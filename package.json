@@ -81,7 +81,7 @@
     "@github/copilot-sdk": "^0.3.0",
     "@opencode-ai/sdk": "^1.14.24",
     "@opentui/core": "0.1.102",
-    "@opentui/react": "0.1.102",
+    "@opentui/react": "0.1.105",
     "commander": "^14.0.3",
     "ignore": "^7.0.5",
     "ignore-by-default": "^2.1.0",
