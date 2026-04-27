@@ -12,9 +12,9 @@ import type { WorkflowDefinition } from "../../src/sdk/types.ts";
 // Inline definitions so TypeScript infers literal agent and name types —
 // makeWorkflow() with explicit return annotation WorkflowDefinition erases
 // those literals and breaks the type-accumulation test at the bottom.
-const wfA = defineWorkflow({ name: "alpha" }).for("claude").run(async (_ctx) => {}).compile();
-const wfB = defineWorkflow({ name: "beta" }).for("opencode").run(async (_ctx) => {}).compile();
-const wfC = defineWorkflow({ name: "gamma" }).for("copilot").run(async (_ctx) => {}).compile();
+const wfA = defineWorkflow({ name: "alpha", source: import.meta.path }).for("claude").run(async (_ctx) => {}).compile();
+const wfB = defineWorkflow({ name: "beta", source: import.meta.path }).for("opencode").run(async (_ctx) => {}).compile();
+const wfC = defineWorkflow({ name: "gamma", source: import.meta.path }).for("copilot").run(async (_ctx) => {}).compile();
 
 // ─── createRegistry() ─────────────────────────────────────────────────────────
 
@@ -151,7 +151,7 @@ describe("validator-on-register", () => {
 
   test("warnings from provider validator surface via console.warn with [registry] prefix", () => {
     // Build a copilot workflow whose run function contains the banned pattern
-    const wfWithWarning = defineWorkflow({ name: "bad-copilot" })
+    const wfWithWarning = defineWorkflow({ name: "bad-copilot", source: import.meta.path })
       .for("copilot")
       .run(async (_ctx) => {
         // new CopilotClient() — matches the banned pattern
@@ -183,7 +183,7 @@ describe("validator-on-register", () => {
 
   test("validator is called synchronously during register() — second pattern also warns", () => {
     // Build a copilot workflow whose run source contains the manual-session pattern
-    const wfSession = defineWorkflow({ name: "bad-session" })
+    const wfSession = defineWorkflow({ name: "bad-session", source: import.meta.path })
       .for("copilot")
       .run(async (_ctx) => {})
       .compile();

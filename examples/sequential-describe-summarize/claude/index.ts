@@ -12,6 +12,7 @@ import { defineWorkflow } from "@bastani/atomic/workflows";
 
 export default defineWorkflow({
   name: "sequential-describe-summarize",
+  source: import.meta.path,
   description: "Describe a topic, then summarize the description",
   inputs: [
     {

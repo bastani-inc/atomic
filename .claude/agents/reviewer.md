@@ -3,7 +3,7 @@ name: reviewer
 description: Code reviewer for proposed code changes.
 tools: Bash, Agent, Glob, Grep, Read, TodoWrite, TaskCreate, TaskList, TaskGet, TaskUpdate, WebFetch, WebSearch
 skills:
-  - test-driven-development
+  - tdd
   - playwright-cli
 model: opus
 ---

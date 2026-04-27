@@ -4,41 +4,60 @@ import type { WorkflowInput } from "./types.ts";
 
 describe("defineWorkflow", () => {
   test("returns a WorkflowBuilder", () => {
-    const builder = defineWorkflow({ name: "test" });
+    const builder = defineWorkflow({ name: "test", source: import.meta.path });
     expect(builder).toBeInstanceOf(WorkflowBuilder);
     expect(builder.__brand).toBe("WorkflowBuilder");
   });
 
   test("throws on empty name", () => {
-    expect(() => defineWorkflow({ name: "" })).toThrow("Workflow name is required");
+    expect(() => defineWorkflow({ name: "", source: import.meta.path })).toThrow("Workflow name is required");
   });
 
   test("throws on whitespace-only name", () => {
-    expect(() => defineWorkflow({ name: "   " })).toThrow("Workflow name is required");
+    expect(() => defineWorkflow({ name: "   ", source: import.meta.path })).toThrow("Workflow name is required");
+  });
+
+  test("throws on missing source at compile()", () => {
+    expect(() =>
+      // Cast required because the type requires `source`; this exercises the
+      // runtime guard for users who silence the type error.
+      defineWorkflow({ name: "no-source" } as unknown as { name: string; source: string })
+        .for("copilot")
+        .run(async () => {})
+        .compile(),
+    ).toThrow(/missing the `source` option/);
+  });
+
+  test("propagates source onto the compiled definition", () => {
+    const def = defineWorkflow({ name: "with-src", source: import.meta.path })
+      .for("copilot")
+      .run(async () => {})
+      .compile();
+    expect(def.source).toBe(import.meta.path);
   });
 });
 
 describe("WorkflowBuilder.run()", () => {
   test("accepts a function and returns this for chaining", () => {
-    const builder = defineWorkflow({ name: "test" });
+    const builder = defineWorkflow({ name: "test", source: import.meta.path });
     const result = builder.run(async () => {});
     expect(result).toBe(builder);
   });
 
   test("throws if called twice", () => {
-    const builder = defineWorkflow({ name: "test" }).run(async () => {});
+    const builder = defineWorkflow({ name: "test", source: import.meta.path }).run(async () => {});
     expect(() => builder.run(async () => {})).toThrow("run() can only be called once");
   });
 
   test("throws if argument is not a function", () => {
-    const builder = defineWorkflow({ name: "test" });
+    const builder = defineWorkflow({ name: "test", source: import.meta.path });
     expect(() => builder.run("not a function" as never)).toThrow("run() requires a function");
   });
 });
 
 describe("WorkflowBuilder.compile()", () => {
   test("produces a WorkflowDefinition with correct brand", () => {
-    const def = defineWorkflow({ name: "test" })
+    const def = defineWorkflow({ name: "test", source: import.meta.path })
       .for("copilot")
       .run(async () => {})
       .compile();
@@ -46,7 +65,7 @@ describe("WorkflowBuilder.compile()", () => {
   });
 
   test("defaults inputs to an empty array when none are declared", () => {
-    const def = defineWorkflow({ name: "test" })
+    const def = defineWorkflow({ name: "test", source: import.meta.path })
       .for("copilot")
       .run(async () => {})
       .compile();
@@ -56,6 +75,7 @@ describe("WorkflowBuilder.compile()", () => {
   test("preserves declared inputs in order", () => {
     const def = defineWorkflow({
       name: "gen-spec",
+      source: import.meta.path,
       inputs: [
         {
           name: "research_doc",
@@ -84,6 +104,7 @@ describe("WorkflowBuilder.compile()", () => {
   test("freezes declared inputs to prevent downstream mutation", () => {
     const def = defineWorkflow({
       name: "test",
+      source: import.meta.path,
       inputs: [{ name: "foo", type: "string" }],
     })
       .for("claude")
@@ -98,6 +119,7 @@ describe("WorkflowBuilder.compile()", () => {
     expect(() =>
       defineWorkflow({
         name: "bad",
+        source: import.meta.path,
         inputs: [{ name: "mode", type: "enum" }],
       })
         .for("copilot")
@@ -110,6 +132,7 @@ describe("WorkflowBuilder.compile()", () => {
     expect(() =>
       defineWorkflow({
         name: "bad",
+        source: import.meta.path,
         inputs: [
           {
             name: "mode",
@@ -129,6 +152,7 @@ describe("WorkflowBuilder.compile()", () => {
     expect(() =>
       defineWorkflow({
         name: "bad",
+        source: import.meta.path,
         inputs: [{ name: "1bad", type: "string" }],
       })
         .for("copilot")
@@ -141,6 +165,7 @@ describe("WorkflowBuilder.compile()", () => {
     expect(() =>
       defineWorkflow({
         name: "bad",
+        source: import.meta.path,
         inputs: [
           { name: "foo", type: "string" },
           { name: "foo", type: "string" },
@@ -153,7 +178,7 @@ describe("WorkflowBuilder.compile()", () => {
   });
 
   test("preserves name, description, and agent", () => {
-    const def = defineWorkflow({ name: "my-wf", description: "A description" })
+    const def = defineWorkflow({ name: "my-wf", description: "A description", source: import.meta.path })
       .for("claude")
       .run(async () => {})
       .compile();
@@ -163,7 +188,7 @@ describe("WorkflowBuilder.compile()", () => {
   });
 
   test("defaults description to empty string", () => {
-    const def = defineWorkflow({ name: "test" })
+    const def = defineWorkflow({ name: "test", source: import.meta.path })
       .for("opencode")
       .run(async () => {})
       .compile();
@@ -172,17 +197,17 @@ describe("WorkflowBuilder.compile()", () => {
 
   test("stores the run function", () => {
     const fn = async () => {};
-    const def = defineWorkflow({ name: "test" }).for("copilot").run(fn).compile();
+    const def = defineWorkflow({ name: "test", source: import.meta.path }).for("copilot").run(fn).compile();
     expect(def.run).toBe(fn);
   });
 
   test("throws if no run callback was provided", () => {
-    const builder = defineWorkflow({ name: "test" }).for("copilot");
+    const builder = defineWorkflow({ name: "test", source: import.meta.path }).for("copilot");
     expect(() => builder.compile()).toThrow("has no run callback");
   });
 
   test("throws if .for() was not called before compile()", () => {
-    const builder = defineWorkflow({ name: "test" }).run(async () => {});
+    const builder = defineWorkflow({ name: "test", source: import.meta.path }).run(async () => {});
     expect(() => builder.compile()).toThrow("has no agent");
   });
 });
@@ -203,6 +228,7 @@ describe("RESERVED_INPUT_NAMES — reserved name validation", () => {
       expect(() =>
         defineWorkflow({
           name: "bad",
+          source: import.meta.path,
           inputs: [{ name: reserved, type: "string" }],
         })
           .for("copilot")
@@ -217,6 +243,7 @@ describe("RESERVED_INPUT_NAMES — reserved name validation", () => {
     try {
       defineWorkflow({
         name: "bad",
+        source: import.meta.path,
         inputs: [{ name: "name", type: "string" }],
       })
         .for("copilot")
@@ -234,6 +261,7 @@ describe("RESERVED_INPUT_NAMES — reserved name validation", () => {
     expect(() =>
       defineWorkflow({
         name: "ok",
+        source: import.meta.path,
         inputs: [{ name: "topic", type: "string" }],
       })
         .for("copilot")
@@ -246,6 +274,7 @@ describe("RESERVED_INPUT_NAMES — reserved name validation", () => {
     expect(() =>
       defineWorkflow({
         name: "ok",
+        source: import.meta.path,
         inputs: [{ name: "named", type: "string" }],
       })
         .for("copilot")
@@ -257,7 +286,7 @@ describe("RESERVED_INPUT_NAMES — reserved name validation", () => {
 
 describe("WorkflowBuilder.for()", () => {
   test("returns a new builder with agent set", () => {
-    const builder = defineWorkflow({ name: "test" });
+    const builder = defineWorkflow({ name: "test", source: import.meta.path });
     const narrowed = builder.for("copilot");
     // .for() returns a new builder instance
     expect(narrowed).toBeInstanceOf(WorkflowBuilder);
@@ -265,7 +294,7 @@ describe("WorkflowBuilder.for()", () => {
   });
 
   test("stores agent on the compiled definition", () => {
-    const def = defineWorkflow({ name: "test" })
+    const def = defineWorkflow({ name: "test", source: import.meta.path })
       .for("copilot")
       .run(async () => {})
       .compile();
@@ -275,6 +304,7 @@ describe("WorkflowBuilder.for()", () => {
   test("chains with run and compile", () => {
     const def = defineWorkflow({
       name: "test",
+      source: import.meta.path,
       inputs: [{ name: "greeting", type: "string" }],
     })
       .for("copilot")
@@ -293,6 +323,7 @@ describe("typed inputs (compile-time)", () => {
     // file without errors (or produces errors only where expected).
     defineWorkflow({
       name: "typed-test",
+      source: import.meta.path,
       inputs: [
         { name: "greeting", type: "string", required: true },
         { name: "style", type: "enum", values: ["formal", "casual"] },
@@ -312,7 +343,7 @@ describe("typed inputs (compile-time)", () => {
   });
 
   test("free-form workflows allow any key", () => {
-    defineWorkflow({ name: "freeform-test" })
+    defineWorkflow({ name: "freeform-test", source: import.meta.path })
       .for("copilot")
       .run(async (ctx) => {
         const _p: string | undefined = ctx.inputs.prompt;

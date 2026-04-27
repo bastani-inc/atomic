@@ -13,7 +13,7 @@
  * Pass criterion: the `submit_review` handler fires exactly once with a
  * `{ verdict, explanation }` object. If it doesn't, the workflow throws.
  *
- * Run: atomic workflow -n reviewer-tool-test -a copilot
+ * Run: bun run examples/reviewer-tool-test/copilot-worker.ts
  */
 
 import { defineWorkflow } from "@bastani/atomic/workflows";
@@ -50,6 +50,7 @@ output the review as plain text — the tool enforces the required schema.`;
 
 export default defineWorkflow({
   name: "reviewer-tool-test",
+  source: import.meta.path,
   description:
     "Verify the reviewer subagent can call a workflow-registered submit_review tool",
   inputs: [],

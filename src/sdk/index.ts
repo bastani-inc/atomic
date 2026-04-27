@@ -1,18 +1,25 @@
 /**
- * atomic SDK
+ * @bastani/atomic — SDK barrel.
  *
- * Public API barrel — re-exports the SDK surface.
- * CLI-only concerns (colors, prompts, process management) are not exported here.
+ * Public API for authoring and running workflows. Composition primitives
+ * are pure functions; consumers wire them into their own CLI shape (via
+ * Commander, citty, yargs, an OpenTUI app, etc.). The SDK itself ships
+ * no opinionated CLI wrapper.
  */
 
-// Typed errors
+// ─── Typed errors ───────────────────────────────────────────────────────────
 export {
   MissingDependencyError,
   WorkflowNotCompiledError,
   InvalidWorkflowError,
 } from "./errors.ts";
 
-// Shared types
+// ─── Authoring ──────────────────────────────────────────────────────────────
+export { defineWorkflow, WorkflowBuilder } from "./define-workflow.ts";
+export { createRegistry } from "./registry.ts";
+export type { Registry } from "./registry.ts";
+
+// ─── Shared types ───────────────────────────────────────────────────────────
 export type {
   AgentType,
   Transcript,
@@ -25,21 +32,64 @@ export type {
   WorkflowContext,
   WorkflowOptions,
   WorkflowDefinition,
+  WorkflowInput,
+  WorkflowInputType,
   StageClientOptions,
   StageSessionOptions,
   ProviderClient,
   ProviderSession,
 } from "./types.ts";
 
-// Workflow SDK (also available as atomic/workflows subpath)
-export { defineWorkflow } from "./define-workflow.ts";
+// ─── Metadata accessors ─────────────────────────────────────────────────────
+export {
+  getName,
+  getDescription,
+  getAgent,
+  getInputSchema,
+  getSource,
+  getMinSDKVersion,
+} from "./primitives/metadata.ts";
 
-// Registry
-export type { Registry } from "./registry.ts";
-export { createRegistry } from "./registry.ts";
+// ─── Registry iteration helpers ─────────────────────────────────────────────
+import type { AgentType, Registry, WorkflowDefinition } from "./types.ts";
 
-// WorkflowCli — the factory that drives workflow CLIs. Accepts a lone
-// workflow, an array of workflows, or a Registry for programmatic
-// composition. Ships with the interactive picker out of the box.
-export { createWorkflowCli } from "./workflow-cli.ts";
-export type { WorkflowCli, CreateWorkflowCliOptions } from "./types.ts";
+/** Snapshot every workflow registered in `registry`. */
+export function listWorkflows(registry: Registry): readonly WorkflowDefinition[] {
+  return registry.list();
+}
+
+/** Resolve a workflow by `(name, agent)`; returns `undefined` when not found. */
+export function getWorkflow(
+  registry: Registry,
+  agent: AgentType,
+  name: string,
+): WorkflowDefinition | undefined {
+  return registry.resolve(name, agent);
+}
+
+// ─── Input validation ───────────────────────────────────────────────────────
+export { validateInputs } from "./primitives/inputs.ts";
+export type { ResolvedInputs } from "./primitives/inputs.ts";
+
+// ─── Run a workflow ─────────────────────────────────────────────────────────
+export { runWorkflow } from "./primitives/run.ts";
+export type {
+  RunWorkflowOptions,
+  RunWorkflowResult,
+} from "./primitives/run.ts";
+
+// ─── Session management ─────────────────────────────────────────────────────
+export {
+  listSessions,
+  getSession,
+  stopSession,
+  attachSession,
+  getSessionStatus,
+  getSessionTranscript,
+} from "./primitives/sessions.ts";
+export type {
+  SessionInfo,
+  SessionScope,
+  StatusSnapshot,
+  ListSessionsOptions,
+} from "./primitives/sessions.ts";

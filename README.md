@@ -45,7 +45,7 @@ Atomic doesn't replace your coding agent or terminal — it gives them a workflo
   - [GitHub Copilot CLI](https://github.com/features/copilot/cli) — run `copilot` and authenticate
 - **Windows only:** PowerShell 7+ ([install guide](https://learn.microsoft.com/en-us/powershell/scripting/install/installing-powershell-on-windows))
 
-> The bootstrap installer below installs Bun and Atomic but **does not** install tmux/psmux or the coding agents. Install those separately before running any workflow — `bun run src/claude-worker.ts -n <workflow-name> -a claude` will fail loudly at stage spawn if either is missing. Using a [devcontainer](#alternative-devcontainer-recommended-for-autonomous-workflows) short-circuits all of this: the atomic feature bundles Bun + tmux + the agent CLI into the container image.
+> The bootstrap installer below installs Bun and Atomic but **does not** install tmux/psmux or the coding agents. Install those separately before running any workflow — `bun run src/claude-worker.ts` will fail loudly at stage spawn if either is missing. Using a [devcontainer](#alternative-devcontainer-recommended-for-autonomous-workflows) short-circuits all of this: the atomic feature bundles Bun + tmux + the agent CLI into the container image.
 
 ### 1. Install — CLI + SDK share the same package
 
@@ -227,22 +227,39 @@ export default defineWorkflow({
   .compile();
 ```
 
-Wire it to a CLI in `src/claude-worker.ts` — three lines:
+Wire it to a CLI in `src/claude-worker.ts`. The SDK ships pure
+primitives — no wrapper to opt into. Compose with your CLI library of
+choice (Commander, citty, yargs, …) and call `runWorkflow`:
 
 ```ts
-import { createWorkflowCli } from "@bastani/atomic/workflows";
+import { Command } from "@commander-js/extra-typings";
+import { getInputSchema, runWorkflow } from "@bastani/atomic/workflows";
 import workflow from "./workflows/review-to-merge/claude.ts";
 
-await createWorkflowCli(workflow).run();
+const program = new Command();
+for (const input of getInputSchema(workflow)) {
+  program.option(`--${input.name} <value>`, input.description ?? "");
+}
+program.action(async (rawOpts) => {
+  const inputs = rawOpts as Record<string, string>;
+  await runWorkflow({ workflow, inputs });
+});
+await program.parseAsync();
 ```
 
 Run it:
 
 ```bash
-bun run src/claude-worker.ts -n review-to-merge -a claude
+bun run src/claude-worker.ts --target_branch=main
 ```
 
-That's the full shape — one workflow file, one three-line composition root. `createWorkflowCli` handles named dispatch (`-n/--name` + `-a/--agent`), the `--<input>` flags declared by your workflow, detached execution, and the interactive picker. Pass an array (`createWorkflowCli([claude, copilot])`) for multi-agent or multi-workflow apps; the file stays three lines. See [Workflow SDK](#workflow-sdk--build-reliable-engineering-workflows) for parallel stages, input schemas, headless stages, and the full API reference.
+That's the full shape — one workflow file, one composition root. The
+SDK exposes primitives (`runWorkflow`, `getInputSchema`, `listWorkflows`,
+`getName`, `getAgent`, `validateInputs`, `listSessions`, …) and the
+developer composes them into whatever CLI shape they prefer. See
+[Workflow SDK](#workflow-sdk--build-reliable-engineering-workflows) for
+parallel stages, input schemas, headless stages, and the full API
+reference.
 
 ### Managing sessions
 
@@ -272,15 +289,15 @@ Detached mode is what you want for scripted / CI automation and long-running tas
 
 Atomic ships **two** things that share one workflow runtime. You can use either on its own or both together:
 
-|                       | Atomic CLI                                                                                                                                                                                                                         | Atomic SDK                                                                                                                                                      |
-| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **What it is**        | Global `atomic` binary                                                                                                                                                                                                             | `@bastani/atomic/workflows` TypeScript library                                                                                                                  |
-| **Install**           | `bun install -g @bastani/atomic` (or `install.sh` / `install.ps1`)                                                                                                                                                                 | `bun add @bastani/atomic` inside your project                                                                                                                   |
-| **Entrypoint**        | `atomic <command>`                                                                                                                                                                                                                 | `bun run src/<agent>-worker.ts`                                                                                                                                 |
-| **Code required?**    | No — everything is pre-built. You can also ask the agent inside `atomic chat` to use the `workflow-creator` skill, decide when a complex task needs its own workflow, and build/run that workflow on the fly.                       | No to start — describe the workflow in natural language and use the `workflow-creator` skill to generate it. Then refine it in natural language or edit the TypeScript workflow and composition root directly, with full visibility into exactly what will run. |
-| **What you get**      | `atomic chat` (agent REPL), three autonomous built-in workflows (`ralph`, `deep-research-codebase`, `open-claude-design`), session management, the live workflow panel, Atomic skills (`/init`, `/research-codebase`, `/create-spec`, …) | `defineWorkflow`, `createWorkflowCli`, `createRegistry`, `ctx.stage`, `s.save` / `s.transcript`, headless stages, the Commander adapter (`toCommand`, `runCli`) |
-| **When to reach for** | You want autonomous execution of a standard pattern out of the box, interactive chat with your agent's full toolset, or a CLI agent that can create a purpose-built workflow before doing complex work.                              | You want to control the outer loop yourself — review flows, deployment gates, custom research pipelines — with full visibility into the TypeScript your team will run identically.                                             |
-| **Read next**         | [Quick Start](#quick-start) (steps 1–3)                                                                                                                                                                                            | [Quick Start step 4](#4-build-your-own-workflow--sdk) and [Building your own atomic-powered app](#building-your-own-atomic-powered-app)                         |
+|                       | Atomic CLI                                                                                                                                                                                                                               | Atomic SDK                                                                                                                                                                                                                                                      |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **What it is**        | Global `atomic` binary                                                                                                                                                                                                                   | `@bastani/atomic/workflows` TypeScript library                                                                                                                                                                                                                  |
+| **Install**           | `bun install -g @bastani/atomic` (or `install.sh` / `install.ps1`)                                                                                                                                                                       | `bun add @bastani/atomic` inside your project                                                                                                                                                                                                                   |
+| **Entrypoint**        | `atomic <command>`                                                                                                                                                                                                                       | `bun run src/<agent>-worker.ts`                                                                                                                                                                                                                                 |
+| **Code required?**    | No — everything is pre-built. You can also ask the agent inside `atomic chat` to use the `workflow-creator` skill, decide when a complex task needs its own workflow, and build/run that workflow on the fly.                            | No to start — describe the workflow in natural language and use the `workflow-creator` skill to generate it. Then refine it in natural language or edit the TypeScript workflow and composition root directly, with full visibility into exactly what will run. |
+| **What you get**      | `atomic chat` (agent REPL), three autonomous built-in workflows (`ralph`, `deep-research-codebase`, `open-claude-design`), session management, the live workflow panel, Atomic skills (`/init`, `/research-codebase`, `/create-spec`, …) | `defineWorkflow`, `createRegistry`, `runWorkflow`, metadata accessors (`getName`, `getInputSchema`, …), session primitives (`listSessions`, `getSessionStatus`, `attachSession`), `ctx.stage`, `s.save` / `s.transcript`, headless stages                       |
+| **When to reach for** | You want autonomous execution of a standard pattern out of the box, interactive chat with your agent's full toolset, or a CLI agent that can create a purpose-built workflow before doing complex work.                                  | You want to control the outer loop yourself — review flows, deployment gates, custom research pipelines — with full visibility into the TypeScript your team will run identically.                                                                              |
+| **Read next**         | [Quick Start](#quick-start) (steps 1–3)                                                                                                                                                                                                  | [Quick Start step 4](#4-build-your-own-workflow--sdk) and [Building your own atomic-powered app](#building-your-own-atomic-powered-app)                                                                                                                         |
 
 Both surfaces call the same runtime underneath (tmux/psmux session graph, provider SDKs, detach/reattach) — they're two entry points, not two products. Neither depends on the other: you can `bun add @bastani/atomic` in a project without ever installing the global binary, and you can use `atomic chat` and the built-in workflows without writing any TypeScript.
 
@@ -340,7 +357,7 @@ These are workflows you'd author with `defineWorkflow` and run from your own `sr
   - [Building your own atomic-powered app](#building-your-own-atomic-powered-app)
     - [One factory, three input shapes](#one-factory-three-input-shapes)
     - [One method: `run()`](#one-method-run)
-    - [Embedding under a parent CLI — `toCommand` + `runCli`](#embedding-under-a-parent-cli--tocommand--runcli)
+    - [Embedding under a parent CLI — `runWorkflow` inside any Commander tree](#embedding-under-a-parent-cli--runworkflow-inside-any-commander-tree)
     - [`entry` — for bundled apps and tests](#entry--for-bundled-apps-and-tests)
     - [Registry rules](#registry-rules)
     - [Input precedence](#input-precedence)
@@ -393,17 +410,19 @@ Each agent gets its own configuration directory (`.claude/`, `.opencode/`, `.git
 
 The Workflow SDK (`@bastani/atomic/workflows`) lets you encode your team's process as TypeScript — spawn agent sessions dynamically with native control flow (`for`, `if`, `Promise.all()`), pass state explicitly, and watch each stage appear in a live graph as it runs.
 
-Set up a workflow project (`bun init && bun add @bastani/atomic`), define your workflow with `defineWorkflow`, then bind it to a CLI with `createWorkflowCli(definition)` (single workflow) or `createWorkflowCli(registry)` (many workflows):
+Set up a workflow project (`bun init && bun add @bastani/atomic`), define your workflow with `defineWorkflow`, then call `runWorkflow({ workflow, inputs })` from inside whatever CLI library you prefer (Commander, citty, yargs, an OpenTUI app, …). The SDK ships pure primitives — no opinionated wrapper:
 
 ```bash
-bun run src/claude-worker.ts -n <workflow-name> -a claude --prompt "describe this project"
+bun run src/claude-worker.ts --prompt="describe this project"
 ```
 
-See [step 4 of Quick Start](#4-build-your-own-workflow) for a complete review-to-merge example. More examples and the full API reference below.
+See [step 4 of Quick Start](#4-build-your-own-workflow--sdk) for a complete review-to-merge example. More examples and the full API reference below.
 
 #### Runnable examples shipped with the repo
 
-The [`examples/`](./examples) directory contains small, complete user apps you can run directly. Most subdirectories ship `claude/`, `copilot/`, and `opencode/` variants plus one agent-scoped worker file per agent — `claude-worker.ts`, `copilot-worker.ts`, `opencode-worker.ts` — each a three-line `createWorkflowCli(workflow).run()` entrypoint. `multi-workflow/` and `commander-embed/` use a single `cli.ts` instead, to demonstrate multi-workflow dispatch and Commander embedding respectively.
+The [`examples/`](./examples) directory contains small, complete user apps you can run directly. Most subdirectories ship `claude/`, `copilot/`, and `opencode/` variants plus one agent-scoped worker file per agent — `claude-worker.ts`, `copilot-worker.ts`, `opencode-worker.ts` — each a small Commander entrypoint that calls `runWorkflow({ workflow, inputs })`. `multi-workflow/` and `commander-embed/` use a single `cli.ts` instead, to demonstrate multi-workflow dispatch and Commander embedding respectively.
+
+**Design principle — when does `-a/--agent` belong on your CLI?** Each agent-scoped worker file imports a single workflow pinned to one agent (`import workflow from "./claude/index.ts"`), so there's nothing to disambiguate — no `-a` flag. Only reach for `-a/--agent` when one CLI dispatches across workflows that exist in multiple agent variants — e.g. a `cli.ts` that registers `hello` for claude *and* copilot. The atomic CLI itself uses `-a` for exactly that reason: its builtin registry has cross-agent variants of `ralph`, `deep-research-codebase`, and `open-claude-design`.
 
 | Example                         | What it demonstrates                                                                                                                                                                                                                                         |
 | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -415,29 +434,27 @@ The [`examples/`](./examples) directory contains small, complete user apps you c
 | `hil-favorite-color-headless`   | HIL pause inside a headless stage                                                                                                                                                                                                                            |
 | `structured-output-demo`        | Per-SDK structured output (JSON-schema validation, Zod)                                                                                                                                                                                                      |
 | `reviewer-tool-test`            | Custom reviewer tool wiring (Copilot — copilot-worker.ts only)                                                                                                                                                                                               |
-| `review-fix-loop`               | Draft → loop(review → fix) with bounded iterations and early exit on a `CLEAN` verdict — a reliable review gate showing how a stage's return value (`handle.result`) drives TypeScript control flow                                                        |
-| `multi-workflow`                | Two Claude workflows under one `cli.ts` — `-n/--name` dispatch, per-workflow `--<input>` flag union, and the interactive picker. Shows the array form (`createWorkflowCli([hello, goodbye])`) and the `createRegistry().register(...)` variant side by side. |
-| `commander-embed`               | Mount an atomic workflow under a parent Commander CLI with `toCommand(cli, "greet")`, alongside a plain Commander sibling command. `runCli` replaces `program.parseAsync()` and transparently handles detached workflow re-entry.                            |
+| `review-fix-loop`               | Draft → loop(review → fix) with bounded iterations and early exit on a `CLEAN` verdict — a reliable review gate showing how a stage's return value (`handle.result`) drives TypeScript control flow                                                          |
+| `multi-workflow`                | Two Claude workflows under one `cli.ts` — uses `listWorkflows(registry)` to register one Commander subcommand per workflow with each workflow's declared inputs as `--<flag>` options.                                                |
+| `commander-embed`               | Mount an atomic workflow under a parent Commander CLI by calling `runWorkflow({ workflow, inputs })` inside a Commander action, alongside a plain Commander sibling command. No re-entry boilerplate — the SDK ships its own orchestrator entry script. |
 
 Run any of them with:
 
 ```bash
-# Single-workflow examples — one worker file per agent
-bun run examples/<name>/<agent>-worker.ts -n <workflow-name> -a <agent> [--field=value | "<prompt>"]
+# Single-workflow workers — agent is pinned by which file you run, so no `-a` flag.
+# Inputs map to `--<input>=<value>` flags; if the workflow declares no inputs,
+# trailing positional tokens become the prompt.
+bun run examples/hello-world/claude-worker.ts --greeting="Hello" --style=casual
+bun run examples/sequential-describe-summarize/claude-worker.ts --topic="Bun"
+bun run examples/review-fix-loop/claude-worker.ts --topic="adopting Bun" --max_iterations=3
+bun run examples/headless-test/copilot-worker.ts --prompt="TypeScript"
 
-# e.g.
-bun run examples/hello-world/claude-worker.ts -n hello-world -a claude --greeting="Hello" --style=casual
-bun run examples/sequential-describe-summarize/claude-worker.ts -n sequential-describe-summarize -a claude --topic="Bun"
-bun run examples/review-fix-loop/claude-worker.ts -n review-fix-loop -a claude --topic="adopting Bun" --max_iterations=3
-bun run examples/headless-test/copilot-worker.ts -n headless-test -a copilot "TypeScript"
+# Multi-workflow CLI — one cli.ts, one Commander subcommand per registered workflow.
+bun run examples/multi-workflow/cli.ts hello   --who=Alex
+bun run examples/multi-workflow/cli.ts goodbye --tone=melodramatic
 
-# Multi-workflow — one cli.ts, dispatch by `-n/--name`
-bun run examples/multi-workflow/cli.ts -n hello   -a claude --who=Alex
-bun run examples/multi-workflow/cli.ts -n goodbye -a claude --tone=melodramatic
-bun run examples/multi-workflow/cli.ts -a claude              # interactive picker (TTY)
-
-# Commander embedding — workflow mounted as a subcommand under a parent CLI
-bun run examples/commander-embed/cli.ts greet -n greet -a claude --who=Alex
+# Commander embedding — atomic workflow mounted as `greet` alongside plain Commander commands.
+bun run examples/commander-embed/cli.ts greet --who=Alex
 bun run examples/commander-embed/cli.ts status                # sibling Commander command
 bun run examples/commander-embed/cli.ts --help                # all commands
 ```
@@ -577,13 +594,11 @@ export default defineWorkflow({
   .compile();
 ```
 
-Wire it into `src/claude-worker.ts` (three lines — see [step 4 of Quick Start](#4-build-your-own-workflow)) and run it:
+Wire it into `src/claude-worker.ts` (three lines — see [step 4 of Quick Start](#4-build-your-own-workflow--sdk)) and run it:
 
 ```bash
 # Scriptable; CI-friendly
 bun run src/claude-worker.ts \
-  -n gen-spec \
-  -a claude \
   --research_doc=research/docs/2026-04-11-auth.md \
   --focus=standard
 ```
@@ -660,7 +675,7 @@ The graph shows `seed → merge` — headless stages are transparent to the topo
 | **Session return values**          | Session callbacks can return data: `const h = await ctx.stage(...); h.result`                                                      |
 | **Transcript passing**             | Access prior output via handle (`s.transcript(handle)`) or name (`s.transcript("name")`)                                           |
 | **Declared input schemas**         | Add an `inputs: [...]` array and the CLI materialises `--<field>=<value>` flags with built-in validation                           |
-| **Interactive picker**             | `atomic workflow -a <agent>` is the explicit no-`-n` discovery path; direct runs use `-n <name>`                                    |
+| **Interactive picker**             | `atomic workflow -a <agent>` is the explicit no-`-n` discovery path; direct runs use `-n <name>`                                   |
 | **Nested sub-sessions**            | `s.stage()` inside a callback spawns child sessions — visible as nested graph nodes                                                |
 | **Auto-inferred graph**            | Topology derived from `await` / `Promise.all` patterns — no annotations                                                            |
 | **Provider-agnostic**              | Write raw SDK code for Claude, Copilot, or OpenCode inside each callback                                                           |
@@ -755,7 +770,7 @@ The runtime auto-creates `s.client` and `s.session` — use them directly inside
 2. Session names must be unique within a workflow run
 3. `transcript()` / `getMessages()` only access completed sessions (callback returned + saves flushed)
 4. Each session runs in its own tmux window with the chosen agent
-5. Bind a workflow to a CLI with `createWorkflowCli(workflow)` (single workflow) or `createWorkflowCli(createRegistry().register(...))` (many workflows)
+5. Run a workflow by calling `runWorkflow({ workflow, inputs })` from inside any CLI library (Commander, citty, yargs, …). Use `listWorkflows(registry)` to iterate when registering multiple workflows.
 6. Set up your workflow project with `bun init && bun add @bastani/atomic`
 7. Background (headless) stages use the same callback API — `s.client`, `s.session`, `s.save()`, return values all work identically
 
@@ -913,16 +928,16 @@ Skills are structured capability modules that give agents best practices and reu
 <details>
 <summary><b>Development workflows</b></summary>
 
-| Skill                     | Description                                                                 |
-| ------------------------- | --------------------------------------------------------------------------- |
-| `init`                    | Generate `CLAUDE.md` and `AGENTS.md` by exploring the codebase              |
-| `research-codebase`       | Analyze codebase with parallel sub-agents and document findings             |
-| `create-spec`             | Create detailed execution plans from research documents                     |
-| `workflow-creator`        | Create multi-agent workflows using the session-based `defineWorkflow()` API |
-| `explain-code`            | Explain code functionality in detail using DeepWiki                         |
-| `find-skills`             | Discover and install agent skills from the community                        |
-| `test-driven-development` | Write tests first; includes a testing anti-patterns guide                   |
-| `prompt-engineer`         | Create, improve, and optimize prompts using best practices                  |
+| Skill               | Description                                                                 |
+| ------------------- | --------------------------------------------------------------------------- |
+| `init`              | Generate `CLAUDE.md` and `AGENTS.md` by exploring the codebase              |
+| `research-codebase` | Analyze codebase with parallel sub-agents and document findings             |
+| `create-spec`       | Create detailed execution plans from research documents                     |
+| `workflow-creator`  | Create multi-agent workflows using the session-based `defineWorkflow()` API |
+| `explain-code`      | Explain code functionality in detail using DeepWiki                         |
+| `find-skills`       | Discover and install agent skills from the community                        |
+| `tdd`               | Write tests first; includes a testing anti-patterns guide                   |
+| `prompt-engineer`   | Create, improve, and optimize prompts using best practices                  |
 
 </details>
 
@@ -1043,16 +1058,16 @@ During `atomic chat`, there is no Atomic-owned TUI — `atomic chat -a <agent>` 
 
 ### CLI Commands
 
-| Command                         | Description                                                     |
-| ------------------------------- | --------------------------------------------------------------- |
-| `atomic chat`                   | Spawn the native agent CLI inside a tmux session                |
+| Command                         | Description                                                       |
+| ------------------------------- | ----------------------------------------------------------------- |
+| `atomic chat`                   | Spawn the native agent CLI inside a tmux session                  |
 | `atomic workflow`               | Run a named multi-session workflow with the Atomic workflow panel |
-| `atomic workflow list`          | List available workflows, grouped by source                     |
-| `atomic session list`           | List all running sessions on the atomic tmux socket             |
-| `atomic session connect [name]` | Attach to a session (interactive picker when no name given)     |
-| `atomic session kill [name]`    | Kill a session by name, or all sessions when no name is given   |
-| `atomic completions <shell>`    | Output shell completion script (bash, zsh, fish, powershell)    |
-| `atomic config set <k> <v>`     | Set configuration values (supports `telemetry` and `scm`)       |
+| `atomic workflow list`          | List available workflows, grouped by source                       |
+| `atomic session list`           | List all running sessions on the atomic tmux socket               |
+| `atomic session connect [name]` | Attach to a session (interactive picker when no name given)       |
+| `atomic session kill [name]`    | Kill a session by name, or all sessions when no name is given     |
+| `atomic completions <shell>`    | Output shell completion script (bash, zsh, fish, powershell)      |
+| `atomic config set <k> <v>`     | Set configuration values (supports `telemetry` and `scm`)         |
 
 #### Global Flags
 
@@ -1109,7 +1124,7 @@ atomic chat -a claude --verbose              # forward --verbose to claude
 
 | Flag                 | Description                                                                                                                                       |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `-n, --name <name>`  | Workflow name (required for direct runs; omit only for the interactive picker)                                                                     |
+| `-n, --name <name>`  | Workflow name (required for direct runs; omit only for the interactive picker)                                                                    |
 | `-a, --agent <name>` | Agent: `claude`, `opencode`, `copilot`                                                                                                            |
 | `-d, --detach`       | Start the workflow in the background without attaching — ideal for scripted / CI runs; attach later with `atomic workflow session connect <name>` |
 | `--<field>=<value>`  | Structured input for workflows that declare an `inputs` schema (also accepts `--<field> <value>`)                                                 |
@@ -1210,148 +1225,154 @@ Native slash commands (`/help`, `/clear`, `/compact`, `/model`, `/theme`, `/agen
 
 > **SDK-only users:** you don't need the global `atomic` binary, but you still need the runtime prerequisites — **[Bun](https://bun.sh/) (the SDK does not run on Node.js)**, a terminal multiplexer (tmux on macOS/Linux, psmux on Windows), and at least one authenticated coding agent CLI (`claude`, `opencode`, or `copilot`). See [Prerequisites](#prerequisites) for the "why" and install commands. The SDK spawns the agent CLI at each stage and wraps it in a detachable multiplexer session.
 >
-> **Management commands ship natively.** `createWorkflowCli` auto-registers `session` and `status` subcommands on every worker CLI by default, so `bun run src/claude-worker.ts session list`, `… status <id>`, `… session connect <id>`, and `… session kill <id> -y` all work with zero extra code. Sessions live on the shared `atomic` tmux socket, so the worker CLI, the global `atomic` binary, and `bunx atomic` (for SDK-only installs) all see the same runtime state. Opt out with `createWorkflowCli(workflow, { includeManagementCommands: false })` when you want a minimal CLI or are embedding under a parent Commander program that owns session management. The names `session` and `status` are reserved — workflow inputs with those names throw at `defineWorkflow` time to prevent flag collisions.
+> **Session management primitives.** The SDK exposes `listSessions`, `getSession`, `stopSession`, `attachSession`, `getSessionStatus`, and `getSessionTranscript` — wire them into your CLI's `session list`, `status`, etc. subcommands as you see fit. Sessions live on the shared `atomic` tmux socket, so a worker CLI built on the primitives, the global `atomic` binary, and `bunx atomic` all see the same runtime state.
 
-### One factory, three input shapes
+### Primitives, not a wrapper
 
-`createWorkflowCli` is the single factory. Pick whichever input shape matches how you organize your workflows:
+The SDK ships pure functions you compose into whatever CLI shape you want:
 
-| Input                           | When to use                                                                                          |
-| ------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `createWorkflowCli(workflow)`   | One workflow. Direct runs still use `-n/--name` + `-a/--agent`; the CLI exposes only that workflow's declared `--<input>` flags. |
-| `createWorkflowCli([wf1, wf2])` | Multiple workflows inline. Uses the same `-n/--name` + `-a/--agent` dispatch and the interactive picker.                         |
-| `createWorkflowCli(registry)`   | Dynamic composition (loop-register, conditional registration). Same runtime shape as the array form.                             |
+| Primitive               | Purpose                                                                                                |
+| ----------------------- | ------------------------------------------------------------------------------------------------------ |
+| `defineWorkflow`        | Author a workflow with `.for(agent).run(...).compile()`. Pass `source: import.meta.path`.              |
+| `createRegistry`        | Build an immutable registry of workflows for iteration / lookup.                                       |
+| `listWorkflows(reg)`    | Snapshot every workflow in a registry.                                                                 |
+| `getWorkflow(reg, …)`   | Resolve `(agent, name)` → workflow.                                                                    |
+| `getName / getAgent / getInputSchema / getDescription / getSource / getMinSDKVersion` | Read workflow metadata.        |
+| `validateInputs(wf, raw)` | Run the same validation pipeline atomic uses (required, defaults, enum, integer).                    |
+| `runWorkflow({ workflow, inputs, detach? })` | Spawn the orchestrator tmux session and (optionally) attach.                      |
+| `listSessions / getSession / stopSession / attachSession` | Manage running tmux sessions on the shared atomic socket.         |
+| `getSessionStatus / getSessionTranscript`    | Read the orchestrator-written status snapshot or per-session messages from disk.  |
 
-**Single workflow (most common)** — one file, three lines:
+**Single workflow (most common):**
 
 ```ts
 // src/claude-worker.ts
-import { createWorkflowCli } from "@bastani/atomic/workflows";
+import { Command } from "@commander-js/extra-typings";
+import { getInputSchema, runWorkflow } from "@bastani/atomic/workflows";
 import workflow from "./workflows/review-to-merge/claude.ts";
 
-await createWorkflowCli(workflow).run({ inputs: { target_branch: "main" } });
-// defaults above; CLI flags override.
+const program = new Command();
+for (const input of getInputSchema(workflow)) {
+  program.option(`--${input.name} <value>`, input.description ?? "");
+}
+program.action(async (rawOpts) => {
+  const inputs = rawOpts as Record<string, string>;
+  await runWorkflow({ workflow, inputs });
+});
+await program.parseAsync();
 ```
 
 Run it:
 
 ```bash
-bun run src/claude-worker.ts -n review-to-merge -a claude --target_branch=release/v2
+bun run src/claude-worker.ts --target_branch=release/v2
 ```
 
-**Multiple workflows — inline array:**
+**Multiple workflows — iterate a registry:**
 
 ```ts
 // src/cli.ts
-import { createWorkflowCli } from "@bastani/atomic/workflows";
+import { Command } from "@commander-js/extra-typings";
+import {
+  createRegistry,
+  getInputSchema,
+  getName,
+  listWorkflows,
+  runWorkflow,
+} from "@bastani/atomic/workflows";
 import reviewToMerge from "./workflows/review-to-merge/claude.ts";
 import genSpec from "./workflows/gen-spec/claude.ts";
 
-await createWorkflowCli([reviewToMerge, genSpec]).run();
+const registry = createRegistry().register(reviewToMerge).register(genSpec);
+const program = new Command("my-app");
+
+for (const wf of listWorkflows(registry)) {
+  const sub = program.command(getName(wf)).description(wf.description);
+  for (const input of getInputSchema(wf)) {
+    sub.option(`--${input.name} <value>`, input.description ?? "");
+  }
+  sub.action(async (rawOpts) => {
+    await runWorkflow({ workflow: wf, inputs: rawOpts as Record<string, string> });
+  });
+}
+
+await program.parseAsync();
 ```
 
-Run it:
+See [`examples/multi-workflow/`](./examples/multi-workflow) for a complete runnable version — two Claude workflows (`hello`, `goodbye`) registered under one `cli.ts`.
 
-```bash
-bun run src/cli.ts -n review-to-merge -a claude
-bun run src/cli.ts -a claude                    # interactive picker (TTY)
-```
+### Programmatic invocation
 
-See [`examples/multi-workflow/`](./examples/multi-workflow) for a complete runnable version — two Claude workflows (`hello`, `goodbye`) registered under one `cli.ts`, with the `createRegistry()` variant shown side by side in a comment.
-
-**Dynamic composition — `createRegistry`:**
+`runWorkflow({ workflow, inputs })` is a plain async function — you don't need a CLI at all:
 
 ```ts
-import { createWorkflowCli, createRegistry } from "@bastani/atomic/workflows";
+import { runWorkflow } from "@bastani/atomic/workflows";
+import workflow from "./workflows/review-to-merge/claude.ts";
 
-const registry = workflowFiles.reduce((r, wf) => r.register(wf), createRegistry());
-await createWorkflowCli(registry).run();
-```
-
-Need a listing subcommand? Use `toCommand(cli)` from `@bastani/atomic/workflows/commander` and attach your own `list` subcommand — the same way `atomic workflow list` is wired up in `src/cli.ts`.
-
-### One method: `run()`
-
-`WorkflowCli` exposes one method — `run(options?)`. Default parses `process.argv`; pass `argv: [...]` to parse an explicit list, or `argv: false` to skip parsing entirely. `inputs` merge as defaults under CLI flags; `argv: false` makes them final. `run()` also accepts `name` / `agent`, which layer the same way.
-
-The `WorkflowCli` type is framework-agnostic — no Commander imports in sight. If you want one, reach for the adapter below.
-
-Example — programmatic invocation without argv:
-
-```ts
-// Single workflow: name + agent are still required when argv parsing is skipped.
-await cli.run({
-  argv: false,
-  name: "review-to-merge",
-  agent: "claude",
+const { id, tmuxSessionName } = await runWorkflow({
+  workflow,
   inputs: { target_branch: "main" },
-});
-
-// Multi-workflow cli: name + agent required under argv: false.
-await cli.run({
-  argv: false,
-  name: "review-to-merge",
-  agent: "claude",
-  inputs: { target_branch: "main" },
+  detach: true,
 });
 ```
 
-### Embedding under a parent CLI — `toCommand` + `runCli`
+Combine with `getSessionStatus(tmuxSessionName)` and `attachSession(id)` to build your own monitoring UI on top of the SDK.
 
-For integration with a bigger Commander program, import the adapter from the dedicated subpath:
+### Embedding under a parent CLI — `runWorkflow` inside any Commander tree
+
+The SDK no longer ships a Commander adapter — it doesn't need one. Just call `runWorkflow` from inside any Commander action:
 
 ```ts
-import { createWorkflowCli } from "@bastani/atomic/workflows";
-import { toCommand, runCli } from "@bastani/atomic/workflows/commander";
 import { Command } from "@commander-js/extra-typings";
+import { getInputSchema, runWorkflow } from "@bastani/atomic/workflows";
 import workflow from "./workflows/deploy/claude.ts";
 
-const cli = createWorkflowCli(workflow);
-
 const program = new Command("my-app");
-program.addCommand(toCommand(cli, "deploy"));
+
+const deploy = program.command("deploy").description(workflow.description);
+for (const input of getInputSchema(workflow)) {
+  deploy.option(`--${input.name} <value>`, input.description ?? "");
+}
+deploy.action(async (rawOpts) => {
+  await runWorkflow({ workflow, inputs: rawOpts as Record<string, string> });
+});
+
 program.command("hello").action(() => console.log("hi"));
 
-// Replaces program.parseAsync(). runCli transparently handles detached
-// re-entry — when the process is a tmux-spawned workflow runner, it drives
-// runOrchestrator; otherwise it invokes your callback (argv parse + any
-// bootstrap you want). PyTorch's init_process_group for rank-zero
-// dispatch — no guards, no env-var checks in user code.
-await runCli(cli, () => program.parseAsync());
+await program.parseAsync();
 ```
 
-`toCommand(cli, "workflow")` is exactly how the internal `atomic workflow` command is wired (`src/commands/cli/workflow.ts`). Because the Commander dependency lives only on the subpath, a future `@bastani/atomic/workflows/yargs` adapter can ship alongside without touching the core SDK.
+There's no re-entry boilerplate — the SDK ships its own internal orchestrator entry script and re-execs *that* with positional args (`workflowSource`, `agent`, base64-encoded inputs). Your CLI is never re-imported, so there's nothing to guard against orchestrator-mode env vars.
 
-### `entry` — for bundled apps and tests
+### `WorkflowPicker` component
 
-`createWorkflowCli` accepts `{ entry?: string }`, defaulting to `process.argv[1]`. That's the file the runtime re-executes on `--detach` to resume the workflow, so it has to be the composition root. Override it when you bundle the app (`entry` should point at the bundle), when the composition root isn't argv[1] (tests, embedded CLIs), or with `import.meta.url` for ESM-native correctness.
+The interactive picker (the same one `atomic workflow -a claude` opens) is exposed as a component:
 
 ```ts
-const cli = createWorkflowCli(workflow, { entry: import.meta.url });
+import { WorkflowPicker } from "@bastani/atomic/workflows/components";
 ```
+
+Mount it inside your own OpenTUI app or imperatively via `WorkflowPickerPanel.create({ agent, registry })`.
 
 ### Registry rules
 
 - `createRegistry()` returns an **immutable** registry. Each `.register(wf)` call returns a **new** registry — the original is unchanged. Chain calls to accumulate workflows.
 - Each workflow is keyed by `${agent}/${name}` — the `(agent, name)` pair must be unique. Registering a duplicate throws immediately.
-- `createWorkflowCli(registry)` inspects every registered workflow and builds a union of their declared inputs. Same-name / same-type flags are shared; same-name / different-type conflicts throw at construction time so ambiguity never reaches runtime.
 - Builtin workflows (`ralph`, `deep-research-codebase`, `open-claude-design`) are managed by `atomic`'s internal `createBuiltinRegistry()`. They are reserved — user-registered workflows with the same name will not shadow builtins when running the `atomic` CLI.
 
 ### Input precedence
 
-CLI flags always win when parsing is active. Under them, the order is:
+`runWorkflow({ workflow, inputs })` runs `validateInputs(workflow, inputs)` for you, applying:
 
-1. `defineWorkflow` default values (on each `WorkflowInput`)
-2. Layer supplied at construction or invocation:
-   - `cli.run({ inputs })` for the single-workflow shape
-   - `createWorkflowCli(registry, { inputs })` / `cli.run({ inputs })` for the multi-workflow shape
-3. CLI flags — `--<field>=<value>` passed at runtime
+1. `defineWorkflow` default values (on each `WorkflowInput`) when no value is provided
+2. The first declared enum value when `required: true` and no value is provided
+3. Whatever you pass in `inputs`
 
-With `argv: false`, the CLI-flag layer is skipped — your programmatic `inputs` become top-of-chain.
+CLI flags compose entirely at the calling-CLI layer — the SDK only sees the final `inputs` map.
 
 ### Builtin workflows via the `atomic` CLI
 
-The `atomic workflow` command still works for the three built-in workflows — internally it's `toCommand(createWorkflowCli(createBuiltinRegistry()), "workflow")`:
+The `atomic workflow` command runs the built-in registry via the same primitives:
 
 ```bash
 atomic workflow -n ralph -a claude "Build the auth module"
@@ -1361,19 +1382,14 @@ atomic workflow -n open-claude-design -a claude
 
 These are not affected by your own `createRegistry()` — they are separate.
 
-### Migration from 0.x (directory-scanning) to current
+### Migration from 0.x (directory-scanning) and the `createWorkflowCli` wrapper
 
-> This is a breaking change. The SDK no longer scans `.atomic/workflows/` directories.
+> Two breaking changes: workflows must declare `source: import.meta.path`, and the `createWorkflowCli` / `toCommand` / `runCli` wrappers were removed in favour of primitives.
 
-1. **Delete** `.atomic/workflows/` from your repo.
-2. **Create one entrypoint file per agent**, e.g. `src/claude-worker.ts`:
-   ```ts
-   import { createWorkflowCli } from "@bastani/atomic/workflows";
-   import workflow from "./workflows/my-workflow/claude.ts";
-
-   await createWorkflowCli(workflow).run();
-   ```
-3. **Update invocations**: replace `atomic workflow -n foo -a claude` with `bun run src/claude-worker.ts -n foo -a claude` for your custom workflows. For the Atomic builtin set (`ralph`, `deep-research-codebase`, `open-claude-design`) keep using `atomic workflow -n <name> -a <agent>`.
+1. **Add `source: import.meta.path`** to every `defineWorkflow({ ... })` call. The SDK uses it to import the workflow module inside the orchestrator child process.
+2. **Replace `createWorkflowCli(workflow).run()`** with a small Commander (or citty / yargs) entrypoint that calls `runWorkflow({ workflow, inputs })` — see the snippets above. The SDK no longer ships a CLI wrapper.
+3. **Remove `handleOrchestratorReentry` / `runCli` calls** — the SDK ships its own orchestrator entry script and the dev's CLI is never re-execed.
+4. **Update invocations**: replace `atomic workflow -n foo -a claude` with `bun run src/claude-worker.ts --<input>=<value>` for your custom workflows. For the Atomic builtin set (`ralph`, `deep-research-codebase`, `open-claude-design`) keep using `atomic workflow -n <name> -a <agent>`.
 
 ---
 

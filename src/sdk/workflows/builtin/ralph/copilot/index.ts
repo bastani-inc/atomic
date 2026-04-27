@@ -83,6 +83,7 @@ function getAssistantText(messages: SessionEvent[]): string {
 
 export default defineWorkflow({
   name: "ralph",
+  source: import.meta.path,
   description: "Plan → orchestrate → review loop with bounded iteration",
   inputs: [
     {

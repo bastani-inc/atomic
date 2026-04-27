@@ -14,8 +14,13 @@
 
 import { COLORS, createPainter } from "../../theme/colors.ts";
 import { AGENT_CONFIG } from "../../services/config/index.ts";
-import { createBuiltinRegistry } from "../../sdk/workflows/builtin-registry.ts";
-import type { WorkflowInput, WorkflowDefinition, AgentType } from "../../sdk/workflows/index.ts";
+import { createBuiltinRegistry } from "../builtin-registry.ts";
+import type {
+  WorkflowInput,
+  WorkflowDefinition,
+  AgentType,
+} from "../../sdk/index.ts";
+import { getInputSchema } from "../../sdk/index.ts";
 
 export type WorkflowInputsFormat = "json" | "text";
 
@@ -236,7 +241,12 @@ export async function workflowInputsCommand(
   }
   const def = loaded.value.definition;
 
-  const payload = buildInputsPayload(def.name, agent, def.description, def.inputs);
+  const payload = buildInputsPayload(
+    def.name,
+    agent,
+    def.description,
+    getInputSchema(def),
+  );
 
   if (format === "json") {
     process.stdout.write(JSON.stringify(payload, null, 2) + "\n");

@@ -89,6 +89,7 @@ function getAssistantText(messages: SessionEvent[]): string {
 
 export default defineWorkflow({
   name: "open-claude-design",
+  source: import.meta.path,
   description:
     "AI-powered design workflow: design system onboarding → import → generate → refine → export/handoff",
   inputs: [

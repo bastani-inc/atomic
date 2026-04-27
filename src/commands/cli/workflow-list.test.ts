@@ -20,6 +20,7 @@ function def(agent: AgentType, name: string, description = ""): WorkflowDefiniti
     description,
     inputs: [],
     minSDKVersion: null,
+    source: import.meta.path,
     run: async () => {},
   } as unknown as WorkflowDefinition;
 }

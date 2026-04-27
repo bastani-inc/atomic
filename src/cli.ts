@@ -27,16 +27,13 @@ import { COLORS } from "./theme/colors.ts";
 import { AGENT_CONFIG, type AgentKey } from "./services/config/index.ts";
 import { SUPPORTED_SHELLS, type Shell } from "./completions/index.ts";
 import { workflowCommand } from "./commands/cli/workflow.ts";
-import { addSessionSubcommand } from "./sdk/management-commands.ts";
+import { addSessionSubcommand } from "./commands/cli/management-commands.ts";
 
-// Orchestrator re-entry is handled transparently by `runCli` in `main()`
-// below — no explicit guard needed. The `atomic workflow` command exposes
-// the builtin workflow CLI, which `runCli` uses to resolve re-entry keys.
-//
-// Session subcommand builders live in `./sdk/management-commands.ts` so the
-// exact same `session list | connect | kill` surface is shipped by every
-// `createWorkflowCli()` user CLI — sessions live on the shared atomic tmux
-// socket, so there's one implementation.
+// The SDK ships its own orchestrator entry script; the dev's CLI never
+// has to opt in to re-entry handling. Session subcommand builders live
+// in `./commands/cli/management-commands.ts` so `atomic chat session`,
+// `atomic workflow session`, and `atomic session` share one
+// implementation.
 
 // ─── Program ────────────────────────────────────────────────────────────────
 
@@ -153,8 +150,6 @@ Examples:
   $ atomic workflow list -a claude                  List Claude workflows only
   $ atomic workflow -a claude                       Open the interactive picker
   $ atomic workflow -n ralph -a claude "fix bug"    Run a free-form workflow
-  $ atomic workflow -n gen-spec -a claude --research_doc=notes.md --focus=standard
-                                                    Run a structured-input workflow
   $ atomic workflow -n ralph -a claude -d "fix bug" Run detached in the background
   $ atomic workflow inputs <name> -a claude         Print a workflow's input schema (JSON)
   $ atomic workflow status                          List status for all running workflows
@@ -350,57 +345,45 @@ export const program = createProgram();
 /**
  * Main entry point for the CLI.
  *
- * `runCli` handles detached orchestrator re-entry transparently — when the
- * process is spawned by a tmux orchestrator pane (ATOMIC_ORCHESTRATOR_MODE
- * set), it resolves the workflow against the builtin CLI's registry
- * and drives it via `runOrchestrator`, skipping bootstrap + argv parsing.
- * Otherwise, it runs the provided CLI callback (bootstrap + parseAsync).
+ * The SDK owns orchestrator re-entry now (see
+ * `src/sdk/runtime/orchestrator-entry.ts`), so the atomic CLI just
+ * runs its bootstrap, parses argv, and exits.
  */
 async function main(): Promise<void> {
     try {
-        const { createWorkflowCli } = await import("./sdk/workflow-cli.ts");
-        const { runCli } = await import("./sdk/commander.ts");
-        const { createBuiltinRegistry } = await import(
-            "./sdk/workflows/builtin-registry.ts"
+        // Bootstrap `~/.atomic/settings.json` on every invocation if absent,
+        // so users always have a file to edit with JSON Schema intellisense
+        // wired up. Idempotent; swallows FS errors internally.
+        const { ensureGlobalAtomicSettings } = await import(
+            "./services/config/settings.ts"
         );
+        await ensureGlobalAtomicSettings();
 
-        const builtinCli = createWorkflowCli(createBuiltinRegistry());
+        // Sync tooling deps and global skills on first launch after install
+        // or upgrade. Runs at most once per version bump (gated on a marker
+        // file under ~/.atomic). Skipped for `--version` / `--help` so info
+        // paths stay instant.
+        const argv = process.argv.slice(2);
+        const isInfoCommand =
+            argv.includes("--version") ||
+            argv.includes("-v") ||
+            argv.includes("--help") ||
+            argv.includes("-h") ||
+            argv[0] === "completions" ||
+            argv[0] === "_footer" ||
+            argv[0] === "_claude-stop-hook" ||
+            argv[0] === "_claude-ask-hook" ||
+            argv[0] === "_claude-session-start-hook" ||
+            argv[0] === "_claude-inflight-hook";
 
-        await runCli([builtinCli], async () => {
-            // Bootstrap `~/.atomic/settings.json` on every invocation if absent,
-            // so users always have a file to edit with JSON Schema intellisense
-            // wired up. Idempotent; swallows FS errors internally.
-            const { ensureGlobalAtomicSettings } = await import(
-                "./services/config/settings.ts"
+        if (!isInfoCommand) {
+            const { autoSyncIfStale } = await import(
+                "./services/system/auto-sync.ts"
             );
-            await ensureGlobalAtomicSettings();
+            await autoSyncIfStale();
+        }
 
-            // Sync tooling deps and global skills on first launch after install
-            // or upgrade. Runs at most once per version bump (gated on a marker
-            // file under ~/.atomic). Skipped for `--version` / `--help` so info
-            // paths stay instant.
-            const argv = process.argv.slice(2);
-            const isInfoCommand =
-                argv.includes("--version") ||
-                argv.includes("-v") ||
-                argv.includes("--help") ||
-                argv.includes("-h") ||
-                argv[0] === "completions" ||
-                argv[0] === "_footer" ||
-                argv[0] === "_claude-stop-hook" ||
-                argv[0] === "_claude-ask-hook" ||
-                argv[0] === "_claude-session-start-hook" ||
-                argv[0] === "_claude-inflight-hook";
-
-            if (!isInfoCommand) {
-                const { autoSyncIfStale } = await import(
-                    "./services/system/auto-sync.ts"
-                );
-                await autoSyncIfStale();
-            }
-
-            await program.parseAsync();
-        });
+        await program.parseAsync();
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         console.error(`${COLORS.red}Error: ${message}${COLORS.reset}`);

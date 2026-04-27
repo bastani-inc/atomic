@@ -21,7 +21,7 @@ import {
   isTmuxInstalled as _isTmuxInstalled,
   listSessions as _listSessions,
   sessionExists as _sessionExists,
-} from "../../sdk/workflows/index.ts";
+} from "../../sdk/runtime/tmux.ts";
 import {
   readSnapshot,
   workflowRunIdFromTmuxName,

@@ -9,6 +9,7 @@ function buildGreetPrompt(inputs: Record<string, string>): string {
 
 export default defineWorkflow({
     name: "parallel-hello-world",
+    source: import.meta.path,
     description: "Parallel hello world: greet → [formal, casual] → merge",
     inputs: [
       {

@@ -12,51 +12,26 @@ import { defineWorkflow } from "../../../src/sdk/define-workflow.ts";
 // ---------------------------------------------------------------------------
 
 describe("WorkflowRunOptions shape", () => {
-  test("accepts entrypointFile and workflowKey (compile-time coverage)", () => {
-    // This test validates the required fields are present in the interface.
-    // At runtime this is a no-op — the real check is that tsc compiles without errors.
+  test("only carries definition + agent + inputs + projectRoot + detach", () => {
+    // The post-refactor WorkflowRunOptions drops `entrypointFile` and
+    // `workflowKey`. The orchestrator imports the workflow by its `source`
+    // field instead, so the executor never needs to know the dev's argv.
     const opts = {
-      definition: defineWorkflow({ name: "hello-world" })
+      definition: defineWorkflow({
+        name: "hello-world",
+        source: import.meta.path,
+      })
         .for("claude")
         .run(async () => {})
         .compile(),
       agent: "claude" as const,
-      entrypointFile: "/home/user/src/worker.ts",
-      workflowKey: "claude/hello-world",
+      inputs: { prompt: "hi" },
     } satisfies WorkflowRunOptions;
 
-    expect(opts.entrypointFile).toBe("/home/user/src/worker.ts");
-    expect(opts.workflowKey).toBe("claude/hello-world");
-  });
-
-  test("workflowKey follows <agent>/<name> format", () => {
-    const opts: WorkflowRunOptions = {
-      definition: defineWorkflow({ name: "deep-research" })
-        .for("copilot")
-        .run(async () => {})
-        .compile(),
-      agent: "copilot",
-      entrypointFile: "/app/worker.ts",
-      workflowKey: "copilot/deep-research",
-    };
-    expect(opts.workflowKey).toMatch(/^[a-z]+\/.+/);
-  });
-
-  test("WorkflowRunOptions does not have workflowFile field", () => {
-    // The old API used workflowFile; the new API uses entrypointFile + workflowKey.
-    // This checks the interface no longer exposes workflowFile.
-    const opts: WorkflowRunOptions = {
-      definition: defineWorkflow({ name: "wf" })
-        .for("opencode")
-        .run(async () => {})
-        .compile(),
-      agent: "opencode",
-      entrypointFile: "/src/worker.ts",
-      workflowKey: "opencode/wf",
-    };
-    // @ts-expect-error — workflowFile is not a field on WorkflowRunOptions
-    const _unused = (opts as Record<string, unknown>).workflowFile;
-    expect("workflowFile" in opts).toBe(false);
+    expect(opts.definition.source).toBe(import.meta.path);
+    // The deprecated fields must not survive on the typed shape.
+    expect("entrypointFile" in opts).toBe(false);
+    expect("workflowKey" in opts).toBe(false);
   });
 });
 
@@ -161,49 +136,42 @@ describe("runOrchestrator env var validation", () => {
 // runOrchestrator — accepts WorkflowDefinition (not a string path)
 // ---------------------------------------------------------------------------
 
-describe("runOrchestrator accepts WorkflowDefinition", () => {
-  test("signature accepts a compiled WorkflowDefinition", () => {
-    // Compile-time test: runOrchestrator must accept a WorkflowDefinition object.
-    const definition = defineWorkflow({ name: "test-wf" })
+describe("runOrchestrator accepts WorkflowDefinition + inputs", () => {
+  test("signature accepts a compiled WorkflowDefinition and an inputs map", () => {
+    const definition = defineWorkflow({
+      name: "test-wf",
+      source: import.meta.path,
+    })
       .for("copilot")
       .run(async () => {})
       .compile();
 
-    // Type must be WorkflowDefinition — if it were string the tsc would reject it.
-    const _check: (d: WorkflowDefinition) => Promise<void> = runOrchestrator;
+    const _check: (
+      d: WorkflowDefinition,
+      inputs?: Record<string, string>,
+    ) => Promise<void> = runOrchestrator;
     expect(typeof _check).toBe("function");
     expect(definition.__brand).toBe("WorkflowDefinition");
-  });
-
-  test("runOrchestrator does not accept a string path (compile-time)", () => {
-    // This confirms the old API (runOrchestrator("<path>")) is gone.
-    // The @ts-expect-error verifies that a string is rejected by TypeScript.
-    const _fn = runOrchestrator;
-    // @ts-expect-error — string path is not accepted; WorkflowDefinition required
-    const _call = () => _fn("/some/path/to/workflow.ts");
-    expect(typeof _fn).toBe("function");
+    expect(definition.source).toBe(import.meta.path);
   });
 });
 
 // ---------------------------------------------------------------------------
-// Launcher script env vars — ATOMIC_ORCHESTRATOR_MODE and ATOMIC_WF_KEY
+// Launcher script — orchestrator entry script with positional argv
 // ---------------------------------------------------------------------------
 
-describe("launcher script env var names", () => {
-  test("ATOMIC_ORCHESTRATOR_MODE is the orchestrator re-entry signal (not ATOMIC_WF_FILE)", async () => {
-    // Regression guard: asserts the launcher-building source in executor.ts
-    // uses ATOMIC_ORCHESTRATOR_MODE and ATOMIC_WF_KEY, not the removed ATOMIC_WF_FILE.
-    // The launcher script is built inline inside executeWorkflow (not an exported helper),
-    // so we assert on the source text directly.
-    const src = await Bun.file(
-      "src/sdk/runtime/executor.ts"
-    ).text();
+describe("launcher script invokes the SDK orchestrator entry", () => {
+  test("executor sources orchestrator-entry.ts and drops the old env-var contract", async () => {
+    const src = await Bun.file("src/sdk/runtime/executor.ts").text();
 
-    // Old file-based var must not appear anywhere in the launcher logic.
+    // The dev's CLI is no longer re-execed; the SDK ships its own entry.
+    expect(src).toContain("orchestrator-entry.ts");
+
+    // The old ATOMIC_ORCHESTRATOR_MODE / ATOMIC_WF_KEY / ATOMIC_WF_INPUTS
+    // re-entry signals must be gone from the launcher.
+    expect(src).not.toContain("ATOMIC_ORCHESTRATOR_MODE");
+    expect(src).not.toContain("ATOMIC_WF_KEY");
+    expect(src).not.toContain("ATOMIC_WF_INPUTS");
     expect(src).not.toContain("ATOMIC_WF_FILE");
-    // Re-entry signal must be present.
-    expect(src).toContain("ATOMIC_ORCHESTRATOR_MODE=1");
-    // Workflow key env var must be present.
-    expect(src).toContain("ATOMIC_WF_KEY");
   });
 });

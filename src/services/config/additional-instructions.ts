@@ -46,7 +46,7 @@ Use playwright-cli (refer to playwright-cli skill) for ALL browser automation ta
 
 You are operating in an environment where ast-grep is installed. For any code search that requires understanding of syntax or code structure, you should default to using \`ast-grep --lang [language] -p '<pattern>'\`. Rely on your ast-grep skill for best practices. Adjust the --lang flag as needed for the specific programming language. Avoid using text-only search tools unless a plain-text search is explicitly requested.
 
-3. **Testing**: ALWAYS invoke your test-driven-development skill BEFORE creating or modifying any tests.
+3. **Testing**: ALWAYS invoke your tdd skill BEFORE creating or modifying any tests.
 
 4. **Sub-agent Orchestration**: You have a large number of tools available to you. The most important one is the one that allows you to dispatch sub-agents: either \`Agent\` or \`Task\`.
 

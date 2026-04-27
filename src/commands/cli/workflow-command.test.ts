@@ -35,9 +35,12 @@ import "../../sdk/registry.ts";
 // but BEFORE the dynamic import of workflow.ts below (which uses worker.ts → mock).
 
 const executeWorkflowCalls: WorkflowRunOptions[] = [];
-const executeWorkflowMock = mock(async (opts: WorkflowRunOptions): Promise<void> => {
-  executeWorkflowCalls.push(opts);
-});
+const executeWorkflowMock = mock(
+  async (opts: WorkflowRunOptions): Promise<{ id: string; tmuxSessionName: string }> => {
+    executeWorkflowCalls.push(opts);
+    return { id: "fake-id", tmuxSessionName: "fake-session" };
+  },
+);
 
 // Spread real module to preserve all exports (escBash, discoverCopilotBinary, etc.)
 // so this mock doesn't break other test files that import those exports.
@@ -48,16 +51,10 @@ await mock.module("../../sdk/runtime/executor.ts", () => ({
   runOrchestrator: async () => {},
 }));
 
-// Build a fresh workflowCommand using the real builtin registry directly.
-// This avoids stale-cache issues when workflow.ts was previously loaded by
-// cli.ts with a mocked (fake) builtin-registry in earlier test files.
-const { createWorkflowCli } = await import("../../sdk/workflow-cli.ts");
-const { toCommand } = await import("../../sdk/commander.ts");
-const { createBuiltinRegistry } = await import("../../sdk/workflows/builtin-registry.ts");
-const workflowCommand = toCommand(
-  createWorkflowCli(createBuiltinRegistry()),
-  "workflow",
-);
+// Load the workflow command after the executor is mocked. Importing
+// `./workflow.ts` triggers the registry build + Commander tree
+// construction inside the mocked executor sandbox.
+const { workflowCommand } = await import("./workflow.ts");
 
 // ─── Output capture ──────────────────────────────────────────────────────────
 
@@ -107,6 +104,7 @@ beforeEach(() => {
   executeWorkflowMock.mockClear();
   executeWorkflowMock.mockImplementation(async (opts) => {
     executeWorkflowCalls.push(opts);
+    return { id: "fake-id", tmuxSessionName: "fake-session" };
   });
 });
 afterEach(() => {
@@ -162,7 +160,7 @@ describe("workflowCommand named mode — success", () => {
     const call = executeWorkflowCalls[0]!;
     expect(call.agent).toBe("claude");
     expect(call.inputs?.["prompt"]).toBe("fix the auth bug");
-    expect(call.workflowKey).toBe("claude/ralph");
+    expect(`${call.definition.agent}/${call.definition.name}`).toBe("claude/ralph");
   });
 
   test("dispatches ralph/copilot successfully", async () => {
@@ -200,7 +198,7 @@ describe("workflowCommand named mode — success", () => {
     ]);
 
     expect(executeWorkflowMock).toHaveBeenCalledTimes(1);
-    expect(executeWorkflowCalls[0]!.workflowKey).toBe("claude/deep-research-codebase");
+    expect(`${executeWorkflowCalls[0]!.definition.agent}/${executeWorkflowCalls[0]!.definition.name}`).toBe("claude/deep-research-codebase");
   });
 
   test("--detach flag threads detach=true to executor", async () => {
@@ -263,7 +261,10 @@ describe("workflowCommand named mode — success", () => {
     ]);
 
     expect(executeWorkflowMock).toHaveBeenCalledTimes(1);
-    expect(executeWorkflowCalls[0]!.workflowKey).toBe("copilot/deep-research-codebase");
+    const c = executeWorkflowCalls[0]!;
+    expect(`${c.definition.agent}/${c.definition.name}`).toBe(
+      "copilot/deep-research-codebase",
+    );
   });
 });
 

@@ -6,7 +6,7 @@
  * `outputFormat`. The validated object is read from
  * `s.session.lastStructuredOutput` — no text parsing.
  *
- * Run: atomic workflow -n structured-output-demo -a claude "Python"
+ * Run: bun run examples/structured-output-demo/claude-worker.ts --prompt=Python
  */
 
 import { defineWorkflow, extractAssistantText } from "@bastani/atomic/workflows";
@@ -21,6 +21,7 @@ import {
 
 export default defineWorkflow({
   name: "structured-output-demo",
+  source: import.meta.path,
   description:
     "Ask for structured facts about a language and prove each SDK's native structured-output path works",
   inputs: [

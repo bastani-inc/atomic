@@ -34,9 +34,9 @@
       "bun": "./src/sdk/workflows/index.ts",
       "types": "./dist/sdk/workflows/index.d.ts"
     },
-    "./workflows/commander": {
-      "bun": "./src/sdk/commander.ts",
-      "types": "./dist/sdk/commander.d.ts"
+    "./workflows/components": {
+      "bun": "./src/sdk/components/workflow-picker-panel.tsx",
+      "types": "./dist/sdk/components/workflow-picker-panel.d.ts"
     },
     "./*": {
       "bun": "./src/sdk/*",

@@ -3,7 +3,7 @@ name: worker
 description: Implement a SINGLE task from a task list.
 tools: Bash, Agent, Edit, Grep, Glob, Read, LSP, TaskCreate, TaskList, TaskGet, TaskUpdate
 skills:
-  - test-driven-development
+  - tdd
 model: sonnet
 ---
 
@@ -82,7 +82,7 @@ Frequently use unit tests, integration tests, and end-to-end tests to verify you
 
 ### Testing Anti-Patterns
 
-Use your test-driven-development skill to avoid common pitfalls when writing tests.
+Use your tdd skill to avoid common pitfalls when writing tests.
 
 ## Design Principles
 

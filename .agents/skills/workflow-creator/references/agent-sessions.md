@@ -56,6 +56,7 @@ import { defineWorkflow } from "@bastani/atomic/workflows";
 
 export default defineWorkflow({
     name: "implement",
+    source: import.meta.path,
     inputs: [{ name: "prompt", type: "text", required: true, description: "task prompt" }],
   })
   .for("claude")
@@ -282,6 +283,7 @@ import { defineWorkflow } from "@bastani/atomic/workflows";
 
 export default defineWorkflow({
     name: "implement",
+    source: import.meta.path,
     inputs: [{ name: "prompt", type: "text", required: true, description: "task prompt" }],
   })
   .for("copilot")
@@ -628,6 +630,7 @@ import { defineWorkflow } from "@bastani/atomic/workflows";
 
 export default defineWorkflow({
     name: "implement",
+    source: import.meta.path,
     inputs: [{ name: "prompt", type: "text", required: true, description: "task prompt" }],
   })
   .for("opencode")

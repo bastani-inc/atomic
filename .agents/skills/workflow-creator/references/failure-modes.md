@@ -47,10 +47,6 @@ Silent failures are catalogued first below. Loud failures are grouped at the end
 | [F15](#f15-headless-stage-errors-are-invisible-in-the-graph) | Headless stage errors are invisible in the graph | all | silent |
 | [F16](#f16-claude-importing-sdk-query-inside-a-non-headless-stage) | Claude: importing the SDK `query()` inside a non-headless stage (anti-pattern) | Claude | silent |
 | [F17](#f17-duplicate-registration-throws-at-composition-root) | Duplicate registration throws at composition root | all | loud |
-| [F18](#f18-input-flag-name-collision-across-workflows-at-createworker-time) | Input flag-name collision across workflows at `createWorkflowCli` time | all | loud |
-| [F19](#f19-reserved-flag-input-name-declared-in-workflow) | Reserved flag input name declared in workflow | all | loud |
-| [F20](#f20-orchestrator-re-entry-env-var-corruption) | Orchestrator re-entry env var corruption | all | silent |
-| [F21](#f21-entry-mismatch-when-user-bundles-the-app) | `entry` mismatch when user bundles the app | all | silent |
 | [F22](#f22-ctxstage-with-no-llm-query-spawns-an-empty-idle-pane) | `ctx.stage()` with no LLM query spawns an empty, idle pane | all | silent |
 
 ---
@@ -908,10 +904,6 @@ Before shipping a multi-session workflow, walk the list:
 - [ ] Headless stage callbacks include descriptive error context so failures can be diagnosed without a graph node (F15)
 - [ ] Claude stages never import `query` (or other entry points) from `@anthropic-ai/claude-agent-sdk` directly — go through `s.session.query()` so the runtime routes to the TUI (interactive) or the SDK (headless) consistently (F16)
 - [ ] No duplicate `${agent}/${name}` registrations in the composition root (F17)
-- [ ] Shared input names across workflows use the same `type` (F18)
-- [ ] No declared inputs use reserved names: `name`, `agent`, `detach`, `list`, `help`, `version` (F19)
-- [ ] `ATOMIC_ORCHESTRATOR_MODE` and `ATOMIC_WF_KEY` are set exclusively by the runtime — not in `.env` files or parent process env (F20)
-- [ ] When bundling the user app, pass `entry` to `createWorkflowCli`/`createWorkflowCli` pointing at the bundle's entrypoint, not the source file (F21)
 - [ ] Every `ctx.stage()` callback contains at least one LLM call (`s.session.query` / `s.session.send` / `s.client.session.prompt`); stages that are pure deterministic code have been demoted to plain TypeScript in `.run()` (F22)
 
 ---
@@ -930,98 +922,6 @@ Each (agent, name) pair must be unique.
 composition root. Two cross-agent variants of the same logical workflow
 (`"claude/ralph"` + `"copilot/ralph"`) are distinct keys — register both
 without conflict.
-
----
-
-### F18. Input flag-name collision across workflows at `createWorkflowCli` time
-
-**Symptom.** `createWorkflowCli({ registry })` throws with a type-conflict message
-before the CLI parses any argv:
-
-```
-[atomic/worker] Input name conflict: "focus" is declared as "enum" in
-"claude/gen-spec" but as "string" in "copilot/summarize".
-Workflows sharing an input name must agree on the type.
-```
-
-**Root cause.** The worker builds a union of all declared inputs across all
-registered workflows and registers one `--<name>` CLI flag per distinct name.
-Two workflows can share a flag name only when they agree on `type`.
-
-**Fix.** Rename the conflicting input in one of the workflows, or align the
-`type` fields so both declare the same type.
-
----
-
-### F19. Reserved flag input name declared in workflow
-
-**Symptom.** `defineWorkflow({ inputs: [{ name: "name", ... }] })` throws at
-definition time — before registration ever happens:
-
-```
-[atomic] Input name "name" is reserved by the worker CLI.
-Rename it. Reserved names: name, agent, detach, list, help, version.
-```
-
-**Fix.** Rename the input. Reserved names match worker-level flags and cannot
-be used as workflow input names in any workflow.
-
----
-
-### F20. Orchestrator re-entry env var corruption
-
-**Symptom.** The worker enters orchestrator re-entry mode unexpectedly on a
-fresh invocation, or re-entry fails with `ATOMIC_WF_KEY "${key}" not found in
-registry`. The CLI runs a different workflow than requested, or exits with an
-opaque error.
-
-**Root cause.** `cli.run()` (and `cli.run()`) check `process.env.ATOMIC_ORCHESTRATOR_MODE`
-**before** parsing argv. If `ATOMIC_ORCHESTRATOR_MODE=1` is present in the
-environment (e.g. from a leaked `.env` file, a parent process, or a test
-harness that forked the worker), the normal CLI flow is bypassed entirely.
-`ATOMIC_WF_KEY` is then expected to name a registered workflow — if it's
-wrong or missing, the worker throws without touching argv.
-
-**Fix.**
-- Never persist `ATOMIC_ORCHESTRATOR_MODE` in `.env` files or shell profiles.
-- In test harnesses that spawn worker processes, clear both env vars before
-  each test: `delete process.env.ATOMIC_ORCHESTRATOR_MODE`.
-- If you need to test orchestrator re-entry explicitly, set both
-  `ATOMIC_ORCHESTRATOR_MODE=1` and `ATOMIC_WF_KEY=<agent>/<name>` together.
-
----
-
-### F21. `entry` mismatch when user bundles the app
-
-**Symptom.** The worker spawns a tmux pane and the orchestrator re-entry
-process exits immediately with a module-not-found error, or runs the wrong
-entrypoint, or fails to locate the workflow definition.
-
-**Root cause.** The executor passes `entry` (defaults to
-`process.argv[1]`) to the spawned orchestrator process as the script to
-re-execute. When the app is bundled (e.g. `bun build`), the running process
-is the bundle, but `process.argv[1]` may still point to the original
-source file (or vice versa). The spawned child executes a different file than
-the one that registered the workflow — so the registry is empty or different
-and `ATOMIC_WF_KEY` resolves to nothing.
-
-**Fix.** Set `entry` at composition-root construction time — it's now a
-factory option, so you set it once, not on every call:
-
-```ts
-// Point to the bundle output, not the source file.
-const worker = createWorkflowCli(workflow, {
-  entry: "/path/to/dist/worker.js",
-});
-
-// WorkflowCli takes the same option.
-const cli = createWorkflowCli(registry, {
-  entry: import.meta.url,
-});
-```
-
-For source-mode Bun apps (`bun run src/worker.ts`), `process.argv[1]` is
-already the source file — no override needed.
 
 ---
 

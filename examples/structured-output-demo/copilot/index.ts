@@ -7,7 +7,7 @@
  * against the Zod schema before the handler fires, so by the time
  * `handler(data)` runs, `data` is already a typed, validated object.
  *
- * Run: atomic workflow -n structured-output-demo -a copilot "Python"
+ * Run: bun run examples/structured-output-demo/copilot-worker.ts --prompt=Python
  */
 
 import { defineWorkflow } from "@bastani/atomic/workflows";
@@ -26,6 +26,7 @@ const SUBMIT_TOOL_DESCRIPTION =
 
 export default defineWorkflow({
   name: "structured-output-demo",
+  source: import.meta.path,
   description:
     "Ask for structured facts about a language and prove each SDK's native structured-output path works",
   inputs: [

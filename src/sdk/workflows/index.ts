@@ -1,26 +1,30 @@
 /**
- * atomic/workflows
+ * @bastani/atomic/workflows — workflow SDK barrel.
  *
- * Workflow SDK for defining dynamic agent workflows.
- * Workflows use defineWorkflow().run().compile() with ctx.stage()
- * for spawning agent sessions using native TypeScript control flow.
+ * Mirrors the root barrel for the historical `/workflows` import path.
+ * Provider-specific helpers (validators, native SDK type re-exports) and
+ * the validation warning type live here so consumers don't have to drill
+ * into provider modules directly.
+ *
+ * Tmux helpers and other runtime utilities are intentionally NOT
+ * re-exported — they are private to the SDK and the atomic CLI.
  */
 
+// ─── Authoring ──────────────────────────────────────────────────────────────
 export { defineWorkflow, WorkflowBuilder } from "../define-workflow.ts";
 export { createRegistry } from "../registry.ts";
 export type { Registry } from "../registry.ts";
 
-// WorkflowCli — the single factory that drives workflow CLIs. Accepts a
-// lone workflow, an array of workflows, or a Registry for programmatic
-// composition. Ships with the interactive picker out of the box.
-export { createWorkflowCli } from "../workflow-cli.ts";
-export type { WorkflowCli, CreateWorkflowCliOptions } from "../types.ts";
+// ─── Errors ─────────────────────────────────────────────────────────────────
+export {
+  MissingDependencyError,
+  WorkflowNotCompiledError,
+  InvalidWorkflowError,
+} from "../errors.ts";
 
-export type { ArgvMode } from "../types.ts";
-
+// ─── Shared types ───────────────────────────────────────────────────────────
 export type {
   AgentType,
-  ValidationWarning,
   Transcript,
   SavedMessage,
   SaveTranscript,
@@ -28,6 +32,7 @@ export type {
   SessionRef,
   SessionHandle,
   SessionRunOptions,
+  ValidationWarning,
   WorkflowContext,
   WorkflowOptions,
   WorkflowDefinition,
@@ -47,53 +52,63 @@ export type {
   ClaudeSessionWrapper,
 } from "../types.ts";
 
-// Re-export native SDK types for convenience
+// ─── Native SDK message types ──────────────────────────────────────────────
 export type { SessionEvent as CopilotSessionEvent } from "@github/copilot-sdk";
 export type { SessionPromptResponse as OpenCodePromptResponse } from "@opencode-ai/sdk/v2";
 export type { SessionMessage as ClaudeSessionMessage } from "@anthropic-ai/claude-agent-sdk";
 
-// Providers
-export { createClaudeSession, claudeQuery, clearClaudeSession, extractAssistantText, validateClaudeWorkflow } from "../providers/claude.ts";
-export type { ClaudeSessionOptions, ClaudeQueryOptions } from "../providers/claude.ts";
+// ─── Provider helpers ──────────────────────────────────────────────────────
+export {
+  createClaudeSession,
+  claudeQuery,
+  clearClaudeSession,
+  extractAssistantText,
+  validateClaudeWorkflow,
+} from "../providers/claude.ts";
+export type {
+  ClaudeSessionOptions,
+  ClaudeQueryOptions,
+} from "../providers/claude.ts";
 
 export { validateCopilotWorkflow } from "../providers/copilot.ts";
-
 export { validateOpenCodeWorkflow } from "../providers/opencode.ts";
 
-// Runtime — tmux utilities
-export type { TmuxResult, TmuxSession, SessionType } from "../runtime/tmux.ts";
+// ─── Metadata accessors ────────────────────────────────────────────────────
 export {
-  SOCKET_NAME,
-  isTmuxInstalled,
-  getMuxBinary,
-  resetMuxBinaryCache,
-  isInsideTmux,
-  isInsideAtomicSocket,
-  createSession,
-  createWindow,
-  createPane,
-  sendLiteralText,
-  sendSpecialKey,
-  capturePane,
-  capturePaneVisible,
-  capturePaneScrollback,
-  killSession,
-  killSessionOnPaneExit,
-  killWindow,
-  sessionExists,
-  listSessions,
-  attachSession,
-  spawnMuxAttach,
-  switchClient,
-  getCurrentSession,
-  attachOrSwitch,
-  detachAndAttachAtomic,
-  selectWindow,
-  setSessionEnv,
-  getSessionEnv,
-  parseSessionName,
-  tmuxRun,
-  normalizeTmuxCapture,
-  normalizeTmuxLines,
-} from "../runtime/tmux.ts";
+  getName,
+  getDescription,
+  getAgent,
+  getInputSchema,
+  getSource,
+  getMinSDKVersion,
+} from "../primitives/metadata.ts";
 
+// ─── Registry iteration ────────────────────────────────────────────────────
+export { listWorkflows, getWorkflow } from "../index.ts";
+
+// ─── Input validation ──────────────────────────────────────────────────────
+export { validateInputs } from "../primitives/inputs.ts";
+export type { ResolvedInputs } from "../primitives/inputs.ts";
+
+// ─── Run a workflow ────────────────────────────────────────────────────────
+export { runWorkflow } from "../primitives/run.ts";
+export type {
+  RunWorkflowOptions,
+  RunWorkflowResult,
+} from "../primitives/run.ts";
+
+// ─── Session management ────────────────────────────────────────────────────
+export {
+  listSessions,
+  getSession,
+  stopSession,
+  attachSession,
+  getSessionStatus,
+  getSessionTranscript,
+} from "../primitives/sessions.ts";
+export type {
+  SessionInfo,
+  SessionScope,
+  StatusSnapshot,
+  ListSessionsOptions,
+} from "../primitives/sessions.ts";

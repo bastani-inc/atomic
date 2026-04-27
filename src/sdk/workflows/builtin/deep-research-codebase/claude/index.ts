@@ -159,6 +159,7 @@ function logBatchRejections(
 
 export default defineWorkflow({
   name: "deep-research-codebase",
+  source: import.meta.path,
   description:
     "Deterministic deep codebase research: scout → per-partition specialist sub-agents → aggregator",
   inputs: [

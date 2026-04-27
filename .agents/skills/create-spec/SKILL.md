@@ -1,16 +1,19 @@
 ---
 name: create-spec
-description: Create a detailed execution plan for implementing features or refactors in a codebase by leveraging existing research in the specified `research` directory.
+description: Create a detailed execution plan/spec/prd for implementing features or refactors in a codebase by leveraging existing research in the codebase.
 ---
 
 You are tasked with creating a spec for implementing a new feature or system change in the codebase by leveraging existing research in the **$ARGUMENTS** path. If no research path is specified, use the entire `research/` directory. IMPORTANT: Research documents are located in the `research/` directory — do NOT look in the `specs/` directory for research. Follow the template below to produce a comprehensive specification as output in the `specs/` folder using the findings from RELEVANT research documents found in `research/`. The spec file MUST be named using the format `YYYY-MM-DD-topic.md` (e.g., `specs/2026-03-26-my-feature.md`), where the date is the current date and the topic is a kebab-case summary. Tip: It's good practice to use the `codebase-research-locator` and `codebase-research-analyzer` agents to help you find and analyze the research documents in the `research/` directory. It is also HIGHLY recommended to cite relevant research throughout the spec for additional context.
 
 <EXTREMELY_IMPORTANT>
 
+- Please use your AskUserQuestion tool to provide a rich interface to ask the user for their input on a question.
 - Please DO NOT implement anything in this stage, just create the comprehensive spec as described below.
 - When writing the spec, DO NOT include information about concrete dates/timelines (e.g. # minutes, hours, days, weeks, etc.) and favor explicit phases (e.g. Phase 1, Phase 2, etc.).
-- Once the spec is generated, refer to the section, "## 9. Open Questions / Unresolved Issues", go through each question one by one, and use **contrastive clarification** (presenting 2-3 specific options with concrete tradeoffs) rather than open-ended questions. This means presenting interpretations like "(A) Option X — tradeoff Y" and "(B) Option Z — tradeoff W" instead of asking "what do you think about X?". Update the spec with the user's answers as you walk through the questions.
-    - Please use your AskUserQuestion tool to ask the user for their input on each question and update the spec accordingly.
+- Once the spec is generated ask questions one at a time OR in logical groups:
+  - Refer to section "## 9. Open Questions / Unresolved Issues", go through each question one by one, and use **contrastive clarification** (presenting 2-3 specific options with concrete tradeoffs) rather than open-ended questions. This means presenting interpretations like "(A) Option X — tradeoff Y" and "(B) Option Z — tradeoff W" instead of asking "what do you think about X?". Update the spec with the user's answers as you walk through the questions.
+  - Interview the user relentlessly about every aspect of this plan/spec until you reach a shared understanding with them. Walk down each branch of the design tree, resolving dependencies between decisions one-by-one. For each question, provide your recommended answer (i.e., **contrastive clarification**).
+  - If a question can be answered by exploring the codebase, explore the codebase instead and confirm with the user that this is their inferred intent.
 - Finally, once the spec is generated and after open questions are answered, provide an executive summary of the spec to the user including the path to the generated spec document in the `specs/` directory.
     - Encourage the user to review the spec for best results and provide feedback or ask any follow-up questions they may have.
 

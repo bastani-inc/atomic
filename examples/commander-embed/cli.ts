@@ -1,43 +1,59 @@
 /**
- * Commander embedding — mount an atomic workflow under a parent Commander CLI
- * alongside plain Commander commands.
+ * Commander embedding — mount an atomic workflow under a parent
+ * Commander CLI alongside plain Commander commands.
  *
- * `toCommand(cli, "greet")` converts the `WorkflowCli` into a Commander
- * subcommand. `runCli(cli, fn)` replaces `program.parseAsync()` and
- * transparently handles detached orchestrator re-entry — when the process
- * is a tmux-spawned worker (ATOMIC_ORCHESTRATOR_MODE=1), `runCli` dispatches
- * directly to `runOrchestrator` and your `cliFn` never runs. No guards, no
- * env-var checks in user code. Same pattern as PyTorch's
- * `init_process_group` for rank-zero dispatch.
- *
- * The Commander dependency lives on the dedicated subpath
- * `@bastani/atomic/workflows/commander`, so the core SDK stays
- * framework-agnostic — a future `yargs` or `citty` adapter could ship
- * alongside without touching `createWorkflowCli`.
+ * The SDK exposes pure primitives — there's nothing to "embed" any more.
+ * Just call `runWorkflow({ workflow, inputs })` from inside any
+ * Commander action and the workflow spawns its own tmux session via the
+ * SDK's orchestrator entry script. No `runCli` wrapper, no
+ * orchestrator-mode env vars, no re-entry guards.
  *
  * Try:
- *   bun run examples/commander-embed/cli.ts greet -a claude --who=Alex
- *   bun run examples/commander-embed/cli.ts greet -a claude            # picker (TTY)
- *   bun run examples/commander-embed/cli.ts status                     # sibling Commander command
- *   bun run examples/commander-embed/cli.ts --help                     # all commands
+ *   bun run examples/commander-embed/cli.ts greet --who=Alex
+ *   bun run examples/commander-embed/cli.ts status
+ *   bun run examples/commander-embed/cli.ts --help
  */
 
 import { Command } from "@commander-js/extra-typings";
-import { createWorkflowCli } from "@bastani/atomic/workflows";
-import { toCommand, runCli } from "@bastani/atomic/workflows/commander";
+import { getInputSchema, runWorkflow } from "@bastani/atomic/workflows";
 import workflow from "./claude/index.ts";
 
-const cli = createWorkflowCli(workflow);
-
 const program = new Command("my-app").description(
-  "Demo CLI with a mounted atomic workflow alongside plain Commander commands",
+  "Demo CLI with an atomic workflow alongside plain Commander commands",
 );
 
-// Mount the atomic workflow as a subcommand named "greet".
-program.addCommand(toCommand(cli, "greet"));
+// ── greet — mount the workflow's inputs as `--<input>` options ──────────
+const greet = program
+  .command("greet")
+  .description(workflow.description);
 
-// A plain Commander sibling command — no atomic involvement, showing that
-// atomic can live side-by-side with the rest of your CLI surface.
+const inputs = getInputSchema(workflow);
+for (const input of inputs) {
+  const desc =
+    input.description ??
+    (input.type === "enum"
+      ? `one of: ${(input.values ?? []).join(", ")}`
+      : input.type);
+  greet.option(`--${input.name} <value>`, desc);
+}
+
+greet.action(async (rawOpts) => {
+  const opts = rawOpts as Record<string, string | undefined>;
+  const collected: Record<string, string> = {};
+  for (const input of inputs) {
+    const camelKey = input.name.replace(
+      /-([a-z])/g,
+      (_, c: string) => c.toUpperCase(),
+    );
+    const value = opts[camelKey] ?? opts[input.name];
+    if (typeof value === "string" && value !== "") {
+      collected[input.name] = value;
+    }
+  }
+  await runWorkflow({ workflow, inputs: collected });
+});
+
+// ── A plain Commander sibling — no atomic involvement ───────────────────
 program
   .command("status")
   .description("Print a trivial status line")
@@ -45,10 +61,4 @@ program
     console.log("ok");
   });
 
-// `runCli` replaces `program.parseAsync()`. Pass pre-parse bootstrap inside
-// the callback if you need to read config, warm caches, etc. The extra
-// `await` discards `parseAsync`'s return value so the callback matches
-// runCli's `() => void | Promise<void>` signature.
-await runCli(cli, async () => {
-  await program.parseAsync();
-});
+await program.parseAsync();

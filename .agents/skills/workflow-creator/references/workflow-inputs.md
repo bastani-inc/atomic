@@ -17,16 +17,16 @@ runtime populates it from whichever invocation surface the user chose.
 
 CLI flags always win. Under them, the order depends on the composition shape:
 
-- **Single-workflow worker** (`createWorkflowCli(workflow)`):
+- **Single-workflow worker** (`runWorkflow({ workflow })`):
   ```
-  CLI flags > cli.run({ inputs }) > defineWorkflow defaults
+  CLI flags > runWorkflow({ workflow, inputs }) > defineWorkflow defaults
   ```
-- **Multi-workflow cli** (`createWorkflowCli(registry, { inputs })`):
+- **Multi-workflow cli** (`iterating registry, with inputs })`):
   ```
-  CLI flags > cli.run({ inputs }) > createWorkflowCli({ inputs }) > defineWorkflow defaults
+  CLI flags > runWorkflow({ workflow, inputs }) > runWorkflow({ inputs }) > defineWorkflow defaults
   ```
 
-With `argv: false`, the CLI-flags layer is skipped entirely — `inputs`
+With ``, the CLI-flags layer is skipped entirely — `inputs`
 become the top-of-chain value. Use this from tests or any programmatic
 caller that doesn't want its host process argv parsed.
 
@@ -37,25 +37,29 @@ higher-precedence value supplies one.
 
 | Surface | How values are supplied | How they land in `ctx.inputs` |
 |---|---|---|
-| **Single-worker, positional** — `bun run src/claude-worker.ts -n answer -a claude "fix the bug"` | `-n` picks the workflow, `-a` picks the agent, trailing prompt tokens supply `prompt` | `{ prompt: "fix the bug" }` |
-| **Single-worker, structured** — `bun run src/claude-worker.ts -n gen-spec -a claude --research_doc=notes.md --focus=standard` | `-n` picks the workflow, `-a` picks the agent, one `--<field>=<value>` flag per declared input | `{ research_doc: "notes.md", focus: "standard" }` |
-| **WorkflowCli, named** — `bun run src/cli.ts -n gen-spec -a claude --research_doc=notes.md` | `-n` picks the workflow, `-a` picks the agent, flags per declared input | Same as above |
-| **Interactive picker** — `atomic workflow -a claude` (cli only) | User fills in a form rendered from the declared schema | Whatever the user typed, keyed by field name |
-| **Programmatic (single)** — `cli.run({ name, agent, inputs, argv: false })` | Typed `InputsOf<def["inputs"]>` | Top-of-chain when `argv: false`; above `createWorkflowCli` defaults |
-| **Programmatic (cli)** — `cli.run({ name, agent, inputs, argv: false })` | Plain `Record<string, string>` (`argv: false` is required — otherwise Commander will try to parse process.argv and exit on missing `-n`/`-a`) | Top-of-chain when `argv: false`; above `createWorkflowCli` defaults |
+| **Single-worker, positional** — `bun run src/claude-worker.ts "fix the bug"` | The dev wires a `[prompt...]` Commander argument; the collected string is passed as `prompt` | `{ prompt: "fix the bug" }` |
+| **Single-worker, structured** — `bun run src/claude-worker.ts --research_doc=notes.md --focus=standard` | The dev registers one `--<field> <value>` option per declared input via `getInputSchema(wf)` | `{ research_doc: "notes.md", focus: "standard" }` |
+| **Multi-workflow CLI** — `bun run src/cli.ts gen-spec --research_doc=notes.md` | The dev registers one Commander subcommand per workflow; the subcommand's `--<field>` options match the workflow's declared inputs | Same as above |
+| **Interactive picker** — `atomic workflow -a claude` (atomic builtins only) | User fills in a form rendered from the declared schema | Whatever the user typed, keyed by field name |
+| **Picker in user app** — dev mounts `WorkflowPickerPanel` from `@bastani/atomic/workflows/components` | Same form-based collection, against the dev's own registry | Same as above |
+| **Programmatic** — `runWorkflow({ workflow, inputs })` | Plain `Record<string, string>` passed directly — no argv parsing | Top-of-chain value; falls back to `defineWorkflow` defaults |
 
 Workflow code is the same either way — it always reads
 `ctx.inputs.<name>`. The invocation surface is a CLI concern, not a
 workflow concern.
 
-### Auto-registered CLI flags
+### CLI flags in user-app CLIs
 
-- **`createWorkflowCli(workflow)`** registers a `--<name>` CLI flag for every input
-  declared on the single bound workflow. No union, no conflicts.
-- **`createWorkflowCli(registry)`** inspects the registry at construction
-  time and registers a `--<name>` flag for every input declared across
-  *all* workflows (the union). See §"CLI flag union and conflict rules"
-  below for the full collision contract and reserved-name list.
+`runWorkflow` and `createRegistry`/`listWorkflows` are pure SDK primitives —
+they do not auto-register CLI flags. It is the developer's responsibility to
+wire flags using whatever CLI library they prefer. The canonical pattern is to
+iterate `getInputSchema(wf)` and call `.option(--<name> <value>)` for each
+declared input. See §"Scaffold a new workflow from scratch" in `SKILL.md` for
+the full template.
+
+The atomic CLI builds its own per-input flags internally by iterating
+`getInputSchema(wf)` when the user passes `-n <name> -a <agent>`. That is
+atomic's own implementation, not an SDK feature.
 
 ## Reading inputs
 
@@ -66,6 +70,7 @@ close over a bare string:
 ```ts
 defineWorkflow({
     name: "answer",
+    source: import.meta.path,
     description: "Single-turn answer",
     inputs: [
       { name: "prompt", type: "text", required: true, description: "question to answer" },
@@ -90,6 +95,7 @@ close over locals:
 ```ts
 defineWorkflow({
     name: "gen-spec",
+    source: import.meta.path,
     description: "Convert a research doc into a detailed execution spec",
     inputs: [
       { name: "research_doc", type: "string", required: true },
@@ -214,7 +220,7 @@ inputs: [
 ]
 ```
 
-This gives the same CLI ergonomics — `atomic workflow -n hello -a claude "fix the bug"` still works — while providing compile-time safety. Accessing `ctx.inputs.prompt` without declaring it is a type error.
+Declaring `prompt` explicitly gives compile-time safety — `ctx.inputs.prompt` is typed and accessing an undeclared key is a type error. For atomic builtins you can still pass a positional string (`atomic workflow -n ralph -a claude "fix the bug"`); user-app workers handle positional args however the dev wired their Commander entrypoint (e.g., `program.argument("[prompt...]", ...)`), and the collected string is passed as the `prompt` input value.
 
 For workflows that need both a free-form prompt AND structured parameters,
 declare all fields in the schema:
@@ -227,56 +233,49 @@ inputs: [
 ]
 ```
 
-## CLI flag union and conflict rules
-
-`createWorkflowCli(registry)` builds the union of all declared inputs across
-every workflow in the registry at construction time. Each distinct input name
-becomes one `--<name>` CLI flag shared by all workflows that declare it.
-
-### Same name, different type → throws at `createWorkflowCli` time
-
-If two registered workflows declare the same input name with **different
-types**, `createWorkflowCli` throws immediately (fail fast at composition root):
-
-```
-[atomic/worker] Input name conflict: "focus" is declared as "enum" in
-"claude/gen-spec" but as "string" in "copilot/gen-spec".
-Workflows sharing an input name must agree on the type.
-```
-
-Same name + same type: the flag is shared silently — one `--focus` covers
-both workflows. This is the intended pattern for cross-agent workflow
-variants.
-
-### Reserved flag names
+## Reserved input names
 
 The following input names are rejected by `defineWorkflow` because they
-collide with the worker's own CLI flags:
+collide with the atomic CLI's `workflow` subcommand flags and management
+subcommands:
 
 ```
-name, agent, detach, list, help, version
+name, agent, detach, list, help, version, session, status
 ```
+
+The first six (`name`, `agent`, `detach`, `list`, `help`, `version`) collide
+with the atomic CLI's `workflow` subcommand flags (`-n/--name`,
+`-a/--agent`, `-d/--detach`, `-l/--list`, `-h/--help`, `-v/--version`).
+The last two (`session`, `status`) collide with the atomic CLI's management
+subcommands (`atomic workflow session …`, `atomic workflow status`).
 
 Declaring an input with any of these names throws at `defineWorkflow` time
 (before the workflow can be registered into any registry):
 
 ```
-[atomic] Input name "name" is reserved by the worker CLI.
-Rename it. Reserved names: name, agent, detach, list, help, version.
+[atomic] defineWorkflow: input name "name" is reserved by the worker CLI.
+Rename it. Reserved names: name, agent, detach, list, help, version, session, status.
 ```
 
-This is enforced in `defineWorkflow`, not in `createWorkflowCli`, so the error
-surfaces at workflow authoring time — it cannot be registered.
+This is enforced in `defineWorkflow`, not at runtime, so the error surfaces
+at workflow authoring time — the workflow cannot be registered.
+
+User-app CLIs built on the SDK primitives are **not** bound by these
+reservations at runtime. The check exists only to keep workflows portable
+to the atomic CLI without needing to rename inputs later.
 
 ## The interactive picker
 
-`atomic workflow -a <agent>` (no `-n`) launches the interactive
-picker (TTY only — non-interactive contexts skip straight to `--help`).
-This picker is the only user-facing workflow path that intentionally
-omits `-n`; all direct attached or detached runs should pass
-`-n <workflow-name>` explicitly.
-The picker is a `WorkflowPickerPanel` component that takes a `Registry`
-prop. It:
+### Atomic builtins — `atomic workflow -a <agent>`
+
+`atomic workflow -a <agent>` (no `-n`) launches the interactive picker for
+atomic builtins (TTY only — non-interactive contexts skip straight to
+`--help`). All direct attached or detached builtin runs should include
+`-n <workflow-name>` explicitly; omitting `-n` is the intentional
+picker-discovery path.
+
+The picker is the `WorkflowPickerPanel` component from
+`@bastani/atomic/workflows/components`. It:
 
 1. Calls `registry.list()` and filters to workflows whose `agent` field
    matches `<agent>`. No source labels — registry entries are just
@@ -293,15 +292,29 @@ prop. It:
    off to the workflow executor — same live-run surface users see
    when they invoke the workflow with `-n` directly.
 
-The picker is the preferred discovery path for users who don't
-remember flag names. Structured workflows benefit the most from it
-because the form teaches the schema as the user fills it in.
+The picker is the preferred discovery path for users who don't remember
+flag names. Structured workflows benefit the most from it because the
+form teaches the schema as the user fills it in.
 
-User apps can mount the same picker against their own registry by
-wiring `cli.run()` — if `-n` is omitted and `process.stdout.isTTY`
-is true, the cli automatically launches the picker over the
-user-supplied registry. Single-workflow workers have no picker because
-the file already identifies the workflow.
+### User apps — mount `WorkflowPickerPanel` yourself
+
+`runWorkflow` does **not** auto-launch a picker. If a user app wants a
+picker UX, the developer mounts `WorkflowPickerPanel` from
+`@bastani/atomic/workflows/components` against their own registry:
+
+```ts
+import { WorkflowPickerPanel } from "@bastani/atomic/workflows/components";
+
+const panel = await WorkflowPickerPanel.create({ agent: "claude", registry });
+const result = await panel.waitForSelection();
+panel.destroy();
+if (result) {
+  await runWorkflow({ workflow: result.workflow, inputs: result.inputs });
+}
+```
+
+Single-workflow workers have no picker — the file already identifies the
+workflow, so the user just passes the declared `--<input>` flags directly.
 
 ## Duplicate registration
 
@@ -321,20 +334,26 @@ contract see `registry-and-validation.md`.
 See SKILL.md §"Invocation surfaces" for the full table. This section covers
 flag-parsing nuances specific to structured inputs.
 
-Both `--flag=value` and `--flag value` forms are accepted. Short flags
-(`-x value`) are NOT parsed as structured inputs — only long-form
+Both `--flag=value` and `--flag value` forms are accepted by Commander. Short
+flags (`-x value`) are NOT parsed as structured inputs — only long-form
 `--<name>` flags resolve against the schema.
 
-The `-d` / `--detach` flag composes with any named shape (positional
-prompt, structured flags) and is independent of the inputs schema.
+For user-app CLIs, the dev wires the flags via `getInputSchema(wf)` and
+Commander; there is no `-n`/`-a`/`-d` built into user-app workers. If the
+dev wants detached runs, they pass `detach: true` to `runWorkflow` or wire
+their own `--detach` Commander option.
 
 ```bash
-# User's own app
-bun run src/cli.ts -n gen-spec -a claude --focus=standard --research_doc=notes.md
-bun run src/cli.ts -n gen-spec -a claude --focus standard --research_doc notes.md
+# User's own app — single-workflow worker
+bun run src/claude-worker.ts --focus=standard --research_doc=notes.md
+bun run src/claude-worker.ts --focus standard --research_doc notes.md
 
-# Atomic builtins (same flag semantics)
+# User's own app — multi-workflow CLI
+bun run src/cli.ts gen-spec --focus=standard --research_doc=notes.md
+
+# Atomic builtins — use atomic CLI's -n/-a/-d flags
 atomic workflow -n gen-spec -a claude --focus=standard --research_doc=notes.md
+atomic workflow -n gen-spec -a claude -d --focus=standard    # detached
 ```
 
 ## Pitfalls
@@ -351,8 +370,12 @@ inputs: [
 ]
 ```
 
-The CLI rejects positional prompt strings for workflows that don't declare
-a `prompt` input.
+If the developer has wired a `[prompt...]` Commander argument in their
+entrypoint, the collected string is passed as the `prompt` input value —
+but only if the workflow actually declares a `prompt` input. Accessing
+`ctx.inputs.prompt` without declaring it is a compile-time error. The
+atomic CLI applies the same rule for builtins: a positional string is
+rejected if the builtin workflow does not declare a `prompt` input.
 
 ### Don't rename inputs across workflow versions
 

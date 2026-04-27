@@ -2,16 +2,20 @@
  * Workflow runtime executor.
  *
  * Architecture:
- * 1. `executeWorkflow()` is called by the CLI command or worker
- * 2. It creates a tmux session with an orchestrator pane that re-executes
- *    the user's entrypoint file with `ATOMIC_ORCHESTRATOR_MODE=1`
+ * 1. `executeWorkflow()` is called by the CLI command (e.g. atomic) or by
+ *    the SDK's `runWorkflow()` primitive
+ * 2. It creates a tmux session with an orchestrator pane that runs the
+ *    SDK-owned `orchestrator-entry.ts` with three positional args:
+ *    `<workflowSource> <agent> <inputsB64>`
  * 3. The CLI then attaches to the tmux session (user sees it live)
- * 4. The orchestrator pane calls `definition.run(workflowCtx)` — the
- *    user's callback uses `ctx.stage()` to spawn agent sessions
+ * 4. The orchestrator pane imports the workflow module by `source`,
+ *    calls `runOrchestrator(definition, inputs)`, which then calls
+ *    `definition.run(workflowCtx)` — the user's callback uses
+ *    `ctx.stage()` to spawn agent sessions
  *
- * In the new model the user's own file (e.g. `src/worker.ts`) is re-executed
- * with env vars (`ATOMIC_ORCHESTRATOR_MODE`, `ATOMIC_WF_KEY`) that signal
- * re-entry. The worker detects those vars and calls `runOrchestrator(definition)`.
+ * The dev's CLI is never re-imported. The SDK orchestrator entry script
+ * is the only re-exec target, so there is no orchestrator-mode env var
+ * re-entry signal and no boilerplate in user code.
  */
 
 import { join } from "node:path";
@@ -132,19 +136,6 @@ export interface WorkflowRunOptions {
    * whether the workflow declares a schema. Empty record is valid.
    */
   inputs?: Record<string, string>;
-  /**
-   * Absolute path to the user's entrypoint file (e.g. `src/worker.ts`).
-   * The launcher re-executes this file with `ATOMIC_ORCHESTRATOR_MODE=1`
-   * so the worker can detect re-entry and call `runOrchestrator()`.
-   * Defaults to `process.argv[1]` at the call site.
-   */
-  entrypointFile: string;
-  /**
-   * Registry key identifying this workflow, formatted as `"<agent>/<name>"`.
-   * Passed via `ATOMIC_WF_KEY` so the orchestrator can resolve the
-   * definition from the registry without a file-system scan.
-   */
-  workflowKey: string;
   /** Project root (defaults to cwd) */
   projectRoot?: string;
   /**
@@ -403,33 +394,6 @@ export function escPwsh(s: string): string {
 }
 
 /**
- * Decode the ATOMIC_WF_INPUTS env var (base64-encoded JSON) into a
- * `Record<string, string>`. Returns an empty record when the variable
- * is missing, malformed, or does not decode to a string-map object —
- * structured inputs are optional, so a corrupt payload must never
- * prevent free-form workflows from running.
- */
-export function parseInputsEnv(
-  raw: string | undefined,
-): Record<string, string> {
-  if (!raw) return {};
-  try {
-    const decoded = Buffer.from(raw, "base64").toString("utf-8");
-    const parsed: unknown = JSON.parse(decoded);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return {};
-    }
-    const out: Record<string, string> = {};
-    for (const [k, v] of Object.entries(parsed)) {
-      if (typeof v === "string") out[k] = v;
-    }
-    return out;
-  } catch {
-    return {};
-  }
-}
-
-/**
  * Coerce raw string inputs to their declared runtime types. Integer inputs
  * become `number`; every other declared type passes through as `string`.
  * Unknown keys (not in the schema) are preserved as strings.
@@ -471,13 +435,11 @@ export function coerceInputsBySchema(
  */
 export async function executeWorkflow(
   options: WorkflowRunOptions,
-): Promise<void> {
+): Promise<{ id: string; tmuxSessionName: string }> {
   const {
     definition,
     agent,
     inputs = {},
-    entrypointFile,
-    workflowKey,
     projectRoot = process.cwd(),
     detach = false,
   } = options;
@@ -501,8 +463,9 @@ export async function executeWorkflow(
   await ensureDir(sessionsBaseDir);
 
   // Write a launcher script for the orchestrator pane.
-  // Re-executes the user's entrypoint file with ATOMIC_ORCHESTRATOR_MODE=1
-  // so the worker can detect re-entry and call runOrchestrator().
+  // Runs the SDK-owned orchestrator entry script with positional args:
+  //   bun <orchestrator-entry.ts> <workflowSource> <agent> <inputsB64>
+  // The dev's own CLI is never re-execed.
   const isWin = process.platform === "win32";
   const launcherExt = isWin ? "ps1" : "sh";
   const launcherPath = join(sessionsBaseDir, `orchestrator.${launcherExt}`);
@@ -515,17 +478,18 @@ export async function executeWorkflow(
   // read the user's prompt via `ctx.inputs.prompt`.
   const inputsB64 = Buffer.from(JSON.stringify(inputs)).toString("base64");
 
+  // Resolve the SDK's orchestrator entry script (sibling of this file).
+  const orchestratorEntry = join(import.meta.dir, "orchestrator-entry.ts");
+  const workflowSource = definition.source;
+
   const launcherScript = isWin
     ? [
         `Set-Location "${escPwsh(projectRoot)}"`,
         `$env:ATOMIC_WF_ID = "${escPwsh(workflowRunId)}"`,
         `$env:ATOMIC_WF_TMUX = "${escPwsh(tmuxSessionName)}"`,
         `$env:ATOMIC_WF_AGENT = "${escPwsh(agent)}"`,
-        `$env:ATOMIC_WF_INPUTS = "${escPwsh(inputsB64)}"`,
-        `$env:ATOMIC_ORCHESTRATOR_MODE = "1"`,
-        `$env:ATOMIC_WF_KEY = "${escPwsh(workflowKey)}"`,
         `$env:ATOMIC_WF_CWD = "${escPwsh(projectRoot)}"`,
-        `bun run "${escPwsh(entrypointFile)}" 2>"${escPwsh(logPath)}"`,
+        `bun run "${escPwsh(orchestratorEntry)}" "${escPwsh(workflowSource)}" "${escPwsh(agent)}" "${escPwsh(inputsB64)}" 2>"${escPwsh(logPath)}"`,
       ].join("\n")
     : [
         "#!/bin/bash",
@@ -533,11 +497,8 @@ export async function executeWorkflow(
         `export ATOMIC_WF_ID="${escBash(workflowRunId)}"`,
         `export ATOMIC_WF_TMUX="${escBash(tmuxSessionName)}"`,
         `export ATOMIC_WF_AGENT="${escBash(agent)}"`,
-        `export ATOMIC_WF_INPUTS="${escBash(inputsB64)}"`,
-        `export ATOMIC_ORCHESTRATOR_MODE="1"`,
-        `export ATOMIC_WF_KEY="${escBash(workflowKey)}"`,
         `export ATOMIC_WF_CWD="${escBash(projectRoot)}"`,
-        `bun run "${escBash(entrypointFile)}" 2>"${escBash(logPath)}"`,
+        `bun run "${escBash(orchestratorEntry)}" "${escBash(workflowSource)}" "${escBash(agent)}" "${escBash(inputsB64)}" 2>"${escBash(logPath)}"`,
       ].join("\n");
 
   await writeFile(launcherPath, launcherScript, { mode: 0o755 });
@@ -553,7 +514,7 @@ export async function executeWorkflow(
     // new-session -d). Print connection hints and return so the caller
     // can exit cleanly without blocking on the orchestrator.
     printDetachedBanner(tmuxSessionName);
-    return;
+    return { id: workflowRunId, tmuxSessionName };
   }
 
   if (tmux.isInsideAtomicSocket()) {
@@ -567,6 +528,8 @@ export async function executeWorkflow(
     const attachProc = spawnMuxAttach(tmuxSessionName);
     await attachProc.exited;
   }
+
+  return { id: workflowRunId, tmuxSessionName };
 }
 
 /**
@@ -1906,71 +1869,29 @@ function createSessionRunner(
 // Orchestrator logic — runs inside a tmux pane
 // ============================================================================
 
-/**
- * Run the orchestrator inside a tmux pane.
- *
- * Called by the worker entrypoint when `ATOMIC_ORCHESTRATOR_MODE=1` is set.
- * The `definition` parameter is resolved by the caller (the worker) from the
- * registry using `ATOMIC_WF_KEY` — this function no longer performs any
- * file-path import or workflow discovery.
- *
- * @param definition - Resolved workflow definition from the registry.
- */
 export { validateOrchestratorEnv } from "./executor-env.ts";
 import { validateOrchestratorEnv } from "./executor-env.ts";
 
 /**
- * Orchestrator re-entry guard.
+ * Run the orchestrator for a compiled workflow definition.
  *
- * When `executeWorkflow()` spawns a detached pane, it re-invokes the
- * composition root with `ATOMIC_ORCHESTRATOR_MODE=1` +
- * `ATOMIC_WF_KEY="<agent>/<name>"`. This helper detects that re-entry
- * and hands off to `runOrchestrator()` with the resolved definition.
- *
- * Returns `true` when re-entry was handled (caller should stop normal
- * CLI flow). Returns `false` when `ATOMIC_ORCHESTRATOR_MODE` is unset
- * — the caller should proceed with argv parsing.
- *
- * The `resolve` callback lets embedded workers pass a trivial lookup
- * (their single bound definition) while the dispatcher passes its
- * registry. Throws on malformed or unknown keys so authoring mistakes
- * surface loudly instead of silently hanging.
+ * Called by the SDK's `orchestrator-entry.ts` after it imports the
+ * workflow module by `source` and decodes the inputs payload from argv.
+ * The runtime environment (`ATOMIC_WF_ID`, `ATOMIC_WF_TMUX`,
+ * `ATOMIC_WF_AGENT`, `ATOMIC_WF_CWD`) is set by the launcher script that
+ * `executeWorkflow()` writes — those vars describe *where* this
+ * orchestrator is running, not what to do.
  */
-export async function handleOrchestratorReEntry(
-  resolve: (name: string, agent: AgentType) => WorkflowDefinition | undefined,
-): Promise<boolean> {
-  if (process.env.ATOMIC_ORCHESTRATOR_MODE !== "1") {
-    return false;
-  }
-  const key = process.env.ATOMIC_WF_KEY ?? "";
-  const slashIdx = key.indexOf("/");
-  if (slashIdx < 0) {
-    throw new Error(
-      `ATOMIC_ORCHESTRATOR_MODE=1 but ATOMIC_WF_KEY "${key}" is malformed — expected "<agent>/<name>"`,
-    );
-  }
-  const agent = key.slice(0, slashIdx) as AgentType;
-  const name = key.slice(slashIdx + 1);
-  const def = resolve(name, agent);
-  if (!def) {
-    throw new Error(`ATOMIC_WF_KEY "${key}" not found in registry`);
-  }
-  await runOrchestrator(def);
-  return true;
-}
-
 export async function runOrchestrator(
   definition: WorkflowDefinition,
+  inputs: Record<string, string> = {},
 ): Promise<void> {
   const { workflowRunId, tmuxSessionName, agent, cwd } = validateOrchestratorEnv();
-  // ATOMIC_WF_INPUTS carries the full input payload. Free-form
-  // workflows store their single positional prompt under the `prompt`
-  // key so workflow authors always read it via `ctx.inputs.prompt`.
-  // An unset, missing, or malformed payload falls back to an empty
-  // record so `ctx.inputs.prompt` gracefully becomes `undefined`.
-  const inputs = parseInputsEnv(process.env.ATOMIC_WF_INPUTS);
   // A bare prompt string is still useful for the panel header and the
   // session-dir metadata.json — both just want something displayable.
+  // Free-form workflows store their single positional prompt under the
+  // `prompt` key so workflow authors always read it via
+  // `ctx.inputs.prompt`.
   const prompt = inputs.prompt ?? "";
 
   process.chdir(cwd);

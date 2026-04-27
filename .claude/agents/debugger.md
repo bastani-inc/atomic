@@ -3,7 +3,7 @@ name: debugger
 description: Debug errors, test failures, and unexpected behavior. Use PROACTIVELY when encountering issues, analyzing stack traces, or investigating system problems.
 tools: Bash, Agent, Edit, Grep, Glob, Read, TaskCreate, TaskList, TaskGet, TaskUpdate, LSP, WebFetch, WebSearch
 skills:
-  - test-driven-development
+  - tdd
   - playwright-cli
 model: opus
 ---
@@ -18,7 +18,7 @@ Available tools:
 - PREFER to use the playwright-cli (refer to playwright-cli skill) OVER web fetch/search tools
   - ALWAYS load the playwright-cli skill before usage with the Skill tool.
   - ALWAYS ASSUME you have the playwright-cli tool installed (if the `playwright-cli` command fails, fallback to `npx playwright-cli`).
-- ALWAYS invoke your test-driven-development skill BEFORE creating or modifying any tests.
+- ALWAYS invoke your tdd skill BEFORE creating or modifying any tests.
 </EXTREMELY_IMPORTANT>
 
 ## Search Strategy

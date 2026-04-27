@@ -2,6 +2,7 @@ import { defineWorkflow } from "@bastani/atomic/workflows";
 
 export default defineWorkflow({
   name: "greet",
+  source: import.meta.path,
   description: "One-line greeting",
   inputs: [
     {

@@ -20,7 +20,7 @@ import {
   detachAndAttachAtomic as _detachAndAttachAtomic,
   killSession as _killSession,
   SOCKET_NAME,
-} from "../../sdk/workflows/index.ts";
+} from "../../sdk/runtime/tmux.ts";
 import type { TmuxSession, SessionType } from "../../sdk/runtime/tmux.ts";
 import type { Subprocess } from "bun";
 

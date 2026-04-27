@@ -22,12 +22,17 @@ import type {
 type AnyInputs = readonly WorkflowInput[];
 
 /**
- * Flag and subcommand names reserved by the worker CLI that cannot be used as
- * workflow input names. The first block (`name` / `agent` / `detach` / `list`
- * / `help` / `version`) collides with Commander's own flags on the root
- * command; the second block (`session` / `status`) collides with the auto-
- * registered management subcommands added by `createWorkflowCli` when
- * `includeManagementCommands` is left at its default (`true`).
+ * Input names reserved because they collide with the atomic CLI's `workflow`
+ * subcommand surface. The first block (`name` / `agent` / `detach` / `list`
+ * / `help` / `version`) collides with the atomic CLI's `workflow` subcommand
+ * flags (`-n/--name`, `-a/--agent`, `-d/--detach`, `-l/--list`, `-h/--help`,
+ * `-v/--version`). The second block (`session` / `status`) collides with the
+ * atomic CLI's management subcommands (`atomic workflow session …`,
+ * `atomic workflow status`).
+ *
+ * User-app CLIs built with the SDK primitives are NOT bound by these
+ * reservations at runtime — the check runs only inside `defineWorkflow` so
+ * that workflows remain portable to the atomic CLI without renaming.
  */
 export const RESERVED_INPUT_NAMES = [
   "name",
@@ -207,6 +212,18 @@ export class WorkflowBuilder<
       );
     }
 
+    if (
+      typeof this.options.source !== "string" ||
+      this.options.source.trim() === ""
+    ) {
+      throw new Error(
+        `Workflow "${this.options.name}" is missing the \`source\` option. ` +
+          `Pass \`source: import.meta.path\` in the \`defineWorkflow({ ... })\` ` +
+          `call so the SDK orchestrator can re-import the workflow module ` +
+          `inside the spawned tmux session.`,
+      );
+    }
+
     return {
       __brand: "WorkflowDefinition" as const,
       name: this.options.name,
@@ -214,6 +231,7 @@ export class WorkflowBuilder<
       description: this.options.description ?? "",
       inputs,
       minSDKVersion: this.options.minSDKVersion ?? null,
+      source: this.options.source,
       run: runFn,
     };
   }

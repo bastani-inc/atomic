@@ -33,15 +33,13 @@ import {
   isInsideTmux,
   isTmuxInstalled,
   resetMuxBinaryCache,
-} from "../../../sdk/workflows/index.ts";
-import {
   createSession,
   detachAndAttachAtomic,
   killSessionOnPaneExit,
   killSession,
   spawnMuxAttach,
   switchClient,
-} from "../../../sdk/workflows/index.ts";
+} from "../../../sdk/runtime/tmux.ts";
 import { spawnAttachedFooter } from "../../../sdk/runtime/attached-footer.ts";
 import { ensureTmuxInstalled } from "../../../lib/spawn.ts";
 

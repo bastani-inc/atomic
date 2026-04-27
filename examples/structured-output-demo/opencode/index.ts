@@ -6,7 +6,7 @@
  * The validated object is read from the AssistantMessage's `structured`
  * field (see `@opencode-ai/sdk` v2 types — AssistantMessage.structured).
  *
- * Run: atomic workflow -n structured-output-demo -a opencode "Python"
+ * Run: bun run examples/structured-output-demo/opencode-worker.ts --prompt=Python
  */
 
 import { defineWorkflow } from "@bastani/atomic/workflows";
@@ -21,6 +21,7 @@ import {
 
 export default defineWorkflow({
   name: "structured-output-demo",
+  source: import.meta.path,
   description:
     "Ask for structured facts about a language and prove each SDK's native structured-output path works",
   inputs: [

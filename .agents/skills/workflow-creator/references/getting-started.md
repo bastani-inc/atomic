@@ -4,92 +4,93 @@ This guide covers the basics of creating workflows with the `defineWorkflow().ru
 
 ## Composition root
 
-A workflow's composition root is the TypeScript file a user runs via `bun`. The SDK ships **one** factory — `createWorkflowCli` — that accepts a single workflow, an array, or a `Registry`. The same shape scales from toy scripts to multi-agent suites without pattern changes, and every cli ships with `-n/--name` + `-a/--agent` flags, the interactive picker, the `--<inputName>` union across registered workflows, and `-d/--detach`. Direct runs require both `-n` and `-a`; the only no-`-n` path is the TTY picker (`-a <agent>` with no name).
+A workflow's composition root is the TypeScript file a user runs via `bun`. The SDK exposes pure primitives — there's no opinionated wrapper. Compose them into whatever CLI library you prefer (Commander, citty, yargs, or none at all) and call `runWorkflow({ workflow, inputs })` from the action.
 
-### The three input shapes
-
-```ts
-import { createWorkflowCli, createRegistry } from "@bastani/atomic/workflows";
-
-// Single workflow — pass it directly. Direct CLI runs still use -n + -a.
-await createWorkflowCli(workflow).run();
-
-// Multiple workflows — pass an array.
-await createWorkflowCli([claudeFlow, copilotFlow, opencodeFlow]).run();
-
-// Dynamic/programmatic composition — build a Registry.
-const registry = workflowFiles.reduce((r, wf) => r.register(wf), createRegistry());
-await createWorkflowCli(registry).run();
-```
-
-### `run()` options
-
-`run()` accepts one options bag that controls all three invocation modes:
+### Single workflow
 
 ```ts
-const cli = createWorkflowCli(workflow);
+// src/claude-worker.ts
+import { Command } from "@commander-js/extra-typings";
+import { getInputSchema, runWorkflow } from "@bastani/atomic/workflows";
+import workflow from "./workflows/deploy/claude.ts";
 
-// CLI mode (default) — parses process.argv
-await cli.run();
-
-// CLI mode with defaults — `inputs` layer beneath CLI flags
-await cli.run({ inputs: { prompt: "default task" } });
-
-// Explicit argv — useful in tests and embedded harnesses
-await cli.run({ argv: ["bun", "cli.ts", "-n", "deploy", "-a", "claude"] });
-
-// Programmatic — skips argv entirely; name + agent required, inputs final
-await cli.run({
-  argv: false,
-  name: "deploy",
-  agent: "claude",
-  inputs: { prompt: "task" },
+const program = new Command();
+for (const input of getInputSchema(workflow)) {
+  program.option(`--${input.name} <value>`, input.description ?? "");
+}
+program.action(async (rawOpts) => {
+  await runWorkflow({ workflow, inputs: rawOpts as Record<string, string> });
 });
+await program.parseAsync();
 ```
 
 Run it:
 
 ```bash
-bun run src/cli.ts -n deploy -a claude --prompt "your task"
-bun run src/cli.ts -n deploy -a claude --field=value
-bun run src/cli.ts -n deploy -a claude "your task"
-bun run src/cli.ts -a claude                           # picker (TTY; no -n)
-bun run src/cli.ts -n deploy -a claude -d "your task"  # detached
+bun run src/claude-worker.ts --prompt "your task"
+bun run src/claude-worker.ts --field=value
 ```
 
-For embedding under a parent CLI, use the Commander adapter:
+### Multiple workflows
 
 ```ts
-import { toCommand, runCli } from "@bastani/atomic/workflows/commander";
+// src/cli.ts
+import { Command } from "@commander-js/extra-typings";
+import {
+  createRegistry,
+  getInputSchema,
+  getName,
+  listWorkflows,
+  runWorkflow,
+} from "@bastani/atomic/workflows";
+import claudeFlow from "./workflows/my-flow/claude.ts";
+import copilotFlow from "./workflows/my-flow/copilot.ts";
 
-parentProgram.addCommand(toCommand(cli));
-await runCli(cli, () => parentProgram.parseAsync());
+const registry = createRegistry().register(claudeFlow).register(copilotFlow);
+const program = new Command();
+
+for (const wf of listWorkflows(registry)) {
+  const sub = program.command(getName(wf)).description(wf.description);
+  for (const input of getInputSchema(wf)) {
+    sub.option(`--${input.name} <value>`, input.description ?? "");
+  }
+  sub.action(async (rawOpts) => {
+    await runWorkflow({ workflow: wf, inputs: rawOpts as Record<string, string> });
+  });
+}
+await program.parseAsync();
 ```
 
-Programmatic invocation — `argv: false` is required because the cli
-normally exits on a missing `-n`/`-a` via Commander's help:
+### Programmatic invocation (no CLI)
 
 ```ts
-await cli.run({
-  name: "my-workflow",
-  agent: "claude",
+import { runWorkflow } from "@bastani/atomic/workflows";
+import workflow from "./workflows/deploy/claude.ts";
+
+const { id, tmuxSessionName } = await runWorkflow({
+  workflow,
   inputs: { prompt: "task" },
-  argv: false,
+  detach: true,
 });
 ```
 
-### The `entry` option
+### Detach and monitor
 
-Both factories accept `{ entry?: string }` so the runtime knows which file
-to re-exec on `--detach`. Default is `process.argv[1]`, which is correct
-for the common `bun run src/cli.ts` case. Override it when:
+`runWorkflow({ ..., detach: true })` returns immediately after the tmux session is created. Combine with `getSessionStatus(tmuxSessionName)`, `attachSession(id)`, and `stopSession(id)` from `@bastani/atomic/workflows` to build your own monitoring loop, or use the global `atomic session …` / `atomic workflow status` commands.
 
-- You bundle the app — `entry` must point at the bundle's entrypoint.
-- Your composition root is imported from elsewhere and isn't argv[1].
-- You're running inside a test harness that isn't your worker file.
+### Interactive picker
+
+The same picker `atomic workflow -a claude` opens is exposed as a component:
 
 ```ts
-await createWorkflowCli(workflow, { entry: import.meta.url }).run();
+import { WorkflowPickerPanel } from "@bastani/atomic/workflows/components";
+
+const panel = await WorkflowPickerPanel.create({ agent: "claude", registry });
+const result = await panel.waitForSelection();
+panel.destroy();
+if (result) {
+  await runWorkflow({ workflow: result.workflow, inputs: result.inputs });
+}
 ```
 
 ## Quick-start example
@@ -106,6 +107,7 @@ import { defineWorkflow, extractAssistantText } from "@bastani/atomic/workflows"
 
 export default defineWorkflow({
     name: "my-workflow",
+    source: import.meta.path,
     description: "A two-session pipeline",
     inputs: [
       { name: "prompt", type: "text", required: true, description: "task to perform" },
@@ -149,6 +151,7 @@ import { defineWorkflow } from "@bastani/atomic/workflows";
 
 export default defineWorkflow({
     name: "my-workflow",
+    source: import.meta.path,
     description: "A two-session pipeline",
     inputs: [
       { name: "prompt", type: "text", required: true, description: "task to perform" },
@@ -192,6 +195,7 @@ import { defineWorkflow } from "@bastani/atomic/workflows";
 
 export default defineWorkflow({
     name: "my-workflow",
+    source: import.meta.path,
     description: "A two-session pipeline",
     inputs: [
       { name: "prompt", type: "text", required: true, description: "task to perform" },
@@ -289,8 +293,8 @@ The `@bastani/atomic/workflows` package exports the workflow authoring and compo
 
 **Composition root:**
 - `createRegistry()` — factory for an empty, immutable, chainable registry. Chain `.register(wf)` to add workflow definitions. Each call returns a new registry. Throws on duplicate `${agent}/${name}` key.
-- `createWorkflowCli(target, options?)` — the workflow-CLI factory. `target` accepts a compiled `WorkflowDefinition`, an array of them, or a `Registry` — the cli normalizes internally. `options` supports `inputs?`, `entry?` (path to re-exec on `--detach`; defaults to `process.argv[1]`), and `extend?` (attach sibling commands to the standalone `run()` CLI).
-- `createRegistry()` — factory for an immutable, chainable registry. Only needed when you want dynamic/programmatic composition; pass workflows directly to `createWorkflowCli` otherwise.
+- `runWorkflow({ workflow, inputs })` — the workflow-CLI factory. `target` accepts a compiled `WorkflowDefinition`, an array of them, or a `Registry` — the cli normalizes internally. `options` supports `inputs?`, `entry?` (path to re-exec on `--detach`; defaults to `process.argv[1]`), and `extend?` (attach sibling commands to the standalone `run()` CLI).
+- `createRegistry()` — factory for an immutable, chainable registry. Only needed when you want dynamic/programmatic composition; pass workflows directly to `runWorkflow` otherwise.
 - `Registry` — type for the registry object (see `registry-and-validation.md`)
 - `WorkflowCli` — exposes `run(options?)`. `run()` options: `{ name?, agent?, inputs?, argv?: string[] | false, detach? }`.
 - `CreateWorkflowCliOptions`, `ArgvMode` — options types
@@ -364,7 +368,7 @@ The SDK ships two builtin workflows registered via `createBuiltinRegistry()` (in
 - **`ralph`** (`src/sdk/workflows/builtin/ralph/`) — iterative plan → orchestrate → review → debug loop with consecutive clean-pass detection, shared helpers for prompts/parsing/git, and cross-SDK adaptation
 - **`deep-research-codebase`** (`src/sdk/workflows/builtin/deep-research-codebase/`) — deterministic codebase scout → LOC-based heuristic explorer partitioning → parallel explorers → aggregator with file-based handoffs and context-aware prompt engineering
 
-Both include `helpers/` directories with SDK-agnostic logic (prompt builders, parsers, heuristics) and per-agent `index.ts` files showing how the same workflow topology adapts to Claude, Copilot, and OpenCode. Their composition root pattern (`createWorkflowCli(workflow | [...] | registry).run()`) is the same pattern user apps follow.
+Both include `helpers/` directories with SDK-agnostic logic (prompt builders, parsers, heuristics) and per-agent `index.ts` files showing how the same workflow topology adapts to Claude, Copilot, and OpenCode. Their composition root pattern (`runWorkflow(via runWorkflow primitives).run()`) is the same pattern user apps follow.
 
 ## Type safety
 

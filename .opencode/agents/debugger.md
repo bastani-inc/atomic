@@ -26,7 +26,7 @@ Available tools:
 - PREFER to use the playwright-cli (refer to playwright-cli skill) OVER web fetch/search tools
   - ALWAYS load the playwright-cli skill before usage with the Skill tool.
   - ALWAYS ASSUME you have the playwright-cli tool installed (if the `playwright-cli` command fails, fallback to `npx playwright-cli`).
-- ALWAYS invoke your test-driven-development skill BEFORE creating or modifying any tests.
+- ALWAYS invoke your tdd skill BEFORE creating or modifying any tests.
 </EXTREMELY_IMPORTANT>
 
 ## Search Strategy
