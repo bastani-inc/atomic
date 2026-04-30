@@ -24,6 +24,7 @@ import { defineWorkflow } from "../../../index.ts";
 import {
   buildPlannerPrompt,
   buildOrchestratorPrompt,
+  buildCodeSimplifierPrompt,
   buildInfraDiscoveryPrompts,
   buildReviewPrompt,
   filterActionable,
@@ -135,6 +136,27 @@ export default defineWorkflow({
               },
             ],
             agent: "orchestrator",
+          });
+          s.save(result.data!);
+        },
+      );
+
+      // ── Code Simplifier ───────────────────────────────────────────────
+      await ctx.stage(
+        { name: `code-simplifier-${iteration}` },
+        {},
+        { title: `code-simplifier-${iteration}` },
+        async (s) => {
+          const result = await s.client.session.prompt({
+            sessionID: s.session.id,
+            parts: [
+              {
+                type: "text",
+                text: buildCodeSimplifierPrompt(prompt, {
+                  plannerNotes: planner.result,
+                }),
+              },
+            ],
           });
           s.save(result.data!);
         },

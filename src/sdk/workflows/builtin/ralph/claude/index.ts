@@ -28,6 +28,7 @@ import { defineWorkflow, extractAssistantText } from "../../../index.ts";
 import {
   buildPlannerPrompt,
   buildOrchestratorPrompt,
+  buildCodeSimplifierPrompt,
   buildInfraDiscoveryPrompts,
   buildReviewPrompt,
   filterActionable,
@@ -130,6 +131,22 @@ export default defineWorkflow({
         {},
         async (s) => {
           await s.session.query(buildOrchestratorPrompt(prompt));
+          s.save(s.sessionId);
+        },
+      );
+
+      // ── Code Simplifier ─────────────────────────────────────────────────
+      await ctx.stage(
+        { name: `code-simplifier-${iteration}` },
+        {
+          chatFlags: [
+            "--allow-dangerously-skip-permissions",
+            "--dangerously-skip-permissions",
+          ],
+        },
+        {},
+        async (s) => {
+          await s.session.query(buildCodeSimplifierPrompt(prompt));
           s.save(s.sessionId);
         },
       );

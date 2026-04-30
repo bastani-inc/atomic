@@ -555,6 +555,60 @@ records — those must remain self-contained and unambiguous.`);
 }
 
 // ============================================================================
+// CODE SIMPLIFIER
+// ============================================================================
+
+export interface CodeSimplifierContext {
+  /** Optional planner output (RFC markdown or absolute path to spec). */
+  plannerNotes?: string;
+}
+
+/**
+ * Build the code-simplifier prompt. Invokes the `/code-simplifier` skill to
+ * inspect only the orchestrator's changes on the current branch and refine
+ * them for clarity, consistency, and maintainability — without altering
+ * functionality or test behaviour.
+ *
+ * @param spec - The user's original specification, used as context/fallback
+ *   when planner output is missing or ambiguous.
+ * @param context - Optional planner handoff (spec path or inline RFC markdown).
+ */
+export function buildCodeSimplifierPrompt(
+  spec: string,
+  context: CodeSimplifierContext = {},
+): string {
+  const plannerNotes = context.plannerNotes?.trim() ?? "";
+  const plannerSection =
+    plannerNotes.length > 0
+      ? `<planner_output>
+${plannerNotes}
+</planner_output>`
+      : `<planner_output>
+(empty — fall back to the Original User Specification below)
+</planner_output>`;
+
+  return withCaveman(`/code-simplifier Inspect the orchestrator's changes on the current branch and simplify the implementation for clarity, consistency, and maintainability.
+
+## Design Input (authoritative)
+
+${plannerSection}
+
+## Original User Specification (context / fallback)
+
+<specification>
+${spec}
+</specification>
+
+## Instructions
+
+1. **Scope to branch changes only.** Run \`git diff\` and \`git status\` to identify every file the orchestrator touched. Do NOT modify files outside that set.
+2. **Simplify and refine.** Within the changed files, improve clarity, consistency, naming, and structure. Remove dead code, unnecessary comments, and redundant abstractions. Prefer simple, direct implementations.
+3. **Preserve all functionality and test behaviour.** No feature regressions, no removed tests, no altered public interfaces unless the change is strictly cosmetic (e.g. rename of an internal variable).
+4. **Keep changes minimal and focused.** No scope creep. Do not rewrite working code that is already clear. Touch only what genuinely benefits from simplification.
+5. **Verify after edits.** Run \`bun typecheck\` and \`bun lint\` from the repository root after all edits are complete. Fix any errors they surface before finishing.`);
+}
+
+// ============================================================================
 // INFRASTRUCTURE DISCOVERY
 // ============================================================================
 
@@ -592,7 +646,7 @@ one-line description of each.
 - **Build config**: tsconfig.json, webpack.config.*, vite.config.*, esbuild.*, rollup.config.*, Makefile, etc.
 - **Test config**: jest.config.*, vitest.config.*, playwright.config.*, .mocharc.*, pytest.ini, etc.
 - **Lint / format config**: .eslintrc.*, eslint.config.*, biome.json, .prettierrc.*, oxlint.json, etc.
-- **CI/CD workflows**: .github/workflows/*.yml, .gitlab-ci.yml, Jenkinsfile, .circleci/config.yml, etc.
+- **CI/CD workflows (REQUIRED)**: .github/workflows/*.yml, .gitlab-ci.yml, Jenkinsfile, .circleci/config.yml, azure-pipelines.yml, etc. List every workflow file separately — reviewers need full coverage.
 - **Agent config files**: CLAUDE.md, AGENTS.md, .claude/*, .github/copilot-instructions.md (these often document project commands)
 
 ## Output format
@@ -625,7 +679,12 @@ which commands to run to verify an implementation.
    executes" list.
 4. Read CLAUDE.md / AGENTS.md if present — they often document the
    canonical commands for contributors.
-5. Identify the test framework(s) in use and how to invoke them.
+5. **Audit CI workflows.** When the \`gh\` CLI is available (check via \`command -v gh\`), run:
+   - \`gh workflow list\` to enumerate active workflows.
+   - \`gh run list --limit 5\` to see the most recent runs and their statuses.
+   - \`gh workflow view <name>\` for any workflow whose name suggests it gates merges.
+   When \`gh\` is unavailable or unauthenticated, fall back to reading the workflow YAML files directly. Capture: workflow names, triggers (push / pull_request / schedule / workflow_dispatch), job names, the exact \`run:\` commands per job, and recent run statuses.
+6. Identify the test framework(s) in use and how to invoke them.
 
 ## Output format
 
@@ -644,6 +703,10 @@ which commands to run to verify an implementation.
 
 ## CI Commands (from workflow files)
 - \`<command>\` — <source file and context>
+
+## CI / GitHub Actions
+- Workflow: \`<name>\` — triggers: \`<push|pr|schedule|...>\` — jobs: \`<job names>\`
+- Recent runs (when \`gh\` available): \`<conclusion>\` on \`<branch>\` (\`<run id>\`)
 \`\`\`
 
 Be specific — include the exact invocation string (e.g. \`bun test\`, not
@@ -670,6 +733,10 @@ but HOW they are used in practice.
    order CI runs them.
 5. **Dependency install pattern**: How are dependencies installed before
    build/test (e.g. \`bun install\`, \`npm ci\`)?
+6. **CI audit patterns**: Map out the CI structure so reviewers can audit it. Identify matrix builds, job dependencies (\`needs:\`), conditional runs (\`if:\`), required checks, and which jobs gate merges. When \`gh\` is available, surface example commands a reviewer could use:
+   - \`gh run view <id> --log-failed\` — inspect a failed run.
+   - \`gh pr checks\` — see check status on the current PR.
+   - \`gh workflow view <name> --yaml\` — view the canonical workflow definition.
 
 ## Output format
 
@@ -679,7 +746,7 @@ For each pattern found, report:
 - A brief explanation of when/how it's used
 
 End with a brief trailing summary of the overall build/test workflow order
-(e.g. "install → typecheck → lint → test → build").`),
+(e.g. "install → typecheck → lint → test → build"). Also summarise CI workflow order: which workflows fire on what triggers, in what order jobs run within each.`),
   };
 }
 

@@ -27,6 +27,7 @@ import type { SessionEvent } from "@github/copilot-sdk";
 import {
   buildPlannerPrompt,
   buildOrchestratorPrompt,
+  buildCodeSimplifierPrompt,
   buildInfraDiscoveryPrompts,
   buildReviewPrompt,
   filterActionable,
@@ -133,6 +134,21 @@ export default defineWorkflow({
         async (s) => {
           await s.session.send({
             prompt: buildOrchestratorPrompt(userPromptText, {
+              plannerNotes: planner.result,
+            }),
+          });
+          s.save(await s.session.getMessages());
+        },
+      );
+
+      // ── Code Simplifier ───────────────────────────────────────────────
+      await ctx.stage(
+        { name: `code-simplifier-${iteration}` },
+        {},
+        {},
+        async (s) => {
+          await s.session.send({
+            prompt: buildCodeSimplifierPrompt(userPromptText, {
               plannerNotes: planner.result,
             }),
           });
