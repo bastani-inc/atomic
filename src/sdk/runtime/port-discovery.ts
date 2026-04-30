@@ -28,6 +28,30 @@ export interface GetListeningPortOptions {
   pollIntervalMs?: number;
 }
 
+type PortDiscoverySpawnOptions = {
+  cmd: string[];
+  stdout: "pipe";
+  stderr: "pipe";
+};
+
+type PortDiscoverySpawnResult = {
+  stdout: { toString(): string };
+  stderr: { toString(): string };
+  success: boolean;
+};
+
+type PortDiscoverySpawnSync = (options: PortDiscoverySpawnOptions) => PortDiscoverySpawnResult;
+
+let spawnSync: PortDiscoverySpawnSync = (options) => Bun.spawnSync(options);
+
+export function _setPortDiscoverySpawnSyncForTest(nextSpawnSync: PortDiscoverySpawnSync): () => void {
+  const previous = spawnSync;
+  spawnSync = nextSpawnSync;
+  return () => {
+    spawnSync = previous;
+  };
+}
+
 /**
  * Discover the TCP port that a given process is listening on.
  *
@@ -44,9 +68,9 @@ export async function getListeningPortForPid(
   const deadline = Date.now() + timeoutMs;
 
   while (Date.now() < deadline) {
-    const port = readListeningPortForPid(pid);
+    const port = _readListeningPortForPid(pid);
     if (port !== null) return port;
-    if (!isProcessAlive(pid)) return null;
+    if (!_isProcessAlive(pid)) return null;
     await Bun.sleep(pollIntervalMs);
   }
   return null;
@@ -56,18 +80,18 @@ export async function getListeningPortForPid(
 // Platform dispatch
 // ---------------------------------------------------------------------------
 
-function readListeningPortForPid(pid: number): number | null {
+export function _readListeningPortForPid(pid: number): number | null {
   const platform = process.platform;
   if (platform === "linux") {
     return linuxReadListeningPort(pid, 0);
   } else if (platform === "darwin") {
-    return macosReadListeningPort(pid, 0);
+    return _macosReadListeningPort(pid, 0);
   } else {
-    return windowsReadListeningPort(pid, 0);
+    return _windowsReadListeningPort(pid, 0);
   }
 }
 
-function isProcessAlive(pid: number): boolean {
+export function _isProcessAlive(pid: number): boolean {
   if (process.platform === "linux") {
     return existsSync(`/proc/${pid}`);
   }
@@ -167,7 +191,7 @@ function readProcFile(path: string): string {
   }
 }
 
-function linuxGetListeningPort(
+export function _linuxGetListeningPort(
   tcpContent: string,
   tcp6Content: string,
   socketInodes: Set<number>,
@@ -191,11 +215,11 @@ function linuxReadListeningPort(pid: number, depth: number): number | null {
   const tcp6Content = readProcFile(`/proc/${pid}/net/tcp6`);
   const socketInodes = _getLinuxPidSocketInodes(pid);
 
-  const port = linuxGetListeningPort(tcpContent, tcp6Content, socketInodes);
+  const port = _linuxGetListeningPort(tcpContent, tcp6Content, socketInodes);
   if (port !== null) return port;
 
   // Walk children if no listening port found
-  const children = linuxGetChildren(pid);
+  const children = _linuxGetChildren(pid);
   for (const childPid of children) {
     const childPort = linuxReadListeningPort(childPid, depth + 1);
     if (childPort !== null) return childPort;
@@ -203,7 +227,7 @@ function linuxReadListeningPort(pid: number, depth: number): number | null {
   return null;
 }
 
-function linuxGetChildren(pid: number): number[] {
+export function _linuxGetChildren(pid: number): number[] {
   // /proc/<pid>/task/<pid>/children lists direct child PIDs (space-separated)
   const content = readProcFile(`/proc/${pid}/task/${pid}/children`).trim();
   if (!content) return [];
@@ -267,10 +291,10 @@ export function _parseMacosLsofOutput(output: string): number | null {
   return fallbackCandidates.length > 0 ? (fallbackCandidates[0] ?? null) : null;
 }
 
-function macosReadListeningPort(pid: number, depth: number): number | null {
+export function _macosReadListeningPort(pid: number, depth: number): number | null {
   if (depth > MACOS_MAX_CHILD_DEPTH) return null;
 
-  const result = Bun.spawnSync({
+  const result = spawnSync({
     cmd: ["lsof", "-nP", "-iTCP", "-sTCP:LISTEN", "-a", "-p", String(pid)],
     stdout: "pipe",
     stderr: "pipe",
@@ -281,16 +305,16 @@ function macosReadListeningPort(pid: number, depth: number): number | null {
   if (port !== null) return port;
 
   // Walk children via pgrep
-  const children = macosGetChildren(pid);
+  const children = _macosGetChildren(pid);
   for (const childPid of children) {
-    const childPort = macosReadListeningPort(childPid, depth + 1);
+    const childPort = _macosReadListeningPort(childPid, depth + 1);
     if (childPort !== null) return childPort;
   }
   return null;
 }
 
-function macosGetChildren(pid: number): number[] {
-  const result = Bun.spawnSync({
+export function _macosGetChildren(pid: number): number[] {
+  const result = spawnSync({
     cmd: ["pgrep", "-P", String(pid)],
     stdout: "pipe",
     stderr: "pipe",
@@ -371,10 +395,10 @@ export function _parseWindowsNetstatOutput(output: string, pid: number): number 
   return null;
 }
 
-function windowsReadListeningPort(pid: number, depth: number): number | null {
+export function _windowsReadListeningPort(pid: number, depth: number): number | null {
   if (depth > WINDOWS_MAX_CHILD_DEPTH) return null;
 
-  const psResult = Bun.spawnSync({
+  const psResult = spawnSync({
     cmd: [
       "powershell",
       "-NoProfile",
@@ -396,7 +420,7 @@ function windowsReadListeningPort(pid: number, depth: number): number | null {
     if (port !== null) return port;
   } else {
     // Fallback: netstat -ano | findstr <pid>
-    const nsResult = Bun.spawnSync({
+    const nsResult = spawnSync({
       cmd: ["cmd", "/c", `netstat -ano | findstr ${pid}`],
       stdout: "pipe",
       stderr: "pipe",
@@ -406,16 +430,16 @@ function windowsReadListeningPort(pid: number, depth: number): number | null {
   }
 
   // Walk children
-  const children = windowsGetChildren(pid);
+  const children = _windowsGetChildren(pid);
   for (const childPid of children) {
-    const childPort = windowsReadListeningPort(childPid, depth + 1);
+    const childPort = _windowsReadListeningPort(childPid, depth + 1);
     if (childPort !== null) return childPort;
   }
   return null;
 }
 
-function windowsGetChildren(pid: number): number[] {
-  const psResult = Bun.spawnSync({
+export function _windowsGetChildren(pid: number): number[] {
+  const psResult = spawnSync({
     cmd: [
       "powershell",
       "-NoProfile",
@@ -458,7 +482,7 @@ function windowsGetChildren(pid: number): number[] {
   }
 
   // Fallback: wmic
-  const wmicResult = Bun.spawnSync({
+  const wmicResult = spawnSync({
     cmd: ["wmic", "process", "where", `(ParentProcessId=${pid})`, "get", "ProcessId"],
     stdout: "pipe",
     stderr: "pipe",

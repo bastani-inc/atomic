@@ -7,16 +7,60 @@
 
 import { test, expect, describe, mock, beforeAll, afterAll } from "bun:test";
 import {
+  _linuxGetListeningPort,
+  _macosGetChildren,
+  _macosReadListeningPort,
   _parseLinuxTcpLine,
   _parseLinuxTcpTable,
   _getLinuxPidSocketInodes,
   _parseMacosLsofOutput,
   _parseWindowsPowerShellOutput,
   _parseWindowsNetstatOutput,
+  _readListeningPortForPid,
+  _setPortDiscoverySpawnSyncForTest,
+  _windowsGetChildren,
+  _windowsReadListeningPort,
   getListeningPortForPid,
   PORT_DISCOVERY_TIMEOUT_MS,
 } from "./port-discovery.ts";
 import * as net from "node:net";
+import { Buffer } from "node:buffer";
+
+type Platform = typeof process.platform;
+type SpawnResult = {
+  stdout: Buffer;
+  stderr: Buffer;
+  success: boolean;
+};
+
+function withPlatform<T>(platform: Platform, fn: () => T): T {
+  const descriptor = Object.getOwnPropertyDescriptor(process, "platform");
+  Object.defineProperty(process, "platform", { configurable: true, value: platform });
+  try {
+    return fn();
+  } finally {
+    if (descriptor) {
+      Object.defineProperty(process, "platform", descriptor);
+    }
+  }
+}
+
+function spawnResult(stdout = "", stderr = "", success = true): SpawnResult {
+  return {
+    stdout: Buffer.from(stdout),
+    stderr: Buffer.from(stderr),
+    success,
+  };
+}
+
+function withSpawnSyncMock<T>(handler: (cmd: string[]) => SpawnResult, fn: () => T): T {
+  const restore = _setPortDiscoverySpawnSyncForTest(mock((options) => handler(options.cmd)));
+  try {
+    return fn();
+  } finally {
+    restore();
+  }
+}
 
 // ---------------------------------------------------------------------------
 // 1. Linux /proc parser
@@ -104,6 +148,27 @@ describe("_parseLinuxTcpTable", () => {
 
 // Note: _getLinuxPidSocketInodes relies on real /proc fs; tested in e2e section.
 
+describe("Linux discovery helpers", () => {
+  test("returns IPv4 port before IPv6 for matching socket inode", () => {
+    const tcp = "0: 0100007F:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000 0 0 111 1";
+    const tcp6 = "0: 00000000000000000000000001000000:23FB 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000 0 0 111 1";
+
+    expect(_linuxGetListeningPort(tcp, tcp6, new Set([111]))).toBe(8080);
+  });
+
+  test("returns IPv6 port when no IPv4 table entry matches", () => {
+    const tcp6 = "0: 00000000000000000000000001000000:23FB 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000 0 0 222 1";
+
+    expect(_linuxGetListeningPort("", tcp6, new Set([222]))).toBe(9211);
+  });
+
+  test("platform dispatch uses Linux reader without subprocesses", () => {
+    const port = withPlatform("linux", () => _readListeningPortForPid(2_000_000_000));
+
+    expect(port).toBeNull();
+  });
+});
+
 // ---------------------------------------------------------------------------
 // 2. macOS lsof parser
 // ---------------------------------------------------------------------------
@@ -170,6 +235,61 @@ describe("_parseMacosLsofOutput", () => {
   });
 });
 
+describe("macOS discovery helpers", () => {
+  const lsofOutput = "COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\nbun 123 user 10u IPv4 0 0t0 TCP 127.0.0.1:4567 (LISTEN)";
+
+  test("reads a port from lsof output", () => {
+    const port = withSpawnSyncMock(
+      () => spawnResult(lsofOutput),
+      () => _macosReadListeningPort(123, 0),
+    );
+
+    expect(port).toBe(4567);
+  });
+
+  test("walks child PIDs when parent has no listening port", () => {
+    const seenCommands: string[][] = [];
+    const port = withSpawnSyncMock(
+      (cmd) => {
+        seenCommands.push(cmd);
+        if (cmd[0] === "pgrep") return spawnResult("456\n");
+        if (cmd.includes("456")) return spawnResult(lsofOutput.replace("4567", "5678"));
+        return spawnResult("");
+      },
+      () => _macosReadListeningPort(123, 0),
+    );
+
+    expect(port).toBe(5678);
+    expect(seenCommands.some((cmd) => cmd[0] === "pgrep")).toBe(true);
+  });
+
+  test("returns null after macOS child traversal depth limit", () => {
+    const port = withSpawnSyncMock(
+      () => spawnResult(lsofOutput),
+      () => _macosReadListeningPort(123, 4),
+    );
+
+    expect(port).toBeNull();
+  });
+
+  test("parses pgrep child output and filters invalid values", () => {
+    const children = withSpawnSyncMock(
+      () => spawnResult("123\nnot-a-pid\n0\n456\n"),
+      () => _macosGetChildren(99),
+    );
+
+    expect(children).toEqual([123, 456]);
+  });
+
+  test("platform dispatch uses macOS reader", () => {
+    const port = withPlatform("darwin", () =>
+      withSpawnSyncMock(() => spawnResult(lsofOutput), () => _readListeningPortForPid(123)),
+    );
+
+    expect(port).toBe(4567);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // 3. Windows PowerShell parser
 // ---------------------------------------------------------------------------
@@ -210,6 +330,92 @@ describe("_parseWindowsPowerShellOutput", () => {
 
   test("returns null for object without LocalPort", () => {
     expect(_parseWindowsPowerShellOutput('{"OtherField":1234}')).toBeNull();
+  });
+});
+
+describe("Windows discovery helpers", () => {
+  test("reads a port from PowerShell output", () => {
+    const port = withSpawnSyncMock(
+      () => spawnResult('{"LocalPort":7001}'),
+      () => _windowsReadListeningPort(321, 0),
+    );
+
+    expect(port).toBe(7001);
+  });
+
+  test("falls back to netstat when PowerShell is unavailable", () => {
+    const port = withSpawnSyncMock(
+      (cmd) => {
+        if (cmd[0] === "cmd") {
+          return spawnResult("TCP 0.0.0.0:7002 0.0.0.0:0 LISTENING 321");
+        }
+        return spawnResult("", "CommandNotFoundException", false);
+      },
+      () => _windowsReadListeningPort(321, 0),
+    );
+
+    expect(port).toBe(7002);
+  });
+
+  test("walks child PIDs when parent has no listening port", () => {
+    const port = withSpawnSyncMock(
+      (cmd) => {
+        const command = cmd.join(" ");
+        if (command.includes("Get-NetTCPConnection") && command.includes("654")) {
+          return spawnResult('{"LocalPort":7003}');
+        }
+        if (command.includes("Win32_Process")) {
+          return spawnResult('{"ProcessId":654}');
+        }
+        return spawnResult("null");
+      },
+      () => _windowsReadListeningPort(321, 0),
+    );
+
+    expect(port).toBe(7003);
+  });
+
+  test("returns null after Windows child traversal depth limit", () => {
+    const port = withSpawnSyncMock(
+      () => spawnResult('{"LocalPort":7004}'),
+      () => _windowsReadListeningPort(321, 4),
+    );
+
+    expect(port).toBeNull();
+  });
+
+  test("parses Windows child PID JSON arrays and objects", () => {
+    const arrayChildren = withSpawnSyncMock(
+      () => spawnResult('[{"ProcessId":111},{"ProcessId":"222"},{"Other":333},{"ProcessId":0}]'),
+      () => _windowsGetChildren(321),
+    );
+    const objectChildren = withSpawnSyncMock(
+      () => spawnResult('{"ProcessId":444}'),
+      () => _windowsGetChildren(321),
+    );
+
+    expect(arrayChildren).toEqual([111, 222]);
+    expect(objectChildren).toEqual([444]);
+  });
+
+  test("falls back to wmic when child PowerShell is unavailable", () => {
+    const children = withSpawnSyncMock(
+      (cmd) => {
+        if (cmd[0] === "wmic") return spawnResult("ProcessId\n111\nbad\n222\n");
+        return spawnResult("", "is not recognized", false);
+      },
+      () => _windowsGetChildren(321),
+    );
+
+    expect(children).toEqual([111, 222]);
+  });
+
+  test("platform dispatch uses Windows reader for non-Linux and non-macOS platforms", () => {
+    const port = withPlatform("win32", () =>
+      withSpawnSyncMock(() => spawnResult('{"LocalPort":7005}'), () => _readListeningPortForPid(321)),
+    );
+
+    expect(port).toBe(7005);
   });
 });
 
