@@ -28,6 +28,7 @@ import { defineWorkflow, extractAssistantText } from "../../../index.ts";
 import {
   buildPlannerPrompt,
   buildOrchestratorPrompt,
+  buildCodeSimplifierPrompt,
   buildInfraDiscoveryPrompts,
   buildReviewPrompt,
   filterActionable,
@@ -94,7 +95,7 @@ export default defineWorkflow({
 
     for (let iteration = 1; iteration <= maxLoops; iteration++) {
       // ── Plan ────────────────────────────────────────────────────────────
-      await ctx.stage(
+      const planner = await ctx.stage(
         { name: `planner-${iteration}` },
         {
           chatFlags: [
@@ -106,13 +107,14 @@ export default defineWorkflow({
         },
         {},
         async (s) => {
-          await s.session.query(
+          const result = await s.session.query(
             buildPlannerPrompt(prompt, {
               iteration,
               reviewReport: reviewReport || undefined,
             }),
           );
           s.save(s.sessionId);
+          return extractAssistantText(result, 0);
         },
       );
 
@@ -129,7 +131,33 @@ export default defineWorkflow({
         },
         {},
         async (s) => {
-          await s.session.query(buildOrchestratorPrompt(prompt));
+          await s.session.query(
+            buildOrchestratorPrompt(prompt, {
+              plannerNotes: planner.result,
+            }),
+          );
+          s.save(s.sessionId);
+        },
+      );
+
+      // ── Code Simplifier ─────────────────────────────────────────────────
+      await ctx.stage(
+        { name: `code-simplifier-${iteration}` },
+        {
+          chatFlags: [
+            "--agent",
+            "code-simplifier",
+            "--allow-dangerously-skip-permissions",
+            "--dangerously-skip-permissions",
+          ],
+        },
+        {},
+        async (s) => {
+          await s.session.query(
+            buildCodeSimplifierPrompt(prompt, {
+              plannerNotes: planner.result,
+            }),
+          );
           s.save(s.sessionId);
         },
       );
