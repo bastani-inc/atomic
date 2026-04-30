@@ -42,6 +42,10 @@ import {
 } from "../../../sdk/runtime/tmux.ts";
 import { spawnAttachedFooter } from "../../../sdk/runtime/attached-footer.ts";
 import { ensureTmuxInstalled } from "../../../lib/spawn.ts";
+import {
+  mergeTerminalEnv,
+  normalizedTerminalEnv,
+} from "../../../lib/terminal-env.ts";
 
 // ============================================================================
 // Types
@@ -132,6 +136,68 @@ function escPwsh(s: string): string {
   return s.replace(/[`"$]/g, "`$&");
 }
 
+export const TERMINAL_ENV_KEYS = [
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "TERM",
+  "COLORTERM",
+] as const;
+
+export type TerminalEnvKey = (typeof TERMINAL_ENV_KEYS)[number];
+
+export function pickTerminalEnv(
+  env: Record<string, string>,
+): Record<TerminalEnvKey, string> {
+  const picked = {} as Record<TerminalEnvKey, string>;
+  for (const key of TERMINAL_ENV_KEYS) {
+    picked[key] = env[key] ?? "";
+  }
+  return picked;
+}
+
+export function buildSpawnEnv(
+  explicitEnv: Record<string, string>,
+  baseEnv: NodeJS.ProcessEnv = process.env,
+): Record<string, string> {
+  return mergeTerminalEnv(explicitEnv, baseEnv);
+}
+
+export function buildLauncherEnv(
+  explicitEnv: Record<string, string>,
+  baseEnv: NodeJS.ProcessEnv = process.env,
+): Record<string, string> {
+  return {
+    ...pickTerminalEnv(normalizedTerminalEnv(baseEnv)),
+    ...explicitEnv,
+  };
+}
+
+/** POSIX env key: must start with letter or underscore, then letters/digits/underscores. */
+const POSIX_ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * Validate a Bash env key. Throws if the key is not a valid POSIX identifier.
+ * Bash would silently accept or misparse invalid keys; surface the error early.
+ */
+function assertBashEnvKey(key: string): void {
+  if (!POSIX_ENV_KEY_RE.test(key)) {
+    throw new Error(
+      `Invalid Bash env key "${key}": must match /^[A-Za-z_][A-Za-z0-9_]*$/`,
+    );
+  }
+}
+
+/**
+ * Escape a PowerShell environment-provider key for use in braced variable syntax.
+ * PowerShell braced syntax `${env:<key>}` requires `}` to be escaped as `` `} ``.
+ * All other characters are valid inside the braces.
+ */
+function escPwshEnvKey(key: string): string {
+  // Only `}` terminates the braced variable reference early.
+  return key.replace(/}/g, "`}");
+}
+
 /**
  * Build a launcher script that preserves cwd and properly quotes args.
  * This avoids shell-injection risks from passthrough args.
@@ -149,7 +215,7 @@ export function buildLauncherScript(
     // PowerShell: use array splatting for safe arg passing
     const argList = args.map((a) => `"${escPwsh(a)}"`).join(", ");
     const envLines = envEntries.map(
-      ([key, value]) => `$env:${key} = "${escPwsh(value)}"`,
+      ([key, value]) => `\${env:${escPwshEnvKey(key)}} = "${escPwsh(value)}"`,
     );
     const script = [
       `Set-Location "${escPwsh(projectRoot)}"`,
@@ -168,9 +234,10 @@ export function buildLauncherScript(
   const quotedArgs = args
     .map((a) => `"${escBash(a)}"`)
     .join(" ");
-  const envLines = envEntries.map(
-    ([key, value]) => `export ${key}="${escBash(value)}"`,
-  );
+  const envLines = envEntries.map(([key, value]) => {
+    assertBashEnvKey(key);
+    return `export ${key}="${escBash(value)}"`;
+  });
   const script = [
     "#!/bin/bash",
     `cd "${escBash(projectRoot)}"`,
@@ -267,9 +334,12 @@ export async function chatCommand(options: ChatCommandOptions = {}): Promise<num
     }
   }
 
+  const spawnEnv = buildSpawnEnv(envVars);
+  const launcherEnv = buildLauncherEnv(envVars);
+
   // ── No TTY: tmux attach requires a real terminal ──
   if (!process.stdin.isTTY) {
-    return spawnDirect(cmd, projectRoot, envVars);
+    return spawnDirect(cmd, projectRoot, spawnEnv);
   }
 
   // ── Ensure tmux is available ──
@@ -283,7 +353,7 @@ export async function chatCommand(options: ChatCommandOptions = {}): Promise<num
     }
     if (!isTmuxInstalled()) {
       // No tmux available — fall back to direct spawn
-      return spawnDirect(cmd, projectRoot, envVars);
+      return spawnDirect(cmd, projectRoot, spawnEnv);
     }
   }
 
@@ -297,7 +367,7 @@ export async function chatCommand(options: ChatCommandOptions = {}): Promise<num
     config.cmd,
     args,
     projectRoot,
-    envVars,
+    launcherEnv,
   );
   const launcherPath = join(sessionsDir, `${windowName}.${ext}`);
   await writeFile(launcherPath, script, { mode: 0o755 });
@@ -308,7 +378,7 @@ export async function chatCommand(options: ChatCommandOptions = {}): Promise<num
 
   // ── Create session on the atomic socket and attach ──
   try {
-    const paneId = createSession(windowName, shellCmd, undefined, projectRoot);
+    const paneId = createSession(windowName, shellCmd, undefined, projectRoot, spawnEnv);
     spawnAttachedFooter(windowName, paneId, agentType);
     killSessionOnPaneExit(windowName, paneId);
 
@@ -336,7 +406,7 @@ export async function chatCommand(options: ChatCommandOptions = {}): Promise<num
     // If tmux attach itself failed (e.g. lost TTY), clean up and fall back
     if (exitCode !== 0) {
       try { killSession(windowName); } catch {}
-      return spawnDirect(cmd, projectRoot, envVars);
+      return spawnDirect(cmd, projectRoot, spawnEnv);
     }
 
     return exitCode;
@@ -346,7 +416,7 @@ export async function chatCommand(options: ChatCommandOptions = {}): Promise<num
     console.error(
       `${COLORS.yellow}Warning: Failed to create tmux session (${message}). Falling back to direct spawn.${COLORS.reset}`
     );
-    return spawnDirect(cmd, projectRoot, envVars);
+    return spawnDirect(cmd, projectRoot, spawnEnv);
   }
 }
 
@@ -357,12 +427,12 @@ export async function chatCommand(options: ChatCommandOptions = {}): Promise<num
 async function spawnDirect(
   cmd: string[],
   projectRoot: string,
-  envVars: Record<string, string> = {},
+  env: Record<string, string> = {},
 ): Promise<number> {
   const proc = Bun.spawn(cmd, {
     stdio: ["inherit", "inherit", "inherit"],
     cwd: projectRoot,
-    env: { ...process.env, ...envVars },
+    env,
   });
 
   return await proc.exited;
