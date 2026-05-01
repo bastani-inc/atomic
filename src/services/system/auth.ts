@@ -17,7 +17,7 @@
 
 import type { AgentKey } from "../config/index.ts";
 import { COLORS } from "../../theme/colors.ts";
-import { copilotSubprocessEnv } from "../../sdk/providers/copilot.ts";
+import { copilotSdkLaunchOptions } from "../../sdk/providers/copilot.ts";
 
 export interface AuthCheckResult {
   /** True when the SDK reports the user is authenticated. */
@@ -72,7 +72,7 @@ const AUTH_PROMPTS: Record<AgentKey, { name: string; loginHint: string }> = {
 
 async function checkCopilotAuth(): Promise<AuthCheckResult> {
   const { CopilotClient } = await import("@github/copilot-sdk");
-  const client = new CopilotClient({ env: copilotSubprocessEnv() });
+  const client = new CopilotClient(copilotSdkLaunchOptions());
   try {
     await client.start();
     const status = await client.getAuthStatus();

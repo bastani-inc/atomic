@@ -10,7 +10,7 @@
  *   atomic chat -a <agent> [native-args...]
  */
 
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { mkdir, writeFile, rm } from "node:fs/promises";
 import { AGENT_CONFIG, type AgentKey } from "../../../services/config/index.ts";
@@ -19,10 +19,11 @@ import { getCopilotScmDisableFlags } from "../../../services/config/scm-sync.ts"
 import {
   resolveAdditionalInstructionsPath,
 } from "../../../services/config/additional-instructions.ts";
-import { dirname } from "node:path";
 import { ensureProjectSetup } from "../init/index.ts";
 import { COLORS } from "../../../theme/colors.ts";
-import { isCommandInstalled } from "../../../services/system/detect.ts";
+import {
+  getCommandPath,
+} from "../../../services/system/detect.ts";
 import { checkAgentAuth, printAuthError } from "../../../services/system/auth.ts";
 import {
   ensureAtomicGlobalAgentConfigs,
@@ -43,8 +44,16 @@ import {
 import { spawnAttachedFooter } from "../../../sdk/runtime/attached-footer.ts";
 import { ensureTmuxInstalled } from "../../../lib/spawn.ts";
 import {
-  mergeTerminalEnv,
-  normalizedTerminalEnv,
+  buildLauncherEnv,
+  buildSpawnEnv,
+} from "../../../lib/terminal-env.ts";
+import { resolveCopilotCliPath } from "../../../sdk/providers/copilot.ts";
+
+export {
+  buildLauncherEnv,
+  buildSpawnEnv,
+  TERMINAL_ENV_KEYS,
+  type TerminalEnvKey,
 } from "../../../lib/terminal-env.ts";
 
 // ============================================================================
@@ -122,6 +131,15 @@ export function getAdditionalInstructionsDir(
   return path ? dirname(path) : undefined;
 }
 
+export function resolveChatCommand(agentType: AgentType): string | undefined {
+  if (agentType === "copilot") {
+    return resolveCopilotCliPath();
+  }
+
+  const config = AGENT_CONFIG[agentType];
+  return getCommandPath(config.cmd) ?? undefined;
+}
+
 function generateChatId(): string {
   return crypto.randomUUID().slice(0, 8);
 }
@@ -136,50 +154,8 @@ function escPwsh(s: string): string {
   return s.replace(/[`"$]/g, "`$&");
 }
 
-export const TERMINAL_ENV_KEYS = [
-  "LANG",
-  "LC_ALL",
-  "LC_CTYPE",
-  "TERM",
-  "COLORTERM",
-] as const;
-
-export type TerminalEnvKey = (typeof TERMINAL_ENV_KEYS)[number];
-
-export function pickTerminalEnv(
-  env: Record<string, string>,
-): Record<TerminalEnvKey, string> {
-  const picked = {} as Record<TerminalEnvKey, string>;
-  for (const key of TERMINAL_ENV_KEYS) {
-    picked[key] = env[key] ?? "";
-  }
-  return picked;
-}
-
-export function buildSpawnEnv(
-  explicitEnv: Record<string, string>,
-  baseEnv: NodeJS.ProcessEnv = process.env,
-): Record<string, string> {
-  return mergeTerminalEnv(explicitEnv, baseEnv);
-}
-
-export function buildLauncherEnv(
-  explicitEnv: Record<string, string>,
-  baseEnv: NodeJS.ProcessEnv = process.env,
-): Record<string, string> {
-  return {
-    ...pickTerminalEnv(normalizedTerminalEnv(baseEnv)),
-    ...explicitEnv,
-  };
-}
-
-/** POSIX env key: must start with letter or underscore, then letters/digits/underscores. */
 const POSIX_ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
-/**
- * Validate a Bash env key. Throws if the key is not a valid POSIX identifier.
- * Bash would silently accept or misparse invalid keys; surface the error early.
- */
 function assertBashEnvKey(key: string): void {
   if (!POSIX_ENV_KEY_RE.test(key)) {
     throw new Error(
@@ -188,14 +164,16 @@ function assertBashEnvKey(key: string): void {
   }
 }
 
-/**
- * Escape a PowerShell environment-provider key for use in braced variable syntax.
- * PowerShell braced syntax `${env:<key>}` requires `}` to be escaped as `` `} ``.
- * All other characters are valid inside the braces.
- */
 function escPwshEnvKey(key: string): string {
-  // Only `}` terminates the braced variable reference early.
   return key.replace(/}/g, "`}");
+}
+
+async function removeLauncher(path: string): Promise<void> {
+  try {
+    await rm(path, { force: true });
+  } catch {
+    // Cleanup best effort; attach/fallback result should remain authoritative.
+  }
 }
 
 /**
@@ -230,10 +208,10 @@ export function buildLauncherScript(
     return { script, ext: "ps1" };
   }
 
-  // Bash: use proper quoting for each arg
-  const quotedArgs = args
-    .map((a) => `"${escBash(a)}"`)
-    .join(" ");
+  const quotedCommand = [
+    `"${escBash(cmd)}"`,
+    ...args.map((arg) => `"${escBash(arg)}"`),
+  ].join(" ");
   const envLines = envEntries.map(([key, value]) => {
     assertBashEnvKey(key);
     return `export ${key}="${escBash(value)}"`;
@@ -242,7 +220,7 @@ export function buildLauncherScript(
     "#!/bin/bash",
     `cd "${escBash(projectRoot)}"`,
     ...envLines,
-    `"${escBash(cmd)}" ${quotedArgs}`,
+    quotedCommand,
     "atomic_exit_code=$?",
     'exit "$atomic_exit_code"',
   ].join("\n");
@@ -273,8 +251,10 @@ export async function chatCommand(options: ChatCommandOptions = {}): Promise<num
 
   const config = AGENT_CONFIG[agentType];
 
+  const executable = resolveChatCommand(agentType);
+
   // Check the agent CLI is installed
-  if (!isCommandInstalled(config.cmd)) {
+  if (!executable) {
     console.error(
       `${COLORS.red}Error: '${config.cmd}' is not installed or not in PATH.${COLORS.reset}`
     );
@@ -303,7 +283,7 @@ export async function chatCommand(options: ChatCommandOptions = {}): Promise<num
 
   // ── Build argv ──
   const args = await buildAgentArgs(agentType, passthroughArgs, projectRoot);
-  const cmd = [config.cmd, ...args];
+  const cmd = [executable, ...args];
   const overrides = await getProviderOverrides(agentType, projectRoot);
   // ATOMIC_AGENT must be baked into the launcher env so the agent CLI
   // and anything it spawns can read it from process start.
@@ -364,7 +344,7 @@ export async function chatCommand(options: ChatCommandOptions = {}): Promise<num
   const sessionsDir = join(homedir(), ".atomic", "sessions", "chat");
   await mkdir(sessionsDir, { recursive: true });
   const { script, ext } = buildLauncherScript(
-    config.cmd,
+    executable,
     args,
     projectRoot,
     launcherEnv,
@@ -385,7 +365,7 @@ export async function chatCommand(options: ChatCommandOptions = {}): Promise<num
     if (isInsideAtomicSocket()) {
       // Already on the atomic server — just switch to the new session.
       switchClient(windowName);
-      try { await rm(launcherPath, { force: true }); } catch {}
+      await removeLauncher(launcherPath);
       return 0;
     }
 
@@ -393,15 +373,14 @@ export async function chatCommand(options: ChatCommandOptions = {}): Promise<num
       // Inside a different tmux server — detach and replace the client
       // with an attach to the atomic socket (no nesting).
       detachAndAttachAtomic(windowName);
-      try { await rm(launcherPath, { force: true }); } catch {}
+      await removeLauncher(launcherPath);
       return 0;
     }
 
     const attachProc = spawnMuxAttach(windowName);
     const exitCode = await attachProc.exited;
 
-    // Clean up launcher
-    try { await rm(launcherPath, { force: true }); } catch {}
+    await removeLauncher(launcherPath);
 
     // If tmux attach itself failed (e.g. lost TTY), clean up and fall back
     if (exitCode !== 0) {
@@ -411,7 +390,7 @@ export async function chatCommand(options: ChatCommandOptions = {}): Promise<num
 
     return exitCode;
   } catch (error) {
-    try { await rm(launcherPath, { force: true }); } catch {}
+    await removeLauncher(launcherPath);
     const message = error instanceof Error ? error.message : String(error);
     console.error(
       `${COLORS.yellow}Warning: Failed to create tmux session (${message}). Falling back to direct spawn.${COLORS.reset}`
