@@ -49,7 +49,10 @@ import {
   buildTmuxEnv,
 } from "../../../lib/terminal-env.ts";
 import { atomicTempEnv } from "../../../lib/atomic-temp.ts";
-import { resolveCopilotCliPath } from "../../../sdk/providers/copilot.ts";
+import {
+  type CommandPathResolver,
+  resolveCopilotCliPath,
+} from "../../../sdk/providers/copilot.ts";
 
 export {
   buildLauncherEnv,
@@ -134,13 +137,16 @@ export function getAdditionalInstructionsDir(
   return path ? dirname(path) : undefined;
 }
 
-export function resolveChatCommand(agentType: AgentType): string | undefined {
+export function resolveChatCommand(
+  agentType: AgentType,
+  resolveCommandPath: CommandPathResolver = getCommandPath,
+): string | undefined {
   if (agentType === "copilot") {
-    return resolveCopilotCliPath();
+    return resolveCopilotCliPath(resolveCommandPath);
   }
 
   const config = AGENT_CONFIG[agentType];
-  return getCommandPath(config.cmd) ?? undefined;
+  return resolveCommandPath(config.cmd) ?? undefined;
 }
 
 function generateChatId(): string {

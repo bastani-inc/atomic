@@ -13,18 +13,7 @@
  *    launcher env.
  */
 
-import { mock, test, expect, describe, beforeEach, afterEach } from "bun:test";
-
-// ---------------------------------------------------------------------------
-// Module-level mock for detect.ts — must precede imports.
-// ---------------------------------------------------------------------------
-
-let mockGetCommandPath: (cmd: string) => string | null = () => null;
-
-await mock.module("../../../../src/services/system/detect.ts", () => ({
-  getCommandPath: (cmd: string) => mockGetCommandPath(cmd),
-  getCommandVersion: () => null,
-}));
+import { test, expect, describe, beforeEach, afterEach } from "bun:test";
 
 import {
   resolveChatCommand,
@@ -33,12 +22,14 @@ import {
   buildTmuxEnv,
   TERMINAL_ENV_KEYS,
 } from "../../../../src/commands/cli/chat/index.ts";
+import type { CommandPathResolver } from "../../../../src/sdk/providers/copilot.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 let savedEnv: NodeJS.ProcessEnv;
+let mockGetCommandPath: CommandPathResolver = () => null;
 
 function saveEnv() {
   savedEnv = { ...process.env };
@@ -70,25 +61,25 @@ describe("resolveChatCommand – copilot", () => {
   test("returns COPILOT_CLI_PATH when set, even if PATH lookup returns null", () => {
     process.env["COPILOT_CLI_PATH"] = "/custom/bin/copilot";
     mockGetCommandPath = () => null;
-    expect(resolveChatCommand("copilot")).toBe("/custom/bin/copilot");
+    expect(resolveChatCommand("copilot", mockGetCommandPath)).toBe("/custom/bin/copilot");
   });
 
   test("returns PATH-resolved path when COPILOT_CLI_PATH absent", () => {
     delete process.env["COPILOT_CLI_PATH"];
     mockGetCommandPath = (cmd) => (cmd === "copilot" ? "/usr/local/bin/copilot" : null);
-    expect(resolveChatCommand("copilot")).toBe("/usr/local/bin/copilot");
+    expect(resolveChatCommand("copilot", mockGetCommandPath)).toBe("/usr/local/bin/copilot");
   });
 
   test("returns undefined when COPILOT_CLI_PATH unset and copilot not in PATH", () => {
     delete process.env["COPILOT_CLI_PATH"];
     mockGetCommandPath = () => null;
-    expect(resolveChatCommand("copilot")).toBeUndefined();
+    expect(resolveChatCommand("copilot", mockGetCommandPath)).toBeUndefined();
   });
 
   test("COPILOT_CLI_PATH takes precedence over PATH-resolved path", () => {
     process.env["COPILOT_CLI_PATH"] = "/explicit/copilot";
     mockGetCommandPath = () => "/usr/local/bin/copilot";
-    expect(resolveChatCommand("copilot")).toBe("/explicit/copilot");
+    expect(resolveChatCommand("copilot", mockGetCommandPath)).toBe("/explicit/copilot");
   });
 });
 
@@ -108,23 +99,23 @@ describe("resolveChatCommand – claude / opencode", () => {
 
   test("claude: returns path from getCommandPath('claude')", () => {
     mockGetCommandPath = (cmd) => (cmd === "claude" ? "/usr/bin/claude" : null);
-    expect(resolveChatCommand("claude")).toBe("/usr/bin/claude");
+    expect(resolveChatCommand("claude", mockGetCommandPath)).toBe("/usr/bin/claude");
   });
 
   test("claude: returns undefined when not in PATH", () => {
     mockGetCommandPath = () => null;
-    expect(resolveChatCommand("claude")).toBeUndefined();
+    expect(resolveChatCommand("claude", mockGetCommandPath)).toBeUndefined();
   });
 
   test("opencode: returns path from getCommandPath('opencode')", () => {
     mockGetCommandPath = (cmd) => (cmd === "opencode" ? "/usr/local/bin/opencode" : null);
-    expect(resolveChatCommand("opencode")).toBe("/usr/local/bin/opencode");
+    expect(resolveChatCommand("opencode", mockGetCommandPath)).toBe("/usr/local/bin/opencode");
   });
 
   test("copilot COPILOT_CLI_PATH does not affect claude resolution", () => {
     process.env["COPILOT_CLI_PATH"] = "/custom/copilot";
     mockGetCommandPath = (cmd) => (cmd === "claude" ? "/usr/bin/claude" : null);
-    expect(resolveChatCommand("claude")).toBe("/usr/bin/claude");
+    expect(resolveChatCommand("claude", mockGetCommandPath)).toBe("/usr/bin/claude");
   });
 });
 

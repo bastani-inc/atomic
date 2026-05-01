@@ -55,7 +55,9 @@ jobs:
         run: bun run typecheck
 
       - name: Run tests
-        run: bun test 2>&1 | cat
+        run: |
+          set -o pipefail
+          bun test 2>&1 | cat
 
       - name: Determine npm publish tag
         id: npm-tag

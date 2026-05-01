@@ -94,11 +94,15 @@ export function enumeratePathCandidates(cmd: string, pathEnv: string): string[] 
   return results;
 }
 
-export function resolveCopilotCliPath(): string | undefined {
+export type CommandPathResolver = (cmd: string) => string | null;
+
+export function resolveCopilotCliPath(
+  resolveCommandPath: CommandPathResolver = getCommandPath,
+): string | undefined {
   const envPath = process.env["COPILOT_CLI_PATH"];
   if (envPath) return envPath;
 
-  const primary = getCommandPath("copilot");
+  const primary = resolveCommandPath("copilot");
   if (primary === null) return undefined;
   if (!isCopilotShim(primary)) return primary;
 
@@ -119,11 +123,13 @@ export function resolveCopilotCliPath(): string | undefined {
  * - `cliPath` from {@link resolveCopilotCliPath} when resolvable; omitted
  *   otherwise so the SDK falls back to its bundled CLI.
  */
-export function copilotSdkLaunchOptions(): CopilotClientOptions {
+export function copilotSdkLaunchOptions(
+  resolveCommandPath: CommandPathResolver = getCommandPath,
+): CopilotClientOptions {
   const options: CopilotClientOptions = {
     env: copilotSubprocessEnv(),
   };
-  const cliPath = resolveCopilotCliPath();
+  const cliPath = resolveCopilotCliPath(resolveCommandPath);
   if (cliPath !== undefined) {
     options.cliPath = cliPath;
   }

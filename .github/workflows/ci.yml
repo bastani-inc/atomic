@@ -36,7 +36,9 @@ jobs:
               run: bun run lint
 
             - name: Run tests with coverage
-              run: bun run test:coverage 2>&1 | cat
+              run: |
+                  set -o pipefail
+                  bun run test:coverage 2>&1 | cat
 
             - name: Validate SDK build
               run: bun run build

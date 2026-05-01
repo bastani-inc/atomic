@@ -5,25 +5,15 @@
  *   - copilotSdkLaunchOptions()
  *
  * Strategy:
- * - Mock `../../src/services/system/detect.ts` to control `getCommandPath`.
+ * - Inject a command-path resolver to control PATH lookups.
  * - Mutate `process.env` within each test; restore in afterEach.
- * - Never leak PATH mutations; use mock instead of real Bun.which.
+ * - Never leak PATH mutations or module mocks into parallel test files.
  */
 
-import { mock, test, expect, describe, beforeEach, afterEach } from "bun:test";
-
-// ---------------------------------------------------------------------------
-// Module-level mock — must precede the import under test.
-// ---------------------------------------------------------------------------
-
-let mockGetCommandPath: (cmd: string) => string | null = () => null;
-
-await mock.module("../../../src/services/system/detect.ts", () => ({
-  getCommandPath: (cmd: string) => mockGetCommandPath(cmd),
-  getCommandVersion: () => null,
-}));
+import { test, expect, describe, beforeEach, afterEach } from "bun:test";
 
 import {
+  type CommandPathResolver,
   resolveCopilotCliPath,
   copilotSubprocessEnv,
   copilotSdkLaunchOptions,
@@ -32,6 +22,8 @@ import {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+let mockGetCommandPath: CommandPathResolver = () => null;
 
 function makeBaseEnv(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
   return {
@@ -72,14 +64,14 @@ describe("resolveCopilotCliPath()", () => {
     process.env["COPILOT_CLI_PATH"] = "/custom/path/copilot";
     mockGetCommandPath = () => "/usr/local/bin/copilot";
 
-    expect(resolveCopilotCliPath()).toBe("/custom/path/copilot");
+    expect(resolveCopilotCliPath(mockGetCommandPath)).toBe("/custom/path/copilot");
   });
 
   test("COPILOT_CLI_PATH non-empty string returned verbatim", () => {
     process.env["COPILOT_CLI_PATH"] = "/opt/copilot/bin/copilot";
     mockGetCommandPath = () => null;
 
-    expect(resolveCopilotCliPath()).toBe("/opt/copilot/bin/copilot");
+    expect(resolveCopilotCliPath(mockGetCommandPath)).toBe("/opt/copilot/bin/copilot");
   });
 
   test("PATH-resolved copilot binary returned when COPILOT_CLI_PATH not set", () => {
@@ -87,14 +79,14 @@ describe("resolveCopilotCliPath()", () => {
     mockGetCommandPath = (cmd: string) =>
       cmd === "copilot" ? "/usr/local/bin/copilot" : null;
 
-    expect(resolveCopilotCliPath()).toBe("/usr/local/bin/copilot");
+    expect(resolveCopilotCliPath(mockGetCommandPath)).toBe("/usr/local/bin/copilot");
   });
 
   test("returns undefined when COPILOT_CLI_PATH unset and command not on PATH", () => {
     delete process.env["COPILOT_CLI_PATH"];
     mockGetCommandPath = () => null;
 
-    expect(resolveCopilotCliPath()).toBeUndefined();
+    expect(resolveCopilotCliPath(mockGetCommandPath)).toBeUndefined();
   });
 
   test("empty COPILOT_CLI_PATH falls through to PATH resolution", () => {
@@ -102,7 +94,7 @@ describe("resolveCopilotCliPath()", () => {
     mockGetCommandPath = (cmd: string) =>
       cmd === "copilot" ? "/usr/bin/copilot" : null;
 
-    expect(resolveCopilotCliPath()).toBe("/usr/bin/copilot");
+    expect(resolveCopilotCliPath(mockGetCommandPath)).toBe("/usr/bin/copilot");
   });
 });
 
@@ -182,21 +174,21 @@ describe("copilotSdkLaunchOptions()", () => {
   test("env field always present in returned options", () => {
     mockGetCommandPath = () => null;
     delete process.env["COPILOT_CLI_PATH"];
-    const opts = copilotSdkLaunchOptions();
+    const opts = copilotSdkLaunchOptions(mockGetCommandPath);
     expect(opts.env).toBeDefined();
   });
 
   test("env includes NODE_NO_WARNINGS=1", () => {
     mockGetCommandPath = () => null;
     delete process.env["COPILOT_CLI_PATH"];
-    const opts = copilotSdkLaunchOptions();
+    const opts = copilotSdkLaunchOptions(mockGetCommandPath);
     expect(opts.env?.["NODE_NO_WARNINGS"]).toBe("1");
   });
 
   test("cliPath set when COPILOT_CLI_PATH provided", () => {
     process.env["COPILOT_CLI_PATH"] = "/custom/copilot";
     mockGetCommandPath = () => null;
-    const opts = copilotSdkLaunchOptions();
+    const opts = copilotSdkLaunchOptions(mockGetCommandPath);
     expect(opts.cliPath).toBe("/custom/copilot");
   });
 
@@ -204,14 +196,14 @@ describe("copilotSdkLaunchOptions()", () => {
     delete process.env["COPILOT_CLI_PATH"];
     mockGetCommandPath = (cmd: string) =>
       cmd === "copilot" ? "/usr/local/bin/copilot" : null;
-    const opts = copilotSdkLaunchOptions();
+    const opts = copilotSdkLaunchOptions(mockGetCommandPath);
     expect(opts.cliPath).toBe("/usr/local/bin/copilot");
   });
 
   test("cliPath absent when command not resolvable", () => {
     delete process.env["COPILOT_CLI_PATH"];
     mockGetCommandPath = () => null;
-    const opts = copilotSdkLaunchOptions();
+    const opts = copilotSdkLaunchOptions(mockGetCommandPath);
     expect(Object.prototype.hasOwnProperty.call(opts, "cliPath")).toBe(false);
   });
 });
