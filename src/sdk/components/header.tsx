@@ -9,11 +9,21 @@ import {
   TmuxSessionContext,
 } from "./orchestrator-panel-contexts.ts";
 
-function CountBadge({ color, icon, count }: { color: string; icon: string; count: number }) {
+function CountBadge({
+  color,
+  icon,
+  count,
+  backgroundColor,
+}: {
+  color: string;
+  icon: string;
+  count: number;
+  backgroundColor: string;
+}) {
   if (count <= 0) return null;
   return (
     <text>
-      <span fg={color}>{icon} {count}</span>
+      <span fg={color} bg={backgroundColor}>{icon} {count}</span>
     </text>
   );
 }
@@ -55,18 +65,20 @@ export function Header() {
 
       {tmuxSession ? (
         <box paddingLeft={1} alignItems="center">
-          <text fg={theme.text}>
-            <strong>{tmuxSession}</strong>
+          <text>
+            <span fg={theme.text} bg={theme.backgroundElement}>
+              <strong>{tmuxSession}</strong>
+            </span>
           </text>
         </box>
       ) : null}
 
       <box flexGrow={1} justifyContent="flex-end" flexDirection="row" gap={2}>
-        <CountBadge color={theme.success} icon={"\u2713"} count={counts.complete} />
-        <CountBadge color={theme.warning} icon={"\u25CF"} count={counts.running} />
-        <CountBadge color={theme.info} icon={"?"} count={counts.awaiting_input} />
-        <CountBadge color={theme.textDim} icon={"\u25CB"} count={counts.pending} />
-        <CountBadge color={theme.error} icon={"\u2717"} count={counts.error} />
+        <CountBadge color={theme.success} backgroundColor={theme.backgroundElement} icon={"\u2713"} count={counts.complete} />
+        <CountBadge color={theme.warning} backgroundColor={theme.backgroundElement} icon={"\u25CF"} count={counts.running} />
+        <CountBadge color={theme.info} backgroundColor={theme.backgroundElement} icon={"?"} count={counts.awaiting_input} />
+        <CountBadge color={theme.textDim} backgroundColor={theme.backgroundElement} icon={"\u25CB"} count={counts.pending} />
+        <CountBadge color={theme.error} backgroundColor={theme.backgroundElement} icon={"\u2717"} count={counts.error} />
       </box>
     </box>
   );

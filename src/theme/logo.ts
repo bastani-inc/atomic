@@ -9,6 +9,7 @@ import {
   supports256Color,
   supportsColor,
 } from "../services/system/detect.ts";
+import { flavors, type CatppuccinFlavor, type ColorName } from "@catppuccin/palette";
 
 export const ATOMIC_BLOCK_LOGO = [
   "█▀▀█ ▀▀█▀▀ █▀▀█ █▀▄▀█ ▀█▀ █▀▀",
@@ -16,17 +17,27 @@ export const ATOMIC_BLOCK_LOGO = [
   "▀  ▀   ▀   ▀▀▀▀ ▀   ▀ ▀▀▀ ▀▀▀",
 ];
 
-/** Catppuccin-inspired gradient (dark terminal). */
-export const GRADIENT_DARK = [
-  "#f5e0dc", "#f2cdcd", "#f5c2e7", "#cba6f7",
-  "#b4befe", "#89b4fa", "#74c7ec", "#89dceb", "#94e2d5",
-];
+const GRADIENT_COLOR_NAMES = [
+  "rosewater",
+  "flamingo",
+  "pink",
+  "mauve",
+  "lavender",
+  "blue",
+  "sapphire",
+  "sky",
+  "teal",
+] as const satisfies readonly ColorName[];
 
-/** Catppuccin-inspired gradient (light terminal). */
-export const GRADIENT_LIGHT = [
-  "#dc8a78", "#dd7878", "#ea76cb", "#8839ef",
-  "#7287fd", "#1e66f5", "#209fb5", "#04a5e5", "#179299",
-];
+function gradientFromFlavor(flavor: CatppuccinFlavor): string[] {
+  return GRADIENT_COLOR_NAMES.map((name) => flavor.colors[name].hex);
+}
+
+/** Catppuccin gradient (dark terminal). */
+export const GRADIENT_DARK = gradientFromFlavor(flavors.mocha);
+
+/** Catppuccin gradient (light terminal). */
+export const GRADIENT_LIGHT = gradientFromFlavor(flavors.latte);
 
 /** 256-color approximation of the gradient. */
 export const GRADIENT_256 = [224, 218, 219, 183, 147, 111, 117, 159, 115];
@@ -40,7 +51,7 @@ function hexToRgb(hex: string): [number, number, number] {
   ];
 }
 
-function interpolateHex(gradient: string[], t: number): [number, number, number] {
+function interpolateHex(gradient: readonly string[], t: number): [number, number, number] {
   const pos = Math.max(0, Math.min(1, t)) * (gradient.length - 1);
   const lo = Math.floor(pos);
   const hi = Math.min(lo + 1, gradient.length - 1);
@@ -60,7 +71,7 @@ function interpolate256(gradient: number[], t: number): number {
   return gradient[lo]!;
 }
 
-export function colorizeLineTrueColor(line: string, gradient: string[]): string {
+export function colorizeLineTrueColor(line: string, gradient: readonly string[]): string {
   let out = "";
   const len = line.length;
   for (let i = 0; i < len; i++) {

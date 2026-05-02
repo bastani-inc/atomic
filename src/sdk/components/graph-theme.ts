@@ -1,7 +1,6 @@
 // ─── Graph Theme ──────────────────────────────────
 
 import type { TerminalTheme } from "../runtime/theme.ts";
-import { lerpColor } from "./color-utils.ts";
 
 export interface GraphTheme {
   background: string;
@@ -24,13 +23,13 @@ export function deriveGraphTheme(t: TerminalTheme): GraphTheme {
     background: t.bg,
     backgroundElement: t.surface,
     text: t.text,
-    textMuted: lerpColor(t.text, t.bg, 0.3),
+    textMuted: t.textMuted,
     textDim: t.dim,
     primary: t.accent,
     success: t.success,
     error: t.error,
     warning: t.warning,
-    info: t.accent,
+    info: t.info,
     mauve: t.mauve,
     border: t.borderDim,
     borderActive: t.border,

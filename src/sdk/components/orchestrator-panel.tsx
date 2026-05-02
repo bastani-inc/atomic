@@ -14,20 +14,39 @@ import { StoreContext, ThemeContext, TmuxSessionContext } from "./orchestrator-p
 import type { PanelSession, PanelOptions, SessionData } from "./orchestrator-panel-types.ts";
 import { SessionGraphPanel } from "./session-graph-panel.tsx";
 import { ErrorBoundary } from "./error-boundary.tsx";
+import {
+  requestRendererBackgroundRepaint,
+  resetRendererTerminalBackground,
+  setRendererBackground,
+} from "./renderer-background.ts";
+import { createTuiDiagnostics, type TuiDiagnostics } from "./tui-diagnostics.ts";
 
 export class OrchestratorPanel {
   private store: PanelStore;
   private renderer: CliRenderer;
   private destroyed = false;
+  private terminalBackgroundSynced: boolean;
+  private diagnostics: TuiDiagnostics | null = null;
+  private unsubscribeDiagnostics: (() => void) | null = null;
 
   private constructor(
     renderer: CliRenderer,
     store: PanelStore,
     graphTheme: GraphTheme,
     tmuxSession: string,
+    terminalBackgroundSynced: boolean,
   ) {
     this.renderer = renderer;
     this.store = store;
+    this.terminalBackgroundSynced = terminalBackgroundSynced;
+    this.diagnostics = createTuiDiagnostics({
+      renderer,
+      graphTheme,
+      getSnapshot: () => this.getDiagnosticSnapshot(),
+    });
+    this.unsubscribeDiagnostics = this.diagnostics
+      ? store.subscribe(() => this.diagnostics?.capture("store-update"))
+      : null;
 
     createRoot(renderer).render(
       <StoreContext.Provider value={store}>
@@ -56,6 +75,8 @@ export class OrchestratorPanel {
         </ThemeContext.Provider>
       </StoreContext.Provider>,
     );
+    requestRendererBackgroundRepaint(this.renderer);
+    this.diagnostics?.capture("post-mount");
   }
 
   /**
@@ -69,18 +90,20 @@ export class OrchestratorPanel {
       exitOnCtrlC: false,
       exitSignals: ["SIGTERM", "SIGQUIT", "SIGABRT", "SIGHUP", "SIGPIPE", "SIGBUS", "SIGFPE"],
     });
-    return OrchestratorPanel.createWithRenderer(renderer, options);
+    return OrchestratorPanel.createWithRenderer(renderer, options, { syncTerminalBackground: true });
   }
 
   /** Create with an externally-provided renderer (e.g. a test renderer). */
   static createWithRenderer(
     renderer: CliRenderer,
     options: PanelOptions,
+    { syncTerminalBackground = false }: { syncTerminalBackground?: boolean } = {},
   ): OrchestratorPanel {
     const termTheme = resolveTheme(renderer.themeMode);
+    setRendererBackground(renderer, termTheme.bg, { syncTerminalDefault: syncTerminalBackground });
     const graphTheme = deriveGraphTheme(termTheme);
     const store = new PanelStore();
-    return new OrchestratorPanel(renderer, store, graphTheme, options.tmuxSession);
+    return new OrchestratorPanel(renderer, store, graphTheme, options.tmuxSession, syncTerminalBackground);
   }
 
   /**
@@ -175,7 +198,15 @@ export class OrchestratorPanel {
   destroy(): void {
     if (this.destroyed) return;
     this.destroyed = true;
+    this.unsubscribeDiagnostics?.();
+    this.unsubscribeDiagnostics = null;
+    this.diagnostics?.capture("destroy");
+    this.diagnostics?.dispose();
+    this.diagnostics = null;
     try {
+      if (this.terminalBackgroundSynced) {
+        resetRendererTerminalBackground(this.renderer);
+      }
       this.renderer.destroy();
     } catch {}
   }
@@ -212,6 +243,20 @@ export class OrchestratorPanel {
       fatalError: this.store.fatalError,
       completionReached: this.store.completionReached,
       sessions: this.store.sessions,
+    };
+  }
+
+  private getDiagnosticSnapshot() {
+    return {
+      workflowName: this.store.workflowName,
+      agent: this.store.agent,
+      prompt: this.store.prompt,
+      fatalError: this.store.fatalError,
+      completionReached: this.store.completionReached,
+      sessions: this.store.sessions,
+      backgroundTaskCount: this.store.backgroundTaskCount,
+      viewMode: this.store.viewMode,
+      activeAgentId: this.store.activeAgentId,
     };
   }
 }

@@ -30,6 +30,25 @@ describe("OrchestratorPanel", () => {
     expect(p).toBeInstanceOf(OrchestratorPanel);
   });
 
+  test("createWithRenderer applies the UI background to the renderer", async () => {
+    testSetup = await createTestRenderer({ width: 80, height: 24 });
+    const backgroundCapture: {
+      value: Parameters<typeof testSetup.renderer.setBackgroundColor>[0] | null;
+    } = { value: null };
+    const originalSetBackgroundColor = testSetup.renderer.setBackgroundColor.bind(testSetup.renderer);
+    testSetup.renderer.setBackgroundColor = (color) => {
+      backgroundCapture.value = color;
+      originalSetBackgroundColor(color);
+    };
+
+    panel = OrchestratorPanel.createWithRenderer(testSetup.renderer, {
+      tmuxSession: "test-session",
+    });
+
+    expect(backgroundCapture.value).toBe(TEST_THEME.background);
+    expect(Reflect.get(testSetup.renderer, "forceFullRepaintRequested")).toBe(true);
+  });
+
   test("showWorkflowInfo does not throw", async () => {
     const { panel: p } = await createPanel();
     expect(() =>

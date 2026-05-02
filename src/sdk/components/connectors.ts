@@ -10,6 +10,7 @@ export interface ConnectorResult {
   width: number;
   height: number;
   color: string;
+  backgroundColor: string;
 }
 
 /** Fan-out connector: one parent branching down to one or more tree children. */
@@ -39,6 +40,7 @@ export function buildConnector(
       width: 1,
       height: numRows,
       color: theme.borderActive,
+      backgroundColor: theme.background,
     };
   }
 
@@ -85,6 +87,7 @@ export function buildConnector(
     width,
     height: numRows,
     color: theme.borderActive,
+    backgroundColor: theme.background,
   };
 }
 
@@ -152,5 +155,6 @@ export function buildMergeConnector(
     width,
     height: numRows,
     color: theme.borderActive,
+    backgroundColor: theme.background,
   };
 }

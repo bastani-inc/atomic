@@ -433,9 +433,16 @@ export function SessionGraphPanel() {
           },
         }}
       >
-        <box width={canvasW} height={canvasH} position="relative">
+        <box width={canvasW} height={canvasH} position="relative" backgroundColor={theme.background}>
           {/* Offset all content by padding to center the graph */}
-          <box position="absolute" left={padX} top={padY} width={layout.width} height={layout.height}>
+          <box
+            position="absolute"
+            left={padX}
+            top={padY}
+            width={layout.width}
+            height={layout.height}
+            backgroundColor={theme.background}
+          >
             {/* Connectors (rendered behind nodes) */}
             {connectors.map((conn, i) => (
               <Edge key={`e${i}`} {...conn} />

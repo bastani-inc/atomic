@@ -1,4 +1,5 @@
 import { supportsColor, supportsTrueColor } from "../services/system/detect.ts";
+import { flavors, type ColorName } from "@catppuccin/palette";
 
 /**
  * ANSI color and formatting codes for CLI output
@@ -31,20 +32,24 @@ export const COLORS = supportsColor() ? ANSI_CODES : NO_COLORS;
 //
 // Truecolor terminals get the full palette via 24-bit ANSI SGR; legacy
 // terminals degrade to basic ANSI; NO_COLOR emits plain text.
-// Hex values mirror .impeccable.md and src/sdk/runtime/theme.ts.
 // ---------------------------------------------------------------------------
 
 export type PaletteKey = "text" | "dim" | "accent" | "success" | "error" | "warning" | "mauve" | "info";
 
+export function paletteRgb(name: ColorName): readonly [number, number, number] {
+  const { r, g, b } = flavors.mocha.colors[name].rgb;
+  return [r, g, b];
+}
+
 export const PALETTE: Record<PaletteKey, readonly [number, number, number]> = {
-  text:    [205, 214, 244], // #cdd6f4
-  dim:     [127, 132, 156], // #7f849c (Overlay1)
-  accent:  [137, 180, 250], // #89b4fa (Blue)
-  success: [166, 227, 161], // #a6e3a1 (Green)
-  error:   [243, 139, 168], // #f38ba8 (Red)
-  warning: [249, 226, 175], // #f9e2af (Yellow)
-  mauve:   [203, 166, 247], // #cba6f7 (Mauve)
-  info:    [137, 220, 235], // #89dceb (Sky)
+  text:    paletteRgb("text"),
+  dim:     paletteRgb("overlay1"),
+  accent:  paletteRgb("blue"),
+  success: paletteRgb("green"),
+  error:   paletteRgb("red"),
+  warning: paletteRgb("yellow"),
+  mauve:   paletteRgb("mauve"),
+  info:    paletteRgb("sky"),
 };
 
 export interface PaintOptions {

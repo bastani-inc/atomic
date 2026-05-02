@@ -43,6 +43,11 @@ import { useLatest } from "./hooks.ts";
 import { resolveTheme, type TerminalTheme } from "../runtime/theme.ts";
 import type { AgentType, WorkflowInput, WorkflowDefinition, Registry } from "../types.ts";
 import { ErrorBoundary } from "./error-boundary.tsx";
+import {
+  requestRendererBackgroundRepaint,
+  resetRendererTerminalBackground,
+  setRendererBackground,
+} from "./renderer-background.ts";
 
 // ─── Theme ──────────────────────────────────────
 // The picker uses a slightly extended palette vs. the base terminal theme:
@@ -68,26 +73,21 @@ export interface PickerTheme {
   borderActive: string;
 }
 
-export function buildPickerTheme(base: TerminalTheme, isDark: boolean): PickerTheme {
-  // For dark mode the prototype values track Catppuccin Mocha. For light
-  // mode we derive muted variants from the base palette — the specific
-  // extras (`info`, `mauve`, the three-level background ladder) have no
-  // direct entries in `TerminalTheme`, so we pick close-enough Catppuccin
-  // values to keep the picker visually consistent with the orchestrator.
+export function buildPickerTheme(base: TerminalTheme): PickerTheme {
   return {
     background: base.bg,
-    backgroundPanel: isDark ? "#181825" : "#e6e9ef",
-    backgroundElement: isDark ? "#11111b" : "#dce0e8",
+    backgroundPanel: base.backgroundPanel,
+    backgroundElement: base.backgroundElement,
     surface: base.surface,
     text: base.text,
-    textMuted: isDark ? "#a6adc8" : "#5c5f77",
+    textMuted: base.textMuted,
     textDim: base.dim,
     primary: base.accent,
     success: base.success,
     error: base.error,
     warning: base.warning,
-    info: isDark ? "#89dceb" : "#04a5e5",
-    mauve: isDark ? "#cba6f7" : "#8839ef",
+    info: base.info,
+    mauve: base.mauve,
     border: base.borderDim,
     borderActive: base.border,
   };
@@ -324,7 +324,7 @@ const WorkflowList = memo(function WorkflowList({
 
   if (rows.length === 0) {
     return (
-      <box paddingLeft={2} paddingTop={2}>
+      <box paddingLeft={2} paddingTop={2} backgroundColor={theme.backgroundPanel}>
         <text>
           <span fg={theme.textDim}>no matches</span>
         </text>
@@ -333,7 +333,7 @@ const WorkflowList = memo(function WorkflowList({
   }
 
   return (
-    <box flexDirection="column">
+    <box flexDirection="column" backgroundColor={theme.backgroundPanel}>
       {rows.map((row, i) => {
         if (row.kind === "section") {
           const ag = row.agent;
@@ -343,6 +343,7 @@ const WorkflowList = memo(function WorkflowList({
               height={2}
               paddingTop={1}
               paddingLeft={2}
+              backgroundColor={theme.backgroundPanel}
             >
               <text>
                 <span fg={theme[AGENT_COLOR[ag]]}>
@@ -362,7 +363,7 @@ const WorkflowList = memo(function WorkflowList({
             key={`wf-${wf.agent}-${wf.name}`}
             height={1}
             flexDirection="row"
-            backgroundColor={isFocused ? theme.border : "transparent"}
+            backgroundColor={isFocused ? theme.border : theme.backgroundPanel}
             paddingLeft={1}
             paddingRight={2}
           >
@@ -545,6 +546,7 @@ function TextAreaContent({
   onInput: (value: string) => void;
 }) {
   const theme = usePickerTheme();
+  const backgroundColor = focused ? theme.backgroundPanel : theme.backgroundElement;
   const instanceRef = useRef<TextareaRenderable | null>(null);
   const onInputRef = useLatest(onInput);
   const lastTextRef = useRef(value);
@@ -593,8 +595,8 @@ function TextAreaContent({
       placeholder={placeholder}
       focused={focused}
       textColor={theme.text}
-      backgroundColor="transparent"
-      focusedBackgroundColor="transparent"
+      backgroundColor={backgroundColor}
+      focusedBackgroundColor={backgroundColor}
       focusedTextColor={theme.text}
       placeholderColor={theme.textDim}
       wrapMode="word"
@@ -616,6 +618,7 @@ function StringContent({
   onInput: (value: string) => void;
 }) {
   const theme = usePickerTheme();
+  const backgroundColor = focused ? theme.backgroundPanel : theme.backgroundElement;
   return (
     <input
       value={value}
@@ -623,8 +626,8 @@ function StringContent({
       focused={focused}
       onInput={onInput}
       textColor={theme.text}
-      backgroundColor="transparent"
-      focusedBackgroundColor="transparent"
+      backgroundColor={backgroundColor}
+      focusedBackgroundColor={backgroundColor}
       focusedTextColor={theme.text}
       flexGrow={1}
     />
@@ -883,7 +886,7 @@ function InputPhase({
         renderBefore={syncScrollFrame}
         style={{
           rootOptions: {
-            backgroundColor: "transparent",
+            backgroundColor: theme.background,
             border: false,
           },
           contentOptions: {
@@ -1481,6 +1484,7 @@ export class WorkflowPickerPanel {
   private renderer: CliRenderer;
   private root: Root;
   private destroyed = false;
+  private terminalBackgroundSynced: boolean;
   private resolveSelection: ((r: WorkflowPickerResult | null) => void) | null =
     null;
   private selectionPromise: Promise<WorkflowPickerResult | null>;
@@ -1488,14 +1492,17 @@ export class WorkflowPickerPanel {
   private constructor(
     renderer: CliRenderer,
     options: WorkflowPickerPanelOptions,
+    { syncTerminalBackground = false }: { syncTerminalBackground?: boolean } = {},
   ) {
     this.renderer = renderer;
+    this.terminalBackgroundSynced = syncTerminalBackground;
     this.selectionPromise = new Promise((resolve) => {
       this.resolveSelection = resolve;
     });
 
-    const isDark = renderer.themeMode !== "light";
-    const theme = buildPickerTheme(resolveTheme(renderer.themeMode), isDark);
+    const termTheme = resolveTheme(renderer.themeMode);
+    setRendererBackground(renderer, termTheme.bg, { syncTerminalDefault: syncTerminalBackground });
+    const theme = buildPickerTheme(termTheme);
     // Filter registry to only the workflows for the selected agent.
     const workflows = options.registry
       .list()
@@ -1528,6 +1535,7 @@ export class WorkflowPickerPanel {
         />
       </ErrorBoundary>,
     );
+    requestRendererBackgroundRepaint(this.renderer);
   }
 
   /**
@@ -1550,7 +1558,7 @@ export class WorkflowPickerPanel {
         "SIGFPE",
       ],
     });
-    return new WorkflowPickerPanel(renderer, options);
+    return new WorkflowPickerPanel(renderer, options, { syncTerminalBackground: true });
   }
 
   /** Create with an externally-provided renderer (e.g. a test renderer). */
@@ -1580,6 +1588,9 @@ export class WorkflowPickerPanel {
       this.resolveSelection = null;
     }
     try {
+      if (this.terminalBackgroundSynced) {
+        resetRendererTerminalBackground(this.renderer);
+      }
       this.renderer.destroy();
     } catch (err) {
       console.error("[WorkflowPickerPanel] destroy failed:", err);

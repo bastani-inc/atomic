@@ -22,7 +22,7 @@
  * library, just what auto-sync needs to stop being visually noisy.
  */
 
-import { COLORS } from "../../theme/colors.ts";
+import { COLORS, PALETTE, paletteRgb, type PaletteKey } from "../../theme/colors.ts";
 import {
   supportsTrueColor,
   supports256Color,
@@ -34,9 +34,9 @@ const BAR_EMPTY = "･";
 
 /**
  * Semantic bar states mapped to Catppuccin Mocha colors:
- *   progress → Yellow #f9e2af (warm accent; "in flight")
- *   success  → Green  #a6e3a1 (universal "completed")
- *   error    → Red    #f38ba8 (universal "failed")
+ *   progress → Yellow (warm accent; "in flight")
+ *   success  → Green  (universal "completed")
+ *   error    → Red    (universal "failed")
  *
  * The empty track stays dim regardless — only the filled portion carries
  * the status signal, which keeps the bar legible while still telegraphing
@@ -44,17 +44,16 @@ const BAR_EMPTY = "･";
  */
 type BarState = "progress" | "success" | "error";
 
+const BAR_STATE_PALETTE: Record<BarState, PaletteKey> = {
+  progress: "warning",
+  success: "success",
+  error: "error",
+};
+
 function fillColor(state: BarState): string {
   if (supportsTrueColor()) {
-    switch (state) {
-      case "success":
-        return "\x1b[38;2;166;227;161m"; // Catppuccin Green  #a6e3a1
-      case "error":
-        return "\x1b[38;2;243;139;168m"; // Catppuccin Red    #f38ba8
-      case "progress":
-      default:
-        return "\x1b[38;2;249;226;175m"; // Catppuccin Yellow #f9e2af
-    }
+    const [r, g, b] = PALETTE[BAR_STATE_PALETTE[state]];
+    return `\x1b[38;2;${r};${g};${b}m`;
   }
   if (supports256Color()) {
     switch (state) {
@@ -78,7 +77,7 @@ function fillColor(state: BarState): string {
   }
 }
 
-type RGB = [number, number, number];
+type RGB = readonly [number, number, number];
 
 /**
  * Gradient endpoints for the filled bar segment. Each state interpolates
@@ -88,12 +87,12 @@ type RGB = [number, number, number];
 function gradientEndpoints(state: BarState): { start: RGB; end: RGB } {
   switch (state) {
     case "success":
-      return { start: [126, 201, 138], end: [166, 227, 161] };
+      return { start: paletteRgb("teal"), end: paletteRgb("green") };
     case "error":
-      return { start: [224, 108, 136], end: [243, 139, 168] };
+      return { start: paletteRgb("maroon"), end: paletteRgb("red") };
     case "progress":
     default:
-      return { start: [242, 196, 120], end: [249, 226, 175] };
+      return { start: paletteRgb("peach"), end: paletteRgb("yellow") };
   }
 }
 

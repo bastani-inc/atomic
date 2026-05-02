@@ -44,6 +44,9 @@ export function CompactSwitcher({ selectedIndex }: CompactSwitcherProps) {
         const isSelected = i === selectedIndex;
         const icon = statusIcon(agent.status);
         const iconColor = statusColor(agent.status, theme);
+        const rowBackground = isSelected
+          ? lerpColor(theme.backgroundElement, theme.primary, 0.12)
+          : theme.backgroundElement;
         const duration =
           agent.startedAt !== null
             ? fmtDuration((agent.endedAt ?? Date.now()) - agent.startedAt)
@@ -56,15 +59,17 @@ export function CompactSwitcher({ selectedIndex }: CompactSwitcherProps) {
             flexDirection="row"
             paddingLeft={1}
             paddingRight={1}
-            backgroundColor={isSelected ? lerpColor(theme.backgroundElement, theme.primary, 0.12) : theme.backgroundElement}
+            backgroundColor={rowBackground}
           >
             <text>
-              <span fg={theme.textDim}>{String(i + 1).padStart(2)} </span>
-              <span fg={iconColor}>{icon} </span>
-              <span fg={isSelected ? theme.text : theme.textMuted}>{agent.name}</span>
+              <span fg={theme.textDim} bg={rowBackground}>{String(i + 1).padStart(2)} </span>
+              <span fg={iconColor} bg={rowBackground}>{icon} </span>
+              <span fg={isSelected ? theme.text : theme.textMuted} bg={rowBackground}>{agent.name}</span>
             </text>
             <box flexGrow={1} />
-            <text fg={theme.textDim}>{duration}</text>
+            <text>
+              <span fg={theme.textDim} bg={rowBackground}>{duration}</span>
+            </text>
           </box>
         );
       })}

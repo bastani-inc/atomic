@@ -28,12 +28,12 @@ export const NodeCard = React.memo(function NodeCard({
   if (isRunning) {
     const t = (Math.sin((pulsePhase / 32) * Math.PI * 2 - Math.PI / 2) + 1) / 2;
     borderCol = focused
-      ? lerpColor(theme.warning, "#ffffff", 0.2)
+      ? lerpColor(theme.warning, theme.text, 0.2)
       : lerpColor(theme.border, theme.warning, t);
   } else if (isAwaitingInput) {
     const t = (Math.sin((pulsePhase / 32) * Math.PI * 2 - Math.PI / 2) + 1) / 2;
     borderCol = focused
-      ? lerpColor(theme.info, "#ffffff", 0.2)
+      ? lerpColor(theme.info, theme.text, 0.2)
       : lerpColor(theme.border, theme.info, t);
   } else if (isPending) {
     borderCol = focused ? sc : theme.borderActive;
@@ -41,8 +41,8 @@ export const NodeCard = React.memo(function NodeCard({
     borderCol = sc;
   }
 
-  // Background: focused nodes get a subtle status-colored tint
-  const bgCol = focused ? lerpColor(theme.background, sc, 0.12) : "transparent";
+  // Keep the card interior aligned with the graph canvas; status color belongs to the border/text.
+  const bgCol = theme.background;
 
   // Duration computed live from start/end timestamps
   const durCol = isPending ? theme.textDim : sc;
@@ -68,15 +68,21 @@ export const NodeCard = React.memo(function NodeCard({
       titleAlignment="center"
     >
       <box alignItems="center">
-        <text fg={durCol}>{duration}</text>
+        <text>
+          <span fg={durCol} bg={bgCol}>{duration}</span>
+        </text>
       </box>
       {isAwaitingInput && (
         <>
           <box alignItems="center">
-            <text fg={theme.info}>waiting for response</text>
+            <text>
+              <span fg={theme.info} bg={bgCol}>waiting for response</span>
+            </text>
           </box>
           <box alignItems="center">
-            <text fg={theme.textDim}>↵ enter to respond</text>
+            <text>
+              <span fg={theme.textDim} bg={bgCol}>↵ enter to respond</span>
+            </text>
           </box>
         </>
       )}

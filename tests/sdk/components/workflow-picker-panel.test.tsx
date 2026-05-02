@@ -16,6 +16,7 @@ import {
 } from "../../../src/sdk/components/workflow-picker-panel.tsx";
 import type { WorkflowDefinition, WorkflowInput } from "../../../src/sdk/types.ts";
 import { createRegistry } from "../../../src/sdk/registry.ts";
+import { resolveTheme } from "../../../src/sdk/runtime/theme.ts";
 import {
   renderReact,
   setReactActEnvironment,
@@ -70,37 +71,10 @@ function makeWorkflow(
   } as WorkflowDefinition;
 }
 
-const TEST_DARK_BASE = {
-  bg: "#1e1e2e",
-  surface: "#313244",
-  selection: "#45475a",
-  border: "#6c7086",
-  borderDim: "#585b70",
-  accent: "#89b4fa",
-  text: "#cdd6f4",
-  dim: "#7f849c",
-  success: "#a6e3a1",
-  error: "#f38ba8",
-  warning: "#f9e2af",
-  mauve: "#cba6f7",
-};
+const TEST_DARK_BASE = resolveTheme(null);
+const TEST_LIGHT_BASE = resolveTheme("light");
 
-const TEST_LIGHT_BASE = {
-  bg: "#eff1f5",
-  surface: "#ccd0da",
-  selection: "#bcc0cc",
-  border: "#9ca0b0",
-  borderDim: "#acb0be",
-  accent: "#1e66f5",
-  text: "#4c4f69",
-  dim: "#8c8fa1",
-  success: "#40a02b",
-  error: "#d20f39",
-  warning: "#df8e1d",
-  mauve: "#8839ef",
-};
-
-const TEST_THEME: PickerTheme = buildPickerTheme(TEST_DARK_BASE, true);
+const TEST_THEME: PickerTheme = buildPickerTheme(TEST_DARK_BASE);
 
 // A catalog with workflows across agents.
 const WORKFLOWS: WorkflowDefinition[] = [
@@ -340,24 +314,24 @@ describe("buildRows", () => {
 });
 
 describe("buildPickerTheme", () => {
-  test("produces distinct dark-mode info/mauve for Mocha base", () => {
-    const theme = buildPickerTheme(TEST_DARK_BASE, true);
-    expect(theme.backgroundPanel).toBe("#181825");
-    expect(theme.backgroundElement).toBe("#11111b");
-    expect(theme.info).toBe("#89dceb");
-    expect(theme.mauve).toBe("#cba6f7");
+  test("maps extended picker roles from Mocha palette", () => {
+    const theme = buildPickerTheme(TEST_DARK_BASE);
+    expect(theme.backgroundPanel).toBe(TEST_DARK_BASE.backgroundPanel);
+    expect(theme.backgroundElement).toBe(TEST_DARK_BASE.backgroundElement);
+    expect(theme.info).toBe(TEST_DARK_BASE.info);
+    expect(theme.mauve).toBe(TEST_DARK_BASE.mauve);
   });
 
-  test("produces light-mode values when isDark is false", () => {
-    const theme = buildPickerTheme(TEST_LIGHT_BASE, false);
-    expect(theme.backgroundPanel).toBe("#e6e9ef");
-    expect(theme.backgroundElement).toBe("#dce0e8");
-    expect(theme.info).toBe("#04a5e5");
-    expect(theme.mauve).toBe("#8839ef");
+  test("maps extended picker roles from Latte palette", () => {
+    const theme = buildPickerTheme(TEST_LIGHT_BASE);
+    expect(theme.backgroundPanel).toBe(TEST_LIGHT_BASE.backgroundPanel);
+    expect(theme.backgroundElement).toBe(TEST_LIGHT_BASE.backgroundElement);
+    expect(theme.info).toBe(TEST_LIGHT_BASE.info);
+    expect(theme.mauve).toBe(TEST_LIGHT_BASE.mauve);
   });
 
   test("forwards base colors into matching theme slots", () => {
-    const theme = buildPickerTheme(TEST_DARK_BASE, true);
+    const theme = buildPickerTheme(TEST_DARK_BASE);
     expect(theme.background).toBe(TEST_DARK_BASE.bg);
     expect(theme.surface).toBe(TEST_DARK_BASE.surface);
     expect(theme.text).toBe(TEST_DARK_BASE.text);
@@ -901,6 +875,33 @@ describe("WorkflowPickerPanel class", () => {
   test("createWithRenderer returns an instance without throwing", async () => {
     const p = await createPanel();
     expect(p).toBeInstanceOf(WorkflowPickerPanel);
+  });
+
+  test("createWithRenderer applies the UI background to the renderer", async () => {
+    coreSetup = await createTestRenderer({ width: 120, height: 40 });
+    const backgroundCapture: {
+      value: Parameters<typeof coreSetup.renderer.setBackgroundColor>[0] | null;
+    } = { value: null };
+    const originalSetBackgroundColor = coreSetup.renderer.setBackgroundColor.bind(coreSetup.renderer);
+    coreSetup.renderer.setBackgroundColor = (color) => {
+      backgroundCapture.value = color;
+      originalSetBackgroundColor(color);
+    };
+
+    const registry = WORKFLOWS.reduce(
+      (r, wf) => r.register(wf),
+      createRegistry(),
+    );
+    setReactActEnvironment(true);
+    act(() => {
+      panel = WorkflowPickerPanel.createWithRenderer(coreSetup!.renderer, {
+        agent: "claude",
+        registry,
+      });
+    });
+
+    expect(backgroundCapture.value).toBe(TEST_DARK_BASE.bg);
+    expect(Reflect.get(coreSetup.renderer, "forceFullRepaintRequested")).toBe(true);
   });
 
   test("waitForSelection returns a pending promise", async () => {

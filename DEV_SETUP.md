@@ -83,6 +83,27 @@ Run these inside the container:
 | `bun run lint:fix`  | Auto-fix linting issues                 |
 | `bun run dev`       | Run CLI in development mode             |
 
+## Workflow UI Diagnostics
+
+Set `ATOMIC_TUI_DIAGNOSTICS=1` when reproducing workflow graph rendering
+issues. The orchestrator writes JSON frame-buffer snapshots that include
+terminal capabilities, workflow state, and background-color counts.
+
+```bash
+ATOMIC_TUI_DIAGNOSTICS=1 \
+ATOMIC_TUI_DIAGNOSTICS_DIR=/tmp/atomic-tui-diagnostics \
+bun run examples/hello-world/claude-worker.ts --greeting="Hello" --style=casual
+```
+
+Optional tuning:
+
+| Variable | Purpose |
+| --- | --- |
+| `ATOMIC_TUI_DIAGNOSTICS_DIR` | Output directory; defaults to a temp directory |
+| `ATOMIC_TUI_DIAGNOSTICS_INTERVAL_MS` | Snapshot interval in milliseconds |
+| `ATOMIC_TUI_DIAGNOSTICS_MAX` | Maximum number of snapshots |
+| `ATOMIC_TUI_DIAGNOSTICS_OPENTUI_DUMP=1` | Also call OpenTUI's native buffer/stdout dump hooks |
+
 ## Quick Reference
 
 ```bash

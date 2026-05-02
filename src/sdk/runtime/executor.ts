@@ -504,7 +504,11 @@ export async function executeWorkflow(
   const launcherExt = isWin ? "ps1" : "sh";
   const launcherPath = join(sessionsBaseDir, `orchestrator.${launcherExt}`);
   const logPath = join(sessionsBaseDir, "orchestrator.log");
-  const launcherEnvVars = agent === "claude" ? atomicTempEnv() : {};
+  const launcherEnvVars = {
+    ...(agent === "claude" ? atomicTempEnv() : {}),
+    ...terminalCapabilityEnv(),
+    ...workflowDiagnosticsEnv(),
+  };
 
   // Inputs are passed through as base64-encoded JSON so long multiline
   // text values survive shell quoting without any further escaping.
@@ -577,6 +581,29 @@ export async function executeWorkflow(
   }
 
   return { id: workflowRunId, tmuxSessionName };
+}
+
+function workflowDiagnosticsEnv(): Record<string, string> {
+  const keys = [
+    "ATOMIC_TUI_DIAGNOSTICS",
+    "ATOMIC_TUI_DIAGNOSTICS_DIR",
+    "ATOMIC_TUI_DIAGNOSTICS_INTERVAL_MS",
+    "ATOMIC_TUI_DIAGNOSTICS_MAX",
+    "ATOMIC_TUI_DIAGNOSTICS_OPENTUI_DUMP",
+  ];
+  const env: Record<string, string> = {};
+  for (const key of keys) {
+    const value = process.env[key];
+    if (value !== undefined) env[key] = value;
+  }
+  return env;
+}
+
+function terminalCapabilityEnv(): Record<string, string> {
+  const env: Record<string, string> = {};
+  const colorterm = process.env.COLORTERM;
+  if (colorterm !== undefined) env.COLORTERM = colorterm;
+  return env;
 }
 
 /**
