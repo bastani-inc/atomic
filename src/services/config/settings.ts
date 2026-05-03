@@ -104,7 +104,9 @@ export async function setScmProvider(scm: ScmProvider): Promise<void> {
 
 /**
  * Seed `COLORTERM=truecolor` into each agent's `providers.<agent>.envVars`
- * in `~/.atomic/settings.json` on install / version bump.
+ * in `~/.atomic/settings.json` on install / version bump. Also seeds
+ * `CLAUDE_CODE_TMUX_TRUECOLOR=1` for the `claude` provider so Claude Code
+ * emits truecolor escapes when running under tmux.
  *
  * The runtime default in `lib/terminal-env.ts` already injects
  * `COLORTERM=truecolor` for every spawned agent — this seed surfaces that
@@ -125,8 +127,20 @@ export async function seedGlobalProviderEnvVars(): Promise<void> {
     for (const agentKey of getAgentKeys()) {
       const provider: ProviderOverrides = providers[agentKey] ?? {};
       const envVars: Record<string, string> = provider.envVars ?? {};
-      if ("COLORTERM" in envVars) continue;
-      envVars.COLORTERM = "truecolor";
+      let providerChanged = false;
+
+      if (!("COLORTERM" in envVars)) {
+        envVars.COLORTERM = "truecolor";
+        providerChanged = true;
+      }
+
+      if (agentKey === "claude" && !("CLAUDE_CODE_TMUX_TRUECOLOR" in envVars)) {
+        envVars.CLAUDE_CODE_TMUX_TRUECOLOR = "1";
+        providerChanged = true;
+      }
+
+      if (!providerChanged) continue;
+
       provider.envVars = envVars;
       providers[agentKey] = provider;
       changed = true;

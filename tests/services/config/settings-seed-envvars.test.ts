@@ -143,4 +143,41 @@ describe("seedGlobalProviderEnvVars", () => {
     expect(claude?.envVars?.ANTHROPIC_API_KEY).toBe("sk-test");
     expect(claude?.envVars?.COLORTERM).toBe("truecolor");
   });
+
+  test("seeds CLAUDE_CODE_TMUX_TRUECOLOR=1 only on the claude provider", async () => {
+    await seedGlobalProviderEnvVars();
+
+    const settings = await readGlobalSettings();
+    const providers = settings.providers as Record<
+      string,
+      { envVars?: Record<string, string> }
+    >;
+    expect(providers.claude?.envVars?.CLAUDE_CODE_TMUX_TRUECOLOR).toBe("1");
+    expect(providers.opencode?.envVars).not.toHaveProperty(
+      "CLAUDE_CODE_TMUX_TRUECOLOR",
+    );
+    expect(providers.copilot?.envVars).not.toHaveProperty(
+      "CLAUDE_CODE_TMUX_TRUECOLOR",
+    );
+  });
+
+  test("preserves a user-set CLAUDE_CODE_TMUX_TRUECOLOR override", async () => {
+    await writeGlobalSettings({
+      version: 1,
+      providers: {
+        claude: { envVars: { CLAUDE_CODE_TMUX_TRUECOLOR: "" } },
+      },
+    });
+
+    await seedGlobalProviderEnvVars();
+
+    const settings = await readGlobalSettings();
+    const providers = settings.providers as Record<
+      string,
+      { envVars?: Record<string, string> }
+    >;
+    expect(providers.claude?.envVars?.CLAUDE_CODE_TMUX_TRUECOLOR).toBe("");
+    // COLORTERM should still be seeded alongside it
+    expect(providers.claude?.envVars?.COLORTERM).toBe("truecolor");
+  });
 });
