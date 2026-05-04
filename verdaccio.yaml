@@ -7,7 +7,9 @@
 # Anonymous publish is intentional: the validate job runs in a hermetic CI
 # step and the registry is destroyed when the runner exits.
 
-storage: /tmp/verdaccio/storage
+# Paths are config-relative so the same file works on every CI runner OS
+# (Windows /tmp doesn't map to a node-readable path).
+storage: ./.verdaccio-storage
 listen: 0.0.0.0:4873
 
 # Per-platform binary tarballs are ~50MB compiled; bump from the 10MB default.
@@ -15,7 +17,7 @@ max_body_size: 200mb
 
 auth:
   htpasswd:
-    file: /tmp/verdaccio/htpasswd
+    file: ./.verdaccio-htpasswd
     max_users: -1
 
 uplinks:

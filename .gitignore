@@ -200,3 +200,7 @@ build/
 # (the canonical configs live at the repo root)
 packages/*/.claude/
 packages/*/.opencode/
+
+# Verdaccio working state used by the publish-validation matrix
+.verdaccio-storage/
+.verdaccio-htpasswd

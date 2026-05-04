@@ -14,20 +14,31 @@ This document describes the GitHub Actions workflows that power Atomic CLI's con
   ├──────────────────────────────┤     ├────────────────────────────────┤
   │                              │     │                                │
   │  CI ..................... ✓  │     │  Publish .................. ✓  │
-  │    · typecheck/lint/test     │     │    · typecheck + tests         │
-  │  Code Review ........... ✓   │     │    · publish @bastani/atomic   │
-  │  PR Description ........ ✓   │     │    · Create GitHub Release     │
-  │  Bump Version .......... ✓   │     │                                │
-  │  Validate Features ..... ✓   │     │  Publish Features ........ ✓  │
+  │    · typecheck/lint/test     │     │    · build (6 platforms)       │
+  │  Code Review ........... ✓   │     │    · validate (6-OS verdaccio) │
+  │  PR Description ........ ✓   │     │    · npm publish               │
+  │  Bump Version .......... ✓   │     │    · GitHub Release            │
+  │  Validate Features ..... ✓   │     │                                │
+  │                              │     │  Publish Features ......... ✓  │
   │                              │     │    (only on devcontainer       │
   │                              │     │     changes)                   │
   └──────────────────────────────┘     └────────────────────────────────┘
 ```
 
-Atomic is distributed exclusively as a single npm package (`@bastani/atomic`)
-that exposes both the CLI binary (`atomic`) and the workflow SDK (via the
-`@bastani/atomic/workflows` package export). There are no platform-specific
-compiled binaries — installation happens through `bun install -g @bastani/atomic`.
+Atomic ships through two install paths backed by the same release pipeline:
+
+- **npm**: `@bastani/atomic` (a thin wrapper) plus six per-platform packages
+  (`@bastani/atomic-{linux,darwin,windows}-{x64,arm64}`) selected at install
+  time via `optionalDependencies`. Users hit this path with
+  `bun install -g @bastani/atomic`.
+- **GitHub Releases**: flat-named precompiled binaries
+  (`atomic-{linux,darwin,windows}-{x64,arm64}[.exe]`) plus a checksum
+  `manifest.json` and a `atomic-configs-v{version}.zip`. The `install.sh`,
+  `install.ps1`, and `install.cmd` bootstrap installers fetch from this path.
+
+Both paths consume the **same compiled binaries** built once by the `build`
+matrix job. The workflow SDK is exposed as the `@bastani/atomic/workflows`
+subpath export of the wrapper package.
 
 ---
 
@@ -138,16 +149,41 @@ Concurrency is enforced per-ref (`publish-${{ github.ref }}`), cancelling in-pro
   │                        Publish Workflow                         │
   │                                                                 │
   │   ┌─────────────────────────────────────────────┐              │
+  │   │  Build (matrix: 6 targets, ubuntu-latest)   │              │
+  │   │                                             │              │
+  │   │  · linux-{x64,arm64}                        │              │
+  │   │  · darwin-{x64,arm64}                       │              │
+  │   │  · windows-{x64,arm64}                      │              │
+  │   │  · bun install --cpu='*' --os='*'           │              │
+  │   │  · bun build.ts <target>                    │              │
+  │   │      → dist/<target>/bin/atomic[.exe]       │              │
+  │   │  · upload-artifact per target               │              │
+  │   └────────────────────┬────────────────────────┘              │
+  │                        ▼                                        │
+  │   ┌─────────────────────────────────────────────┐              │
+  │   │  Validate (matrix: 6 OS × arch)             │              │
+  │   │                                             │              │
+  │   │  Each runner spins up its own verdaccio:    │              │
+  │   │  · publish wrapper + platform packages to   │              │
+  │   │    http://localhost:4873                    │              │
+  │   │  · bun install -g from verdaccio            │              │
+  │   │  · smoke (--version, workflow list)         │              │
+  │   │  · version-keyed cache extraction check     │              │
+  │   │  · atomic install (launcher, rc edits,      │              │
+  │   │    completions, $PROFILE wrapper on Win)    │              │
+  │   │  · mux auto-install (selected rows)         │              │
+  │   │  · atomic uninstall + uninstall --purge     │              │
+  │   │  · chat preflight (canary row only)         │              │
+  │   └────────────────────┬────────────────────────┘              │
+  │                        ▼                                        │
+  │   ┌─────────────────────────────────────────────┐              │
   │   │  Publish to npm (ubuntu-latest)             │              │
   │   │                                             │              │
-  │   │  · bun install                              │              │
-  │   │  · bun run typecheck                        │              │
-  │   │  · bun test                                 │              │
+  │   │  · bun run typecheck + bun test             │              │
   │   │  · determine npm tag                        │              │
   │   │      version has '-' → next                 │              │
   │   │      otherwise       → latest               │              │
-  │   │  · setup Node for npm registry              │              │
-  │   │  · npm publish                              │              │
+  │   │  · npm publish wrapper + 6 platform pkgs    │              │
   │   │      --provenance --access public           │              │
   │   │      --tag {latest|next}                    │              │
   │   └────────────────────┬────────────────────────┘              │
@@ -155,10 +191,14 @@ Concurrency is enforced per-ref (`publish-${{ github.ref }}`), cancelling in-pro
   │   ┌─────────────────────────────────────────────┐              │
   │   │  Create Release          ◄── Overwritable   │              │
   │   │                                             │              │
-  │   │  · Read version from package.json           │              │
+  │   │  · bundle-configs.ts <version>              │              │
+  │   │      → atomic-configs-v{version}.zip        │              │
+  │   │  · release-assets.ts                        │              │
+  │   │      → atomic-{platform}[.exe] + manifest   │              │
   │   │  · GitHub Release (tag: v{version})         │              │
-  │   │  · prerelease flag if version has '-'       │              │
-  │   │  · generate_release_notes: true             │              │
+  │   │      attaches binaries + manifest + configs │              │
+  │   │      prerelease flag if version has '-'     │              │
+  │   │      generate_release_notes: true           │              │
   │   └─────────────────────────────────────────────┘              │
   └─────────────────────────────────────────────────────────────────┘
 ```
@@ -167,21 +207,26 @@ Devcontainer features are published independently via `publish-features.yml`
 when `.devcontainer/features/**` files are merged to main or via manual dispatch.
 Features are validated via schema checks during PRs and published after merge.
 
-### Why npm-Only?
+### Why Pre-Publish Validation?
 
-Atomic ships as a single npm package. The `atomic` bin (keyed by command
-name in `package.json`'s `bin` field) points at `src/cli.ts` and is run by
-Bun at install time, so there are no platform-specific binaries to compile,
-validate, or attach to a release. This eliminates a large amount of CI
-complexity that used to live in this pipeline:
+The `validate` matrix is the single gate before anything reaches the public
+npm registry. Each of its six runners (Ubuntu/macOS/Windows × x64/arm64)
+exercises the **exact** install path users hit, against a **local verdaccio**
+holding the just-built artifacts:
 
-- No `build-binaries` cross-compilation step (6 targets removed)
-- No 6-platform binary validation matrix (linux/darwin/windows × x64/arm64)
-- No config archive packaging or per-platform validation
-- No `installer-validation.yml` workflow (`install.sh` / `install.ps1` are
-  now thin wrappers around `bun install -g @bastani/atomic`)
-- No separate workflow SDK package or publish step — the SDK is exposed as
-  the `@bastani/atomic/workflows` subpath export of the same package
+- A regression in postinstall, optionalDependencies resolution, the wrapper
+  shim, or `atomic install` lifecycle fails the matrix and **never reaches
+  npm**. npm publishes are permanent — once a bad version is up, it stays up.
+- The verdaccio instance is per-runner and torn down with the VM, so there's
+  no shared state. Verdaccio's `@bastani/*` packages config is `proxy: ` (no
+  uplink) so a missing local tarball can't silently fall back to a previously
+  released version on npmjs.
+- No post-publish smoke jobs exist. Earlier iterations had `mux-autoinstall-smoke`
+  / `install-smoke` / `bootstrap-smoke` jobs that ran **after** publish; they
+  intermittently failed on npm registry replication lag (~10s after publish,
+  early-running runners couldn't resolve the new version) and discovered
+  problems too late to prevent a bad release. Folding them into pre-publish
+  verdaccio matrix runs eliminates both issues.
 
 ### Why Publish Before Release?
 
@@ -247,11 +292,17 @@ End-to-end flow for a release, from branch creation to published artifacts:
            ▼
   ④ Publish workflow fires ──────────────────────────────────┐
            │                                                  │
+     Build (cross-compile 6 platform binaries)                │
+           │                                                  │
+           ▼                                                  │
+     Validate (6-OS matrix, verdaccio + lifecycle)            │
+           │                                                  │
+           ▼                                                  │
      Publish to npm (permanent, OIDC provenance)              │
            │                                                  │
            ▼                                                  │
-     Create GitHub Release (overwritable, auto-generated     │
-     release notes)                                           │
+     Create GitHub Release (overwritable, attaches            │
+     binaries + manifest + configs zip)                       │
                                                               │
   ⑤ Done ◄───────────────────────────────────────────────────┘
 ```
@@ -264,14 +315,23 @@ of the release pipeline).
 
 ## Build & Release Scripts
 
-The publish workflow is intentionally thin. The only release-time script that
-runs locally is the version bumper:
+Scripts invoked by `publish.yml` at each stage:
 
-| Script                          | Purpose                                                    |
-|---------------------------------|------------------------------------------------------------|
-| `src/scripts/bump-version.ts`   | Bumps version across all tracked `package.json` files      |
-| `src/scripts/constants.ts`      | Shared constants (`SDK_PACKAGE_NAME`, `CONFIG_DIRS`, etc.) |
-| `src/scripts/constants-base.ts` | Dependency-free constants (`SDK_PACKAGE_NAME`, `VERSION_FILES`) safe to import before `bun install` |
+| Stage      | Script                                            | Purpose                                                                 |
+|------------|---------------------------------------------------|-------------------------------------------------------------------------|
+| `build`    | `packages/atomic/script/build.ts <target>`        | Cross-compile the CLI to `dist/<target>/bin/atomic[.exe]`               |
+| `validate` | `packages/atomic-sdk/script/publish.ts`           | Publish the SDK package (verdaccio with `NPM_REGISTRY=...` set)         |
+| `validate` | `packages/atomic/script/publish.ts`               | Publish wrapper + 6 platform packages (verdaccio)                       |
+| `publish`  | `packages/atomic-sdk/script/publish.ts`           | Same script, no `NPM_REGISTRY` → publishes to npmjs                     |
+| `publish`  | `packages/atomic/script/publish.ts`               | Same script → publishes to npmjs with provenance                        |
+| `release`  | `packages/atomic/script/bundle-configs.ts`        | Produce `atomic-configs-v{version}.zip`                                 |
+| `release`  | `packages/atomic/script/release-assets.ts`        | Copy per-platform binaries into flat names + emit checksum `manifest.json` |
+| (PR-only)  | `packages/atomic/script/bump-version.ts`          | Bump version across `VERSION_FILES` from branch name (`bump-version.yml`) |
+
+The same `publish.ts` runs in both validate and publish stages — its target
+registry is selected by the `NPM_REGISTRY` env var (verdaccio at
+`http://localhost:4873` during validate, unset during the real publish so it
+defaults to `registry.npmjs.org`).
 
 ### Shared Constants
 
@@ -279,11 +339,12 @@ Values that appear across multiple scripts are centralised to reduce drift:
 
 - **`SDK_PACKAGE_NAME`** — the npm package name (`@bastani/atomic`)
 - **`VERSION_FILES`** — `package.json` files bumped together during releases (currently just the root `package.json`)
-- **`CONFIG_DIRS`** — agent config directories, derived from the canonical `AGENTS` list exported by the workflow SDK (`src/sdk/workflows/index.ts`)
+- **`CONFIG_DIRS`** — agent config directories, derived from the canonical `AGENTS` list exported by the workflow SDK
 - **`CONFIG_FILES`** — individual config files (e.g. `.github/lsp.json`)
 
-`constants-base.ts` is intentionally free of heavy dependencies so it can be
-imported by `bump-version.ts` before `bun install` has run in CI.
+`packages/atomic/script/constants-base.ts` is intentionally free of heavy
+dependencies so it can be imported by `bump-version.ts` before `bun install`
+has run in CI.
 
 ---
 
