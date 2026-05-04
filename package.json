@@ -44,6 +44,7 @@
     "@opentui/react": "^0.2.2",
     "@types/bun": "^1.3.13",
     "@types/react": "^19.2.14",
+    "bun-pty": "0.4.8",
     "oxlint": "^1.62.0",
     "react": "^19.2.5",
     "typescript": "^6.0.3",

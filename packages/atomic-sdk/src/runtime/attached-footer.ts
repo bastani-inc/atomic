@@ -72,23 +72,35 @@ export function buildAttachedFooterCommand({
   agentType?: AgentType;
   platform?: NodeJS.Platform;
 }): string {
+  // In dev (`bun cli.ts _footer …`) the runtime (`bun`) and cli script
+  // (`cli.ts`) are distinct files and both must appear on the command line.
+  // In a compiled binary `process.execPath` is the binary itself, so runtime
+  // === cliPath; emitting both would put two copies of the binary path in
+  // argv. Bun's compiled binary already injects argv[1] = binary (Node-compat)
+  // so Commander's default `slice(2)` then sees the surplus `<binary>` token
+  // as the first user arg, fails to match the `_footer` subcommand, and
+  // falls through to the default `chat` command — which exits with
+  // "Missing agent" and leaves the footer pane blank.
+  const isSelfExec = runtime === cliPath;
   if (platform === "win32") {
-    const script = [
-      quotePwshLiteral(runtime),
-      quotePwshLiteral(cliPath),
+    const parts = [quotePwshLiteral(runtime)];
+    if (!isSelfExec) parts.push(quotePwshLiteral(cliPath));
+    parts.push(
       quotePwshLiteral("_footer"),
       quotePwshLiteral("--name"),
       quotePwshLiteral(windowName),
-      ...(agentType
-        ? [quotePwshLiteral("--agent"), quotePwshLiteral(agentType)]
-        : []),
-    ].join(" ");
+    );
+    if (agentType) {
+      parts.push(quotePwshLiteral("--agent"), quotePwshLiteral(agentType));
+    }
+    const script = parts.join(" ");
     return `pwsh -NoProfile -EncodedCommand ${encodePwshCommand(`& ${script}`)}`;
   }
 
   const agentFlag = agentType ? ` --agent "${escBash(agentType)}"` : "";
+  const cliPart = isSelfExec ? "" : `"${escBash(cliPath)}" `;
   return (
-    `"${escBash(runtime)}" "${escBash(cliPath)}" _footer ` +
+    `"${escBash(runtime)}" ${cliPart}_footer ` +
     `--name "${escBash(windowName)}"${agentFlag}`
   );
 }
