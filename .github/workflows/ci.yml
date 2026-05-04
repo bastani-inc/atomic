@@ -5,12 +5,16 @@ on:
         branches: [main]
         paths:
             - "package.json"
+            - "**/package.json"
             - "bun.lock"
             - "tsconfig.json"
             - "**/*.ts"
             - "**/*.tsx"
             - "**/*.js"
             - "**/*.jsx"
+            - "**/*.mjs"
+            - "verdaccio.yaml"
+            - ".github/workflows/ci.yml"
 
 jobs:
     checks:
@@ -39,6 +43,72 @@ jobs:
               run: |
                   set -o pipefail
                   bun run test:coverage 2>&1 | cat
-
             - name: Validate SDK build
               run: bun run build
+
+    # Pre-publish validation. Builds the host-target binary, publishes the
+    # SDK + per-platform package + synthesised wrapper to a throwaway
+    # verdaccio, then `bun install -g`s the wrapper from that registry and
+    # smoke-tests it. Catches publish-layout regressions (wrapper synth,
+    # optionalDependencies resolution, postinstall, exports rewrite) at PR
+    # time instead of after a real npm publish lands.
+    validate-publish:
+        name: Validate publish (verdaccio)
+        runs-on: ubuntu-latest
+
+        steps:
+            - uses: actions/checkout@v6
+
+            - uses: oven-sh/setup-bun@v2
+              with:
+                  bun-version: latest
+
+            - uses: actions/setup-node@v6
+              with:
+                  node-version: "lts/*"
+
+            - name: Install dependencies
+              run: bun install
+
+            - name: Build host-target binary
+              run: bun packages/atomic/script/build.ts
+
+            - name: Start verdaccio
+              run: |
+                  npm install -g verdaccio
+                  mkdir -p /tmp/verdaccio
+                  verdaccio --config verdaccio.yaml &
+                  for i in {1..30}; do
+                      if curl -sf http://localhost:4873/-/ping >/dev/null; then
+                          echo "verdaccio up"; exit 0
+                      fi
+                      sleep 1
+                  done
+                  echo "verdaccio failed to start"; exit 1
+
+            - name: Configure npm auth for verdaccio
+              run: echo "//localhost:4873/:_authToken=fake-token" >> ~/.npmrc
+
+            - name: Publish SDK to verdaccio
+              run: bun packages/atomic-sdk/script/publish.ts
+              env:
+                  NPM_REGISTRY: http://localhost:4873
+
+            - name: Publish wrapper + host platform package to verdaccio
+              run: bun packages/atomic/script/publish.ts
+              env:
+                  NPM_REGISTRY: http://localhost:4873
+
+            - name: Smoke install from verdaccio
+              run: |
+                  set -e
+                  VERSION=$(jq -r .version package.json)
+                  bun install -g "@bastani/atomic@${VERSION}" --registry http://localhost:4873
+                  atomic --version | grep -q "$VERSION"
+                  atomic workflow list >/dev/null
+                  # `--preflight-only` runs onboarding without spawning the
+                  # agent or checking executables/auth — exercises the chat
+                  # launch path (config sync, project setup) headlessly.
+                  for agent in claude copilot opencode; do
+                      atomic chat -a "$agent" --preflight-only
+                  done

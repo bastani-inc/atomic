@@ -1,4 +1,5 @@
 import { $ } from "bun";
+import { existsSync } from "node:fs";
 import { mkdir, writeFile, copyFile } from "node:fs/promises";
 import { join } from "node:path";
 import { findRepoRoot } from "../src/lib/workspace-paths.ts";
@@ -32,15 +33,32 @@ if (import.meta.main) {
   const version = (await Bun.file(join(WORKSPACE_ROOT, "package.json")).json()).version;
   const tag = process.env.NPM_TAG ?? (version.includes("-") ? "next" : "latest");
 
+  // `NPM_REGISTRY` is set by the validate workflow to point at a throwaway
+  // verdaccio. In that mode we skip --provenance (OIDC-only), pass the
+  // override registry, and tolerate missing per-platform dist dirs (the
+  // PR-time validate job only builds the host target).
+  const registry = process.env.NPM_REGISTRY;
+  const extraArgs: string[] = [];
+  if (registry) extraArgs.push(`--registry=${registry}`);
+  if (process.env.GITHUB_ACTIONS === "true" && !registry) extraArgs.push("--provenance");
+
   // 1. Synthesize wrapper.
   const wrapperOut = join(CLI_PKG_ROOT, "dist", "wrapper");
   await synthesizeWrapper(wrapperOut, { version });
 
   // 2. Publish per-platform packages.
   for (const t of TARGETS) {
-    await $`cd ${join(CLI_PKG_ROOT, "dist", t.name)} && npm publish --provenance --access public --tag ${tag}`;
+    const distDir = join(CLI_PKG_ROOT, "dist", t.name);
+    if (!existsSync(distDir)) {
+      if (registry) {
+        console.log(`[publish] skipping ${t.name} — dist dir missing (validate mode)`);
+        continue;
+      }
+      throw new Error(`[publish] missing dist dir for ${t.name}: ${distDir}`);
+    }
+    await $`cd ${distDir} && npm publish --access public --tag ${tag} ${extraArgs}`;
   }
 
   // 3. Publish wrapper.
-  await $`cd ${wrapperOut} && npm publish --provenance --access public --tag ${tag}`;
+  await $`cd ${wrapperOut} && npm publish --access public --tag ${tag} ${extraArgs}`;
 }

@@ -23,9 +23,13 @@ await Bun.write(pkgPath, JSON.stringify(pkg, null, 2) + "\n");
 // Default prerelease versions to the `next` tag so `latest` is reserved for stable.
 const defaultTag = (pkg.version as string).includes("-") ? "next" : "latest";
 const tag = process.env.NPM_TAG ?? defaultTag;
-// Provenance requires GitHub Actions OIDC — only enable in CI.
+// `NPM_REGISTRY` is set by the validate workflow to point at a throwaway
+// verdaccio. In that mode we skip --provenance (OIDC-only) and pass the
+// override registry explicitly.
+const registry = process.env.NPM_REGISTRY;
 const args = ["publish", "--access", "public", "--tag", tag];
-if (process.env.GITHUB_ACTIONS === "true") args.push("--provenance");
+if (registry) args.push("--registry", registry);
+if (process.env.GITHUB_ACTIONS === "true" && !registry) args.push("--provenance");
 
 try {
   const result = Bun.spawnSync(["npm", ...args], { cwd: SDK_PKG_ROOT, stdio: ["inherit", "inherit", "inherit"] });
