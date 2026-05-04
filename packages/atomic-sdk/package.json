@@ -1,6 +1,6 @@
 {
   "name": "@bastani/atomic-sdk",
-  "version": "0.7.0-5",
+  "version": "0.7.0-6",
   "type": "module",
   "license": "MIT",
   "description": "TypeScript SDK for atomic — defineWorkflow, schemas, components",
