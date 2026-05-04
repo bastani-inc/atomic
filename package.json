@@ -38,7 +38,7 @@
     "prepare": "prek install || true"
   },
   "devDependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.126",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.128",
     "@j178/prek": "^0.3.11",
     "@opentui/core": "^0.2.2",
     "@opentui/react": "^0.2.2",

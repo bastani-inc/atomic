@@ -19,7 +19,7 @@
     "typecheck": "bunx tsc --noEmit"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.126",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.128",
     "@bastani/atomic-sdk": "workspace:*",
     "@catppuccin/palette": "^1.8.0",
     "@clack/prompts": "^1.3.0",
