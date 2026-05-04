@@ -79,6 +79,13 @@ export function createProgram() {
         .addOption(
             new Option("--preflight-only").hideHelp(),
         )
+        // Internal flag — bypasses `checkAgentAuth` for claude/copilot.
+        // Paired with a stub agent on PATH it lets the CI matrix exercise
+        // the real `chatCommand` tmux-launch path on every platform
+        // without holding live credentials. Hidden from `--help`.
+        .addOption(
+            new Option("--no-login").hideHelp(),
+        )
         .allowUnknownOption()
         .allowExcessArguments(true)
         .enablePositionalOptions()
@@ -123,6 +130,9 @@ Examples:
                 agentType,
                 passthroughArgs: cmd.args,
                 preflightOnly: localOpts.preflightOnly,
+                // Commander turns `--no-login` into `login: false`. Treat
+                // either explicit form as "skip the auth probe".
+                noLogin: localOpts.login === false,
             });
 
             process.exit(exitCode);

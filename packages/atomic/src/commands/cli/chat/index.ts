@@ -83,6 +83,15 @@ export interface ChatCommandOptions {
    * and auth checks so it works even when the agent CLI is not installed.
    */
   preflightOnly?: boolean;
+  /**
+   * When true, skip the SDK-level auth probe in `checkAgentAuth`.
+   * Internal — exists so the cross-platform CI smoke matrix can exercise
+   * the *real* tmux launch path against a stub agent on PATH without
+   * needing live Claude / Copilot credentials. The chat flow continues
+   * normally past the auth gate; it does NOT alter what the agent CLI
+   * itself does once spawned.
+   */
+  noLogin?: boolean;
 }
 
 // ============================================================================
@@ -259,7 +268,7 @@ export function buildLauncherScript(
  * @returns Exit code from the agent process
  */
 export async function chatCommand(options: ChatCommandOptions = {}): Promise<number> {
-  const { agentType, passthroughArgs, preflightOnly } = options;
+  const { agentType, passthroughArgs, preflightOnly, noLogin } = options;
 
   if (!agentType) {
     throw new Error("agentType is required. Start chat with `atomic chat -a <agent>`.");
@@ -293,11 +302,15 @@ export async function chatCommand(options: ChatCommandOptions = {}): Promise<num
   // ── Preflight: authentication ──
   // Copilot and Claude expose SDK-level login checks; run them now so
   // users get a short actionable error instead of being dropped into a
-  // native CLI that immediately redirects them to /login.
-  const auth = await checkAgentAuth(agentType);
-  if (!auth.loggedIn) {
-    printAuthError(agentType, auth);
-    return 1;
+  // native CLI that immediately redirects them to /login. The
+  // `--no-login` escape hatch skips this for CI smoke-tests that pair
+  // a stub agent on PATH with the real chat-launch code path.
+  if (!noLogin) {
+    const auth = await checkAgentAuth(agentType);
+    if (!auth.loggedIn) {
+      printAuthError(agentType, auth);
+      return 1;
+    }
   }
 
   // ── Preflight: global config sync ──
@@ -411,8 +424,17 @@ export async function chatCommand(options: ChatCommandOptions = {}): Promise<num
 
     await removeLauncher(launcherPath);
 
-    // If tmux attach itself failed (e.g. lost TTY), clean up and fall back
+    // If tmux attach itself failed (e.g. unsuitable TERM, lost TTY) we
+    // surface that explicitly before falling back to a plain spawn —
+    // otherwise the user lands in the agent CLI without realising tmux
+    // never opened, and the multi-pane footer / Ctrl-C debounce / chat
+    // session manager are all silently disabled.
     if (exitCode !== 0) {
+      console.error(
+        `${COLORS.yellow}Warning: tmux attach-session exited ${exitCode}. ` +
+        `Common cause: $TERM is unset or has no terminfo entry on this host. ` +
+        `Falling back to direct spawn — chat session features will be disabled.${COLORS.reset}`,
+      );
       try { killSession(windowName); } catch {}
       return spawnDirect(cmd, projectRoot, spawnEnv);
     }

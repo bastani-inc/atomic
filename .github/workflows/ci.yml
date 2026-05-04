@@ -212,3 +212,115 @@ jobs:
                   fi
                   echo "Smoke-testing: $ATOMIC"
                   "$ATOMIC" _runtime-assets-smoke
+
+            # End-to-end chat-launch smoke: invokes the *full* chat command
+            # (`atomic chat -a opencode --no-login`) against a stub agent on
+            # PATH and asserts the agent ended up running INSIDE tmux/psmux
+            # (i.e. `$TMUX` / `$PSMUX` is populated when the stub runs).
+            #
+            # This catches regressions that the asset-only smoke can't, e.g.:
+            #  - tmux `attach-session` failing because $TERM is unset/dumb
+            #    on the host (silent fallback to spawnDirect).
+            #  - any future regression that breaks the full launch chain
+            #    (createSession -> spawnAttachedFooter -> spawnMuxAttach).
+            #
+            # `--no-login` skips the SDK auth probe so we can pair this with
+            # a stub `opencode` binary (opencode's auth check is a no-op
+            # anyway, but the flag keeps the test agent-agnostic).
+            - name: Stage stub agent + run chat smoke (Unix)
+              if: runner.os != 'Windows'
+              shell: bash
+              run: |
+                  set -e
+                  STUB_DIR="$RUNNER_TEMP/atomic-stub-bin"
+                  mkdir -p "$STUB_DIR"
+                  # Stub opencode prints diagnostic line, then sleeps. The
+                  # sleep is load-bearing: atomic.chatCommand runs ~7 follow-up
+                  # tmux commands (set-options, split-window, set-hooks,
+                  # attach-session) within ~60ms of `new-session`. If the
+                  # stub exits in <60ms the pane closure triggers
+                  # killSessionOnPaneExit → server dies → every later tmux
+                  # call fails with "no server running" and chat falls
+                  # back to spawnDirect. Real agents take >100ms to
+                  # initialise so they don't hit this race; the stub has to
+                  # stick around long enough to mimic that.
+                  cat > "$STUB_DIR/opencode" <<'STUB'
+                  #!/bin/bash
+                  echo "ATOMIC_CHAT_SMOKE TMUX=${TMUX:-} PSMUX=${PSMUX:-}"
+                  exec sleep 5
+                  STUB
+                  chmod +x "$STUB_DIR/opencode"
+                  export PATH="$STUB_DIR:$PATH"
+
+                  ATOMIC=$(find packages/atomic/dist -type f -name 'atomic*' | head -n 1)
+                  echo "Chat-smoke binary: $ATOMIC"
+
+                  # `script -qfc` allocates a real PTY; the chat code path's
+                  # `process.stdin.isTTY` check would otherwise force the
+                  # spawnDirect fallback regardless of tmux state.
+                  OUT="$RUNNER_TEMP/chat-smoke.log"
+                  if [ "$RUNNER_OS" = "macOS" ]; then
+                      # BSD `script` syntax: `script -q logfile cmd args...`
+                      timeout --kill-after=2 8 script -q "$OUT" "$ATOMIC" chat -a opencode --no-login || true
+                  else
+                      # GNU `script` syntax
+                      timeout --kill-after=2 8 script -qfc "$ATOMIC chat -a opencode --no-login" "$OUT" || true
+                  fi
+
+                  echo "--- captured chat output ---"
+                  cat "$OUT" || true
+                  echo "--- assertion ---"
+                  if grep -E 'ATOMIC_CHAT_SMOKE TMUX=[^ ]+/atomic' "$OUT" >/dev/null; then
+                      echo "PASS: stub agent ran inside tmux session"
+                  else
+                      echo "FAIL: stub agent did not see \$TMUX populated — chat fell back to spawnDirect"
+                      exit 1
+                  fi
+
+            - name: Stage stub agent + run chat smoke (Windows)
+              if: runner.os == 'Windows'
+              shell: pwsh
+              run: |
+                  $stubDir = Join-Path $env:RUNNER_TEMP 'atomic-stub-bin'
+                  New-Item -ItemType Directory -Force -Path $stubDir | Out-Null
+                  # psmux invokes pane commands via `pwsh -NoProfile -File <ps1>`,
+                  # so a stub PowerShell script is what gets exec'd as the agent.
+                  # Sleep is load-bearing — see the Unix sibling step for the
+                  # race condition this avoids.
+                  @'
+                  Write-Host "ATOMIC_CHAT_SMOKE TMUX=$($env:TMUX) PSMUX=$($env:PSMUX)"
+                  Start-Sleep -Seconds 5
+                  '@ | Set-Content -Path (Join-Path $stubDir 'opencode.ps1') -Encoding ASCII
+
+                  # The CLI looks up the agent via Bun.which("opencode"); on
+                  # Windows that resolves a `.cmd` shim. Provide one.
+                  @'
+                  @echo off
+                  pwsh -NoProfile -File "%~dp0opencode.ps1" %*
+                  '@ | Set-Content -Path (Join-Path $stubDir 'opencode.cmd') -Encoding ASCII
+
+                  $env:Path = "$stubDir;$env:Path"
+
+                  $atomic = Get-ChildItem -Path packages/atomic/dist -Recurse -Filter 'atomic.exe' | Select-Object -First 1
+                  if (-not $atomic) { throw 'atomic.exe not found under packages/atomic/dist' }
+                  Write-Host "Chat-smoke binary: $($atomic.FullName)"
+
+                  $out = Join-Path $env:RUNNER_TEMP 'chat-smoke.log'
+                  $proc = Start-Process -FilePath $atomic.FullName `
+                      -ArgumentList 'chat','-a','opencode','--no-login' `
+                      -RedirectStandardOutput $out -RedirectStandardError "$out.err" `
+                      -PassThru -NoNewWindow
+                  if (-not $proc.WaitForExit(8000)) { $proc.Kill() }
+
+                  Write-Host '--- captured chat output ---'
+                  if (Test-Path $out)     { Get-Content $out }
+                  if (Test-Path "$out.err") { Get-Content "$out.err" }
+                  Write-Host '--- assertion ---'
+                  $captured = ''
+                  if (Test-Path $out) { $captured = Get-Content $out -Raw }
+                  if ($captured -match 'ATOMIC_CHAT_SMOKE\s+TMUX=\S*atomic|ATOMIC_CHAT_SMOKE\s+\S*PSMUX=\S*atomic') {
+                      Write-Host 'PASS: stub agent ran inside psmux session'
+                  } else {
+                      Write-Host 'FAIL: stub agent did not see $TMUX/$PSMUX populated — chat fell back to spawnDirect'
+                      exit 1
+                  }

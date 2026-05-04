@@ -11,6 +11,7 @@ import { tmuxConfPath, ccDebounceScriptPath } from "../lib/runtime-assets.ts";
 import { writeFileSync, unlinkSync } from "node:fs";
 import type { Subprocess } from "bun";
 import { atomicTempPath } from "../lib/atomic-temp.ts";
+import { normalizedTerminalEnv } from "../lib/terminal-env.ts";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -625,6 +626,24 @@ function buildAttachArgs(sessionName: string): string[] {
 }
 
 /**
+ * Build the env for an attach-session client process.
+ *
+ * tmux probes the client's $TERM at attach time and aborts with
+ * "open terminal failed: terminal does not support clear" when the
+ * value is unset, "dumb", or has no terminfo entry on the host. That
+ * branches the chat command into a silent `spawnDirect` fallback even
+ * though the session was created successfully — exactly the failure
+ * mode that CI / Docker / `script(1)`-wrapped invocations hit.
+ *
+ * Reusing `normalizedTerminalEnv` keeps the override aligned with what
+ * we already inject into tmux *new-session* via `-e TERM=…`, so the
+ * client and the in-pane processes always agree on the terminal type.
+ */
+function attachClientEnv(): Record<string, string> {
+  return normalizedTerminalEnv(process.env);
+}
+
+/**
  * Attach to an existing tmux session (takes over the current terminal).
  */
 export function attachSession(sessionName: string): void {
@@ -634,6 +653,7 @@ export function attachSession(sessionName: string): void {
     stdin: "inherit",
     stdout: "inherit",
     stderr: "pipe",
+    env: attachClientEnv(),
   });
   if (!proc.success) {
     const stderr = proc.stderr.toString().trim();
@@ -649,6 +669,7 @@ export function attachSession(sessionName: string): void {
 export function spawnMuxAttach(sessionName: string): Subprocess {
   return Bun.spawn(buildAttachArgs(sessionName), {
     stdio: ["inherit", "inherit", "inherit"],
+    env: attachClientEnv(),
   });
 }
 
