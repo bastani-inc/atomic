@@ -1,14 +1,14 @@
 {
   "name": "@bastani/example-pane-navigation",
   "private": true,
-  "version": "0.7.3",
+  "version": "0.7.4",
   "type": "module",
   "description": "Driver CLI for the SDK pane-navigation primitives (start / list / status / next / prev / home / attach / stop)",
   "scripts": {
     "start": "bun run cli.ts"
   },
   "dependencies": {
-    "@bastani/atomic-sdk": "^0.7.3",
+    "@bastani/atomic-sdk": "^0.7.4",
     "@commander-js/extra-typings": "^14.0.0"
   }
 }

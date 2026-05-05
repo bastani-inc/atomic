@@ -1,7 +1,7 @@
 {
   "name": "@bastani/example-commander-embed",
   "private": true,
-  "version": "0.7.3",
+  "version": "0.7.4",
   "type": "module",
   "description": "Mount an atomic workflow under a parent Commander CLI alongside plain Commander commands",
   "scripts": {
@@ -10,7 +10,7 @@
     "status": "bun run cli.ts status"
   },
   "dependencies": {
-    "@bastani/atomic-sdk": "^0.7.3",
+    "@bastani/atomic-sdk": "^0.7.4",
     "@commander-js/extra-typings": "^14.0.0"
   }
 }

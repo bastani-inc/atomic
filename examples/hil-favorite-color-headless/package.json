@@ -1,7 +1,7 @@
 {
   "name": "@bastani/example-hil-favorite-color-headless",
   "private": true,
-  "version": "0.7.3",
+  "version": "0.7.4",
   "type": "module",
   "description": "HIL pause inside a headless stage",
   "scripts": {
@@ -10,7 +10,7 @@
     "opencode": "bun run opencode-worker.ts"
   },
   "dependencies": {
-    "@bastani/atomic-sdk": "^0.7.3",
+    "@bastani/atomic-sdk": "^0.7.4",
     "@commander-js/extra-typings": "^14.0.0"
   }
 }

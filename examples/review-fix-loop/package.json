@@ -1,14 +1,14 @@
 {
   "name": "@bastani/example-review-fix-loop",
   "private": true,
-  "version": "0.7.3",
+  "version": "0.7.4",
   "type": "module",
   "description": "Draft -> loop(review -> fix) with bounded iterations and early exit on a CLEAN verdict",
   "scripts": {
     "claude": "bun run claude-worker.ts"
   },
   "dependencies": {
-    "@bastani/atomic-sdk": "^0.7.3",
+    "@bastani/atomic-sdk": "^0.7.4",
     "@commander-js/extra-typings": "^14.0.0"
   }
 }

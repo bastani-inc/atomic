@@ -1,14 +1,14 @@
 {
   "name": "@bastani/example-claude-background-subagents",
   "private": true,
-  "version": "0.7.3",
+  "version": "0.7.4",
   "type": "module",
   "description": "Stage 1 spawns 3 background subagents and ends its turn immediately; stage 2 verifies they all finished before it started.",
   "scripts": {
     "claude": "bun run claude-worker.ts"
   },
   "dependencies": {
-    "@bastani/atomic-sdk": "^0.7.3",
+    "@bastani/atomic-sdk": "^0.7.4",
     "@commander-js/extra-typings": "^14.0.0"
   }
 }

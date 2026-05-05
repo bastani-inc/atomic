@@ -1,14 +1,14 @@
 {
   "name": "@bastani/example-sequential-describe-summarize",
   "private": true,
-  "version": "0.7.3",
+  "version": "0.7.4",
   "type": "module",
   "description": "Two stages passing data via s.save() -> s.transcript(handle) — the canonical handoff pattern",
   "scripts": {
     "claude": "bun run claude-worker.ts"
   },
   "dependencies": {
-    "@bastani/atomic-sdk": "^0.7.3",
+    "@bastani/atomic-sdk": "^0.7.4",
     "@commander-js/extra-typings": "^14.0.0"
   }
 }
