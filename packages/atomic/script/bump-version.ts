@@ -19,7 +19,7 @@
 
 import { $ } from "bun";
 import { resolve } from "node:path";
-import { VERSION_FILES } from "./constants-base.ts";
+import { getVersionFiles } from "./constants-base.ts";
 import { findRepoRoot } from "../src/lib/workspace-paths.ts";
 
 /**
@@ -112,7 +112,7 @@ async function main(): Promise<void> {
 
   console.log(`Bumping version to ${version}\n`);
 
-  for (const file of VERSION_FILES) {
+  for (const file of getVersionFiles(ROOT)) {
     await bumpFile(file, version);
   }
 

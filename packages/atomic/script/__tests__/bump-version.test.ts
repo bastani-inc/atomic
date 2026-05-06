@@ -1,13 +1,14 @@
 import { test, expect, afterAll } from "bun:test";
 import { $ } from "bun";
 import { mkdtemp, copyFile, mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { findRepoRoot } from "../../src/lib/workspace-paths.ts";
-import { VERSION_FILES } from "../constants-base.ts";
+import { getVersionFiles } from "../constants-base.ts";
 
 const WORKSPACE_ROOT = findRepoRoot(import.meta.dir);
 const BUMP_SCRIPT = join(WORKSPACE_ROOT, "packages/atomic/script/bump-version.ts");
+const VERSION_FILES = getVersionFiles(WORKSPACE_ROOT);
 
 /**
  * Snapshot real package.json contents BEFORE any test runs so afterAll can
@@ -31,12 +32,14 @@ afterAll(async () => {
   }
 });
 
-test("bump-version writes every VERSION_FILES entry in temp fixture", async () => {
+test("bump-version writes every discovered package.json in temp fixture", async () => {
   // Build isolated fixture dir with copies of the workspace package.json files.
+  // mkdir each entry's parent so the copyFile target exists; the example
+  // directories are discovered at runtime, so a static mkdir list would
+  // drift the moment a new example is added.
   const fixture = await mkdtemp(join(tmpdir(), "atomic-bump-"));
-  await mkdir(join(fixture, "packages/atomic"), { recursive: true });
-  await mkdir(join(fixture, "packages/atomic-sdk"), { recursive: true });
   for (const rel of VERSION_FILES) {
+    await mkdir(join(fixture, dirname(rel)), { recursive: true });
     await copyFile(join(WORKSPACE_ROOT, rel), join(fixture, rel));
   }
 
@@ -49,6 +52,10 @@ test("bump-version writes every VERSION_FILES entry in temp fixture", async () =
   const newVersion = "9.99.99-test";
   const r = await $`bun ${BUMP_SCRIPT} --root ${fixture} ${newVersion}`.quiet();
   expect(r.exitCode).toBe(0);
+
+  // Sanity-check the discovered set actually picked up at least one example
+  // — otherwise the loop below would silently degrade to packages-only.
+  expect(VERSION_FILES.some((rel) => rel.startsWith("examples/"))).toBe(true);
 
   // Assertions read from fixture, NOT WORKSPACE_ROOT.
   for (const rel of VERSION_FILES) {
