@@ -192,7 +192,7 @@ jobs:
             await Bun.write('package.json', JSON.stringify(pkg, null, 2) + '\n');
           "
 
-      # ── Install tmux for steps 2/4/6 ──────────────────────────────────────
+      # ── Install tmux/psmux for steps 2/4/6 ────────────────────────────────
       - name: Install tmux (linux glibc)
         if: runner.os == 'Linux' && matrix.container == ''
         run: sudo apt-get update -qq && sudo apt-get install -y tmux
@@ -204,6 +204,29 @@ jobs:
       - name: Install tmux (macos)
         if: runner.os == 'macOS'
         run: brew install tmux || true
+
+      # psmux is the Windows port of tmux; downloaded from the pinned
+      # GitHub release (the same path `installPsmuxFromGitHubRelease`
+      # in spawn.ts uses). Mirrors `.github/workflows/ci.yml`'s
+      # runtime-assets-smoke setup.
+      - name: Install psmux (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $latest = Invoke-RestMethod -Headers @{ Accept = 'application/vnd.github+json' } `
+              -Uri 'https://api.github.com/repos/psmux/psmux/releases/latest'
+          $asset = $latest.assets | Where-Object { $_.name -like '*windows-x64.zip' } | Select-Object -First 1
+          if (-not $asset) { throw 'No psmux windows-x64 release asset found' }
+          $tmp = New-Item -ItemType Directory -Force -Path (Join-Path $env:RUNNER_TEMP 'psmux')
+          $zip = Join-Path $tmp 'psmux.zip'
+          Invoke-WebRequest -UseBasicParsing -Uri $asset.browser_download_url -OutFile $zip
+          Expand-Archive -LiteralPath $zip -DestinationPath $tmp -Force
+          $bin = Join-Path $env:LOCALAPPDATA 'Programs\psmux'
+          New-Item -ItemType Directory -Force -Path $bin | Out-Null
+          Get-ChildItem $tmp -Filter 'psmux.exe' -Recurse | ForEach-Object {
+              Copy-Item $_.FullName -Destination (Join-Path $bin 'psmux.exe') -Force
+          }
+          echo $bin >> $env:GITHUB_PATH
 
       # ── Run the full six-step smoke matrix ────────────────────────────────
       - name: Run smoke matrix
