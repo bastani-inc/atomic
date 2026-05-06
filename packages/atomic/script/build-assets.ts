@@ -37,7 +37,13 @@ export async function bundleEmbeddedAssets(rootDir: string): Promise<void> {
   await mkdir(join(rootDir, ".agents"), { recursive: true });
 
   const archives: ArchiveSpec[] = [
-    { outPath: join(rootDir, ".claude.tar"),           leafDir: join(rootDir, ".claude") },
+    { outPath: join(rootDir, ".claude.tar"),           leafDir: join(rootDir, ".claude"),
+      // `.claude/skills` is a symlink to `.agents/skills`. Skills ship in
+      // their own bundle (`skills.tar`) and are copied into `~/.claude/skills`
+      // at install time, so the symlink entry is redundant. Excluding it also
+      // avoids extraction failures on Windows accounts without Developer Mode
+      // or admin rights, where bsdtar can't recreate symlinks.
+      excludes: ["skills"] },
     { outPath: join(rootDir, ".opencode.tar"),         leafDir: join(rootDir, ".opencode") },
     { outPath: join(rootDir, ".github.tar"),           leafDir: join(rootDir, ".github"),
       excludes: ["workflows", "dependabot.yml"] },
