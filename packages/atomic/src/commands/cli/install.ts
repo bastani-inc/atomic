@@ -44,7 +44,7 @@ export interface InstallOptions {
     readonly noCompletions?: boolean;
 }
 
-interface InstallPaths {
+export interface InstallPaths {
     readonly binDir: string;
     readonly binPath: string;
     readonly completionsDir: string;
@@ -90,7 +90,40 @@ export function getInstallPaths(): InstallPaths {
  * before the new one rolls in. Stale `.old.*` files are reaped on
  * next install.
  */
-function copyBinary(paths: InstallPaths): void {
+export function copyBinary(paths: InstallPaths, sourcePath?: string): void {
+    // Allow override of source path for update (downloading a new binary)
+    if (sourcePath !== undefined) {
+        const sourceResolved = resolve(sourcePath);
+        const destResolved = resolve(paths.binPath);
+        if (sourceResolved.toLowerCase() === destResolved.toLowerCase()) return;
+        if (!existsSync(paths.binDir)) mkdirSync(paths.binDir, { recursive: true });
+        if (isWindows() && existsSync(paths.binPath)) {
+            const archivedPath = `${paths.binPath}.old.${Date.now()}`;
+            try {
+                renameSync(paths.binPath, archivedPath);
+            } catch (err) {
+                throw new Error(
+                    `Failed to archive existing atomic.exe at ${paths.binPath}: ${(err as Error).message}. ` +
+                    "If atomic is currently running, close it and retry.",
+                );
+            }
+        }
+        const tempPath = `${paths.binPath}.tmp.${process.pid}.${Date.now()}`;
+        try {
+            copyFileSync(sourcePath, tempPath);
+            if (!isWindows()) chmodSync(tempPath, 0o755);
+            renameSync(tempPath, paths.binPath);
+        } catch (err) {
+            try { unlinkSync(tempPath); } catch { /* ignore */ }
+            throw err;
+        }
+        return;
+    }
+    // Original: copy process.execPath
+    return _copyBinaryFromExecPath(paths);
+}
+
+function _copyBinaryFromExecPath(paths: InstallPaths): void {
     const source = process.execPath;
     const sourceResolved = resolve(source);
     const destResolved = resolve(paths.binPath);
