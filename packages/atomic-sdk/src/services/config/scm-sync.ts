@@ -19,27 +19,29 @@ import { pathExists } from "../system/copy.ts";
 import type { ScmProvider } from "./atomic-config.ts";
 import { readAtomicConfig } from "./atomic-config.ts";
 
-const SCM_MCP_SERVERS = ["github", "azure-devops"] as const;
+const SCM_MCP_SERVERS = ["github-mcp-server", "azure-devops"] as const;
 type ScmMcpServer = (typeof SCM_MCP_SERVERS)[number];
 
 /** Which SCM MCP servers should be enabled for each scm value. */
 function enabledServersFor(scm: ScmProvider): Set<ScmMcpServer> {
-  if (scm === "github") return new Set(["github"]);
+  if (scm === "github") return new Set(["github-mcp-server"]);
   if (scm === "azure-devops") return new Set(["azure-devops"]);
   return new Set();
 }
 
 /**
  * Copilot CLI servers to disable per scm selection. Copilot ships with a
- * built-in `github-mcp-server`; when scm is `github` the user's own
- * `github` MCP is redundant with it, so we keep the built-in and disable
- * the user's. For `azure-devops` we keep the user's `azure-devops` and
- * disable both GitHub variants. Sapling disables everything.
+ * built-in `github-mcp-server`; our `.mcp.json` registers a server under
+ * the same name, so when scm is `github` we leave it alone — the
+ * workspace entry overrides the built-in transparently and we only
+ * disable `azure-devops`. For `azure-devops` we disable
+ * `github-mcp-server` (which knocks out both the workspace and built-in
+ * variants since they share a name). Sapling disables everything.
  */
 const COPILOT_DISABLE_BY_SCM: Record<ScmProvider, readonly string[]> = {
-  github: ["github", "azure-devops"],
-  "azure-devops": ["github", "github-mcp-server"],
-  sapling: ["github", "azure-devops", "github-mcp-server"],
+  github: ["azure-devops"],
+  "azure-devops": ["github-mcp-server"],
+  sapling: ["github-mcp-server", "azure-devops"],
 };
 
 /**

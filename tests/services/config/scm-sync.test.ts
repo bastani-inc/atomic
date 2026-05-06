@@ -57,32 +57,26 @@ describe("copilotScmDisableFlags", () => {
     expect(copilotScmDisableFlags(undefined)).toEqual([]);
   });
 
-  test("disables github and azure-devops when scm is github (keeps built-in github-mcp-server)", () => {
+  test("disables only azure-devops when scm is github (workspace github-mcp-server overrides the built-in)", () => {
     expect(copilotScmDisableFlags("github")).toEqual([
       "--disable-mcp-server",
-      "github",
-      "--disable-mcp-server",
       "azure-devops",
     ]);
   });
 
-  test("disables github and github-mcp-server when scm is azure-devops", () => {
+  test("disables github-mcp-server when scm is azure-devops", () => {
     expect(copilotScmDisableFlags("azure-devops")).toEqual([
       "--disable-mcp-server",
-      "github",
-      "--disable-mcp-server",
       "github-mcp-server",
     ]);
   });
 
-  test("disables github, azure-devops, and github-mcp-server when scm is sapling", () => {
+  test("disables github-mcp-server and azure-devops when scm is sapling", () => {
     expect(copilotScmDisableFlags("sapling")).toEqual([
       "--disable-mcp-server",
-      "github",
+      "github-mcp-server",
       "--disable-mcp-server",
       "azure-devops",
-      "--disable-mcp-server",
-      "github-mcp-server",
     ]);
   });
 });
@@ -104,8 +98,6 @@ describe("getCopilotScmDisableFlags", () => {
     await writeAtomicConfig(projectRoot, { scm: "github" });
 
     expect(await getCopilotScmDisableFlags(projectRoot)).toEqual([
-      "--disable-mcp-server",
-      "github",
       "--disable-mcp-server",
       "azure-devops",
     ]);
@@ -147,7 +139,7 @@ describe("syncScmMcpServers — Claude settings", () => {
     expect(settings.disabledMcpjsonServers).toEqual(["azure-devops"]);
   });
 
-  test("adds github to disabledMcpjsonServers when scm is azure-devops", async () => {
+  test("adds github-mcp-server to disabledMcpjsonServers when scm is azure-devops", async () => {
     const projectRoot = join(tmpDir, "claude-ado");
     await mkdir(projectRoot, { recursive: true });
     await writeAtomicConfig(projectRoot, { scm: "azure-devops" });
@@ -158,7 +150,7 @@ describe("syncScmMcpServers — Claude settings", () => {
     const settings = await readJsonFile(
       join(projectRoot, ".claude", "settings.json"),
     );
-    expect(settings.disabledMcpjsonServers).toEqual(["github"]);
+    expect(settings.disabledMcpjsonServers).toEqual(["github-mcp-server"]);
   });
 
   test("preserves unrelated entries in disabledMcpjsonServers", async () => {
@@ -195,7 +187,7 @@ describe("syncScmMcpServers — Claude settings", () => {
     const settings = await readJsonFile(
       join(projectRoot, ".claude", "settings.json"),
     );
-    expect(settings.disabledMcpjsonServers).toEqual(["github"]);
+    expect(settings.disabledMcpjsonServers).toEqual(["github-mcp-server"]);
   });
 
   test("no-ops when the resulting array matches existing", async () => {
@@ -228,7 +220,7 @@ describe("syncScmMcpServers — Claude settings", () => {
     const settings = await readJsonFile(
       join(projectRoot, ".claude", "settings.json"),
     );
-    expect(settings.disabledMcpjsonServers).toEqual(["keep", "github"]);
+    expect(settings.disabledMcpjsonServers).toEqual(["keep", "github-mcp-server"]);
   });
 
   test("skips when .claude/settings.json does not exist", async () => {
@@ -291,13 +283,13 @@ describe("syncScmMcpServers — OpenCode settings", () => {
     await writeFile(join(dir, "opencode.json"), JSON.stringify(config));
   }
 
-  test("enables github and disables azure-devops when scm is github", async () => {
+  test("enables github-mcp-server and disables azure-devops when scm is github", async () => {
     const projectRoot = join(tmpDir, "oc-gh");
     await mkdir(projectRoot, { recursive: true });
     await writeAtomicConfig(projectRoot, { scm: "github" });
     await writeOpencodeConfig(projectRoot, {
       mcp: {
-        github: { enabled: false, type: "local" },
+        "github-mcp-server": { enabled: false, type: "local" },
         "azure-devops": { enabled: true, type: "local" },
       },
     });
@@ -308,7 +300,7 @@ describe("syncScmMcpServers — OpenCode settings", () => {
       join(projectRoot, ".opencode", "opencode.json"),
     );
     const mcp = (config.mcp ?? {}) as Record<string, { enabled?: boolean }>;
-    expect(mcp.github?.enabled).toBe(true);
+    expect(mcp["github-mcp-server"]?.enabled).toBe(true);
     expect(mcp["azure-devops"]?.enabled).toBe(false);
   });
 
@@ -318,7 +310,7 @@ describe("syncScmMcpServers — OpenCode settings", () => {
     await writeAtomicConfig(projectRoot, { scm: "sapling" });
     await writeOpencodeConfig(projectRoot, {
       mcp: {
-        github: { enabled: true },
+        "github-mcp-server": { enabled: true },
         "azure-devops": { enabled: true },
       },
     });
@@ -329,7 +321,7 @@ describe("syncScmMcpServers — OpenCode settings", () => {
       join(projectRoot, ".opencode", "opencode.json"),
     );
     const mcp = (config.mcp ?? {}) as Record<string, { enabled?: boolean }>;
-    expect(mcp.github?.enabled).toBe(false);
+    expect(mcp["github-mcp-server"]?.enabled).toBe(false);
     expect(mcp["azure-devops"]?.enabled).toBe(false);
   });
 
@@ -339,7 +331,7 @@ describe("syncScmMcpServers — OpenCode settings", () => {
     await writeAtomicConfig(projectRoot, { scm: "github" });
     await writeOpencodeConfig(projectRoot, {
       mcp: {
-        github: { enabled: false },
+        "github-mcp-server": { enabled: false },
         "custom-server": { enabled: true, command: "x" },
       },
     });
@@ -350,7 +342,7 @@ describe("syncScmMcpServers — OpenCode settings", () => {
       join(projectRoot, ".opencode", "opencode.json"),
     );
     const mcp = config.mcp as Record<string, Record<string, unknown>>;
-    expect(mcp.github?.enabled).toBe(true);
+    expect(mcp["github-mcp-server"]?.enabled).toBe(true);
     expect(mcp["custom-server"]).toEqual({ enabled: true, command: "x" });
   });
 
@@ -374,7 +366,7 @@ describe("syncScmMcpServers — OpenCode settings", () => {
     await writeAtomicConfig(projectRoot, { scm: "github" });
     await writeOpencodeConfig(projectRoot, {
       mcp: {
-        github: { enabled: true },
+        "github-mcp-server": { enabled: true },
         "azure-devops": { enabled: false },
       },
     });
@@ -406,7 +398,7 @@ describe("syncScmMcpServers — OpenCode settings", () => {
     await writeAtomicConfig(projectRoot, { scm: "github" });
     await writeOpencodeConfig(projectRoot, {
       mcp: {
-        github: "not-an-object",
+        "github-mcp-server": "not-an-object",
         "azure-devops": { enabled: true },
       },
     });
@@ -417,7 +409,7 @@ describe("syncScmMcpServers — OpenCode settings", () => {
       join(projectRoot, ".opencode", "opencode.json"),
     );
     const mcp = config.mcp as Record<string, unknown>;
-    expect(mcp.github).toBe("not-an-object");
+    expect(mcp["github-mcp-server"]).toBe("not-an-object");
     expect((mcp["azure-devops"] as { enabled: boolean }).enabled).toBe(false);
   });
 
