@@ -435,8 +435,8 @@ targets. The fixture is a minimal `bun build --compile`d third-party CLI that im
 | `linux-arm64-musl` | `ubuntu-24.04-arm` | `oven/bun:alpine` | TODO: no arm64 alpine runner |
 | `darwin-arm64` | `macos-latest` | — | Active |
 | `darwin-x64` | `macos-13` | — | Active |
-| `win32-x64` | `windows-latest` | — | Active |
-| `win32-arm64` | `windows-11-arm` | — | TODO: no windows-arm64 runner |
+| `windows-x64` | `windows-latest` | — | Active |
+| `windows-arm64` | `windows-11-arm` | — | TODO: no windows-arm64 runner |
 
 ### Six-step smoke matrix
 

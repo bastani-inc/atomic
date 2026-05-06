@@ -559,7 +559,7 @@ shipping additional binaries.
 `.github/workflows/sdk-fixture-smoke.yml` runs the full six-step matrix
 on every PR touching `packages/atomic-sdk/**`, `packages/atomic/**`, or
 the fixture, across linux-x64 (glibc + musl), linux-arm64 glibc,
-darwin-arm64, darwin-x64, and win32-x64.
+darwin-arm64, darwin-x64, and windows-x64.
 
 ### 11.7 Final Design — Zero-Boilerplate Compiled Hosts (corrects §11.1, §11.3, §11.4)
 

@@ -100,15 +100,15 @@ jobs:
             container: ""
             shell: bash
 
-          # ── win32-x64 ─────────────────────────────────────────────────────
-          - name: win32-x64
+          # ── windows-x64 ───────────────────────────────────────────────────
+          - name: windows-x64
             runs-on: windows-latest
             container: ""
             shell: bash
 
-          # ── win32-arm64 ───────────────────────────────────────────────────
+          # ── windows-arm64 ─────────────────────────────────────────────────
           # TODO: no windows-arm64 runner on GitHub Actions.
-          # - name: win32-arm64
+          # - name: windows-arm64
           #   runs-on: windows-11-arm
 
     runs-on: ${{ matrix.runs-on }}
@@ -134,19 +134,22 @@ jobs:
         run: bun install
 
       # ── Pre-publish / nightly: pack SDK to local tarball ─────────────────
-      # Build the SDK and produce a local .tgz so the fixture installs from
-      # the PR's current state, not the last published version.
-      - name: Build SDK
-        if: github.event_name != 'release'
-        run: bun packages/atomic-sdk/script/build.ts
-
+      # `script/pack.ts` builds dist/, rewrites package.json's exports
+      # from `./src/<file>.ts` to `{ types, import }` pointing at
+      # `./dist/`, and runs `bun pm pack` so the tarball matches the
+      # shape `script/publish.ts` would publish to npm. Without that
+      # rewrite, the fixture's `bun install` against the tarball
+      # resolves `@bastani/atomic-sdk/workflows` to a `./src/...` path
+      # that isn't shipped (`files: ["dist"]`), throwing
+      # `Cannot find module`.
+      #
+      # We deliberately don't use `npm pack` because the alpine row
+      # runs in `oven/bun:alpine`, which has no npm.
       - name: Pack SDK tarball (pre-publish / nightly)
         if: github.event_name != 'release'
         id: pack-sdk
         run: |
-          cd packages/atomic-sdk
-          TARBALL=$(npm pack --json 2>/dev/null | bun -e \
-            "const a = await Bun.stdin.json(); process.stdout.write(a[0].filename)")
+          TARBALL=$(bun packages/atomic-sdk/script/pack.ts)
           echo "tarball=packages/atomic-sdk/${TARBALL}" >> "$GITHUB_OUTPUT"
 
       # Rewrite the fixture's @bastani/atomic-sdk dependency to point at the
