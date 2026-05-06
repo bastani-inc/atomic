@@ -4,7 +4,10 @@
     "github-mcp-server": {
       "type": "remote",
       "url": "https://api.githubcopilot.com/mcp",
-      "enabled": true
+      "enabled": true,
+      "headers": {
+        "Authorization": "Bearer {env:GH_TOKEN}"
+      }
     },
     "azure-devops": {
       "type": "local",
@@ -17,5 +20,8 @@
       "enabled": false
     }
   },
-  "permission": "allow"
+  "permission": "allow",
+  "instructions": [
+    "~/.atomic/AGENTS.md"
+  ]
 }

@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "github-mcp-server": {
+      "type": "http",
+      "url": "https://api.githubcopilot.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${GH_TOKEN}"
+      }
+    },
+    "azure-devops": {
+      "type": "stdio",
+      "command": "bunx",
+      "args": [
+        "-y",
+        "@azure-devops/mcp",
+        "<your-org>"
+      ]
+    }
+  }
+}

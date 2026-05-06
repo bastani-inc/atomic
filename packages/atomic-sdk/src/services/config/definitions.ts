@@ -45,6 +45,15 @@ export interface AgentConfig {
      * destination like `~/.claude/settings.json`.
      */
     excludeConfigKeys?: readonly string[];
+    /**
+     * Top-level keys for which Atomic's source forcibly overwrites the
+     * destination's existing value, opting out of the default
+     * user-precedence merge. Use sparingly — only for keys whose
+     * canonical state is owned by Atomic (e.g. forced security
+     * defaults). Anything else should follow the golden rule and let
+     * the user's value win.
+     */
+    overwriteConfigKeys?: readonly string[];
   }>;
 }
 
@@ -115,7 +124,17 @@ export const AGENT_CONFIG: Record<AgentKey, AgentConfig> = {
     install_url:
       "https://github.com/github/copilot-cli?tab=readme-ov-file#installation",
     exclude: ["workflows", "dependabot.yml"],
-    onboarding_files: [],
+    onboarding_files: [
+      // Workspace `.mcp.json` is shared with Claude — Copilot reads the
+      // same file at the project root. We source it from the `claude`
+      // bundle so a single canonical template ships in both providers.
+      {
+        kind: "claude",
+        source: ".mcp.json",
+        destination: ".mcp.json",
+        merge: true,
+      },
+    ],
   },
 };
 

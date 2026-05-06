@@ -258,3 +258,46 @@ jobs:
                       bun packages/atomic/script/chat-smoke.ts "$ATOMIC" "$agent"
                       echo "::endgroup::"
                   done
+
+    # Cross-platform onboarding contract test. Reuses the host-target
+    # binary built per runner and asserts every agent's declared
+    # `onboarding_files` (claude/copilot/opencode) materialises in a
+    # fresh project root after `atomic chat -a <agent> --preflight-only`.
+    #
+    # Why this needs a dedicated job:
+    #   - `validate-publish` runs preflight but doesn't assert files
+    #     landed on disk (a silent no-op would slip through).
+    #   - The original test was Linux-only; the bug fixed by this PR
+    #     (copilot's empty `onboarding_files` → no `.mcp.json`) was a
+    #     config-data regression with no platform-specific aspect, but
+    #     the resolver code path (embedded-asset extraction, `~/...`
+    #     destination expansion) does differ across Linux/macOS/Windows.
+    #     A cross-platform contract test catches both classes of bug.
+    #
+    # The job sets `RUN_CI_E2E=1` to opt the gated test in.
+    onboarding-matrix:
+        name: Onboarding preflight (${{ matrix.os }})
+        strategy:
+            fail-fast: false
+            matrix:
+                os: [ubuntu-latest, macos-latest, windows-latest]
+        runs-on: ${{ matrix.os }}
+
+        steps:
+            - uses: actions/checkout@v6
+
+            - uses: oven-sh/setup-bun@v2
+              with:
+                  bun-version: latest
+
+            - name: Install dependencies
+              run: bun install
+
+            - name: Build host-target binary
+              run: bun packages/atomic/script/build.ts
+
+            - name: Run onboarding preflight test
+              shell: bash
+              env:
+                  RUN_CI_E2E: "1"
+              run: bun test tests/ci/onboarding.test.ts

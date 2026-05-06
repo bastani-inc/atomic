@@ -43,6 +43,7 @@ export async function applyManagedOnboardingFiles(
       destinationPath,
       managedFile.merge,
       managedFile.excludeConfigKeys ?? [],
+      managedFile.overwriteConfigKeys ?? [],
     );
   }
 }

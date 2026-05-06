@@ -111,6 +111,29 @@ export function getLocalAdditionalInstructionsPath(
 }
 
 /**
+ * Portable form of a resolved AGENTS.md path for OpenCode's `instructions`
+ * array. OpenCode expands a leading `~/` to the user's home dir and resolves
+ * relative paths from the project root, so we can write a machine-independent
+ * entry that's safe to commit to source control:
+ *   - global seed → `~/.atomic/AGENTS.md`
+ *   - project-local override → `.atomic/AGENTS.md` (relative to project root)
+ *
+ * Returns the input unchanged if it doesn't match either of those (defensive
+ * fallback; in practice the resolver only ever returns one of the two).
+ *
+ * Source: opencode `packages/opencode/src/session/instruction.ts` —
+ *   `raw.startsWith("~/") ? path.join(global.home, raw.slice(2)) : raw`,
+ *   then `path.isAbsolute(raw) ? raw : globUp(raw, cwd)`.
+ */
+function toOpencodePortable(absPath: string, projectRoot: string): string {
+  const globalAbs = getGlobalAdditionalInstructionsPath();
+  if (absPath === globalAbs) return "~/.atomic/AGENTS.md";
+  const localAbs = getLocalAdditionalInstructionsPath(projectRoot);
+  if (absPath === localAbs) return ".atomic/AGENTS.md";
+  return absPath;
+}
+
+/**
  * Resolve the effective additional-instructions file for a project.
  *
  * Returns the project-local override if it exists, otherwise the global
@@ -163,11 +186,17 @@ export async function seedGlobalAdditionalInstructions(): Promise<void> {
 
 /**
  * Build a predicate that identifies OpenCode `instructions` entries atomic
- * owns. Matches exact equality against the two paths we ever inject — the
- * global seed (`~/.atomic/AGENTS.md`) and the project-local override
- * (`<projectRoot>/.atomic/AGENTS.md`). A tighter scope than a tail-match
- * ensures legal-but-unusual user entries like `vendor/.atomic/AGENTS.md`
- * are preserved across reconciliation passes.
+ * owns. Matches exact equality against the four forms we may have written:
+ *   - global absolute (legacy) — `<home>/.atomic/AGENTS.md`
+ *   - global portable          — `~/.atomic/AGENTS.md`
+ *   - local absolute (legacy)  — `<projectRoot>/.atomic/AGENTS.md`
+ *   - local portable           — `.atomic/AGENTS.md`
+ *
+ * The legacy absolute forms are matched so existing configs migrate to the
+ * portable form on the next reconcile pass without leaving duplicate entries.
+ *
+ * A tighter scope than a tail-match ensures legal-but-unusual user entries
+ * like `vendor/.atomic/AGENTS.md` are preserved across reconciliation passes.
  */
 function buildAtomicOwnedMatcher(
   projectRoot: string,
@@ -175,6 +204,8 @@ function buildAtomicOwnedMatcher(
   const owned = new Set<string>([
     getGlobalAdditionalInstructionsPath(),
     getLocalAdditionalInstructionsPath(projectRoot),
+    "~/.atomic/AGENTS.md",
+    ".atomic/AGENTS.md",
   ]);
   return (entry: unknown): entry is string =>
     typeof entry === "string" && owned.has(entry);
@@ -207,9 +238,10 @@ function sameInstructionMultiset(
  * file. Strategy:
  *   - Resolve the effective path via {@link resolveAdditionalInstructionsPath}.
  *   - Strip any prior atomic-managed entries (matches `.atomic/AGENTS.md`).
- *   - Append the absolute resolved path. Absolute is fine because OpenCode
- *     happily takes them; we don't expect the user to commit this entry
- *     across machines (and even if they do, the next run reconciles it).
+ *   - Append a portable form via {@link toOpencodePortable} — `~/...` for the
+ *     global seed, a project-relative path for the local override. OpenCode
+ *     expands both at load time, so the resulting `opencode.json` is safe to
+ *     commit and shared across machines without rewriting per-checkout.
  *   - When nothing resolves (file truly missing on this machine), we still
  *     run the cleanup pass so a previously-seeded entry doesn't leak.
  *
@@ -251,7 +283,10 @@ export async function reconcileOpencodeInstructions(
   const preserved = existing.filter((e) => !isAtomicOwned(e));
 
   const resolved = resolveAdditionalInstructionsPath(projectRoot);
-  const next = resolved ? [...preserved, resolved] : preserved;
+  const portable = resolved
+    ? toOpencodePortable(resolved, projectRoot)
+    : undefined;
+  const next = portable ? [...preserved, portable] : preserved;
 
   // Skip the write when the entry set is unchanged — avoids touching mtime
   // on every spawn, keeps the file out of `git status` noise, and preserves
