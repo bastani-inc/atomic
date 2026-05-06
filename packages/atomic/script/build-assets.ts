@@ -9,6 +9,14 @@ interface ArchiveSpec {
   excludes?: readonly string[];
 }
 
+function debugAssetsEnabled(): boolean {
+  return process.env.ATOMIC_DEBUG === "1" ||
+    process.env.ATOMIC_DEBUG === "true" ||
+    process.env.DEBUG === "1" ||
+    process.env.DEBUG === "true" ||
+    (process.env.DEBUG ?? "").split(",").includes("atomic");
+}
+
 /**
  * Hard cap on per-entry path length inside the embedded tarballs.
  *
@@ -33,6 +41,8 @@ export function findOverlongTarEntry(entries: readonly string[]): string | null 
 }
 
 export async function bundleEmbeddedAssets(rootDir: string): Promise<void> {
+  const debugAssets = debugAssetsEnabled();
+
   // Ensure .agents/ dir exists at workspace root (for skills.tar)
   await mkdir(join(rootDir, ".agents"), { recursive: true });
 
@@ -78,7 +88,9 @@ export async function bundleEmbeddedAssets(rootDir: string): Promise<void> {
       );
     }
 
-    console.log(`bundled: ${outPath}`);
+    if (debugAssets) {
+      console.log(`bundled: ${outPath}`);
+    }
   }
 }
 

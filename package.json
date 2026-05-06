@@ -28,7 +28,8 @@
     "examples/*"
   ],
   "scripts": {
-    "dev": "bun run packages/atomic/script/ensure-dev-assets.ts && bun run packages/atomic/src/cli.ts",
+    "build:assets": "bun run packages/atomic/script/build-assets.ts",
+    "dev": "bun --silent run build:assets && bun run packages/atomic/src/cli.ts",
     "build": "bun run packages/atomic/script/build.ts && bun run packages/atomic-sdk/script/build.ts",
     "test": "bun test --parallel packages tests",
     "test:coverage": "bun test --coverage packages tests",

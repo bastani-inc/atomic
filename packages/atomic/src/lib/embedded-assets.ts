@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { homedir, platform, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -29,6 +30,14 @@ function cacheRoot(): string {
   }
 }
 
+function fingerprintAsset(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+function extractionMarker(fingerprint: string): string {
+  return `${VERSION}\n${fingerprint}\n`;
+}
+
 export async function getEmbeddedAsset(kind: EmbeddedAssetKind): Promise<string> {
   const tarPath = BUNDLES[kind];
   if (!tarPath) {
@@ -37,8 +46,14 @@ export async function getEmbeddedAsset(kind: EmbeddedAssetKind): Promise<string>
     );
   }
 
+  const tarBytes = await Bun.file(tarPath).bytes();
+  const expectedMarker = extractionMarker(fingerprintAsset(tarBytes));
   const finalDir = join(cacheRoot(), VERSION, kind);
-  if (existsSync(join(finalDir, ".extracted"))) return finalDir;
+  const markerPath = join(finalDir, ".extracted");
+  if (existsSync(markerPath)) {
+    const marker = await Bun.file(markerPath).text();
+    if (marker === expectedMarker) return finalDir;
+  }
 
   const stagingDir = join(cacheRoot(), VERSION, `.${kind}.staging.${process.pid}.${Date.now()}`);
   await rm(stagingDir, { recursive: true, force: true });
@@ -53,7 +68,7 @@ export async function getEmbeddedAsset(kind: EmbeddedAssetKind): Promise<string>
     ? join(tmpdir(), `.atomic-${kind}-${process.pid}-${Date.now()}.tar`)
     : tarPath;
   if (inBunfs) {
-    await Bun.write(tarPathForOs, await Bun.file(tarPath).bytes());
+    await Bun.write(tarPathForOs, tarBytes);
   }
 
   // On Windows, prefer the bsdtar shipped in System32 over whatever `tar`
@@ -77,7 +92,7 @@ export async function getEmbeddedAsset(kind: EmbeddedAssetKind): Promise<string>
     await rm(stagingDir, { recursive: true, force: true });
     throw new Error(`getEmbeddedAsset: tar failed for ${kind} (exit ${exitCode}): ${stderr}`);
   }
-  await writeFile(join(stagingDir, ".extracted"), VERSION);
+  await writeFile(join(stagingDir, ".extracted"), expectedMarker);
 
   await rm(finalDir, { recursive: true, force: true });
   await rename(stagingDir, finalDir);
