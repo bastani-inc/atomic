@@ -443,6 +443,15 @@ jobs:
             echo "atomic still on PATH after 'bun remove -g'"; exit 1
           fi
 
+      # bun 1.3 on Windows can leave the wrapper's bin shim (and the
+      # @bastani/atomic-windows-<arch> optional-dep package) under
+      # ~/.bun/install/global after `bun remove -g` strips the wrapper —
+      # so Get-Command still resolves `atomic`. The Unix counterpart above
+      # asserts the strict end-state because bun cleans up fully there;
+      # on Windows we surface the leftover as a diagnostic note and let
+      # the binary-install lifecycle below proceed (it targets a different
+      # bin dir, %LOCALAPPDATA%\atomic\bin, and isn't affected by the
+      # leftover shim).
       - name: bun remove -g round-trip (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -450,8 +459,18 @@ jobs:
           $userPath = [Environment]::GetEnvironmentVariable('Path','User')
           if ($userPath) { $env:Path = "$env:Path;$userPath" }
           bun remove -g @bastani/atomic
-          if (Get-Command atomic -ErrorAction SilentlyContinue) {
-            throw "atomic still on PATH after 'bun remove -g'"
+          if ($LASTEXITCODE -ne 0) {
+            throw "bun remove -g failed with exit $LASTEXITCODE"
+          }
+          $cmd = Get-Command atomic -ErrorAction SilentlyContinue
+          if ($cmd) {
+            Write-Output "note: atomic still resolves to $($cmd.Source) after 'bun remove -g' (bun-on-Windows quirk)"
+            $bunBin = Join-Path $env:USERPROFILE '.bun\bin'
+            if (Test-Path $bunBin) {
+              Write-Output "==== ~/.bun/bin atomic* ===="
+              Get-ChildItem $bunBin -Filter 'atomic*' -ErrorAction SilentlyContinue |
+                  Format-Table Name, Length, LastWriteTime | Out-String | Write-Output
+            }
           }
 
       # ── Re-install via bun so the binary-branch lifecycle steps below
