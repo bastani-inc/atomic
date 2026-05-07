@@ -34,6 +34,8 @@ export type {
   WorkflowContext,
   WorkflowOptions,
   WorkflowDefinition,
+  ExternalWorkflow,
+  RegistrableWorkflow,
   WorkflowInput,
   WorkflowInputType,
   StageClientOptions,
@@ -53,10 +55,10 @@ export {
 } from "./primitives/metadata.ts";
 
 // ─── Registry iteration helpers ─────────────────────────────────────────────
-import type { AgentType, Registry, WorkflowDefinition } from "./types.ts";
+import type { AgentType, ExternalWorkflow, Registry, WorkflowDefinition } from "./types.ts";
 
-/** Snapshot every workflow registered in `registry`. */
-export function listWorkflows(registry: Registry): readonly WorkflowDefinition[] {
+/** Snapshot every workflow registered in `registry` (builtins + externals). */
+export function listWorkflows(registry: Registry): readonly (WorkflowDefinition | ExternalWorkflow)[] {
   return registry.list();
 }
 
@@ -65,7 +67,7 @@ export function getWorkflow(
   registry: Registry,
   agent: AgentType,
   name: string,
-): WorkflowDefinition | undefined {
+): WorkflowDefinition | ExternalWorkflow | undefined {
   return registry.resolve(name, agent);
 }
 

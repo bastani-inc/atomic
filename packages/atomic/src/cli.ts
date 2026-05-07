@@ -298,13 +298,23 @@ Examples:
                 const { createBuiltinRegistry } = await import(
                     "./commands/builtin-registry.ts"
                 );
-                const def = createBuiltinRegistry().resolve(workflowName, agent);
-                if (!def) {
+                const resolved = createBuiltinRegistry().resolve(workflowName, agent);
+                if (!resolved) {
                     console.error(
                         `${COLORS.red}[atomic/orchestrator-entry] No workflow named "${workflowName}" for agent "${agent}" in the builtin registry.${COLORS.reset}`,
                     );
                     process.exit(1);
                 }
+                // Builtin registry only contains compiled WorkflowDefinitions — never ExternalWorkflow.
+                // The orchestrator-entry path is exclusively for builtins.
+                if ("kind" in resolved && resolved.kind === "external") {
+                    console.error(
+                        `${COLORS.red}[atomic/orchestrator-entry] Unexpected external workflow in builtin registry: "${workflowName}".${COLORS.reset}`,
+                    );
+                    process.exit(1);
+                }
+                // After the "external" guard above, resolved is WorkflowDefinition.
+                const def = resolved as import("@bastani/atomic-sdk").WorkflowDefinition;
                 const { runOrchestratorWithDefinition } = await import(
                     "@bastani/atomic-sdk/runtime/orchestrator-entry"
                 );

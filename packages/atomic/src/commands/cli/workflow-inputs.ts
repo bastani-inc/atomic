@@ -21,6 +21,7 @@ import { createBuiltinRegistry } from "../builtin-registry.ts";
 import type {
   WorkflowInput,
   WorkflowDefinition,
+  ExternalWorkflow,
   AgentType,
 } from "@bastani/atomic-sdk";
 import { getInputSchema } from "@bastani/atomic-sdk";
@@ -170,7 +171,7 @@ export interface ResolvedWorkflowEntry {
  * definition or a failure with a stage label and message.
  */
 export type WorkflowLoadResult =
-  | { ok: true; value: { definition: WorkflowDefinition } }
+  | { ok: true; value: { definition: WorkflowDefinition | ExternalWorkflow } }
   | { ok: false; stage: string; error: unknown; message: string };
 
 /**
@@ -246,7 +247,7 @@ export async function workflowInputsCommand(
   const payload = buildInputsPayload(
     def.name,
     agent,
-    def.description,
+    def.description ?? "",
     getInputSchema(def),
   );
 

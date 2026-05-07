@@ -6,7 +6,7 @@
  * `register()` is immutable: returns a new Registry, original is unchanged.
  */
 
-import type { AgentType, Registry, RegistrableWorkflow, WorkflowDefinition } from "./types.ts";
+import type { AgentType, ExternalWorkflow, Registry, RegistrableWorkflow, WorkflowDefinition } from "./types.ts";
 import { validateCopilotWorkflow } from "./providers/copilot.ts";
 import { validateOpenCodeWorkflow } from "./providers/opencode.ts";
 import { validateClaudeWorkflow } from "./providers/claude.ts";
@@ -41,11 +41,14 @@ function runProviderValidation(wf: WorkflowDefinition): ValidationWarning[] {
 }
 
 /**
- * Validate a single workflow definition at registration time.
- * Throws on hard failures; logs warnings via console.warn with `[registry]` prefix.
+ * Validate a workflow entry at registration time.
+ * External workflows (`kind === "external"`) have no `run` source to inspect —
+ * validation is skipped silently. Builtins log warnings via console.warn.
  */
-function validateAtRegistration(wf: WorkflowDefinition): void {
-  const warnings = runProviderValidation(wf);
+function validateAtRegistration(wf: WorkflowDefinition | ExternalWorkflow): void {
+  // ExternalWorkflow has no `run` to inspect — skip provider validation.
+  if ("kind" in wf && wf.kind === "external") return;
+  const warnings = runProviderValidation(wf as WorkflowDefinition);
   for (const w of warnings) {
     console.warn(
       `[registry] workflow "${wf.agent}/${wf.name}" — ${w.rule}: ${w.message}`,
@@ -60,11 +63,15 @@ function validateAtRegistration(wf: WorkflowDefinition): void {
  * so the accumulating generic can be rebuilt on each `register()` call
  * without leaking the implementation detail.
  */
-class RegistryImpl<T extends Record<string, WorkflowDefinition>> {
-  /** Immutable snapshot of registered definitions, keyed by `${agent}/${name}`. */
-  private readonly map: ReadonlyMap<string, WorkflowDefinition>;
+class RegistryImpl<T extends Record<string, WorkflowDefinition | ExternalWorkflow>> {
+  /**
+   * Immutable snapshot of registered entries, keyed by `${agent}/${name}`.
+   * Values may be builtins (`WorkflowDefinition`) or externals (`ExternalWorkflow`).
+   * Consumers discriminate via `entry.kind === "external"` at runtime.
+   */
+  private readonly map: ReadonlyMap<string, WorkflowDefinition | ExternalWorkflow>;
 
-  constructor(map: ReadonlyMap<string, WorkflowDefinition>) {
+  constructor(map: ReadonlyMap<string, WorkflowDefinition | ExternalWorkflow>) {
     this.map = map;
   }
 
@@ -89,6 +96,24 @@ class RegistryImpl<T extends Record<string, WorkflowDefinition>> {
     >;
   }
 
+  upsert(
+    wf: RegistrableWorkflow,
+    onOverride?: (prior: WorkflowDefinition | ExternalWorkflow) => void,
+  ): Registry<T> {
+    const key = `${wf.agent}/${wf.name}`;
+
+    const prior = this.map.get(key);
+    if (prior !== undefined && onOverride) {
+      onOverride(prior);
+    }
+
+    validateAtRegistration(wf);
+
+    const next = new Map(this.map);
+    next.set(key, wf);
+    return new RegistryImpl<T>(next) as Registry<T>;
+  }
+
   get<K extends keyof T>(key: K): T[K] {
     const entry = this.map.get(key as string);
     if (!entry) {
@@ -102,11 +127,15 @@ class RegistryImpl<T extends Record<string, WorkflowDefinition>> {
   }
 
   list(): readonly WorkflowDefinition[] {
-    return Object.freeze(Array.from(this.map.values()));
+    // Cast: callers that need to dispatch on `kind === "external"` do so at
+    // runtime; the public Registry type exposes WorkflowDefinition for
+    // backwards-compatible callers that only handle builtins.
+    return Object.freeze(Array.from(this.map.values())) as readonly WorkflowDefinition[];
   }
 
   resolve(name: string, agent: AgentType): WorkflowDefinition | undefined {
-    return this.map.get(`${agent}/${name}`);
+    // Same cast rationale as list() above.
+    return this.map.get(`${agent}/${name}`) as WorkflowDefinition | undefined;
   }
 }
 

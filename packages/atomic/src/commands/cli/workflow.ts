@@ -19,6 +19,7 @@
 import { Command } from "@commander-js/extra-typings";
 import {
   type AgentType,
+  type ExternalWorkflow,
   type WorkflowDefinition,
   type WorkflowInput,
   getInputSchema,
@@ -38,7 +39,7 @@ function resolveWorkflow(
   registry: ReturnType<typeof createBuiltinRegistry>,
   name: string,
   agent: AgentType,
-): WorkflowDefinition {
+): WorkflowDefinition | ExternalWorkflow {
   const def = registry.resolve(name, agent);
   if (def) return def;
   const sameName = listWorkflows(registry)
@@ -55,10 +56,17 @@ function resolveWorkflow(
 
 /** Run a resolved workflow with merged inputs. */
 async function dispatch(
-  workflow: WorkflowDefinition,
+  workflow: WorkflowDefinition | ExternalWorkflow,
   cliInputs: Record<string, string>,
   detach: boolean,
 ): Promise<void> {
+  if ("kind" in workflow && workflow.kind === "external") {
+    // External workflows are dispatched via subprocess (_atomic-run).
+    // Full dispatch implementation is in §5.6 (separate task).
+    throw new Error(
+      `[atomic/workflow] External workflow dispatch not yet implemented for "${workflow.name}".`,
+    );
+  }
   // The SDK's `runWorkflow` auto-defaults `pathToAtomicExecutable` to
   // `process.execPath` in compiled-binary hosts, so atomic's compiled
   // CLI self-dispatches `_orchestrator-entry` through its own binary

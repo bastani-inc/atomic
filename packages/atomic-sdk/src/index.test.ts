@@ -14,7 +14,14 @@ import {
   defineWorkflow,
   getWorkflow,
   listWorkflows,
+  getName,
+  getDescription,
+  getAgent,
+  getInputSchema,
+  getSource,
+  getMinSDKVersion,
 } from "./index.ts";
+import type { ExternalWorkflow } from "./index.ts";
 
 function makeWorkflow(name: string, agent: "claude" | "copilot" | "opencode") {
   return defineWorkflow({ name, source: import.meta.path })
@@ -88,5 +95,99 @@ describe("getWorkflow", () => {
     expect(copilotRalph).toBeDefined();
     expect(claudeRalph!.agent).toBe("claude");
     expect(copilotRalph!.agent).toBe("copilot");
+  });
+});
+
+// ─── ExternalWorkflow + metadata accessors ───────────────────────────────────
+
+function makeExternal(name: string, agent: "claude" | "copilot" | "opencode" = "claude"): ExternalWorkflow {
+  return {
+    kind: "external",
+    name,
+    agent,
+    description: `${name} description`,
+    inputs: [{ name: "query", type: "string" }],
+    source: { command: "bunx", args: [`@me/${name}`] },
+  };
+}
+
+describe("ExternalWorkflow in registry", () => {
+  test("upsert inserts an ExternalWorkflow and list() returns it", () => {
+    const ext = makeExternal("my-wf");
+    const registry = createRegistry().upsert(ext);
+
+    const all = listWorkflows(registry);
+    expect(all).toHaveLength(1);
+    expect(all[0]?.name).toBe("my-wf");
+    const first = all[0];
+    expect(first && "kind" in first ? first.kind : undefined).toBe("external");
+  });
+
+  test("getWorkflow resolves an ExternalWorkflow by (name, agent)", () => {
+    const ext = makeExternal("my-wf", "copilot");
+    const registry = createRegistry().upsert(ext);
+
+    const result = getWorkflow(registry, "copilot", "my-wf");
+    expect(result).toBeDefined();
+    expect(result!.agent).toBe("copilot");
+    expect(result!.name).toBe("my-wf");
+  });
+
+  test("ExternalWorkflow coexists with builtin in registry", () => {
+    const builtin = makeWorkflow("builtin-wf", "claude");
+    const ext = makeExternal("external-wf", "claude");
+    const registry = createRegistry().register(builtin).upsert(ext);
+
+    const all = listWorkflows(registry);
+    expect(all).toHaveLength(2);
+    const names = all.map((w) => w.name).sort();
+    expect(names).toEqual(["builtin-wf", "external-wf"]);
+  });
+
+  test("upsert replaces a builtin with an ExternalWorkflow", () => {
+    const builtin = makeWorkflow("wf", "claude");
+    const ext = makeExternal("wf", "claude");
+    const registry = createRegistry().register(builtin).upsert(ext);
+
+    const resolved = getWorkflow(registry, "claude", "wf");
+    expect(resolved && "kind" in resolved ? resolved.kind : undefined).toBe("external");
+  });
+});
+
+describe("metadata accessors with ExternalWorkflow", () => {
+  test("getName returns the name", () => {
+    expect(getName(makeExternal("my-wf"))).toBe("my-wf");
+  });
+
+  test("getDescription returns description (present)", () => {
+    expect(getDescription(makeExternal("my-wf"))).toBe("my-wf description");
+  });
+
+  test("getDescription returns empty string when description is absent", () => {
+    const ext: ExternalWorkflow = { kind: "external", name: "x", agent: "claude", inputs: [], source: { command: "bunx", args: [] } };
+    expect(getDescription(ext)).toBe("");
+  });
+
+  test("getAgent returns the agent", () => {
+    expect(getAgent(makeExternal("my-wf", "copilot"))).toBe("copilot");
+  });
+
+  test("getInputSchema returns the inputs array", () => {
+    const ext = makeExternal("my-wf");
+    expect(getInputSchema(ext)).toEqual([{ name: "query", type: "string" }]);
+  });
+
+  test("getSource returns formatted command string", () => {
+    const ext = makeExternal("my-wf");
+    expect(getSource(ext)).toBe("bunx @me/my-wf");
+  });
+
+  test("getSource returns just command when args are empty", () => {
+    const ext: ExternalWorkflow = { kind: "external", name: "x", agent: "claude", inputs: [], source: { command: "/abs/path/bin", args: [] } };
+    expect(getSource(ext)).toBe("/abs/path/bin");
+  });
+
+  test("getMinSDKVersion returns null for ExternalWorkflow", () => {
+    expect(getMinSDKVersion(makeExternal("my-wf"))).toBeNull();
   });
 });

@@ -41,13 +41,16 @@ import {
 import { useState, useEffect, useMemo, useRef, useCallback, useContext, createContext, memo } from "react";
 import { useLatest } from "./hooks.ts";
 import { resolveTheme, type TerminalTheme } from "../runtime/theme.ts";
-import type { AgentType, WorkflowInput, WorkflowDefinition, Registry } from "../types.ts";
+import type { AgentType, ExternalWorkflow, WorkflowInput, WorkflowDefinition, Registry } from "../types.ts";
 import { ErrorBoundary } from "./error-boundary.tsx";
 import {
   requestRendererBackgroundRepaint,
   resetRendererTerminalBackground,
   setRendererBackground,
 } from "./renderer-background.ts";
+
+/** A registry entry the picker can display — either a compiled builtin or an external. */
+type PickerWorkflow = WorkflowDefinition | ExternalWorkflow;
 
 // ─── Theme ──────────────────────────────────────
 // The picker uses a slightly extended palette vs. the base terminal theme:
@@ -111,7 +114,7 @@ type Phase = "pick" | "prompt";
 /** The payload the picker resolves with on successful submission. */
 export interface WorkflowPickerResult {
   /** The workflow the user committed to running. */
-  workflow: WorkflowDefinition;
+  workflow: PickerWorkflow;
   /** Populated form values, one per declared input (or { prompt } for free-form). */
   inputs: Record<string, string>;
 }
@@ -157,7 +160,7 @@ export function fuzzyMatch(query: string, target: string): number | null {
 // ─── List Building ──────────────────────────────
 
 interface ListEntry {
-  workflow: WorkflowDefinition;
+  workflow: PickerWorkflow;
   /** Agent the workflow belongs to — used for section grouping. */
   section: AgentType;
 }
@@ -168,13 +171,13 @@ type ListRow =
 
 export function buildEntries(
   query: string,
-  workflows: WorkflowDefinition[],
+  workflows: PickerWorkflow[],
 ): ListEntry[] {
-  type Scored = { wf: WorkflowDefinition; score: number };
+  type Scored = { wf: PickerWorkflow; score: number };
   const scored: Scored[] = [];
   for (const wf of workflows) {
     const nameScore = fuzzyMatch(query, wf.name);
-    const descScore = fuzzyMatch(query, wf.description);
+    const descScore = fuzzyMatch(query, wf.description ?? "");
     const best =
       nameScore !== null && descScore !== null
         ? Math.min(nameScore, descScore + 2)
@@ -433,7 +436,7 @@ const ArgumentRow = memo(function ArgumentRow({
 const Preview = memo(function Preview({
   wf,
 }: {
-  wf: WorkflowDefinition;
+  wf: PickerWorkflow;
 }) {
   const theme = usePickerTheme();
   const args = wf.inputs;
@@ -765,7 +768,7 @@ function InputPhase({
   focusedFieldIdx,
   onFieldInput,
 }: {
-  workflow: WorkflowDefinition;
+  workflow: PickerWorkflow;
   agent: AgentType;
   fields: readonly WorkflowInput[];
   values: Record<string, string>;
@@ -922,7 +925,7 @@ function ConfirmModal({
   workflow,
   agent,
 }: {
-  workflow: WorkflowDefinition;
+  workflow: PickerWorkflow;
   agent: AgentType;
 }) {
   const theme = usePickerTheme();
@@ -1076,7 +1079,7 @@ const Statusline = memo(function Statusline({
   phase: Phase;
   confirmOpen: boolean;
   hints: { key: string; label: string; dim?: boolean }[];
-  focusedWf: WorkflowDefinition | undefined;
+  focusedWf: PickerWorkflow | undefined;
 }) {
   const theme = usePickerTheme();
   const modeLabel = confirmOpen
@@ -1142,7 +1145,7 @@ interface PickerKeyboardState {
   entries: ListEntry[];
   clampedEntryIdx: number;
   savedEntryIdx: number;
-  focusedWf: WorkflowDefinition | undefined;
+  focusedWf: PickerWorkflow | undefined;
   fieldValues: Record<string, string>;
   isFormValid: boolean;
   invalidFieldIndices: number[];
@@ -1312,7 +1315,7 @@ function usePickerKeyboard(state: PickerKeyboardState): void {
 interface PickerAppProps {
   theme: PickerTheme;
   agent: AgentType;
-  workflows: WorkflowDefinition[];
+  workflows: PickerWorkflow[];
   onSubmit: (result: WorkflowPickerResult) => void;
   onCancel: () => void;
 }
@@ -1471,7 +1474,7 @@ export interface WorkflowPickerPanelOptions {
    * Registry of compiled workflow definitions. The panel calls
    * `registry.list()` and filters to the selected `agent`.
    */
-  registry: Registry<Record<string, WorkflowDefinition>>;
+  registry: Registry<Record<string, PickerWorkflow>>;
 }
 
 /**
