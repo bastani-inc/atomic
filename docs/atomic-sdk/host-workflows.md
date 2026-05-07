@@ -1,6 +1,6 @@
 # hostWorkflows
 
-`hostWorkflows` is the explicit handoff point that lets atomic discover and dispatch your custom workflows from the third-party CLI. Call it once after `defineWorkflow({...}).compile()`, and `export default` the compiled workflow alongside the call — the orchestrator pane that atomic spawns later re-imports the same file and reads `mod.default` to resolve the workflow definition.
+`hostWorkflows` is the explicit handoff point that lets atomic discover and dispatch your custom workflows from the third-party CLI. Call it once after `defineWorkflow({...}).compile()`. The call (1) handles atomic's `_emit-workflow-meta` and `_atomic-run` sub-commands when token-gated, and (2) registers the supplied workflows into a process-local registry so the orchestrator pane that atomic spawns later can resolve them by `(name, agent)` — no `export default` boilerplate required.
 
 ## Why explicit?
 
@@ -30,9 +30,6 @@ const wf = defineWorkflow({
     });
   })
   .compile();
-
-// Required: the orchestrator pane re-imports this file and reads `mod.default`.
-export default wf;
 
 await hostWorkflows([wf]);
 
@@ -71,10 +68,11 @@ export async function hostWorkflows(
 
 `hostWorkflows`:
 
-1. Inspects `argv` for `_emit-workflow-meta` or `_atomic-run`. Neither present → returns immediately.
-2. Validates the dispatch token (`ATOMIC_HOST=1` env + `--dispatch-token=<hex>` argv must match `ATOMIC_DISPATCH_TOKEN` env). Mismatch → returns silently. **Direct invocations like `bunx my-pkg _emit-workflow-meta` from a user terminal will run your CLI's main() normally — they will not emit the meta line.**
-3. `_emit-workflow-meta`: serializes the supplied `workflows` to JSON, writes one line `ATOMIC_WORKFLOW_META: <json>\n` to stdout, exits 0.
-4. `_atomic-run`: parses `--name <X> --agent <Y> [--detach] [--<input> <v>]…`, looks up `(name, agent)` in `workflows`, runs it via `runWorkflow`, exits 0 on success / 1 on missing match or error.
+1. Registers the supplied `workflows` into a process-local registry keyed by `(agent, name)`. This always happens, even when `argv` carries no recognised sub-command — the orchestrator pane spawned by `_atomic-run` later re-imports the same file and uses this registry to resolve the definition without requiring an `export default`.
+2. Inspects `argv` for `_emit-workflow-meta` or `_atomic-run`. Neither present → returns immediately.
+3. Validates the dispatch token (`ATOMIC_HOST=1` env + `--dispatch-token=<hex>` argv must match `ATOMIC_DISPATCH_TOKEN` env). Mismatch → returns silently. **Direct invocations like `bunx my-pkg _emit-workflow-meta` from a user terminal will run your CLI's main() normally — they will not emit the meta line.**
+4. `_emit-workflow-meta`: serializes the supplied `workflows` to JSON, writes one line `ATOMIC_WORKFLOW_META: <json>\n` to stdout, exits 0.
+5. `_atomic-run`: parses `--name <X> --agent <Y> [--detach] [--<input> <v>]…`, looks up `(name, agent)` in `workflows`, runs it via `runWorkflow`, exits 0 on success / 1 on missing match or error.
 
 ## See also
 

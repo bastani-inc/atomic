@@ -328,7 +328,7 @@ Examples:
             const { runOrchestratorEntry } = await import(
                 "@bastani/atomic-sdk/runtime/orchestrator-entry"
             );
-            await runOrchestratorEntry(workflowSource, agent, inputsB64);
+            await runOrchestratorEntry(workflowSource, workflowName, agent, inputsB64);
         });
 
     // ── Internal: cc-debounce (called by tmux.conf on every Ctrl+C) ────────

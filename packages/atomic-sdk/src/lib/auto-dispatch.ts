@@ -11,7 +11,7 @@
  *
  * Behavior:
  *   `_orchestrator-entry`
- *     - Try `runOrchestratorEntry(source, agent, inputsB64)`.
+ *     - Try `runOrchestratorEntry(source, workflowName, agent, inputsB64)`.
  *     - On `InvalidWorkflowError`, fall through silently. Atomic's
  *       compiled binary collapses every bundled module's
  *       `import.meta.path` to the binary entry, so the SDK's
@@ -168,7 +168,9 @@ export function parseAtomicRunArgv(argv: readonly string[]): AtomicRunArgs {
 const found = findSub(process.argv);
 
 if (found?.sub === "_orchestrator-entry") {
-  // Arguments follow immediately after the sub-command token.
+  // Arguments follow immediately after the sub-command token, in the same
+  // order the executor emits them: [workflowName, agent, inputsB64, source].
+  const workflowName = process.argv[found.index + 1] ?? "";
   const agent = process.argv[found.index + 2] ?? "";
   const inputsB64 = process.argv[found.index + 3] ?? "";
   const source = process.argv[found.index + 4] ?? "";
@@ -176,7 +178,7 @@ if (found?.sub === "_orchestrator-entry") {
     const { runOrchestratorEntry } = await import(
       "../runtime/orchestrator-entry.ts"
     );
-    await runOrchestratorEntry(source, agent, inputsB64);
+    await runOrchestratorEntry(source, workflowName, agent, inputsB64);
     process.exit(0);
   } catch (err) {
     const { InvalidWorkflowError } = await import("../errors.ts");

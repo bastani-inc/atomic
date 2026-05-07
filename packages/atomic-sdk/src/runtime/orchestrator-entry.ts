@@ -22,14 +22,56 @@ import { runOrchestrator } from "./executor.ts";
 import type { AgentType, WorkflowDefinition } from "../types.ts";
 import { isValidAgent } from "../services/config/definitions.ts";
 import { InvalidWorkflowError } from "../errors.ts";
+import { lookupHostedWorkflow } from "../lib/host-workflows.ts";
 
-/** Runtime guard for the imported module's default export. */
+/** Runtime guard for any candidate WorkflowDefinition (mod.default OR registry hit). */
 function isWorkflowDefinition(value: unknown): value is WorkflowDefinition {
   return (
     typeof value === "object" &&
     value !== null &&
     (value as { __brand?: unknown }).__brand === "WorkflowDefinition"
   );
+}
+
+/**
+ * Resolve a `WorkflowDefinition` for the given source path.
+ *
+ * Imports the source (which lets any top-level `await hostWorkflows([wf])`
+ * call register into the host registry) and then resolves the definition
+ * in this order:
+ *
+ *   1. Host-workflows registry, keyed by `(agent, name)` — populated by
+ *      `hostWorkflows([…])`. This lets consumers declare the workflow
+ *      once via the `hostWorkflows` argument array, with no separate
+ *      `export default` required.
+ *   2. `mod.default` — backwards-compat for the traditional pattern
+ *      where a workflow file directly default-exports the compiled
+ *      definition (e.g. `examples/hello-world/claude/index.ts`) and a
+ *      sibling worker calls `runWorkflow({ workflow, … })`.
+ *
+ * Throws `InvalidWorkflowError` when neither source resolves.
+ *
+ * Exported for unit testing; production callers should use
+ * `runOrchestratorEntry`.
+ */
+export async function resolveWorkflowDefinition(
+  sourcePath: string,
+  workflowName: string,
+  agent: AgentType,
+): Promise<WorkflowDefinition> {
+  const mod: unknown = await import(sourcePath);
+
+  if (workflowName !== "") {
+    const fromHost = lookupHostedWorkflow(workflowName, agent);
+    if (fromHost && isWorkflowDefinition(fromHost)) {
+      return fromHost;
+    }
+  }
+
+  const def = (mod as { default?: unknown }).default;
+  if (isWorkflowDefinition(def)) return def;
+
+  throw new InvalidWorkflowError(sourcePath);
 }
 
 /**
@@ -87,6 +129,7 @@ function decodeInputs(b64: string): Record<string, string> {
  */
 export async function runOrchestratorEntry(
   sourcePath: string,
+  workflowName: string,
   agentRaw: string,
   inputsB64: string,
 ): Promise<void> {
@@ -98,15 +141,7 @@ export async function runOrchestratorEntry(
   }
   const agent: AgentType = agentRaw;
 
-  // Import the workflow module by its source path. The dev's `defineWorkflow`
-  // call passed `source: import.meta.path`, so this is the same path the SDK
-  // captured at build time.
-  const mod: unknown = await import(sourcePath);
-  const def = (mod as { default?: unknown }).default;
-
-  if (!isWorkflowDefinition(def)) {
-    throw new InvalidWorkflowError(sourcePath);
-  }
+  const def = await resolveWorkflowDefinition(sourcePath, workflowName, agent);
 
   if (def.agent !== agent) {
     throw new Error(

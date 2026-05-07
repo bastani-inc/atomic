@@ -12,7 +12,11 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { defineWorkflow } from "../define-workflow.ts";
 import type { RunWorkflowResult } from "../primitives/run.ts";
-import { hostWorkflows } from "./host-workflows.ts";
+import {
+  hostWorkflows,
+  lookupHostedWorkflow,
+  _clearHostedWorkflowRegistry,
+} from "./host-workflows.ts";
 
 // ─── Sentinel ────────────────────────────────────────────────────────────────
 
@@ -406,5 +410,58 @@ describe("hostWorkflows — _atomic-run", () => {
     expect(caught).toBeInstanceOf(ExitCalled);
     expect(caught!.code).toBe(1);
     expect(capturedStderr.join("")).toContain("workflow execution failed");
+  });
+});
+
+// ─── hostedWorkflowRegistry ───────────────────────────────────────────────────
+
+describe("hostWorkflows — registry side-effect", () => {
+  beforeEach(() => {
+    _clearHostedWorkflowRegistry();
+  });
+
+  test("registers each supplied workflow keyed by (agent, name)", async () => {
+    const wfA = makeWorkflow("demo-a", "claude");
+    const wfB = makeWorkflow("demo-b", "opencode");
+
+    // No HOST_SUBS in argv → hostWorkflows returns silently, but the
+    // registry side-effect must still run so orchestrator-entry can resolve
+    // the workflow on a later re-import.
+    const argv = ["bun", "fixture.ts"];
+    await hostWorkflows([wfA, wfB], { argv, env: {} });
+
+    expect(lookupHostedWorkflow("demo-a", "claude")).toBe(wfA);
+    expect(lookupHostedWorkflow("demo-b", "opencode")).toBe(wfB);
+  });
+
+  test("lookupHostedWorkflow returns undefined for unknown (name, agent)", () => {
+    expect(lookupHostedWorkflow("never-registered", "claude")).toBeUndefined();
+  });
+
+  test("registry write happens before token validation, so untokenised re-imports still register", async () => {
+    const wf = makeWorkflow("demo", "claude");
+    // Token absent: validateDispatchToken returns false → hostWorkflows
+    // returns immediately. But the registry must still be populated, since
+    // this is exactly the path the orchestrator pane takes when it
+    // re-imports the user's CLI under `_orchestrator-entry`.
+    const argv = ["bun", "fixture.ts", "_emit-workflow-meta"];
+    await hostWorkflows([wf], { argv, env: {} });
+
+    expect(lookupHostedWorkflow("demo", "claude")).toBe(wf);
+    // No stdout / stderr emitted because token check failed.
+    expect(capturedStdout.join("")).toBe("");
+  });
+
+  test("agent disambiguates same-named workflows in the registry", async () => {
+    const wfClaude = makeWorkflow("shared-name", "claude");
+    const wfOpencode = makeWorkflow("shared-name", "opencode");
+
+    await hostWorkflows([wfClaude, wfOpencode], {
+      argv: ["bun", "fixture.ts"],
+      env: {},
+    });
+
+    expect(lookupHostedWorkflow("shared-name", "claude")).toBe(wfClaude);
+    expect(lookupHostedWorkflow("shared-name", "opencode")).toBe(wfOpencode);
   });
 });

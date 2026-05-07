@@ -58,6 +58,44 @@ type HostableWorkflow = {
 /** Sub-commands handled exclusively by `hostWorkflows()`. */
 const HOST_SUBS = new Set(["_emit-workflow-meta", "_atomic-run"]);
 
+/**
+ * Module-scoped registry of workflows passed to `hostWorkflows([…])`.
+ *
+ * Populated at every `hostWorkflows()` call (before any argv inspection).
+ * `runOrchestratorEntry` consults this registry by `(agent, name)` after
+ * dynamic-importing the workflow source path, so consumers don't need to
+ * `export default` the compiled workflow alongside the `hostWorkflows()`
+ * call — the array argument is the single declaration.
+ *
+ * Keyed by `${agent}:${name}` because (name, agent) is the dispatch
+ * identity and a single source file may register multiple workflows.
+ */
+const hostedWorkflowRegistry = new Map<string, HostableWorkflow>();
+
+function registryKey(agent: string, name: string): string {
+  return `${agent}:${name}`;
+}
+
+/**
+ * Look up a workflow registered via `hostWorkflows([…])` by
+ * `(name, agent)`. Returns `undefined` if no workflow has been
+ * registered for that pair in the current process.
+ *
+ * Used by `runOrchestratorEntry` (and unit tests). Consumers should call
+ * `hostWorkflows()` to register; this function is a read-only accessor.
+ */
+export function lookupHostedWorkflow(
+  name: string,
+  agent: string,
+): HostableWorkflow | undefined {
+  return hostedWorkflowRegistry.get(registryKey(agent, name));
+}
+
+/** Test seam: clear the host-workflow registry between tests. */
+export function _clearHostedWorkflowRegistry(): void {
+  hostedWorkflowRegistry.clear();
+}
+
 /** Scan `argv` from index 2 for the first HOST_SUBS token. */
 function findHostSub(argv: readonly string[]): { sub: string; index: number } | null {
   for (let i = 2; i < argv.length; i++) {
@@ -109,6 +147,16 @@ export async function hostWorkflows(
 ): Promise<void> {
   const argv = options?.argv ?? process.argv;
   const env = options?.env ?? (process.env as Record<string, string | undefined>);
+
+  // Register supplied workflows into the host registry BEFORE any argv
+  // inspection. This runs on every call — including when the dispatcher
+  // pane re-imports this file under `_orchestrator-entry`, where the
+  // function returns silently below but the registry side-effect lets
+  // `runOrchestratorEntry` resolve the definition without requiring the
+  // consumer to also `export default` the workflow.
+  for (const w of workflows) {
+    hostedWorkflowRegistry.set(registryKey(w.agent, w.name), w);
+  }
 
   const found = findHostSub(argv);
   if (!found || !validateDispatchToken(env, argv)) return;
