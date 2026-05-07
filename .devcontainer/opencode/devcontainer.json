@@ -4,14 +4,32 @@
   "features": {
     "ghcr.io/devcontainers/features/common-utils": {},
     "ghcr.io/flora131/atomic/opencode:1": {},
-    "ghcr.io/devcontainers/features/github-cli:1": {}
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {}
   },
   "remoteEnv": {
     "GH_TOKEN": "${localEnv:GH_TOKEN}"
   },
+  "postCreateCommand": "bun install",
+  "mounts": [
+    {
+      "source": "${localEnv:HOME}${localEnv:USERPROFILE}/.ssh",
+      "target": "/home/vscode/.ssh",
+      "type": "bind"
+    },
+    {
+      "source": "${localEnv:HOME}${localEnv:USERPROFILE}/.gitconfig",
+      "target": "/home/vscode/.gitconfig",
+      "type": "bind"
+    }
+  ],
   "customizations": {
     "vscode": {
-      "extensions": ["shd101wyy.markdown-preview-enhanced", "sst-dev.opencode"]
+      "extensions": [
+        "oven.bun-vscode",
+        "shd101wyy.markdown-preview-enhanced",
+        "sst-dev.opencode"
+      ]
     }
   }
 }

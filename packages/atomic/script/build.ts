@@ -112,6 +112,10 @@ for (const t of requested) {
     repository,
     os: [t.os],
     cpu: [t.cpu],
+    // `libc` discriminates Linux glibc/musl variants. Omitted on darwin/windows
+    // where it has no meaning. Without this, npm picks any matching os/cpu
+    // package on Alpine and crashes at runtime on `libc.so.6` lookup.
+    ...(t.libc ? { libc: [t.libc] } : {}),
     files: ["bin"],
     license: "MIT",
   }, null, 2) + "\n");

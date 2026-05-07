@@ -38,6 +38,9 @@ curl -fsSL https://raw.githubusercontent.com/flora131/atomic/main/install.sh | b
 
 # Windows (PowerShell 5.1+ or 7+)
 irm https://raw.githubusercontent.com/flora131/atomic/main/install.ps1 | iex
+
+# Already have Bun? Skip the bootstrap script entirely
+bun install -g @bastani/atomic
 ```
 
 Then kick off your first autonomous workflow:

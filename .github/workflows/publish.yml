@@ -79,27 +79,45 @@ jobs:
   # Catches regressions BEFORE we touch the public npm registry, so a
   # bad publish never reaches users.
   validate:
-    name: Validate ${{ matrix.os }} ${{ matrix.arch }}
+    name: Validate ${{ matrix.os }} ${{ matrix.arch }}${{ matrix.libc == 'musl' && ' (musl)' || '' }}
     needs: [build]
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest,    arch: x64,   mux: true,  preflight: true  }
-          - { os: ubuntu-24.04-arm, arch: arm64, mux: false, preflight: false }
-          - { os: macos-26-intel,   arch: x64,   mux: false, preflight: false }
-          - { os: macos-latest,     arch: arm64, mux: true,  preflight: false }
-          - { os: windows-latest,   arch: x64,   mux: true,  preflight: false }
-          - { os: windows-11-arm,   arch: arm64, mux: false, preflight: false }
+          - { os: ubuntu-latest,    arch: x64,   mux: true,  preflight: true,  libc: glibc }
+          - { os: ubuntu-24.04-arm, arch: arm64, mux: false, preflight: false, libc: glibc }
+          - { os: macos-26-intel,   arch: x64,   mux: false, preflight: false, libc: glibc }
+          - { os: macos-latest,     arch: arm64, mux: true,  preflight: false, libc: glibc }
+          - { os: windows-latest,   arch: x64,   mux: true,  preflight: false, libc: glibc }
+          - { os: windows-11-arm,   arch: arm64, mux: false, preflight: false, libc: glibc }
+          # musl rows mirror the linux glibc rows' mux/preflight choices so
+          # auto-install + chat-preflight paths get exercised against musl too.
+          - { os: ubuntu-latest,    arch: x64,   mux: true,  preflight: true,  libc: musl,
+              container: 'node:lts-alpine' }
+          - { os: ubuntu-24.04-arm, arch: arm64, mux: false, preflight: false, libc: musl,
+              container: 'node:lts-alpine' }
     runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container || '' }}
     steps:
+      # Alpine bootstrap: must run before any other step so `actions/checkout`
+      # can clone with native git (faster than the API tarball fallback) and
+      # later steps have bash/jq/tmux/libstdc++ available. node + npm are
+      # pre-installed in `node:lts-alpine`; we skip `setup-node` below since
+      # its prebuilt binaries are glibc-linked and would crash on Alpine.
+      - name: Bootstrap Alpine toolchain (musl rows)
+        if: matrix.libc == 'musl'
+        shell: sh
+        run: apk add --no-cache git bash curl jq tmux libstdc++ libgcc
+
       - uses: actions/checkout@v6
 
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
 
-      - uses: actions/setup-node@v6
+      - if: matrix.libc == 'glibc'
+        uses: actions/setup-node@v6
         with:
           node-version: "lts/*"
 
@@ -172,12 +190,24 @@ jobs:
       #    triggered by `atomic workflow list` (ensureTmuxInstalled) is
       #    actually exercised end-to-end.
       - name: Strip tmux (Linux mux row)
-        if: matrix.mux && runner.os == 'Linux'
+        if: matrix.mux && runner.os == 'Linux' && matrix.libc == 'glibc'
         shell: bash
         run: |
           sudo apt-get remove -y tmux >/dev/null 2>&1 || true
           if command -v tmux >/dev/null 2>&1; then
             echo "tmux still on PATH after remove"; exit 1
+          fi
+
+      # Alpine has no apt-get / sudo; the bootstrap step above installed tmux,
+      # so `apk del` here mirrors the glibc strip and lets atomic's auto-install
+      # path run from a clean state.
+      - name: Strip tmux (Alpine mux row)
+        if: matrix.mux && matrix.libc == 'musl'
+        shell: sh
+        run: |
+          apk del tmux 2>/dev/null || true
+          if command -v tmux >/dev/null 2>&1; then
+            echo "tmux still on PATH after apk del"; exit 1
           fi
 
       - name: Strip tmux (macOS mux row)

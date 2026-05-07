@@ -132,27 +132,34 @@ echo "✓ Atomic CLI installed (${ATOMIC_SPEC})"
 # Agent CLIs (e.g. Copilot) emit Unicode box-drawing / figlet characters.
 # Without a UTF-8 locale the output is garbled when spawned as a Bun
 # subprocess inside the devcontainer.
+#
+# Branches by host package manager:
+#   apt-get → install `locales`, run `locale-gen en_US.UTF-8`, `update-locale`
+#   apk     → install `musl-locales` (Alpine; no locale-gen needed)
+#   neither → skip silently — the rc-file env exports below still set
+#             LANG/LC_ALL so most agent CLIs render correctly even without
+#             a generated locale archive.
 
-# Step 1: install locales package if locale-gen is not present
-if ! command -v locale-gen >/dev/null 2>&1; then
-    apt-get update -y
-    apt-get install -y --no-install-recommends locales
-fi
-
-# Step 2: ensure en_US.UTF-8 UTF-8 is uncommented in /etc/locale.gen
-if [ -f /etc/locale.gen ]; then
-    sed -i 's/^# *en_US\.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
-fi
-if ! grep -q '^en_US\.UTF-8 UTF-8' /etc/locale.gen 2>/dev/null; then
-    echo 'en_US.UTF-8 UTF-8' >> /etc/locale.gen
-fi
-
-# Step 3: generate the locale
-locale-gen en_US.UTF-8
-
-# Step 4: set system default locale when update-locale is available
-if command -v update-locale >/dev/null 2>&1; then
-    update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 LC_CTYPE=en_US.UTF-8
+if command -v apt-get >/dev/null 2>&1; then
+    if ! command -v locale-gen >/dev/null 2>&1; then
+        apt-get update -y
+        apt-get install -y --no-install-recommends locales
+    fi
+    if [ -f /etc/locale.gen ]; then
+        sed -i 's/^# *en_US\.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
+    fi
+    if ! grep -q '^en_US\.UTF-8 UTF-8' /etc/locale.gen 2>/dev/null; then
+        echo 'en_US.UTF-8 UTF-8' >> /etc/locale.gen
+    fi
+    locale-gen en_US.UTF-8
+    if command -v update-locale >/dev/null 2>&1; then
+        update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 LC_CTYPE=en_US.UTF-8
+    fi
+elif command -v apk >/dev/null 2>&1; then
+    # Alpine ships a stripped-down musl libc with no locale data. The
+    # `musl-locales` community package installs the en_US.UTF-8 archive,
+    # which the env exports below then activate.
+    apk add --no-cache musl-locales musl-locales-lang 2>/dev/null || true
 fi
 
 cat > /etc/profile.d/atomic-locale.sh <<'LOCALE_EOF'
