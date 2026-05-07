@@ -1,20 +1,34 @@
 #!/usr/bin/env bun
 import { defineWorkflow, hostWorkflows } from "@bastani/atomic-sdk";
 
-const deployWorkflow = defineWorkflow({
-  name: "deploy",
-  description: "Deploys the staging environment",
+const explainFile = defineWorkflow({
+  name: "explain-file",
+  description: "Open a Claude pane that walks through a file",
   source: import.meta.path,
-  inputs: [],
+  inputs: [
+    {
+      name: "path",
+      type: "text",
+      required: true,
+      description: "absolute or relative path to the file to explain",
+    },
+  ],
 })
   .for("claude")
-  .run(async (_ctx) => {
-    // Perform deployment steps here.
-    // ctx.stage() / ctx.inputs available for real workflows.
+  .run(async (ctx) => {
+    await ctx.stage(
+      { name: "explain", description: "Read the file and walk through it" },
+      {},
+      {},
+      async (s) => {
+        await s.session.query(
+          `Read ${ctx.inputs.path} and walk me through what it does. ` +
+            `Highlight any non-obvious behaviour or invariants. Keep it under 10 short sentences.`,
+        );
+        s.save(s.sessionId);
+      },
+    );
   })
   .compile();
 
-await hostWorkflows([deployWorkflow]);
-
-// Your CLI's main() continues here if not invoked by atomic.
-console.log("standalone mode: deploy workflow defined; not running anything");
+await hostWorkflows([explainFile]);

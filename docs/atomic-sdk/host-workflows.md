@@ -15,21 +15,25 @@ The `_orchestrator-entry` and `_cc-debounce` subs continue to dispatch at module
 import { defineWorkflow, hostWorkflows } from "@bastani/atomic-sdk";
 
 const wf = defineWorkflow({
-  name: "deploy",
-  description: "Deploys the staging environment",
-  agent: "claude",
-  inputs: [],
+  name: "explain-file",
+  description: "Open a Claude pane that walks through a file",
+  source: import.meta.path,
+  inputs: [
+    { name: "path", type: "text", required: true, description: "file to explain" },
+  ],
 })
-  .run(async ({ inputs }) => {
-    // ... your workflow body
-    return { ok: true };
+  .for("claude")
+  .run(async (ctx) => {
+    await ctx.stage({ name: "explain" }, {}, {}, async (s) => {
+      await s.session.query(`Read ${ctx.inputs.path} and walk me through it.`);
+      s.save(s.sessionId);
+    });
   })
   .compile();
 
 await hostWorkflows([wf]);
 
 // Your CLI's main() continues here when not invoked by atomic.
-program.parse(process.argv);
 ```
 
 Register the binary in your atomic settings:
@@ -37,7 +41,7 @@ Register the binary in your atomic settings:
 ```json
 {
   "workflows": {
-    "deploy": {
+    "explain-file": {
       "command": "bunx",
       "args": ["@example/my-workflows"],
       "agents": ["claude"]

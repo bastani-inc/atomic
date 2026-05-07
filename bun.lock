@@ -45,10 +45,6 @@
       "dependencies": {
         "@bastani/atomic-sdk": "workspace:*",
       },
-      "devDependencies": {
-        "@types/bun": "^1.3.13",
-        "typescript": "^6.0.3",
-      },
     },
     "examples/headless-test": {
       "name": "@bastani/example-headless-test",
