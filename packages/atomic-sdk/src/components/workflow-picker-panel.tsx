@@ -41,7 +41,7 @@ import {
 import { useState, useEffect, useMemo, useRef, useCallback, useContext, createContext, memo } from "react";
 import { useLatest } from "./hooks.ts";
 import { resolveTheme, type TerminalTheme } from "../runtime/theme.ts";
-import type { AgentType, ExternalWorkflow, WorkflowInput, WorkflowDefinition, Registry } from "../types.ts";
+import type { AgentType, BrokenWorkflow, ExternalWorkflow, WorkflowInput, WorkflowDefinition, Registry } from "../types.ts";
 import { ErrorBoundary } from "./error-boundary.tsx";
 import {
   requestRendererBackgroundRepaint,
@@ -51,6 +51,15 @@ import {
 
 /** A registry entry the picker can display — either a compiled builtin or an external. */
 type PickerWorkflow = WorkflowDefinition | ExternalWorkflow;
+
+/**
+ * A unified navigable row in the picker list — either a healthy workflow or a
+ * broken entry that failed to load. Arrow-key navigation indices over this
+ * union so broken entries are fully traversable.
+ */
+export type PickerRow =
+  | { kind: "healthy"; wf: PickerWorkflow }
+  | { kind: "broken"; alias: string; agent: AgentType; broken: BrokenWorkflow };
 
 // ─── Theme ──────────────────────────────────────
 // The picker uses a slightly extended palette vs. the base terminal theme:
@@ -224,6 +233,82 @@ export function buildRows(entries: ListEntry[], query: string): ListRow[] {
   return rows;
 }
 
+/**
+ * Build the unified navigable list of `PickerRow` entries from healthy
+ * workflows and a broken index. Broken rows are matched by alias + agent
+ * against the query the same way healthy rows are.
+ *
+ * The returned array is the authoritative navigation list — arrow key
+ * indices run over it directly (no separate entry array).
+ */
+export function buildPickerRows(
+  query: string,
+  workflows: PickerWorkflow[],
+  brokenIndex: ReadonlyMap<string, BrokenWorkflow> = new Map(),
+): PickerRow[] {
+  // ── Healthy ──────────────────────────────────────────────────────────────
+
+  type ScoredHealthy = { wf: PickerWorkflow; score: number };
+  const scoredHealthy: ScoredHealthy[] = [];
+  for (const wf of workflows) {
+    const nameScore = fuzzyMatch(query, wf.name);
+    const descScore = fuzzyMatch(query, wf.description ?? "");
+    const best =
+      nameScore !== null && descScore !== null
+        ? Math.min(nameScore, descScore + 2)
+        : nameScore !== null
+          ? nameScore
+          : descScore !== null
+            ? descScore + 2
+            : null;
+    if (best !== null) scoredHealthy.push({ wf, score: best });
+  }
+
+  // ── Broken ───────────────────────────────────────────────────────────────
+
+  type ScoredBroken = { alias: string; agent: AgentType; broken: BrokenWorkflow; score: number };
+  const scoredBroken: ScoredBroken[] = [];
+  for (const [key, broken] of brokenIndex) {
+    const slash = key.indexOf("/");
+    if (slash === -1) continue;
+    const agent = key.slice(0, slash) as AgentType;
+    const alias = key.slice(slash + 1);
+    const score = fuzzyMatch(query, alias);
+    if (score !== null) scoredBroken.push({ alias, agent, broken, score });
+  }
+
+  // ── Assemble ─────────────────────────────────────────────────────────────
+
+  if (query === "") {
+    // No query: group by agent in canonical order, healthy before broken per agent.
+    const rows: PickerRow[] = [];
+    for (const agent of ["claude", "copilot", "opencode"] as AgentType[]) {
+      const healthyGroup = scoredHealthy
+        .filter((s) => s.wf.agent === agent)
+        .sort((a, b) => a.wf.name.localeCompare(b.wf.name))
+        .map<PickerRow>((s) => ({ kind: "healthy", wf: s.wf }));
+      const brokenGroup = scoredBroken
+        .filter((s) => s.agent === agent)
+        .sort((a, b) => a.alias.localeCompare(b.alias))
+        .map<PickerRow>((s) => ({ kind: "broken", alias: s.alias, agent: s.agent, broken: s.broken }));
+      rows.push(...healthyGroup, ...brokenGroup);
+    }
+    return rows;
+  }
+
+  // With query: sort by score, interleave broken with healthy.
+  const allScored: Array<(ScoredHealthy | ScoredBroken) & { score: number }> = [
+    ...scoredHealthy,
+    ...scoredBroken,
+  ];
+  allScored.sort((a, b) => a.score - b.score);
+  return allScored.map<PickerRow>((s) =>
+    "wf" in s
+      ? { kind: "healthy", wf: s.wf }
+      : { kind: "broken", alias: s.alias, agent: s.agent, broken: s.broken },
+  );
+}
+
 // ─── Validation ─────────────────────────────────
 
 export function isFieldValid(field: WorkflowInput, value: string): boolean {
@@ -302,87 +387,6 @@ function FilterBar({
     </box>
   );
 }
-
-const WorkflowList = memo(function WorkflowList({
-  rows,
-  focusedEntryIdx,
-}: {
-  rows: ListRow[];
-  focusedEntryIdx: number;
-}) {
-  const theme = usePickerTheme();
-  // Pre-compute entry indices so the render pass is side-effect-free.
-  // Must live before any early return to satisfy the Rules of Hooks.
-  const entryIndexByRow = useMemo(() => {
-    const map = new Map<number, number>();
-    let counter = 0;
-    for (let i = 0; i < rows.length; i++) {
-      const row = rows[i];
-      if (row && row.kind === "entry") {
-        map.set(i, counter++);
-      }
-    }
-    return map;
-  }, [rows]);
-
-  if (rows.length === 0) {
-    return (
-      <box paddingLeft={2} paddingTop={2} backgroundColor={theme.backgroundPanel}>
-        <text>
-          <span fg={theme.textDim}>no matches</span>
-        </text>
-      </box>
-    );
-  }
-
-  return (
-    <box flexDirection="column" backgroundColor={theme.backgroundPanel}>
-      {rows.map((row, i) => {
-        if (row.kind === "section") {
-          const ag = row.agent;
-          return (
-            <box
-              key={`section-${ag}`}
-              height={2}
-              paddingTop={1}
-              paddingLeft={2}
-              backgroundColor={theme.backgroundPanel}
-            >
-              <text>
-                <span fg={theme[AGENT_COLOR[ag]]}>
-                  {ag}
-                </span>
-              </text>
-            </box>
-          );
-        }
-        const entryIdx = entryIndexByRow.get(i) ?? -1;
-        const isFocused = entryIdx === focusedEntryIdx;
-        const wf = row.entry.workflow;
-
-        return (
-          <box
-            key={`wf-${wf.agent}-${wf.name}`}
-            height={1}
-            flexDirection="row"
-            backgroundColor={isFocused ? theme.primary : theme.backgroundPanel}
-            paddingLeft={1}
-            paddingRight={2}
-          >
-            <text>
-              <span fg={isFocused ? theme.surface : theme.textDim}>
-                {isFocused ? <strong>{"▸ "}</strong> : "  "}
-              </span>
-              <span fg={isFocused ? theme.surface : theme.textMuted}>
-                {isFocused ? <strong>{wf.name}</strong> : wf.name}
-              </span>
-            </text>
-          </box>
-        );
-      })}
-    </box>
-  );
-});
 
 const ArgumentRow = memo(function ArgumentRow({
   field,
@@ -480,6 +484,171 @@ const Preview = memo(function Preview({
           ))}
         </>
       )}
+    </box>
+  );
+});
+
+/** Preview pane rendered when a broken workflow is focused. */
+const BrokenPreview = memo(function BrokenPreview({
+  alias,
+  broken,
+}: {
+  alias: string;
+  broken: BrokenWorkflow;
+}) {
+  const theme = usePickerTheme();
+  return (
+    <box
+      flexDirection="column"
+      paddingLeft={3}
+      paddingRight={3}
+      paddingTop={1}
+    >
+      <text>
+        <span fg={theme.text}>
+          <strong>{alias}</strong>
+        </span>
+      </text>
+
+      <box height={1} />
+
+      <text>
+        <span fg={theme.error}>{"✗ Failed to load"}</span>
+      </text>
+
+      <box height={2} />
+
+      <text>
+        <span fg={theme.textMuted}>{broken.reason}</span>
+      </text>
+
+      <box height={2} />
+
+      <text>
+        <span fg={theme.textDim}>{"source  ·  "}</span>
+        <span fg={theme.text}>{broken.source}</span>
+      </text>
+
+      <box height={1} />
+
+      <text>
+        <span fg={theme.textDim}>{"fix  ·  "}</span>
+        <span fg={theme.textMuted}>{broken.fix}</span>
+      </text>
+    </box>
+  );
+});
+
+/**
+ * Unified picker list that handles both healthy and broken rows.
+ * Section headers are injected at render time (no separate row kind needed).
+ */
+const PickerList = memo(function PickerList({
+  pickerRows,
+  focusedIdx,
+  query,
+}: {
+  pickerRows: PickerRow[];
+  focusedIdx: number;
+  query: string;
+}) {
+  const theme = usePickerTheme();
+
+  if (pickerRows.length === 0) {
+    return (
+      <box paddingLeft={2} paddingTop={2} backgroundColor={theme.backgroundPanel}>
+        <text>
+          <span fg={theme.textDim}>no matches</span>
+        </text>
+      </box>
+    );
+  }
+
+  // When no query is active, insert section labels at agent transitions.
+  const showSections = query === "";
+  let lastAgent: AgentType | null = null;
+
+  return (
+    <box flexDirection="column" backgroundColor={theme.backgroundPanel}>
+      {pickerRows.map((row, i) => {
+        const rowAgent = row.kind === "healthy" ? row.wf.agent : row.agent;
+        const sectionHeader =
+          showSections && rowAgent !== lastAgent ? (
+            <box
+              key={`section-${rowAgent}-${i}`}
+              height={2}
+              paddingTop={1}
+              paddingLeft={2}
+              backgroundColor={theme.backgroundPanel}
+            >
+              <text>
+                <span fg={theme[AGENT_COLOR[rowAgent]]}>
+                  {rowAgent}
+                </span>
+              </text>
+            </box>
+          ) : null;
+        if (showSections) lastAgent = rowAgent;
+
+        const isFocused = i === focusedIdx;
+
+        if (row.kind === "healthy") {
+          const wf = row.wf;
+          const rowEl = (
+            <box
+              key={`wf-${wf.agent}-${wf.name}`}
+              height={1}
+              flexDirection="row"
+              backgroundColor={isFocused ? theme.primary : theme.backgroundPanel}
+              paddingLeft={1}
+              paddingRight={2}
+            >
+              <text>
+                <span fg={isFocused ? theme.surface : theme.textDim}>
+                  {isFocused ? <strong>{"▸ "}</strong> : "  "}
+                </span>
+                <span fg={isFocused ? theme.surface : theme.textMuted}>
+                  {isFocused ? <strong>{wf.name}</strong> : wf.name}
+                </span>
+              </text>
+            </box>
+          );
+          return sectionHeader ? (
+            <box key={`group-healthy-${wf.agent}-${wf.name}`} flexDirection="column">
+              {sectionHeader}
+              {rowEl}
+            </box>
+          ) : rowEl;
+        }
+
+        // Broken row — picker-row-broken / picker-row-broken-focused tokens.
+        const { alias, agent } = row;
+        const brokenBg = isFocused ? theme.surface : theme.backgroundPanel;
+        const aliasColor = isFocused ? theme.text : theme.textMuted;
+        const rowEl = (
+          <box
+            key={`broken-${agent}-${alias}`}
+            height={1}
+            flexDirection="row"
+            backgroundColor={brokenBg}
+            paddingLeft={1}
+            paddingRight={2}
+          >
+            <text>
+              <span fg={theme.error}>{"✗ "}</span>
+              <span fg={aliasColor}>
+                {alias}
+              </span>
+            </text>
+          </box>
+        );
+        return sectionHeader ? (
+          <box key={`group-broken-${agent}-${alias}`} flexDirection="column">
+            {sectionHeader}
+            {rowEl}
+          </box>
+        ) : rowEl;
+      })}
     </box>
   );
 });
@@ -1075,11 +1244,13 @@ const Statusline = memo(function Statusline({
   confirmOpen,
   hints,
   focusedWf,
+  statusFlash,
 }: {
   phase: Phase;
   confirmOpen: boolean;
   hints: { key: string; label: string; dim?: boolean }[];
   focusedWf: PickerWorkflow | undefined;
+  statusFlash?: string | null;
 }) {
   const theme = usePickerTheme();
   const modeLabel = confirmOpen
@@ -1106,7 +1277,13 @@ const Statusline = memo(function Statusline({
         </text>
       </box>
 
-      {focusedWf ? (
+      {statusFlash ? (
+        <box paddingLeft={1} paddingRight={1} alignItems="center">
+          <text>
+            <span fg={theme.error}>{statusFlash}</span>
+          </text>
+        </box>
+      ) : focusedWf ? (
         <box paddingLeft={1} paddingRight={1} alignItems="center">
           <text>
             <span fg={theme.text}>
@@ -1142,9 +1319,10 @@ const Statusline = memo(function Statusline({
 // ─── Keyboard hook ─────────────────────────────
 
 interface PickerKeyboardState {
-  entries: ListEntry[];
+  pickerRows: PickerRow[];
   clampedEntryIdx: number;
   savedEntryIdx: number;
+  focusedRow: PickerRow | undefined;
   focusedWf: PickerWorkflow | undefined;
   fieldValues: Record<string, string>;
   isFormValid: boolean;
@@ -1161,6 +1339,7 @@ interface PickerKeyboardState {
   setFieldValues: React.Dispatch<React.SetStateAction<Record<string, string>>>;
   setFocusedFieldIdx: React.Dispatch<React.SetStateAction<number>>;
   setConfirmOpen: (open: boolean) => void;
+  setStatusFlash: (msg: string) => void;
 }
 
 /**
@@ -1171,9 +1350,10 @@ interface PickerKeyboardState {
 function usePickerKeyboard(state: PickerKeyboardState): void {
   const onSubmitRef = useLatest(state.onSubmit);
   const onCancelRef = useLatest(state.onCancel);
-  const entriesRef = useLatest(state.entries);
+  const pickerRowsRef = useLatest(state.pickerRows);
   const entryIdxRef = useLatest(state.clampedEntryIdx);
   const savedEntryIdxRef = useLatest(state.savedEntryIdx);
+  const focusedRowRef = useLatest(state.focusedRow);
   const focusedWfRef = useLatest(state.focusedWf);
   const fieldValuesRef = useLatest(state.fieldValues);
   const isFormValidRef = useLatest(state.isFormValid);
@@ -1190,6 +1370,7 @@ function usePickerKeyboard(state: PickerKeyboardState): void {
     setFieldValues,
     setFocusedFieldIdx,
     setConfirmOpen,
+    setStatusFlash,
   } = state;
 
   const onConfirmKey = useCallback((key: KeyEvent) => {
@@ -1218,27 +1399,32 @@ function usePickerKeyboard(state: PickerKeyboardState): void {
     }
     if (key.name === "down" || (key.ctrl && key.name === "j")) {
       key.stopPropagation();
-      setEntryIdx(Math.min(entriesRef.current.length - 1, entryIdxRef.current + 1));
+      setEntryIdx(Math.min(pickerRowsRef.current.length - 1, entryIdxRef.current + 1));
       return;
     }
     if (key.name === "return") {
       key.stopPropagation();
-      const wf = focusedWfRef.current;
-      if (wf) {
-        const initial: Record<string, string> = {};
-        for (const f of wf.inputs) {
-          initial[f.name] =
-            f.default !== undefined
-              ? String(f.default)
-              : f.type === "enum"
-                ? (f.values?.[0] ?? "")
-                : "";
-        }
-        setFieldValues(initial);
-        setFocusedFieldIdx(0);
-        setSavedEntryIdx(entryIdxRef.current);
-        setPhase("prompt");
+      const row = focusedRowRef.current;
+      if (!row) return;
+      if (row.kind === "broken") {
+        // Broken workflow: no dispatch — flash statusline message.
+        setStatusFlash(`cannot run: ${row.alias} failed to load — see preview`);
+        return;
       }
+      const wf = row.wf;
+      const initial: Record<string, string> = {};
+      for (const f of wf.inputs) {
+        initial[f.name] =
+          f.default !== undefined
+            ? String(f.default)
+            : f.type === "enum"
+              ? (f.values?.[0] ?? "")
+              : "";
+      }
+      setFieldValues(initial);
+      setFocusedFieldIdx(0);
+      setSavedEntryIdx(entryIdxRef.current);
+      setPhase("prompt");
     }
   }, []);
 
@@ -1312,10 +1498,15 @@ function usePickerKeyboard(state: PickerKeyboardState): void {
 
 // ─── App ────────────────────────────────────────
 
+/** Duration (ms) for the "cannot run broken workflow" statusline flash. */
+const BROKEN_FLASH_MS = 2000;
+
 interface PickerAppProps {
   theme: PickerTheme;
   agent: AgentType;
   workflows: PickerWorkflow[];
+  /** Index of broken workflow entries keyed by `${agent}/${alias}`. */
+  brokenIndex?: ReadonlyMap<string, BrokenWorkflow>;
   onSubmit: (result: WorkflowPickerResult) => void;
   onCancel: () => void;
 }
@@ -1324,6 +1515,7 @@ export function WorkflowPicker({
   theme,
   agent,
   workflows,
+  brokenIndex,
   onSubmit,
   onCancel,
 }: PickerAppProps) {
@@ -1334,16 +1526,37 @@ export function WorkflowPicker({
   const [fieldValues, setFieldValues] = useState<Record<string, string>>({});
   const [focusedFieldIdx, setFocusedFieldIdx] = useState(0);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  /** Non-null while "cannot run broken workflow" message is flashed. */
+  const [statusFlash, setStatusFlashRaw] = useState<string | null>(null);
+  const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const entries = useMemo(() => buildEntries(query, workflows), [query, workflows]);
-  const rows = useMemo(() => buildRows(entries, query), [entries, query]);
+  const setStatusFlash = useCallback((msg: string) => {
+    setStatusFlashRaw(msg);
+    if (flashTimerRef.current !== null) clearTimeout(flashTimerRef.current);
+    flashTimerRef.current = setTimeout(() => {
+      setStatusFlashRaw(null);
+      flashTimerRef.current = null;
+    }, BROKEN_FLASH_MS);
+  }, []);
+
+  // Clear flash timer on unmount.
+  useEffect(() => () => {
+    if (flashTimerRef.current !== null) clearTimeout(flashTimerRef.current);
+  }, []);
+
+  // Unified navigable row list (healthy + broken).
+  const pickerRows = useMemo(
+    () => buildPickerRows(query, workflows, brokenIndex),
+    [query, workflows, brokenIndex],
+  );
 
   // Clamp index when the list shrinks (e.g. typing filters entries out).
   // Derived during render — keyboard handlers read the clamped value via
   // refs (useLatest) so no sync-back effect is needed.
-  const clampedEntryIdx = Math.min(entryIdx, Math.max(0, entries.length - 1));
+  const clampedEntryIdx = Math.min(entryIdx, Math.max(0, pickerRows.length - 1));
 
-  const focusedWf = entries[clampedEntryIdx]?.workflow;
+  const focusedRow = pickerRows[clampedEntryIdx];
+  const focusedWf = focusedRow?.kind === "healthy" ? focusedRow.wf : undefined;
 
   const currentFields = useMemo<readonly WorkflowInput[]>(
     () => focusedWf?.inputs ?? [],
@@ -1370,9 +1583,10 @@ export function WorkflowPicker({
   );
 
   usePickerKeyboard({
-    entries,
+    pickerRows,
     clampedEntryIdx,
     savedEntryIdx,
+    focusedRow,
     focusedWf,
     fieldValues,
     isFormValid,
@@ -1389,6 +1603,7 @@ export function WorkflowPicker({
     setFieldValues,
     setFocusedFieldIdx,
     setConfirmOpen,
+    setStatusFlash,
   });
 
   const hints = confirmOpen
@@ -1426,14 +1641,17 @@ export function WorkflowPicker({
             <box width={36} flexDirection="column">
               <FilterBar query={query} focused={phase === "pick"} onInput={setQuery} />
               <box height={1} />
-              <WorkflowList
-                rows={rows}
-                focusedEntryIdx={clampedEntryIdx}
+              <PickerList
+                pickerRows={pickerRows}
+                focusedIdx={clampedEntryIdx}
+                query={query}
               />
             </box>
             <box width={1} backgroundColor={theme.border} />
             <box flexGrow={1} flexDirection="column">
-              {focusedWf ? (
+              {focusedRow?.kind === "broken" ? (
+                <BrokenPreview alias={focusedRow.alias} broken={focusedRow.broken} />
+              ) : focusedWf ? (
                 <Preview wf={focusedWf} />
               ) : (
                 <EmptyPreview query={query} />
@@ -1456,6 +1674,7 @@ export function WorkflowPicker({
           confirmOpen={confirmOpen}
           hints={hints}
           focusedWf={focusedWf}
+          statusFlash={statusFlash}
         />
 
         {confirmOpen && focusedWf ? (
@@ -1475,6 +1694,12 @@ export interface WorkflowPickerPanelOptions {
    * `registry.list()` and filters to the selected `agent`.
    */
   registry: Registry<Record<string, PickerWorkflow>>;
+  /**
+   * Optional index of broken workflow entries keyed by `${agent}/${alias}`.
+   * When provided, broken entries are rendered with `picker-row-broken` /
+   * `picker-row-broken-focused` design tokens and are not dispatchable.
+   */
+  brokenIndex?: ReadonlyMap<string, BrokenWorkflow>;
 }
 
 /**
@@ -1532,6 +1757,7 @@ export class WorkflowPickerPanel {
           theme={theme}
           agent={options.agent}
           workflows={workflows}
+          brokenIndex={options.brokenIndex}
           onSubmit={(result) => this.handleSubmit(result)}
           onCancel={() => this.handleCancel()}
         />

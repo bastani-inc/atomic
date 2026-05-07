@@ -450,6 +450,26 @@ export interface WorkflowOptions<
 // ─── Registry + WorkflowCli types ───────────────────────────────────────────
 
 /**
+ * A workflow entry from `settings.json` that failed to load.
+ *
+ * Produced by `loadCustomWorkflows()` when a custom workflow command cannot
+ * be spawned, times out, or emits invalid metadata. The picker renders broken
+ * entries with `picker-row-broken` / `picker-row-broken-focused` design tokens
+ * so users can see which workflows failed and why.
+ *
+ * Lives in `atomic-sdk` (not `atomic`) so the picker component can reference
+ * it without creating a circular dependency.
+ */
+export interface BrokenWorkflow {
+  alias: string;
+  origin: "local" | "global";
+  agents: AgentType[];
+  reason: string;
+  source: string;
+  fix: string;
+}
+
+/**
  * An external workflow loaded from `settings.json` `workflows` entries.
  *
  * Carries the same user-visible metadata as a `WorkflowDefinition`
@@ -471,8 +491,8 @@ export interface ExternalWorkflow {
 /**
  * Structural constraint for workflows accepted by `Registry.register()`.
  *
- * A discriminated union:
- * - builtin branch: compiled in-process `WorkflowDefinition` (optional `kind?: "builtin"`)
+ * A discriminated union narrowed via `kind`:
+ * - builtin branch: structurally compatible with `WorkflowDefinition`
  * - external branch: subprocess-dispatched `ExternalWorkflow` from `settings.json`
  *
  * The builtin branch uses `run: (...args: never[]) => Promise<void>` instead of
@@ -483,6 +503,7 @@ export interface ExternalWorkflow {
 export type RegistrableWorkflow =
   | {
       readonly __brand: "WorkflowDefinition";
+      readonly kind?: "builtin";
       readonly agent: AgentType;
       readonly name: string;
       readonly description: string;
@@ -490,7 +511,6 @@ export type RegistrableWorkflow =
       readonly minSDKVersion: string | null;
       readonly source: string;
       readonly run: (...args: never[]) => Promise<void>;
-      readonly kind?: "builtin";
     }
   | ExternalWorkflow;
 
@@ -563,6 +583,12 @@ export interface WorkflowDefinition<
   I extends readonly WorkflowInput[] = readonly WorkflowInput[],
 > {
   readonly __brand: "WorkflowDefinition";
+  /**
+   * Discriminant for the registry's `WorkflowDefinition | ExternalWorkflow`
+   * union. Optional so existing `.compile()` output (which never sets it)
+   * remains assignable; consumers narrow via `wf.kind === "external"`.
+   */
+  readonly kind?: "builtin";
   readonly name: string;
   /** The agent this workflow targets. Set via `.for(agent)` in the builder. */
   readonly agent: A;

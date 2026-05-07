@@ -10,7 +10,8 @@
 
 import { randomBytes } from "node:crypto";
 import type { CustomWorkflowEntry } from "@bastani/atomic-sdk/services/config/atomic-config";
-import type { AgentType, ExternalWorkflow, WorkflowInput } from "@bastani/atomic-sdk";
+import type { AgentType, BrokenWorkflow, ExternalWorkflow, WorkflowDefinition, WorkflowInput } from "@bastani/atomic-sdk";
+import type { createBuiltinRegistry } from "./builtin-registry.ts";
 
 // ─── Public types ────────────────────────────────────────────────────────────
 
@@ -20,14 +21,9 @@ export interface LoadedWorkflow {
   workflow: ExternalWorkflow;
 }
 
-export interface BrokenWorkflow {
-  alias: string;
-  origin: "local" | "global";
-  agents: AgentType[];
-  reason: string;
-  source: string;
-  fix: string;
-}
+// Re-export the canonical BrokenWorkflow from atomic-sdk so callers can
+// import it from either package without creating a circular dependency.
+export type { BrokenWorkflow };
 
 export interface LoadCustomWorkflowsResult {
   loaded: LoadedWorkflow[];
@@ -102,6 +98,20 @@ async function loadOne(
   const broken: BrokenWorkflow[] = [];
   const timeoutMs = resolveTimeoutMs();
 
+  /**
+   * Emit a §5.8 diagnostic to stderr and append a `BrokenWorkflow` to the
+   * accumulator. Returns `{ loaded, broken }` so callers can early-return.
+   */
+  function fail(
+    failedAgents: AgentType[],
+    reason: string,
+    fix: string,
+  ): LoadCustomWorkflowsResult {
+    process.stderr.write(`[atomic/workflows] ${reason}\n`);
+    broken.push({ alias, origin, agents: failedAgents, reason, source: settingsPath, fix });
+    return { loaded, broken };
+  }
+
   // ── Spawn ────────────────────────────────────────────────────────────────
 
   const token = randomBytes(16).toString("hex");
@@ -119,19 +129,13 @@ async function loadOne(
       env: { ...process.env, ATOMIC_HOST: "1", ATOMIC_DISPATCH_TOKEN: token },
     });
   } catch (err) {
-    const msg = spawnErrorMessage(alias, entry.command, err);
-    process.stderr.write(`[atomic/workflows] ${msg}\n`);
-    broken.push({
-      alias,
-      origin,
-      agents: entry.agents,
-      reason: msg,
-      source: settingsPath,
-      fix: isNotFoundError(err)
+    return fail(
+      entry.agents,
+      spawnErrorMessage(alias, entry.command, err),
+      isNotFoundError(err)
         ? `install "${entry.command}" or use an absolute path`
         : "check file permissions and PATH",
-    });
-    return { loaded, broken };
+    );
   }
 
   // ── Timeout race ─────────────────────────────────────────────────────────
@@ -151,93 +155,70 @@ async function loadOne(
   clearTimeout(timer);
 
   if (timedOut) {
-    const msg = `"${alias}": metadata emission timed out after ${timeoutMs}ms — is the third-party CLI using @bastani/atomic-sdk?`;
-    process.stderr.write(`[atomic/workflows] ${msg}\n`);
-    broken.push({
-      alias,
-      origin,
-      agents: entry.agents,
-      reason: msg,
-      source: settingsPath,
-      fix: `ensure "${entry.command}" imports @bastani/atomic-sdk`,
-    });
-    return { loaded, broken };
+    return fail(
+      entry.agents,
+      `"${alias}": metadata emission timed out after ${timeoutMs}ms — is the third-party CLI using @bastani/atomic-sdk?`,
+      `ensure "${entry.command}" imports @bastani/atomic-sdk`,
+    );
   }
 
   // ── Exit code ────────────────────────────────────────────────────────────
 
   const exitCode = child.exitCode;
   if (exitCode !== 0) {
-    const argStr = [...(entry.args ?? []), "_emit-workflow-meta"].join(" ");
-    const cmdStr = argStr ? `${entry.command} ${argStr}` : `${entry.command} _emit-workflow-meta`;
+    const cmdStr = [entry.command, ...(entry.args ?? []), "_emit-workflow-meta"].join(" ");
     const capturedStderr = stderrText.slice(0, STDERR_TRUNCATE);
-    const msg = `"${alias}": "${cmdStr}" exited ${exitCode}; stderr: ${capturedStderr}`;
-    process.stderr.write(`[atomic/workflows] ${msg}\n`);
-    broken.push({
-      alias,
-      origin,
-      agents: entry.agents,
-      reason: msg,
-      source: settingsPath,
-      fix: `check that "${entry.command}" supports _emit-workflow-meta`,
-    });
-    return { loaded, broken };
+    return fail(
+      entry.agents,
+      `"${alias}": "${cmdStr}" exited ${exitCode}; stderr: ${capturedStderr}`,
+      `check that "${entry.command}" supports _emit-workflow-meta`,
+    );
   }
 
   // ── Parse meta line ───────────────────────────────────────────────────────
 
-  const metaLine = stdoutText
-    .split("\n")
-    .find((l) => l.startsWith(META_PREFIX));
-
+  const metaLine = stdoutText.split("\n").find((l) => l.startsWith(META_PREFIX));
   if (!metaLine) {
-    const msg = `"${alias}": expected ATOMIC_WORKFLOW_META line — third-party CLI may be missing 'import "@bastani/atomic-sdk"'`;
-    process.stderr.write(`[atomic/workflows] ${msg}\n`);
-    broken.push({
-      alias,
-      origin,
-      agents: entry.agents,
-      reason: msg,
-      source: settingsPath,
-      fix: `add 'import "@bastani/atomic-sdk"' to "${entry.command}"`,
-    });
-    return { loaded, broken };
+    return fail(
+      entry.agents,
+      `"${alias}": expected ATOMIC_WORKFLOW_META line — third-party CLI may be missing 'import "@bastani/atomic-sdk"'`,
+      `add 'import "@bastani/atomic-sdk"' to "${entry.command}"`,
+    );
   }
 
   const jsonStr = metaLine.slice(META_PREFIX.length);
-  let emitted: EmittedWorkflowDef[];
+  let emitted: unknown;
   try {
-    emitted = JSON.parse(jsonStr) as EmittedWorkflowDef[];
+    emitted = JSON.parse(jsonStr);
   } catch (parseErr) {
     const snippet = jsonStr.slice(0, JSON_TRUNCATE);
-    const msg = `"${alias}": failed to parse ATOMIC_WORKFLOW_META JSON — ${String(parseErr)}; offending substring: ${snippet}`;
-    process.stderr.write(`[atomic/workflows] ${msg}\n`);
-    broken.push({
-      alias,
-      origin,
-      agents: entry.agents,
-      reason: msg,
-      source: settingsPath,
-      fix: `ensure "${entry.command}" emits valid JSON on the ATOMIC_WORKFLOW_META line`,
-    });
-    return { loaded, broken };
+    return fail(
+      entry.agents,
+      `"${alias}": failed to parse ATOMIC_WORKFLOW_META JSON — ${String(parseErr)}; offending substring: ${snippet}`,
+      `ensure "${entry.command}" emits valid JSON on the ATOMIC_WORKFLOW_META line`,
+    );
   }
+  if (!Array.isArray(emitted)) {
+    return fail(
+      entry.agents,
+      `"${alias}": ATOMIC_WORKFLOW_META payload must be a JSON array (got ${
+        emitted === null ? "null" : typeof emitted
+      })`,
+      `ensure "${entry.command}" emits a JSON array on the ATOMIC_WORKFLOW_META line`,
+    );
+  }
+  const list = emitted as EmittedWorkflowDef[];
 
   // ── Match per declared agent ──────────────────────────────────────────────
 
   for (const declaredAgent of entry.agents) {
-    const def = emitted.find((d) => d.agent === declaredAgent);
+    const def = list.find((d) => d.agent === declaredAgent);
     if (!def) {
-      const msg = `"${alias}/${declaredAgent}": command did not register a workflow for agent "${declaredAgent}"`;
-      process.stderr.write(`[atomic/workflows] ${msg}\n`);
-      broken.push({
-        alias,
-        origin,
-        agents: [declaredAgent],
-        reason: msg,
-        source: settingsPath,
-        fix: `add a .for("${declaredAgent}") branch to the workflow in "${entry.command}"`,
-      });
+      fail(
+        [declaredAgent],
+        `"${alias}/${declaredAgent}": command did not register a workflow for agent "${declaredAgent}"`,
+        `add a .for("${declaredAgent}") branch to the workflow in "${entry.command}"`,
+      );
       continue;
     }
 
@@ -277,7 +258,60 @@ function spawnErrorMessage(alias: string, cmd: string, err: unknown): string {
   if (isNotFoundError(err)) {
     return `"${alias}": command "${cmd}" not found on PATH; install it or use an absolute path`;
   }
-  // Verbatim syscall error with alias prefix
   const errMsg = err instanceof Error ? err.message : String(err);
   return `"${alias}": ${errMsg}`;
+}
+
+// ─── Registry merge ───────────────────────────────────────────────────────────
+
+export interface MergeResult {
+  registry: ReturnType<typeof createBuiltinRegistry>;
+  brokenIndex: ReadonlyMap<string, BrokenWorkflow>;
+  summary: string | null;
+}
+
+/**
+ * Merge global and local custom workflow results into a builtin registry.
+ *
+ * Precedence: local > global > builtin.
+ * Override events are written to stderr as audit lines.
+ * Broken entries are indexed by `${agent}/${alias}`.
+ *
+ * RFC §5.7.
+ */
+export function mergeIntoRegistry(
+  builtin: ReturnType<typeof createBuiltinRegistry>,
+  global: LoadCustomWorkflowsResult,
+  local: LoadCustomWorkflowsResult,
+): MergeResult {
+  let registry: ReturnType<typeof createBuiltinRegistry> = builtin;
+
+  for (const { workflow } of global.loaded) {
+    registry = registry.upsert(workflow, (prior: WorkflowDefinition | ExternalWorkflow) => {
+      process.stderr.write(
+        `[atomic/workflows] override: ${workflow.name}/${workflow.agent} (global) > ${prior.kind === "external" ? "external" : "builtin"}\n`,
+      );
+    }) as ReturnType<typeof createBuiltinRegistry>;
+  }
+  for (const { workflow } of local.loaded) {
+    registry = registry.upsert(workflow, (prior: WorkflowDefinition | ExternalWorkflow) => {
+      process.stderr.write(
+        `[atomic/workflows] override: ${workflow.name}/${workflow.agent} (local) > ${prior.kind === "external" ? "external" : "builtin"}\n`,
+      );
+    }) as ReturnType<typeof createBuiltinRegistry>;
+  }
+
+  const brokenIndex = new Map<string, BrokenWorkflow>();
+  for (const b of [...global.broken, ...local.broken]) {
+    for (const a of b.agents) brokenIndex.set(`${a}/${b.alias}`, b);
+  }
+
+  const loadedCount = global.loaded.length + local.loaded.length;
+  const brokenCount = global.broken.length + local.broken.length;
+  const summary =
+    loadedCount + brokenCount > 0
+      ? `[atomic/workflows] loaded ${loadedCount} custom workflow(s)${brokenCount ? ` (${brokenCount} skipped — see warnings above)` : ""}`
+      : null;
+
+  return { registry, brokenIndex, summary };
 }

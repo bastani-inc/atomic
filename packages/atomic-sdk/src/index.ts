@@ -35,6 +35,7 @@ export type {
   WorkflowOptions,
   WorkflowDefinition,
   ExternalWorkflow,
+  BrokenWorkflow,
   RegistrableWorkflow,
   WorkflowInput,
   WorkflowInputType,
