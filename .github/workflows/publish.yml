@@ -105,14 +105,25 @@ jobs:
       # later steps have bash/jq/tmux/libstdc++ available. node + npm are
       # pre-installed in `node:lts-alpine`; we skip `setup-node` below since
       # its prebuilt binaries are glibc-linked and would crash on Alpine.
+      # `oven-sh/setup-bun@v2` is also skipped on musl: it unconditionally
+      # fetches the glibc bun zip, which can't load Alpine's musl linker.
+      # The upstream `bun.sh/install` script reads /etc/os-release and
+      # selects the musl variant, so we run it here and prepend ~/.bun/bin
+      # to PATH for subsequent steps.
       - name: Bootstrap Alpine toolchain (musl rows)
         if: matrix.libc == 'musl'
         shell: sh
-        run: apk add --no-cache git bash curl jq tmux libstdc++ libgcc
+        run: |
+          set -e
+          apk add --no-cache git bash curl jq tmux libstdc++ libgcc unzip
+          curl -fsSL https://bun.sh/install | bash
+          echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
+          "$HOME/.bun/bin/bun" --version
 
       - uses: actions/checkout@v6
 
-      - uses: oven-sh/setup-bun@v2
+      - if: matrix.libc != 'musl'
+        uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
 
