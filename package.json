@@ -1,7 +1,7 @@
 {
   "name": "@bastani/atomic-monorepo",
   "private": true,
-  "version": "0.7.9-0",
+  "version": "0.7.9-1",
   "description": "Configuration management CLI and SDK for coding agents",
   "type": "module",
   "license": "MIT",
@@ -40,7 +40,7 @@
     "prepare": "prek install || true"
   },
   "devDependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.131",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.132",
     "@j178/prek": "^0.3.13",
     "@opentui/core": "^0.2.3",
     "@opentui/react": "^0.2.3",
