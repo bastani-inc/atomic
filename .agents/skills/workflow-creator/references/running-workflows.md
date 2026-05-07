@@ -210,6 +210,133 @@ Skip AskUserQuestion entirely when:
 7. **Report the session name** the CLI printed and tell the user: "attach any
    time with `atomic workflow session connect <session>` — or
    `atomic workflow session list` to see what's running."
+8. **If you started the workflow detached (`-d` or `detach: true`), poll
+   status until it terminates or pauses for input** — see "Polling rhythm
+   after spawning" below. Surfacing a HIL pause to the user immediately is
+   non-negotiable; an unattended `awaiting_input` / `needs_review` state
+   means the workflow is wedged and the user doesn't know.
+
+## Polling rhythm after spawning
+
+When the workflow runs detached (you spawned it with `-d` or the user wants
+to keep working while it executes), the model is responsible for tracking
+its progress. The pattern is a small loop around `atomic workflow status`:
+
+```bash
+atomic workflow status <session-id>
+# JSON envelope; key field is `overall`:
+#   in_progress    → keep polling at a sensible cadence
+#   awaiting_input → surface to user *now* — see HIL response below
+#   needs_review   → surface to user *now* — same handling
+#   completed      → report success + summarize the snapshot's `sessions[]` results
+#   error          → report `fatalError` + offer to investigate
+```
+
+Polling cadence: every 30–60s for runs that should take minutes; every 2–5
+minutes for long runs (e.g. `ralph` iterating). Don't busy-poll. If the
+user asks "is it done yet?" mid-run, run `status` once and answer from the
+result — don't kick off a new poll loop on every question.
+
+### What to do on `awaiting_input` or `needs_review`
+
+These states mean a stage is waiting on a typed answer (an `AskUserQuestion`
+elicitation, a Copilot `ask_user`, an OpenCode `question.asked`, or a
+review-marker handoff). The workflow will sit forever unless the user
+responds.
+
+The current send-back path is **interactive attach only**:
+
+```bash
+atomic workflow session connect <session-id>
+# user lands inside the tmux pane, types their answer into the agent's TUI,
+# detaches with the agent's standard binding (Ctrl-b d for tmux)
+```
+
+There is **no `atomic workflow send <id> --message "..."`** today — the
+agent CLI panes accept input only through the live TUI. If the model needs
+to forward a typed answer back into a session non-interactively, that's a
+known gap; surface it to the user and let them attach. (The SDK does use
+`tmux send-keys` internally for orchestration, but there is no public CLI
+surface that exposes it for HIL responses.)
+
+So when you see `awaiting_input` or `needs_review`:
+
+1. Stop polling.
+2. Read the snapshot's `sessions[]` to find which stage is paused (`status: "awaiting_input"`).
+3. Tell the user **plainly and immediately**: "Workflow `<name>` is paused on stage `<stage-name>` waiting for your input. Attach with `atomic workflow session connect <session-id>` to respond." Include the stage name so the user knows what they're answering.
+4. Wait for the user to confirm they've responded (or for the next status poll to show `in_progress` again) before resuming the polling rhythm.
+
+### Inspecting on-disk state with `atomic workflow read`
+
+When the model needs to actually *read* what a workflow has produced —
+the saved transcript of a stage, the orchestrator's `status.json`, the
+captured `inbox.md` rendering — `atomic workflow read` resolves the
+on-disk path under `~/.atomic/sessions/<runId>/` so you don't have to
+guess the opaque `<stageName>-<8hex>` directory suffix.
+
+Two shapes:
+
+```bash
+# Run-level: list the run dir and discover available stages.
+atomic workflow read --sessionId atomic-wf-claude-ralph-a1b2c3d4
+# Inside an atomic chat session this auto-defaults to JSON:
+# {
+#   "ok": true,
+#   "runId": "a1b2c3d4",
+#   "path": "/home/u/.atomic/sessions/a1b2c3d4",
+#   "stages": ["scout", "explore", "synth"],
+#   "files": [{"name":"status.json","kind":"file","size":1234}, …]
+# }
+
+# Stage-level: resolve the single stage subdir + list its saved artifacts.
+atomic workflow read --sessionId atomic-wf-claude-ralph-a1b2c3d4 --stageId scout
+# {
+#   "ok": true,
+#   "runId": "a1b2c3d4",
+#   "stageName": "scout",
+#   "path": "/home/u/.atomic/sessions/a1b2c3d4/scout-9f8e7d6c",
+#   "files": [
+#     {"name":"messages.json","kind":"file","size":8123},   ← s.save() raw JSON
+#     {"name":"inbox.md","kind":"file","size":3401},        ← human-readable transcript
+#     {"name":"metadata.json","kind":"file","size":312}
+#   ]
+# }
+```
+
+**Key fields under `<runId>/`:**
+
+| File / dir                                     | What's in it                                                                                                                          |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `status.json`                                  | Live panel snapshot — same JSON `atomic workflow status <id>` returns                                                                |
+| `metadata.json`                                | Workflow-level metadata: name, agent, prompt, project root, `startedAt`                                                              |
+| `orchestrator.log`                             | Stdout/stderr of the orchestrator pane                                                                                                |
+| `<stageName>-<stageSessionId>/messages.json`   | The `SavedMessage[]` array produced by `s.save(...)` calls in that stage. Schema is provider-specific.                               |
+| `<stageName>-<stageSessionId>/inbox.md`        | A plain-text rendering of `messages.json`. Cheaper to read than the JSON when you just want to see what the agent said.              |
+| `<stageName>-<stageSessionId>/metadata.json`   | Stage metadata: name, description, agent, paneId, `startedAt`                                                                         |
+| `<stageName>-<stageSessionId>/error.txt`       | Present **only** when the stage failed; contains the error message.                                                                  |
+
+**Typical model flow** when investigating a stalled or completed run:
+
+1. `atomic workflow status <session-id>` — see overall + per-stage states.
+2. Pick a stage of interest (`needs_review` / `error` / `completed`).
+3. `atomic workflow read --sessionId <session-id> --stageId <stage>` — get its absolute dir.
+4. `Read` the file you actually want (`inbox.md` for human-readable, `messages.json` for raw, `error.txt` for a failure trace).
+
+This avoids two anti-patterns: (a) attaching to the tmux pane just to read transcripts (interactive-only, breaks scripted flows), and (b) globbing `~/.atomic/sessions/` blind.
+
+### Tracking multiple workflows
+
+`atomic workflow status` (no id) returns every workflow on the atomic socket:
+
+```bash
+atomic workflow status
+# {"workflows":[{"id":"…","overall":"in_progress",...},
+#               {"id":"…","overall":"needs_review",...}]}
+```
+
+Useful when the user has several runs going. Sort by `overall` priority —
+surface every `needs_review` / `awaiting_input` first, then `error`, then
+`in_progress`. `completed` workflows can be reported in summary.
 
 ## Monitoring a running workflow
 

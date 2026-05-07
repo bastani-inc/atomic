@@ -9,10 +9,15 @@
  */
 
 import { randomBytes } from "node:crypto";
-import type { CustomWorkflowEntry } from "@bastani/atomic-sdk/services/config/atomic-config";
+import {
+  getGlobalSettingsPath,
+  getLocalSettingsPath,
+  readAtomicConfigSplit,
+  type CustomWorkflowEntry,
+} from "@bastani/atomic-sdk/services/config/atomic-config";
 import type { AgentType, BrokenWorkflow, ExternalWorkflow, WorkflowInput } from "@bastani/atomic-sdk";
 import { listWorkflows } from "@bastani/atomic-sdk";
-import type { createBuiltinRegistry } from "./builtin-registry.ts";
+import { createBuiltinRegistry } from "./builtin-registry.ts";
 
 // ─── Public types ────────────────────────────────────────────────────────────
 
@@ -357,4 +362,51 @@ export function mergeIntoRegistry(
       : null;
 
   return { registry, brokenList, brokenIndex, summary };
+}
+
+// ─── Bootstrap (read settings → load → merge) ────────────────────────────────
+
+/**
+ * Result of `bootstrapCustomWorkflows`. Extends `MergeResult` with the raw
+ * `LoadedWorkflow` list so callers (refresh CLI, telemetry) can render
+ * per-entry detail (alias, origin) that isn't preserved on the merged registry.
+ *
+ * Also includes the resolved settings paths so diagnostics can name the
+ * exact file the user must edit to fix a broken entry.
+ */
+export interface BootstrapResult extends MergeResult {
+  loaded: LoadedWorkflow[];
+  paths: { global: string; local: string };
+}
+
+/**
+ * Read global + local `settings.json`, spawn each entry's metadata
+ * subprocess, and merge the results into a builtin-seeded registry.
+ *
+ * Pure data flow — does not mutate the active workflow command. Callers
+ * are responsible for invoking `rebuildWorkflowCommand(...)` with the
+ * returned `registry` and `brokenIndex` if they need the singleton CLI
+ * to reflect the new state.
+ */
+export async function bootstrapCustomWorkflows(
+  projectDir: string = process.cwd(),
+): Promise<BootstrapResult> {
+  const globalPath = getGlobalSettingsPath();
+  const localPath = getLocalSettingsPath(projectDir);
+
+  const { global: globalCfg, local: localCfg } =
+    await readAtomicConfigSplit(projectDir);
+
+  const [globalRes, localRes] = await Promise.all([
+    loadCustomWorkflows(globalCfg?.workflows, "global", globalPath),
+    loadCustomWorkflows(localCfg?.workflows, "local", localPath),
+  ]);
+
+  const merge = mergeIntoRegistry(createBuiltinRegistry(), globalRes, localRes);
+
+  return {
+    ...merge,
+    loaded: [...globalRes.loaded, ...localRes.loaded],
+    paths: { global: globalPath, local: localPath },
+  };
 }

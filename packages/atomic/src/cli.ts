@@ -10,6 +10,8 @@
  *   atomic chat session connect <id>          Attach to a session
  *   atomic workflow list                      List available workflows
  *   atomic workflow inputs <name> -a <agent>  Print a workflow's input schema (JSON)
+ *   atomic workflow refresh                   Reload custom workflows from settings.json
+ *   atomic workflow read --sessionId <id> [--stageId <name>]  Print on-disk path to a run / stage
  *   atomic workflow status [<id>]             Query workflow status (JSON)
  *   atomic workflow session list              List running sessions
  *   atomic workflow session connect <id>      Attach to a session
@@ -157,6 +159,9 @@ Examples:
   $ atomic workflow -n ralph -a claude "fix bug"    Run a free-form workflow
   $ atomic workflow -n ralph -a claude -d "fix bug" Run detached in the background
   $ atomic workflow inputs <name> -a claude         Print a workflow's input schema (JSON)
+  $ atomic workflow refresh                         Reload custom workflows from settings.json
+  $ atomic workflow read --sessionId <id>           Print path to a workflow run dir on disk
+  $ atomic workflow read --sessionId <id> --stageId scout  Print path to a single stage's saved artifacts
   $ atomic workflow status                          List status for all running workflows
   $ atomic workflow status <id>                     Query a single workflow's status
   $ atomic workflow session list                    List running sessions
@@ -200,6 +205,53 @@ Examples:
                 name,
                 agent: localOpts.agent,
                 format: localOpts.format === "text" ? "text" : "json",
+            });
+            process.exit(exitCode);
+        });
+
+    // Workflow refresh subcommand: atomic workflow refresh [--format json|text]
+    // Re-spawns metadata loaders for every entry in settings.json and reports
+    // the result. Defaults to JSON when ATOMIC_AGENT is set (i.e. the LM is
+    // the consumer) so the model can ingest the result without screen-scraping.
+    workflowCommand
+        .command("refresh")
+        .description(
+            "Reload custom workflows from settings.json and report loaded + broken entries",
+        )
+        .option("--format <format>", "Output format: json | text (defaults to json inside an atomic chat session, text otherwise)")
+        .action(async (localOpts) => {
+            const { workflowRefreshCommand } = await import(
+                "./commands/cli/workflow-refresh.ts"
+            );
+            const fmt = localOpts.format;
+            const exitCode = await workflowRefreshCommand({
+                format: fmt === "json" || fmt === "text" ? fmt : undefined,
+            });
+            process.exit(exitCode);
+        });
+
+    // Workflow read subcommand: atomic workflow read --sessionId <id> [--stageId <name>]
+    // Prints the on-disk path under ~/.atomic/sessions for a workflow run or a
+    // single stage subdir, plus a listing of files inside. Lets the model find
+    // saved transcripts (messages.json / inbox.md / status.json) without
+    // guessing the opaque stage-session-id suffix the runtime appends.
+    workflowCommand
+        .command("read")
+        .description(
+            "Print the on-disk path to a workflow run or stage under ~/.atomic/sessions",
+        )
+        .requiredOption("--sessionId <id>", "Tmux session name (atomic-wf-…) or bare 8-hex run id")
+        .option("--stageId <name>", "Stage name as it appears in `atomic workflow status` output")
+        .option("--format <format>", "Output format: json | text (defaults to json inside an atomic chat session, text otherwise)")
+        .action(async (localOpts) => {
+            const { workflowReadCommand } = await import(
+                "./commands/cli/workflow-read.ts"
+            );
+            const fmt = localOpts.format;
+            const exitCode = await workflowReadCommand({
+                sessionId: localOpts.sessionId,
+                stageId: localOpts.stageId,
+                format: fmt === "json" || fmt === "text" ? fmt : undefined,
             });
             process.exit(exitCode);
         });
@@ -490,43 +542,22 @@ export const program = createProgram();
 /**
  * Discover and merge custom workflows from global + local settings into the
  * active workflow command registry. Failures are non-fatal — atomic works
- * without custom workflows.
+ * without custom workflows. The data-loading flow lives in
+ * `commands/custom-workflows.ts`; this wrapper just rebuilds the singleton
+ * Commander tree from its result.
  */
-async function bootstrapCustomWorkflows(): Promise<void> {
+async function bootstrapCustomWorkflowsAndRebuild(): Promise<void> {
     try {
         const [
-            { readAtomicConfigSplit, getGlobalSettingsPath, getLocalSettingsPath },
-            { loadCustomWorkflows, mergeIntoRegistry },
-            { createBuiltinRegistry },
+            { bootstrapCustomWorkflows },
             { rebuildWorkflowCommand },
         ] = await Promise.all([
-            import("@bastani/atomic-sdk/services/config/atomic-config"),
             import("./commands/custom-workflows.ts"),
-            import("./commands/builtin-registry.ts"),
             import("./commands/cli/workflow.ts"),
         ]);
 
-        const { global: globalCfg, local: localCfg } =
-            await readAtomicConfigSplit(process.cwd());
-
-        const [globalRes, localRes] = await Promise.all([
-            loadCustomWorkflows(
-                globalCfg?.workflows,
-                "global",
-                getGlobalSettingsPath(),
-            ),
-            loadCustomWorkflows(
-                localCfg?.workflows,
-                "local",
-                getLocalSettingsPath(process.cwd()),
-            ),
-        ]);
-
-        const { registry, brokenList, brokenIndex, summary } = mergeIntoRegistry(
-            createBuiltinRegistry(),
-            globalRes,
-            localRes,
-        );
+        const { registry, brokenList, brokenIndex, summary } =
+            await bootstrapCustomWorkflows(process.cwd());
         if (summary) process.stderr.write(summary + "\n");
 
         rebuildWorkflowCommand(registry, brokenIndex, brokenList);
@@ -576,7 +607,7 @@ async function main(): Promise<void> {
         // ./.atomic/settings.json (local) into the workflow command registry.
         // Skipped for info-only commands to avoid spawn cost.
         if (!isInfoCommand) {
-            await bootstrapCustomWorkflows();
+            await bootstrapCustomWorkflowsAndRebuild();
         }
 
         await program.parseAsync();

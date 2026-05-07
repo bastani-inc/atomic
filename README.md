@@ -1230,6 +1230,10 @@ During `atomic chat`, there is no Atomic-owned TUI — `atomic chat -a <agent>` 
 | `atomic chat`                   | Spawn the native agent CLI inside a tmux session                  |
 | `atomic workflow`               | Run a named multi-session workflow with the Atomic workflow panel |
 | `atomic workflow list`          | List available workflows, grouped by source                       |
+| `atomic workflow refresh`       | Reload custom workflows from `settings.json` and report loaded + broken entries (auto-defaults to JSON inside an atomic chat session) |
+| `atomic workflow read`          | Print the on-disk path under `~/.atomic/sessions/<runId>/` for a workflow run or a single stage so you can inspect saved transcripts |
+| `atomic workflow status [<id>]` | Query workflow state (`in_progress` / `awaiting_input` / `needs_review` / `completed` / `error`) |
+| `atomic workflow inputs <name> -a <agent>` | Print a workflow's declared input schema as JSON              |
 | `atomic session list`           | List all running sessions on the atomic tmux socket               |
 | `atomic session connect [name]` | Attach to a session (interactive picker when no name given)       |
 | `atomic session kill [name]`    | Kill one session, or pick sessions interactively when no name is given |
@@ -1581,6 +1585,74 @@ atomic workflow -n open-claude-design -a claude
 
 These are not affected by your own `createRegistry()` — they are separate.
 
+### Registering your own workflows with `atomic workflow`
+
+If you want a custom workflow to be discoverable through `atomic workflow list`, the picker, and `atomic workflow -n <name> -a <agent>`, add an entry to `settings.json` under a `workflows` map. Each entry points at an external command that exposes its workflow definition via `hostLocalWorkflows([wf])`.
+
+```jsonc
+// .atomic/settings.json (project-local) or ~/.atomic/settings.json (global)
+{
+  "$schema": "https://raw.githubusercontent.com/flora131/atomic/main/assets/settings.schema.json",
+  "version": 1,
+  "workflows": {
+    "pr-review": {
+      "command": "bunx",
+      "args": ["./.atomic/workflows/pr-review/index.ts"],
+      "agents": ["claude"]
+    }
+  }
+}
+```
+
+The recommended layout for the workflow itself is a self-contained Bun package under `.atomic/workflows/<name>/` (or `~/.atomic/workflows/<name>/` for global) — its own `package.json`, own `tsconfig.json`, own `node_modules` — with the entry file ending in `await hostLocalWorkflows([wf])`:
+
+```ts
+// .atomic/workflows/pr-review/index.ts
+#!/usr/bin/env bun
+import { defineWorkflow, hostLocalWorkflows } from "@bastani/atomic-sdk";
+
+const workflow = defineWorkflow({
+  name: "pr-review",
+  source: import.meta.path,
+  description: "Review the diff on the current branch",
+  inputs: [
+    { name: "target_branch", type: "string", required: true, description: "branch to diff against" },
+  ],
+})
+  .for("claude")
+  .run(async (ctx) => {
+    await ctx.stage({ name: "review" }, {}, {}, async (s) => {
+      await s.session.query(`Review changes vs ${ctx.inputs.target_branch}`);
+      s.save(s.sessionId);
+    });
+  })
+  .compile();
+
+await hostLocalWorkflows([workflow]);
+```
+
+After editing `settings.json` or any registered workflow file, run:
+
+```bash
+atomic workflow refresh
+```
+
+This re-spawns the metadata loader for every entry and reports loaded + broken entries with field-by-field diagnostics (`reason`, `fix`, `settings` path) on each broken-entry line — so you (or an LM authoring the workflow) can self-correct without prose parsing. Inside an atomic chat session it auto-defaults to JSON. Once an entry shows as `LOADED`, invoke it with `atomic workflow -n pr-review -a claude --target_branch=main`.
+
+To inspect what a workflow has produced after it runs (saved transcripts, stage metadata, status snapshots), use:
+
+```bash
+# Run-level: discover stages + run-level files
+atomic workflow read --sessionId atomic-wf-claude-pr-review-a1b2c3d4
+
+# Stage-level: locate a single stage's saved artifacts
+atomic workflow read --sessionId atomic-wf-claude-pr-review-a1b2c3d4 --stageId review
+```
+
+The path it prints points at `~/.atomic/sessions/<runId>/[<stageName>-<sessionId>/]` — read `messages.json` (raw `s.save()` output), `inbox.md` (human-readable transcript), or `status.json` (live panel snapshot) directly from there.
+
+For the full authoring playbook (modes, scaffolding, broken-entry symptom→fix table) see the [`workflow-creator` skill](.agents/skills/workflow-creator/SKILL.md). Runnable references live under [`examples/`](https://github.com/flora131/atomic/tree/main/examples) — `custom-workflow-bunx` is the minimal Mode-1 reference.
+
 <details id="migration-from-0x-directory-scanning-and-the-createworkflowcli-wrapper">
 <summary><b>Migration from 0.x (directory-scanning) and the <code>createWorkflowCli</code> wrapper</b></summary>
 
@@ -1614,6 +1686,13 @@ Resolution order:
       "chatFlags": ["--model", "claude-sonnet-4-6"],
       "envVars": { "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "16384" }
     }
+  },
+  "workflows": {
+    "pr-review": {
+      "command": "bunx",
+      "args": ["./.atomic/workflows/pr-review/index.ts"],
+      "agents": ["claude"]
+    }
   }
 }
 ```
@@ -1625,6 +1704,7 @@ Resolution order:
 | `version`   | number | Config schema version (currently `1`)                                                                                                           |
 | `scm`       | string | Source control provider — `github`, `azure-devops`, or `sapling`. Reconciles the GitHub / Azure DevOps MCP servers in agent configs on startup. |
 | `providers` | object | Per-provider overrides for `claude`, `opencode`, `copilot`. `chatFlags` replaces built-in defaults entirely; `envVars` are merged               |
+| `workflows` | object | Custom workflow registry — each key is the alias the `atomic` CLI exposes; each value is `{ command, args?, agents }` pointing at an external entry that calls `hostLocalWorkflows([wf])`. Local entries override global ones with the same alias. Run `atomic workflow refresh` after editing. |
 
 > Model selection and reasoning effort are managed by each underlying agent CLI (e.g. Claude Code's `/model`), not Atomic. Atomic's chat command spawns the agent's native TUI — use the agent's own controls.
 

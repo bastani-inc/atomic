@@ -2,6 +2,16 @@
 
 A deterministic recipe for getting a user from "empty terminal" to "first workflow runs" in one session. This is the path to follow whenever the user signals they want to start using the workflow SDK from zero — phrases like *"set me up with the workflow SDK"*, *"I want to write workflows"*, *"bootstrap a workflow project"*, *"how do I get started"*, or any equivalent. If the user already has `@bastani/atomic-sdk` installed and a workflow file exists, jump to step 5.
 
+## Pick the mode first (see SKILL.md §"Custom workflow modes")
+
+Two distinct setup tracks share Steps 1–3, then branch at Step 4:
+
+- **Mode 1 — Atomic-managed.** The default. Workflow lives in `.atomic/workflows/<name>/` (project) or `~/.atomic/workflows/<name>/` (global) as a self-contained Bun package, registered in `settings.json`, invoked via `atomic workflow -n <name>`. Branch to **Step 4-Mode1** and **Step 5-Mode1**.
+- **Mode 2 — Dev-owned CLI.** Workflow lives in `<repo>/src/workflows/<name>/<agent>.ts` with a Commander composition root in `<repo>/src/<agent>-worker.ts`. Branch to **Step 4-Mode2** and **Step 5-Mode2**.
+- **Combined.** Author as Mode 2 but call `await hostLocalWorkflows([wf])` *before* the `program.parseAsync()` so the file is also discoverable by `atomic workflow`.
+
+If the user does not specify, **default to Mode 1**. Confirm in one short question only when the wording is ambiguous (e.g. user says "a workflow I can reuse across projects" — that's a global Mode 1, not project-local).
+
 ## Why this recipe exists
 
 Bootstrapping is the highest-friction moment of the SDK because three of the runtime dependencies live outside `bun add`:
@@ -47,17 +57,26 @@ Ask the user which agent they're targeting and whether they want one or multiple
 
 Don't guess. Use `AskUserQuestion` (or the equivalent) when intent is unclear — picking wrong here means rewriting 100% of the scaffold.
 
-## Step 3 — Bootstrap the project
+## Step 3 — Bootstrap the package
 
-If `package.json` already exists, skip `bun init`. Otherwise:
+For **Mode 1**, the package lives at `.atomic/workflows/<name>/` (or `~/.atomic/workflows/<name>/` for global) and is fully self-contained — its own `package.json`, `tsconfig.json`, and `node_modules`. Do this *inside* that directory, not in the repo root:
 
 ```bash
+mkdir -p .atomic/workflows/<name>
+cd .atomic/workflows/<name>
 bun init -y
+bun add @bastani/atomic-sdk
+bun add @anthropic-ai/claude-agent-sdk     # only if Claude
+bun add @github/copilot-sdk                # only if Copilot
+bun add @opencode-ai/sdk                   # only if OpenCode
 ```
 
-Add the SDK plus only the provider package(s) the user picked:
+The atomic CLI spawns this package as a subprocess (via `bunx <path>` or `bun <path>`) — keeping its dependencies isolated means the host project's deps never collide with the workflow's, and global workflows under `~/.atomic/workflows/<name>/` work identically because they ship their own deps.
+
+For **Mode 2**, work in the repo root:
 
 ```bash
+bun init -y                                # skip if package.json exists
 bun add @bastani/atomic-sdk
 bun add @anthropic-ai/claude-agent-sdk     # only if Claude
 bun add @github/copilot-sdk                # only if Copilot
@@ -69,11 +88,44 @@ If the user has `npm install`, `yarn add`, or any non-Bun command on file, gentl
 
 ## Step 4 — Scaffold the workflow file
 
-Drop into `src/workflows/<name>/<agent>.ts`. The convention is one directory per workflow, one file per agent — this keeps `src/workflows/<name>/helpers/` available for SDK-agnostic logic when the user does want cross-agent support later. The naming matters because every reference doc and every agent looking at the codebase finds files the same way.
-
 Always include `source: import.meta.path` — the runtime re-imports the module from this path inside the orchestrator child process. Forget it and the workflow loads fine but `runWorkflow` blows up at spawn time with `InvalidWorkflowError`.
 
-### Claude template
+### Step 4-Mode1 — Atomic-managed entry (`.atomic/workflows/<name>/index.ts`)
+
+Single file per workflow package. The trailing `await hostLocalWorkflows([…])` is what makes the file responsive to atomic's two token-gated sub-commands (`_emit-workflow-meta` and `_atomic-run`); without it, the loader will time out and surface a `BROKEN` entry on `atomic workflow refresh`. Add an executable shebang so the file can be invoked via `bunx <path>`.
+
+```ts
+// .atomic/workflows/<name>/index.ts
+#!/usr/bin/env bun
+import { defineWorkflow, hostLocalWorkflows } from "@bastani/atomic-sdk";
+
+const workflow = defineWorkflow({
+  name: "<workflow-name>",
+  source: import.meta.path,
+  description: "<one-line description>",
+  inputs: [
+    { name: "prompt", type: "text", required: true, description: "what the user supplies" },
+  ],
+})
+  .for("claude") // or .for("copilot") / .for("opencode") — pick the agent the user named
+  .run(async (ctx) => {
+    await ctx.stage({ name: "step-1" }, {}, {}, async (s) => {
+      await s.session.query(ctx.inputs.prompt);
+      s.save(s.sessionId);
+    });
+  })
+  .compile();
+
+await hostLocalWorkflows([workflow]);
+```
+
+For Copilot / OpenCode session bodies, use the same `.for(...)` + `.run(...)` shape as Mode 2 templates below — only the directory layout, package boundary, and `hostLocalWorkflows` call change between modes.
+
+### Step 4-Mode2 — Dev-owned files (`src/workflows/<name>/<agent>.ts`)
+
+Drop into `src/workflows/<name>/<agent>.ts`. The convention is one directory per workflow, one file per agent — this keeps `src/workflows/<name>/helpers/` available for SDK-agnostic logic when the user does want cross-agent support later. The naming matters because every reference doc and every agent looking at the codebase finds files the same way.
+
+#### Claude template
 
 ```ts
 // src/workflows/<name>/claude.ts
@@ -97,7 +149,7 @@ export default defineWorkflow({
   .compile();
 ```
 
-### Copilot template
+#### Copilot template
 
 ```ts
 .for("copilot")
@@ -110,7 +162,7 @@ export default defineWorkflow({
 .compile();
 ```
 
-### OpenCode template
+#### OpenCode template
 
 ```ts
 .for("opencode")
@@ -128,11 +180,58 @@ export default defineWorkflow({
 
 The `s.save(...)` call shape differs per agent on purpose — see `getting-started.md` "Saving Transcripts" for the per-provider rationale.
 
-## Step 5 — Scaffold the composition root
+## Step 5 — Wire the entry point
+
+### Step 5-Mode1 — Register in `settings.json` and refresh
+
+Mode 1 has no separate composition root; the workflow file *is* the entry point because `hostLocalWorkflows([wf])` doubles as the host-dispatch handler. Instead, you register the package in atomic's settings file:
+
+- **Project-local** → `.atomic/settings.json` (recommended default)
+- **Global** → `~/.atomic/settings.json` (use absolute paths in `args` so `cwd` doesn't matter)
+
+```jsonc
+// .atomic/settings.json
+{
+  "$schema": "https://raw.githubusercontent.com/flora131/atomic/main/assets/settings.schema.json",
+  "version": 1,
+  "workflows": {
+    "<workflow-name>": {
+      "command": "bunx",
+      "args": ["./.atomic/workflows/<workflow-name>/index.ts"],
+      "agents": ["claude"]
+    }
+  }
+}
+```
+
+If the user already has a `settings.json`, *merge* into the existing `workflows` object — do not overwrite it. Use `Read` first, then `Edit` the JSON in place.
+
+Then verify the registration:
+
+```bash
+atomic workflow refresh
+```
+
+Inside an atomic chat session this auto-defaults to JSON; outside, it prints colourised text. Either way, every diagnostic field is on its own `key · value` line so the model can self-correct without prose parsing:
+
+- `loaded` entries confirm the workflow is invocable as `atomic workflow -n <workflow-name> -a claude`.
+- `broken` entries spell out `reason · …`, `fix · …`, `settings · <path> (workflows.<alias>)` so you know exactly which file and which JSON path to repair before re-running.
+
+Common Mode-1 broken-entry causes the model should self-diagnose:
+
+| Symptom (`reason` field starts with…)                                 | Fix                                                                                                     |
+| --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `metadata emission timed out`                                         | Ensure `await hostLocalWorkflows([wf])` is the *last* statement in the file (after `.compile()`).        |
+| `expected ATOMIC_WORKFLOW_META line`                                  | The file is not importing `@bastani/atomic-sdk`, OR `hostLocalWorkflows` is never called.               |
+| `command "<x>" not found on PATH`                                     | Use `bunx` + a path under `args`, not a bare command — or supply an absolute path.                      |
+| `command did not register a workflow for agent "<a>"`                 | The `.for(...)` chain targets a different agent than `agents` in `settings.json` declares.              |
+| `failed to parse ATOMIC_WORKFLOW_META JSON`                           | A `console.log` or `process.stdout.write` is racing with the meta line — keep the file output-clean.    |
+
+### Step 5-Mode2 — Composition root with Commander
 
 The SDK ships pure primitives, not a CLI wrapper. The user composes them into whatever CLI library they prefer. Default to Commander unless they say otherwise.
 
-### Single workflow worker
+#### Single workflow worker
 
 ```ts
 // src/<agent>-worker.ts
@@ -165,7 +264,7 @@ await program.parseAsync();
 
 The typed-error catch is small but it pays for itself the first time `tmux` is missing — the user gets one actionable line instead of an SDK stack trace. Add more `instanceof` branches as the surface grows (see Step 8).
 
-### Multi-workflow CLI
+#### Multi-workflow CLI
 
 When the user picks "multiple workflows, one CLI", swap the worker for a registry-driven composition root:
 
@@ -198,6 +297,10 @@ await program.parseAsync();
 
 Every `(agent, name)` key must be unique across the registry — registering a duplicate throws immediately at startup, which is intentional. Agents reading the codebase rely on stable keys.
 
+#### Mode 1 + 2 combined
+
+Add `await hostLocalWorkflows([wf])` *before* `program.parseAsync()` in either of the templates above. Atomic's two internal sub-commands are token-gated and `process.exit(0)` after handling, so Commander never sees them on bare invocation. Then ALSO register the file in `settings.json` (Step 5-Mode1) so `atomic workflow -n …` discovers it. The example at <https://github.com/flora131/atomic/tree/main/examples/custom-workflow-bunx> shows the minimal Mode-1 shape; combine its `hostLocalWorkflows([wf])` call with the Commander setup above to get both surfaces in one file.
+
 ## Step 6 — Add a `typecheck` script
 
 The biggest payoff for catching mistakes early is `bunx tsc --noEmit`. Wire it into `package.json`:
@@ -220,7 +323,18 @@ If this fails, fix the errors before moving on — typecheck failures here usual
 
 ## Step 7 — Smoke test
 
-Run the workflow attached the first time so the user can watch a tmux pane spawn and see Claude/Copilot/OpenCode actually respond:
+Run the workflow attached the first time so the user can watch a tmux pane spawn and see Claude/Copilot/OpenCode actually respond.
+
+**Mode 1:**
+
+```bash
+atomic workflow refresh                  # confirm registration succeeds
+atomic workflow -n <workflow-name> -a <agent> "Reply with the single word 'ok'"
+```
+
+If `refresh` reports the workflow as `BROKEN`, fix the issue surfaced in the `fix · …` line *before* trying to invoke — the dispatcher will hard-block with the same diagnostic.
+
+**Mode 2:**
 
 ```bash
 bun run src/<agent>-worker.ts --prompt "Reply with the single word 'ok'"
@@ -258,9 +372,13 @@ Don't catch errors you don't know how to render — let them throw. A blanket `c
 
 Once the smoke test passes, the user owns the project. Tell them:
 
-- **Where the workflow lives** — `src/workflows/<name>/<agent>.ts`. Edits there change the pipeline shape.
-- **Where the entry point lives** — `src/<agent>-worker.ts` (or `src/cli.ts` for the registry shape). Edits there change the user-facing flag surface.
-- **How to monitor** — `atomic session list` for a system-wide view, `atomic workflow status <id>` for one run, or wire `listSessions` / `getSessionStatus` into their own CLI's subcommands. The pane-navigation primitives (`nextWindow`, `previousWindow`, `gotoOrchestrator`, `detachSession`) drive tmux directly without taking over the user's terminal — import them from the **root** `@bastani/atomic-sdk` barrel (not `/workflows`); see `examples/pane-navigation/` for a reference driver CLI.
-- **What to read next** — `references/getting-started.md` for the SDK exports table, `references/control-flow.md` for loops/parallel/headless, `references/state-and-data-flow.md` for `s.save`/`s.transcript` patterns, `references/failure-modes.md` before shipping any multi-stage workflow.
+- **Where the workflow lives** —
+    - Mode 1: `.atomic/workflows/<name>/index.ts` (project) or `~/.atomic/workflows/<name>/index.ts` (global). Edits there change the pipeline shape.
+    - Mode 2: `src/workflows/<name>/<agent>.ts`. Edits there change the pipeline shape.
+- **Where the entry point lives** —
+    - Mode 1: `.atomic/settings.json` (or `~/.atomic/settings.json`). Edits there change which workflows the `atomic` CLI registers — run `atomic workflow refresh` after any settings.json edit to surface broken-entry diagnostics immediately.
+    - Mode 2: `src/<agent>-worker.ts` (or `src/cli.ts` for the registry shape). Edits there change the user-facing flag surface.
+- **How to monitor** — `atomic session list` for a system-wide view, `atomic workflow status <id>` for one run (returns `awaiting_input` / `needs_review` when a HiL prompt is pending — surface that to the user immediately), or wire `listSessions` / `getSessionStatus` into their own CLI's subcommands. The pane-navigation primitives (`nextWindow`, `previousWindow`, `gotoOrchestrator`, `detachSession`) drive tmux directly without taking over the user's terminal — import them from the **root** `@bastani/atomic-sdk` barrel (not `/workflows`); see [`examples/pane-navigation/`](https://github.com/flora131/atomic/tree/main/examples/pane-navigation) for a reference driver CLI.
+- **What to read next** — `references/getting-started.md` for the SDK exports table, `references/control-flow.md` for loops/parallel/headless, `references/state-and-data-flow.md` for `s.save`/`s.transcript` patterns, `references/running-workflows.md` for HiL handling and teardown, `references/failure-modes.md` before shipping any multi-stage workflow.
 
 If the user is now stuck on workflow design rather than setup ("how do I do a review-fix loop?", "what's the right shape for parallel research?"), pivot to the authoring guidance in `SKILL.md` §"Authoring Process" and the `Design Advisory Skills` table. Setup is done.
