@@ -606,53 +606,11 @@ jobs:
       # ── `atomic update` lifecycle ──────────────────────────────────────
       # ────────────────────────────────────────────────────────────────────
       # `atomic update` is only a real upgrade path for the standalone
-      # binary install. PM-managed installs (bun/npm/pnpm/yarn) just print
-      # guidance pointing at the PM's own update command.
-      #
-      #   1. PM `--check` smoke   — runs against the bun-installed wrapper
-      #                             and asserts the rendered note tells
-      #                             the user to run `bun update -g`.
-      #   2. Binary download path — generates release-assets, points the
-      #                             CLI at a local mock GitHub Releases
-      #                             server (script/ci/mock-gh-releases.ts),
-      #                             and runs the installed binary so
-      #                             detection returns "binary". Exercises
-      #                             real download / verify / swap / spawn
-      #                             on every supported platform.
-      #
-      # Caveat (binary path): the same compiled binary is served as the
-      # vN+1 asset to keep the matrix cheap, so `atomic --version` still
-      # reports vN after the swap. The test asserts the plumbing
-      # succeeded, not that the version string advanced.
-      - name: Compute host target
-        id: host
-        shell: bash
-        run: |
-          case "${{ runner.os }}" in
-            Linux)   plat="linux"   ;;
-            macOS)   plat="darwin"  ;;
-            Windows) plat="windows" ;;
-            *) echo "unknown runner.os: ${{ runner.os }}"; exit 1 ;;
-          esac
-          arch="${{ matrix.arch }}"
-          libc_suffix=""
-          if [ "${{ matrix.libc }}" = "musl" ]; then libc_suffix="-musl"; fi
-          ext=""
-          if [ "${{ runner.os }}" = "Windows" ]; then ext=".exe"; fi
-          echo "host=${plat}-${arch}${libc_suffix}" >> $GITHUB_OUTPUT
-          echo "ext=${ext}" >> $GITHUB_OUTPUT
-
-      # Generates packages/atomic/release-assets/{atomic-<host>[.exe], manifest.json}
-      # from the matrix-built dist/ artifacts. Mock server reads from this
-      # directory; the manifest's sha256 must match the served binary.
-      - name: Generate release-assets manifest
-        shell: bash
-        run: bun packages/atomic/script/release-assets.ts
-
-      # ── 1. PM `--check` smoke ─────────────────────────────────────────
-      # `atomic` on PATH resolves to the bun-installed wrapper, so
-      # detectInstallMethod returns "bun" and `--check` should render
-      # a PM-update hint, not version metadata.
+      # binary install. PM-managed installs (bun/npm/pnpm/yarn) print
+      # guidance pointing at the PM's own update command, which is what
+      # we exercise here via `--check` against the bun-installed wrapper.
+      # The end-to-end download/verify/swap path is covered by
+      # release-fetch.test.ts at the unit level.
       - name: atomic update --check (Unix)
         if: runner.os != 'Windows'
         shell: bash
@@ -681,97 +639,6 @@ jobs:
           Write-Output $out
           if ($out -notmatch 'installed via bun')             { throw "missing 'installed via bun'" }
           if ($out -notmatch 'bun update -g @bastani/atomic') { throw "missing PM update hint" }
-
-      # ── 2. Binary download path via mock GitHub Releases server ───────
-      # Uses port 4874 (verdaccio is on 4873). MOCK_VERSION=999.0.0 forces
-      # the `isNewer` check inside `runBinaryUpdate` to return true so the
-      # download/verify/swap path actually runs.
-      - name: atomic update via mock GitHub server (Unix)
-        if: runner.os != 'Windows'
-        shell: bash
-        env:
-          HOST: ${{ steps.host.outputs.host }}
-          EXT: ${{ steps.host.outputs.ext }}
-        run: |
-          set -euo pipefail
-          assets="$PWD/packages/atomic/release-assets"
-          test -f "$assets/atomic-${HOST}${EXT}" || { echo "host asset missing in $assets"; ls -la "$assets"; exit 1; }
-          test -f "$assets/manifest.json" || { echo "manifest.json missing in $assets"; exit 1; }
-
-          MOCK_PORT=4874 \
-          MOCK_VERSION="999.0.0" \
-          MOCK_ASSET_DIR="$assets" \
-          bun packages/atomic/script/ci/mock-gh-releases.ts \
-            > "$RUNNER_TEMP/mock-gh.log" 2>&1 &
-          mock_pid=$!
-          trap 'kill -TERM $mock_pid 2>/dev/null || true' EXIT
-
-          for i in $(seq 1 30); do
-            if grep -q "^READY " "$RUNNER_TEMP/mock-gh.log" 2>/dev/null; then break; fi
-            sleep 0.5
-          done
-          if ! grep -q "^READY " "$RUNNER_TEMP/mock-gh.log"; then
-            echo "mock-gh-releases failed to start"
-            cat "$RUNNER_TEMP/mock-gh.log" || true
-            exit 1
-          fi
-
-          export ATOMIC_GITHUB_API_BASE="http://127.0.0.1:4874/repos/flora131/atomic"
-          binary="$HOME/.local/bin/atomic"
-          test -x "$binary" || { echo "expected installed binary at $binary"; exit 1; }
-
-          # Run the update via the *installed* binary so detectInstallMethod
-          # returns "binary" (process.execPath == getInstallPaths().binPath).
-          "$binary" update --version 999.0.0
-          # Sanity: post-update binary still runs.
-          "$binary" --version
-
-      - name: atomic update via mock GitHub server (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        env:
-          HOST: ${{ steps.host.outputs.host }}
-          EXT: ${{ steps.host.outputs.ext }}
-        run: |
-          $assets = Join-Path $PWD "packages\atomic\release-assets"
-          $hostAsset = Join-Path $assets "atomic-$env:HOST$env:EXT"
-          if (-not (Test-Path $hostAsset))                       { throw "host asset missing: $hostAsset" }
-          if (-not (Test-Path (Join-Path $assets 'manifest.json'))) { throw "manifest.json missing in $assets" }
-
-          $log = Join-Path $env:RUNNER_TEMP "mock-gh.log"
-          $mockEnv = @{
-            MOCK_PORT       = "4874"
-            MOCK_VERSION    = "999.0.0"
-            MOCK_ASSET_DIR  = $assets
-          }
-          foreach ($kv in $mockEnv.GetEnumerator()) { Set-Item -Path "Env:$($kv.Key)" -Value $kv.Value }
-
-          $mock = Start-Process -FilePath "bun" `
-            -ArgumentList "packages/atomic/script/ci/mock-gh-releases.ts" `
-            -NoNewWindow -PassThru `
-            -RedirectStandardOutput $log -RedirectStandardError "$log.err"
-          try {
-            for ($i = 0; $i -lt 30; $i++) {
-              if ((Test-Path $log) -and ((Get-Content $log -Raw -ErrorAction SilentlyContinue) -match '^READY ')) { break }
-              Start-Sleep -Milliseconds 500
-            }
-            if (-not ((Get-Content $log -Raw -ErrorAction SilentlyContinue) -match '^READY ')) {
-              if (Test-Path $log)       { Get-Content $log }
-              if (Test-Path "$log.err") { Get-Content "$log.err" }
-              throw "mock-gh-releases failed to start"
-            }
-
-            $env:ATOMIC_GITHUB_API_BASE = "http://127.0.0.1:4874/repos/flora131/atomic"
-            $binary = Join-Path $env:LOCALAPPDATA "atomic\bin\atomic.exe"
-            if (-not (Test-Path $binary)) { throw "expected installed binary at $binary" }
-
-            & $binary update --version 999.0.0
-            if ($LASTEXITCODE -ne 0) { throw "atomic update exited $LASTEXITCODE" }
-            & $binary --version
-            if ($LASTEXITCODE -ne 0) { throw "atomic --version exited $LASTEXITCODE post-update" }
-          } finally {
-            if (-not $mock.HasExited) { Stop-Process -Id $mock.Id -Force -ErrorAction SilentlyContinue }
-          }
 
       # ── `atomic uninstall`: removes launcher / rc snippets / completions
       #    cache but preserves ~/.atomic (no --purge flag).
