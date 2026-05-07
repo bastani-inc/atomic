@@ -24,19 +24,27 @@ See `index.ts` for the `defineWorkflow → compile → hostLocalWorkflows([wf])`
 
 ## Run standalone
 
-`hostLocalWorkflows([wf])` doubles as a CLI runner. With a single workflow registered, the `--name` flag is optional — just pass inputs:
+`hostLocalWorkflows([wf])` only handles atomic's two internal sub-commands (`_emit-workflow-meta` and `_atomic-run`); it intentionally stays out of your CLI surface. `bun run ./index.ts` with no flags returns silently — that's expected.
 
-```sh
-# Bare — prints registered workflows + invocation hint
-bun run ./index.ts
+If you want this file to also work as a directly-invokable CLI, add your own commander setup (or any argv parser) AFTER `hostLocalWorkflows` and call `runWorkflow` yourself:
 
-# Foreground (attaches to the orchestrator pane in tmux)
-bun run ./index.ts --path src/cli.ts
+```ts
+import { Command } from "@commander-js/extra-typings";
+import { defineWorkflow, hostLocalWorkflows, runWorkflow } from "@bastani/atomic-sdk";
 
-# Background — returns immediately
-bun run ./index.ts --path src/cli.ts --detach
+const explainFile = defineWorkflow({ … }).for("claude").run(…).compile();
+
+// Atomic dispatch — exits here when atomic spawns us with `_atomic-run`.
+await hostLocalWorkflows([explainFile]);
+
+// Your own CLI. Whatever shape you want.
+const program = new Command();
+program
+  .option("--path <path>", "file to explain")
+  .action(async (opts) => {
+    await runWorkflow({ workflow: explainFile, inputs: opts });
+  });
+await program.parseAsync();
 ```
 
-When multiple workflows are registered, pass `--name <workflow>` to disambiguate (and `--agent <agent>` when the same name covers multiple agents).
-
-Want full control of argv? Don't call `hostLocalWorkflows`. Import `runWorkflow` from `@bastani/atomic-sdk` and dispatch yourself — you'll trade atomic auto-discovery for full CLI flexibility.
+The two paths don't interfere: atomic's sub-commands are token-gated and `process.exit` before your parser runs.

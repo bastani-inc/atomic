@@ -34,9 +34,7 @@ The `workflows` map in `settings.json` takes arbitrary string aliases as keys. E
 
 ## The hostLocalWorkflows contract
 
-> **Required:** The CLI you point `command` at MUST call `await hostLocalWorkflows([wf])` once after `defineWorkflow(...).compile()`. Atomic dispatches custom workflows by re-spawning that CLI with hidden `_emit-workflow-meta` and `_atomic-run` subcommands; `hostLocalWorkflows()` is the helper that responds to them. The same call also (a) registers the workflows into a process-local registry so the orchestrator pane atomic spawns later can resolve them without you needing to `export default`, and (b) doubles as a standalone CLI runner so `bun run my-cli.ts [--<input> <v>]…` runs the workflow without atomic in the loop. With a single workflow registered, `--name` is optional.
-
-If you want full argv control with a custom CLI structure, **don't call `hostLocalWorkflows`** — import `runWorkflow` from `@bastani/atomic-sdk` and dispatch yourself. You'll trade atomic auto-discovery for complete flexibility.
+> **Required:** The CLI you point `command` at MUST call `await hostLocalWorkflows([wf])` once after `defineWorkflow(...).compile()`. Atomic dispatches custom workflows by re-spawning that CLI with hidden `_emit-workflow-meta` and `_atomic-run` subcommands; `hostLocalWorkflows()` is the helper that responds to them and registers the workflow so atomic's orchestrator pane can resolve it later. **Anything else returns silently** — `hostLocalWorkflows` deliberately stays out of your CLI surface, so you can layer commander or any argv parser on top to expose the workflow as a directly-invokable CLI without worrying about clashes with atomic's sub-commands.
 
 Canonical pattern (from [`examples/custom-workflow-bunx/index.ts`](../../examples/custom-workflow-bunx/index.ts)):
 

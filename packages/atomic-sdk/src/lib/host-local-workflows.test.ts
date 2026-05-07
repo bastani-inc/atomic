@@ -231,37 +231,24 @@ describe("hostLocalWorkflows — token guard (silent returns)", () => {
     expect(capturedStderr).toHaveLength(0);
   });
 
-  test("non-dispatch argv flags + single workflow + no --name → auto-runs the single workflow", async () => {
+  test("returns silently when no atomic-internal sub-command in argv", async () => {
     const wf = makeWorkflow();
     const runWorkflowMock = makeRunMock();
-    // `--help` here is just a non-dispatch flag with one positional value.
-    // The argv parser treats it as input { help: "--dispatch-token=…" }
-    // — single workflow + flags = auto-target.
     const argv = ["bun", "fixture.ts", "--help", `--dispatch-token=${VALID_TOKEN}`];
 
-    let caught: ExitCalled | null = null;
-    try {
-      await hostLocalWorkflows([wf], { argv, env: VALID_ENV, runWorkflow: runWorkflowMock });
-    } catch (e) {
-      caught = e as ExitCalled;
-    }
+    await hostLocalWorkflows([wf], { argv, env: VALID_ENV, runWorkflow: runWorkflowMock });
 
-    expect(caught?.code).toBe(0);
-    expect(runWorkflowMock).toHaveBeenCalledTimes(1);
+    expect(capturedStdout).toHaveLength(0);
+    expect(capturedStderr).toHaveLength(0);
+    expect(runWorkflowMock).not.toHaveBeenCalled();
   });
 
-  test("bare argv (< 3 tokens) prints help and exits 0", async () => {
+  test("returns silently when argv is too short (< 3 tokens)", async () => {
     const wf = makeWorkflow();
-    let caught: ExitCalled | null = null;
-    try {
-      await hostLocalWorkflows([wf], { argv: ["bun", "fixture.ts"], env: VALID_ENV });
-    } catch (e) {
-      caught = e as ExitCalled;
-    }
+    await hostLocalWorkflows([wf], { argv: ["bun", "fixture.ts"], env: VALID_ENV });
 
-    expect(caught?.code).toBe(0);
-    expect(capturedStdout.join("")).toContain("Available workflows");
-    expect(capturedStdout.join("")).toContain(wf.name);
+    expect(capturedStdout).toHaveLength(0);
+    expect(capturedStderr).toHaveLength(0);
   });
 });
 
@@ -439,17 +426,11 @@ describe("hostLocalWorkflows — registry side-effect", () => {
     const wfA = makeWorkflow("demo-a", "claude");
     const wfB = makeWorkflow("demo-b", "opencode");
 
-    // Bare argv prints help + exits 0, but the registry side-effect must
-    // still have run BEFORE the help branch — that's what lets the
-    // orchestrator pane resolve the definition on a later re-import.
+    // No HOST_SUBS in argv → hostLocalWorkflows returns silently, but the
+    // registry side-effect must still run so orchestrator-entry can resolve
+    // the workflow on a later re-import.
     const argv = ["bun", "fixture.ts"];
-    let caught: ExitCalled | null = null;
-    try {
-      await hostLocalWorkflows([wfA, wfB], { argv, env: {} });
-    } catch (e) {
-      caught = e as ExitCalled;
-    }
-    expect(caught?.code).toBe(0);
+    await hostLocalWorkflows([wfA, wfB], { argv, env: {} });
 
     expect(lookupLocalWorkflow("demo-a", "claude")).toBe(wfA);
     expect(lookupLocalWorkflow("demo-b", "opencode")).toBe(wfB);
@@ -477,162 +458,31 @@ describe("hostLocalWorkflows — registry side-effect", () => {
     const wfClaude = makeWorkflow("shared-name", "claude");
     const wfOpencode = makeWorkflow("shared-name", "opencode");
 
-    let caught: ExitCalled | null = null;
-    try {
-      await hostLocalWorkflows([wfClaude, wfOpencode], {
-        argv: ["bun", "fixture.ts"],
-        env: {},
-      });
-    } catch (e) {
-      caught = e as ExitCalled;
-    }
-    expect(caught?.code).toBe(0);
+    await hostLocalWorkflows([wfClaude, wfOpencode], {
+      argv: ["bun", "fixture.ts"],
+      env: {},
+    });
 
     expect(lookupLocalWorkflow("shared-name", "claude")).toBe(wfClaude);
     expect(lookupLocalWorkflow("shared-name", "opencode")).toBe(wfOpencode);
   });
 });
 
-// ─── Direct CLI mode (no dispatch sub-command, --name supplied) ──────────────
+// ─── Composition guarantee: silent-return on non-dispatch argv ───────────────
 
-describe("hostLocalWorkflows — direct CLI mode", () => {
-  test("runs workflow when --name + --agent + inputs supplied without dispatch sub-command", async () => {
+describe("hostLocalWorkflows — composition guarantee", () => {
+  test("silent-returns when argv carries the orchestrator-entry sub-command — no recursion in dispatched re-imports", async () => {
     const wf = makeWorkflow("demo", "claude");
     const runWorkflowMock = makeRunMock();
 
+    // argv shape inside the dispatched orchestrator pane: SDK CLI runs
+    // `bun /SDK/cli.ts _orchestrator-entry <name> <agent> <inputsB64> <source>`
+    // and dynamic-imports the source — which calls hostLocalWorkflows again.
+    // It must register and return silently; auto-running here would
+    // recursively spawn another tmux session.
     const argv = [
-      "bun", "fixture.ts",
-      "--name", "demo",
-      "--agent", "claude",
-    ];
-
-    let caught: ExitCalled | null = null;
-    try {
-      await hostLocalWorkflows([wf], { argv, env: {}, runWorkflow: runWorkflowMock });
-    } catch (e) {
-      caught = e as ExitCalled;
-    }
-
-    expect(caught?.code).toBe(0);
-    expect(runWorkflowMock).toHaveBeenCalledTimes(1);
-    expect(runWorkflowMock.mock.calls[0]![0]!.workflow).toBe(wf);
-  });
-
-  test("auto-resolves --agent when exactly one workflow matches --name", async () => {
-    const wf = makeWorkflow("demo", "claude");
-    const runWorkflowMock = makeRunMock();
-
-    const argv = ["bun", "fixture.ts", "--name", "demo"];
-
-    let caught: ExitCalled | null = null;
-    try {
-      await hostLocalWorkflows([wf], { argv, env: {}, runWorkflow: runWorkflowMock });
-    } catch (e) {
-      caught = e as ExitCalled;
-    }
-
-    expect(caught?.code).toBe(0);
-    expect(runWorkflowMock).toHaveBeenCalledTimes(1);
-    expect(runWorkflowMock.mock.calls[0]![0]!.workflow).toBe(wf);
-  });
-
-  test("forwards --<input> flags as inputs to runWorkflow", async () => {
-    const wf = makeWorkflow("demo", "claude");
-    const runWorkflowMock = makeRunMock();
-
-    const argv = [
-      "bun", "fixture.ts",
-      "--name", "demo",
-      "--path", "/abs/path/to/file.ts",
-      "--detach",
-    ];
-
-    let caught: ExitCalled | null = null;
-    try {
-      await hostLocalWorkflows([wf], { argv, env: {}, runWorkflow: runWorkflowMock });
-    } catch (e) {
-      caught = e as ExitCalled;
-    }
-
-    expect(caught?.code).toBe(0);
-    const callArg = runWorkflowMock.mock.calls[0]![0]!;
-    expect(callArg.inputs).toEqual({ path: "/abs/path/to/file.ts" });
-    expect(callArg.detach).toBe(true);
-  });
-
-  test("errors when --name doesn't match any registered workflow", async () => {
-    const wf = makeWorkflow("demo", "claude");
-    const runWorkflowMock = makeRunMock();
-
-    const argv = ["bun", "fixture.ts", "--name", "missing"];
-
-    let caught: ExitCalled | null = null;
-    try {
-      await hostLocalWorkflows([wf], { argv, env: {}, runWorkflow: runWorkflowMock });
-    } catch (e) {
-      caught = e as ExitCalled;
-    }
-
-    expect(caught?.code).toBe(1);
-    expect(capturedStderr.join("")).toContain("missing");
-    expect(runWorkflowMock).not.toHaveBeenCalled();
-  });
-
-  test("errors when --name is ambiguous and --agent is omitted", async () => {
-    const wfA = makeWorkflow("shared", "claude");
-    const wfB = makeWorkflow("shared", "opencode");
-    const runWorkflowMock = makeRunMock();
-
-    const argv = ["bun", "fixture.ts", "--name", "shared"];
-
-    let caught: ExitCalled | null = null;
-    try {
-      await hostLocalWorkflows([wfA, wfB], { argv, env: {}, runWorkflow: runWorkflowMock });
-    } catch (e) {
-      caught = e as ExitCalled;
-    }
-
-    expect(caught?.code).toBe(1);
-    expect(capturedStderr.join("")).toContain("Specify --agent");
-    expect(runWorkflowMock).not.toHaveBeenCalled();
-  });
-
-  test("auto-targets the only registered workflow when --name is absent and a flag is supplied", async () => {
-    const wf = makeWorkflow("demo", "claude");
-    const runWorkflowMock = makeRunMock();
-
-    const argv = ["bun", "fixture.ts", "--path", "/some/file.ts"];
-
-    let caught: ExitCalled | null = null;
-    try {
-      await hostLocalWorkflows([wf], { argv, env: {}, runWorkflow: runWorkflowMock });
-    } catch (e) {
-      caught = e as ExitCalled;
-    }
-
-    expect(caught?.code).toBe(0);
-    expect(runWorkflowMock).toHaveBeenCalledTimes(1);
-    expect(runWorkflowMock.mock.calls[0]![0]!.workflow).toBe(wf);
-    expect(runWorkflowMock.mock.calls[0]![0]!.inputs).toEqual({ path: "/some/file.ts" });
-  });
-
-  test("silent-returns when argv contains _orchestrator-entry — guards against infinite recursion in re-imports", async () => {
-    const wf = makeWorkflow("demo", "claude");
-    const runWorkflowMock = makeRunMock();
-
-    // This is the argv shape SDK CLI sees inside the dispatched orchestrator
-    // pane: `bun /SDK/cli.ts _orchestrator-entry <name> <agent> <inputsB64> <source>`.
-    // hostLocalWorkflows must return silently after the registry side-effect
-    // so the auto-dispatch handler in auto-dispatch.ts can do its work
-    // without us re-spawning another workflow.
-    const argv = [
-      "bun",
-      "/SDK/cli.ts",
-      "_orchestrator-entry",
-      "demo",
-      "claude",
-      "",
-      "/path/to/user-cli.ts",
+      "bun", "/SDK/cli.ts",
+      "_orchestrator-entry", "demo", "claude", "", "/path/to/user-cli.ts",
     ];
 
     await hostLocalWorkflows([wf], { argv, env: {}, runWorkflow: runWorkflowMock });
@@ -640,39 +490,20 @@ describe("hostLocalWorkflows — direct CLI mode", () => {
     expect(runWorkflowMock).not.toHaveBeenCalled();
     expect(capturedStdout.join("")).toBe("");
     expect(capturedStderr.join("")).toBe("");
-    // Registry must still have been populated — that's the orchestrator
-    // pane's whole reason for re-importing this file.
+    // Registry write still happened — orchestrator-entry needs it.
     expect(lookupLocalWorkflow("demo", "claude")).toBe(wf);
   });
 
-  test("silent-returns when argv contains _cc-debounce — same auto-dispatch guard", async () => {
+  test("silent-returns on consumer-defined flags so user's commander parser can take over", async () => {
     const wf = makeWorkflow("demo", "claude");
     const runWorkflowMock = makeRunMock();
 
-    const argv = ["bun", "/SDK/cli.ts", "_cc-debounce", "%0"];
+    const argv = ["bun", "fixture.ts", "--path", "/some/file.ts", "--verbose"];
 
     await hostLocalWorkflows([wf], { argv, env: {}, runWorkflow: runWorkflowMock });
 
     expect(runWorkflowMock).not.toHaveBeenCalled();
     expect(capturedStdout.join("")).toBe("");
-  });
-
-  test("errors when no --name and multiple workflows are registered", async () => {
-    const wfA = makeWorkflow("a", "claude");
-    const wfB = makeWorkflow("b", "claude");
-    const runWorkflowMock = makeRunMock();
-
-    const argv = ["bun", "fixture.ts", "--path", "foo"];
-
-    let caught: ExitCalled | null = null;
-    try {
-      await hostLocalWorkflows([wfA, wfB], { argv, env: {}, runWorkflow: runWorkflowMock });
-    } catch (e) {
-      caught = e as ExitCalled;
-    }
-
-    expect(caught?.code).toBe(1);
-    expect(capturedStderr.join("")).toContain("Specify --name");
-    expect(runWorkflowMock).not.toHaveBeenCalled();
+    expect(capturedStderr.join("")).toBe("");
   });
 });
