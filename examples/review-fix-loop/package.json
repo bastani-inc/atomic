@@ -1,7 +1,7 @@
 {
   "name": "@bastani/example-review-fix-loop",
   "private": true,
-  "version": "0.7.11-0",
+  "version": "0.7.11",
   "type": "module",
   "description": "Draft -> loop(review -> fix) with bounded iterations and early exit on a CLEAN verdict",
   "scripts": {

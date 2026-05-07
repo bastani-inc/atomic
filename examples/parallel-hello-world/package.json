@@ -1,7 +1,7 @@
 {
   "name": "@bastani/example-parallel-hello-world",
   "private": true,
-  "version": "0.7.11-0",
+  "version": "0.7.11",
   "type": "module",
   "description": "Promise.all() fan-out and transcript merge across parallel stages",
   "scripts": {
