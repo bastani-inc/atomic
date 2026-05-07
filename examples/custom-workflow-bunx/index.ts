@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { defineWorkflow, hostWorkflows } from "@bastani/atomic-sdk";
+import { defineWorkflow, hostLocalWorkflows } from "@bastani/atomic-sdk";
 
 const explainFile = defineWorkflow({
   name: "explain-file",
@@ -31,4 +31,4 @@ const explainFile = defineWorkflow({
   })
   .compile();
 
-await hostWorkflows([explainFile]);
+await hostLocalWorkflows([explainFile]);

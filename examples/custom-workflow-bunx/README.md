@@ -20,11 +20,11 @@ Add the binary to your atomic settings:
 
 On startup atomic spawns `bunx @example/custom-workflow-bunx _emit-workflow-meta --dispatch-token=…` to discover the workflow. Running `atomic workflow -n explain-file -a claude --path src/cli.ts` spawns `bunx @example/custom-workflow-bunx _atomic-run --dispatch-token=… --name explain-file --agent claude --path src/cli.ts`.
 
-See `index.ts` for the `defineWorkflow → compile → hostWorkflows([wf])` pattern. Read `docs/atomic-sdk/host-workflows.md` for the full reference.
+See `index.ts` for the `defineWorkflow → compile → hostLocalWorkflows([wf])` pattern. Read `docs/atomic-sdk/host-local-workflows.md` for the full reference.
 
 ## Run standalone
 
-`hostWorkflows([wf])` doubles as a CLI runner. Pass `--name <workflow>` (and optional `--agent <agent>` when the same name is registered for multiple agents) along with any inputs:
+`hostLocalWorkflows([wf])` doubles as a CLI runner. Pass `--name <workflow>` (and optional `--agent <agent>` when the same name is registered for multiple agents) along with any inputs:
 
 ```sh
 # Foreground (attaches to the orchestrator pane in tmux)

@@ -1,5 +1,5 @@
 /**
- * Unit tests for `hostWorkflows()`.
+ * Unit tests for `hostLocalWorkflows()`.
  *
  * Mocking strategy:
  * - `process.exit`: replaced with a function that throws `ExitCalled` sentinel
@@ -13,10 +13,10 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { defineWorkflow } from "../define-workflow.ts";
 import type { RunWorkflowOptions, RunWorkflowResult } from "../primitives/run.ts";
 import {
-  hostWorkflows,
-  lookupHostedWorkflow,
-  _clearHostedWorkflowRegistry,
-} from "./host-workflows.ts";
+  hostLocalWorkflows,
+  lookupLocalWorkflow,
+  _clearLocalWorkflowRegistry,
+} from "./host-local-workflows.ts";
 
 // ─── Sentinel ────────────────────────────────────────────────────────────────
 
@@ -108,14 +108,14 @@ afterEach(() => {
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
-describe("hostWorkflows — _emit-workflow-meta", () => {
+describe("hostLocalWorkflows — _emit-workflow-meta", () => {
   test("emits ATOMIC_WORKFLOW_META JSON and exits 0 with one workflow", async () => {
     const wf = makeWorkflow("demo", "claude");
     const argv = makeArgv("_emit-workflow-meta");
 
     let firstCaught: ExitCalled | null = null;
     try {
-      await hostWorkflows([wf], { argv, env: VALID_ENV });
+      await hostLocalWorkflows([wf], { argv, env: VALID_ENV });
     } catch (e) {
       firstCaught = e as ExitCalled;
     }
@@ -140,7 +140,7 @@ describe("hostWorkflows — _emit-workflow-meta", () => {
     // Assert exit code was 0
     let caught: ExitCalled | null = null;
     try {
-      await hostWorkflows([wf], { argv, env: VALID_ENV });
+      await hostLocalWorkflows([wf], { argv, env: VALID_ENV });
     } catch (e) {
       caught = e as ExitCalled;
     }
@@ -153,7 +153,7 @@ describe("hostWorkflows — _emit-workflow-meta", () => {
 
     let caught: ExitCalled | null = null;
     try {
-      await hostWorkflows([], { argv, env: VALID_ENV });
+      await hostLocalWorkflows([], { argv, env: VALID_ENV });
     } catch (e) {
       caught = e as ExitCalled;
     }
@@ -180,7 +180,7 @@ describe("hostWorkflows — _emit-workflow-meta", () => {
 
     const argv = makeArgv("_emit-workflow-meta");
     try {
-      await hostWorkflows([wf], { argv, env: VALID_ENV });
+      await hostLocalWorkflows([wf], { argv, env: VALID_ENV });
     } catch {
       // ExitCalled
     }
@@ -194,7 +194,7 @@ describe("hostWorkflows — _emit-workflow-meta", () => {
     const wf = makeWorkflow("no-version", "claude");
     const argv = makeArgv("_emit-workflow-meta");
     try {
-      await hostWorkflows([wf], { argv, env: VALID_ENV });
+      await hostLocalWorkflows([wf], { argv, env: VALID_ENV });
     } catch {
       // ExitCalled
     }
@@ -206,12 +206,12 @@ describe("hostWorkflows — _emit-workflow-meta", () => {
   });
 });
 
-describe("hostWorkflows — token guard (silent returns)", () => {
+describe("hostLocalWorkflows — token guard (silent returns)", () => {
   test("returns silently when no env tokens present", async () => {
     const wf = makeWorkflow();
     const argv = makeArgv("_emit-workflow-meta");
     // No ATOMIC_HOST or ATOMIC_DISPATCH_TOKEN in env
-    await hostWorkflows([wf], { argv, env: {} });
+    await hostLocalWorkflows([wf], { argv, env: {} });
 
     expect(capturedStdout).toHaveLength(0);
     expect(capturedStderr).toHaveLength(0);
@@ -225,7 +225,7 @@ describe("hostWorkflows — token guard (silent returns)", () => {
       ATOMIC_DISPATCH_TOKEN: "b".repeat(32), // different from VALID_TOKEN ("a"*32)
     };
 
-    await hostWorkflows([wf], { argv, env });
+    await hostLocalWorkflows([wf], { argv, env });
 
     expect(capturedStdout).toHaveLength(0);
     expect(capturedStderr).toHaveLength(0);
@@ -235,7 +235,7 @@ describe("hostWorkflows — token guard (silent returns)", () => {
     const wf = makeWorkflow();
     const argv = ["bun", "fixture.ts", "--help", `--dispatch-token=${VALID_TOKEN}`];
 
-    await hostWorkflows([wf], { argv, env: VALID_ENV });
+    await hostLocalWorkflows([wf], { argv, env: VALID_ENV });
 
     expect(capturedStdout).toHaveLength(0);
     expect(capturedStderr).toHaveLength(0);
@@ -243,14 +243,14 @@ describe("hostWorkflows — token guard (silent returns)", () => {
 
   test("returns silently when argv is too short (< 3 tokens)", async () => {
     const wf = makeWorkflow();
-    await hostWorkflows([wf], { argv: ["bun", "fixture.ts"], env: VALID_ENV });
+    await hostLocalWorkflows([wf], { argv: ["bun", "fixture.ts"], env: VALID_ENV });
 
     expect(capturedStdout).toHaveLength(0);
     expect(capturedStderr).toHaveLength(0);
   });
 });
 
-describe("hostWorkflows — _atomic-run", () => {
+describe("hostLocalWorkflows — _atomic-run", () => {
   test("calls runWorkflow with matching workflow and exits 0", async () => {
     const wf = makeWorkflow("demo", "claude");
 
@@ -266,7 +266,7 @@ describe("hostWorkflows — _atomic-run", () => {
 
     let caught: ExitCalled | null = null;
     try {
-      await hostWorkflows([wf], { argv, env: VALID_ENV, runWorkflow: runWorkflowMock });
+      await hostLocalWorkflows([wf], { argv, env: VALID_ENV, runWorkflow: runWorkflowMock });
     } catch (e) {
       caught = e as ExitCalled;
     }
@@ -307,7 +307,7 @@ describe("hostWorkflows — _atomic-run", () => {
     ];
 
     try {
-      await hostWorkflows([wfWithInputs], { argv, env: VALID_ENV, runWorkflow: runWorkflowMock });
+      await hostLocalWorkflows([wfWithInputs], { argv, env: VALID_ENV, runWorkflow: runWorkflowMock });
     } catch {
       // ExitCalled
     }
@@ -331,7 +331,7 @@ describe("hostWorkflows — _atomic-run", () => {
 
     let caught: ExitCalled | null = null;
     try {
-      await hostWorkflows([wf], { argv, env: VALID_ENV });
+      await hostLocalWorkflows([wf], { argv, env: VALID_ENV });
     } catch (e) {
       caught = e as ExitCalled;
     }
@@ -353,7 +353,7 @@ describe("hostWorkflows — _atomic-run", () => {
 
     let caught: ExitCalled | null = null;
     try {
-      await hostWorkflows([wf], { argv, env: VALID_ENV });
+      await hostLocalWorkflows([wf], { argv, env: VALID_ENV });
     } catch (e) {
       caught = e as ExitCalled;
     }
@@ -375,7 +375,7 @@ describe("hostWorkflows — _atomic-run", () => {
 
     let caught: ExitCalled | null = null;
     try {
-      await hostWorkflows([wf], { argv, env: VALID_ENV });
+      await hostLocalWorkflows([wf], { argv, env: VALID_ENV });
     } catch (e) {
       caught = e as ExitCalled;
     }
@@ -402,7 +402,7 @@ describe("hostWorkflows — _atomic-run", () => {
 
     let caught: ExitCalled | null = null;
     try {
-      await hostWorkflows([wf], { argv, env: VALID_ENV, runWorkflow: runWorkflowMock });
+      await hostLocalWorkflows([wf], { argv, env: VALID_ENV, runWorkflow: runWorkflowMock });
     } catch (e) {
       caught = e as ExitCalled;
     }
@@ -413,41 +413,41 @@ describe("hostWorkflows — _atomic-run", () => {
   });
 });
 
-// ─── hostedWorkflowRegistry ───────────────────────────────────────────────────
+// ─── localWorkflowRegistry ───────────────────────────────────────────────────
 
-describe("hostWorkflows — registry side-effect", () => {
+describe("hostLocalWorkflows — registry side-effect", () => {
   beforeEach(() => {
-    _clearHostedWorkflowRegistry();
+    _clearLocalWorkflowRegistry();
   });
 
   test("registers each supplied workflow keyed by (agent, name)", async () => {
     const wfA = makeWorkflow("demo-a", "claude");
     const wfB = makeWorkflow("demo-b", "opencode");
 
-    // No HOST_SUBS in argv → hostWorkflows returns silently, but the
+    // No HOST_SUBS in argv → hostLocalWorkflows returns silently, but the
     // registry side-effect must still run so orchestrator-entry can resolve
     // the workflow on a later re-import.
     const argv = ["bun", "fixture.ts"];
-    await hostWorkflows([wfA, wfB], { argv, env: {} });
+    await hostLocalWorkflows([wfA, wfB], { argv, env: {} });
 
-    expect(lookupHostedWorkflow("demo-a", "claude")).toBe(wfA);
-    expect(lookupHostedWorkflow("demo-b", "opencode")).toBe(wfB);
+    expect(lookupLocalWorkflow("demo-a", "claude")).toBe(wfA);
+    expect(lookupLocalWorkflow("demo-b", "opencode")).toBe(wfB);
   });
 
-  test("lookupHostedWorkflow returns undefined for unknown (name, agent)", () => {
-    expect(lookupHostedWorkflow("never-registered", "claude")).toBeUndefined();
+  test("lookupLocalWorkflow returns undefined for unknown (name, agent)", () => {
+    expect(lookupLocalWorkflow("never-registered", "claude")).toBeUndefined();
   });
 
   test("registry write happens before token validation, so untokenised re-imports still register", async () => {
     const wf = makeWorkflow("demo", "claude");
-    // Token absent: validateDispatchToken returns false → hostWorkflows
+    // Token absent: validateDispatchToken returns false → hostLocalWorkflows
     // returns immediately. But the registry must still be populated, since
     // this is exactly the path the orchestrator pane takes when it
     // re-imports the user's CLI under `_orchestrator-entry`.
     const argv = ["bun", "fixture.ts", "_emit-workflow-meta"];
-    await hostWorkflows([wf], { argv, env: {} });
+    await hostLocalWorkflows([wf], { argv, env: {} });
 
-    expect(lookupHostedWorkflow("demo", "claude")).toBe(wf);
+    expect(lookupLocalWorkflow("demo", "claude")).toBe(wf);
     // No stdout / stderr emitted because token check failed.
     expect(capturedStdout.join("")).toBe("");
   });
@@ -456,19 +456,19 @@ describe("hostWorkflows — registry side-effect", () => {
     const wfClaude = makeWorkflow("shared-name", "claude");
     const wfOpencode = makeWorkflow("shared-name", "opencode");
 
-    await hostWorkflows([wfClaude, wfOpencode], {
+    await hostLocalWorkflows([wfClaude, wfOpencode], {
       argv: ["bun", "fixture.ts"],
       env: {},
     });
 
-    expect(lookupHostedWorkflow("shared-name", "claude")).toBe(wfClaude);
-    expect(lookupHostedWorkflow("shared-name", "opencode")).toBe(wfOpencode);
+    expect(lookupLocalWorkflow("shared-name", "claude")).toBe(wfClaude);
+    expect(lookupLocalWorkflow("shared-name", "opencode")).toBe(wfOpencode);
   });
 });
 
 // ─── Direct CLI mode (no dispatch sub-command, --name supplied) ──────────────
 
-describe("hostWorkflows — direct CLI mode", () => {
+describe("hostLocalWorkflows — direct CLI mode", () => {
   test("runs workflow when --name + --agent + inputs supplied without dispatch sub-command", async () => {
     const wf = makeWorkflow("demo", "claude");
     const runWorkflowMock = makeRunMock();
@@ -481,7 +481,7 @@ describe("hostWorkflows — direct CLI mode", () => {
 
     let caught: ExitCalled | null = null;
     try {
-      await hostWorkflows([wf], { argv, env: {}, runWorkflow: runWorkflowMock });
+      await hostLocalWorkflows([wf], { argv, env: {}, runWorkflow: runWorkflowMock });
     } catch (e) {
       caught = e as ExitCalled;
     }
@@ -499,7 +499,7 @@ describe("hostWorkflows — direct CLI mode", () => {
 
     let caught: ExitCalled | null = null;
     try {
-      await hostWorkflows([wf], { argv, env: {}, runWorkflow: runWorkflowMock });
+      await hostLocalWorkflows([wf], { argv, env: {}, runWorkflow: runWorkflowMock });
     } catch (e) {
       caught = e as ExitCalled;
     }
@@ -522,7 +522,7 @@ describe("hostWorkflows — direct CLI mode", () => {
 
     let caught: ExitCalled | null = null;
     try {
-      await hostWorkflows([wf], { argv, env: {}, runWorkflow: runWorkflowMock });
+      await hostLocalWorkflows([wf], { argv, env: {}, runWorkflow: runWorkflowMock });
     } catch (e) {
       caught = e as ExitCalled;
     }
@@ -541,7 +541,7 @@ describe("hostWorkflows — direct CLI mode", () => {
 
     let caught: ExitCalled | null = null;
     try {
-      await hostWorkflows([wf], { argv, env: {}, runWorkflow: runWorkflowMock });
+      await hostLocalWorkflows([wf], { argv, env: {}, runWorkflow: runWorkflowMock });
     } catch (e) {
       caught = e as ExitCalled;
     }
@@ -560,7 +560,7 @@ describe("hostWorkflows — direct CLI mode", () => {
 
     let caught: ExitCalled | null = null;
     try {
-      await hostWorkflows([wfA, wfB], { argv, env: {}, runWorkflow: runWorkflowMock });
+      await hostLocalWorkflows([wfA, wfB], { argv, env: {}, runWorkflow: runWorkflowMock });
     } catch (e) {
       caught = e as ExitCalled;
     }
@@ -576,7 +576,7 @@ describe("hostWorkflows — direct CLI mode", () => {
 
     const argv = ["bun", "fixture.ts", "--something-else", "value"];
 
-    await hostWorkflows([wf], { argv, env: {}, runWorkflow: runWorkflowMock });
+    await hostLocalWorkflows([wf], { argv, env: {}, runWorkflow: runWorkflowMock });
 
     expect(runWorkflowMock).not.toHaveBeenCalled();
     expect(capturedStdout.join("")).toBe("");

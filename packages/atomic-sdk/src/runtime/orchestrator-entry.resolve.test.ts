@@ -3,8 +3,8 @@
  *
  * Verifies the post-import resolution chain that
  * `runOrchestratorEntry` relies on:
- *   1. `(name, agent)` lookup against the host-workflows registry
- *      (populated by `hostWorkflows([…])`).
+ *   1. `(name, agent)` lookup against the host-local-workflows registry
+ *      (populated by `hostLocalWorkflows([…])`).
  *   2. `mod.default` fallback for the legacy worker pattern.
  *   3. `InvalidWorkflowError` when neither produces a definition.
  *
@@ -15,17 +15,17 @@
 import { test, expect, describe, beforeEach } from "bun:test";
 import { join } from "node:path";
 import { resolveWorkflowDefinition } from "./orchestrator-entry.ts";
-import { _clearHostedWorkflowRegistry } from "../lib/host-workflows.ts";
+import { _clearLocalWorkflowRegistry } from "../lib/host-local-workflows.ts";
 import { InvalidWorkflowError } from "../errors.ts";
 
 const FIXTURE_DIR = join(import.meta.dir, "__fixtures__");
 
 describe("resolveWorkflowDefinition", () => {
   beforeEach(() => {
-    _clearHostedWorkflowRegistry();
+    _clearLocalWorkflowRegistry();
   });
 
-  test("prefers a workflow registered via hostWorkflows over mod.default", async () => {
+  test("prefers a workflow registered via hostLocalWorkflows over mod.default", async () => {
     const def = await resolveWorkflowDefinition(
       join(FIXTURE_DIR, "host-only.ts"),
       "host-only-wf",

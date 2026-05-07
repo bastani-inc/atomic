@@ -1,10 +1,10 @@
 /**
- * Integration tests for custom-workflows / hostWorkflows end-to-end.
+ * Integration tests for custom-workflows / hostLocalWorkflows end-to-end.
  *
  * Uses the real SDK fixture at tests/fixtures/sdk-host-consumer/index.ts
  * to exercise the full spawn-parse cycle that the production loader
  * (loadCustomWorkflows) drives, as well as two direct-spawn paths that
- * exercise hostWorkflows() behaviour:
+ * exercise hostLocalWorkflows() behaviour:
  *   1. _emit-workflow-meta with valid token  → ATOMIC_WORKFLOW_META emitted
  *   2. no env tokens                         → user main() runs, no meta
  *   3. _atomic-run --detach                  → exit 0 (creates tmux session)
@@ -144,7 +144,7 @@ test("RFC §8.3 symmetry: fixture invoked with _emit-workflow-meta and valid env
   const stdout = await new Response(child.stdout).text();
   const exitCode = await child.exited;
 
-  // Exits 0 after emitting meta (process.exit(0) in hostWorkflows)
+  // Exits 0 after emitting meta (process.exit(0) in hostLocalWorkflows)
   expect(exitCode).toBe(0);
   // Must contain the meta sentinel line
   const metaLine = stdout.split("\n").find((l) => l.startsWith("ATOMIC_WORKFLOW_META: "));
@@ -160,7 +160,7 @@ test("RFC §8.3 symmetry: fixture invoked with _emit-workflow-meta and valid env
 
 // ─── Test 3: _atomic-run --detach path exits 0 ────────────────────────────────
 
-test("hostWorkflows _atomic-run --detach path creates tmux session and exits 0", async () => {
+test("hostLocalWorkflows _atomic-run --detach path creates tmux session and exits 0", async () => {
   // The foreground _atomic-run path calls `tmux switch-client` which requires
   // an active tmux client.  Using --detach avoids the attach step so the
   // process can exit cleanly in a plain terminal harness.

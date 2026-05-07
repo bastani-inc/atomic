@@ -32,15 +32,15 @@ The `workflows` map in `settings.json` takes arbitrary string aliases as keys. E
 - `args` — static arguments prepended before atomic's hidden subcommands. Defaults to `[]`.
 - `agents` — required; one or more of `"claude" | "opencode" | "copilot"`. Atomic registers one entry per agent listed.
 
-## The hostWorkflows contract
+## The hostLocalWorkflows contract
 
-> **Required:** The CLI you point `command` at MUST call `await hostWorkflows([wf])` once after `defineWorkflow(...).compile()`. Atomic dispatches custom workflows by re-spawning that CLI with hidden `_emit-workflow-meta` and `_atomic-run` subcommands; `hostWorkflows()` is the helper that responds to them. The same call also (a) registers the workflows into a process-local registry so the orchestrator pane atomic spawns later can resolve them without you needing to `export default`, and (b) doubles as a standalone CLI runner so `bun run my-cli.ts --name <X> [--<input> <v>]…` runs the workflow without atomic in the loop.
+> **Required:** The CLI you point `command` at MUST call `await hostLocalWorkflows([wf])` once after `defineWorkflow(...).compile()`. Atomic dispatches custom workflows by re-spawning that CLI with hidden `_emit-workflow-meta` and `_atomic-run` subcommands; `hostLocalWorkflows()` is the helper that responds to them. The same call also (a) registers the workflows into a process-local registry so the orchestrator pane atomic spawns later can resolve them without you needing to `export default`, and (b) doubles as a standalone CLI runner so `bun run my-cli.ts --name <X> [--<input> <v>]…` runs the workflow without atomic in the loop.
 
 Canonical pattern (from [`examples/custom-workflow-bunx/index.ts`](../../examples/custom-workflow-bunx/index.ts)):
 
 ```ts
 #!/usr/bin/env bun
-import { defineWorkflow, hostWorkflows } from "@bastani/atomic-sdk";
+import { defineWorkflow, hostLocalWorkflows } from "@bastani/atomic-sdk";
 
 const explainFile = defineWorkflow({
   name: "explain-file",
@@ -72,12 +72,12 @@ const explainFile = defineWorkflow({
   })
   .compile();
 
-await hostWorkflows([explainFile]);
+await hostLocalWorkflows([explainFile]);
 
 // Your CLI's main() continues here if not invoked by atomic.
 ```
 
-**Why explicit?** ESM evaluation is depth-first: a dependency module's body runs before its importer's body. If the SDK handled dispatch at module load, it would drain an empty registry before the consumer's `.compile()` line ran. The explicit `await hostWorkflows([wf])` call after `.compile()` sidesteps that ordering constraint entirely.
+**Why explicit?** ESM evaluation is depth-first: a dependency module's body runs before its importer's body. If the SDK handled dispatch at module load, it would drain an empty registry before the consumer's `.compile()` line ran. The explicit `await hostLocalWorkflows([wf])` call after `.compile()` sidesteps that ordering constraint entirely.
 
 ## Precedence
 
@@ -101,13 +101,13 @@ When an entry fails to load — schema error, missing binary, timeout, missing m
 
 | Diagnostic | Fix |
 |---|---|
-| `"<alias>": metadata emission timed out after <N>ms — ensure the third-party CLI invokes hostWorkflows([…]) after compile()` | Add `await hostWorkflows([wf])` after `.compile()` in the CLI pointed to by `command`. |
-| `"<alias>": expected ATOMIC_WORKFLOW_META line — the third-party CLI may be missing the 'await hostWorkflows([wf])' call after compile() (or it is not importing @bastani/atomic-sdk)` | Add `await hostWorkflows([wf])` after `.compile()` and confirm the package imports `@bastani/atomic-sdk`. |
+| `"<alias>": metadata emission timed out after <N>ms — ensure the third-party CLI invokes hostLocalWorkflows([…]) after compile()` | Add `await hostLocalWorkflows([wf])` after `.compile()` in the CLI pointed to by `command`. |
+| `"<alias>": expected ATOMIC_WORKFLOW_META line — the third-party CLI may be missing the 'await hostLocalWorkflows([wf])' call after compile() (or it is not importing @bastani/atomic-sdk)` | Add `await hostLocalWorkflows([wf])` after `.compile()` and confirm the package imports `@bastani/atomic-sdk`. |
 | `"<alias>": command "<cmd>" not found on PATH` | Install the package or use an absolute path in `command`. |
 | `"<alias>/<agent>": command did not register a workflow for agent "<agent>"` | Add a `.for("<agent>")` branch in the CLI's `defineWorkflow` call. |
 
 ## Reference
 
 - Working example: [`examples/custom-workflow-bunx/`](../../examples/custom-workflow-bunx/) — minimal `bunx`-friendly package that registers a single workflow.
-- SDK helper: [`hostWorkflows`](../atomic-sdk/host-workflows.md).
+- SDK helper: [`hostLocalWorkflows`](../atomic-sdk/host-local-workflows.md).
 - Schema: [`assets/settings.schema.json`](../../assets/settings.schema.json).

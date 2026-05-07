@@ -22,7 +22,7 @@ import { runOrchestrator } from "./executor.ts";
 import type { AgentType, WorkflowDefinition } from "../types.ts";
 import { isValidAgent } from "../services/config/definitions.ts";
 import { InvalidWorkflowError } from "../errors.ts";
-import { lookupHostedWorkflow } from "../lib/host-workflows.ts";
+import { lookupLocalWorkflow } from "../lib/host-local-workflows.ts";
 
 /** Runtime guard for any candidate WorkflowDefinition (mod.default OR registry hit). */
 function isWorkflowDefinition(value: unknown): value is WorkflowDefinition {
@@ -36,13 +36,13 @@ function isWorkflowDefinition(value: unknown): value is WorkflowDefinition {
 /**
  * Resolve a `WorkflowDefinition` for the given source path.
  *
- * Imports the source (which lets any top-level `await hostWorkflows([wf])`
+ * Imports the source (which lets any top-level `await hostLocalWorkflows([wf])`
  * call register into the host registry) and then resolves the definition
  * in this order:
  *
  *   1. Host-workflows registry, keyed by `(agent, name)` — populated by
- *      `hostWorkflows([…])`. This lets consumers declare the workflow
- *      once via the `hostWorkflows` argument array, with no separate
+ *      `hostLocalWorkflows([…])`. This lets consumers declare the workflow
+ *      once via the `hostLocalWorkflows` argument array, with no separate
  *      `export default` required.
  *   2. `mod.default` — backwards-compat for the traditional pattern
  *      where a workflow file directly default-exports the compiled
@@ -62,7 +62,7 @@ export async function resolveWorkflowDefinition(
   const mod: unknown = await import(sourcePath);
 
   if (workflowName !== "") {
-    const fromHost = lookupHostedWorkflow(workflowName, agent);
+    const fromHost = lookupLocalWorkflow(workflowName, agent);
     if (fromHost && isWorkflowDefinition(fromHost)) {
       return fromHost;
     }

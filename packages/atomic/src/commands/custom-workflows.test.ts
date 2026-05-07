@@ -203,11 +203,11 @@ exit 0
     expect(result.loaded).toHaveLength(0);
     expect(result.broken).toHaveLength(1);
     expect(cap.stderr).toContain("expected ATOMIC_WORKFLOW_META line");
-    expect(cap.stderr).toContain("hostWorkflows");
-    expect(cap.stderr).toContain("await hostWorkflows([wf])");
+    expect(cap.stderr).toContain("hostLocalWorkflows");
+    expect(cap.stderr).toContain("await hostLocalWorkflows([wf])");
     expect(result.broken[0]!.reason).toContain("expected ATOMIC_WORKFLOW_META line");
-    expect(result.broken[0]!.reason).toContain("await hostWorkflows([wf])");
-    expect(result.broken[0]!.fix).toContain("await hostWorkflows([wf])");
+    expect(result.broken[0]!.reason).toContain("await hostLocalWorkflows([wf])");
+    expect(result.broken[0]!.fix).toContain("await hostLocalWorkflows([wf])");
   });
 });
 
@@ -268,10 +268,10 @@ await new Promise(() => {});
     expect(result.loaded).toHaveLength(0);
     expect(result.broken).toHaveLength(1);
     expect(cap.stderr).toContain("metadata emission timed out after 300ms");
-    expect(cap.stderr).toContain("hostWorkflows");
+    expect(cap.stderr).toContain("hostLocalWorkflows");
     expect(result.broken[0]!.reason).toContain("timed out after 300ms");
-    expect(result.broken[0]!.reason).toContain("hostWorkflows");
-    expect(result.broken[0]!.fix).toContain("await hostWorkflows([wf])");
+    expect(result.broken[0]!.reason).toContain("hostLocalWorkflows");
+    expect(result.broken[0]!.fix).toContain("await hostLocalWorkflows([wf])");
   }, 15000);
 });
 

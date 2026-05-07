@@ -1,5 +1,5 @@
 /**
- * `hostWorkflows` — explicit host-side dispatch helper.
+ * `hostLocalWorkflows` — explicit host-side dispatch helper.
  *
  * Call this AFTER all `defineWorkflow().compile()` calls in your entry
  * point. It checks `process.argv` for the `_emit-workflow-meta` and
@@ -16,14 +16,14 @@
  *
  * @example
  * ```typescript
- * import { defineWorkflow, hostWorkflows } from "@bastani/atomic";
+ * import { defineWorkflow, hostLocalWorkflows } from "@bastani/atomic";
  *
  * const myWorkflow = defineWorkflow({ name: "my-wf", source: import.meta.path })
  *   .for("claude")
  *   .run(async (ctx) => { ... })
  *   .compile();
  *
- * await hostWorkflows([myWorkflow]);
+ * await hostLocalWorkflows([myWorkflow]);
  * // user main() continues here when not dispatched
  * await main();
  * ```
@@ -37,14 +37,14 @@ import {
 } from "./auto-dispatch.ts";
 
 /**
- * Structural shape accepted by `hostWorkflows()`.
+ * Structural shape accepted by `hostLocalWorkflows()`.
  *
  * Uses `run: (...args: never[]) => Promise<void>` (the bivariant trick from
  * `RegistrableWorkflow`) so that narrowly-typed `WorkflowDefinition<"claude",
  * readonly []>` values produced by `.for("claude").compile()` are assignable
  * without an `as unknown as WorkflowDefinition` cast at the call site.
  */
-type HostableWorkflow = {
+type HostableLocalWorkflow = {
   readonly __brand: "WorkflowDefinition";
   readonly name: string;
   readonly agent: AgentType;
@@ -55,45 +55,45 @@ type HostableWorkflow = {
   readonly run: (...args: never[]) => Promise<void>;
 };
 
-/** Sub-commands handled exclusively by `hostWorkflows()`. */
+/** Sub-commands handled exclusively by `hostLocalWorkflows()`. */
 const HOST_SUBS = new Set(["_emit-workflow-meta", "_atomic-run"]);
 
 /**
- * Module-scoped registry of workflows passed to `hostWorkflows([…])`.
+ * Module-scoped registry of workflows passed to `hostLocalWorkflows([…])`.
  *
- * Populated at every `hostWorkflows()` call (before any argv inspection).
+ * Populated at every `hostLocalWorkflows()` call (before any argv inspection).
  * `runOrchestratorEntry` consults this registry by `(agent, name)` after
  * dynamic-importing the workflow source path, so consumers don't need to
- * `export default` the compiled workflow alongside the `hostWorkflows()`
+ * `export default` the compiled workflow alongside the `hostLocalWorkflows()`
  * call — the array argument is the single declaration.
  *
  * Keyed by `${agent}:${name}` because (name, agent) is the dispatch
  * identity and a single source file may register multiple workflows.
  */
-const hostedWorkflowRegistry = new Map<string, HostableWorkflow>();
+const localWorkflowRegistry = new Map<string, HostableLocalWorkflow>();
 
 function registryKey(agent: string, name: string): string {
   return `${agent}:${name}`;
 }
 
 /**
- * Look up a workflow registered via `hostWorkflows([…])` by
+ * Look up a workflow registered via `hostLocalWorkflows([…])` by
  * `(name, agent)`. Returns `undefined` if no workflow has been
  * registered for that pair in the current process.
  *
  * Used by `runOrchestratorEntry` (and unit tests). Consumers should call
- * `hostWorkflows()` to register; this function is a read-only accessor.
+ * `hostLocalWorkflows()` to register; this function is a read-only accessor.
  */
-export function lookupHostedWorkflow(
+export function lookupLocalWorkflow(
   name: string,
   agent: string,
-): HostableWorkflow | undefined {
-  return hostedWorkflowRegistry.get(registryKey(agent, name));
+): HostableLocalWorkflow | undefined {
+  return localWorkflowRegistry.get(registryKey(agent, name));
 }
 
 /** Test seam: clear the host-workflow registry between tests. */
-export function _clearHostedWorkflowRegistry(): void {
-  hostedWorkflowRegistry.clear();
+export function _clearLocalWorkflowRegistry(): void {
+  localWorkflowRegistry.clear();
 }
 
 /** Scan `argv` from index 2 for the first HOST_SUBS token. */
@@ -105,8 +105,8 @@ function findHostSub(argv: readonly string[]): { sub: string; index: number } | 
   return null;
 }
 
-/** Serialize a HostableWorkflow into the JSON shape emitted on the meta line. */
-function serializeMeta(w: HostableWorkflow): Record<string, unknown> {
+/** Serialize a HostableLocalWorkflow into the JSON shape emitted on the meta line. */
+function serializeMeta(w: HostableLocalWorkflow): Record<string, unknown> {
   return {
     name: w.name,
     description: w.description,
@@ -117,8 +117,8 @@ function serializeMeta(w: HostableWorkflow): Record<string, unknown> {
   };
 }
 
-/** Options for `hostWorkflows()`. */
-export interface HostWorkflowsOptions {
+/** Options for `hostLocalWorkflows()`. */
+export interface HostLocalWorkflowsOptions {
   /** Override `process.argv`. Defaults to `process.argv`. */
   argv?: readonly string[];
   /** Override `process.env`. Defaults to `process.env`. */
@@ -149,15 +149,15 @@ export interface HostWorkflowsOptions {
  *      workflow via `runWorkflow` and exits 0. When `--agent` is omitted
  *      it auto-resolves if exactly one workflow matches the name.
  *
- * When none of these match, `hostWorkflows` returns silently so the
+ * When none of these match, `hostLocalWorkflows` returns silently so the
  * caller's own `main()` can continue.
  *
  * @param workflows - Compiled workflow definitions to expose/dispatch.
  * @param options   - Optional argv/env overrides (useful in tests).
  */
-export async function hostWorkflows(
-  workflows: readonly HostableWorkflow[],
-  options?: HostWorkflowsOptions,
+export async function hostLocalWorkflows(
+  workflows: readonly HostableLocalWorkflow[],
+  options?: HostLocalWorkflowsOptions,
 ): Promise<void> {
   const argv = options?.argv ?? process.argv;
   const env = options?.env ?? (process.env as Record<string, string | undefined>);
@@ -169,7 +169,7 @@ export async function hostWorkflows(
   // `runOrchestratorEntry` resolve the definition without requiring the
   // consumer to also `export default` the workflow.
   for (const w of workflows) {
-    hostedWorkflowRegistry.set(registryKey(w.agent, w.name), w);
+    localWorkflowRegistry.set(registryKey(w.agent, w.name), w);
   }
 
   const found = findHostSub(argv);
@@ -235,9 +235,9 @@ export async function hostWorkflows(
  * required to disambiguate.
  */
 async function maybeRunDirectCLI(
-  workflows: readonly HostableWorkflow[],
+  workflows: readonly HostableLocalWorkflow[],
   argv: readonly string[],
-  options: HostWorkflowsOptions | undefined,
+  options: HostLocalWorkflowsOptions | undefined,
 ): Promise<void> {
   const cli = parseAtomicRunArgv(argv.slice(2));
   if (!cli.name) return;
@@ -245,18 +245,18 @@ async function maybeRunDirectCLI(
   const matches = workflows.filter((w) => w.name === cli.name);
   if (matches.length === 0) {
     process.stderr.write(
-      `[hostWorkflows] No registered workflow named "${cli.name}". ` +
+      `[hostLocalWorkflows] No registered workflow named "${cli.name}". ` +
         `Available: ${workflows.map((w) => `${w.name}/${w.agent}`).join(", ") || "(none)"}\n`,
     );
     process.exit(1);
   }
 
-  let workflow: HostableWorkflow;
+  let workflow: HostableLocalWorkflow;
   if (cli.agent) {
     const exact = matches.find((w) => w.agent === cli.agent);
     if (!exact) {
       process.stderr.write(
-        `[hostWorkflows] Workflow "${cli.name}" is not registered for agent "${cli.agent}". ` +
+        `[hostLocalWorkflows] Workflow "${cli.name}" is not registered for agent "${cli.agent}". ` +
           `Registered agents: ${matches.map((w) => w.agent).join(", ")}\n`,
       );
       process.exit(1);
@@ -266,7 +266,7 @@ async function maybeRunDirectCLI(
     workflow = matches[0]!;
   } else {
     process.stderr.write(
-      `[hostWorkflows] Workflow "${cli.name}" is registered for multiple agents ` +
+      `[hostLocalWorkflows] Workflow "${cli.name}" is registered for multiple agents ` +
         `(${matches.map((w) => w.agent).join(", ")}). Specify --agent <name>.\n`,
     );
     process.exit(1);
@@ -279,7 +279,7 @@ async function maybeRunDirectCLI(
     await runWorkflow({ workflow, inputs: cli.inputs, detach: cli.detach });
   } catch (err) {
     const msg = err instanceof Error ? err.stack ?? err.message : String(err);
-    process.stderr.write(`[hostWorkflows] ${msg}\n`);
+    process.stderr.write(`[hostLocalWorkflows] ${msg}\n`);
     process.exit(1);
   }
   process.exit(0);

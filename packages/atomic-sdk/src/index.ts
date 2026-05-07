@@ -22,8 +22,8 @@ export { createRegistry } from "./registry.ts";
 export type { Registry } from "./registry.ts";
 
 // ─── Host dispatch ───────────────────────────────────────────────────────────
-export { hostWorkflows } from "./lib/host-workflows.ts";
-export type { HostWorkflowsOptions } from "./lib/host-workflows.ts";
+export { hostLocalWorkflows } from "./lib/host-local-workflows.ts";
+export type { HostLocalWorkflowsOptions } from "./lib/host-local-workflows.ts";
 
 // ─── Shared types ───────────────────────────────────────────────────────────
 export type {

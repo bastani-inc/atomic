@@ -151,8 +151,8 @@ async function loadOne(
   if (timedOut) {
     return fail(
       entry.agents,
-      `"${alias}": metadata emission timed out after ${timeoutMs}ms — ensure the third-party CLI invokes hostWorkflows([…]) after compile()`,
-      `add 'await hostWorkflows([wf])' after the .compile() call in "${entry.command}" (and verify it imports @bastani/atomic-sdk)`,
+      `"${alias}": metadata emission timed out after ${timeoutMs}ms — ensure the third-party CLI invokes hostLocalWorkflows([…]) after compile()`,
+      `add 'await hostLocalWorkflows([wf])' after the .compile() call in "${entry.command}" (and verify it imports @bastani/atomic-sdk)`,
     );
   }
 
@@ -175,8 +175,8 @@ async function loadOne(
   if (!metaLine) {
     return fail(
       entry.agents,
-      `"${alias}": expected ATOMIC_WORKFLOW_META line — the third-party CLI may be missing the 'await hostWorkflows([wf])' call after compile() (or it is not importing @bastani/atomic-sdk)`,
-      `add 'await hostWorkflows([wf])' after the .compile() call in "${entry.command}"`,
+      `"${alias}": expected ATOMIC_WORKFLOW_META line — the third-party CLI may be missing the 'await hostLocalWorkflows([wf])' call after compile() (or it is not importing @bastani/atomic-sdk)`,
+      `add 'await hostLocalWorkflows([wf])' after the .compile() call in "${entry.command}"`,
     );
   }
 

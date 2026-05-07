@@ -24,7 +24,7 @@
  *     - Run `runCcDebounce(paneId)` and exit with its return code.
  *
  * The token-gated `_emit-workflow-meta` and `_atomic-run` sub-commands
- * are handled by `hostWorkflows()` in `./host-workflows.ts`, which the
+ * are handled by `hostLocalWorkflows()` in `./host-local-workflows.ts`, which the
  * user calls explicitly AFTER their `compile()` calls so the workflow
  * registry is populated at dispatch time.
  *
@@ -32,7 +32,7 @@
  * matching cases top-level-await the dispatch and exit.
  *
  * `validateDispatchToken`, `findSub`, `parseAtomicRunArgv`, and
- * `AtomicRunArgs` are exported for use by `host-workflows.ts` and for
+ * `AtomicRunArgs` are exported for use by `host-local-workflows.ts` and for
  * unit testing.
  */
 
