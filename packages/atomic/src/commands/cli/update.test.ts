@@ -50,7 +50,6 @@ const logInfoMock = mock((_msg: string) => {});
 const logErrorMock = mock((_msg: string) => {});
 const logSuccessMock = mock((_msg: string) => {});
 const noteMock = mock((_msg: string, _title?: string) => {});
-const confirmMock = mock(async (): Promise<boolean | symbol> => true);
 const spinnerStartMock = mock((_msg: string) => {});
 const spinnerStopMock = mock((_msg: string) => {});
 const spinnerMock = mock(() => ({ start: spinnerStartMock, stop: spinnerStopMock }));
@@ -69,7 +68,6 @@ await mock.module("@clack/prompts", () => ({
         success: logSuccessMock,
     },
     note: noteMock,
-    confirm: confirmMock,
     spinner: spinnerMock,
 }));
 
@@ -181,7 +179,6 @@ beforeEach(() => {
     logErrorMock.mockClear();
     logSuccessMock.mockClear();
     noteMock.mockClear();
-    confirmMock.mockClear();
     spinnerStartMock.mockClear();
     spinnerStopMock.mockClear();
     spinnerMock.mockClear();
@@ -211,7 +208,6 @@ beforeEach(() => {
     getInstallPathsMock.mockImplementation(() => FAKE_PATHS);
     copyBinaryMock.mockImplementation(() => {});
     cleanupOldArtifactsMock.mockImplementation(() => ({ oldBinariesRemoved: 0, tempFilesRemoved: 0 }));
-    confirmMock.mockImplementation(async () => true);
 });
 
 // ── describe block ────────────────────────────────────────────────────────────
@@ -224,7 +220,7 @@ describe("updateCommand", () => {
         const spawnSpy = spyOn(Bun, "spawn");
 
         try {
-            const code = await updateCommand({ yes: true });
+            const code = await updateCommand({});
             expect(code).toBe(0);
             expect(spawnSpy).not.toHaveBeenCalled();
             const allInfoCalls = logInfoMock.mock.calls.map((c) => String(c[0]));
@@ -267,7 +263,7 @@ describe("updateCommand", () => {
         } as ReturnType<typeof Bun.spawnSync>);
 
         try {
-            const code = await updateCommand({ yes: true });
+            const code = await updateCommand({});
             expect(code).toBe(0);
             expect(copyBinaryMock).toHaveBeenCalledTimes(1);
             // copyBinary first arg is paths, second is assetDest
@@ -294,7 +290,7 @@ describe("updateCommand", () => {
             detectInstallMethodResult = { kind, binPath: `/fake/${kind}/atomic` };
             const spawnSpy = spyOn(Bun, "spawn");
             try {
-                const code = await updateCommand({ yes: true });
+                const code = await updateCommand({});
                 expect(code).toBe(1);
                 expect(spawnSpy).not.toHaveBeenCalled();
                 const errorCalls = logErrorMock.mock.calls.map((c) => String(c[0]));
@@ -328,7 +324,7 @@ describe("updateCommand", () => {
         const spawnSpy = spyOn(Bun, "spawn");
 
         try {
-            const code = await updateCommand({ yes: true });
+            const code = await updateCommand({});
             expect(code).toBe(1);
             expect(spawnSpy).not.toHaveBeenCalled();
             const errorCalls = logErrorMock.mock.calls.map((c) => String(c[0]));
@@ -346,7 +342,7 @@ describe("updateCommand", () => {
         const spawnSpy = spyOn(Bun, "spawn");
 
         try {
-            const code = await updateCommand({ yes: true });
+            const code = await updateCommand({});
             expect(code).toBe(1);
             expect(spawnSpy).not.toHaveBeenCalled();
             const errorCalls = logErrorMock.mock.calls.map((c) => String(c[0]));
@@ -359,19 +355,6 @@ describe("updateCommand", () => {
         }
     });
 
-    test("binary path: confirm cancel returns 0 without downloading", async () => {
-        detectInstallMethodResult = { kind: "binary", binPath: FAKE_PATHS.binPath };
-        isNewerMock.mockImplementation(() => true);
-        confirmMock.mockImplementation(async () => false);
-
-        const code = await updateCommand({});
-        expect(code).toBe(0);
-        expect(downloadAssetFromUrlMock).not.toHaveBeenCalled();
-        expect(copyBinaryMock).not.toHaveBeenCalled();
-        const infoCalls = logInfoMock.mock.calls.map((c) => String(c[0]));
-        expect(infoCalls.some((m) => m.includes("cancelled"))).toBe(true);
-    });
-
     test("binary path: missing host asset returns 1 with error", async () => {
         detectInstallMethodResult = { kind: "binary", binPath: FAKE_PATHS.binPath };
         isNewerMock.mockImplementation(() => true);
@@ -381,7 +364,7 @@ describe("updateCommand", () => {
             assets: [{ name: "manifest.json", browser_download_url: "https://example.com/manifest.json" }],
         }));
 
-        const code = await updateCommand({ yes: true });
+        const code = await updateCommand({});
         expect(code).toBe(1);
         const errorCalls = logErrorMock.mock.calls.map((c) => String(c[0]));
         expect(errorCalls.some((m) => m.includes(HOST_ASSET) && m.includes("not found"))).toBe(true);
@@ -395,7 +378,7 @@ describe("updateCommand", () => {
             assets: [{ name: HOST_ASSET, browser_download_url: `https://example.com/${HOST_ASSET}` }],
         }));
 
-        const code = await updateCommand({ yes: true });
+        const code = await updateCommand({});
         expect(code).toBe(1);
         const errorCalls = logErrorMock.mock.calls.map((c) => String(c[0]));
         expect(errorCalls.some((m) => m.includes("manifest.json") && m.includes("not found"))).toBe(true);
@@ -425,7 +408,7 @@ describe("updateCommand", () => {
         } as ReturnType<typeof Bun.spawnSync>);
 
         try {
-            const code = await updateCommand({ yes: true, version: "0.7.5" });
+            const code = await updateCommand({ version: "0.7.5" });
             expect(code).toBe(0);
             // copyBinary must have been called — pinned version skips isNewer
             expect(copyBinaryMock).toHaveBeenCalledTimes(1);
@@ -452,7 +435,7 @@ describe("updateCommand", () => {
         } as ReturnType<typeof Bun.spawnSync>);
 
         try {
-            const code = await updateCommand({ yes: true });
+            const code = await updateCommand({});
             expect(code).toBe(1);
             const errorCalls = logErrorMock.mock.calls.map((c) => String(c[0]));
             expect(errorCalls.some((m) => m.includes("Sanity check failed"))).toBe(true);

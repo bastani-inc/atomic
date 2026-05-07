@@ -435,13 +435,11 @@ Examples:
         .description("Update atomic to the latest release (or a pinned version)")
         .option("--check", "Print current vs target without installing")
         .option("--version <v>", "Pin a target version (default: latest)")
-        .option("-y, --yes", "Skip the confirmation prompt")
-        .action(async (localOpts: { check?: boolean; version?: string; yes?: boolean }) => {
+        .action(async (localOpts: { check?: boolean; version?: string }) => {
             const { updateCommand } = await import("./commands/cli/update.ts");
             const exitCode = await updateCommand({
                 check: localOpts.check === true,
                 version: localOpts.version,
-                yes: localOpts.yes === true,
             });
             process.exit(exitCode);
         });

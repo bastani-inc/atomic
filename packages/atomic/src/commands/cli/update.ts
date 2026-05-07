@@ -14,7 +14,7 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { confirm, spinner, log, note } from "@clack/prompts";
+import { spinner, log, note } from "@clack/prompts";
 
 import { VERSION } from "../../version.ts";
 import { detectInstallMethod } from "../../services/system/install-method.ts";
@@ -35,7 +35,6 @@ import {
 } from "./install.ts";
 
 export interface UpdateOptions {
-    readonly yes?: boolean;
     readonly check?: boolean;
     readonly version?: string;
 }
@@ -127,16 +126,6 @@ async function runBinaryUpdate(opts: UpdateOptions, target: string): Promise<num
     if (target === "latest" && !isNewer(release.tag_name, VERSION)) {
         log.info(`Already up to date (${VERSION})`);
         return 0;
-    }
-
-    if (!opts.yes) {
-        const ok = await confirm({
-            message: `Update atomic from ${VERSION} to ${release.tag_name}?`,
-        });
-        if (ok !== true) {
-            log.info("Update cancelled.");
-            return 0;
-        }
     }
 
     const host = hostTarget();

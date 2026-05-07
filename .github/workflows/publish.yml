@@ -356,6 +356,12 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          # GitHub Actions pwsh sets $PSNativeCommandUseErrorActionPreference=$true
+          # plus $ErrorActionPreference='Stop', which turns any non-zero exit
+          # from a native command into a terminating error before we can read
+          # $LASTEXITCODE. Disable for this step so the deliberate exit-1
+          # refusal can be asserted against, not propagated.
+          $PSNativeCommandUseErrorActionPreference = $false
           $userPath = [Environment]::GetEnvironmentVariable('Path','User')
           if ($userPath) { $env:Path = "$env:Path;$userPath" }
           $out = atomic uninstall 2>&1 | Out-String
@@ -369,6 +375,50 @@ jobs:
           }
           if ($out -notmatch 'bun remove -g @bastani/atomic') {
             throw "missing 'bun remove -g' hint"
+          }
+          if (-not (Get-Command atomic -ErrorAction SilentlyContinue)) {
+            throw "atomic disappeared after refusal — must touch nothing"
+          }
+
+      # ── `atomic update` on a PM-managed install (no --check): refuses
+      #    with exit 1 and tells the user to run `bun update -g`. Sister
+      #    test to the uninstall refusal above; covers the second exit-1
+      #    branch in the PM-detection path of update.ts.
+      - name: atomic update refuses on bun install (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          export PATH="$HOME/.bun/bin:$PATH"
+          out=$(atomic update 2>&1) && rc=0 || rc=$?
+          echo "$out"
+          if [ "$rc" -eq 0 ]; then
+            echo "expected non-zero exit on a bun-managed install"; exit 1
+          fi
+          echo "$out" | grep -q "atomic update is not available for bun" \
+            || { echo "missing 'not available for bun' hint"; exit 1; }
+          echo "$out" | grep -q "bun update -g @bastani/atomic" \
+            || { echo "missing 'bun update -g' hint"; exit 1; }
+          command -v atomic >/dev/null 2>&1 \
+            || { echo "atomic disappeared after refusal — must touch nothing"; exit 1; }
+
+      - name: atomic update refuses on bun install (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $userPath = [Environment]::GetEnvironmentVariable('Path','User')
+          if ($userPath) { $env:Path = "$env:Path;$userPath" }
+          $out = atomic update 2>&1 | Out-String
+          $rc = $LASTEXITCODE
+          Write-Output $out
+          if ($rc -eq 0) {
+            throw "expected non-zero exit on a bun-managed install"
+          }
+          if ($out -notmatch 'atomic update is not available for bun') {
+            throw "missing 'not available for bun' hint"
+          }
+          if ($out -notmatch 'bun update -g @bastani/atomic') {
+            throw "missing 'bun update -g' hint"
           }
           if (-not (Get-Command atomic -ErrorAction SilentlyContinue)) {
             throw "atomic disappeared after refusal — must touch nothing"
@@ -611,7 +661,7 @@ jobs:
       # Uses port 4874 (verdaccio is on 4873). MOCK_VERSION=999.0.0 forces
       # the `isNewer` check inside `runBinaryUpdate` to return true so the
       # download/verify/swap path actually runs.
-      - name: atomic update -y via mock GitHub server (Unix)
+      - name: atomic update via mock GitHub server (Unix)
         if: runner.os != 'Windows'
         shell: bash
         env:
@@ -647,11 +697,11 @@ jobs:
 
           # Run the update via the *installed* binary so detectInstallMethod
           # returns "binary" (process.execPath == getInstallPaths().binPath).
-          "$binary" update -y --version 999.0.0
+          "$binary" update --version 999.0.0
           # Sanity: post-update binary still runs.
           "$binary" --version
 
-      - name: atomic update -y via mock GitHub server (Windows)
+      - name: atomic update via mock GitHub server (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         env:
@@ -690,8 +740,8 @@ jobs:
             $binary = Join-Path $env:LOCALAPPDATA "atomic\bin\atomic.exe"
             if (-not (Test-Path $binary)) { throw "expected installed binary at $binary" }
 
-            & $binary update -y --version 999.0.0
-            if ($LASTEXITCODE -ne 0) { throw "atomic update -y exited $LASTEXITCODE" }
+            & $binary update --version 999.0.0
+            if ($LASTEXITCODE -ne 0) { throw "atomic update exited $LASTEXITCODE" }
             & $binary --version
             if ($LASTEXITCODE -ne 0) { throw "atomic --version exited $LASTEXITCODE post-update" }
           } finally {
