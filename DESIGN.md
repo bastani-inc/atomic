@@ -54,6 +54,18 @@ components:
     textColor: "{colors.surface0}"
     typography: "{typography.bold}"
     padding: "0 2ch 0 1ch"
+  picker-row-broken:
+    backgroundColor: "{colors.mantle}"
+    textColor: "{colors.overlay1}" # dim alias
+    glyphColor: "{colors.red}"
+    captionColor: "{colors.red}"
+    padding: "0 2ch 0 1ch"
+  picker-row-broken-focused:
+    backgroundColor: "{colors.surface1}" # the previously-reserved disabled-hover stratum
+    textColor: "{colors.text}" # alias lifted to text, NOT bold
+    glyphColor: "{colors.red}"
+    captionColor: "{colors.red}"
+    padding: "0 2ch 0 1ch"
   panel:
     backgroundColor: "{colors.mantle}"
     textColor: "{colors.text}"
@@ -208,6 +220,8 @@ The component voice is **tactile and confident**: rounded boxes, decisive select
 - **Shape:** 1 row tall, `paddingLeft: 1`, `paddingRight: 2`, no border.
 - **Default:** `mantle` background, `subtext0` (textMuted) name, leading two-space indent.
 - **Selected:** `accent` background, `surface0` foreground, **bold** name, leading `▸ ` chevron also `surface0` and bold. The accent-pill vocabulary applied to a row.
+- **Broken (default):** `mantle` background, `overlay1` (dim) alias text, `✗ ` glyph in `red`, trailing caption in `red`. No bold — bold is reserved for actionable selection. Status-Is-Truth: red genuinely means broken.
+- **Broken (focused/cursor-on):** `surface1` background — the slot reserved for hover/selection states on neutral surfaces — `text` foreground (lifted from dim), glyph and caption remain `red`. The bold-and-Blue (accent) vocabulary stays sacred for actionable rows; broken-focused uses `surface1` instead. No bold on broken rows in either state.
 - **Section header:** 2 rows tall, `mantle` bg, agent name colored per agent (`yellow`/`green`/`mauve`).
 
 ### Panels (rounded boxes)

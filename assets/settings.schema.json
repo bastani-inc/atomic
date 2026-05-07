@@ -26,9 +26,41 @@
         "copilot": { "$ref": "#/$defs/providerOverrides" }
       },
       "additionalProperties": false
+    },
+    "workflows": {
+      "type": "object",
+      "description": "Custom user workflows. Each entry declares an executable command; atomic invokes it once at startup with `_emit-workflow-meta` to discover the compiled WorkflowDefinitions, then invokes it with `_atomic-run` to dispatch. Both behaviors are auto-handled by @bastani/atomic-sdk's argv interceptor — no third-party boilerplate.",
+      "additionalProperties": { "$ref": "#/$defs/customWorkflow" }
     }
   },
   "$defs": {
+    "customWorkflow": {
+      "type": "object",
+      "required": ["command", "agents"],
+      "properties": {
+        "command": {
+          "type": "string",
+          "description": "Executable to spawn (e.g., 'bunx', 'node', '/abs/path/to/binary')."
+        },
+        "args": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Static arguments passed before atomic's hidden `_emit-workflow-meta` / `_atomic-run` argv."
+        },
+        "agents": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": ["claude", "opencode", "copilot"]
+          },
+          "description": "Required. Agents this workflow supports. Atomic registers one entry per agent listed; the third-party command's WorkflowDefinitions must cover them."
+        }
+      },
+      "additionalProperties": false
+    },
     "providerOverrides": {
       "type": "object",
       "description": "Override settings for a single provider.",

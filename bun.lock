@@ -11,6 +11,7 @@
         "@opentui/react": "^0.2.3",
         "@types/bun": "^1.3.13",
         "@types/react": "^19.2.14",
+        "ajv": "^8.20.0",
         "bun-pty": "0.4.8",
         "oxlint": "^1.63.0",
         "react": "^19.2.6",
@@ -21,7 +22,7 @@
     },
     "examples/claude-background-subagents": {
       "name": "@bastani/example-claude-background-subagents",
-      "version": "0.7.9",
+      "version": "0.7.10",
       "dependencies": {
         "@bastani/atomic-sdk": "workspace:*",
         "@commander-js/extra-typings": "^14.0.0",
@@ -29,7 +30,7 @@
     },
     "examples/commander-embed": {
       "name": "@bastani/example-commander-embed",
-      "version": "0.7.9",
+      "version": "0.7.10",
       "dependencies": {
         "@bastani/atomic-sdk": "workspace:*",
         "@commander-js/extra-typings": "^14.0.0",
@@ -37,7 +38,7 @@
     },
     "examples/headless-test": {
       "name": "@bastani/example-headless-test",
-      "version": "0.7.9",
+      "version": "0.7.10",
       "dependencies": {
         "@bastani/atomic-sdk": "workspace:*",
         "@commander-js/extra-typings": "^14.0.0",
@@ -46,7 +47,7 @@
     },
     "examples/hello-world": {
       "name": "@bastani/example-hello-world",
-      "version": "0.7.9",
+      "version": "0.7.10",
       "dependencies": {
         "@bastani/atomic-sdk": "workspace:*",
         "@commander-js/extra-typings": "^14.0.0",
@@ -54,7 +55,7 @@
     },
     "examples/hil-favorite-color": {
       "name": "@bastani/example-hil-favorite-color",
-      "version": "0.7.9",
+      "version": "0.7.10",
       "dependencies": {
         "@bastani/atomic-sdk": "workspace:*",
         "@commander-js/extra-typings": "^14.0.0",
@@ -62,7 +63,7 @@
     },
     "examples/hil-favorite-color-headless": {
       "name": "@bastani/example-hil-favorite-color-headless",
-      "version": "0.7.9",
+      "version": "0.7.10",
       "dependencies": {
         "@bastani/atomic-sdk": "workspace:*",
         "@commander-js/extra-typings": "^14.0.0",
@@ -70,7 +71,7 @@
     },
     "examples/multi-workflow": {
       "name": "@bastani/example-multi-workflow",
-      "version": "0.7.9",
+      "version": "0.7.10",
       "dependencies": {
         "@bastani/atomic-sdk": "workspace:*",
         "@commander-js/extra-typings": "^14.0.0",
@@ -78,7 +79,7 @@
     },
     "examples/pane-navigation": {
       "name": "@bastani/example-pane-navigation",
-      "version": "0.7.9",
+      "version": "0.7.10",
       "dependencies": {
         "@bastani/atomic-sdk": "workspace:*",
         "@commander-js/extra-typings": "^14.0.0",
@@ -86,7 +87,7 @@
     },
     "examples/parallel-hello-world": {
       "name": "@bastani/example-parallel-hello-world",
-      "version": "0.7.9",
+      "version": "0.7.10",
       "dependencies": {
         "@bastani/atomic-sdk": "workspace:*",
         "@commander-js/extra-typings": "^14.0.0",
@@ -94,7 +95,7 @@
     },
     "examples/review-fix-loop": {
       "name": "@bastani/example-review-fix-loop",
-      "version": "0.7.9",
+      "version": "0.7.10",
       "dependencies": {
         "@bastani/atomic-sdk": "workspace:*",
         "@commander-js/extra-typings": "^14.0.0",
@@ -102,7 +103,7 @@
     },
     "examples/reviewer-tool-test": {
       "name": "@bastani/example-reviewer-tool-test",
-      "version": "0.7.9",
+      "version": "0.7.10",
       "dependencies": {
         "@bastani/atomic-sdk": "workspace:*",
         "@commander-js/extra-typings": "^14.0.0",
@@ -112,7 +113,7 @@
     },
     "examples/sequential-describe-summarize": {
       "name": "@bastani/example-sequential-describe-summarize",
-      "version": "0.7.9",
+      "version": "0.7.10",
       "dependencies": {
         "@bastani/atomic-sdk": "workspace:*",
         "@commander-js/extra-typings": "^14.0.0",
@@ -120,7 +121,7 @@
     },
     "examples/structured-output-demo": {
       "name": "@bastani/example-structured-output-demo",
-      "version": "0.7.9",
+      "version": "0.7.10",
       "dependencies": {
         "@bastani/atomic-sdk": "workspace:*",
         "@commander-js/extra-typings": "^14.0.0",
@@ -130,7 +131,7 @@
     },
     "packages/atomic": {
       "name": "@bastani/atomic",
-      "version": "0.7.9",
+      "version": "0.7.10",
       "bin": {
         "atomic": "src/cli.ts",
       },
@@ -153,7 +154,7 @@
     },
     "packages/atomic-sdk": {
       "name": "@bastani/atomic-sdk",
-      "version": "0.7.9",
+      "version": "0.7.10",
       "dependencies": {
         "@anthropic-ai/claude-agent-sdk": "^0.2.132",
         "@catppuccin/palette": "^1.8.0",
@@ -369,7 +370,7 @@
 
     "accepts": ["accepts@2.0.0", "", { "dependencies": { "mime-types": "^3.0.0", "negotiator": "^1.0.0" } }, "sha512-5cvg6CtKwfgdmVqY1WIiXKc3Q1bkRqGLi+2W/6ao+6Y7gu/RCwRuAhGEzh5B4KlszSuTLgZYuqFqo5bImjNKng=="],
 
-    "ajv": ["ajv@8.18.0", "", { "dependencies": { "fast-deep-equal": "^3.1.3", "fast-uri": "^3.0.1", "json-schema-traverse": "^1.0.0", "require-from-string": "^2.0.2" } }, "sha512-PlXPeEWMXMZ7sPYOHqmDyCJzcfNrUr3fGNKtezX14ykXOEIvyK81d+qydx89KY5O71FKMPaQ2vBfBFI5NHR63A=="],
+    "ajv": ["ajv@8.20.0", "", { "dependencies": { "fast-deep-equal": "^3.1.3", "fast-uri": "^3.0.1", "json-schema-traverse": "^1.0.0", "require-from-string": "^2.0.2" } }, "sha512-Thbli+OlOj+iMPYFBVBfJ3OmCAnaSyNn4M1vz9T6Gka5Jt9ba/HIR56joy65tY6kx/FCF5VXNB819Y7/GUrBGA=="],
 
     "ajv-formats": ["ajv-formats@3.0.1", "", { "dependencies": { "ajv": "^8.0.0" } }, "sha512-8iUql50EUR+uUcdRQ3HDqa6EVyo3docL8g5WJ3FNcWmu62IbkGUue/pEyLBW8VGKKucTPgqeks4fIU1DA4yowQ=="],
 
@@ -617,7 +618,11 @@
 
     "@github/copilot-sdk/zod": ["zod@4.3.6", "", {}, "sha512-rftlrkhHZOcjDwkGlnUtZZkvaPHCsDATp4pGpuOOMDaTdDDXF91wuVDJoWoPsKX/3YPQ5fHuF3STjcYyKr+Qhg=="],
 
+    "@modelcontextprotocol/sdk/ajv": ["ajv@8.18.0", "", { "dependencies": { "fast-deep-equal": "^3.1.3", "fast-uri": "^3.0.1", "json-schema-traverse": "^1.0.0", "require-from-string": "^2.0.2" } }, "sha512-PlXPeEWMXMZ7sPYOHqmDyCJzcfNrUr3fGNKtezX14ykXOEIvyK81d+qydx89KY5O71FKMPaQ2vBfBFI5NHR63A=="],
+
     "@modelcontextprotocol/sdk/zod": ["zod@4.3.6", "", {}, "sha512-rftlrkhHZOcjDwkGlnUtZZkvaPHCsDATp4pGpuOOMDaTdDDXF91wuVDJoWoPsKX/3YPQ5fHuF3STjcYyKr+Qhg=="],
+
+    "ajv-formats/ajv": ["ajv@8.18.0", "", { "dependencies": { "fast-deep-equal": "^3.1.3", "fast-uri": "^3.0.1", "json-schema-traverse": "^1.0.0", "require-from-string": "^2.0.2" } }, "sha512-PlXPeEWMXMZ7sPYOHqmDyCJzcfNrUr3fGNKtezX14ykXOEIvyK81d+qydx89KY5O71FKMPaQ2vBfBFI5NHR63A=="],
 
     "react-devtools-core/ws": ["ws@7.5.10", "", { "peerDependencies": { "bufferutil": "^4.0.1", "utf-8-validate": "^5.0.2" }, "optionalPeers": ["bufferutil", "utf-8-validate"] }, "sha512-+dbF1tHwZpXcbOJdVOkzLDxZP1ailvSxM6ZweXTegylPny803bFhA+vqBYw4s31NSAk4S2Qz+AKXK9a4wkdjcQ=="],
   }

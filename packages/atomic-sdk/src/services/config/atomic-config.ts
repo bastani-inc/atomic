@@ -10,15 +10,13 @@
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import {
+  getAgentKeys,
   isValidAgent,
   type AgentKey,
   type ProviderOverrides,
 } from "./definitions.ts";
 import { SETTINGS_SCHEMA_URL } from "./settings-schema.ts";
 import { ensureDir } from "../system/copy.ts";
-
-/** Known agent values for workflow validation. */
-const KNOWN_AGENTS: ReadonlyArray<AgentKey> = ["claude", "opencode", "copilot"];
 
 /**
  * A single custom workflow entry declared in `settings.json` under the
@@ -73,16 +71,16 @@ export interface AtomicConfig {
 
 type JsonRecord = Record<string, unknown>;
 
-function getGlobalSettingsPath(): string {
+export function getGlobalSettingsPath(): string {
   const home = process.env.ATOMIC_SETTINGS_HOME ?? homedir();
   return join(home, SETTINGS_DIR, SETTINGS_FILENAME);
 }
 
-function getLocalSettingsPath(projectDir: string): string {
+export function getLocalSettingsPath(projectDir: string): string {
   return join(projectDir, SETTINGS_DIR, SETTINGS_FILENAME);
 }
 
-async function readJsonFile(path: string): Promise<JsonRecord | null> {
+export async function readJsonFile(path: string): Promise<JsonRecord | null> {
   try {
     return await Bun.file(path).json() as JsonRecord;
   } catch {
@@ -126,6 +124,11 @@ function pickProviders(raw: unknown): Partial<Record<AgentKey, ProviderOverrides
 /** Known property keys for a `CustomWorkflowEntry`. Used to detect unknown properties. */
 const KNOWN_WORKFLOW_PROPS = new Set(["command", "args", "agents"]);
 
+/** Emit a single-line workflow diagnostic to stderr. */
+function workflowDiagnostic(alias: string, message: string): void {
+  process.stderr.write(`[atomic/workflows] "${alias}": ${message}\n`);
+}
+
 /**
  * Parse and validate the raw `workflows` value from settings.json.
  *
@@ -140,12 +143,12 @@ export function pickWorkflows(raw: unknown): Record<string, CustomWorkflowEntry>
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
   const obj = raw as Record<string, unknown>;
   const result: Record<string, CustomWorkflowEntry> = {};
+  const missingCommandMsg = `missing required "command"; see ${SETTINGS_SCHEMA_URL}`;
+  const agentsMsg = `"agents" must be a non-empty subset of [${getAgentKeys().join(", ")}]`;
 
   for (const [alias, value] of Object.entries(obj)) {
     if (!value || typeof value !== "object" || Array.isArray(value)) {
-      process.stderr.write(
-        `[atomic/workflows] "${alias}": missing required "command"; see ${SETTINGS_SCHEMA_URL}\n`,
-      );
+      workflowDiagnostic(alias, missingCommandMsg);
       continue;
     }
 
@@ -154,17 +157,13 @@ export function pickWorkflows(raw: unknown): Record<string, CustomWorkflowEntry>
     // Reject unknown properties (§5.8 — skip the whole entry).
     const unknownProp = Object.keys(entry).find((p) => !KNOWN_WORKFLOW_PROPS.has(p));
     if (unknownProp !== undefined) {
-      process.stderr.write(
-        `[atomic/workflows] "${alias}": unknown property "${unknownProp}" — see ${SETTINGS_SCHEMA_URL}\n`,
-      );
+      workflowDiagnostic(alias, `unknown property "${unknownProp}" — see ${SETTINGS_SCHEMA_URL}`);
       continue;
     }
 
     // Validate `command`.
     if (typeof entry.command !== "string" || entry.command.trim() === "") {
-      process.stderr.write(
-        `[atomic/workflows] "${alias}": missing required "command"; see ${SETTINGS_SCHEMA_URL}\n`,
-      );
+      workflowDiagnostic(alias, missingCommandMsg);
       continue;
     }
 
@@ -175,31 +174,31 @@ export function pickWorkflows(raw: unknown): Record<string, CustomWorkflowEntry>
         !(entry.args as unknown[]).every((a) => typeof a === "string")
       ) {
         const gotType = Array.isArray(entry.args) ? "array of non-strings" : typeof entry.args;
-        process.stderr.write(
-          `[atomic/workflows] "${alias}": "args" must be array of strings (got ${gotType})\n`,
-        );
+        workflowDiagnostic(alias, `"args" must be array of strings (got ${gotType})`);
         continue;
       }
     }
 
-    // Validate `agents`.
+    // Validate `agents`: a non-empty array of known agent keys.
     const rawAgents = entry.agents;
     if (
       !Array.isArray(rawAgents) ||
       rawAgents.length === 0 ||
-      !(rawAgents as unknown[]).every(
-        (a): a is AgentKey => typeof a === "string" && (KNOWN_AGENTS as readonly string[]).includes(a),
-      )
+      !rawAgents.every((a): a is AgentKey => typeof a === "string" && isValidAgent(a))
     ) {
-      process.stderr.write(
-        `[atomic/workflows] "${alias}": "agents" must be a non-empty subset of [claude, opencode, copilot]\n`,
-      );
+      workflowDiagnostic(alias, agentsMsg);
       continue;
+    }
+
+    // De-duplicate agents (schema: uniqueItems: true).
+    const agents = [...new Set(rawAgents)] as AgentKey[];
+    if (agents.length !== rawAgents.length) {
+      workflowDiagnostic(alias, `"agents" contains duplicates; de-duplicating to [${agents.join(", ")}]`);
     }
 
     const validEntry: CustomWorkflowEntry = {
       command: entry.command,
-      agents: rawAgents,
+      agents,
     };
     if (entry.args !== undefined) {
       validEntry.args = entry.args as string[];
@@ -211,7 +210,7 @@ export function pickWorkflows(raw: unknown): Record<string, CustomWorkflowEntry>
   return Object.keys(result).length > 0 ? result : undefined;
 }
 
-function pickAtomicConfig(record: JsonRecord | null): AtomicConfig | null {
+export function pickAtomicConfig(record: JsonRecord | null): AtomicConfig | null {
   if (!record) return null;
 
   const config: AtomicConfig = {};
@@ -303,6 +302,25 @@ export async function readAtomicConfig(projectDir: string): Promise<AtomicConfig
 
   // global < local settings
   return mergeConfigs(globalConfig, localConfig);
+}
+
+/**
+ * Split view of global and local atomic configs, without merging.
+ *
+ * RFC §5.2 — consumers that need to know the source of each setting
+ * (e.g. to display provenance in the UI) should use this instead of
+ * `readAtomicConfig`.
+ */
+export interface AtomicConfigSplit {
+  global: AtomicConfig | null;
+  local: AtomicConfig | null;
+}
+
+export async function readAtomicConfigSplit(projectDir: string): Promise<AtomicConfigSplit> {
+  return {
+    global: pickAtomicConfig(await readJsonFile(getGlobalSettingsPath())),
+    local: pickAtomicConfig(await readJsonFile(getLocalSettingsPath(projectDir))),
+  };
 }
 
 /**

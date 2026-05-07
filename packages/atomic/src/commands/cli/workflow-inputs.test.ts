@@ -6,7 +6,7 @@
  * is exercised end-to-end by the existing workflow-command harness.
  */
 
-import { describe, test, expect, beforeAll, afterAll, mock } from "bun:test";
+import { describe, test, expect, beforeAll, afterAll, beforeEach, mock } from "bun:test";
 import {
   buildInputsPayload,
   renderInputsText,
@@ -14,7 +14,8 @@ import {
   type WorkflowInputsDeps,
   type ResolvedWorkflowEntry,
 } from "./workflow-inputs.ts";
-import type { AgentType, WorkflowInput, WorkflowDefinition } from "@bastani/atomic-sdk/workflows";
+import type { AgentType, WorkflowInput, WorkflowDefinition, ExternalWorkflow } from "@bastani/atomic-sdk/workflows";
+import { rebuildWorkflowCommand, getActiveRegistry } from "./workflow.ts";
 
 let originalNoColor: string | undefined;
 beforeAll(() => {
@@ -346,6 +347,149 @@ describe("workflowInputsCommand", () => {
       expect(code).toBe(1);
       const parsed = JSON.parse(cap.stdout());
       expect(parsed.error).toContain("not found");
+    } finally {
+      cap.restore();
+    }
+  });
+
+  // ─── Regression: builtin lookup still works via activeRegistry ────────────
+
+  test("builtin lookup unchanged after rebuildWorkflowCommand with empty broken", async () => {
+    // Reset to clean builtin-only registry with empty broken map.
+    rebuildWorkflowCommand(getActiveRegistry(), new Map());
+    const cap = captureOutput();
+    try {
+      const code = await workflowInputsCommand({
+        name: "ralph",
+        agent: "claude",
+        format: "json",
+      });
+      expect(code).toBe(0);
+      const parsed = JSON.parse(cap.stdout());
+      expect(parsed.workflow).toBe("ralph");
+    } finally {
+      cap.restore();
+    }
+  });
+
+  // ─── ExternalWorkflow inputs render correctly via activeRegistry ──────────
+
+  test("ExternalWorkflow in activeRegistry renders inputs correctly", async () => {
+    const ext: ExternalWorkflow = {
+      kind: "external",
+      name: "my-ext-wf",
+      agent: "claude",
+      description: "my external workflow",
+      inputs: [
+        { name: "target", type: "string", required: true, description: "target path" },
+      ],
+      source: { command: "/usr/bin/ext", args: [] },
+    };
+
+    // Upsert the external workflow into the active registry.
+    const originalRegistry = getActiveRegistry();
+    const mergedRegistry = originalRegistry.upsert(ext);
+    rebuildWorkflowCommand(mergedRegistry, new Map());
+
+    const cap = captureOutput();
+    try {
+      const code = await workflowInputsCommand({
+        name: "my-ext-wf",
+        agent: "claude",
+        format: "json",
+      });
+      expect(code).toBe(0);
+      const parsed = JSON.parse(cap.stdout());
+      expect(parsed.workflow).toBe("my-ext-wf");
+      expect(parsed.agent).toBe("claude");
+      expect(parsed.description).toBe("my external workflow");
+      expect(parsed.inputs).toHaveLength(1);
+      expect(parsed.inputs[0].name).toBe("target");
+    } finally {
+      cap.restore();
+      // Restore to original registry.
+      rebuildWorkflowCommand(originalRegistry, new Map());
+    }
+  });
+});
+
+// ─── Hard-block: activeBroken populated ──────────────────────────────────────
+
+describe("hard-block on activeBroken", () => {
+  beforeEach(() => {
+    // Ensure activeBroken is empty before each test to avoid cross-test pollution.
+    rebuildWorkflowCommand(getActiveRegistry(), new Map());
+  });
+
+  test("writes all three diagnostic lines to stderr and calls process.exit(2)", async () => {
+    const brokenEntry = {
+      alias: "bad-ext",
+      origin: "local" as const,
+      agents: ["claude" as AgentType],
+      reason: "SyntaxError: unexpected token",
+      source: "/home/user/.atomic/workflows/bad-ext.ts",
+      fix: "Fix the syntax error in the workflow file.",
+    };
+    const brokenMap = new Map([["claude/bad-ext", brokenEntry]]);
+    rebuildWorkflowCommand(getActiveRegistry(), brokenMap);
+
+    const errChunks: string[] = [];
+    const origErr = process.stderr.write;
+    process.stderr.write = ((c: string | Uint8Array) => {
+      errChunks.push(typeof c === "string" ? c : new TextDecoder().decode(c));
+      return true;
+    }) as typeof process.stderr.write;
+
+    const origExit = process.exit;
+    let exitCode: number | undefined;
+    process.exit = ((code?: number) => {
+      exitCode = code;
+      throw new Error(`process.exit(${code})`);
+    }) as typeof process.exit;
+
+    try {
+      await workflowInputsCommand(
+        { name: "bad-ext", agent: "claude", format: "json" },
+        makeDeps(),
+      );
+      throw new Error("should have thrown from process.exit");
+    } catch (err) {
+      if (!(err instanceof Error) || !err.message.startsWith("process.exit")) throw err;
+    } finally {
+      process.stderr.write = origErr;
+      process.exit = origExit;
+    }
+
+    expect(exitCode).toBe(2);
+    const stderrOutput = errChunks.join("");
+    expect(stderrOutput).toContain("reason ·");
+    expect(stderrOutput).toContain("source ·");
+    expect(stderrOutput).toContain("fix    ·");
+    expect(stderrOutput).toContain("SyntaxError: unexpected token");
+    expect(stderrOutput).toContain("/home/user/.atomic/workflows/bad-ext.ts");
+  });
+
+  test("non-broken workflow is not blocked", async () => {
+    // Only 'other-wf' is broken, 'gen-spec' should pass through.
+    const brokenMap = new Map([
+      ["claude/other-wf", {
+        alias: "other-wf",
+        origin: "local" as const,
+        agents: ["claude" as AgentType],
+        reason: "error",
+        source: "/path",
+        fix: "fix it",
+      }],
+    ]);
+    rebuildWorkflowCommand(getActiveRegistry(), brokenMap);
+
+    const cap = captureOutput();
+    try {
+      const code = await workflowInputsCommand(
+        { name: "gen-spec", agent: "claude", format: "json" },
+        makeDeps(),
+      );
+      expect(code).toBe(0);
     } finally {
       cap.restore();
     }

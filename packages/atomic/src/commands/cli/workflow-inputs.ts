@@ -17,14 +17,14 @@ import {
   getAgentKeys,
   isValidAgent,
 } from "@bastani/atomic-sdk/services/config/definitions";
-import { createBuiltinRegistry } from "../builtin-registry.ts";
+import { blockIfBroken, getActiveRegistry } from "./workflow.ts";
 import type {
   WorkflowInput,
   WorkflowDefinition,
   ExternalWorkflow,
   AgentType,
 } from "@bastani/atomic-sdk";
-import { getInputSchema } from "@bastani/atomic-sdk";
+import { getDescription, getInputSchema } from "@bastani/atomic-sdk";
 
 export type WorkflowInputsFormat = "json" | "text";
 
@@ -185,14 +185,14 @@ export interface WorkflowInputsDeps {
 }
 
 function registryFindWorkflow(name: string, agent: AgentType): Promise<ResolvedWorkflowEntry | null> {
-  const registry = createBuiltinRegistry();
+  const registry = getActiveRegistry();
   const wf = registry.resolve(name, agent);
   if (!wf) return Promise.resolve(null);
   return Promise.resolve({ name: wf.name, agent: wf.agent });
 }
 
 function registryLoadWorkflow(entry: ResolvedWorkflowEntry): Promise<WorkflowLoadResult> {
-  const registry = createBuiltinRegistry();
+  const registry = getActiveRegistry();
   const wf = registry.resolve(entry.name, entry.agent);
   if (!wf) {
     return Promise.resolve({
@@ -230,6 +230,8 @@ export async function workflowInputsCommand(
   }
   const agent = options.agent;
 
+  blockIfBroken(options.name, agent);
+
   const discovered = await deps.findWorkflow(options.name, agent, options.cwd);
   if (!discovered) {
     return reportError(
@@ -247,7 +249,7 @@ export async function workflowInputsCommand(
   const payload = buildInputsPayload(
     def.name,
     agent,
-    def.description ?? "",
+    getDescription(def),
     getInputSchema(def),
   );
 

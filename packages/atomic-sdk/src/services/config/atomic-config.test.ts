@@ -1,5 +1,5 @@
-import { test, expect, describe, beforeEach, afterEach, spyOn } from "bun:test";
-import { pickWorkflows } from "./atomic-config.ts";
+import { test, expect, describe, beforeEach, spyOn } from "bun:test";
+import { pickWorkflows, readAtomicConfigSplit } from "./atomic-config.ts";
 import { SETTINGS_SCHEMA_URL } from "./settings-schema.ts";
 
 // Helper to capture stderr writes during a call.
@@ -255,13 +255,15 @@ describe("mergeConfigs workflows via readAtomicConfig", () => {
     writeFileSync(join(dir, ".atomic", "settings.json"), JSON.stringify(content), "utf-8");
   }
 
-  function withHome<T>(home: string, fn: () => Promise<T>): Promise<T> {
+  async function withHome<T>(home: string, fn: () => Promise<T>): Promise<T> {
     const original = process.env.ATOMIC_SETTINGS_HOME;
     process.env.ATOMIC_SETTINGS_HOME = home;
-    return fn().finally(() => {
+    try {
+      return await fn();
+    } finally {
       if (original === undefined) delete process.env.ATOMIC_SETTINGS_HOME;
       else process.env.ATOMIC_SETTINGS_HOME = original;
-    });
+    }
   }
 
   test("local-only workflows appear in merged config", async () => {
@@ -321,5 +323,136 @@ describe("mergeConfigs workflows via readAtomicConfig", () => {
     });
     const config = await withHome(globalDir, () => readAtomicConfig(localDir));
     expect(Object.keys(config?.workflows ?? {}).sort()).toEqual(["a", "b"]);
+  });
+});
+
+// ── readAtomicConfigSplit ─────────────────────────────────────────────────────
+
+describe("readAtomicConfigSplit", () => {
+  let tmpBase: string;
+  let globalDir: string;
+  let localDir: string;
+
+  beforeEach(() => {
+    const unique = Math.random().toString(36).slice(2);
+    tmpBase = join(tmpdir(), `atomic-split-${unique}`);
+    globalDir = join(tmpBase, "global");
+    localDir = join(tmpBase, "local");
+    mkdirSync(join(globalDir, ".atomic"), { recursive: true });
+    mkdirSync(join(localDir, ".atomic"), { recursive: true });
+  });
+
+  function writeSettings(dir: string, content: object) {
+    writeFileSync(join(dir, ".atomic", "settings.json"), JSON.stringify(content), "utf-8");
+  }
+
+  async function withHome<T>(home: string, fn: () => Promise<T>): Promise<T> {
+    const original = process.env.ATOMIC_SETTINGS_HOME;
+    process.env.ATOMIC_SETTINGS_HOME = home;
+    try {
+      return await fn();
+    } finally {
+      if (original === undefined) delete process.env.ATOMIC_SETTINGS_HOME;
+      else process.env.ATOMIC_SETTINGS_HOME = original;
+    }
+  }
+
+  test("returns { global: null, local: null } when neither file exists", async () => {
+    const nonexistentLocal = join(tmpBase, "nonexistent-local");
+    const result = await withHome(join(tmpBase, "nonexistent-global"), () =>
+      readAtomicConfigSplit(nonexistentLocal),
+    );
+    expect(result).toEqual({ global: null, local: null });
+  });
+
+  test("returns parsed configs when both exist", async () => {
+    writeSettings(globalDir, { scm: "github" });
+    writeSettings(localDir, { scm: "azure-devops" });
+    const result = await withHome(globalDir, () => readAtomicConfigSplit(localDir));
+    expect(result.global?.scm).toBe("github");
+    expect(result.local?.scm).toBe("azure-devops");
+  });
+
+  test("returns { global: <parsed>, local: null } when local missing", async () => {
+    writeSettings(globalDir, { scm: "sapling" });
+    const nonexistentLocal = join(tmpBase, "no-local");
+    const result = await withHome(globalDir, () =>
+      readAtomicConfigSplit(nonexistentLocal),
+    );
+    expect(result.global?.scm).toBe("sapling");
+    expect(result.local).toBeNull();
+  });
+
+  test("does NOT merge — local override does not affect global field", async () => {
+    writeSettings(globalDir, { scm: "github" });
+    writeSettings(localDir, { scm: "azure-devops" });
+    const result = await withHome(globalDir, () => readAtomicConfigSplit(localDir));
+    // Both sides are independent — no merge semantics.
+    expect(result.global?.scm).toBe("github");
+    expect(result.local?.scm).toBe("azure-devops");
+  });
+});
+
+// ── pickWorkflows de-duplication ──────────────────────────────────────────────
+
+describe("pickWorkflows — agents de-duplication", () => {
+  function captureStderrSync(fn: () => unknown): { result: unknown; lines: string[] } {
+    const lines: string[] = [];
+    const spy = spyOn(process.stderr, "write").mockImplementation((chunk: string | Uint8Array) => {
+      lines.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk));
+      return true;
+    });
+    const result = fn();
+    spy.mockRestore();
+    return { result, lines };
+  }
+
+  test("de-dupes [claude, claude] → [claude] and emits diagnostic", () => {
+    const { result, lines } = captureStderrSync(() =>
+      pickWorkflows({ "wf": { command: "bunx", agents: ["claude", "claude"] } }),
+    );
+    expect((result as Record<string, { agents: string[] }>)?.["wf"]?.agents).toEqual(["claude"]);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("duplicates");
+    expect(lines[0]).toContain("claude");
+  });
+
+  test("preserves order on de-dupe: [claude, copilot, claude] → [claude, copilot]", () => {
+    const { result } = captureStderrSync(() =>
+      pickWorkflows({
+        "wf": { command: "bunx", agents: ["claude", "copilot", "claude"] },
+      }),
+    );
+    expect((result as Record<string, { agents: string[] }>)?.["wf"]?.agents).toEqual([
+      "claude",
+      "copilot",
+    ]);
+  });
+
+  test("emits no diagnostic when no duplicates", () => {
+    const { lines } = captureStderrSync(() =>
+      pickWorkflows({ "wf": { command: "bunx", agents: ["claude", "copilot"] } }),
+    );
+    expect(lines).toHaveLength(0);
+  });
+
+  test("diagnostic message contains de-duplicated list", () => {
+    const { lines } = captureStderrSync(() =>
+      pickWorkflows({
+        "my-wf": { command: "bunx", agents: ["claude", "opencode", "claude"] },
+      }),
+    );
+    expect(lines[0]).toContain(`"agents" contains duplicates; de-duplicating to [claude, opencode]`);
+  });
+
+  test("args preserved after de-dupe", () => {
+    const { result } = captureStderrSync(() =>
+      pickWorkflows({
+        "wf": { command: "bunx", args: ["--flag"], agents: ["claude", "claude"] },
+      }),
+    );
+    const entry = (result as Record<string, { agents: string[]; args?: string[] }>)?.["wf"];
+    expect(entry?.agents).toEqual(["claude"]);
+    expect(entry?.args).toEqual(["--flag"]);
   });
 });

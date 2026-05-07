@@ -284,22 +284,20 @@ export function mergeIntoRegistry(
   global: LoadCustomWorkflowsResult,
   local: LoadCustomWorkflowsResult,
 ): MergeResult {
-  let registry: ReturnType<typeof createBuiltinRegistry> = builtin;
+  type BuiltinRegistry = ReturnType<typeof createBuiltinRegistry>;
+  let registry: BuiltinRegistry = builtin;
 
-  for (const { workflow } of global.loaded) {
-    registry = registry.upsert(workflow, (prior: WorkflowDefinition | ExternalWorkflow) => {
-      process.stderr.write(
-        `[atomic/workflows] override: ${workflow.name}/${workflow.agent} (global) > ${prior.kind === "external" ? "external" : "builtin"}\n`,
-      );
-    }) as ReturnType<typeof createBuiltinRegistry>;
+  function applyOrigin(loaded: readonly LoadedWorkflow[], origin: "global" | "local"): void {
+    for (const { workflow } of loaded) {
+      registry = registry.upsert(workflow, (prior: WorkflowDefinition | ExternalWorkflow) => {
+        process.stderr.write(
+          `[atomic/workflows] override: ${workflow.name}/${workflow.agent} (${origin}) > ${prior.kind === "external" ? "external" : "builtin"}\n`,
+        );
+      }) as BuiltinRegistry;
+    }
   }
-  for (const { workflow } of local.loaded) {
-    registry = registry.upsert(workflow, (prior: WorkflowDefinition | ExternalWorkflow) => {
-      process.stderr.write(
-        `[atomic/workflows] override: ${workflow.name}/${workflow.agent} (local) > ${prior.kind === "external" ? "external" : "builtin"}\n`,
-      );
-    }) as ReturnType<typeof createBuiltinRegistry>;
-  }
+  applyOrigin(global.loaded, "global");
+  applyOrigin(local.loaded, "local");
 
   const brokenIndex = new Map<string, BrokenWorkflow>();
   for (const b of [...global.broken, ...local.broken]) {

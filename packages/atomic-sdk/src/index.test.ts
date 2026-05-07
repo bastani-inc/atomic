@@ -144,6 +144,9 @@ describe("ExternalWorkflow in registry", () => {
     expect(names).toEqual(["builtin-wf", "external-wf"]);
   });
 
+  // RFC §8.3 bullet 4: Registry.upsert() replaces matching (agent, name) while
+  // Registry.register() keeps its strict semantics.
+
   test("upsert replaces a builtin with an ExternalWorkflow", () => {
     const builtin = makeWorkflow("wf", "claude");
     const ext = makeExternal("wf", "claude");
@@ -151,6 +154,32 @@ describe("ExternalWorkflow in registry", () => {
 
     const resolved = getWorkflow(registry, "claude", "wf");
     expect(resolved && "kind" in resolved ? resolved.kind : undefined).toBe("external");
+  });
+
+  test("upsert replaces an ExternalWorkflow with a builtin WorkflowDefinition", () => {
+    const ext = makeExternal("wf", "claude");
+    const builtin = makeWorkflow("wf", "claude");
+    const registry = createRegistry().upsert(ext).upsert(builtin);
+
+    const resolved = getWorkflow(registry, "claude", "wf");
+    // builtin WorkflowDefinition has no `kind` field (or kind === "builtin")
+    expect(resolved).toBeDefined();
+    expect(resolved && "kind" in resolved ? resolved.kind : "builtin").toBe("builtin");
+    expect(resolved!.name).toBe("wf");
+    // list() reflects replacement — only one entry
+    expect(listWorkflows(registry)).toHaveLength(1);
+  });
+
+  test("list() after upsert reflects replacement, not original", () => {
+    const builtin = makeWorkflow("wf", "claude");
+    const ext = makeExternal("wf", "claude");
+    const registry = createRegistry().register(builtin).upsert(ext);
+
+    const all = listWorkflows(registry);
+    expect(all).toHaveLength(1);
+    const first = all[0];
+    // Replacement is the external
+    expect(first && "kind" in first ? first.kind : undefined).toBe("external");
   });
 });
 

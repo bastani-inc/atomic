@@ -305,20 +305,18 @@ Examples:
                     );
                     process.exit(1);
                 }
-                // Builtin registry only contains compiled WorkflowDefinitions — never ExternalWorkflow.
-                // The orchestrator-entry path is exclusively for builtins.
-                if ("kind" in resolved && resolved.kind === "external") {
+                // Builtin registry only contains compiled WorkflowDefinitions; the
+                // orchestrator-entry path is exclusively for builtins.
+                if (resolved.kind === "external") {
                     console.error(
                         `${COLORS.red}[atomic/orchestrator-entry] Unexpected external workflow in builtin registry: "${workflowName}".${COLORS.reset}`,
                     );
                     process.exit(1);
                 }
-                // After the "external" guard above, resolved is WorkflowDefinition.
-                const def = resolved as import("@bastani/atomic-sdk").WorkflowDefinition;
                 const { runOrchestratorWithDefinition } = await import(
                     "@bastani/atomic-sdk/runtime/orchestrator-entry"
                 );
-                await runOrchestratorWithDefinition(def, inputsB64);
+                await runOrchestratorWithDefinition(resolved, inputsB64);
                 return;
             }
 
@@ -534,6 +532,61 @@ async function main(): Promise<void> {
                 "./services/system/auto-sync.ts"
             );
             await autoSyncIfStale();
+        }
+
+        // Merge custom workflows from ~/.atomic/settings.json (global) and
+        // ./.atomic/settings.json (local) into the workflow command registry.
+        // Skipped for info-only commands to avoid spawn cost.
+        // Bootstrap failures are non-fatal — atomic works without custom workflows.
+        if (!isInfoCommand) {
+            try {
+                const {
+                    readAtomicConfigSplit,
+                    getGlobalSettingsPath,
+                    getLocalSettingsPath,
+                } = await import(
+                    "@bastani/atomic-sdk/services/config/atomic-config"
+                );
+                const { loadCustomWorkflows, mergeIntoRegistry } = await import(
+                    "./commands/custom-workflows.ts"
+                );
+                const { createBuiltinRegistry } = await import(
+                    "./commands/builtin-registry.ts"
+                );
+                const { rebuildWorkflowCommand } = await import(
+                    "./commands/cli/workflow.ts"
+                );
+
+                const { global: globalCfg, local: localCfg } =
+                    await readAtomicConfigSplit(process.cwd());
+
+                const [globalRes, localRes] = await Promise.all([
+                    loadCustomWorkflows(
+                        globalCfg?.workflows,
+                        "global",
+                        getGlobalSettingsPath(),
+                    ),
+                    loadCustomWorkflows(
+                        localCfg?.workflows,
+                        "local",
+                        getLocalSettingsPath(process.cwd()),
+                    ),
+                ]);
+
+                const { registry, brokenIndex, summary } = mergeIntoRegistry(
+                    createBuiltinRegistry(),
+                    globalRes,
+                    localRes,
+                );
+                if (summary) process.stderr.write(summary + "\n");
+
+                rebuildWorkflowCommand(registry, brokenIndex);
+            } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                process.stderr.write(
+                    `[atomic/workflows] failed to merge custom workflows: ${msg}\n`,
+                );
+            }
         }
 
         await program.parseAsync();

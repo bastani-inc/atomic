@@ -42,13 +42,12 @@ function runProviderValidation(wf: WorkflowDefinition): ValidationWarning[] {
 
 /**
  * Validate a workflow entry at registration time.
- * External workflows (`kind === "external"`) have no `run` source to inspect —
- * validation is skipped silently. Builtins log warnings via console.warn.
+ * External workflows have no `run` source to inspect — validation is skipped
+ * silently. Builtins log warnings via console.warn.
  */
 function validateAtRegistration(wf: WorkflowDefinition | ExternalWorkflow): void {
-  // ExternalWorkflow has no `run` to inspect — skip provider validation.
-  if ("kind" in wf && wf.kind === "external") return;
-  const warnings = runProviderValidation(wf as WorkflowDefinition);
+  if (wf.kind === "external") return;
+  const warnings = runProviderValidation(wf);
   for (const w of warnings) {
     console.warn(
       `[registry] workflow "${wf.agent}/${wf.name}" — ${w.rule}: ${w.message}`,
@@ -126,16 +125,12 @@ class RegistryImpl<T extends Record<string, WorkflowDefinition | ExternalWorkflo
     return this.map.has(key);
   }
 
-  list(): readonly WorkflowDefinition[] {
-    // Cast: callers that need to dispatch on `kind === "external"` do so at
-    // runtime; the public Registry type exposes WorkflowDefinition for
-    // backwards-compatible callers that only handle builtins.
-    return Object.freeze(Array.from(this.map.values())) as readonly WorkflowDefinition[];
+  list(): readonly (WorkflowDefinition | ExternalWorkflow)[] {
+    return Object.freeze(Array.from(this.map.values()));
   }
 
-  resolve(name: string, agent: AgentType): WorkflowDefinition | undefined {
-    // Same cast rationale as list() above.
-    return this.map.get(`${agent}/${name}`) as WorkflowDefinition | undefined;
+  resolve(name: string, agent: AgentType): WorkflowDefinition | ExternalWorkflow | undefined {
+    return this.map.get(`${agent}/${name}`);
   }
 }
 

@@ -9,12 +9,14 @@
  * BrokenWorkflow entries are checked for correct shape / reason field.
  */
 
-import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from "bun:test";
+import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { join } from "node:path";
 import { mkdtemp, rm, writeFile, chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { loadCustomWorkflows } from "./custom-workflows.ts";
-import type { LoadCustomWorkflowsResult } from "./custom-workflows.ts";
+import { loadCustomWorkflows, mergeIntoRegistry } from "./custom-workflows.ts";
+import type { LoadCustomWorkflowsResult, BrokenWorkflow } from "./custom-workflows.ts";
+import { createBuiltinRegistry } from "./builtin-registry.ts";
+import type { ExternalWorkflow } from "@bastani/atomic-sdk";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -363,5 +365,222 @@ process.exit(1);
     expect(result.broken).toHaveLength(0);
     const names = result.loaded.map((l) => l.workflow.name).sort();
     expect(names).toEqual(["wf-a", "wf-b"]);
+  });
+});
+
+// ─── Array.isArray guard ──────────────────────────────────────────────────────
+
+describe("loadCustomWorkflows — non-array ATOMIC_WORKFLOW_META payload", () => {
+  test("object payload → BrokenWorkflow with 'must be a JSON array (got object)'", async () => {
+    const scriptPath = await mkScript("object-meta.sh", `
+printf 'ATOMIC_WORKFLOW_META: {"name":"foo"}\\n'
+exit 0
+`);
+
+    const cap = captureStderr();
+    let result: LoadCustomWorkflowsResult;
+    try {
+      result = await loadCustomWorkflows(
+        { "obj-alias": { command: scriptPath, agents: ["claude"] } },
+        "local",
+        SETTINGS_PATH,
+      );
+    } finally {
+      cap.restore();
+    }
+
+    expect(result.loaded).toHaveLength(0);
+    expect(result.broken).toHaveLength(1);
+    expect(cap.stderr).toContain("must be a JSON array (got object)");
+    expect(result.broken[0]!.reason).toContain("must be a JSON array (got object)");
+  });
+
+  test("null payload → BrokenWorkflow with 'must be a JSON array (got null)'", async () => {
+    const scriptPath = await mkScript("null-meta.sh", `
+printf 'ATOMIC_WORKFLOW_META: null\\n'
+exit 0
+`);
+
+    const cap = captureStderr();
+    let result: LoadCustomWorkflowsResult;
+    try {
+      result = await loadCustomWorkflows(
+        { "null-alias": { command: scriptPath, agents: ["claude"] } },
+        "local",
+        SETTINGS_PATH,
+      );
+    } finally {
+      cap.restore();
+    }
+
+    expect(result.loaded).toHaveLength(0);
+    expect(result.broken).toHaveLength(1);
+    expect(cap.stderr).toContain("must be a JSON array (got null)");
+    expect(result.broken[0]!.reason).toContain("must be a JSON array (got null)");
+  });
+});
+
+// ─── mergeIntoRegistry ────────────────────────────────────────────────────────
+
+function makeExternalWorkflow(name: string, agent: "claude" | "opencode" | "copilot" = "claude"): ExternalWorkflow {
+  return {
+    kind: "external",
+    name,
+    agent,
+    description: `desc-${name}`,
+    inputs: [],
+    source: { command: "fake-cmd", args: [] },
+  };
+}
+
+function emptyResult(): LoadCustomWorkflowsResult {
+  return { loaded: [], broken: [] };
+}
+
+function loadedResult(wf: ExternalWorkflow, alias = wf.name): LoadCustomWorkflowsResult {
+  return { loaded: [{ alias, origin: "global", workflow: wf }], broken: [] };
+}
+
+function brokenResult(b: BrokenWorkflow): LoadCustomWorkflowsResult {
+  return { loaded: [], broken: [b] };
+}
+
+describe("mergeIntoRegistry — no custom workflows", () => {
+  test("builtin only → no overrides, no broken, null summary", () => {
+    const builtin = createBuiltinRegistry();
+    const cap = captureStderr();
+    let result;
+    try {
+      result = mergeIntoRegistry(builtin, emptyResult(), emptyResult());
+    } finally {
+      cap.restore();
+    }
+    expect(cap.stderr).toBe("");
+    expect(result.brokenIndex.size).toBe(0);
+    expect(result.summary).toBeNull();
+  });
+});
+
+describe("mergeIntoRegistry — global entry, no prior key", () => {
+  test("upserts without firing onOverride", () => {
+    const builtin = createBuiltinRegistry();
+    const wf = makeExternalWorkflow("totally-unique-global-wf", "claude");
+    const cap = captureStderr();
+    let result;
+    try {
+      result = mergeIntoRegistry(builtin, loadedResult(wf), emptyResult());
+    } finally {
+      cap.restore();
+    }
+    expect(cap.stderr).toBe("");
+    expect(result.registry.has("claude/totally-unique-global-wf")).toBe(true);
+    expect(result.summary).toBe("[atomic/workflows] loaded 1 custom workflow(s)");
+  });
+});
+
+describe("mergeIntoRegistry — local shadows global same key", () => {
+  test("override callback fires with (local) label", () => {
+    const builtin = createBuiltinRegistry();
+    const globalWf = makeExternalWorkflow("shadow-wf", "claude");
+    const localWf = makeExternalWorkflow("shadow-wf", "claude");
+    const globalRes: LoadCustomWorkflowsResult = {
+      loaded: [{ alias: "shadow-wf", origin: "global", workflow: globalWf }],
+      broken: [],
+    };
+    const localRes: LoadCustomWorkflowsResult = {
+      loaded: [{ alias: "shadow-wf", origin: "local", workflow: localWf }],
+      broken: [],
+    };
+
+    const cap = captureStderr();
+    let result;
+    try {
+      result = mergeIntoRegistry(builtin, globalRes, localRes);
+    } finally {
+      cap.restore();
+    }
+
+    expect(cap.stderr).toContain("[atomic/workflows] override: shadow-wf/claude (local) > external");
+    expect(result.summary).toBe("[atomic/workflows] loaded 2 custom workflow(s)");
+  });
+});
+
+describe("mergeIntoRegistry — brokenIndex keyed correctly", () => {
+  test("multiple agents → separate keys per agent", () => {
+    const builtin = createBuiltinRegistry();
+    const broken: BrokenWorkflow = {
+      alias: "bad-wf",
+      origin: "global",
+      agents: ["claude", "opencode"],
+      reason: "test failure",
+      source: SETTINGS_PATH,
+      fix: "fix it",
+    };
+    const cap = captureStderr();
+    let result;
+    try {
+      result = mergeIntoRegistry(builtin, brokenResult(broken), emptyResult());
+    } finally {
+      cap.restore();
+    }
+
+    expect(result.brokenIndex.has("claude/bad-wf")).toBe(true);
+    expect(result.brokenIndex.has("opencode/bad-wf")).toBe(true);
+    expect(result.brokenIndex.get("claude/bad-wf")).toBe(broken);
+    expect(result.brokenIndex.get("opencode/bad-wf")).toBe(broken);
+  });
+});
+
+describe("mergeIntoRegistry — summary formatting", () => {
+  test("loaded only → no skipped suffix", () => {
+    const builtin = createBuiltinRegistry();
+    const wf = makeExternalWorkflow("sum-wf-1", "claude");
+    const cap = captureStderr();
+    let result;
+    try {
+      result = mergeIntoRegistry(builtin, loadedResult(wf), emptyResult());
+    } finally {
+      cap.restore();
+    }
+    expect(result.summary).toBe("[atomic/workflows] loaded 1 custom workflow(s)");
+    expect(result.summary).not.toContain("skipped");
+  });
+
+  test("loaded + broken → skipped suffix", () => {
+    const builtin = createBuiltinRegistry();
+    const wf = makeExternalWorkflow("sum-wf-2", "claude");
+    const broken: BrokenWorkflow = {
+      alias: "broken-sum",
+      origin: "local",
+      agents: ["opencode"],
+      reason: "r",
+      source: SETTINGS_PATH,
+      fix: "f",
+    };
+    const globalRes: LoadCustomWorkflowsResult = {
+      loaded: [{ alias: "sum-wf-2", origin: "global", workflow: wf }],
+      broken: [broken],
+    };
+
+    const cap = captureStderr();
+    let result;
+    try {
+      result = mergeIntoRegistry(builtin, globalRes, emptyResult());
+    } finally {
+      cap.restore();
+    }
+    expect(result.summary).toBe("[atomic/workflows] loaded 1 custom workflow(s) (1 skipped — see warnings above)");
+  });
+
+  test("empty inputs → null summary", () => {
+    const builtin = createBuiltinRegistry();
+    const cap = captureStderr();
+    let result;
+    try {
+      result = mergeIntoRegistry(builtin, emptyResult(), emptyResult());
+    } finally {
+      cap.restore();
+    }
+    expect(result.summary).toBeNull();
   });
 });

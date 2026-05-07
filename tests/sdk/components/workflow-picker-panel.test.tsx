@@ -12,7 +12,6 @@ import {
   buildRows,
   fuzzyMatch,
   isFieldValid,
-  type PickerRow,
   type PickerTheme,
   type WorkflowPickerResult,
 } from "../../../packages/atomic-sdk/src/components/workflow-picker-panel.tsx";

@@ -36,6 +36,7 @@ export type {
   ValidationWarning,
   WorkflowContext,
   WorkflowOptions,
+  ExternalWorkflow,
   WorkflowDefinition,
   WorkflowInput,
   WorkflowInputType,
