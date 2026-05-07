@@ -24,8 +24,14 @@ See `index.ts` for the `defineWorkflow → compile → hostWorkflows([wf])` patt
 
 ## Run standalone
 
+`hostWorkflows([wf])` doubles as a CLI runner. Pass `--name <workflow>` (and optional `--agent <agent>` when the same name is registered for multiple agents) along with any inputs:
+
 ```sh
-bun run ./index.ts
+# Foreground (attaches to the orchestrator pane in tmux)
+bun run ./index.ts --name explain-file --path src/cli.ts
+
+# Background (`--detach` returns immediately)
+bun run ./index.ts --name explain-file --agent claude --path src/cli.ts --detach
 ```
 
-`hostWorkflows([wf])` returns silently when not invoked under atomic, so your CLI's main() runs normally.
+Bare `bun run ./index.ts` (no flags) returns silently so your own `main()` can take over if you've added one.

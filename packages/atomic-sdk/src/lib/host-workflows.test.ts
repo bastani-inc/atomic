@@ -11,7 +11,7 @@
 
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { defineWorkflow } from "../define-workflow.ts";
-import type { RunWorkflowResult } from "../primitives/run.ts";
+import type { RunWorkflowOptions, RunWorkflowResult } from "../primitives/run.ts";
 import {
   hostWorkflows,
   lookupHostedWorkflow,
@@ -58,9 +58,9 @@ const RUN_RESULT: RunWorkflowResult = {
   tmuxSessionName: "atomic-wf-test",
 };
 
-/** Mock that resolves with a stub result — typed so DI passes typecheck. */
+/** Mock that resolves with a stub result — typed so DI passes typecheck and call sites can introspect args. */
 function makeRunMock() {
-  return mock(async (): Promise<RunWorkflowResult> => RUN_RESULT);
+  return mock(async (_opts: RunWorkflowOptions): Promise<RunWorkflowResult> => RUN_RESULT);
 }
 
 // ─── Process spy helpers ──────────────────────────────────────────────────────
@@ -463,5 +463,123 @@ describe("hostWorkflows — registry side-effect", () => {
 
     expect(lookupHostedWorkflow("shared-name", "claude")).toBe(wfClaude);
     expect(lookupHostedWorkflow("shared-name", "opencode")).toBe(wfOpencode);
+  });
+});
+
+// ─── Direct CLI mode (no dispatch sub-command, --name supplied) ──────────────
+
+describe("hostWorkflows — direct CLI mode", () => {
+  test("runs workflow when --name + --agent + inputs supplied without dispatch sub-command", async () => {
+    const wf = makeWorkflow("demo", "claude");
+    const runWorkflowMock = makeRunMock();
+
+    const argv = [
+      "bun", "fixture.ts",
+      "--name", "demo",
+      "--agent", "claude",
+    ];
+
+    let caught: ExitCalled | null = null;
+    try {
+      await hostWorkflows([wf], { argv, env: {}, runWorkflow: runWorkflowMock });
+    } catch (e) {
+      caught = e as ExitCalled;
+    }
+
+    expect(caught?.code).toBe(0);
+    expect(runWorkflowMock).toHaveBeenCalledTimes(1);
+    expect(runWorkflowMock.mock.calls[0]![0]!.workflow).toBe(wf);
+  });
+
+  test("auto-resolves --agent when exactly one workflow matches --name", async () => {
+    const wf = makeWorkflow("demo", "claude");
+    const runWorkflowMock = makeRunMock();
+
+    const argv = ["bun", "fixture.ts", "--name", "demo"];
+
+    let caught: ExitCalled | null = null;
+    try {
+      await hostWorkflows([wf], { argv, env: {}, runWorkflow: runWorkflowMock });
+    } catch (e) {
+      caught = e as ExitCalled;
+    }
+
+    expect(caught?.code).toBe(0);
+    expect(runWorkflowMock).toHaveBeenCalledTimes(1);
+    expect(runWorkflowMock.mock.calls[0]![0]!.workflow).toBe(wf);
+  });
+
+  test("forwards --<input> flags as inputs to runWorkflow", async () => {
+    const wf = makeWorkflow("demo", "claude");
+    const runWorkflowMock = makeRunMock();
+
+    const argv = [
+      "bun", "fixture.ts",
+      "--name", "demo",
+      "--path", "/abs/path/to/file.ts",
+      "--detach",
+    ];
+
+    let caught: ExitCalled | null = null;
+    try {
+      await hostWorkflows([wf], { argv, env: {}, runWorkflow: runWorkflowMock });
+    } catch (e) {
+      caught = e as ExitCalled;
+    }
+
+    expect(caught?.code).toBe(0);
+    const callArg = runWorkflowMock.mock.calls[0]![0]!;
+    expect(callArg.inputs).toEqual({ path: "/abs/path/to/file.ts" });
+    expect(callArg.detach).toBe(true);
+  });
+
+  test("errors when --name doesn't match any registered workflow", async () => {
+    const wf = makeWorkflow("demo", "claude");
+    const runWorkflowMock = makeRunMock();
+
+    const argv = ["bun", "fixture.ts", "--name", "missing"];
+
+    let caught: ExitCalled | null = null;
+    try {
+      await hostWorkflows([wf], { argv, env: {}, runWorkflow: runWorkflowMock });
+    } catch (e) {
+      caught = e as ExitCalled;
+    }
+
+    expect(caught?.code).toBe(1);
+    expect(capturedStderr.join("")).toContain("missing");
+    expect(runWorkflowMock).not.toHaveBeenCalled();
+  });
+
+  test("errors when --name is ambiguous and --agent is omitted", async () => {
+    const wfA = makeWorkflow("shared", "claude");
+    const wfB = makeWorkflow("shared", "opencode");
+    const runWorkflowMock = makeRunMock();
+
+    const argv = ["bun", "fixture.ts", "--name", "shared"];
+
+    let caught: ExitCalled | null = null;
+    try {
+      await hostWorkflows([wfA, wfB], { argv, env: {}, runWorkflow: runWorkflowMock });
+    } catch (e) {
+      caught = e as ExitCalled;
+    }
+
+    expect(caught?.code).toBe(1);
+    expect(capturedStderr.join("")).toContain("Specify --agent");
+    expect(runWorkflowMock).not.toHaveBeenCalled();
+  });
+
+  test("returns silently when --name is absent — does not interfere with caller's main()", async () => {
+    const wf = makeWorkflow("demo", "claude");
+    const runWorkflowMock = makeRunMock();
+
+    const argv = ["bun", "fixture.ts", "--something-else", "value"];
+
+    await hostWorkflows([wf], { argv, env: {}, runWorkflow: runWorkflowMock });
+
+    expect(runWorkflowMock).not.toHaveBeenCalled();
+    expect(capturedStdout.join("")).toBe("");
+    expect(capturedStderr.join("")).toBe("");
   });
 });

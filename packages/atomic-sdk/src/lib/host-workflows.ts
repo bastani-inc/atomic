@@ -133,10 +133,24 @@ export interface HostWorkflowsOptions {
 
 /**
  * Inspect `argv` for `_emit-workflow-meta` / `_atomic-run` sub-commands
+ * (atomic dispatch) or a direct `--name <X>` invocation (manual CLI use)
  * and handle them against the provided `workflows` array.
  *
  * Must be called **after** all `.compile()` calls so that `workflows` is
  * fully populated.
+ *
+ * Three execution modes:
+ *   1. Atomic-dispatched `_emit-workflow-meta` (token-gated) — emits
+ *      the metadata line and exits 0.
+ *   2. Atomic-dispatched `_atomic-run` (token-gated) — runs the named
+ *      workflow via `runWorkflow` and exits 0.
+ *   3. Direct CLI invocation — `bun run script.ts --name <X> [--agent <Y>]
+ *      [--<input> <v>]… [--detach]`. No dispatch token required; runs the
+ *      workflow via `runWorkflow` and exits 0. When `--agent` is omitted
+ *      it auto-resolves if exactly one workflow matches the name.
+ *
+ * When none of these match, `hostWorkflows` returns silently so the
+ * caller's own `main()` can continue.
  *
  * @param workflows - Compiled workflow definitions to expose/dispatch.
  * @param options   - Optional argv/env overrides (useful in tests).
@@ -159,29 +173,101 @@ export async function hostWorkflows(
   }
 
   const found = findHostSub(argv);
-  if (!found || !validateDispatchToken(env, argv)) return;
+  if (found && validateDispatchToken(env, argv)) {
+    if (found.sub === "_emit-workflow-meta") {
+      const meta = workflows.map(serializeMeta);
+      process.stdout.write(`ATOMIC_WORKFLOW_META: ${JSON.stringify(meta)}\n`);
+      process.exit(0);
+    }
 
-  if (found.sub === "_emit-workflow-meta") {
-    const meta = workflows.map(serializeMeta);
-    process.stdout.write(`ATOMIC_WORKFLOW_META: ${JSON.stringify(meta)}\n`);
+    // found.sub === "_atomic-run"
+    const { name, agent, detach, inputs } = parseAtomicRunArgv(
+      argv.slice(found.index + 1),
+    );
+
+    if (!name || !agent) {
+      const missing = [!name && "--name", !agent && "--agent"].filter(Boolean).join(" ");
+      process.stderr.write(`[atomic-sdk:_atomic-run] Missing required flag(s): ${missing}\n`);
+      process.exit(1);
+    }
+
+    const workflow = workflows.find((d) => d.name === name && d.agent === agent);
+    if (!workflow) {
+      process.stderr.write(
+        `[atomic-sdk:_atomic-run] No compiled workflow found for name="${name}" agent="${agent}"\n`,
+      );
+      process.exit(1);
+    }
+
+    const runWorkflow =
+      options?.runWorkflow ??
+      (await import("../primitives/run.ts")).runWorkflow;
+    try {
+      await runWorkflow({ workflow, inputs, detach });
+    } catch (err) {
+      const msg = err instanceof Error ? err.stack ?? err.message : String(err);
+      process.stderr.write(`[atomic-sdk:_atomic-run] ${msg}\n`);
+      process.exit(1);
+    }
     process.exit(0);
   }
 
-  // found.sub === "_atomic-run"
-  const { name, agent, detach, inputs } = parseAtomicRunArgv(
-    argv.slice(found.index + 1),
-  );
+  // ─── Direct CLI mode ──────────────────────────────────────────────────
+  // No dispatch sub-command (or token failed validation). Fall through to
+  // direct `bun run script.ts --name <X> …` style invocation so consumers
+  // can run their custom workflow as a standalone CLI without going
+  // through atomic at all.
+  await maybeRunDirectCLI(workflows, argv, options);
+}
 
-  if (!name || !agent) {
-    const missing = [!name && "--name", !agent && "--agent"].filter(Boolean).join(" ");
-    process.stderr.write(`[atomic-sdk:_atomic-run] Missing required flag(s): ${missing}\n`);
+/**
+ * Direct-CLI handler. Triggers when `argv` carries `--name <X>` (and
+ * optional `--agent <Y>`) outside of a token-gated dispatch context.
+ * Otherwise returns without side-effect so the caller's own `main()`
+ * continues normally.
+ *
+ * Argument shape mirrors `_atomic-run`'s flags exactly so consumers
+ * learn one syntax for both invocation modes:
+ *   `--name <X> [--agent <Y>] [--detach] [--<input> <value>…]`
+ *
+ * `--agent` is optional when exactly one registered workflow matches
+ * `--name`; when multiple agents register the same name, `--agent` is
+ * required to disambiguate.
+ */
+async function maybeRunDirectCLI(
+  workflows: readonly HostableWorkflow[],
+  argv: readonly string[],
+  options: HostWorkflowsOptions | undefined,
+): Promise<void> {
+  const cli = parseAtomicRunArgv(argv.slice(2));
+  if (!cli.name) return;
+
+  const matches = workflows.filter((w) => w.name === cli.name);
+  if (matches.length === 0) {
+    process.stderr.write(
+      `[hostWorkflows] No registered workflow named "${cli.name}". ` +
+        `Available: ${workflows.map((w) => `${w.name}/${w.agent}`).join(", ") || "(none)"}\n`,
+    );
     process.exit(1);
   }
 
-  const workflow = workflows.find((d) => d.name === name && d.agent === agent);
-  if (!workflow) {
+  let workflow: HostableWorkflow;
+  if (cli.agent) {
+    const exact = matches.find((w) => w.agent === cli.agent);
+    if (!exact) {
+      process.stderr.write(
+        `[hostWorkflows] Workflow "${cli.name}" is not registered for agent "${cli.agent}". ` +
+          `Registered agents: ${matches.map((w) => w.agent).join(", ")}\n`,
+      );
+      process.exit(1);
+    }
+    workflow = exact;
+  } else if (matches.length === 1) {
+    workflow = matches[0]!;
+  } else {
     process.stderr.write(
-      `[atomic-sdk:_atomic-run] No compiled workflow found for name="${name}" agent="${agent}"\n`,
+      `[hostWorkflows] Workflow "${cli.name}" is registered for multiple agents ` +
+        `(${matches.map((w) => w.agent).join(", ")}). Specify --agent <name>.\n`,
     );
     process.exit(1);
   }
@@ -190,10 +276,10 @@ export async function hostWorkflows(
     options?.runWorkflow ??
     (await import("../primitives/run.ts")).runWorkflow;
   try {
-    await runWorkflow({ workflow, inputs, detach });
+    await runWorkflow({ workflow, inputs: cli.inputs, detach: cli.detach });
   } catch (err) {
     const msg = err instanceof Error ? err.stack ?? err.message : String(err);
-    process.stderr.write(`[atomic-sdk:_atomic-run] ${msg}\n`);
+    process.stderr.write(`[hostWorkflows] ${msg}\n`);
     process.exit(1);
   }
   process.exit(0);

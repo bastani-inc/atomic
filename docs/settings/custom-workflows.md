@@ -34,7 +34,7 @@ The `workflows` map in `settings.json` takes arbitrary string aliases as keys. E
 
 ## The hostWorkflows contract
 
-> **Required:** The CLI you point `command` at MUST call `await hostWorkflows([wf])` once after `defineWorkflow(...).compile()`. Atomic dispatches custom workflows by re-spawning that CLI with hidden `_emit-workflow-meta` and `_atomic-run` subcommands; `hostWorkflows()` is the helper that responds to them. The same call also registers the workflows into a process-local registry so the orchestrator pane that atomic spawns later can resolve them without you needing to also `export default` the compiled workflow.
+> **Required:** The CLI you point `command` at MUST call `await hostWorkflows([wf])` once after `defineWorkflow(...).compile()`. Atomic dispatches custom workflows by re-spawning that CLI with hidden `_emit-workflow-meta` and `_atomic-run` subcommands; `hostWorkflows()` is the helper that responds to them. The same call also (a) registers the workflows into a process-local registry so the orchestrator pane atomic spawns later can resolve them without you needing to `export default`, and (b) doubles as a standalone CLI runner so `bun run my-cli.ts --name <X> [--<input> <v>]…` runs the workflow without atomic in the loop.
 
 Canonical pattern (from [`examples/custom-workflow-bunx/index.ts`](../../examples/custom-workflow-bunx/index.ts)):
 
