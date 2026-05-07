@@ -23,6 +23,7 @@ import {
     spyOn,
 } from "bun:test";
 import { writeFileSync } from "node:fs";
+import * as realClack from "@clack/prompts";
 import type { InstallMethod } from "../../services/system/install-method.ts";
 import type { ReleaseInfo, Manifest } from "../../services/system/release-fetch.ts";
 import type { InstallPaths } from "./install.ts";
@@ -54,8 +55,15 @@ const spinnerStartMock = mock((_msg: string) => {});
 const spinnerStopMock = mock((_msg: string) => {});
 const spinnerMock = mock(() => ({ start: spinnerStartMock, stop: spinnerStopMock }));
 
+// Spread the real module so every export (cancel, select, isCancel, log.warn,
+// etc.) stays available — `mock.module()` is process-global in Bun
+// (oven-sh/bun#12823) and a partial replacement breaks unrelated test files
+// that import the missing names from `@clack/prompts` later in the same
+// `bun test` run (e.g. session.test.ts → session.ts → import { cancel }).
 await mock.module("@clack/prompts", () => ({
+    ...realClack,
     log: {
+        ...realClack.log,
         info: logInfoMock,
         error: logErrorMock,
         success: logSuccessMock,
