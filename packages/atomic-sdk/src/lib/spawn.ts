@@ -523,13 +523,20 @@ export async function ensureTmuxInstalled(options: EnsureOptions = {}): Promise<
     throw new Error("Neither bash nor sh is available to install tmux.");
   }
 
+  // Drop `sudo` when we're already root or `sudo` isn't on PATH. Slim
+  // container images (`node:lts-alpine`, `node:slim`, distroless variants)
+  // run as uid 0 with no sudo installed, so `sudo apk add tmux` would fail
+  // with `sudo: command not found` before ever reaching the package manager.
+  const isRoot = process.getuid?.() === 0;
+  const sudo = isRoot || !resolveCommandFromCurrentPath("sudo") ? "" : "sudo ";
+
   const managers: string[] = [
-    "command -v apt-get >/dev/null 2>&1 && sudo apt-get update -qq && sudo apt-get install -y tmux",
-    "command -v dnf >/dev/null 2>&1 && sudo dnf install -y tmux",
-    "command -v yum >/dev/null 2>&1 && sudo yum install -y tmux",
-    "command -v pacman >/dev/null 2>&1 && sudo pacman -Sy --noconfirm tmux",
-    "command -v zypper >/dev/null 2>&1 && sudo zypper --non-interactive install tmux",
-    "command -v apk >/dev/null 2>&1 && sudo apk add --no-cache tmux",
+    `command -v apt-get >/dev/null 2>&1 && ${sudo}apt-get update -qq && ${sudo}apt-get install -y tmux`,
+    `command -v dnf >/dev/null 2>&1 && ${sudo}dnf install -y tmux`,
+    `command -v yum >/dev/null 2>&1 && ${sudo}yum install -y tmux`,
+    `command -v pacman >/dev/null 2>&1 && ${sudo}pacman -Sy --noconfirm tmux`,
+    `command -v zypper >/dev/null 2>&1 && ${sudo}zypper --non-interactive install tmux`,
+    `command -v apk >/dev/null 2>&1 && ${sudo}apk add --no-cache tmux`,
   ];
 
   for (const script of managers) {
