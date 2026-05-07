@@ -11,6 +11,7 @@ coveragePathIgnorePatterns = [
   # Test infrastructure — coverageSkipTestFiles only skips *.test.ts/*.spec.ts,
   # not helpers, fixtures, mocks, or suite files loaded during tests
   "tests/**",
+  "packages/atomic-sdk/src/runtime/__fixtures__/**",
   # Temp files created during test runs (e.g. discovery tests writing to /tmp)
   "**/tmp/**",
   # macOS resolves temp dirs to /private/var/folders/…, which bypasses **/tmp/**
@@ -45,6 +46,13 @@ coveragePathIgnorePatterns = [
   "packages/atomic-sdk/src/runtime/attached-footer.ts",
   "packages/atomic-sdk/src/runtime/cc-debounce.ts",
   "packages/atomic-sdk/src/runtime/executor.ts",
+  # `runOrchestratorEntry` / `runOrchestratorWithDefinition` both delegate
+  # to `runOrchestrator` (tmux-bound), so the function bodies aren't unit-
+  # testable. The new `resolveWorkflowDefinition` helper IS unit-tested by
+  # `orchestrator-entry.resolve.test.ts` — excluding the whole file keeps
+  # the threshold honest without us needing to instantiate a tmux session
+  # in-process.
+  "packages/atomic-sdk/src/runtime/orchestrator-entry.ts",
   "packages/atomic-sdk/src/runtime/panel.tsx",
   "packages/atomic-sdk/src/runtime/theme.ts",
   "packages/atomic-sdk/src/components/error-boundary.tsx",
