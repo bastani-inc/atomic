@@ -117,8 +117,12 @@ jobs:
           set -e
           apk add --no-cache git bash curl jq tmux libstdc++ libgcc unzip
           curl -fsSL https://bun.sh/install | bash
+          # `bun.sh/install` only drops `bun`; `setup-bun@v2` also creates a
+          # `bunx` symlink, which scripts using `bun $ \`bunx ...\`` rely on.
+          ln -sf bun "$HOME/.bun/bin/bunx"
           echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
           "$HOME/.bun/bin/bun" --version
+          "$HOME/.bun/bin/bunx" --version
 
       - uses: actions/checkout@v6
 
