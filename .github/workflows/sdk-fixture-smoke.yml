@@ -212,8 +212,17 @@ jobs:
       - name: Install psmux (windows)
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          # Authenticated requests get the 1000/hr per-repo rate limit; the
+          # unauthenticated 60/hr limit is shared across all GitHub-hosted
+          # runners on the same egress IP and trips intermittently on busy days.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $latest = Invoke-RestMethod -Headers @{ Accept = 'application/vnd.github+json' } `
+          $latest = Invoke-RestMethod `
+              -Headers @{
+                  Accept        = 'application/vnd.github+json'
+                  Authorization = "Bearer $env:GH_TOKEN"
+              } `
               -Uri 'https://api.github.com/repos/psmux/psmux/releases/latest'
           $asset = $latest.assets | Where-Object { $_.name -like '*windows-x64.zip' } | Select-Object -First 1
           if (-not $asset) { throw 'No psmux windows-x64 release asset found' }
