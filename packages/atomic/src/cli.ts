@@ -430,6 +430,22 @@ Examples:
             process.exit(exitCode);
         });
 
+    program
+        .command("update")
+        .description("Update atomic to the latest release (or a pinned version)")
+        .option("--check", "Print current vs target without installing")
+        .option("--version <v>", "Pin a target version (default: latest)")
+        .option("-y, --yes", "Skip the confirmation prompt")
+        .action(async (localOpts: { check?: boolean; version?: string; yes?: boolean }) => {
+            const { updateCommand } = await import("./commands/cli/update.ts");
+            const exitCode = await updateCommand({
+                check: localOpts.check === true,
+                version: localOpts.version,
+                yes: localOpts.yes === true,
+            });
+            process.exit(exitCode);
+        });
+
     // ── Completions command ────────────────────────────────────────────────
     program
         .command("completions")
@@ -496,6 +512,7 @@ async function main(): Promise<void> {
             argv.includes("-h") ||
             argv[0] === "install" ||
             argv[0] === "uninstall" ||
+            argv[0] === "update" ||
             argv[0] === "completions" ||
             argv[0] === "_orchestrator-entry" ||
             argv[0] === "_cc-debounce" ||
