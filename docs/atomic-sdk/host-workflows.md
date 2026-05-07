@@ -1,6 +1,6 @@
 # hostWorkflows
 
-`hostWorkflows` is the explicit handoff point that lets atomic discover and dispatch your custom workflows from the third-party CLI. Call it once after `defineWorkflow({...}).compile()`.
+`hostWorkflows` is the explicit handoff point that lets atomic discover and dispatch your custom workflows from the third-party CLI. Call it once after `defineWorkflow({...}).compile()`, and `export default` the compiled workflow alongside the call — the orchestrator pane that atomic spawns later re-imports the same file and reads `mod.default` to resolve the workflow definition.
 
 ## Why explicit?
 
@@ -30,6 +30,9 @@ const wf = defineWorkflow({
     });
   })
   .compile();
+
+// Required: the orchestrator pane re-imports this file and reads `mod.default`.
+export default wf;
 
 await hostWorkflows([wf]);
 

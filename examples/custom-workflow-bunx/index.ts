@@ -31,4 +31,10 @@ const explainFile = defineWorkflow({
   })
   .compile();
 
+// `runOrchestratorEntry` re-imports this file inside the tmux pane and
+// reads `mod.default` to resolve the WorkflowDefinition; without this
+// export the dispatched session would throw InvalidWorkflowError and exit
+// immediately.
+export default explainFile;
+
 await hostWorkflows([explainFile]);

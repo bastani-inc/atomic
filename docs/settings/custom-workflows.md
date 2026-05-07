@@ -34,7 +34,7 @@ The `workflows` map in `settings.json` takes arbitrary string aliases as keys. E
 
 ## The hostWorkflows contract
 
-> **Required:** The CLI you point `command` at MUST call `await hostWorkflows([wf])` once after `defineWorkflow(...).compile()`. Atomic dispatches custom workflows by re-spawning that CLI with hidden `_emit-workflow-meta` and `_atomic-run` subcommands; `hostWorkflows()` is the helper that responds to them.
+> **Required:** The CLI you point `command` at MUST (1) `export default <compiled>` the compiled workflow and (2) call `await hostWorkflows([wf])` once after `defineWorkflow(...).compile()`. Atomic dispatches custom workflows by re-spawning that CLI with hidden `_emit-workflow-meta` and `_atomic-run` subcommands; `hostWorkflows()` responds to those, and the orchestrator pane re-imports the same file later and reads `mod.default` to resolve the workflow definition.
 
 Canonical pattern (from [`examples/custom-workflow-bunx/index.ts`](../../examples/custom-workflow-bunx/index.ts)):
 
@@ -72,6 +72,9 @@ const explainFile = defineWorkflow({
   })
   .compile();
 
+// Required: the orchestrator pane re-imports this file and reads `mod.default`.
+export default explainFile;
+
 await hostWorkflows([explainFile]);
 
 // Your CLI's main() continues here if not invoked by atomic.
@@ -105,6 +108,7 @@ When an entry fails to load — schema error, missing binary, timeout, missing m
 | `"<alias>": expected ATOMIC_WORKFLOW_META line — the third-party CLI may be missing the 'await hostWorkflows([wf])' call after compile() (or it is not importing @bastani/atomic-sdk)` | Add `await hostWorkflows([wf])` after `.compile()` and confirm the package imports `@bastani/atomic-sdk`. |
 | `"<alias>": command "<cmd>" not found on PATH` | Install the package or use an absolute path in `command`. |
 | `"<alias>/<agent>": command did not register a workflow for agent "<agent>"` | Add a `.for("<agent>")` branch in the CLI's `defineWorkflow` call. |
+| Dispatched session opens then exits immediately (no agent pane) | The CLI is missing `export default <compiled>`. The orchestrator pane re-imports the file and reads `mod.default`; without the export it throws `InvalidWorkflowError` and the session ends. |
 
 ## Reference
 
