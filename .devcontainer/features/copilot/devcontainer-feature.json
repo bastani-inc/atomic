@@ -1,6 +1,6 @@
 {
   "id": "copilot",
-  "version": "1.0.14",
+  "version": "1.0.15",
   "name": "Atomic + Copilot CLI",
   "description": "Installs Atomic CLI with GitHub Copilot agent, skills, and shared tooling (playwright, liteparse)",
   "documentationURL": "https://github.com/flora131/atomic",

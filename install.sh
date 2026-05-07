@@ -97,7 +97,20 @@ if [[ "$os" == "darwin" && "$arch" == "x64" ]]; then
     fi
 fi
 
-platform="${os}-${arch}"
+# Detect musl on Linux. Without this, Alpine hosts download the glibc
+# binary and fail at launch on `libc.so.6: not found`. busybox `ldd` on
+# Alpine prints "musl libc" to stderr; glibc's `ldd` prints "GLIBC". The
+# `/lib/ld-musl-*` fallback covers stripped images where `ldd` is absent.
+libc=""
+if [[ "$os" == "linux" ]]; then
+    if ldd --version 2>&1 | grep -qi musl \
+        || [ -f /lib/ld-musl-x86_64.so.1 ] \
+        || [ -f /lib/ld-musl-aarch64.so.1 ]; then
+        libc="-musl"
+    fi
+fi
+
+platform="${os}-${arch}${libc}"
 mkdir -p "$DOWNLOAD_DIR"
 
 # Resolve the manifest URL.
