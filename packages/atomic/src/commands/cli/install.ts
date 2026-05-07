@@ -21,6 +21,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync, renameSync, appendFileSync, chmodSync, unlinkSync, readdirSync, statSync, rmSync } from "node:fs";
 import { homedir, platform as osPlatform } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { detectInstallMethod, type InstallMethod } from "./install-method.ts";
 import {
     bashCompletionScript,
     zshCompletionScript,
@@ -607,13 +608,20 @@ function removeWindowsPath(dir: string): boolean {
 export interface UninstallOptions {
     /** Also remove ~/.atomic/ (config, completions cache, downloads). */
     readonly purge?: boolean;
+    /** Test seam — inject detector to avoid mock.module pollution. */
+    readonly detectInstall?: () => InstallMethod;
 }
 
-export async function uninstallCommand(opts: UninstallOptions = {}): Promise<number> {
-    const paths = getInstallPaths();
+const PACKAGE_NAME = "@bastani/atomic";
 
-    process.stdout.write("Uninstalling atomic...\n");
+const PM_REMOVE_CMD: Record<"bun" | "npm" | "pnpm" | "yarn", string[]> = {
+    bun:  ["bun",  "remove",    "-g",     PACKAGE_NAME],
+    npm:  ["npm",  "uninstall", "-g",     PACKAGE_NAME],
+    pnpm: ["pnpm", "remove",    "-g",     PACKAGE_NAME],
+    yarn: ["yarn", "global",    "remove", PACKAGE_NAME],
+};
 
+function uninstallBinary(paths: InstallPaths): void {
     // 1. Remove the launcher binary (and any leftover .old.*/.tmp.*).
     if (existsSync(paths.binPath)) {
         try {
@@ -675,26 +683,73 @@ export async function uninstallCommand(opts: UninstallOptions = {}): Promise<num
         try { unlinkSync(fishCompletion); } catch { /* ignore */ }
     }
 
-    // 5. Optional: nuke ~/.atomic/ entirely.
-    if (opts.purge) {
-        const atomicHome = join(homedir(), ".atomic");
-        try {
-            rmSync(atomicHome, { recursive: true, force: true });
-            process.stdout.write(`  ✓ purged ${atomicHome}\n`);
-        } catch (err) {
-            process.stderr.write(`  ! could not purge ${atomicHome}: ${(err as Error).message}\n`);
+    process.stdout.write("Restart your shell to drop the PATH entry from your env.\n");
+}
+
+function purgeAtomicHome(): void {
+    const atomicHome = join(homedir(), ".atomic");
+    try {
+        rmSync(atomicHome, { recursive: true, force: true });
+        process.stdout.write(`  ✓ purged ${atomicHome}\n`);
+    } catch (err) {
+        process.stderr.write(`  ! could not purge ${atomicHome}: ${(err as Error).message}\n`);
+    }
+}
+
+async function spawnPmRemove(cmd: string[]): Promise<number> {
+    const pm = cmd[0];
+    const manualHint = `    You may need to run manually: ${cmd.join(" ")}\n`;
+    try {
+        const proc = Bun.spawn({ cmd, stdout: "inherit", stderr: "inherit" });
+        const code = await proc.exited;
+        if (code !== 0) {
+            process.stderr.write(`  ! ${pm} exited with code ${code}.\n${manualHint}`);
         }
-    } else {
-        // Just the completions cache, leaving config/downloads alone.
-        rmSync(paths.completionsDir, { recursive: true, force: true });
+        return code;
+    } catch (err) {
+        process.stderr.write(`  ! ${pm} spawn failed: ${(err as Error).message}\n${manualHint}`);
+        return 1;
+    }
+}
+
+export async function uninstallCommand(opts: UninstallOptions = {}): Promise<number> {
+    const method = (opts.detectInstall ?? detectInstallMethod)();
+    const paths = getInstallPaths();
+    process.stdout.write(`Uninstalling atomic (install method: ${method})...\n`);
+
+    let pmExit = 0;
+    switch (method) {
+        case "binary":
+            uninstallBinary(paths);
+            break;
+        case "bun":
+        case "npm":
+        case "pnpm":
+        case "yarn":
+            pmExit = await spawnPmRemove(PM_REMOVE_CMD[method]);
+            break;
+        case "source":
+        case "unknown":
+            process.stdout.write(
+                `  · skipping package removal — atomic appears to run from ${process.execPath}\n` +
+                `    if you installed via a package manager, run its uninstall command manually.\n`,
+            );
+            break;
     }
 
-    process.stdout.write("\nAtomic uninstalled. Restart your shell to drop the PATH entry from your env.\n");
-    if (!opts.purge) {
+    if (opts.purge) {
+        purgeAtomicHome();
+    } else {
+        // Always reap the completions cache; --purge subsumes this by removing ~/.atomic.
+        try { rmSync(paths.completionsDir, { recursive: true, force: true }); }
+        catch { /* best-effort */ }
         process.stdout.write(`(Run with --purge to also remove ${join(homedir(), ".atomic")})\n`);
     }
-    process.stdout.write("\n");
-    return 0;
+
+    if (pmExit === 0) {
+        process.stdout.write("\nAtomic uninstalled.\n");
+    }
+    return pmExit;
 }
 
 // ── Public entry ───────────────────────────────────────────────────────────
