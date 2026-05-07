@@ -325,6 +325,98 @@ jobs:
             atomic chat -a "$agent" --preflight-only
           done
 
+      # ── Pm-managed install policy: while atomic still runs from the
+      #    bun-global install dir (~/.bun/install/global/.../@bastani/
+      #    atomic-<plat>-<arch>/bin/), `atomic uninstall` MUST refuse and
+      #    point the user at `bun remove -g @bastani/atomic` — running
+      #    cleanup on a pm-managed install would leave dangling links and
+      #    a broken `atomic` shim.
+      #
+      #    This step runs BEFORE `atomic install` migrates the launcher
+      #    to the canonical binary dir (which would flip detection to the
+      #    "binary" branch and re-enable cleanup).
+      - name: atomic uninstall refuses on bun install (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          export PATH="$HOME/.bun/bin:$PATH"
+          out=$(atomic uninstall 2>&1) && rc=0 || rc=$?
+          echo "$out"
+          if [ "$rc" -eq 0 ]; then
+            echo "expected non-zero exit on a bun-managed install"; exit 1
+          fi
+          echo "$out" | grep -q "atomic was installed via bun" \
+            || { echo "missing 'atomic was installed via bun' hint"; exit 1; }
+          echo "$out" | grep -q "bun remove -g @bastani/atomic" \
+            || { echo "missing 'bun remove -g' hint"; exit 1; }
+          command -v atomic >/dev/null 2>&1 \
+            || { echo "atomic disappeared after refusal — must touch nothing"; exit 1; }
+
+      - name: atomic uninstall refuses on bun install (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $userPath = [Environment]::GetEnvironmentVariable('Path','User')
+          if ($userPath) { $env:Path = "$env:Path;$userPath" }
+          $out = atomic uninstall 2>&1 | Out-String
+          $rc = $LASTEXITCODE
+          Write-Output $out
+          if ($rc -eq 0) {
+            throw "expected non-zero exit on a bun-managed install"
+          }
+          if ($out -notmatch 'atomic was installed via bun') {
+            throw "missing 'atomic was installed via bun' hint"
+          }
+          if ($out -notmatch 'bun remove -g @bastani/atomic') {
+            throw "missing 'bun remove -g' hint"
+          }
+          if (-not (Get-Command atomic -ErrorAction SilentlyContinue)) {
+            throw "atomic disappeared after refusal — must touch nothing"
+          }
+
+      # ── Round-trip the documented pm uninstall path: `bun remove -g`
+      #    is what the refusal message above tells users to run, so we
+      #    smoke-test it actually evicts atomic from PATH.
+      - name: bun remove -g round-trip (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          export PATH="$HOME/.bun/bin:$PATH"
+          bun remove -g @bastani/atomic
+          if command -v atomic >/dev/null 2>&1; then
+            echo "atomic still on PATH after 'bun remove -g'"; exit 1
+          fi
+
+      - name: bun remove -g round-trip (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $userPath = [Environment]::GetEnvironmentVariable('Path','User')
+          if ($userPath) { $env:Path = "$env:Path;$userPath" }
+          bun remove -g @bastani/atomic
+          if (Get-Command atomic -ErrorAction SilentlyContinue) {
+            throw "atomic still on PATH after 'bun remove -g'"
+          }
+
+      # ── Re-install via bun so the binary-branch lifecycle steps below
+      #    have a fresh atomic to migrate via `atomic install`.
+      - name: Re-install atomic from verdaccio (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: bun install -g "@bastani/atomic@${VERSION}" --registry http://localhost:4873
+
+      - name: Re-install atomic from verdaccio (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          bun install -g "@bastani/atomic@$env:VERSION" --registry http://localhost:4873
+          $userPath = [Environment]::GetEnvironmentVariable('Path','User')
+          if ($userPath) { $env:Path = "$env:Path;$userPath" }
+
       # ── `atomic install` lifecycle: drops launcher into the canonical
       #    install dir, writes rc snippets / profile wrapper, caches
       #    completions. Mirrors the install path users hit after running
