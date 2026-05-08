@@ -803,6 +803,111 @@ describe("PanelStore", () => {
     });
   });
 
+  // ── setSessionStatus ───────────────────────────────────────────────────────
+
+  describe("setSessionStatus", () => {
+    beforeEach(() => {
+      store.setWorkflowInfo("wf", "claude", [{ name: "worker", parents: [] }], "prompt");
+      store.startSession("worker");
+      store.completeSession("worker");
+    });
+
+    test("complete → offloaded sets status to offloaded", () => {
+      store.setSessionStatus("worker", "offloaded");
+      const s = store.sessions.find((s) => s.name === "worker")!;
+      expect(s.status).toBe("offloaded");
+    });
+
+    test("offloaded → resuming sets status to resuming", () => {
+      store.setSessionStatus("worker", "offloaded");
+      store.setSessionStatus("worker", "resuming");
+      const s = store.sessions.find((s) => s.name === "worker")!;
+      expect(s.status).toBe("resuming");
+    });
+
+    test("resuming → complete sets status to complete", () => {
+      store.setSessionStatus("worker", "offloaded");
+      store.setSessionStatus("worker", "resuming");
+      store.setSessionStatus("worker", "complete");
+      const s = store.sessions.find((s) => s.name === "worker")!;
+      expect(s.status).toBe("complete");
+    });
+
+    test("resuming → offloaded (recoverable error path) sets status to offloaded", () => {
+      store.setSessionStatus("worker", "offloaded");
+      store.setSessionStatus("worker", "resuming");
+      store.setSessionStatus("worker", "offloaded");
+      const s = store.sessions.find((s) => s.name === "worker")!;
+      expect(s.status).toBe("offloaded");
+    });
+
+    test("bumps version by exactly 1 per call", () => {
+      const before = store.version;
+      store.setSessionStatus("worker", "offloaded");
+      expect(store.version).toBe(before + 1);
+    });
+
+    test("notifies subscribed listeners", () => {
+      const listener = mock(() => {});
+      store.subscribe(listener);
+      store.setSessionStatus("worker", "offloaded");
+      expect(listener).toHaveBeenCalledTimes(1);
+    });
+
+    test("does not emit when session not found", () => {
+      const before = store.version;
+      store.setSessionStatus("nonexistent", "offloaded");
+      expect(store.version).toBe(before);
+    });
+
+    test("does not notify listeners when session not found", () => {
+      const listener = mock(() => {});
+      store.subscribe(listener);
+      store.setSessionStatus("nonexistent", "offloaded");
+      expect(listener).toHaveBeenCalledTimes(0);
+    });
+
+    test("resumeSession (HIL) still only transitions awaiting_input → running", () => {
+      // set to awaiting_input first via awaitingInput helper
+      store.startSession("worker"); // re-start since it was completed in beforeEach
+      store.awaitingInput("worker");
+      store.resumeSession("worker");
+      const s = store.sessions.find((s) => s.name === "worker")!;
+      expect(s.status).toBe("running");
+    });
+
+    test("resumeSession does not transition offloaded → running", () => {
+      store.setSessionStatus("worker", "offloaded");
+      const before = store.version;
+      store.resumeSession("worker");
+      const s = store.sessions.find((s) => s.name === "worker")!;
+      expect(s.status).toBe("offloaded");
+      expect(store.version).toBe(before);
+    });
+
+    test("setSessionStatus does not interfere with resumeSession HIL path", () => {
+      // Both methods co-exist without collision
+      // Use a fresh store with two named sessions
+      const s2 = new PanelStore();
+      s2.setWorkflowInfo("wf2", "claude", [
+        { name: "hil-worker", parents: [] },
+        { name: "bg-worker", parents: [] },
+      ], "p");
+      s2.startSession("hil-worker");
+      s2.awaitingInput("hil-worker");
+      s2.startSession("bg-worker");
+      s2.completeSession("bg-worker");
+      // setSessionStatus on bg-worker
+      s2.setSessionStatus("bg-worker", "offloaded");
+      // HIL resume still works on hil-worker
+      s2.resumeSession("hil-worker");
+      const hil = s2.sessions.find((s) => s.name === "hil-worker")!;
+      expect(hil.status).toBe("running");
+      const offloaded = s2.sessions.find((s) => s.name === "bg-worker")!;
+      expect(offloaded.status).toBe("offloaded");
+    });
+  });
+
   // ── setViewMode ────────────────────────────────────────────────────────────
 
   describe("setViewMode", () => {

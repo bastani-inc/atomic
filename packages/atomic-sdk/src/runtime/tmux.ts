@@ -450,13 +450,25 @@ export function killSession(sessionName: string): void {
   }
 }
 
-/** Kill a specific tmux window within a session. Silences errors if already dead. */
-export function killWindow(sessionName: string, windowName: string): void {
+/**
+ * Kill a specific tmux window within a session.
+ *
+ * Throws if `windowName` is empty or `"0"` (the orchestrator window).
+ * Resolves when the window is gone; silences errors if already dead.
+ */
+export function killWindow(sessionName: string, windowName: string): Promise<void> {
+  if (!windowName) {
+    return Promise.reject(new Error("refuses to kill orchestrator window"));
+  }
+  if (windowName === "0") {
+    return Promise.reject(new Error("refuses to kill orchestrator window"));
+  }
   try {
     tmuxExec(["kill-window", "-t", `${sessionName}:${windowName}`]);
   } catch {
     // Window may already be dead
   }
+  return Promise.resolve();
 }
 
 /**

@@ -67,6 +67,25 @@ export async function withHeadlessOpencodeEnv<T>(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Resume adapter
+// ---------------------------------------------------------------------------
+
+// TODO(task-4): replace with import from offload-types.ts once it lands
+interface OffloadResumeMetadata {
+  /** Agent-native session ID to pass to --session. */
+  agentSessionId: string;
+}
+
+/**
+ * Build the `opencode` CLI argv fragment needed to resume an offloaded session.
+ *
+ * Produces: ["--session", "<sessionId>"]
+ */
+export function buildOpencodeResumeArgs(meta: OffloadResumeMetadata): string[] {
+  return ["--session", meta.agentSessionId];
+}
+
 /**
  * Validate an OpenCode workflow source file for common mistakes.
  */

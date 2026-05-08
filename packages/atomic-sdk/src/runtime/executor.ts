@@ -2002,9 +2002,7 @@ function createSessionRunner(
       // Kill the tmux window if one was created (visible stages and headless OpenCode).
       // Headless Claude/Copilot have virtual paneIds ("headless-...") — no window to kill.
       if (paneId && !paneId.startsWith("headless-")) {
-        try {
-          tmux.killWindow(shared.tmuxSessionName, name);
-        } catch {}
+        await tmux.killWindow(shared.tmuxSessionName, name).catch(() => {});
       }
       // Ensure the done promise settles and the active entry is cleared.
       shared.activeRegistry.delete(name);
@@ -2179,11 +2177,9 @@ export async function runOrchestrator(
     // Headless Claude/Copilot have virtual paneIds ("headless-...") — their
     // SDK-managed processes are cleaned up by cleanupProvider().
     for (const [, active] of shared.activeRegistry) {
-      try {
-        if (active.paneId && !active.paneId.startsWith("headless-")) {
-          tmux.killWindow(tmuxSessionName, active.name);
-        }
-      } catch {}
+      if (active.paneId && !active.paneId.startsWith("headless-")) {
+        await tmux.killWindow(tmuxSessionName, active.name).catch(() => {});
+      }
     }
 
     if (error instanceof WorkflowAbortError) {

@@ -35,7 +35,7 @@ export function Header() {
   const storeVersion = useStoreVersion(store);
 
   const counts = useMemo(() => {
-    const c: Record<SessionStatus, number> = { complete: 0, running: 0, pending: 0, error: 0, awaiting_input: 0 };
+    const c: Record<SessionStatus, number> = { complete: 0, running: 0, pending: 0, error: 0, awaiting_input: 0, offloaded: 0, resuming: 0 };
     for (const s of store.sessions) c[s.status]++;
     return c;
   }, [storeVersion]);

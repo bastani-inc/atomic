@@ -1383,7 +1383,7 @@ describe("executeWorkflow — resolver pre-flight", () => {
       capturePane: () => "",
       getPanePid: () => null,
       killSession: () => {},
-      killWindow: () => {},
+      killWindow: () => Promise.resolve(),
       createWindow: () => "%1",
     }));
 

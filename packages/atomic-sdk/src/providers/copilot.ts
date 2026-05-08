@@ -164,6 +164,27 @@ export function mergeCopilotSystemMessage(
   return { ...existing, content: merged };
 }
 
+// ---------------------------------------------------------------------------
+// Resume adapter
+// ---------------------------------------------------------------------------
+
+// TODO(task-4): replace with import from offload-types.ts once it lands
+interface OffloadResumeMetadata {
+  /** Agent-native session ID to pass to --resume=<id>. */
+  agentSessionId: string;
+}
+
+/**
+ * Build the `copilot` CLI argv fragment needed to resume an offloaded session.
+ *
+ * Produces: ["--resume=<sessionId>"]
+ *
+ * Note: Copilot CLI requires `=` syntax (not space-separated) per spec §5.4.
+ */
+export function buildCopilotResumeArgs(meta: OffloadResumeMetadata): string[] {
+  return [`--resume=${meta.agentSessionId}`];
+}
+
 /**
  * Validate a Copilot workflow source file for common mistakes.
  */

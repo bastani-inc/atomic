@@ -1423,6 +1423,36 @@ export class HeadlessClaudeSessionWrapper {
 }
 
 // ---------------------------------------------------------------------------
+// Resume adapter
+// ---------------------------------------------------------------------------
+
+// TODO(task-4): replace with import from offload-types.ts once it lands
+interface OffloadResumeMetadata {
+  /** Agent-native session ID to pass to --resume / --session. */
+  agentSessionId: string;
+}
+
+/**
+ * Build the `claude` CLI argv fragment needed to resume an offloaded session.
+ *
+ * Produces:
+ *   ["--resume", "<UUID>", ...DEFAULT_CHAT_FLAGS, "--settings", "<hooksPath>"]
+ *
+ * Placement: `--resume` before the standard chat flags so Claude Code's
+ * last-wins flag semantics leave our `--settings` authoritative.
+ */
+export function buildClaudeResumeArgs(meta: OffloadResumeMetadata): string[] {
+  const hooksPath = workflowHookSettingsPath();
+  return [
+    "--resume",
+    meta.agentSessionId,
+    ...DEFAULT_CHAT_FLAGS,
+    "--settings",
+    hooksPath,
+  ];
+}
+
+// ---------------------------------------------------------------------------
 // Static source validation
 // ---------------------------------------------------------------------------
 

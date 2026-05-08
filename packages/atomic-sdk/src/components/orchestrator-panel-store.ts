@@ -106,6 +106,13 @@ export class PanelStore {
     }
   }
 
+  setSessionStatus(name: string, status: SessionData["status"]): void {
+    const session = this.sessions.find((s) => s.name === name);
+    if (!session) return;
+    session.status = status;
+    this.emit();
+  }
+
   addSession(session: SessionData): void {
     this.sessions.push(session);
     this.emit();
