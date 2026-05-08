@@ -33,11 +33,10 @@
 
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
-import { CodeGraph } from "@colbymchenry/codegraph";
-import type { Node, Edge, Subgraph } from "@colbymchenry/codegraph";
+import type { CodeGraph, Edge, Node, Subgraph } from "@colbymchenry/codegraph";
 import type { PartitionUnit } from "./scout.ts";
 
-export type ExplorerSections = {
+type BaseExplorerSections = {
   index: number;
   total: number;
   partition: PartitionUnit[];
@@ -49,19 +48,33 @@ export type ExplorerSections = {
   analyzerOutput: string;
   /** Full assistant text from the codebase-online-researcher sub-agent. */
   onlineOutput: string;
-  /**
-   * When true the synthesis pipeline calls cg.getCallers / cg.getImpactRadius
-   * to produce deterministic "Callers" and "Impact" sections.
-   * When false (or absent) those sections are omitted and the aggregator's
-   * LLM stage produces equivalent coverage from raw specialist text.
-   */
-  codegraphHealthy?: boolean;
-  /**
-   * Absolute path to the project root — required when codegraphHealthy is
-   * true so we can open the CodeGraph DB.
-   */
-  projectRoot?: string;
 };
+
+/**
+ * When `codegraphHealthy` is true the synthesis pipeline calls
+ * `cg.getCallers` / `cg.getImpactRadius` for deterministic "Callers" /
+ * "Impact" sections. The caller (orchestrator) opens the CodeGraph handle
+ * once and threads it through here. When false those sections are omitted —
+ * the aggregator's LLM stage covers them from raw specialist text.
+ */
+export type ExplorerSections =
+  | (BaseExplorerSections & { codegraphHealthy: true; graph: CodeGraph })
+  | (BaseExplorerSections & { codegraphHealthy: false });
+
+/**
+ * Build the discriminated-union tail of an `ExplorerSections` value from a
+ * possibly-null CodeGraph handle. Used by orchestrators to keep the explorer
+ * synthesis call site free of inline ternaries.
+ */
+export function graphHealth(
+  graph: CodeGraph | null,
+):
+  | { codegraphHealthy: true; graph: CodeGraph }
+  | { codegraphHealthy: false } {
+  return graph !== null
+    ? { codegraphHealthy: true, graph }
+    : { codegraphHealthy: false };
+}
 
 /** Heuristic: detect the "no external research applicable" sentinel. */
 function isOnlineSkip(output: string): boolean {
@@ -84,7 +97,7 @@ function isOnlineSkip(output: string): boolean {
  */
 export function extractSymbolIds(text: string): string[] {
   const seen = new Set<string>();
-  const pattern = /\[symbol:([a-zA-Z0-9_-]+)\]/g;
+  const pattern = /\[symbol:([a-zA-Z0-9_\-:/.]+)\]/g;
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(text)) !== null) {
     if (match[1] !== undefined) seen.add(match[1]);
@@ -92,11 +105,28 @@ export function extractSymbolIds(text: string): string[] {
   return Array.from(seen);
 }
 
-/** Render a single caller entry as a markdown table row. */
-function callerRow(caller: { node: Node; edge: Edge }): string {
-  const { node, edge } = caller;
-  const loc = edge.line != null ? `:${edge.line}` : "";
-  return `| \`${node.qualifiedName}\` | ${node.kind} | \`${node.filePath}${loc}\` |`;
+/**
+ * Render a markdown table subsection. Returns the empty-state stub when
+ * `rows` is empty so callers don't have to special-case it.
+ */
+function renderTableSubsection(
+  heading: string,
+  emptyMessage: string,
+  headers: [string, string, string],
+  rows: string[],
+): string {
+  if (rows.length === 0) {
+    return [`### ${heading}`, `_(${emptyMessage})_`, ``].join("\n");
+  }
+  const [h1, h2, h3] = headers;
+  const sep = headers.map(() => "------").join("|");
+  return [
+    `### ${heading}`,
+    `| ${h1} | ${h2} | ${h3} |`,
+    `|${sep}|`,
+    rows.join("\n"),
+    ``,
+  ].join("\n");
 }
 
 /** Render the deterministic "Callers" subsection for one symbol. */
@@ -104,43 +134,29 @@ function renderCallersSubsection(
   symbolId: string,
   callers: Array<{ node: Node; edge: Edge }>,
 ): string {
-  if (callers.length === 0) {
-    return [
-      `### Callers of \`${symbolId}\``,
-      `_(no callers found in graph)_`,
-      ``,
-    ].join("\n");
-  }
-  const rows = callers.map(callerRow).join("\n");
-  return [
-    `### Callers of \`${symbolId}\``,
-    `| Caller | Kind | Location |`,
-    `|--------|------|----------|`,
+  const rows = callers.map(({ node, edge }) => {
+    const loc = edge.line != null ? `:${edge.line}` : "";
+    return `| \`${node.qualifiedName}\` | ${node.kind} | \`${node.filePath}${loc}\` |`;
+  });
+  return renderTableSubsection(
+    `Callers of \`${symbolId}\``,
+    "no callers found in graph",
+    ["Caller", "Kind", "Location"],
     rows,
-    ``,
-  ].join("\n");
+  );
 }
 
 /** Render the deterministic "Impact" subsection for one symbol. */
 function renderImpactSubsection(symbolId: string, subgraph: Subgraph): string {
-  const nodes = Array.from(subgraph.nodes.values());
-  if (nodes.length === 0) {
-    return [
-      `### Impact of \`${symbolId}\``,
-      `_(no impacted nodes found in graph)_`,
-      ``,
-    ].join("\n");
-  }
-  const rows = nodes
-    .map((n) => `| \`${n.qualifiedName}\` | ${n.kind} | \`${n.filePath}\` |`)
-    .join("\n");
-  return [
-    `### Impact of \`${symbolId}\``,
-    `| Symbol | Kind | File |`,
-    `|--------|------|------|`,
+  const rows = Array.from(subgraph.nodes.values()).map(
+    (n) => `| \`${n.qualifiedName}\` | ${n.kind} | \`${n.filePath}\` |`,
+  );
+  return renderTableSubsection(
+    `Impact of \`${symbolId}\``,
+    "no impacted nodes found in graph",
+    ["Symbol", "Kind", "File"],
     rows,
-    ``,
-  ].join("\n");
+  );
 }
 
 /** Maximum graph traversal depth for impact radius queries. */
@@ -149,38 +165,30 @@ const IMPACT_DEPTH = 3;
 /**
  * Query CodeGraph for callers and impact of every symbol ID found in the
  * specialist outputs. Returns combined markdown for the two deterministic
- * sections, or null if no symbol IDs were found or the graph is unavailable.
+ * sections, or null if no symbol IDs were found.
+ *
+ * The caller (orchestrator) owns the graph lifecycle — do NOT open or close
+ * inside this function.
  */
 async function buildDeterministicGraphSections(
-  projectRoot: string,
+  graph: CodeGraph,
   symbolIds: string[],
 ): Promise<string | null> {
   if (symbolIds.length === 0) return null;
-
-  const cg = await CodeGraph.open(projectRoot, { readOnly: true });
-  try {
-    const callersParts: string[] = [];
-    const impactParts: string[] = [];
-
-    for (const id of symbolIds) {
-      const callers = cg.getCallers(id);
-      callersParts.push(renderCallersSubsection(id, callers));
-
-      const impact = cg.getImpactRadius(id, IMPACT_DEPTH);
-      impactParts.push(renderImpactSubsection(id, impact));
-    }
-
-    return [
-      `## Callers`,
-      `<!-- Source: deterministic CodeGraph library API (getCallers) -->`,
-      ...callersParts,
-      `## Impact`,
-      `<!-- Source: deterministic CodeGraph library API (getImpactRadius depth=${IMPACT_DEPTH}) -->`,
-      ...impactParts,
-    ].join("\n");
-  } finally {
-    cg.close();
+  const callersParts: string[] = [];
+  const impactParts: string[] = [];
+  for (const id of symbolIds) {
+    callersParts.push(renderCallersSubsection(id, graph.getCallers(id)));
+    impactParts.push(renderImpactSubsection(id, graph.getImpactRadius(id, IMPACT_DEPTH)));
   }
+  return [
+    `## Callers`,
+    `<!-- Source: deterministic CodeGraph library API (getCallers) -->`,
+    ...callersParts,
+    `## Impact`,
+    `<!-- Source: deterministic CodeGraph library API (getImpactRadius depth=${IMPACT_DEPTH}) -->`,
+    ...impactParts,
+  ].join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -245,19 +253,17 @@ function renderBaseMarkdown(sections: ExplorerSections): string {
 /**
  * Render the markdown body deterministically.
  *
- * When sections.codegraphHealthy is true AND sections.projectRoot is set,
- * "Callers" and "Impact" sections are appended via deterministic CodeGraph
- * library API calls (§5.6 healthy branch).
- * When false/absent those sections are omitted — the aggregator's LLM stage
- * covers equivalent coverage from raw specialist text (§5.6 unhealthy branch).
+ * When `codegraphHealthy` is true, "Callers" and "Impact" sections are
+ * appended via the CodeGraph library API (§5.6 healthy branch). Otherwise
+ * those sections are omitted — the aggregator's LLM stage covers them from
+ * raw specialist text (§5.6 unhealthy branch).
  */
 export async function renderExplorerMarkdown(
   sections: ExplorerSections,
 ): Promise<string> {
   let md = renderBaseMarkdown(sections);
 
-  // §5.6 healthy branch — deterministic callers / impact
-  if (sections.codegraphHealthy === true && sections.projectRoot != null) {
+  if (sections.codegraphHealthy) {
     const allText = [
       sections.locatorOutput,
       sections.patternsOutput,
@@ -265,15 +271,11 @@ export async function renderExplorerMarkdown(
     ].join("\n");
     const symbolIds = extractSymbolIds(allText);
     const graphSections = await buildDeterministicGraphSections(
-      sections.projectRoot,
+      sections.graph,
       symbolIds,
     );
-    if (graphSections != null) {
-      md += graphSections;
-    }
+    if (graphSections != null) md += graphSections;
   }
-  // §5.6 unhealthy branch — no Callers/Impact sections; LLM fallback via
-  // aggregator stage covers them from raw specialist text.
 
   return md;
 }

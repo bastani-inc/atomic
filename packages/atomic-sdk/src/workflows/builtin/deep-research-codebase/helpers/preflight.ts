@@ -6,8 +6,19 @@
  */
 
 import { basename, extname } from "node:path";
-import CodeGraph from "@colbymchenry/codegraph";
-import { ensureUvInstalled } from "../../../../lib/spawn";
+import RealCodeGraph from "@colbymchenry/codegraph";
+import { ensureUvInstalled as realEnsureUv } from "../../../../lib/spawn";
+import { listAllFiles as realListAllFiles } from "./file-discovery";
+
+export type CodeGraphCtor = typeof RealCodeGraph;
+export type ListFilesFn = (root: string) => string[];
+export type EnsureUvFn = (opts: { quiet: boolean }) => Promise<void>;
+
+export type PreflightDeps = {
+  listFiles?: ListFilesFn;
+  CodeGraph?: CodeGraphCtor;
+  ensureUv?: EnsureUvFn;
+};
 
 export type PreflightResult = {
   codegraphHealthy: boolean;
@@ -92,30 +103,38 @@ export function computeLanguageRatio(files: string[]): {
   return { total, supported, ratio };
 }
 
+/** Build the standard "unhealthy" preflight result with a reason already pushed. */
+function unhealthyResult(opts: {
+  uvAvailable: boolean;
+  ratio: number;
+  reasons: string[];
+}): PreflightResult {
+  return {
+    codegraphHealthy: false,
+    uvAvailable: opts.uvAvailable,
+    initialized: false,
+    indexed: false,
+    synced: false,
+    supportedLanguageRatio: opts.ratio,
+    nodeCount: 0,
+    fileCount: 0,
+    reasons: opts.reasons,
+  };
+}
+
 /**
- * Walk source files via `git ls-files` and compute the fraction that map to a
- * CodeGraph-supported language.
- *
- * Files with extensions in SKIP_EXTENSIONS are excluded from both the numerator
- * and denominator so binaries / lock files don't dilute the ratio.
+ * Emit the standard preflight log lines (reasons + one-line status). Shared
+ * across the three orchestrators so log output stays consistent.
  */
-async function calculateSupportedLanguageRatio(projectRoot: string): Promise<number> {
-  const proc = Bun.spawn({
-    cmd: ["git", "ls-files"],
-    cwd: projectRoot,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-
-  const stdout = await new Response(proc.stdout).text();
-  await proc.exited;
-
-  const files = stdout
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-
-  return computeLanguageRatio(files).ratio;
+export function logPreflightResult(result: PreflightResult): void {
+  for (const reason of result.reasons) {
+    console.log(`[preflight] ${reason}`);
+  }
+  console.log(
+    result.codegraphHealthy
+      ? `CodeGraph: ${result.indexed ? "indexed" : "synced"} ${result.fileCount} files, ${result.nodeCount} nodes (healthy)`
+      : "CodeGraph: unhealthy — agents will fall back to grep/glob",
+  );
 }
 
 /**
@@ -129,12 +148,19 @@ async function calculateSupportedLanguageRatio(projectRoot: string): Promise<num
  * `cg.getStats()` (synchronous, returns `GraphStats`). We use `getStats()` and
  * preserve the semantics described in the spec.
  */
-export async function preflight(projectRoot: string): Promise<PreflightResult> {
+export async function preflight(
+  projectRoot: string,
+  deps: PreflightDeps = {},
+): Promise<PreflightResult> {
+  const listFiles = deps.listFiles ?? realListAllFiles;
+  const CodeGraph = deps.CodeGraph ?? RealCodeGraph;
+  const ensureUv = deps.ensureUv ?? realEnsureUv;
+
   const reasons: string[] = [];
   let uvAvailable = true;
 
   try {
-    await ensureUvInstalled({ quiet: true });
+    await ensureUv({ quiet: true });
   } catch (e) {
     uvAvailable = false;
     reasons.push(
@@ -142,41 +168,37 @@ export async function preflight(projectRoot: string): Promise<PreflightResult> {
     );
   }
 
-  const ratio = await calculateSupportedLanguageRatio(projectRoot);
+  const files = listFiles(projectRoot);
+  const { ratio } = computeLanguageRatio(files);
+
+  // Empty discovery result attribution: walker is the last fallback, so 0
+  // files almost always means git+rg both threw ENOENT and the walker found
+  // nothing. Surface that distinctly from "low ratio".
+  if (files.length === 0) {
+    reasons.push(
+      "File discovery yielded 0 files (git/rg/walker chain exhausted); CodeGraph skipped",
+    );
+    return unhealthyResult({ uvAvailable, ratio: 0, reasons });
+  }
 
   if (ratio < CODEGRAPH_MIN_SUPPORTED_RATIO) {
     reasons.push(
       `Codegraph skipped: only ${(ratio * 100).toFixed(0)}% of source files map to a supported language`,
     );
-    return {
-      codegraphHealthy: false,
-      uvAvailable,
-      initialized: false,
-      indexed: false,
-      synced: false,
-      supportedLanguageRatio: ratio,
-      nodeCount: 0,
-      fileCount: 0,
-      reasons,
-    };
+    return unhealthyResult({ uvAvailable, ratio, reasons });
   }
 
-  let cg: CodeGraph | null = null;
+  let cg: RealCodeGraph | null = null;
   try {
     const initialized = CodeGraph.isInitialized(projectRoot);
     cg = initialized
       ? await CodeGraph.open(projectRoot)
       : await CodeGraph.init(projectRoot);
 
-    let indexed = false;
-    let synced = false;
-
-    if (!initialized) {
-      await cg.indexAll();
-      indexed = true;
-    } else {
+    if (initialized) {
       await cg.sync();
-      synced = true;
+    } else {
+      await cg.indexAll();
     }
 
     // spec says `cg.status()` — actual library method is `cg.getStats()` (sync)
@@ -186,8 +208,8 @@ export async function preflight(projectRoot: string): Promise<PreflightResult> {
       codegraphHealthy: true,
       uvAvailable,
       initialized,
-      indexed,
-      synced,
+      indexed: !initialized,
+      synced: initialized,
       supportedLanguageRatio: ratio,
       nodeCount: stats.nodeCount,
       fileCount: stats.fileCount,
@@ -195,17 +217,7 @@ export async function preflight(projectRoot: string): Promise<PreflightResult> {
     };
   } catch (e) {
     reasons.push(`Codegraph unhealthy: ${(e as Error).message}`);
-    return {
-      codegraphHealthy: false,
-      uvAvailable,
-      initialized: false,
-      indexed: false,
-      synced: false,
-      supportedLanguageRatio: ratio,
-      nodeCount: 0,
-      fileCount: 0,
-      reasons,
-    };
+    return unhealthyResult({ uvAvailable, ratio, reasons });
   } finally {
     if (cg !== null) cg.close();
   }

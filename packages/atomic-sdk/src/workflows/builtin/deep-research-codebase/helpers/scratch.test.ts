@@ -1,12 +1,10 @@
-import { test, expect, mock, beforeEach } from "bun:test";
-import type { Node, Edge, Subgraph } from "@colbymchenry/codegraph";
+import { test, expect } from "bun:test";
+import type { CodeGraph, Edge, Node, Subgraph } from "@colbymchenry/codegraph";
+import { extractSymbolIds, type ExplorerSections } from "./scratch.ts";
 
 // ---------------------------------------------------------------------------
 // extractSymbolIds
 // ---------------------------------------------------------------------------
-
-// Import after potential mocks so module cache isn't polluted
-import { extractSymbolIds } from "./scratch.ts";
 
 test("extractSymbolIds: returns empty array for text with no symbols", () => {
   expect(extractSymbolIds("no symbols here")).toEqual([]);
@@ -30,62 +28,20 @@ test("extractSymbolIds: handles dashes and underscores in ids", () => {
   expect(ids).toEqual(["my-symbol_v2"]);
 });
 
-// ---------------------------------------------------------------------------
-// renderExplorerMarkdown — base sections always present
-// ---------------------------------------------------------------------------
-
-function makeMinimalSections(
-  overrides: Partial<{
-    codegraphHealthy: boolean;
-    projectRoot: string;
-  }> = {},
-) {
-  return {
-    index: 1,
-    total: 3,
-    partition: [{ path: "src/foo", fileCount: 5, loc: 1000, files: [] }],
-    locatorOutput: "locator text",
-    patternsOutput: "patterns text",
-    analyzerOutput: "analyzer text",
-    onlineOutput: "(no external research applicable)",
-    ...overrides,
-  };
-}
-
-test("renderExplorerMarkdown: base sections present without codegraph", async () => {
-  const { renderExplorerMarkdown } = await import("./scratch.ts");
-  const md = await renderExplorerMarkdown(makeMinimalSections());
-  expect(md).toContain("## Scope");
-  expect(md).toContain("## Files in Scope");
-  expect(md).toContain("## How It Works");
-  expect(md).toContain("## Patterns");
-  expect(md).toContain("## Out-of-Partition References");
-  // No Callers/Impact when unhealthy
-  expect(md).not.toContain("## Callers");
-  expect(md).not.toContain("## Impact");
+test("extractSymbolIds accepts qualified ids", () => {
+  expect(extractSymbolIds("see [symbol:src/a.ts::handler]")).toEqual([
+    "src/a.ts::handler",
+  ]);
 });
 
-test("renderExplorerMarkdown: external references omitted on skip sentinel", async () => {
-  const { renderExplorerMarkdown } = await import("./scratch.ts");
-  const md = await renderExplorerMarkdown(makeMinimalSections());
-  expect(md).not.toContain("## External References");
-});
-
-test("renderExplorerMarkdown: external references included when non-empty non-sentinel", async () => {
-  const { renderExplorerMarkdown } = await import("./scratch.ts");
-  const md = await renderExplorerMarkdown({
-    ...makeMinimalSections(),
-    onlineOutput: "https://example.com",
-  });
-  expect(md).toContain("## External References");
+test("extractSymbolIds dedupes mixed plain + qualified", () => {
+  const ids = extractSymbolIds("[symbol:foo] [symbol:src/x.ts::foo]");
+  expect(ids).toEqual(["foo", "src/x.ts::foo"]);
 });
 
 // ---------------------------------------------------------------------------
-// renderExplorerMarkdown — §5.6 healthy branch
+// Mock graph helpers
 // ---------------------------------------------------------------------------
-
-// We mock @colbymchenry/codegraph at the module level so CodeGraph.open
-// returns a fake instance with controlled getCallers / getImpactRadius.
 
 const fakeNode = (id: string): Node =>
   ({
@@ -116,39 +72,118 @@ const fakeSubgraph = (nodeIds: string[]): Subgraph => {
   return { nodes, edges: [], roots: nodeIds };
 };
 
-// Mock the module
-mock.module("@colbymchenry/codegraph", () => {
-  const getCallersMock = mock(() => [
-    { node: fakeNode("callerFn"), edge: fakeEdge("callerFn", "sym1", 42) },
-  ]);
-  const getImpactRadiusMock = mock(() => fakeSubgraph(["impactedFn"]));
-  const closeMock = mock(() => {});
+type MockGraph = CodeGraph & { openCount: number; closeCount: number };
 
-  return {
-    CodeGraph: {
-      open: mock(async () => ({
-        getCallers: getCallersMock,
-        getImpactRadius: getImpactRadiusMock,
-        close: closeMock,
-      })),
+/**
+ * Mock graph that records open/close call counts for invariant testing.
+ * Implements the subset of CodeGraph used by buildDeterministicGraphSections.
+ */
+function makeMockGraph(opts?: {
+  callers?: Array<{ node: Node; edge: Edge }>;
+  impactNodeIds?: string[];
+}): MockGraph {
+  const callers = opts?.callers ?? [
+    { node: fakeNode("callerFn"), edge: fakeEdge("callerFn", "sym1", 42) },
+  ];
+  const impactNodeIds = opts?.impactNodeIds ?? ["impactedFn"];
+
+  let openCount = 0;
+  let closeCount = 0;
+
+  // open/close should never be called by buildDeterministicGraphSections.
+  const graph = {
+    getCallers: () => callers,
+    getImpactRadius: () => fakeSubgraph(impactNodeIds),
+    open: () => {
+      openCount++;
+      return Promise.resolve(graph as unknown as CodeGraph);
     },
+    close: () => {
+      closeCount++;
+      return Promise.resolve();
+    },
+    get openCount() {
+      return openCount;
+    },
+    get closeCount() {
+      return closeCount;
+    },
+  } as unknown as MockGraph;
+
+  return graph;
+}
+
+type TextOverrides = {
+  analyzerOutput?: string;
+  onlineOutput?: string;
+  locatorOutput?: string;
+  patternsOutput?: string;
+};
+
+type SectionOverrides = TextOverrides &
+  (
+    | { codegraphHealthy: true; graph: CodeGraph }
+    | { codegraphHealthy?: false }
+  );
+
+function makeMinimalSections(
+  overrides: SectionOverrides = {},
+): ExplorerSections {
+  const base = {
+    index: 1,
+    total: 3,
+    partition: [{ path: "src/foo", fileCount: 5, loc: 1000, files: [] }],
+    locatorOutput: overrides.locatorOutput ?? "locator text",
+    patternsOutput: overrides.patternsOutput ?? "patterns text",
+    analyzerOutput: overrides.analyzerOutput ?? "analyzer text",
+    onlineOutput: overrides.onlineOutput ?? "(no external research applicable)",
   };
+  if (overrides.codegraphHealthy) {
+    return { ...base, codegraphHealthy: true, graph: overrides.graph };
+  }
+  return { ...base, codegraphHealthy: false };
+}
+
+test("renderExplorerMarkdown: base sections present without codegraph", async () => {
+  const { renderExplorerMarkdown } = await import("./scratch.ts");
+  const md = await renderExplorerMarkdown(makeMinimalSections());
+  expect(md).toContain("## Scope");
+  expect(md).toContain("## Files in Scope");
+  expect(md).toContain("## How It Works");
+  expect(md).toContain("## Patterns");
+  expect(md).toContain("## Out-of-Partition References");
+  // No Callers/Impact when unhealthy
+  expect(md).not.toContain("## Callers");
+  expect(md).not.toContain("## Impact");
 });
+
+test("renderExplorerMarkdown: external references omitted on skip sentinel", async () => {
+  const { renderExplorerMarkdown } = await import("./scratch.ts");
+  const md = await renderExplorerMarkdown(makeMinimalSections());
+  expect(md).not.toContain("## External References");
+});
+
+test("renderExplorerMarkdown: external references included when non-empty non-sentinel", async () => {
+  const { renderExplorerMarkdown } = await import("./scratch.ts");
+  const md = await renderExplorerMarkdown(
+    makeMinimalSections({ onlineOutput: "https://example.com" }),
+  );
+  expect(md).toContain("## External References");
+});
+
+// ---------------------------------------------------------------------------
+// renderExplorerMarkdown — §5.6 healthy branch
+// ---------------------------------------------------------------------------
 
 test("renderExplorerMarkdown: Callers and Impact sections present when healthy and symbols found", async () => {
   const { renderExplorerMarkdown } = await import("./scratch.ts");
   const sections = makeMinimalSections({
     codegraphHealthy: true,
-    projectRoot: "/fake/project",
-    // Include a symbol reference in analyzer output
-  });
-  // Inject symbol ref into analyzer output
-  const sectionsWithSymbol = {
-    ...sections,
+    graph: makeMockGraph(),
     analyzerOutput: "See [symbol:sym1] for details",
-  };
+  });
 
-  const md = await renderExplorerMarkdown(sectionsWithSymbol);
+  const md = await renderExplorerMarkdown(sections);
 
   expect(md).toContain("## Callers");
   expect(md).toContain("## Impact");
@@ -161,7 +196,7 @@ test("renderExplorerMarkdown: Callers and Impact absent when healthy but no symb
   const { renderExplorerMarkdown } = await import("./scratch.ts");
   const sections = makeMinimalSections({
     codegraphHealthy: true,
-    projectRoot: "/fake/project",
+    graph: makeMockGraph(),
     // no [symbol:...] tokens in any output
   });
 
@@ -174,11 +209,10 @@ test("renderExplorerMarkdown: Callers and Impact absent when healthy but no symb
 
 test("renderExplorerMarkdown: Callers and Impact absent when codegraphHealthy is false", async () => {
   const { renderExplorerMarkdown } = await import("./scratch.ts");
-  const sections = {
-    ...makeMinimalSections({ codegraphHealthy: false }),
+  const sections = makeMinimalSections({
+    codegraphHealthy: false,
     analyzerOutput: "See [symbol:sym1] for details",
-    projectRoot: "/fake/project",
-  };
+  });
 
   const md = await renderExplorerMarkdown(sections);
 
@@ -186,16 +220,25 @@ test("renderExplorerMarkdown: Callers and Impact absent when codegraphHealthy is
   expect(md).not.toContain("## Impact");
 });
 
-test("renderExplorerMarkdown: Callers and Impact absent when projectRoot missing even if healthy", async () => {
+// ---------------------------------------------------------------------------
+// §8.3 open/close invariant — orchestrator owns the lifecycle
+// ---------------------------------------------------------------------------
+
+test("buildDeterministicGraphSections does not open or close the graph", async () => {
   const { renderExplorerMarkdown } = await import("./scratch.ts");
-  const sections = {
-    ...makeMinimalSections({ codegraphHealthy: true }),
-    // no projectRoot
-    analyzerOutput: "See [symbol:sym1] for details",
-  };
-
-  const md = await renderExplorerMarkdown(sections);
-
-  expect(md).not.toContain("## Callers");
-  expect(md).not.toContain("## Impact");
+  const mock = makeMockGraph();
+  // Pass symbols via analyzerOutput so the graph query path is exercised.
+  await renderExplorerMarkdown(
+    makeMinimalSections({
+      codegraphHealthy: true,
+      graph: mock,
+      analyzerOutput: "See [symbol:sym1] and [symbol:sym2] for details",
+    }),
+  );
+  expect(mock.openCount).toBe(0);
+  expect(mock.closeCount).toBe(0);
 });
+
+// The discriminated union requires `graph` whenever `codegraphHealthy` is
+// true, so the previous "healthy but no projectRoot" runtime case is now
+// a compile-time error and needs no test.
