@@ -56,7 +56,9 @@ Every new workflow lands in one of two layouts. The choice is not stylistic — 
 | **2 · Dev-owned CLI**                      | `<repo>/src/workflows/<name>/<agent>.ts` + `<repo>/src/<agent>-worker.ts` (or `src/cli.ts` for multi-workflow registries)                                                                                            | `bun run src/<agent>-worker.ts --<flag>=<value>`                                                  | The user is building their *own* CLI surface, an internal tool, an `examples/` reference, or anything where the workflow is not meant to be discoverable by the wider `atomic` CLI |
 | **1 + 2 combined**                         | Same file as Mode 2, plus `await hostLocalWorkflows([wf])` *before* their own `program.parseAsync()`                                                                                                                 | Both surfaces work — `atomic workflow -n …` AND the dev's own flags                               | The dev wants a polished standalone CLI **and** wants the workflow to show up in `atomic workflow list`. Token-gated dispatch means the two paths don't interfere.              |
 
-**Default rule for the model:** if the user does not specify, scaffold Mode 1 in `.atomic/workflows/<name>/`. Confirm scope in one short question only when ambiguous (e.g. "global or project-scope?" when the wording suggests user-wide reuse).
+**Default rule for the model:** if the user does not specify, scaffold Mode 1 in `.atomic/workflows/<name>/` and register the entry in the project-local `.atomic/settings.json`. Use `~/.atomic/workflows/<name>/` + `~/.atomic/settings.json` *only* when the user explicitly asks for a "global", "user-level", or "everywhere"-scoped workflow. Confirm scope in one short question only when ambiguous (e.g. "global or project-scope?" when the wording suggests user-wide reuse).
+
+**Mode 1 registration is non-negotiable.** A Mode 1 workflow that lives on disk but is missing from `settings.json` is invisible to `atomic workflow list`, `atomic workflow refresh`, and `atomic workflow -n <name>`. Always update the matching `settings.json` (`.atomic/settings.json` for project, `~/.atomic/settings.json` for global) with an entry under the `workflows` key in the same change that creates the workflow file. Mode 2 (dev-owned CLI) does not use `settings.json` — see Mode 1 §step 4 for the full rule.
 
 For runnable reference workflows across both modes, study the in-repo examples first: <https://github.com/flora131/atomic/tree/main/examples>. Each example directory under `examples/` ships per-agent files plus a `<agent>-worker.ts` entry — copy the closest-fitting one as your starting point rather than authoring from a blank file.
 
@@ -106,7 +108,13 @@ Five-step rhythm:
 
    The `source: import.meta.path` is mandatory — the orchestrator re-imports this path. The trailing `await hostLocalWorkflows([wf])` is what makes the file responsive to atomic's token-gated `_emit-workflow-meta` and `_atomic-run` sub-commands.
 
-4. **Register in `settings.json`** — append to `.atomic/settings.json` (project-local) or `~/.atomic/settings.json` (global; create if missing). The schema URL gives JSON intellisense in editors.
+4. **Register in `settings.json`** — **this step is mandatory for Mode 1.** A workflow file under `.atomic/workflows/<name>/` does *not* exist to atomic until it is registered as an entry in the `workflows` map of a settings file. Skip this step and `atomic workflow list` won't show the workflow, `atomic workflow refresh` won't pick it up, and `atomic workflow -n <name>` will fail with "workflow not found".
+
+   **Which settings file:**
+   - **Default → project-level: `.atomic/settings.json`** in the current repo. Use this whenever the user says "build me a workflow that does X" without scoping it.
+   - **Global → `~/.atomic/settings.json`** (create if missing). Use this *only* when the user explicitly says "global workflow", "user-level", "available everywhere", or similar. Match the workflow's location: project workflows go in `.atomic/workflows/`; global workflows go in `~/.atomic/workflows/`.
+
+   Append (don't replace) the entry under the top-level `workflows` key. The schema URL gives JSON intellisense in editors.
 
    ```jsonc
    {
@@ -122,7 +130,64 @@ Five-step rhythm:
    }
    ```
 
-   Use `~/.atomic/workflows/<name>/...` (absolute) in the `args` for global workflows so `cwd` doesn't change resolution.
+   **Top-level shape** (full schema in `assets/settings.schema.json`):
+   - `$schema` *(string, optional)* — schema URL for editor intellisense.
+   - `version` *(number)* — config schema version. Use `1`.
+   - `workflows` *(object)* — map of `<workflow-name>` → entry. The key is the name the user will type in `atomic workflow -n <key>` and must match the `name` passed to `defineWorkflow({ name: ... })` inside the workflow file. Duplicate keys overwrite earlier entries.
+
+   **Entry fields** (one per workflow under `workflows.<name>`):
+
+   | Field     | Type       | Required | Purpose                                                                                                                                                                                                                                                |
+   | --------- | ---------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+   | `command` | `string`   | yes      | Executable atomic spawns to load and run the workflow. Typically `"bunx"` for a `.ts` entry; can also be `"node"`, `"bun"`, or an absolute path to a compiled binary. Must resolve on `PATH` if a bare name.                                            |
+   | `args`    | `string[]` | no (default `[]`) | Static argv prepended to atomic's hidden `_emit-workflow-meta` / `_atomic-run` sub-commands. The first element is normally the path to the workflow's `index.ts`. Use a relative path (e.g. `./.atomic/workflows/<name>/index.ts`) for project-scoped workflows and an absolute path (e.g. `/Users/me/.atomic/workflows/<name>/index.ts`) for global ones so `cwd` doesn't change resolution. |
+   | `agents`  | `string[]` | yes      | Non-empty, unique list of agents this workflow supports. Each item must be one of `"claude"`, `"opencode"`, `"copilot"`. Atomic registers one (name, agent) pair per entry — the workflow file's `WorkflowDefinition`s (one per `.for(<agent>)`) must cover every agent listed.                                                                                                                                                |
+
+   No other keys are accepted (`additionalProperties: false`).
+
+   **Common shapes:**
+
+   ```jsonc
+   // Single-agent project workflow
+   "workflows": {
+     "review-pr": {
+       "command": "bunx",
+       "args": ["./.atomic/workflows/review-pr/index.ts"],
+       "agents": ["claude"]
+     }
+   }
+
+   // Multi-agent workflow — one file exports a WorkflowDefinition per agent,
+   // hostLocalWorkflows([...]) hosts all of them
+   "workflows": {
+     "spec-it": {
+       "command": "bunx",
+       "args": ["./.atomic/workflows/spec-it/index.ts"],
+       "agents": ["claude", "copilot", "opencode"]
+     }
+   }
+
+   // Global workflow — absolute path so $HOME-relative resolution works regardless of cwd
+   "workflows": {
+     "ralph-mine": {
+       "command": "bunx",
+       "args": ["/Users/me/.atomic/workflows/ralph-mine/index.ts"],
+       "agents": ["claude"]
+     }
+   }
+
+   // Compiled binary entry — no args needed if the binary embeds the workflow
+   "workflows": {
+     "deploy-bot": {
+       "command": "/usr/local/bin/deploy-bot",
+       "agents": ["copilot"]
+     }
+   }
+   ```
+
+   The entry's `command` + `args` must point at a script that imports `@bastani/atomic-sdk`, builds the workflow with `defineWorkflow({...}).for(...).run(...).compile()`, and ends with `await hostLocalWorkflows([wf])`. The `hostLocalWorkflows` call is what lets atomic dispatch the hidden `_emit-workflow-meta` and `_atomic-run` sub-commands without depending on ESM module-load ordering.
+
+   **Mode 2 note:** dev-owned CLIs (Mode 2) do **not** use `settings.json` — they're invoked through the dev's own Bun script (`bun run src/<agent>-worker.ts ...`), not through `atomic workflow`. Only edit `settings.json` for Mode 1 or the Mode 1 + 2 combined layout where you want the workflow discoverable through `atomic workflow`.
 
 5. **Refresh and verify** — run `atomic workflow refresh`. This re-spawns the metadata loader for every entry and emits a structured report. Inside an atomic chat session it auto-defaults to JSON; outside, text. Either way:
 
