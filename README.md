@@ -32,16 +32,30 @@
 
 ## Get started
 
-**macOS / Linux**
+The easiest way to install Atomic is through the install script.
 
 ```bash
+# macOS / Linux
 curl -fsSL https://raw.githubusercontent.com/flora131/atomic/main/install.sh | bash
+
+# Windows (PowerShell 5.1+ or 7+)
+irm https://raw.githubusercontent.com/flora131/atomic/main/install.ps1 | iex
 ```
 
-**Windows (PowerShell 5.1+)**
+You can also install it with the following commands:
 
-```powershell
-irm https://raw.githubusercontent.com/flora131/atomic/main/install.ps1 | iex
+**Using Node.js**
+
+**npm**
+
+```bash
+npm install -g @bastani/atomic
+```
+
+**Bun**
+
+```bash
+bun add -g @bastani/atomic
 ```
 
 Then run your first autonomous workflow:
@@ -53,26 +67,14 @@ atomic workflow -n ralph -a claude "Build a REST API for user management"
 > ⚠️ Workflows run with agent permission checks **disabled** so pipelines don't block on prompts. Use a [devcontainer](#containerized-execution) or [git worktree](https://git-scm.com/docs/git-worktree) — not your host machine.
 
 <details>
-<summary><b>Prerequisites & alternative install paths</b> (npm, devcontainer, SDK-only)</summary>
+<summary><b>Prerequisites, version pinning, devcontainer, SDK-only</b></summary>
 
 **Prerequisites** — Atomic spawns coding agents inside a tmux session, so the host needs:
 
 - A terminal multiplexer — [tmux](https://github.com/tmux/tmux) (macOS/Linux) or [psmux](https://github.com/psmux/psmux) (Windows). Auto-installed on first `atomic` run via your platform's package manager.
 - At least one authenticated coding agent CLI — [Claude Code](https://code.claude.com/docs/en/quickstart), [OpenCode](https://opencode.ai), or [GitHub Copilot CLI](https://github.com/features/copilot/cli). Install and `claude` / `opencode` / `copilot` to authenticate.
 
-**npm install** (no shell completions; run `atomic completions <shell>` separately):
-
-```bash
-npm install -g @bastani/atomic        # or: bun add -g, pnpm add -g, yarn global add
-```
-
-**Windows (cmd.exe)** — for environments without PowerShell:
-
-```cmd
-curl -fsSL https://raw.githubusercontent.com/flora131/atomic/main/install.cmd -o install.cmd && install.cmd && del install.cmd
-```
-
-Pin a version: `bash install.sh 0.4.47` (same flag for `.ps1` / `.cmd`).
+**Pin a version:** `bash install.sh 0.4.47` (same trailing-arg form works for `.ps1` and `.cmd`).
 
 **Devcontainer** — recommended for autonomous workflows. Add one feature to `.devcontainer/devcontainer.json`:
 
