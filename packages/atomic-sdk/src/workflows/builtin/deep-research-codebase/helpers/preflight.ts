@@ -77,8 +77,10 @@ const SKIP_EXTENSIONS = new Set([
  * Extension is extracted via `extname(basename(file))` so dotted directory
  * segments (e.g. `pkg.with.dots/Makefile`) do NOT pollute the extension.
  *
- * Files with extensions in SKIP_EXTENSIONS are excluded from both numerator
- * and denominator so binaries / lock files don't dilute the ratio.
+ * Files whose extension lives in SKIP_EXTENSIONS are excluded from both
+ * numerator and denominator so binaries / lock files don't dilute the ratio.
+ * Extension-less files (`""`) are in neither set, so they fall through to the
+ * counted-but-unsupported case.
  */
 export function computeLanguageRatio(files: string[]): {
   total: number;
@@ -90,10 +92,6 @@ export function computeLanguageRatio(files: string[]): {
 
   for (const file of files) {
     const ext = extname(basename(file)).toLowerCase();
-    if (ext === "") {
-      total++;
-      continue;
-    }
     if (SKIP_EXTENSIONS.has(ext)) continue;
     total++;
     if (SUPPORTED_EXTENSIONS.has(ext)) supported++;
@@ -219,6 +217,14 @@ export async function preflight(
     reasons.push(`Codegraph unhealthy: ${(e as Error).message}`);
     return unhealthyResult({ uvAvailable, ratio, reasons });
   } finally {
-    if (cg !== null) cg.close();
+    if (cg !== null) {
+      try {
+        cg.close();
+      } catch (e) {
+        console.error(
+          `[preflight] codegraph close failed (ignored): ${(e as Error).message}`,
+        );
+      }
+    }
   }
 }

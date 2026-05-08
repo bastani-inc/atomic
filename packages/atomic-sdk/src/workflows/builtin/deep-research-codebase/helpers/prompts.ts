@@ -49,13 +49,11 @@ const TRAILING_PROSE_REMINDER =
   "Do NOT end the turn on a tool call — downstream stages read your assistant " +
   "transcript and will see nothing if the final message is a tool invocation.";
 
-const AST_GREP_ENV_NOTICE =
-  "You are operating in an environment where ast-grep is installed. For any " +
-  "code search that requires understanding of syntax or code structure, you " +
-  "should default to using `ast-grep --lang [language] -p '<pattern>'`. Rely " +
-  "on your ast-grep skill for best practices. Adjust the --lang flag as " +
-  "needed for the specific programming language. Avoid using text-only " +
-  "search tools unless a plain-text search is explicitly requested.";
+/** Trim `text`; return `fallback` when the trimmed result is empty. */
+function trimOr(text: string, fallback: string): string {
+  const trimmed = text.trim();
+  return trimmed.length > 0 ? trimmed : fallback;
+}
 
 /** Slugify the user's prompt for use in the final research filename. */
 export function slugifyPrompt(prompt: string): string {
@@ -85,6 +83,27 @@ function renderPartitionDirs(partition: PartitionUnit[]): string {
   return partition.map((u) => `\`${u.path}/\``).join(", ");
 }
 
+/**
+ * Render the `<ARCHITECTURAL_ORIENTATION>` block shared by the locator,
+ * pattern-finder, and analyzer specialist prompts. Each specialist embeds the
+ * same scout briefing and points to its partition's seed section.
+ */
+function renderArchitecturalOrientation(
+  partitionIndex: number,
+  orientation: string,
+): string[] {
+  return [
+    `<ARCHITECTURAL_ORIENTATION>`,
+    `The briefing below contains both a high-level orientation AND per-partition`,
+    `ast-grep query seeds. Find the **Partition ${partitionIndex}** section for the`,
+    `seeds scoped to your investigation — treat them as starting points, not`,
+    `commands. Adapt or skip seeds that don't fit what you actually find.`,
+    ``,
+    orientation,
+    `</ARCHITECTURAL_ORIENTATION>`,
+  ];
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Stage 1a — codebase-scout + query planner (single LLM call)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -106,9 +125,8 @@ export function buildScoutPrompt(opts: {
 }): string {
   const partitionPreview = opts.partitionPreview
     .map((bin, i) => {
-      const dirs = bin.map((u) => `\`${u.path}/\``).join(", ");
       const loc = bin.reduce((s, u) => s + u.loc, 0);
-      return `  ${i + 1}. ${dirs} — ${loc.toLocaleString()} LOC`;
+      return `  ${i + 1}. ${renderPartitionDirs(bin)} — ${loc.toLocaleString()} LOC`;
     })
     .join("\n");
 
@@ -136,10 +154,13 @@ export function buildScoutPrompt(opts: {
     `</CONTEXT>`,
     ``,
     `<TOOLING>`,
-    AST_GREP_ENV_NOTICE,
-    `Consult https://ast-grep.github.io/reference/languages.html for the`,
-    `canonical language list, and https://ast-grep.github.io/llms-full.txt for`,
-    `the full rule reference, when you need them.`,
+    `Default to ast-grep over plain grep when investigating code structure (decorators,`,
+    `async/await pairings, kind+has rules). Invoke via Bash: \`ast-grep --lang <lang> -p '<pat>'\``,
+    `or a fenced YAML rule block — scout has no MCP tools; the specialist sub-agents do.`,
+    ``,
+    `Consult https://ast-grep.github.io/reference/languages.html for the canonical`,
+    `language list, and https://ast-grep.github.io/llms-full.txt for the full rule`,
+    `reference, when you need them.`,
     `</TOOLING>`,
     ``,
     `<TASK>`,
@@ -210,10 +231,10 @@ export function buildLocatorPrompt(opts: {
 }): string {
   const assignment = renderPartitionAssignment(opts.partition);
   const dirs = renderPartitionDirs(opts.partition);
-  const orientation =
-    opts.scoutOverview.trim().length > 0
-      ? opts.scoutOverview.trim()
-      : "(scout overview unavailable — proceed without)";
+  const orientation = trimOr(
+    opts.scoutOverview,
+    "(scout overview unavailable — proceed without)",
+  );
 
   return [
     `<RESEARCH_QUESTION>`,
@@ -226,18 +247,7 @@ export function buildLocatorPrompt(opts: {
     `relates to the research question, and return a categorized index.`,
     `</MISSION>`,
     ``,
-    `<TOOLING>`,
-    AST_GREP_ENV_NOTICE,
-    `</TOOLING>`,
-    ``,
-    `<ARCHITECTURAL_ORIENTATION>`,
-    `The briefing below contains both a high-level orientation AND per-partition`,
-    `ast-grep query seeds. Find the **Partition ${opts.index}** section for the`,
-    `seeds scoped to your investigation — treat them as starting points, not`,
-    `commands. Adapt or skip seeds that don't fit what you actually find.`,
-    ``,
-    orientation,
-    `</ARCHITECTURAL_ORIENTATION>`,
+    ...renderArchitecturalOrientation(opts.index, orientation),
     ``,
     `<SCOPE>`,
     `Search ONLY within these directories. Other partitions cover the rest of`,
@@ -299,10 +309,10 @@ export function buildPatternFinderPrompt(opts: {
 }): string {
   const assignment = renderPartitionAssignment(opts.partition);
   const dirs = renderPartitionDirs(opts.partition);
-  const orientation =
-    opts.scoutOverview.trim().length > 0
-      ? opts.scoutOverview.trim()
-      : "(scout overview unavailable — proceed without)";
+  const orientation = trimOr(
+    opts.scoutOverview,
+    "(scout overview unavailable — proceed without)",
+  );
 
   return [
     `<RESEARCH_QUESTION>`,
@@ -316,18 +326,7 @@ export function buildPatternFinderPrompt(opts: {
     `Return runnable-looking snippets, not abstract descriptions.`,
     `</MISSION>`,
     ``,
-    `<TOOLING>`,
-    AST_GREP_ENV_NOTICE,
-    `</TOOLING>`,
-    ``,
-    `<ARCHITECTURAL_ORIENTATION>`,
-    `The briefing below contains both a high-level orientation AND per-partition`,
-    `ast-grep query seeds. Find the **Partition ${opts.index}** section for the`,
-    `seeds scoped to your investigation — treat them as starting points, not`,
-    `commands. Adapt or skip seeds that don't fit what you actually find.`,
-    ``,
-    orientation,
-    `</ARCHITECTURAL_ORIENTATION>`,
+    ...renderArchitecturalOrientation(opts.index, orientation),
     ``,
     `<SCOPE>`,
     assignment,
@@ -373,14 +372,14 @@ export function buildAnalyzerPrompt(opts: {
   total: number;
 }): string {
   const assignment = renderPartitionAssignment(opts.partition);
-  const orientation =
-    opts.scoutOverview.trim().length > 0
-      ? opts.scoutOverview.trim()
-      : "(scout overview unavailable — proceed without)";
-  const locator =
-    opts.locatorOutput.trim().length > 0
-      ? opts.locatorOutput.trim()
-      : "(locator returned no files — analyse the partition directly)";
+  const orientation = trimOr(
+    opts.scoutOverview,
+    "(scout overview unavailable — proceed without)",
+  );
+  const locator = trimOr(
+    opts.locatorOutput,
+    "(locator returned no files — analyse the partition directly)",
+  );
 
   return [
     `<RESEARCH_QUESTION>`,
@@ -395,18 +394,7 @@ export function buildAnalyzerPrompt(opts: {
     `precise \`file.ts:line\` references throughout.`,
     `</MISSION>`,
     ``,
-    `<TOOLING>`,
-    AST_GREP_ENV_NOTICE,
-    `</TOOLING>`,
-    ``,
-    `<ARCHITECTURAL_ORIENTATION>`,
-    `The briefing below contains both a high-level orientation AND per-partition`,
-    `ast-grep query seeds. Find the **Partition ${opts.index}** section for the`,
-    `seeds scoped to your investigation — treat them as starting points, not`,
-    `commands. Adapt or skip seeds that don't fit what you actually find.`,
-    ``,
-    orientation,
-    `</ARCHITECTURAL_ORIENTATION>`,
+    ...renderArchitecturalOrientation(opts.index, orientation),
     ``,
     `<SCOPE>`,
     assignment,
@@ -481,10 +469,7 @@ export function buildOnlineResearcherPrompt(opts: {
   total: number;
 }): string {
   const assignment = renderPartitionAssignment(opts.partition);
-  const locator =
-    opts.locatorOutput.trim().length > 0
-      ? opts.locatorOutput.trim()
-      : "(locator returned no files)";
+  const locator = trimOr(opts.locatorOutput, "(locator returned no files)");
 
   return [
     `<RESEARCH_QUESTION>`,
@@ -622,10 +607,7 @@ export function buildHistoryAnalyzerPrompt(opts: {
   question: string;
   locatorOutput: string;
 }): string {
-  const locator =
-    opts.locatorOutput.trim().length > 0
-      ? opts.locatorOutput.trim()
-      : "(no prior research surfaced)";
+  const locator = trimOr(opts.locatorOutput, "(no prior research surfaced)");
 
   return [
     `<RESEARCH_QUESTION>`,
@@ -697,21 +679,17 @@ export function buildAggregatorPrompt(opts: {
   historyOverview: string;
 }): string {
   const explorerSummary = opts.explorerFiles
-    .map((e) => {
-      const dirs = e.partition.map((u) => `\`${u.path}/\``).join(", ");
-      return `- **Partition ${e.index}** → \`${e.scratchPath}\`\n  Covered: ${dirs}`;
-    })
+    .map(
+      (e) =>
+        `- **Partition ${e.index}** → \`${e.scratchPath}\`\n  Covered: ${renderPartitionDirs(e.partition)}`,
+    )
     .join("\n");
 
-  const orientation =
-    opts.scoutOverview.trim().length > 0
-      ? opts.scoutOverview.trim()
-      : "(scout overview unavailable)";
-
-  const history =
-    opts.historyOverview.trim().length > 0
-      ? opts.historyOverview.trim()
-      : "(no historical research surfaced)";
+  const orientation = trimOr(opts.scoutOverview, "(scout overview unavailable)");
+  const history = trimOr(
+    opts.historyOverview,
+    "(no historical research surfaced)",
+  );
 
   return [
     `<RESEARCH_QUESTION>`,
@@ -743,6 +721,8 @@ export function buildAggregatorPrompt(opts: {
     `<EXPLORER_REPORTS>`,
     `Each file below has the same structure (Scope / Files in Scope / How It`,
     `Works / Patterns / External References / Out-of-Partition References).`,
+    `Some files also contain \`## Callers\` and \`## Impact\` sections produced`,
+    `deterministically by the CodeGraph library — treat those as authoritative.`,
     `These are LIVE evidence from the specialist sub-agents and take precedence`,
     `over historical context.`,
     ``,
@@ -758,8 +738,13 @@ export function buildAggregatorPrompt(opts: {
     `   directly — do not paper over disagreements.`,
     `4. Integrate historical context where it adds value, but trust live`,
     `   findings when they conflict with history.`,
-    `5. Write the final research document to: \`${opts.finalPath}\``,
-    `6. After writing the file, output a ≤200-word executive summary as your`,
+    `5. When a findings file contains a \`## Callers\` or \`## Impact\` section`,
+    `   (written by the deterministic CodeGraph synthesis step), treat every row`,
+    `   in those tables as an authoritative fact — computed by the graph, not`,
+    `   inferred by an LLM. Preserve them verbatim in the final output: do not`,
+    `   summarise, paraphrase, merge, or drop rows.`,
+    `6. Write the final research document to: \`${opts.finalPath}\``,
+    `7. After writing the file, output a ≤200-word executive summary as your`,
     `   final prose response so this transcript has content.`,
     `</METHOD>`,
     ``,
@@ -800,6 +785,12 @@ export function buildAggregatorPrompt(opts: {
     ``,
     `## Code References`,
     `- \`path/to/file.ts:123\` — what's there`,
+    ``,
+    `## Callers & Impact (Deterministic)`,
+    `Verbatim tables from the \`## Callers\` and \`## Impact\` sections of each`,
+    `explorer findings file that contained CodeGraph data. Concatenate all`,
+    `per-symbol subsections here unchanged. Omit this section only if NO`,
+    `findings file contained a \`## Callers\` or \`## Impact\` section.`,
     ``,
     `## Historical Context (from research/)`,
     `Relevant insights from prior research, with paths. Omit if no history.`,

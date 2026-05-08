@@ -44,12 +44,13 @@ import {
   buildLayer2TaskSpec,
   buildLayer2Tasks,
   buildPartitionPaths,
+  closeGraph,
   logBatchRejections,
+  openGraphForRun,
   readLocatorOutputs,
   resolveEffectiveCounts,
   synthesizeExplorerHandles,
 } from "../helpers/orchestration.ts";
-import CodeGraph from "@colbymchenry/codegraph";
 import {
   calculateExplorerCount,
   explainHeuristic,
@@ -105,14 +106,7 @@ export default defineWorkflow({
     logPreflightResult(preflightResult);
 
     // ── CodeGraph lifecycle (§5.4): open once, close in finally ──────────
-    const graph: CodeGraph | null = preflightResult.codegraphHealthy
-      ? await CodeGraph.open(root, { readOnly: true })
-      : null;
-    console.log(
-      graph !== null
-        ? "[codegraph] handle opened (readOnly)"
-        : "[codegraph] skipped — using legacy file walk",
-    );
+    const graph = await openGraphForRun(root, preflightResult.codegraphHealthy);
 
     try {
     // ── Stage 1a: codebase-scout ‖ Stage 1b: research-history pipeline ────
@@ -430,10 +424,7 @@ export default defineWorkflow({
       },
     );
     } finally {
-      if (graph !== null) {
-        graph.close();
-        console.log("[codegraph] handle closed");
-      }
+      closeGraph(graph);
     }
   })
   .compile();

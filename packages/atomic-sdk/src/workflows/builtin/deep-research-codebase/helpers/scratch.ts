@@ -96,13 +96,11 @@ function isOnlineSkip(output: string): boolean {
  * Example match: `[symbol:abc123def456]`
  */
 export function extractSymbolIds(text: string): string[] {
-  const seen = new Set<string>();
-  const pattern = /\[symbol:([a-zA-Z0-9_\-:/.]+)\]/g;
-  let match: RegExpExecArray | null;
-  while ((match = pattern.exec(text)) !== null) {
-    if (match[1] !== undefined) seen.add(match[1]);
+  const ids = new Set<string>();
+  for (const match of text.matchAll(/\[symbol:([a-zA-Z0-9_\-:/.]+)\]/g)) {
+    ids.add(match[1]!);
   }
-  return Array.from(seen);
+  return [...ids];
 }
 
 /**
@@ -168,19 +166,20 @@ const IMPACT_DEPTH = 3;
  * sections, or null if no symbol IDs were found.
  *
  * The caller (orchestrator) owns the graph lifecycle — do NOT open or close
- * inside this function.
+ * inside this function. The CodeGraph API used here (`getCallers`,
+ * `getImpactRadius`) is synchronous, so this helper is too.
  */
-async function buildDeterministicGraphSections(
+function buildDeterministicGraphSections(
   graph: CodeGraph,
   symbolIds: string[],
-): Promise<string | null> {
+): string | null {
   if (symbolIds.length === 0) return null;
-  const callersParts: string[] = [];
-  const impactParts: string[] = [];
-  for (const id of symbolIds) {
-    callersParts.push(renderCallersSubsection(id, graph.getCallers(id)));
-    impactParts.push(renderImpactSubsection(id, graph.getImpactRadius(id, IMPACT_DEPTH)));
-  }
+  const callersParts = symbolIds.map((id) =>
+    renderCallersSubsection(id, graph.getCallers(id)),
+  );
+  const impactParts = symbolIds.map((id) =>
+    renderImpactSubsection(id, graph.getImpactRadius(id, IMPACT_DEPTH)),
+  );
   return [
     `## Callers`,
     `<!-- Source: deterministic CodeGraph library API (getCallers) -->`,
@@ -256,28 +255,24 @@ function renderBaseMarkdown(sections: ExplorerSections): string {
  * When `codegraphHealthy` is true, "Callers" and "Impact" sections are
  * appended via the CodeGraph library API (§5.6 healthy branch). Otherwise
  * those sections are omitted — the aggregator's LLM stage covers them from
- * raw specialist text (§5.6 unhealthy branch).
+ * raw specialist text (§5.6 unhealthy branch). Sync because the CodeGraph
+ * API used (`getCallers`, `getImpactRadius`) is sync.
  */
-export async function renderExplorerMarkdown(
-  sections: ExplorerSections,
-): Promise<string> {
-  let md = renderBaseMarkdown(sections);
+export function renderExplorerMarkdown(sections: ExplorerSections): string {
+  const md = renderBaseMarkdown(sections);
+  if (!sections.codegraphHealthy) return md;
 
-  if (sections.codegraphHealthy) {
-    const allText = [
-      sections.locatorOutput,
-      sections.patternsOutput,
-      sections.analyzerOutput,
-    ].join("\n");
-    const symbolIds = extractSymbolIds(allText);
-    const graphSections = await buildDeterministicGraphSections(
-      sections.graph,
-      symbolIds,
-    );
-    if (graphSections != null) md += graphSections;
-  }
-
-  return md;
+  const allText = [
+    sections.locatorOutput,
+    sections.patternsOutput,
+    sections.analyzerOutput,
+  ].join("\n");
+  const symbolIds = extractSymbolIds(allText);
+  const graphSections = buildDeterministicGraphSections(
+    sections.graph,
+    symbolIds,
+  );
+  return graphSections === null ? md : md + graphSections;
 }
 
 /**
@@ -289,7 +284,6 @@ export async function writeExplorerScratchFile(
   sections: ExplorerSections,
 ): Promise<string> {
   const abs = path.resolve(scratchPath);
-  const md = await renderExplorerMarkdown(sections);
-  await writeFile(abs, md, "utf8");
+  await writeFile(abs, renderExplorerMarkdown(sections), "utf8");
   return abs;
 }

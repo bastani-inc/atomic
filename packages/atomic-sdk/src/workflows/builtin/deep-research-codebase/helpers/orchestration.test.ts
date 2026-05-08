@@ -1,4 +1,4 @@
-import { test, expect, mock, spyOn } from "bun:test";
+import { test, expect, spyOn } from "bun:test";
 import type CodeGraph from "@colbymchenry/codegraph";
 import { openGraphForRun, closeGraph } from "./orchestration.ts";
 

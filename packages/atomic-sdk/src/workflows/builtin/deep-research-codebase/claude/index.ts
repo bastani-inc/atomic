@@ -96,6 +96,7 @@ import {
 } from "../helpers/orchestration.ts";
 import {
   calculateExplorerCount,
+  CODEGRAPH_EXPLORER_FACTOR,
   explainHeuristic,
 } from "../helpers/heuristic.ts";
 import {
@@ -214,8 +215,11 @@ export default defineWorkflow({
           const targetCount = calculateExplorerCount(effectiveLoc, {
             codegraphHealthy: preflightResult.codegraphHealthy,
           });
+          const heuristicSuffix = preflightResult.codegraphHealthy
+            ? `, factor=${CODEGRAPH_EXPLORER_FACTOR}`
+            : "";
           console.log(
-            `[deep-research-codebase] Heuristic: explorerCount=${targetCount} (codegraphHealthy=${preflightResult.codegraphHealthy}${preflightResult.codegraphHealthy ? ", factor=0.7" : ""})`,
+            `[deep-research-codebase] Heuristic: explorerCount=${targetCount} (codegraphHealthy=${preflightResult.codegraphHealthy}${heuristicSuffix})`,
           );
           const partitions = partitionUnits(data.units, targetCount);
           const actualCount = partitions.length;

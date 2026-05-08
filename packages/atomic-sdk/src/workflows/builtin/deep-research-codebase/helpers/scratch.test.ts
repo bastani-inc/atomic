@@ -1,6 +1,10 @@
 import { test, expect } from "bun:test";
 import type { CodeGraph, Edge, Node, Subgraph } from "@colbymchenry/codegraph";
-import { extractSymbolIds, type ExplorerSections } from "./scratch.ts";
+import {
+  extractSymbolIds,
+  renderExplorerMarkdown,
+  type ExplorerSections,
+} from "./scratch.ts";
 
 // ---------------------------------------------------------------------------
 // extractSymbolIds
@@ -144,9 +148,8 @@ function makeMinimalSections(
   return { ...base, codegraphHealthy: false };
 }
 
-test("renderExplorerMarkdown: base sections present without codegraph", async () => {
-  const { renderExplorerMarkdown } = await import("./scratch.ts");
-  const md = await renderExplorerMarkdown(makeMinimalSections());
+test("renderExplorerMarkdown: base sections present without codegraph", () => {
+  const md = renderExplorerMarkdown(makeMinimalSections());
   expect(md).toContain("## Scope");
   expect(md).toContain("## Files in Scope");
   expect(md).toContain("## How It Works");
@@ -157,15 +160,13 @@ test("renderExplorerMarkdown: base sections present without codegraph", async ()
   expect(md).not.toContain("## Impact");
 });
 
-test("renderExplorerMarkdown: external references omitted on skip sentinel", async () => {
-  const { renderExplorerMarkdown } = await import("./scratch.ts");
-  const md = await renderExplorerMarkdown(makeMinimalSections());
+test("renderExplorerMarkdown: external references omitted on skip sentinel", () => {
+  const md = renderExplorerMarkdown(makeMinimalSections());
   expect(md).not.toContain("## External References");
 });
 
-test("renderExplorerMarkdown: external references included when non-empty non-sentinel", async () => {
-  const { renderExplorerMarkdown } = await import("./scratch.ts");
-  const md = await renderExplorerMarkdown(
+test("renderExplorerMarkdown: external references included when non-empty non-sentinel", () => {
+  const md = renderExplorerMarkdown(
     makeMinimalSections({ onlineOutput: "https://example.com" }),
   );
   expect(md).toContain("## External References");
@@ -175,15 +176,14 @@ test("renderExplorerMarkdown: external references included when non-empty non-se
 // renderExplorerMarkdown — §5.6 healthy branch
 // ---------------------------------------------------------------------------
 
-test("renderExplorerMarkdown: Callers and Impact sections present when healthy and symbols found", async () => {
-  const { renderExplorerMarkdown } = await import("./scratch.ts");
-  const sections = makeMinimalSections({
-    codegraphHealthy: true,
-    graph: makeMockGraph(),
-    analyzerOutput: "See [symbol:sym1] for details",
-  });
-
-  const md = await renderExplorerMarkdown(sections);
+test("renderExplorerMarkdown: Callers and Impact sections present when healthy and symbols found", () => {
+  const md = renderExplorerMarkdown(
+    makeMinimalSections({
+      codegraphHealthy: true,
+      graph: makeMockGraph(),
+      analyzerOutput: "See [symbol:sym1] for details",
+    }),
+  );
 
   expect(md).toContain("## Callers");
   expect(md).toContain("## Impact");
@@ -192,29 +192,27 @@ test("renderExplorerMarkdown: Callers and Impact sections present when healthy a
   expect(md).toContain("impactedFn");
 });
 
-test("renderExplorerMarkdown: Callers and Impact absent when healthy but no symbol refs", async () => {
-  const { renderExplorerMarkdown } = await import("./scratch.ts");
-  const sections = makeMinimalSections({
-    codegraphHealthy: true,
-    graph: makeMockGraph(),
-    // no [symbol:...] tokens in any output
-  });
-
-  const md = await renderExplorerMarkdown(sections);
+test("renderExplorerMarkdown: Callers and Impact absent when healthy but no symbol refs", () => {
+  const md = renderExplorerMarkdown(
+    makeMinimalSections({
+      codegraphHealthy: true,
+      graph: makeMockGraph(),
+      // no [symbol:...] tokens in any output
+    }),
+  );
 
   // No symbols → buildDeterministicGraphSections returns null → no sections
   expect(md).not.toContain("## Callers");
   expect(md).not.toContain("## Impact");
 });
 
-test("renderExplorerMarkdown: Callers and Impact absent when codegraphHealthy is false", async () => {
-  const { renderExplorerMarkdown } = await import("./scratch.ts");
-  const sections = makeMinimalSections({
-    codegraphHealthy: false,
-    analyzerOutput: "See [symbol:sym1] for details",
-  });
-
-  const md = await renderExplorerMarkdown(sections);
+test("renderExplorerMarkdown: Callers and Impact absent when codegraphHealthy is false", () => {
+  const md = renderExplorerMarkdown(
+    makeMinimalSections({
+      codegraphHealthy: false,
+      analyzerOutput: "See [symbol:sym1] for details",
+    }),
+  );
 
   expect(md).not.toContain("## Callers");
   expect(md).not.toContain("## Impact");
@@ -224,11 +222,10 @@ test("renderExplorerMarkdown: Callers and Impact absent when codegraphHealthy is
 // §8.3 open/close invariant — orchestrator owns the lifecycle
 // ---------------------------------------------------------------------------
 
-test("buildDeterministicGraphSections does not open or close the graph", async () => {
-  const { renderExplorerMarkdown } = await import("./scratch.ts");
+test("buildDeterministicGraphSections does not open or close the graph", () => {
   const mock = makeMockGraph();
   // Pass symbols via analyzerOutput so the graph query path is exercised.
-  await renderExplorerMarkdown(
+  renderExplorerMarkdown(
     makeMinimalSections({
       codegraphHealthy: true,
       graph: mock,

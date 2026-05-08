@@ -7,7 +7,7 @@
  *   - ./file-discovery          → NOT mocked; listFiles injected via PreflightDeps per test
  */
 
-import { beforeEach, test, expect, mock } from "bun:test";
+import { beforeEach, test, expect, mock, spyOn } from "bun:test";
 
 // ---------------------------------------------------------------------------
 // Swappable mock functions — set per-test, then reset in beforeEach
@@ -212,6 +212,81 @@ test("preflight: uv missing — uvAvailable=false, codegraph branch still runs",
   // CodeGraph should still be attempted (uv is independent)
   expect(cgInit).toHaveBeenCalled();
   expect(result.codegraphHealthy).toBe(true);
+});
+
+// ---------------------------------------------------------------------------
+// Iteration 13 regression: cg.close() throw must not propagate — RFC §5.3
+// ---------------------------------------------------------------------------
+
+test("preflight: close throws on healthy path — resolves, codegraphHealthy=true, console.error logged", async () => {
+  cgIsInitialized.mockReturnValue(false);
+  const fakeCg = {
+    indexAll: cgIndexAll,
+    sync: cgSync,
+    getStats: cgGetStats,
+    close: cgClose,
+  };
+  cgInit.mockResolvedValue(fakeCg);
+  cgIndexAll.mockResolvedValue(undefined);
+  cgGetStats.mockReturnValue({ nodeCount: 5, fileCount: 3 });
+  cgClose.mockImplementation(() => {
+    throw new Error("EBUSY: file locked");
+  });
+  ensureUvInstalledMock.mockResolvedValue(undefined);
+
+  const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const result = await preflight("/fake/project", {
+      listFiles: () => ["src/a.ts", "src/b.ts"],
+    });
+
+    expect(result.codegraphHealthy).toBe(true);
+    expect(result.nodeCount).toBe(5);
+    expect(result.fileCount).toBe(3);
+
+    const calls = errorSpy.mock.calls;
+    const matched = calls.some(
+      (args) =>
+        typeof args[0] === "string" &&
+        /\[preflight\] codegraph close failed/.test(args[0]),
+    );
+    expect(matched).toBe(true);
+  } finally {
+    errorSpy.mockRestore();
+  }
+});
+
+test("preflight: getStats throws + close throws — resolves codegraphHealthy=false, close error NOT in reasons", async () => {
+  cgIsInitialized.mockReturnValue(false);
+  const fakeCg = {
+    indexAll: cgIndexAll,
+    sync: cgSync,
+    getStats: cgGetStats,
+    close: cgClose,
+  };
+  cgInit.mockResolvedValue(fakeCg);
+  cgIndexAll.mockResolvedValue(undefined);
+  cgGetStats.mockImplementation(() => {
+    throw new Error("db corrupt");
+  });
+  cgClose.mockImplementation(() => {
+    throw new Error("EBUSY");
+  });
+  ensureUvInstalledMock.mockResolvedValue(undefined);
+
+  const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const result = await preflight("/fake/project", {
+      listFiles: () => ["src/a.ts", "src/b.ts"],
+    });
+
+    expect(result.codegraphHealthy).toBe(false);
+    expect(result.reasons.some((r) => r.includes("db corrupt"))).toBe(true);
+    // close error must NOT appear in reasons — it is logged separately
+    expect(result.reasons.every((r) => !r.includes("EBUSY"))).toBe(true);
+  } finally {
+    errorSpy.mockRestore();
+  }
 });
 
 // ---------------------------------------------------------------------------

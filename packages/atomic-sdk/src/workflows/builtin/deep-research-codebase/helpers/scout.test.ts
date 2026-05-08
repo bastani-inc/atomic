@@ -8,6 +8,9 @@
  */
 
 import { test, expect, describe } from "bun:test";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type CodeGraph from "@colbymchenry/codegraph";
 import type { FileRecord } from "@colbymchenry/codegraph";
 import { listSourceFiles } from "./scout";
@@ -82,17 +85,22 @@ describe("listSourceFiles", () => {
     expect(result).toHaveLength(0);
   });
 
-  test("falls back to legacy when graph is null (real filesystem call on test root)", async () => {
-    // When graph is null, the legacy path runs git ls-files / rg / walker.
-    // We just verify it returns an array of { path, loc } shaped objects.
-    const result = await listSourceFiles(process.cwd(), { graph: null });
+  test("falls back to legacy when graph is null (self-seeded fixture)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "scout-legacy-"));
+    try {
+      mkdirSync(join(root, "src"), { recursive: true });
+      writeFileSync(join(root, "src/a.ts"), "export const a = 1;\n");
+      writeFileSync(join(root, "src/b.ts"), "export const b = 2;\n");
 
-    expect(Array.isArray(result)).toBe(true);
-    // Should find at least one source file in the repo root.
-    expect(result.length).toBeGreaterThan(0);
-    for (const f of result) {
-      expect(typeof f.path).toBe("string");
-      expect(typeof f.loc).toBe("number");
+      const result = await listSourceFiles(root, { graph: null });
+
+      expect(result.length).toBeGreaterThan(0);
+      for (const f of result) {
+        expect(typeof f.path).toBe("string");
+        expect(typeof f.loc).toBe("number");
+      }
+    } finally {
+      try { rmSync(root, { recursive: true, force: true }); } catch { /* best-effort */ }
     }
   });
 });

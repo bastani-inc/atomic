@@ -32,8 +32,6 @@ import { defineWorkflow } from "../../../index.ts";
 import type { SessionEvent } from "@github/copilot-sdk";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
-import CodeGraph from "@colbymchenry/codegraph";
-
 import {
   getCodebaseRoot,
   listSourceFiles,
@@ -46,7 +44,9 @@ import {
   buildLayer2TaskSpec,
   buildLayer2Tasks,
   buildPartitionPaths,
+  closeGraph,
   logBatchRejections,
+  openGraphForRun,
   readLocatorOutputs,
   resolveEffectiveCounts,
   synthesizeExplorerHandles,
@@ -117,17 +117,9 @@ export default defineWorkflow({
     // Open a single read-only handle when healthy; null otherwise. Threaded
     // into listSourceFiles + writeExplorerScratchFile so every downstream
     // consumer shares one open connection.
-    const graph: CodeGraph | null = preflightResult.codegraphHealthy
-      ? await CodeGraph.open(root, { readOnly: true })
-      : null;
-    console.log(
-      graph !== null
-        ? "[codegraph] handle opened (readOnly)"
-        : "[codegraph] skipped — using legacy file walk",
-    );
+    const graph = await openGraphForRun(root, preflightResult.codegraphHealthy);
 
     try {
-
     // ── Stage 1a: codebase-scout ‖ Stage 1b: research-history pipeline ────
     const [scout, historyOverview] = await Promise.all([
       ctx.stage(
@@ -389,10 +381,7 @@ export default defineWorkflow({
     );
 
     } finally {
-      if (graph !== null) {
-        graph.close();
-        console.log("[codegraph] handle closed");
-      }
+      closeGraph(graph);
     }
   })
   .compile();

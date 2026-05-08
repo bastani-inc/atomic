@@ -40,15 +40,14 @@ export function logBatchRejections(
   label: string,
   results: PromiseSettledResult<unknown>[],
 ): void {
-  for (let i = 0; i < results.length; i++) {
-    const r = results[i];
-    if (r?.status === "rejected") {
+  results.forEach((r, i) => {
+    if (r.status === "rejected") {
       console.error(
         `[deep-research-codebase] ${label} batch ${i + 1} failed:`,
         r.reason,
       );
     }
-  }
+  });
 }
 
 /**
@@ -62,7 +61,7 @@ export function logBatchRejections(
  * scout's totals are used directly.
  */
 export function resolveEffectiveCounts(opts: {
-  graph: unknown | null;
+  graph: CodeGraph | null;
   fileWalk: SourceFile[];
   scoutTotalFiles: number;
   scoutTotalLoc: number;
