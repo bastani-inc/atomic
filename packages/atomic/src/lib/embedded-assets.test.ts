@@ -46,37 +46,41 @@ test("getEmbeddedAsset throws actionable error when bundle path is empty", async
 
 test("tar failure does not write marker", async () => {
   const spy = spyOn(Bun, "spawn");
-  spy.mockImplementation((() => {
-    const stderr = new ReadableStream({
-      start(controller) {
-        controller.enqueue(new TextEncoder().encode("fake tar error"));
-        controller.close();
-      },
-    });
-    return { exited: Promise.resolve(2), stderr } as ReturnType<typeof Bun.spawn>;
-  }) as unknown as typeof Bun.spawn);
+  try {
+    spy.mockImplementation((() => {
+      const stderr = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("fake tar error"));
+          controller.close();
+        },
+      });
+      return { exited: Promise.resolve(2), stderr } as ReturnType<typeof Bun.spawn>;
+    }) as unknown as typeof Bun.spawn);
 
-  await expect(getEmbeddedAsset("claude")).rejects.toThrow(/tar failed for claude/);
+    await expect(getEmbeddedAsset("claude")).rejects.toThrow(/tar failed for claude/);
 
-  const marker = join(cacheDir, ...CACHE_PREFIX_SEGMENTS, VERSION, "claude", ".extracted");
-  expect(existsSync(marker)).toBe(false);
-
-  spy.mockRestore();
+    const marker = join(cacheDir, ...CACHE_PREFIX_SEGMENTS, VERSION, "claude", ".extracted");
+    expect(existsSync(marker)).toBe(false);
+  } finally {
+    spy.mockRestore();
+  }
 });
 
 test("VERSION drives cache subdir, not 'dev'", async () => {
   const spy = spyOn(Bun, "spawn");
-  spy.mockImplementation((() => ({
-    exited: Promise.resolve(0),
-    stderr: new ReadableStream({ start(c) { c.close(); } }),
-  })) as unknown as typeof Bun.spawn);
+  try {
+    spy.mockImplementation((() => ({
+      exited: Promise.resolve(0),
+      stderr: new ReadableStream({ start(c) { c.close(); } }),
+    })) as unknown as typeof Bun.spawn);
 
-  const result = await getEmbeddedAsset("claude");
+    const result = await getEmbeddedAsset("claude");
 
-  expect(result).toBe(join(cacheDir, ...CACHE_PREFIX_SEGMENTS, VERSION, "claude"));
-  expect(result).not.toMatch(/[\\/]dev[\\/]/);
-
-  spy.mockRestore();
+    expect(result).toBe(join(cacheDir, ...CACHE_PREFIX_SEGMENTS, VERSION, "claude"));
+    expect(result).not.toMatch(/[\\/]dev[\\/]/);
+  } finally {
+    spy.mockRestore();
+  }
 });
 
 test("getEmbeddedAsset refreshes cache when the bundle fingerprint changes", async () => {
@@ -87,25 +91,27 @@ test("getEmbeddedAsset refreshes cache when the bundle fingerprint changes", asy
 
   let tarCalls = 0;
   const spy = spyOn(Bun, "spawn");
-  spy.mockImplementation((() => {
-    tarCalls += 1;
-    return {
-      exited: Promise.resolve(0),
-      stderr: new ReadableStream({ start(c) { c.close(); } }),
-    };
-  }) as unknown as typeof Bun.spawn);
+  try {
+    spy.mockImplementation((() => {
+      tarCalls += 1;
+      return {
+        exited: Promise.resolve(0),
+        stderr: new ReadableStream({ start(c) { c.close(); } }),
+      };
+    }) as unknown as typeof Bun.spawn);
 
-  const first = await getEmbeddedAsset("claude");
-  expect(first).toBe(finalDir);
-  expect(tarCalls).toBe(1);
+    const first = await getEmbeddedAsset("claude");
+    expect(first).toBe(finalDir);
+    expect(tarCalls).toBe(1);
 
-  const updatedMarker = await readFile(marker, "utf8");
-  expect(updatedMarker.startsWith(`${VERSION}\n`)).toBe(true);
-  expect(updatedMarker).not.toBe(VERSION);
+    const updatedMarker = await readFile(marker, "utf8");
+    expect(updatedMarker.startsWith(`${VERSION}\n`)).toBe(true);
+    expect(updatedMarker).not.toBe(VERSION);
 
-  const second = await getEmbeddedAsset("claude");
-  expect(second).toBe(finalDir);
-  expect(tarCalls).toBe(1);
-
-  spy.mockRestore();
+    const second = await getEmbeddedAsset("claude");
+    expect(second).toBe(finalDir);
+    expect(tarCalls).toBe(1);
+  } finally {
+    spy.mockRestore();
+  }
 });

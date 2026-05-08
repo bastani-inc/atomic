@@ -24,7 +24,9 @@ import {
 } from "bun:test";
 import { writeFileSync } from "node:fs";
 import * as realClack from "@clack/prompts";
+import * as installMethodModule from "../../services/system/install-method.ts";
 import type { InstallMethod } from "../../services/system/install-method.ts";
+import * as releaseFetchModule from "../../services/system/release-fetch.ts";
 import type { ReleaseInfo, Manifest } from "../../services/system/release-fetch.ts";
 import type { InstallPaths } from "./install.ts";
 // Host-derived fixtures: mirror the production `hostTarget()` in update.ts:46-49.
@@ -71,16 +73,26 @@ await mock.module("@clack/prompts", () => ({
     spinner: spinnerMock,
 }));
 
-// ── install-method.ts stub ────────────────────────────────────────────────────
+// ── install-method.ts spy ─────────────────────────────────────────────────────
+//
+// We deliberately do NOT use `mock.module("../../services/system/install-method.ts", ...)`
+// here: Bun's `mock.module()` is process-global and the stub object's missing
+// named exports surface as `SyntaxError: Export named '<x>' not found in module`
+// in unrelated test files (install-method.test.ts) that import the real module
+// later in the same `bun test` run. spyOn returns Bun mock instances that
+// support `.mockClear()` / `.mockImplementation(...)` like top-level `mock()`
+// and is reverted via `.mockRestore()` in `afterAll`.
 
 let detectInstallMethodResult: InstallMethod = { kind: "unknown" };
-const detectInstallMethodMock = mock(async (): Promise<InstallMethod> => detectInstallMethodResult);
+const detectInstallMethodMock = spyOn(installMethodModule, "detectInstallMethod").mockImplementation(
+    async (): Promise<InstallMethod> => detectInstallMethodResult,
+);
 
-await mock.module("../../services/system/install-method.ts", () => ({
-    detectInstallMethod: detectInstallMethodMock,
-}));
-
-// ── release-fetch.ts stub ─────────────────────────────────────────────────────
+// ── release-fetch.ts spies ────────────────────────────────────────────────────
+//
+// Same rationale as install-method.ts above — `mock.module()` of release-fetch.ts
+// breaks release-fetch.test.ts's real-module imports (e.g. `downloadAsset`,
+// `ATOMIC_PACKAGE_NAME`) when both files run in the same `bun test` run.
 
 const FAKE_RELEASE: ReleaseInfo = {
     tag_name: "v0.9.0",
@@ -96,25 +108,28 @@ const FAKE_RELEASE: ReleaseInfo = {
     ],
 };
 
-const getLatestReleaseMock = mock(async (): Promise<ReleaseInfo> => FAKE_RELEASE);
-const getReleaseByTagMock = mock(async (_tag: string): Promise<ReleaseInfo> => FAKE_RELEASE);
-const downloadAssetFromUrlMock = mock(async (_url: string, _dest: string): Promise<void> => {});
-const verifyChecksumMock = mock(async (_path: string, _checksum: string): Promise<void> => {});
-const isNewerMock = mock((_tag: string, _current: string): boolean => true);
-const normalizeVersionMock = mock((input: string): string => {
-    const t = input.trim();
-    if (t.toLowerCase() === "latest") return "latest";
-    return t.replace(/^v/, "");
-});
-
-await mock.module("../../services/system/release-fetch.ts", () => ({
-    getLatestRelease: getLatestReleaseMock,
-    getReleaseByTag: getReleaseByTagMock,
-    downloadAssetFromUrl: downloadAssetFromUrlMock,
-    verifyChecksum: verifyChecksumMock,
-    isNewer: isNewerMock,
-    normalizeVersion: normalizeVersionMock,
-}));
+const getLatestReleaseMock = spyOn(releaseFetchModule, "getLatestRelease").mockImplementation(
+    async (): Promise<ReleaseInfo> => FAKE_RELEASE,
+);
+const getReleaseByTagMock = spyOn(releaseFetchModule, "getReleaseByTag").mockImplementation(
+    async (_tag: string): Promise<ReleaseInfo> => FAKE_RELEASE,
+);
+const downloadAssetFromUrlMock = spyOn(releaseFetchModule, "downloadAssetFromUrl").mockImplementation(
+    async (_url: string, _dest: string): Promise<void> => {},
+);
+const verifyChecksumMock = spyOn(releaseFetchModule, "verifyChecksum").mockImplementation(
+    async (_path: string, _checksum: string): Promise<void> => {},
+);
+const isNewerMock = spyOn(releaseFetchModule, "isNewer").mockImplementation(
+    (_tag: string, _current: string): boolean => true,
+);
+const normalizeVersionMock = spyOn(releaseFetchModule, "normalizeVersion").mockImplementation(
+    (input: string): string => {
+        const t = input.trim();
+        if (t.toLowerCase() === "latest") return "latest";
+        return t.replace(/^v/, "");
+    },
+);
 
 // ── install.ts spies ──────────────────────────────────────────────────────────
 //
@@ -152,8 +167,15 @@ await mock.module("../../version.ts", () => ({
 const { updateCommand } = await import("./update.ts");
 
 afterAll(() => {
-    // Restore install.ts spies so other test files in the same `bun test`
-    // process see the real module exports.
+    // Restore spies so other test files in the same `bun test` process see
+    // the real module exports — see comments above each `spyOn(...)` block.
+    detectInstallMethodMock.mockRestore();
+    getLatestReleaseMock.mockRestore();
+    getReleaseByTagMock.mockRestore();
+    downloadAssetFromUrlMock.mockRestore();
+    verifyChecksumMock.mockRestore();
+    isNewerMock.mockRestore();
+    normalizeVersionMock.mockRestore();
     getInstallPathsMock.mockRestore();
     copyBinaryMock.mockRestore();
     cleanupOldArtifactsMock.mockRestore();

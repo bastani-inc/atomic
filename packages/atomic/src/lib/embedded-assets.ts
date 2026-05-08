@@ -24,7 +24,7 @@ function cacheRoot(): string {
     case "win32":
       return join(process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local"), "atomic", "Cache");
     case "darwin":
-      return join(homedir(), "Library", "Caches", "atomic");
+      return join(process.env.XDG_CACHE_HOME ?? join(homedir(), "Library", "Caches"), "atomic");
     default:
       return join(process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"), "atomic");
   }

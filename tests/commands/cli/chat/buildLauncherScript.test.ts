@@ -1,13 +1,26 @@
-import { test, expect, describe, beforeEach, afterEach } from "bun:test";
+import { test, expect, describe, beforeEach, afterEach, afterAll } from "bun:test";
 
 // ── Platform shim ─────────────────────────────────────────────────────────────
 // We need to exercise both posix and win32 branches.  We patch
 // `process.platform` around each describe block via Object.defineProperty so
 // the same test file covers both paths without spawning sub-processes.
 
+const ORIGINAL_PLATFORM_DESCRIPTOR = Object.getOwnPropertyDescriptor(process, "platform");
+
 function setPlatform(p: NodeJS.Platform) {
   Object.defineProperty(process, "platform", { value: p, configurable: true });
 }
+
+// Restore the host's real platform after the file finishes — earlier
+// `afterEach(() => setPlatform("linux"))` calls leak "linux" into other
+// test files that read process.platform at module load (e.g.
+// cli-build-host-default.test.ts via hostTarget(), port-discovery.test.ts
+// via isLinuxOrMac), which breaks them on non-Linux hosts.
+afterAll(() => {
+  if (ORIGINAL_PLATFORM_DESCRIPTOR) {
+    Object.defineProperty(process, "platform", ORIGINAL_PLATFORM_DESCRIPTOR);
+  }
+});
 
 // Import after platform is set the first time (we re-import via cache busting
 // is not needed because the module reads process.platform at call time, not

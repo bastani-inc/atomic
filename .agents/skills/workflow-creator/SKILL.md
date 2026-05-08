@@ -37,6 +37,15 @@ Load references on demand. **Only `getting-started.md` is always-load.** Everyth
 | `user-input.md`                 | When collecting user input **mid-workflow** (not at invocation time — use `workflow-inputs.md` for that)                                                                                                              |
 | `registry-and-validation.md`    | When setting up `createRegistry()` and iterating it via `listWorkflows`, understanding key scheme, validate-on-register rules, and same-name collision detection (only relevant for the multi-workflow cli)           |
 
+## Before you scaffold anything
+
+Two non-negotiable preflight steps gate the rest of the playbook. Both are detailed in §"Authoring Process"; this banner exists so they are not skipped:
+
+1. **Detect the target agent from `ATOMIC_AGENT`.** The Atomic chat launcher bakes the user's current agent into `process.env.ATOMIC_AGENT` (`claude` | `copilot` | `opencode`). Default to that value for `.for(<agent>)` unless the user explicitly overrides. Picking the wrong agent silently produces a workflow the user cannot run. Full decision rules in §"Authoring Process" step 1.
+2. **Spec the workflow with the `create-spec` skill.** A workflow is code, not a prompt — it deserves a Technical Design Document before scaffolding. `create-spec` produces `specs/YYYY-MM-DD-<workflow-name>.md` and runs an Open-Questions interview that resolves design decisions on paper instead of in broken runs. Full required-content checklist in §"Authoring Process" step 2.
+
+Skip step 2 only if the user explicitly says "skip the spec" or the request is a trivial single-stage edit to an existing file. Step 1 has no skip path — there is always one correct target agent.
+
 ## Custom workflow modes — pick before you scaffold
 
 Every new workflow lands in one of two layouts. The choice is not stylistic — it determines *where files live*, *how the workflow is invoked*, and *which entry-point pattern you use*. Pick before you write any code; mixing layouts mid-stream means rewriting the scaffold.
@@ -47,7 +56,9 @@ Every new workflow lands in one of two layouts. The choice is not stylistic — 
 | **2 · Dev-owned CLI**                      | `<repo>/src/workflows/<name>/<agent>.ts` + `<repo>/src/<agent>-worker.ts` (or `src/cli.ts` for multi-workflow registries)                                                                                            | `bun run src/<agent>-worker.ts --<flag>=<value>`                                                  | The user is building their *own* CLI surface, an internal tool, an `examples/` reference, or anything where the workflow is not meant to be discoverable by the wider `atomic` CLI |
 | **1 + 2 combined**                         | Same file as Mode 2, plus `await hostLocalWorkflows([wf])` *before* their own `program.parseAsync()`                                                                                                                 | Both surfaces work — `atomic workflow -n …` AND the dev's own flags                               | The dev wants a polished standalone CLI **and** wants the workflow to show up in `atomic workflow list`. Token-gated dispatch means the two paths don't interfere.              |
 
-**Default rule for the model:** if the user does not specify, scaffold Mode 1 in `.atomic/workflows/<name>/`. Confirm scope in one short question only when ambiguous (e.g. "global or project-scope?" when the wording suggests user-wide reuse).
+**Default rule for the model:** if the user does not specify, scaffold Mode 1 in `.atomic/workflows/<name>/` and register the entry in the project-local `.atomic/settings.json`. Use `~/.atomic/workflows/<name>/` + `~/.atomic/settings.json` *only* when the user explicitly asks for a "global", "user-level", or "everywhere"-scoped workflow. Confirm scope in one short question only when ambiguous (e.g. "global or project-scope?" when the wording suggests user-wide reuse).
+
+**Mode 1 registration is non-negotiable.** A Mode 1 workflow that lives on disk but is missing from `settings.json` is invisible to `atomic workflow list`, `atomic workflow refresh`, and `atomic workflow -n <name>`. Always update the matching `settings.json` (`.atomic/settings.json` for project, `~/.atomic/settings.json` for global) with an entry under the `workflows` key in the same change that creates the workflow file. Mode 2 (dev-owned CLI) does not use `settings.json` — see Mode 1 §step 4 for the full rule.
 
 For runnable reference workflows across both modes, study the in-repo examples first: <https://github.com/flora131/atomic/tree/main/examples>. Each example directory under `examples/` ships per-agent files plus a `<agent>-worker.ts` entry — copy the closest-fitting one as your starting point rather than authoring from a blank file.
 
@@ -97,7 +108,13 @@ Five-step rhythm:
 
    The `source: import.meta.path` is mandatory — the orchestrator re-imports this path. The trailing `await hostLocalWorkflows([wf])` is what makes the file responsive to atomic's token-gated `_emit-workflow-meta` and `_atomic-run` sub-commands.
 
-4. **Register in `settings.json`** — append to `.atomic/settings.json` (project-local) or `~/.atomic/settings.json` (global; create if missing). The schema URL gives JSON intellisense in editors.
+4. **Register in `settings.json`** — **this step is mandatory for Mode 1.** A workflow file under `.atomic/workflows/<name>/` does *not* exist to atomic until it is registered as an entry in the `workflows` map of a settings file. Skip this step and `atomic workflow list` won't show the workflow, `atomic workflow refresh` won't pick it up, and `atomic workflow -n <name>` will fail with "workflow not found".
+
+   **Which settings file:**
+   - **Default → project-level: `.atomic/settings.json`** in the current repo. Use this whenever the user says "build me a workflow that does X" without scoping it.
+   - **Global → `~/.atomic/settings.json`** (create if missing). Use this *only* when the user explicitly says "global workflow", "user-level", "available everywhere", or similar. Match the workflow's location: project workflows go in `.atomic/workflows/`; global workflows go in `~/.atomic/workflows/`.
+
+   Append (don't replace) the entry under the top-level `workflows` key. The schema URL gives JSON intellisense in editors.
 
    ```jsonc
    {
@@ -113,7 +130,64 @@ Five-step rhythm:
    }
    ```
 
-   Use `~/.atomic/workflows/<name>/...` (absolute) in the `args` for global workflows so `cwd` doesn't change resolution.
+   **Top-level shape** (full schema in `assets/settings.schema.json`):
+   - `$schema` *(string, optional)* — schema URL for editor intellisense.
+   - `version` *(number)* — config schema version. Use `1`.
+   - `workflows` *(object)* — map of `<workflow-name>` → entry. The key is the name the user will type in `atomic workflow -n <key>` and must match the `name` passed to `defineWorkflow({ name: ... })` inside the workflow file. Duplicate keys overwrite earlier entries.
+
+   **Entry fields** (one per workflow under `workflows.<name>`):
+
+   | Field     | Type       | Required | Purpose                                                                                                                                                                                                                                                |
+   | --------- | ---------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+   | `command` | `string`   | yes      | Executable atomic spawns to load and run the workflow. Typically `"bunx"` for a `.ts` entry; can also be `"node"`, `"bun"`, or an absolute path to a compiled binary. Must resolve on `PATH` if a bare name.                                            |
+   | `args`    | `string[]` | no (default `[]`) | Static argv prepended to atomic's hidden `_emit-workflow-meta` / `_atomic-run` sub-commands. The first element is normally the path to the workflow's `index.ts`. Use a relative path (e.g. `./.atomic/workflows/<name>/index.ts`) for project-scoped workflows and an absolute path (e.g. `/Users/me/.atomic/workflows/<name>/index.ts`) for global ones so `cwd` doesn't change resolution. |
+   | `agents`  | `string[]` | yes      | Non-empty, unique list of agents this workflow supports. Each item must be one of `"claude"`, `"opencode"`, `"copilot"`. Atomic registers one (name, agent) pair per entry — the workflow file's `WorkflowDefinition`s (one per `.for(<agent>)`) must cover every agent listed.                                                                                                                                                |
+
+   No other keys are accepted (`additionalProperties: false`).
+
+   **Common shapes:**
+
+   ```jsonc
+   // Single-agent project workflow
+   "workflows": {
+     "review-pr": {
+       "command": "bunx",
+       "args": ["./.atomic/workflows/review-pr/index.ts"],
+       "agents": ["claude"]
+     }
+   }
+
+   // Multi-agent workflow — one file exports a WorkflowDefinition per agent,
+   // hostLocalWorkflows([...]) hosts all of them
+   "workflows": {
+     "spec-it": {
+       "command": "bunx",
+       "args": ["./.atomic/workflows/spec-it/index.ts"],
+       "agents": ["claude", "copilot", "opencode"]
+     }
+   }
+
+   // Global workflow — absolute path so $HOME-relative resolution works regardless of cwd
+   "workflows": {
+     "ralph-mine": {
+       "command": "bunx",
+       "args": ["/Users/me/.atomic/workflows/ralph-mine/index.ts"],
+       "agents": ["claude"]
+     }
+   }
+
+   // Compiled binary entry — no args needed if the binary embeds the workflow
+   "workflows": {
+     "deploy-bot": {
+       "command": "/usr/local/bin/deploy-bot",
+       "agents": ["copilot"]
+     }
+   }
+   ```
+
+   The entry's `command` + `args` must point at a script that imports `@bastani/atomic-sdk`, builds the workflow with `defineWorkflow({...}).for(...).run(...).compile()`, and ends with `await hostLocalWorkflows([wf])`. The `hostLocalWorkflows` call is what lets atomic dispatch the hidden `_emit-workflow-meta` and `_atomic-run` sub-commands without depending on ESM module-load ordering.
+
+   **Mode 2 note:** dev-owned CLIs (Mode 2) do **not** use `settings.json` — they're invoked through the dev's own Bun script (`bun run src/<agent>-worker.ts ...`), not through `atomic workflow`. Only edit `settings.json` for Mode 1 or the Mode 1 + 2 combined layout where you want the workflow discoverable through `atomic workflow`.
 
 5. **Refresh and verify** — run `atomic workflow refresh`. This re-spawns the metadata loader for every entry and emits a structured report. Inside an atomic chat session it auto-defaults to JSON; outside, text. Either way:
 
@@ -540,7 +614,46 @@ transcript compression), and `references/computation-and-validation.md`
 
 ## Authoring Process
 
-### 1. Understand the User's Goal
+### 1. Detect the target agent from `ATOMIC_AGENT`
+
+**Authoring a workflow is writing code, and the code is agent-specific** — `.for("claude")` vs `.for("copilot")` vs `.for("opencode")` selects different SDKs and session APIs. Picking the wrong agent here means the user runs the workflow and gets type errors, missing methods, or — worse — a workflow that scaffolds cleanly but targets an agent the user does not actually use.
+
+The Atomic chat launcher bakes the user's current agent into `process.env.ATOMIC_AGENT` (`packages/atomic/src/commands/cli/chat/index.ts:310`). **When the skill activates inside a chat session, treat `ATOMIC_AGENT` as the default target agent**:
+
+```bash
+echo "$ATOMIC_AGENT"   # → "claude" | "copilot" | "opencode"
+```
+
+Decision rules (in order):
+
+1. **User explicitly named an agent in the request** ("write a copilot workflow that…", "for opencode, …") → use the named agent. Do not second-guess; the user's words win.
+2. **`ATOMIC_AGENT` is set** → use that agent. Mention it once in your first response so the user can redirect (e.g. *"Scaffolding for `claude` (your current `ATOMIC_AGENT`). Say so if you want a different agent or cross-agent variants."*). Do not re-confirm on every turn.
+3. **`ATOMIC_AGENT` is unset and the user did not name an agent** → ask once via `AskUserQuestion` with the three options.
+4. **User asks for cross-agent support** (multiple agents, "all three", "claude and copilot") → scaffold one workflow file per agent following §"Choose the Target Agent" and the cross-agent layout below.
+
+This rule overrides any default-to-Claude assumption that might otherwise creep in. The whole point of `ATOMIC_AGENT` is that the launcher already knows which agent the user is using — re-asking or guessing is friction, and silently defaulting to Claude when the user is in a Copilot session produces a workflow they cannot run.
+
+### 2. Spec the workflow before writing code
+
+**Authoring a workflow is writing code, not writing a prompt.** A workflow file is a TypeScript program that orchestrates multiple agent sessions, manages information flow between them, declares a typed input schema, and ships as a self-contained Bun package — exactly the kind of artifact that benefits from an upfront spec.
+
+**Before scaffolding, invoke the `create-spec` skill** to produce a Technical Design Document for the workflow. Pass the user's stated goal as the spec topic. The spec should capture, at minimum:
+
+- **Goals / non-goals** — what LLM interactions the workflow performs, what it deliberately does not do.
+- **Inputs** — the `WorkflowInput[]` schema (names, types, defaults, descriptions, required-vs-optional).
+- **Stage decomposition** — every distinct LLM conversation as one `ctx.stage()` call (Rule 9), with the stage name, target agent, parents/children in the execution graph, and a one-line description of its prompt.
+- **Information flow** — what each stage needs as input, how it gets there (prompt arg, `s.transcript(handle)`, file on disk, `s.save()` payload), and what it emits. Cross-reference §"Information Flow Is a First-Class Design Concern" and `references/state-and-data-flow.md`.
+- **Control flow** — sequential vs `Promise.all` vs loops vs review/fix; visible vs `headless` stages; conditional branches.
+- **Per-session config** — model overrides, permission posture, custom tools, hooks (cross-reference `references/session-config.md`).
+- **Failure modes considered** — walk `references/failure-modes.md` and call out which failures apply and how the design mitigates them.
+- **Mode selection** — Mode 1 (atomic-managed `.atomic/workflows/<name>/`) vs Mode 2 (dev-owned CLI) vs Mode 1 + 2 combined (§"Custom workflow modes — pick before you scaffold").
+- **Target agent(s)** — locked from §1 above; if cross-agent, list each `.for("<agent>")` variant.
+
+The spec lands in `specs/YYYY-MM-DD-<workflow-name>.md`. Walk the user through `create-spec`'s "Open Questions" interview before scaffolding — design decisions resolved on paper are an order of magnitude cheaper than design decisions resolved by re-running broken workflows. Skip this step only when the user explicitly says "skip the spec" or the request is a trivial single-stage edit to an existing workflow file.
+
+After the spec is approved, proceed to step 3.
+
+### 3. Understand the User's Goal
 
 Map the user's intent to sessions and patterns:
 
@@ -562,11 +675,9 @@ skill in *before* writing code. Catching architectural and prompt-quality
 issues at design time is far cheaper than catching them in the first failed
 end-to-end run.
 
-### 2. Choose the Target Agent
+### 4. Choose the Target Agent
 
-Pass the agent as a runtime argument to `.for()` on the builder — this
-narrows all context types and gives correct `s.client`/`s.session` types.
-Call `.for()` **before** `.run()`:
+The agent was already detected in step 1 from `ATOMIC_AGENT` (or the user's explicit override). Pass it as a runtime argument to `.for()` on the builder — this narrows all context types and gives correct `s.client`/`s.session` types. Call `.for()` **before** `.run()`:
 
 | Agent    | Builder Chain                           | Primary Session API                                                                                                                                                               |
 | -------- | --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -603,7 +714,7 @@ const registry = createRegistry()
   .register(copilotWorkflow);
 ```
 
-### 3. Write the Workflow File
+### 5. Write the Workflow File
 
 Write the workflow file using the SDK-specific patterns. See
 `references/getting-started.md` for full quick-start examples for all 3
@@ -637,7 +748,7 @@ caveats.
 Both sets demonstrate shared helpers, context-aware prompt building,
 deterministic heuristics, and cross-SDK adaptation.
 
-### 4. Wire, typecheck, run
+### 6. Wire, typecheck, run
 
 The composition root is always three lines (see §"Scaffold a new workflow from scratch" above for the exact template and multi-workflow variant). After writing it:
 
