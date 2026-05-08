@@ -64,6 +64,7 @@ import {
   HeadlessClaudeClientWrapper,
   HeadlessClaudeSessionWrapper,
   buildClaudeResumeArgs,
+  claudeOffloadCleanup,
   ensureWorkflowHookSettings,
 } from "../providers/claude.ts";
 import { withHeadlessOpencodeEnv, buildOpencodeResumeArgs } from "../providers/opencode.ts";
@@ -2386,6 +2387,7 @@ export async function runOrchestrator(
     waitForReady: defaultWaitForAgentReady,
     now: Date.now,
     emit: (event, payload) => _telemetrySink.emit(event, payload),
+    claudeOffloadCleanup,
   });
 
   // RFC §5.6 — wire the offload manager into the panel so the React tree's

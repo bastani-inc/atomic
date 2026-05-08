@@ -7,6 +7,8 @@ import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import type { OffloadResumeMetadata, MetadataJsonWithResume, AgentKind } from "./offload-types.ts";
 import type { SessionData } from "../components/orchestrator-panel-types.ts";
+import { claudeOffloadCleanup as _realClaudeOffloadCleanup } from "../providers/claude.ts";
+import type { ClaudeMarkerCleanupResult } from "../providers/claude.ts";
 
 // Telemetry event-name constants — kept in sync with
 // packages/atomic/src/lib/telemetry/offload-events.ts (avoids cross-package dep).
@@ -17,6 +19,7 @@ const WORKFLOW_OFFLOAD_RESUME_SUCCEEDED = "workflow.offload.resume.succeeded" as
 const WORKFLOW_OFFLOAD_RESUME_FAILED = "workflow.offload.resume.failed" as const;
 const WORKFLOW_OFFLOAD_REGISTER_PERSISTED = "workflow.offload.register.persisted" as const;
 const WORKFLOW_OFFLOAD_RESUME_ROLLBACK_FAILED = "workflow.offload.resume.rollback_failed" as const;
+const WORKFLOW_OFFLOAD_CLAUDE_MARKER_CLEANUP = "workflow.offload.claude_marker_cleanup" as const;
 
 // ─── filterSpawnEnv ─────────────────────────────────────────────────────────
 
@@ -274,6 +277,12 @@ export interface OffloadManagerDeps {
   now(): number;
   /** Telemetry sink — `event` is one of WORKFLOW_OFFLOAD_* constants. */
   emit(event: string, payload: Record<string, unknown>): void;
+  /**
+   * Best-effort cleanup of Claude per-session marker files after offload.
+   * Optional — defaults to the real `claudeOffloadCleanup` from providers/claude.ts.
+   * Tests inject a mock to avoid real filesystem I/O.
+   */
+  claudeOffloadCleanup?: (agentSessionId: string) => Promise<ClaudeMarkerCleanupResult>;
 }
 
 // ─── Internal state ─────────────────────────────────────────────────────────
@@ -360,6 +369,28 @@ export function createOffloadManager(deps: OffloadManagerDeps): OffloadManager {
     const ts = deps.now();
     // Patch is ONLY timestamps — snapshot fields already on disk from registerSession.
     await persistResume(sess.stageDir, { offloadedAt: ts, lastSeenAt: ts });
+
+    // RFC §5.4: claude-specific marker cleanup before killing the window.
+    if (sess.agent === "claude") {
+      const cleanupFn = deps.claudeOffloadCleanup ?? _realClaudeOffloadCleanup;
+      try {
+        const { readyCleared, stopCleared, pidCleared, inflightCleared, failures } =
+          await cleanupFn(sess.agentSessionId);
+        deps.emit(WORKFLOW_OFFLOAD_CLAUDE_MARKER_CLEANUP, {
+          runId: sess.runId,
+          name: sess.name,
+          agentSessionId: sess.agentSessionId,
+          readyCleared,
+          stopCleared,
+          pidCleared,
+          inflightCleared,
+          failures,
+        });
+      } catch {
+        // Cleanup must never abort kill — errors are swallowed.
+      }
+    }
+
     await deps.tmux.killWindow(sess.tmuxSession, sess.tmuxWindow);
     deps.panelStore.setSessionStatus(sess.name, "offloaded");
     sess.state = "offloaded";
