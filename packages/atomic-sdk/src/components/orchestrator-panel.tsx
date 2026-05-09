@@ -84,7 +84,7 @@ export class OrchestratorPanel {
                     </box>
                   )}
                 >
-                  <SessionGraphPanel />
+                  {offloadManager ? <SessionGraphPanel /> : null}
                 </ErrorBoundary>
               </OffloadManagerContext.Provider>
             </TmuxSessionContext.Provider>
