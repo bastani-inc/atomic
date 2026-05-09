@@ -1,6 +1,10 @@
 # pane-navigation
 
-Driver CLI for the SDK pane-navigation primitives (`nextWindow`, `previousWindow`, `gotoOrchestrator`, `attachSession`, `detachSession`). Spawns a 3-stage workflow detached and exposes `start / list / status / next / prev / home / attach / stop` subcommands. Catches `SessionNotFoundError` for friendly errors.
+Driver CLI for the SDK's pane-navigation primitives (`nextWindow`,
+`previousWindow`, `gotoOrchestrator`, `attachSession`, `detachSession`).
+Spawns a 3-stage workflow detached and exposes `start / list / status /
+next / prev / home / attach / stop` subcommands. Catches
+`SessionNotFoundError` for friendly errors.
 
 ## Run
 
@@ -27,5 +31,11 @@ bun run cli.ts stop   <session-id>
 
 ## What's here
 
-- `claude/`, `copilot/`, `opencode/` — same 3-stage workflow per agent
-- `cli.ts` — Commander driver that wraps the SDK's session primitives
+- `claude/`, `copilot/`, `opencode/` — same 3-stage workflow per agent.
+- `cli.ts` — Commander driver that wraps the SDK's session primitives.
+
+---
+
+**Starting fresh?** Run `bun create @bastani/atomic-cli` for a working
+scaffold. This directory is a focused demo of pane-navigation
+primitives, not a starter template.

@@ -101,9 +101,13 @@ function scaffoldAtomicWorkflow(
   sessionCall: string,
 ): ScaffoldResult {
   const scope = opts.scope ?? "project";
+  // For global scope, the atomic CLI itself honors `ATOMIC_SETTINGS_HOME`
+  // (overrides the homedir() base for `~/.atomic/`). Mirror that here so
+  // tests can sandbox writes without touching the real `~/.atomic`.
   const atomicHome =
     scope === "global"
-      ? opts.globalAtomicHome ?? path.join(homedir(), ".atomic")
+      ? opts.globalAtomicHome ??
+        path.join(process.env.ATOMIC_SETTINGS_HOME ?? homedir(), ".atomic")
       : path.join(cwd, ".atomic");
   const projectDir = path.join(atomicHome, "workflows", opts.name);
   const settingsPath = path.join(atomicHome, "settings.json");
