@@ -85,58 +85,54 @@ compiled binary. The SDK's argv side-effect catches the sub-command
 before Commander parses argv, runs the orchestrator, and exits — your
 own command tree never sees those argv tokens.
 
-## Compiled-binary hosts with disk-resident capsules
+## Scaffolding a new project
 
-If your host CLI is built with `bun build --compile` and ships workflow
-capsules to disk (e.g. `~/.<host>/workflows/<wf>.mjs`) for later dynamic
-import, externalize `@opentui/core` from your capsule build so its
-platform-native loader resolves against the host's already-loaded module
-instead of walking parent directories from the capsule on disk:
+Use `bun create` to scaffold a fresh atomic-powered project. The
+scaffold prompts for:
 
-```ts
-await Bun.build({
-  entrypoints: ["./workflows/my-wf.ts"],
-  format: "esm",
-  target: "bun",
-  external: [
-    "@opentui/core",
-    // platform-native variants — all entries from
-    // @opentui/core/package.json#optionalDependencies
-    "@opentui/core-darwin-x64",
-    "@opentui/core-darwin-arm64",
-    "@opentui/core-linux-x64",
-    "@opentui/core-linux-arm64",
-    "@opentui/core-win32-x64",
-    "@opentui/core-win32-arm64",
-  ],
-  outdir: "./dist/workflows",
-});
+- **What you're building** — `Add a workflow to atomic CLI` (registers
+  in `settings.json` so atomic dispatches it) or `Build my own CLI tool`
+  (a single binary your users run directly).
+- **Where it lives** (atomic-workflow only) — project (`.atomic/workflows/`)
+  or global (`~/.atomic/workflows/`).
+- **Default agent** — Claude, Copilot, or OpenCode.
+
+```bash
+bun create @bastani/atomic-cli my-app
 ```
 
-This uses Bun's built-in [`external`](https://bun.com/docs/bundler) option
-— the same pattern OpenTUI's own packages use in their build scripts.
-`"@opentui/core"` covers the bare specifier and all subpaths
-(`@opentui/core/testing`, etc.) via Bun's subpath inheritance; the
-platform-native packages must be enumerated because Bun's `external` only
-treats `*` as a wildcard.
+Or non-interactive:
 
-You do **not** need to externalize if your host bundles workflows directly
-into the binary via `hostLocalWorkflows([...])` — `bun build --compile`
-already handles that static graph correctly.
+```bash
+bun create @bastani/atomic-cli my-app -y
+bun create @bastani/atomic-cli my-app --template=standalone-cli --agent=claude
+bun create @bastani/atomic-cli my-app --template=atomic-workflow --scope=project --agent=claude
+```
 
-The capsule ends up containing bare `@opentui/core*` specifiers. The SDK's
-`_orchestrator-entry` subprocess registers the host's already-loaded
-`@opentui/core` via `ensureRuntimePluginSupport` before importing the
-capsule, so the bare specifiers resolve to the host's instance.
+The `standalone-cli` template emits a CLI compiled with
+`bun build --compile` that bundles workflows directly into the binary.
+No build configuration to maintain, no externalize array, no `node_modules`
+on the user's machine.
 
-#### Idempotency contract
+The `atomic-workflow` template emits a `.atomic/workflows/<name>/` (or
+`~/.atomic/workflows/<name>/`) Bun package and merges a registry entry
+into the appropriate `settings.json`. After scaffolding, run
+`atomic workflow refresh` and the workflow becomes invocable via
+`atomic workflow -n <name> -a <agent>`.
 
-`ensureRuntimePluginSupport` is registered exactly once per `_orchestrator-entry` process. The SDK guards the call by reading `globalThis.__opentuiCoreRuntimePluginSupportInstalled__` — the same global key OpenTUI writes during install. When a capsule built with `@opentui/core*` externalized is dynamic-imported under `_orchestrator-entry` argv, its bundled copy of `auto-dispatch.ts` re-runs its top-level await in the same process; the sentinel is already set, so the second registration is skipped. This avoids OpenTUI's identity assertion `OpenTUI Core runtime plugin support is already installed with a different core runtime module.`, which would otherwise crash the orchestrator-entry subprocess.
+`examples/compiled-cli/` is a checked-in snapshot of what the
+`standalone-cli` template produces. Read it to see the shape; run
+`bun create` to get one of your own.
 
-Set `ATOMIC_DEBUG=1` to surface the install path on stderr:
+### Disk-resident workflows (niche)
 
-- `[atomic-sdk:runtime-plugin] registered core loader (orchestrator-entry)` — first install in this process.
-- `[atomic-sdk:runtime-plugin] skipped install (already present)` — bundled-capsule re-entry, sentinel already set.
+If your host needs workflows shipped **separately** from the binary
+(e.g. for hot-reload during development, or third-party-distributed
+workflow plugins), see
+[`docs/disk-resident-workflows.md`](./docs/disk-resident-workflows.md)
+for the externalize array and runtime contract. Most CLI builders
+don't need this path — pick `standalone-cli` from the scaffold and
+ship a single binary.
 
 ## `pathToAtomicExecutable` escape hatch
 

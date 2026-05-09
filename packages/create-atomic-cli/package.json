@@ -1,0 +1,38 @@
+{
+  "name": "@bastani/create-atomic-cli",
+  "version": "0.7.12",
+  "type": "module",
+  "description": "Scaffold a new atomic workflow or third-party CLI built on @bastani/atomic-sdk",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/flora131/atomic.git",
+    "directory": "packages/create-atomic-cli"
+  },
+  "keywords": [
+    "atomic",
+    "atomic-sdk",
+    "cli",
+    "scaffold",
+    "create",
+    "workflow",
+    "agents"
+  ],
+  "bin": {
+    "create-atomic-cli": "./src/cli.ts"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "templates",
+    "README.md"
+  ],
+  "dependencies": {
+    "@clack/prompts": "^1.3.0"
+  },
+  "engines": {
+    "bun": ">=1.3.0"
+  }
+}

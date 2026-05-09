@@ -201,3 +201,7 @@ packages/*/.opencode/
 # Verdaccio working state used by the publish-validation matrix
 .verdaccio-storage/
 .verdaccio-htpasswd
+# Workspace-internal scratch dir used by the bundled-capsule reentry e2e
+# (auto-dispatch.runtime-plugin.test.ts). Lives under SDK fixtures so the
+# capsule's bundled @opentui/core import resolves via workspace node_modules.
+packages/atomic-sdk/src/lib/__fixtures__/.tmp-reentry/

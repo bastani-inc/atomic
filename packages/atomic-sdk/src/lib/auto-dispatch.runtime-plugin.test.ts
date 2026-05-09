@@ -15,8 +15,7 @@
  */
 
 import { test, expect, describe, afterAll } from "bun:test";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 
 describe("auto-dispatch runtime-plugin e2e", () => {
@@ -80,7 +79,20 @@ describe("auto-dispatch runtime-plugin e2e", () => {
       // Two separate Bun.build outputs → two distinct resolved paths → two
       // independent module instances → two separate auto-dispatch.ts TLA
       // executions in the harness child process.
-      const tmpDir = await mkdtemp(join(tmpdir(), "atomic-reentry-"));
+      //
+      // Tmp dir lives INSIDE the workspace so the bundled `@opentui/core`
+      // import (reached transitively via the SDK's static graph in the
+      // capsule) walks up from the capsule's location into the workspace's
+      // `node_modules` tree at runtime. A tmp dir under `os.tmpdir()` has
+      // no walk-up path to `node_modules`, which makes the capsule's eager
+      // `@opentui/core` import fail with ENOENT before the bundled
+      // `auto-dispatch.ts` can install the runtime plugin.
+      const workspaceTmp = new URL(
+        "./__fixtures__/.tmp-reentry/",
+        import.meta.url,
+      ).pathname;
+      await mkdir(workspaceTmp, { recursive: true });
+      const tmpDir = await mkdtemp(join(workspaceTmp, "atomic-reentry-"));
       reentryTmpDir = tmpDir;
 
       // Write a tiny "no-workflow" dummy source that the bundled auto-dispatch

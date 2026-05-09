@@ -1,0 +1,15 @@
+{
+  "name": "{{name}}",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun run mycli.ts",
+    "build": "bun run build.ts"
+  },
+  "dependencies": {
+    "@bastani/atomic-sdk": "^0.7.0",
+    "@commander-js/extra-typings": "^14.0.0",
+    "{{providerSdkPkg}}": "{{providerSdkVersion}}"
+  }
+}

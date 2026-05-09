@@ -192,6 +192,16 @@
         "react",
       ],
     },
+    "packages/create-atomic-cli": {
+      "name": "@bastani/create-atomic-cli",
+      "version": "0.7.12",
+      "bin": {
+        "create-atomic-cli": "./src/cli.ts",
+      },
+      "dependencies": {
+        "@clack/prompts": "^1.3.0",
+      },
+    },
     "tests/fixtures/sdk-compiled-consumer": {
       "name": "@atomic-fixtures/sdk-compiled-consumer",
       "version": "0.0.0",
@@ -239,6 +249,8 @@
     "@bastani/atomic": ["@bastani/atomic@workspace:packages/atomic"],
 
     "@bastani/atomic-sdk": ["@bastani/atomic-sdk@workspace:packages/atomic-sdk"],
+
+    "@bastani/create-atomic-cli": ["@bastani/create-atomic-cli@workspace:packages/create-atomic-cli"],
 
     "@bastani/example-claude-background-subagents": ["@bastani/example-claude-background-subagents@workspace:examples/claude-background-subagents"],
 
