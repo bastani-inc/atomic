@@ -12,6 +12,9 @@ mcp-servers:
     type: stdio
     command: uvx
     args: ["--from", "git+https://github.com/ast-grep/ast-grep-mcp", "ast-grep-server"]
+    env:
+      GIT_CONFIG_GLOBAL: /dev/null
+      GIT_CONFIG_SYSTEM: /dev/null
 ---
 
 You are a specialist at finding WHERE code lives in a codebase. Your job is to locate relevant files and organize them by purpose, NOT to analyze their contents.

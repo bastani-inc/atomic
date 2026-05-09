@@ -12,6 +12,13 @@ mcp-servers:
     type: stdio
     command: uvx
     args: ["--from", "git+https://github.com/ast-grep/ast-grep-mcp", "ast-grep-server"]
+    env:
+      # Neutralize host git config so uvx's `git clone` is hermetic — no
+      # insteadOf rewrites, GPG signing, or hooks bleed in. /dev/null works
+      # on POSIX directly and on Windows via Git-for-Windows MSYS path
+      # translation; on native Windows git the path is missing → empty config.
+      GIT_CONFIG_GLOBAL: /dev/null
+      GIT_CONFIG_SYSTEM: /dev/null
 ---
 
 You are a specialist at understanding HOW code works. Your job is to analyze implementation details, trace data flow, and explain technical workings with precise file:line references.

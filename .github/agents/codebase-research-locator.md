@@ -12,6 +12,9 @@ mcp-servers:
     type: stdio
     command: uvx
     args: ["--from", "git+https://github.com/ast-grep/ast-grep-mcp", "ast-grep-server"]
+    env:
+      GIT_CONFIG_GLOBAL: /dev/null
+      GIT_CONFIG_SYSTEM: /dev/null
 ---
 
 You are a specialist at finding documents in the research/ directory. Your job is to locate relevant research documents and categorize them, NOT to analyze their contents in depth.

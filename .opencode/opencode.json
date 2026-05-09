@@ -21,12 +21,25 @@
     },
     "codegraph": {
       "type": "local",
-      "command": ["codegraph", "serve", "--mcp"],
+      "command": [
+        "codegraph",
+        "serve",
+        "--mcp"
+      ],
       "enabled": true
     },
     "ast-grep": {
       "type": "local",
-      "command": ["uvx", "--from", "git+https://github.com/ast-grep/ast-grep-mcp", "ast-grep-server"],
+      "command": [
+        "uvx",
+        "--from",
+        "git+https://github.com/ast-grep/ast-grep-mcp",
+        "ast-grep-server"
+      ],
+      "environment": {
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_SYSTEM": "/dev/null"
+      },
       "enabled": true
     }
   },
@@ -36,22 +49,40 @@
   },
   "agent": {
     "codebase-locator": {
-      "tools": { "codegraph*": true, "ast-grep*": true }
+      "tools": {
+        "codegraph*": true,
+        "ast-grep*": true
+      }
     },
     "codebase-pattern-finder": {
-      "tools": { "codegraph*": true, "ast-grep*": true }
+      "tools": {
+        "codegraph*": true,
+        "ast-grep*": true
+      }
     },
     "codebase-analyzer": {
-      "tools": { "codegraph*": true, "ast-grep*": true }
+      "tools": {
+        "codegraph*": true,
+        "ast-grep*": true
+      }
     },
     "codebase-online-researcher": {
-      "tools": { "codegraph*": true, "ast-grep*": false }
+      "tools": {
+        "codegraph*": true,
+        "ast-grep*": false
+      }
     },
     "codebase-research-locator": {
-      "tools": { "codegraph*": true, "ast-grep*": true }
+      "tools": {
+        "codegraph*": true,
+        "ast-grep*": true
+      }
     },
     "codebase-research-analyzer": {
-      "tools": { "codegraph*": true, "ast-grep*": true }
+      "tools": {
+        "codegraph*": true,
+        "ast-grep*": true
+      }
     }
   },
   "permission": "allow",

@@ -12,6 +12,9 @@ mcpServers:
     type: stdio
     command: uvx
     args: ["--from", "git+https://github.com/ast-grep/ast-grep-mcp", "ast-grep-server"]
+    env:
+      GIT_CONFIG_GLOBAL: /dev/null
+      GIT_CONFIG_SYSTEM: /dev/null
 ---
 
 You are a specialist at extracting HIGH-VALUE insights from thoughts documents. Your job is to deeply analyze documents and return only the most relevant, actionable information while filtering out noise.
