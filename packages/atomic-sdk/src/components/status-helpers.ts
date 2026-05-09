@@ -1,30 +1,38 @@
 // ─── Status Helpers ───────────────────────────────
 
 import type { GraphTheme } from "./graph-theme.ts";
+import type { SessionStatus } from "./orchestrator-panel-types.ts";
+
+interface StatusEntry {
+  color: (theme: GraphTheme) => string;
+  label: string;
+  icon: string;
+}
+
+const STATUS_TABLE: Record<SessionStatus, StatusEntry> = {
+  running:        { color: (t) => t.warning, label: "running",      icon: "●" },
+  complete:       { color: (t) => t.success, label: "done",         icon: "✓" },
+  pending:        { color: (t) => t.textDim, label: "waiting",      icon: "○" },
+  error:          { color: (t) => t.error,   label: "failed",       icon: "✗" },
+  awaiting_input: { color: (t) => t.info,    label: "input needed", icon: "?" },
+  offloaded:      { color: (t) => t.textDim, label: "offloaded",    icon: "◌" },
+  resuming:       { color: (t) => t.warning, label: "resuming…",    icon: "◐" },
+};
+
+function lookup(status: string): StatusEntry | undefined {
+  return STATUS_TABLE[status as SessionStatus];
+}
 
 export function statusColor(status: string, theme: GraphTheme): string {
-  return (
-    {
-      running: theme.warning,
-      complete: theme.success,
-      pending: theme.textDim,
-      error: theme.error,
-      awaiting_input: theme.info,
-      offloaded: theme.textDim,
-      resuming: theme.warning,
-    }[status] ?? theme.textDim
-  );
+  return lookup(status)?.color(theme) ?? theme.textDim;
 }
 
 export function statusLabel(status: string): string {
-  return (
-    { running: "running", complete: "done", pending: "waiting", error: "failed", awaiting_input: "input needed", offloaded: "offloaded", resuming: "resuming…" }[status] ??
-    status
-  );
+  return lookup(status)?.label ?? status;
 }
 
 export function statusIcon(status: string): string {
-  return { running: "●", complete: "✓", pending: "○", error: "✗", awaiting_input: "?", offloaded: "◌", resuming: "◐" }[status] ?? "○";
+  return lookup(status)?.icon ?? "○";
 }
 
 // ─── Duration ─────────────────────────────────────
