@@ -57,45 +57,54 @@ Ask the user which agent they're targeting and whether they want one or multiple
 
 Don't guess. Use `AskUserQuestion` (or the equivalent) when intent is unclear — picking wrong here means rewriting 100% of the scaffold.
 
-## Step 3 — Bootstrap the package
+## Step 3 — Scaffold via `bun create`
 
-For **Mode 1**, the package lives at `.atomic/workflows/<name>/` (or `~/.atomic/workflows/<name>/` for global) and is fully self-contained — its own `package.json`, `tsconfig.json`, and `node_modules`. Do this *inside* that directory, not in the repo root:
+The `bun create @bastani/atomic-cli` scaffold produces the correct project layout for either mode in a single command. It writes the `package.json` with the right deps, the `tsconfig.json`, the starter workflow file, and (for Mode 1) the merged `settings.json` entry. Use it instead of running `mkdir + bun init + bun add` and editing `settings.json` by hand — the scaffold gets the args path, the alias key, and the `agents` array shape right every time, which is where most "broken entry on `atomic workflow refresh`" diagnostics come from when humans hand-write Mode 1.
 
-```bash
-mkdir -p .atomic/workflows/<name>
-cd .atomic/workflows/<name>
-bun init -y
-bun add @bastani/atomic-sdk
-bun add @anthropic-ai/claude-agent-sdk     # only if Claude
-bun add @github/copilot-sdk                # only if Copilot
-bun add @opencode-ai/sdk                   # only if OpenCode
-```
-
-The atomic CLI spawns this package as a subprocess (via `bunx <path>` or `bun <path>`) — keeping its dependencies isolated means the host project's deps never collide with the workflow's, and global workflows under `~/.atomic/workflows/<name>/` work identically because they ship their own deps.
-
-For **Mode 2**, work in the repo root:
+**Mode 1 — atomic-managed workflow:**
 
 ```bash
-bun init -y                                # skip if package.json exists
-bun add @bastani/atomic-sdk
-bun add @anthropic-ai/claude-agent-sdk     # only if Claude
-bun add @github/copilot-sdk                # only if Copilot
-bun add @opencode-ai/sdk                   # only if OpenCode
-bun add @commander-js/extra-typings        # for the worker; swap for citty/yargs if the user prefers
+# Project-scoped (default) — writes to <cwd>/.atomic/workflows/<name>/
+# and merges <cwd>/.atomic/settings.json
+bun create @bastani/atomic-cli <name> -y \
+  --template=atomic-workflow --scope=project --agent=<claude|copilot|opencode>
+
+# Global — writes to ~/.atomic/workflows/<name>/
+# and merges ~/.atomic/settings.json (absolute args path so cwd doesn't matter)
+bun create @bastani/atomic-cli <name> -y \
+  --template=atomic-workflow --scope=global --agent=<claude|copilot|opencode>
 ```
+
+**Mode 2 — dev-owned CLI:**
+
+```bash
+# Writes <cwd>/<name>/ with a Commander tree (mycli.ts), the workflow under
+# workflows/hello.ts, a `bun build --compile` script, and the deps wired up.
+bun create @bastani/atomic-cli <name> -y \
+  --template=standalone-cli --agent=<claude|copilot|opencode>
+```
+
+Drop the `-y` if you want the interactive prompts (the scaffold defaults to project-scope + Claude). Run `bun install` inside the generated directory afterward to materialise `node_modules`.
+
+The atomic CLI spawns Mode 1 packages as subprocesses (via `bunx <path>`) — keeping their deps isolated means the host project's deps never collide with the workflow's, and global workflows under `~/.atomic/workflows/<name>/` work identically because they ship their own. The scaffold preserves this isolation: each generated `.atomic/workflows/<name>/` is its own Bun package.
+
+**The scaffold refuses to overwrite an existing alias.** If the user already has a `<name>` workflow registered, the scaffold throws — pick a different name or remove the existing entry first.
+
+**If `bun create` is unavailable** (sandbox without network, integrating with an existing build pipeline that owns `package.json`), the long-form manual playbook is the bottom of this file: §"Manual Mode 1 setup (no `bun create`)" and §"Manual Mode 2 setup (no `bun create`)". The file shapes are identical, you just produce them by hand.
 
 If the user has `npm install`, `yarn add`, or any non-Bun command on file, gently redirect — the SDK will not work under Node, full stop.
 
-## Step 4 — Scaffold the workflow file
+## Step 4 — Edit the generated workflow body
 
-Always include `source: import.meta.path` — the runtime re-imports the module from this path inside the orchestrator child process. Forget it and the workflow loads fine but `runWorkflow` blows up at spawn time with `InvalidWorkflowError`.
+The scaffold ships a starter `index.ts` (Mode 1) or `workflows/hello.ts` (Mode 2) shaped like the templates below. The model's job here is to fill in the `.run(async (ctx) => {...})` body with the real pipeline — `ctx.stage()` calls, control flow, data handoffs. The surrounding boilerplate (`#!/usr/bin/env bun` shebang, `defineWorkflow`, `.for`, `.compile`, and the trailing `hostLocalWorkflows` for Mode 1) is what the runtime depends on; leave it in place.
 
-### Step 4-Mode1 — Atomic-managed entry (`.atomic/workflows/<name>/index.ts`)
+**Why `source: import.meta.path` matters.** The orchestrator re-imports this file from the captured path inside its child process. The scaffold sets it correctly; if you ever rewrite the file from scratch, never drop this field — the workflow loads fine but `runWorkflow` blows up at spawn time with `InvalidWorkflowError`.
 
-Single file per workflow package. The trailing `await hostLocalWorkflows([…])` is what makes the file responsive to atomic's two token-gated sub-commands (`_emit-workflow-meta` and `_atomic-run`); without it, the loader will time out and surface a `BROKEN` entry on `atomic workflow refresh`. Add an executable shebang so the file can be invoked via `bunx <path>`.
+**Why the trailing `await hostLocalWorkflows([wf])` matters (Mode 1 only).** It's how the file responds to atomic's two token-gated sub-commands (`_emit-workflow-meta` and `_atomic-run`). Without it, the loader times out and `atomic workflow refresh` surfaces a `BROKEN` entry. Keep it the *last* statement in the file.
+
+### Step 4-Mode1 — What the scaffold writes at `.atomic/workflows/<name>/index.ts`
 
 ```ts
-// .atomic/workflows/<name>/index.ts
 #!/usr/bin/env bun
 import { defineWorkflow, hostLocalWorkflows } from "@bastani/atomic-sdk";
 
@@ -107,9 +116,9 @@ const workflow = defineWorkflow({
     { name: "prompt", type: "text", required: true, description: "what the user supplies" },
   ],
 })
-  .for("claude") // or .for("copilot") / .for("opencode") — pick the agent the user named
+  .for("claude") // matches the --agent flag passed to `bun create`
   .run(async (ctx) => {
-    await ctx.stage({ name: "step-1" }, {}, {}, async (s) => {
+    await ctx.stage({ name: "main" }, {}, {}, async (s) => {
       await s.session.query(ctx.inputs.prompt);
       s.save(s.sessionId);
     });
@@ -119,11 +128,32 @@ const workflow = defineWorkflow({
 await hostLocalWorkflows([workflow]);
 ```
 
-For Copilot / OpenCode session bodies, use the same `.for(...)` + `.run(...)` shape as Mode 2 templates below — only the directory layout, package boundary, and `hostLocalWorkflows` call change between modes.
+Replace the single-stage `.run` body with whatever pipeline the user asked for — see SKILL.md §"How Workflows Work" for `ctx.stage()` patterns and §"Concept-to-Code Mapping" for sequential / parallel / loop / headless shapes. For Copilot / OpenCode session bodies, the surrounding `defineWorkflow` shape is identical; only the inner SDK call differs (templates below).
 
-### Step 4-Mode2 — Dev-owned files (`src/workflows/<name>/<agent>.ts`)
+### Step 4-Mode2 — What the scaffold writes at `<name>/workflows/hello.ts`
 
-Drop into `src/workflows/<name>/<agent>.ts`. The convention is one directory per workflow, one file per agent — this keeps `src/workflows/<name>/helpers/` available for SDK-agnostic logic when the user does want cross-agent support later. The naming matters because every reference doc and every agent looking at the codebase finds files the same way.
+```ts
+import { defineWorkflow } from "@bastani/atomic-sdk";
+
+export default defineWorkflow({
+  name: "hello",
+  source: import.meta.path,
+  description: "Open a single agent session and ask it something.",
+  inputs: [
+    { name: "prompt", type: "text", required: true, description: "what to ask the agent" },
+  ],
+})
+  .for("claude") // matches the --agent flag passed to `bun create`
+  .run(async (ctx) => {
+    await ctx.stage({ name: "ask" }, {}, {}, async (s) => {
+      await s.session.query(ctx.inputs.prompt);
+      s.save(s.sessionId);
+    });
+  })
+  .compile();
+```
+
+Mode 2 typically wants one file per agent under `workflows/<name>/<agent>.ts` and one composition root in `mycli.ts`. The scaffold ships the single-agent single-workflow case; for cross-agent support, rename `workflows/hello.ts` → `workflows/<name>/<agent>.ts`, drop sibling files for the other agents, and add subcommands in `mycli.ts`.
 
 #### Claude template
 
@@ -182,12 +212,11 @@ The `s.save(...)` call shape differs per agent on purpose — see `getting-start
 
 ## Step 5 — Wire the entry point
 
-### Step 5-Mode1 — Register in `settings.json` and refresh
+### Step 5-Mode1 — Refresh and verify
 
-Mode 1 has no separate composition root; the workflow file *is* the entry point because `hostLocalWorkflows([wf])` doubles as the host-dispatch handler. Instead, you register the package in atomic's settings file:
+Mode 1 has no separate composition root; the workflow file *is* the entry point because `hostLocalWorkflows([wf])` doubles as the host-dispatch handler. The `bun create` scaffold (Step 3) already wrote the matching `settings.json` entry — project-local at `.atomic/settings.json` or global at `~/.atomic/settings.json` — under the `workflows` key. The scaffold preserves any other entries already in the file; you only need to verify, not re-register.
 
-- **Project-local** → `.atomic/settings.json` (recommended default)
-- **Global** → `~/.atomic/settings.json` (use absolute paths in `args` so `cwd` doesn't matter)
+For reference, the entry the scaffold wrote looks like this (project-scoped):
 
 ```jsonc
 // .atomic/settings.json
@@ -198,34 +227,34 @@ Mode 1 has no separate composition root; the workflow file *is* the entry point 
     "<workflow-name>": {
       "command": "bunx",
       "args": ["./.atomic/workflows/<workflow-name>/index.ts"],
-      "agents": ["claude"]
+      "agents": ["<agent>"]
     }
   }
 }
 ```
 
-If the user already has a `settings.json`, *merge* into the existing `workflows` object — do not overwrite it. Use `Read` first, then `Edit` the JSON in place.
+Global-scoped entries use an absolute path in `args` (e.g. `/Users/me/.atomic/workflows/<name>/index.ts`) so `cwd` doesn't change resolution.
 
-Then verify the registration:
+Verify the registration:
 
 ```bash
 atomic workflow refresh
 ```
 
-Inside an atomic chat session this auto-defaults to JSON; outside, it prints colourised text. Either way, every diagnostic field is on its own `key · value` line so the model can self-correct without prose parsing:
+Inside an atomic chat session this auto-defaults to JSON; outside, it prints colourised text. Every diagnostic field is on its own `key · value` line so the model can self-correct without prose parsing:
 
-- `loaded` entries confirm the workflow is invocable as `atomic workflow -n <workflow-name> -a claude`.
+- `loaded` entries confirm the workflow is invocable as `atomic workflow -n <workflow-name> -a <agent>`.
 - `broken` entries spell out `reason · …`, `fix · …`, `settings · <path> (workflows.<alias>)` so you know exactly which file and which JSON path to repair before re-running.
 
-Common Mode-1 broken-entry causes the model should self-diagnose:
+Common Mode-1 broken-entry causes — these all surface from the model's edits to the generated `index.ts`, not from the scaffold's settings.json work, which is mechanical:
 
 | Symptom (`reason` field starts with…)                                 | Fix                                                                                                     |
 | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
 | `metadata emission timed out`                                         | Ensure `await hostLocalWorkflows([wf])` is the *last* statement in the file (after `.compile()`).        |
 | `expected ATOMIC_WORKFLOW_META line`                                  | The file is not importing `@bastani/atomic-sdk`, OR `hostLocalWorkflows` is never called.               |
-| `command "<x>" not found on PATH`                                     | Use `bunx` + a path under `args`, not a bare command — or supply an absolute path.                      |
-| `command did not register a workflow for agent "<a>"`                 | The `.for(...)` chain targets a different agent than `agents` in `settings.json` declares.              |
-| `failed to parse ATOMIC_WORKFLOW_META JSON`                           | A `console.log` or `process.stdout.write` is racing with the meta line — keep the file output-clean.    |
+| `command "<x>" not found on PATH`                                     | Almost certainly a hand-edited entry — the scaffold writes `bunx` + a path. Restore those if you changed them. |
+| `command did not register a workflow for agent "<a>"`                 | The `.for(...)` chain in `index.ts` targets a different agent than `agents` in `settings.json` declares. |
+| `failed to parse ATOMIC_WORKFLOW_META JSON`                           | A `console.log` or `process.stdout.write` in the file is racing with the meta line — keep the file output-clean. |
 
 ### Step 5-Mode2 — Composition root with Commander
 
@@ -382,3 +411,34 @@ Once the smoke test passes, the user owns the project. Tell them:
 - **What to read next** — `references/getting-started.md` for the SDK exports table, `references/control-flow.md` for loops/parallel/headless, `references/state-and-data-flow.md` for `s.save`/`s.transcript` patterns, `references/running-workflows.md` for HiL handling and teardown, `references/failure-modes.md` before shipping any multi-stage workflow.
 
 If the user is now stuck on workflow design rather than setup ("how do I do a review-fix loop?", "what's the right shape for parallel research?"), pivot to the authoring guidance in `SKILL.md` §"Authoring Process" and the `Design Advisory Skills` table. Setup is done.
+
+---
+
+## Manual Mode 1 setup (no `bun create`)
+
+Use this fallback only if `bun create @bastani/atomic-cli` is unavailable — typically a sandbox without network access for `bunx` or an existing build pipeline that owns `package.json`. The scaffold is the recommended path because it gets the args path, alias key, and `agents` array shape right every time. If you do this by hand, replicate exactly the same files the scaffold would write.
+
+```bash
+mkdir -p .atomic/workflows/<name>
+cd .atomic/workflows/<name>
+bun init -y
+bun add @bastani/atomic-sdk
+bun add @anthropic-ai/claude-agent-sdk     # only if Claude
+bun add @github/copilot-sdk                # only if Copilot
+bun add @opencode-ai/sdk                   # only if OpenCode
+```
+
+Write `index.ts` from the Step 4-Mode1 template above. Then merge an entry into `.atomic/settings.json` (project) or `~/.atomic/settings.json` (global) under the `workflows` key — same shape the scaffold writes (Step 5-Mode1 reference). If `settings.json` exists, *merge*, do not overwrite — `Read` first, then `Edit` the JSON in place to preserve `scm`, `providers`, and any other workflow aliases.
+
+## Manual Mode 2 setup (no `bun create`)
+
+```bash
+bun init -y                                # skip if package.json exists
+bun add @bastani/atomic-sdk
+bun add @anthropic-ai/claude-agent-sdk     # only if Claude
+bun add @github/copilot-sdk                # only if Copilot
+bun add @opencode-ai/sdk                   # only if OpenCode
+bun add @commander-js/extra-typings        # for the worker; swap for citty/yargs if the user prefers
+```
+
+Write `src/workflows/<name>/<agent>.ts` from the Step 4-Mode2 template above and the composition root from the Step 5-Mode2 templates. The standalone-cli template the scaffold ships also writes a `build.ts` for `bun build --compile` — replicate it from [`examples/compiled-cli/build.ts`](https://github.com/flora131/atomic/tree/main/examples/compiled-cli) if you want single-binary distribution.

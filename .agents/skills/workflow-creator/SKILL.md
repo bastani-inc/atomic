@@ -1,6 +1,6 @@
 ---
 name: workflow-creator
-description: Create or run Atomic CLI workflows with the `@bastani/atomic-sdk` npm package — using `defineWorkflow().run().compile()` and `ctx.stage()` across Claude, Copilot, and OpenCode SDKs. Use when authoring, editing, debugging, or designing agent pipelines including multi-stage automations, review/fix loops, parallel fan-out, headless/background stages, `ctx.inputs`, `WorkflowInput` schemas, registries, validation, picker UI, and single or multi-workflow composition roots. Use when scaffolding atomic-managed custom workflows under `.atomic/workflows/<name>/` (or `~/.atomic/workflows/<name>/`), registering them in `settings.json`, and verifying with `atomic workflow refresh`. Use when running existing workflows to kick off, monitor, check status, inspect on-disk state via `atomic workflow read`, gather inputs, or tear down sessions via `atomic workflow -n`, `atomic workflow inputs`, `atomic workflow status`, picker flows, or `atomic session kill`.
+description: Create or run Atomic CLI workflows with the `@bastani/atomic-sdk` npm package — using `defineWorkflow().run().compile()` and `ctx.stage()` across Claude, Copilot, and OpenCode SDKs. Use when authoring, editing, debugging, or designing agent pipelines including multi-stage automations, review/fix loops, parallel fan-out, headless/background stages, `ctx.inputs`, `WorkflowInput` schemas, registries, validation, picker UI, and single or multi-workflow composition roots. Use when scaffolding new workflows or third-party CLIs via `bun create @bastani/atomic-cli` — produces the correct project layout, merges `settings.json`, and skips the manual mkdir/bun init/bun add/settings-edit dance. Use when verifying with `atomic workflow refresh` after edits, and when running existing workflows to kick off, monitor, check status, inspect on-disk state via `atomic workflow read`, gather inputs, or tear down sessions via `atomic workflow -n`, `atomic workflow inputs`, `atomic workflow status`, picker flows, or `atomic session kill`.
 metadata:
   provider: atomic
 ---
@@ -78,11 +78,24 @@ Use this when the user wants a workflow that integrates with `atomic workflow` (
             └── index.ts                       # defineWorkflow → compile → hostLocalWorkflows
 ```
 
-Five-step rhythm:
+Three-step rhythm:
 
 1. **Verify prerequisites** — Bun, tmux/psmux, an authenticated agent CLI (devcontainers using `ghcr.io/flora131/atomic/<agent>:1` bundle all three).
-2. **Scaffold the package** — `mkdir -p .atomic/workflows/<name> && cd .atomic/workflows/<name> && bun init -y` + `bun add @bastani/atomic-sdk @anthropic-ai/claude-agent-sdk` (or the provider SDK matching the agent the user picked).
-3. **Write the workflow** at `.atomic/workflows/<name>/index.ts`:
+2. **Scaffold via `bun create`** — one command produces the directory, the `package.json` with the right deps, the `tsconfig.json`, the starter `index.ts`, and the merged `settings.json` entry. Pick the flags from the user's intent:
+
+   ```bash
+   # Project-scoped (default) — writes to <cwd>/.atomic/workflows/<name>/
+   # and merges <cwd>/.atomic/settings.json
+   bun create @bastani/atomic-cli <name> -y \
+     --template=atomic-workflow --scope=project --agent=<claude|copilot|opencode>
+
+   # Global — writes to ~/.atomic/workflows/<name>/
+   # and merges ~/.atomic/settings.json (absolute args path)
+   bun create @bastani/atomic-cli <name> -y \
+     --template=atomic-workflow --scope=global --agent=<claude|copilot|opencode>
+   ```
+
+   The scaffold writes a starter `index.ts` shaped like this — the runtime relies on the marked invariants, so leave them in place when you flesh out the body:
 
    ```ts
    #!/usr/bin/env bun
@@ -90,31 +103,23 @@ Five-step rhythm:
 
    const workflow = defineWorkflow({
      name: "<workflow-name>",
-     source: import.meta.path,
+     source: import.meta.path,                 // ← orchestrator re-imports this path
      description: "<one-line description>",
      inputs: [{ name: "prompt", type: "text", required: true, description: "..." }],
    })
-     .for("claude")
+     .for("<agent>")                           // ← matches `--agent` flag passed to `bun create`
      .run(async (ctx) => {
-       await ctx.stage({ name: "step-1" }, {}, {}, async (s) => {
-         await s.session.query(ctx.inputs.prompt);
+       await ctx.stage({ name: "main" }, {}, {}, async (s) => {
+         await s.session.query(ctx.inputs.prompt);   // or .send / .client.session.prompt — see Mode 2
          s.save(s.sessionId);
        });
      })
      .compile();
 
-   await hostLocalWorkflows([workflow]);
+   await hostLocalWorkflows([workflow]);       // ← required: handles _emit-workflow-meta / _atomic-run
    ```
 
-   The `source: import.meta.path` is mandatory — the orchestrator re-imports this path. The trailing `await hostLocalWorkflows([wf])` is what makes the file responsive to atomic's token-gated `_emit-workflow-meta` and `_atomic-run` sub-commands.
-
-4. **Register in `settings.json`** — **this step is mandatory for Mode 1.** A workflow file under `.atomic/workflows/<name>/` does *not* exist to atomic until it is registered as an entry in the `workflows` map of a settings file. Skip this step and `atomic workflow list` won't show the workflow, `atomic workflow refresh` won't pick it up, and `atomic workflow -n <name>` will fail with "workflow not found".
-
-   **Which settings file:**
-   - **Default → project-level: `.atomic/settings.json`** in the current repo. Use this whenever the user says "build me a workflow that does X" without scoping it.
-   - **Global → `~/.atomic/settings.json`** (create if missing). Use this *only* when the user explicitly says "global workflow", "user-level", "available everywhere", or similar. Match the workflow's location: project workflows go in `.atomic/workflows/`; global workflows go in `~/.atomic/workflows/`.
-
-   Append (don't replace) the entry under the top-level `workflows` key. The schema URL gives JSON intellisense in editors.
+   The `settings.json` entry the scaffold merges follows this exact shape (project-scoped variant — global uses an absolute path under `args`):
 
    ```jsonc
    {
@@ -124,102 +129,65 @@ Five-step rhythm:
        "<workflow-name>": {
          "command": "bunx",
          "args": ["./.atomic/workflows/<workflow-name>/index.ts"],
-         "agents": ["claude"]
+         "agents": ["<agent>"]
        }
      }
    }
    ```
 
-   **Top-level shape** (full schema in `assets/settings.schema.json`):
-   - `$schema` *(string, optional)* — schema URL for editor intellisense.
-   - `version` *(number)* — config schema version. Use `1`.
-   - `workflows` *(object)* — map of `<workflow-name>` → entry. The key is the name the user will type in `atomic workflow -n <key>` and must match the `name` passed to `defineWorkflow({ name: ... })` inside the workflow file. Duplicate keys overwrite earlier entries.
+   The merge preserves any other keys already in `settings.json` (`scm`, `providers`, other workflow entries). It refuses to overwrite an existing alias of the same name — pick a different `<name>` if the scaffold complains.
 
-   **Entry fields** (one per workflow under `workflows.<name>`):
+   The body of `.run(async (ctx) => {...})` is what you fill in to express the actual pipeline — `ctx.stage()` calls, control flow, data handoffs. Edit this in place; the surrounding `defineWorkflow` / `.for` / `.compile` / `hostLocalWorkflows` boilerplate is what the runtime depends on. See §"How Workflows Work" + the Design Advisory Skills below for what to put inside.
 
-   | Field     | Type       | Required | Purpose                                                                                                                                                                                                                                                |
-   | --------- | ---------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-   | `command` | `string`   | yes      | Executable atomic spawns to load and run the workflow. Typically `"bunx"` for a `.ts` entry; can also be `"node"`, `"bun"`, or an absolute path to a compiled binary. Must resolve on `PATH` if a bare name.                                            |
-   | `args`    | `string[]` | no (default `[]`) | Static argv prepended to atomic's hidden `_emit-workflow-meta` / `_atomic-run` sub-commands. The first element is normally the path to the workflow's `index.ts`. Use a relative path (e.g. `./.atomic/workflows/<name>/index.ts`) for project-scoped workflows and an absolute path (e.g. `/Users/me/.atomic/workflows/<name>/index.ts`) for global ones so `cwd` doesn't change resolution. |
-   | `agents`  | `string[]` | yes      | Non-empty, unique list of agents this workflow supports. Each item must be one of `"claude"`, `"opencode"`, `"copilot"`. Atomic registers one (name, agent) pair per entry — the workflow file's `WorkflowDefinition`s (one per `.for(<agent>)`) must cover every agent listed.                                                                                                                                                |
-
-   No other keys are accepted (`additionalProperties: false`).
-
-   **Common shapes:**
-
-   ```jsonc
-   // Single-agent project workflow
-   "workflows": {
-     "review-pr": {
-       "command": "bunx",
-       "args": ["./.atomic/workflows/review-pr/index.ts"],
-       "agents": ["claude"]
-     }
-   }
-
-   // Multi-agent workflow — one file exports a WorkflowDefinition per agent,
-   // hostLocalWorkflows([...]) hosts all of them
-   "workflows": {
-     "spec-it": {
-       "command": "bunx",
-       "args": ["./.atomic/workflows/spec-it/index.ts"],
-       "agents": ["claude", "copilot", "opencode"]
-     }
-   }
-
-   // Global workflow — absolute path so $HOME-relative resolution works regardless of cwd
-   "workflows": {
-     "ralph-mine": {
-       "command": "bunx",
-       "args": ["/Users/me/.atomic/workflows/ralph-mine/index.ts"],
-       "agents": ["claude"]
-     }
-   }
-
-   // Compiled binary entry — no args needed if the binary embeds the workflow
-   "workflows": {
-     "deploy-bot": {
-       "command": "/usr/local/bin/deploy-bot",
-       "agents": ["copilot"]
-     }
-   }
-   ```
-
-   The entry's `command` + `args` must point at a script that imports `@bastani/atomic-sdk`, builds the workflow with `defineWorkflow({...}).for(...).run(...).compile()`, and ends with `await hostLocalWorkflows([wf])`. The `hostLocalWorkflows` call is what lets atomic dispatch the hidden `_emit-workflow-meta` and `_atomic-run` sub-commands without depending on ESM module-load ordering.
-
-   **Mode 2 note:** dev-owned CLIs (Mode 2) do **not** use `settings.json` — they're invoked through the dev's own Bun script (`bun run src/<agent>-worker.ts ...`), not through `atomic workflow`. Only edit `settings.json` for Mode 1 or the Mode 1 + 2 combined layout where you want the workflow discoverable through `atomic workflow`.
-
-5. **Refresh and verify** — run `atomic workflow refresh`. This re-spawns the metadata loader for every entry and emits a structured report. Inside an atomic chat session it auto-defaults to JSON; outside, text. Either way:
+3. **Refresh and verify** — `atomic workflow refresh` re-spawns the metadata loader for every entry and emits a structured report. Inside an atomic chat session it auto-defaults to JSON; outside, text:
 
    - `loaded` entries confirm the workflow is now invocable via `atomic workflow -n <name> -a <agent>`.
-   - `broken` entries surface the exact `reason`, `fix`, and `settings` path on their own lines so the model can self-correct without prose parsing.
+   - `broken` entries surface `reason`, `fix`, and `settings` path on their own lines so you can self-correct without prose parsing. Common Mode-1 broken-entry causes the scaffold cannot prevent (because they emerge from the model's edits to `index.ts`):
+
+     | `reason` starts with…                                  | Fix                                                                                            |
+     | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------- |
+     | `metadata emission timed out`                          | `await hostLocalWorkflows([wf])` must be the *last* statement in the file. Don't move it.      |
+     | `expected ATOMIC_WORKFLOW_META line`                   | The file is not importing `@bastani/atomic-sdk`, OR `hostLocalWorkflows` is never called.      |
+     | `command did not register a workflow for agent "<a>"`  | The `.for(...)` chain targets a different agent than `agents` in `settings.json` declares.     |
+     | `failed to parse ATOMIC_WORKFLOW_META JSON`            | A `console.log` or `process.stdout.write` is racing with the meta line — keep output clean.    |
 
    On clean load, smoke-test with `atomic workflow -n <name> -a <agent> "<test prompt>"`.
 
+#### When the user pushes back on the scaffold
+
+The scaffold is the recommended path because it gets the `settings.json` shape, the args path, and the `hostLocalWorkflows` boilerplate right every time — that is where most "broken entry" diagnostics come from when humans hand-write Mode 1. If the user wants to wire it up by hand anyway (e.g. they're working in a sandbox without network access for `bunx`, or are integrating with an existing build system), the long-form manual playbook lives in `references/agent-setup-recipe.md` §"Manual Mode 1 setup (no `bun create`)". Use that fallback only when the user explicitly opts out.
+
 ### Mode 2 — Dev-owned CLI
 
-Use this when the user is building their own CLI (an internal tool, an example, a one-off script). Shape:
+Use this when the user is building their own CLI (an internal tool, an example, a one-off script).
+
+Scaffold with:
+
+```bash
+bun create @bastani/atomic-cli <name> -y \
+  --template=standalone-cli --agent=<claude|copilot|opencode>
+```
+
+That generates `<cwd>/<name>/` with this shape — ready to compile into a single binary via `bun run build`:
 
 ```
-<repo>/
-├── package.json
+<name>/
+├── package.json          # @bastani/atomic-sdk + commander + provider SDK
 ├── tsconfig.json
-└── src/
-    ├── workflows/
-    │   └── <workflow-name>/
-    │       ├── claude.ts        # one file per agent you target
-    │       ├── copilot.ts
-    │       └── opencode.ts
-    └── <agent>-worker.ts        # one composition root per agent
+├── mycli.ts              # Commander tree wired to runWorkflow (composition root)
+├── build.ts              # `bun build --compile` for the current platform
+├── workflows/
+│   └── hello.ts          # sample workflow definition (statically imported by mycli.ts)
+└── README.md
 ```
 
-Same five-step rhythm, but the entry point is `runWorkflow({ workflow, inputs })` inside a Commander/citty/yargs handler. Detailed playbook: `references/agent-setup-recipe.md` §"Mode 2 setup".
+Edit `workflows/hello.ts` (or rename + add more files under `workflows/`) and `mycli.ts` to mount your real workflow. The entry point is `runWorkflow({ workflow, inputs })` inside the Commander action — already wired by the scaffold. Detailed playbook with the multi-agent and registry variants: `references/agent-setup-recipe.md` §"Mode 2 setup".
 
 The when-in-doubt rules within Mode 2:
 
-- **Single agent, single workflow** — the 90% case. One `<agent>.ts` + one `<agent>-worker.ts`. Done.
-- **Same workflow across agents** — three `<agent>.ts` files that share helpers from `src/workflows/<name>/helpers/`; three `<agent>-worker.ts` files.
-- **Multiple workflows in one CLI** — build a `createRegistry().register(...)` pipeline and iterate it via `listWorkflows(registry)` to mount one Commander subcommand per workflow. Use a `src/cli.ts` composition root instead of per-agent workers.
+- **Single agent, single workflow** — the 90% case. The scaffold output is exactly this; just edit `workflows/hello.ts`.
+- **Same workflow across agents** — drop one file per agent under `workflows/<name>/<agent>.ts` (sharing helpers from `workflows/<name>/helpers/`) and add Commander subcommands in `mycli.ts` per agent.
+- **Multiple workflows in one CLI** — replace the static `import hello` in `mycli.ts` with a `createRegistry()` pipeline iterated by `listWorkflows(registry)` to mount one Commander subcommand per workflow.
 
 ### Mode 1 + 2 combined
 
