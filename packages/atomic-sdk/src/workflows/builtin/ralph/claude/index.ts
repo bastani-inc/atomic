@@ -20,6 +20,15 @@
  * graph focused on stages the user cares about and lets the SDK enforce the
  * schema without TUI round-trips.
  *
+ * The reviewer's persona is injected via `systemPrompt.append` (see
+ * {@link REVIEWER_PERSONA_BODY}) rather than `agent: "reviewer"`. The
+ * Claude Agent SDK silently disables `outputFormat` whenever an `agent`
+ * is also passed, which leaves `lastStructuredOutput` undefined and
+ * causes {@link hasActionableFindings} to fall through to its
+ * conservative non-empty-raw-text branch — i.e., the loop never
+ * converges on a clean review. `systemPrompt` keeps the persona while
+ * letting `outputFormat` actually fire.
+ *
  * Run: atomic workflow -n ralph -a claude "<your spec>"
  */
 
@@ -40,6 +49,7 @@ import {
 } from "../helpers/prompts.ts";
 import { hasActionableFindings } from "../helpers/review.ts";
 import { captureBranchChangeset } from "../helpers/git.ts";
+import { REVIEWER_PERSONA_BODY, REVIEWER_TOOLS } from "../helpers/claude-reviewer.ts";
 
 const DEFAULT_MAX_LOOPS = 10;
 
@@ -236,7 +246,12 @@ export default defineWorkflow({
           {},
           async (s) => {
             const result = await s.session.query(reviewPrompt, {
-              agent: "reviewer",
+              systemPrompt: {
+                type: "preset",
+                preset: "claude_code",
+                append: REVIEWER_PERSONA_BODY,
+              },
+              tools: [...REVIEWER_TOOLS],
               permissionMode: "bypassPermissions",
               allowDangerouslySkipPermissions: true,
               outputFormat: {
