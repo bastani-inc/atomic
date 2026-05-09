@@ -79,7 +79,11 @@ export async function withHeadlessOpencodeEnv<T>(
  * `OffloadManager.registerSession` (RFC §5.4). It is required by the schema —
  * there is no legacy fallback.
  *
- * Produces: ["--session", "<sessionId>", ...meta.chatFlags]
+ * Produces: ["--port", "0", "--session", "<sessionId>", ...meta.chatFlags]
+ *
+ * `--port 0` mirrors the original spawn (executor.ts buildSpawnArgs for
+ * `opencode`) — without it the resumed server doesn't bind a TCP port and
+ * `waitForServer` times out at 15s.
  */
 export function buildOpencodeResumeArgs(
   meta: Pick<OffloadResumeMetadata, "agentSessionId" | "chatFlags">,
@@ -87,7 +91,7 @@ export function buildOpencodeResumeArgs(
   if (meta.agentSessionId == null || meta.agentSessionId === "") {
     throw new Error("empty agentSessionId on resume");
   }
-  return ["--session", meta.agentSessionId, ...meta.chatFlags];
+  return ["--port", "0", "--session", meta.agentSessionId, ...meta.chatFlags];
 }
 
 /**

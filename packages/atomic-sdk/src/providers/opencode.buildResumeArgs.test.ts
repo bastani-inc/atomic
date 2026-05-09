@@ -37,18 +37,18 @@ describe("buildOpencodeResumeArgs() — empty agentSessionId guards (RFC §5.4)"
 
   // RFC §5.4 — chatFlags threading
 
-  test("chatFlags: [] (empty array) produces exact ['--session', id]", () => {
+  test("chatFlags: [] (empty array) produces server-mode prefix + ['--session', id]", () => {
     const args = buildOpencodeResumeArgs(meta("oc-123", []));
-    expect(args).toEqual(["--session", "oc-123"]);
+    expect(args).toEqual(["--port", "0", "--session", "oc-123"]);
   });
 
   test("chatFlags: ['--model', 'opus'] → appended after session id", () => {
     const args = buildOpencodeResumeArgs(meta("oc-123", ["--model", "opus"]));
-    expect(args).toEqual(["--session", "oc-123", "--model", "opus"]);
+    expect(args).toEqual(["--port", "0", "--session", "oc-123", "--model", "opus"]);
   });
 
   test("chatFlags: ['--add-dir', '/some/path'] → preserved verbatim", () => {
     const args = buildOpencodeResumeArgs(meta("oc-123", ["--add-dir", "/some/path"]));
-    expect(args).toEqual(["--session", "oc-123", "--add-dir", "/some/path"]);
+    expect(args).toEqual(["--port", "0", "--session", "oc-123", "--add-dir", "/some/path"]);
   });
 });

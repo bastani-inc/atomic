@@ -37,23 +37,23 @@ describe("buildCopilotResumeArgs() — empty agentSessionId guards (RFC §5.4)",
 
   // RFC §5.4 — chatFlags threading
 
-  test("chatFlags: [] (empty array) produces exact ['--resume=id']", () => {
+  test("chatFlags: [] (empty array) produces server-mode prefix + --resume=id", () => {
     const args = buildCopilotResumeArgs(meta("cop-123", []));
-    expect(args).toEqual(["--resume=cop-123"]);
+    expect(args).toEqual(["--ui-server", "--port", "0", "--resume=cop-123"]);
   });
 
   test("chatFlags: ['--model', 'opus'] → appended after --resume=id", () => {
     const args = buildCopilotResumeArgs(meta("cop-123", ["--model", "opus"]));
-    expect(args).toEqual(["--resume=cop-123", "--model", "opus"]);
+    expect(args).toEqual(["--ui-server", "--port", "0", "--resume=cop-123", "--model", "opus"]);
   });
 
   test("chatFlags: ['--add-dir', '/some/path'] → preserved verbatim", () => {
     const args = buildCopilotResumeArgs(meta("cop-123", ["--add-dir", "/some/path"]));
-    expect(args).toEqual(["--resume=cop-123", "--add-dir", "/some/path"]);
+    expect(args).toEqual(["--ui-server", "--port", "0", "--resume=cop-123", "--add-dir", "/some/path"]);
   });
 
   test("chatFlags: ['--deny-tool', 'shell(git)'] → SCM-disable extra preserved", () => {
     const args = buildCopilotResumeArgs(meta("cop-123", ["--deny-tool", "shell(git)"]));
-    expect(args).toEqual(["--resume=cop-123", "--deny-tool", "shell(git)"]);
+    expect(args).toEqual(["--ui-server", "--port", "0", "--resume=cop-123", "--deny-tool", "shell(git)"]);
   });
 });

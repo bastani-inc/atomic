@@ -176,7 +176,11 @@ export function mergeCopilotSystemMessage(
  * `OffloadManager.registerSession` (RFC §5.4). It is required by the schema —
  * there is no legacy fallback.
  *
- * Produces: ["--resume=<sessionId>", ...meta.chatFlags]
+ * Produces: ["--ui-server", "--port", "0", "--resume=<sessionId>", ...meta.chatFlags]
+ *
+ * `--ui-server --port 0` mirrors the original spawn (executor.ts buildSpawnArgs
+ * for `copilot`) — without it the resumed CLI starts in interactive mode and
+ * never binds a TCP port, so `waitForServer` would time out at 15s.
  *
  * Note: Copilot CLI requires `=` syntax (not space-separated) per spec §5.4.
  */
@@ -186,7 +190,7 @@ export function buildCopilotResumeArgs(
   if (meta.agentSessionId === "" || meta.agentSessionId == null) {
     throw new Error("empty agentSessionId on resume");
   }
-  return [`--resume=${meta.agentSessionId}`, ...meta.chatFlags];
+  return ["--ui-server", "--port", "0", `--resume=${meta.agentSessionId}`, ...meta.chatFlags];
 }
 
 /**

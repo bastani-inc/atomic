@@ -13,28 +13,40 @@ const FIXTURE_META: OpencodeMeta = {
 };
 
 describe("buildOpencodeResumeArgs()", () => {
-  test("returns exact array [--session, <sessionId>]", () => {
+  test("returns exact array with server-mode prefix and [--session, <sessionId>]", () => {
     const args = buildOpencodeResumeArgs(FIXTURE_META);
-    expect(args).toEqual(["--session", FIXTURE_META.agentSessionId]);
+    expect(args).toEqual(["--port", "0", "--session", FIXTURE_META.agentSessionId]);
   });
 
-  test("array length is 2 when chatFlags empty", () => {
+  test("array length is 4 when chatFlags empty", () => {
     const args = buildOpencodeResumeArgs(FIXTURE_META);
-    expect(args).toHaveLength(2);
+    expect(args).toHaveLength(4);
   });
 
-  test("flag is --session (not --session-id or --resume)", () => {
+  test("--session token is present (not --session-id or --resume)", () => {
     const args = buildOpencodeResumeArgs(FIXTURE_META);
-    expect(args[0]).toBe("--session");
+    expect(args).toContain("--session");
+    expect(args).not.toContain("--session-id");
+    expect(args).not.toContain("--resume");
   });
 
-  test("agentSessionId is second element verbatim", () => {
+  test("agentSessionId follows --session", () => {
     const args = buildOpencodeResumeArgs(FIXTURE_META);
-    expect(args[1]).toBe(FIXTURE_META.agentSessionId);
+    const sessionIdx = args.indexOf("--session");
+    expect(args[sessionIdx + 1]).toBe(FIXTURE_META.agentSessionId);
   });
 
   test("different agentSessionId produces correct args", () => {
     const args = buildOpencodeResumeArgs({ agentSessionId: "other-session", chatFlags: [] });
-    expect(args).toEqual(["--session", "other-session"]);
+    expect(args).toEqual(["--port", "0", "--session", "other-session"]);
+  });
+
+  test("server-mode flag --port 0 precedes --session", () => {
+    const args = buildOpencodeResumeArgs(FIXTURE_META);
+    const portIdx = args.indexOf("--port");
+    const sessionIdx = args.indexOf("--session");
+    expect(portIdx).toBe(0);
+    expect(args[portIdx + 1]).toBe("0");
+    expect(sessionIdx).toBeGreaterThan(portIdx);
   });
 });
