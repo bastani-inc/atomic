@@ -482,3 +482,20 @@ describe("workflowListCommand — broken workflows", () => {
 // mock import kept at module scope to match the lint pattern used by
 // other test files — suppresses an unused-import warning if any.
 void mock;
+
+describe("workflowListCommand — defaultDeps", () => {
+  test("runs against the live active registry when no deps are passed", async () => {
+    const cap = captureOutput();
+    let code: number;
+    try {
+      code = await workflowListCommand({});
+    } finally {
+      cap.restore();
+    }
+    // The active registry contains the builtin set; we don't assert specific
+    // names (they shift as builtins evolve) — just that the command runs to
+    // completion against it and produces some output.
+    expect(code).toBe(0);
+    expect(cap.stdout.length).toBeGreaterThan(0);
+  });
+});

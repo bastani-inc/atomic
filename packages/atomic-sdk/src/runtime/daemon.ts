@@ -635,7 +635,8 @@ function resolveWorkspaceDevAtomicCommand(): string[] | null {
   return [process.execPath, cliPath];
 }
 
-function resolvePackagedAtomicBinary(): string | null {
+/** @internal — exported for unit tests. */
+export function resolvePackagedAtomicBinary(): string | null {
   if (isSdkSourceCheckout()) return null;
 
   const require = createRequire(import.meta.url);
@@ -661,13 +662,17 @@ function isSdkSourceCheckout(): boolean {
   }
 }
 
-function getPlatformPackageSuffixes(): string[] {
-  const arch = process.arch;
+/** @internal — exported for unit tests. */
+export function getPlatformPackageSuffixes(
+  platform: NodeJS.Platform = process.platform,
+  arch: NodeJS.Architecture = process.arch,
+  musl: boolean = isLinuxMusl(),
+): string[] {
   if (arch !== "x64" && arch !== "arm64") return [];
 
-  switch (process.platform) {
+  switch (platform) {
     case "linux":
-      return isLinuxMusl()
+      return musl
         ? [`linux-${arch}-musl`, `linux-${arch}`]
         : [`linux-${arch}`, `linux-${arch}-musl`];
     case "darwin":
@@ -679,7 +684,8 @@ function getPlatformPackageSuffixes(): string[] {
   }
 }
 
-function isLinuxMusl(): boolean {
+/** @internal — exported for unit tests. */
+export function isLinuxMusl(): boolean {
   if (process.platform !== "linux") return false;
   const report = process.report?.getReport?.() as
     | { header?: { glibcVersionRuntime?: string } }

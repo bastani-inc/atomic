@@ -21,6 +21,9 @@ import {
   readEndpointFile,
   probeLiveness,
   connectToDaemon,
+  getPlatformPackageSuffixes,
+  isLinuxMusl,
+  resolvePackagedAtomicBinary,
   MissingDependencyError,
   DaemonAlreadyRunningError,
 } from "./daemon.ts";
@@ -1011,5 +1014,50 @@ describe("Daemon integration — run/stop via RPC kills active stage and emits c
     } finally {
       await daemon.stop();
     }
+  });
+});
+
+
+describe("platform package resolution", () => {
+  test("isLinuxMusl returns false on non-linux platforms", () => {
+    if (process.platform !== "linux") {
+      expect(isLinuxMusl()).toBe(false);
+    } else {
+      expect(typeof isLinuxMusl()).toBe("boolean");
+    }
+  });
+
+  test("getPlatformPackageSuffixes returns [] for unsupported arch", () => {
+    expect(getPlatformPackageSuffixes("linux", "ia32" as NodeJS.Architecture, false)).toEqual([]);
+  });
+
+  test("getPlatformPackageSuffixes orders glibc first on linux without musl", () => {
+    expect(getPlatformPackageSuffixes("linux", "x64", false)).toEqual([
+      "linux-x64",
+      "linux-x64-musl",
+    ]);
+  });
+
+  test("getPlatformPackageSuffixes orders musl first on a musl linux", () => {
+    expect(getPlatformPackageSuffixes("linux", "arm64", true)).toEqual([
+      "linux-arm64-musl",
+      "linux-arm64",
+    ]);
+  });
+
+  test("getPlatformPackageSuffixes returns single-entry lists for darwin and win32", () => {
+    expect(getPlatformPackageSuffixes("darwin", "arm64", false)).toEqual(["darwin-arm64"]);
+    expect(getPlatformPackageSuffixes("win32", "x64", false)).toEqual(["windows-x64"]);
+  });
+
+  test("getPlatformPackageSuffixes returns [] for unrecognised platforms", () => {
+    expect(getPlatformPackageSuffixes("freebsd" as NodeJS.Platform, "x64", false)).toEqual([]);
+  });
+
+  test("resolvePackagedAtomicBinary returns null inside the SDK source checkout", () => {
+    // This test file lives at packages/atomic-sdk/src/runtime/daemon.test.ts —
+    // import.meta.url for daemon.ts therefore matches isSdkSourceCheckout()'s
+    // workspace-source heuristic, so the helper short-circuits to null.
+    expect(resolvePackagedAtomicBinary()).toBeNull();
   });
 });
