@@ -785,6 +785,133 @@ describe("dispatch() external workflow — subprocess path (dispatchExternal)", 
 
     expect(capturedCmd).toContain("--detach");
   });
+
+  // ─── Focused routing: ExternalWorkflow → Bun.spawn, _atomic-run token ────────
+
+  test("external path: Bun.spawn argv contains _atomic-run sentinel and --dispatch-token matches env ATOMIC_DISPATCH_TOKEN", async () => {
+    const { spyOn } = await import("bun:test");
+    let capturedArgv: string[] | undefined;
+    let capturedEnv: Record<string, string> | undefined;
+
+    const spawnSpy = spyOn(Bun, "spawn").mockImplementation(((argv: string[], opts?: { env?: Record<string, string> }) => {
+      capturedArgv = argv;
+      capturedEnv = opts?.env;
+      return { exited: Promise.resolve(0), signalCode: null };
+    }) as unknown as typeof Bun.spawn);
+
+    try {
+      await dispatch(sigWf, {}, false);
+    } finally {
+      spawnSpy.mockRestore();
+    }
+
+    // argv must contain the _atomic-run sentinel used by atomic-hosted processes
+    expect(capturedArgv).toBeDefined();
+    expect(capturedArgv).toContain("_atomic-run");
+
+    // the --dispatch-token=<hex> arg must be present and match ATOMIC_DISPATCH_TOKEN in env
+    const tokenArg = capturedArgv!.find((a) => a.startsWith("--dispatch-token="));
+    expect(tokenArg).toBeDefined();
+    const tokenFromArgv = tokenArg!.replace("--dispatch-token=", "");
+
+    expect(capturedEnv).toBeDefined();
+    expect(capturedEnv!["ATOMIC_DISPATCH_TOKEN"]).toBe(tokenFromArgv);
+    expect(capturedEnv!["ATOMIC_HOST"]).toBe("1");
+  });
+
+  test("external path: dispatch does NOT call sendRequest('workflow/start') — only Bun.spawn", async () => {
+    const { spyOn } = await import("bun:test");
+    dispatchRpcCalls.length = 0;
+
+    let spawnCallCount = 0;
+    const spawnSpy = spyOn(Bun, "spawn").mockImplementation((() => {
+      spawnCallCount++;
+      return { exited: Promise.resolve(0), signalCode: null };
+    }) as unknown as typeof Bun.spawn);
+
+    try {
+      await dispatch(sigWf, {}, false);
+    } finally {
+      spawnSpy.mockRestore();
+    }
+
+    // No RPC calls must have been made — external path never touches the daemon
+    expect(dispatchRpcCalls).toHaveLength(0);
+    expect(spawnCallCount).toBe(1);
+  });
+});
+
+// ─── Focused routing: importable WorkflowDefinition → sendRequest("workflow/start") ──
+
+describe("dispatch() importable WorkflowDefinition — daemon path sends workflow/start", () => {
+  const importableWf = defineWorkflow({
+    name: "importable-dispatch-wf",
+    inputs: [{ name: "prompt", type: "text", description: "prompt text", required: false }],
+  })
+    .for("claude")
+    .run(async () => {})
+    .compile() as unknown as WorkflowDefinition;
+
+  beforeEach(() => {
+    dispatchRpcCalls.length = 0;
+    Object.defineProperty(process.stdout, "isTTY", { configurable: true, get: () => false });
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process.stdout, "isTTY", { configurable: true, get: () => false });
+  });
+
+  test("importable WorkflowDefinition: sendRequest is called with method 'workflow/start'", async () => {
+    const sentMethods: string[] = [];
+    const conn = {
+      sendRequest: mock(async (method: string, params: unknown) => {
+        sentMethods.push(method);
+        if (method === "workflow/start") {
+          dispatchRpcCalls.push(params as typeof dispatchRpcCalls[number]);
+          return { runId: rpcRunId, attachable: true };
+        }
+        return {};
+      }),
+      onNotification: mock((_event: string, handler: (params: { runId: string }) => void) => {
+        if (_event === "run/ended") handler({ runId: rpcRunId });
+        return fakeDisposable;
+      }),
+      onClose: mock(() => fakeDisposable),
+      dispose: mock(() => {}),
+    };
+
+    await mock.module("@bastani/atomic-sdk/runtime/daemon", () => ({
+      ...realDaemonMod,
+      ensureStarted: mock(async () => conn),
+    }));
+
+    await dispatch(importableWf, { prompt: "hello" }, false);
+
+    expect(sentMethods).toContain("workflow/start");
+    expect(sentMethods).not.toContain("external");
+    expect(dispatchRpcCalls).toHaveLength(1);
+    expect(dispatchRpcCalls[0]!.workflowName).toBe("importable-dispatch-wf");
+    expect(dispatchRpcCalls[0]!.inputs).toEqual({ prompt: "hello" });
+  });
+
+  test("importable WorkflowDefinition: Bun.spawn is NOT called — daemon handles execution", async () => {
+    const { spyOn } = await import("bun:test");
+    const spawnSpy = spyOn(Bun, "spawn");
+
+    const conn = makeFakeConn({ notifyOnRegister: true });
+    await mock.module("@bastani/atomic-sdk/runtime/daemon", () => ({
+      ...realDaemonMod,
+      ensureStarted: mock(async () => conn),
+    }));
+
+    try {
+      await dispatch(importableWf, {}, false);
+    } finally {
+      spawnSpy.mockRestore();
+    }
+
+    expect(spawnSpy).not.toHaveBeenCalled();
+  });
 });
 
 // ─── dispatch() non-TTY foreground — deterministic completion ─────────────────
