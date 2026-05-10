@@ -1,6 +1,6 @@
 <h1 align="center">Atomic</h1>
 
-<p align="center"><img width="800" height="450" alt="atomic-promo" src="https://github.com/user-attachments/assets/03806ea9-597d-45c8-a356-f1044f767c06" /></p>
+<p align="center"><img width="800" height="450" alt="atomic-promo" src="./assets/atomic-promo.gif" /></p>
 
 <p align="center">
   <b>Turn coding agents into reliable engineering workflows.</b><br>
