@@ -1,11 +1,15 @@
 /**
  * RunManager — focused tests for terminal lifecycle (run/ended) and
  * cancellation path wired through stop().
+ *
+ * Also covers integration of ctx.stage() via RunManager.start() with a
+ * fake ISupervisor — no real agent binaries required.
  */
 
-import { test, expect, describe } from "bun:test";
+import { test, expect, describe, mock } from "bun:test";
 import { join } from "node:path";
 import { RunManager } from "./run-manager.ts";
+import type { ISupervisor } from "./ui-protocol/methods.ts";
 import type { MessageConnection } from "vscode-jsonrpc";
 
 // ─── Fake MessageConnection ───────────────────────────────────────────────────
@@ -44,6 +48,33 @@ function fakeConnection(): MessageConnection & { notifications: Notification[] }
 /** Drain microtasks and macrotasks. */
 async function flushAsync() {
   await new Promise<void>((resolve) => setTimeout(resolve, 10));
+}
+
+// ─── Fake ISupervisor ─────────────────────────────────────────────────────────
+
+interface SpawnCall {
+  runId: string;
+  stageName: string;
+  agent: string;
+  args: string[];
+}
+
+function makeFakeSupervisor(exitCode = 0): ISupervisor & { spawnCalls: SpawnCall[] } {
+  const spawnCalls: SpawnCall[] = [];
+  return {
+    spawnCalls,
+    async spawn(params) {
+      spawnCalls.push(params as SpawnCall);
+      if (params.onExit) {
+        const cb = params.onExit;
+        queueMicrotask(() => cb(exitCode));
+      }
+      return { pid: 99999 };
+    },
+    sendInput: mock(() => {}),
+    getScrollback: mock(() => ({ data: "", headOffset: 0 })),
+    kill: mock(() => {}),
+  } as ISupervisor & { spawnCalls: SpawnCall[] };
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -360,6 +391,175 @@ describe("RunManager", () => {
       expect(info).not.toBeNull();
       expect(info!.status).toBe("error");
       expect(typeof info!.endedAt).toBe("string");
+    });
+  });
+
+  // ─── Integration: ctx.stage() wired through RunManager ─────────────────────
+
+  describe("executeRun — staged workflow integration", () => {
+    test("workflow calling ctx.stage() completes when stage exits 0", async () => {
+      const fixturePath = join(import.meta.dir, "__fixtures__/with-one-stage.ts");
+      const supervisor = makeFakeSupervisor(0);
+      const manager = new RunManager({ supervisor });
+      const { runId } = await manager.start({
+        source: fixturePath,
+        workflowName: "stage-complete-wf",
+        agent: "claude",
+        inputs: {},
+      });
+
+      const conn = fakeConnection();
+      manager.subscribe(conn, runId);
+
+      await flushAsync();
+
+      const ended = conn.notifications.filter((n) => n.method === "run/ended");
+      expect(ended.length).toBe(1);
+      const p = ended[0]!.params as { runId: string; overall: string };
+      expect(p.runId).toBe(runId);
+      expect(p.overall).toBe("complete");
+    });
+
+    test("workflow calling ctx.stage() marks RunInfo status=complete", async () => {
+      const fixturePath = join(import.meta.dir, "__fixtures__/with-one-stage.ts");
+      const supervisor = makeFakeSupervisor(0);
+      const manager = new RunManager({ supervisor });
+      const { runId } = await manager.start({
+        source: fixturePath,
+        workflowName: "stage-info-complete-wf",
+        agent: "claude",
+        inputs: {},
+      });
+
+      await flushAsync();
+
+      const info = manager.get(runId);
+      expect(info).not.toBeNull();
+      expect(info!.status).toBe("complete");
+      expect(typeof info!.endedAt).toBe("string");
+    });
+
+    test("supervisor.spawn called with correct runId and stageName", async () => {
+      const fixturePath = join(import.meta.dir, "__fixtures__/with-one-stage.ts");
+      const supervisor = makeFakeSupervisor(0);
+      const manager = new RunManager({ supervisor });
+      const { runId } = await manager.start({
+        source: fixturePath,
+        workflowName: "stage-spawn-params-wf",
+        agent: "claude",
+        inputs: {},
+      });
+
+      await flushAsync();
+
+      expect(supervisor.spawnCalls).toHaveLength(1);
+      expect(supervisor.spawnCalls[0]!.runId).toBe(runId);
+      expect(supervisor.spawnCalls[0]!.stageName).toBe("step-1");
+      expect(supervisor.spawnCalls[0]!.agent).toBe("claude");
+    });
+
+    test("workflow calling ctx.stage() with non-zero exit emits run/ended=error", async () => {
+      const fixturePath = join(import.meta.dir, "__fixtures__/with-one-stage.ts");
+      const supervisor = makeFakeSupervisor(1); // stage fails
+      const manager = new RunManager({ supervisor });
+      const { runId } = await manager.start({
+        source: fixturePath,
+        workflowName: "stage-error-wf",
+        agent: "claude",
+        inputs: {},
+      });
+
+      const conn = fakeConnection();
+      manager.subscribe(conn, runId);
+
+      await flushAsync();
+
+      const ended = conn.notifications.filter((n) => n.method === "run/ended");
+      expect(ended.length).toBe(1);
+      const p = ended[0]!.params as { runId: string; overall: string };
+      expect(p.runId).toBe(runId);
+      expect(p.overall).toBe("error");
+    });
+
+    test("workflow calling ctx.stage() with non-zero exit marks RunInfo status=error", async () => {
+      const fixturePath = join(import.meta.dir, "__fixtures__/with-one-stage.ts");
+      const supervisor = makeFakeSupervisor(1);
+      const manager = new RunManager({ supervisor });
+      const { runId } = await manager.start({
+        source: fixturePath,
+        workflowName: "stage-error-info-wf",
+        agent: "claude",
+        inputs: {},
+      });
+
+      await flushAsync();
+
+      const info = manager.get(runId);
+      expect(info).not.toBeNull();
+      expect(info!.status).toBe("error");
+      expect(typeof info!.endedAt).toBe("string");
+    });
+
+    test("stop() cancels staged workflow before stage completes", async () => {
+      // Use a supervisor that never fires onExit — stage blocks forever.
+      const hangingSupervisor: ISupervisor & { spawnCalls: SpawnCall[] } = {
+        spawnCalls: [],
+        async spawn(params) {
+          (this as { spawnCalls: SpawnCall[] }).spawnCalls.push(params as SpawnCall);
+          // Intentionally never call params.onExit — simulates long-running stage.
+          return { pid: 77777 };
+        },
+        sendInput: mock(() => {}),
+        getScrollback: mock(() => ({ data: "", headOffset: 0 })),
+        kill: mock(() => {}),
+      };
+
+      const fixturePath = join(import.meta.dir, "__fixtures__/with-one-stage.ts");
+      const manager = new RunManager({ supervisor: hangingSupervisor });
+      const { runId } = await manager.start({
+        source: fixturePath,
+        workflowName: "stage-cancel-wf",
+        agent: "claude",
+        inputs: {},
+      });
+
+      const conn = fakeConnection();
+      manager.subscribe(conn, runId);
+
+      // stop() immediately — stage is hanging.
+      await manager.stop(runId);
+      await flushAsync();
+
+      const info = manager.get(runId);
+      expect(info!.status).toBe("cancelled");
+
+      const ended = conn.notifications.filter((n) => n.method === "run/ended");
+      expect(ended.length).toBe(1);
+      const p = ended[0]!.params as { overall: string };
+      expect(p.overall).toBe("cancelled");
+    });
+
+    test("no-supervisor RunManager emits error when workflow calls ctx.stage()", async () => {
+      // RunManager without supervisor uses noopSupervisor which rejects spawn.
+      const fixturePath = join(import.meta.dir, "__fixtures__/with-one-stage.ts");
+      const manager = new RunManager(); // no supervisor
+      const { runId } = await manager.start({
+        source: fixturePath,
+        workflowName: "no-supervisor-stage-wf",
+        agent: "claude",
+        inputs: {},
+      });
+
+      const conn = fakeConnection();
+      manager.subscribe(conn, runId);
+
+      await flushAsync();
+
+      const ended = conn.notifications.filter((n) => n.method === "run/ended");
+      expect(ended.length).toBe(1);
+      const p = ended[0]!.params as { overall: string };
+      // noopSupervisor rejects — workflow error propagates as run/ended=error.
+      expect(p.overall).toBe("error");
     });
   });
 });
