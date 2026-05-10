@@ -1,6 +1,6 @@
 {
   "name": "@example/custom-workflow-bunx",
-  "version": "0.7.16-2",
+  "version": "0.7.16",
   "private": true,
   "type": "module",
   "bin": {
