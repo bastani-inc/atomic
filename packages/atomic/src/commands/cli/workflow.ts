@@ -46,6 +46,11 @@ const SIGNAL_NAME_TO_NUMBER: Record<string, number> = Object.fromEntries(
 /** Exit code used when a signal name is not present in os.constants.signals. */
 const UNKNOWN_SIGNAL_EXIT = 129;
 
+type WorkflowStartResult = {
+  runId: string;
+  attachable: boolean;
+};
+
 // ─── Module-level mutable state (late-bound active registry) ─────────────────
 
 let activeRegistry: ReturnType<typeof createBuiltinRegistry> = createBuiltinRegistry();
@@ -261,30 +266,34 @@ export async function dispatch(
   cliInputs: Record<string, string>,
   detach: boolean,
 ): Promise<void> {
+  if (workflow.kind === "external") {
+    await dispatchExternal(workflow, cliInputs, detach);
+    return;
+  }
+
   const { ensureStarted } = await import("@bastani/atomic-sdk/runtime/daemon");
   const { getSource, getName, getAgent } = await import("@bastani/atomic-sdk/primitives/metadata");
 
   const conn = await ensureStarted();
+  const startParams = {
+    source: getSource(workflow),
+    workflowName: getName(workflow),
+    agent: getAgent(workflow),
+    inputs: cliInputs,
+  };
+  async function startWorkflow(): Promise<WorkflowStartResult> {
+    return await conn.sendRequest("workflow/start", startParams) as WorkflowStartResult;
+  }
 
   if (detach) {
-    const result = await conn.sendRequest("workflow/start", {
-      source: getSource(workflow),
-      workflowName: getName(workflow),
-      agent: getAgent(workflow),
-      inputs: cliInputs,
-    }) as { runId: string; attachable: boolean };
+    const result = await startWorkflow();
     conn.dispose();
     process.stdout.write(`[atomic/workflow] run started: ${result.runId}\n`);
     return;
   }
 
   if (process.stdout.isTTY) {
-    const result = await conn.sendRequest("workflow/start", {
-      source: getSource(workflow),
-      workflowName: getName(workflow),
-      agent: getAgent(workflow),
-      inputs: cliInputs,
-    }) as { runId: string; attachable: boolean };
+    const result = await startWorkflow();
     conn.dispose();
     const { PanelClient } = await import("@bastani/atomic-sdk/components/panel-client");
     await PanelClient.mount({ runId: result.runId });
@@ -316,12 +325,7 @@ export async function dispatch(
       rejectEnded(new Error("[atomic] daemon connection closed before run/ended"));
     });
 
-    const result = await conn.sendRequest("workflow/start", {
-      source: getSource(workflow),
-      workflowName: getName(workflow),
-      agent: getAgent(workflow),
-      inputs: cliInputs,
-    }) as { runId: string; attachable: boolean };
+    const result = await startWorkflow();
 
     const { runId } = result;
     pendingRunId = runId;
