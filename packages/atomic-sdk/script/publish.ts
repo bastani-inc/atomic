@@ -1,6 +1,7 @@
 import { $ } from "bun";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { TARGETS } from "../../atomic/script/targets.ts";
 
 const SDK_PKG_ROOT = fileURLToPath(new URL("..", import.meta.url));
 
@@ -11,6 +12,9 @@ const pkg = await Bun.file(pkgPath).json();
 
 // Snapshot original exports for restore after publish (so dev still resolves to src/).
 const originalExports = pkg.exports;
+// Snapshot original optionalDependencies for restore after publish (so source
+// package.json stays version-agnostic for development).
+const originalOptionalDependencies = pkg.optionalDependencies;
 // `types` MUST come before `import` — TS resolves conditional exports
 // left-to-right under node16 / bundler resolution, so an `import`-first
 // shape would match the `.js` and miss the `.d.ts`.
@@ -20,6 +24,14 @@ for (const [key, src] of Object.entries(originalExports as Record<string, string
   rewritten[key] = { types: `${base}.d.ts`, import: `${base}.js` };
 }
 pkg.exports = rewritten;
+
+// Populate optionalDependencies dynamically from the same TARGETS table used
+// by packages/atomic/script/publish.ts — guarantees version parity without
+// manual maintenance. The source package.json carries approximate placeholder
+// values; the published tarball always has the exact version.
+pkg.optionalDependencies = Object.fromEntries(
+  TARGETS.map((t) => [`@bastani/atomic-${t.name}`, pkg.version as string]),
+);
 
 await Bun.write(pkgPath, JSON.stringify(pkg, null, 2) + "\n");
 
@@ -61,8 +73,10 @@ try {
   console.error(err);
   exitCode = 1;
 } finally {
-  // Always restore so dev checkouts keep resolving to src/.
+  // Always restore so dev checkouts keep resolving to src/ and optionalDependencies
+  // stay as approximate placeholders rather than pinned publish-time values.
   pkg.exports = originalExports;
+  pkg.optionalDependencies = originalOptionalDependencies;
   await Bun.write(pkgPath, JSON.stringify(pkg, null, 2) + "\n");
 }
 if (exitCode !== 0) process.exit(exitCode);

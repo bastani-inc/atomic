@@ -11,6 +11,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./cli": "./src/cli.ts",
+    "./sdk-protocol-version.json": "./sdk-protocol-version.json",
+    "./runtime/daemon": "./src/runtime/daemon.ts",
     "./workflows": "./src/workflows/index.ts",
     "./workflows/components": "./src/components/workflow-picker-panel.tsx",
     "./define-workflow": "./src/define-workflow.ts",
@@ -59,7 +61,8 @@
     "./workflows/builtin/open-claude-design/opencode": "./src/workflows/builtin/open-claude-design/opencode/index.ts"
   },
   "files": [
-    "dist"
+    "dist",
+    "sdk-protocol-version.json"
   ],
   "scripts": {
     "build": "bun run script/build.ts",
@@ -79,6 +82,8 @@
     "ignore": "^7.0.5",
     "ignore-by-default": "^2.1.0",
     "linguist-languages": "^9.3.2",
+    "vscode-jsonrpc": "^8.2.1",
+    "bun-pty": "^0.4.8",
     "yaml": "^2.8.4",
     "zod": "^4.4.3"
   },
@@ -89,6 +94,16 @@
     "react": {
       "optional": true
     }
+  },
+  "optionalDependencies": {
+    "@bastani/atomic-linux-x64": "0.7.13",
+    "@bastani/atomic-linux-arm64": "0.7.13",
+    "@bastani/atomic-linux-x64-musl": "0.7.13",
+    "@bastani/atomic-linux-arm64-musl": "0.7.13",
+    "@bastani/atomic-darwin-x64": "0.7.13",
+    "@bastani/atomic-darwin-arm64": "0.7.13",
+    "@bastani/atomic-windows-x64": "0.7.13",
+    "@bastani/atomic-windows-arm64": "0.7.13"
   },
   "devDependencies": {
     "ajv": "^8.20.0"
