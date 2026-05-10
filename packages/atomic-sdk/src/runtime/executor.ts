@@ -805,7 +805,7 @@ export async function executeWorkflow(
   // future stage window too — `createSessionRunner` re-applies it per
   // stage to refresh user-option state, but the orchestrator pane no
   // longer flashes the default tmux status while waiting.
-  spawnAttachedFooter("orchestrator", orchPaneId, undefined, tmuxSessionName);
+  spawnAttachedFooter(orchPaneId, undefined, tmuxSessionName);
 
   if (detach) {
     // Session is already running detached on the atomic socket (tmux
@@ -1946,7 +1946,7 @@ function createSessionRunner(
         );
         shared.activeRegistry.set(name, { name, paneId, done: donePromise });
 
-        spawnAttachedFooter(name, paneId, undefined, shared.tmuxSessionName);
+        spawnAttachedFooter(paneId, undefined, shared.tmuxSessionName);
 
         serverUrl = await waitForServer(shared.agent, paneId);
 

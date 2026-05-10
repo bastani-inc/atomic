@@ -72,7 +72,7 @@ function slots(
 }
 
 describe("attachedStatusline (workflow variant)", () => {
-  const tree = attachedStatusline({ name: "agent-1", theme: THEME });
+  const tree = attachedStatusline({ theme: THEME });
   const { left, right, props } = slots(tree);
   const compiledLeft = compile(left);
   const compiledRight = compile(right);
@@ -159,9 +159,8 @@ describe("backgroundTasksValue", () => {
 });
 
 describe("attachedStatusline (chat variant)", () => {
-  test("claude renders a warning-color pill with literal agent name", () => {
+  test("claude renders a warning-color pill", () => {
     const tree = attachedStatusline({
-      name: "atomic-chat-claude-abcd",
       theme: THEME,
       agentType: "claude",
     });
@@ -175,7 +174,6 @@ describe("attachedStatusline (chat variant)", () => {
 
   test("copilot uses the success color", () => {
     const tree = attachedStatusline({
-      name: "atomic-chat-copilot-xyz",
       theme: THEME,
       agentType: "copilot",
     });
@@ -185,7 +183,6 @@ describe("attachedStatusline (chat variant)", () => {
 
   test("opencode uses the mauve color", () => {
     const tree = attachedStatusline({
-      name: "atomic-chat-opencode-foo",
       theme: THEME,
       agentType: "opencode",
     });
@@ -193,16 +190,32 @@ describe("attachedStatusline (chat variant)", () => {
     expect(compile(left)).toContain("#[bg=#cc66ff]");
   });
 
-  test("Footer.Right shows the agent name and detach hint", () => {
+  test("Footer.Right shows the /atomic help hint and detach hint", () => {
     const tree = attachedStatusline({
-      name: "atomic-chat-opencode-foo",
       theme: THEME,
       agentType: "opencode",
     });
     const { right } = slots(tree);
     const compiled = compile(right);
-    expect(compiled).toContain("atomic-chat-opencode-foo");
+    expect(compiled).toContain("/atomic <question>");
     expect(compiled).toContain("ctrl+b d");
     expect(compiled).toContain("detach");
+  });
+
+  test("Footer.Right surfaces the session id between the /atomic hint and detach hint", () => {
+    const tree = attachedStatusline({
+      theme: THEME,
+      agentType: "opencode",
+      name: "atomic-chat-opencode-foo",
+    });
+    const { right } = slots(tree);
+    const compiled = compile(right);
+    expect(compiled).toContain("atomic-chat-opencode-foo");
+    const atomicIdx = compiled.indexOf("/atomic <question>");
+    const nameIdx = compiled.indexOf("atomic-chat-opencode-foo");
+    const detachIdx = compiled.indexOf("ctrl+b d");
+    expect(atomicIdx).toBeGreaterThanOrEqual(0);
+    expect(nameIdx).toBeGreaterThan(atomicIdx);
+    expect(detachIdx).toBeGreaterThan(nameIdx);
   });
 });

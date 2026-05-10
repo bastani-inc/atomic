@@ -377,7 +377,7 @@ export async function chatCommand(options: ChatCommandOptions = {}): Promise<num
   // ── Create session on the atomic socket and attach ──
   try {
     const paneId = createSession(windowName, shellCmd, undefined, projectRoot, tmuxEnv);
-    spawnAttachedFooter(windowName, paneId, agentType, windowName);
+    spawnAttachedFooter(paneId, agentType, windowName, windowName);
     killSessionOnPaneExit(windowName, paneId);
 
     if (isInsideAtomicSocket()) {

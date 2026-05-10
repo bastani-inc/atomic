@@ -85,11 +85,11 @@ function whenOrchestrator(orch: ReactNode, agent: ReactNode): ReactNode {
 }
 
 export function attachedStatusline(args: {
-  name: string;
   theme: GraphTheme;
   agentType?: AgentType;
+  name?: string;
 }): ReactNode {
-  const { name, theme, agentType } = args;
+  const { theme, agentType, name } = args;
 
   if (agentType) {
     const pillBg = theme[AGENT_PILL_COLOR[agentType]];
@@ -108,7 +108,14 @@ export function attachedStatusline(args: {
         </Footer.Left>
         <Footer.Right>
           <Box paddingRight={2}>
-            <Text fg={theme.textMuted}>{name}</Text>
+            <Text fg={theme.textMuted}>?  </Text>
+            <Text fg={theme.text}>{`/atomic <question>`}</Text>
+            {name ? (
+              <>
+                <Text fg={theme.textDim}>{` ${DOT} `}</Text>
+                <Text fg={theme.textMuted}>{name}</Text>
+              </>
+            ) : null}
             <Text fg={theme.textDim}>{` ${DOT} `}</Text>
             <Text fg={theme.text}>ctrl+b d</Text>
             <Text fg={theme.textMuted}> detach</Text>

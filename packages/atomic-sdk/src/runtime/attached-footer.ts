@@ -26,14 +26,14 @@ import { deriveGraphTheme } from "../components/graph-theme.ts";
 import { resolveTheme } from "./theme.ts";
 
 export function spawnAttachedFooter(
-  windowName: string,
   _paneId: string,
   agentType?: AgentType,
   sessionName?: string,
+  name?: string,
 ): void {
   const theme = deriveGraphTheme(resolveTheme(null));
   renderFooter(
-    attachedStatusline({ name: windowName, theme, agentType }),
+    attachedStatusline({ theme, agentType, name }),
     { sessionName },
   );
 }
