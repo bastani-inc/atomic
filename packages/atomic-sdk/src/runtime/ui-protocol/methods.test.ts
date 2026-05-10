@@ -302,6 +302,36 @@ describe("workflow/list", () => {
     expect(result).toHaveLength(1);
     expect((result as { name: string }[])[0]?.name).toBe("my-wf");
   });
+
+  test("awaits registry.load() before calling list()", async () => {
+    const callOrder: string[] = [];
+    const registry = makeWorkflowRegistry({
+      list: () => {
+        callOrder.push("list");
+        return [];
+      },
+    });
+    // Override load to record call order
+    registry.load = mock(async () => {
+      callOrder.push("load");
+      return { count: 0, broken: [] as BrokenEntry[] };
+    });
+    const { dispatcher, conn } = makeDispatcher({ workflows: registry });
+    await authenticate(dispatcher, conn);
+    await dispatcher.dispatch("workflow/list", {}, conn);
+    expect(callOrder).toEqual(["load", "list"]);
+  });
+
+  test("load() called even when already loaded (idempotent by registry contract)", async () => {
+    const registry = makeWorkflowRegistry({
+      list: () => [{ name: "wf", source: "/wf.ts", agent: "claude" as const }],
+    });
+    const { dispatcher, conn } = makeDispatcher({ workflows: registry });
+    await authenticate(dispatcher, conn);
+    await dispatcher.dispatch("workflow/list", {}, conn);
+    await dispatcher.dispatch("workflow/list", {}, conn);
+    expect(registry.load).toHaveBeenCalledTimes(2);
+  });
 });
 
 // ---------------------------------------------------------------------------

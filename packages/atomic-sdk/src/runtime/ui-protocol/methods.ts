@@ -423,7 +423,8 @@ export class MethodDispatcher {
 
   // ── Handlers: workflow/* ──────────────────────────────────────────────────
 
-  private handleWorkflowList(): WorkflowDescriptor[] {
+  private async handleWorkflowList(): Promise<WorkflowDescriptor[]> {
+    await this.opts.workflows.load();
     return this.opts.workflows.list();
   }
 
