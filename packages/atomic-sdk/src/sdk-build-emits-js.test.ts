@@ -29,6 +29,10 @@ test("every exports entry has .js and .d.ts in dist", async () => {
   const missing: string[] = [];
 
   for (const [exportKey, srcPath] of Object.entries(pkg.exports)) {
+    // Skip non-TypeScript exports (e.g. bare .json data files like sdk-protocol-version.json).
+    // These don't get compiled into dist — they're referenced directly from the package root.
+    if (!(srcPath as string).match(/\.tsx?$/)) continue;
+
     // srcPath is like "./src/index.ts" — map to "./dist/index.js" + "./dist/index.d.ts"
     const base = (srcPath as string)
       .replace(/^\.\/src\//, "./dist/")
