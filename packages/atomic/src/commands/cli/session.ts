@@ -9,20 +9,11 @@
 
 import { select, multiselect, confirm, isCancel, cancel } from "@clack/prompts";
 import { createPainter, type PaletteKey } from "@bastani/atomic-sdk/theme/colors";
-import {
-  listSessions as _listSessions,
-  isTmuxInstalled as _isTmuxInstalled,
-  isInsideAtomicSocket as _isInsideAtomicSocket,
-  isInsideTmux as _isInsideTmux,
-  sessionExists as _sessionExists,
-  switchClient as _switchClient,
-  spawnMuxAttach as _spawnMuxAttach,
-  detachAndAttachAtomic as _detachAndAttachAtomic,
-  killSession as _killSession,
-  SOCKET_NAME,
-} from "@bastani/atomic-sdk/runtime/tmux";
-import type { TmuxSession, SessionType } from "@bastani/atomic-sdk/runtime/tmux";
 import type { Subprocess } from "bun";
+
+export type SessionType = "chat" | "workflow";
+export interface TmuxSession { name: string; type?: SessionType; agent?: string; attached?: boolean; created: string; windows?: number; }
+const SOCKET_NAME = "atomic";
 
 /** Scope controls which session types a command shows. */
 export type SessionScope = "chat" | "workflow" | "all";
@@ -49,15 +40,15 @@ export interface SessionDeps {
 
 /** Default deps — wire through to the real implementations. */
 const defaultDeps: SessionDeps = {
-  isTmuxInstalled: _isTmuxInstalled,
-  sessionExists: _sessionExists,
-  listSessions: _listSessions,
-  isInsideAtomicSocket: _isInsideAtomicSocket,
-  isInsideTmux: _isInsideTmux,
-  switchClient: _switchClient,
-  spawnMuxAttach: _spawnMuxAttach,
-  detachAndAttachAtomic: _detachAndAttachAtomic,
-  killSession: _killSession,
+  isTmuxInstalled: () => false,
+  sessionExists: () => false,
+  listSessions: () => [],
+  isInsideAtomicSocket: () => false,
+  isInsideTmux: () => false,
+  switchClient: () => { throw new Error("not implemented: use daemon path"); },
+  spawnMuxAttach: () => { throw new Error("not implemented: use daemon path"); },
+  detachAndAttachAtomic: () => { throw new Error("not implemented: use daemon path"); },
+  killSession: () => { throw new Error("not implemented: use daemon path"); },
   select,
   multiselect,
   confirm,

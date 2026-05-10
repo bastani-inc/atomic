@@ -23,11 +23,8 @@ import { ZodError } from "zod";
 import { MethodSchemas } from "./schemas.ts";
 import {
   AtomicRpcError,
-  AtomicErrorCode,
   authenticationRequired,
   runNotFound,
-  stageNotFound,
-  workflowNotFound,
 } from "./errors.ts";
 import type { WorkflowRegistry, WorkflowDescriptor, BrokenEntry } from "../registry.ts";
 import { getProtocolVersion } from "../protocol-version.ts";

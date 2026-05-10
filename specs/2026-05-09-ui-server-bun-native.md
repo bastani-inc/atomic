@@ -341,7 +341,11 @@ pty.onExit(({ exitCode, signal }) => {
   this.endedAt = Date.now();
   this.exitCode = exitCode;
   this.broadcast("pane/exit", { runId, stageName, exitCode, signal });
-  this.panelStore.sessionEnded(stageName, exitCode === 0 ? "complete" : "error");
+  this.panelStore.sessionEnded(
+    stageName,
+    exitCode === 0 ? "complete" : "error",
+    exitCode === 0 ? undefined : `exited with code ${exitCode}${signal ? ` (signal ${signal})` : ""}`,
+  );
 });
 ```
 

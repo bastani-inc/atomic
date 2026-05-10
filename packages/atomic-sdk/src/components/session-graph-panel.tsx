@@ -18,7 +18,6 @@ import {
   useRef,
   useContext,
 } from "react";
-import { tmuxRun } from "../runtime/tmux.ts";
 import {
   useStore,
   useGraphTheme,
@@ -168,7 +167,6 @@ export function SessionGraphPanel() {
       }
 
       store.setViewMode("attached", id);
-      tmuxRun(["switch-client", "-t", `${tmuxSession}:${n.name}`]); // offload-exempt: status === "alive"
     },
     [layout.map, tmuxSession, offloadManager],
   );
@@ -380,79 +378,6 @@ export function SessionGraphPanel() {
     }
   }, [focusedId, focused, termW, termH, padX, padY, viewportH, layout.rowH]);
 
-  // ── Track active tmux window ──────────────────────────
-  // Ctrl+G and Ctrl+\ are bound at the tmux level, so the React app
-  // never receives them.  Poll the active window to sync viewMode
-  // with tmux-level navigation in both directions.
-  const hasStartedAgent = useMemo(
-    () => store.sessions.some((s) => s.name !== "orchestrator" && s.status !== "pending"),
-    [storeVersion],
-  );
-
-  // Last logical window the user was focused on, tracked across poll ticks
-  // so we can detect focus-leave transitions and fire offload on the pane
-  // they just exited (Chrome-tab semantics — RFC §5.5 R4).
-  const prevActiveRef = useRef<string>("");
-
-  useEffect(() => {
-    if (!hasStartedAgent) return;
-
-    const check = () => {
-      const result = tmuxRun([
-        "display-message", "-t", tmuxSession, "-p", "#{window_index} #{window_name}",
-      ]);
-      if (!result.ok) return;
-
-      const output = result.stdout.trim();
-      const spaceIdx = output.indexOf(" ");
-      const idx = spaceIdx >= 0 ? output.slice(0, spaceIdx) : output;
-      const windowName = spaceIdx >= 0 ? output.slice(spaceIdx + 1) : "";
-
-      // Logical name: window index 0 is always the orchestrator regardless
-      // of its tmux window name.
-      const currentName = idx === "0" ? "orchestrator" : windowName;
-
-      // Update viewMode FIRST so offloadSession (called below) reads the
-      // already-updated activeAgentId. Without this ordering, the focus
-      // guard inside isEligibleForOffload would see the stale prev name
-      // and skip the offload.
-      if (idx === "0") {
-        if (store.viewMode !== "graph") {
-          store.setViewMode("graph");
-        }
-      } else {
-        // Map offload status → panel viewMode. "offloaded" and "resuming" both
-        // render as "resuming"; only "alive" flips to "attached" (RFC §5.5 R3).
-        const targetStatus = offloadManager.getStatus(windowName);
-        const desiredMode: ViewMode = targetStatus === "alive" ? "attached" : "resuming";
-        if (store.viewMode !== desiredMode || store.activeAgentId !== windowName) {
-          store.setViewMode(desiredMode, windowName);
-        }
-        // Kick off resume only when actually offloaded; "resuming" means a
-        // prior tick already started one (requestResume coalesces but skip
-        // the redundant call), and "alive" needs no action.
-        if (targetStatus === "offloaded") {
-          void offloadManager.requestResume(windowName).catch(() => {
-            // OffloadManager already emitted RESUME_FAILED + reset status to "offloaded".
-          });
-        }
-      }
-
-      // Focus-leave: user just navigated AWAY from a stage pane. Offload it
-      // if eligible (non-headless, status === "complete"). The manager's own
-      // eligibility check filters out running/headless/already-offloaded
-      // sessions, so we can fire unconditionally.
-      const prevName = prevActiveRef.current;
-      if (prevName !== "" && prevName !== currentName && prevName !== "orchestrator") {
-        void offloadManager.offloadSession(prevName).catch(() => {});
-      }
-
-      prevActiveRef.current = currentName;
-    };
-
-    const id = setInterval(check, 500);
-    return () => clearInterval(id);
-  }, [tmuxSession, hasStartedAgent, offloadManager]);
 
   return (
     <box width="100%" height="100%" flexDirection="column" backgroundColor={theme.background}>

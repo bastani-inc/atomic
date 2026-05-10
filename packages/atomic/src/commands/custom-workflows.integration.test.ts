@@ -152,60 +152,6 @@ test("RFC §8.3 symmetry: fixture invoked with _emit-workflow-meta and valid env
   expect(first["agent"]).toBe("claude");
 }, 30000);
 
-// ─── Test 3: _runtime-assets-smoke skips workflow bootstrap ───────────────────
 
-test("_runtime-assets-smoke exits 0 and does not trigger workflow bootstrap even with broken workflow entry", async () => {
-  // Write a settings.json whose workflow command crashes with exit 7 and never
-  // emits the ATOMIC_WORKFLOW_META line. If the bootstrap were NOT skipped,
-  // the loader would spawn this command, fail to parse meta, and emit
-  // [atomic/workflows] diagnostics to stderr. The skip predicate must prevent
-  // that entirely.
-  const tmpHome = await mkdtemp(path.join(tmpdir(), "atomic-smoke-test-home-"));
-  const tmpCwd = await mkdtemp(path.join(tmpdir(), "atomic-smoke-test-cwd-"));
-  try {
-    await mkdir(path.join(tmpHome, ".atomic"), { recursive: true });
-    await mkdir(path.join(tmpCwd, ".atomic"), { recursive: true });
-    await writeFile(
-      path.join(tmpHome, ".atomic", "settings.json"),
-      JSON.stringify({
-        workflows: {
-          "crash-wf": {
-            command: "/bin/sh",
-            args: ["-c", "exit 7"],
-            agents: ["claude"],
-          },
-        },
-      }),
-    );
 
-    const child = Bun.spawn(
-      ["bun", CLI_PATH, "_runtime-assets-smoke"],
-      {
-        stdout: "pipe",
-        stderr: "pipe",
-        cwd: tmpCwd,
-        env: {
-          ...process.env,
-          ATOMIC_SETTINGS_HOME: tmpHome,
-          ATOMIC_SKIP_AUTOSYNC: "1",
-        },
-      },
-    );
 
-    const [stderr] = await Promise.all([
-      new Response(child.stderr as ReadableStream<Uint8Array>).text(),
-      new Response(child.stdout as ReadableStream<Uint8Array>).text(),
-    ]);
-    const exitCode = await child.exited;
-
-    // Command must exit 0 (smoke check may report individual asset failures
-    // but always exits cleanly)
-    expect(exitCode).toBe(0);
-
-    // No workflow bootstrap diagnostics — bootstrap was skipped
-    expect(stderr).not.toContain("[atomic/workflows]");
-  } finally {
-    await rm(tmpHome, { recursive: true, force: true });
-    await rm(tmpCwd, { recursive: true, force: true });
-  }
-}, 30000);

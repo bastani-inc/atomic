@@ -1,3 +1,6 @@
+import { join } from "node:path";
+import { homedir } from "node:os";
+import { COLORS, createPainter, type PaletteKey } from "@bastani/atomic-sdk/theme/colors";
 /**
  * `atomic workflow status [<id>]` — query the current state of one or
  * all running workflows so an orchestrating agent can decide whether
@@ -14,21 +17,13 @@
  *      before the orchestrator first writes its snapshot.
  */
 
-import { join } from "node:path";
-import { homedir } from "node:os";
-import { COLORS, createPainter, type PaletteKey } from "@bastani/atomic-sdk/theme/colors";
-import {
-  isTmuxInstalled as _isTmuxInstalled,
-  listSessions as _listSessions,
-  sessionExists as _sessionExists,
-} from "@bastani/atomic-sdk/runtime/tmux";
 import {
   readSnapshot,
   workflowRunIdFromTmuxName,
   type WorkflowOverallStatus,
   type WorkflowStatusSnapshot,
 } from "@bastani/atomic-sdk/runtime/status-writer";
-import type { TmuxSession } from "@bastani/atomic-sdk/runtime/tmux";
+export interface TmuxSession { name: string; type?: "chat" | "workflow"; windows?: number; created?: string; attached?: boolean; agent?: string; }
 
 export type StatusFormat = "json" | "text";
 
@@ -68,9 +63,9 @@ export interface StatusDeps {
 }
 
 const defaultDeps: StatusDeps = {
-  isTmuxInstalled: _isTmuxInstalled,
-  sessionExists: _sessionExists,
-  listSessions: _listSessions,
+  isTmuxInstalled: () => false,
+  sessionExists: () => false,
+  listSessions: () => [],
   readSnapshot,
   sessionsBaseDir: join(homedir(), ".atomic", "sessions"),
 };

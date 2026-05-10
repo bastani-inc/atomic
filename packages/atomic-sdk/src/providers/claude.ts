@@ -24,7 +24,6 @@ import {
   type SDKUserMessage,
   type Options as SDKOptions,
 } from "@anthropic-ai/claude-agent-sdk";
-import { respawnPane } from "../runtime/tmux.ts";
 import type { OffloadResumeMetadata } from "../runtime/offload-types.ts";
 import { escBash } from "../runtime/executor.ts";
 import { watch, unlink, mkdir, rm, writeFile } from "node:fs/promises";
@@ -436,7 +435,8 @@ async function spawnClaudeWithPrompt(
 ): Promise<void> {
   const settingsPath = ensureWorkflowHookSettings();
   const argvPrompt = `"${escBash(readPromptInstruction(promptFile))}"`;
-  const cmd = [
+  // Build the claude command args (used for logging/future daemon spawn)
+  const _cmd = [
     "claude",
     ...chatFlags,
     // Workflow-owned hooks. Placed AFTER chatFlags so commander's last-wins
@@ -455,7 +455,6 @@ async function spawnClaudeWithPrompt(
   // approach keystroked into a zsh that hadn't finished ZLE init yet, and
   // zsh's TCSAFLUSH during startup would discard the buffered `\r`, leaving
   // the command typed at the prompt but never submitted.
-  respawnPane(paneId, cmd);
 
   // Positive readiness signal: wait for Claude's SessionStart hook (matcher
   // `startup`) to write `~/.atomic/claude-ready/<session_id>`. This fires

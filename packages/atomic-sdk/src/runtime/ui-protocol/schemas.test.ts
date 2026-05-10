@@ -96,15 +96,16 @@ describe("WorkflowDescriptorSchema", () => {
   });
 
   test("accepts full descriptor", () => {
+    const input = { name: "env", type: "string" as const, required: true, description: "Env name" };
     const result = WorkflowDescriptorSchema.parse({
       name: "my-workflow",
       source: "/path/to/workflow.ts",
       agent: "copilot",
       displayName: "My Workflow",
-      inputs: { key: "value" },
+      inputs: [input],
     });
     expect(result.displayName).toBe("My Workflow");
-    expect(result.inputs).toEqual({ key: "value" });
+    expect(result.inputs).toEqual([input]);
   });
 });
 
@@ -296,12 +297,14 @@ describe("agent/kill", () => {
 });
 
 describe("Notifications", () => {
-  test("panel/update has runId and snapshot", () => {
+  test("panel/update has runId, snapshot, and version", () => {
     const result = PanelUpdateNotificationParamsSchema.parse({
       runId: "r1",
       snapshot: { stage: "main" },
+      version: 3,
     });
     expect(result.runId).toBe("r1");
+    expect(result.version).toBe(3);
   });
 
   test("panel/foregroundChange stageName is nullable", () => {

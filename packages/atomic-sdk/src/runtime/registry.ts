@@ -176,18 +176,28 @@ export class WorkflowRegistry {
 
   private loaded = false;
 
+  /** Shared in-flight Promises so concurrent callers don't race; nulled on settle. */
+  private loadInFlight: Promise<{ count: number; broken: BrokenEntry[] }> | null = null;
+  private refreshInFlight: Promise<{ count: number; broken: BrokenEntry[] }> | null = null;
+
   // ─── Public API ─────────────────────────────────────────────────────────────
 
   /**
    * Read settings files and import all registered workflow sources.
    * Idempotent — calling `load()` a second time is a no-op (use `refresh()`
-   * for hot-reload).
+   * for hot-reload). Concurrent callers share one in-flight Promise; if a
+   * `refresh()` is in-flight, `load()` adopts its result rather than racing
+   * a parallel import pass.
    */
   async load(): Promise<{ count: number; broken: BrokenEntry[] }> {
-    if (this.loaded) {
-      return { count: this.byName.size, broken: [] };
-    }
-    return this._importAll();
+    if (this.loaded) return { count: this.byName.size, broken: [] };
+    if (this.refreshInFlight) return this.refreshInFlight;
+    if (this.loadInFlight) return this.loadInFlight;
+
+    this.loadInFlight = this._importAll()
+      .then((r) => { this.loaded = true; return r; })
+      .finally(() => { this.loadInFlight = null; });
+    return this.loadInFlight;
   }
 
   /** Return all cached workflow descriptors. */
@@ -226,12 +236,29 @@ export class WorkflowRegistry {
   /**
    * Re-import all registered source files from scratch.
    * Clears the existing cache before re-importing so stale entries don't persist.
+   *
+   * Queue semantics (RFC §9): if a `load()` is in-flight, refresh() waits for
+   * it to settle before clearing caches and starting its own import pass.
+   * Concurrent `refresh()` callers share one in-flight Promise.
    */
   async refresh(): Promise<{ count: number; broken: BrokenEntry[] }> {
-    this.byName.clear();
-    this.bySource.clear();
-    this.loaded = false;
-    return this._importAll();
+    if (this.refreshInFlight) return this.refreshInFlight;
+
+    // Wait for any in-flight load to complete before we clear caches.
+    const predecessor = this.loadInFlight ?? Promise.resolve();
+
+    this.refreshInFlight = predecessor
+      .catch(() => { /* ignore load errors — we're refreshing regardless */ })
+      .then(() => {
+        this.byName.clear();
+        this.bySource.clear();
+        this.loaded = false;
+        return this._importAll();
+      })
+      .then((r) => { this.loaded = true; return r; })
+      .finally(() => { this.refreshInFlight = null; });
+
+    return this.refreshInFlight;
   }
 
   // ─── Internal ───────────────────────────────────────────────────────────────
@@ -240,8 +267,6 @@ export class WorkflowRegistry {
    * Read settings, collect unique source paths, import each, populate cache.
    */
   private async _importAll(): Promise<{ count: number; broken: BrokenEntry[] }> {
-    this.loaded = true;
-
     const sources = await this._collectSources();
     if (sources.length === 0) {
       return { count: 0, broken: [] };
@@ -329,17 +354,14 @@ export class WorkflowRegistry {
  * Mode 2 commands (`bunx my-tool`, `node dist/runner`, etc.) return `false`.
  */
 export function isMode1Source(command: string): boolean {
-  // 1. If it resolves to an actual file, it's Mode 1.
   try {
     if (existsSync(command)) return true;
-  } catch { /* fall through */ }
-  // 2. Otherwise, recognize JS/TS extensions (handles tilde-paths, glob inputs
-  //    that haven't expanded yet, and pre-bundled paths that don't exist on
-  //    disk in the current cwd).
+  } catch {
+    // existsSync rarely throws; fall through to the extension check.
+  }
   return /\.(ts|tsx|js|mjs|cjs)$/.test(command);
 }
 
 // ─── Convenience path exports (re-export for callers that want them) ──────────
 
 export { getGlobalSettingsPath, getLocalSettingsPath };
-// isMode1Source is exported directly from its declaration above.

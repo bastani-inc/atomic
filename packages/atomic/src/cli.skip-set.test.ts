@@ -13,11 +13,6 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { INFO_COMMAND_ARGV0, isInfoCommandArgv } from "./info-command-skip.ts";
 
-// ─── Snapshot: _runtime-assets-smoke must be present ─────────────────────────
-
-test("INFO_COMMAND_ARGV0 includes _runtime-assets-smoke", () => {
-    expect(INFO_COMMAND_ARGV0).toContain("_runtime-assets-smoke");
-});
 
 test("INFO_COMMAND_ARGV0 snapshot includes all expected entries", () => {
     const expected = [
@@ -25,13 +20,10 @@ test("INFO_COMMAND_ARGV0 snapshot includes all expected entries", () => {
         "uninstall",
         "update",
         "completions",
-        "_orchestrator-entry",
-        "_cc-debounce",
         "_claude-stop-hook",
         "_claude-ask-hook",
         "_claude-session-start-hook",
         "_claude-inflight-hook",
-        "_runtime-assets-smoke",
     ] as const;
     for (const entry of expected) {
         expect(INFO_COMMAND_ARGV0).toContain(entry);

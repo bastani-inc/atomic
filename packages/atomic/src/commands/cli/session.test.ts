@@ -9,7 +9,7 @@ import {
   sessionKillCommand,
 } from "./session.ts";
 import type { SessionDeps } from "./session.ts";
-import type { TmuxSession } from "@bastani/atomic-sdk/runtime/tmux";
+import type { TmuxSession } from "./session.ts";
 
 // Force plain-text output so assertions match readable substrings.
 let originalNoColor: string | undefined;

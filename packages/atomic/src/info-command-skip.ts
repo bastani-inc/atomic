@@ -14,13 +14,10 @@ export const INFO_COMMAND_ARGV0 = [
     "uninstall",
     "update",
     "completions",
-    "_orchestrator-entry",
-    "_cc-debounce",
     "_claude-stop-hook",
     "_claude-ask-hook",
     "_claude-session-start-hook",
     "_claude-inflight-hook",
-    "_runtime-assets-smoke",
 ] as const;
 
 export type InfoCommandArgv0 = (typeof INFO_COMMAND_ARGV0)[number];

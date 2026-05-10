@@ -8,29 +8,9 @@ workflow with version 1.2.3". Do not reply with instructions for the user to run
 unless shell execution is unavailable in your environment; use your terminal
 tool to invoke the workflow yourself.
 
-**This playbook works from any context.** Whether you're running in a fresh terminal, inside `atomic chat -a <agent>`, or from a CI script, the decision tree below is the same — registered atomic workflows, repo examples, and user SDK workflows are all discoverable and invokable. If the user is chatting with you through `atomic chat` and says "start my hello-world workflow", walk the same paths; the shared tmux socket means the workflow you spawn will be visible to every monitoring surface (the worker CLI's own `status` / `session` subcommands, `atomic workflow status`, and `bunx atomic …`) regardless of which path you used to start it.
+**This playbook works from any context.** Whether you're running in a fresh terminal, inside `atomic chat -a <agent>`, or from a CI script, the decision tree below is the same — atomic builtins, repo examples, and user SDK workflows are all discoverable and invokable through the daemon. The daemon is the single source of truth: every workflow you dispatch is tracked by it and visible to every client that connects.
 
-## Natural-language run contract
-
-Follow this contract whenever the user asks to run a workflow:
-
-1. **Run, don't recite.** If you have shell/tool access, execute the workflow command. Do not answer "I can't run it" or only print `atomic workflow -n ...`.
-2. **Use the current agent by default.** Resolve the agent in this order: user explicitly named an agent → `ATOMIC_AGENT` (`claude`, `copilot`, `opencode`) → ask once. Never silently default to a specific agent — every supported agent (Claude, Copilot, OpenCode) is a first-class target.
-3. **Prefer the atomic registry first.** Run `atomic workflow list -a <agent>` before probing examples or app-specific CLIs. This list includes builtins and registered custom workflows from `.atomic/settings.json` and `~/.atomic/settings.json`.
-4. **Inspect inputs before running.** Run `atomic workflow inputs <name> -a <agent>` for registered atomic workflows; parse the schema and ask only for required values the user did not provide.
-5. **Run detached from agent chats.** Add `-d` when starting via `atomic workflow` from a coding-agent chat unless the user explicitly wants to attach immediately.
-6. **Report the session id and attach command.** On successful spawn, give the exact session id and tell the user to open a new terminal and run `atomic workflow session connect <sessionId>`.
-
-Agent resolution details:
-
-```bash
-printenv ATOMIC_AGENT   # "claude" | "copilot" | "opencode" when launched by atomic chat
-```
-
-If `ATOMIC_AGENT=claude`, run the Claude variant (`-a claude`). If
-`ATOMIC_AGENT=copilot`, run the Copilot variant (`-a copilot`). If
-`ATOMIC_AGENT=opencode`, run the OpenCode variant (`-a opencode`). Only use a
-different agent when the user explicitly requests it or confirms a switch.
+**Runtime model (atomic 2.0).** `atomic --ui-server` is a per-user singleton daemon. The SDK auto-spawns it on first use and auto-discovers it via `~/.atomic/daemon.endpoint.json`. All workflow control — dispatch, inspection, status, control — goes through JSON-RPC calls to the daemon. There is no tmux dependency.
 
 ## Three invocation paths
 
@@ -47,9 +27,7 @@ roots. Two shapes exist — pick based on what the file calls:
   bun run src/<agent>-worker.ts "<prompt>"             # positional (if the worker wired [prompt...])
   ```
 
-  For detached runs, the dev passes `detach: true` to `runWorkflow` or
-  wires their own `--detach` Commander option. There are no built-in
-  `-n`/`-a`/`-d` flags on user-app workers.
+  `runWorkflow({...})` is a JSON-RPC client call to `workflow/start` on the daemon. The daemon auto-spawns if not running. For detached runs, the dev passes `detach: true` to `runWorkflow` or wires their own `--detach` Commander option. There are no built-in `-n`/`-a`/`-d` flags on user-app workers.
 
 - **Multi-workflow CLI** (`createRegistry()` + `listWorkflows`) —
   a single file that registers many workflows and mounts one Commander
@@ -90,7 +68,7 @@ Builtin names: `ralph`, `deep-research-codebase`, `open-claude-design`.
 
 Direct `atomic workflow` runs should always include `-n <name>` and
 `-a <agent>`. Use `-d` when launching from an agent or script and you want
-the command to return after spawning the workflow.
+the command to return after dispatching the workflow (run continues in daemon, no panel attached).
 
 **Identify the path before anything else.** Decision order:
 
@@ -233,69 +211,74 @@ Skip AskUserQuestion entirely when:
    Atomic registry:
    - Free-form: `atomic workflow -n <name> -a <agent> "<prompt>"`
    - Structured: `atomic workflow -n <name> -a <agent> --<field1>=<value1>`
-   - Detached: add `-d`
+   - Detached (background, no panel): add `-d`
 
-8. **Tell the user how to attach interactively** — the runtime printed a
-   session name like `atomic-wf-<agent>-<workflow>-a1b2c3d4`. Immediately
-   echo it back with the **new-terminal attach instruction** described in
-   §"After starting: tell the user how to view it interactively" below.
-   This is non-negotiable on every successful spawn. Also surface
-   `atomic workflow status <sessionId>` (poll) and
-   `atomic session kill <sessionId> -y` (stop).
-9. **If you started the workflow detached (`-d` or `detach: true`), poll
+7. **Tell the user the run id and how to attach** — the runtime prints a
+   `runId` when the workflow dispatches. Immediately echo it back with the
+   attach instruction described in §"After starting: tell the user how to
+   attach" below. This is non-negotiable on every successful dispatch. Also
+   surface `run/status` (poll) and `run/stop` (stop).
+8. **If you started the workflow detached (`-d` or `detach: true`), poll
    status until it terminates or pauses for input** — see "Polling rhythm
    after spawning" below. Surfacing a HIL pause to the user immediately is
    non-negotiable; an unattended `awaiting_input` / `needs_review` state
    means the workflow is wedged and the user doesn't know.
 
-## After starting: tell the user how to view it interactively
+## After starting: tell the user how to attach
 
-**Rule:** Every time you successfully start a workflow on the user's behalf, your *very next message* must tell them how to attach to it interactively **from a new terminal**. Do not bury this in a status report or a summary — it is the headline of the post-spawn message.
+**Rule:** Every time you successfully start a workflow on the user's behalf, your *very next message* must tell them the `runId` and how to attach to the live panel. Do not bury this in a status report or a summary — it is the headline of the post-dispatch message.
 
-The runtime prints a session name when the workflow starts (e.g. `atomic-wf-claude-ralph-a1b2c3d4`). Capture that exact string and use it verbatim — do not paraphrase, abbreviate, or invent placeholder ids. The user must be able to copy-paste the command.
+The runtime prints a `runId` when the workflow dispatches (e.g. `a1b2c3d4`). Capture that exact string and use it verbatim — do not paraphrase, abbreviate, or invent placeholder ids. The user must be able to copy-paste the command.
 
-**Phrasing template** — substitute `<name>` with the workflow name and `<sessionId>` with the literal session id printed by the CLI:
+**Phrasing template** — substitute `<name>` with the workflow name and `<runId>` with the literal run id printed:
 
-> Started workflow `<name>` (session id: `<sessionId>`). To watch it run interactively, **open a new terminal** and run:
+> Started workflow `<name>` (run id: `<runId>`). To watch it run interactively, open a new terminal and run:
 >
 > ```
-> atomic workflow session connect <sessionId>
+> atomic workflow attach <runId>
 > ```
 
-**Why "open a new terminal" is part of the rule, not optional flavor:**
+**Why "open a new terminal":** `atomic workflow attach` mounts an OpenTUI panel client that takes over the terminal's stdin/stdout. If the user runs it in the same shell hosting their chat session, they lose the chat for the duration. A second terminal lets the workflow run visibly while the user keeps talking to you. Always say "open a new terminal."
 
-`atomic workflow session connect` attaches stdin/stdout to the workflow's tmux pane and takes over the terminal it runs in. If the user runs it in the same shell that's currently hosting their chat with you, they lose the chat session for the duration of the attach. A *second* terminal lets the workflow run visibly while the user keeps talking to you. Always say "open a new terminal" — never just "run this command."
-
-**Use `atomic workflow session connect`, not `atomic session connect`.** Both reach the same tmux socket, but the `workflow` form is the canonical surface for workflow-spawned sessions and is what users will see in docs, examples, and other agent output. Stay consistent.
-
-**This rule applies to all three invocation paths.** Builtins, repo-shipped examples, and user-app workers all land on the same `atomic` tmux socket, so `atomic workflow session connect <sessionId>` works regardless of how the workflow was spawned. Never use a path-specific attach command instead.
+**Multi-attach is supported.** Multiple terminals can run `atomic workflow attach <runId>` simultaneously — each gets its own independent OpenTUI client subscribed to the daemon's `panel/update` stream. Inform the user if they ask about watching from multiple places.
 
 **Worked phrasing — copy this shape verbatim, swapping the ids:**
 
-> Started workflow `gen-spec` (session id: `atomic-wf-claude-gen-spec-a1b2c3d4`). To watch it run interactively, open a new terminal and run:
+> Started workflow `gen-spec` (run id: `a1b2c3d4`). To watch it run interactively, open a new terminal and run:
 >
 > ```
-> atomic workflow session connect atomic-wf-claude-gen-spec-a1b2c3d4
+> atomic workflow attach a1b2c3d4
 > ```
 >
-> Status: `atomic workflow status atomic-wf-claude-gen-spec-a1b2c3d4`
-> Stop: `atomic session kill atomic-wf-claude-gen-spec-a1b2c3d4 -y`
+> Status: `atomic workflow status a1b2c3d4`
+> Stop: `atomic workflow stop a1b2c3d4`
 
-If the runtime did *not* print a session name (rare — usually a startup error), do not fabricate one. Tell the user the workflow failed to start and surface the actual error output instead.
+If the runtime did *not* print a run id (rare — usually a startup error or daemon unreachable), do not fabricate one. Tell the user the workflow failed to start and surface the actual error output instead.
+
+## Dispatching from the SDK
+
+`runWorkflow({...})` sends `workflow/start` to the daemon over JSON-RPC and returns a `runId`. The daemon auto-spawns if not running. SDK-side dispatch:
+
+```ts
+const { runId } = await runWorkflow({ workflow, inputs });
+// runId is the handle for all subsequent run/* calls
+```
+
+The daemon auto-discovers its endpoint from `~/.atomic/daemon.endpoint.json`. SDK consumers never manage the daemon lifecycle directly.
 
 ## Polling rhythm after spawning
 
-When the workflow runs detached (you spawned it with `-d` or the user wants
+When the workflow runs detached (you dispatched with `-d` or the user wants
 to keep working while it executes), the model is responsible for tracking
-its progress. The pattern is a small loop around `atomic workflow status`:
+its progress. Use `run/status` (via `atomic workflow status <runId>`):
 
 ```bash
-atomic workflow status <session-id>
+atomic workflow status <runId>
 # JSON envelope; key field is `overall`:
 #   in_progress    → keep polling at a sensible cadence
 #   awaiting_input → surface to user *now* — see HIL response below
 #   needs_review   → surface to user *now* — same handling
-#   completed      → report success + summarize the snapshot's `sessions[]` results
+#   completed      → report success + summarize the snapshot's stage results
 #   error          → report `fatalError` + offer to investigate
 ```
 
@@ -311,42 +294,36 @@ elicitation, a Copilot `ask_user`, an OpenCode `question.asked`, or a
 review-marker handoff). The workflow will sit forever unless the user
 responds.
 
-The current send-back path is **interactive attach only**:
+The response path is **interactive attach**:
 
 ```bash
-atomic workflow session connect <session-id>
-# user lands inside the tmux pane, types their answer into the agent's TUI,
-# detaches with the agent's standard binding (Ctrl-b d for tmux)
+atomic workflow attach <runId>
+# User sees the live OpenTUI panel, types their answer into the agent's pane,
+# detaches with the panel's standard key binding
 ```
 
-There is **no `atomic workflow send <id> --message "..."`** today — the
-agent CLI panes accept input only through the live TUI. If the model needs
-to forward a typed answer back into a session non-interactively, that's a
-known gap; surface it to the user and let them attach. (The SDK does use
-`tmux send-keys` internally for orchestration, but there is no public CLI
-surface that exposes it for HIL responses.)
+Input forwarded by the panel client goes to the daemon via `pane/sendInput`, which writes it to the agent subprocess's PTY. There is no `atomic workflow send <runId> --message "..."` public command — agent panes accept input only through the live panel.
 
 So when you see `awaiting_input` or `needs_review`:
 
 1. Stop polling.
-2. Read the snapshot's `sessions[]` to find which stage is paused (`status: "awaiting_input"`).
-3. Tell the user **plainly and immediately**: "Workflow `<name>` is paused on stage `<stage-name>` waiting for your input. Attach with `atomic workflow session connect <session-id>` to respond." Include the stage name so the user knows what they're answering.
+2. Read the snapshot's stages to find which one is paused (`status: "awaiting_input"`).
+3. Tell the user **plainly and immediately**: "Workflow `<name>` is paused on stage `<stage-name>` waiting for your input. Attach with `atomic workflow attach <runId>` to respond." Include the stage name so the user knows what they're answering.
 4. Wait for the user to confirm they've responded (or for the next status poll to show `in_progress` again) before resuming the polling rhythm.
 
-### Inspecting on-disk state with `atomic workflow read`
+### Inspecting run state
 
-When the model needs to actually *read* what a workflow has produced —
-the saved transcript of a stage, the orchestrator's `status.json`, the
-captured `inbox.md` rendering — `atomic workflow read` resolves the
-on-disk path under `~/.atomic/sessions/<runId>/` so you don't have to
-guess the opaque `<stageName>-<8hex>` directory suffix.
+Two surfaces:
 
-Two shapes:
+**`atomic workflow status <runId>`** — returns a `WorkflowStatusSnapshot` including `overall` status and per-stage states. Pass no id to list all runs: `atomic workflow status`.
+
+**`run/transcript`** — retrieve the saved `SavedMessage[]` for a completed stage. Use `atomic workflow transcript <runId> <stageName>` (or the equivalent SDK call). Cheaper than attaching when you just want to read what an agent produced.
+
+**`atomic workflow read --runId <runId>`** — resolves on-disk artifacts under `~/.atomic/sessions/<runId>/`:
 
 ```bash
 # Run-level: list the run dir and discover available stages.
-atomic workflow read --sessionId atomic-wf-claude-ralph-a1b2c3d4
-# Inside an atomic chat session this auto-defaults to JSON:
+atomic workflow read --runId a1b2c3d4
 # {
 #   "ok": true,
 #   "runId": "a1b2c3d4",
@@ -356,154 +333,109 @@ atomic workflow read --sessionId atomic-wf-claude-ralph-a1b2c3d4
 # }
 
 # Stage-level: resolve the single stage subdir + list its saved artifacts.
-atomic workflow read --sessionId atomic-wf-claude-ralph-a1b2c3d4 --stageId scout
+atomic workflow read --runId a1b2c3d4 --stageId scout
 # {
 #   "ok": true,
 #   "runId": "a1b2c3d4",
 #   "stageName": "scout",
 #   "path": "/home/u/.atomic/sessions/a1b2c3d4/scout-9f8e7d6c",
 #   "files": [
-#     {"name":"messages.json","kind":"file","size":8123},   ← s.save() raw JSON
-#     {"name":"inbox.md","kind":"file","size":3401},        ← human-readable transcript
+#     {"name":"messages.json","kind":"file","size":8123},
+#     {"name":"inbox.md","kind":"file","size":3401},
 #     {"name":"metadata.json","kind":"file","size":312}
 #   ]
 # }
 ```
 
-**Key fields under `<runId>/`:**
+**Key files under `<runId>/`:**
 
-| File / dir                                     | What's in it                                                                                                                          |
-| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `status.json`                                  | Live panel snapshot — same JSON `atomic workflow status <id>` returns                                                                |
-| `metadata.json`                                | Workflow-level metadata: name, agent, prompt, project root, `startedAt`                                                              |
-| `orchestrator.log`                             | Stdout/stderr of the orchestrator pane                                                                                                |
-| `<stageName>-<stageSessionId>/messages.json`   | The `SavedMessage[]` array produced by `s.save(...)` calls in that stage. Schema is provider-specific.                               |
-| `<stageName>-<stageSessionId>/inbox.md`        | A plain-text rendering of `messages.json`. Cheaper to read than the JSON when you just want to see what the agent said.              |
-| `<stageName>-<stageSessionId>/metadata.json`   | Stage metadata: name, description, agent, paneId, `startedAt`                                                                         |
-| `<stageName>-<stageSessionId>/error.txt`       | Present **only** when the stage failed; contains the error message.                                                                  |
+| File / dir                                     | What's in it                                                                               |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `status.json`                                  | Panel snapshot — same JSON `atomic workflow status <runId>` returns                        |
+| `metadata.json`                                | Workflow-level metadata: name, agent, prompt, project root, `startedAt`                   |
+| `<stageName>-<stageSessionId>/messages.json`   | `SavedMessage[]` produced by `s.save(...)` in that stage. Schema is provider-specific.    |
+| `<stageName>-<stageSessionId>/inbox.md`        | Plain-text rendering of `messages.json`. Cheaper than JSON for reading agent output.      |
+| `<stageName>-<stageSessionId>/metadata.json`   | Stage metadata: name, description, agent, `startedAt`                                     |
+| `<stageName>-<stageSessionId>/error.txt`       | Present **only** when the stage failed; contains the error message.                       |
 
 **Typical model flow** when investigating a stalled or completed run:
 
-1. `atomic workflow status <session-id>` — see overall + per-stage states.
+1. `atomic workflow status <runId>` — see overall + per-stage states.
 2. Pick a stage of interest (`needs_review` / `error` / `completed`).
-3. `atomic workflow read --sessionId <session-id> --stageId <stage>` — get its absolute dir.
+3. `atomic workflow read --runId <runId> --stageId <stage>` — get its absolute dir.
 4. `Read` the file you actually want (`inbox.md` for human-readable, `messages.json` for raw, `error.txt` for a failure trace).
-
-This avoids two anti-patterns: (a) attaching to the tmux pane just to read transcripts (interactive-only, breaks scripted flows), and (b) globbing `~/.atomic/sessions/` blind.
 
 ### Tracking multiple workflows
 
-`atomic workflow status` (no id) returns every workflow on the atomic socket:
+`atomic workflow status` (no id) issues `run/list` to the daemon and returns all runs:
 
 ```bash
 atomic workflow status
-# {"workflows":[{"id":"…","overall":"in_progress",...},
-#               {"id":"…","overall":"needs_review",...}]}
+# {"runs":[{"runId":"…","overall":"in_progress",...},
+#          {"runId":"…","overall":"needs_review",...}]}
 ```
 
 Useful when the user has several runs going. Sort by `overall` priority —
 surface every `needs_review` / `awaiting_input` first, then `error`, then
-`in_progress`. `completed` workflows can be reported in summary.
+`in_progress`. `completed` runs can be reported in summary.
 
 ## Monitoring a running workflow
 
-All three invocation paths (Path A, B, C) spawn sessions on the same `atomic`
-tmux socket. Two surfaces expose monitoring commands:
+All three invocation paths (Path A, B, C) dispatch through the same daemon. Monitoring surfaces:
 
-1. **The global `atomic` binary (recommended for all paths).** Session
-   management lives under `atomic session …` and `atomic workflow status`.
-   Use `atomic workflow session connect` (not `atomic session connect`) when
-   attaching to workflow-spawned sessions — it is the canonical surface and
-   the form you should always quote back to the user:
-   ```bash
-   atomic session list
-   atomic workflow status <session-id>
-   atomic workflow session connect <session-id>      # new terminal recommended — takes over stdin/stdout
-   atomic session kill <session-id> -y
-   ```
-2. **No-global-install fallback — `bunx atomic`.** The `atomic` CLI ships as a
-   separate package (`@bastani/atomic`) from the SDK (`@bastani/atomic-sdk`).
-   Add it alongside the SDK with `bun add @bastani/atomic` and the binary
-   becomes available at `node_modules/.bin/atomic` so `bunx atomic …` works
-   without a global install. Skip this if the user already has the global
-   binary on `PATH`.
+```bash
+atomic workflow status <runId>           # run/status — JSON snapshot
+atomic workflow attach <runId>           # mount OpenTUI panel client (new terminal)
+atomic workflow stop <runId>             # run/stop — SIGTERM to agent subprocess(es)
+```
 
-`runWorkflow` does **not** auto-register `session` or `status` subcommands on
-user-app worker files. If the dev wants those commands inside their own CLI,
-they wire them explicitly using the SDK session primitives:
+No-global-install fallback — `bunx atomic`. The `atomic` CLI ships as a
+separate package (`@bastani/atomic`) from the SDK (`@bastani/atomic-sdk`).
+Add it with `bun add @bastani/atomic` and use `bunx atomic …` in place of
+`atomic …`. Skip if the global binary is already on `PATH`.
+
+`runWorkflow` does **not** auto-register monitoring subcommands on user-app
+worker files. If the dev wants those commands inside their own CLI, they
+wire them using SDK primitives:
 
 ```ts
 import {
-  listSessions,
-  stopSession,
-  attachSession,
-  getSessionStatus,
+  runWorkflow,
+  connectToDaemon,
 } from "@bastani/atomic-sdk/workflows";
+
+// After runWorkflow returns a runId, use the daemon connection:
+const conn = await connectToDaemon();
+const status = await conn.sendRequest("run/status", { runId });
+const transcript = await conn.sendRequest("run/transcript", { runId, sessionName: "step-1" });
+await conn.sendRequest("run/stop", { runId });
 ```
 
-Because every workflow lands on the same atomic tmux socket regardless of
-which path spawned it, the `atomic` CLI commands work for Path A and B
-workflows just as well as for registered atomic workflows.
-
-Detached workflows return immediately with a session name; the actual work
-runs in the background. Use `status` to check whether the workflow is still
-running, has completed, errored out, or paused for human input — without
-attaching to its TUI.
-
-```bash
-# Via the global `atomic` CLI:
-atomic workflow status atomic-wf-claude-gen-spec-a1b2c3d4
-
-# Via bunx atomic (SDK-only, no global install):
-bunx atomic workflow status atomic-wf-claude-gen-spec-a1b2c3d4
-
-# Output:
-# {"id":"atomic-wf-claude-gen-spec-a1b2c3d4","overall":"in_progress","alive":true,
-#  "sessions":[{"name":"orchestrator","status":"running",...}],...}
-```
+Detached workflows (launched with `-d` or `detach: true`) dispatch immediately and return. The daemon keeps the run alive. Use `run/status` to poll progress without attaching a panel.
 
 Five overall states the agent must handle distinctly:
 
 | Status | Meaning | What you should do |
 |---|---|---|
-| `in_progress` | The orchestrator is running and no stage is paused | Wait, or report progress to the user |
-| `awaiting_input` | A stage is mid-`AskUserQuestion` (or equivalent HIL primitive) and the SDK has emitted the elicitation event — but no transcript-level review marker is set yet. Surfaces in the orchestrator panel as a blue HIL pulse | **Surface this to the user immediately** — same UX as `needs_review`. The session is blocked waiting on a typed answer; nothing else will happen until the user attaches and responds |
-| `needs_review` | At least one stage is paused for human input (HIL) — Copilot `ask_user`, OpenCode `question.asked`, Copilot/MCP elicitation, or a transcript-marker handoff that survives across reattach | **Surface this to the user immediately** — they need to attach with `atomic workflow session connect <id>` to respond, otherwise the workflow stalls indefinitely |
+| `in_progress` | Daemon is running stages and no stage is paused | Wait, or report progress to the user |
+| `awaiting_input` | A stage is mid-`AskUserQuestion` (or equivalent HIL primitive) and the SDK has emitted the elicitation event — no transcript-level review marker set yet | **Surface this to the user immediately** — same UX as `needs_review`. Session blocked waiting on a typed answer; nothing else will happen until the user attaches and responds |
+| `needs_review` | At least one stage is paused for human input (HIL) — Copilot `ask_user`, OpenCode `question.asked`, Copilot/MCP elicitation, or a transcript-marker handoff that survives across detach/reattach | **Surface this to the user immediately** — they need to `atomic workflow attach <runId>` to respond, otherwise the workflow stalls indefinitely |
 | `completed` | Workflow finished successfully | Report success and summarize the output |
 | `error` | Fatal error or a stage failed | Report the `fatalError` field and offer to investigate logs |
 
 `awaiting_input` and `needs_review` both outrank `completed` so a HIL pause
 near the end is never reported as done while still waiting on a human.
-A dead orchestrator with a stale snapshot is automatically downgraded to
-`error`. The two HIL states differ in provenance: `awaiting_input` is a
-live-event pulse (only visible while the elicitation tool is mid-call —
-guarded transitions only allow `running → awaiting_input → running` per
-`PanelStore`), while `needs_review` is durable (set when a stage's transcript
-contains a review marker and survives across detach/reattach). Workflows that
-use `AskUserQuestion` may surface either or both.
 
-Omit the id to list every running workflow at once: `atomic workflow status`.
-Useful when checking on multiple parallel runs, or when the user just asks
-"what's running?".
+## Stopping a run
 
-## Cleaning up sessions
-
-When the user is done with a workflow — or you launched one detached and it's
-no longer needed — tear it down with `-y` so no confirmation prompt blocks you:
+When the user is done with a workflow, or you dispatched one that's no longer needed:
 
 ```bash
-# Via the global atomic binary (works for all three paths — same tmux socket):
-atomic session kill atomic-wf-claude-gen-spec-a1b2c3d4 -y
-
-# Via bunx atomic (SDK-only, no global install):
-bunx atomic session kill atomic-wf-claude-gen-spec-a1b2c3d4 -y
+atomic workflow stop <runId>
+# Equivalent SDK RPC: conn.sendRequest("run/stop", { runId })
 ```
 
-The `-y` flag is mandatory for agent use. Without it, the CLI calls
-`@clack/prompts confirm`, which expects a TTY and will hang indefinitely in a
-non-interactive context. Same flag works for `atomic workflow session kill`
-and `atomic chat session kill`. Without an id, `kill -y` tears down every
-in-scope session — only do that when the user has asked to stop everything.
+The daemon sends SIGTERM to the agent subprocess(es) and cleans up the run. Unlike the 1.x `session kill`, there is no `-y` flag — the daemon's `run/stop` is non-interactive by design.
 
 ## Worked examples
 
@@ -523,14 +455,14 @@ in-scope session — only do that when the user has asked to stop everything.
 5. Ask via AskUserQuestion once: "What focus level for the spec?" with
    choices `minimal`, `standard`, `exhaustive`. User picks `standard`. Skip
    `notes` since it's optional.
-6. Run: `atomic workflow -n gen-spec -a claude -d --research_doc=research/docs/2026-04-11-auth.md --focus=standard`
-7. The CLI prints a session name like `atomic-wf-claude-gen-spec-a1b2c3d4`.
-   Tell the user, using the §"After starting" template:
-   "Started workflow `gen-spec` (session id: `atomic-wf-claude-gen-spec-a1b2c3d4`).
+5. Run: `atomic workflow -n gen-spec -a claude --research_doc=research/docs/2026-04-11-auth.md --focus=standard`
+6. The CLI prints a run id like `a1b2c3d4`.
+   Tell the user:
+   "Started workflow `gen-spec` (run id: `a1b2c3d4`).
    To watch it run interactively, **open a new terminal** and run:
-   `atomic workflow session connect atomic-wf-claude-gen-spec-a1b2c3d4`.
-   Status: `atomic workflow status atomic-wf-claude-gen-spec-a1b2c3d4`.
-   Stop: `atomic session kill atomic-wf-claude-gen-spec-a1b2c3d4 -y`."
+   `atomic workflow attach a1b2c3d4`.
+   Status: `atomic workflow status a1b2c3d4`.
+   Stop: `atomic workflow stop a1b2c3d4`."
 
 **Example B — user app, free-form prompt**
 
@@ -545,20 +477,17 @@ in-scope session — only do that when the user has asked to stop everything.
    `defineWorkflow` source to confirm `prompt` is a declared input.
 5. Run: `bun run src/opencode-worker.ts --prompt="add OAuth to the API"`.
    (If the worker was built with a `[prompt...]` Commander argument, the positional
-   form `bun run src/opencode-worker.ts "add OAuth to the API"` works too.)
-   The runtime prints a session name like `atomic-wf-opencode-summarize-pr-a1b2c3d4`.
+   form `bun run src/claude-worker.ts "add OAuth to the API"` works too.)
+   The daemon prints a run id like `b5c6d7e8`.
    For a detached run, the worker must wire `detach: true` to `runWorkflow` or
    expose its own `--detach` Commander option — there is no built-in `-d` on
    user-app workers.
-6. Apply the §"After starting" rule. Tell the user:
-   "Started workflow `summarize-pr` (session id: `atomic-wf-opencode-summarize-pr-a1b2c3d4`).
+5. Tell the user:
+   "Started workflow `summarize-pr` (run id: `b5c6d7e8`).
    To watch it run interactively, **open a new terminal** and run:
-   `atomic workflow session connect atomic-wf-opencode-summarize-pr-a1b2c3d4`.
-   Status: `atomic workflow status atomic-wf-opencode-summarize-pr-a1b2c3d4`.
-   Stop: `atomic session kill atomic-wf-opencode-summarize-pr-a1b2c3d4 -y`."
-7. `bunx atomic …` is equivalent if the global binary is not installed. Both
-   talk to the same atomic tmux socket regardless of which path spawned the
-   workflow.
+   `atomic workflow attach b5c6d7e8`.
+   Status: `atomic workflow status b5c6d7e8`.
+   Stop: `atomic workflow stop b5c6d7e8`."
 
 **Example B1b — repo-shipped example, structured inputs**
 
@@ -573,26 +502,19 @@ in-scope session — only do that when the user has asked to stop everything.
    default casual), `notes` (text, optional).
 5. Ask via AskUserQuestion: "What should the greeting text be?" User
    supplies `"Hello there"`. `style=formal` is implied by the message.
-6. Run: `bun run examples/hello-world/copilot-worker.ts --greeting="Hello there" --style=formal`
-7. Apply the §"After starting" rule. Tell the user:
-   "Started workflow `hello-world` (session id: `<sessionId from CLI>`).
-   To watch it run interactively, **open a new terminal** and run:
-   `atomic workflow session connect <sessionId>`."
+5. Run: `bun run examples/hello-world/claude-worker.ts --greeting="Hello there" --style=formal`
+6. Apply the §"After starting" rule. Tell the user the run id and attach command.
 
 **Example B2 — atomic registry, free-form prompt**
 
 > **User:** "run ralph on 'add OAuth to the API'"
 
-1. Resolve the agent from the user request or `ATOMIC_AGENT` (example: `copilot`).
-2. Path C (atomic registry — `ralph` is shipped inside `@bastani/atomic-sdk`).
-   Run `atomic workflow list -a copilot`. Confirms `ralph` is registered for Copilot.
-3. Target resolved exactly: `ralph`, agent `copilot`.
-4. Prompt already given in user's message. No AskUserQuestion needed.
-5. Run: `atomic workflow -n ralph -a copilot -d "add OAuth to the API"`.
-6. Apply the §"After starting" rule. Tell the user:
-   "Started workflow `ralph` (session id: `<sessionId from CLI>`).
-   To watch it run interactively, **open a new terminal** and run:
-   `atomic workflow session connect <sessionId>`."
+1. Path C (atomic builtin — `ralph` is shipped inside `@bastani/atomic-sdk`).
+   Run `atomic workflow list`. Confirms `ralph` is registered.
+2. Target resolved exactly: `ralph`, agent `claude`.
+3. Prompt already given in user's message. No AskUserQuestion needed.
+4. Run: `atomic workflow -n ralph -a claude "add OAuth to the API"`.
+5. Apply the §"After starting" rule. Tell the user the run id and attach command.
 
 **Example C — workflow does not exist**
 
@@ -629,23 +551,8 @@ in-scope session — only do that when the user has asked to stop everything.
 - **Asking everything at once** — let AskUserQuestion drive one question per
   field. Enum fields are multiple-choice, not free text.
 - **Re-asking what the user already said** — read their message first.
-- **Forgetting to report the session name** — the user needs it to reattach
-  and to query status later.
-- **Reporting the session name without the new-terminal attach instruction** —
-  every successful spawn must tell the user, in the *same message*, to
-  **open a new terminal** and run `atomic workflow session connect <sessionId>`.
-  See §"After starting: tell the user how to view it interactively" for the
-  exact phrasing template. Omitting it leaves the user with a session id and
-  no idea how to watch the workflow run.
-- **Telling the user to attach in their current terminal** —
-  `atomic workflow session connect` takes over stdin/stdout, so attaching in
-  the chat shell kicks the user out of the chat. Always say "open a new
-  terminal."
-- **Substituting `atomic session connect` for `atomic workflow session connect`** —
-  both reach the same socket, but the `workflow` form is the canonical surface
-  for workflow-spawned sessions. Use it consistently.
-- **Leaving `needs_review` unreported** — when `atomic workflow status`
-  returns `needs_review`, surface it to the user right away. The workflow is
-  blocked on human input and will sit forever otherwise.
-- **Calling `session kill` without `-y`** — the prompt hangs in a
-  non-interactive context. Always pass `-y` from an agent.
+- **Forgetting to report the run id** — the user needs it to attach and to query status later.
+- **Reporting the run id without the attach command** — every successful dispatch must tell the user, in the *same message*, to **open a new terminal** and run `atomic workflow attach <runId>`. Omitting it leaves the user with an id and no idea how to watch the workflow run.
+- **Telling the user to attach in their current terminal** — `atomic workflow attach` mounts an OpenTUI panel that takes over stdin/stdout, so attaching in the chat shell ends the chat. Always say "open a new terminal."
+- **Leaving `needs_review` unreported** — when status returns `needs_review`, surface it to the user right away. The workflow is blocked on human input and will sit forever otherwise.
+- **Using `run/stop` without waiting for confirmation** — `run/stop` sends SIGTERM. Verify the user wants to stop before calling it on their behalf.

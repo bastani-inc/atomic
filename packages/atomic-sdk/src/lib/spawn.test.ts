@@ -3,11 +3,8 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  hasRequiredMuxBinary,
-  isMuxBinaryRequiredForPlatform,
+  hasUv,
   prependPath,
-  psmuxReleaseAssetSuffix,
-  requiredMuxBinaryCandidatesForPlatform,
   resolveCommandFromCurrentPath,
   runCommand,
 } from "./spawn.ts";
@@ -40,42 +37,6 @@ describe("spawn PATH helpers", () => {
     prependPath(tempDir);
 
     expect(resolveCommandFromCurrentPath("atomic-spawn-test")).toBe(commandPath);
-  });
-
-  test("requires native psmux binaries on Windows", () => {
-    expect(requiredMuxBinaryCandidatesForPlatform("win32")).toEqual([
-      "psmux",
-      "pmux",
-    ]);
-    expect(isMuxBinaryRequiredForPlatform("psmux", "win32")).toBe(true);
-    expect(isMuxBinaryRequiredForPlatform("pmux", "win32")).toBe(true);
-    expect(isMuxBinaryRequiredForPlatform("tmux", "win32")).toBe(false);
-  });
-
-  test("requires tmux on Unix-like platforms", () => {
-    expect(requiredMuxBinaryCandidatesForPlatform("linux")).toEqual(["tmux"]);
-    expect(requiredMuxBinaryCandidatesForPlatform("darwin")).toEqual(["tmux"]);
-    expect(isMuxBinaryRequiredForPlatform("tmux", "linux")).toBe(true);
-    expect(isMuxBinaryRequiredForPlatform("psmux", "linux")).toBe(false);
-    expect(isMuxBinaryRequiredForPlatform("pmux", "darwin")).toBe(false);
-  });
-
-  test("maps supported Windows architectures to psmux release assets", () => {
-    expect(psmuxReleaseAssetSuffix("x64")).toBe("windows-x64.zip");
-    expect(psmuxReleaseAssetSuffix("ia32")).toBe("windows-x86.zip");
-    expect(psmuxReleaseAssetSuffix("arm64")).toBe("windows-arm64.zip");
-    expect(psmuxReleaseAssetSuffix("arm")).toBeNull();
-  });
-
-  test("uses platform requirement when checking PATH", () => {
-    const commandPath = join(tempDir, "tmux");
-
-    writeFileSync(commandPath, "#!/bin/sh\n");
-    chmodSync(commandPath, 0o755);
-
-    process.env.PATH = tempDir;
-
-    expect(hasRequiredMuxBinary()).toBe(process.platform !== "win32");
   });
 
   test("does not add duplicate PATH entries", () => {

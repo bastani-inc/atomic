@@ -48,15 +48,11 @@ import { ensureDir } from "../services/system/copy.ts";
 import type { SessionEvent } from "@github/copilot-sdk";
 import type { SessionPromptResponse } from "@opencode-ai/sdk/v2";
 import type { SessionMessage } from "@anthropic-ai/claude-agent-sdk";
-import * as tmux from "./tmux.ts";
-import { spawnMuxAttach } from "./tmux.ts";
-import { buildSelfExecCommand, resolveDispatcher } from "../lib/self-exec.ts";
 import { buildLauncherEnv, buildTmuxEnv } from "../lib/terminal-env.ts";
 import {
   getListeningPortForPid,
   PORT_DISCOVERY_TIMEOUT_MS,
 } from "./port-discovery.ts";
-import { spawnAttachedFooter } from "./attached-footer.ts";
 import {
   clearClaudeSession,
   ClaudeClientWrapper,
@@ -162,27 +158,7 @@ export function setExecutorTelemetrySinks(
  * Reserved-name rejections (orchestrator-name leak, fixture leak) are bug
  * conditions that must be observable — they must NOT be silently swallowed.
  */
-async function loggedKillWindow(
-  sessionName: string,
-  windowName: string,
-  origin: "stage-error" | "abort-cleanup",
-): Promise<void> {
-  try {
-    await tmux.killWindow(sessionName, windowName);
-  } catch (err) {
-    const msg = errorMessage(err);
-    _warnSink(`killWindow rejected for ${windowName} (${origin}): ${msg}`);
-    _telemetrySink.emit("workflow.tmux.kill_window_rejected", {
-      windowName,
-      origin,
-      error: msg,
-    });
-  }
-}
-
 /** Exported for unit testing only. Not part of the public API. */
-export const _loggedKillWindowForTest = loggedKillWindow;
-
 // ---------------------------------------------------------------------------
 // Agent readiness wait — wired into OffloadManager via deps.waitForReady.
 // ---------------------------------------------------------------------------
@@ -530,63 +506,12 @@ export function buildPaneCommand(
   }
 }
 
-export async function waitForServer(
-  agent: AgentType,
-  paneId: string,
-): Promise<string> {
+export async function waitForServer(agent: AgentType, paneId: string): Promise<string> {
   if (agent === "claude") return "";
-
-  const portDeadline = Date.now() + PORT_DISCOVERY_TIMEOUT_MS;
-
-  // 1. Wait for the agent process to start and the TUI to render.
-  while (Date.now() < portDeadline) {
-    const content = tmux.capturePane(paneId);
-    const lines = content.split("\n").filter((l) => l.trim().length > 0);
-    if (lines.length >= 3) break;
-    await Bun.sleep(1_000);
-  }
-
-  // 2. Discover the listening port via the agent's PID.
-  const panePid = tmux.getPanePid(paneId);
-  if (!panePid) {
-    throw new Error(`failed to resolve agent PID for pane ${paneId}`);
-  }
-  const remainingMs = Math.max(0, portDeadline - Date.now());
-  const port = await getListeningPortForPid(panePid, {
-    timeoutMs: remainingMs,
-  });
-  if (port === null) {
-    throw new Error(
-      `agent (${agent}) did not bind a TCP port within ${PORT_DISCOVERY_TIMEOUT_MS}ms ` +
-        `(pane ${paneId}, pid ${panePid})`,
-    );
-  }
-  const serverUrl = `localhost:${port}`;
-
-  // 3. Verify the SDK can actually connect.
-  if (agent === "copilot") {
-    const probeDeadline = Date.now() + SERVER_PROBE_TIMEOUT_MS;
-    const { CopilotClient } = await import("@github/copilot-sdk");
-    while (Date.now() < probeDeadline) {
-      try {
-        const probe = new CopilotClient({ cliUrl: serverUrl });
-        await probe.start();
-        await probe.listSessions();
-        await probe.stop();
-        return serverUrl;
-      } catch {
-        await Bun.sleep(1_000);
-      }
-    }
-    throw new Error(
-      `copilot SDK probe did not respond at ${serverUrl} within ${SERVER_PROBE_TIMEOUT_MS}ms`,
-    );
-  }
-
-  // OpenCode: short settle delay, then return.
-  await Bun.sleep(1_000);
-  return serverUrl;
+  void paneId;
+  throw new Error("not implemented: use daemon path");
 }
+
 
 /**
  * Escape a string for safe interpolation inside a bash double-quoted string.
@@ -645,190 +570,6 @@ export function coerceInputsBySchema(
   return out;
 }
 
-// ============================================================================
-// Entry point called by the CLI command
-// ============================================================================
-
-/**
- * Called by `atomic workflow -n <name> -a <agent> <prompt>`.
- *
- * Always creates a tmux session in the atomic socket with the
- * orchestrator as the initial pane, then attaches so the user sees
- * everything live — even when invoked from inside another tmux session.
- */
-export async function executeWorkflow(
-  options: WorkflowRunOptions,
-): Promise<{ id: string; tmuxSessionName: string }> {
-  const {
-    definition,
-    agent,
-    inputs = {},
-    projectRoot = process.cwd(),
-    detach = false,
-    pathToAtomicExecutable,
-  } = options;
-
-  // Resolve the dispatcher early — before any tmux or filesystem side-effect
-  // so NoDispatcherError rejects the promise without leaking a tmux session
-  // (RFC §5.7).
-  const dispatcher = resolveDispatcher({ override: pathToAtomicExecutable });
-
-  // OpenCode reads its `instructions` array from `.opencode/opencode.json`
-  // at server-start time — both for the interactive tmux-pane path and the
-  // headless `createOpencode({ port: 0 })` path. Reconcile here, before
-  // either spawn, so the resolved AGENTS.md is the source of truth on
-  // every workflow run. Best-effort: a malformed config shouldn't block.
-  if (agent === "opencode") {
-    try {
-      await reconcileOpencodeInstructions(projectRoot);
-    } catch {
-      /* swallow */
-    }
-  }
-
-  const workflowRunId = generateId();
-  const tmuxSessionName = `atomic-wf-${agent}-${definition.name}-${workflowRunId}`;
-  const sessionsBaseDir = join(getSessionsBaseDir(), workflowRunId);
-  await ensureDir(sessionsBaseDir);
-
-  // Compose the per-session env exactly like `atomic chat` does in
-  // `chat/index.ts`: agent-CLI defaults + claude temp env + provider
-  // overrides + ATOMIC_AGENT, then layer terminal defaults
-  // (LANG / LC_ALL / LC_CTYPE / TERM / COLORTERM=truecolor) via
-  // `buildLauncherEnv`. Without this the orchestrator pane lost
-  // COLORTERM (OpenTUI fell back to 256-color rendering) and stage
-  // panes never saw provider-overrides envVars (e.g. custom
-  // ANTHROPIC_API_URL / OPENAI_BASE_URL set in
-  // `~/.atomic/settings.json#providers.<agent>.envVars`).
-  const providerOverrides = await getProviderOverrides(agent, projectRoot);
-  const claudeTempEnv = agent === "claude" ? atomicTempEnv() : {};
-  const agentEnv: Record<string, string> = {
-    ...AGENT_CLI[agent].envVars,
-    ...claudeTempEnv,
-    ...providerOverrides.envVars,
-    ATOMIC_AGENT: agent,
-  };
-  const sessionEnv = buildTmuxEnv(agentEnv);
-
-  // Write a launcher script for the orchestrator pane.
-  // Re-executes the atomic CLI's hidden `_orchestrator-entry` sub-command
-  // with positional args:
-  //   atomic _orchestrator-entry <workflowName> <agent> <inputsB64> <workflowSource>
-  // (or `bun <cli.ts> _orchestrator-entry …` in dev). Mirrors OpenCode's
-  // single-binary architecture — every fresh-process entry into atomic
-  // goes through a CLI sub-command, never a free-standing JS bundle.
-  //
-  // Why both `name` and `source`: in a `bun build --compile` binary every
-  // bundled module's `import.meta.path` collapses to `/$bunfs/root/<binary>`,
-  // so the `definition.source` captured at workflow-module-eval time
-  // points at the binary itself. The CLI's `_orchestrator-entry` resolves
-  // by name+agent against the builtin registry in that case; in dev /
-  // installed-package mode it falls back to dynamic-importing the source
-  // so third-party SDK consumers (whose workflows aren't in the builtin
-  // registry) keep working.
-  const isWin = process.platform === "win32";
-  const launcherExt = isWin ? "ps1" : "sh";
-  const launcherPath = join(sessionsBaseDir, `orchestrator.${launcherExt}`);
-  const logPath = join(sessionsBaseDir, "orchestrator.log");
-  // Orchestrator launcher env = session env + workflow-specific extras.
-  // The workflow extras (ATOMIC_WF_* + diagnostics) are orchestrator-only,
-  // so they live in the launcher script rather than the session env.
-  const launcherEnvVars: Record<string, string> = {
-    ...buildLauncherEnv(agentEnv),
-    ...workflowDiagnosticsEnv(),
-    ATOMIC_WF_ID: workflowRunId,
-    ATOMIC_WF_TMUX: tmuxSessionName,
-    ATOMIC_WF_AGENT: agent,
-    ATOMIC_WF_CWD: projectRoot,
-  };
-
-  // Inputs are passed through as base64-encoded JSON so long multiline
-  // text values survive shell quoting without any further escaping.
-  // Free-form workflows ride the same pipe — their single positional
-  // prompt is stored under the `prompt` key so workflow authors always
-  // read the user's prompt via `ctx.inputs.prompt`.
-  const inputsB64 = Buffer.from(JSON.stringify(inputs)).toString("base64");
-  const workflowSource = definition.source;
-
-  // Build the self-re-exec command line via the resolved dispatcher.
-  // Resolution order (already performed above, before any side-effects):
-  //   - override-binary → `<override> _orchestrator-entry <args>`
-  //   - host-bun        → `<bun> <SDK cli.ts> _orchestrator-entry <args>`
-  const orchestratorCmd = buildSelfExecCommand({
-    dispatcher,
-    subcommand: "_orchestrator-entry",
-    args: [definition.name, agent, inputsB64, workflowSource],
-  });
-
-  const launcherScript = isWin
-    ? [
-        `Set-Location "${escPwsh(projectRoot)}"`,
-        ...Object.entries(launcherEnvVars).map(
-          ([key, value]) => `$env:${key} = "${escPwsh(value)}"`,
-        ),
-        `& ${orchestratorCmd} 2>"${escPwsh(logPath)}"`,
-      ].join("\n")
-    : [
-        "#!/bin/bash",
-        `cd "${escBash(projectRoot)}"`,
-        ...Object.entries(launcherEnvVars).map(
-          ([key, value]) => `export ${key}="${escBash(value)}"`,
-        ),
-        `${orchestratorCmd} 2>"${escBash(logPath)}"`,
-      ].join("\n");
-
-  await writeFile(launcherPath, launcherScript, { mode: 0o755 });
-
-  const shellCmd = isWin
-    ? `pwsh -NoProfile -File "${escPwsh(launcherPath)}"`
-    : `bash "${escBash(launcherPath)}"`;
-  // Pass `sessionEnv` (not `launcherEnvVars`) to tmux's `new-session -e
-  // KEY=VALUE` so all subsequent windows / panes inherit the same agent
-  // env that chat sets — terminal defaults, AGENT_CLI defaults, provider
-  // overrides, ATOMIC_AGENT. Workflow-only extras (ATOMIC_WF_* and
-  // diagnostics) stay in the orchestrator launcher script's env exports
-  // since stage panes don't need them.
-  const orchPaneId = tmux.createSession(
-    tmuxSessionName,
-    shellCmd,
-    "orchestrator",
-    undefined,
-    sessionEnv,
-    pathToAtomicExecutable,
-  );
-
-  // Set up the workflow's status-line up-front so the default tmux
-  // window-list (`0:orchestrator …`) doesn't leak through before the
-  // first agent stage starts. The format is shared across all windows
-  // in this session and switches between the orchestrator and agent
-  // branches via `#{window_name}`, so this single call covers every
-  // future stage window too — `createSessionRunner` re-applies it per
-  // stage to refresh user-option state, but the orchestrator pane no
-  // longer flashes the default tmux status while waiting.
-  spawnAttachedFooter(orchPaneId, undefined, tmuxSessionName);
-
-  if (detach) {
-    // Session is already running detached on the atomic socket (tmux
-    // new-session -d). Print connection hints and return so the caller
-    // can exit cleanly without blocking on the orchestrator.
-    printDetachedBanner(tmuxSessionName);
-    return { id: workflowRunId, tmuxSessionName };
-  }
-
-  if (tmux.isInsideAtomicSocket()) {
-    // Already on the atomic server — just switch to the new session.
-    tmux.switchClient(tmuxSessionName);
-  } else if (tmux.isInsideTmux()) {
-    // Inside a different tmux server — detach and replace the client
-    // with an attach to the atomic socket (no nesting).
-    tmux.detachAndAttachAtomic(tmuxSessionName);
-  } else {
-    const attachProc = spawnMuxAttach(tmuxSessionName);
-    await attachProc.exited;
-  }
-
-  return { id: workflowRunId, tmuxSessionName };
-}
 
 function workflowDiagnosticsEnv(): Record<string, string> {
   const keys = [
@@ -851,36 +592,6 @@ function workflowDiagnosticsEnv(): Record<string, string> {
  * background and how to attach to it. Written to stdout so scripts can
  * capture the session name with a simple redirect.
  */
-function printDetachedBanner(tmuxSessionName: string): void {
-  const paint = createPainter();
-  process.stdout.write(
-    "\n" +
-      "  " +
-      paint("success", "✓") +
-      " " +
-      paint("text", "workflow started in background", { bold: true }) +
-      "\n" +
-      "  " +
-      paint("dim", "session: ") +
-      paint("accent", tmuxSessionName) +
-      "\n" +
-      "\n" +
-      "  " +
-      paint("dim", "attach: ") +
-      paint("accent", `atomic workflow session connect ${tmuxSessionName}`) +
-      "\n" +
-      "  " +
-      paint("dim", "list:   ") +
-      paint("accent", "atomic workflow session list") +
-      "\n" +
-      "  " +
-      paint("dim", "kill:   ") +
-      paint("accent", `atomic workflow session kill ${tmuxSessionName}`) +
-      "\n" +
-      "\n",
-  );
-}
-
 // ============================================================================
 // Session execution helpers
 // ============================================================================
@@ -1936,20 +1647,9 @@ function createSessionRunner(
         shared.panel.backgroundTaskStarted();
         panelSessionAdded = true;
       } else {
-        // Standard tmux window for visible stages.
-        paneId = tmux.createWindow(
-          shared.tmuxSessionName,
-          name,
-          paneCmd,
-          undefined,
-          paneEnvVars,
-        );
-        shared.activeRegistry.set(name, { name, paneId, done: donePromise });
-
-        spawnAttachedFooter(paneId, undefined, shared.tmuxSessionName);
-
-        serverUrl = await waitForServer(shared.agent, paneId);
-
+        // Standard tmux window for visible stages — not implemented in daemon path.
+        // Non-headless stages are handled by the daemon UI server.
+        serverUrl = "";
         shared.panel.addSession(name, graphParents);
         panelSessionAdded = true;
       }
@@ -2253,9 +1953,6 @@ function createSessionRunner(
       }
       // Kill the tmux window if one was created (visible stages and headless OpenCode).
       // Headless Claude/Copilot have virtual paneIds ("headless-...") — no window to kill.
-      if (paneId && !paneId.startsWith("headless-")) {
-        await loggedKillWindow(shared.tmuxSessionName, name, "stage-error");
-      }
       // Ensure the done promise settles and the active entry is cleared.
       shared.activeRegistry.delete(name);
       shared.failedRegistry.add(name);
@@ -2269,230 +1966,4 @@ function createSessionRunner(
   };
 }
 
-// ============================================================================
-// Orchestrator logic — runs inside a tmux pane
-// ============================================================================
-
 export { validateOrchestratorEnv } from "./executor-env.ts";
-import { validateOrchestratorEnv } from "./executor-env.ts";
-
-/**
- * Run the orchestrator for a compiled workflow definition.
- *
- * Called by the SDK's `orchestrator-entry.ts` after it has resolved the
- * workflow definition (either via builtin-registry lookup in compiled-
- * binary mode, or by dynamic-importing `source` in dev) and decoded the
- * inputs payload from argv. The runtime environment (`ATOMIC_WF_ID`,
- * `ATOMIC_WF_TMUX`, `ATOMIC_WF_AGENT`, `ATOMIC_WF_CWD`) is set by the
- * launcher script that `executeWorkflow()` writes — those vars describe
- * *where* this orchestrator is running, not what to do.
- */
-export async function runOrchestrator(
-  definition: WorkflowDefinition,
-  inputs: Record<string, string> = {},
-): Promise<void> {
-  const { workflowRunId, tmuxSessionName, agent, cwd } =
-    validateOrchestratorEnv();
-
-  // RFC §5.11 — register the real telemetry sink so all WORKFLOW_OFFLOAD_*
-  // events reach disk at ~/.atomic/sessions/<runId>/telemetry.jsonl. Tests
-  // override via setExecutorTelemetrySinks before runOrchestrator is invoked.
-  // `warn` keeps its default (console.warn) — no override needed here.
-  setExecutorTelemetrySinks({
-    telemetry: getProductionTelemetrySink(workflowRunId),
-  });
-
-  // A bare prompt string is still useful for the panel header and the
-  // session-dir metadata.json — both just want something displayable.
-  // Free-form workflows store their single positional prompt under the
-  // `prompt` key so workflow authors always read it via
-  // `ctx.inputs.prompt`.
-  const prompt = inputs.prompt ?? "";
-
-  process.chdir(cwd);
-
-  const providerOverrides = await getProviderOverrides(agent, cwd);
-  const extraChatFlags =
-    agent === "copilot" ? await getCopilotScmDisableFlags(cwd) : [];
-  const sessionsBaseDir = join(getSessionsBaseDir(), workflowRunId);
-  await ensureDir(sessionsBaseDir);
-
-  const panel = await OrchestratorPanel.create({
-    tmuxSession: tmuxSessionName,
-  });
-
-  // Mirror panel-store mutations to <sessionDir>/status.json so
-  // out-of-process consumers (e.g. `atomic workflow status`) can read
-  // the live workflow state without IPC into the orchestrator.
-  // Writes are debounced via a "pending" flag so a burst of mutations
-  // collapses into a single file write.
-  let snapshotPending = false;
-  const persistSnapshot = (): void => {
-    if (snapshotPending) return;
-    snapshotPending = true;
-    queueMicrotask(() => {
-      snapshotPending = false;
-      const snap = panel.getSnapshot();
-      void writeSnapshot(
-        sessionsBaseDir,
-        buildSnapshot({
-          workflowRunId,
-          tmuxSession: tmuxSessionName,
-          ...snap,
-        }),
-      );
-    });
-  };
-  const unsubscribePanel = panel.subscribe(persistSnapshot);
-  // Seed an initial snapshot so the file exists before any session starts.
-  persistSnapshot();
-
-  // Idempotent shutdown guard
-  let shutdownCalled = false;
-  const shutdown = (exitCode = 0) => {
-    if (shutdownCalled) return;
-    shutdownCalled = true;
-    unsubscribePanel();
-    // Final snapshot reflecting terminal state (completed/error/aborted).
-    void writeSnapshot(
-      sessionsBaseDir,
-      buildSnapshot({
-        workflowRunId,
-        tmuxSession: tmuxSessionName,
-        ...panel.getSnapshot(),
-      }),
-    );
-    panel.destroy();
-    try {
-      tmux.killSession(tmuxSessionName);
-    } catch {}
-    process.exitCode = exitCode;
-  };
-
-  // Wire SIGINT so the terminal is always restored.
-  // SIGTERM and other signals are handled by OpenTUI's exitSignals.
-  const signalHandler = () => shutdown(1);
-  process.on("SIGINT", signalHandler);
-
-  // Build OffloadManager with live panel store and tmux/provider deps.
-  const offloadManager = createOffloadManager({
-    panelStore: panel.getPanelStore(),
-    tmux: {
-      killWindow: tmux.killWindow,
-      createWindow: async (session, window, command, cwd, envVars) => {
-        tmux.createWindow(session, window, command, cwd, envVars);
-      },
-      selectWindow: async (session, window) => {
-        tmux.selectWindow(`${session}:${window}`);
-      },
-    },
-    providers: {
-      claude: { buildResumeArgs: buildClaudeResumeArgs },
-      opencode: { buildResumeArgs: buildOpencodeResumeArgs },
-      copilot: { buildResumeArgs: buildCopilotResumeArgs },
-    },
-    hookSettingsPath: ensureWorkflowHookSettings,
-    shellQuote,
-    waitForReady: defaultWaitForAgentReady,
-    now: Date.now,
-    emit: (event, payload) => _telemetrySink.emit(event, payload),
-    claudeOffloadCleanup,
-  });
-
-  // RFC §5.6 — wire the offload manager into the panel so the React tree's
-  // OffloadManagerContext.Provider is non-null before any stage renders.
-  panel.attachOffloadManager(offloadManager);
-
-  // Shared state for all session runners
-  const shared: SharedRunnerState = {
-    tmuxSessionName,
-    sessionsBaseDir,
-    projectRoot: cwd,
-    agent,
-    inputs,
-    providerOverrides,
-    extraChatFlags,
-    panel,
-    activeRegistry: new Map(),
-    completedRegistry: new Map(),
-    failedRegistry: new Set(),
-    offloadManager,
-    workflowRunId,
-  };
-
-  try {
-    // Parse integer inputs to numbers so `ctx.inputs.<name>` matches the
-    // declared type. Mutate shared.inputs so per-stage SessionContexts see
-    // the same shape.
-    shared.inputs = coerceInputsBySchema(inputs, definition.inputs);
-
-    await Bun.write(
-      join(sessionsBaseDir, "metadata.json"),
-      JSON.stringify(
-        {
-          workflowName: definition.name,
-          agent,
-          prompt,
-          projectRoot: cwd,
-          startedAt: new Date().toISOString(),
-        },
-        null,
-        2,
-      ),
-    );
-
-    // Initialize panel with just the orchestrator node (sessions added dynamically)
-    panel.showWorkflowInfo(definition.name, agent, [], prompt);
-
-    // Build the WorkflowContext — top-level context for the .run() callback
-    const sessionRunner = createSessionRunner(shared, "orchestrator");
-
-    const workflowCtx: WorkflowContext = {
-      inputs: shared.inputs as WorkflowContext["inputs"],
-      agent,
-      stage: sessionRunner as WorkflowContext["stage"],
-      transcript: createTranscriptReader(shared.completedRegistry),
-      getMessages: createMessagesReader(shared.completedRegistry),
-    };
-
-    // Run the workflow, racing against user abort (q / Ctrl+C)
-    const abortPromise = panel.waitForAbort().then(() => {
-      throw new WorkflowAbortError();
-    });
-    await Promise.race([definition.run(workflowCtx), abortPromise]);
-
-    // Notify OffloadManager that all stages have completed (RFC §5.11). Wrap
-    // to keep an offload failure from halting orchestrator teardown.
-    try {
-      await shared.offloadManager.onWorkflowCompletion();
-    } catch (err) {
-      console.warn(`offload onWorkflowCompletion failed: ${errorMessage(err)}`);
-    }
-
-    panel.showCompletion(definition.name, sessionsBaseDir);
-    await panel.waitForExit();
-    shutdown(0);
-  } catch (error) {
-    // Kill any active tmux windows that didn't complete.
-    // Headless Claude/Copilot have virtual paneIds ("headless-...") — their
-    // SDK-managed processes are cleaned up by cleanupProvider().
-    for (const [, active] of shared.activeRegistry) {
-      if (active.paneId && !active.paneId.startsWith("headless-")) {
-        await loggedKillWindow(tmuxSessionName, active.name, "abort-cleanup");
-      }
-    }
-
-    if (error instanceof WorkflowAbortError) {
-      shutdown(0);
-    } else {
-      const message = errorMessage(error);
-      try {
-        panel.showFatalError(message);
-        await panel.waitForExit();
-      } catch {}
-      shutdown(1);
-    }
-  } finally {
-    process.off("SIGINT", signalHandler);
-  }
-}

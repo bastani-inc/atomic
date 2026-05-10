@@ -1,5 +1,9 @@
 import { test, expect, describe, afterEach, spyOn } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { RunState, type RunStateOptions } from "./run-state.ts";
+import { readSnapshot } from "./status-writer.ts";
 import type { MessageConnection } from "vscode-jsonrpc";
 
 // ─── Fake MessageConnection ───────────────────────────────────────────────────
@@ -346,7 +350,13 @@ describe("RunState", () => {
     });
 
     test("throwing subscriber is pruned after first failure; console.warn called once", async () => {
+      // Defensively restore any leaked spy from earlier files in the same process.
+      const prior = console.warn as unknown as { mockRestore?: () => void };
+      prior.mockRestore?.();
+
       warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+      const before = warnSpy.mock.calls.length; // baseline
+
       const state = makeState();
       const bad = {
         sendNotification() {
@@ -363,7 +373,7 @@ describe("RunState", () => {
       }
 
       expect(state.subscriberCount).toBe(0);
-      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy.mock.calls.length - before).toBe(1);
       state.dispose();
     });
 
@@ -412,6 +422,45 @@ describe("RunState", () => {
       expect(all.length).toBe(2);
       expect((all[1]!.params as { version: number }).version).toBe(2);
       state.dispose();
+    });
+  });
+
+  describe("schedulePersist stale snapshot fix (Cluster B.2)", () => {
+    test("schedulePersist writes latest snapshot when bursts coalesce", async () => {
+      const tmpDir = await mkdtemp(join(tmpdir(), "run-state-persist-test-"));
+      try {
+        const statusFilePath = join(tmpDir, "status.json");
+        const state = makeState({ statusFilePath });
+
+        // First mutation — schedules microtask broadcast; sets latestSnapshot on flush
+        state.addStage({ name: "a" });
+        await Promise.resolve(); // drain first microtask
+
+        // Second mutation before macrotask fires — schedulePersist early-returns
+        // on persistPending but must still update latestSnapshot
+        state.addStage({ name: "b" });
+        await Promise.resolve(); // drain second microtask
+
+        // Flush macrotasks so the single setTimeout fires with latest snapshot
+        await flushAsync();
+
+        const snap = await readSnapshot(tmpDir);
+        expect(snap).not.toBeNull();
+        const names = snap!.sessions.map((s) => s.name);
+        expect(names).toContain("a");
+        expect(names).toContain("b");
+
+        state.dispose();
+      } finally {
+        await rm(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    test("dispose() clears latestSnapshot reference", () => {
+      const state = makeState();
+      state.addStage({ name: "x" });
+      state.dispose();
+      expect((state as unknown as { latestSnapshot: unknown }).latestSnapshot).toBeNull();
     });
   });
 });

@@ -21,11 +21,6 @@ import {
   setRendererBackground,
 } from "./renderer-background.ts";
 import { createTuiDiagnostics, type TuiDiagnostics } from "./tui-diagnostics.ts";
-import {
-  BACKGROUND_TASKS_OPTION,
-  backgroundTasksValue,
-} from "../tui/attached-statusline.tsx";
-import { setStatuslineState } from "../tui/mux.ts";
 
 export class OrchestratorPanel {
   private store: PanelStore;
@@ -191,11 +186,6 @@ export class OrchestratorPanel {
    * sessions on the shared socket don't clobber each other's count.
    */
   private pushBackgroundTasksIndicator(): void {
-    setStatuslineState(
-      BACKGROUND_TASKS_OPTION,
-      backgroundTasksValue(this.store.backgroundTaskCount, this.graphTheme),
-      this.tmuxSession,
-    );
   }
 
   /** Show the workflow-complete banner with a link to saved transcripts. */

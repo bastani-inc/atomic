@@ -18,12 +18,24 @@ export type WorkflowStatusSnapshot = z.infer<typeof WorkflowStatusSnapshotSchema
 export const SavedMessageSchema = z.record(z.string(), z.unknown());
 export type SavedMessage = z.infer<typeof SavedMessageSchema>;
 
+export const WorkflowInputTypeSchema = z.enum(["string", "text", "enum", "integer"]);
+
+export const WorkflowInputSchema = z.object({
+  name: z.string(),
+  type: WorkflowInputTypeSchema,
+  required: z.boolean().optional(),
+  description: z.string().optional(),
+  placeholder: z.string().optional(),
+  default: z.union([z.string(), z.number()]).optional(),
+  values: z.array(z.string()).optional(),
+});
+
 export const WorkflowDescriptorSchema = z.object({
   name: z.string(),
   source: z.string(),
   agent: AgentTypeSchema,
   displayName: z.string().optional(),
-  inputs: z.record(z.string(), z.unknown()).optional(),
+  inputs: z.array(WorkflowInputSchema).optional(),
 });
 export type WorkflowDescriptor = z.infer<typeof WorkflowDescriptorSchema>;
 
@@ -251,6 +263,7 @@ export type AgentKillResult = z.infer<typeof AgentKillResultSchema>;
 export const PanelUpdateNotificationParamsSchema = z.object({
   runId: z.string(),
   snapshot: WorkflowStatusSnapshotSchema,
+  version: z.number().int().nonnegative(),
 });
 export type PanelUpdateNotificationParams = z.infer<typeof PanelUpdateNotificationParamsSchema>;
 

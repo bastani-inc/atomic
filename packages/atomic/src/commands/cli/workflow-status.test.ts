@@ -15,7 +15,7 @@ import {
   writeSnapshot,
   type WorkflowStatusSnapshot,
 } from "@bastani/atomic-sdk/runtime/status-writer";
-import type { TmuxSession } from "@bastani/atomic-sdk/runtime/tmux";
+import type { TmuxSession } from "./workflow-status.ts";
 import type { SessionData } from "@bastani/atomic-sdk/components/orchestrator-panel-types";
 
 // ─── output capture ────────────────────────────────────────────────

@@ -22,7 +22,7 @@
     },
     "examples/claude-background-subagents": {
       "name": "@bastani/example-claude-background-subagents",
-      "version": "0.7.14",
+      "version": "0.7.13",
       "dependencies": {
         "@bastani/atomic-sdk": "workspace:*",
         "@commander-js/extra-typings": "^14.0.0",
@@ -30,7 +30,7 @@
     },
     "examples/commander-embed": {
       "name": "@bastani/example-commander-embed",
-      "version": "0.7.14",
+      "version": "0.7.13",
       "dependencies": {
         "@bastani/atomic-sdk": "workspace:*",
         "@commander-js/extra-typings": "^14.0.0",
@@ -38,7 +38,7 @@
     },
     "examples/custom-workflow-bunx": {
       "name": "@example/custom-workflow-bunx",
-      "version": "0.7.14",
+      "version": "0.7.13",
       "bin": {
         "custom-workflow-bunx": "./index.ts",
       },
@@ -48,7 +48,7 @@
     },
     "examples/headless-test": {
       "name": "@bastani/example-headless-test",
-      "version": "0.7.14",
+      "version": "0.7.13",
       "dependencies": {
         "@bastani/atomic-sdk": "workspace:*",
         "@commander-js/extra-typings": "^14.0.0",
@@ -57,7 +57,7 @@
     },
     "examples/hello-world": {
       "name": "@bastani/example-hello-world",
-      "version": "0.7.14",
+      "version": "0.7.13",
       "dependencies": {
         "@bastani/atomic-sdk": "workspace:*",
         "@commander-js/extra-typings": "^14.0.0",
@@ -65,7 +65,7 @@
     },
     "examples/hil-favorite-color": {
       "name": "@bastani/example-hil-favorite-color",
-      "version": "0.7.14",
+      "version": "0.7.13",
       "dependencies": {
         "@bastani/atomic-sdk": "workspace:*",
         "@commander-js/extra-typings": "^14.0.0",
@@ -73,7 +73,7 @@
     },
     "examples/hil-favorite-color-headless": {
       "name": "@bastani/example-hil-favorite-color-headless",
-      "version": "0.7.14",
+      "version": "0.7.13",
       "dependencies": {
         "@bastani/atomic-sdk": "workspace:*",
         "@commander-js/extra-typings": "^14.0.0",
@@ -81,7 +81,7 @@
     },
     "examples/multi-workflow": {
       "name": "@bastani/example-multi-workflow",
-      "version": "0.7.14",
+      "version": "0.7.13",
       "dependencies": {
         "@bastani/atomic-sdk": "workspace:*",
         "@commander-js/extra-typings": "^14.0.0",
@@ -89,7 +89,7 @@
     },
     "examples/pane-navigation": {
       "name": "@bastani/example-pane-navigation",
-      "version": "0.7.14",
+      "version": "0.7.13",
       "dependencies": {
         "@bastani/atomic-sdk": "workspace:*",
         "@commander-js/extra-typings": "^14.0.0",
@@ -97,7 +97,7 @@
     },
     "examples/parallel-hello-world": {
       "name": "@bastani/example-parallel-hello-world",
-      "version": "0.7.14",
+      "version": "0.7.13",
       "dependencies": {
         "@bastani/atomic-sdk": "workspace:*",
         "@commander-js/extra-typings": "^14.0.0",
@@ -105,7 +105,7 @@
     },
     "examples/review-fix-loop": {
       "name": "@bastani/example-review-fix-loop",
-      "version": "0.7.14",
+      "version": "0.7.13",
       "dependencies": {
         "@bastani/atomic-sdk": "workspace:*",
         "@commander-js/extra-typings": "^14.0.0",
@@ -113,7 +113,7 @@
     },
     "examples/reviewer-tool-test": {
       "name": "@bastani/example-reviewer-tool-test",
-      "version": "0.7.14",
+      "version": "0.7.13",
       "dependencies": {
         "@bastani/atomic-sdk": "workspace:*",
         "@commander-js/extra-typings": "^14.0.0",
@@ -123,7 +123,7 @@
     },
     "examples/sequential-describe-summarize": {
       "name": "@bastani/example-sequential-describe-summarize",
-      "version": "0.7.14",
+      "version": "0.7.13",
       "dependencies": {
         "@bastani/atomic-sdk": "workspace:*",
         "@commander-js/extra-typings": "^14.0.0",
@@ -131,7 +131,7 @@
     },
     "examples/structured-output-demo": {
       "name": "@bastani/example-structured-output-demo",
-      "version": "0.7.14",
+      "version": "0.7.13",
       "dependencies": {
         "@bastani/atomic-sdk": "workspace:*",
         "@commander-js/extra-typings": "^14.0.0",
@@ -139,9 +139,16 @@
         "zod": "^4.4.3",
       },
     },
+    "examples/ui-server-client": {
+      "name": "@bastani/example-ui-server-client",
+      "version": "0.7.13",
+      "dependencies": {
+        "vscode-jsonrpc": "^8.2.1",
+      },
+    },
     "packages/atomic": {
       "name": "@bastani/atomic",
-      "version": "0.7.14",
+      "version": "0.7.13",
       "bin": {
         "atomic": "src/cli.ts",
       },
@@ -164,7 +171,7 @@
     },
     "packages/atomic-sdk": {
       "name": "@bastani/atomic-sdk",
-      "version": "0.7.14",
+      "version": "0.7.13",
       "dependencies": {
         "@anthropic-ai/claude-agent-sdk": "^0.2.132",
         "@catppuccin/palette": "^1.8.0",
@@ -174,15 +181,27 @@
         "@opencode-ai/sdk": "^1.14.40",
         "@opentui/core": "^0.2.3",
         "@opentui/react": "^0.2.3",
+        "bun-pty": "^0.4.8",
         "commander": "^14.0.3",
         "ignore": "^7.0.5",
         "ignore-by-default": "^2.1.0",
         "linguist-languages": "^9.3.2",
+        "vscode-jsonrpc": "^8.2.1",
         "yaml": "^2.8.4",
         "zod": "^4.4.3",
       },
       "devDependencies": {
         "ajv": "^8.20.0",
+      },
+      "optionalDependencies": {
+        "@bastani/atomic-darwin-arm64": "0.7.13",
+        "@bastani/atomic-darwin-x64": "0.7.13",
+        "@bastani/atomic-linux-arm64": "0.7.13",
+        "@bastani/atomic-linux-arm64-musl": "0.7.13",
+        "@bastani/atomic-linux-x64": "0.7.13",
+        "@bastani/atomic-linux-x64-musl": "0.7.13",
+        "@bastani/atomic-windows-arm64": "0.7.13",
+        "@bastani/atomic-windows-x64": "0.7.13",
       },
       "peerDependencies": {
         "react": "^19.2.6",
@@ -237,7 +256,23 @@
 
     "@bastani/atomic": ["@bastani/atomic@workspace:packages/atomic"],
 
+    "@bastani/atomic-darwin-arm64": ["@bastani/atomic-darwin-arm64@0.7.13", "", { "os": "darwin", "cpu": "arm64" }, "sha512-LpM6LUjn2fu2/H/+W8qRbzwCrTgjrgg5tkJ7Ml0LUbaFyG9r9uRAaN0jIqZUyQ51Ln55Psp/AbbAK5C3SLuoKQ=="],
+
+    "@bastani/atomic-darwin-x64": ["@bastani/atomic-darwin-x64@0.7.13", "", { "os": "darwin", "cpu": "x64" }, "sha512-DhryLqJVSxfO2tjjyyO5vJ40biJxh8zD8QTqDcNP+v3zUfYrPFXyI2Xjhmh2jzToqbAcB2NQxifO5+l5CtSNng=="],
+
+    "@bastani/atomic-linux-arm64": ["@bastani/atomic-linux-arm64@0.7.13", "", { "os": "linux", "cpu": "arm64" }, "sha512-1I8QglL/0ZrMMh9xF38QHciQg0T2wWWP0kf7rVAiflShb00jGcJOzYmItWR/WIibUuM8NNjB1XqjtYTaMFO5lQ=="],
+
+    "@bastani/atomic-linux-arm64-musl": ["@bastani/atomic-linux-arm64-musl@0.7.13", "", { "os": "linux", "cpu": "arm64" }, "sha512-eyQQ5DTvXDe8ZYnQvzBap++SW5qCpQLQ0FaMXsrhD8Vc9qT8q1B/KAqdYJ8x9QSNT0WyBc0/4BW6z0l/4YfBTQ=="],
+
+    "@bastani/atomic-linux-x64": ["@bastani/atomic-linux-x64@0.7.13", "", { "os": "linux", "cpu": "x64" }, "sha512-PqYadBAbd0DD9rlCVSn6thEqPBO5r4zbmGer16Cr66TApqO4bfdaxBsLUs9hNJ+59LnNmEKejmpcXEGz7oPifA=="],
+
+    "@bastani/atomic-linux-x64-musl": ["@bastani/atomic-linux-x64-musl@0.7.13", "", { "os": "linux", "cpu": "x64" }, "sha512-B81k8saRJomPPmnSL7F88Xv1WKacbQ/hou3fkPv7EvQuTsy71dmbyMQ2OXfATscH0eqerukMeGrOZa+5x5VHcg=="],
+
     "@bastani/atomic-sdk": ["@bastani/atomic-sdk@workspace:packages/atomic-sdk"],
+
+    "@bastani/atomic-windows-arm64": ["@bastani/atomic-windows-arm64@0.7.13", "", { "os": "win32", "cpu": "arm64" }, "sha512-FmMlIC7OeQltuYdBmIosjMXvw98B37XcK4jB1XBHipsV16xBxEmeci2w5J4ZWYLohWv2zlQd3bwERSvVdSlfkg=="],
+
+    "@bastani/atomic-windows-x64": ["@bastani/atomic-windows-x64@0.7.13", "", { "os": "win32", "cpu": "x64" }, "sha512-KqgXWgPfgwWdKYwemB+zSs4Q1Vy+NAMbPkX/1HdIFtA7DffSuFf4uvaY2lkcmCIbNd1S0BixxN3vABSXwuUAqg=="],
 
     "@bastani/example-claude-background-subagents": ["@bastani/example-claude-background-subagents@workspace:examples/claude-background-subagents"],
 
@@ -264,6 +299,8 @@
     "@bastani/example-sequential-describe-summarize": ["@bastani/example-sequential-describe-summarize@workspace:examples/sequential-describe-summarize"],
 
     "@bastani/example-structured-output-demo": ["@bastani/example-structured-output-demo@workspace:examples/structured-output-demo"],
+
+    "@bastani/example-ui-server-client": ["@bastani/example-ui-server-client@workspace:examples/ui-server-client"],
 
     "@catppuccin/palette": ["@catppuccin/palette@1.8.0", "", {}, "sha512-qXhwKiLzQomUygUJYB36YAFgs+dET5bIocfkiaFIatQF5Pwc7L112TlF9P8J5Oqs3x3XTjYSucG0ncHXSCuk7Q=="],
 

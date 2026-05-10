@@ -421,6 +421,102 @@ describe("WorkflowRegistry — non-Mode1 command skipped", () => {
   });
 });
 
+// ─── Concurrent load() / refresh() — in-flight Promise sharing ───────────────
+
+describe("WorkflowRegistry — concurrent load() shares one Promise", () => {
+  let cleanup: (() => Promise<void>) | null = null;
+  let origCwd: string;
+
+  beforeEach(async () => {
+    const dirs = await setupDirs();
+    await writeSettings(dirs.projectDir, {
+      "conc-wf": {
+        command: join(FIXTURES, "default-only.ts"),
+        agents: ["claude"],
+      },
+    });
+    origCwd = process.cwd();
+    process.chdir(dirs.projectDir);
+    cleanup = dirs.cleanup;
+  });
+
+  afterEach(async () => {
+    process.chdir(origCwd);
+    await cleanup?.();
+    cleanup = null;
+  });
+
+  test("two concurrent load() calls resolve to identical non-zero count", async () => {
+    const reg = new WorkflowRegistry();
+    const [a, b] = await Promise.all([reg.load(), reg.load()]);
+    expect(a.count).toBe(b.count);
+    expect(a.count).toBeGreaterThan(0);
+    expect(a.broken).toHaveLength(0);
+    expect(b.broken).toHaveLength(0);
+  });
+
+  test("N concurrent load() calls all report same count", async () => {
+    const reg = new WorkflowRegistry();
+    const results = await Promise.all(
+      Array.from({ length: 8 }, () => reg.load()),
+    );
+    const firstCount = results[0]!.count;
+    expect(firstCount).toBeGreaterThan(0);
+    for (const r of results) {
+      expect(r.count).toBe(firstCount);
+      expect(r.broken).toHaveLength(0);
+    }
+  });
+});
+
+describe("WorkflowRegistry — concurrent refresh() shares one Promise", () => {
+  let cleanup: (() => Promise<void>) | null = null;
+  let origCwd: string;
+  let projectDir: string;
+
+  beforeEach(async () => {
+    const dirs = await setupDirs();
+    projectDir = dirs.projectDir;
+    await writeSettings(dirs.projectDir, {
+      "conc-wf": {
+        command: join(FIXTURES, "default-only.ts"),
+        agents: ["claude"],
+      },
+    });
+    origCwd = process.cwd();
+    process.chdir(dirs.projectDir);
+    cleanup = dirs.cleanup;
+  });
+
+  afterEach(async () => {
+    process.chdir(origCwd);
+    await cleanup?.();
+    cleanup = null;
+  });
+
+  test("two concurrent refresh() calls resolve to identical non-zero count", async () => {
+    const reg = new WorkflowRegistry();
+    await reg.load();
+    const [a, b] = await Promise.all([reg.refresh(), reg.refresh()]);
+    expect(a.count).toBe(b.count);
+    expect(a.count).toBeGreaterThan(0);
+    expect(a.broken).toHaveLength(0);
+    expect(b.broken).toHaveLength(0);
+  });
+
+  test("refresh() queued behind in-flight load() sees full count", async () => {
+    const reg = new WorkflowRegistry();
+    // Start load and refresh concurrently — refresh must wait for load.
+    const [loadResult, refreshResult] = await Promise.all([
+      reg.load(),
+      reg.refresh(),
+    ]);
+    expect(loadResult.count).toBeGreaterThan(0);
+    expect(refreshResult.count).toBeGreaterThan(0);
+    expect(refreshResult.count).toBe(loadResult.count);
+  });
+});
+
 // ─── isMode1Source — path classification ──────────────────────────────────────
 
 describe("isMode1Source — path classification", () => {

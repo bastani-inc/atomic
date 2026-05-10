@@ -317,101 +317,6 @@ Examples:
             process.exit(exitCode);
         });
 
-    // ── Internal: orchestrator entry (spawned in the workflow tmux pane) ───
-    //
-    // Mirrors OpenCode's "every fresh-process entry is a CLI sub-command"
-    // model. The launcher script written by `executeWorkflow()` runs:
-    //   <bun> <cli.ts> _orchestrator-entry <name> <agent> <inputsB64> <source>
-    // in dev, or
-    //   <atomic-binary> _orchestrator-entry <name> <agent> <inputsB64> <source>
-    // in compiled-binary mode. The SDK never ships a separately-runnable
-    // bundle that a sub-process would `bun run` from outside the package's
-    // module resolution context — that pattern broke `@opentui/core`'s
-    // dynamic platform-binding import.
-    //
-    // Why both `name` and `source`: in a `bun build --compile` binary every
-    // bundled module's `import.meta.path` collapses to `/$bunfs/root/<binary>`,
-    // so the `definition.source` captured at workflow-module-eval time is
-    // the binary itself, and dynamic-importing it would re-load cli.ts
-    // (no default export). In compiled-binary mode we resolve the workflow
-    // by `name + agent` against the builtin registry that's already linked
-    // into the binary; in dev / installed-package mode we fall back to
-    // dynamic import so third-party SDK consumers can spawn workflows
-    // whose definitions aren't in the builtin registry.
-    program
-        .command("_orchestrator-entry", { hidden: true })
-        .description("Internal: load a workflow definition and run the orchestrator panel")
-        .argument("<workflowName>", "Workflow name (matches builtin registry)")
-        .argument("<agent>", "claude | copilot | opencode")
-        .argument("[inputsB64]", "Base64-encoded JSON record of structured inputs", "")
-        .argument("[workflowSource]", "Workflow source path (dynamic-import fallback for non-builtin workflows in dev)", "")
-        .action(async (
-            workflowName: string,
-            agent: string,
-            inputsB64: string,
-            workflowSource: string,
-        ) => {
-            const { isCompiledBinaryRuntime } = await import(
-                "@bastani/atomic-sdk/lib/runtime-env"
-            );
-
-            // Compiled binary: source path is bunfs-collapsed and can't
-            // be dynamic-imported. Resolve by name+agent in the builtin
-            // registry, which is statically linked into the binary.
-            if (isCompiledBinaryRuntime(workflowSource)) {
-                if (!isValidAgent(agent)) {
-                    console.error(
-                        `${COLORS.red}[atomic/orchestrator-entry] Invalid agent "${agent}".${COLORS.reset}`,
-                    );
-                    process.exit(1);
-                }
-                const { createBuiltinRegistry } = await import(
-                    "./commands/builtin-registry.ts"
-                );
-                const resolved = createBuiltinRegistry().resolve(workflowName, agent);
-                if (!resolved) {
-                    console.error(
-                        `${COLORS.red}[atomic/orchestrator-entry] No workflow named "${workflowName}" for agent "${agent}" in the builtin registry.${COLORS.reset}`,
-                    );
-                    process.exit(1);
-                }
-                // Builtin registry only contains compiled WorkflowDefinitions; the
-                // orchestrator-entry path is exclusively for builtins.
-                if (resolved.kind === "external") {
-                    console.error(
-                        `${COLORS.red}[atomic/orchestrator-entry] Unexpected external workflow in builtin registry: "${workflowName}".${COLORS.reset}`,
-                    );
-                    process.exit(1);
-                }
-                const { runOrchestratorWithDefinition } = await import(
-                    "@bastani/atomic-sdk/runtime/orchestrator-entry"
-                );
-                await runOrchestratorWithDefinition(resolved, inputsB64);
-                return;
-            }
-
-            // Dev / installed-package: dynamic-import the workflow file.
-            // Preserves third-party SDK use where the workflow lives at
-            // an arbitrary on-disk path that the builtin registry doesn't
-            // know about.
-            const { runOrchestratorEntry } = await import(
-                "@bastani/atomic-sdk/runtime/orchestrator-entry"
-            );
-            await runOrchestratorEntry(workflowSource, workflowName, agent, inputsB64);
-        });
-
-    // ── Internal: cc-debounce (called by tmux.conf on every Ctrl+C) ────────
-    program
-        .command("_cc-debounce", { hidden: true })
-        .description("Internal: debounce Ctrl+C presses inside Atomic-managed tmux panes")
-        .argument("<paneId>", "tmux pane id (e.g. %0)")
-        .action(async (paneId: string) => {
-            const { runCcDebounce } = await import(
-                "@bastani/atomic-sdk/runtime/cc-debounce"
-            );
-            process.exit(runCcDebounce(paneId));
-        });
-
     // ── Internal: Claude Stop hook handler ────────────────────────────────
     program
         .command("_claude-stop-hook", { hidden: true })
@@ -444,23 +349,6 @@ Examples:
             }
             const { claudeAskHookCommand } = await import("./commands/cli/claude-ask-hook.ts");
             const exitCode = await claudeAskHookCommand(mode);
-            process.exit(exitCode);
-        });
-
-    // ── Internal: runtime-assets smoke check (CI cross-platform harness) ─
-    //
-    // Verifies that bundled runtime assets (tmux.conf, debounce script,
-    // orchestrator entry) materialize out of `/$bunfs/` to a real on-disk
-    // path and that tmux can actually load the conf. Headless — no TTY,
-    // no agent CLI, no auth.
-    program
-        .command("_runtime-assets-smoke", { hidden: true })
-        .description("Internal: verify bundled runtime assets are subprocess-readable")
-        .action(async () => {
-            const { runtimeAssetsSmokeCommand } = await import(
-                "./commands/cli/runtime-assets-smoke.ts"
-            );
-            const exitCode = await runtimeAssetsSmokeCommand();
             process.exit(exitCode);
         });
 
