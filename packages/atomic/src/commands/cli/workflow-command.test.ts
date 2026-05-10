@@ -2,16 +2,13 @@
  * Tests for `workflowCommand` — the Commander Command returned by
  * `createWorkflowCli(createBuiltinRegistry()).command("workflow")`.
  *
- * Mocking strategy: mock.module("../../sdk/runtime/executor.ts") replaces
- * executeWorkflow with a spy BEFORE the dynamic import of workflow.ts.
+ * Mocking strategy: mock.module("@bastani/atomic-sdk/runtime/daemon") replaces
+ * ensureStarted with a spy BEFORE the dynamic import of workflow.ts.
  *
  * Module load order:
- *   1. Static imports execute first (hoisted by ES module semantics) —
- *      this loads registry.ts → providers/claude.ts → executor.ts (REAL),
- *      so `escBash` and all other executor exports are cached before the mock.
- *   2. `mock.module` replaces executor.ts for SUBSEQUENT imports — only
- *      `worker.ts` picks up the mocked executeWorkflow/runOrchestrator.
- *   3. Dynamic import of workflow.ts uses the mocked executor via worker.ts.
+ *   1. Static imports execute first (hoisted by ES module semantics).
+ *   2. `mock.module` replaces daemon/PanelClient for SUBSEQUENT imports.
+ *   3. Dynamic import of workflow.ts uses the mocked modules.
  *
  * Commander error handling: `exitOverride()` is called on the command before
  * tests that expect rejection, converting process.exit(1) into a thrown Error.
@@ -25,35 +22,50 @@ import {
   afterEach,
   mock,
 } from "bun:test";
-import type { WorkflowRunOptions } from "@bastani/atomic-sdk/runtime/executor";
-// Static import — loads providers/claude.ts → real executor.ts into module cache
-// BEFORE mock.module replaces it for subsequent imports.
+// Static import — loads registry into module cache BEFORE mocks replace anything.
 import "@bastani/atomic-sdk/registry";
 
 // ─── Module-level mock ────────────────────────────────────────────────────────
-// Must be declared AFTER the static imports above (which load the real executor)
-// but BEFORE the dynamic import of workflow.ts below (which uses worker.ts → mock).
+// Track dispatch calls for assertions
+const dispatchCalls: Array<{ source: string; workflowName: string; agent: string; inputs: Record<string, string> }> = [];
+const mockRunId = "test-run-id";
 
-const executeWorkflowCalls: WorkflowRunOptions[] = [];
-const executeWorkflowMock = mock(
-  async (opts: WorkflowRunOptions): Promise<{ id: string; tmuxSessionName: string }> => {
-    executeWorkflowCalls.push(opts);
-    return { id: "fake-id", tmuxSessionName: "fake-session" };
-  },
-);
+const fakeConn = {
+  sendRequest: mock(async (_method: string, params: unknown) => {
+    if (_method === "workflow/start") {
+      dispatchCalls.push(params as typeof dispatchCalls[number]);
+      return { runId: mockRunId, attachable: true };
+    }
+    return {};
+  }),
+  onNotification: mock((_method: string, handler: (params: unknown) => void) => {
+    // Immediately invoke with matching runId so dispatch() doesn't hang
+    if (_method === "run/ended") {
+      handler({ runId: mockRunId });
+    }
+  }),
+  dispose: mock(() => {}),
+};
 
-// Spread real module to preserve all exports (escBash, discoverCopilotBinary, etc.)
-// so this mock doesn't break other test files that import those exports.
-const realExecutor = await import("@bastani/atomic-sdk/runtime/executor");
-await mock.module("@bastani/atomic-sdk/runtime/executor", () => ({
-  ...realExecutor,
-  executeWorkflow: executeWorkflowMock,
-  runOrchestrator: async () => {},
+// Mock daemon ensureStarted
+const realDaemon = await import("@bastani/atomic-sdk/runtime/daemon");
+await mock.module("@bastani/atomic-sdk/runtime/daemon", () => ({
+  ...realDaemon,
+  ensureStarted: mock(async () => fakeConn),
 }));
 
-// Load the workflow command after the executor is mocked. Importing
-// `./workflow.ts` triggers the registry build + Commander tree
-// construction inside the mocked executor sandbox.
+// Mock PanelClient.mount
+const realPanelClient = await import("@bastani/atomic-sdk/components/panel-client");
+const panelMountMock = mock(async () => {});
+await mock.module("@bastani/atomic-sdk/components/panel-client", () => ({
+  ...realPanelClient,
+  PanelClient: {
+    ...(realPanelClient.PanelClient ?? {}),
+    mount: panelMountMock,
+  },
+}));
+
+// Load the workflow command after the daemon is mocked.
 const { workflowCommand, buildWorkflowCommand } = await import("./workflow.ts");
 const { defineWorkflow } = await import("@bastani/atomic-sdk/define-workflow");
 const { createRegistry } = await import("@bastani/atomic-sdk/registry");
@@ -102,11 +114,25 @@ let savedNoColor: string | undefined;
 beforeEach(() => {
   savedNoColor = process.env.NO_COLOR;
   process.env.NO_COLOR = "1";
-  executeWorkflowCalls.length = 0;
-  executeWorkflowMock.mockClear();
-  executeWorkflowMock.mockImplementation(async (opts) => {
-    executeWorkflowCalls.push(opts);
-    return { id: "fake-id", tmuxSessionName: "fake-session" };
+  dispatchCalls.length = 0;
+  fakeConn.sendRequest.mockClear();
+  fakeConn.onNotification.mockClear();
+  fakeConn.dispose.mockClear();
+  panelMountMock.mockClear();
+  // Set stdout to non-TTY for tests (avoids PanelClient mount)
+  Object.defineProperty(process.stdout, "isTTY", { configurable: true, get: () => false });
+  // Re-wire sendRequest so dispatchCalls is populated correctly
+  fakeConn.sendRequest.mockImplementation(async (_method: string, params: unknown) => {
+    if (_method === "workflow/start") {
+      dispatchCalls.push(params as typeof dispatchCalls[number]);
+      return { runId: mockRunId, attachable: true };
+    }
+    return {};
+  });
+  fakeConn.onNotification.mockImplementation((_method: string, handler: (params: unknown) => void) => {
+    if (_method === "run/ended") {
+      handler({ runId: mockRunId });
+    }
   });
 });
 afterEach(() => {
@@ -143,7 +169,7 @@ describe("workflowCommand: --list flag removed", () => {
       cap.restore();
     }
     expect(threw).toBe(true);
-    expect(executeWorkflowMock).not.toHaveBeenCalled();
+    expect(dispatchCalls).toHaveLength(0);
   });
 });
 
@@ -158,11 +184,11 @@ describe("workflowCommand named mode — success", () => {
       "--prompt", "fix the auth bug",
     ]);
 
-    expect(executeWorkflowMock).toHaveBeenCalledTimes(1);
-    const call = executeWorkflowCalls[0]!;
+    expect(dispatchCalls).toHaveLength(1);
+    const call = dispatchCalls[0]!;
     expect(call.agent).toBe("claude");
     expect(call.inputs?.["prompt"]).toBe("fix the auth bug");
-    expect(`${call.definition.agent}/${call.definition.name}`).toBe("claude/ralph");
+    expect(`${call.agent}/${call.workflowName}`).toBe("claude/ralph");
   });
 
   test("dispatches ralph/copilot successfully", async () => {
@@ -173,8 +199,8 @@ describe("workflowCommand named mode — success", () => {
       "--prompt", "review this PR",
     ]);
 
-    expect(executeWorkflowMock).toHaveBeenCalledTimes(1);
-    const call = executeWorkflowCalls[0]!;
+    expect(dispatchCalls).toHaveLength(1);
+    const call = dispatchCalls[0]!;
     expect(call.agent).toBe("copilot");
     expect(call.inputs?.["prompt"]).toBe("review this PR");
   });
@@ -187,8 +213,8 @@ describe("workflowCommand named mode — success", () => {
       "--prompt", "refactor the service layer",
     ]);
 
-    expect(executeWorkflowMock).toHaveBeenCalledTimes(1);
-    expect(executeWorkflowCalls[0]!.agent).toBe("opencode");
+    expect(dispatchCalls).toHaveLength(1);
+    expect(dispatchCalls[0]!.agent).toBe("opencode");
   });
 
   test("dispatches deep-research-codebase/claude with prompt", async () => {
@@ -199,8 +225,8 @@ describe("workflowCommand named mode — success", () => {
       "--prompt", "how does auth work",
     ]);
 
-    expect(executeWorkflowMock).toHaveBeenCalledTimes(1);
-    expect(`${executeWorkflowCalls[0]!.definition.agent}/${executeWorkflowCalls[0]!.definition.name}`).toBe("claude/deep-research-codebase");
+    expect(dispatchCalls).toHaveLength(1);
+    expect(`${dispatchCalls[0]!.agent}/${dispatchCalls[0]!.workflowName}`).toBe("claude/deep-research-codebase");
   });
 
   test("--detach flag threads detach=true to executor", async () => {
@@ -212,8 +238,9 @@ describe("workflowCommand named mode — success", () => {
       "--detach",
     ]);
 
-    expect(executeWorkflowMock).toHaveBeenCalledTimes(1);
-    expect(executeWorkflowCalls[0]!.detach).toBe(true);
+    expect(dispatchCalls).toHaveLength(1);
+    expect(fakeConn.onNotification).not.toHaveBeenCalled();
+    expect(fakeConn.dispose).toHaveBeenCalled();
   });
 
   test("-d shorthand also sets detach=true", async () => {
@@ -225,8 +252,9 @@ describe("workflowCommand named mode — success", () => {
       "-d",
     ]);
 
-    expect(executeWorkflowMock).toHaveBeenCalledTimes(1);
-    expect(executeWorkflowCalls[0]!.detach).toBe(true);
+    expect(dispatchCalls).toHaveLength(1);
+    expect(fakeConn.onNotification).not.toHaveBeenCalled();
+    expect(fakeConn.dispose).toHaveBeenCalled();
   });
 
   test("detach defaults to false when flag omitted", async () => {
@@ -237,8 +265,8 @@ describe("workflowCommand named mode — success", () => {
       "--prompt", "test",
     ]);
 
-    expect(executeWorkflowMock).toHaveBeenCalledTimes(1);
-    expect(executeWorkflowCalls[0]!.detach).toBe(false);
+    expect(dispatchCalls).toHaveLength(1);
+    expect(fakeConn.onNotification).toHaveBeenCalled();
   });
 
   test("integer input --max_loops is forwarded to executor", async () => {
@@ -250,8 +278,8 @@ describe("workflowCommand named mode — success", () => {
       "--max_loops", "3",
     ]);
 
-    expect(executeWorkflowMock).toHaveBeenCalledTimes(1);
-    expect(executeWorkflowCalls[0]!.inputs?.["max_loops"]).toBe("3");
+    expect(dispatchCalls).toHaveLength(1);
+    expect(dispatchCalls[0]!.inputs?.["max_loops"]).toBe("3");
   });
 
   test("workflowKey is always <agent>/<name>", async () => {
@@ -262,11 +290,10 @@ describe("workflowCommand named mode — success", () => {
       "--prompt", "research something",
     ]);
 
-    expect(executeWorkflowMock).toHaveBeenCalledTimes(1);
-    const c = executeWorkflowCalls[0]!;
-    expect(`${c.definition.agent}/${c.definition.name}`).toBe(
-      "copilot/deep-research-codebase",
-    );
+    expect(dispatchCalls).toHaveLength(1);
+    const c = dispatchCalls[0]!;
+    expect(c.agent).toBe("copilot");
+    expect(c.workflowName).toBe("deep-research-codebase");
   });
 });
 
@@ -289,7 +316,7 @@ describe("workflowCommand named mode — error paths", () => {
       cap.restore();
     }
     expect(threw).toBe(true);
-    expect(executeWorkflowMock).not.toHaveBeenCalled();
+    expect(dispatchCalls).toHaveLength(0);
   });
 
   test("unknown agent throws (Commander exits via exitOverride)", async () => {
@@ -308,12 +335,12 @@ describe("workflowCommand named mode — error paths", () => {
       cap.restore();
     }
     expect(threw).toBe(true);
-    expect(executeWorkflowMock).not.toHaveBeenCalled();
+    expect(dispatchCalls).toHaveLength(0);
   });
 
-  test("missing required prompt for ralph throws from validateAndResolve", async () => {
-    enableExitOverride();
-    let threw = false;
+  test("missing required prompt for ralph routes through daemon (validation is server-side)", async () => {
+    // In the new JSON-RPC architecture, client-side validateAndResolve is gone.
+    // Missing required inputs are forwarded to the daemon which validates server-side.
     const cap = captureOutput();
     try {
       await workflowCommand.parseAsync([
@@ -322,18 +349,17 @@ describe("workflowCommand named mode — error paths", () => {
         "-a", "claude",
         // --prompt intentionally omitted
       ]);
-    } catch (_e) {
-      threw = true;
     } finally {
       cap.restore();
     }
-    expect(threw).toBe(true);
-    expect(executeWorkflowMock).not.toHaveBeenCalled();
+    // dispatch still fires — daemon is responsible for required-input validation
+    expect(dispatchCalls).toHaveLength(1);
+    expect(dispatchCalls[0]!.inputs?.["prompt"]).toBeUndefined();
   });
 
-  test("non-integer value for --max_loops throws from validateAndResolve", async () => {
-    enableExitOverride();
-    let threw = false;
+  test("non-integer value for --max_loops is forwarded to daemon without client-side coercion", async () => {
+    // In the new JSON-RPC architecture, type validation moved to the daemon.
+    // The CLI forwards string values as-is without throwing.
     const cap = captureOutput();
     try {
       await workflowCommand.parseAsync([
@@ -343,13 +369,12 @@ describe("workflowCommand named mode — error paths", () => {
         "--prompt", "test",
         "--max_loops", "not-an-int",
       ]);
-    } catch (_e) {
-      threw = true;
     } finally {
       cap.restore();
     }
-    expect(threw).toBe(true);
-    expect(executeWorkflowMock).not.toHaveBeenCalled();
+    // dispatch fires; daemon validates type server-side
+    expect(dispatchCalls).toHaveLength(1);
+    expect(dispatchCalls[0]!.inputs?.["max_loops"]).toBe("not-an-int");
   });
 });
 
@@ -365,14 +390,14 @@ describe("workflowCommand enum input coercion", () => {
       "--output-type", "prototype",
     ]);
 
-    expect(executeWorkflowMock).toHaveBeenCalledTimes(1);
-    expect(executeWorkflowCalls[0]!.inputs?.["output-type"]).toBe("prototype");
+    expect(dispatchCalls).toHaveLength(1);
+    expect(dispatchCalls[0]!.inputs?.["output-type"]).toBe("prototype");
   });
 
   test("default enum value applied when --output-type omitted", async () => {
-    // output-type has default "prototype" — validateAndResolve fills it in.
-    // Note: Commander camelCases hyphenated flags (output-type → outputType),
-    // so the CLI flag lookup for "output-type" falls through to the default.
+    // In the new JSON-RPC architecture, validateAndResolve no longer fills
+    // in defaults client-side. The daemon handles defaults server-side.
+    // When --output-type is omitted, inputs["output-type"] is not set.
     await workflowCommand.parseAsync([
       "node", "cli",
       "-n", "open-claude-design",
@@ -381,8 +406,9 @@ describe("workflowCommand enum input coercion", () => {
       // --output-type intentionally omitted
     ]);
 
-    expect(executeWorkflowMock).toHaveBeenCalledTimes(1);
-    expect(executeWorkflowCalls[0]!.inputs?.["output-type"]).toBe("prototype");
+    expect(dispatchCalls).toHaveLength(1);
+    // Default is not filled client-side; daemon applies defaults server-side.
+    expect(dispatchCalls[0]!.inputs?.["output-type"]).toBeUndefined();
   });
 });
 
@@ -407,7 +433,7 @@ describe("workflowCommand help fallback", () => {
       cap.restore();
     }
     expect(threw).toBe(true);
-    expect(executeWorkflowMock).not.toHaveBeenCalled();
+    expect(dispatchCalls).toHaveLength(0);
   });
 
   test("agent without name does NOT trigger picker when stdout is not a TTY", async () => {
@@ -433,7 +459,7 @@ describe("workflowCommand help fallback", () => {
       });
     }
     expect(threw).toBe(true);
-    expect(executeWorkflowMock).not.toHaveBeenCalled();
+    expect(dispatchCalls).toHaveLength(0);
   });
 
   test("name without agent triggers cmd.help() — agent is required", async () => {
@@ -448,7 +474,7 @@ describe("workflowCommand help fallback", () => {
       cap.restore();
     }
     expect(threw).toBe(true);
-    expect(executeWorkflowMock).not.toHaveBeenCalled();
+    expect(dispatchCalls).toHaveLength(0);
   });
 });
 
@@ -481,8 +507,8 @@ describe("buildWorkflowCommand with custom registries", () => {
       "bug",
     ]);
 
-    expect(executeWorkflowMock).toHaveBeenCalledTimes(1);
-    expect(executeWorkflowCalls[0]!.inputs?.["prompt"]).toBe("fix the auth bug");
+    expect(dispatchCalls).toHaveLength(1);
+    expect(dispatchCalls[0]!.inputs?.["prompt"]).toBe("fix the auth bug");
   });
 
   test("workflow with declared inputs ignores positional prompt collapsing", async () => {
@@ -503,9 +529,9 @@ describe("buildWorkflowCommand with custom registries", () => {
       "trailing", "positional",
     ]);
 
-    expect(executeWorkflowMock).toHaveBeenCalledTimes(1);
+    expect(dispatchCalls).toHaveLength(1);
     // No `prompt` should be synthesised — schema is non-empty.
-    expect(executeWorkflowCalls[0]!.inputs?.["prompt"]).toBeUndefined();
+    expect(dispatchCalls[0]!.inputs?.["prompt"]).toBeUndefined();
   });
 
   test("resolveWorkflow lists alternate agents when name exists for a different agent", async () => {

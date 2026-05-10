@@ -55,6 +55,7 @@ export function createProgram() {
         // Global options available to all commands
         .option("-y, --yes", "Auto-confirm all prompts (non-interactive mode)")
         .option("--no-banner", "Skip ASCII banner display")
+        .addOption(new Option("--ui-server").hideHelp())
 
         // Configure error output with colors
         .configureOutput({
@@ -158,6 +159,7 @@ Examples:
   $ atomic workflow -a claude                       Open the interactive picker
   $ atomic workflow -n ralph -a claude "fix bug"    Run a free-form workflow
   $ atomic workflow -n ralph -a claude -d "fix bug" Run detached in the background
+  $ atomic workflow attach <runId>              Re-attach panel to a background run
   $ atomic workflow inputs <name> -a claude         Print a workflow's input schema (JSON)
   $ atomic workflow refresh                         Reload custom workflows from settings.json
   $ atomic workflow read --sessionId <id>           Print path to a workflow run dir on disk
@@ -279,6 +281,21 @@ Examples:
 
     // Workflow session subcommands: atomic workflow session list / connect
     addSessionSubcommand(workflowCommand, "workflow");
+
+    // Workflow attach subcommand: atomic workflow attach <runId>
+    // Re-mounts the panel client for an already-running workflow run.
+    workflowCommand
+        .command("attach")
+        .description("Attach to a running workflow run (re-mount the panel client)")
+        .argument("<runId>", "Run ID returned by workflow/start")
+        .option("--endpoint-file <path>", "Override the daemon endpoint file path")
+        .action(async (runId: string, localOpts: { endpointFile?: string }) => {
+            const { PanelClient } = await import("@bastani/atomic-sdk/components/panel-client");
+            await PanelClient.mount({
+                runId,
+                endpointFile: localOpts.endpointFile,
+            });
+        });
 
     // ── Top-level session command ───────────────────────────────────────────
     addSessionSubcommand(program);
@@ -578,6 +595,14 @@ async function bootstrapCustomWorkflowsAndRebuild(): Promise<void> {
  */
 async function main(): Promise<void> {
     try {
+        // Early exit for --ui-server: bypass all bootstrapping and run the daemon directly.
+        const uiServerArgv = process.argv.slice(2);
+        if (uiServerArgv.includes("--ui-server")) {
+            const { runUiServer } = await import("./commands/cli/ui-server.ts");
+            await runUiServer();
+            return;
+        }
+
         // Bootstrap `~/.atomic/settings.json` on every invocation if absent,
         // so users always have a file to edit with JSON Schema intellisense
         // wired up. Idempotent; swallows FS errors internally.

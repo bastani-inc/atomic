@@ -18,7 +18,7 @@
 
 import { randomBytes } from "node:crypto";
 import { constants as osConstants } from "node:os";
-import { Command } from "@commander-js/extra-typings";
+import { Command, Option } from "@commander-js/extra-typings";
 import {
   type AgentType,
   type ExternalWorkflow,
@@ -26,7 +26,6 @@ import {
   type WorkflowInput,
   getInputSchema,
   listWorkflows,
-  runWorkflow,
 } from "@bastani/atomic-sdk";
 import {
   getAgentKeys,
@@ -262,21 +261,45 @@ export async function dispatch(
   cliInputs: Record<string, string>,
   detach: boolean,
 ): Promise<void> {
-  if (workflow.kind === "external") {
-    return dispatchExternal(workflow, cliInputs, detach);
-  }
-  // The SDK's `runWorkflow` auto-defaults `pathToAtomicExecutable` to
-  // `process.execPath` in compiled-binary hosts, so atomic's compiled
-  // CLI self-dispatches `_orchestrator-entry` through its own binary
-  // (handled by atomic's hidden Commander command, which falls back to
-  // the builtin registry when the SDK's source-path dispatcher can't
-  // resolve). In dev mode (`bun packages/atomic/src/cli.ts …`) the
-  // auto-default returns undefined and the SDK's host-bun branch fires.
-  await runWorkflow({
-    workflow,
+  const { ensureStarted } = await import("@bastani/atomic-sdk/runtime/daemon");
+  const { getSource, getName, getAgent } = await import("@bastani/atomic-sdk/primitives/metadata");
+
+  const conn = await ensureStarted();
+
+  const result = await conn.sendRequest("workflow/start", {
+    source: getSource(workflow),
+    workflowName: getName(workflow),
+    agent: getAgent(workflow),
     inputs: cliInputs,
-    detach,
-  });
+  }) as { runId: string; attachable: boolean };
+
+  const { runId } = result;
+
+  if (detach) {
+    conn.dispose();
+    process.stdout.write(`[atomic/workflow] run started: ${runId}\n`);
+    return;
+  }
+
+  if (process.stdout.isTTY) {
+    conn.dispose();
+    const { PanelClient } = await import("@bastani/atomic-sdk/components/panel-client");
+    await PanelClient.mount({ runId });
+  } else {
+    await new Promise<void>((resolve) => {
+      conn.onNotification("run/ended", (params: unknown) => {
+        if (
+          params !== null &&
+          typeof params === "object" &&
+          "runId" in params &&
+          (params as { runId: string }).runId === runId
+        ) {
+          resolve();
+        }
+      });
+    });
+    conn.dispose();
+  }
 }
 
 /**
@@ -359,6 +382,11 @@ export function buildWorkflowCommand(
   applyDynamicOptions(cmd, registry);
 
   cmd.option("-d, --detach", "Run workflow in background (detach from tmux)");
+
+  cmd.addOption(
+    new Option("--render-pane <runId>", "Internal: run ID to attach the panel client to (used by the CLI daemon path)")
+      .hideHelp(),
+  );
 
   cmd.argument("[prompt...]", "Free-form prompt (joined, stored as inputs.prompt)");
 
