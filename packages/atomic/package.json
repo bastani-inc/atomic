@@ -1,7 +1,7 @@
 {
   "name": "@bastani/atomic",
   "private": true,
-  "version": "0.7.13",
+  "version": "0.7.14-0",
   "type": "module",
   "license": "MIT",
   "description": "Configuration management CLI for coding agents",
