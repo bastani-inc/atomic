@@ -12,32 +12,7 @@ import type { MessageConnection } from "vscode-jsonrpc";
 import type { AgentType } from "../types.ts";
 import { RunState } from "./run-state.ts";
 import type { IRunManager, ISupervisor, RunInfo } from "./ui-protocol/methods.ts";
-
-// ─── WorkflowContext stub ─────────────────────────────────────────────────────
-
-interface WorkflowContext {
-  inputs: Record<string, unknown>;
-  agent: AgentType;
-  stage: (name: string, opts?: unknown) => never;
-  transcript: () => never;
-  getMessages: () => never;
-}
-
-function makeStubContext(inputs: Record<string, unknown>, agent: AgentType): WorkflowContext {
-  return {
-    inputs,
-    agent,
-    stage() {
-      throw new Error("stage() not yet wired to Supervisor in this daemon version");
-    },
-    transcript() {
-      throw new Error("transcript() not implemented");
-    },
-    getMessages() {
-      throw new Error("getMessages() not implemented");
-    },
-  };
-}
+import { DaemonWorkflowContext } from "./daemon-workflow-context.ts";
 
 // ─── RunManager ───────────────────────────────────────────────────────────────
 
@@ -120,7 +95,13 @@ export class RunManager implements IRunManager {
     try {
       const mod = await import(source);
       if (mod.default && typeof mod.default.run === "function") {
-        const ctx = makeStubContext(inputs, info.agent);
+        const ctx = new DaemonWorkflowContext({
+          runId: state.runId,
+          agent: info.agent,
+          inputs,
+          state,
+          supervisor: this.supervisor ?? noopSupervisor,
+        });
         await mod.default.run(ctx);
       }
       // Do not overwrite terminal status set by a concurrent stop().
@@ -207,3 +188,30 @@ export class RunManager implements IRunManager {
     this.subscriptions.delete(subscriptionId);
   }
 }
+
+// ─── noopSupervisor ───────────────────────────────────────────────────────────
+
+/**
+ * Fallback ISupervisor used when RunManager is constructed without a
+ * supervisor (e.g. in tests that only exercise lifecycle, not stage spawning).
+ * All methods throw with a clear error rather than silently doing nothing.
+ */
+const noopSupervisor: ISupervisor = {
+  spawn(_params): Promise<{ pid: number }> {
+    return Promise.reject(
+      new Error(
+        "No ISupervisor injected into RunManager — cannot spawn stage. " +
+          "Construct RunManager with { supervisor } to enable stage execution.",
+      ),
+    );
+  },
+  sendInput(_runId, _stageName, _data): void {
+    throw new Error("No ISupervisor injected into RunManager — cannot send input.");
+  },
+  getScrollback(_runId, _stageName, _fromOffset): { data: string; headOffset: number } {
+    throw new Error("No ISupervisor injected into RunManager — cannot get scrollback.");
+  },
+  kill(_pid, _signal): void {
+    throw new Error("No ISupervisor injected into RunManager — cannot kill process.");
+  },
+};
