@@ -34,11 +34,15 @@
 
 The easiest way to install Atomic is through the install script.
 
-```bash
-# macOS / Linux
-curl -fsSL https://raw.githubusercontent.com/flora131/atomic/main/install.sh | bash
+**macOS / Linux**
 
-# Windows (PowerShell 5.1+ or 7+)
+```bash
+curl -fsSL https://raw.githubusercontent.com/flora131/atomic/main/install.sh | bash
+```
+
+**Windows** (PowerShell 5.1+ or 7+)
+
+```powershell
 irm https://raw.githubusercontent.com/flora131/atomic/main/install.ps1 | iex
 ```
 
@@ -49,22 +53,34 @@ You can also install it with the following commands:
 **npm**
 
 ```bash
-npm install -g @bastani/atomic
+npm install -g @bastani/atomic         # latest stable
+npm install -g @bastani/atomic@next    # latest pre-release
 ```
 
 **Bun**
 
 ```bash
-bun add -g @bastani/atomic
+bun add -g @bastani/atomic             # latest stable
+bun add -g @bastani/atomic@next        # latest pre-release
 ```
 
-Then run your first autonomous workflow:
+**Onboarding**
+
+Open a chat with the agent you've authenticated:
 
 ```bash
-atomic workflow -n ralph -a claude "Build a REST API for user management"
+atomic chat -a <agent>   # claude | opencode | copilot
 ```
 
-> ⚠️ Workflows run with agent permission checks **disabled** so pipelines don't block on prompts. Use a [devcontainer](#containerized-execution) or [git worktree](https://git-scm.com/docs/git-worktree) — not your host machine.
+Inside the chat, run:
+
+```text
+/atomic   # guided onboarding — start here
+```
+
+`/atomic` tailors the tour to what you're trying to ship — driving a large feature through deterministic, spec-driven development (research → spec → parallel implementation passes), or codifying a recurring engineering job (review-to-merge, migrations, incident triage, release prep) into a reusable workflow your whole team can run identically. The slash command is the fastest onboarding path; if you want the long form, jump to [Key features](#key-features) or the [Workflow SDK](#workflow-sdk) below.
+
+> ⚠️ Workflows run with agent permission checks **disabled** so pipelines don't block on prompts. Once `/atomic` points you at a workflow, we suggest running it inside a [devcontainer](#containerized-execution), VM, or remote dev machine — not your host machine.
 
 <details>
 <summary><b>Prerequisites, version pinning, devcontainer, SDK-only</b></summary>
@@ -277,7 +293,7 @@ These are workflows you'd author with `defineWorkflow` — see [Workflow SDK](#w
 ## Security & permissions
 
 > [!CAUTION]
-> Atomic workflows run coding agents with **all permission checks disabled** so pipelines don't block on prompts. Run them in a [devcontainer](#containerized-execution) or [git worktree](https://git-scm.com/docs/git-worktree) — not on your host machine.
+> Atomic workflows run coding agents with **all permission checks disabled** so pipelines don't block on prompts. Run them in a [devcontainer](#containerized-execution), VM, or remote dev machine — not on your host machine.
 
 | Agent                  | How permissions are bypassed                                         | Key flags / settings                                                  |
 | ---------------------- | -------------------------------------------------------------------- | --------------------------------------------------------------------- |
