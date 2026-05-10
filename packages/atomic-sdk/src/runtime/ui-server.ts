@@ -210,6 +210,6 @@ export class UIServer {
   }
 
   private log(msg: string): void {
-    (this.opts.onLog ?? (() => {}))(msg);
+    this.opts.onLog?.(msg);
   }
 }

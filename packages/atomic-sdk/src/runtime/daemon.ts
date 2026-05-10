@@ -25,7 +25,7 @@ import {
   StreamMessageWriter,
   type MessageConnection,
 } from "vscode-jsonrpc/node";
-import { UIServer, type UIServerOptions } from "./ui-server.ts";
+import { UIServer } from "./ui-server.ts";
 import { getProtocolVersion } from "./protocol-version.ts";
 import type { IRunManager, ISupervisor } from "./ui-protocol/methods.ts";
 import type { WorkflowRegistry } from "./registry.ts";
@@ -117,7 +117,6 @@ export interface EnsureStartedOptions extends ConnectOptions {
 
 const DEFAULT_POLL_INTERVAL_MS = 50;
 const DEFAULT_TIMEOUT_MS = 5_000;
-const DRAIN_MS = 100;
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -405,7 +404,6 @@ export class Daemon {
     this.log(`[daemon] Started on ${endpoint.host}:${endpoint.port} (pid ${endpoint.pid})`);
 
     this.registerSignalHandlers();
-    this.registerExceptionHandlers();
 
     return { endpoint, mode: "new" };
   }
@@ -487,12 +485,8 @@ export class Daemon {
 
   // ── Internal ─────────────────────────────────────────────────────────────
 
-  private registerExceptionHandlers(): void {
-    // Already registered inside registerSignalHandlers().
-  }
-
   private log(msg: string): void {
-    (this.opts.onLog ?? (() => {}))(msg);
+    this.opts.onLog?.(msg);
   }
 }
 

@@ -26,8 +26,9 @@ export async function runUiServer(): Promise<void> {
   }
 
   const workflows = new WorkflowRegistry();
-  const runs = new RunManager();
-  const supervisor = new DaemonSupervisorAdapter();
+  const cwd = process.cwd();
+  const supervisor = new DaemonSupervisorAdapter({ cwd });
+  const runs = new RunManager({ supervisor, cwd });
 
   const daemon = new Daemon({
     workflows,

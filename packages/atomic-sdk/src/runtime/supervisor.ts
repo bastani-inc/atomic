@@ -379,25 +379,36 @@ export class Supervisor {
     return stage;
   }
 
-  private broadcastOutput(stage: SupervisedStage, data: string): void {
-    const params = {
-      runId: stage.runId,
-      stageName: stage.stageName,
-      data,
-      offset: stage.scrollbackHead,
-    };
+  /**
+   * Fan out a JSON-RPC notification to every output subscriber for a stage.
+   * Connections that throw synchronously or reject asynchronously are pruned.
+   */
+  private fanOutNotification(
+    subscribers: Set<MessageConnection>,
+    method: string,
+    params: Record<string, unknown>,
+  ): void {
     const dead: MessageConnection[] = [];
-    for (const conn of stage.outputSubscribers) {
+    for (const conn of subscribers) {
       try {
-        const p = conn.sendNotification("pane/output", params);
+        const p = conn.sendNotification(method, params);
         Promise.resolve(p).catch(() => {
-          stage.outputSubscribers.delete(conn);
+          subscribers.delete(conn);
         });
       } catch {
         dead.push(conn);
       }
     }
-    for (const c of dead) stage.outputSubscribers.delete(c);
+    for (const c of dead) subscribers.delete(c);
+  }
+
+  private broadcastOutput(stage: SupervisedStage, data: string): void {
+    this.fanOutNotification(stage.outputSubscribers, "pane/output", {
+      runId: stage.runId,
+      stageName: stage.stageName,
+      data,
+      offset: stage.scrollbackHead,
+    });
   }
 
   private broadcastExit(
@@ -405,25 +416,12 @@ export class Supervisor {
     exitCode: number,
     signal?: string,
   ): void {
-    const params = {
+    this.fanOutNotification(stage.outputSubscribers, "pane/exit", {
       runId: stage.runId,
       stageName: stage.stageName,
       exitCode,
       ...(signal !== undefined && { signal }),
-    };
-    // pane/exit goes to outputSubscribers (same clients care about both)
-    const dead: MessageConnection[] = [];
-    for (const conn of stage.outputSubscribers) {
-      try {
-        const p = conn.sendNotification("pane/exit", params);
-        Promise.resolve(p).catch(() => {
-          stage.outputSubscribers.delete(conn);
-        });
-      } catch {
-        dead.push(conn);
-      }
-    }
-    for (const c of dead) stage.outputSubscribers.delete(c);
+    });
   }
 }
 

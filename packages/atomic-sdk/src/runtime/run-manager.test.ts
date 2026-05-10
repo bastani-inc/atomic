@@ -4,6 +4,7 @@
  */
 
 import { test, expect, describe } from "bun:test";
+import { join } from "node:path";
 import { RunManager } from "./run-manager.ts";
 import type { MessageConnection } from "vscode-jsonrpc";
 
@@ -155,6 +156,151 @@ describe("RunManager", () => {
 
       const active = manager.list("active");
       expect(active.find((r) => r.runId === runId)).toBeUndefined();
+    });
+  });
+
+  describe("executeRun — complete path", () => {
+    test("successful executeRun emits run/ended with overall=complete", async () => {
+      const fixturePath = join(import.meta.dir, "__fixtures__/default-only.ts");
+      const manager = new RunManager();
+      const { runId } = await manager.start({
+        source: fixturePath,
+        workflowName: "complete-path-wf",
+        agent: "claude",
+        inputs: {},
+      });
+
+      const conn = fakeConnection();
+      manager.subscribe(conn, runId);
+
+      // Wait for async executeRun to complete.
+      await flushAsync();
+
+      const ended = conn.notifications.filter((n) => n.method === "run/ended");
+      expect(ended.length).toBe(1);
+      const p = ended[0]!.params as { runId: string; overall: string };
+      expect(p.runId).toBe(runId);
+      expect(p.overall).toBe("complete");
+    });
+
+    test("successful executeRun marks RunInfo status=complete with endedAt", async () => {
+      const fixturePath = join(import.meta.dir, "__fixtures__/default-only.ts");
+      const manager = new RunManager();
+      const { runId } = await manager.start({
+        source: fixturePath,
+        workflowName: "complete-info-wf",
+        agent: "claude",
+        inputs: {},
+      });
+
+      await flushAsync();
+
+      const info = manager.get(runId);
+      expect(info).not.toBeNull();
+      expect(info!.status).toBe("complete");
+      expect(typeof info!.endedAt).toBe("string");
+    });
+
+    test("successful executeRun does not appear in list('active')", async () => {
+      const fixturePath = join(import.meta.dir, "__fixtures__/default-only.ts");
+      const manager = new RunManager();
+      const { runId } = await manager.start({
+        source: fixturePath,
+        workflowName: "complete-active-filter-wf",
+        agent: "claude",
+        inputs: {},
+      });
+
+      await flushAsync();
+
+      const active = manager.list("active");
+      expect(active.find((r) => r.runId === runId)).toBeUndefined();
+    });
+  });
+
+  describe("executeRun — error path", () => {
+    test("failing executeRun emits run/ended with overall=error", async () => {
+      const fixturePath = join(import.meta.dir, "__fixtures__/throws-on-run.ts");
+      const manager = new RunManager();
+      const { runId } = await manager.start({
+        source: fixturePath,
+        workflowName: "error-path-wf",
+        agent: "claude",
+        inputs: {},
+      });
+
+      const conn = fakeConnection();
+      manager.subscribe(conn, runId);
+
+      await flushAsync();
+
+      const ended = conn.notifications.filter((n) => n.method === "run/ended");
+      expect(ended.length).toBe(1);
+      const p = ended[0]!.params as { runId: string; overall: string };
+      expect(p.runId).toBe(runId);
+      expect(p.overall).toBe("error");
+    });
+
+    test("failing executeRun marks RunInfo status=error with endedAt", async () => {
+      const fixturePath = join(import.meta.dir, "__fixtures__/throws-on-run.ts");
+      const manager = new RunManager();
+      const { runId } = await manager.start({
+        source: fixturePath,
+        workflowName: "error-info-wf",
+        agent: "claude",
+        inputs: {},
+      });
+
+      await flushAsync();
+
+      const info = manager.get(runId);
+      expect(info).not.toBeNull();
+      expect(info!.status).toBe("error");
+      expect(typeof info!.endedAt).toBe("string");
+    });
+
+    test("failing executeRun emits run/ended exactly once", async () => {
+      const fixturePath = join(import.meta.dir, "__fixtures__/throws-on-run.ts");
+      const manager = new RunManager();
+      const { runId } = await manager.start({
+        source: fixturePath,
+        workflowName: "error-once-wf",
+        agent: "claude",
+        inputs: {},
+      });
+
+      const conn = fakeConnection();
+      manager.subscribe(conn, runId);
+
+      // Wait well past when the error fires.
+      await flushAsync();
+      await flushAsync();
+
+      const ended = conn.notifications.filter((n) => n.method === "run/ended");
+      expect(ended.length).toBe(1);
+    });
+
+    test("cancel wins over concurrent executeRun error — run/ended=cancelled, not error", async () => {
+      const fixturePath = join(import.meta.dir, "__fixtures__/throws-on-run.ts");
+      const manager = new RunManager();
+      const { runId } = await manager.start({
+        source: fixturePath,
+        workflowName: "cancel-vs-error-wf",
+        agent: "claude",
+        inputs: {},
+      });
+
+      const conn = fakeConnection();
+      manager.subscribe(conn, runId);
+
+      // stop() immediately — before executeRun has a chance to finish.
+      await manager.stop(runId);
+      await flushAsync();
+
+      const ended = conn.notifications.filter((n) => n.method === "run/ended");
+      expect(ended.length).toBe(1);
+      const p = ended[0]!.params as { overall: string };
+      expect(p.overall).toBe("cancelled");
     });
   });
 });

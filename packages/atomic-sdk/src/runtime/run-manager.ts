@@ -11,7 +11,7 @@ import { readFile } from "node:fs/promises";
 import type { MessageConnection } from "vscode-jsonrpc";
 import type { AgentType } from "../types.ts";
 import { RunState } from "./run-state.ts";
-import type { IRunManager, RunInfo } from "./ui-protocol/methods.ts";
+import type { IRunManager, ISupervisor, RunInfo } from "./ui-protocol/methods.ts";
 
 // ─── WorkflowContext stub ─────────────────────────────────────────────────────
 
@@ -41,10 +41,31 @@ function makeStubContext(inputs: Record<string, unknown>, agent: AgentType): Wor
 
 // ─── RunManager ───────────────────────────────────────────────────────────────
 
+/** Options for constructing a RunManager. */
+export interface RunManagerOptions {
+  /**
+   * Injected process supervisor for agent subprocess management.
+   * When provided, wired into each RunState for stage execution.
+   */
+  supervisor?: ISupervisor;
+  /**
+   * Project root / working directory used for RunState and agent spawning.
+   * Defaults to process.cwd() at construction time.
+   */
+  cwd?: string;
+}
+
 export class RunManager implements IRunManager {
   private runs = new Map<string, RunInfo>();
   private states = new Map<string, RunState>();
   private subscriptions = new Map<string, { connection: MessageConnection; runId?: string }>();
+  readonly supervisor: ISupervisor | undefined;
+  private readonly cwd: string;
+
+  constructor(opts: RunManagerOptions = {}) {
+    this.supervisor = opts.supervisor;
+    this.cwd = opts.cwd ?? process.cwd();
+  }
 
   async start(params: {
     source: string;
@@ -59,7 +80,7 @@ export class RunManager implements IRunManager {
       runId,
       workflowName,
       agent,
-      projectRoot: process.cwd(),
+      projectRoot: this.cwd,
     });
 
     const info: RunInfo = {

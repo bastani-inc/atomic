@@ -18,6 +18,20 @@ import { missingDependency } from "./ui-protocol/errors.ts";
 
 // ─── DaemonSupervisorAdapter ──────────────────────────────────────────────────
 
+/** Options for constructing a DaemonSupervisorAdapter. */
+export interface DaemonSupervisorAdapterOptions {
+  /**
+   * Low-level Supervisor instance to delegate to.
+   * Defaults to a freshly constructed Supervisor.
+   */
+  supervisor?: Supervisor;
+  /**
+   * Working directory used as the cwd for spawned agent subprocesses.
+   * Defaults to process.cwd() at construction time.
+   */
+  cwd?: string;
+}
+
 /**
  * Implements `ISupervisor` by delegating to a `Supervisor` instance.
  *
@@ -26,9 +40,17 @@ import { missingDependency } from "./ui-protocol/errors.ts";
  */
 export class DaemonSupervisorAdapter implements ISupervisor {
   private readonly supervisor: Supervisor;
+  private readonly cwd: string;
 
-  constructor(supervisor?: Supervisor) {
-    this.supervisor = supervisor ?? new Supervisor();
+  constructor(opts: DaemonSupervisorAdapterOptions | Supervisor = {}) {
+    // Accept legacy positional `new DaemonSupervisorAdapter(supervisor)` form too.
+    if (opts instanceof Supervisor) {
+      this.supervisor = opts;
+      this.cwd = process.cwd();
+    } else {
+      this.supervisor = opts.supervisor ?? new Supervisor();
+      this.cwd = opts.cwd ?? process.cwd();
+    }
   }
 
   // ─── ISupervisor: spawn ─────────────────────────────────────────────────────
@@ -45,8 +67,9 @@ export class DaemonSupervisorAdapter implements ISupervisor {
     agent: AgentType;
     args: string[];
     env?: Record<string, string>;
+    onExit?: (exitCode: number, signal?: string) => void;
   }): Promise<{ pid: number }> {
-    const { runId, stageName, agent, args, env } = params;
+    const { runId, stageName, agent, args, env, onExit } = params;
 
     // Resolve binary safely — Bun.which never invokes a shell.
     const cmd = AGENT_CONFIG[agent].cmd;
@@ -55,11 +78,14 @@ export class DaemonSupervisorAdapter implements ISupervisor {
       throw missingDependency(cmd);
     }
 
-    // Use the daemon's working directory as the subprocess cwd.
-    const cwd = process.cwd();
+    // Use the injected working directory as the subprocess cwd.
+    const cwd = this.cwd;
+
+    // Wire onExit through StageCallbacks so callers can await subprocess exit.
+    const callbacks = onExit ? { onExit } : undefined;
 
     // spawn is synchronous inside Supervisor; wrap in Promise for interface compat.
-    const result = this.supervisor.spawn({ runId, stageName, agent, file, args, cwd, env });
+    const result = this.supervisor.spawn({ runId, stageName, agent, file, args, cwd, env, callbacks });
     return Promise.resolve(result);
   }
 

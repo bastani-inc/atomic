@@ -155,6 +155,12 @@ export interface ISupervisor {
     agent: AgentType;
     args: string[];
     env?: Record<string, string>;
+    /**
+     * Optional exit callback. Called once when the subprocess exits.
+     * Implementors wire this to `StageCallbacks.onExit` so callers can
+     * await stage completion without polling.
+     */
+    onExit?: (exitCode: number, signal?: string) => void;
   }): Promise<{ pid: number }>;
 
   /**
