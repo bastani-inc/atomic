@@ -33,7 +33,16 @@ export interface RunManagerOptions {
 export class RunManager implements IRunManager {
   private runs = new Map<string, RunInfo>();
   private states = new Map<string, RunState>();
-  private subscriptions = new Map<string, { connection: MessageConnection; runId?: string }>();
+  private subscriptions = new Map<
+    string,
+    {
+      connection: MessageConnection;
+      runId?: string;
+      stateSubscriptions: Array<{ runId: string; subscriptionId: string }>;
+    }
+  >();
+  /** Active stage PIDs owned by each run. Cleared when run terminates. */
+  private readonly runPids = new Map<string, Set<number>>();
   readonly supervisor: ISupervisor | undefined;
   private readonly cwd: string;
 
@@ -195,23 +204,32 @@ export class RunManager implements IRunManager {
 
   subscribe(connection: MessageConnection, runId?: string): string {
     const subscriptionId = randomUUID();
-    this.subscriptions.set(subscriptionId, { connection, runId });
-    // If subscribing to a specific run, add the connection as a subscriber to its state.
+    const stateSubscriptions: Array<{ runId: string; subscriptionId: string }> = [];
+
     if (runId) {
       const state = this.states.get(runId);
       if (state) {
-        state.subscribe(connection);
+        const innerSubId = state.subscribe(connection);
+        stateSubscriptions.push({ runId, subscriptionId: innerSubId });
       }
     } else {
-      // Subscribe to all active runs.
-      for (const state of this.states.values()) {
-        state.subscribe(connection);
+      for (const [rid, state] of this.states) {
+        const innerSubId = state.subscribe(connection);
+        stateSubscriptions.push({ runId: rid, subscriptionId: innerSubId });
       }
     }
+
+    this.subscriptions.set(subscriptionId, { connection, runId, stateSubscriptions });
     return subscriptionId;
   }
 
   unsubscribe(subscriptionId: string): void {
+    const record = this.subscriptions.get(subscriptionId);
+    if (!record) return;
+    for (const inner of record.stateSubscriptions) {
+      const state = this.states.get(inner.runId);
+      state?.unsubscribe(inner.subscriptionId);
+    }
     this.subscriptions.delete(subscriptionId);
   }
 }

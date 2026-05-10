@@ -803,6 +803,63 @@ describe("RunManager.unsubscribe()", () => {
 
     await flushAsync();
   });
+
+  test("unsubscribe removes inner RunState subscriber for run-specific subscription", async () => {
+    const manager = new RunManager();
+    const conn = fakeConnection();
+    const { runId } = await manager.start({
+      source: join(import.meta.dir, "__fixtures__/throws-on-run.ts"),
+      workflowName: "inner-unsub-specific-wf",
+      agent: "claude",
+      inputs: {},
+    });
+
+    const state = manager.getState(runId)!;
+    const beforeCount = state.subscriberCount;
+
+    const subId = manager.subscribe(conn, runId);
+    expect(state.subscriberCount).toBe(beforeCount + 1);
+
+    manager.unsubscribe(subId);
+    expect(state.subscriberCount).toBe(beforeCount);
+
+    await flushAsync();
+  });
+
+  test("unsubscribe removes inner RunState subscribers for all-runs subscription", async () => {
+    const manager = new RunManager();
+    const conn = fakeConnection();
+
+    // Start two runs so the all-runs subscribe wires into both states.
+    const { runId: r1 } = await manager.start({
+      source: join(import.meta.dir, "__fixtures__/throws-on-run.ts"),
+      workflowName: "inner-unsub-all-wf-1",
+      agent: "claude",
+      inputs: {},
+    });
+    const { runId: r2 } = await manager.start({
+      source: join(import.meta.dir, "__fixtures__/throws-on-run.ts"),
+      workflowName: "inner-unsub-all-wf-2",
+      agent: "claude",
+      inputs: {},
+    });
+
+    const s1 = manager.getState(r1)!;
+    const s2 = manager.getState(r2)!;
+    const before1 = s1.subscriberCount;
+    const before2 = s2.subscriberCount;
+
+    // Subscribe with no runId — should wire into both states.
+    const subId = manager.subscribe(conn);
+    expect(s1.subscriberCount).toBe(before1 + 1);
+    expect(s2.subscriberCount).toBe(before2 + 1);
+
+    manager.unsubscribe(subId);
+    expect(s1.subscriberCount).toBe(before1);
+    expect(s2.subscriberCount).toBe(before2);
+
+    await flushAsync();
+  });
 });
 
 // ─── noopSupervisor methods ───────────────────────────────────────────────────
