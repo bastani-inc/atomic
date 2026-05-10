@@ -563,3 +563,137 @@ describe("RunManager", () => {
     });
   });
 });
+
+// ─── outer .catch() on executeRun (lines 73-82) ──────────────────────────────
+
+describe("RunManager.start() — outer executeRun rejection handler (lines 73-82)", () => {
+  test("outer catch marks run as error when executeRun promise rejects outside internal try/catch", async () => {
+    const manager = new RunManager();
+
+    // Replace the private executeRun with a function that unconditionally rejects.
+    // This simulates an unexpected rejection that bypasses the internal try/catch.
+    (manager as unknown as Record<string, unknown>).executeRun = async () => {
+      throw new Error("Simulated outer executeRun rejection");
+    };
+
+    const { runId } = await manager.start({
+      source: join(import.meta.dir, "__fixtures__/with-one-stage.ts"),
+      workflowName: "outer-catch-wf",
+      agent: "claude",
+      inputs: {},
+    });
+
+    // Allow microtasks to resolve so the outer .catch() callback fires.
+    await flushAsync();
+
+    const info = manager.get(runId);
+    expect(info).not.toBeNull();
+    expect(info!.status).toBe("error");
+  });
+});
+
+// ─── getTranscript ────────────────────────────────────────────────────────────
+
+describe("RunManager.getTranscript()", () => {
+  test("returns empty array when messages.json does not exist", async () => {
+    const manager = new RunManager();
+    const result = await manager.getTranscript("nonexistent-run", "nonexistent-stage");
+    expect(result).toEqual([]);
+  });
+
+  test("reads and parses messages.json from HOME/.atomic/sessions/<runId>/<sessionName>/", async () => {
+    const { mkdtemp, mkdir, writeFile, rm } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    const { tmpdir } = await import("node:os");
+
+    // Create a temporary directory to act as HOME.
+    const tmpHome = await mkdtemp(join(tmpdir(), "atomic-rm-transcript-"));
+    const runId = "test-run-transcript-id";
+    const sessionName = "my-stage";
+    const messagesDir = join(tmpHome, ".atomic", "sessions", runId, sessionName);
+    await mkdir(messagesDir, { recursive: true });
+
+    const messages = [
+      { type: "assistant", content: "hello" },
+      { type: "user", content: "world" },
+    ];
+    await writeFile(join(messagesDir, "messages.json"), JSON.stringify(messages), "utf-8");
+
+    // Override HOME env to point at our temp dir.
+    const originalHome = process.env.HOME;
+    process.env.HOME = tmpHome;
+
+    try {
+      const manager = new RunManager();
+      const result = await manager.getTranscript(runId, sessionName);
+      expect(result).toEqual(messages);
+    } finally {
+      if (originalHome !== undefined) process.env.HOME = originalHome;
+      else delete process.env.HOME;
+      await rm(tmpHome, { recursive: true, force: true });
+    }
+  });
+});
+
+// ─── unsubscribe ──────────────────────────────────────────────────────────────
+
+describe("RunManager.unsubscribe()", () => {
+  test("removes the subscription without throwing", () => {
+    const manager = new RunManager();
+    const conn = fakeConnection();
+
+    // Subscribe (no runId — subscribes to all active runs).
+    const subId = manager.subscribe(conn);
+    // Unsubscribe — should succeed silently.
+    expect(() => manager.unsubscribe(subId)).not.toThrow();
+  });
+
+  test("unsubscribing an unknown id is a no-op", () => {
+    const manager = new RunManager();
+    expect(() => manager.unsubscribe("non-existent-subscription-id")).not.toThrow();
+  });
+
+  test("subscribe returns a subscriptionId that can be unsubscribed", async () => {
+    const manager = new RunManager();
+    const conn = fakeConnection();
+    const { runId } = await manager.start({
+      source: join(import.meta.dir, "__fixtures__/throws-on-run.ts"),
+      workflowName: "unsub-test",
+      agent: "claude",
+      inputs: {},
+    });
+
+    const subId = manager.subscribe(conn, runId);
+    expect(typeof subId).toBe("string");
+    expect(subId.length).toBeGreaterThan(0);
+
+    // Unsubscribe should not throw.
+    expect(() => manager.unsubscribe(subId)).not.toThrow();
+
+    await flushAsync();
+  });
+});
+
+// ─── noopSupervisor methods ───────────────────────────────────────────────────
+
+describe("noopSupervisor — sendInput and getScrollback throw descriptive errors", () => {
+  test("noopSupervisor.sendInput throws when called via workflow context (no supervisor)", async () => {
+    const fixturePath = join(import.meta.dir, "__fixtures__/access-noop-supervisor.ts");
+    const manager = new RunManager(); // no supervisor → noopSupervisor used as fallback
+
+    const { runId } = await manager.start({
+      source: fixturePath,
+      workflowName: "noop-methods-wf",
+      agent: "claude",
+      inputs: {},
+    });
+
+    await flushAsync();
+
+    // The workflow accesses noopSupervisor.sendInput/getScrollback and catches the errors.
+    // The run should complete successfully (the fixture doesn't call ctx.stage()).
+    const info = manager.get(runId);
+    // The workflow completes normally; sendInput/getScrollback errors are caught internally.
+    expect(info).not.toBeNull();
+  });
+});

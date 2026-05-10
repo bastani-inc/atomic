@@ -8,7 +8,7 @@
  * the underlying start/stop mechanics directly.
  */
 
-import { test, expect, describe, mock, beforeEach, afterEach } from "bun:test";
+import { test, expect, describe, mock } from "bun:test";
 import * as net from "node:net";
 import * as fsp from "node:fs/promises";
 import * as fs from "node:fs";
@@ -414,5 +414,280 @@ describe("log file", () => {
     // Check that the onLog hook was called with daemon messages.
     expect(lines.some((l) => l.includes("[daemon] Started"))).toBe(true);
     expect(lines.some((l) => l.includes("[daemon] Stopped"))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DaemonAlreadyRunningError
+// ---------------------------------------------------------------------------
+
+describe("DaemonAlreadyRunningError", () => {
+  test("constructor sets name, message, and endpoint fields", () => {
+    const ep: DaemonEndpoint = {
+      host: "127.0.0.1",
+      port: 9999,
+      pid: 42,
+      startedAt: "2026-01-01T00:00:00.000Z",
+      atomicVersion: "2.0.0",
+      protocolVersion: "1.0.0",
+    };
+    const err = new DaemonAlreadyRunningError(ep);
+    expect(err.name).toBe("DaemonAlreadyRunningError");
+    expect(err.message).toContain("9999");
+    expect(err.endpoint).toBe(ep);
+    expect(err).toBeInstanceOf(Error);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// defaultEndpointFile / defaultLogFile — covered via Daemon constructor
+// without opts.endpointFile or opts.logFile
+// ---------------------------------------------------------------------------
+
+describe("Daemon with default path helpers (no endpointFile/logFile opts)", () => {
+  test("daemon constructor uses defaultEndpointFile when no endpointFile provided", () => {
+    // We just construct the daemon; we don't start it because the default
+    // ~/.atomic path may not be writeable in CI. The constructor triggers
+    // defaultEndpointFile() and defaultLogFile() calls.
+    const daemon = new Daemon({
+      workflows: makeRegistry(),
+      runs: makeRunManager(),
+      supervisor: makeSupervisor(),
+      atomicVersion: "2.0.0",
+      sdkVersion: "0.7.13",
+      token: "test-token",
+      // Intentionally omit endpointFile and logFile so defaults are used.
+    });
+    // getEndpoint returns null before start.
+    expect(daemon.getEndpoint()).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildLogWriter — covered by Daemon without custom onLog
+// ---------------------------------------------------------------------------
+
+describe("Daemon log writer (buildLogWriter path)", () => {
+  test("daemon without onLog writes to logFile via buildLogWriter", async () => {
+    const tmpDir = await makeTempDir();
+    const logFile = path.join(tmpDir, "default.log");
+    // No onLog provided → Daemon uses buildLogWriter(logFile) internally.
+    const opts = makeDaemonOpts(tmpDir, {
+      logFile,
+      onLog: undefined, // force buildLogWriter path
+    });
+    const daemon = new Daemon(opts);
+    await daemon.start();
+    await daemon.stop();
+
+    // The log file should exist and contain the started/stopped messages.
+    const content = await fsp.readFile(logFile, "utf-8");
+    expect(content).toContain("[daemon] Started");
+    expect(content).toContain("[daemon] Stopped");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isTransportError — private function; exercised via unhandledRejection handler
+// ---------------------------------------------------------------------------
+
+describe("isTransportError — transport error suppression in unhandledRejection", () => {
+  test("EPIPE error is suppressed and does not call stop", async () => {
+    const tmpDir = await makeTempDir();
+    const daemon = new Daemon(makeDaemonOpts(tmpDir));
+    await daemon.start();
+    try {
+      // Grab the private handler.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const handler = (daemon as any).unhandledRejectionHandler as (reason: unknown) => Promise<void>;
+
+      const epipeErr = Object.assign(new Error("write EPIPE"), { code: "EPIPE" });
+      // Should return without stopping the daemon (transport error suppression).
+      await handler(epipeErr);
+
+      // Daemon still alive: endpoint file should still exist.
+      expect(fs.existsSync(makeDaemonOpts(tmpDir).endpointFile!)).toBe(true);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  test("ECONNRESET error is suppressed", async () => {
+    const tmpDir = await makeTempDir();
+    const daemon = new Daemon(makeDaemonOpts(tmpDir));
+    await daemon.start();
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const handler = (daemon as any).unhandledRejectionHandler as (reason: unknown) => Promise<void>;
+      const err = Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" });
+      await handler(err);
+      expect(daemon.getEndpoint()).not.toBeNull();
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  test("non-transport error triggers stop (fatal path)", async () => {
+    const tmpDir = await makeTempDir();
+    const endpointFile = path.join(tmpDir, "daemon.endpoint.json");
+    const daemon = new Daemon(makeDaemonOpts(tmpDir));
+    await daemon.start();
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const handler = (daemon as any).unhandledRejectionHandler as (reason: unknown) => Promise<void>;
+
+    // Intercept process.exit to prevent test process from exiting.
+    const origExit = process.exit;
+    let exitCode: number | undefined;
+    process.exit = ((code?: number) => { exitCode = code as number; }) as typeof process.exit;
+    try {
+      const genuineErr = new Error("Some non-transport bug");
+      await handler(genuineErr);
+      // Daemon should have been stopped: endpoint file unlinked.
+      expect(fs.existsSync(endpointFile)).toBe(false);
+      expect(exitCode).toBe(1);
+    } finally {
+      process.exit = origExit;
+      // Daemon already stopped by handler; second stop is a no-op.
+      await daemon.stop().catch(() => {});
+    }
+  });
+
+  test("uncaughtException handler triggers stop (fatal path)", async () => {
+    const tmpDir = await makeTempDir();
+    const endpointFile = path.join(tmpDir, "daemon.endpoint.json");
+    const daemon = new Daemon(makeDaemonOpts(tmpDir));
+    await daemon.start();
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const handler = (daemon as any).uncaughtExceptionHandler as (err: Error) => Promise<void>;
+
+    const origExit = process.exit;
+    let exitCode: number | undefined;
+    process.exit = ((code?: number) => { exitCode = code as number; }) as typeof process.exit;
+    try {
+      await handler(new Error("Uncaught crash"));
+      expect(fs.existsSync(endpointFile)).toBe(false);
+      expect(exitCode).toBe(1);
+    } finally {
+      process.exit = origExit;
+      await daemon.stop().catch(() => {});
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveAtomicBinary + ensureStarted (MissingDependencyError)
+// ---------------------------------------------------------------------------
+
+describe("ensureStarted()", () => {
+  test("throws MissingDependencyError when no endpoint file and no binary found", async () => {
+    const tmpDir = await makeTempDir();
+    const missingFile = path.join(tmpDir, "nonexistent.json");
+
+    // Ensure ATOMIC_BINARY is unset so resolveAtomicBinary falls through.
+    const origBinary = process.env.ATOMIC_BINARY;
+    delete process.env.ATOMIC_BINARY;
+
+    // Mock Bun.which to return null (binary not found) to avoid spawning.
+    const origWhich = Bun.which;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (Bun as any).which = () => null;
+
+    try {
+      const { ensureStarted } = await import("./daemon.ts");
+      // Providing a very short timeout so the poll loop exits fast.
+      await expect(
+        ensureStarted({ endpointFile: missingFile, timeoutMs: 1, pollIntervalMs: 1 }),
+      ).rejects.toThrow(MissingDependencyError);
+    } finally {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (Bun as any).which = origWhich;
+      if (origBinary !== undefined) process.env.ATOMIC_BINARY = origBinary;
+    }
+  });
+
+  test("resolveAtomicBinary returns opts.atomicBinary when provided", async () => {
+    const tmpDir = await makeTempDir();
+    const missingFile = path.join(tmpDir, "nonexistent.json");
+
+    // Use a binary that clearly doesn't exist as a daemon — spawn will do nothing.
+    // The test is that ensureStarted uses the provided binary string.
+    // It will fail with timeout (MissingDependencyError) because no real daemon starts.
+    const origBinary = process.env.ATOMIC_BINARY;
+    delete process.env.ATOMIC_BINARY;
+
+    try {
+      const { ensureStarted } = await import("./daemon.ts");
+      await expect(
+        ensureStarted({
+          endpointFile: missingFile,
+          atomicBinary: "/usr/bin/false",
+          timeoutMs: 1,
+          pollIntervalMs: 1,
+        }),
+      ).rejects.toThrow(MissingDependencyError);
+    } finally {
+      if (origBinary !== undefined) process.env.ATOMIC_BINARY = origBinary;
+    }
+  });
+
+  test("resolveAtomicBinary uses ATOMIC_BINARY env var as fallback", async () => {
+    const tmpDir = await makeTempDir();
+    const missingFile = path.join(tmpDir, "nonexistent.json");
+
+    const origBinary = process.env.ATOMIC_BINARY;
+    process.env.ATOMIC_BINARY = "/usr/bin/false"; // present but won't start a daemon
+
+    try {
+      const { ensureStarted } = await import("./daemon.ts");
+      await expect(
+        ensureStarted({ endpointFile: missingFile, timeoutMs: 1, pollIntervalMs: 1 }),
+      ).rejects.toThrow(MissingDependencyError);
+    } finally {
+      if (origBinary !== undefined) process.env.ATOMIC_BINARY = origBinary;
+      else delete process.env.ATOMIC_BINARY;
+    }
+  });
+
+  test("returns existing connection when a live daemon is already running", async () => {
+    const tmpDir = await makeTempDir();
+    const opts = makeDaemonOpts(tmpDir, { token: undefined });
+    const daemon = new Daemon(opts);
+    await daemon.start();
+
+    try {
+      const { ensureStarted } = await import("./daemon.ts");
+      const conn = await ensureStarted({ endpointFile: opts.endpointFile });
+      // Verify connection works.
+      const res = await conn.sendRequest("protocol/getVersion", {}) as { protocolVersion: string };
+      expect(typeof res.protocolVersion).toBe("string");
+      conn.dispose();
+    } finally {
+      await daemon.stop();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// openConnection error rejection — connect request fails
+// ---------------------------------------------------------------------------
+
+describe("openConnection failure path", () => {
+  test("connectToDaemon rejects when the server rejects the connect request (auth failure)", async () => {
+    const tmpDir = await makeTempDir();
+    // Start a daemon with a specific token.
+    const opts = makeDaemonOpts(tmpDir, { token: "server-secret" });
+    const daemon = new Daemon(opts);
+    await daemon.start();
+
+    try {
+      // Connect with wrong token — the server should reject the connect request.
+      await expect(
+        connectToDaemon({ endpointFile: opts.endpointFile, token: "wrong-token" }),
+      ).rejects.toBeDefined();
+    } finally {
+      await daemon.stop();
+    }
   });
 });

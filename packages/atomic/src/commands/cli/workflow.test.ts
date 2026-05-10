@@ -979,6 +979,40 @@ describe("dispatch() non-TTY foreground — deterministic completion", () => {
     expect(localDisposable.dispose).toHaveBeenCalledTimes(2);
   });
 
+  test("direct notification path (lines 310-311): run/ended fires after pendingRunId is set", async () => {
+    // This test covers lines 310-311 by ensuring the run/ended notification fires
+    // AFTER sendRequest completes and pendingRunId is set (macrotask delay).
+    let capturedHandler: ((params: { runId: string }) => void) | undefined;
+    const localDisposable = { dispose: mock(() => {}) };
+
+    const conn = {
+      sendRequest: mock(async (_method: string, params: unknown) => {
+        dispatchRpcCalls.push(params as typeof dispatchRpcCalls[number]);
+        // Use a macrotask (setTimeout 0) so the notification fires AFTER dispatch
+        // resumes from await-sendRequest and sets pendingRunId.
+        // This exercises the `else if (params.runId === pendingRunId)` branch (line 310-311).
+        setTimeout(() => capturedHandler?.({ runId: rpcRunId }), 0);
+        return { runId: rpcRunId, attachable: true };
+      }),
+      onNotification: mock((event: string, handler: (params: { runId: string }) => void) => {
+        if (event === "run/ended") capturedHandler = handler;
+        return localDisposable;
+      }),
+      onClose: mock((_handler: () => void) => localDisposable),
+      dispose: mock(() => {}),
+    };
+
+    await mock.module("@bastani/atomic-sdk/runtime/daemon", () => ({
+      ...realDaemonMod,
+      ensureStarted: mock(async () => conn),
+    }));
+
+    await dispatch(foregroundFixtureWf, {}, false);
+
+    expect(dispatchRpcCalls).toHaveLength(1);
+    expect(conn.dispose).toHaveBeenCalled();
+  });
+
   test("detach:true — sends workflow/start and returns without subscribing to run/ended", async () => {
     const conn = makeFakeConn({ notifyOnRegister: false });
 
@@ -995,6 +1029,155 @@ describe("dispatch() non-TTY foreground — deterministic completion", () => {
     expect(conn.dispose).toHaveBeenCalled();
     // RPC was still sent.
     expect(dispatchRpcCalls).toHaveLength(1);
+  });
+});
+
+// ─── ATOMIC_DEBUG=1 debug logging path ────────────────────────────────────────
+
+describe("dispatch() with ATOMIC_DEBUG=1 — debug logging path (lines 485-489)", () => {
+  beforeEach(() => {
+    dispatchRpcCalls.length = 0;
+    Object.defineProperty(process.stdout, "isTTY", { configurable: true, get: () => false });
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process.stdout, "isTTY", { configurable: true, get: () => false });
+  });
+
+  test("writes debug line to stderr when ATOMIC_DEBUG=1", async () => {
+    const origDebug = process.env.ATOMIC_DEBUG;
+    process.env.ATOMIC_DEBUG = "1";
+
+    const stderrChunks: string[] = [];
+    const origWrite = process.stderr.write;
+    process.stderr.write = ((chunk: string | Uint8Array, ..._rest: unknown[]) => {
+      stderrChunks.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+
+    // Build a registry containing a test external workflow.
+    const debugWf: ExternalWorkflow = {
+      kind: "external",
+      name: "debug-test-wf",
+      agent: "claude",
+      description: "debug test workflow",
+      inputs: [{ name: "myInput", type: "string" as const, description: "an input", required: false }],
+      source: { command: "/usr/bin/debug-runner", args: [] },
+    };
+    const registry = createRegistry().upsert(debugWf);
+    rebuildWorkflowCommand(registry, new Map());
+
+    const conn = makeFakeConn({ notifyOnRegister: true });
+    await mock.module("@bastani/atomic-sdk/runtime/daemon", () => ({
+      ...realDaemonMod,
+      ensureStarted: mock(async () => conn),
+    }));
+
+    const cmd = buildWorkflowCommand(registry, false);
+    cmd.exitOverride();
+
+    try {
+      await cmd.parseAsync([
+        "node", "cli",
+        "-n", "debug-test-wf",
+        "-a", "claude",
+        "--myInput", "hello",
+      ]);
+    } catch {
+      // parseAsync may throw exitOverride errors for some Commander versions; ignore.
+    } finally {
+      if (origDebug !== undefined) process.env.ATOMIC_DEBUG = origDebug;
+      else delete process.env.ATOMIC_DEBUG;
+      process.stderr.write = origWrite;
+    }
+
+    const debugOut = stderrChunks.join("");
+    expect(debugOut).toContain("[atomic/workflow] dispatching");
+    expect(debugOut).toContain("debug-test-wf");
+  });
+
+  test("does NOT write debug line when ATOMIC_DEBUG is unset", async () => {
+    const origDebug = process.env.ATOMIC_DEBUG;
+    delete process.env.ATOMIC_DEBUG;
+
+    const stderrChunks: string[] = [];
+    const origWrite = process.stderr.write;
+    process.stderr.write = ((chunk: string | Uint8Array, ..._rest: unknown[]) => {
+      stderrChunks.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+
+    const conn = makeFakeConn({ notifyOnRegister: true });
+    await mock.module("@bastani/atomic-sdk/runtime/daemon", () => ({
+      ...realDaemonMod,
+      ensureStarted: mock(async () => conn),
+    }));
+
+    try {
+      await dispatch(foregroundFixtureWf, {}, false);
+    } finally {
+      if (origDebug !== undefined) process.env.ATOMIC_DEBUG = origDebug;
+      process.stderr.write = origWrite;
+    }
+
+    const debugOut = stderrChunks.join("");
+    expect(debugOut).not.toContain("[atomic/workflow] dispatching");
+  });
+});
+
+// ─── TTY branch in dispatch() (lines 282-290) ────────────────────────────────
+//
+// When process.stdout.isTTY is true, dispatch calls PanelClient.mount
+// instead of waiting for run/ended via notification.
+
+describe("dispatch() TTY foreground path (lines 282-290)", () => {
+  beforeEach(() => {
+    dispatchRpcCalls.length = 0;
+  });
+
+  afterEach(async () => {
+    // Reset isTTY and restore module mocks.
+    Object.defineProperty(process.stdout, "isTTY", { configurable: true, get: () => false });
+    await mock.module("@bastani/atomic-sdk/runtime/daemon", () => ({
+      ...realDaemonMod,
+      ensureStarted: mock(async () => fakeRpcConn),
+    }));
+  });
+
+  test("TTY path: sends workflow/start RPC then calls PanelClient.mount", async () => {
+    // Force TTY mode.
+    Object.defineProperty(process.stdout, "isTTY", { configurable: true, get: () => true });
+
+    const mountMock = mock(async (_opts: unknown) => {});
+    await mock.module("@bastani/atomic-sdk/components/panel-client", () => ({
+      PanelClient: { mount: mountMock },
+    }));
+
+    const conn = {
+      sendRequest: mock(async (_method: string, params: unknown) => {
+        dispatchRpcCalls.push(params as typeof dispatchRpcCalls[number]);
+        return { runId: rpcRunId, attachable: true };
+      }),
+      onNotification: mock(() => ({ dispose: mock(() => {}) })),
+      onClose: mock(() => ({ dispose: mock(() => {}) })),
+      dispose: mock(() => {}),
+    };
+
+    await mock.module("@bastani/atomic-sdk/runtime/daemon", () => ({
+      ...realDaemonMod,
+      ensureStarted: mock(async () => conn),
+    }));
+
+    await dispatch(foregroundFixtureWf, {}, false);
+
+    // RPC was sent.
+    expect(dispatchRpcCalls).toHaveLength(1);
+    // PanelClient.mount was called with the run ID.
+    expect(mountMock).toHaveBeenCalledWith({ runId: rpcRunId });
+    // Connection was disposed.
+    expect(conn.dispose).toHaveBeenCalled();
+    // Notification subscription was NOT created in TTY path.
+    expect(conn.onNotification).not.toHaveBeenCalled();
   });
 });
 

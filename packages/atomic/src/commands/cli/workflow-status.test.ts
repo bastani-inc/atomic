@@ -449,3 +449,20 @@ describe("workflowStatusCommand", () => {
     if (tmpDir) await rm(tmpDir, { recursive: true, force: true });
   });
 });
+
+// ---------------------------------------------------------------------------
+// defaultDeps — exercise via call without deps argument
+// ---------------------------------------------------------------------------
+
+describe("workflowStatusCommand() without deps (uses defaultDeps)", () => {
+  test("defaultDeps.isTmuxInstalled returns false → early return with code 0", async () => {
+    const cap = captureStdout();
+    try {
+      // No deps argument → uses defaultDeps where isTmuxInstalled() === false.
+      const code = await workflowStatusCommand({});
+      expect(code).toBe(0);
+    } finally {
+      cap.restore();
+    }
+  });
+});

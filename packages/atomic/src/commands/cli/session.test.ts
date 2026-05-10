@@ -827,4 +827,96 @@ describe("sessionKillCommand", () => {
       process.stdout.write = origWrite;
     }
   });
+
+  // ── Lines 312-320: named session not found but other sessions available ──────
+
+  test("shows available sessions in scope when named session is not found", async () => {
+    const now = new Date().toISOString();
+    // inScope has sessions but the requested name isn't among them
+    tmuxMocks.listSessions.mockReturnValue([
+      { name: "session-alpha", windows: 1, created: now, attached: false, type: "chat" as const, agent: "claude" },
+      { name: "session-beta", windows: 1, created: now, attached: false, type: "chat" as const, agent: "copilot" },
+    ]);
+    const chunks: string[] = [];
+    const origWrite = process.stderr.write;
+    process.stderr.write = ((c: string) => { chunks.push(c); return true; }) as typeof process.stderr.write;
+    try {
+      const code = await sessionKillCommand("ghost-session", [], "all", makeDeps());
+      expect(code).toBe(1);
+      const output = chunks.join("");
+      // Lines 312-320: available sessions list shown
+      expect(output).toContain("Available sessions:");
+      expect(output).toContain("session-alpha");
+      expect(output).toContain("session-beta");
+    } finally {
+      process.stderr.write = origWrite;
+    }
+  });
+
+  // ── Lines 365-366: multiselect returns Symbol (cancel) ─────────────────────
+
+  test("returns 0 when user cancels multiselect (Symbol returned)", async () => {
+    const now = new Date().toISOString();
+    tmuxMocks.listSessions.mockReturnValue([
+      { name: "session-x", windows: 1, created: now, attached: false, type: "chat" as const },
+    ]);
+    // Return a Symbol so isCancel() returns true
+    tmuxMocks.multiselect.mockResolvedValue(Symbol("cancel") as unknown as string[]);
+    const origWrite = process.stdout.write;
+    process.stdout.write = (() => true) as typeof process.stdout.write;
+    try {
+      const code = await sessionKillCommand(undefined, [], "all", makeDeps());
+      expect(code).toBe(0);
+      expect(tmuxMocks.killSession).not.toHaveBeenCalled();
+    } finally {
+      process.stdout.write = origWrite;
+    }
+  });
+
+  // ── Lines 370-373: no sessions selected after multiselect ──────────────────
+
+  test("returns 0 with 'No sessions selected' when multiselect returns empty array", async () => {
+    const now = new Date().toISOString();
+    tmuxMocks.listSessions.mockReturnValue([
+      { name: "session-x", windows: 1, created: now, attached: false, type: "chat" as const },
+    ]);
+    // Return empty array (no sessions selected)
+    tmuxMocks.multiselect.mockResolvedValue([]);
+    const chunks: string[] = [];
+    const origWrite = process.stdout.write;
+    process.stdout.write = ((c: string) => { chunks.push(c); return true; }) as typeof process.stdout.write;
+    try {
+      const code = await sessionKillCommand(undefined, [], "all", makeDeps());
+      expect(code).toBe(0);
+      const output = chunks.join("");
+      expect(output).toContain("No sessions selected.");
+      expect(tmuxMocks.killSession).not.toHaveBeenCalled();
+    } finally {
+      process.stdout.write = origWrite;
+    }
+  });
+
+  // ── Lines 387-388: isCancel(answer) after selection in multi-kill ──────────
+
+  test("returns 0 when user cancels confirmation after selecting sessions (Symbol)", async () => {
+    const now = new Date().toISOString();
+    tmuxMocks.listSessions.mockReturnValue([
+      { name: "session-x", windows: 1, created: now, attached: false, type: "chat" as const },
+      { name: "session-y", windows: 1, created: now, attached: false, type: "workflow" as const },
+    ]);
+    // Multiselect returns names (not cancel)
+    tmuxMocks.multiselect.mockResolvedValue(["session-x", "session-y"]);
+    // Confirm returns Symbol (cancel)
+    tmuxMocks.confirm.mockResolvedValue(Symbol("cancel") as unknown as boolean);
+    const origWrite = process.stdout.write;
+    process.stdout.write = (() => true) as typeof process.stdout.write;
+    try {
+      const code = await sessionKillCommand(undefined, [], "all", makeDeps());
+      expect(code).toBe(0);
+      // Lines 387-388: isCancel(answer) → cancel, killSession not called
+      expect(tmuxMocks.killSession).not.toHaveBeenCalled();
+    } finally {
+      process.stdout.write = origWrite;
+    }
+  });
 });
