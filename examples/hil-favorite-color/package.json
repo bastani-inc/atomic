@@ -1,7 +1,7 @@
 {
   "name": "@bastani/example-hil-favorite-color",
   "private": true,
-  "version": "0.7.13",
+  "version": "0.7.14-0",
   "type": "module",
   "description": "Human-in-the-loop prompt mid-workflow",
   "scripts": {
