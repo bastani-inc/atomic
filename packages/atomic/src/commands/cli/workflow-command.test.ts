@@ -72,7 +72,15 @@ await mock.module("@bastani/atomic-sdk/components/panel-client", () => ({
 }));
 
 // Load the workflow command after the daemon is mocked.
-const { workflowCommand, buildWorkflowCommand } = await import("./workflow.ts");
+const {
+  workflowCommand,
+  buildWorkflowCommand,
+  blockIfBroken,
+  getActiveBroken,
+  getActiveBrokenList,
+  rebuildWorkflowCommand,
+} = await import("./workflow.ts");
+const { createBuiltinRegistry } = await import("../builtin-registry.ts");
 const { defineWorkflow } = await import("@bastani/atomic-sdk/define-workflow");
 const { createRegistry } = await import("@bastani/atomic-sdk/registry");
 
@@ -87,6 +95,7 @@ interface CapturedOutput {
 function captureOutput(): CapturedOutput {
   const captured: CapturedOutput = { stdout: "", stderr: "", restore: () => {} };
   const origStdout = process.stdout.write.bind(process.stdout);
+  const origStderr = process.stderr.write.bind(process.stderr);
   const origConsoleLog = console.log;
   const origConsoleError = console.error;
   const origConsoleWarn = console.warn;
@@ -95,6 +104,10 @@ function captureOutput(): CapturedOutput {
     captured.stdout += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
     return true;
   }) as typeof process.stdout.write;
+  process.stderr.write = ((chunk: string | Uint8Array): boolean => {
+    captured.stderr += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
+    return true;
+  }) as typeof process.stderr.write;
   console.log = (...args: unknown[]) => {
     captured.stdout += args.map(String).join(" ") + "\n";
   };
@@ -107,6 +120,7 @@ function captureOutput(): CapturedOutput {
 
   captured.restore = () => {
     process.stdout.write = origStdout;
+    process.stderr.write = origStderr;
     console.log = origConsoleLog;
     console.error = origConsoleError;
     console.warn = origConsoleWarn;
@@ -644,5 +658,182 @@ describe("buildWorkflowCommand with custom registries", () => {
     const message = caught instanceof Error ? caught.message : String(caught);
     expect(message).toContain("anything");
     expect(message).toContain("registry");
+  });
+});
+
+// ─── Broken-workflow gating and active-state accessors ──────────────────────
+
+describe("rebuildWorkflowCommand + broken-workflow gating", () => {
+  const sampleBroken = {
+    alias: "demo",
+    origin: "local" as const,
+    agents: ["claude" as const] as ("claude" | "copilot" | "opencode")[],
+    reason: "demo workflow failed to load",
+    source: "/repo/.atomic/settings.json",
+    fix: "fix the import error",
+  };
+
+  test("getActiveBroken / getActiveBrokenList expose the latest rebuild's broken state", () => {
+    const reg = createBuiltinRegistry();
+    const idx = new Map([[`claude/${sampleBroken.alias}`, sampleBroken]]);
+    rebuildWorkflowCommand(reg, idx, [sampleBroken]);
+    try {
+      expect(getActiveBroken().has("claude/demo")).toBe(true);
+      expect(getActiveBrokenList()).toContain(sampleBroken);
+    } finally {
+      rebuildWorkflowCommand(createBuiltinRegistry(), new Map(), []);
+    }
+  });
+
+  test("blockIfBroken writes the 4-line diagnostic and exits with code 2", () => {
+    const reg = createBuiltinRegistry();
+    const idx = new Map([[`claude/${sampleBroken.alias}`, sampleBroken]]);
+    rebuildWorkflowCommand(reg, idx, [sampleBroken]);
+
+    const origExit = process.exit;
+    const exits: number[] = [];
+    process.exit = ((code?: number): never => {
+      exits.push(code ?? 0);
+      throw new Error(`__test_exit_${code}`);
+    }) as typeof process.exit;
+    const cap = captureOutput();
+    let caught: unknown;
+    try {
+      try {
+        blockIfBroken("demo", "claude");
+      } catch (e) {
+        caught = e;
+      }
+    } finally {
+      cap.restore();
+      process.exit = origExit;
+      rebuildWorkflowCommand(createBuiltinRegistry(), new Map(), []);
+    }
+    expect(exits).toEqual([2]);
+    expect(caught).toBeDefined();
+    expect(cap.stderr).toContain('cannot run "demo"');
+    expect(cap.stderr).toContain("reason · demo workflow failed to load");
+    expect(cap.stderr).toContain("source · /repo/.atomic/settings.json");
+    expect(cap.stderr).toContain("fix    · fix the import error");
+  });
+
+  test("blockIfBroken is a no-op when (agent, name) is not in the broken index", () => {
+    rebuildWorkflowCommand(createBuiltinRegistry(), new Map(), []);
+    expect(() => blockIfBroken("not-broken", "claude")).not.toThrow();
+  });
+});
+
+// ─── ATOMIC_DEBUG=1 dispatch tracing ─────────────────────────────────────────
+
+describe("workflowCommand ATOMIC_DEBUG tracing", () => {
+  test("writes a `[atomic/workflow] dispatching ...` line to stderr when ATOMIC_DEBUG=1", async () => {
+    const saved = process.env.ATOMIC_DEBUG;
+    process.env.ATOMIC_DEBUG = "1";
+    const cap = captureOutput();
+    try {
+      await workflowCommand.parseAsync([
+        "node", "cli",
+        "-n", "ralph",
+        "-a", "claude",
+        "--prompt", "trace me",
+      ]);
+    } finally {
+      cap.restore();
+      if (saved === undefined) delete process.env.ATOMIC_DEBUG;
+      else process.env.ATOMIC_DEBUG = saved;
+    }
+    expect(cap.stderr).toContain("[atomic/workflow] dispatching ralph/claude inputs=[prompt]");
+    expect(dispatchCalls).toHaveLength(1);
+  });
+});
+
+// ─── Non-TTY dispatch settle paths ───────────────────────────────────────────
+
+describe("workflowCommand non-TTY dispatch settle paths", () => {
+  test("run/ended with overall=error rejects with the fatalError message", async () => {
+    // Reroute the run/ended handler to fire AFTER startWorkflow returns,
+    // so it reaches the `params.runId === pendingRunId` branch with an error.
+    fakeConn.onNotification.mockImplementation(
+      (_method: string, handler: (params: unknown) => void) => {
+        if (_method === "run/ended") {
+          queueMicrotask(() => handler({ runId: mockRunId, overall: "error", fatalError: "boom" }));
+        }
+        return fakeConnDisposable;
+      },
+    );
+    const cap = captureOutput();
+    let caught: unknown;
+    try {
+      await workflowCommand.parseAsync([
+        "node", "cli",
+        "-n", "ralph",
+        "-a", "claude",
+        "--prompt", "trigger error",
+      ]);
+    } catch (e) {
+      caught = e;
+    } finally {
+      cap.restore();
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toContain("boom");
+  });
+
+  test("run/get reporting a non-active status settles dispatch immediately", async () => {
+    // Suppress the immediate run/ended firing so settlement must come from
+    // the run/get short-circuit path.
+    fakeConn.onNotification.mockImplementation(() => fakeConnDisposable);
+    fakeConn.sendRequest.mockImplementation(async (method: string, params: unknown) => {
+      if (method === "workflow/start") {
+        dispatchCalls.push(params as typeof dispatchCalls[number]);
+        return { runId: mockRunId, attachable: true };
+      }
+      if (method === "run/get") return { status: "complete" };
+      return {};
+    });
+    const cap = captureOutput();
+    try {
+      await workflowCommand.parseAsync([
+        "node", "cli",
+        "-n", "ralph",
+        "-a", "claude",
+        "--prompt", "already done",
+      ]);
+    } finally {
+      cap.restore();
+    }
+    expect(dispatchCalls).toHaveLength(1);
+  });
+
+  test("daemon onClose firing before run/ended rejects with a connection-closed error", async () => {
+    fakeConn.onNotification.mockImplementation(() => fakeConnDisposable);
+    fakeConn.onClose.mockImplementation((handler: () => void) => {
+      queueMicrotask(handler);
+      return fakeConnDisposable;
+    });
+    fakeConn.sendRequest.mockImplementation(async (method: string, params: unknown) => {
+      if (method === "workflow/start") {
+        dispatchCalls.push(params as typeof dispatchCalls[number]);
+        return { runId: mockRunId, attachable: true };
+      }
+      if (method === "run/get") return { status: "active" };
+      return {};
+    });
+    const cap = captureOutput();
+    let caught: unknown;
+    try {
+      await workflowCommand.parseAsync([
+        "node", "cli",
+        "-n", "ralph",
+        "-a", "claude",
+        "--prompt", "daemon dies",
+      ]);
+    } catch (e) {
+      caught = e;
+    } finally {
+      cap.restore();
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toContain("daemon connection closed");
   });
 });
