@@ -55,6 +55,7 @@ export class RunState {
   // ── disk persistence ────────────────────────────────────────────────────────
   private readonly sessionDir: string;
   private persistPending = false;
+  private latestSnapshot: WorkflowStatusSnapshot | null = null;
 
   // ── subscribers ─────────────────────────────────────────────────────────────
   private subscribers = new Map<string, MessageConnection>();
@@ -178,6 +179,7 @@ export class RunState {
     this.subscribers.clear();
     this.broadcastPending = false;
     this.persistPending = false;
+    this.latestSnapshot = null;
   }
 
   // ─── Private helpers ─────────────────────────────────────────────────────────
@@ -204,15 +206,22 @@ export class RunState {
    * Debounced disk write — fires after the microtask broadcast (via setTimeout
    * macrotask) so persistence is always consistent with what was sent to
    * clients and never blocks the microtask queue.
+   *
+   * `latestSnapshot` is overwritten unconditionally so a coalesced burst still
+   * persists the most recent state; the timer reads it at fire time rather
+   * than capturing a closure-stale value.
    */
   private schedulePersist(snapshot: WorkflowStatusSnapshot): void {
+    this.latestSnapshot = snapshot;
     if (this.persistPending || this.disposed) return;
     this.persistPending = true;
     const timer = setTimeout(() => {
       this.persistPending = false;
       if (this.disposed) return;
+      const toWrite = this.latestSnapshot;
+      if (!toWrite) return;
       // Best-effort — never crash the daemon over a disk write.
-      void writeSnapshot(this.sessionDir, snapshot).catch(() => {});
+      void writeSnapshot(this.sessionDir, toWrite).catch(() => {});
     }, 0);
     // Don't hold the event loop alive just for persistence.
     (timer as { unref?: () => void }).unref?.();
@@ -223,24 +232,31 @@ export class RunState {
     return this.subscribers.size;
   }
 
+  /** Current foreground stage name. Exposed for run/getAttachInfo. */
+  getForeground(): string | null {
+    return this.foregroundStage;
+  }
+
   /**
    * Fan out a JSON-RPC notification to every subscriber.
    * Subscribers that throw synchronously or whose async send rejects are
    * pruned immediately (RFC §5.3.1 / §7.3 policy: close that client).
    */
   private broadcast(method: string, params: unknown): void {
+    const warn = (id: string, err: unknown): void => {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`[RunState] subscriber ${id} dropped (${method}): ${message}`);
+    };
     const dead: string[] = [];
     for (const [id, conn] of this.subscribers) {
       try {
         const promise = conn.sendNotification(method, params);
         Promise.resolve(promise).catch((err: unknown) => {
-          const message = err instanceof Error ? err.message : String(err);
-          console.warn(`[RunState] subscriber ${id} dropped (${method}): ${message}`);
+          warn(id, err);
           this.subscribers.delete(id);
         });
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        console.warn(`[RunState] subscriber ${id} dropped (${method}): ${message}`);
+        warn(id, err);
         dead.push(id);
       }
     }
