@@ -69,14 +69,14 @@ program
       process.exit(1);
     }
     const result = await runWorkflow({ workflow, detach: true });
-    console.log(result.tmuxSessionName);
+    console.log(result.runId);
   });
 
 program
   .command("list")
   .description("List workflow sessions on the atomic socket")
-  .action(() => {
-    const sessions = listSessions({ scope: "workflow" });
+  .action(async () => {
+    const sessions = await listSessions({ scope: "workflow" });
     if (sessions.length === 0) {
       console.log("(no workflow sessions)");
       return;
@@ -117,7 +117,7 @@ program
 program
   .command("attach <id>")
   .description("Attach this terminal to the session interactively")
-  .action((id: string) => handleErrors(() => attachSession(id)));
+  .action((id: string) => handleErrors(async () => { await attachSession(id); }));
 
 program
   .command("stop <id>")

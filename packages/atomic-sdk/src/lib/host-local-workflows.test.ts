@@ -53,8 +53,12 @@ function makeWorkflow(name = "demo", agent: "claude" | "copilot" | "opencode" = 
 
 /** Stand-in result so the injected mock satisfies `runWorkflow`'s return type. */
 const RUN_RESULT: RunWorkflowResult = {
-  id: "00000000",
-  tmuxSessionName: "atomic-wf-test",
+  runId: "00000000",
+  daemon: {
+    sendRequest: async () => {},
+    onNotification: () => {},
+    dispose: () => {},
+  } as unknown as import("vscode-jsonrpc").MessageConnection,
 };
 
 /** Mock that resolves with a stub result — typed so DI passes typecheck and call sites can introspect args. */

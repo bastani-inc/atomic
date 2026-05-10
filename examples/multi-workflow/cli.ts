@@ -32,7 +32,7 @@ const program = new Command("multi-workflow").description(
 for (const workflow of listWorkflows(registry)) {
   const sub = program
     .command(getName(workflow))
-    .description(workflow.description);
+    .description(workflow.description ?? "");
 
   const inputs = getInputSchema(workflow);
   for (const input of inputs) {

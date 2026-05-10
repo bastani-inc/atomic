@@ -1,53 +1,41 @@
 /**
  * Session-management primitives.
  *
- * Thin wrappers around the tmux runtime utilities and the on-disk
- * `~/.atomic/sessions/<workflowRunId>/` layout. Consumers (atomic CLI,
+ * Thin RPC clients over the atomic daemon JSON-RPC. Consumers (atomic CLI,
  * third-party CLIs, embedding TUIs) call these instead of touching tmux
  * commands or the status-writer schema directly.
  */
 
-import { join } from "node:path";
-import { homedir } from "node:os";
-import {
-  attachSession as tmuxAttach,
-  detachClients as tmuxDetachClients,
-  isTmuxInstalled,
-  killSession,
-  listSessions as listAllTmuxSessions,
-  nextWindow as tmuxNextWindow,
-  previousWindow as tmuxPreviousWindow,
-  selectWindow as tmuxSelectWindow,
-  type SessionType,
-  type TmuxSession,
-} from "../runtime/tmux.ts";
-import {
-  readSnapshot,
-  workflowRunIdFromTmuxName,
-  type WorkflowStatusSnapshot,
-} from "../runtime/status-writer.ts";
-import { MissingDependencyError, SessionNotFoundError } from "../errors.ts";
+import { connectToDaemon } from "../runtime/daemon.ts";
+import type { RunInfo } from "../runtime/ui-protocol/schemas.ts";
+import type { WorkflowStatusSnapshot } from "../runtime/status-writer.ts";
 import type { AgentType, SavedMessage } from "../types.ts";
+
+// ─── Public types ────────────────────────────────────────────────────────────
 
 /** Scope filter for session listings — chat sessions, workflow sessions, or both. */
 export type SessionScope = "chat" | "workflow" | "all";
 
+/** Status snapshot persisted by the orchestrator. */
+export type StatusSnapshot = WorkflowStatusSnapshot;
+
 /** Single session entry returned by `listSessions` / `getSession`. */
 export interface SessionInfo {
-  /** Tmux session name (e.g. `atomic-wf-claude-ralph-a1b2c3d4`). */
+  /** Run id (replaces tmux session name). */
   id: string;
-  /** Session type derived from the name prefix. */
-  type?: SessionType;
-  /** Agent backend that owns this session. */
+  /** Always "workflow" for daemon-managed runs. */
+  type?: "workflow" | "chat";
+  /** Agent backend. */
   agent?: string;
-  /** ISO 8601 creation timestamp. */
+  /** ISO 8601 start timestamp. */
   created: string;
-  /** Whether a tmux client is currently attached. */
+  /** Whether a client is attached. False by default (daemon doesn't track this yet). */
   attached: boolean;
+  /** Run status (new field). */
+  status?: string;
+  /** Workflow name (new field). */
+  workflowName?: string;
 }
-
-/** Status snapshot persisted by the orchestrator at `~/.atomic/sessions/<id>/status.json`. */
-export type StatusSnapshot = WorkflowStatusSnapshot;
 
 /** Options for filtering `listSessions()`. */
 export interface ListSessionsOptions {
@@ -60,58 +48,100 @@ export interface ListSessionsOptions {
 /**
  * Injectable dependencies for the session primitives.
  *
- * Defaults wire through to the real tmux/status-writer implementations.
- * Tests pass in mocks; embedding consumers can override the base directory
- * or swap the tmux backend (e.g. for psmux on Windows) without monkey-
- * patching the underlying modules.
+ * Defaults wire through to the real daemon JSON-RPC implementations.
+ * Tests pass in mocks; embedding consumers can override the backend
+ * without monkey-patching the underlying modules.
  */
 export interface SessionPrimitiveDeps {
-  isTmuxInstalled: () => boolean;
-  listAllTmuxSessions: () => readonly TmuxSession[];
-  killSession: (id: string) => void;
-  attachSession: (id: string) => void;
-  detachClients: (id: string) => void;
-  nextWindow: (id: string) => void;
-  previousWindow: (id: string) => void;
-  /** `target` is a tmux window target like `<session>:<index>`. */
-  selectWindow: (target: string) => void;
-  readSnapshot: typeof readSnapshot;
-  /** Base directory for session artefacts. Defaults to `~/.atomic/sessions`. */
-  sessionsBaseDir: string;
+  /** run/list */
+  listRuns(scope?: "active" | "completed" | "all"): Promise<RunInfo[]>;
+  /** run/get */
+  getRun(runId: string): Promise<RunInfo | null>;
+  /** run/stop */
+  stopRun(runId: string): Promise<void>;
+  /** run/status */
+  getRunStatus(runId: string): Promise<StatusSnapshot | null>;
+  /** run/transcript */
+  getRunTranscript(runId: string, sessionName: string): Promise<SavedMessage[]>;
+  /** run/getAttachInfo */
+  getAttachInfo(runId: string): Promise<{ subscriptionId: string; foregroundStage: string | null }>;
+  /** run/setForeground */
+  setForeground(runId: string, stageName?: string): Promise<void>;
 }
 
-/** Default deps object — wires through to the real implementations. */
+/** Default deps — wires through to the real daemon JSON-RPC implementations. */
 const defaultDeps: SessionPrimitiveDeps = {
-  isTmuxInstalled,
-  listAllTmuxSessions,
-  killSession,
-  attachSession: tmuxAttach,
-  detachClients: tmuxDetachClients,
-  nextWindow: tmuxNextWindow,
-  previousWindow: tmuxPreviousWindow,
-  selectWindow: tmuxSelectWindow,
-  readSnapshot,
-  sessionsBaseDir: join(homedir(), ".atomic", "sessions"),
+  listRuns: async (scope) => {
+    const conn = await connectToDaemon();
+    try {
+      return await conn.sendRequest("run/list", { scope }) as RunInfo[];
+    } finally {
+      conn.dispose();
+    }
+  },
+  getRun: async (runId) => {
+    const conn = await connectToDaemon();
+    try {
+      return await conn.sendRequest("run/get", { runId }) as RunInfo | null;
+    } finally {
+      conn.dispose();
+    }
+  },
+  stopRun: async (runId) => {
+    const conn = await connectToDaemon();
+    try {
+      await conn.sendRequest("run/stop", { runId });
+    } finally {
+      conn.dispose();
+    }
+  },
+  getRunStatus: async (runId) => {
+    const conn = await connectToDaemon();
+    try {
+      return await conn.sendRequest("run/status", { runId }) as StatusSnapshot | null;
+    } finally {
+      conn.dispose();
+    }
+  },
+  getRunTranscript: async (runId, sessionName) => {
+    const conn = await connectToDaemon();
+    try {
+      return await conn.sendRequest("run/transcript", { runId, sessionName }) as SavedMessage[];
+    } finally {
+      conn.dispose();
+    }
+  },
+  getAttachInfo: async (runId) => {
+    const conn = await connectToDaemon();
+    try {
+      return await conn.sendRequest("run/getAttachInfo", { runId }) as { subscriptionId: string; foregroundStage: string | null };
+    } finally {
+      conn.dispose();
+    }
+  },
+  setForeground: async (runId, stageName) => {
+    const conn = await connectToDaemon();
+    try {
+      await conn.sendRequest("run/setForeground", { runId, stageName });
+    } finally {
+      conn.dispose();
+    }
+  },
 };
 
-/** Convert a TmuxSession into the consumer-facing SessionInfo shape. */
-function toSessionInfo(s: TmuxSession): SessionInfo {
-  return {
-    id: s.name,
-    type: s.type,
-    agent: s.agent,
-    created: s.created,
-    attached: s.attached,
-  };
-}
+// ─── Internal helpers ────────────────────────────────────────────────────────
 
-/** Filter sessions by scope. */
-function filterByScope(
-  sessions: readonly TmuxSession[],
-  scope: SessionScope,
-): TmuxSession[] {
-  if (scope === "all") return [...sessions];
-  return sessions.filter((s) => s.type === scope);
+/** Convert a RunInfo into the consumer-facing SessionInfo shape. */
+function runInfoToSessionInfo(r: RunInfo): SessionInfo {
+  return {
+    id: r.runId,
+    type: "workflow",
+    agent: r.agent,
+    created: r.startedAt,
+    attached: false,
+    status: r.status,
+    workflowName: r.workflowName,
+  };
 }
 
 /** Normalise the optional `agent` option into a flat list. Empty list = no filter. */
@@ -123,211 +153,136 @@ function toAgentList(
   return [agent as AgentType];
 }
 
-/** Filter sessions by an allow-list of agent backends. */
-function filterByAgents(
-  sessions: readonly TmuxSession[],
-  agents: readonly AgentType[],
-): TmuxSession[] {
-  if (agents.length === 0) return [...sessions];
-  const allowed = new Set<string>(agents);
-  return sessions.filter((s) => s.agent !== undefined && allowed.has(s.agent));
-}
+// ─── Public API ──────────────────────────────────────────────────────────────
 
 /**
- * List atomic-managed tmux sessions on the shared `atomic` socket.
+ * List atomic-managed runs from the daemon.
  *
- * Returns an empty array when tmux is not installed or the server has no
- * sessions — never throws on the cold-start path.
+ * Returns an empty array when the daemon has no runs — never throws on
+ * the cold-start path.
  */
-export function listSessions(
+export async function listSessions(
   options: ListSessionsOptions = {},
   deps: SessionPrimitiveDeps = defaultDeps,
-): SessionInfo[] {
-  if (!deps.isTmuxInstalled()) return [];
-  const scope = options.scope ?? "all";
-  const agents = toAgentList(options.agent);
+): Promise<SessionInfo[]> {
+  // SessionScope ("chat" | "workflow" | "all") is a session-type filter.
+  // run/list uses "active" | "completed" | "all". Always fetch "all" and
+  // let the session-type filter below narrow the results.
+  const runs = await deps.listRuns("all");
+  let sessions = runs.map(runInfoToSessionInfo);
 
-  const all = deps.listAllTmuxSessions();
-  const scoped = filterByScope(all, scope);
-  const filtered = filterByAgents(scoped, agents);
-  return filtered.map(toSessionInfo);
+  if (options.scope === "chat") sessions = sessions.filter((s) => s.type === "chat");
+  if (options.scope === "workflow") sessions = sessions.filter((s) => s.type === "workflow");
+
+  const agents = toAgentList(options.agent);
+  if (agents.length > 0) {
+    const allowed = new Set<string>(agents);
+    sessions = sessions.filter((s) => s.agent !== undefined && allowed.has(s.agent));
+  }
+
+  return sessions;
 }
 
-/** Look up a single session by id. Returns `undefined` when not found. */
-export function getSession(
+/** Look up a single run by id. Returns `undefined` when not found. */
+export async function getSession(
   id: string,
   deps: SessionPrimitiveDeps = defaultDeps,
-): SessionInfo | undefined {
-  if (!deps.isTmuxInstalled()) return undefined;
-  const match = deps.listAllTmuxSessions().find((s) => s.name === id);
-  return match ? toSessionInfo(match) : undefined;
+): Promise<SessionInfo | undefined> {
+  const run = await deps.getRun(id);
+  return run ? runInfoToSessionInfo(run) : undefined;
 }
 
 /**
  * Stop a running session. Best-effort: if the session is already gone
- * the underlying `tmux kill-session` is a no-op-equivalent.
+ * the underlying RPC call is a no-op-equivalent.
  */
 export async function stopSession(
   id: string,
   deps: SessionPrimitiveDeps = defaultDeps,
 ): Promise<void> {
-  if (!deps.isTmuxInstalled()) return;
   try {
-    deps.killSession(id);
+    await deps.stopRun(id);
   } catch {
-    // tmux returns non-zero when the session has already been torn down —
-    // surface that as a successful stop rather than a hard failure.
+    // best-effort
   }
 }
 
 /**
- * Attach to a running session interactively. Only valid when the host
- * process has a TTY — otherwise the underlying tmux invocation will
- * complain that it can't take over the terminal.
+ * Get attach info for a run. Returns the subscription id and the
+ * current foreground stage (or null when none is set).
  */
 export async function attachSession(
   id: string,
   deps: SessionPrimitiveDeps = defaultDeps,
-): Promise<void> {
-  if (!deps.isTmuxInstalled()) {
-    throw new MissingDependencyError("tmux");
-  }
-  deps.attachSession(id);
+): Promise<{ subscriptionId: string; foregroundStage: string | null }> {
+  return await deps.getAttachInfo(id);
 }
 
 /**
- * Validate that tmux is installed and the session id exists on the
- * atomic socket. Shared preamble for the navigation primitives.
+ * Detach clients from a session. No RPC equivalent in daemon v1;
+ * detach is managed by panel clients. Best-effort no-op.
  */
-function ensureSession(id: string, deps: SessionPrimitiveDeps): void {
-  if (!deps.isTmuxInstalled()) {
-    throw new MissingDependencyError("tmux");
-  }
-  const session = deps.listAllTmuxSessions().find((s) => s.name === id);
-  if (!session) {
-    throw new SessionNotFoundError(id);
-  }
+export async function detachSession(
+  _id: string,
+  _deps: SessionPrimitiveDeps = defaultDeps,
+): Promise<void> {
+  // No RPC equivalent in daemon v1; detach is managed by panel clients.
 }
 
 /**
- * Move the session's current-window pointer to the next window.
- * Mirrors the `Ctrl+\` keybinding bound inside an attached client.
- *
- * Pure navigation: never attaches. An already-attached client sees the
- * change live; if no client is watching, the session's current-window
- * pointer is updated silently and a subsequent `attachSession` will
- * land on the new window. Compose `nextWindow(id)` + `attachSession(id)`
- * if you want navigate-then-attach.
+ * Move to the next stage/window. Calls `setForeground` with no stageName —
+ * the daemon selects the next stage.
  */
 export async function nextWindow(
   id: string,
   deps: SessionPrimitiveDeps = defaultDeps,
 ): Promise<void> {
-  ensureSession(id, deps);
-  deps.nextWindow(id);
+  await deps.setForeground(id, undefined);
 }
 
 /**
- * Move the session's current-window pointer to the previous window.
- * Symmetrical counterpart to {@link nextWindow} — also pure navigation.
+ * Move to the previous stage/window. Calls `setForeground` with no stageName —
+ * the daemon selects the default stage.
  */
 export async function previousWindow(
   id: string,
   deps: SessionPrimitiveDeps = defaultDeps,
 ): Promise<void> {
-  ensureSession(id, deps);
-  deps.previousWindow(id);
+  await deps.setForeground(id, undefined);
 }
 
 /**
- * Jump to the orchestrator window (window 0) of the target session.
- * Mirrors the `Ctrl+G` keybinding bound inside an attached client.
- *
- * For workflow sessions, window 0 hosts the orchestrator graph view;
- * for chat sessions, window 0 is the agent pane. Pure navigation —
- * never attaches.
+ * Jump to the orchestrator / default stage of the target run.
+ * Calls `setForeground` with no stageName — daemon resets to foreground/default.
  */
 export async function gotoOrchestrator(
   id: string,
   deps: SessionPrimitiveDeps = defaultDeps,
 ): Promise<void> {
-  ensureSession(id, deps);
-  deps.selectWindow(`${id}:0`);
+  await deps.setForeground(id, undefined);
 }
 
 /**
- * Detach every client currently attached to a session. The session
- * itself keeps running in the background — re-attach with
- * {@link attachSession} or `tmux -L atomic attach -t <id>`.
- *
- * Best-effort, idempotent: returns silently when tmux is missing, the
- * session is already gone, or no clients are attached.
- */
-export async function detachSession(
-  id: string,
-  deps: SessionPrimitiveDeps = defaultDeps,
-): Promise<void> {
-  if (!deps.isTmuxInstalled()) return;
-  try {
-    deps.detachClients(id);
-  } catch {
-    // tmux returns non-zero when the session is gone or no clients are
-    // attached — surface that as a successful detach rather than a hard
-    // failure, matching `stopSession`'s best-effort semantics.
-  }
-}
-
-/**
- * Read the on-disk status snapshot for a workflow session. Returns
- * `null` when the orchestrator hasn't written one yet (the workflow
- * is still very early) or when the directory doesn't exist.
+ * Read the status snapshot for a workflow run. Returns `null` when the
+ * orchestrator hasn't written one yet or the run is not found.
  */
 export async function getSessionStatus(
   id: string,
   deps: SessionPrimitiveDeps = defaultDeps,
 ): Promise<StatusSnapshot | null> {
-  const runId = workflowRunIdFromTmuxName(id);
-  if (!runId) return null;
-  return await deps.readSnapshot(join(deps.sessionsBaseDir, runId));
+  return await deps.getRunStatus(id);
 }
 
 /**
- * Read the saved native-message transcript for a single session inside
- * a workflow run. `id` is the tmux session id (`atomic-wf-...`); the
- * `sessionName` is the `name` passed to `ctx.stage({ name })` whose
- * messages were saved via `s.save(...)`.
+ * Read the saved native-message transcript for a single stage inside
+ * a workflow run. `id` is the run id; `sessionName` is the stage name.
  *
- * Returns an empty array when no transcript was persisted (e.g. the
- * workflow chose not to call `s.save`).
+ * Returns an empty array when no transcript was persisted.
  */
 export async function getSessionTranscript(
   id: string,
   sessionName: string,
   deps: SessionPrimitiveDeps = defaultDeps,
 ): Promise<SavedMessage[]> {
-  const runId = workflowRunIdFromTmuxName(id);
-  if (!runId) return [];
-  const file = Bun.file(
-    join(deps.sessionsBaseDir, runId, sessionName, "messages.json"),
-  );
-  if (!(await file.exists())) return [];
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(await file.text());
-  } catch {
-    return [];
-  }
-  if (!Array.isArray(parsed)) return [];
-  return parsed.filter(isSavedMessage);
-}
-
-/** Runtime guard for deserialised SavedMessage objects. */
-function isSavedMessage(value: unknown): value is SavedMessage {
-  if (!value || typeof value !== "object") return false;
-  const v = value as Record<string, unknown>;
-  return (
-    v.provider === "claude" ||
-    v.provider === "copilot" ||
-    v.provider === "opencode"
-  );
+  return await deps.getRunTranscript(id, sessionName);
 }
