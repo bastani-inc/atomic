@@ -8,7 +8,7 @@
  * the underlying start/stop mechanics directly.
  */
 
-import { test, expect, describe, mock } from "bun:test";
+import { test, expect, describe, mock, beforeEach, afterEach } from "bun:test";
 import * as net from "node:net";
 import * as fsp from "node:fs/promises";
 import * as fs from "node:fs";
@@ -25,7 +25,8 @@ import {
   DaemonAlreadyRunningError,
 } from "./daemon.ts";
 import type { IRunManager, ISupervisor } from "./ui-protocol/methods.ts";
-import type { WorkflowRegistry } from "./registry.ts";
+import { WorkflowRegistry } from "./registry.ts";
+import { RunManager } from "./run-manager.ts";
 
 // ---------------------------------------------------------------------------
 // Stub factories
@@ -782,6 +783,197 @@ describe("Daemon.start() — registry load before endpoint readiness", () => {
       expect((registry2.load as ReturnType<typeof mock>).mock.calls.length).toBe(0);
     } finally {
       await d1.stop();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Daemon integration — workflow/list with real WorkflowRegistry
+// ---------------------------------------------------------------------------
+
+/** Drain pending microtasks and one macrotask tick. */
+async function flushAsync(): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, 20));
+}
+
+/**
+ * Write a minimal .atomic/settings.json into `dir`.
+ * `workflows` maps alias → { command, agents } per the Atomic settings schema.
+ */
+async function writeLocalSettings(
+  dir: string,
+  workflows: Record<string, { command: string; agents: string[] }>,
+): Promise<void> {
+  const settingsDir = path.join(dir, ".atomic");
+  await fsp.mkdir(settingsDir, { recursive: true });
+  await fsp.writeFile(
+    path.join(settingsDir, "settings.json"),
+    JSON.stringify({ version: 1, workflows }),
+    "utf8",
+  );
+}
+
+describe("Daemon integration — workflow/list with real WorkflowRegistry", () => {
+  // Absolute path to the fixture directory colocated with this test file.
+  const FIXTURES = path.join(import.meta.dir, "__fixtures__");
+
+  let origCwd: string;
+  let origSettingsHome: string | undefined;
+  let projectDir: string;
+  let globalDir: string;
+
+  beforeEach(async () => {
+    origCwd = process.cwd();
+    origSettingsHome = process.env.ATOMIC_SETTINGS_HOME;
+
+    const base = await fsp.mkdtemp(path.join(os.tmpdir(), "atomic-daemon-wflist-"));
+    projectDir = path.join(base, "project");
+    globalDir = path.join(base, "global");
+    await fsp.mkdir(projectDir, { recursive: true });
+    await fsp.mkdir(globalDir, { recursive: true });
+
+    // Redirect global settings to an empty temp dir — no global workflows.
+    process.env.ATOMIC_SETTINGS_HOME = globalDir;
+    process.chdir(projectDir);
+  });
+
+  afterEach(async () => {
+    process.chdir(origCwd);
+    if (origSettingsHome === undefined) delete process.env.ATOMIC_SETTINGS_HOME;
+    else process.env.ATOMIC_SETTINGS_HOME = origSettingsHome;
+  });
+
+  test("fresh daemon returns configured workflows from first workflow/list call", async () => {
+    // Register the default-only fixture in the local settings.json.
+    const fixturePath = path.join(FIXTURES, "default-only.ts");
+    await writeLocalSettings(projectDir, {
+      "default-only-wf": { command: fixturePath, agents: ["claude"] },
+    });
+
+    const registry = new WorkflowRegistry();
+    const tmpDir = await makeTempDir();
+    const opts = makeDaemonOpts(tmpDir, { workflows: registry, token: undefined });
+    const daemon = new Daemon(opts);
+    await daemon.start();
+
+    try {
+      const conn = await connectToDaemon({ endpointFile: opts.endpointFile });
+      try {
+        const descriptors = (await conn.sendRequest("workflow/list", {})) as Array<{
+          name: string;
+          source: string;
+          agent: string;
+        }>;
+        // The fixture exports a WorkflowDefinition named "default-only-wf".
+        const found = descriptors.find((d) => d.name === "default-only-wf");
+        expect(found).toBeDefined();
+        expect(found!.source).toBe(fixturePath);
+      } finally {
+        conn.dispose();
+      }
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  test("workflow/list returns empty array when no workflows configured", async () => {
+    // No settings.json written in project dir — registry stays empty.
+    const registry = new WorkflowRegistry();
+    const tmpDir = await makeTempDir();
+    const opts = makeDaemonOpts(tmpDir, { workflows: registry, token: undefined });
+    const daemon = new Daemon(opts);
+    await daemon.start();
+
+    try {
+      const conn = await connectToDaemon({ endpointFile: opts.endpointFile });
+      try {
+        const descriptors = (await conn.sendRequest("workflow/list", {})) as unknown[];
+        expect(Array.isArray(descriptors)).toBe(true);
+        expect(descriptors.length).toBe(0);
+      } finally {
+        conn.dispose();
+      }
+    } finally {
+      await daemon.stop();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Daemon integration — run/stop via RPC kills PTY stage + emits cancelled
+// ---------------------------------------------------------------------------
+
+describe("Daemon integration — run/stop via RPC kills active stage and emits cancelled", () => {
+  test("run/stop sends SIGTERM to spawned stage PID and emits run/ended=cancelled", async () => {
+    const FIXTURES = path.join(import.meta.dir, "__fixtures__");
+    const fixturePath = path.join(FIXTURES, "with-one-stage.ts");
+
+    // Fake supervisor: hang on spawn (never calls onExit) so PID stays active.
+    const killCalls: Array<{ pid: number; signal: string | undefined }> = [];
+    const fakeSupervisor: ISupervisor = {
+      async spawn(params) {
+        // Do NOT call params.onExit — run hangs until stop().
+        return { pid: 77777 };
+      },
+      sendInput: mock(() => {}),
+      getScrollback: mock(() => ({ data: "", headOffset: 0 })),
+      kill(pid, signal) {
+        killCalls.push({ pid, signal: signal as string | undefined });
+      },
+    };
+
+    const runs = new RunManager({ supervisor: fakeSupervisor });
+    const tmpDir = await makeTempDir();
+    // No token — permissive mode so we skip connect auth.
+    const opts = makeDaemonOpts(tmpDir, { runs, supervisor: fakeSupervisor, token: undefined });
+    const daemon = new Daemon(opts);
+    await daemon.start();
+
+    try {
+      const conn = await connectToDaemon({ endpointFile: opts.endpointFile });
+
+      // Collect run/ended notifications received by this client.
+      const runEndedNotifs: Array<{ runId: string; overall: string }> = [];
+      conn.onNotification("run/ended", (params) => {
+        runEndedNotifs.push(params as { runId: string; overall: string });
+      });
+
+      try {
+        // Start the long-running workflow stage.
+        const startResult = (await conn.sendRequest("workflow/start", {
+          source: fixturePath,
+          workflowName: "stop-kill-integration",
+          agent: "claude",
+          inputs: {},
+        })) as { runId: string };
+        const { runId } = startResult;
+
+        // Subscribe so this connection receives run/ended for this run.
+        await conn.sendRequest("panel/subscribe", { runId });
+
+        // Give the workflow task time to call supervisor.spawn and register the PID.
+        await flushAsync();
+
+        // Stop via JSON-RPC — this must kill the PID and cancel the run.
+        await conn.sendRequest("run/stop", { runId });
+
+        // Allow notifications to propagate over TCP.
+        await flushAsync();
+
+        // Assert: supervisor.kill was called with the stage PID and SIGTERM.
+        expect(killCalls.length).toBeGreaterThanOrEqual(1);
+        expect(killCalls[0]!.pid).toBe(77777);
+        expect(killCalls[0]!.signal).toBe("SIGTERM");
+
+        // Assert: run/ended notification with overall=cancelled was delivered.
+        expect(runEndedNotifs.length).toBeGreaterThanOrEqual(1);
+        expect(runEndedNotifs[0]!.overall).toBe("cancelled");
+        expect(runEndedNotifs[0]!.runId).toBe(runId);
+      } finally {
+        conn.dispose();
+      }
+    } finally {
+      await daemon.stop();
     }
   });
 });

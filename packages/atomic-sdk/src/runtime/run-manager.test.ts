@@ -1109,3 +1109,98 @@ describe("noopSupervisor — sendInput and getScrollback throw descriptive error
     expect(info).not.toBeNull();
   });
 });
+
+// ─── Panel subscribe → unsubscribe → no notifications after ──────────────────
+
+describe("RunManager — panel unsubscribe stops notifications", () => {
+  test("unsubscribed connection receives no run/ended notification after unsubscribe", async () => {
+    // Hanging supervisor: spawn registers PID but never calls onExit.
+    let capturedOnExit: ((code: number) => void) | undefined;
+    const hangingSupervisor: ISupervisor = {
+      async spawn(params) {
+        if (params.onExit) capturedOnExit = params.onExit;
+        return { pid: 88888 };
+      },
+      sendInput: mock(() => {}),
+      getScrollback: mock(() => ({ data: "", headOffset: 0 })),
+      kill: mock(() => {}),
+    };
+
+    const manager = new RunManager({ supervisor: hangingSupervisor });
+    const conn = fakeConnection();
+
+    // Start a run that will hang (stage never exits).
+    const { runId } = await manager.start({
+      source: join(import.meta.dir, "__fixtures__/with-one-stage.ts"),
+      workflowName: "unsub-no-notify-wf",
+      agent: "claude",
+      inputs: {},
+    });
+
+    // Wait for spawn to register the PID.
+    await flushAsync();
+
+    // Subscribe: conn should receive notifications for this run.
+    const subId = manager.subscribe(conn, runId);
+
+    // Immediately unsubscribe: conn must receive NOTHING afterwards.
+    manager.unsubscribe(subId);
+
+    // Capture notification count at the point of unsubscription.
+    const countBeforeStop = conn.notifications.length;
+
+    // Trigger state mutation: stop() → cancel() → run/ended broadcast.
+    await manager.stop(runId);
+
+    // Drain any pending microtasks.
+    await flushAsync();
+
+    // No notifications must have been delivered after unsubscription.
+    expect(conn.notifications.length).toBe(countBeforeStop);
+  });
+
+  test("unsubscribed connection receives no panel/update after state mutation", async () => {
+    // Hanging supervisor so stage stays active (keeps run in active state).
+    const hangingSupervisor: ISupervisor = {
+      async spawn(params) {
+        // never call onExit — run hangs
+        return { pid: 99990 };
+      },
+      sendInput: mock(() => {}),
+      getScrollback: mock(() => ({ data: "", headOffset: 0 })),
+      kill: mock(() => {}),
+    };
+
+    const manager = new RunManager({ supervisor: hangingSupervisor });
+    const conn = fakeConnection();
+
+    const { runId } = await manager.start({
+      source: join(import.meta.dir, "__fixtures__/with-one-stage.ts"),
+      workflowName: "unsub-panel-update-wf",
+      agent: "claude",
+      inputs: {},
+    });
+
+    // Wait for stage spawn.
+    await flushAsync();
+
+    // Subscribe then immediately unsubscribe.
+    const subId = manager.subscribe(conn, runId);
+    manager.unsubscribe(subId);
+
+    const notifsBefore = conn.notifications.length;
+
+    // Mutate state: setForeground → triggers panel/update + panel/foregroundChange.
+    const state = manager.getState(runId);
+    expect(state).not.toBeNull();
+    state!.setForeground("step-1");
+
+    await flushAsync();
+
+    // Connection was unsubscribed — must receive zero new notifications.
+    expect(conn.notifications.length).toBe(notifsBefore);
+
+    // Cleanup.
+    await manager.stop(runId);
+  });
+});
