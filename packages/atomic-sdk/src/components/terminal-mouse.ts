@@ -24,27 +24,15 @@ export const TERMINAL_MOUSE_REPORTING_DISABLE_SEQUENCE = [
 ].join("");
 
 const PRIVATE_MODE_SEQUENCE_RE = /\x1b\[\?([0-9;:]*)([hl])/g;
+const SGR_MOUSE_INPUT_SEQUENCE_RE = /^\x1b\[<[0-9]+;[0-9]+;[0-9]+[Mm]$/;
+const BASIC_MOUSE_INPUT_SEQUENCE_RE = /^\x1b\[M[\s\S]{3,}$/;
+const URXVT_MOUSE_INPUT_SEQUENCE_RE = /^\x1b\[[0-9]+;[0-9]+;[0-9]+M$/;
 
-/**
- * Strip DECSET mouse-enable modes from streamed PTY output while preserving
- * non-mouse private modes that may be combined in the same CSI sequence.
- */
-export function stripTerminalMouseModeEnableSequences(output: string): string {
-  return output.replace(
-    PRIVATE_MODE_SEQUENCE_RE,
-    (sequence: string, rawParams: string, final: string): string => {
-      if (final !== "h") return sequence;
+type TerminalMouseModeFinal = "h" | "l";
 
-      const separator = rawParams.includes(":") ? ":" : ";";
-      const params = rawParams.split(/[;:]/).filter((param) => param.length > 0);
-      if (params.length === 0) return sequence;
-
-      const keptParams = params.filter((param) => !MOUSE_REPORTING_MODES.has(param));
-      if (keptParams.length === params.length) return sequence;
-      if (keptParams.length === 0) return "";
-      return `\x1b[?${keptParams.join(separator)}h`;
-    },
-  );
+interface TerminalMouseModeChange {
+  final: TerminalMouseModeFinal;
+  modes: string[];
 }
 
 function splitTrailingIncompleteEscapeSequence(output: string): { complete: string; pending: string } {
@@ -70,33 +58,72 @@ function splitTrailingIncompleteEscapeSequence(output: string): { complete: stri
   return { complete: output.slice(0, lastEscapeIndex), pending: tail };
 }
 
-/**
- * Ensure terminal-native drag selection remains available after agent output.
- *
- * Some agent TUIs enable xterm mouse reporting in their PTY output. Because
- * Atomic streams those bytes to the real terminal, that mode would make the
- * terminal send mouse drags to the process instead of selecting text. Strip
- * explicit mouse enables and append a defensive disable sequence for agents
- * that repeatedly toggle the mode.
- */
-export function withTerminalMouseReportingDisabled(output: string): string {
-  if (output.length === 0) return TERMINAL_MOUSE_REPORTING_DISABLE_SEQUENCE;
-  return stripTerminalMouseModeEnableSequences(output) + TERMINAL_MOUSE_REPORTING_DISABLE_SEQUENCE;
+function readTerminalMouseModeChanges(output: string): TerminalMouseModeChange[] {
+  const changes: TerminalMouseModeChange[] = [];
+  PRIVATE_MODE_SEQUENCE_RE.lastIndex = 0;
+
+  let match = PRIVATE_MODE_SEQUENCE_RE.exec(output);
+  while (match !== null) {
+    const rawParams = match[1] ?? "";
+    const final = match[2] as TerminalMouseModeFinal;
+    const modes = rawParams
+      .split(/[;:]/)
+      .filter((param) => MOUSE_REPORTING_MODES.has(param));
+
+    if (modes.length > 0) {
+      changes.push({ final, modes });
+    }
+
+    match = PRIVATE_MODE_SEQUENCE_RE.exec(output);
+  }
+
+  return changes;
 }
 
-export class TerminalMouseReportingFilter {
+/** True for raw xterm-compatible mouse input sequences parsed by OpenTUI. */
+export function isTerminalMouseInputSequence(sequence: string): boolean {
+  return SGR_MOUSE_INPUT_SEQUENCE_RE.test(sequence)
+    || BASIC_MOUSE_INPUT_SEQUENCE_RE.test(sequence)
+    || URXVT_MOUSE_INPUT_SEQUENCE_RE.test(sequence);
+}
+
+/**
+ * Tracks whether the attached agent has requested terminal mouse reporting.
+ *
+ * Direct chat and workflow pane attaches stream the agent's ANSI output to the
+ * real terminal while OpenTUI owns stdin for the pinned footer. We therefore
+ * let the agent's DECSET/DECRST mouse mode sequences pass through unchanged,
+ * but track them so raw mouse input can be forwarded to the PTY only while the
+ * agent believes mouse reporting is active.
+ */
+export class TerminalMouseReportingTracker {
+  private readonly activeModes = new Set<string>();
   private pending = "";
 
-  write(output: string): string {
+  update(output: string): boolean {
     const next = this.pending + output;
     const { complete, pending } = splitTrailingIncompleteEscapeSequence(next);
     this.pending = pending;
-    if (complete.length === 0) return "";
-    return withTerminalMouseReportingDisabled(complete);
+
+    for (const change of readTerminalMouseModeChanges(complete)) {
+      for (const mode of change.modes) {
+        if (change.final === "h") {
+          this.activeModes.add(mode);
+        } else {
+          this.activeModes.delete(mode);
+        }
+      }
+    }
+
+    return this.enabled;
   }
 
-  finish(): string {
+  get enabled(): boolean {
+    return this.activeModes.size > 0;
+  }
+
+  reset(): void {
     this.pending = "";
-    return TERMINAL_MOUSE_REPORTING_DISABLE_SEQUENCE;
+    this.activeModes.clear();
   }
 }

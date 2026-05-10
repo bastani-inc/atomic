@@ -237,13 +237,13 @@ describe("chat env builders", () => {
 });
 
 describe("buildAgentArgs", () => {
-  test("Copilot chat disables CLI mouse capture so terminal text selection works", async () => {
+  test("Copilot chat keeps CLI mouse capture enabled so click events work", async () => {
     const projectRoot = mkdtempSync(join(tmpdir(), "atomic-chat-args-"));
     try {
       const args = await buildAgentArgs("copilot", [], projectRoot);
 
-      expect(args).toContain("--no-mouse");
-      expect(args.indexOf("--no-mouse")).toBeGreaterThan(args.indexOf("--experimental"));
+      expect(args).toContain("--experimental");
+      expect(args).not.toContain("--no-mouse");
     } finally {
       rmSync(projectRoot, { recursive: true, force: true });
     }

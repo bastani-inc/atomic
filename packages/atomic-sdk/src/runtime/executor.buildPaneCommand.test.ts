@@ -17,7 +17,7 @@ import { buildPaneCommand } from "./executor.ts";
 // Known canonical defaults (mirrors AGENT_CLI in executor.ts).
 // Must be kept in sync when AGENT_CLI changes.
 // ---------------------------------------------------------------------------
-const COPILOT_DEFAULT_CHAT_FLAGS = ["--add-dir", ".", "--yolo", "--experimental", "--no-mouse"];
+const COPILOT_DEFAULT_CHAT_FLAGS = ["--add-dir", ".", "--yolo", "--experimental"];
 const OPENCODE_DEFAULT_CHAT_FLAGS: string[] = [];
 // Claude chatFlags: canonical spawn-argv tail. NOT an exec argv (command is the
 // shell, not claude). chatFlags is persisted into metadata.json#resume.chatFlags

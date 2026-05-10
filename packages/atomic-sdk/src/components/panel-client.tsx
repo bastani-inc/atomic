@@ -197,9 +197,10 @@ export interface DirectSessionRendererConfigOptions {
  * Renderer configuration for direct PTY sessions.
  *
  * Direct chat and workflow pane attaches stream the native agent TUI straight
- * to the user's terminal, outside OpenTUI's render tree. Keeping OpenTUI mouse
- * reporting disabled lets the terminal provide normal drag-to-select behavior
- * for Claude Code, Copilot CLI, and OpenCode session output.
+ * to the user's terminal, outside OpenTUI's render tree. OpenTUI mouse support
+ * stays enabled so click sequences can be captured above the split footer and
+ * forwarded to the attached agent PTY when that agent has requested mouse
+ * reporting.
  */
 export function createDirectSessionRendererConfig({
   footerHeight,
@@ -212,7 +213,7 @@ export function createDirectSessionRendererConfig({
     footerHeight,
     externalOutputMode: "passthrough",
     clearOnShutdown,
-    useMouse: false,
+    useMouse: true,
   };
 }
 

@@ -32,9 +32,8 @@ import {
 } from "./chat-session-panel.tsx";
 import {
   TERMINAL_MOUSE_REPORTING_DISABLE_SEQUENCE,
-  TerminalMouseReportingFilter,
-  stripTerminalMouseModeEnableSequences,
-  withTerminalMouseReportingDisabled,
+  TerminalMouseReportingTracker,
+  isTerminalMouseInputSequence,
 } from "./terminal-mouse.ts";
 import type { MessageConnection } from "vscode-jsonrpc/node";
 import type { WorkflowStatusSnapshot } from "../runtime/status-writer.ts";
@@ -297,7 +296,7 @@ describe("applyForegroundStage", () => {
 // ---------------------------------------------------------------------------
 
 describe("createDirectSessionRendererConfig", () => {
-  test("keeps terminal text selection available in direct chat sessions", () => {
+  test("enables mouse capture for direct chat sessions so agent clicks can be forwarded", () => {
     const config = createDirectSessionRendererConfig({
       footerHeight: 2,
       clearOnShutdown: false,
@@ -305,10 +304,10 @@ describe("createDirectSessionRendererConfig", () => {
 
     expect(config.screenMode).toBe("split-footer");
     expect(config.externalOutputMode).toBe("passthrough");
-    expect(config.useMouse).toBe(false);
+    expect(config.useMouse).toBe(true);
   });
 
-  test("keeps terminal text selection available in direct workflow pane sessions", () => {
+  test("enables mouse capture for direct workflow pane sessions", () => {
     const config = createDirectSessionRendererConfig({
       footerHeight: 1,
       clearOnShutdown: true,
@@ -317,7 +316,7 @@ describe("createDirectSessionRendererConfig", () => {
     expect(config.screenMode).toBe("split-footer");
     expect(config.footerHeight).toBe(1);
     expect(config.clearOnShutdown).toBe(true);
-    expect(config.useMouse).toBe(false);
+    expect(config.useMouse).toBe(true);
   });
 });
 
@@ -427,33 +426,56 @@ describe("DaemonPanelStore.applySnapshot", () => {
 });
 
 // ---------------------------------------------------------------------------
-// terminal mouse reporting filter
+// terminal mouse reporting helpers
 // ---------------------------------------------------------------------------
 
-describe("terminal mouse reporting filter", () => {
-  test("strips mouse reporting enable sequences from direct PTY output", () => {
-    const output = `before\x1b[?1000h\x1b[?1006hafter`;
-
-    expect(stripTerminalMouseModeEnableSequences(output)).toBe("beforeafter");
+describe("terminal mouse reporting helpers", () => {
+  test("recognizes common raw mouse input sequences", () => {
+    expect(isTerminalMouseInputSequence("\x1b[<0;12;4M")).toBe(true);
+    expect(isTerminalMouseInputSequence("\x1b[<0;12;4m")).toBe(true);
+    expect(isTerminalMouseInputSequence("\x1b[M !!!")).toBe(true);
+    expect(isTerminalMouseInputSequence("\x1b[0;12;4M")).toBe(true);
+    expect(isTerminalMouseInputSequence("\x1b[A")).toBe(false);
   });
 
-  test("preserves non-mouse private modes when combined with mouse modes", () => {
-    const output = `\x1b[?25;1000;1006hdraw`;
+  test("tracks agent-requested mouse reporting modes without mutating output", () => {
+    const tracker = new TerminalMouseReportingTracker();
+    const output = "before\x1b[?1000h\x1b[?1006hafter";
 
-    expect(stripTerminalMouseModeEnableSequences(output)).toBe("\x1b[?25hdraw");
+    expect(tracker.update(output)).toBe(true);
+    expect(tracker.enabled).toBe(true);
   });
 
-  test("appends a defensive mouse-disable sequence after streamed output", () => {
-    const output = withTerminalMouseReportingDisabled("paint");
+  test("ignores non-mouse private modes when tracking", () => {
+    const tracker = new TerminalMouseReportingTracker();
 
-    expect(output).toBe(`paint${TERMINAL_MOUSE_REPORTING_DISABLE_SEQUENCE}`);
+    expect(tracker.update("\x1b[?25hdraw")).toBe(false);
+    expect(tracker.enabled).toBe(false);
   });
 
-  test("buffers incomplete CSI sequences across PTY chunks", () => {
-    const filter = new TerminalMouseReportingFilter();
+  test("handles combined mouse and non-mouse private modes", () => {
+    const tracker = new TerminalMouseReportingTracker();
 
-    expect(filter.write("start\x1b[?100")).toBe(`start${TERMINAL_MOUSE_REPORTING_DISABLE_SEQUENCE}`);
-    expect(filter.write("0hpaint")).toBe(`paint${TERMINAL_MOUSE_REPORTING_DISABLE_SEQUENCE}`);
+    expect(tracker.update("\x1b[?25;1000;1006hdraw")).toBe(true);
+    expect(tracker.update("\x1b[?1000l")).toBe(true);
+    expect(tracker.update("\x1b[?1006l")).toBe(false);
+  });
+
+  test("buffers incomplete CSI mouse mode sequences across PTY chunks", () => {
+    const tracker = new TerminalMouseReportingTracker();
+
+    expect(tracker.update("paint\x1b[?100")).toBe(false);
+    expect(tracker.update("6h")).toBe(true);
+  });
+
+  test("resets tracked state and exposes the defensive cleanup sequence", () => {
+    const tracker = new TerminalMouseReportingTracker();
+    tracker.update("\x1b[?1006h");
+
+    tracker.reset();
+
+    expect(tracker.enabled).toBe(false);
+    expect(TERMINAL_MOUSE_REPORTING_DISABLE_SEQUENCE).toContain("\x1b[?1006l");
   });
 });
 

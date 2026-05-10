@@ -17,7 +17,8 @@ import type { PaneOutputNotificationParams } from "../runtime/ui-protocol/schema
 import { useLatest } from "./hooks.ts";
 import {
   TERMINAL_MOUSE_REPORTING_DISABLE_SEQUENCE,
-  TerminalMouseReportingFilter,
+  TerminalMouseReportingTracker,
+  isTerminalMouseInputSequence,
 } from "./terminal-mouse.ts";
 
 // ---------------------------------------------------------------------------
@@ -230,6 +231,7 @@ export function DirectPtyPane({
 }: DirectPtyPaneProps) {
   const renderer = useRenderer();
   const ptySize = usePaneTerminalSize(renderer);
+  const mouseReportingEnabledRef = useRef(false);
 
   useEffect(() => {
     let disposed = false;
@@ -237,14 +239,13 @@ export function DirectPtyPane({
     let snapshotLoaded = false;
     let headOffset = 0;
     const pendingLiveOutput: PaneOutputNotificationParams[] = [];
-    const mouseFilter = new TerminalMouseReportingFilter();
-
-    process.stdout.write(TERMINAL_MOUSE_REPORTING_DISABLE_SEQUENCE);
+    const mouseTracker = new TerminalMouseReportingTracker();
+    mouseReportingEnabledRef.current = false;
 
     const write = (data: string) => {
       if (!disposed && data.length > 0) {
-        const filtered = mouseFilter.write(data);
-        if (filtered.length > 0) process.stdout.write(filtered);
+        mouseReportingEnabledRef.current = mouseTracker.update(data);
+        process.stdout.write(data);
         renderer.requestRender();
       }
     };
@@ -317,7 +318,9 @@ export function DirectPtyPane({
 
     return () => {
       disposed = true;
-      process.stdout.write(mouseFilter.finish());
+      mouseTracker.reset();
+      mouseReportingEnabledRef.current = false;
+      process.stdout.write(TERMINAL_MOUSE_REPORTING_DISABLE_SEQUENCE);
       outputDisposable.dispose();
       if (outputSubscriptionId) {
         connection
@@ -339,6 +342,25 @@ export function DirectPtyPane({
   }, [connection, runId, stageName, ptySize.cols, ptySize.rows]);
 
   const focusedRef = useLatest(focused);
+
+  useEffect(() => {
+    const forwardMouseInput = (sequence: string): boolean => {
+      if (!isTerminalMouseInputSequence(sequence)) return false;
+
+      if (focusedRef.current && mouseReportingEnabledRef.current) {
+        connection
+          .sendRequest("pane/sendInput", { runId, stageName, data: sequence })
+          .catch(() => {});
+      }
+
+      return true;
+    };
+
+    renderer.addInputHandler(forwardMouseInput);
+    return () => {
+      renderer.removeInputHandler(forwardMouseInput);
+    };
+  }, [connection, focusedRef, renderer, runId, stageName]);
 
   useKeyboard((key) => {
     if (key.name === "q" || (key.ctrl && key.name === "c")) {

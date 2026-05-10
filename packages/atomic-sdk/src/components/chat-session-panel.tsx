@@ -8,7 +8,7 @@
  * while OpenTUI's split-footer mode pins Atomic's divider + footer underneath.
  */
 
-import { memo, useEffect, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
 import type { CliRenderer } from "@opentui/core";
 import type { MessageConnection } from "vscode-jsonrpc/node";
@@ -20,7 +20,8 @@ import type {
 import { useGraphTheme } from "./orchestrator-panel-contexts.ts";
 import {
   TERMINAL_MOUSE_REPORTING_DISABLE_SEQUENCE,
-  TerminalMouseReportingFilter,
+  TerminalMouseReportingTracker,
+  isTerminalMouseInputSequence,
 } from "./terminal-mouse.ts";
 
 export const CHAT_FOOTER_ROWS = 2;
@@ -166,6 +167,7 @@ export function ChatSessionPanel({
 }: ChatSessionPanelProps) {
   const renderer = useRenderer();
   const ptySize = useChatTerminalSize(renderer);
+  const mouseReportingEnabledRef = useRef(false);
 
   useEffect(() => {
     let disposed = false;
@@ -173,14 +175,13 @@ export function ChatSessionPanel({
     let snapshotLoaded = false;
     let headOffset = 0;
     const pendingLiveOutput: PaneOutputNotificationParams[] = [];
-    const mouseFilter = new TerminalMouseReportingFilter();
-
-    process.stdout.write(TERMINAL_MOUSE_REPORTING_DISABLE_SEQUENCE);
+    const mouseTracker = new TerminalMouseReportingTracker();
+    mouseReportingEnabledRef.current = false;
 
     const write = (data: string) => {
       if (!disposed && data.length > 0) {
-        const filtered = mouseFilter.write(data);
-        if (filtered.length > 0) process.stdout.write(filtered);
+        mouseReportingEnabledRef.current = mouseTracker.update(data);
+        process.stdout.write(data);
         renderer.requestRender();
       }
     };
@@ -272,7 +273,9 @@ export function ChatSessionPanel({
 
     return () => {
       disposed = true;
-      process.stdout.write(mouseFilter.finish());
+      mouseTracker.reset();
+      mouseReportingEnabledRef.current = false;
+      process.stdout.write(TERMINAL_MOUSE_REPORTING_DISABLE_SEQUENCE);
       outputDisposable.dispose();
       exitDisposable.dispose();
       if (outputSubscriptionId) {
@@ -309,6 +312,29 @@ export function ChatSessionPanel({
       process.off("SIGINT", forwardSigint);
     };
   }, [connection, runId]);
+
+  useEffect(() => {
+    const forwardMouseInput = (sequence: string): boolean => {
+      if (!isTerminalMouseInputSequence(sequence)) return false;
+
+      if (mouseReportingEnabledRef.current) {
+        connection
+          .sendRequest("pane/sendInput", {
+            runId,
+            stageName: CHAT_STAGE_NAME,
+            data: sequence,
+          })
+          .catch(() => {});
+      }
+
+      return true;
+    };
+
+    renderer.addInputHandler(forwardMouseInput);
+    return () => {
+      renderer.removeInputHandler(forwardMouseInput);
+    };
+  }, [connection, renderer, runId]);
 
   useKeyboard((key) => {
     if (isChatDetachKey(key)) {

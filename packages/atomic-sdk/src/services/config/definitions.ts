@@ -116,7 +116,7 @@ export const AGENT_CONFIG: Record<AgentKey, AgentConfig> = {
   copilot: {
     name: "GitHub Copilot CLI",
     cmd: "copilot",
-    chat_flags: ["--add-dir", ".", "--yolo", "--experimental", "--no-mouse"],
+    chat_flags: ["--add-dir", ".", "--yolo", "--experimental"],
     env_vars: {
       COPILOT_ALLOW_ALL: "true",
     },
