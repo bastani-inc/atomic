@@ -1,7 +1,7 @@
 {
   "name": "@bastani/example-multi-workflow",
   "private": true,
-  "version": "0.7.15",
+  "version": "0.7.16-0",
   "type": "module",
   "description": "Two Claude workflows (hello, goodbye) under one cli.ts — Commander subcommand per registered workflow",
   "scripts": {

@@ -1,7 +1,7 @@
 {
   "name": "@bastani/example-hello-world",
   "private": true,
-  "version": "0.7.15",
+  "version": "0.7.16-0",
   "type": "module",
   "description": "Minimal single-session workflow with structured inputs (greeting, style, optional notes)",
   "scripts": {

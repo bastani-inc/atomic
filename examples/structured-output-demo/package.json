@@ -1,7 +1,7 @@
 {
   "name": "@bastani/example-structured-output-demo",
   "private": true,
-  "version": "0.7.15",
+  "version": "0.7.16-0",
   "type": "module",
   "description": "Per-SDK structured output (JSON-schema validation, Zod)",
   "scripts": {
