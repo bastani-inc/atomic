@@ -387,6 +387,15 @@ export class Daemon {
     await server.start(0, "127.0.0.1");
     this.server = server;
 
+    // Load workflow registry before writing the endpoint file so that the
+    // daemon is fully ready (workflows available) the moment it becomes
+    // discoverable. Broken entries are logged as warnings but do not abort
+    // startup — the MethodDispatcher already handles defensive lazy-load.
+    const { broken } = await this.opts.workflows.load();
+    for (const entry of broken) {
+      this.warn(`[daemon] Failed to load workflow ${entry.source}: ${entry.error}`);
+    }
+
     const addr = server.address();
     if (!addr) throw new Error("UIServer started but address() returned null");
 
@@ -487,6 +496,10 @@ export class Daemon {
 
   private log(msg: string): void {
     this.opts.onLog?.(msg);
+  }
+
+  private warn(msg: string): void {
+    this.opts.onWarn?.(msg);
   }
 }
 

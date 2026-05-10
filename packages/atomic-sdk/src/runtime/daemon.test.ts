@@ -691,3 +691,97 @@ describe("openConnection failure path", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Registry load during startup
+// ---------------------------------------------------------------------------
+
+describe("Daemon.start() — registry load before endpoint readiness", () => {
+  test("calls workflows.load() before writing endpoint file", async () => {
+    const tmpDir = await makeTempDir();
+    const endpointFile = path.join(tmpDir, "daemon.endpoint.json");
+    let endpointExistedAtLoadTime = false;
+
+    const registry = {
+      load: mock(async () => {
+        // At the moment load() is called, endpoint file must NOT exist yet.
+        endpointExistedAtLoadTime = fs.existsSync(endpointFile);
+        return { count: 0, broken: [] };
+      }),
+      list: mock(() => []),
+      get: mock(() => null),
+      getDescriptor: mock(() => null),
+      getBySource: mock(() => null),
+      refresh: mock(() => Promise.resolve({ count: 0, broken: [] })),
+    } as unknown as WorkflowRegistry;
+
+    const opts = makeDaemonOpts(tmpDir, { workflows: registry, endpointFile });
+    const daemon = new Daemon(opts);
+    await daemon.start();
+    try {
+      expect((registry.load as ReturnType<typeof mock>).mock.calls.length).toBe(1);
+      expect(endpointExistedAtLoadTime).toBe(false);
+      // After start(), endpoint file must now exist.
+      expect(fs.existsSync(endpointFile)).toBe(true);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  test("broken workflow entries are warned but startup succeeds", async () => {
+    const tmpDir = await makeTempDir();
+    const warns: string[] = [];
+    const registry = {
+      load: mock(() =>
+        Promise.resolve({
+          count: 0,
+          broken: [{ source: "/path/to/bad-wf.ts", error: "SyntaxError: Unexpected token" }],
+        }),
+      ),
+      list: mock(() => []),
+      get: mock(() => null),
+      getDescriptor: mock(() => null),
+      getBySource: mock(() => null),
+      refresh: mock(() => Promise.resolve({ count: 0, broken: [] })),
+    } as unknown as WorkflowRegistry;
+
+    const opts = makeDaemonOpts(tmpDir, {
+      workflows: registry,
+      onWarn: (msg) => { warns.push(msg); },
+    });
+    const daemon = new Daemon(opts);
+    const result = await daemon.start();
+    try {
+      expect(result.mode).toBe("new");
+      expect(warns.some((w) => w.includes("bad-wf.ts") && w.includes("SyntaxError"))).toBe(true);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  test("workflows.load() is not called for mode=existing path", async () => {
+    const tmpDir = await makeTempDir();
+
+    const d1 = new Daemon(makeDaemonOpts(tmpDir));
+    await d1.start();
+
+    try {
+      const registry2 = {
+        load: mock(() => Promise.resolve({ count: 0, broken: [] })),
+        list: mock(() => []),
+        get: mock(() => null),
+        getDescriptor: mock(() => null),
+        getBySource: mock(() => null),
+        refresh: mock(() => Promise.resolve({ count: 0, broken: [] })),
+      } as unknown as WorkflowRegistry;
+
+      const d2 = new Daemon(makeDaemonOpts(tmpDir, { workflows: registry2 }));
+      const r2 = await d2.start();
+      expect(r2.mode).toBe("existing");
+      // load() must NOT have been called — we returned early.
+      expect((registry2.load as ReturnType<typeof mock>).mock.calls.length).toBe(0);
+    } finally {
+      await d1.stop();
+    }
+  });
+});
