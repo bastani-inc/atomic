@@ -1,0 +1,54 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "export-registry.schema.json",
+  "title": "SDK Export Registry",
+  "description": "Classification metadata for every @bastani/atomic-sdk package.json#exports subpath.",
+  "type": "object",
+  "required": ["package", "version", "exports"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "package": { "type": "string" },
+    "version": { "type": "string" },
+    "generatedAt": { "type": "string" },
+    "exports": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["subpath", "target", "classification", "owner"],
+        "properties": {
+          "subpath": {
+            "type": "string",
+            "description": "Exact key from package.json#exports (e.g. \".\" or \"./runtime/daemon\")."
+          },
+          "target": {
+            "type": "string",
+            "description": "Exact value from package.json#exports."
+          },
+          "classification": {
+            "type": "string",
+            "enum": ["public", "cli-internal", "test-only", "deprecated"],
+            "description": "public: stable API for workflow authors; cli-internal: used only by atomic CLI/daemon; test-only: test fixtures; deprecated: obsolete compatibility shim."
+          },
+          "owner": {
+            "type": "string",
+            "description": "Team or package responsible (e.g. sdk, atomic-cli)."
+          },
+          "replacement": {
+            "type": "string",
+            "description": "For deprecated exports, the preferred subpath to use instead."
+          },
+          "notes": {
+            "type": "string",
+            "description": "Free-text rationale for the classification."
+          },
+          "uncertain": {
+            "type": "boolean",
+            "description": "True when classification requires architect review."
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

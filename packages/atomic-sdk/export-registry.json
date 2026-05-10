@@ -1,0 +1,370 @@
+{
+  "$schema": "./export-registry.schema.json",
+  "package": "@bastani/atomic-sdk",
+  "version": "0.7.13",
+  "generatedAt": "2025-08-02",
+  "exports": [
+    {
+      "subpath": ".",
+      "target": "./src/index.ts",
+      "classification": "public",
+      "owner": "sdk",
+      "notes": "Stable public facade. Primary entry point for workflow authors."
+    },
+    {
+      "subpath": "./sdk-protocol-version.json",
+      "target": "./sdk-protocol-version.json",
+      "classification": "public",
+      "owner": "sdk",
+      "notes": "Protocol version metadata. Consumed by SDK consumers and daemon compatibility checks."
+    },
+    {
+      "subpath": "./define-workflow",
+      "target": "./src/define-workflow.ts",
+      "classification": "public",
+      "owner": "sdk",
+      "notes": "defineWorkflow, WorkflowBuilder, getCompiledWorkflows. Re-exported from root barrel. Subpath used by atomic CLI internals for direct import."
+    },
+    {
+      "subpath": "./registry",
+      "target": "./src/registry.ts",
+      "classification": "public",
+      "owner": "sdk",
+      "notes": "createRegistry, Registry type. Re-exported from root barrel. Subpath used by atomic CLI internals."
+    },
+    {
+      "subpath": "./errors",
+      "target": "./src/errors.ts",
+      "classification": "public",
+      "owner": "sdk",
+      "notes": "Typed SDK error classes. Re-exported from root barrel. Subpath used by atomic CLI internals."
+    },
+    {
+      "subpath": "./types",
+      "target": "./src/types.ts",
+      "classification": "public",
+      "owner": "sdk",
+      "notes": "Core SDK types. Re-exported from root barrel. Subpath used by atomic CLI internals."
+    },
+    {
+      "subpath": "./workflows",
+      "target": "./src/workflows/index.ts",
+      "classification": "public",
+      "owner": "sdk",
+      "notes": "Workflow SDK barrel (historical /workflows import path). Used in examples and tests."
+    },
+    {
+      "subpath": "./providers/claude",
+      "target": "./src/providers/claude.ts",
+      "classification": "public",
+      "owner": "sdk",
+      "notes": "Claude Code provider adapter. Used by atomic CLI internals for agent dispatch. Conceptually public provider API.",
+      "uncertain": true
+    },
+    {
+      "subpath": "./providers/copilot",
+      "target": "./src/providers/copilot.ts",
+      "classification": "public",
+      "owner": "sdk",
+      "notes": "Copilot provider adapter. Used by atomic CLI internals for agent dispatch. Conceptually public provider API.",
+      "uncertain": true
+    },
+    {
+      "subpath": "./providers/claude-stop-hook",
+      "target": "./src/providers/claude-stop-hook.ts",
+      "classification": "public",
+      "owner": "sdk",
+      "notes": "Claude stop hook provider. Used by atomic CLI internals. Conceptually public provider API.",
+      "uncertain": true
+    },
+    {
+      "subpath": "./providers/claude-inflight-hook",
+      "target": "./src/providers/claude-inflight-hook.ts",
+      "classification": "public",
+      "owner": "sdk",
+      "notes": "Claude inflight hook provider. Used by atomic CLI internals. Conceptually public provider API.",
+      "uncertain": true
+    },
+    {
+      "subpath": "./primitives/metadata",
+      "target": "./src/primitives/metadata.ts",
+      "classification": "cli-internal",
+      "owner": "atomic-cli",
+      "notes": "Metadata accessors (getName, getDescription, getAgent, etc). Re-exported from root barrel. Subpath used by atomic CLI internals only."
+    },
+    {
+      "subpath": "./cli",
+      "target": "./src/cli.ts",
+      "classification": "cli-internal",
+      "owner": "atomic-cli",
+      "notes": "SDK-bundled internal CLI dispatcher entry point. Spawned by host-bun resolver for _orchestrator-entry and _cc-debounce. Not for external consumers."
+    },
+    {
+      "subpath": "./worker-shared",
+      "target": "./src/worker-shared.ts",
+      "classification": "cli-internal",
+      "owner": "atomic-cli",
+      "notes": "Internal worker helpers: toCamelCase, validateAndResolve, stringifyDefaults, buildInputUnion. Used by multi-workflow dispatcher and single-definition worker."
+    },
+    {
+      "subpath": "./runtime/daemon",
+      "target": "./src/runtime/daemon.ts",
+      "classification": "cli-internal",
+      "owner": "atomic-cli",
+      "notes": "Daemon lifecycle: singleton enforcement, endpoint file I/O, signal handling, connectToDaemon, ensureStarted. Used by atomic CLI only."
+    },
+    {
+      "subpath": "./runtime/run-manager",
+      "target": "./src/runtime/run-manager.ts",
+      "classification": "cli-internal",
+      "owner": "atomic-cli",
+      "notes": "RunManager implementing IRunManager for the atomic daemon. Manages workflow run lifecycle."
+    },
+    {
+      "subpath": "./runtime/registry",
+      "target": "./src/runtime/registry.ts",
+      "classification": "cli-internal",
+      "owner": "atomic-cli",
+      "notes": "Daemon workflow registry. Reads settings.json, discovers and caches WorkflowDefinitions. Daemon-mode only."
+    },
+    {
+      "subpath": "./runtime/supervisor",
+      "target": "./src/runtime/supervisor.ts",
+      "classification": "cli-internal",
+      "owner": "atomic-cli",
+      "notes": "Process supervisor owning agent subprocesses via bun-pty. Daemon-mode only."
+    },
+    {
+      "subpath": "./runtime/daemon-supervisor-adapter",
+      "target": "./src/runtime/daemon-supervisor-adapter.ts",
+      "classification": "cli-internal",
+      "owner": "atomic-cli",
+      "notes": "Typed bridge from ISupervisor to Supervisor. Daemon-mode only."
+    },
+    {
+      "subpath": "./runtime/status-writer",
+      "target": "./src/runtime/status-writer.ts",
+      "classification": "cli-internal",
+      "owner": "atomic-cli",
+      "notes": "Workflow status snapshot writer to ~/.atomic/sessions/<id>/status.json."
+    },
+    {
+      "subpath": "./runtime/theme",
+      "target": "./src/runtime/theme.ts",
+      "classification": "cli-internal",
+      "owner": "atomic-cli",
+      "notes": "Terminal color theme using Catppuccin palettes. Used by TUI components."
+    },
+    {
+      "subpath": "./runtime/executor",
+      "target": "./src/runtime/executor.ts",
+      "classification": "cli-internal",
+      "owner": "atomic-cli",
+      "notes": "Workflow runtime executor (executeWorkflow). TelemetrySink type re-exported from root barrel. Subpath for atomic CLI internals.",
+      "uncertain": true
+    },
+    {
+      "subpath": "./components/panel-client",
+      "target": "./src/components/panel-client.tsx",
+      "classification": "cli-internal",
+      "owner": "atomic-cli",
+      "notes": "PanelClient TUI component. Connects to daemon, subscribes to panel/update notifications. Used by atomic CLI."
+    },
+    {
+      "subpath": "./components/graph-theme",
+      "target": "./src/components/graph-theme.ts",
+      "classification": "cli-internal",
+      "owner": "atomic-cli",
+      "notes": "GraphTheme interface for TUI graph rendering. Used by atomic CLI internals."
+    },
+    {
+      "subpath": "./components/orchestrator-panel-types",
+      "target": "./src/components/orchestrator-panel-types.ts",
+      "classification": "cli-internal",
+      "owner": "atomic-cli",
+      "notes": "SessionStatus, ViewMode and orchestrator panel types. Used by atomic CLI internals."
+    },
+    {
+      "subpath": "./workflows/components",
+      "target": "./src/components/workflow-picker-panel.tsx",
+      "classification": "cli-internal",
+      "owner": "atomic-cli",
+      "notes": "WorkflowPickerPanel TUI component (telescope-style fuzzy picker). Used by atomic CLI for `atomic workflow -a <agent>`."
+    },
+    {
+      "subpath": "./theme/colors",
+      "target": "./src/theme/colors.ts",
+      "classification": "cli-internal",
+      "owner": "atomic-cli",
+      "notes": "ANSI color and formatting codes for CLI output."
+    },
+    {
+      "subpath": "./lib/telemetry",
+      "target": "./src/lib/telemetry/index.ts",
+      "classification": "cli-internal",
+      "owner": "atomic-cli",
+      "notes": "Production telemetry sink (getProductionTelemetrySink). Used by atomic CLI internals."
+    },
+    {
+      "subpath": "./lib/atomic-temp",
+      "target": "./src/lib/atomic-temp.ts",
+      "classification": "cli-internal",
+      "owner": "atomic-cli",
+      "notes": "~/.atomic temp directory utilities."
+    },
+    {
+      "subpath": "./lib/spawn",
+      "target": "./src/lib/spawn.ts",
+      "classification": "cli-internal",
+      "owner": "atomic-cli",
+      "notes": "Shared spawn utilities for postinstall and lifecycle scripts."
+    },
+    {
+      "subpath": "./lib/terminal-env",
+      "target": "./src/lib/terminal-env.ts",
+      "classification": "cli-internal",
+      "owner": "atomic-cli",
+      "notes": "Terminal-environment detection helpers (UTF-8, etc)."
+    },
+    {
+      "subpath": "./lib/common-ignore",
+      "target": "./src/lib/common-ignore.ts",
+      "classification": "cli-internal",
+      "owner": "atomic-cli",
+      "notes": "Common gitignore-style filter for agent config copy operations."
+    },
+    {
+      "subpath": "./lib/path-root-guard",
+      "target": "./src/lib/path-root-guard.ts",
+      "classification": "cli-internal",
+      "owner": "atomic-cli",
+      "notes": "Path sub-path guard utility (realpath + relative check)."
+    },
+    {
+      "subpath": "./lib/runtime-env",
+      "target": "./src/lib/runtime-env.ts",
+      "classification": "cli-internal",
+      "owner": "atomic-cli",
+      "notes": "Runtime-environment detection (compiled binary vs dev). RFC §5.3."
+    },
+    {
+      "subpath": "./lib/runtime-assets",
+      "target": "./src/lib/runtime-assets.ts",
+      "classification": "cli-internal",
+      "owner": "atomic-cli",
+      "notes": "Resolved paths to runtime sibling assets (tmuxConfPath, etc). RFC §5.1."
+    },
+    {
+      "subpath": "./services/config/definitions",
+      "target": "./src/services/config/definitions.ts",
+      "classification": "cli-internal",
+      "owner": "atomic-cli",
+      "notes": "Agent configuration definitions (AGENT_CONFIG). Used by daemon supervisor adapter."
+    },
+    {
+      "subpath": "./services/config/atomic-config",
+      "target": "./src/services/config/atomic-config.ts",
+      "classification": "cli-internal",
+      "owner": "atomic-cli",
+      "notes": "Atomic config file utilities (readAtomicConfigSplit, getGlobalSettingsPath, getLocalSettingsPath)."
+    },
+    {
+      "subpath": "./services/config/scm-sync",
+      "target": "./src/services/config/scm-sync.ts",
+      "classification": "cli-internal",
+      "owner": "atomic-cli",
+      "notes": "Source-control-driven MCP server enable/disable sync."
+    },
+    {
+      "subpath": "./services/config/additional-instructions",
+      "target": "./src/services/config/additional-instructions.ts",
+      "classification": "cli-internal",
+      "owner": "atomic-cli",
+      "notes": "Default additional instructions appended to every spawned agent."
+    },
+    {
+      "subpath": "./services/config/settings-schema",
+      "target": "./src/services/config/settings-schema.ts",
+      "classification": "cli-internal",
+      "owner": "atomic-cli",
+      "notes": "Settings schema URL constant."
+    },
+    {
+      "subpath": "./services/system/copy",
+      "target": "./src/services/system/copy.ts",
+      "classification": "cli-internal",
+      "owner": "atomic-cli",
+      "notes": "Directory/file copy utilities with exclusions. Used for agent config copy."
+    },
+    {
+      "subpath": "./services/system/detect",
+      "target": "./src/services/system/detect.ts",
+      "classification": "cli-internal",
+      "owner": "atomic-cli",
+      "notes": "Command and platform detection utilities (supportsColor, supportsTrueColor, WSL detection)."
+    },
+    {
+      "subpath": "./workflows/builtin/ralph/claude",
+      "target": "./src/workflows/builtin/ralph/claude/index.ts",
+      "classification": "cli-internal",
+      "owner": "atomic-cli",
+      "notes": "Built-in ralph workflow for Claude agent. Loaded by atomic daemon registry."
+    },
+    {
+      "subpath": "./workflows/builtin/ralph/copilot",
+      "target": "./src/workflows/builtin/ralph/copilot/index.ts",
+      "classification": "cli-internal",
+      "owner": "atomic-cli",
+      "notes": "Built-in ralph workflow for Copilot agent. Loaded by atomic daemon registry."
+    },
+    {
+      "subpath": "./workflows/builtin/ralph/opencode",
+      "target": "./src/workflows/builtin/ralph/opencode/index.ts",
+      "classification": "cli-internal",
+      "owner": "atomic-cli",
+      "notes": "Built-in ralph workflow for OpenCode agent. Loaded by atomic daemon registry."
+    },
+    {
+      "subpath": "./workflows/builtin/deep-research-codebase/claude",
+      "target": "./src/workflows/builtin/deep-research-codebase/claude/index.ts",
+      "classification": "cli-internal",
+      "owner": "atomic-cli",
+      "notes": "Built-in deep-research-codebase workflow for Claude agent."
+    },
+    {
+      "subpath": "./workflows/builtin/deep-research-codebase/copilot",
+      "target": "./src/workflows/builtin/deep-research-codebase/copilot/index.ts",
+      "classification": "cli-internal",
+      "owner": "atomic-cli",
+      "notes": "Built-in deep-research-codebase workflow for Copilot agent."
+    },
+    {
+      "subpath": "./workflows/builtin/deep-research-codebase/opencode",
+      "target": "./src/workflows/builtin/deep-research-codebase/opencode/index.ts",
+      "classification": "cli-internal",
+      "owner": "atomic-cli",
+      "notes": "Built-in deep-research-codebase workflow for OpenCode agent."
+    },
+    {
+      "subpath": "./workflows/builtin/open-claude-design/claude",
+      "target": "./src/workflows/builtin/open-claude-design/claude/index.ts",
+      "classification": "cli-internal",
+      "owner": "atomic-cli",
+      "notes": "Built-in open-claude-design workflow for Claude agent."
+    },
+    {
+      "subpath": "./workflows/builtin/open-claude-design/copilot",
+      "target": "./src/workflows/builtin/open-claude-design/copilot/index.ts",
+      "classification": "cli-internal",
+      "owner": "atomic-cli",
+      "notes": "Built-in open-claude-design workflow for Copilot agent."
+    },
+    {
+      "subpath": "./workflows/builtin/open-claude-design/opencode",
+      "target": "./src/workflows/builtin/open-claude-design/opencode/index.ts",
+      "classification": "cli-internal",
+      "owner": "atomic-cli",
+      "notes": "Built-in open-claude-design workflow for OpenCode agent."
+    }
+  ]
+}
