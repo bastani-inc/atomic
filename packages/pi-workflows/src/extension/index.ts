@@ -29,6 +29,8 @@ import type { DiscoveryResult } from "./discovery.js";
 import { buildDoctorReport } from "./doctor.js";
 import type { DoctorSiblingStatus } from "./doctor.js";
 import { registerWorkflowCliFlags, runWorkflowFromCliFlags } from "../cli-flags.js";
+import { loadWorkflowConfig } from "./config-loader.js";
+import type { ConfigLoadResult } from "./config-loader.js";
 
 // ---------------------------------------------------------------------------
 // Minimal ExtensionAPI structural types
@@ -49,9 +51,7 @@ export interface PiRenderContext {
 }
 
 /** Options bag passed to renderResult. */
-export interface PiRenderResultOpts extends RenderResultOpts {
-  isPartial?: boolean;
-}
+export interface PiRenderResultOpts extends RenderResultOpts {}
 
 /** Tool call args wrapper passed to renderCall. */
 export interface PiToolCallArgs<T> {
@@ -289,6 +289,40 @@ function tryRegisterSlashCommand(pi: ExtensionAPI, opts: PiSlashCommandOpts): vo
   // Neither present — silently skip (degraded runtime).
 }
 
+/** Register a /workflow:<name> shortcut slash command for a single workflow. */
+function registerWorkflowAlias(
+  pi: ExtensionAPI,
+  workflowName: string,
+  runtimeProxy: ExtensionRuntime,
+): void {
+  tryRegisterSlashCommand(pi, {
+    name: `workflow:${workflowName}`,
+    description: `Run workflow: ${workflowName}`,
+    execute: async (args: string, ctx: PiCommandContext) => {
+      const print = ctx.reply ?? ctx.print ?? ((_msg: string) => undefined);
+      const rawParts = args.trim().split(/\s+/);
+      const tokens = rawParts[0] === "" ? [] : rawParts;
+      const inputs = parseWorkflowArgs(tokens);
+      const result = await runtimeProxy.dispatch({
+        name: workflowName,
+        inputs,
+        action: "run",
+      });
+      if (result.action === "run" && "runId" in result) {
+        const r = result as Extract<WorkflowToolResult, { action: "run"; runId: string }>;
+        if (r.status === "failed") {
+          print(`Workflow "${workflowName}" failed: ${r.error ?? "unknown error"}`);
+        } else {
+          print(`Workflow "${workflowName}" completed (runId: ${r.runId})`);
+        }
+      }
+    },
+    getArgumentCompletions: async (_partial: string): Promise<PiArgumentCompletion[]> => {
+      return [];
+    },
+  });
+}
+
 /**
  * Admin subcommands handled before workflow name resolution.
  * Any first token NOT in this set is treated as a workflow name.
@@ -352,6 +386,8 @@ function factory(pi: ExtensionAPI): void {
   };
   /** Stores the full unified DiscoveryResult once async discovery completes. */
   const discoveryRef: { result: DiscoveryResult | null } = { result: null };
+  /** Retains config load result for /workflows-doctor diagnostics. */
+  const configLoadRef: { result: ConfigLoadResult | null } = { result: null };
 
   /** Stable proxy — all registrations close over this; delegates to runtimeRef.current. */
   const runtimeProxy: ExtensionRuntime = {
@@ -370,44 +406,31 @@ function factory(pi: ExtensionAPI): void {
   // workflows beyond the bundled set (project-local, user-global, settings paths).
   const bundledNames = new Set(runtimeRef.current.registry.names());
 
-  const discoveryPromise = discoverWorkflows().then((result) => {
+  // Load startup config before discovery so workflow paths and tunables are applied.
+  const discoveryPromise = loadWorkflowConfig().then(async (configResult) => {
+    configLoadRef.result = configResult;
+
+    // Map config.workflows entries → DiscoveryConfig.projectWorkflows for
+    // settings-based discovery (merged config — project wins over global).
+    const workflowsMap = configResult.config?.workflows;
+    const discoveryConfig =
+      workflowsMap !== undefined && Object.keys(workflowsMap).length > 0
+        ? {
+            projectWorkflows: Object.fromEntries(
+              Object.entries(workflowsMap).map(([name, entry]) => [name, entry.path]),
+            ),
+          }
+        : undefined;
+
+    const result = await discoverWorkflows({ config: discoveryConfig });
     discoveryRef.result = result;
     runtimeRef.current = createExtensionRuntime({ registry: result.registry });
 
-    // -----------------------------------------------------------------------
-    // 2b (deferred). Register /workflow:<name> aliases for workflows discovered
-    //    beyond the initial bundled set (project-local, user-global, settings).
-    //    Bundled aliases are registered synchronously below.
-    // -----------------------------------------------------------------------
+    // Register /workflow:<name> aliases for workflows discovered beyond the
+    // initial bundled set (project-local, user-global, settings).
     for (const workflowName of result.registry.names()) {
-      if (bundledNames.has(workflowName)) continue; // already registered synchronously
-      tryRegisterSlashCommand(pi, {
-        name: `workflow:${workflowName}`,
-        description: `Run workflow: ${workflowName}`,
-        execute: async (args: string, ctx: PiCommandContext) => {
-          const print = ctx.reply ?? ctx.print ?? ((_msg: string) => undefined);
-          const rawParts = args.trim().split(/\s+/);
-          const tokens = rawParts[0] === "" ? [] : rawParts;
-          const inputs = parseWorkflowArgs(tokens);
-          const result = await runtimeProxy.dispatch({
-            name: workflowName,
-            inputs,
-            action: "run",
-          });
-          if (result.action === "run" && "runId" in result) {
-            const r = result as Extract<WorkflowToolResult, { action: "run"; runId: string }>;
-            if (r.status === "failed") {
-              print(`Workflow "${workflowName}" failed: ${r.error ?? "unknown error"}`);
-            } else {
-              print(`Workflow "${workflowName}" completed (runId: ${r.runId})`);
-            }
-          }
-        },
-        getArgumentCompletions: async (partial: string): Promise<PiArgumentCompletion[]> => {
-          void partial;
-          return [];
-        },
-      });
+      if (bundledNames.has(workflowName)) continue;
+      registerWorkflowAlias(pi, workflowName, runtimeProxy);
     }
   });
 
@@ -615,33 +638,7 @@ function factory(pi: ExtensionAPI): void {
   //     registered after async discovery resolves (see discoveryPromise above).
   // -------------------------------------------------------------------------
   for (const workflowName of runtimeRef.current.registry.names()) {
-    tryRegisterSlashCommand(pi, {
-      name: `workflow:${workflowName}`,
-      description: `Run workflow: ${workflowName}`,
-      execute: async (args: string, ctx: PiCommandContext) => {
-        const print = ctx.reply ?? ctx.print ?? ((_msg: string) => undefined);
-        const rawParts = args.trim().split(/\s+/);
-        const tokens = rawParts[0] === "" ? [] : rawParts;
-        const inputs = parseWorkflowArgs(tokens);
-        const result = await runtimeProxy.dispatch({
-          name: workflowName,
-          inputs,
-          action: "run",
-        });
-        if (result.action === "run" && "runId" in result) {
-          const r = result as Extract<WorkflowToolResult, { action: "run"; runId: string }>;
-          if (r.status === "failed") {
-            print(`Workflow "${workflowName}" failed: ${r.error ?? "unknown error"}`);
-          } else {
-            print(`Workflow "${workflowName}" completed (runId: ${r.runId})`);
-          }
-        }
-      },
-      getArgumentCompletions: async (partial: string): Promise<PiArgumentCompletion[]> => {
-        void partial;
-        return [];
-      },
-    });
+    registerWorkflowAlias(pi, workflowName, runtimeProxy);
   }
 
   // -------------------------------------------------------------------------
@@ -706,16 +703,23 @@ function factory(pi: ExtensionAPI): void {
   // -------------------------------------------------------------------------
   if (typeof pi.on === "function") {
     pi.on("session_start", async () => {
-      // Ensure unified registry is ready before dispatching CLI workflow flags.
+      // Ensure config+discovery are ready before restoring in-flight runs and
+      // dispatching CLI workflow flags — tunables must be resolved first.
       await discoveryPromise;
       void runWorkflowFromCliFlags({ runtime: runtimeProxy });
     });
 
-    pi.on("session_start", () => {
+    pi.on("session_start", async () => {
+      // Wait for config to load so we use configured tunables, not hardcoded defaults.
+      await discoveryPromise;
       if (pi.sessionManager) {
+        const cfg = configLoadRef.result?.config;
         restoreOnSessionStart(
           pi.sessionManager,
-          { resumeInFlight: "ask", persistRuns: true },
+          {
+            resumeInFlight: cfg?.resumeInFlight ?? "ask",
+            persistRuns: cfg?.persistRuns ?? true,
+          },
           store,
         );
       }
