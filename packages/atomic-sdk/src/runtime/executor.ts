@@ -1785,6 +1785,13 @@ async function cleanupProvider<A extends AgentType>(
         // `HeadlessClaudeSessionWrapper.disconnect` for the rationale —
         // without this, headless stages that end cleanly with
         // `stop_reason: end_turn` deadlock waiting for child exit.
+        //
+        // The cast narrows to `ProviderSession<"claude">` (the interactive
+        // wrapper type), but at runtime this is actually a
+        // `HeadlessClaudeSessionWrapper` (see the unknown-cast at the
+        // headless branch of `connectAgent`). The two wrappers share the
+        // `disconnect(): Promise<void>` shape, so the call is sound by
+        // structural duck-typing.
         const session = providerSession as ProviderSession<"claude">;
         try {
           await session.disconnect();

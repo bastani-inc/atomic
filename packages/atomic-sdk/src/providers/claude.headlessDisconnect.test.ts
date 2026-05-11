@@ -107,4 +107,35 @@ describe("HeadlessClaudeSessionWrapper.disconnect()", () => {
 
     expect(fake.returnCalls).toBe(1);
   });
+
+  test("resolves within the deadline even if Query.return() never resolves", async () => {
+    // Regression test for the cleanup-hang risk: if the SDK's
+    // transport.close() / child-exit waits wedge (e.g. uninterruptible
+    // sleep, stuck transcript flush), the wrapper must not block the
+    // stage cleanup forever. Exercise the helper directly with a tight
+    // 100ms deadline — disconnect()'s production value is ~10s, but the
+    // mechanism under test is identical.
+    const { awaitReturnWithDeadline } = await import("./claude.ts");
+    const neverResolving = {
+      return: () => new Promise<IteratorResult<unknown>>(() => {}),
+      next: async () =>
+        ({ value: undefined, done: true }) as IteratorResult<unknown>,
+      throw: async () =>
+        ({ value: undefined, done: true }) as IteratorResult<unknown>,
+      [Symbol.asyncIterator]() {
+        return this;
+      },
+    };
+
+    const start = Date.now();
+    await awaitReturnWithDeadline(
+      neverResolving as unknown as Parameters<typeof awaitReturnWithDeadline>[0],
+      100,
+    );
+    const elapsed = Date.now() - start;
+    // Should be ≈100ms; allow generous slack for slow CI hosts but stay
+    // well under "would have hung indefinitely" territory.
+    expect(elapsed).toBeGreaterThanOrEqual(90);
+    expect(elapsed).toBeLessThan(2_000);
+  });
 });

@@ -1336,6 +1336,47 @@ export function resolveHeadlessClaudeBin(): string {
 }
 
 /**
+ * Hard upper bound on how long the wrapper will block waiting for the
+ * Agent SDK's `Query.return()` to finish tearing down the spawned `claude`
+ * child. Chosen with ~3s headroom over the SDK's own escalation ladder
+ * (stdin close → SIGTERM at +2s → SIGKILL at +5s ≈ 7s worst case). The
+ * SDK's `cleanup()` also awaits an internal transcript flush before
+ * touching the transport, which can stall on slow disk — without this
+ * wrapper-level deadline, a wedged child or stuck I/O would pin the
+ * entire stage cleanup indefinitely.
+ */
+const DISCONNECT_RETURN_TIMEOUT_MS = 10_000;
+
+/**
+ * Race `active.return(undefined)` against {@link DISCONNECT_RETURN_TIMEOUT_MS}
+ * so a stuck child process can never block the cleanup path forever.
+ * Rejection from `return()` is allowed to propagate — callers wrap this in
+ * a try/catch and swallow per the "best-effort cleanup" contract.
+ *
+ * Exported for contract-testing only — production callers pass through
+ * {@link HeadlessClaudeSessionWrapper.disconnect} and the `query()` finally.
+ */
+export async function awaitReturnWithDeadline(
+  active: SDKQuery,
+  timeoutMs: number = DISCONNECT_RETURN_TIMEOUT_MS,
+): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      active.return(undefined).then(() => undefined),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, timeoutMs);
+        // Don't keep the event loop alive solely for the safety timer —
+        // if the process is otherwise idle, the timer should not block exit.
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
  * Headless session wrapper for Claude stages. Uses the Agent SDK's `query()`
  * directly instead of tmux pane operations. Implements the same `query()`
  * interface as {@link ClaudeSessionWrapper} so workflow callbacks work
@@ -1380,14 +1421,26 @@ export class HeadlessClaudeSessionWrapper {
    * In-flight Agent SDK generator from the current `query()` call. Held so
    * {@link disconnect} (or the per-stage cleanup path) can force the SDK
    * to tear down the spawned `claude` child process — calling `.return()`
-   * on the generator triggers `transport.close()`, which closes the
-   * child's stdin and SIGTERMs it after a 2s grace window.
+   * on the generator triggers `transport.close()`, which runs the SDK's
+   * shutdown ladder:
+   *
+   *   t=0     close child stdin
+   *   t≈2s    SIGTERM the child if still alive
+   *   t≈7s    SIGKILL the child if still alive (5s after SIGTERM)
    *
    * Without this, headless stages that end cleanly with `stop_reason:
    * end_turn` deadlock: the SDK's `stream-json` transport keeps the
    * child alive across turns, the for-await loop below never observes a
    * natural end-of-iterator, and `await session.query(...)` waits forever
    * on the child process exit that never happens.
+   *
+   * Contract: this wrapper is single-shot per instance — one in-flight
+   * `query()` call at a time. `_lastSessionId` and `_lastStructuredOutput`
+   * are written without synchronization, so concurrent `query()` invocations
+   * on the same wrapper would corrupt observed state. The
+   * `this._activeQuery === activeQuery` guard in the `query()` finally is
+   * defensive (e.g. against a `disconnect()` racing with a fresh `query()`)
+   * and is expected never to trigger in normal use.
    */
   private _activeQuery: SDKQuery | undefined;
 
@@ -1441,6 +1494,14 @@ export class HeadlessClaudeSessionWrapper {
             // `stream-json` transport keeps the child alive across turns,
             // so on `end_turn` the loop hangs even after the API turn has
             // cleanly completed.
+            //
+            // Safe to discard the iterator tail: `result` is terminal for
+            // single-turn queries (the `error_*` subtypes the SDK can emit
+            // — `error_max_turns`, `error_during_execution`,
+            // `error_max_structured_output_retries` — are themselves
+            // `result` subtypes, not post-result follow-ons). The
+            // transcript downstream consumers care about is read from
+            // disk via `getSessionMessages` below, not from this stream.
             break;
           }
         }
@@ -1449,17 +1510,18 @@ export class HeadlessClaudeSessionWrapper {
       const detail = err instanceof Error ? err.message : String(err);
       throw new Error(`Claude SDK query failed: ${detail}`);
     } finally {
-      // Drive the SDK's `Query.return()` path so it closes stdin and
-      // SIGTERMs the child (with a SIGKILL fallback after ~5s). Safe to
-      // call even when the iterator already ran to completion — the SDK
-      // dedupes via an internal `cleanupPerformed` guard.
+      // Drive the SDK's `Query.return()` path so it runs the shutdown
+      // ladder documented on `_activeQuery` (stdin close → SIGTERM at +2s
+      // → SIGKILL at +5s). Safe to call even when the iterator already
+      // ran to completion — the SDK dedupes via an internal
+      // `cleanupPerformed` guard.
       const toClose = activeQuery ?? this._activeQuery;
       if (this._activeQuery === activeQuery) {
         this._activeQuery = undefined;
       }
       if (toClose) {
         try {
-          await toClose.return(undefined);
+          await awaitReturnWithDeadline(toClose);
         } catch {
           // Best-effort — the SDK's cleanup path swallows transport errors
           // already, so anything that escapes here is unexpected and not
@@ -1494,7 +1556,7 @@ export class HeadlessClaudeSessionWrapper {
     this._activeQuery = undefined;
     if (active) {
       try {
-        await active.return(undefined);
+        await awaitReturnWithDeadline(active);
       } catch {
         // Best-effort — the SDK's cleanup is idempotent and already
         // swallows transport-level errors internally.
