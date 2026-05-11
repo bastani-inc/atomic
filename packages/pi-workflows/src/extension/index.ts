@@ -39,8 +39,9 @@ import type { DiscoveryResult } from "./discovery.js";
 import { buildDoctorReport } from "./doctor.js";
 import type { DoctorSiblingStatus } from "./doctor.js";
 import { registerWorkflowCliFlags, runWorkflowFromCliFlags } from "../cli-flags.js";
-import { loadWorkflowConfig, toDiscoveryConfig } from "./config-loader.js";
+import { loadWorkflowConfig, toDiscoveryConfig, WORKFLOW_CONFIG_DEFAULTS } from "./config-loader.js";
 import type { ConfigLoadResult } from "./config-loader.js";
+import type { WorkflowPersistencePort } from "../shared/types.js";
 import { buildRuntimeAdapters } from "./wiring.js";
 import { buildUIAdapter } from "./wiring.js";
 import type { PiUISurface, PiCustomOverlayOpts, PiCustomOverlayHandle } from "./wiring.js";
@@ -409,6 +410,36 @@ export function parseWorkflowArgs(tokens: string[]): Record<string, unknown> {
 }
 
 // ---------------------------------------------------------------------------
+// Persistence port builder
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a WorkflowPersistencePort from the pi ExtensionAPI when persistence
+ * is enabled. Returns undefined when:
+ *   - persistRuns is false, OR
+ *   - pi.appendEntry is absent (older pi runtime without persistence API).
+ */
+export function makePersistencePort(
+  pi: ExtensionAPI,
+  persistRuns: boolean,
+): WorkflowPersistencePort | undefined {
+  if (!persistRuns) return undefined;
+  if (typeof pi.appendEntry !== "function") return undefined;
+
+  const port: WorkflowPersistencePort = {
+    appendEntry: (type, payload) => pi.appendEntry!(type, payload),
+  };
+  if (typeof pi.setLabel === "function") {
+    port.setLabel = (entryId, label) => pi.setLabel!(entryId, label);
+  }
+  if (typeof pi.appendCustomMessageEntry === "function") {
+    port.appendCustomMessageEntry = (content, meta) =>
+      pi.appendCustomMessageEntry!(content, meta);
+  }
+  return port;
+}
+
+// ---------------------------------------------------------------------------
 // Factory — the default export consumed by the pi runtime
 // ---------------------------------------------------------------------------
 
@@ -435,7 +466,13 @@ function factory(pi: ExtensionAPI): void {
   //    needing to be re-registered.
   // -------------------------------------------------------------------------
   const runtimeRef: { current: ExtensionRuntime } = {
-    current: createExtensionRuntime({ registry: discoverBundledWorkflowsSync().registry, adapters, ui, cancellation: cancellationRegistry }),
+    current: createExtensionRuntime({
+      registry: discoverBundledWorkflowsSync().registry,
+      adapters,
+      ui,
+      cancellation: cancellationRegistry,
+      persistence: makePersistencePort(pi, WORKFLOW_CONFIG_DEFAULTS.persistRuns),
+    }),
   };
   const discoveryRef: { current: DiscoveryResult | null } = { current: null };
   const configLoadRef: { current: ConfigLoadResult | null } = { current: null };
@@ -468,7 +505,14 @@ function factory(pi: ExtensionAPI): void {
 
     const result = await discoverWorkflows({ config: discoveryConfig });
     discoveryRef.current = result;
-    runtimeRef.current = createExtensionRuntime({ registry: result.registry, adapters, ui, cancellation: cancellationRegistry });
+    const resolvedPersistRuns = configResult.config?.persistRuns ?? WORKFLOW_CONFIG_DEFAULTS.persistRuns;
+    runtimeRef.current = createExtensionRuntime({
+      registry: result.registry,
+      adapters,
+      ui,
+      cancellation: cancellationRegistry,
+      persistence: makePersistencePort(pi, resolvedPersistRuns),
+    });
 
     // Register /workflow:<name> aliases for workflows discovered beyond the
     // initial bundled set (project-local, user-global, settings).
