@@ -146,12 +146,16 @@ describe("resumeRun", () => {
     if (!result.ok) expect(result.reason).toBe("not_found");
   });
 
-  test("returns ok:false reason:not_ended for still-active run", () => {
+  test("returns ok:true with snapshot for still-active run", () => {
     const st = createStore();
-    st.recordRunStart(makeRun({ id: "r1" }));
+    st.recordRunStart(makeRun({ id: "r1", name: "my-wf" }));
     const result = resumeRun("r1", { store: st });
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toBe("not_ended");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.runId).toBe("r1");
+      expect(result.snapshot.name).toBe("my-wf");
+      expect(result.snapshot.status).toBe("running");
+    }
   });
 
   test("returns ok:true with snapshot for ended run", () => {

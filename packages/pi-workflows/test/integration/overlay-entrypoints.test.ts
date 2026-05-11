@@ -369,10 +369,10 @@ describe("/workflow resume — overlay integration", () => {
     expect(customCalls[0]!.opts.overlay).toBe(true);
   });
 
-  test("resume with still-active runId does NOT call overlay.open", async () => {
+  test("resume with still-active runId calls overlay.open", async () => {
     const runId = `test-active-run-${Date.now()}`;
 
-    // Seed singleton store with an in-flight run (no endedAt) — resumeRun returns not_ended
+    // Seed singleton store with an in-flight run (no endedAt) — resumeRun now returns ok:true
     singletonStore.recordRunStart({
       id: runId,
       name: "active-wf",
@@ -391,7 +391,9 @@ describe("/workflow resume — overlay integration", () => {
 
     await wfCmd.execute(`resume ${runId}`, ctx);
 
-    expect(customCalls).toHaveLength(0);
+    // resumeRun now returns ok:true for active runs — overlay.open should be called
+    expect(customCalls).toHaveLength(1);
+    expect(customCalls[0]!.opts.overlay).toBe(true);
   });
 });
 
