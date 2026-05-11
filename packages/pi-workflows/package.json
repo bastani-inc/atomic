@@ -1,0 +1,56 @@
+{
+  "name": "pi-workflows",
+  "version": "0.1.0",
+  "description": "Pi extension providing multi-stage workflow authoring and execution.",
+  "keywords": ["pi-package", "pi-extension", "workflow", "orchestration", "coding-agent"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/alilavaee/atomic-pi-rewrite"
+  },
+  "homepage": "https://github.com/alilavaee/atomic-pi-rewrite#readme",
+  "files": ["dist", "workflows", "README.md", "LICENSE"],
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "pi": {
+    "extensions": ["./dist/extension/index.js"],
+    "workflows": ["./workflows"]
+  },
+  "scripts": {
+    "build": "bun run scripts/build.ts",
+    "lint": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "peerDependencies": {
+    "pi-subagents": "*",
+    "pi-mcp-adapter": "*",
+    "pi-intercom": "*"
+  },
+  "peerDependenciesMeta": {
+    "pi-subagents": {
+      "optional": true
+    },
+    "pi-mcp-adapter": {
+      "optional": true
+    },
+    "pi-intercom": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "jiti": "^2.0.0",
+    "@sinclair/typebox": "^0.34.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.13",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  }
+}
