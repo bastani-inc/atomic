@@ -17,3 +17,7 @@ export { GraphFrontierTracker } from "./runs/shared/graph-inference.js";
 export type { StageNode } from "./runs/shared/graph-inference.js";
 export { createStore, store } from "./store.js";
 export type { RunStatus, StageStatus, ToolEvent, StageSnapshot, RunSnapshot, StoreSnapshot } from "./store-types.js";
+
+// Phase D — cancellation registry
+export { createCancellationRegistry, cancellationRegistry } from "./runs/detach/cancellation-registry.js";
+export type { CancellationRegistry, ActiveRunEntry } from "./runs/detach/cancellation-registry.js";
