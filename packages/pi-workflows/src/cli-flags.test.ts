@@ -12,6 +12,7 @@ import {
 import type { WorkflowFlagValues } from "./cli-flags.js";
 import type { ExtensionAPI } from "./extension/index.js";
 import type { ExtensionRuntime } from "./extension/runtime.js";
+import type { WorkflowToolArgs } from "./extension/index.js";
 import type { WorkflowToolResult } from "./extension/render-result.js";
 
 // ---------------------------------------------------------------------------
@@ -95,6 +96,32 @@ describe("parseWorkflowFlags", () => {
     ]);
     expect(r?.workflow).toBe("deploy");
     expect(r?.inputs).toEqual({ region: "us-east-1" });
+  });
+
+  // Task-spec named inputs
+  test("--workflow-input-prompt=hello → string", () => {
+    const r = parseWorkflowFlags(["--workflow=flow", "--workflow-input-prompt=hello"]);
+    expect(r?.inputs.prompt).toBe("hello");
+  });
+
+  test("--workflow-input-max=3 → number", () => {
+    const r = parseWorkflowFlags(["--workflow=flow", "--workflow-input-max=3"]);
+    expect(r?.inputs.max).toBe(3);
+  });
+
+  test("--workflow-input-dryRun=true → boolean (camelCase key preserved)", () => {
+    const r = parseWorkflowFlags(["--workflow=flow", "--workflow-input-dryRun=true"]);
+    expect(r?.inputs.dryRun).toBe(true);
+  });
+
+  test('--workflow-input-options={"a":1} → parsed object', () => {
+    const r = parseWorkflowFlags(["--workflow=flow", '--workflow-input-options={"a":1}']);
+    expect(r?.inputs.options).toEqual({ a: 1 });
+  });
+
+  test("--workflow-input-prompt <value> space-separated", () => {
+    const r = parseWorkflowFlags(["--workflow=flow", "--workflow-input-prompt", "hello"]);
+    expect(r?.inputs.prompt).toBe("hello");
   });
 });
 
@@ -226,5 +253,30 @@ describe("runWorkflowFromCliFlags", () => {
     const result = await runWorkflowFromCliFlags({ runtime });
     // We only verify it doesn't throw and returns a result
     expect(typeof result.handled).toBe("boolean");
+  });
+
+  test("dispatch payload contains action:run, name, and inputs", async () => {
+    let captured: WorkflowToolArgs | null = null;
+    const runtime: ExtensionRuntime = {
+      get registry() {
+        return { names: () => [], get: () => undefined } as unknown as ExtensionRuntime["registry"];
+      },
+      dispatch: async (args) => {
+        captured = args;
+        return { action: "run", name: args.name!, runId: "r1", status: "completed", stages: [] };
+      },
+    };
+    await runWorkflowFromCliFlags({
+      runtime,
+      argv: ["--workflow=release", "--workflow-input-prompt=hello", "--workflow-input-max=3"],
+    });
+    expect(captured).not.toBeNull();
+    const c = captured!;
+    expect(c.action).toBe("run");
+    expect(c.name).toBe("release");
+    expect((c as WorkflowToolArgs & { inputs: Record<string, unknown> }).inputs).toEqual({
+      prompt: "hello",
+      max: 3,
+    });
   });
 });
