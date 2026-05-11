@@ -11,12 +11,11 @@ import type {
   StageOptions,
   WorkflowMcpPort,
   WorkflowPersistencePort,
-  WorkflowOverlayAdapter,
-  CancellationRegistry,
 } from "../../shared/types.js";
 import type { StageAdapters } from "./stage-runner.js";
-import type { RunStatus, StageSnapshot, RunSnapshot } from "../../store-types.js";
+import type { RunStatus, StageSnapshot, RunSnapshot, WorkflowOverlayAdapter } from "../../store-types.js";
 import type { Store } from "../../store.js";
+import type { CancellationRegistry } from "../detach/cancellation-registry.js";
 import { createStageContext } from "./stage-runner.js";
 import { GraphFrontierTracker } from "../shared/graph-inference.js";
 import { store as defaultStore } from "../../store.js";

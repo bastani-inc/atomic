@@ -54,9 +54,20 @@ export interface WorkflowNotice {
   readonly runId?: string;
   readonly stageId?: string;
   readonly level: NoticeLevel;
-  readonly message: string;
+  message: string;
   readonly createdAt: number;
   readonly requiresAck?: boolean;
   /** Set once acknowledged. */
   ackedAt?: number;
+}
+
+/**
+ * Adapter for displaying run progress / status in a UI layer.
+ * Implemented by the TUI widget or a test spy; injected via RunOpts.overlay.
+ */
+export interface WorkflowOverlayAdapter {
+  /** Show or update the overlay with the given notice. */
+  show(notice: WorkflowNotice): void;
+  /** Hide the overlay (called when the run completes or is cancelled). */
+  hide(): void;
 }

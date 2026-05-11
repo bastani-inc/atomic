@@ -72,6 +72,56 @@ export interface WorkflowUIContext {
 export type WorkflowUIAdapter = WorkflowUIContext;
 
 // ---------------------------------------------------------------------------
+// StageOptions — per-stage configuration
+// ---------------------------------------------------------------------------
+
+/**
+ * MCP server gating options for a single stage.
+ * When provided, the executor forwards these to the WorkflowMcpPort
+ * before the stage starts and clears them after it settles.
+ */
+export interface StageMcpOptions {
+  /** Allow only these server IDs during this stage (all others implicitly denied). */
+  allow?: string[];
+  /** Deny these server IDs during this stage (applied after allow when both set). */
+  deny?: string[];
+}
+
+/**
+ * Options accepted by WorkflowRunContext.stage(name, options?).
+ * Extends backward-compatibly — omitting options keeps existing behaviour.
+ */
+export interface StageOptions {
+  /** Per-stage MCP server gating. No-op when no WorkflowMcpPort is configured. */
+  mcp?: StageMcpOptions;
+}
+
+// ---------------------------------------------------------------------------
+// Runtime ports — abstract adapters used by the executor
+// ---------------------------------------------------------------------------
+
+/**
+ * Abstract MCP scope-gating port.
+ * Implemented by the pi runtime or a test stub; no hard dep on integrations/mcp.
+ */
+export interface WorkflowMcpPort {
+  /** Restrict MCP server access for the given stage. Null = unrestricted. */
+  setScope(stageId: string, allow: string[] | null, deny: string[] | null): void;
+  /** Restore unrestricted MCP access after the stage settles. */
+  clearScope(stageId: string): void;
+}
+
+/**
+ * Abstract persistence port.
+ * Mirrors PersistenceAPI from persistence/session-entries — no hard import.
+ */
+export interface WorkflowPersistencePort {
+  appendEntry(type: string, payload: Record<string, unknown>): string | undefined;
+  setLabel?(entryId: string, label: string): void;
+  appendCustomMessageEntry?(content: string, meta?: Record<string, unknown>): string | undefined;
+}
+
+// ---------------------------------------------------------------------------
 // Stage context (provided to ctx.stage() calls)
 // ---------------------------------------------------------------------------
 
@@ -123,8 +173,12 @@ export interface WorkflowRunContext<TInputs extends Record<string, unknown> = Re
   /**
    * Create and register a named stage.  Stages can be sequenced (await) or
    * parallelised (Promise.all); the executor infers the DAG automatically.
+   *
+   * @param name   Human-readable stage name (used in TUI + persistence).
+   * @param options Optional per-stage configuration (mcp allow/deny, etc.).
+   *               Omitting options preserves backward-compatible behaviour.
    */
-  stage(name: string): StageContext;
+  stage(name: string, options?: StageOptions): StageContext;
   /** HIL primitives for user interaction during a run. */
   readonly ui: WorkflowUIContext;
 }

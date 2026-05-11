@@ -15,7 +15,7 @@ export type { PromptAdapter, CompleteAdapter, SubagentAdapter, StageAdapters } f
 export { GraphFrontierTracker } from "./runs/shared/graph-inference.js";
 export type { StageNode } from "./runs/shared/graph-inference.js";
 export { createStore, store } from "./store.js";
-export type { RunStatus, StageStatus, ToolEvent, StageSnapshot, RunSnapshot, StoreSnapshot, WorkflowNotice, NoticeLevel } from "./store-types.js";
+export type { RunStatus, StageStatus, ToolEvent, StageSnapshot, RunSnapshot, StoreSnapshot, WorkflowNotice, NoticeLevel, WorkflowOverlayAdapter } from "./store-types.js";
 
 // Phase D — cancellation registry
 export { createCancellationRegistry, cancellationRegistry } from "./runs/detach/cancellation-registry.js";
