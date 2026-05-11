@@ -2,7 +2,7 @@
  * Main DAG executor: run(def, inputs, opts) → RunResult
  */
 
-import type { WorkflowDefinition, WorkflowRunContext, WorkflowUIContext } from "../../shared/types.js";
+import type { WorkflowDefinition, WorkflowRunContext, WorkflowUIContext, WorkflowUIAdapter } from "../../shared/types.js";
 import type { StageAdapters } from "./stage-runner.js";
 import type { RunStatus, StageSnapshot, RunSnapshot } from "../../store-types.js";
 import type { Store } from "../../store.js";
@@ -14,6 +14,8 @@ export interface ResolvedInputs extends Record<string, unknown> {}
 
 export interface RunOpts {
   adapters?: StageAdapters;
+  /** HIL adapter injected by the pi runtime or test harness. */
+  ui?: WorkflowUIAdapter;
   onRunStart?: (snapshot: RunSnapshot) => void;
   onStageStart?: (runId: string, snapshot: StageSnapshot) => void;
   onStageEnd?: (runId: string, snapshot: StageSnapshot) => void;
@@ -60,17 +62,17 @@ export function resolveInputs(
 }
 
 // ---------------------------------------------------------------------------
-// HIL stub — throws a clear error in the sync executor
+// HIL unavailable fallback — rejects with precise per-primitive error
 // ---------------------------------------------------------------------------
 
-function makeUIContext(): WorkflowUIContext {
-  const msg =
-    "pi-workflows: HIL (ctx.ui.*) not available in sync executor — wire pi dialog adapters";
+function makeUnavailableUIContext(): WorkflowUIContext {
+  const msg = (primitive: string): string =>
+    `pi-workflows: HIL ctx.ui.${primitive} is unavailable because pi runtime did not provide a UI adapter`;
   return {
-    input: () => Promise.reject(new Error(msg)),
-    confirm: () => Promise.reject(new Error(msg)),
-    select: () => Promise.reject(new Error(msg)),
-    editor: () => Promise.reject(new Error(msg)),
+    input: () => Promise.reject(new Error(msg("input"))),
+    confirm: () => Promise.reject(new Error(msg("confirm"))),
+    select: () => Promise.reject(new Error(msg("select"))),
+    editor: () => Promise.reject(new Error(msg("editor"))),
   };
 }
 
@@ -111,7 +113,7 @@ export async function run(
   // 5. Build WorkflowRunContext
   const ctx: WorkflowRunContext = {
     inputs: resolvedInputs,
-    ui: makeUIContext(),
+    ui: opts.ui ?? makeUnavailableUIContext(),
 
     stage(name: string) {
       // a. Generate stageId

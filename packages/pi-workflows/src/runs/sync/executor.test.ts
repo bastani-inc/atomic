@@ -286,3 +286,177 @@ describe("executor.run", () => {
     expect(s3?.parentIds).toHaveLength(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// HIL adapter injection
+// ---------------------------------------------------------------------------
+
+describe("executor.run — HIL adapter injection", () => {
+  test("ctx.ui.input delegates to injected adapter", async () => {
+    let capturedPrompt: string | undefined;
+    const uiAdapter = {
+      input: async (prompt: string) => { capturedPrompt = prompt; return "user-input"; },
+      confirm: async (_message: string) => false,
+      select: async <T extends string>(_message: string, options: readonly T[]) => options[0] as T,
+      editor: async (_initial?: string) => "",
+    };
+
+    const def = defineWorkflow("hil-input-wf")
+      .run(async (ctx) => {
+        const value = await ctx.ui.input("What is your name?");
+        return { value };
+      })
+      .compile();
+
+    const wfResult = await run(def, {}, { ui: uiAdapter, store: createStore() });
+
+    expect(wfResult.status).toBe("completed");
+    expect(wfResult.result?.["value"]).toBe("user-input");
+    expect(capturedPrompt).toBe("What is your name?");
+  });
+
+  test("ctx.ui.confirm delegates to injected adapter", async () => {
+    const uiAdapter = {
+      input: async (_prompt: string) => "",
+      confirm: async (_message: string) => true,
+      select: async <T extends string>(_message: string, options: readonly T[]) => options[0] as T,
+      editor: async (_initial?: string) => "",
+    };
+
+    const def = defineWorkflow("hil-confirm-wf")
+      .run(async (ctx) => {
+        const ok = await ctx.ui.confirm("Continue?");
+        return { ok };
+      })
+      .compile();
+
+    const wfResult = await run(def, {}, { ui: uiAdapter, store: createStore() });
+
+    expect(wfResult.status).toBe("completed");
+    expect(wfResult.result?.["ok"]).toBe(true);
+  });
+
+  test("ctx.ui.select delegates to injected adapter", async () => {
+    const uiAdapter = {
+      input: async (_prompt: string) => "",
+      confirm: async (_message: string) => false,
+      select: async <T extends string>(_message: string, options: readonly T[]) => options[1] as T,
+      editor: async (_initial?: string) => "",
+    };
+
+    const def = defineWorkflow("hil-select-wf")
+      .run(async (ctx) => {
+        const choice = await ctx.ui.select("Pick one", ["a", "b", "c"] as const);
+        return { choice };
+      })
+      .compile();
+
+    const wfResult = await run(def, {}, { ui: uiAdapter, store: createStore() });
+
+    expect(wfResult.status).toBe("completed");
+    expect(wfResult.result?.["choice"]).toBe("b");
+  });
+
+  test("ctx.ui.editor delegates to injected adapter", async () => {
+    const uiAdapter = {
+      input: async (_prompt: string) => "",
+      confirm: async (_message: string) => false,
+      select: async <T extends string>(_message: string, options: readonly T[]) => options[0] as T,
+      editor: async (initial?: string) => `edited: ${initial ?? ""}`,
+    };
+
+    const def = defineWorkflow("hil-editor-wf")
+      .run(async (ctx) => {
+        const content = await ctx.ui.editor("draft");
+        return { content };
+      })
+      .compile();
+
+    const wfResult = await run(def, {}, { ui: uiAdapter, store: createStore() });
+
+    expect(wfResult.status).toBe("completed");
+    expect(wfResult.result?.["content"]).toBe("edited: draft");
+  });
+
+  test("fallback rejects ctx.ui.input with precise missing-adapter error", async () => {
+    const def = defineWorkflow("fallback-input-wf")
+      .run(async (ctx) => {
+        await ctx.ui.input("hello");
+        return {};
+      })
+      .compile();
+
+    const wfResult = await run(def, {}, { store: createStore() });
+
+    expect(wfResult.status).toBe("failed");
+    expect(wfResult.error).toBe(
+      "pi-workflows: HIL ctx.ui.input is unavailable because pi runtime did not provide a UI adapter",
+    );
+  });
+
+  test("fallback rejects ctx.ui.confirm with precise missing-adapter error", async () => {
+    const def = defineWorkflow("fallback-confirm-wf")
+      .run(async (ctx) => {
+        await ctx.ui.confirm("sure?");
+        return {};
+      })
+      .compile();
+
+    const wfResult = await run(def, {}, { store: createStore() });
+
+    expect(wfResult.status).toBe("failed");
+    expect(wfResult.error).toBe(
+      "pi-workflows: HIL ctx.ui.confirm is unavailable because pi runtime did not provide a UI adapter",
+    );
+  });
+
+  test("fallback rejects ctx.ui.select with precise missing-adapter error", async () => {
+    const def = defineWorkflow("fallback-select-wf")
+      .run(async (ctx) => {
+        await ctx.ui.select("pick", ["x"] as const);
+        return {};
+      })
+      .compile();
+
+    const wfResult = await run(def, {}, { store: createStore() });
+
+    expect(wfResult.status).toBe("failed");
+    expect(wfResult.error).toBe(
+      "pi-workflows: HIL ctx.ui.select is unavailable because pi runtime did not provide a UI adapter",
+    );
+  });
+
+  test("fallback rejects ctx.ui.editor with precise missing-adapter error", async () => {
+    const def = defineWorkflow("fallback-editor-wf")
+      .run(async (ctx) => {
+        await ctx.ui.editor();
+        return {};
+      })
+      .compile();
+
+    const wfResult = await run(def, {}, { store: createStore() });
+
+    expect(wfResult.status).toBe("failed");
+    expect(wfResult.error).toBe(
+      "pi-workflows: HIL ctx.ui.editor is unavailable because pi runtime did not provide a UI adapter",
+    );
+  });
+
+  test("no HIL: existing run behavior unchanged when no HIL used", async () => {
+    const def = defineWorkflow("no-hil-wf")
+      .run(async (ctx) => {
+        const r = await ctx.stage("s").prompt("go");
+        return { r };
+      })
+      .compile();
+
+    const wfResult = await run(def, {}, {
+      adapters: { prompt: { prompt: async () => "ok" } },
+      store: createStore(),
+    });
+
+    expect(wfResult.status).toBe("completed");
+    expect(wfResult.result?.["r"]).toBe("ok");
+  });
+});
+
