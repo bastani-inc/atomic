@@ -1,13 +1,348 @@
 /**
  * Tests for buildUIAdapter — maps pi ctx.ui dialog surface to WorkflowUIAdapter.
+ * Tests for buildRuntimeAdapters — prompt/complete/subagent wiring, signal propagation.
  *
  * cross-ref: packages/pi-workflows/src/extension/wiring.ts buildUIAdapter
+ *            packages/pi-workflows/src/extension/wiring.ts buildRuntimeAdapters
  *            packages/pi-workflows/src/shared/types.ts WorkflowUIAdapter
  */
 
 import { test, expect, describe } from "bun:test";
-import { buildUIAdapter } from "./wiring.js";
-import type { PiUISurface, UIWiringSurface } from "./wiring.js";
+import { buildUIAdapter, buildRuntimeAdapters, extractAssistantText } from "./wiring.js";
+import type { PiUISurface, UIWiringSurface, PiExecResult, PiExecOpts, RuntimeWiringSurface } from "./wiring.js";
+import type { StageExecutionMeta } from "../shared/types.js";
+
+// ---------------------------------------------------------------------------
+// Helpers — NDJSON builder
+// ---------------------------------------------------------------------------
+
+function makeNdjson(text: string): string {
+  return JSON.stringify({
+    type: "message_end",
+    message: { role: "assistant", content: [{ type: "text", text }] },
+  });
+}
+
+function okExecResult(text: string): PiExecResult {
+  return { stdout: makeNdjson(text), stderr: "", code: 0, killed: false };
+}
+
+function makeSignal(): AbortSignal {
+  return new AbortController().signal;
+}
+
+// ---------------------------------------------------------------------------
+// buildRuntimeAdapters — prompt adapter exec invocation
+// ---------------------------------------------------------------------------
+
+describe("buildRuntimeAdapters — prompt adapter", () => {
+  test("calls exec('pi', args, { signal }) — first arg is 'pi'", async () => {
+    const calls: Array<{ cmd: string; args: string[]; opts?: PiExecOpts }> = [];
+    const pi: RuntimeWiringSurface = {
+      exec: async (cmd, args, opts) => { calls.push({ cmd, args, opts }); return okExecResult("hello"); },
+    };
+    const adapters = buildRuntimeAdapters(pi);
+    const signal = makeSignal();
+    const meta: StageExecutionMeta = { runId: "r1", stageId: "s1", stageName: "S", signal };
+    await adapters.prompt!.prompt("the text", meta);
+    expect(calls[0]?.cmd).toBe("pi");
+  });
+
+  test("calls exec with --mode json and -p flags", async () => {
+    const calls: Array<{ args: string[] }> = [];
+    const pi: RuntimeWiringSurface = {
+      exec: async (_cmd, args) => { calls.push({ args }); return okExecResult("reply"); },
+    };
+    const adapters = buildRuntimeAdapters(pi);
+    await adapters.prompt!.prompt("my prompt", { runId: "r", stageId: "s", stageName: "N" });
+    expect(calls[0]?.args).toContain("--mode");
+    expect(calls[0]?.args).toContain("json");
+    expect(calls[0]?.args).toContain("-p");
+    expect(calls[0]?.args).toContain("my prompt");
+    expect(calls[0]?.args).toContain("--no-session");
+  });
+
+  test("passes { signal } in exec opts when meta.signal present", async () => {
+    const calls: Array<{ opts?: PiExecOpts }> = [];
+    const signal = makeSignal();
+    const pi: RuntimeWiringSurface = {
+      exec: async (_cmd, _args, opts) => { calls.push({ opts }); return okExecResult("ok"); },
+    };
+    const adapters = buildRuntimeAdapters(pi);
+    const meta: StageExecutionMeta = { runId: "r", stageId: "s", stageName: "N", signal };
+    await adapters.prompt!.prompt("text", meta);
+    expect(calls[0]?.opts?.signal).toBe(signal);
+  });
+
+  test("passes empty opts (no signal key) when meta.signal absent", async () => {
+    const calls: Array<{ opts?: PiExecOpts }> = [];
+    const pi: RuntimeWiringSurface = {
+      exec: async (_cmd, _args, opts) => { calls.push({ opts }); return okExecResult("ok"); },
+    };
+    const adapters = buildRuntimeAdapters(pi);
+    const meta: StageExecutionMeta = { runId: "r", stageId: "s", stageName: "N" };
+    await adapters.prompt!.prompt("text", meta);
+    expect(calls[0]?.opts?.signal).toBeUndefined();
+  });
+
+  test("prompt adapter absent when pi.exec absent", () => {
+    const adapters = buildRuntimeAdapters({});
+    expect(adapters.prompt).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildRuntimeAdapters — complete adapter exec invocation
+// ---------------------------------------------------------------------------
+
+describe("buildRuntimeAdapters — complete adapter", () => {
+  test("calls exec('pi', args, { signal }) — first arg is 'pi'", async () => {
+    const calls: Array<{ cmd: string }> = [];
+    const pi: RuntimeWiringSurface = {
+      exec: async (cmd) => { calls.push({ cmd }); return okExecResult("done"); },
+    };
+    const adapters = buildRuntimeAdapters(pi);
+    const signal = makeSignal();
+    const meta: StageExecutionMeta = { runId: "r", stageId: "s", stageName: "N", signal };
+    await adapters.complete!.complete("text", undefined, meta);
+    expect(calls[0]?.cmd).toBe("pi");
+  });
+
+  test("passes signal through exec opts for complete", async () => {
+    const calls: Array<{ opts?: PiExecOpts }> = [];
+    const signal = makeSignal();
+    const pi: RuntimeWiringSurface = {
+      exec: async (_cmd, _args, opts) => { calls.push({ opts }); return okExecResult("done"); },
+    };
+    const adapters = buildRuntimeAdapters(pi);
+    const meta: StageExecutionMeta = { runId: "r", stageId: "s", stageName: "N", signal };
+    await adapters.complete!.complete("text", undefined, meta);
+    expect(calls[0]?.opts?.signal).toBe(signal);
+  });
+
+  test("appends --model flag when CompleteStageOpts.model provided", async () => {
+    const calls: Array<{ args: string[] }> = [];
+    const pi: RuntimeWiringSurface = {
+      exec: async (_cmd, args) => { calls.push({ args }); return okExecResult("ok"); },
+    };
+    const adapters = buildRuntimeAdapters(pi);
+    await adapters.complete!.complete("text", { model: "gpt-4o" });
+    expect(calls[0]?.args).toContain("--model");
+    expect(calls[0]?.args).toContain("gpt-4o");
+  });
+
+  test("does not append --model when CompleteStageOpts.model absent", async () => {
+    const calls: Array<{ args: string[] }> = [];
+    const pi: RuntimeWiringSurface = {
+      exec: async (_cmd, args) => { calls.push({ args }); return okExecResult("ok"); },
+    };
+    const adapters = buildRuntimeAdapters(pi);
+    await adapters.complete!.complete("text", {});
+    expect(calls[0]?.args).not.toContain("--model");
+  });
+
+  test("does not append --model when no opts passed", async () => {
+    const calls: Array<{ args: string[] }> = [];
+    const pi: RuntimeWiringSurface = {
+      exec: async (_cmd, args) => { calls.push({ args }); return okExecResult("ok"); },
+    };
+    const adapters = buildRuntimeAdapters(pi);
+    await adapters.complete!.complete("text");
+    expect(calls[0]?.args).not.toContain("--model");
+  });
+
+  test("complete adapter absent when pi.exec absent", () => {
+    const adapters = buildRuntimeAdapters({});
+    expect(adapters.complete).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildRuntimeAdapters — subagent adapter: pi.subagents.run path
+// ---------------------------------------------------------------------------
+
+describe("buildRuntimeAdapters — subagent adapter via pi.subagents.run", () => {
+  test("subagent adapter present when pi.subagents.run exists and pi.exec absent", () => {
+    const pi: RuntimeWiringSurface = {
+      subagents: { run: async () => "ok" },
+    };
+    const adapters = buildRuntimeAdapters(pi);
+    expect(adapters.subagent).toBeDefined();
+  });
+
+  test("subagent adapter present when pi.subagents.run exists alongside pi.exec", () => {
+    const pi: RuntimeWiringSurface = {
+      exec: async () => okExecResult("hi"),
+      subagents: { run: async () => "ok" },
+    };
+    const adapters = buildRuntimeAdapters(pi);
+    expect(adapters.subagent).toBeDefined();
+  });
+
+  test("delegates to pi.subagents.run with agent and task", async () => {
+    const calls: Array<{ agent: string; task: string }> = [];
+    const pi: RuntimeWiringSurface = {
+      subagents: {
+        run: async (opts: { agent: string; task: string }) => {
+          calls.push({ agent: opts.agent, task: opts.task });
+          return "result";
+        },
+      },
+    };
+    const adapters = buildRuntimeAdapters(pi);
+    await adapters.subagent!.subagent({ agent: "coder", task: "fix it" });
+    expect(calls[0]?.agent).toBe("coder");
+    expect(calls[0]?.task).toBe("fix it");
+  });
+
+  test("passes signal from meta to pi.subagents.run", async () => {
+    const signal = makeSignal();
+    const calls: Array<{ signal?: AbortSignal }> = [];
+    const pi: RuntimeWiringSurface = {
+      subagents: {
+        run: async (opts: { signal?: AbortSignal }) => {
+          calls.push({ signal: opts.signal });
+          return "ok";
+        },
+      },
+    };
+    const adapters = buildRuntimeAdapters(pi);
+    const meta: StageExecutionMeta = { runId: "r", stageId: "s", stageName: "N", signal };
+    await adapters.subagent!.subagent({ agent: "a", task: "t" }, meta);
+    expect(calls[0]?.signal).toBe(signal);
+  });
+
+  test("injects runId into env passed to pi.subagents.run", async () => {
+    const calls: Array<{ env?: Record<string, string> }> = [];
+    const pi: RuntimeWiringSurface = {
+      subagents: {
+        run: async (opts: { env?: Record<string, string> }) => {
+          calls.push({ env: opts.env });
+          return "ok";
+        },
+      },
+    };
+    const adapters = buildRuntimeAdapters(pi);
+    const meta: StageExecutionMeta = { runId: "run-999", stageId: "s", stageName: "N" };
+    await adapters.subagent!.subagent({ agent: "a", task: "t" }, meta);
+    expect(calls[0]?.env?.["PI_WORKFLOW_RUN_ID"]).toBe("run-999");
+  });
+
+  test("injects stageId into env passed to pi.subagents.run", async () => {
+    const calls: Array<{ env?: Record<string, string> }> = [];
+    const pi: RuntimeWiringSurface = {
+      subagents: {
+        run: async (opts: { env?: Record<string, string> }) => {
+          calls.push({ env: opts.env });
+          return "ok";
+        },
+      },
+    };
+    const adapters = buildRuntimeAdapters(pi);
+    const meta: StageExecutionMeta = { runId: "r", stageId: "stage-42", stageName: "N" };
+    await adapters.subagent!.subagent({ agent: "a", task: "t" }, meta);
+    expect(calls[0]?.env?.["PI_WORKFLOW_STAGE_ID"]).toBe("stage-42");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildRuntimeAdapters — subagent adapter: pi.callTool fallback
+// ---------------------------------------------------------------------------
+
+describe("buildRuntimeAdapters — subagent adapter via pi.callTool", () => {
+  test("subagent adapter present when pi.callTool exists and pi.exec absent", () => {
+    const pi: RuntimeWiringSurface = {
+      callTool: async () => "ok",
+    };
+    const adapters = buildRuntimeAdapters(pi);
+    expect(adapters.subagent).toBeDefined();
+  });
+
+  test("subagent adapter present when pi.callTool exists alongside pi.exec", () => {
+    const pi: RuntimeWiringSurface = {
+      exec: async () => okExecResult("hi"),
+      callTool: async () => "ok",
+    };
+    const adapters = buildRuntimeAdapters(pi);
+    expect(adapters.subagent).toBeDefined();
+  });
+
+  test("delegates to pi.callTool('subagent', args) when pi.subagents absent", async () => {
+    const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+    const pi: RuntimeWiringSurface = {
+      callTool: async (name, args) => { calls.push({ name, args }); return "done"; },
+    };
+    const adapters = buildRuntimeAdapters(pi);
+    await adapters.subagent!.subagent({ agent: "reviewer", task: "review" });
+    expect(calls[0]?.name).toBe("subagent");
+    expect(calls[0]?.args["agent"]).toBe("reviewer");
+    expect(calls[0]?.args["task"]).toBe("review");
+  });
+
+  test("includes context in callTool args when provided", async () => {
+    const calls: Array<{ args: Record<string, unknown> }> = [];
+    const pi: RuntimeWiringSurface = {
+      callTool: async (_name, args) => { calls.push({ args }); return "ok"; },
+    };
+    const adapters = buildRuntimeAdapters(pi);
+    await adapters.subagent!.subagent({ agent: "a", task: "t", context: "ctx text" });
+    expect(calls[0]?.args["context"]).toBe("ctx text");
+  });
+
+  test("omits context key in callTool args when not provided", async () => {
+    const calls: Array<{ args: Record<string, unknown> }> = [];
+    const pi: RuntimeWiringSurface = {
+      callTool: async (_name, args) => { calls.push({ args }); return "ok"; },
+    };
+    const adapters = buildRuntimeAdapters(pi);
+    await adapters.subagent!.subagent({ agent: "a", task: "t" });
+    expect(Object.prototype.hasOwnProperty.call(calls[0]?.args, "context")).toBe(false);
+  });
+
+  test("passes runId env to callTool args", async () => {
+    const calls: Array<{ args: Record<string, unknown> }> = [];
+    const pi: RuntimeWiringSurface = {
+      callTool: async (_name, args) => { calls.push({ args }); return "ok"; },
+    };
+    const adapters = buildRuntimeAdapters(pi);
+    const meta: StageExecutionMeta = { runId: "run-ct", stageId: "s", stageName: "N" };
+    await adapters.subagent!.subagent({ agent: "a", task: "t" }, meta);
+    const env = calls[0]?.args["env"] as Record<string, string>;
+    expect(env["PI_WORKFLOW_RUN_ID"]).toBe("run-ct");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildRuntimeAdapters — degraded: no surfaces
+// ---------------------------------------------------------------------------
+
+describe("buildRuntimeAdapters — degraded (no surfaces)", () => {
+  test("returns empty adapter set when pi has no exec, subagents, or callTool", () => {
+    const adapters = buildRuntimeAdapters({});
+    expect(adapters.prompt).toBeUndefined();
+    expect(adapters.complete).toBeUndefined();
+    expect(adapters.subagent).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractAssistantText — sanity checks
+// ---------------------------------------------------------------------------
+
+describe("extractAssistantText", () => {
+  test("extracts text from message_end assistant event", () => {
+    const ndjson = makeNdjson("hello world");
+    expect(extractAssistantText(ndjson)).toBe("hello world");
+  });
+
+  test("returns empty string for empty input", () => {
+    expect(extractAssistantText("")).toBe("");
+  });
+
+  test("returns empty string when no message_end event", () => {
+    expect(extractAssistantText('{"type":"message_start"}\n{"type":"content_block_delta"}')).toBe("");
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Helpers
