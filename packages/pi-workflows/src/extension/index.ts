@@ -20,7 +20,7 @@ import { installStoreWidget, installToolExecutionHooks } from "../tui/store-widg
 import type { WidgetFactory } from "../tui/store-widget-installer.js";
 import { createExtensionRuntime } from "./runtime.js";
 import type { ExtensionRuntime } from "./runtime.js";
-import { discoverBundledWorkflows } from "./discovery.js";
+import { discoverBundledWorkflows, discoverBundledWorkflowsSync } from "./discovery.js";
 import { buildDoctorReport } from "./doctor.js";
 import type { DoctorSiblingStatus } from "./doctor.js";
 
@@ -291,7 +291,8 @@ const factory = (pi: ExtensionAPI): void => {
   // -------------------------------------------------------------------------
   // 0. Create ExtensionRuntime (registry + dispatcher)
   // -------------------------------------------------------------------------
-  const runtime = createExtensionRuntime();
+  const discovery = discoverBundledWorkflowsSync();
+  const runtime = createExtensionRuntime({ registry: discovery.registry });
   const executeWorkflowTool = makeExecuteWorkflowTool(runtime);
 
   // -------------------------------------------------------------------------
