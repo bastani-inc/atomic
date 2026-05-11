@@ -35,7 +35,7 @@ export function Header() {
   const tmuxSession = useContext(TmuxSessionContext);
   const storeVersion = useStoreVersion(store);
 
-  // Exclude the synthetic orchestrator entry from status counts \u2014 it's
+  // Exclude the synthetic orchestrator entry from status counts — it's
   // workflow-timing bookkeeping, not a user-defined stage, and surfaces
   // separately as the workflow duration on the right.
   const counts = useMemo(() => {
@@ -57,7 +57,7 @@ export function Header() {
       ? ` \u2713 ${store.workflowName} `
       : " Orchestrator ";
 
-  // Workflow duration \u2014 derived from the orchestrator session's timing
+  // Workflow duration — derived from the orchestrator session's timing
   // (startedAt set on workflow start, endedAt set on completion/failure).
   // While running, a 1s ticker drives re-renders so the display stays live;
   // when terminal, the value freezes at endedAt and the ticker stops.

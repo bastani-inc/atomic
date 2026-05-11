@@ -17,7 +17,9 @@ export function CompactSwitcher({ selectedIndex }: CompactSwitcherProps) {
   const theme = useGraphTheme();
   useStoreVersion(store);
 
-  const agents = store.sessions;
+  // Filter the synthetic orchestrator entry — it has no node in the graph
+  // and selecting it would no-op inside doAttach.
+  const agents = store.sessions.filter((s) => s.name !== "orchestrator");
   const headerHint = "\u2191\u2193 select \u00B7 \u21B5 jump \u00B7 Esc close";
 
   return (

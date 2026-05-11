@@ -18,22 +18,16 @@ import type { OffloadManager } from "../runtime/offload-manager.ts";
 // ─── decideAttachAction ───────────────────────────────────────────────────────
 
 describe("decideAttachAction", () => {
-  test("id=orchestrator → graphView regardless of offloadStatus", () => {
-    expect(decideAttachAction("orchestrator", "alive")).toEqual({ kind: "graphView" });
-    expect(decideAttachAction("orchestrator", "offloaded")).toEqual({ kind: "graphView" });
-    expect(decideAttachAction("orchestrator", "resuming")).toEqual({ kind: "graphView" });
-  });
-
   test("status=alive → switchClient", () => {
-    expect(decideAttachAction("agent-1", "alive")).toEqual({ kind: "switchClient" });
+    expect(decideAttachAction("alive")).toEqual({ kind: "switchClient" });
   });
 
   test("status=offloaded → resume", () => {
-    expect(decideAttachAction("agent-1", "offloaded")).toEqual({ kind: "resume" });
+    expect(decideAttachAction("offloaded")).toEqual({ kind: "resume" });
   });
 
   test("status=resuming → resume (coalesces onto in-flight op)", () => {
-    expect(decideAttachAction("agent-1", "resuming")).toEqual({ kind: "resume" });
+    expect(decideAttachAction("resuming")).toEqual({ kind: "resume" });
   });
 });
 
@@ -73,12 +67,6 @@ async function runDoAttach(opts: {
   // Mirrors session guard
   const session = store.sessions.find((s) => s.name === id);
   if (!session || session.status === "pending") return;
-
-  // Mirrors orchestrator guard
-  if (id === "orchestrator") {
-    store.setViewMode("graph");
-    return;
-  }
 
   setFocusedId(id);
 

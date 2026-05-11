@@ -51,22 +51,16 @@ const GG_DOUBLE_TAP_MS = 300;
  * Pure function — no side effects, fully testable in isolation.
  *
  * Returns:
- *   { kind: "skip" }              — node not found or session pending
- *   { kind: "graphView" }         — id === "orchestrator"
  *   { kind: "resume" }            — session is offloaded or resuming
  *   { kind: "switchClient" }      — session is alive; issue switch-client
  */
 export type AttachDecision =
-  | { kind: "skip" }
-  | { kind: "graphView" }
   | { kind: "resume" }
   | { kind: "switchClient" };
 
 export function decideAttachAction(
-  id: string,
   offloadStatus: "alive" | "offloaded" | "resuming",
 ): AttachDecision {
-  if (id === "orchestrator") return { kind: "graphView" };
   if (offloadStatus === "offloaded" || offloadStatus === "resuming") return { kind: "resume" };
   return { kind: "switchClient" };
 }
@@ -84,6 +78,13 @@ export function SessionGraphPanel() {
   // Compute layout from current session data
   const layout = useMemo(() => computeLayout(store.sessions), [storeVersion]);
   const nodeList = useMemo(() => Object.values(layout.map), [layout]);
+
+  // Sessions visible in the switcher — same filter the switcher itself applies.
+  // The synthetic orchestrator has no graph node and isn't attachable.
+  const visibleSessions = useMemo(
+    () => store.sessions.filter((s) => s.name !== "orchestrator"),
+    [storeVersion],
+  );
 
   const connectors = useMemo(() => {
     const result: ConnectorResult[] = [];
@@ -144,12 +145,6 @@ export function SessionGraphPanel() {
       const session = store.sessions.find((s) => s.name === id);
       if (!session || session.status === "pending") return;
 
-      // Orchestrator = the graph view itself
-      if (id === "orchestrator") {
-        store.setViewMode("graph");
-        return;
-      }
-
       setFocusedId(id);
 
       // RFC §5.5 — gate switch-client on resume completion when offloaded.
@@ -182,10 +177,10 @@ export function SessionGraphPanel() {
   const openSwitcher = useCallback(() => {
     // Pre-select the current agent or focused node
     const currentId = store.viewMode === "attached" ? store.activeAgentId : focusedIdRef.current;
-    const idx = store.sessions.findIndex((s) => s.name === currentId);
+    const idx = visibleSessions.findIndex((s) => s.name === currentId);
     setSwitcherSel(Math.max(0, idx));
     setSwitcherOpen(true);
-  }, []);
+  }, [visibleSessions]);
 
   const closeSwitcher = useCallback(() => {
     setSwitcherOpen(false);
@@ -248,11 +243,11 @@ export function SessionGraphPanel() {
         return;
       }
       if (key.name === "down" || key.name === "j") {
-        setSwitcherSel((s) => Math.min(store.sessions.length - 1, s + 1));
+        setSwitcherSel((s) => Math.min(visibleSessions.length - 1, s + 1));
         return;
       }
       if (key.name === "return") {
-        const agent = store.sessions[switcherSel];
+        const agent = visibleSessions[switcherSel];
         closeSwitcher();
         if (agent) void doAttach(agent.name);
         return;
@@ -322,7 +317,10 @@ export function SessionGraphPanel() {
     if (key.name === "g" && !key.shift) {
       const now = Date.now();
       if (lastKeyRef.current.key === "g" && now - lastKeyRef.current.time < GG_DOUBLE_TAP_MS) {
-        setFocusedId(store.sessions[0]?.name ?? "");
+        // sessions[0] is the synthetic orchestrator, which is filtered out
+        // of layout.map. Pick the first session that actually has a node.
+        const firstVisible = store.sessions.find((s) => layout.map[s.name]);
+        setFocusedId(firstVisible?.name ?? "");
         lastKeyRef.current.key = "";
       } else {
         lastKeyRef.current.key = "g";
