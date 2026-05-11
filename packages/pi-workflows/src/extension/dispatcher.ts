@@ -14,7 +14,7 @@ import type { CancellationRegistry } from "../runs/detach/cancellation-registry.
 import { run } from "../runs/sync/executor.js";
 import type { WorkflowToolResult, WorkflowInputEntry } from "./render-result.js";
 import type { WorkflowToolArgs } from "./index.js";
-import type { WorkflowUIAdapter, WorkflowPersistencePort } from "../shared/types.js";
+import type { WorkflowUIAdapter, WorkflowPersistencePort, WorkflowMcpPort } from "../shared/types.js";
 
 // ---------------------------------------------------------------------------
 // Options
@@ -33,6 +33,8 @@ export interface DispatcherOpts {
   cancellation?: CancellationRegistry;
   /** Persistence port forwarded to the executor. */
   persistence?: WorkflowPersistencePort;
+  /** MCP scope-gating port forwarded to the executor. */
+  mcp?: WorkflowMcpPort;
 }
 
 // ---------------------------------------------------------------------------
@@ -111,6 +113,7 @@ export async function dispatch(
         store: opts.store,
         cancellation: opts.cancellation,
         persistence: opts.persistence,
+        mcp: opts.mcp,
       });
 
       return {
