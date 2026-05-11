@@ -10,8 +10,10 @@
 
 import type { Store } from "../../store.js";
 import type { RunSnapshot, RunStatus } from "../../store-types.js";
+import type { WorkflowPersistencePort } from "../../shared/types.js";
 import type { CancellationRegistry } from "./cancellation-registry.js";
 import { store as defaultStore } from "../../store.js";
+import { appendRunEnd } from "../../persistence/session-entries.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -67,21 +69,22 @@ export function statusRuns(opts?: { all?: boolean; store?: Store }): RunStatusEn
 // ---------------------------------------------------------------------------
 
 /**
- * Marks a run as "killed" in the store.
+ * Marks a run as "killed" in the store and appends a `workflow.run.end` entry
+ * with status "killed" when persistence is provided.
+ *
+ * Checks run existence and terminal state BEFORE aborting the executor so that
+ * "not_found" / "already_ended" rejections are cheap and side-effect-free.
  *
  * If the run has already ended (completed/failed/killed), returns ok:false with
  * reason "already_ended". If the runId is unknown, returns ok:false "not_found".
- *
- * Note: does NOT abort an in-progress async executor — callers that hold an
- * AbortController should call `controller.abort()` separately. This helper
- * only updates store state.
  */
-export function killRun(runId: string, opts?: { store?: Store; cancellation?: CancellationRegistry }): KillResult {
+export function killRun(
+  runId: string,
+  opts?: { store?: Store; cancellation?: CancellationRegistry; persistence?: WorkflowPersistencePort },
+): KillResult {
   const activeStore = opts?.store ?? defaultStore;
 
-  // Abort active executor first (no-op if not registered)
-  opts?.cancellation?.abort(runId, "workflow killed");
-
+  // Read run state BEFORE aborting — reject early without side-effects
   const runs = activeStore.runs();
   const run = runs.find((r) => r.id === runId);
 
@@ -93,17 +96,33 @@ export function killRun(runId: string, opts?: { store?: Store; cancellation?: Ca
   }
 
   const previousStatus = run.status;
-  activeStore.recordRunEnd(runId, "killed", undefined, "workflow killed");
+
+  // Abort active executor (no-op if not registered)
+  opts?.cancellation?.abort(runId, "workflow killed");
+
+  const recorded = activeStore.recordRunEnd(runId, "killed", undefined, "workflow killed");
+  if (recorded && opts?.persistence) {
+    appendRunEnd(opts.persistence, { runId, status: "killed", ts: Date.now() });
+  }
+
   return { ok: true, runId, previousStatus };
 }
 
 /**
  * Kills all in-flight runs. Returns array of KillResult for each run acted on.
+ * Appends one `workflow.run.end` with status "killed" per successful kill when
+ * persistence is provided.
  */
-export function killAllRuns(opts?: { store?: Store; cancellation?: CancellationRegistry }): KillResult[] {
+export function killAllRuns(opts?: {
+  store?: Store;
+  cancellation?: CancellationRegistry;
+  persistence?: WorkflowPersistencePort;
+}): KillResult[] {
   const activeStore = opts?.store ?? defaultStore;
   const inFlight = activeStore.runs().filter((r) => r.endedAt === undefined);
-  return inFlight.map((r) => killRun(r.id, { store: activeStore, cancellation: opts?.cancellation }));
+  return inFlight.map((r) =>
+    killRun(r.id, { store: activeStore, cancellation: opts?.cancellation, persistence: opts?.persistence }),
+  );
 }
 
 // ---------------------------------------------------------------------------
