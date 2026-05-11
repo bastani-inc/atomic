@@ -5,7 +5,7 @@
 import type { StageSnapshot } from "../store-types.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { statusIcon, fmtDuration } from "./status-helpers.js";
-import { lerpColor } from "./color-utils.js";
+import { lerpColor, hexToAnsi, RESET } from "./color-utils.js";
 import { NODE_W, NODE_H } from "./layout.js";
 
 export interface NodeCardOpts {
@@ -15,16 +15,6 @@ export interface NodeCardOpts {
   pulsePhase?: number; // 0-1 for pulse animation
   theme: GraphTheme;
 }
-
-function hexToAnsi(hex: string): string {
-  const h = hex.replace(/^#/, "");
-  const r = parseInt(h.slice(0, 2), 16);
-  const g = parseInt(h.slice(2, 4), 16);
-  const b = parseInt(h.slice(4, 6), 16);
-  return `\x1b[38;2;${r};${g};${b}m`;
-}
-
-const RESET = "\x1b[0m";
 
 function truncate(s: string, maxLen: number): string {
   if (s.length <= maxLen) return s;
@@ -96,11 +86,14 @@ export function renderNodeCard(stage: StageSnapshot, opts: NodeCardOpts): string
 
   // Line 1: status + duration
   if (contentHeight >= 2) {
-    const dur = stage.durationMs != null
-      ? fmtDuration(stage.durationMs)
-      : stage.startedAt != null
-      ? fmtDuration(Date.now() - stage.startedAt)
-      : "";
+    let dur: string;
+    if (stage.durationMs != null) {
+      dur = fmtDuration(stage.durationMs);
+    } else if (stage.startedAt != null) {
+      dur = fmtDuration(Date.now() - stage.startedAt);
+    } else {
+      dur = "";
+    }
     const statusStr = stage.status;
     const durStr = dur ? ` ${dur}` : "";
     const line1Content = `${statusStr}${durStr}`;

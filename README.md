@@ -1,259 +1,370 @@
-<h1 align="center">Atomic</h1>
-
-<p align="center"><img width="800" height="450" alt="atomic-promo" src="./assets/atomic-promo.gif" /></p>
+<h1 align="center">pi-workflows</h1>
 
 <p align="center">
-  <b>Turn coding agents into reliable engineering workflows.</b><br>
-  An open-source CLI and TypeScript SDK for Claude Code, OpenCode, and GitHub Copilot CLI.
+  <b>Multi-stage workflow authoring and execution for the pi coding agent.</b><br>
+  A first-party pi extension — install it, author workflows in TypeScript, run them from the chat.
 </p>
 
 <p align="center">
-  <a href="#get-started"><b>Get started →</b></a>
+  <a href="#install"><b>Install →</b></a>
   &nbsp;·&nbsp;
-  <a href="#why-atomic">Why Atomic</a>
+  <a href="#authoring-api">Authoring API</a>
   &nbsp;·&nbsp;
-  <a href="#key-features">Key features</a>
+  <a href="#surfaces">Surfaces</a>
   &nbsp;·&nbsp;
-  <a href="https://docs.bastani.ai/">Docs</a>
+  <a href="#builtin-workflows">Builtins</a>
+  &nbsp;·&nbsp;
+  <a href="#development">Development</a>
 </p>
 
 <p align="center">
-  <a href="https://docs.bastani.ai/"><img src="https://img.shields.io/badge/docs-atomic-blue" alt="Docs"></a>
-  <a href="https://deepwiki.com/flora131/atomic"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki"></a>
-  <a href="./package.json"><img src="https://img.shields.io/badge/TypeScript-6.x-3178C6?logo=typescript&logoColor=white" alt="TypeScript"></a>
-  <a href="./package.json"><img src="https://img.shields.io/badge/Bun-Runtime-f9f1e1?logo=bun&logoColor=black" alt="Bun"></a>
+  <a href="./packages/pi-workflows/package.json"><img src="https://img.shields.io/badge/version-0.1.0-blue" alt="Version 0.1.0"></a>
+  <a href="./packages/pi-workflows/package.json"><img src="https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white" alt="TypeScript"></a>
+  <a href="./packages/pi-workflows/package.json"><img src="https://img.shields.io/badge/Bun-%E2%89%A51.1-f9f1e1?logo=bun&logoColor=black" alt="Bun ≥ 1.1"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
 </p>
 
 ---
 
-## Get started
+`pi-workflows` is a **pi extension** that brings multi-stage, DAG-driven workflow execution to the pi coding agent. Workflows are plain TypeScript files that export a `WorkflowDefinition`; the DAG is inferred from your `async/await` and `Promise.all` call patterns at runtime — no YAML, no graph config. Each stage runs as an isolated pi sub-session. A live above-editor widget and on-demand DAG overlay give you real-time progress visibility. Completed runs are persisted to the session store and can be resumed.
 
-The easiest way to install Atomic is through the install script.
+---
 
-**macOS / Linux**
+## Install
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/flora131/atomic/main/install.sh | bash
-```
-
-**Windows** (PowerShell 5.1+ or 7+)
-
-```powershell
-irm https://raw.githubusercontent.com/flora131/atomic/main/install.ps1 | iex
-```
-
-You can also install it with the following commands:
-
-**Using Node.js**
-
-**npm**
+### Via pi package manager
 
 ```bash
-npm install -g @bastani/atomic         # latest stable
-npm install -g @bastani/atomic@next    # latest pre-release
+pi install pi-workflows
 ```
 
-**Bun**
+Then add the extension to your pi settings (`~/.pi/settings.json`):
+
+```json
+{
+  "extensions": ["pi-workflows"],
+  "workflows": {
+    "name": {
+      "path": ".pi/workflows"
+    }
+  }
+}
+```
+
+### From source
 
 ```bash
-bun add -g @bastani/atomic             # latest stable
-bun add -g @bastani/atomic@next        # latest pre-release
+bun install
+bun run build
+pi install ./packages/pi-workflows
 ```
 
-**Onboarding**
+---
 
-Open a chat with the agent you've authenticated:
+## Authoring API
+
+### Example 1 — Single stage
+
+```typescript
+import { defineWorkflow } from "pi-workflows";
+
+export default defineWorkflow("summarize-pr")
+  .description("Summarize a pull request in one stage.")
+  .input("pr_url", {
+    type: "text",
+    required: true,
+    description: "URL of the pull request to summarize.",
+  })
+  .run(async (ctx) => {
+    const summary = await ctx.stage("summarize").prompt(
+      `Summarize the pull request at ${String(ctx.inputs.pr_url)} clearly and concisely.`
+    );
+    return { summary };
+  })
+  .compile();
+```
+
+### Example 2 — Parallel fan-out with `Promise.all`
+
+The `GraphFrontierTracker` infers parallelism from `Promise.all` — the three specialist stages are scheduled concurrently; the aggregator waits for all three (fan-in).
+
+```typescript
+import { defineWorkflow } from "pi-workflows";
+
+export default defineWorkflow("parallel-research")
+  .description("Scout → three parallel specialists → aggregator.")
+  .input("topic", { type: "text", required: true, description: "Research topic." })
+  .run(async (ctx) => {
+    const { topic } = ctx.inputs as { topic: string };
+
+    const [authReport, dbReport, apiReport] = await Promise.all([
+      ctx.stage("auth-specialist").prompt(`Research authentication patterns for: ${topic}`),
+      ctx.stage("db-specialist").prompt(`Research database layer for: ${topic}`),
+      ctx.stage("api-specialist").prompt(`Research API surface for: ${topic}`),
+    ]);
+
+    const summary = await ctx.stage("aggregator").prompt(
+      `Synthesize these three specialist reports:\n\n## Auth\n${authReport}\n\n## Database\n${dbReport}\n\n## API\n${apiReport}`
+    );
+    return { summary };
+  })
+  .compile();
+```
+
+### Example 3 — Human-in-the-loop (HIL)
+
+```typescript
+import { defineWorkflow } from "pi-workflows";
+
+export default defineWorkflow("review-and-merge")
+  .description("Plan a change, ask for human approval, then execute.")
+  .input("task", { type: "text", required: true, description: "What to implement." })
+  .run(async (ctx) => {
+    const plan = await ctx.stage("planner").prompt(
+      `Create a concise implementation plan for: ${String(ctx.inputs.task)}`
+    );
+
+    const approved = await ctx.ui.confirm(
+      `Proceed with this plan?\n\n${plan}`
+    );
+    if (!approved) return { status: "cancelled" };
+
+    const result = await ctx.stage("implementer").prompt(
+      `Execute this plan exactly:\n\n${plan}`
+    );
+    return { result };
+  })
+  .compile();
+```
+
+### `createRegistry` — grouping workflows
+
+```typescript
+import { createRegistry, defineWorkflow } from "pi-workflows";
+
+const alpha = defineWorkflow("alpha").run(async () => {}).compile();
+const beta  = defineWorkflow("beta").run(async () => {}).compile();
+const gamma = defineWorkflow("gamma").run(async () => {}).compile();
+
+// Immutable chainable registry
+const registry = createRegistry()
+  .register(alpha)
+  .register(beta)
+  .merge(createRegistry().register(gamma));
+
+registry.names();           // ["alpha", "beta", "gamma"]
+registry.all();             // WorkflowDefinition[]
+registry.get("alpha");      // WorkflowDefinition | undefined
+```
+
+### Input types
+
+| Type      | Description            | Extra options                       |
+| --------- | ---------------------- | ----------------------------------- |
+| `text`    | Free-form string       | `default`, `required`               |
+| `string`  | Alias for `text`       | `default`, `required`               |
+| `number`  | Numeric value          | `default`, `required`, `min`, `max` |
+| `boolean` | True/false toggle      | `default`                           |
+| `select`  | Enumerated choices     | `options: string[]`, `default`      |
+
+---
+
+## Surfaces
+
+### Slash commands
+
+| Command                              | Description                                              |
+| ------------------------------------ | -------------------------------------------------------- |
+| `/workflow <name> [--key=value ...]` | Start a named workflow, passing optional input overrides |
+| `/workflow:<name>`                   | Shorthand — start workflow `<name>` with no inputs       |
+| `/workflow list`                     | List all registered workflows with descriptions          |
+| `/workflow status`                   | Show status of all active and recent runs                |
+| `/workflow stop [run-id]`            | Stop the active run (or the specified run ID)            |
+| `/workflow resume <run-id>`          | Resume a previously paused or failed run                 |
+| `/workflow inputs <name>`            | Print the input schema for a workflow                    |
+| `/workflow overlay`                  | Toggle the live DAG overlay panel                        |
+| `/workflows-doctor`                  | Diagnose registration, discovery, and peer-dep issues    |
+
+### `workflow` tool (LLM-callable)
+
+When `pi-workflows` is installed, the pi LLM gains access to the `workflow` tool:
+
+```json
+{
+  "name": "workflow",
+  "description": "Start a registered workflow by name.",
+  "parameters": {
+    "name": "string (required) — workflow name or normalizedName",
+    "inputs": "object (optional) — key/value map of workflow inputs"
+  }
+}
+```
+
+- **`renderCall`** — renders a live DAG chip in the chat scroll as the workflow executes.
+- **`renderResult`** — renders a summary card when the run completes.
+
+### CLI flag
 
 ```bash
-atomic chat -a <agent>   # claude | opencode | copilot
+pi --workflow deep-research-codebase --prompt "Investigate the auth module"
 ```
 
-Inside the chat, run:
+Passes `prompt` as a workflow input; remaining `--key=value` flags are forwarded as additional inputs.
+
+---
+
+## Builtin workflows
+
+### `deep-research-codebase`
+
+Scout → parallel specialist stages → aggregator. Ideal for deep investigation of a codebase topic across multiple specialist angles.
 
 ```text
-/atomic   # guided onboarding — start here
+/workflow deep-research-codebase --prompt="How does session persistence work?"
 ```
 
-`/atomic` tailors the tour to what you're trying to ship — driving a large feature through deterministic, spec-driven development (research → spec → parallel implementation passes), or codifying a recurring engineering job (review-to-merge, migrations, incident triage, release prep) into a reusable workflow your whole team can run identically. The slash command is the fastest onboarding path; if you want the long form, jump to [Key features](#key-features) or the [Workflow SDK](#workflow-sdk) below.
+| Input            | Type     | Required | Default | Description                                   |
+| ---------------- | -------- | -------- | ------- | --------------------------------------------- |
+| `prompt`         | `text`   | ✓        | —       | Research question or topic to investigate.    |
+| `max_partitions` | `number` | —        | `4`     | Maximum number of parallel specialist stages. |
 
-> ⚠️ Workflows run with agent permission checks **disabled** so pipelines don't block on prompts. Once `/atomic` points you at a workflow, we suggest running it inside a [devcontainer](#containerized-execution), VM, or remote dev machine — not your host machine.
+---
 
-<details>
-<summary><b>Prerequisites, version pinning, devcontainer, SDK-only</b></summary>
+### `ralph`
 
-**Prerequisites** — Atomic spawns coding agents inside a tmux session, so the host needs:
+Plan → orchestrate → review loop with optional HIL checkpoints. Named after the [Ralph Wiggum Method](https://ghuntley.com/ralph/).
 
-- A terminal multiplexer — [tmux](https://github.com/tmux/tmux) (macOS/Linux) or [psmux](https://github.com/psmux/psmux) (Windows). Auto-installed on first `atomic` run via your platform's package manager.
-- At least one authenticated coding agent CLI — [Claude Code](https://code.claude.com/docs/en/quickstart), [OpenCode](https://opencode.ai), or [GitHub Copilot CLI](https://github.com/features/copilot/cli). Install and `claude` / `opencode` / `copilot` to authenticate.
+```text
+/workflow ralph --prompt="Migrate the database layer to Drizzle ORM"
+```
 
-**Pin a version:** `bash install.sh 0.4.47` (same trailing-arg form works for `.ps1` and `.cmd`).
+| Input            | Type     | Required | Default | Description                                  |
+| ---------------- | -------- | -------- | ------- | -------------------------------------------- |
+| `prompt`         | `text`   | ✓        | —       | High-level task or goal to accomplish.       |
+| `max_iterations` | `number` | —        | `3`     | Maximum plan → execute → review iterations. |
 
-**Devcontainer** — recommended for autonomous workflows. Add one feature to `.devcontainer/devcontainer.json`:
+---
 
-| Feature                              | Agent        |
-| ------------------------------------ | ------------ |
-| `ghcr.io/flora131/atomic/claude:1`   | Claude Code  |
-| `ghcr.io/flora131/atomic/opencode:1` | OpenCode     |
-| `ghcr.io/flora131/atomic/copilot:1`  | Copilot CLI  |
+### `open-claude-design`
 
-Templates per agent live in [`.devcontainer/`](./.devcontainer/).
+Design generation pipeline — produce mockups or interactive prototypes from a natural-language prompt.
 
-**SDK-only** — skip the global binary, use `defineWorkflow` in your own project:
+```text
+/workflow open-claude-design --prompt="Design a kanban board for task management" --output_type=mockup
+```
+
+| Input         | Type     | Required | Default   | Description                                 |
+| ------------- | -------- | -------- | --------- | ------------------------------------------- |
+| `prompt`      | `text`   | ✓        | —         | Design brief or description.                |
+| `reference`   | `text`   | —        | —         | Optional path to a reference image or file. |
+| `output_type` | `select` | —        | `mockup`  | `mockup` or `prototype`.                    |
+
+---
+
+## Custom workflow discovery
+
+`pi-workflows` automatically discovers workflow files from three locations:
+
+| Location                          | Scope      | Example path                           |
+| --------------------------------- | ---------- | -------------------------------------- |
+| `.pi/workflows/*.ts`              | Project    | `.pi/workflows/my-workflow.ts`         |
+| `~/.pi/agent/workflows/*.ts`      | User       | `~/.pi/agent/workflows/my-workflow.ts` |
+| `workflows.name.path` in settings | Configured | see `~/.pi/settings.json` example below |
+
+Settings-based discovery (`~/.pi/settings.json`):
+
+```json
+{
+  "workflows": {
+    "my-team-workflows": {
+      "path": "/shared/team/pi-workflows"
+    }
+  }
+}
+```
+
+---
+
+## Optional peer dependencies
+
+Install peer packages to unlock additional capabilities:
+
+| Package          | Capability unlocked                                                   |
+| ---------------- | --------------------------------------------------------------------- |
+| `pi-subagents`   | Sub-agent dispatch from within stages (`ctx.stage().subagent(...)`)  |
+| `pi-mcp-adapter` | Per-stage MCP server gating — restrict which MCP tools each stage sees |
+| `pi-intercom`    | HIL for detached runs via `contact_supervisor` — resume from anywhere |
 
 ```bash
-bun init -y && bun add @bastani/atomic-sdk @anthropic-ai/claude-agent-sdk
+pi install pi-subagents
+pi install pi-mcp-adapter
+pi install pi-intercom
 ```
 
-You still need tmux/psmux + an authenticated agent CLI at runtime.
+---
 
-</details>
+## Development
 
-<details>
-<summary><b>Upgrading from a previous version</b></summary>
+### Prerequisites
 
-**From 0.6.x or earlier (SDK users):** the SDK moved from `@bastani/atomic` to `@bastani/atomic-sdk`.
+- **Bun ≥ 1.1** — [install](https://bun.sh)
+
+### Setup
 
 ```bash
-bun remove @bastani/atomic && bun add @bastani/atomic-sdk
+bun install
 ```
 
-Update imports: `from "@bastani/atomic/workflows"` → `from "@bastani/atomic-sdk/workflows"`. The CLI keeps the same package name.
+### Commands
 
-For SDK API changes (`createWorkflowCli` removal, `source: import.meta.path`, etc.), see [SDK migration](#migration-from-0x).
+| Command                                         | Description                          |
+| ----------------------------------------------- | ------------------------------------ |
+| `bun run build`                                 | Build all packages                   |
+| `bun run typecheck`                             | Type-check all packages              |
+| `bun test`                                      | Run all tests (workspace root)       |
+| `cd packages/pi-workflows && bun test`          | Run pi-workflows tests only          |
+| `cd packages/pi-workflows && bun run typecheck` | Type-check pi-workflows only         |
 
-</details>
+### Project layout
 
----
+```
+packages/pi-workflows/
+├── src/
+│   ├── extension/       # Pi extension entry point — registers tool, slash commands, hooks
+│   ├── integrations/    # Optional peer-dep adapters (pi-subagents, pi-mcp-adapter, pi-intercom)
+│   ├── lib/             # Internal utilities
+│   ├── persistence/     # Session-entry persistence and restore logic
+│   ├── runs/
+│   │   ├── shared/      # GraphFrontierTracker — DAG topology inference
+│   │   └── sync/        # Synchronous executor and stage runner
+│   ├── slash/           # Slash command handlers (/workflow, /workflows-doctor)
+│   ├── tool/            # "workflow" tool definition and renderers
+│   ├── tui/             # Above-editor widget and DAG overlay
+│   ├── workflows/       # defineWorkflow, createRegistry, identity helpers
+│   ├── index.ts         # Public entry point
+│   ├── store.ts         # Run/stage state store
+│   └── store-types.ts   # Store type definitions
+├── workflows/           # Builtin workflow definitions (auto-discovered via pi.workflows)
+│   ├── deep-research-codebase.ts
+│   ├── ralph.ts
+│   └── open-claude-design.ts
+├── test/                # Unit and integration tests
+├── examples/            # Runnable standalone examples
+│   ├── hello-world.ts
+│   └── parallel-fan-out.ts
+├── package.json
+└── tsconfig.json
+```
 
-## Why Atomic
+### Running examples
 
-Coding agents are great inside a single session — they inspect code, edit files, and explain their work. The trouble starts when a task is ambiguous, tied to specific exit criteria, long-running, or anchored in a large codebase. You end up reminding the agent of the process, copying output between sessions, and deciding when a human needs to review.
-
-**Atomic turns that process into code.** A workflow can branch, retry, run stages in parallel, isolate sessions, pass only the right transcript forward, pause for human approval, and run inside a devcontainer so the agent is never loose on your host.
-
-| | |
-|---|---|
-| **Start with your own process** | Automate the repetitive parts of research, debugging, review, migrations, or PR prep — one TypeScript file, versioned with the repo. |
-| **Scale to your team** | Encode review gates, quality checks, and approvals so every teammate runs the same workflow instead of manually steering an agent. |
-| **Keep the coding agent** | Atomic adds structure around Claude Code, OpenCode, and Copilot CLI — without rebuilding file editing, tool use, MCP setup, hooks, or context handling. |
-| **Own the outer loop** | Workflows, gates, handoffs, and the execution graph are TypeScript you can read, edit, and version — not a black-box harness improvising process. |
-
-> Build the workflow once. Run it across agents, repos, and teams.
-
----
-
-## Key features
-
-Atomic ships three top-level building blocks: **workflows**, **skills**, and **specialized sub-agents**. Everything else in this README is reference material on top.
-
-### 1. Workflows
-
-Atomic workflows separate orchestration from execution: control flow is deterministic TypeScript — frozen definitions, strict step ordering, and explicit transcript handoffs between stages — while each stage runs a full coding agent with unconstrained tool use and reasoning.
-
-| Workflow                 | What it does                                                                                                                                          | Example input                                                                                                                              |
-| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `ralph`                  | Autonomous plan → orchestrate → simplify → review loop that keeps iterating until two reviewers agree (or `max_loops` hits). For multi-hour unattended coding on a bounded task. | `atomic workflow -n ralph -a claude "Implement the caching layer per research/docs/2026-05-07-caching.md"`                                 |
-| `deep-research-codebase` | Parallel research across a large codebase, written to a dated `research/docs/` doc you can hand to future workflows or specs. Token-heavy — reach for it on large migrations or cross-service work. For smaller, single-question research, use the [`/research-codebase`](#2-skills) skill instead. | `atomic workflow -n deep-research-codebase -a copilot "Map every callsite of the legacy auth middleware so we can migrate to session-v2"` |
-| `open-claude-design`     | End-to-end design generation: discovers your design system, generates from a prompt, refines with feedback, and exports a handoff directory.          | `atomic workflow -n open-claude-design -a opencode --prompt="Team activity feed" --reference=./mocks/feed.png --output-type=prototype`     |
-| _author your own_        | Anything outside the built-ins — review-to-merge, migration, triage, release pipelines. Describe it in natural language and the [`workflow-creator`](#2-skills) skill scaffolds a `defineWorkflow()` file with typed CLI flags. | _"Use the `workflow-creator` skill to scaffold a workflow for `claude` that takes an `--issue=<n>` flag, pulls the GitHub issue, and runs an implementation pass identical to the built-in `ralph` workflow against the described features."_ |
-
-For full input schemas, run `atomic workflow inputs <name> -a <agent>`. SDK details in [Workflow SDK](#workflow-sdk); runnable references in [`examples/`](./examples).
-
-### 2. Skills
-
-Structured capability modules that give agents best practices and reusable workflows. Atomic ships **57 skills** at `.agents/skills/<name>/SKILL.md`. They auto-invoke when the agent detects a relevant trigger, or you can call them directly with `/<skill-name>` (Claude Code) or natural language (OpenCode / Copilot CLI).
-
-**Top skills to know first:**
-
-| Skill               | Invoke with                       | Purpose                                                                          |
-| ------------------- | --------------------------------- | -------------------------------------------------------------------------------- |
-| `init`              | `/init`                           | Generate `CLAUDE.md` / `AGENTS.md` by exploring the codebase                     |
-| `prompt-engineer`   | natural language                  | Sharpen your research prompts, workflow inputs, or any agent prompt before you run it |
-| `research-codebase` | `/research-codebase "<question>"` | Dispatch parallel sub-agents to analyze the codebase and write a research doc    |
-| `create-spec`       | `/create-spec "<research-path>"`  | Produce a technical execution spec grounded in a research document               |
-| `workflow-creator`  | natural language                  | Generate a multi-agent workflow definition using `defineWorkflow()` + a registry |
-| `tdd`               | natural language                  | Red-green-refactor with a built-in testing-anti-patterns guide                   |
-| `explain-code`      | `/explain-code "<path>"`          | Deep-dive explanation of specific code using DeepWiki                            |
-| `gh-create-pr`      | `/gh-create-pr`                   | Commit, push, and open a GitHub PR (also `/ado-create-pr`, `/sl-submit-diff`)    |
-| `playwright-cli`    | natural language                  | Automate browser interactions, tests, screenshots                                |
-| `impeccable`        | natural language                  | Create distinctive, production-grade frontend interfaces                         |
-| `find-skills`       | natural language                  | Discover and install community skills you don't have yet                         |
-
-<details>
-<summary><b>Full catalog</b> — all 57 skills, grouped by category</summary>
-
-**Development workflows:** `init`, `research-codebase`, `create-spec`, `workflow-creator`, `explain-code`, `find-skills`, `tdd`, `prompt-engineer`
-
-**Context engineering:** `context-fundamentals`, `context-degradation`, `context-compression`, `context-optimization`, `filesystem-context`, `memory-systems`, `multi-agent-patterns`, `tool-design`, `hosted-agents`, `project-development`, `bdi-mental-states`
-
-**TypeScript & runtime:** `typescript-expert`, `typescript-advanced-types`, `typescript-react-reviewer`, `bun`, `opentui`
-
-**Frontend design & UI polish:** `impeccable`, `polish`, `critique`, `audit`, `layout`, `typeset`, `colorize`, `adapt`, `animate`, `delight`, `clarify`, `distill`, `quieter`, `bolder`, `overdrive`, `harden`, `optimize`, `arrange`, `extract`, `normalize`, `onboard`, `shape`, `teach-impeccable`, `frontend-design`, `ux-design-virtuoso`
-
-**Evaluation:** `evaluation`, `advanced-evaluation`
-
-**Documents & parsing:** `pdf`, `xlsx`, `docx`, `pptx`, `liteparse`
-
-**Source control & automation:** `gh-commit`, `gh-create-pr`, `ado-commit`, `ado-create-pr`, `sl-commit`, `sl-submit-diff`, `playwright-cli`
-
-**Meta:** `skill-creator`
-
-> **Source-control MCP servers are disabled by default.** Set `scm` in `.atomic/settings.json` (or run `atomic config set scm <provider>`) to `github`, `azure-devops`, or `sapling` to enable the matching MCP server. `sapling` disables both.
-
-Run `ls .agents/skills/` for the live, on-disk list.
-
-</details>
-
-### 3. Specialized sub-agents
-
-Purpose-built agents with scoped context, tools, and termination conditions. Run `/agents` in any chat to list them; they're auto-dispatched by skills and workflows, or invoke directly with `Task(subagent_type="<name>", ...)`.
-
-| Sub-agent                    | Purpose                                                             |
-| ---------------------------- | ------------------------------------------------------------------- |
-| `planner`                    | Decompose specs into structured task lists with dependency tracking |
-| `worker`                     | Implement single focused tasks (multiple workers run in parallel)   |
-| `reviewer`                   | Audit implementations against specs and best practices              |
-| `orchestrator`               | Coordinate complex multi-step workflows                             |
-| `debugger`                   | Debug errors, test failures, and unexpected behavior                |
-| `code-simplifier`            | Simplify and refine code for clarity and maintainability            |
-| `codebase-locator`           | Locate files, directories, and components                           |
-| `codebase-analyzer`          | Analyze implementation details of specific components               |
-| `codebase-pattern-finder`    | Find similar implementations and usage examples                     |
-| `codebase-online-researcher` | Research using web sources and DeepWiki                             |
-| `codebase-research-locator`  | Find prior research documents in `research/`                        |
-| `codebase-research-analyzer` | Deep dive on existing research topics                               |
-
-<details>
-<summary><i>Why specialized agents instead of one general agent?</i></summary>
-
-LLMs have an architectural limitation: the more context they hold, the harder it is to attend to the right information. A single agent juggling a spec, dozens of files, tool outputs, and its own reasoning will lose details, repeat work, or hallucinate connections. Specialized sub-agents fix this with **context isolation** (fresh, minimal context per job), **tool scoping** (a `reviewer` can't edit files; a `worker` can't spawn other workers), and **parallel execution** (independent agents run concurrently).
-
-</details>
+```bash
+cd packages/pi-workflows && bun run examples/hello-world.ts
+cd packages/pi-workflows && bun run examples/parallel-fan-out.ts
+```
 
 ---
-
-## Documentation
-
-Full documentation lives at **[docs.bastani.ai](https://docs.bastani.ai/)** — the CLI and SDK reference, security model, containerized execution, the workflow panel, session management, configuration, troubleshooting, FAQ, and side-by-side comparisons with Spec-Kit, DeerFlow, and Hermes.
-
-The docs are open source — the same content is browsable on GitHub at [flora131/docs](https://github.com/flora131/docs). Open a PR there to suggest a change.
-
----
-
-## Contributing
-
-See [DEV_SETUP.md](DEV_SETUP.md) for development setup, testing guidelines, and contribution workflow.
 
 ## License
 
 MIT — see [LICENSE](LICENSE).
-
-## Credits
-
-- [Superpowers](https://github.com/obra/superpowers)
-- [Anthropic Skills](https://github.com/anthropics/skills)
-- [Ralph Wiggum Method](https://ghuntley.com/ralph/)
-- [OpenAI Codex Cookbook](https://github.com/openai/openai-cookbook)
-- [HumanLayer](https://github.com/humanlayer/humanlayer)
-- [Impeccable](https://github.com/pbakaus/impeccable)

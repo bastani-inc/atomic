@@ -2,7 +2,13 @@
  * Main DAG executor: run(def, inputs, opts) → RunResult
  */
 
-import type { WorkflowDefinition, WorkflowRunContext, WorkflowUIContext, WorkflowUIAdapter } from "../../shared/types.js";
+import type {
+  WorkflowDefinition,
+  WorkflowRunContext,
+  WorkflowUIContext,
+  WorkflowUIAdapter,
+  WorkflowInputSchema,
+} from "../../shared/types.js";
 import type { StageAdapters } from "./stage-runner.js";
 import type { RunStatus, StageSnapshot, RunSnapshot } from "../../store-types.js";
 import type { Store } from "../../store.js";
@@ -35,8 +41,6 @@ export interface RunResult {
 // ---------------------------------------------------------------------------
 // Input resolution / validation
 // ---------------------------------------------------------------------------
-
-import type { WorkflowInputSchema } from "../../shared/types.js";
 
 export function resolveInputs(
   schema: Readonly<Record<string, WorkflowInputSchema>>,
@@ -138,37 +142,24 @@ export async function run(
       // e. Create inner StageContext (raw, without wrapping)
       const innerCtx = createStageContext({ stageId, stageName: name, adapters });
 
-      // f. Wrap each method to record lifecycle
       const wrapMethod = <TArgs extends unknown[]>(
         method: (...args: TArgs) => Promise<string>,
       ): ((...args: TArgs) => Promise<string>) => {
         return async (...args: TArgs): Promise<string> => {
-          // Update status to "running"
           stageSnapshot.status = "running";
           stageSnapshot.startedAt = Date.now();
           activeStore.recordStageStart(runId, stageSnapshot);
 
           try {
             const result = await method(...args);
-
-            // Completed
             stageSnapshot.status = "completed";
             stageSnapshot.result = result;
-            stageSnapshot.endedAt = Date.now();
-            stageSnapshot.durationMs =
-              stageSnapshot.startedAt !== undefined
-                ? stageSnapshot.endedAt - stageSnapshot.startedAt
-                : undefined;
-
-            activeStore.recordStageEnd(runId, stageSnapshot);
-            opts.onStageEnd?.(runId, stageSnapshot);
-            tracker.onSettle(stageId);
-
             return result;
           } catch (err) {
-            // Failed
             stageSnapshot.status = "failed";
             stageSnapshot.error = err instanceof Error ? err.message : String(err);
+            throw err;
+          } finally {
             stageSnapshot.endedAt = Date.now();
             stageSnapshot.durationMs =
               stageSnapshot.startedAt !== undefined
@@ -178,8 +169,6 @@ export async function run(
             activeStore.recordStageEnd(runId, stageSnapshot);
             opts.onStageEnd?.(runId, stageSnapshot);
             tracker.onSettle(stageId);
-
-            throw err;
           }
         };
       };

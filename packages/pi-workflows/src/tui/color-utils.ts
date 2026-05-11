@@ -33,3 +33,17 @@ export function lerpColor(a: string, b: string, t: number): string {
   const bl = ab + (bb - ab) * t;
   return toHex(r, g, bl);
 }
+
+/** Convert a hex color to an ANSI 24-bit foreground escape sequence. */
+export function hexToAnsi(hex: string): string {
+  const [r, g, b] = parseHex(hex);
+  return `\x1b[38;2;${r};${g};${b}m`;
+}
+
+/** Convert a hex color to an ANSI 24-bit background escape sequence. */
+export function hexBg(hex: string): string {
+  const [r, g, b] = parseHex(hex);
+  return `\x1b[48;2;${r};${g};${b}m`;
+}
+
+export const RESET = "\x1b[0m";

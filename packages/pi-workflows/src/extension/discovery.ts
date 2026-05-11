@@ -23,7 +23,7 @@
  *   const result = discoverBundledWorkflowsSync();
  */
 
-import { readdir } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import { join, resolve, extname, isAbsolute } from "node:path";
 import type { WorkflowDefinition } from "../shared/types.js";
 import { createRegistry } from "../workflows/registry.js";
@@ -331,11 +331,9 @@ async function loadFromPaths(
   for (const { rawPath, configuredName } of entries) {
     const absPath = isAbsolute(rawPath) ? rawPath : resolve(baseCwd, rawPath);
 
-    // Check existence via import (IMPORT_FAILED covers not found too), but
-    // give a specific PATH_NOT_FOUND when we can detect the file is absent.
+    // Give a specific PATH_NOT_FOUND when we can detect the file is absent.
     let exists = false;
     try {
-      const { stat } = await import("node:fs/promises");
       await stat(absPath);
       exists = true;
     } catch {
@@ -489,38 +487,13 @@ export function discoverBundledWorkflowsSync(): DiscoveryResult {
   const sources: DiscoverySource[] = [];
   let registry = createRegistry();
 
-  for (const [exportKey, value] of Object.entries(manifest)) {
-    const reason = validateDefinition(value);
-    if (reason !== null) {
-      diagnostics.push({
-        level: "error",
-        code: "INVALID_DEFINITION",
-        message: `Bundled export "${exportKey}" rejected: ${reason}`,
-        source: exportKey,
-      });
-      continue;
-    }
+  const candidates = Object.entries(manifest).map(([exportKey, value]) => ({
+    value,
+    exportKey,
+    kind: "bundled" as DiscoveryKind,
+  }));
 
-    const def = value as WorkflowDefinition;
-    const key = def.normalizedName;
-
-    if (registry.has(key)) {
-      diagnostics.push({
-        level: "warn",
-        code: "DUPLICATE_NAME",
-        message: `Bundled export "${exportKey}" skipped: normalizedName "${key}" already registered`,
-        source: exportKey,
-      });
-      continue;
-    }
-
-    registry = registry.register(def);
-    sources.push({
-      id: key,
-      kind: "bundled",
-      name: def.name,
-    });
-  }
+  registry = applyBatch(candidates, registry, sources, diagnostics);
 
   return { registry, sources, errors: diagnostics };
 }

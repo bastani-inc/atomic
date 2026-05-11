@@ -12,6 +12,7 @@ import { renderHeader } from "./header.js";
 import { renderNodeCard } from "./node-card.js";
 import { renderSwitcher, filterStages } from "./switcher.js";
 import { renderToasts, createToastManager } from "./toast.js";
+import { RESET } from "./color-utils.js";
 
 export type GraphViewMode = "overlay" | "widget";
 
@@ -22,8 +23,6 @@ export interface GraphViewOpts {
   graphTheme: GraphTheme;
   onClose?: () => void;
 }
-
-const RESET = "\x1b[0m";
 
 export class GraphView {
   private mode: GraphViewMode;
@@ -164,55 +163,14 @@ export class GraphView {
     return lines;
   }
 
-  private _renderGraph(width: number): string[] {
+  private _renderGraph(_width: number): string[] {
     const run = this._getCurrentRun();
     if (!run || this.cachedLayout.length === 0) {
       return ["  (no stages)"];
     }
 
-    // Create a 2D canvas
-    // Find dimensions
-    let maxX = 0;
-    let maxY = 0;
-    for (const node of this.cachedLayout) {
-      maxX = Math.max(maxX, node.x + NODE_W);
-      maxY = Math.max(maxY, node.y + NODE_H);
-    }
-
-    const canvasWidth = Math.min(maxX + 4, width);
-    const canvasHeight = maxY + 2;
-
-    // Build canvas as array of string arrays
-    const canvas: string[][] = [];
-    for (let y = 0; y < canvasHeight; y++) {
-      canvas.push(Array(canvasWidth).fill(" "));
-    }
-
-    // Helper to write a string at (x, y)
-    const writeAt = (x: number, y: number, chars: string) => {
-      if (y < 0 || y >= canvasHeight) return;
-      // Strip ANSI for placement purposes - we'll just append styled output
-      for (let i = 0; i < chars.length; i++) {
-        const cx = x + i;
-        if (cx >= 0 && cx < canvasWidth) {
-          canvas[y]![cx] = chars[i]!;
-        }
-      }
-    };
-
-    // For a simpler rendering, just output lines per node
     const outputLines: string[] = [];
 
-    // Group nodes by row for rendering
-    const nodeMap = new Map<string, LayoutNode>();
-    for (const node of this.cachedLayout) {
-      nodeMap.set(node.stage.id, node);
-    }
-
-    // Find the focused stage
-    const focusedNode = this.cachedLayout[this.focusedIndex];
-
-    // Render each node card
     for (let ni = 0; ni < this.cachedLayout.length; ni++) {
       const node = this.cachedLayout[ni]!;
       const focused = ni === this.focusedIndex;
@@ -224,27 +182,16 @@ export class GraphView {
         theme: this.graphTheme,
       });
 
-      // Add card lines to output
-      const startY = node.y + 1; // +1 for header
+      const startY = node.y + 1;
       for (let li = 0; li < cardLines.length; li++) {
         const lineIdx = startY + li;
-        // Ensure we have enough output lines
         while (outputLines.length <= lineIdx) {
-          outputLines.push(" ".repeat(canvasWidth));
+          outputLines.push("");
         }
-        // Place card at x position
-        const existingLine = outputLines[lineIdx] ?? " ".repeat(canvasWidth);
-        // Pad existing to x
-        const padded = existingLine.padEnd(node.x, " ");
-        outputLines[lineIdx] = padded + cardLines[li];
+        const existingLine = outputLines[lineIdx] ?? "";
+        outputLines[lineIdx] = existingLine.padEnd(node.x, " ") + cardLines[li];
       }
     }
-
-    void canvas;
-    void writeAt;
-    void focusedNode;
-    void maxX;
-    void maxY;
 
     return outputLines;
   }
@@ -258,7 +205,6 @@ export class GraphView {
   }
 
   private _handleGraphInput(data: string): boolean {
-    const run = this._getCurrentRun();
     const stageCount = this.cachedLayout.length;
 
     if (data === "j" || data === "\x1b[B") {
@@ -302,7 +248,6 @@ export class GraphView {
       return true;
     }
 
-    void run;
     return false;
   }
 

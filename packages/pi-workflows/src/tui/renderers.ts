@@ -12,4 +12,4 @@ export { GraphView } from "./graph-view.js";
 export { deriveGraphTheme } from "./graph-theme.js";
 export { computeLayout, NODE_W, NODE_H } from "./layout.js";
 export { statusColor, statusIcon, fmtDuration } from "./status-helpers.js";
-export { lerpColor } from "./color-utils.js";
+export { lerpColor, hexToAnsi, hexBg, RESET } from "./color-utils.js";

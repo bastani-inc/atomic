@@ -5,6 +5,7 @@
 import type { StageSnapshot } from "../store-types.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { statusIcon } from "./status-helpers.js";
+import { hexToAnsi, hexBg, RESET } from "./color-utils.js";
 
 export interface SwitcherState {
   query: string;
@@ -25,23 +26,6 @@ export function filterStages(
   return stages.filter((s) => s.name.toLowerCase().includes(q));
 }
 
-function hexToAnsi(hex: string): string {
-  const h = hex.replace(/^#/, "");
-  const r = parseInt(h.slice(0, 2), 16);
-  const g = parseInt(h.slice(2, 4), 16);
-  const b = parseInt(h.slice(4, 6), 16);
-  return `\x1b[38;2;${r};${g};${b}m`;
-}
-
-function hexBg(hex: string): string {
-  const h = hex.replace(/^#/, "");
-  const r = parseInt(h.slice(0, 2), 16);
-  const g = parseInt(h.slice(2, 4), 16);
-  const b = parseInt(h.slice(4, 6), 16);
-  return `\x1b[48;2;${r};${g};${b}m`;
-}
-
-const RESET = "\x1b[0m";
 const BOLD = "\x1b[1m";
 
 /**

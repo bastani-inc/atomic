@@ -17,7 +17,6 @@ export interface StageNode {
 export class GraphFrontierTracker {
   private frontier: Set<string> = new Set();
   private stageParents: Map<string, string[]> = new Map();
-  private stageNames: Map<string, string> = new Map();
   private nodes: Map<string, StageNode> = new Map();
 
   /**
@@ -27,14 +26,12 @@ export class GraphFrontierTracker {
   onSpawn(stageId: string, stageName: string): string[] {
     const parents = Array.from(this.frontier);
     this.stageParents.set(stageId, parents);
-    this.stageNames.set(stageId, stageName);
 
-    const node: StageNode = {
+    this.nodes.set(stageId, {
       id: stageId,
       name: stageName,
       parentIds: Object.freeze(parents),
-    };
-    this.nodes.set(stageId, node);
+    });
 
     return parents;
   }
@@ -67,7 +64,6 @@ export class GraphFrontierTracker {
   reset(): void {
     this.frontier.clear();
     this.stageParents.clear();
-    this.stageNames.clear();
     this.nodes.clear();
   }
 }

@@ -5,29 +5,12 @@
 import type { RunSnapshot } from "../store-types.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { statusIcon, fmtDuration } from "./status-helpers.js";
+import { hexToAnsi, hexBg, RESET } from "./color-utils.js";
 
 export interface HeaderOpts {
   width: number;
   theme: GraphTheme;
 }
-
-function hexToAnsi(hex: string): string {
-  const h = hex.replace(/^#/, "");
-  const r = parseInt(h.slice(0, 2), 16);
-  const g = parseInt(h.slice(2, 4), 16);
-  const b = parseInt(h.slice(4, 6), 16);
-  return `\x1b[38;2;${r};${g};${b}m`;
-}
-
-function hexBg(hex: string): string {
-  const h = hex.replace(/^#/, "");
-  const r = parseInt(h.slice(0, 2), 16);
-  const g = parseInt(h.slice(2, 4), 16);
-  const b = parseInt(h.slice(4, 6), 16);
-  return `\x1b[48;2;${r};${g};${b}m`;
-}
-
-const RESET = "\x1b[0m";
 
 /**
  * Render the header for a workflow run.
@@ -39,12 +22,14 @@ export function renderHeader(run: RunSnapshot, opts: HeaderOpts): string[] {
   const fg = hexToAnsi(theme.headerFg);
 
   const icon = statusIcon(run.status);
-  const elapsed =
-    run.durationMs != null
-      ? fmtDuration(run.durationMs)
-      : run.startedAt != null
-      ? fmtDuration(Date.now() - run.startedAt)
-      : "";
+  let elapsed: string;
+  if (run.durationMs != null) {
+    elapsed = fmtDuration(run.durationMs);
+  } else if (run.startedAt != null) {
+    elapsed = fmtDuration(Date.now() - run.startedAt);
+  } else {
+    elapsed = "";
+  }
 
   // Count stages by status
   const counts = { pending: 0, running: 0, completed: 0, failed: 0 };

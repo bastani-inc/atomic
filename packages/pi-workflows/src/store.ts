@@ -74,7 +74,7 @@ export function createStore(): Store {
       const run = findRun(runId);
       if (!run) return;
       // Only push if not already in run.stages
-      if (!run.stages.find((s) => s.id === stage.id)) {
+      if (!run.stages.some((s) => s.id === stage.id)) {
         run.stages.push(stage);
       }
       _version++;

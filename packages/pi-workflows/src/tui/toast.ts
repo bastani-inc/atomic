@@ -3,6 +3,7 @@
  * cross-ref: spec §5.4.7, v0.x packages/atomic-sdk/src/components/toast.tsx
  */
 import type { GraphTheme } from "./graph-theme.js";
+import { hexBg, RESET } from "./color-utils.js";
 
 export type ToastKind = "success" | "error" | "warn" | "info";
 
@@ -62,15 +63,6 @@ export interface ToastOpts {
   theme: GraphTheme;
 }
 
-function hexBg(hex: string): string {
-  const h = hex.replace(/^#/, "");
-  const r = parseInt(h.slice(0, 2), 16);
-  const g = parseInt(h.slice(2, 4), 16);
-  const b = parseInt(h.slice(4, 6), 16);
-  return `\x1b[48;2;${r};${g};${b}m`;
-}
-
-const RESET = "\x1b[0m";
 const BOLD = "\x1b[1m";
 const WHITE_FG = "\x1b[37m";
 
