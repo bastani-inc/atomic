@@ -1,21 +1,28 @@
 /**
- * Runtime wiring helpers — construct StageAdapters from Pi runtime surfaces.
+ * Runtime wiring helpers — construct StageAdapters and WorkflowUIAdapter from
+ * pi runtime surfaces.
  *
  * The pi ExtensionAPI is structurally typed here: only the `exec` surface is
- * required to build adapters.  When `exec` is absent (degraded / test runtime),
- * `buildRuntimeAdapters` returns an empty adapter set; stage-runner's built-in
- * error messages will fire if any adapter is actually invoked.
+ * required to build stage adapters.  When `exec` is absent (degraded / test
+ * runtime), `buildRuntimeAdapters` returns an empty adapter set; stage-runner's
+ * built-in error messages will fire if any adapter is actually invoked.
  *
- * Each adapter spawns `pi --mode json` as a one-shot subprocess and extracts
- * the final assistant text from the NDJSON event stream.
+ * `buildUIAdapter` maps the pi `ctx.ui` dialog methods (input/confirm/select/
+ * editor) to the WorkflowUIAdapter surface.  Returns `undefined` when pi.ui is
+ * absent or lacks all dialog methods, preserving the executor's existing
+ * fallback behaviour.
+ *
+ * Each stage adapter spawns `pi --mode json` as a one-shot subprocess and
+ * extracts the final assistant text from the NDJSON event stream.
  *
  * cross-ref: packages/pi-workflows/src/runs/sync/stage-runner.ts
  *            packages/pi-workflows/src/extension/index.ts
  *            research/docs/2026-05-11-pi-coding-agent-reference.md §4.3 pi --mode json
+ *            @earendil-works/pi-coding-agent dist/core/extensions/types.d.ts
  */
 
 import type { StageAdapters } from "../runs/sync/stage-runner.js";
-import type { SubagentStageOpts, CompleteStageOpts } from "../shared/types.js";
+import type { SubagentStageOpts, CompleteStageOpts, WorkflowUIAdapter } from "../shared/types.js";
 
 // ---------------------------------------------------------------------------
 // Minimal pi surface
@@ -155,6 +162,108 @@ export function buildRuntimeAdapters(pi: RuntimeWiringSurface): StageAdapters {
         const taskText = parts.join("\n\n");
         return runPiJson(["--mode", "json", "-p", taskText, "--no-session"]);
       },
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// UI adapter — maps pi ctx.ui dialog surface to WorkflowUIAdapter
+// ---------------------------------------------------------------------------
+
+/**
+ * Subset of pi's ExtensionUIDialogOptions consumed by the adapter.
+ * Structurally matched against @earendil-works/pi-coding-agent
+ * dist/core/extensions/types.d.ts ExtensionUIDialogOptions.
+ */
+export interface PiUIDialogOptions {
+  /** AbortSignal to programmatically dismiss the dialog. */
+  signal?: AbortSignal;
+  /** Timeout in milliseconds. */
+  timeout?: number;
+}
+
+/**
+ * Structural type for the pi UI dialog surface.
+ * Matches @earendil-works/pi-coding-agent ExtensionUIContext dialog methods.
+ * All fields optional — presence is checked at runtime before building adapter.
+ */
+export interface PiUISurface {
+  /** Show a text input dialog. Returns undefined when user dismisses. */
+  input?: (title: string, placeholder?: string, opts?: PiUIDialogOptions) => Promise<string | undefined>;
+  /** Show a confirmation dialog. */
+  confirm?: (title: string, message: string, opts?: PiUIDialogOptions) => Promise<boolean>;
+  /** Show a selector and return the user's choice. Returns undefined when user dismisses. */
+  select?: (title: string, options: string[], opts?: PiUIDialogOptions) => Promise<string | undefined>;
+  /** Show a multi-line editor. Returns undefined when user dismisses. */
+  editor?: (title: string, prefill?: string) => Promise<string | undefined>;
+}
+
+/**
+ * Runtime surface that includes the optional UI dialog surface.
+ * Extends RuntimeWiringSurface so buildUIAdapter accepts the same `pi`
+ * object passed to buildRuntimeAdapters.
+ */
+export interface UIWiringSurface {
+  ui?: PiUISurface;
+}
+
+/**
+ * Derive a WorkflowUIAdapter from the pi `ctx.ui` dialog surface.
+ *
+ * Maps each WorkflowUIContext primitive to the corresponding pi dialog method:
+ * - `input(prompt)`   → `pi.ui.input(prompt)` — empty string when dismissed
+ * - `confirm(message)` → `pi.ui.confirm(message, message)` — direct boolean
+ * - `select(message, options)` → `pi.ui.select(message, [...options])` — first
+ *    option when dismissed (select always has ≥1 choice by type invariant)
+ * - `editor(initial?)` → `pi.ui.editor("", initial)` — `initial ?? ""` when dismissed
+ *
+ * Returns `undefined` when `pi.ui` is absent or none of the four dialog
+ * methods are present — the executor's existing fallback remains intact.
+ *
+ * @example
+ * ```ts
+ * // In extension factory:
+ * const ui = buildUIAdapter(pi);
+ * const runtime = createExtensionRuntime({ registry, adapters, ui });
+ * ```
+ */
+export function buildUIAdapter(pi: UIWiringSurface): WorkflowUIAdapter | undefined {
+  const piUI = pi.ui;
+  if (
+    piUI === undefined ||
+    piUI === null ||
+    (typeof piUI.input !== "function" &&
+      typeof piUI.confirm !== "function" &&
+      typeof piUI.select !== "function" &&
+      typeof piUI.editor !== "function")
+  ) {
+    return undefined;
+  }
+
+  return {
+    async input(prompt: string): Promise<string> {
+      if (typeof piUI.input !== "function") return "";
+      const result = await piUI.input(prompt);
+      return result ?? "";
+    },
+
+    async confirm(message: string): Promise<boolean> {
+      if (typeof piUI.confirm !== "function") return false;
+      return piUI.confirm(message, message);
+    },
+
+    async select<T extends string>(message: string, options: readonly T[]): Promise<T> {
+      if (typeof piUI.select !== "function") return options[0];
+      const result = await piUI.select(message, [...options]);
+      // If user dismissed (undefined), fall back to first option.
+      if (result === undefined) return options[0];
+      return result as T;
+    },
+
+    async editor(initial?: string): Promise<string> {
+      if (typeof piUI.editor !== "function") return initial ?? "";
+      const result = await piUI.editor("", initial);
+      return result ?? initial ?? "";
     },
   };
 }

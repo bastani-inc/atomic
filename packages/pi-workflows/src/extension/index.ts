@@ -9,6 +9,13 @@ import {
   renderStageResult,
   renderRunSummary,
 } from "./renderers.js";
+import type {
+  RunEndPayload,
+  RunStartPayload,
+  StageEndPayload,
+  StageProgressPayload,
+  StageStartPayload,
+} from "./renderers.js";
 import { store } from "../store.js";
 import { restoreOnSessionStart } from "../persistence/restore.js";
 import type { SessionManager } from "../persistence/restore.js";
@@ -32,6 +39,8 @@ import { registerWorkflowCliFlags, runWorkflowFromCliFlags } from "../cli-flags.
 import { loadWorkflowConfig, toDiscoveryConfig } from "./config-loader.js";
 import type { ConfigLoadResult } from "./config-loader.js";
 import { buildRuntimeAdapters } from "./wiring.js";
+import { buildUIAdapter } from "./wiring.js";
+import type { PiUISurface } from "./wiring.js";
 
 // ---------------------------------------------------------------------------
 // Minimal ExtensionAPI structural types
@@ -119,7 +128,7 @@ export interface ExtensionAPI {
   registerCommand?: (opts: PiSlashCommandOpts) => void;
   /** Alias used by some earlier pi builds. */
   registerSlashCommand?: (opts: PiSlashCommandOpts) => void;
-  registerMessageRenderer?: (event: string, renderer: (payload: Record<string, unknown>) => string) => void;
+  registerMessageRenderer?: (event: string, renderer: (payload: unknown) => string) => void;
   registerFlag?: (opts: PiFlagOpts) => void;
   /**
    * Sets the session name exposed to child processes via pi-intercom.
@@ -167,7 +176,7 @@ export interface ExtensionAPI {
   sessionManager?: SessionManager;
   ui?: {
     setWidget?: (key: string, factory: WidgetFactory | undefined, opts?: { placement?: string }) => void;
-  };
+  } & PiUISurface;
   [key: string]: unknown;
 }
 
@@ -386,11 +395,13 @@ export function parseWorkflowArgs(tokens: string[]): Record<string, unknown> {
 
 function factory(pi: ExtensionAPI): void {
   // -------------------------------------------------------------------------
-  // 0. Build StageAdapters from pi runtime surfaces.
-  //    adapters are passed into every createExtensionRuntime() call so that
-  //    stage.prompt() / stage.complete() / stage.subagent() work outside tests.
+  // 0. Build StageAdapters and WorkflowUIAdapter from pi runtime surfaces.
+  //    Both are passed into every createExtensionRuntime() call so that
+  //    stage.prompt() / stage.complete() / stage.subagent() and HIL
+  //    ui.input() / confirm() / select() / editor() work outside tests.
   // -------------------------------------------------------------------------
   const adapters = buildRuntimeAdapters(pi);
+  const ui = buildUIAdapter(pi);
 
   // -------------------------------------------------------------------------
   // 1. Create ExtensionRuntime — mutable ref seeded from sync bundled discovery,
@@ -401,12 +412,10 @@ function factory(pi: ExtensionAPI): void {
   //    needing to be re-registered.
   // -------------------------------------------------------------------------
   const runtimeRef: { current: ExtensionRuntime } = {
-    current: createExtensionRuntime({ registry: discoverBundledWorkflowsSync().registry, adapters }),
+    current: createExtensionRuntime({ registry: discoverBundledWorkflowsSync().registry, adapters, ui }),
   };
-  /** Stores the full unified DiscoveryResult once async discovery completes. */
-  const discoveryRef: { result: DiscoveryResult | null } = { result: null };
-  /** Retains config load result for /workflows-doctor diagnostics. */
-  const configLoadRef: { result: ConfigLoadResult | null } = { result: null };
+  const discoveryRef: { current: DiscoveryResult | null } = { current: null };
+  const configLoadRef: { current: ConfigLoadResult | null } = { current: null };
 
   /** Stable proxy — all registrations close over this; delegates to runtimeRef.current. */
   const runtimeProxy: ExtensionRuntime = {
@@ -427,7 +436,7 @@ function factory(pi: ExtensionAPI): void {
 
   // Load startup config before discovery so workflow paths and tunables are applied.
   const discoveryPromise = loadWorkflowConfig().then(async (configResult) => {
-    configLoadRef.result = configResult;
+    configLoadRef.current = configResult;
 
     // Map config.workflows entries → DiscoveryConfig.projectWorkflows for
     // settings-based discovery (merged config — project wins over global).
@@ -435,8 +444,8 @@ function factory(pi: ExtensionAPI): void {
       configResult.config !== null ? toDiscoveryConfig(configResult.config) : undefined;
 
     const result = await discoverWorkflows({ config: discoveryConfig });
-    discoveryRef.result = result;
-    runtimeRef.current = createExtensionRuntime({ registry: result.registry, adapters });
+    discoveryRef.current = result;
+    runtimeRef.current = createExtensionRuntime({ registry: result.registry, adapters, ui });
 
     // Register /workflow:<name> aliases for workflows discovered beyond the
     // initial bundled set (project-local, user-global, settings).
@@ -663,7 +672,7 @@ function factory(pi: ExtensionAPI): void {
     execute: async (_args: string, ctx: PiCommandContext) => {
       const print = ctx.reply ?? ctx.print ?? ((_msg: string) => undefined);
       // Use already-discovered unified registry when available; fall back to bundled-only.
-      const discovery = discoveryRef.result ?? (await discoverBundledWorkflows());
+      const discovery = discoveryRef.current ?? (await discoverBundledWorkflows());
       const siblings: DoctorSiblingStatus = {
         subagents: pi.subagents !== undefined,
         // pi-mcp-adapter exposes itself as pi["mcpAdapter"] (structural check)
@@ -671,7 +680,7 @@ function factory(pi: ExtensionAPI): void {
         // pi-intercom registers setSessionName on the ExtensionAPI when present
         intercom: typeof pi.setSessionName === "function",
       };
-      print(buildDoctorReport(discovery, siblings, configLoadRef.result));
+      print(buildDoctorReport(discovery, siblings, configLoadRef.current));
     },
   });
 
@@ -681,23 +690,23 @@ function factory(pi: ExtensionAPI): void {
   if (typeof pi.registerMessageRenderer === "function") {
     pi.registerMessageRenderer(
       "workflow.run.start",
-      (payload) => renderRunBanner(payload as unknown as Parameters<typeof renderRunBanner>[0]),
+      (payload) => renderRunBanner(payload as RunStartPayload),
     );
     pi.registerMessageRenderer(
       "workflow.stage.start",
-      (payload) => renderStageChip(payload as unknown as Parameters<typeof renderStageChip>[0]),
+      (payload) => renderStageChip(payload as StageStartPayload),
     );
     pi.registerMessageRenderer(
       "workflow.stage.progress",
-      (payload) => renderStageProgress(payload as unknown as Parameters<typeof renderStageProgress>[0]),
+      (payload) => renderStageProgress(payload as StageProgressPayload),
     );
     pi.registerMessageRenderer(
       "workflow.stage.end",
-      (payload) => renderStageResult(payload as unknown as Parameters<typeof renderStageResult>[0]),
+      (payload) => renderStageResult(payload as StageEndPayload),
     );
     pi.registerMessageRenderer(
       "workflow.run.end",
-      (payload) => renderRunSummary(payload as unknown as Parameters<typeof renderRunSummary>[0]),
+      (payload) => renderRunSummary(payload as RunEndPayload),
     );
   }
 
@@ -719,13 +728,9 @@ function factory(pi: ExtensionAPI): void {
       // dispatching CLI workflow flags — tunables must be resolved first.
       await discoveryPromise;
       void runWorkflowFromCliFlags({ runtime: runtimeProxy });
-    });
 
-    pi.on("session_start", async () => {
-      // Wait for config to load so we use configured tunables, not hardcoded defaults.
-      await discoveryPromise;
       if (pi.sessionManager) {
-        const cfg = configLoadRef.result?.config;
+        const cfg = configLoadRef.current?.config;
         restoreOnSessionStart(
           pi.sessionManager,
           {
