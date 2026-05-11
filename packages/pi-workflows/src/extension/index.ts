@@ -237,7 +237,7 @@ const workflowParameters = Type.Object({
 //                + real status/kill/resume (Phase D)
 // ---------------------------------------------------------------------------
 
-function makeExecuteWorkflowTool(
+export function makeExecuteWorkflowTool(
   runtime: ExtensionRuntime,
   getPersistence: () => WorkflowPersistencePort | undefined,
 ) {
