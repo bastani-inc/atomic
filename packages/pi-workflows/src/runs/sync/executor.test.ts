@@ -721,6 +721,63 @@ describe("executor.run — abort/kill wiring", () => {
     adapterResolve("ignored");
   });
 
+  test("external killRun + executor abort path: workflow.run.end appended exactly once", async () => {
+    const { createCancellationRegistry } = await import("../detach/cancellation-registry.js");
+    const { killRun } = await import("../detach/status.js");
+
+    const registry = createCancellationRegistry();
+    const testStore = createStore();
+
+    const calls: Array<{ type: string; payload: Record<string, unknown> }> = [];
+    const persistence = {
+      appendEntry(type: string, payload: Record<string, unknown>): string {
+        calls.push({ type, payload });
+        return `entry-${calls.length}`;
+      },
+    };
+
+    const def = defineWorkflow("no-dup-kill-wf")
+      .run(async (ctx) => {
+        await ctx.stage("slow").prompt("go");
+        return {};
+      })
+      .compile();
+
+    let capturedRunId!: string;
+    let adapterResolve!: (value: string) => void;
+    const adapterPromise = new Promise<string>((resolve) => {
+      adapterResolve = resolve;
+    });
+
+    const runPromise = run(def, {}, {
+      adapters: { prompt: { prompt: async (_text) => adapterPromise } },
+      store: testStore,
+      cancellation: registry,
+      persistence,
+      onRunStart: (snap) => { capturedRunId = snap.id; },
+    });
+
+    // Wait for executor to register and stage to be in-flight
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+
+    // External kill path: records "killed" in store + appends one workflow.run.end
+    const killResult = killRun(capturedRunId, { store: testStore, cancellation: registry, persistence });
+    expect(killResult).toMatchObject({ ok: true });
+
+    // Resolve the dangling adapter promise (executor is already aborted, ignored)
+    adapterResolve("ignored");
+
+    const result = await runPromise;
+    expect(result.status).toBe("killed");
+
+    // Executor's abort path called recordRunEnd → store returned false (already terminal)
+    // appendRunEndWhenRecorded skipped → total workflow.run.end entries = 1 (from killRun only)
+    const runEndCalls = calls.filter((c) => c.type === "workflow.run.end");
+    expect(runEndCalls).toHaveLength(1);
+    expect(runEndCalls[0]?.payload["status"]).toBe("killed");
+    expect(runEndCalls[0]?.payload["runId"]).toBe(capturedRunId);
+  });
+
   test("later resolution doesn't overwrite killed status", async () => {
     const { createCancellationRegistry } = await import("../detach/cancellation-registry.js");
     const testStore = createStore();
