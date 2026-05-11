@@ -7,6 +7,7 @@
     "build": "bun run --filter='*' build",
     "lint": "bun run --filter='*' lint",
     "typecheck": "bun run --filter='*' typecheck",
-    "test": "bun run --filter='*' test"
+    "test": "bun run --filter='*' test",
+    "verify-artifact": "bun run --filter='*' verify-artifact"
   }
 }
