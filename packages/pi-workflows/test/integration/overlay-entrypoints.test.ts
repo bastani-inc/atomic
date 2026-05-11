@@ -16,7 +16,7 @@ import { test, expect, describe } from "bun:test";
 import { buildGraphOverlayAdapter } from "../../src/tui/overlay-adapter.js";
 import type { GraphOverlayPort, OverlayPiSurface } from "../../src/tui/overlay-adapter.js";
 import type { PiCustomOverlayOpts, PiCustomOverlayHandle } from "../../src/extension/wiring.js";
-import { createStore } from "../../src/store.js";
+import { createStore, store as singletonStore } from "../../src/store.js";
 import factory from "../../src/extension/index.js";
 import type { ExtensionAPI, PiSlashCommandOpts, PiCommandContext } from "../../src/extension/index.js";
 
@@ -338,6 +338,60 @@ describe("/workflow resume — overlay integration", () => {
     const completions = await wfCmd.getArgumentCompletions?.("res") ?? [];
 
     expect(completions.some((c) => c.label === "resume")).toBe(true);
+  });
+
+  // RFC regression gate: overlay.open MUST be called when resume succeeds.
+  // Fails if the runtime registers helpers but doesn't invoke overlay.open.
+  test("resume with known completed runId calls overlay.open (opens custom overlay)", async () => {
+    const runId = `test-resume-run-${Date.now()}`;
+
+    // Seed the singleton store — factory's resumeRun uses defaultStore
+    singletonStore.recordRunStart({
+      id: runId,
+      name: "test-wf",
+      inputs: {},
+      status: "running",
+      stages: [],
+      startedAt: Date.now(),
+    });
+    singletonStore.recordRunEnd(runId, "completed", {});
+
+    const { pi, commands, customCalls } = buildMockPi();
+    factory(pi);
+
+    const wfCmd = commands["workflow"]!;
+    const { ctx } = buildPrintCtx();
+
+    await wfCmd.execute(`resume ${runId}`, ctx);
+
+    // overlay.open(runId) must have been called → pi.ui.custom fired
+    expect(customCalls.length).toBeGreaterThanOrEqual(1);
+    expect(customCalls[0]!.opts.overlay).toBe(true);
+  });
+
+  test("resume with still-active runId does NOT call overlay.open", async () => {
+    const runId = `test-active-run-${Date.now()}`;
+
+    // Seed singleton store with an in-flight run (no endedAt) — resumeRun returns not_ended
+    singletonStore.recordRunStart({
+      id: runId,
+      name: "active-wf",
+      inputs: {},
+      status: "running",
+      stages: [],
+      startedAt: Date.now(),
+    });
+    // Do NOT call recordRunEnd — run stays active
+
+    const { pi, commands, customCalls } = buildMockPi();
+    factory(pi);
+
+    const wfCmd = commands["workflow"]!;
+    const { ctx } = buildPrintCtx();
+
+    await wfCmd.execute(`resume ${runId}`, ctx);
+
+    expect(customCalls).toHaveLength(0);
   });
 });
 
