@@ -14,12 +14,13 @@
  */
 
 import { test, expect, describe } from "bun:test";
-import { parseWorkflowArgs, stripDetachFlags } from "./index.js";
+import { parseWorkflowArgs, stripDetachFlags, makeExecuteWorkflowTool } from "./index.js";
 import type { ExtensionAPI, PiCommandContext, PiCommandOptions, PiSlashCommandOpts } from "./index.js";
 import { createRegistry } from "../workflows/registry.js";
 import { defineWorkflow } from "../workflows/define-workflow.js";
 import type { WorkflowDefinition } from "../shared/types.js";
 import { createExtensionRuntime } from "./runtime.js";
+import { store } from "../store.js";
 
 // ---------------------------------------------------------------------------
 // parseWorkflowArgs
@@ -74,25 +75,44 @@ interface RegisteredCommand {
   opts: PiSlashCommandOpts;
 }
 
-/** Build a minimal mock ExtensionAPI that records registerCommand calls. */
 function buildMockPi(): { pi: ExtensionAPI; commands: RegisteredCommand[] } {
   const commands: RegisteredCommand[] = [];
   const pi: ExtensionAPI = {
     registerCommand: (name: string, options: PiCommandOptions) => {
-      const opts: PiSlashCommandOpts = { name, description: options.description, execute: options.handler, getArgumentCompletions: options.getArgumentCompletions };
+      const opts: PiSlashCommandOpts = {
+        name,
+        description: options.description,
+        execute: options.handler,
+        getArgumentCompletions: options.getArgumentCompletions,
+      };
       commands.push({ name, opts });
     },
   };
   return { pi, commands };
 }
 
-/** Build a print-capturing PiCommandContext. */
 function buildCtx(): { ctx: PiCommandContext; messages: string[] } {
   const messages: string[] = [];
   const ctx: PiCommandContext = {
-    reply: (msg: string) => { messages.push(msg); },
+    reply(msg: string) {
+      messages.push(msg);
+    },
   };
   return { ctx, messages };
+}
+
+function addFactoryStubs(pi: ExtensionAPI): void {
+  pi.registerTool = () => {};
+  pi.registerMessageRenderer = () => {};
+  pi.registerFlag = () => {};
+  pi.on = () => {};
+  pi.ui = { setWidget: () => {} };
+}
+
+async function runFactory(pi: ExtensionAPI): Promise<void> {
+  addFactoryStubs(pi);
+  const factoryModule = await import("./index.js");
+  factoryModule.default(pi);
 }
 
 // ---------------------------------------------------------------------------
@@ -110,15 +130,8 @@ describe("slash /workflow <name> dispatch", () => {
 
     const { pi, commands } = buildMockPi();
 
-    // Import factory dynamically to inject controlled runtime
-    // We test the execute handler directly by building it from the runtime dispatch
     const { ctx, messages } = buildCtx();
 
-    // Simulate dispatch: call the execute handler of /workflow with "test-wf"
-    // We build the handler the same way factory does by extracting it from registered commands
-    // Use the factory with a mock pi that captures the command
-
-    // Build execute handler inline (mirrors factory behaviour)
     let dispatchCalled = false;
     let dispatchedArgs: { name: string; inputs: Record<string, unknown>; action: string } | null = null;
 
@@ -205,16 +218,7 @@ describe("factory alias registration (real factory)", () => {
   /** Import factory and call it with a mock pi whose registry contains known workflows. */
   async function runFactoryWithMock(): Promise<RegisteredCommand[]> {
     const { pi, commands } = buildMockPi();
-    // Patch pi with stubs for other registration calls to avoid side effects
-    pi.registerTool = () => {};
-    pi.registerMessageRenderer = () => {};
-    pi.registerFlag = () => {};
-    pi.on = () => {};
-    pi.ui = { setWidget: () => {} };
-
-    const factoryModule = await import("./index.js");
-    const factory = factoryModule.default;
-    factory(pi);
+    await runFactory(pi);
     return commands;
   }
 
@@ -246,14 +250,7 @@ describe("factory alias registration (real factory)", () => {
 describe("getArgumentCompletions includes workflow names", () => {
   test("completions include admin subcommands and workflow names from registry", async () => {
     const { pi, commands } = buildMockPi();
-    pi.registerTool = () => {};
-    pi.registerMessageRenderer = () => {};
-    pi.registerFlag = () => {};
-    pi.on = () => {};
-    pi.ui = { setWidget: () => {} };
-
-    const factoryModule = await import("./index.js");
-    factoryModule.default(pi);
+    await runFactory(pi);
 
     const workflowCmd = commands.find((c) => c.name === "workflow");
     expect(workflowCmd).toBeDefined();
@@ -261,14 +258,12 @@ describe("getArgumentCompletions includes workflow names", () => {
     const completions = await workflowCmd!.opts.getArgumentCompletions?.("") ?? [];
     const labels = completions.map((c) => c.label);
 
-    // Admin subcommands
     expect(labels).toContain("list");
     expect(labels).toContain("status");
     expect(labels).toContain("kill");
     expect(labels).toContain("resume");
     expect(labels).toContain("inputs");
 
-    // Workflow names from bundled discovery
     expect(labels).toContain("deep-research-codebase");
     expect(labels).toContain("ralph");
     expect(labels).toContain("open-claude-design");
@@ -276,14 +271,7 @@ describe("getArgumentCompletions includes workflow names", () => {
 
   test("completions filter by partial prefix", async () => {
     const { pi, commands } = buildMockPi();
-    pi.registerTool = () => {};
-    pi.registerMessageRenderer = () => {};
-    pi.registerFlag = () => {};
-    pi.on = () => {};
-    pi.ui = { setWidget: () => {} };
-
-    const factoryModule = await import("./index.js");
-    factoryModule.default(pi);
+    await runFactory(pi);
 
     const workflowCmd = commands.find((c) => c.name === "workflow");
     const completions = await workflowCmd!.opts.getArgumentCompletions?.("li") ?? [];
@@ -299,14 +287,7 @@ describe("getArgumentCompletions includes workflow names", () => {
 describe("inputs subcommand", () => {
   test("/workflow inputs with no name prints usage", async () => {
     const { pi, commands } = buildMockPi();
-    pi.registerTool = () => {};
-    pi.registerMessageRenderer = () => {};
-    pi.registerFlag = () => {};
-    pi.on = () => {};
-    pi.ui = { setWidget: () => {} };
-
-    const factoryModule = await import("./index.js");
-    factoryModule.default(pi);
+    await runFactory(pi);
 
     const workflowCmd = commands.find((c) => c.name === "workflow");
     const { ctx, messages } = buildCtx();
@@ -318,14 +299,7 @@ describe("inputs subcommand", () => {
 
   test("/workflow inputs <unknown> prints workflow not found plus available", async () => {
     const { pi, commands } = buildMockPi();
-    pi.registerTool = () => {};
-    pi.registerMessageRenderer = () => {};
-    pi.registerFlag = () => {};
-    pi.on = () => {};
-    pi.ui = { setWidget: () => {} };
-
-    const factoryModule = await import("./index.js");
-    factoryModule.default(pi);
+    await runFactory(pi);
 
     const workflowCmd = commands.find((c) => c.name === "workflow");
     const { ctx, messages } = buildCtx();
@@ -337,23 +311,13 @@ describe("inputs subcommand", () => {
 
   test("/workflow inputs <known> shows schema", async () => {
     const { pi, commands } = buildMockPi();
-    pi.registerTool = () => {};
-    pi.registerMessageRenderer = () => {};
-    pi.registerFlag = () => {};
-    pi.on = () => {};
-    pi.ui = { setWidget: () => {} };
-
-    const factoryModule = await import("./index.js");
-    factoryModule.default(pi);
+    await runFactory(pi);
 
     const workflowCmd = commands.find((c) => c.name === "workflow");
     const { ctx, messages } = buildCtx();
-    // "ralph" is a bundled workflow — it may have inputs or not, but should not error with "not found"
     await workflowCmd!.opts.execute("inputs ralph", ctx);
 
-    // Should not say "Workflow not found"
     expect(messages[0]).not.toContain("Workflow not found");
-    // Should mention "ralph" in context
     expect(messages[0]).toContain("ralph");
   });
 });
@@ -365,24 +329,14 @@ describe("inputs subcommand", () => {
 describe("/workflow <name> prompt=test dispatches run via factory", () => {
   test("/workflow deep-research-codebase dispatches run action (not unknown subcommand)", async () => {
     const { pi, commands } = buildMockPi();
-    pi.registerTool = () => {};
-    pi.registerMessageRenderer = () => {};
-    pi.registerFlag = () => {};
-    pi.on = () => {};
-    pi.ui = { setWidget: () => {} };
-
-    const factoryModule = await import("./index.js");
-    factoryModule.default(pi);
+    await runFactory(pi);
 
     const workflowCmd = commands.find((c) => c.name === "workflow");
     const { ctx, messages } = buildCtx();
 
-    // Execute — deep-research-codebase is a real bundled workflow.
-    // It may fail/succeed at runtime but should NOT print "unknown subcommand".
     await workflowCmd!.opts.execute("deep-research-codebase prompt=test", ctx);
 
     expect(messages.some((m) => m.includes("unknown subcommand"))).toBe(false);
-    // Should print completed OR failed (workflow ran, not rejected as unknown subcommand)
     const dispatched = messages.some(
       (m) =>
         m.includes("completed") ||
@@ -390,6 +344,158 @@ describe("/workflow <name> prompt=test dispatches run via factory", () => {
         m.includes("Workflow not found"),
     );
     expect(dispatched).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Canonical registerCommand shape — opts.handler, no opts.execute
+// ---------------------------------------------------------------------------
+
+interface RawRegisteredCommand {
+  name: string;
+  options: PiCommandOptions;
+}
+
+function buildRawMockPi(): { pi: ExtensionAPI; commands: RawRegisteredCommand[] } {
+  const commands: RawRegisteredCommand[] = [];
+  const pi: ExtensionAPI = {
+    registerCommand: (name: string, options: PiCommandOptions) => {
+      commands.push({ name, options });
+    },
+  };
+  return { pi, commands };
+}
+
+describe("canonical registerCommand — opts.handler shape", () => {
+  async function runFactoryRaw(): Promise<RawRegisteredCommand[]> {
+    const { pi, commands } = buildRawMockPi();
+    await runFactory(pi);
+    return commands;
+  }
+
+  test("registerCommand receives string name 'workflow'", async () => {
+    const commands = await runFactoryRaw();
+    const names = commands.map((c) => c.name);
+    expect(names).toContain("workflow");
+  });
+
+  test("registerCommand receives string name 'workflows-doctor'", async () => {
+    const commands = await runFactoryRaw();
+    const names = commands.map((c) => c.name);
+    expect(names).toContain("workflows-doctor");
+  });
+
+  test("registerCommand receives string names 'workflow:<alias>' for bundled workflows", async () => {
+    const commands = await runFactoryRaw();
+    const names = commands.map((c) => c.name);
+    expect(names.some((n) => n.startsWith("workflow:"))).toBe(true);
+  });
+
+  test("opts passed to registerCommand have 'handler' (function)", async () => {
+    const commands = await runFactoryRaw();
+    for (const { name, options } of commands) {
+      expect(typeof options.handler, `${name}: handler should be function`).toBe("function");
+    }
+  });
+
+  test("opts passed to registerCommand do NOT have 'execute' property", async () => {
+    const commands = await runFactoryRaw();
+    for (const { name, options } of commands) {
+      expect(
+        Object.prototype.hasOwnProperty.call(options, "execute"),
+        `${name}: opts must not have execute — use handler`,
+      ).toBe(false);
+    }
+  });
+
+  test("opts have 'description' string", async () => {
+    const commands = await runFactoryRaw();
+    for (const { name, options } of commands) {
+      expect(typeof options.description, `${name}: description should be string`).toBe("string");
+    }
+  });
+
+  test("handler for 'workflow' is callable — does not throw synchronously", async () => {
+    const commands = await runFactoryRaw();
+    const workflowCmd = commands.find((c) => c.name === "workflow");
+    expect(workflowCmd).toBeDefined();
+    const msgs: string[] = [];
+    const ctx: PiCommandContext = {
+      reply(message) {
+        msgs.push(message);
+      },
+    };
+    await workflowCmd!.options.handler("list", ctx);
+    expect(msgs.length).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Canonical preference — registerCommand wins over registerSlashCommand
+// ---------------------------------------------------------------------------
+
+describe("canonical preference — registerCommand preferred over registerSlashCommand", () => {
+  test("when both present, registerCommand called and registerSlashCommand NOT called", async () => {
+    let canonicalCalls = 0;
+    let legacyCalls = 0;
+
+    const pi: ExtensionAPI = {
+      registerCommand() {
+        canonicalCalls++;
+      },
+      registerSlashCommand() {
+        legacyCalls++;
+      },
+    };
+
+    await runFactory(pi);
+
+    expect(canonicalCalls).toBeGreaterThan(0);
+    expect(legacyCalls).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Legacy fallback — registerSlashCommand called when registerCommand absent
+// ---------------------------------------------------------------------------
+
+describe("legacy fallback — registerSlashCommand when registerCommand absent", () => {
+  async function runFactoryLegacy(): Promise<PiSlashCommandOpts[]> {
+    const legacyCommands: PiSlashCommandOpts[] = [];
+
+    const pi: ExtensionAPI = {
+      registerSlashCommand(opts: PiSlashCommandOpts) {
+        legacyCommands.push(opts);
+      },
+    };
+
+    await runFactory(pi);
+    return legacyCommands;
+  }
+
+  test("registerSlashCommand called for all commands when registerCommand absent", async () => {
+    const legacyCommands = await runFactoryLegacy();
+
+    expect(legacyCommands.length).toBeGreaterThan(0);
+    const names = legacyCommands.map((c) => c.name);
+    expect(names).toContain("workflow");
+    expect(names).toContain("workflows-doctor");
+  });
+
+  test("legacy opts have 'execute' function (not 'handler')", async () => {
+    const legacyCommands = await runFactoryLegacy();
+
+    for (const opts of legacyCommands) {
+      expect(typeof opts.execute, `${opts.name}: execute should be function on legacy path`).toBe("function");
+    }
+  });
+
+  test("legacy opts have 'name' string", async () => {
+    const legacyCommands = await runFactoryLegacy();
+
+    for (const opts of legacyCommands) {
+      expect(typeof opts.name, `${opts.name}: name should be string`).toBe("string");
+    }
   });
 });
 
@@ -593,5 +699,105 @@ describe("workflow:<name> alias --detach flag (factory execute)", () => {
 
     expect(msgs.some((m) => m.includes("background"))).toBe(true);
     expect(msgs.every((m) => !m.includes("--bg"))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resume regression: /workflow resume opens overlay + no legacy message
+// ---------------------------------------------------------------------------
+
+function makeInflightRun(id: string) {
+  return {
+    id,
+    name: "test-wf",
+    inputs: {},
+    status: "running" as const,
+    stages: [],
+    startedAt: Date.now(),
+  };
+}
+
+describe("/workflow resume <runId> — overlay open + no legacy message", () => {
+  test("seeds active run; /workflow resume calls overlay.open (pi.ui.custom invoked with overlay:true)", async () => {
+    const runId = `resume-slash-overlay-${Date.now()}`;
+    store.recordRunStart(makeInflightRun(runId));
+
+    const openCalls: Array<{ overlay: boolean }> = [];
+    const { pi, commands } = buildMockPi();
+    pi.registerTool = () => {};
+    pi.registerMessageRenderer = () => {};
+    pi.registerFlag = () => {};
+    pi.on = () => {};
+    pi.ui = {
+      setWidget: () => {},
+      custom: (opts) => {
+        openCalls.push({ overlay: !!opts.overlay });
+        return { close: () => {} };
+      },
+    };
+
+    const factoryModule = await import("./index.js");
+    factoryModule.default(pi);
+
+    const workflowCmd = commands.find((c) => c.name === "workflow")!;
+    const msgs: string[] = [];
+    const ctx: PiCommandContext = { reply: (m: string) => { msgs.push(m); } };
+
+    await workflowCmd.opts.execute(`resume ${runId}`, ctx);
+
+    expect(openCalls.length).toBeGreaterThan(0);
+    expect(openCalls[0].overlay).toBe(true);
+  });
+
+  test("active run resume output does NOT include 'still active — no resume needed'", async () => {
+    const runId = `resume-nomsg-${Date.now()}`;
+    store.recordRunStart(makeInflightRun(runId));
+
+    const { pi, commands } = buildMockPi();
+    pi.registerTool = () => {};
+    pi.registerMessageRenderer = () => {};
+    pi.registerFlag = () => {};
+    pi.on = () => {};
+    pi.ui = {
+      setWidget: () => {},
+      custom: () => ({ close: () => {} }),
+    };
+
+    const factoryModule = await import("./index.js");
+    factoryModule.default(pi);
+
+    const workflowCmd = commands.find((c) => c.name === "workflow")!;
+    const msgs: string[] = [];
+    const ctx: PiCommandContext = { reply: (m: string) => { msgs.push(m); } };
+
+    await workflowCmd.opts.execute(`resume ${runId}`, ctx);
+
+    expect(msgs.every((m) => !m.includes("still active"))).toBe(true);
+    expect(msgs.every((m) => !m.includes("no resume needed"))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resume regression: tool action "resume" against active run returns status:"ok"
+// ---------------------------------------------------------------------------
+
+describe("tool action resume — active run returns status:ok", () => {
+  test("makeExecuteWorkflowTool resume against in-flight run returns status:'ok'", async () => {
+    const runId = `resume-tool-ok-${Date.now()}`;
+    store.recordRunStart(makeInflightRun(runId));
+
+    const registry = createRegistry([]);
+    const runtime = createExtensionRuntime({ registry });
+    const handler = makeExecuteWorkflowTool(runtime, () => undefined);
+
+    const result = await handler(
+      { action: "resume", name: runId },
+      {} as never,
+    );
+
+    expect(result.action).toBe("resume");
+    const r = result as { action: string; status: string; runId: string };
+    expect(r.status).toBe("ok");
+    expect(r.runId).toBe(runId);
   });
 });
