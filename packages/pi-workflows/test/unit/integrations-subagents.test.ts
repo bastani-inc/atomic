@@ -101,7 +101,9 @@ describe("isSubagentsPresent", () => {
 
 describe("assertSubagentsPresent", () => {
   test("throws with actionable message when absent", () => {
-    expect(() => assertSubagentsPresent({})).toThrow("pi install npm:pi-subagents");
+    expect(() => assertSubagentsPresent({})).toThrow(
+      "pi-workflows: subagent delegation requires pi-subagents — install npm:pi-subagents and restart pi.",
+    );
   });
 
   test("does not throw when present", () => {

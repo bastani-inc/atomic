@@ -23,6 +23,7 @@
 
 import type { StageAdapters } from "../runs/sync/stage-runner.js";
 import type { SubagentStageOpts, CompleteStageOpts, WorkflowUIAdapter } from "../shared/types.js";
+import { readWorkflowEnv } from "../integrations/subagents.js";
 
 // ---------------------------------------------------------------------------
 // Minimal pi surface
@@ -44,8 +45,21 @@ export interface RuntimeWiringSurface {
   /**
    * Execute a shell command.
    * Present on the real pi ExtensionAPI; may be absent in degraded / test runtimes.
+   * Used by prompt and complete adapters only — NOT used by the subagent adapter.
    */
   exec?: (command: string, args: string[]) => Promise<PiExecResult>;
+
+  /**
+   * pi-subagents integration surface.
+   * Typed as unknown for compatibility with ExtensionAPI — narrowed at point of use.
+   */
+  subagents?: unknown;
+
+  /**
+   * Generic tool-call surface on the pi runtime.
+   * Used as secondary fallback for subagent delegation when pi.subagents is absent.
+   */
+  callTool?: (name: string, args: Record<string, unknown>) => Promise<string>;
 }
 
 // ---------------------------------------------------------------------------
@@ -131,6 +145,15 @@ export function buildRuntimeAdapters(pi: RuntimeWiringSurface): StageAdapters {
     return text;
   }
 
+  /** Collect defined workflow env vars for injection into subagent child context. */
+  function workflowEnvRecord(): Record<string, string> {
+    const raw = readWorkflowEnv();
+    const out: Record<string, string> = {};
+    if (raw.PI_WORKFLOW_RUN_ID) out["PI_WORKFLOW_RUN_ID"] = raw.PI_WORKFLOW_RUN_ID;
+    if (raw.PI_WORKFLOW_STAGE_ID) out["PI_WORKFLOW_STAGE_ID"] = raw.PI_WORKFLOW_STAGE_ID;
+    return out;
+  }
+
   return {
     prompt: {
       async prompt(text: string): Promise<string> {
@@ -150,17 +173,44 @@ export function buildRuntimeAdapters(pi: RuntimeWiringSurface): StageAdapters {
 
     subagent: {
       async subagent(opts: SubagentStageOpts): Promise<string> {
-        // Prepend agent identity and optional context into the task prompt so
-        // the spawned pi session understands its role without requiring a
-        // separately resolved agent definition file.
-        const parts: string[] = [];
-        if (opts.context) {
-          parts.push(`Context: ${opts.context}`);
+        // Primary: delegate to pi-subagents public surface.
+        // Narrowed at runtime — pi.subagents is typed unknown for ExtensionAPI compat.
+        const subagentsAny = pi.subagents as Record<string, unknown> | undefined;
+        if (typeof subagentsAny?.["run"] === "function") {
+          const runFn = subagentsAny["run"] as (opts: {
+            agent: string;
+            task: string;
+            context?: string;
+            env?: Record<string, string>;
+            signal?: AbortSignal;
+          }) => Promise<string>;
+          return runFn({
+            agent: opts.agent,
+            task: opts.task,
+            context: opts.context,
+            env: workflowEnvRecord(),
+            signal: undefined,
+          });
         }
-        parts.push(`Agent: ${opts.agent}`);
-        parts.push(`Task: ${opts.task}`);
-        const taskText = parts.join("\n\n");
-        return runPiJson(["--mode", "json", "-p", taskText, "--no-session"]);
+
+        // Secondary: generic callTool fallback when pi.subagents absent.
+        if (typeof pi.callTool === "function") {
+          const args: Record<string, unknown> = {
+            action: "run",
+            agent: opts.agent,
+            task: opts.task,
+            env: workflowEnvRecord(),
+          };
+          if (opts.context !== undefined) {
+            args["context"] = opts.context;
+          }
+          return pi.callTool("subagent", args);
+        }
+
+        // Neither surface available — fail with actionable error.
+        throw new Error(
+          "pi-workflows: subagent delegation requires pi-subagents — install npm:pi-subagents and restart pi.",
+        );
       },
     },
   };
@@ -180,6 +230,27 @@ export interface PiUIDialogOptions {
   signal?: AbortSignal;
   /** Timeout in milliseconds. */
   timeout?: number;
+}
+
+/**
+ * Handle returned by pi.ui.custom() to dismiss the overlay.
+ */
+export interface PiCustomOverlayHandle {
+  close(): void;
+}
+
+/**
+ * Options passed to pi.ui.custom() to open a custom overlay panel.
+ */
+export interface PiCustomOverlayOpts {
+  /** When true, renders as a full-screen overlay rather than an inline widget. */
+  overlay: true;
+  /** Render callback — returns lines to display. width is terminal columns. */
+  render?: (width: number) => string[];
+  /** Keyboard input handler — returns true when the key was consumed. */
+  onInput?: (data: string) => boolean;
+  /** Called when the host UI closes the overlay (e.g. user navigates away). */
+  onClose?: () => void;
 }
 
 /**

@@ -126,8 +126,7 @@ export function isSubagentsPresent(pi: PiSubagentsExtensionAPI): boolean {
 export function assertSubagentsPresent(pi: PiSubagentsExtensionAPI): void {
   if (!isSubagentsPresent(pi)) {
     throw new Error(
-      "pi-workflows: subagent delegation requires pi-subagents — " +
-        "install it with `pi install npm:pi-subagents` and restart pi.",
+      "pi-workflows: subagent delegation requires pi-subagents — install npm:pi-subagents and restart pi.",
     );
   }
 }

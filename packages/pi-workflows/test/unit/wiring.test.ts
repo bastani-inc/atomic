@@ -261,52 +261,146 @@ describe("complete adapter", () => {
 });
 
 // ---------------------------------------------------------------------------
-// subagent adapter
+// subagent adapter — delegates to pi.subagents.run or pi.callTool (no exec)
 // ---------------------------------------------------------------------------
 
-describe("subagent adapter", () => {
-  test("includes agent name and task in prompt", async () => {
-    const { pi, calls } = makeMockPi(makeNdjsonWithText("done"));
-    const adapters = buildRuntimeAdapters(pi);
-    const opts: SubagentStageOpts = { agent: "code-reviewer", task: "Review the PR" };
-    await adapters.subagent!.subagent(opts);
-    const { args } = calls[0]!;
-    const promptArg = args[args.indexOf("-p") + 1];
-    expect(promptArg).toContain("code-reviewer");
-    expect(promptArg).toContain("Review the PR");
-  });
-
-  test("includes context when provided", async () => {
-    const { pi, calls } = makeMockPi(makeNdjsonWithText("done"));
-    const adapters = buildRuntimeAdapters(pi);
-    const opts: SubagentStageOpts = {
-      agent: "doc-writer",
-      task: "Write docs for the API",
-      context: "TypeScript REST API using Hono",
+describe("subagent adapter — pi.subagents.run delegation", () => {
+  test("calls pi.subagents.run when available", async () => {
+    const runCalls: Array<Record<string, unknown>> = [];
+    const pi: RuntimeWiringSurface = {
+      exec: async () => ({ stdout: "", stderr: "", code: 0, killed: false }),
+      subagents: {
+        run: async (opts) => {
+          runCalls.push(opts as unknown as Record<string, unknown>);
+          return "subagent-result";
+        },
+      },
     };
-    await adapters.subagent!.subagent(opts);
-    const promptArg = calls[0]!.args[calls[0]!.args.indexOf("-p") + 1];
-    expect(promptArg).toContain("TypeScript REST API using Hono");
-    expect(promptArg).toContain("doc-writer");
-    expect(promptArg).toContain("Write docs for the API");
-  });
-
-  test("omits Context: prefix when context is absent", async () => {
-    const { pi, calls } = makeMockPi(makeNdjsonWithText("done"));
     const adapters = buildRuntimeAdapters(pi);
-    const opts: SubagentStageOpts = { agent: "helper", task: "Help me" };
-    await adapters.subagent!.subagent(opts);
-    const promptArg = calls[0]!.args[calls[0]!.args.indexOf("-p") + 1];
-    expect(promptArg).not.toContain("Context:");
+    const result = await adapters.subagent!.subagent({ agent: "code-reviewer", task: "Review PR" });
+    expect(result).toBe("subagent-result");
+    expect(runCalls).toHaveLength(1);
+    expect(runCalls[0]).toMatchObject({ agent: "code-reviewer", task: "Review PR" });
   });
 
-  test("always passes --no-session and --mode json", async () => {
-    const { pi, calls } = makeMockPi(makeNdjsonWithText("done"));
+  test("passes context to pi.subagents.run when provided", async () => {
+    const runCalls: Array<Record<string, unknown>> = [];
+    const pi: RuntimeWiringSurface = {
+      exec: async () => ({ stdout: "", stderr: "", code: 0, killed: false }),
+      subagents: {
+        run: async (opts) => { runCalls.push(opts as unknown as Record<string, unknown>); return "done"; },
+      },
+    };
+    const adapters = buildRuntimeAdapters(pi);
+    await adapters.subagent!.subagent({ agent: "a", task: "t", context: "some context" });
+    expect(runCalls[0]).toMatchObject({ context: "some context" });
+  });
+
+  test("does NOT call exec for subagent when pi.subagents.run available", async () => {
+    const execCalls: Array<unknown> = [];
+    const pi: RuntimeWiringSurface = {
+      exec: async (...args) => { execCalls.push(args); return { stdout: "", stderr: "", code: 0, killed: false }; },
+      subagents: {
+        run: async () => "result",
+      },
+    };
     const adapters = buildRuntimeAdapters(pi);
     await adapters.subagent!.subagent({ agent: "a", task: "t" });
-    const { args } = calls[0]!;
-    expect(args).toContain("--mode");
-    expect(args).toContain("json");
-    expect(args).toContain("--no-session");
+    expect(execCalls).toHaveLength(0);
+  });
+
+  test("passes env record to pi.subagents.run", async () => {
+    const runCalls: Array<Record<string, unknown>> = [];
+    const pi: RuntimeWiringSurface = {
+      exec: async () => ({ stdout: "", stderr: "", code: 0, killed: false }),
+      subagents: {
+        run: async (opts) => { runCalls.push(opts as unknown as Record<string, unknown>); return "done"; },
+      },
+    };
+    const adapters = buildRuntimeAdapters(pi);
+    await adapters.subagent!.subagent({ agent: "a", task: "t" });
+    expect(runCalls[0]).toHaveProperty("env");
+    expect(typeof runCalls[0]!["env"]).toBe("object");
+  });
+});
+
+describe("subagent adapter — pi.callTool fallback", () => {
+  test("calls pi.callTool('subagent', ...) when pi.subagents absent", async () => {
+    const toolCalls: Array<{ name: string; args: Record<string, unknown> }> = [];
+    const pi: RuntimeWiringSurface = {
+      exec: async () => ({ stdout: "", stderr: "", code: 0, killed: false }),
+      callTool: async (name, args) => { toolCalls.push({ name, args }); return "calltool-result"; },
+    };
+    const adapters = buildRuntimeAdapters(pi);
+    const result = await adapters.subagent!.subagent({ agent: "doc-writer", task: "Write docs" });
+    expect(result).toBe("calltool-result");
+    expect(toolCalls).toHaveLength(1);
+    expect(toolCalls[0]!.name).toBe("subagent");
+    expect(toolCalls[0]!.args).toMatchObject({ action: "run", agent: "doc-writer", task: "Write docs" });
+  });
+
+  test("passes context in callTool args when provided", async () => {
+    const toolCalls: Array<{ name: string; args: Record<string, unknown> }> = [];
+    const pi: RuntimeWiringSurface = {
+      exec: async () => ({ stdout: "", stderr: "", code: 0, killed: false }),
+      callTool: async (name, args) => { toolCalls.push({ name, args }); return "done"; },
+    };
+    const adapters = buildRuntimeAdapters(pi);
+    await adapters.subagent!.subagent({ agent: "a", task: "t", context: "repo context" });
+    expect(toolCalls[0]!.args).toMatchObject({ context: "repo context" });
+  });
+
+  test("omits context key from callTool args when absent", async () => {
+    const toolCalls: Array<{ name: string; args: Record<string, unknown> }> = [];
+    const pi: RuntimeWiringSurface = {
+      exec: async () => ({ stdout: "", stderr: "", code: 0, killed: false }),
+      callTool: async (name, args) => { toolCalls.push({ name, args }); return "done"; },
+    };
+    const adapters = buildRuntimeAdapters(pi);
+    await adapters.subagent!.subagent({ agent: "a", task: "t" });
+    expect(toolCalls[0]!.args).not.toHaveProperty("context");
+  });
+
+  test("does NOT call exec for subagent via callTool path", async () => {
+    const execCalls: Array<unknown> = [];
+    const pi: RuntimeWiringSurface = {
+      exec: async (...args) => { execCalls.push(args); return { stdout: "", stderr: "", code: 0, killed: false }; },
+      callTool: async () => "result",
+    };
+    const adapters = buildRuntimeAdapters(pi);
+    await adapters.subagent!.subagent({ agent: "a", task: "t" });
+    expect(execCalls).toHaveLength(0);
+  });
+});
+
+describe("subagent adapter — missing pi-subagents error", () => {
+  test("throws exact actionable error when neither pi.subagents nor pi.callTool available", async () => {
+    const pi: RuntimeWiringSurface = {
+      exec: async () => ({ stdout: "", stderr: "", code: 0, killed: false }),
+    };
+    const adapters = buildRuntimeAdapters(pi);
+    await expect(adapters.subagent!.subagent({ agent: "a", task: "t" })).rejects.toThrow(
+      "pi-workflows: subagent delegation requires pi-subagents — install npm:pi-subagents and restart pi.",
+    );
+  });
+
+  test("exec is never called when pi-subagents missing", async () => {
+    const execCalls: Array<unknown> = [];
+    const pi: RuntimeWiringSurface = {
+      exec: async (...args) => { execCalls.push(args); return { stdout: "", stderr: "", code: 0, killed: false }; },
+    };
+    const adapters = buildRuntimeAdapters(pi);
+    await expect(adapters.subagent!.subagent({ agent: "a", task: "t" })).rejects.toThrow();
+    expect(execCalls).toHaveLength(0);
+  });
+
+  test("error message contains install instruction", async () => {
+    const pi: RuntimeWiringSurface = {
+      exec: async () => ({ stdout: "", stderr: "", code: 0, killed: false }),
+    };
+    const adapters = buildRuntimeAdapters(pi);
+    await expect(adapters.subagent!.subagent({ agent: "a", task: "t" })).rejects.toThrow(
+      "install npm:pi-subagents",
+    );
   });
 });
