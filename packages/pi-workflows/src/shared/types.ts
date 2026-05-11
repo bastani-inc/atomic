@@ -97,6 +97,25 @@ export interface StageOptions {
 }
 
 // ---------------------------------------------------------------------------
+// Stage execution metadata — threaded from executor into adapter calls
+// ---------------------------------------------------------------------------
+
+/**
+ * Execution metadata injected by the executor into stage adapter calls.
+ * Not exposed to workflow authors — StageContext public API is unchanged.
+ */
+export interface StageExecutionMeta {
+  /** Run ID of the containing workflow execution. */
+  runId: string;
+  /** Stage ID of the current stage. */
+  stageId: string;
+  /** Human-readable stage name. */
+  stageName: string;
+  /** AbortSignal propagated from the executor's own AbortController. */
+  signal?: AbortSignal;
+}
+
+// ---------------------------------------------------------------------------
 // Runtime ports — abstract adapters used by the executor
 // ---------------------------------------------------------------------------
 

@@ -17,6 +17,7 @@ export type {
   SubagentStageOpts,
   CompleteStageOpts,
   WorkflowUIContext,
+  StageExecutionMeta,
 } from "./shared/types.js";
 
 export type { WorkflowBuilder, CompletedWorkflowBuilder } from "./workflows/define-workflow.js";

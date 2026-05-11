@@ -22,8 +22,7 @@
  */
 
 import type { StageAdapters } from "../runs/sync/stage-runner.js";
-import type { SubagentStageMeta } from "../runs/sync/stage-runner.js";
-import type { SubagentStageOpts, CompleteStageOpts, WorkflowUIAdapter } from "../shared/types.js";
+import type { SubagentStageOpts, CompleteStageOpts, WorkflowUIAdapter, StageExecutionMeta } from "../shared/types.js";
 import { readWorkflowEnv } from "../integrations/subagents.js";
 
 // ---------------------------------------------------------------------------
@@ -148,7 +147,7 @@ export function buildRuntimeAdapters(pi: RuntimeWiringSurface): StageAdapters {
 
   /** Collect workflow env vars for injection into subagent child context.
    * Explicit meta (runId/stageId from stage-runner) overrides ambient process.env fallback. */
-  function workflowEnvRecord(meta?: SubagentStageMeta): Record<string, string> {
+  function workflowEnvRecord(meta?: StageExecutionMeta): Record<string, string> {
     const raw = readWorkflowEnv();
     const out: Record<string, string> = {};
     // Ambient fallback first
@@ -157,19 +156,18 @@ export function buildRuntimeAdapters(pi: RuntimeWiringSurface): StageAdapters {
     // Explicit meta overrides ambient
     if (meta?.runId) out["PI_WORKFLOW_RUN_ID"] = meta.runId;
     if (meta?.stageId) out["PI_WORKFLOW_STAGE_ID"] = meta.stageId;
-    if (meta?.stageName) out["PI_WORKFLOW_STAGE_NAME"] = meta.stageName;
     return out;
   }
 
   return {
     prompt: {
-      async prompt(text: string): Promise<string> {
+      async prompt(text: string, _meta?: StageExecutionMeta): Promise<string> {
         return runPiJson(["--mode", "json", "-p", text, "--no-session"]);
       },
     },
 
     complete: {
-      async complete(text: string, opts?: CompleteStageOpts): Promise<string> {
+      async complete(text: string, opts?: CompleteStageOpts, _meta?: StageExecutionMeta): Promise<string> {
         const args = ["--mode", "json", "-p", text, "--no-session"];
         if (opts?.model) {
           args.push("--model", opts.model);
@@ -179,7 +177,7 @@ export function buildRuntimeAdapters(pi: RuntimeWiringSurface): StageAdapters {
     },
 
     subagent: {
-      async subagent(opts: SubagentStageOpts, meta?: SubagentStageMeta): Promise<string> {
+      async subagent(opts: SubagentStageOpts, meta?: StageExecutionMeta): Promise<string> {
         // Primary: delegate to pi-subagents public surface.
         // Narrowed at runtime — pi.subagents is typed unknown for ExtensionAPI compat.
         const subagentsAny = pi.subagents as Record<string, unknown> | undefined;

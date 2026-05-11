@@ -3,30 +3,22 @@
  * Handles prompt / complete / subagent adapters.
  */
 
-import type { StageContext, SubagentStageOpts, CompleteStageOpts } from "../../shared/types.js";
+import type { StageContext, SubagentStageOpts, CompleteStageOpts, StageExecutionMeta } from "../../shared/types.js";
 
 export interface PromptAdapter {
-  prompt(text: string): Promise<string>;
+  prompt(text: string, meta?: StageExecutionMeta): Promise<string>;
 }
 
 export interface CompleteAdapter {
-  complete(text: string, opts?: CompleteStageOpts): Promise<string>;
+  complete(text: string, opts?: CompleteStageOpts, meta?: StageExecutionMeta): Promise<string>;
 }
 
 /**
  * Execution metadata threaded from the executor into stage adapter calls.
  * Not exposed to workflow authors — StageContext public API is unchanged.
+ * @deprecated Use StageExecutionMeta from shared/types instead.
  */
-export interface SubagentStageMeta {
-  /** Run ID of the containing workflow execution. */
-  runId: string;
-  /** Stage ID of the current stage. */
-  stageId: string;
-  /** Human-readable stage name. */
-  stageName: string;
-  /** AbortSignal propagated from the executor's own AbortController. */
-  signal?: AbortSignal;
-}
+export type SubagentStageMeta = StageExecutionMeta;
 
 export interface SubagentAdapter {
   /**
@@ -36,7 +28,7 @@ export interface SubagentAdapter {
    *                 injected by the stage-runner; overrides ambient process.env
    *                 fallback in the adapter implementation.
    */
-  subagent(opts: SubagentStageOpts, meta?: SubagentStageMeta): Promise<string>;
+  subagent(opts: SubagentStageOpts, meta?: StageExecutionMeta): Promise<string>;
 }
 
 export interface StageAdapters {
@@ -57,13 +49,14 @@ export interface StageRunnerOpts {
 
 export function createStageContext(opts: StageRunnerOpts): StageContext {
   const { stageId, stageName, adapters, runId, signal } = opts;
+  const meta: StageExecutionMeta = { runId, stageId, stageName, signal };
 
   return {
     name: stageName,
 
     async prompt(text: string): Promise<string> {
       if (adapters.prompt) {
-        return adapters.prompt.prompt(text);
+        return adapters.prompt.prompt(text, meta);
       }
       // Deterministic stub in test environments
       if (process.env["NODE_ENV"] === "test") {
@@ -76,7 +69,7 @@ export function createStageContext(opts: StageRunnerOpts): StageContext {
 
     async complete(text: string, completeOpts?: CompleteStageOpts): Promise<string> {
       if (adapters.complete) {
-        return adapters.complete.complete(text, completeOpts);
+        return adapters.complete.complete(text, completeOpts, meta);
       }
       throw new Error(
         "pi-workflows: complete adapter not configured — provide a CompleteAdapter via RunOpts.complete",
@@ -85,7 +78,6 @@ export function createStageContext(opts: StageRunnerOpts): StageContext {
 
     async subagent(subagentOpts: SubagentStageOpts): Promise<string> {
       if (adapters.subagent) {
-        const meta: SubagentStageMeta = { runId, stageId, stageName, signal };
         return adapters.subagent.subagent(subagentOpts, meta);
       }
       throw new Error(
