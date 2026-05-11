@@ -906,6 +906,80 @@ describe("MockExtensionAPI — /workflows-doctor reports real loaded count", () 
 });
 
 // ---------------------------------------------------------------------------
+// Registered tool — list/status without name or inputs (schema-tool-args: optional fields)
+// ---------------------------------------------------------------------------
+
+describe("MockExtensionAPI — tool list/status without name or inputs", () => {
+  let mock: ReturnType<typeof makeMock>;
+
+  beforeEach(() => {
+    mock = makeMock();
+    factory(mock);
+  });
+
+  // Schema: name and inputs must NOT appear in the required array
+  test("schema has no required fields — name absent from required", () => {
+    const params = mock.tools[0]!.opts.parameters as { required?: string[] };
+    expect(params.required ?? []).not.toContain("name");
+  });
+
+  test("schema has no required fields — inputs absent from required", () => {
+    const params = mock.tools[0]!.opts.parameters as { required?: string[] };
+    expect(params.required ?? []).not.toContain("inputs");
+  });
+
+  // Tool execute: { action: "list" } — no name, no inputs
+  test("execute({ action: 'list' }) returns action='list'", async () => {
+    const execute = mock.tools[0]!.opts.execute;
+    const result = await execute({ action: "list" }, {});
+    expect(result.action).toBe("list");
+  });
+
+  test("execute({ action: 'list' }) returns workflows array", async () => {
+    const execute = mock.tools[0]!.opts.execute;
+    const result = await execute({ action: "list" }, {});
+    const r = result as { action: "list"; workflows: unknown[] };
+    expect(Array.isArray(r.workflows)).toBe(true);
+  });
+
+  test("execute({ action: 'list' }) workflows includes bundled names", async () => {
+    const execute = mock.tools[0]!.opts.execute;
+    const result = await execute({ action: "list" }, {});
+    const r = result as { action: "list"; workflows: string[] };
+    expect(r.workflows).toContain("deep-research-codebase");
+  });
+
+  // Tool execute: { action: "status" } — no name, no inputs
+  test("execute({ action: 'status' }) returns action='status'", async () => {
+    const execute = mock.tools[0]!.opts.execute;
+    const result = await execute({ action: "status" }, {});
+    expect(result.action).toBe("status");
+  });
+
+  test("execute({ action: 'status' }) returns runs array", async () => {
+    const execute = mock.tools[0]!.opts.execute;
+    const result = await execute({ action: "status" }, {});
+    const r = result as { action: "status"; runs: unknown[] };
+    expect(Array.isArray(r.runs)).toBe(true);
+  });
+
+  // Results identical whether or not name/inputs are supplied (idempotent)
+  test("execute list with/without name yields same action", async () => {
+    const execute = mock.tools[0]!.opts.execute;
+    const withName = await execute({ name: "", inputs: {}, action: "list" }, {});
+    const withoutName = await execute({ action: "list" }, {});
+    expect(withoutName.action).toBe(withName.action);
+  });
+
+  test("execute status with/without name yields same action", async () => {
+    const execute = mock.tools[0]!.opts.execute;
+    const withName = await execute({ name: "", inputs: {}, action: "status" }, {});
+    const withoutName = await execute({ action: "status" }, {});
+    expect(withoutName.action).toBe(withName.action);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Graceful degradation — empty API object
 // ---------------------------------------------------------------------------
 

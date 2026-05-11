@@ -41,10 +41,12 @@ import type { DoctorSiblingStatus } from "./doctor.js";
 import { registerWorkflowCliFlags, runWorkflowFromCliFlags } from "../cli-flags.js";
 import { loadWorkflowConfig, toDiscoveryConfig, WORKFLOW_CONFIG_DEFAULTS } from "./config-loader.js";
 import type { ConfigLoadResult } from "./config-loader.js";
-import type { WorkflowPersistencePort } from "../shared/types.js";
+import type { WorkflowPersistencePort, WorkflowMcpPort } from "../shared/types.js";
 import { buildRuntimeAdapters } from "./wiring.js";
 import { buildUIAdapter } from "./wiring.js";
 import type { PiUISurface, PiCustomOverlayOpts, PiCustomOverlayHandle } from "./wiring.js";
+import { setMcpScope, clearMcpScope } from "../integrations/mcp.js";
+import type { PiMcpExtensionAPI, PiEventBus } from "../integrations/mcp.js";
 
 // ---------------------------------------------------------------------------
 // Minimal ExtensionAPI structural types
@@ -454,6 +456,38 @@ export function makePersistencePort(
 }
 
 // ---------------------------------------------------------------------------
+// MCP port builder
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a WorkflowMcpPort from the pi ExtensionAPI when MCP scope gating is
+ * supported. Returns undefined when pi.events?.emit is absent (adapter not
+ * installed or older runtime without events bus) — scoping becomes a no-op.
+ */
+export function makeMcpPort(pi: ExtensionAPI): WorkflowMcpPort | undefined {
+  if (typeof pi.events?.emit !== "function") return undefined;
+
+  // Adapt ExtensionAPI to the minimal PiMcpExtensionAPI shape expected by
+  // setMcpScope / clearMcpScope. We only forward events.emit (confirmed above).
+  const piForMcp: PiMcpExtensionAPI = {
+    events: { emit: pi.events.emit as PiEventBus["emit"] },
+  };
+
+  return {
+    setScope(stageId: string, allow: string[] | null, deny: string[] | null) {
+      setMcpScope(piForMcp, {
+        stageId,
+        allow: allow ?? undefined,
+        deny: deny ?? undefined,
+      });
+    },
+    clearScope(stageId: string) {
+      clearMcpScope(piForMcp, stageId);
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Factory — the default export consumed by the pi runtime
 // ---------------------------------------------------------------------------
 
@@ -482,6 +516,7 @@ function factory(pi: ExtensionAPI): void {
   const persistenceRef: { current: WorkflowPersistencePort | undefined } = {
     current: makePersistencePort(pi, WORKFLOW_CONFIG_DEFAULTS.persistRuns),
   };
+  const mcpPort: WorkflowMcpPort | undefined = makeMcpPort(pi);
   const runtimeRef: { current: ExtensionRuntime } = {
     current: createExtensionRuntime({
       registry: discoverBundledWorkflowsSync().registry,
@@ -489,6 +524,7 @@ function factory(pi: ExtensionAPI): void {
       ui,
       cancellation: cancellationRegistry,
       persistence: persistenceRef.current,
+      mcp: mcpPort,
     }),
   };
   const discoveryRef: { current: DiscoveryResult | null } = { current: null };
@@ -530,6 +566,7 @@ function factory(pi: ExtensionAPI): void {
       ui,
       cancellation: cancellationRegistry,
       persistence: persistenceRef.current,
+      mcp: mcpPort,
     });
 
     // Register /workflow:<name> aliases for workflows discovered beyond the
