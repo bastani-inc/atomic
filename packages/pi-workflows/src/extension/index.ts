@@ -46,6 +46,8 @@ import type { WorkflowPersistencePort, WorkflowMcpPort, WorkflowRuntimeConfig } 
 import { buildRuntimeAdapters } from "./wiring.js";
 import { buildUIAdapter } from "./wiring.js";
 import type { PiUISurface, PiCustomOverlayOpts, PiCustomOverlayHandle } from "./wiring.js";
+import { createStatusWriter } from "./status-writer.js";
+import type { StatusWriter } from "./status-writer.js";
 import { setMcpScope, clearMcpScope } from "../integrations/mcp.js";
 import type { PiMcpExtensionAPI, PiEventBus } from "../integrations/mcp.js";
 
@@ -615,6 +617,13 @@ function factory(pi: ExtensionAPI): void {
     },
   };
 
+  /**
+   * Mutable ref for the status writer instance.
+   * Replaced (old unsubscribed) each time runtimeConfigRef is updated after
+   * async config resolution. Starts as a no-op (statusFile defaults to false).
+   */
+  let statusWriterRef: StatusWriter = createStatusWriter(store, runtimeConfigRef.current);
+
   const runtimeRef: { current: ExtensionRuntime } = {
     current: createExtensionRuntime({
       registry: discoverBundledWorkflowsSync().registry,
@@ -677,6 +686,11 @@ function factory(pi: ExtensionAPI): void {
       statusFile: effectiveConfig.statusFile,
       resumeInFlight: effectiveConfig.resumeInFlight,
     };
+
+    // Replace status writer with one that reflects the resolved config.
+    // Unsubscribe the prior (no-op) writer before creating the new one.
+    statusWriterRef.unsubscribe();
+    statusWriterRef = createStatusWriter(store, runtimeConfigRef.current);
 
     persistenceRef.current = makePersistencePort(pi, effectiveConfig.persistRuns);
     runtimeRef.current = createExtensionRuntime({
