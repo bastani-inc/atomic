@@ -44,6 +44,12 @@ export interface RunOpts {
   overlay?: WorkflowOverlayAdapter;
   /** AbortSignal that requests cancellation from the caller side. */
   signal?: AbortSignal;
+  /**
+   * Pre-allocated runId. When provided, the executor uses this ID instead of
+   * generating a new UUID. The detached runner uses this seam to preallocate
+   * the runId before starting the background promise.
+   */
+  runId?: string;
   onRunStart?: (snapshot: RunSnapshot) => void;
   onStageStart?: (runId: string, snapshot: StageSnapshot) => void;
   onStageEnd?: (runId: string, snapshot: StageSnapshot) => void;
@@ -173,8 +179,8 @@ export async function run(
   // 1. Resolve + validate inputs
   const resolvedInputs = resolveInputs(def.inputs, inputs);
 
-  // 2. Generate runId
-  const runId = crypto.randomUUID();
+  // 2. Generate runId (or use pre-allocated seam from caller)
+  const runId = opts.runId ?? crypto.randomUUID();
 
   // 2a. Create own AbortController; forward caller signal if provided
   const ownController = new AbortController();
