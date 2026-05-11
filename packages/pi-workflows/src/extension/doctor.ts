@@ -10,6 +10,7 @@
  */
 
 import type { DiscoveryResult } from "./discovery.js";
+import type { ConfigLoadResult } from "./config-loader.js";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -26,6 +27,19 @@ export interface DoctorSiblingStatus {
 }
 
 // ---------------------------------------------------------------------------
+// Internal constants
+// ---------------------------------------------------------------------------
+
+/** Default tunable values per RFC. */
+const DEFAULTS = {
+  persistRuns: true,
+  resumeInFlight: "ask" as const,
+  defaultConcurrency: 4,
+  maxDepth: 4,
+  statusFile: false,
+} as const;
+
+// ---------------------------------------------------------------------------
 // Report builder
 // ---------------------------------------------------------------------------
 
@@ -34,13 +48,15 @@ export interface DoctorSiblingStatus {
  *
  * Deterministic: same inputs → same output.  No I/O.
  *
- * @param discovery - Result from discoverBundledWorkflows().
- * @param siblings  - Detected sibling availability (structural checks on pi).
+ * @param discovery  - Result from discoverBundledWorkflows().
+ * @param siblings   - Detected sibling availability (structural checks on pi).
+ * @param configLoad - Optional result from loadWorkflowConfig().
  * @returns Multi-line report string suitable for ctx.reply / ctx.print.
  */
 export function buildDoctorReport(
   discovery: DiscoveryResult,
   siblings: DoctorSiblingStatus,
+  configLoad?: ConfigLoadResult | null,
 ): string {
   const lines: string[] = [
     "pi-workflows doctor report",
@@ -70,6 +86,40 @@ export function buildDoctorReport(
     }
   } else {
     lines.push("Discovery diagnostics: (none)");
+  }
+
+  // Config diagnostics
+  if (configLoad == null) {
+    lines.push("Config diagnostics: (not loaded)");
+  } else if (configLoad.diagnostics.length > 0) {
+    lines.push(`Config diagnostics (${configLoad.diagnostics.length}):`);
+    for (const diag of configLoad.diagnostics) {
+      const src = diag.source ? ` (${diag.source})` : "";
+      lines.push(`  [${diag.level}] ${diag.code}${src}: ${diag.message}`);
+    }
+  } else {
+    lines.push("Config diagnostics: (none)");
+  }
+
+  // Effective tunables
+  const cfg = configLoad?.config ?? null;
+  lines.push("Tunables:");
+  lines.push(`  persistRuns        — ${cfg?.persistRuns ?? DEFAULTS.persistRuns}`);
+  lines.push(`  resumeInFlight     — ${cfg?.resumeInFlight ?? DEFAULTS.resumeInFlight}`);
+  lines.push(`  defaultConcurrency — ${cfg?.defaultConcurrency ?? DEFAULTS.defaultConcurrency}`);
+  lines.push(`  maxDepth           — ${cfg?.maxDepth ?? DEFAULTS.maxDepth}`);
+  lines.push(`  statusFile         — ${cfg?.statusFile ?? DEFAULTS.statusFile}`);
+
+  // Configured workflow entries
+  const workflows = cfg?.workflows;
+  const workflowEntries = workflows ? Object.entries(workflows) : [];
+  if (workflowEntries.length > 0) {
+    lines.push(`Configured workflows (${workflowEntries.length}):`);
+    for (const [name, entry] of workflowEntries) {
+      lines.push(`  ${name} → ${entry.path}`);
+    }
+  } else {
+    lines.push("Configured workflows: (none configured)");
   }
 
   // Sibling availability

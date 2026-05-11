@@ -10,6 +10,7 @@ import { buildDoctorReport } from "../../src/extension/doctor.js";
 import type { DoctorSiblingStatus } from "../../src/extension/doctor.js";
 import { createRegistry } from "../../src/workflows/registry.js";
 import type { DiscoveryResult } from "../../src/extension/discovery.js";
+import type { ConfigLoadResult } from "../../src/extension/config-loader.js";
 import factory, {
   type ExtensionAPI,
   type PiSlashCommandOpts,
@@ -334,5 +335,252 @@ describe("/workflows-doctor execute — integration", () => {
     await cmd!.execute("", { print: (m) => messages.push(m) });
     expect(messages.length).toBeGreaterThan(0);
     expect(messages.join("\n")).toContain("pi-workflows");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Config diagnostics section
+// ---------------------------------------------------------------------------
+
+describe("buildDoctorReport — config diagnostics", () => {
+  test("shows '(not loaded)' when configLoad is undefined", () => {
+    const report = buildDoctorReport(makeDiscovery(), noSiblings);
+    expect(report).toContain("Config diagnostics: (not loaded)");
+  });
+
+  test("shows '(not loaded)' when configLoad is null", () => {
+    const report = buildDoctorReport(makeDiscovery(), noSiblings, null);
+    expect(report).toContain("Config diagnostics: (not loaded)");
+  });
+
+  test("shows '(none)' when configLoad has no diagnostics", () => {
+    const configLoad: ConfigLoadResult = { config: null, diagnostics: [] };
+    const report = buildDoctorReport(makeDiscovery(), noSiblings, configLoad);
+    expect(report).toContain("Config diagnostics: (none)");
+  });
+
+  test("lists config diagnostic with level, code, source, and message", () => {
+    const configLoad: ConfigLoadResult = {
+      config: null,
+      diagnostics: [
+        {
+          level: "error",
+          code: "CONFIG_INVALID",
+          message: "Invalid JSON in config file: Unexpected token",
+          source: "/project/.pi/extensions/workflow/config.json",
+        },
+      ],
+    };
+    const report = buildDoctorReport(makeDiscovery(), noSiblings, configLoad);
+    expect(report).toContain("Config diagnostics (1):");
+    expect(report).toContain("[error]");
+    expect(report).toContain("CONFIG_INVALID");
+    expect(report).toContain("/project/.pi/extensions/workflow/config.json");
+    expect(report).toContain("Invalid JSON in config file");
+  });
+
+  test("shows count for multiple config diagnostics", () => {
+    const configLoad: ConfigLoadResult = {
+      config: null,
+      diagnostics: [
+        { level: "error", code: "CONFIG_INVALID", message: "err1", source: "/a.json" },
+        { level: "error", code: "CONFIG_INVALID", message: "err2", source: "/b.json" },
+      ],
+    };
+    const report = buildDoctorReport(makeDiscovery(), noSiblings, configLoad);
+    expect(report).toContain("Config diagnostics (2):");
+  });
+
+  test("shows diagnostic without source when source absent", () => {
+    const configLoad: ConfigLoadResult = {
+      config: null,
+      diagnostics: [
+        { level: "error", code: "CONFIG_INVALID", message: "some error" },
+      ],
+    };
+    const report = buildDoctorReport(makeDiscovery(), noSiblings, configLoad);
+    expect(report).toContain("CONFIG_INVALID: some error");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tunables section
+// ---------------------------------------------------------------------------
+
+describe("buildDoctorReport — tunables", () => {
+  test("shows default tunables when config is null", () => {
+    const configLoad: ConfigLoadResult = { config: null, diagnostics: [] };
+    const report = buildDoctorReport(makeDiscovery(), noSiblings, configLoad);
+    expect(report).toContain("Tunables:");
+    expect(report).toContain("persistRuns        — true");
+    expect(report).toContain("resumeInFlight     — ask");
+    expect(report).toContain("defaultConcurrency — 4");
+    expect(report).toContain("maxDepth           — 4");
+    expect(report).toContain("statusFile         — false");
+  });
+
+  test("shows default tunables when configLoad is undefined", () => {
+    const report = buildDoctorReport(makeDiscovery(), noSiblings);
+    expect(report).toContain("Tunables:");
+    expect(report).toContain("persistRuns        — true");
+    expect(report).toContain("resumeInFlight     — ask");
+    expect(report).toContain("defaultConcurrency — 4");
+    expect(report).toContain("maxDepth           — 4");
+    expect(report).toContain("statusFile         — false");
+  });
+
+  test("shows overridden tunables from config", () => {
+    const configLoad: ConfigLoadResult = {
+      config: {
+        persistRuns: false,
+        resumeInFlight: "auto",
+        defaultConcurrency: 8,
+        maxDepth: 2,
+        statusFile: true,
+      },
+      diagnostics: [],
+    };
+    const report = buildDoctorReport(makeDiscovery(), noSiblings, configLoad);
+    expect(report).toContain("persistRuns        — false");
+    expect(report).toContain("resumeInFlight     — auto");
+    expect(report).toContain("defaultConcurrency — 8");
+    expect(report).toContain("maxDepth           — 2");
+    expect(report).toContain("statusFile         — true");
+  });
+
+  test("shows partial overrides; unset fields fall back to defaults", () => {
+    const configLoad: ConfigLoadResult = {
+      config: { maxDepth: 10 },
+      diagnostics: [],
+    };
+    const report = buildDoctorReport(makeDiscovery(), noSiblings, configLoad);
+    expect(report).toContain("maxDepth           — 10");
+    expect(report).toContain("persistRuns        — true");
+    expect(report).toContain("defaultConcurrency — 4");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Configured workflow entries section
+// ---------------------------------------------------------------------------
+
+describe("buildDoctorReport — configured workflows", () => {
+  test("shows '(none configured)' when config has no workflows", () => {
+    const configLoad: ConfigLoadResult = { config: {}, diagnostics: [] };
+    const report = buildDoctorReport(makeDiscovery(), noSiblings, configLoad);
+    expect(report).toContain("Configured workflows: (none configured)");
+  });
+
+  test("shows '(none configured)' when configLoad is undefined", () => {
+    const report = buildDoctorReport(makeDiscovery(), noSiblings);
+    expect(report).toContain("Configured workflows: (none configured)");
+  });
+
+  test("lists each configured workflow with name and path", () => {
+    const configLoad: ConfigLoadResult = {
+      config: {
+        workflows: {
+          "my-workflow": { path: "./workflows/my-workflow.ts" },
+        },
+      },
+      diagnostics: [],
+    };
+    const report = buildDoctorReport(makeDiscovery(), noSiblings, configLoad);
+    expect(report).toContain("Configured workflows (1):");
+    expect(report).toContain("my-workflow → ./workflows/my-workflow.ts");
+  });
+
+  test("lists multiple configured workflows", () => {
+    const configLoad: ConfigLoadResult = {
+      config: {
+        workflows: {
+          alpha: { path: "/abs/alpha.ts" },
+          beta: { path: "./beta.ts" },
+        },
+      },
+      diagnostics: [],
+    };
+    const report = buildDoctorReport(makeDiscovery(), noSiblings, configLoad);
+    expect(report).toContain("Configured workflows (2):");
+    expect(report).toContain("alpha → /abs/alpha.ts");
+    expect(report).toContain("beta → ./beta.ts");
+  });
+
+  test("does NOT print file contents — only name and path", () => {
+    const configLoad: ConfigLoadResult = {
+      config: {
+        workflows: {
+          secret: { path: "./secret-workflow.ts" },
+        },
+      },
+      diagnostics: [],
+    };
+    const report = buildDoctorReport(makeDiscovery(), noSiblings, configLoad);
+    // Only path, not any file content
+    expect(report).toContain("secret → ./secret-workflow.ts");
+    expect(report).not.toContain("FILE_CONTENTS");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Section ordering
+// ---------------------------------------------------------------------------
+
+describe("buildDoctorReport — section ordering", () => {
+  test("config diagnostics appears before tunables", () => {
+    const configLoad: ConfigLoadResult = { config: null, diagnostics: [] };
+    const report = buildDoctorReport(makeDiscovery(), noSiblings, configLoad);
+    const configIdx = report.indexOf("Config diagnostics:");
+    const tunablesIdx = report.indexOf("Tunables:");
+    expect(configIdx).toBeLessThan(tunablesIdx);
+  });
+
+  test("tunables appears before configured workflows", () => {
+    const configLoad: ConfigLoadResult = { config: null, diagnostics: [] };
+    const report = buildDoctorReport(makeDiscovery(), noSiblings, configLoad);
+    const tunablesIdx = report.indexOf("Tunables:");
+    const workflowsIdx = report.indexOf("Configured workflows:");
+    expect(tunablesIdx).toBeLessThan(workflowsIdx);
+  });
+
+  test("configured workflows appears before siblings", () => {
+    const configLoad: ConfigLoadResult = { config: null, diagnostics: [] };
+    const report = buildDoctorReport(makeDiscovery(), noSiblings, configLoad);
+    const workflowsIdx = report.indexOf("Configured workflows:");
+    const siblingsIdx = report.indexOf("Siblings:");
+    expect(workflowsIdx).toBeLessThan(siblingsIdx);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Integration: /workflows-doctor includes new sections
+// ---------------------------------------------------------------------------
+
+describe("/workflows-doctor execute — config sections integration", () => {
+  test("shows 'Config diagnostics:' section", async () => {
+    const api = makeMockApi();
+    factory(api);
+    const cmd = api.commands.find((c) => c.opts.name === "workflows-doctor")?.opts;
+    const messages: string[] = [];
+    await cmd!.execute("", { reply: (m) => messages.push(m) });
+    expect(messages.join("\n")).toContain("Config diagnostics:");
+  });
+
+  test("shows 'Tunables:' section", async () => {
+    const api = makeMockApi();
+    factory(api);
+    const cmd = api.commands.find((c) => c.opts.name === "workflows-doctor")?.opts;
+    const messages: string[] = [];
+    await cmd!.execute("", { reply: (m) => messages.push(m) });
+    expect(messages.join("\n")).toContain("Tunables:");
+  });
+
+  test("shows 'Configured workflows:' section", async () => {
+    const api = makeMockApi();
+    factory(api);
+    const cmd = api.commands.find((c) => c.opts.name === "workflows-doctor")?.opts;
+    const messages: string[] = [];
+    await cmd!.execute("", { reply: (m) => messages.push(m) });
+    expect(messages.join("\n")).toContain("Configured workflows:");
   });
 });
