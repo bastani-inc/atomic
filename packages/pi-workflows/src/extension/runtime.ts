@@ -12,7 +12,7 @@
 
 import { createRegistry } from "../workflows/registry.js";
 import type { WorkflowRegistry } from "../workflows/registry.js";
-import type { WorkflowDefinition } from "../shared/types.js";
+import type { WorkflowDefinition, WorkflowUIAdapter } from "../shared/types.js";
 import type { StageAdapters } from "../runs/sync/stage-runner.js";
 import type { Store } from "../store.js";
 import { store as defaultStore } from "../store.js";
@@ -37,6 +37,8 @@ export interface ExtensionRuntimeOpts {
   definitions?: WorkflowDefinition[];
   /** Stage adapters forwarded to the executor (prompt/complete/subagent). */
   adapters?: StageAdapters;
+  /** HIL UI adapter forwarded to the executor (prompt/confirm/select/editor). */
+  ui?: WorkflowUIAdapter;
   /** Store override (defaults to the singleton store). */
   store?: Store;
 }
@@ -79,6 +81,7 @@ export interface ExtensionRuntime {
 export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): ExtensionRuntime {
   const registry = opts.registry ?? createRegistry(opts.definitions ?? []);
   const adapters = opts.adapters;
+  const ui = opts.ui;
   const activeStore = opts.store ?? defaultStore;
 
   return {
@@ -87,7 +90,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
     },
 
     dispatch(args: WorkflowToolArgs): Promise<WorkflowToolResult> {
-      return dispatch(args, { registry, adapters, store: activeStore });
+      return dispatch(args, { registry, adapters, ui, store: activeStore });
     },
   };
 }

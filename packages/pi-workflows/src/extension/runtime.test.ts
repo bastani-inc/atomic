@@ -10,7 +10,7 @@ import { createRegistry } from "../workflows/registry.js";
 import { defineWorkflow } from "../workflows/define-workflow.js";
 import { createStore } from "../store.js";
 import { renderResult } from "./render-result.js";
-import type { WorkflowDefinition } from "../shared/types.js";
+import type { WorkflowDefinition, WorkflowUIAdapter } from "../shared/types.js";
 import type { StageAdapters } from "../runs/sync/stage-runner.js";
 import type {
   WorkflowToolResult,
@@ -289,5 +289,72 @@ describe("renderResult — run variant", () => {
     const out = renderResult({ action: "status", runs });
     expect(out).toContain("r1");
     expect(out).toContain("wf");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WorkflowUIAdapter — forwarding through createExtensionRuntime → dispatch → run
+// ---------------------------------------------------------------------------
+
+describe("WorkflowUIAdapter — runtime forwarding", () => {
+  const uiWorkflow = defineWorkflow("ui-test")
+    .description("Tests HIL ui forwarding")
+    .run(async (ctx) => {
+      const answer = await ctx.ui.input("What is your name?");
+      return { answer };
+    })
+    .compile() as WorkflowDefinition;
+
+  test("ui adapter is called when provided via createExtensionRuntime", async () => {
+    let captured: string | undefined;
+    const mockUI: WorkflowUIAdapter = {
+      input: async (prompt) => { captured = prompt; return "Alice"; },
+      confirm: async () => false,
+      select: async <T extends string>(_msg: string, options: readonly T[]): Promise<T> => options[0]!,
+      editor: async () => "",
+    };
+
+    const runtime = createExtensionRuntime({
+      definitions: [uiWorkflow],
+      ui: mockUI,
+      store: createStore(),
+    });
+
+    const result = await runtime.dispatch({ name: "ui-test", inputs: {}, action: "run" });
+    const run = asRun(result);
+    expect(run.status).toBe("completed");
+    expect(run.result?.["answer"]).toBe("Alice");
+    expect(captured).toBe("What is your name?");
+  });
+
+  test("ui adapter is called when provided via dispatch directly", async () => {
+    let called = false;
+    const mockUI: WorkflowUIAdapter = {
+      input: async () => { called = true; return "Bob"; },
+      confirm: async () => false,
+      select: async <T extends string>(_msg: string, options: readonly T[]): Promise<T> => options[0]!,
+      editor: async () => "",
+    };
+
+    const registry = createRegistry([uiWorkflow]);
+    const result = await dispatch(
+      { name: "ui-test", inputs: {}, action: "run" },
+      { registry, ui: mockUI, store: createStore() },
+    );
+    const run = asRun(result);
+    expect(run.status).toBe("completed");
+    expect(called).toBe(true);
+  });
+
+  test("omitting ui causes HIL call to reject with unavailable error", async () => {
+    const runtime = createExtensionRuntime({
+      definitions: [uiWorkflow],
+      store: createStore(),
+    });
+
+    const result = await runtime.dispatch({ name: "ui-test", inputs: {}, action: "run" });
+    const run = asRun(result);
+    expect(run.status).toBe("failed");
+    expect(run.error).toContain("ui.input is unavailable");
   });
 });
