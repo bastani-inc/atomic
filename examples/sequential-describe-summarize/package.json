@@ -1,7 +1,7 @@
 {
   "name": "@bastani/example-sequential-describe-summarize",
   "private": true,
-  "version": "0.7.16",
+  "version": "0.7.17-0",
   "type": "module",
   "description": "Two stages passing data via s.save() -> s.transcript(handle) — the canonical handoff pattern",
   "scripts": {

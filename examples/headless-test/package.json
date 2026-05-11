@@ -1,7 +1,7 @@
 {
   "name": "@bastani/example-headless-test",
   "private": true,
-  "version": "0.7.16",
+  "version": "0.7.17-0",
   "type": "module",
   "description": "Visible seed -> 3 parallel headless stages -> visible merge -> headless verdict",
   "scripts": {
