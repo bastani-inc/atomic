@@ -14,7 +14,7 @@ import type { CancellationRegistry } from "../runs/detach/cancellation-registry.
 import { run } from "../runs/sync/executor.js";
 import type { WorkflowToolResult, WorkflowInputEntry } from "./render-result.js";
 import type { WorkflowToolArgs } from "./index.js";
-import type { WorkflowUIAdapter } from "../shared/types.js";
+import type { WorkflowUIAdapter, WorkflowPersistencePort } from "../shared/types.js";
 
 // ---------------------------------------------------------------------------
 // Options
@@ -31,6 +31,8 @@ export interface DispatcherOpts {
   store?: Store;
   /** Cancellation registry forwarded to the executor. */
   cancellation?: CancellationRegistry;
+  /** Persistence port forwarded to the executor. */
+  persistence?: WorkflowPersistencePort;
 }
 
 // ---------------------------------------------------------------------------
@@ -108,6 +110,7 @@ export async function dispatch(
         ui: opts.ui,
         store: opts.store,
         cancellation: opts.cancellation,
+        persistence: opts.persistence,
       });
 
       return {

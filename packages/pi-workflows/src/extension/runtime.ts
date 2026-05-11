@@ -12,7 +12,7 @@
 
 import { createRegistry } from "../workflows/registry.js";
 import type { WorkflowRegistry } from "../workflows/registry.js";
-import type { WorkflowDefinition, WorkflowUIAdapter } from "../shared/types.js";
+import type { WorkflowDefinition, WorkflowUIAdapter, WorkflowPersistencePort } from "../shared/types.js";
 import type { StageAdapters } from "../runs/sync/stage-runner.js";
 import type { Store } from "../store.js";
 import type { CancellationRegistry } from "../runs/detach/cancellation-registry.js";
@@ -44,6 +44,8 @@ export interface ExtensionRuntimeOpts {
   store?: Store;
   /** Cancellation registry forwarded to the executor. */
   cancellation?: CancellationRegistry;
+  /** Persistence port forwarded to the executor. */
+  persistence?: WorkflowPersistencePort;
 }
 
 // ---------------------------------------------------------------------------
@@ -87,6 +89,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
   const ui = opts.ui;
   const activeStore = opts.store ?? defaultStore;
   const cancellation = opts.cancellation;
+  const persistence = opts.persistence;
 
   return {
     get registry(): WorkflowRegistry {
@@ -94,7 +97,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
     },
 
     dispatch(args: WorkflowToolArgs): Promise<WorkflowToolResult> {
-      return dispatch(args, { registry, adapters, ui, store: activeStore, cancellation });
+      return dispatch(args, { registry, adapters, ui, store: activeStore, cancellation, persistence });
     },
   };
 }
