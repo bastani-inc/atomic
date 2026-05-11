@@ -13,6 +13,7 @@ import type { Store } from "../store.js";
 import { run } from "../runs/sync/executor.js";
 import type { WorkflowToolResult, WorkflowInputEntry } from "./render-result.js";
 import type { WorkflowToolArgs } from "./index.js";
+import type { WorkflowUIAdapter } from "../shared/types.js";
 
 // ---------------------------------------------------------------------------
 // Options
@@ -23,6 +24,8 @@ export interface DispatcherOpts {
   registry: WorkflowRegistry;
   /** Stage adapters forwarded to the executor (prompt/complete/subagent). */
   adapters?: StageAdapters;
+  /** UI adapter forwarded to the executor (HIL / progress rendering). */
+  ui?: WorkflowUIAdapter;
   /** Store override (for testing; falls back to executor default). */
   store?: Store;
 }
@@ -97,6 +100,7 @@ export async function dispatch(
       // Let real errors propagate — no broad catch here.
       const runResult = await run(def, args.inputs, {
         adapters: opts.adapters,
+        ui: opts.ui,
         store: opts.store,
       });
 
