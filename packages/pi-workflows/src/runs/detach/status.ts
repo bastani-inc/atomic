@@ -34,7 +34,7 @@ export type KillResult =
 
 export type ResumeResult =
   | { ok: true; runId: string; snapshot: RunSnapshot }
-  | { ok: false; runId: string; reason: "not_found" | "not_ended" };
+  | { ok: false; runId: string; reason: "not_found" };
 
 // ---------------------------------------------------------------------------
 // statusRuns
@@ -130,15 +130,15 @@ export function killAllRuns(opts?: {
 // ---------------------------------------------------------------------------
 
 /**
- * "Resumes" a run by returning its snapshot so callers can re-open the overlay
- * or re-display progress. Does NOT re-execute the workflow.
+ * Looks up a run by ID and returns a deep-copy snapshot for display.
+ * "Resume" means reopen/display the run's current state — not re-execute.
  *
- * Returns ok:false with reason "not_ended" if the run is still in-flight
- * (nothing to resume — it's already active). Returns ok:false "not_found" if
- * the runId is unknown.
+ * Works for both in-flight (active) and ended runs. Callers use the snapshot
+ * to drive UI display (e.g. re-summon the graph overlay) regardless of whether
+ * the run is still running or has completed/failed/killed.
  *
- * The caller (slash command / tool action) should use the returned snapshot
- * to drive UI display (e.g. re-summon the graph overlay).
+ * Returns ok:false "not_found" only when the runId is unknown to the store.
+ * Read-only: does not mutate store, cancellation, persistence, or job tracker.
  */
 export function resumeRun(
   runId: string,
@@ -150,10 +150,6 @@ export function resumeRun(
 
   if (!run) {
     return { ok: false, runId, reason: "not_found" };
-  }
-  if (run.endedAt === undefined) {
-    // Still running — nothing to resume (already live)
-    return { ok: false, runId, reason: "not_ended" };
   }
 
   // Return a deep copy of the snapshot for safe consumption

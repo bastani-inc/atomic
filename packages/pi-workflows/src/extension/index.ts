@@ -353,16 +353,14 @@ export function makeExecuteWorkflowTool(
             action: "resume",
             runId: result.runId,
             status: "ok",
-            message: `Run ${result.runId} (${result.snapshot.name}) \u2014 status: ${result.snapshot.status}`,
+            message: `Snapshot available: run ${result.runId} (${result.snapshot.name}) \u2014 status: ${result.snapshot.status}, stages: ${result.snapshot.stages.length}`,
           };
         }
         return {
           action: "resume",
           runId,
           status: "noop",
-          message: result.reason === "not_found"
-            ? `Run not found: ${runId}`
-            : `Run ${runId} is still active \u2014 no resume needed.`,
+          message: `Run not found: ${runId}`,
         };
       }
 
@@ -818,14 +816,10 @@ function factory(pi: ExtensionAPI): void {
         if (result.ok) {
           overlay.open(result.runId);
           print(
-            `Run ${result.runId} (${result.snapshot.name}) \u2014 status: ${result.snapshot.status}, stages: ${result.snapshot.stages.length}`,
+            `Snapshot available: run ${result.runId} (${result.snapshot.name}) \u2014 status: ${result.snapshot.status}, stages: ${result.snapshot.stages.length}`,
           );
         } else {
-          print(
-            result.reason === "not_found"
-              ? `Run not found: ${target}`
-              : `Run ${target} is still active \u2014 no resume needed.`,
-          );
+          print(`Run not found: ${target}`);
         }
         return;
       }
