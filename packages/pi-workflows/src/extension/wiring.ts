@@ -38,6 +38,16 @@ export interface PiExecResult {
 }
 
 /**
+ * Options forwarded to pi.exec() for signal propagation and timeout control.
+ */
+export interface PiExecOpts {
+  /** AbortSignal to cancel the subprocess. */
+  signal?: AbortSignal;
+  /** Timeout in milliseconds before the subprocess is killed. */
+  timeout?: number;
+}
+
+/**
  * Minimal pi runtime surface needed to build stage adapters.
  * Structurally typed so it works against both the real ExtensionAPI and mocks.
  */
@@ -47,7 +57,7 @@ export interface RuntimeWiringSurface {
    * Present on the real pi ExtensionAPI; may be absent in degraded / test runtimes.
    * Used by prompt and complete adapters only — NOT used by the subagent adapter.
    */
-  exec?: (command: string, args: string[]) => Promise<PiExecResult>;
+  exec?: (command: string, args: string[], opts?: PiExecOpts) => Promise<PiExecResult>;
 
   /**
    * pi-subagents integration surface.
@@ -106,13 +116,13 @@ export function extractAssistantText(ndjson: string): string {
  * Build StageAdapters from available pi runtime surfaces.
  *
  * Adapters built:
- * - **prompt**: `pi --mode json -p <text> --no-session` → assistant text
- * - **complete**: same + optional `--model` flag from CompleteStageOpts
- * - **subagent**: `pi --mode json -p <task> --no-session`, prefixing context
- *   and agent name into the prompt when present
+ * - **prompt**: requires `pi.exec` — `pi --mode json -p <text> --no-session` → assistant text;
+ *   passes `{ signal: meta?.signal }` to exec when signal present.
+ * - **complete**: same as prompt + optional `--model` flag from CompleteStageOpts.
+ * - **subagent**: built independently of `pi.exec`; requires `pi.subagents.run` OR
+ *   `pi.callTool`. Passes `StageExecutionMeta` signal and env through existing behaviour.
  *
- * Returns `{}` (no adapters) when `pi.exec` is absent; in that case the
- * stage-runner will throw its standard "adapter not configured" errors.
+ * Returns `{}` when no surfaces are available.
  *
  * @example
  * ```ts
@@ -122,28 +132,53 @@ export function extractAssistantText(ndjson: string): string {
  * ```
  */
 export function buildRuntimeAdapters(pi: RuntimeWiringSurface): StageAdapters {
-  if (typeof pi.exec !== "function") {
-    return {};
+  const adapters: StageAdapters = {};
+
+  // ------------------------------------------------------------------
+  // prompt + complete — require pi.exec
+  // ------------------------------------------------------------------
+  if (typeof pi.exec === "function") {
+    const exec = pi.exec.bind(pi as { exec: NonNullable<RuntimeWiringSurface["exec"]> });
+
+    async function runPiJson(args: string[], meta?: StageExecutionMeta): Promise<string> {
+      const opts: PiExecOpts = {};
+      if (meta?.signal !== undefined) opts.signal = meta.signal;
+      const result = await exec("pi", args, opts);
+      // Non-zero exit with no stdout → hard error
+      if (result.code !== 0 && !result.stdout.trim()) {
+        throw new Error(
+          `pi-workflows: pi subprocess exited with code ${result.code}: ${result.stderr.slice(0, 200)}`,
+        );
+      }
+      const text = extractAssistantText(result.stdout);
+      if (!text) {
+        throw new Error(
+          "pi-workflows: pi subprocess produced no assistant text — check pi installation",
+        );
+      }
+      return text;
+    }
+
+    adapters.prompt = {
+      async prompt(text: string, meta?: StageExecutionMeta): Promise<string> {
+        return runPiJson(["--mode", "json", "-p", text, "--no-session"], meta);
+      },
+    };
+
+    adapters.complete = {
+      async complete(text: string, opts?: CompleteStageOpts, meta?: StageExecutionMeta): Promise<string> {
+        const args = ["--mode", "json", "-p", text, "--no-session"];
+        if (opts?.model) {
+          args.push("--model", opts.model);
+        }
+        return runPiJson(args, meta);
+      },
+    };
   }
 
-  const exec = pi.exec.bind(pi as { exec: RuntimeWiringSurface["exec"] });
-
-  async function runPiJson(args: string[]): Promise<string> {
-    const result = await exec!("pi", args);
-    // Non-zero exit with no stdout → hard error
-    if (result.code !== 0 && !result.stdout.trim()) {
-      throw new Error(
-        `pi-workflows: pi subprocess exited with code ${result.code}: ${result.stderr.slice(0, 200)}`,
-      );
-    }
-    const text = extractAssistantText(result.stdout);
-    if (!text) {
-      throw new Error(
-        "pi-workflows: pi subprocess produced no assistant text — check pi installation",
-      );
-    }
-    return text;
-  }
+  // ------------------------------------------------------------------
+  // subagent — independent of pi.exec; requires pi.subagents.run or pi.callTool
+  // ------------------------------------------------------------------
 
   /** Collect workflow env vars for injection into subagent child context.
    * Explicit meta (runId/stageId from stage-runner) overrides ambient process.env fallback. */
@@ -159,30 +194,17 @@ export function buildRuntimeAdapters(pi: RuntimeWiringSurface): StageAdapters {
     return out;
   }
 
-  return {
-    prompt: {
-      async prompt(text: string, _meta?: StageExecutionMeta): Promise<string> {
-        return runPiJson(["--mode", "json", "-p", text, "--no-session"]);
-      },
-    },
+  const subagentsAny = pi.subagents as Record<string, unknown> | undefined;
+  const hasSubagentsRun = typeof subagentsAny?.["run"] === "function";
+  const hasCallTool = typeof pi.callTool === "function";
 
-    complete: {
-      async complete(text: string, opts?: CompleteStageOpts, _meta?: StageExecutionMeta): Promise<string> {
-        const args = ["--mode", "json", "-p", text, "--no-session"];
-        if (opts?.model) {
-          args.push("--model", opts.model);
-        }
-        return runPiJson(args);
-      },
-    },
-
-    subagent: {
+  if (hasSubagentsRun || hasCallTool) {
+    adapters.subagent = {
       async subagent(opts: SubagentStageOpts, meta?: StageExecutionMeta): Promise<string> {
         // Primary: delegate to pi-subagents public surface.
         // Narrowed at runtime — pi.subagents is typed unknown for ExtensionAPI compat.
-        const subagentsAny = pi.subagents as Record<string, unknown> | undefined;
-        if (typeof subagentsAny?.["run"] === "function") {
-          const runFn = subagentsAny["run"] as (opts: {
+        if (hasSubagentsRun) {
+          const runFn = subagentsAny!["run"] as (opts: {
             agent: string;
             task: string;
             context?: string;
@@ -199,26 +221,21 @@ export function buildRuntimeAdapters(pi: RuntimeWiringSurface): StageAdapters {
         }
 
         // Secondary: generic callTool fallback when pi.subagents absent.
-        if (typeof pi.callTool === "function") {
-          const args: Record<string, unknown> = {
-            action: "run",
-            agent: opts.agent,
-            task: opts.task,
-            env: workflowEnvRecord(meta),
-          };
-          if (opts.context !== undefined) {
-            args["context"] = opts.context;
-          }
-          return pi.callTool("subagent", args);
+        const callToolArgs: Record<string, unknown> = {
+          action: "run",
+          agent: opts.agent,
+          task: opts.task,
+          env: workflowEnvRecord(meta),
+        };
+        if (opts.context !== undefined) {
+          callToolArgs["context"] = opts.context;
         }
-
-        // Neither surface available — fail with actionable error.
-        throw new Error(
-          "pi-workflows: subagent delegation requires pi-subagents — install npm:pi-subagents and restart pi.",
-        );
+        return pi.callTool!("subagent", callToolArgs);
       },
-    },
-  };
+    };
+  }
+
+  return adapters;
 }
 
 // ---------------------------------------------------------------------------
