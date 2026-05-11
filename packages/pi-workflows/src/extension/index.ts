@@ -131,6 +131,11 @@ export interface ExtensionAPI {
   registerMessageRenderer?: (event: string, renderer: (payload: unknown) => string) => void;
   registerFlag?: (opts: PiFlagOpts) => void;
   /**
+   * Register a keyboard shortcut.
+   * Present on pi >= 1.x; absent on older runtimes.
+   */
+  registerShortcut?: (key: string, opts: { description: string; handler: () => void | Promise<void> }) => void;
+  /**
    * Sets the session name exposed to child processes via pi-intercom.
    * Present only when pi-intercom is installed.
    */
@@ -149,8 +154,9 @@ export interface ExtensionAPI {
    * Execute a shell command and return stdout/stderr/exit code.
    * Present on the real pi ExtensionAPI (pi >= 1.x).
    * Used by buildRuntimeAdapters to spawn `pi --mode json` for stage execution.
+   * Supports abort via optional opts.signal (AbortSignal) and opts.timeout.
    */
-  exec?: (command: string, args: string[]) => Promise<{
+  exec?: (command: string, args: string[], opts?: { signal?: AbortSignal; timeout?: number }) => Promise<{
     stdout: string;
     stderr: string;
     code: number;
@@ -176,6 +182,12 @@ export interface ExtensionAPI {
   sessionManager?: SessionManager;
   ui?: {
     setWidget?: (key: string, factory: WidgetFactory | undefined, opts?: { placement?: string }) => void;
+    /**
+     * Spawn a custom TUI component (overlay or inline).
+     * Returns a Promise resolving to whatever done(value) is called with.
+     * Overlay mode (overlay: true) floats over existing content.
+     */
+    custom?: (factory: unknown, opts?: { overlay?: boolean; overlayOptions?: unknown; onHandle?: unknown }) => Promise<unknown>;
   } & PiUISurface;
   [key: string]: unknown;
 }
@@ -675,12 +687,24 @@ function factory(pi: ExtensionAPI): void {
       const discovery = discoveryRef.current ?? (await discoverBundledWorkflows());
       const siblings: DoctorSiblingStatus = {
         subagents: pi.subagents !== undefined,
+        // pi-subagents callable when run() method present on surface
+        subagentsCallable: typeof (pi.subagents as Record<string, unknown> | undefined)?.["run"] === "function",
         // pi-mcp-adapter exposes itself as pi["mcpAdapter"] (structural check)
         mcpAdapter: (pi as Record<string, unknown>)["mcpAdapter"] !== undefined,
+        // mcp scope events present when mcpAdapter has scopeEvents surface
+        mcpScopeEvents: typeof ((pi as Record<string, unknown>)["mcpAdapter"] as Record<string, unknown> | undefined)?.["scopeEvents"] === "object",
         // pi-intercom registers setSessionName on the ExtensionAPI when present
         intercom: typeof pi.setSessionName === "function",
         // HIL adapter available when pi.ui is present
         hil: pi.ui !== undefined,
+        // ui.custom overlay available
+        uiCustom: typeof pi.ui?.custom === "function",
+        // F2/shortcut registration available
+        shortcut: typeof pi.registerShortcut === "function",
+        // exec abortable when pi.exec accepts AbortSignal (runtime capability)
+        execAbortable: typeof pi.exec === "function",
+        // persistence appendEntry available
+        persistenceAppendEntry: typeof pi.appendEntry === "function",
       };
       print(buildDoctorReport(discovery, siblings, configLoadRef.current));
     },
