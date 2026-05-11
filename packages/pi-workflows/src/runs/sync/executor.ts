@@ -11,6 +11,7 @@ import type {
   StageOptions,
   WorkflowMcpPort,
   WorkflowPersistencePort,
+  WorkflowRuntimeConfig,
 } from "../../shared/types.js";
 import type { StageAdapters } from "./stage-runner.js";
 import type { RunStatus, StageSnapshot, RunSnapshot, WorkflowOverlayAdapter } from "../../store-types.js";
@@ -44,6 +45,12 @@ export interface RunOpts {
   overlay?: WorkflowOverlayAdapter;
   /** AbortSignal that requests cancellation from the caller side. */
   signal?: AbortSignal;
+  /**
+   * Resolved runtime configuration. Injected by the composition root after
+   * merging file config with defaults. Downstream tasks (maxDepth, concurrency,
+   * status writer) consume this; values are threaded here but not yet acted on.
+   */
+  config?: WorkflowRuntimeConfig;
   /**
    * Pre-allocated runId. When provided, the executor uses this ID instead of
    * generating a new UUID. The detached runner uses this seam to preallocate

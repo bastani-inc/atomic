@@ -203,6 +203,38 @@ export interface WorkflowRunContext<TInputs extends Record<string, unknown> = Re
 }
 
 // ---------------------------------------------------------------------------
+// WorkflowRuntimeConfig — resolved runtime tunables injected at composition root
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolved runtime configuration for workflow execution.
+ * Built from WorkflowEffectiveConfig (all optionals filled with defaults) and
+ * injected into createExtensionRuntime, dispatch, run, and runDetached option seams.
+ *
+ * Downstream tasks own: maxDepth enforcement, defaultConcurrency pool,
+ * statusFile writer. This type is the port — values flow through but are not
+ * acted on until those tasks land.
+ */
+export interface WorkflowRuntimeConfig {
+  /** Maximum workflow recursion/nesting depth. Default: 4. */
+  readonly maxDepth: number;
+  /** Default stage concurrency limit. Default: 4. */
+  readonly defaultConcurrency: number;
+  /** Persist runs via pi.appendEntry. Default: true. */
+  readonly persistRuns: boolean;
+  /** Emit derived status file for CI polling. Default: false. */
+  readonly statusFile: boolean;
+  /**
+   * Filesystem path for the emitted status file.
+   * Only meaningful when statusFile is true.
+   * Absence means the writer should choose a default path.
+   */
+  readonly statusFilePath?: string;
+  /** Behaviour on session_start for in-flight runs. Default: "ask". */
+  readonly resumeInFlight: "ask" | "auto" | "never";
+}
+
+// ---------------------------------------------------------------------------
 // Workflow run function
 // ---------------------------------------------------------------------------
 

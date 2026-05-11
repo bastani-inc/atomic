@@ -16,7 +16,7 @@ import { run } from "../runs/sync/executor.js";
 import { runDetached } from "../runs/detach/runner.js";
 import type { WorkflowToolResult, WorkflowInputEntry } from "./render-result.js";
 import type { WorkflowToolArgs } from "./index.js";
-import type { WorkflowUIAdapter, WorkflowPersistencePort, WorkflowMcpPort } from "../shared/types.js";
+import type { WorkflowUIAdapter, WorkflowPersistencePort, WorkflowMcpPort, WorkflowRuntimeConfig } from "../shared/types.js";
 
 // ---------------------------------------------------------------------------
 // Options
@@ -39,6 +39,11 @@ export interface DispatcherOpts {
   persistence?: WorkflowPersistencePort;
   /** MCP scope-gating port forwarded to the executor. */
   mcp?: WorkflowMcpPort;
+  /**
+   * Resolved runtime configuration. Forwarded to run() and runDetached()
+   * so downstream tasks (maxDepth, concurrency, statusFile) can consume it.
+   */
+  config?: WorkflowRuntimeConfig;
 }
 
 // ---------------------------------------------------------------------------
@@ -119,6 +124,7 @@ export async function dispatch(
           jobs: opts.jobs,
           persistence: opts.persistence,
           mcp: opts.mcp,
+          config: opts.config,
         });
         return {
           action: "run",
@@ -140,6 +146,7 @@ export async function dispatch(
         cancellation: opts.cancellation,
         persistence: opts.persistence,
         mcp: opts.mcp,
+        config: opts.config,
       });
 
       return {

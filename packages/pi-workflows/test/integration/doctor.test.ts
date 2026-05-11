@@ -13,6 +13,7 @@ import type { DiscoveryResult } from "../../src/extension/discovery.js";
 import type { ConfigLoadResult } from "../../src/extension/config-loader.js";
 import factory, {
   type ExtensionAPI,
+  type PiCommandOptions,
   type PiSlashCommandOpts,
 } from "../../src/extension/index.js";
 
@@ -69,8 +70,18 @@ function makeMockApi(extras: Partial<ExtensionAPI> = {}): ExtensionAPI & { comma
   const commands: RegisteredCommand[] = [];
   return {
     commands,
-    registerCommand(opts: PiSlashCommandOpts) {
-      commands.push({ opts });
+    registerCommand(name: string, options: PiCommandOptions) {
+      const opts: PiSlashCommandOpts = {
+        name,
+        description: options.description,
+        execute: options.handler,
+      };
+      if (options.getArgumentCompletions !== undefined) {
+        opts.getArgumentCompletions = options.getArgumentCompletions;
+      }
+      commands.push({
+        opts,
+      });
     },
     registerTool: () => undefined,
     registerMessageRenderer: () => undefined,
@@ -384,7 +395,7 @@ describe("buildDoctorReport — config diagnostics", () => {
   });
 
   test("shows '(none)' when configLoad has no diagnostics", () => {
-    const configLoad: ConfigLoadResult = { config: null, diagnostics: [] };
+    const configLoad: ConfigLoadResult = { config: null, globalConfig: null, projectConfig: null, diagnostics: [] };
     const report = buildDoctorReport(makeDiscovery(), noSiblings, configLoad);
     expect(report).toContain("Config diagnostics: (none)");
   });
@@ -392,6 +403,8 @@ describe("buildDoctorReport — config diagnostics", () => {
   test("lists config diagnostic with level, code, source, and message", () => {
     const configLoad: ConfigLoadResult = {
       config: null,
+      globalConfig: null,
+      projectConfig: null,
       diagnostics: [
         {
           level: "error",
@@ -412,6 +425,8 @@ describe("buildDoctorReport — config diagnostics", () => {
   test("shows count for multiple config diagnostics", () => {
     const configLoad: ConfigLoadResult = {
       config: null,
+      globalConfig: null,
+      projectConfig: null,
       diagnostics: [
         { level: "error", code: "CONFIG_INVALID", message: "err1", source: "/a.json" },
         { level: "error", code: "CONFIG_INVALID", message: "err2", source: "/b.json" },
@@ -424,6 +439,8 @@ describe("buildDoctorReport — config diagnostics", () => {
   test("shows diagnostic without source when source absent", () => {
     const configLoad: ConfigLoadResult = {
       config: null,
+      globalConfig: null,
+      projectConfig: null,
       diagnostics: [
         { level: "error", code: "CONFIG_INVALID", message: "some error" },
       ],
@@ -439,7 +456,7 @@ describe("buildDoctorReport — config diagnostics", () => {
 
 describe("buildDoctorReport — tunables", () => {
   test("shows default tunables when config is null", () => {
-    const configLoad: ConfigLoadResult = { config: null, diagnostics: [] };
+    const configLoad: ConfigLoadResult = { config: null, globalConfig: null, projectConfig: null, diagnostics: [] };
     const report = buildDoctorReport(makeDiscovery(), noSiblings, configLoad);
     expect(report).toContain("Tunables:");
     expect(report).toContain("persistRuns        — true");
@@ -468,6 +485,8 @@ describe("buildDoctorReport — tunables", () => {
         maxDepth: 2,
         statusFile: true,
       },
+      globalConfig: null,
+      projectConfig: null,
       diagnostics: [],
     };
     const report = buildDoctorReport(makeDiscovery(), noSiblings, configLoad);
@@ -481,6 +500,8 @@ describe("buildDoctorReport — tunables", () => {
   test("shows partial overrides; unset fields fall back to defaults", () => {
     const configLoad: ConfigLoadResult = {
       config: { maxDepth: 10 },
+      globalConfig: null,
+      projectConfig: null,
       diagnostics: [],
     };
     const report = buildDoctorReport(makeDiscovery(), noSiblings, configLoad);
@@ -496,7 +517,7 @@ describe("buildDoctorReport — tunables", () => {
 
 describe("buildDoctorReport — configured workflows", () => {
   test("shows '(none configured)' when config has no workflows", () => {
-    const configLoad: ConfigLoadResult = { config: {}, diagnostics: [] };
+    const configLoad: ConfigLoadResult = { config: {}, globalConfig: null, projectConfig: null, diagnostics: [] };
     const report = buildDoctorReport(makeDiscovery(), noSiblings, configLoad);
     expect(report).toContain("Configured workflows: (none configured)");
   });
@@ -513,6 +534,8 @@ describe("buildDoctorReport — configured workflows", () => {
           "my-workflow": { path: "./workflows/my-workflow.ts" },
         },
       },
+      globalConfig: null,
+      projectConfig: null,
       diagnostics: [],
     };
     const report = buildDoctorReport(makeDiscovery(), noSiblings, configLoad);
@@ -528,6 +551,8 @@ describe("buildDoctorReport — configured workflows", () => {
           beta: { path: "./beta.ts" },
         },
       },
+      globalConfig: null,
+      projectConfig: null,
       diagnostics: [],
     };
     const report = buildDoctorReport(makeDiscovery(), noSiblings, configLoad);
@@ -543,6 +568,8 @@ describe("buildDoctorReport — configured workflows", () => {
           secret: { path: "./secret-workflow.ts" },
         },
       },
+      globalConfig: null,
+      projectConfig: null,
       diagnostics: [],
     };
     const report = buildDoctorReport(makeDiscovery(), noSiblings, configLoad);
@@ -558,7 +585,7 @@ describe("buildDoctorReport — configured workflows", () => {
 
 describe("buildDoctorReport — section ordering", () => {
   test("config diagnostics appears before tunables", () => {
-    const configLoad: ConfigLoadResult = { config: null, diagnostics: [] };
+    const configLoad: ConfigLoadResult = { config: null, globalConfig: null, projectConfig: null, diagnostics: [] };
     const report = buildDoctorReport(makeDiscovery(), noSiblings, configLoad);
     const configIdx = report.indexOf("Config diagnostics:");
     const tunablesIdx = report.indexOf("Tunables:");
@@ -566,7 +593,7 @@ describe("buildDoctorReport — section ordering", () => {
   });
 
   test("tunables appears before configured workflows", () => {
-    const configLoad: ConfigLoadResult = { config: null, diagnostics: [] };
+    const configLoad: ConfigLoadResult = { config: null, globalConfig: null, projectConfig: null, diagnostics: [] };
     const report = buildDoctorReport(makeDiscovery(), noSiblings, configLoad);
     const tunablesIdx = report.indexOf("Tunables:");
     const workflowsIdx = report.indexOf("Configured workflows:");
@@ -574,7 +601,7 @@ describe("buildDoctorReport — section ordering", () => {
   });
 
   test("configured workflows appears before capabilities", () => {
-    const configLoad: ConfigLoadResult = { config: null, diagnostics: [] };
+    const configLoad: ConfigLoadResult = { config: null, globalConfig: null, projectConfig: null, diagnostics: [] };
     const report = buildDoctorReport(makeDiscovery(), noSiblings, configLoad);
     const workflowsIdx = report.indexOf("Configured workflows:");
     const capabilitiesIdx = report.indexOf("Capabilities:");

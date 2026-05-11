@@ -12,7 +12,7 @@
 
 import { createRegistry } from "../workflows/registry.js";
 import type { WorkflowRegistry } from "../workflows/registry.js";
-import type { WorkflowDefinition, WorkflowUIAdapter, WorkflowPersistencePort, WorkflowMcpPort } from "../shared/types.js";
+import type { WorkflowDefinition, WorkflowUIAdapter, WorkflowPersistencePort, WorkflowMcpPort, WorkflowRuntimeConfig } from "../shared/types.js";
 import type { StageAdapters } from "../runs/sync/stage-runner.js";
 import type { Store } from "../store.js";
 import type { CancellationRegistry } from "../runs/detach/cancellation-registry.js";
@@ -48,6 +48,11 @@ export interface ExtensionRuntimeOpts {
   persistence?: WorkflowPersistencePort;
   /** MCP scope-gating port forwarded to the executor. */
   mcp?: WorkflowMcpPort;
+  /**
+   * Resolved runtime configuration. Injected by the composition root after
+   * merging file config with defaults. Forwarded to dispatch → run/runDetached.
+   */
+  config?: WorkflowRuntimeConfig;
 }
 
 // ---------------------------------------------------------------------------
@@ -93,6 +98,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
   const cancellation = opts.cancellation;
   const persistence = opts.persistence;
   const mcp = opts.mcp;
+  const config = opts.config;
 
   return {
     get registry(): WorkflowRegistry {
@@ -100,7 +106,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
     },
 
     dispatch(args: WorkflowToolArgs): Promise<WorkflowToolResult> {
-      return dispatch(args, { registry, adapters, ui, store: activeStore, cancellation, persistence, mcp });
+      return dispatch(args, { registry, adapters, ui, store: activeStore, cancellation, persistence, mcp, config });
     },
   };
 }

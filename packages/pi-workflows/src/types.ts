@@ -18,6 +18,7 @@ export type {
   CompleteStageOpts,
   WorkflowUIContext,
   StageExecutionMeta,
+  WorkflowRuntimeConfig,
 } from "./shared/types.js";
 
 export type { WorkflowBuilder, CompletedWorkflowBuilder } from "./workflows/define-workflow.js";
