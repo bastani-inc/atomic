@@ -36,6 +36,9 @@ const allAbsent: DoctorSiblingStatus = {
   shortcut: false,
   execAbortable: false,
   persistenceAppendEntry: false,
+  promptAdapter: false,
+  completeAdapter: false,
+  subagentAdapterVia: "unavailable",
 };
 
 const allPresent: DoctorSiblingStatus = {
@@ -49,6 +52,9 @@ const allPresent: DoctorSiblingStatus = {
   shortcut: true,
   execAbortable: true,
   persistenceAppendEntry: true,
+  promptAdapter: true,
+  completeAdapter: true,
+  subagentAdapterVia: "pi.subagents",
 };
 
 // ---------------------------------------------------------------------------
@@ -218,5 +224,101 @@ describe("buildDoctorReport — structure", () => {
   test("includes Capabilities section header", () => {
     const report = buildDoctorReport(emptyDiscovery(), allAbsent);
     expect(report).toContain("Capabilities:");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Runtime adapters — pi.exec
+// ---------------------------------------------------------------------------
+
+describe("buildDoctorReport — pi.exec capability", () => {
+  test("execAbortable false renders unavailable under Runtime adapters", () => {
+    const report = buildDoctorReport(emptyDiscovery(), { ...allAbsent, execAbortable: false });
+    expect(report).toContain("pi.exec          — unavailable");
+  });
+
+  test("execAbortable true renders available under Runtime adapters", () => {
+    const report = buildDoctorReport(emptyDiscovery(), { ...allAbsent, execAbortable: true });
+    expect(report).toContain("pi.exec          — available");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Runtime adapters — prompt adapter
+// ---------------------------------------------------------------------------
+
+describe("buildDoctorReport — prompt adapter", () => {
+  test("promptAdapter false renders unconfigured", () => {
+    const report = buildDoctorReport(emptyDiscovery(), { ...allAbsent, promptAdapter: false });
+    expect(report).toContain("prompt adapter   — unconfigured");
+  });
+
+  test("promptAdapter true renders configured", () => {
+    const report = buildDoctorReport(emptyDiscovery(), { ...allAbsent, promptAdapter: true });
+    expect(report).toContain("prompt adapter   — configured");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Runtime adapters — complete adapter
+// ---------------------------------------------------------------------------
+
+describe("buildDoctorReport — complete adapter", () => {
+  test("completeAdapter false renders unconfigured", () => {
+    const report = buildDoctorReport(emptyDiscovery(), { ...allAbsent, completeAdapter: false });
+    expect(report).toContain("complete adapter — unconfigured");
+  });
+
+  test("completeAdapter true renders configured", () => {
+    const report = buildDoctorReport(emptyDiscovery(), { ...allAbsent, completeAdapter: true });
+    expect(report).toContain("complete adapter — configured");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Runtime adapters — subagent adapter via
+// ---------------------------------------------------------------------------
+
+describe("buildDoctorReport — subagent adapter via", () => {
+  test("unavailable renders unavailable", () => {
+    const report = buildDoctorReport(emptyDiscovery(), { ...allAbsent, subagentAdapterVia: "unavailable" });
+    expect(report).toContain("subagent adapter — unavailable");
+  });
+
+  test("pi.subagents renders configured via pi.subagents", () => {
+    const report = buildDoctorReport(emptyDiscovery(), { ...allAbsent, subagentAdapterVia: "pi.subagents" });
+    expect(report).toContain("subagent adapter — configured via pi.subagents");
+  });
+
+  test("callTool renders configured via callTool", () => {
+    const report = buildDoctorReport(emptyDiscovery(), { ...allAbsent, subagentAdapterVia: "callTool" });
+    expect(report).toContain("subagent adapter — configured via callTool");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Runtime adapters — section header + combined
+// ---------------------------------------------------------------------------
+
+describe("buildDoctorReport — Runtime adapters section", () => {
+  test("includes Runtime adapters header", () => {
+    const report = buildDoctorReport(emptyDiscovery(), allAbsent);
+    expect(report).toContain("Runtime adapters:");
+  });
+
+  test("all absent renders all unconfigured/unavailable", () => {
+    const report = buildDoctorReport(emptyDiscovery(), allAbsent);
+    expect(report).toContain("pi.exec          — unavailable");
+    expect(report).toContain("prompt adapter   — unconfigured");
+    expect(report).toContain("complete adapter — unconfigured");
+    expect(report).toContain("subagent adapter — unavailable");
+  });
+
+  test("all present renders all configured/available", () => {
+    const report = buildDoctorReport(emptyDiscovery(), allPresent);
+    expect(report).toContain("pi.exec          — available");
+    expect(report).toContain("prompt adapter   — configured");
+    expect(report).toContain("complete adapter — configured");
+    expect(report).toContain("subagent adapter — configured via pi.subagents");
   });
 });

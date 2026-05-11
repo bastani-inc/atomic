@@ -38,6 +38,20 @@ export interface DoctorSiblingStatus {
   readonly execAbortable: boolean;
   /** True when pi.appendEntry is present — persistence transcript available. */
   readonly persistenceAppendEntry: boolean;
+  // ---------------------------------------------------------------------------
+  // Runtime adapter capabilities (populated by buildRuntimeAdapters surface checks)
+  // ---------------------------------------------------------------------------
+  /** True when prompt adapter is configured (requires pi.exec). */
+  readonly promptAdapter: boolean;
+  /** True when complete adapter is configured (requires pi.exec). */
+  readonly completeAdapter: boolean;
+  /**
+   * How the subagent adapter is wired:
+   * - "pi.subagents" — pi.subagents.run() present (primary path)
+   * - "callTool"     — pi.callTool present, pi.subagents.run absent (fallback path)
+   * - "unavailable"  — neither surface detected
+   */
+  readonly subagentAdapterVia: "pi.subagents" | "callTool" | "unavailable";
 }
 
 // ---------------------------------------------------------------------------
@@ -170,6 +184,27 @@ export function buildDoctorReport(
 
   // persistence appendEntry: appendEntry available / unavailable
   lines.push(`  persistence    — ${siblings.persistenceAppendEntry ? "appendEntry available" : "unavailable"}`);
+
+  // Runtime adapter capabilities
+  lines.push("Runtime adapters:");
+
+  // pi.exec: available / unavailable
+  lines.push(`  pi.exec          — ${siblings.execAbortable ? "available" : "unavailable"}`);
+
+  // prompt adapter: configured / unconfigured
+  lines.push(`  prompt adapter   — ${siblings.promptAdapter ? "configured" : "unconfigured"}`);
+
+  // complete adapter: configured / unconfigured
+  lines.push(`  complete adapter — ${siblings.completeAdapter ? "configured" : "unconfigured"}`);
+
+  // subagent adapter: configured via pi.subagents / callTool / unavailable
+  const subagentAdapterLabel =
+    siblings.subagentAdapterVia === "pi.subagents"
+      ? "configured via pi.subagents"
+      : siblings.subagentAdapterVia === "callTool"
+        ? "configured via callTool"
+        : "unavailable";
+  lines.push(`  subagent adapter — ${subagentAdapterLabel}`);
 
   return lines.join("\n");
 }

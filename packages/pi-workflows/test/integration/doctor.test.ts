@@ -31,6 +31,9 @@ const noSiblings: DoctorSiblingStatus = {
   shortcut: false,
   execAbortable: false,
   persistenceAppendEntry: false,
+  promptAdapter: false,
+  completeAdapter: false,
+  subagentAdapterVia: "unavailable",
 };
 
 const allSiblings: DoctorSiblingStatus = {
@@ -44,6 +47,9 @@ const allSiblings: DoctorSiblingStatus = {
   shortcut: true,
   execAbortable: true,
   persistenceAppendEntry: true,
+  promptAdapter: true,
+  completeAdapter: true,
+  subagentAdapterVia: "pi.subagents",
 };
 
 function makeDiscovery(overrides: Partial<DiscoveryResult> = {}): DiscoveryResult {
@@ -249,6 +255,9 @@ describe("buildDoctorReport — siblings", () => {
       shortcut: false,
       execAbortable: false,
       persistenceAppendEntry: false,
+      promptAdapter: false,
+      completeAdapter: false,
+      subagentAdapterVia: "unavailable",
     };
     const report = buildDoctorReport(makeDiscovery(), mixed);
     expect(report).toContain("pi-subagents   — available");

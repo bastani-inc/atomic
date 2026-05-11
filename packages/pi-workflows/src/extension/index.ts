@@ -230,6 +230,9 @@ const workflowParameters = Type.Object({
       Type.Literal("inputs"),
     ]),
   ),
+  detach: Type.Optional(
+    Type.Boolean({ description: "Start workflow in background and return runId immediately" }),
+  ),
 });
 
 // ---------------------------------------------------------------------------
@@ -385,6 +388,19 @@ function registerWorkflowAlias(
  * Any first token NOT in this set is treated as a workflow name.
  */
 const ADMIN_SUBCOMMANDS = new Set(["list", "status", "kill", "resume", "inputs"]);
+
+/**
+ * Strip `--detach` and `--bg` control flags from a token list before
+ * passing to `parseWorkflowArgs()`.  Flags may appear anywhere in the list.
+ * Returns cleaned token array and whether a detach flag was present.
+ */
+export function stripDetachFlags(tokens: string[]): { tokens: string[]; detach: boolean } {
+  const detach = tokens.some((t) => t === "--detach" || t === "--bg");
+  return {
+    tokens: tokens.filter((t) => t !== "--detach" && t !== "--bg"),
+    detach,
+  };
+}
 
 /**
  * Parse remaining args tokens as key=value pairs.

@@ -82,6 +82,9 @@ const noSiblings: DoctorSiblingStatus = {
   shortcut: false,
   execAbortable: false,
   persistenceAppendEntry: false,
+  promptAdapter: false,
+  completeAdapter: false,
+  subagentAdapterVia: "unavailable",
 };
 
 beforeAll(async () => {
