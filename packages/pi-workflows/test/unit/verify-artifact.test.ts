@@ -183,17 +183,9 @@ describe("verify-artifact", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Integration: actual dist output after build
+// Note: real dist verification (all package.json paths present, public API
+// exports, extension factory) is performed by scripts/verify-artifact.ts
+// which is invoked as step 5 of scripts/build.ts. Those checks require a
+// built dist and must not run in the unit-test suite so that `bun test`
+// passes from a clean checkout without a prior build.
 // ---------------------------------------------------------------------------
-
-describe("verify-artifact integration — actual dist", () => {
-  test("all paths declared in package.json exist in dist after build", async () => {
-    const pkgJsonPath = resolve(import.meta.dir, "../../package.json");
-    const pkgRoot = resolve(import.meta.dir, "../..");
-
-    const { default: pkg } = await import(pkgJsonPath, { with: { type: "json" } });
-
-    const missing = verifyArtifact(pkgRoot, pkg as PkgShape);
-    expect(missing).toHaveLength(0);
-  });
-});
