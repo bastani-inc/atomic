@@ -24,6 +24,7 @@ import { statusRuns, killRun, killAllRuns, resumeRun } from "../runs/detach/stat
 import { cancellationRegistry } from "../runs/detach/cancellation-registry.js";
 import { registerIntercomParentSession } from "../integrations/intercom/intercom-bridge.js";
 import { subscribeIntercomControl } from "../integrations/intercom/result-intercom.js";
+import { buildIntercomCallbacks } from "../integrations/intercom/intercom-routing.js";
 import { installStoreWidget, installToolExecutionHooks } from "../tui/store-widget-installer.js";
 import type { WidgetFactory } from "../tui/store-widget-installer.js";
 import { buildGraphOverlayAdapter } from "../tui/overlay-adapter.js";
@@ -1003,16 +1004,22 @@ function factory(pi: ExtensionAPI): void {
   registerIntercomParentSession(pi);
 
   // pi-intercom: route subagent:control-intercom events to overlay/store callbacks.
-  // Callbacks are intentionally left as stubs here; the overlay/store (Phase E/F)
-  // can re-subscribe with real handlers once implemented.
-  subscribeIntercomControl(pi, {
-    onNeedDecision: (_payload) => {
-      // Phase E/F: surface ctx.ui.confirm in overlay when available.
-    },
-    onNotify: (_payload) => {
-      // Phase E/F: surface non-blocking notice in workflow overlay.
-    },
-  });
+  // buildIntercomCallbacks wires store.recordNotice, pi.ui.confirm (when present),
+  // and pi.events.emit (when present) so escalations are never silently dropped.
+  subscribeIntercomControl(
+    pi,
+    buildIntercomCallbacks({
+      store,
+      emit:
+        typeof pi.events?.emit === "function"
+          ? (event, payload) => pi.events!.emit!(event, payload)
+          : undefined,
+      confirm:
+        typeof pi.ui?.confirm === "function"
+          ? (title, message) => pi.ui!.confirm!(title, message)
+          : undefined,
+    }),
+  );
 }
 
 export default factory;
