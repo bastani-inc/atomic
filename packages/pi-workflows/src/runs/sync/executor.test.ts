@@ -679,3 +679,81 @@ describe("executor.run — lifecycle persistence", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// executor.run — abort/kill wiring
+// ---------------------------------------------------------------------------
+
+describe("executor.run — abort/kill wiring", () => {
+  test("abort signal aborts in-flight stage, run finishes as killed", async () => {
+    const { createCancellationRegistry } = await import("../detach/cancellation-registry.js");
+    const registry = createCancellationRegistry();
+    const controller = new AbortController();
+
+    const def = defineWorkflow("abort-wf")
+      .run(async (ctx) => {
+        await ctx.stage("slow").prompt("go");
+        return {};
+      })
+      .compile();
+
+    let adapterResolve!: (value: string) => void;
+    const adapterPromise = new Promise<string>((resolve) => {
+      adapterResolve = resolve;
+    });
+
+    const runPromise = run(def, {}, {
+      adapters: { prompt: { prompt: async (_text) => adapterPromise } },
+      store: createStore(),
+      cancellation: registry,
+      signal: controller.signal,
+    });
+
+    // Abort after a short delay while the adapter is pending
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    controller.abort();
+
+    const result = await runPromise;
+
+    expect(result.status).toBe("killed");
+    expect(result.error).toBe("workflow killed");
+
+    // Clean up the never-resolving adapter promise
+    adapterResolve("ignored");
+  });
+
+  test("later resolution doesn't overwrite killed status", async () => {
+    const { createCancellationRegistry } = await import("../detach/cancellation-registry.js");
+    const testStore = createStore();
+    const registry = createCancellationRegistry();
+
+    const def = defineWorkflow("abort-guard-wf")
+      .run(async (ctx) => {
+        await ctx.stage("slow").prompt("go");
+        return {};
+      })
+      .compile();
+
+    let adapterResolve!: (value: string) => void;
+    const adapterPromise = new Promise<string>((resolve) => {
+      adapterResolve = resolve;
+    });
+
+    const runPromise = run(def, {}, {
+      adapters: { prompt: { prompt: async (_text) => adapterPromise } },
+      store: testStore,
+      cancellation: registry,
+    });
+
+    // Wait for the run to be registered, then abort all
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    registry.abortAll("workflow killed");
+
+    // Resolve the adapter after the abort (should be ignored)
+    adapterResolve("done");
+
+    const result = await runPromise;
+
+    expect(result.status).toBe("killed");
+    expect(testStore.snapshot().runs[0]?.status).toBe("killed");
+  });
+});
