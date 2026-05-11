@@ -10,6 +10,8 @@ import {
   type PiIntercomExtensionAPI,
 } from "../../src/integrations/intercom/intercom-bridge.js";
 import { subscribeIntercomControl } from "../../src/integrations/intercom/result-intercom.js";
+import { buildIntercomCallbacks } from "../../src/integrations/intercom/intercom-routing.js";
+import { createStore } from "../../src/store.js";
 
 // ---------------------------------------------------------------------------
 // intercom-bridge
@@ -199,5 +201,177 @@ describe("subscribeIntercomControl", () => {
     expect(() => capturedHandler!(null)).not.toThrow();
     expect(() => capturedHandler!("string")).not.toThrow();
     expect(() => capturedHandler!(42)).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// result-intercom + intercom-routing integration
+// Wires subscribeIntercomControl with buildIntercomCallbacks and asserts
+// store-level behaviour end-to-end.
+// ---------------------------------------------------------------------------
+
+/** Capture handler registered via pi.events.on and expose a fire() helper. */
+function makeEventBus(): {
+  pi: { events: { on: (event: string, handler: (payload: unknown) => void) => void } };
+  fire: (payload: unknown) => void;
+} {
+  let capturedHandler: ((payload: unknown) => void) = () => {};
+  return {
+    pi: {
+      events: {
+        on: (_event: string, handler: (payload: unknown) => void) => {
+          capturedHandler = handler;
+        },
+      },
+    },
+    fire: (payload: unknown) => capturedHandler(payload),
+  };
+}
+
+describe("result-intercom + intercom-routing — notify records notice", () => {
+  test("notify event records info notice in store", async () => {
+    const store = createStore();
+    const bus = makeEventBus();
+    const callbacks = buildIntercomCallbacks({ store, emit: undefined, confirm: undefined });
+    subscribeIntercomControl(bus.pi, callbacks);
+
+    bus.fire({ type: "notify", message: "stage started" });
+    await new Promise((r) => setTimeout(r, 0));
+
+    const notices = store.notices();
+    expect(notices).toHaveLength(1);
+    expect(notices[0]!.level).toBe("info");
+    expect(notices[0]!.message).toBe("stage started");
+    expect(notices[0]!.requiresAck).toBeUndefined();
+  });
+
+  test("notify event with warning level records warning notice", async () => {
+    const store = createStore();
+    const bus = makeEventBus();
+    const callbacks = buildIntercomCallbacks({ store, emit: undefined, confirm: undefined });
+    subscribeIntercomControl(bus.pi, callbacks);
+
+    bus.fire({ type: "notify", message: "memory high", level: "warning" });
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(store.notices()[0]!.level).toBe("warning");
+  });
+
+  test("notify does not ack the notice", async () => {
+    const store = createStore();
+    const bus = makeEventBus();
+    const callbacks = buildIntercomCallbacks({ store, emit: undefined, confirm: undefined });
+    subscribeIntercomControl(bus.pi, callbacks);
+
+    bus.fire({ type: "notify", message: "info only" });
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(store.notices()[0]!.ackedAt).toBeUndefined();
+  });
+});
+
+describe("result-intercom + intercom-routing — need_decision records requiresAck warning when UI unavailable", () => {
+  test("need_decision records requiresAck=true warning notice when confirm absent", async () => {
+    const store = createStore();
+    const bus = makeEventBus();
+    const emitCalls: { event: string; payload: Record<string, unknown> }[] = [];
+    const callbacks = buildIntercomCallbacks({
+      store,
+      emit: (event, payload) => { emitCalls.push({ event, payload }); },
+      confirm: undefined,
+    });
+    subscribeIntercomControl(bus.pi, callbacks);
+
+    bus.fire({ type: "need_decision", message: "proceed?", requestId: "req-1", runId: "run-1", stageId: "s-1" });
+    await new Promise((r) => setTimeout(r, 10));
+
+    const notices = store.notices();
+    expect(notices).toHaveLength(1);
+    expect(notices[0]!.level).toBe("warning");
+    expect(notices[0]!.requiresAck).toBe(true);
+    expect(notices[0]!.message).toBe("proceed?");
+  });
+
+  test("need_decision emits response with accepted=false when confirm absent", async () => {
+    const store = createStore();
+    const bus = makeEventBus();
+    const emitCalls: { event: string; payload: Record<string, unknown> }[] = [];
+    const callbacks = buildIntercomCallbacks({
+      store,
+      emit: (event, payload) => { emitCalls.push({ event, payload }); },
+      confirm: undefined,
+    });
+    subscribeIntercomControl(bus.pi, callbacks);
+
+    bus.fire({ type: "need_decision", message: "ok?", requestId: "req-noui" });
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(emitCalls).toHaveLength(1);
+    expect(emitCalls[0]!.event).toBe("subagent:control-intercom:response");
+    expect(emitCalls[0]!.payload["accepted"]).toBe(false);
+    expect(emitCalls[0]!.payload["requestId"]).toBe("req-noui");
+  });
+
+  test("need_decision notice is acked after response emitted", async () => {
+    const store = createStore();
+    const bus = makeEventBus();
+    const callbacks = buildIntercomCallbacks({
+      store,
+      emit: () => {},
+      confirm: undefined,
+    });
+    subscribeIntercomControl(bus.pi, callbacks);
+
+    bus.fire({ type: "need_decision", message: "ack me" });
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(store.notices()[0]!.ackedAt).toBeDefined();
+  });
+});
+
+describe("result-intercom + intercom-routing — unknown event records warning", () => {
+  test("unknown type records warning notice containing type name and message", async () => {
+    const store = createStore();
+    const bus = makeEventBus();
+    const callbacks = buildIntercomCallbacks({ store, emit: undefined, confirm: undefined });
+    subscribeIntercomControl(bus.pi, callbacks);
+
+    bus.fire({ type: "future_event", message: "unknown payload" });
+    await new Promise((r) => setTimeout(r, 0));
+
+    const notices = store.notices();
+    expect(notices).toHaveLength(1);
+    expect(notices[0]!.level).toBe("warning");
+    expect(notices[0]!.message).toContain("future_event");
+    expect(notices[0]!.message).toContain("unknown payload");
+  });
+
+  test("unknown type does not ack notice", async () => {
+    const store = createStore();
+    const bus = makeEventBus();
+    const callbacks = buildIntercomCallbacks({ store, emit: undefined, confirm: undefined });
+    subscribeIntercomControl(bus.pi, callbacks);
+
+    bus.fire({ type: "novel_type", message: "hi" });
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(store.notices()[0]!.ackedAt).toBeUndefined();
+  });
+
+  test("unknown type does not emit response event", async () => {
+    const store = createStore();
+    const bus = makeEventBus();
+    const emitCalls: unknown[] = [];
+    const callbacks = buildIntercomCallbacks({
+      store,
+      emit: (event, payload) => { emitCalls.push({ event, payload }); },
+      confirm: undefined,
+    });
+    subscribeIntercomControl(bus.pi, callbacks);
+
+    bus.fire({ type: "novel_type", message: "hi" });
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(emitCalls).toHaveLength(0);
   });
 });
