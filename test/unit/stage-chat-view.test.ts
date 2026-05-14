@@ -14,11 +14,14 @@
 
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createStore } from "../../src/shared/store.js";
 import { StageChatView } from "../../src/tui/stage-chat-view.js";
 import { deriveGraphTheme } from "../../src/tui/graph-theme.js";
 import type { StageControlHandle } from "../../src/runs/foreground/stage-control-registry.js";
-import type { AgentSession, AgentSessionEvent } from "@earendil-works/pi-coding-agent";
+import { SessionManager, type AgentSession, type AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 
 interface HandleState {
   promptCalls: Array<string>;
@@ -39,7 +42,7 @@ function makeHandle(
     isStreaming: false,
   },
   messages: AgentSession["messages"] = [],
-): { handle: StageControlHandle; state: HandleState } {
+): { handle: StageControlHandle; state: HandleState; emit: (event: AgentSessionEvent) => void } {
   let listener: ((e: AgentSessionEvent) => void) | undefined;
   const handle: StageControlHandle = {
     runId: "run-1",
@@ -76,7 +79,11 @@ function makeHandle(
       };
     },
   };
-  return { handle, state };
+  return {
+    handle,
+    state,
+    emit: (event: AgentSessionEvent) => listener?.(event),
+  };
 }
 
 function setupRun(
@@ -332,6 +339,379 @@ describe("StageChatView", () => {
     });
     const text = view.render(96).join("\n");
     assert.match(text, /custom rendered from SDK history/);
+    view.dispose();
+  });
+
+  test("loads persisted session messages when reopening a settled stage without a live handle", () => {
+    const store = createStore();
+    setupRun(store, "run-1", "stage-a", "completed");
+    const sessionDir = mkdtempSync(join(tmpdir(), "atomic-stage-session-"));
+    const manager = SessionManager.create(process.cwd(), sessionDir);
+    const userMessage: Parameters<SessionManager["appendMessage"]>[0] = {
+      role: "user",
+      content: [{ type: "text", text: "persisted prompt" }],
+      timestamp: Date.now(),
+    };
+    const assistantMessage: Parameters<SessionManager["appendMessage"]>[0] = {
+      role: "assistant",
+      content: [{ type: "text", text: "persisted answer" }],
+      api: "openai-codex-responses",
+      provider: "openai-codex",
+      model: "gpt-test",
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          total: 0,
+        },
+      },
+      stopReason: "stop",
+      timestamp: Date.now(),
+    };
+    manager.appendMessage(userMessage);
+    manager.appendMessage(assistantMessage);
+    const sessionFile = manager.getSessionFile();
+    assert.equal(typeof sessionFile, "string");
+    store.recordStageSession("run-1", "stage-a", {
+      sessionId: manager.getSessionId(),
+      sessionFile,
+    });
+
+    const view = new StageChatView({
+      store,
+      graphTheme: deriveGraphTheme({}),
+      runId: "run-1",
+      stageId: "stage-a",
+      workflowName: "test-wf",
+      onDetach: () => {},
+      onClose: () => {},
+    });
+
+    const rendered = view.render(96).join("\n");
+    assert.match(rendered, /persisted prompt/);
+    assert.match(rendered, /persisted answer/);
+    assert.match(rendered, /2 messages/);
+    view.dispose();
+  });
+
+  test("requests render and accumulates SDK assistant text deltas", () => {
+    const store = createStore();
+    setupRun(store, "run-1", "stage-a");
+    const { handle, emit } = makeHandle();
+    let renders = 0;
+    const view = new StageChatView({
+      store,
+      graphTheme: deriveGraphTheme({}),
+      runId: "run-1",
+      stageId: "stage-a",
+      workflowName: "test-wf",
+      handle,
+      onDetach: () => {},
+      onClose: () => {},
+      requestRender: () => { renders += 1; },
+    });
+
+    emit({
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", delta: "hel" },
+      message: { role: "assistant", content: [{ type: "text", text: "hel" }] },
+    } as unknown as AgentSessionEvent);
+    emit({
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", delta: "lo" },
+      message: { role: "assistant", content: [{ type: "text", text: "hello" }] },
+    } as unknown as AgentSessionEvent);
+
+    assert.equal(renders, 2);
+    assert.equal(view._transcript.at(-1)?.text, "hello");
+    assert.match(view.render(96).join("\n"), /hello/);
+    view.dispose();
+  });
+
+  test("renders assistant markdown like the pi chat", () => {
+    const store = createStore();
+    setupRun(store, "run-1", "stage-a");
+    const { handle, emit } = makeHandle();
+    const view = new StageChatView({
+      store,
+      graphTheme: deriveGraphTheme({}),
+      runId: "run-1",
+      stageId: "stage-a",
+      workflowName: "test-wf",
+      handle,
+      onDetach: () => {},
+      onClose: () => {},
+    });
+
+    emit({
+      type: "message_update",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "# Plan\n\n- **Read** files\n- Use `rg`" }],
+      },
+    } as unknown as AgentSessionEvent);
+
+    const rendered = view.render(96).join("\n");
+    assert.match(rendered, /Plan/);
+    assert.match(rendered, /Read/);
+    assert.match(rendered, /rg/);
+    assert.doesNotMatch(rendered, /# Plan/);
+    assert.doesNotMatch(rendered, /\*\*Read\*\*/);
+    view.dispose();
+  });
+
+  test("requests render and accumulates SDK thinking deltas", () => {
+    const store = createStore();
+    setupRun(store, "run-1", "stage-a");
+    const { handle, emit } = makeHandle();
+    let renders = 0;
+    const view = new StageChatView({
+      store,
+      graphTheme: deriveGraphTheme({}),
+      runId: "run-1",
+      stageId: "stage-a",
+      workflowName: "test-wf",
+      handle,
+      onDetach: () => {},
+      onClose: () => {},
+      requestRender: () => { renders += 1; },
+    });
+
+    emit({
+      type: "message_update",
+      assistantMessageEvent: { type: "thinking_delta", delta: "reason" },
+      message: { role: "assistant", content: [] },
+    } as unknown as AgentSessionEvent);
+    emit({
+      type: "message_update",
+      assistantMessageEvent: { type: "thinking_delta", delta: "ing" },
+      message: { role: "assistant", content: [] },
+    } as unknown as AgentSessionEvent);
+
+    assert.equal(renders, 2);
+    assert.equal(view._transcript.at(-1)?.role, "thinking");
+    assert.equal(view._transcript.at(-1)?.text, "reasoning");
+    view.dispose();
+  });
+
+  test("maps full SDK assistant message snapshots and tool calls", () => {
+    const store = createStore();
+    setupRun(store, "run-1", "stage-a");
+    const { handle, emit } = makeHandle();
+    const view = new StageChatView({
+      store,
+      graphTheme: deriveGraphTheme({}),
+      runId: "run-1",
+      stageId: "stage-a",
+      workflowName: "test-wf",
+      handle,
+      onDetach: () => {},
+      onClose: () => {},
+    });
+
+    emit({
+      type: "message_start",
+      message: { role: "assistant", content: [] },
+    } as unknown as AgentSessionEvent);
+    emit({
+      type: "message_update",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "checking" },
+          { type: "text", text: "I will inspect it." },
+          { type: "toolCall", id: "t-snapshot", name: "read", arguments: { path: "src/index.ts" } },
+        ],
+      },
+    } as unknown as AgentSessionEvent);
+
+    assert.equal(view._transcript.some((entry) => entry.role === "thinking" && entry.text === "checking"), true);
+    assert.equal(view._transcript.some((entry) => entry.role === "assistant" && entry.text === "I will inspect it."), true);
+    assert.equal(view._transcript.some((entry) => entry.role === "tool" && entry.toolCallId === "t-snapshot"), true);
+    assert.match(view.render(96).join("\n"), /I will inspect it/);
+    assert.match(view.render(96).join("\n"), /read/);
+    view.dispose();
+  });
+
+  test("deduplicates locally submitted user messages echoed by SDK", async () => {
+    const store = createStore();
+    setupRun(store, "run-1", "stage-a", "pending");
+    const { handle, emit } = makeHandle();
+    const view = new StageChatView({
+      store,
+      graphTheme: deriveGraphTheme({}),
+      runId: "run-1",
+      stageId: "stage-a",
+      workflowName: "test-wf",
+      handle,
+      onDetach: () => {},
+      onClose: () => {},
+    });
+    for (const ch of "hello") view.handleInput(ch);
+    view.handleInput("\r");
+    await flush();
+    emit({
+      type: "message_start",
+      message: { role: "user", content: "hello" },
+    } as unknown as AgentSessionEvent);
+    assert.equal(view._transcript.filter((entry) => entry.role === "user" && entry.text === "hello").length, 1);
+    view.dispose();
+  });
+
+  test("agent lifecycle starts and stops the Pi-style animation tick", () => {
+    const store = createStore();
+    setupRun(store, "run-1", "stage-a");
+    const { handle, emit } = makeHandle();
+    const view = new StageChatView({
+      store,
+      graphTheme: deriveGraphTheme({}),
+      runId: "run-1",
+      stageId: "stage-a",
+      workflowName: "test-wf",
+      handle,
+      onDetach: () => {},
+      onClose: () => {},
+    });
+    assert.equal(view._hasAnimationTick, false);
+    emit({ type: "agent_start" } as unknown as AgentSessionEvent);
+    assert.equal(view._hasAnimationTick, true);
+    emit({ type: "agent_end" } as unknown as AgentSessionEvent);
+    assert.equal(view._hasAnimationTick, false);
+    view.dispose();
+  });
+
+  test("Escape interrupts streaming stages instead of closing", async () => {
+    const store = createStore();
+    setupRun(store, "run-1", "stage-a");
+    const { handle, state } = makeHandle({
+      promptCalls: [],
+      steerCalls: [],
+      followUpCalls: [],
+      pauseCalls: 0,
+      resumeCalls: [],
+      isStreaming: true,
+    });
+    let closed = 0;
+    const view = new StageChatView({
+      store,
+      graphTheme: deriveGraphTheme({}),
+      runId: "run-1",
+      stageId: "stage-a",
+      workflowName: "test-wf",
+      handle,
+      onDetach: () => {},
+      onClose: () => { closed += 1; },
+    });
+    view.handleInput("\x1b");
+    await flush();
+    await flush();
+    assert.equal(state.pauseCalls, 1);
+    assert.equal(closed, 0);
+    view.dispose();
+  });
+
+  test("tracks SDK tool execution events by toolCallId", () => {
+    const store = createStore();
+    setupRun(store, "run-1", "stage-a");
+    const { handle, emit } = makeHandle();
+    let renders = 0;
+    const view = new StageChatView({
+      store,
+      graphTheme: deriveGraphTheme({}),
+      runId: "run-1",
+      stageId: "stage-a",
+      workflowName: "test-wf",
+      handle,
+      onDetach: () => {},
+      onClose: () => {},
+      requestRender: () => { renders += 1; },
+    });
+
+    emit({ type: "tool_execution_start", toolCallId: "t1", toolName: "bash", args: { command: "ls" } } as unknown as AgentSessionEvent);
+    assert.equal(view._transcript.at(-1)?.role, "tool");
+    assert.equal(view._transcript.at(-1)?.text.includes("bash"), true);
+
+    emit({
+      type: "tool_execution_end",
+      toolCallId: "t1",
+      toolName: "bash",
+      result: { content: [{ type: "text", text: "ok" }], details: {} },
+      isError: false,
+    } as unknown as AgentSessionEvent);
+
+    assert.equal(renders, 2);
+    const entry = view._transcript.at(-1);
+    assert.equal(entry?.role, "tool");
+    assert.equal(entry?.text.includes("ok"), true);
+    const renderedLines = view.render(96);
+    assert.match(renderedLines.join("\n"), /ok/);
+    const toolLine = renderedLines.find((line) => line.includes("bash"));
+    assert.notEqual(toolLine, undefined);
+    assert.equal(toolLine!.indexOf("\x1b[0m"), toolLine!.length - "\x1b[0m".length);
+    view.dispose();
+  });
+
+  test("marks pending tool rows as errors when assistant turn aborts", () => {
+    const store = createStore();
+    setupRun(store, "run-1", "stage-a");
+    const { handle, emit } = makeHandle();
+    const view = new StageChatView({
+      store,
+      graphTheme: deriveGraphTheme({}),
+      runId: "run-1",
+      stageId: "stage-a",
+      workflowName: "test-wf",
+      handle,
+      onDetach: () => {},
+      onClose: () => {},
+    });
+
+    emit({ type: "tool_execution_start", toolCallId: "t1", toolName: "bash", args: { command: "sleep 10" } } as unknown as AgentSessionEvent);
+    emit({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [],
+        stopReason: "aborted",
+        errorMessage: "Operation aborted",
+      },
+    } as unknown as AgentSessionEvent);
+
+    const entry = view._transcript.find((item) => item.role === "tool");
+    assert.equal(entry?.role, "tool");
+    assert.equal(entry?.state, "error");
+    assert.equal(entry?.output, "Operation aborted");
+    assert.match(view.render(96).join("\n"), /Operation aborted/);
+    view.dispose();
+  });
+
+  test("uses pi SDK compaction event names for status and animation", () => {
+    const store = createStore();
+    setupRun(store, "run-1", "stage-a");
+    const { handle, emit } = makeHandle();
+    const view = new StageChatView({
+      store,
+      graphTheme: deriveGraphTheme({}),
+      runId: "run-1",
+      stageId: "stage-a",
+      workflowName: "test-wf",
+      handle,
+      onDetach: () => {},
+      onClose: () => {},
+    });
+
+    emit({ type: "compaction_start", reason: "manual" } as unknown as AgentSessionEvent);
+    assert.equal(view._hasAnimationTick, true);
+    assert.match(view.render(96).join("\n"), /compacting context/);
+    emit({ type: "compaction_end", reason: "manual", aborted: false, willRetry: false } as unknown as AgentSessionEvent);
+    assert.equal(view._hasAnimationTick, false);
     view.dispose();
   });
 

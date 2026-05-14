@@ -163,7 +163,7 @@
 
       /* =============================================================
          Stage chat — Pi-box primitives.
-         Mirrors @oh-my-pi/pi-coding-agent components:
+         Mirrors @earendil-works/pi-coding-agent components:
            - UserMessageComponent     → .pi-user (filled Box bar)
            - AssistantMessageComponent → .pi-assistant (no box)
            - ToolExecutionComponent   → .pi-tool.pending|success|error
@@ -554,7 +554,7 @@
     <div class="page">
       <h1>@bastani/atomic-workflows · stage chat (Pi-box UI)</h1>
       <p class="lede">
-        Pressing <b class="blue">Enter</b> on a graph node attaches the orchestrator overlay to that stage's <b class="b">live oh-my-pi AgentSession</b>. Same popup chrome, swapped interior. The chat surface here is intentionally <b class="b">minimal</b> &mdash; a steering surface, not a second Pi shell. It reuses Pi's box primitives verbatim: filled <span class="muted">user</span> bars, unboxed assistant Markdown, state-coloured tool bars, italic <span class="dim">thinking</span>, bordered loader, rounded editor, two-line dim footer, key-hint strip. Every SDK operation the workflow performs on the stage session (<code class="inline">setModel</code>, <code class="inline">setThinkingLevel</code>, <code class="inline">compact</code>, &hellip;) surfaces here so the user can see <b class="b">what the workflow is doing</b> without leaving the overlay.
+        Pressing <b class="blue">Enter</b> on a graph node attaches the orchestrator overlay to that stage's <b class="b">live pi AgentSession</b>. Same popup chrome, swapped interior. The chat surface here is intentionally <b class="b">minimal</b> &mdash; a steering surface, not a second Pi shell. It reuses Pi's box primitives verbatim: filled <span class="muted">user</span> bars, unboxed assistant Markdown, state-coloured tool bars, italic <span class="dim">thinking</span>, bordered loader, rounded editor, two-line dim footer, key-hint strip. Every SDK operation the workflow performs on the stage session (<code class="inline">setModel</code>, <code class="inline">setThinkingLevel</code>, <code class="inline">compact</code>, &hellip;) surfaces here so the user can see <b class="b">what the workflow is doing</b> without leaving the overlay.
       </p>
 
       <!-- ============================================================

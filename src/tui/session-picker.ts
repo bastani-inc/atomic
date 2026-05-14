@@ -388,8 +388,8 @@ export function handleSessionPickerInput(
     if (!row) return { kind: "noop" };
     return { kind: "connect", runId: row.run.id };
   }
-  // `x` = kill. Avoids collision with vim's `k` = up. `K` accepted as alias.
-  if (data === "x" || data === "X" || data === "K") {
+  // `x` = kill. Avoids collision with vim's `k` = up.
+  if (data === "x" || data === "X") {
     const row = rows[state.selectedIndex];
     if (!row) return { kind: "noop" };
     return { kind: "kill", runId: row.run.id };

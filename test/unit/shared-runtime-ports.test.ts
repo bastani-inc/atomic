@@ -186,12 +186,12 @@ describe("RunOpts port fields", () => {
 });
 
 // ---------------------------------------------------------------------------
-// ctx.stage(name, options?) — backward compat + MCP port wiring
+// ctx.stage(name, options?) — optional stage options + MCP port wiring
 // ---------------------------------------------------------------------------
 
 describe("ctx.stage with StageOptions", () => {
-  test("stage() with no options still works (backward compat)", async () => {
-    const wf = defineWorkflow("compat-test")
+  test("stage() with no options creates a default stage", async () => {
+    const wf = defineWorkflow("default-stage-options-test")
       .description("d")
       .run(async (ctx) => {
         const s = ctx.stage("step");

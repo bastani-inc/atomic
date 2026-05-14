@@ -120,7 +120,7 @@ function fallbackForKind(descriptor: PromptDescriptor): unknown {
  * `/workflow connect` overlay.
  *
  * `signal` is the run's `AbortController.signal`; when fired (e.g. via
- * `/workflow kill <id>`), any HIL waiter rejects so the workflow body
+ * `/workflow interrupt <id>`), any HIL waiter rejects so the workflow body
  * unwinds instead of hanging. Pass `undefined` only in tests where you
  * drive resolution directly via `store.resolvePendingPrompt`.
  */

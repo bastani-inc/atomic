@@ -13,6 +13,9 @@
 
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createStageContext } from "../../src/runs/foreground/stage-runner.js";
 import type {
   StageRunnerOpts,
@@ -103,7 +106,13 @@ describe("createStageContext — prompt metadata propagation", () => {
       adapters: { prompt: promptAdapter },
     });
     await ctx.prompt("summarise this");
-    assert.deepEqual(received[0], { runId: "r-100", stageId: "s-42", stageName: "Summarise", signal });
+    assert.deepEqual(received[0], {
+      runId: "r-100",
+      stageId: "s-42",
+      stageName: "Summarise",
+      signal,
+      stageOptions: undefined,
+    });
   });
 
   test("prompt adapter receives the text passed to ctx.prompt", async () => {
@@ -124,6 +133,79 @@ describe("createStageContext — prompt metadata propagation", () => {
     const ctx = createStageContext(makeOpts({ adapters: { prompt: promptAdapter } }));
     await ctx.prompt("go");
     assert.equal(received[0]?.signal, undefined);
+  });
+
+  test("prompt outputMode=file-only writes full output and returns a saved-file reference", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pi-workflows-stage-output-"));
+    try {
+      const output = join(dir, "answer.md");
+      const promptAdapter: PromptAdapter = {
+        async prompt() { return "line one\nline two"; },
+      };
+      const ctx = createStageContext(makeOpts({ adapters: { prompt: promptAdapter } }));
+
+      const result = await ctx.prompt("go", { output, outputMode: "file-only" });
+
+      assert.match(result, /^Output saved to: /);
+      assert.match(result, /answer\.md/);
+      assert.equal(await readFile(output, "utf8"), "line one\nline two");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("prompt outputMode=file-only requires an output path", async () => {
+    const promptAdapter: PromptAdapter = {
+      async prompt() { return "ok"; },
+    };
+    const ctx = createStageContext(makeOpts({ adapters: { prompt: promptAdapter } }));
+    await assert.rejects(
+      ctx.prompt("go", { outputMode: "file-only" }),
+      /outputMode: "file-only".*output file/,
+    );
+  });
+
+  test("prompt maxOutput truncates inline output", async () => {
+    const promptAdapter: PromptAdapter = {
+      async prompt() { return "first line\nsecond line"; },
+    };
+    const ctx = createStageContext(makeOpts({ adapters: { prompt: promptAdapter } }));
+
+    const result = await ctx.prompt("go", { maxOutput: { lines: 1 } });
+
+    assert.equal(result, "first line\n\n[workflow output truncated; limits: 204800 bytes, 1 lines]");
+  });
+
+  test("prompt strips workflow output options before delegating to the SDK session", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pi-workflows-session-dir-"));
+    try {
+      const receivedOptions: Array<Record<string, unknown> | undefined> = [];
+      const { session } = makeMockSession({
+        async prompt(_text, options) {
+          receivedOptions.push(options as Record<string, unknown> | undefined);
+        },
+        getLastAssistantText() { return "ok"; },
+      });
+      const agentSession: AgentSessionAdapter = { async create() { return session; } };
+      const ctx = createStageContext(makeOpts({
+        adapters: { agentSession },
+        stageOptions: { cwd: dir, sessionDir: dir, context: "fork" },
+      })) as InternalStageContext;
+
+      const result = await ctx.prompt("go", {
+        output: false,
+        maxOutput: { bytes: 10 },
+        cwd: "/ignored-for-session",
+        context: "fresh",
+        sessionDir: "/ignored-sessions",
+        expandPromptTemplates: false,
+      });
+
+      assert.equal(result, "ok");
+      assert.deepEqual(receivedOptions[0], { expandPromptTemplates: false });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -146,7 +228,13 @@ describe("createStageContext — complete metadata propagation", () => {
       adapters: { complete: completeAdapter },
     });
     await ctx.complete("write a draft");
-    assert.deepEqual(received[0], { runId: "r-55", stageId: "s-7", stageName: "Draft", signal });
+    assert.deepEqual(received[0], {
+      runId: "r-55",
+      stageId: "s-7",
+      stageName: "Draft",
+      signal,
+      stageOptions: undefined,
+    });
   });
 
   test("complete adapter receives CompleteStageOpts.model", async () => {
@@ -229,7 +317,13 @@ describe("createStageContext — subagent metadata propagation", () => {
       adapters: { subagent: subagentAdapter },
     });
     await ctx.subagent({ agent: "coder", task: "fix bug" });
-    assert.deepEqual(received[0], { runId: "r-sub", stageId: "s-sub", stageName: "SubStage", signal });
+    assert.deepEqual(received[0], {
+      runId: "r-sub",
+      stageId: "s-sub",
+      stageName: "SubStage",
+      signal,
+      stageOptions: undefined,
+    });
   });
 
   test("subagent adapter receives SubagentStageOpts intact", async () => {
@@ -361,6 +455,38 @@ describe("createStageContext — lazy attach", () => {
     // on attach). We can't directly emit from our mock without state,
     // so we just assert the subscriber survived attach without throwing.
     assert.equal(events.length, 0);
+  });
+
+  test("prompt result falls back to assistant text appended to SDK messages", async () => {
+    const messages = [
+      {
+        role: "user",
+        content: [{ type: "text", text: "question" }],
+        timestamp: Date.now(),
+      },
+    ] as AgentSession["messages"];
+    const { session } = makeMockSession({
+      async prompt() {
+        messages.push({
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "private reasoning" },
+            { type: "text", text: "derived" },
+            { type: "text", text: " answer" },
+          ],
+          timestamp: Date.now(),
+        } as AgentSession["messages"][number]);
+      },
+      messages,
+      getLastAssistantText: undefined,
+    });
+    const agentSession: AgentSessionAdapter = { async create() { return session; } };
+    const ctx = createStageContext(makeOpts({ adapters: { agentSession } })) as InternalStageContext;
+
+    const result = await ctx.prompt("question");
+
+    assert.equal(result, "derived answer");
+    assert.equal(ctx.getLastAssistantText(), "derived answer");
   });
 });
 

@@ -7,13 +7,18 @@
  * prompt/subagent abstraction.
  */
 
-import type { AgentSession, CreateAgentSessionOptions, PromptOptions } from "@earendil-works/pi-coding-agent";
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname, isAbsolute, resolve } from "node:path";
+import { SessionManager, type AgentSession, type CreateAgentSessionOptions, type PromptOptions } from "@earendil-works/pi-coding-agent";
 import type {
   CompleteStageOpts,
   StageContext,
   StageExecutionMeta,
   StageOptions,
+  StageOutputOptions,
+  StagePromptOptions,
   SubagentStageOpts,
+  WorkflowMaxOutput,
 } from "../../shared/types.js";
 
 export interface StageSessionRuntime {
@@ -37,7 +42,7 @@ export interface StageSessionRuntime {
   abortCompaction(): void;
   abort(): Promise<void>;
   dispose(): void | Promise<void>;
-  getLastAssistantText(): string | undefined;
+  getLastAssistantText?: () => string | undefined;
 }
 
 export interface AgentSessionAdapter {
@@ -111,7 +116,21 @@ export interface InternalStageContext extends StageContext {
 
 function stripWorkflowOnlyOptions(options: StageOptions | undefined): CreateAgentSessionOptions {
   if (!options) return {};
-  const { mcp: _mcp, ...sessionOptions } = options;
+  const {
+    mcp: _mcp,
+    context,
+    forkFromSessionFile,
+    sessionDir,
+    ...sessionOptions
+  } = options;
+  if (sessionOptions.sessionManager === undefined) {
+    const cwd = sessionOptions.cwd ?? process.cwd();
+    if (context === "fork" && forkFromSessionFile !== undefined) {
+      sessionOptions.sessionManager = SessionManager.forkFrom(forkFromSessionFile, cwd, sessionDir);
+    } else if (sessionDir !== undefined) {
+      sessionOptions.sessionManager = SessionManager.create(cwd, sessionDir);
+    }
+  }
   return sessionOptions;
 }
 
@@ -127,13 +146,193 @@ function unavailableSync(property: string): never {
   );
 }
 
+type TextLikeContent = {
+  readonly type?: string;
+  readonly text?: string;
+};
+
+type MessageWithTextContent = {
+  readonly content?: string | readonly TextLikeContent[];
+};
+
+function extractAssistantText(message: AgentSession["messages"][number]): string {
+  const { content } = message as MessageWithTextContent;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((block) => (block.type === "text" && typeof block.text === "string" ? block.text : ""))
+      .filter(Boolean)
+      .join("");
+  }
+  return "";
+}
+
+function lastAssistantTextFromMessages(messages: AgentSession["messages"]): string | undefined {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!message || message.role !== "assistant") continue;
+    const text = extractAssistantText(message).trim();
+    if (text) return text;
+  }
+  return undefined;
+}
+
+function lastAssistantTextFromSession(
+  activeSession: StageSessionRuntime | undefined,
+  fallback: string | undefined,
+): string | undefined {
+  if (!activeSession) return fallback;
+  const direct = activeSession.getLastAssistantText?.();
+  if (direct !== undefined && direct.trim()) return direct;
+  return lastAssistantTextFromMessages(activeSession.messages) ?? direct ?? fallback;
+}
+
+const DEFAULT_MAX_OUTPUT_BYTES = 200 * 1024;
+const DEFAULT_MAX_OUTPUT_LINES = 5000;
+
+function normalizeMaxOutput(maxOutput: WorkflowMaxOutput | undefined): Required<WorkflowMaxOutput> {
+  return {
+    bytes: maxOutput?.bytes ?? DEFAULT_MAX_OUTPUT_BYTES,
+    lines: maxOutput?.lines ?? DEFAULT_MAX_OUTPUT_LINES,
+  };
+}
+
+function truncateByLines(text: string, maxLines: number): { text: string; truncated: boolean } {
+  if (!Number.isFinite(maxLines) || maxLines <= 0) return { text: "", truncated: text.length > 0 };
+  const lines = text.split(/\r?\n/);
+  if (lines.length <= maxLines) return { text, truncated: false };
+  return { text: lines.slice(0, maxLines).join("\n"), truncated: true };
+}
+
+function truncateByBytes(text: string, maxBytes: number): { text: string; truncated: boolean } {
+  if (!Number.isFinite(maxBytes) || maxBytes <= 0) return { text: "", truncated: text.length > 0 };
+  if (Buffer.byteLength(text, "utf8") <= maxBytes) return { text, truncated: false };
+
+  let low = 0;
+  let high = text.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (Buffer.byteLength(text.slice(0, mid), "utf8") <= maxBytes) low = mid;
+    else high = mid - 1;
+  }
+  return { text: text.slice(0, low), truncated: true };
+}
+
+function truncateOutput(text: string, maxOutput: WorkflowMaxOutput | undefined): string {
+  const limits = normalizeMaxOutput(maxOutput);
+  const byLines = truncateByLines(text, limits.lines);
+  const byBytes = truncateByBytes(byLines.text, limits.bytes);
+  if (!byLines.truncated && !byBytes.truncated) return text;
+  return `${byBytes.text}\n\n[workflow output truncated; limits: ${limits.bytes} bytes, ${limits.lines} lines]`;
+}
+
+function countLines(text: string): number {
+  if (!text) return 0;
+  const newlineMatches = text.match(/\r\n|\r|\n/g);
+  return (newlineMatches?.length ?? 0) + (/[\r\n]$/.test(text) ? 0 : 1);
+}
+
+function formatByteSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = bytes / 1024;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${value.toFixed(1)} ${units[unitIndex]}`;
+}
+
+function savedOutputReference(outputPath: string, fullOutput: string): string {
+  const absolutePath = resolve(outputPath);
+  const bytes = Buffer.byteLength(fullOutput, "utf8");
+  const lines = countLines(fullOutput);
+  return `Output saved to: ${absolutePath} (${formatByteSize(bytes)}, ${lines} ${lines === 1 ? "line" : "lines"}). Read this file if needed.`;
+}
+
+function resolveOutputPath(
+  output: string | false | undefined,
+  runtimeCwd: string,
+  requestedCwd: string | undefined,
+): string | undefined {
+  if (typeof output !== "string" || output.length === 0) return undefined;
+  if (isAbsolute(output)) return output;
+  const baseCwd = requestedCwd === undefined
+    ? runtimeCwd
+    : isAbsolute(requestedCwd)
+      ? requestedCwd
+      : resolve(runtimeCwd, requestedCwd);
+  return resolve(baseCwd, output);
+}
+
+function splitPromptOptions(options: StagePromptOptions | undefined): {
+  sdkOptions: PromptOptions | undefined;
+  outputOptions: StageOutputOptions;
+} {
+  if (!options) return { sdkOptions: undefined, outputOptions: {} };
+  const sdkOptions: PromptOptions = {};
+  if (options.expandPromptTemplates !== undefined) sdkOptions.expandPromptTemplates = options.expandPromptTemplates;
+  if (options.images !== undefined) sdkOptions.images = options.images;
+  if (options.streamingBehavior !== undefined) sdkOptions.streamingBehavior = options.streamingBehavior;
+  if (options.source !== undefined) sdkOptions.source = options.source;
+  if (options.preflightResult !== undefined) sdkOptions.preflightResult = options.preflightResult;
+
+  const outputOptions: StageOutputOptions = {
+    ...(options.output !== undefined ? { output: options.output } : {}),
+    ...(options.outputMode !== undefined ? { outputMode: options.outputMode } : {}),
+    ...(options.context !== undefined ? { context: options.context } : {}),
+    ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+    ...(options.maxOutput !== undefined ? { maxOutput: options.maxOutput } : {}),
+    ...(options.artifacts !== undefined ? { artifacts: options.artifacts } : {}),
+    ...(options.sessionDir !== undefined ? { sessionDir: options.sessionDir } : {}),
+  };
+
+  return {
+    sdkOptions: Object.keys(sdkOptions).length === 0 ? undefined : sdkOptions,
+    outputOptions,
+  };
+}
+
+function validatePromptOutputOptions(outputOptions: StageOutputOptions): void {
+  if (outputOptions.outputMode === "file-only" && (typeof outputOptions.output !== "string" || outputOptions.output.length === 0)) {
+    throw new Error(
+      "pi-workflows: prompt sets outputMode: \"file-only\" but does not configure an output file. Set output to a path or use outputMode: \"inline\".",
+    );
+  }
+}
+
+async function finalizePromptOutput(
+  fullOutput: string,
+  outputOptions: StageOutputOptions,
+  runtimeCwd: string,
+): Promise<string> {
+  const outputPath = resolveOutputPath(outputOptions.output, runtimeCwd, outputOptions.cwd);
+  validatePromptOutputOptions(outputOptions);
+
+  const displayOutput = truncateOutput(fullOutput, outputOptions.maxOutput);
+  if (outputPath === undefined) return displayOutput;
+
+  try {
+    await mkdir(dirname(outputPath), { recursive: true });
+    await writeFile(outputPath, fullOutput, "utf8");
+  } catch (err) {
+    return `${displayOutput}\n\nOutput file error: ${outputPath}\n${err instanceof Error ? err.message : String(err)}`;
+  }
+
+  const reference = savedOutputReference(outputPath, fullOutput);
+  return outputOptions.outputMode === "file-only"
+    ? reference
+    : `${displayOutput}\n\n${reference}`;
+}
+
 export function createStageContext(opts: StageRunnerOpts): InternalStageContext {
   const { stageId, stageName, adapters, runId, signal, stageOptions } = opts;
-  const meta: StageExecutionMeta = { runId, stageId, stageName, signal };
+  const meta: StageExecutionMeta = { runId, stageId, stageName, signal, stageOptions };
   let session: StageSessionRuntime | undefined;
   let sessionPromise: Promise<StageSessionRuntime> | undefined;
   let lastAssistantText: string | undefined;
-  let legacyMessages: AgentSession["messages"] = [];
+  let adapterMessages: AgentSession["messages"] = [];
   let disposed = false;
   let pendingThinkingLevel: Parameters<StageContext["setThinkingLevel"]>[0] | undefined;
   const pendingListeners = new Set<(event: Parameters<StageContext["subscribe"]>[0] extends (event: infer T) => void ? T : never) => void>();
@@ -198,9 +397,13 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
     name: stageName,
 
     async prompt(text, options) {
+      const { sdkOptions, outputOptions } = splitPromptOptions(options);
+      const runtimeCwd = typeof stageOptions?.cwd === "string" ? stageOptions.cwd : process.cwd();
+      validatePromptOutputOptions(outputOptions);
       if (adapters.prompt) {
-        lastAssistantText = await adapters.prompt.prompt(text, meta);
-        legacyMessages = assistantMessage(lastAssistantText);
+        const rawText = await adapters.prompt.prompt(text, meta);
+        lastAssistantText = await finalizePromptOutput(rawText, outputOptions, runtimeCwd);
+        adapterMessages = assistantMessage(lastAssistantText);
         return lastAssistantText;
       }
       const s = await ensureSession();
@@ -211,7 +414,7 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
       let nextText: string | undefined = text;
       while (nextText !== undefined) {
         try {
-          await s.prompt(nextText, options);
+          await s.prompt(nextText, sdkOptions);
           nextText = undefined;
         } catch (err) {
           if (pauseRequest) {
@@ -222,8 +425,9 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
           throw err;
         }
       }
-      lastAssistantText = session?.getLastAssistantText();
-      return lastAssistantText ?? "";
+      const rawText = lastAssistantTextFromSession(session, lastAssistantText) ?? "";
+      lastAssistantText = await finalizePromptOutput(rawText, outputOptions, runtimeCwd);
+      return lastAssistantText;
     },
 
     async complete(text, completeOpts) {
@@ -233,7 +437,7 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
         );
       }
       lastAssistantText = await adapters.complete.complete(text, completeOpts, meta);
-      legacyMessages = assistantMessage(lastAssistantText);
+      adapterMessages = assistantMessage(lastAssistantText);
       return lastAssistantText;
     },
 
@@ -244,7 +448,7 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
         );
       }
       lastAssistantText = await adapters.subagent.subagent(subagentOpts, meta);
-      legacyMessages = assistantMessage(lastAssistantText);
+      adapterMessages = assistantMessage(lastAssistantText);
       return lastAssistantText;
     },
 
@@ -305,7 +509,7 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
     },
 
     get messages() {
-      return session?.messages ?? legacyMessages;
+      return session?.messages ?? adapterMessages;
     },
 
     get isStreaming() {
@@ -337,11 +541,11 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
     },
 
     __getLastAssistantText() {
-      return session?.getLastAssistantText() ?? lastAssistantText;
+      return lastAssistantTextFromSession(session, lastAssistantText);
     },
 
     getLastAssistantText() {
-      return session?.getLastAssistantText() ?? lastAssistantText;
+      return lastAssistantTextFromSession(session, lastAssistantText);
     },
 
     async __ensureSession() {

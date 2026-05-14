@@ -6,9 +6,8 @@
  * derive from it. We exercise:
  *   - structured payload shape (sections, status rows, hints)
  *   - companion presence/missing
- *   - legacy 2-arg `buildDoctorReport(discovery, siblings, configLoad?)`
- *     signature still produces text (used by RPC mode and any
- *     environment without `pi.sendMessage`)
+ *   - payload text rendering for RPC mode and environments without
+ *     `pi.sendMessage`
  */
 
 import { describe, test } from "bun:test";
@@ -47,6 +46,8 @@ function findRow(payload: DoctorPayload, section: string, label: string) {
 const allAbsent: DoctorSiblingStatus = {
   taskDelegation: false,
   mcpScopeEvents: false,
+  intercomEvents: false,
+  intercomControlSubscription: false,
   sessionNaming: false,
   hil: false,
   uiCustom: false,
@@ -59,6 +60,8 @@ const allAbsent: DoctorSiblingStatus = {
 const allPresent: DoctorSiblingStatus = {
   taskDelegation: true,
   mcpScopeEvents: true,
+  intercomEvents: true,
+  intercomControlSubscription: true,
   sessionNaming: true,
   hil: true,
   uiCustom: true,
@@ -92,6 +95,7 @@ describe("buildDoctorPayload — structure", () => {
       "DIAGNOSTICS",
       "TUNABLES",
       "CONFIGURED WORKFLOWS",
+      "DIRECT RUNTIME",
       "HOST CAPABILITIES",
       "RUNTIME ADAPTERS",
       "COMPANIONS",
@@ -115,6 +119,8 @@ describe("buildDoctorPayload — structure", () => {
     });
     assert.equal(findRow(ok, "HOST CAPABILITIES", "task delegation").status, "ok");
     assert.equal(findRow(ok, "HOST CAPABILITIES", "hil dialogs").value, "available");
+    assert.equal(findRow(ok, "HOST CAPABILITIES", "intercom events").value, "emit/on available");
+    assert.equal(findRow(ok, "RUNTIME ADAPTERS", "intercom channels").value, "workflow result/control + subagent bridge");
 
     const missing = buildDoctorPayload({
       discovery: emptyDiscovery(),
@@ -123,6 +129,8 @@ describe("buildDoctorPayload — structure", () => {
     });
     assert.equal(findRow(missing, "HOST CAPABILITIES", "task delegation").status, "warn");
     assert.equal(findRow(missing, "HOST CAPABILITIES", "hil dialogs").value, "unavailable");
+    assert.equal(findRow(missing, "HOST CAPABILITIES", "intercom events").status, "warn");
+    assert.equal(findRow(missing, "RUNTIME ADAPTERS", "intercom channels").value, "not subscribed");
   });
 
   test("runtime adapter rows describe the subagent-via path", () => {
@@ -191,15 +199,7 @@ describe("buildDoctorPayload — companions", () => {
   });
 });
 
-describe("buildDoctorReport — text formatter (legacy + payload signatures)", () => {
-  test("legacy 2-arg signature still renders without companions section", () => {
-    const text = buildDoctorReport(emptyDiscovery(), allAbsent);
-    assert.ok(text.startsWith("atomic-workflows doctor report"));
-    assert.ok(text.includes("HOST CAPABILITIES"));
-    // No companion hints when called via the legacy signature.
-    assert.ok(!text.includes("NEXT STEPS"));
-  });
-
+describe("buildDoctorReport — text formatter", () => {
   test("payload signature renders sections, glyphs, and install hints", () => {
     const payload = buildDoctorPayload({
       discovery: emptyDiscovery(),

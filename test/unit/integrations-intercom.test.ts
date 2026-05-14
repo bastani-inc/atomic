@@ -189,6 +189,20 @@ describe("subscribeIntercomControl", () => {
     assert.equal(received.length, 0);
   });
 
+  test("cleanup calls event-bus unsubscribe when provided", () => {
+    let unsubscribed = 0;
+    const pi = {
+      events: {
+        on: (_event: string, _handler: (payload: unknown) => void) => {
+          return () => { unsubscribed += 1; };
+        },
+      },
+    };
+    const cleanup = subscribeIntercomControl(pi, {});
+    cleanup!();
+    assert.equal(unsubscribed, 1);
+  });
+
   test("ignores malformed payload (no crash)", async () => {
     let capturedHandler: ((p: unknown) => void) | null = null;
     const pi = {

@@ -96,7 +96,7 @@ describe("runtime tunables — maxDepth", () => {
     assert.equal(result.result?.["ran"], true);
   });
 
-  test("no config → no depth limit (backward compat)", async () => {
+  test("no config uses default maxDepth", async () => {
     const wf = defineWorkflow("rt-no-config")
       .run(async () => ({ ok: true }))
       .compile();
@@ -107,7 +107,8 @@ describe("runtime tunables — maxDepth", () => {
       // config intentionally omitted
     });
 
-    assert.equal(result.status, "completed");
+    assert.equal(result.status, "failed");
+    assert.equal(result.error, "pi-workflows: maxDepth exceeded (max 4)");
   });
 
   test("failed result carries non-empty runId", async () => {

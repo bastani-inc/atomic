@@ -2,7 +2,7 @@
  * Workflow registry — createRegistry().
  * Immutable, chainable, keyed by normalized workflow name.
  *
- * Supported operations: register (upsert), get, has, remove, merge, names, all.
+ * Supported operations: register, get, has, remove, merge, names, all.
  *
  * cross-ref: v0.x packages/atomic-sdk/src/registry.ts
  *            pi-subagents src/agents/agents.ts (discover/parse)
@@ -13,16 +13,11 @@ import { normalizeWorkflowName } from "./identity.js";
 
 export interface WorkflowRegistry {
   /**
-   * Register (upsert) a compiled workflow definition.
+   * Register a compiled workflow definition.
    * Keyed by the definition's normalizedName; replaces any prior entry with
    * the same key.  Returns a NEW registry — this one is unchanged.
    */
   register(definition: WorkflowDefinition): WorkflowRegistry;
-  /**
-   * Alias for register — explicit upsert intent.
-   * Returns a NEW registry with the definition added/replaced.
-   */
-  upsert(definition: WorkflowDefinition): WorkflowRegistry;
   /**
    * Return a new registry with all definitions from another registry merged
    * in (other's entries win on collision).
@@ -59,10 +54,6 @@ function makeRegistry(store: Map<string, WorkflowDefinition>): WorkflowRegistry 
       const next = new Map(store);
       next.set(definition.normalizedName, definition);
       return makeRegistry(next);
-    },
-
-    upsert(definition) {
-      return this.register(definition);
     },
 
     merge(other) {

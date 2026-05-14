@@ -295,7 +295,7 @@ describe("slash /workflow <name> dispatch", () => {
       const parts = rawParts[0] === "" ? [] : rawParts;
       const subcommand = parts[0] ?? "";
 
-      const ADMIN = new Set(["list", "status", "kill", "resume", "inputs"]);
+      const ADMIN = new Set(["list", "status", "interrupt", "resume", "inputs"]);
 
       if (!subcommand || subcommand === "list") {
         print(`Registered workflows: ${runtime.registry.names().join(", ")}`);
@@ -307,7 +307,7 @@ describe("slash /workflow <name> dispatch", () => {
         const inputTokens = parts.slice(1);
         const inputs = parseWorkflowArgs(inputTokens);
         dispatchedArgs = { name: subcommand, inputs, action: "run" };
-        const result = await runtime.dispatch({ name: subcommand, inputs, action: "run" });
+        const result = await runtime.dispatch({ workflow: subcommand, inputs, action: "run" });
         if (result.action === "run" && "runId" in result) {
           const r = result as { action: "run"; runId: string; status: string; error?: string };
           if (r.status === "failed" && r.runId === "") {
@@ -339,14 +339,14 @@ describe("slash /workflow <name> dispatch", () => {
     const runtime = createExtensionRuntime({ registry });
     const { ctx, messages } = buildCtx();
 
-    const ADMIN = new Set(["list", "status", "kill", "resume", "inputs"]);
+    const ADMIN = new Set(["list", "status", "interrupt", "resume", "inputs"]);
     const execute = async (args: string, execCtx: PiCommandContext) => {
       const print = (msg: string): void => execCtx.ui.notify(msg, "info");
       const rawParts = args.trim().split(/\s+/);
       const parts = rawParts[0] === "" ? [] : rawParts;
       const subcommand = parts[0] ?? "";
       if (!ADMIN.has(subcommand) && subcommand) {
-        const result = await runtime.dispatch({ name: subcommand, inputs: {}, action: "run" });
+        const result = await runtime.dispatch({ workflow: subcommand, inputs: {}, action: "run" });
         if (result.action === "run" && "runId" in result) {
           const r = result as { action: "run"; runId: string; status: string };
           if (r.status === "failed" && r.runId === "") {
@@ -413,7 +413,7 @@ describe("getArgumentCompletions includes workflow names", () => {
     assert.ok(labels.includes("list"));
     assert.ok(labels.includes("status"));
     assert.ok(labels.includes("connect"));
-    assert.ok(labels.includes("kill"));
+    assert.ok(labels.includes("interrupt"));
     assert.ok(labels.includes("resume"));
     assert.ok(labels.includes("inputs"));
     assert.equal(labels.includes("session"), false);
@@ -438,8 +438,8 @@ describe("getArgumentCompletions includes workflow names", () => {
     await runFactory(pi);
 
     const workflowCmd = commands.find((c) => c.name === "workflow");
-    const completions = workflowCmd!.options.getArgumentCompletions?.("kill -") ?? [];
-    assert.ok(completions.some((c) => c.value === "kill -y "));
+    const completions = workflowCmd!.options.getArgumentCompletions?.("interrupt -") ?? [];
+    assert.ok(completions.some((c) => c.value === "interrupt -y "));
   });
 
   test("trailing-space completion does not throw on empty subcommand", async () => {
@@ -573,8 +573,7 @@ describe("/workflow <name> --help prints schema without dispatching", () => {
 
     await workflowCmd!.options.handler("deep-research-codebase --help", ctx);
 
-    // Schema printer prints the pretty 'INPUTS FOR <NAME>' header (theme mode),
-    // or the legacy 'Inputs for "<name>":' line in plain mode.
+    // Schema printer prints the pretty themed header or the plain text header.
     assert.ok(
       messages.some((m) => /INPUTS FOR DEEP-RESEARCH-CODEBASE|Inputs for "deep-research-codebase":/.test(m)),
       `expected schema header in messages; got: ${JSON.stringify(messages)}`,
@@ -586,18 +585,6 @@ describe("/workflow <name> --help prints schema without dispatching", () => {
     );
   });
 
-  test("-h alias also short-circuits", async () => {
-    const { pi, commands } = buildMockPi();
-    await runFactory(pi);
-
-    const workflowCmd = commands.find((c) => c.name === "workflow");
-    const { ctx, messages } = buildCtx();
-
-    await workflowCmd!.options.handler("deep-research-codebase -h", ctx);
-    assert.ok(
-      messages.some((m) => /INPUTS FOR DEEP-RESEARCH-CODEBASE|Inputs for "deep-research-codebase":/.test(m)),
-    );
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -718,9 +705,9 @@ function makeInflightRun(id: string) {
   };
 }
 
-describe("/workflow kill chat command", () => {
-  test("top-level /workflow kill defaults to the active run", async () => {
-    const runId = `kill-active-${Date.now()}`;
+describe("/workflow interrupt chat command", () => {
+  test("top-level /workflow interrupt defaults to the active run", async () => {
+    const runId = `interrupt-active-${Date.now()}`;
     store.recordRunStart(makeInflightRun(runId));
 
     const { pi, commands } = buildMockPi();
@@ -738,15 +725,15 @@ describe("/workflow kill chat command", () => {
       },
     };
 
-    await workflowCmd.options.handler("kill", ctx);
+    await workflowCmd.options.handler("interrupt", ctx);
 
     const run = store.runs().find((r) => r.id === runId);
     assert.equal(run?.status, "killed");
-    assert.equal(msgs.some((m) => m.includes("killed")), true);
+    assert.equal(msgs.some((m) => m.includes("interrupted")), true);
   });
 
-  test("top-level /workflow kill <id> kills from chat without requiring confirmation", async () => {
-    const runId = `kill-chat-${Date.now()}`;
+  test("top-level /workflow interrupt <id> interrupts from chat without requiring confirmation", async () => {
+    const runId = `interrupt-chat-${Date.now()}`;
     store.recordRunStart(makeInflightRun(runId));
 
     const { pi, commands } = buildMockPi();
@@ -768,12 +755,12 @@ describe("/workflow kill chat command", () => {
       },
     };
 
-    await workflowCmd.options.handler(`kill ${runId}`, ctx);
+    await workflowCmd.options.handler(`interrupt ${runId}`, ctx);
 
     const run = store.runs().find((r) => r.id === runId);
     assert.equal(confirmCalls, 0);
     assert.equal(run?.status, "killed");
-    assert.equal(msgs.some((m) => m.includes("killed")), true);
+    assert.equal(msgs.some((m) => m.includes("interrupted")), true);
   });
 });
 
@@ -880,7 +867,7 @@ describe("tool action resume — active run returns status:ok", () => {
     const handler = makeExecuteWorkflowTool(runtime, () => undefined);
 
     const result = await handler(
-      { action: "resume", name: runId },
+      { action: "resume", runId },
       {} as never,
     );
 

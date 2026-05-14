@@ -200,6 +200,7 @@ export class WorkflowAttachPane implements Component {
       handle,
       onDetach: () => this._detachFromStage(),
       onClose: this.onClose,
+      requestRender: this.hostRequestRender,
       getViewportRows: this.getViewportRows,
     });
     this.store.recordStageAttached(runId, stageId, true);

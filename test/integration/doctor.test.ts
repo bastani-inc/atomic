@@ -7,7 +7,7 @@
 
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
-import { buildDoctorReport } from "../../src/extension/doctor.js";
+import { buildDoctorPayload, buildDoctorReport } from "../../src/extension/doctor.js";
 import type { DoctorSiblingStatus } from "../../src/extension/doctor.js";
 import { createRegistry } from "../../src/workflows/registry.js";
 import type { DiscoveryResult } from "../../src/extension/discovery.js";
@@ -24,6 +24,8 @@ import factory, {
 const noSiblings: DoctorSiblingStatus = {
   taskDelegation: false,
   mcpScopeEvents: false,
+  intercomEvents: false,
+  intercomControlSubscription: false,
   sessionNaming: false,
   hil: false,
   uiCustom: false,
@@ -35,6 +37,8 @@ const noSiblings: DoctorSiblingStatus = {
 const allSiblings: DoctorSiblingStatus = {
   taskDelegation: true,
   mcpScopeEvents: true,
+  intercomEvents: true,
+  intercomControlSubscription: true,
   sessionNaming: true,
   hil: true,
   uiCustom: true,
@@ -50,6 +54,19 @@ function makeDiscovery(overrides: Partial<DiscoveryResult> = {}): DiscoveryResul
     errors: [],
     ...overrides,
   };
+}
+
+function doctorReport(
+  discovery: DiscoveryResult,
+  siblings: DoctorSiblingStatus,
+  configLoad?: ConfigLoadResult | null,
+): string {
+  return buildDoctorReport(buildDoctorPayload({
+    discovery,
+    siblings,
+    companions: [],
+    configLoad,
+  }));
 }
 
 interface RegisteredCommand {
@@ -77,28 +94,28 @@ function makeMockApi(extras: Partial<ExtensionAPI> = {}): ExtensionAPI & { comma
 
 describe("buildDoctorReport — header", () => {
   test("starts with 'atomic-workflows doctor report'", () => {
-    const report = buildDoctorReport(makeDiscovery(), noSiblings);
+    const report = doctorReport(makeDiscovery(), noSiblings);
     assert.equal(report.startsWith("atomic-workflows doctor report"), true);
   });
 
   test("includes the payload subtitle on the second line", () => {
-    const report = buildDoctorReport(makeDiscovery(), noSiblings);
+    const report = doctorReport(makeDiscovery(), noSiblings);
     // Subtitle format: `atomic-workflows · N workflow(s) · N/N companions`.
     assert.match(report, /atomic-workflows · \d+ workflows? · \d+\/\d+ companions/);
   });
 
   test("does NOT contain 'Phase B stub'", () => {
-    const report = buildDoctorReport(makeDiscovery(), noSiblings);
+    const report = doctorReport(makeDiscovery(), noSiblings);
     assert.ok(!report.includes("Phase B stub"));
   });
 
   test("does NOT contain 'Executor: not yet implemented'", () => {
-    const report = buildDoctorReport(makeDiscovery(), noSiblings);
+    const report = doctorReport(makeDiscovery(), noSiblings);
     assert.ok(!report.includes("Executor: not yet implemented"));
   });
 
   test("does NOT contain 'availability check not yet wired'", () => {
-    const report = buildDoctorReport(makeDiscovery(), noSiblings);
+    const report = doctorReport(makeDiscovery(), noSiblings);
     assert.ok(!report.includes("availability check not yet wired"));
   });
 });
@@ -109,7 +126,7 @@ describe("buildDoctorReport — header", () => {
 
 describe("buildDoctorReport — registry section", () => {
   test("shows 0 workflows for empty registry", () => {
-    const report = buildDoctorReport(makeDiscovery(), noSiblings);
+    const report = doctorReport(makeDiscovery(), noSiblings);
     assert.ok(report.includes("[ REGISTRY ]"));
     assert.ok(report.includes("0 workflows loaded"));
   });
@@ -121,7 +138,7 @@ describe("buildDoctorReport — registry section", () => {
         { id: "beta", kind: "bundled", name: "Beta" },
       ],
     });
-    const report = buildDoctorReport(discovery, noSiblings);
+    const report = doctorReport(discovery, noSiblings);
     // registry is empty in this fixture; sources appear as rows under [ REGISTRY ].
     assert.ok(report.includes("[ REGISTRY ]"));
     assert.ok(report.includes("0 workflows loaded"));
@@ -136,7 +153,7 @@ describe("buildDoctorReport — registry section", () => {
 
 describe("buildDoctorReport — source rows", () => {
   test("shows placeholder row when no sources", () => {
-    const report = buildDoctorReport(makeDiscovery(), noSiblings);
+    const report = doctorReport(makeDiscovery(), noSiblings);
     assert.ok(report.includes("no bundled workflows discovered"));
   });
 
@@ -146,7 +163,7 @@ describe("buildDoctorReport — source rows", () => {
         { id: "my-workflow", kind: "bundled", name: "My Workflow" },
       ],
     });
-    const report = buildDoctorReport(discovery, noSiblings);
+    const report = doctorReport(discovery, noSiblings);
     assert.ok(report.includes("My Workflow"));
     assert.ok(report.includes("my-workflow"));
     assert.ok(report.includes("(bundled)"));
@@ -160,7 +177,7 @@ describe("buildDoctorReport — source rows", () => {
         { id: "wf-c", kind: "bundled", name: "Wf C" },
       ],
     });
-    const report = buildDoctorReport(discovery, noSiblings);
+    const report = doctorReport(discovery, noSiblings);
     assert.ok(report.includes("Wf A"));
     assert.ok(report.includes("Wf B"));
     assert.ok(report.includes("Wf C"));
@@ -173,7 +190,7 @@ describe("buildDoctorReport — source rows", () => {
 
 describe("buildDoctorReport — diagnostics section", () => {
   test("emits the diagnostics band even when there are no discovery errors", () => {
-    const report = buildDoctorReport(makeDiscovery(), noSiblings);
+    const report = doctorReport(makeDiscovery(), noSiblings);
     assert.ok(report.includes("[ DIAGNOSTICS ]"));
   });
 
@@ -188,7 +205,7 @@ describe("buildDoctorReport — diagnostics section", () => {
         },
       ],
     });
-    const report = buildDoctorReport(discovery, noSiblings);
+    const report = doctorReport(discovery, noSiblings);
     assert.ok(report.includes("[error]"));
     assert.ok(report.includes("INVALID_DEFINITION"));
     assert.ok(report.includes("badWf"));
@@ -205,7 +222,7 @@ describe("buildDoctorReport — diagnostics section", () => {
         },
       ],
     });
-    const report = buildDoctorReport(discovery, noSiblings);
+    const report = doctorReport(discovery, noSiblings);
     assert.ok(report.includes("[warn]"));
     assert.ok(report.includes("DUPLICATE_NAME"));
   });
@@ -217,7 +234,7 @@ describe("buildDoctorReport — diagnostics section", () => {
         { level: "warn", code: "DUPLICATE_NAME", message: "msg2", source: "b" },
       ],
     });
-    const report = buildDoctorReport(discovery, noSiblings);
+    const report = doctorReport(discovery, noSiblings);
     assert.ok(report.includes("[ DIAGNOSTICS ]"));
     // Two error rows + one 'config: not loaded' row from undefined configLoad.
     assert.ok(report.includes("INVALID_DEFINITION"));
@@ -231,13 +248,13 @@ describe("buildDoctorReport — diagnostics section", () => {
 
 describe("buildDoctorReport — siblings", () => {
   test("shows unavailable runtime capabilities when none present", () => {
-    const report = buildDoctorReport(makeDiscovery(), noSiblings);
+    const report = doctorReport(makeDiscovery(), noSiblings);
     assert.ok(report.includes("task delegation: unavailable"));
     assert.ok(report.includes("session naming: unavailable"));
   });
 
   test("shows available/present runtime capabilities when configured", () => {
-    const report = buildDoctorReport(makeDiscovery(), allSiblings);
+    const report = doctorReport(makeDiscovery(), allSiblings);
     // `allSiblings` uses subagentAdapterVia: "pi-subagents tool", which
     // renders as `available via pi-subagents` in the capability row.
     assert.ok(report.includes("task delegation: available via pi-subagents"));
@@ -248,6 +265,8 @@ describe("buildDoctorReport — siblings", () => {
     const mixed: DoctorSiblingStatus = {
       taskDelegation: true,
       mcpScopeEvents: false,
+      intercomEvents: true,
+      intercomControlSubscription: false,
       sessionNaming: true,
       hil: false,
       uiCustom: false,
@@ -255,10 +274,21 @@ describe("buildDoctorReport — siblings", () => {
       persistenceAppendEntry: false,
       subagentAdapterVia: "pi.callTool",
     };
-    const report = buildDoctorReport(makeDiscovery(), mixed);
+    const report = doctorReport(makeDiscovery(), mixed);
     assert.ok(report.includes("task delegation: available via pi.callTool"));
     assert.ok(report.includes("mcp scope evts: unknown"));
+    assert.ok(report.includes("intercom events: emit/on available"));
+    assert.ok(report.includes("intercom channels: not subscribed"));
     assert.ok(report.includes("session naming: present"));
+  });
+});
+
+describe("buildDoctorReport — direct workflow runtime", () => {
+  test("reports direct execution and output artifact support", () => {
+    const report = doctorReport(makeDiscovery(), allSiblings);
+    assert.ok(report.includes("direct execution"));
+    assert.ok(report.includes("single / parallel / chain"));
+    assert.ok(report.includes("output artifacts"));
   });
 });
 
@@ -360,18 +390,18 @@ describe("/workflows-doctor execute — integration", () => {
 
 describe("buildDoctorReport — config diagnostics", () => {
   test("emits a 'config: not loaded' row when configLoad is undefined", () => {
-    const report = buildDoctorReport(makeDiscovery(), noSiblings);
+    const report = doctorReport(makeDiscovery(), noSiblings);
     assert.ok(report.includes("config: not loaded"));
   });
 
   test("emits a 'config: not loaded' row when configLoad is null", () => {
-    const report = buildDoctorReport(makeDiscovery(), noSiblings, null);
+    const report = doctorReport(makeDiscovery(), noSiblings, null);
     assert.ok(report.includes("config: not loaded"));
   });
 
   test("emits the diagnostics band when configLoad has no diagnostics", () => {
     const configLoad: ConfigLoadResult = { config: null, globalConfig: null, projectConfig: null, diagnostics: [] };
-    const report = buildDoctorReport(makeDiscovery(), noSiblings, configLoad);
+    const report = doctorReport(makeDiscovery(), noSiblings, configLoad);
     assert.ok(report.includes("[ DIAGNOSTICS ]"));
     assert.ok(report.includes("no problems found"));
   });
@@ -390,7 +420,7 @@ describe("buildDoctorReport — config diagnostics", () => {
         },
       ],
     };
-    const report = buildDoctorReport(makeDiscovery(), noSiblings, configLoad);
+    const report = doctorReport(makeDiscovery(), noSiblings, configLoad);
     assert.ok(report.includes("[error]"));
     assert.ok(report.includes("CONFIG_INVALID"));
     assert.ok(report.includes("/project/.pi/extensions/workflow/config.json"));
@@ -407,7 +437,7 @@ describe("buildDoctorReport — config diagnostics", () => {
         { level: "error", code: "CONFIG_INVALID", message: "err2", source: "/b.json" },
       ],
     };
-    const report = buildDoctorReport(makeDiscovery(), noSiblings, configLoad);
+    const report = doctorReport(makeDiscovery(), noSiblings, configLoad);
     assert.ok(report.includes("err1"));
     assert.ok(report.includes("err2"));
   });
@@ -421,7 +451,7 @@ describe("buildDoctorReport — config diagnostics", () => {
         { level: "error", code: "CONFIG_INVALID", message: "some error" },
       ],
     };
-    const report = buildDoctorReport(makeDiscovery(), noSiblings, configLoad);
+    const report = doctorReport(makeDiscovery(), noSiblings, configLoad);
     assert.ok(report.includes("CONFIG_INVALID"));
     assert.ok(report.includes("some error"));
   });
@@ -434,7 +464,7 @@ describe("buildDoctorReport — config diagnostics", () => {
 describe("buildDoctorReport — tunables", () => {
   test("shows default tunables when config is null", () => {
     const configLoad: ConfigLoadResult = { config: null, globalConfig: null, projectConfig: null, diagnostics: [] };
-    const report = buildDoctorReport(makeDiscovery(), noSiblings, configLoad);
+    const report = doctorReport(makeDiscovery(), noSiblings, configLoad);
     assert.ok(report.includes("[ TUNABLES ]"));
     assert.ok(report.includes("persistRuns: true"));
     assert.ok(report.includes("resumeInFlight: ask"));
@@ -444,7 +474,7 @@ describe("buildDoctorReport — tunables", () => {
   });
 
   test("shows default tunables when configLoad is undefined", () => {
-    const report = buildDoctorReport(makeDiscovery(), noSiblings);
+    const report = doctorReport(makeDiscovery(), noSiblings);
     assert.ok(report.includes("[ TUNABLES ]"));
     assert.ok(report.includes("persistRuns: true"));
     assert.ok(report.includes("resumeInFlight: ask"));
@@ -466,7 +496,7 @@ describe("buildDoctorReport — tunables", () => {
       projectConfig: null,
       diagnostics: [],
     };
-    const report = buildDoctorReport(makeDiscovery(), noSiblings, configLoad);
+    const report = doctorReport(makeDiscovery(), noSiblings, configLoad);
     assert.ok(report.includes("persistRuns: false"));
     assert.ok(report.includes("resumeInFlight: auto"));
     assert.ok(report.includes("defaultConcurrency: 8"));
@@ -481,7 +511,7 @@ describe("buildDoctorReport — tunables", () => {
       projectConfig: null,
       diagnostics: [],
     };
-    const report = buildDoctorReport(makeDiscovery(), noSiblings, configLoad);
+    const report = doctorReport(makeDiscovery(), noSiblings, configLoad);
     assert.ok(report.includes("maxDepth: 10"));
     assert.ok(report.includes("persistRuns: true"));
     assert.ok(report.includes("defaultConcurrency: 4"));
@@ -495,13 +525,13 @@ describe("buildDoctorReport — tunables", () => {
 describe("buildDoctorReport — configured workflows", () => {
   test("shows '(none configured)' placeholder when config has no workflows", () => {
     const configLoad: ConfigLoadResult = { config: {}, globalConfig: null, projectConfig: null, diagnostics: [] };
-    const report = buildDoctorReport(makeDiscovery(), noSiblings, configLoad);
+    const report = doctorReport(makeDiscovery(), noSiblings, configLoad);
     assert.ok(report.includes("[ CONFIGURED WORKFLOWS ]"));
     assert.ok(report.includes("no workflows configured in settings"));
   });
 
   test("shows '(none configured)' placeholder when configLoad is undefined", () => {
-    const report = buildDoctorReport(makeDiscovery(), noSiblings);
+    const report = doctorReport(makeDiscovery(), noSiblings);
     assert.ok(report.includes("[ CONFIGURED WORKFLOWS ]"));
     assert.ok(report.includes("no workflows configured in settings"));
   });
@@ -517,7 +547,7 @@ describe("buildDoctorReport — configured workflows", () => {
       projectConfig: null,
       diagnostics: [],
     };
-    const report = buildDoctorReport(makeDiscovery(), noSiblings, configLoad);
+    const report = doctorReport(makeDiscovery(), noSiblings, configLoad);
     assert.ok(report.includes("[ CONFIGURED WORKFLOWS ]"));
     assert.ok(report.includes("my-workflow: ./workflows/my-workflow.ts"));
   });
@@ -534,7 +564,7 @@ describe("buildDoctorReport — configured workflows", () => {
       projectConfig: null,
       diagnostics: [],
     };
-    const report = buildDoctorReport(makeDiscovery(), noSiblings, configLoad);
+    const report = doctorReport(makeDiscovery(), noSiblings, configLoad);
     assert.ok(report.includes("alpha: /abs/alpha.ts"));
     assert.ok(report.includes("beta: ./beta.ts"));
   });
@@ -550,7 +580,7 @@ describe("buildDoctorReport — configured workflows", () => {
       projectConfig: null,
       diagnostics: [],
     };
-    const report = buildDoctorReport(makeDiscovery(), noSiblings, configLoad);
+    const report = doctorReport(makeDiscovery(), noSiblings, configLoad);
     // Only path, not any file content
     assert.ok(report.includes("secret: ./secret-workflow.ts"));
     assert.ok(!report.includes("FILE_CONTENTS"));
@@ -564,25 +594,25 @@ describe("buildDoctorReport — configured workflows", () => {
 describe("buildDoctorReport — section ordering", () => {
   test("diagnostics appears before tunables", () => {
     const configLoad: ConfigLoadResult = { config: null, globalConfig: null, projectConfig: null, diagnostics: [] };
-    const report = buildDoctorReport(makeDiscovery(), noSiblings, configLoad);
+    const report = doctorReport(makeDiscovery(), noSiblings, configLoad);
     assert.ok(report.indexOf("[ DIAGNOSTICS ]") < report.indexOf("[ TUNABLES ]"));
   });
 
   test("tunables appears before configured workflows", () => {
     const configLoad: ConfigLoadResult = { config: null, globalConfig: null, projectConfig: null, diagnostics: [] };
-    const report = buildDoctorReport(makeDiscovery(), noSiblings, configLoad);
+    const report = doctorReport(makeDiscovery(), noSiblings, configLoad);
     assert.ok(report.indexOf("[ TUNABLES ]") < report.indexOf("[ CONFIGURED WORKFLOWS ]"));
   });
 
   test("configured workflows appears before host capabilities", () => {
     const configLoad: ConfigLoadResult = { config: null, globalConfig: null, projectConfig: null, diagnostics: [] };
-    const report = buildDoctorReport(makeDiscovery(), noSiblings, configLoad);
+    const report = doctorReport(makeDiscovery(), noSiblings, configLoad);
     assert.ok(report.indexOf("[ CONFIGURED WORKFLOWS ]") < report.indexOf("[ HOST CAPABILITIES ]"));
   });
 
   test("host capabilities appears before runtime adapters and companions", () => {
     const configLoad: ConfigLoadResult = { config: null, globalConfig: null, projectConfig: null, diagnostics: [] };
-    const report = buildDoctorReport(makeDiscovery(), noSiblings, configLoad);
+    const report = doctorReport(makeDiscovery(), noSiblings, configLoad);
     const caps = report.indexOf("[ HOST CAPABILITIES ]");
     const adapters = report.indexOf("[ RUNTIME ADAPTERS ]");
     const companions = report.indexOf("[ COMPANIONS ]");

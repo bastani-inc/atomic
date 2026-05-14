@@ -4,7 +4,7 @@
  * Covers:
  * 1. Mock ExtensionAPI with exec surface → SDK session adapters built → workflow
  *    tool dispatch does not shell out through exec.
- * 2. Initial runtime (pre-discovery, seeded from discoverBundledWorkflowsSync)
+ * 2. Initial runtime (pre-discovery, seeded from discoverStartupWorkflowsSync)
  *    carries adapters — workflow dispatch calls prompt/complete adapters.
  * 3. Post-discovery runtime swap preserves the same adapters — exec still
  *    called after createExtensionRuntime is re-called with discovered registry.
@@ -30,7 +30,7 @@ import factory, {
 import type { WorkflowToolResult } from "../../src/extension/render-result.js";
 import type { PiExecResult } from "../../src/extension/wiring.js";
 import { createExtensionRuntime } from "../../src/extension/runtime.js";
-import { discoverBundledWorkflowsSync, discoverWorkflows } from "../../src/extension/discovery.js";
+import { discoverStartupWorkflowsSync, discoverWorkflows } from "../../src/extension/discovery.js";
 import { waitForRun } from "../support/helpers.ts";
 
 /**
@@ -131,7 +131,7 @@ async function runWorkflowTool(
   // tool returns `{ content, details }`. Tests assert against `details`.
   const out = await execute(
     "test-tool-call",
-    { name: "deep-research-codebase", inputs: { prompt: "test research question" }, action: "run" },
+    { workflow: "deep-research-codebase", inputs: { prompt: "test research question" }, action: "run" },
     undefined,
     undefined,
     {} as never,
@@ -244,15 +244,15 @@ describe("runtime-wiring — pre-discovery: initial runtime carries adapters", (
     const adapters = makeSpyAdapters(calls);
 
     // Simulate the pre-discovery state: sync bundled registry + adapters (same
-    // as factory does at line: current = createExtensionRuntime({ registry: discoverBundledWorkflowsSync().registry, adapters }))
+    // as factory does at line: current = createExtensionRuntime({ registry: discoverStartupWorkflowsSync().registry, adapters }))
     const initialRuntime = createExtensionRuntime({
-      registry: discoverBundledWorkflowsSync().registry,
+      registry: discoverStartupWorkflowsSync().registry,
       adapters,
     });
 
     await dispatchAndWait(initialRuntime, {
       action: "run",
-      name: "deep-research-codebase",
+      workflow: "deep-research-codebase",
       inputs: { prompt: "test pre-discovery" },
     });
 
@@ -265,13 +265,13 @@ describe("runtime-wiring — pre-discovery: initial runtime carries adapters", (
     const adapters = makeSpyAdapters(calls);
 
     const initialRuntime = createExtensionRuntime({
-      registry: discoverBundledWorkflowsSync().registry,
+      registry: discoverStartupWorkflowsSync().registry,
       adapters,
     });
 
     await dispatchAndWait(initialRuntime, {
       action: "run",
-      name: "deep-research-codebase",
+      workflow: "deep-research-codebase",
       inputs: { prompt: "pre-discovery-research" },
     });
 
@@ -284,13 +284,13 @@ describe("runtime-wiring — pre-discovery: initial runtime carries adapters", (
     const adapters = makeSpyAdapters(calls);
 
     const initialRuntime = createExtensionRuntime({
-      registry: discoverBundledWorkflowsSync().registry,
+      registry: discoverStartupWorkflowsSync().registry,
       adapters,
     });
 
     await dispatchAndWait(initialRuntime, {
       action: "run",
-      name: "deep-research-codebase",
+      workflow: "deep-research-codebase",
       inputs: { prompt: "test-complete" },
     });
 
@@ -319,7 +319,7 @@ describe("runtime-wiring — post-discovery: swapped runtime preserves adapters"
 
     await dispatchAndWait(swappedRuntime, {
       action: "run",
-      name: "deep-research-codebase",
+      workflow: "deep-research-codebase",
       inputs: { prompt: "test post-discovery" },
     });
 
@@ -338,7 +338,7 @@ describe("runtime-wiring — post-discovery: swapped runtime preserves adapters"
 
     await dispatchAndWait(swappedRuntime, {
       action: "run",
-      name: "deep-research-codebase",
+      workflow: "deep-research-codebase",
       inputs: { prompt: "post-discovery-question" },
     });
 
@@ -352,12 +352,12 @@ describe("runtime-wiring — post-discovery: swapped runtime preserves adapters"
 
     // Initial runtime (pre-discovery)
     const initialRuntime = createExtensionRuntime({
-      registry: discoverBundledWorkflowsSync().registry,
+      registry: discoverStartupWorkflowsSync().registry,
       adapters,
     });
     await dispatchAndWait(initialRuntime, {
       action: "run",
-      name: "deep-research-codebase",
+      workflow: "deep-research-codebase",
       inputs: { prompt: "initial" },
     });
     const callsAfterInitial = calls.length;
@@ -371,7 +371,7 @@ describe("runtime-wiring — post-discovery: swapped runtime preserves adapters"
     });
     await dispatchAndWait(swappedRuntime, {
       action: "run",
-      name: "deep-research-codebase",
+      workflow: "deep-research-codebase",
       inputs: { prompt: "swapped" },
     });
 

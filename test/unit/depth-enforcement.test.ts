@@ -5,7 +5,7 @@
  * - run() returns status:"failed" with "pi-workflows: maxDepth exceeded (max N)"
  *   when depth >= config.maxDepth
  * - run() executes normally when depth < maxDepth
- * - run() without config has no depth limit (backward compat)
+ * - run() without config enforces the default maxDepth
  * - exact-boundary: depth === maxDepth fails, depth === maxDepth - 1 passes
  * - runId is present even in the failed result
  */
@@ -89,15 +89,15 @@ describe("maxDepth enforcement — executor.run", () => {
     assert.equal(result.status, "completed");
   });
 
-  test("no config means no depth limit (backward compat)", async () => {
+  test("no config uses default maxDepth", async () => {
     const wf = makeWf("no-config-wf");
-    // Pass an absurdly large depth — without config, no enforcement
     const result = await run(wf, {}, {
       store: createStore(),
       depth: 9999,
     });
 
-    assert.equal(result.status, "completed");
+    assert.equal(result.status, "failed");
+    assert.equal(result.error, "pi-workflows: maxDepth exceeded (max 4)");
   });
 
   test("failed runId is non-empty string", async () => {

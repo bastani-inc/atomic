@@ -2,7 +2,7 @@
  * Tests for src/extension/discovery.ts
  *
  * Covers:
- *   - discoverBundledWorkflows() happy path: all three builtins registered
+ *   - discoverStartupWorkflowsSync() happy path: all three builtins registered
  *   - DiscoveryResult shape: registry, sources, errors
  *   - sources array: one entry per bundled workflow with correct id/kind/name
  *   - No errors on clean manifest
@@ -19,7 +19,7 @@ import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import type { WorkflowDefinition } from "../../src/shared/types.js";
 import {
-  discoverBundledWorkflows,
+  discoverStartupWorkflowsSync,
   discoverWorkflows,
   type DiscoverySource,
   type DiscoveryDiagnostic,
@@ -49,9 +49,9 @@ function makeValidDef(
 // Happy path: real bundled workflows
 // ---------------------------------------------------------------------------
 
-describe("discoverBundledWorkflows — bundled manifest", () => {
+describe("discoverStartupWorkflowsSync — bundled manifest", () => {
   test("returns a DiscoveryResult with registry, sources, errors", async () => {
-    const result = await discoverBundledWorkflows();
+    const result = await discoverStartupWorkflowsSync();
     assert.notEqual(result, undefined);
     assert.notEqual(result.registry, undefined);
     assert.equal(Array.isArray(result.sources), true);
@@ -59,7 +59,7 @@ describe("discoverBundledWorkflows — bundled manifest", () => {
   });
 
   test("registers exactly the three bundled workflows", async () => {
-    const { registry } = await discoverBundledWorkflows();
+    const { registry } = await discoverStartupWorkflowsSync();
     const names = registry.names();
     assert.ok(names.includes("deep-research-codebase"));
     assert.ok(names.includes("ralph"));
@@ -68,12 +68,12 @@ describe("discoverBundledWorkflows — bundled manifest", () => {
   });
 
   test("no errors on clean manifest", async () => {
-    const { errors } = await discoverBundledWorkflows();
+    const { errors } = await discoverStartupWorkflowsSync();
     assert.equal(errors.length, 0);
   });
 
   test("sources array has one entry per registered workflow", async () => {
-    const { sources } = await discoverBundledWorkflows();
+    const { sources } = await discoverStartupWorkflowsSync();
     assert.equal(sources.length, 3);
     const ids = sources.map((s: DiscoverySource) => s.id);
     assert.ok(ids.includes("deep-research-codebase"));
@@ -82,14 +82,14 @@ describe("discoverBundledWorkflows — bundled manifest", () => {
   });
 
   test("every source has kind='bundled'", async () => {
-    const { sources } = await discoverBundledWorkflows();
+    const { sources } = await discoverStartupWorkflowsSync();
     for (const s of sources) {
       assert.equal(s.kind, "bundled");
     }
   });
 
   test("source id matches normalizedName", async () => {
-    const { sources, registry } = await discoverBundledWorkflows();
+    const { sources, registry } = await discoverStartupWorkflowsSync();
     for (const s of sources) {
       const def = registry.get(s.id);
       assert.notEqual(def, undefined);
@@ -98,7 +98,7 @@ describe("discoverBundledWorkflows — bundled manifest", () => {
   });
 
   test("source name matches workflow display name", async () => {
-    const { sources, registry } = await discoverBundledWorkflows();
+    const { sources, registry } = await discoverStartupWorkflowsSync();
     for (const s of sources) {
       const def = registry.get(s.id);
       assert.equal(def!.name, s.name);
@@ -106,7 +106,7 @@ describe("discoverBundledWorkflows — bundled manifest", () => {
   });
 
   test("registry.get by normalizedName returns valid WorkflowDefinition", async () => {
-    const { registry } = await discoverBundledWorkflows();
+    const { registry } = await discoverStartupWorkflowsSync();
     for (const name of ["deep-research-codebase", "ralph", "open-claude-design"]) {
       const def = registry.get(name);
       assert.notEqual(def, undefined);
@@ -117,7 +117,7 @@ describe("discoverBundledWorkflows — bundled manifest", () => {
   });
 
   test("registry is immutable-style (register returns new registry)", async () => {
-    const { registry } = await discoverBundledWorkflows();
+    const { registry } = await discoverStartupWorkflowsSync();
     const extra = makeValidDef("new-workflow", "new-workflow");
     const r2 = registry.register(extra);
     // original unchanged
@@ -130,7 +130,7 @@ describe("discoverBundledWorkflows — bundled manifest", () => {
 // Validation: INVALID_DEFINITION diagnostics
 // ---------------------------------------------------------------------------
 
-describe("discoverBundledWorkflows — validation diagnostics", () => {
+describe("discoverStartupWorkflowsSync — validation diagnostics", () => {
   /**
    * We test validation indirectly by inspecting the diagnostic shape from
    * a direct call to the module's internal validator via a crafted scenario.
@@ -156,7 +156,7 @@ describe("discoverBundledWorkflows — validation diagnostics", () => {
   });
 
   test("no INVALID_DEFINITION errors for real bundled workflows", async () => {
-    const { errors } = await discoverBundledWorkflows();
+    const { errors } = await discoverStartupWorkflowsSync();
     const invalidErrors = errors.filter((e: DiscoveryDiagnostic) => e.code === "INVALID_DEFINITION");
     assert.equal(invalidErrors.length, 0);
   });
@@ -166,9 +166,9 @@ describe("discoverBundledWorkflows — validation diagnostics", () => {
 // Duplicate detection via createRegistry + registry logic
 // ---------------------------------------------------------------------------
 
-describe("discoverBundledWorkflows — duplicate handling", () => {
+describe("discoverStartupWorkflowsSync — duplicate handling", () => {
   test("no DUPLICATE_NAME warnings for clean bundled manifest (all unique)", async () => {
-    const { errors } = await discoverBundledWorkflows();
+    const { errors } = await discoverStartupWorkflowsSync();
     const dupeWarnings = errors.filter((e: DiscoveryDiagnostic) => e.code === "DUPLICATE_NAME");
     assert.equal(dupeWarnings.length, 0);
   });
@@ -192,7 +192,7 @@ describe("discoverBundledWorkflows — duplicate handling", () => {
 
 describe("DiscoveryResult contract", () => {
   test("sources array is readonly (cannot push)", async () => {
-    const { sources } = await discoverBundledWorkflows();
+    const { sources } = await discoverStartupWorkflowsSync();
     // readonly — TypeScript enforces this; runtime check via Object.isFrozen or try
     // The array itself may not be frozen at runtime, but we confirm length is stable
     const lenBefore = sources.length;
@@ -201,7 +201,7 @@ describe("DiscoveryResult contract", () => {
   });
 
   test("errors array is readonly (length stable)", async () => {
-    const { errors } = await discoverBundledWorkflows();
+    const { errors } = await discoverStartupWorkflowsSync();
     const lenBefore = errors.length;
     assert.equal(errors.length, lenBefore);
   });
@@ -213,7 +213,7 @@ describe("DiscoveryResult contract", () => {
 
 describe("DiscoverySource shape", () => {
   test("each source has id, kind, name fields", async () => {
-    const { sources } = await discoverBundledWorkflows();
+    const { sources } = await discoverStartupWorkflowsSync();
     for (const s of sources) {
       assert.equal(typeof s.id, "string");
       assert.ok(s.id.length > 0);
@@ -224,7 +224,7 @@ describe("DiscoverySource shape", () => {
   });
 
   test("source ids are unique", async () => {
-    const { sources } = await discoverBundledWorkflows();
+    const { sources } = await discoverStartupWorkflowsSync();
     const ids = sources.map((s: DiscoverySource) => s.id);
     const unique = new Set(ids);
     assert.equal(unique.size, ids.length);
@@ -237,7 +237,7 @@ describe("DiscoverySource shape", () => {
 
 describe("registry.all() after discovery", () => {
   test("all() returns three WorkflowDefinition objects", async () => {
-    const { registry } = await discoverBundledWorkflows();
+    const { registry } = await discoverStartupWorkflowsSync();
     const all = registry.all();
     assert.equal(all.length, 3);
     for (const def of all) {
@@ -249,7 +249,7 @@ describe("registry.all() after discovery", () => {
   });
 
   test("registry.names() matches source ids", async () => {
-    const { registry, sources } = await discoverBundledWorkflows();
+    const { registry, sources } = await discoverStartupWorkflowsSync();
     const regNames = new Set(registry.names());
     const srcIds = new Set(sources.map((s: DiscoverySource) => s.id));
     assert.equal(regNames.size, srcIds.size);

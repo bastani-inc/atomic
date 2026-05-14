@@ -15,13 +15,16 @@
  * cross-ref: spec §5.10 Integration with pi-intercom, §8.1 Phase G
  */
 
+import type { WorkflowDetails } from "../shared/types.js";
+
 // ---------------------------------------------------------------------------
 // Minimal structural types
 // ---------------------------------------------------------------------------
 
 /** Minimal pi events bus surface used by this module. */
 export interface PiEventBus {
-  on?: (event: string, handler: (payload: unknown) => void) => void;
+  on?: (event: string, handler: (payload: unknown) => void) => void | (() => void);
+  emit?: (event: string, payload: Record<string, unknown>) => void;
 }
 
 /** Minimal ExtensionAPI surface expected by result-intercom module. */
@@ -82,6 +85,99 @@ export interface IntercomControlCallbacks {
   onUnknown?: (payload: IntercomControlPayload) => void | Promise<void>;
 }
 
+export type WorkflowIntercomDelivery = "off" | "notify" | "result" | "control-and-result";
+
+export interface WorkflowResultIntercomPort {
+  emit?: (event: string, payload: Record<string, unknown>) => void;
+  parentSession?: string | (() => string | undefined);
+}
+
+export interface WorkflowIntercomEventOptions {
+  readonly delivery: Exclude<WorkflowIntercomDelivery, "off">;
+  readonly parentSession?: string;
+}
+
+export interface WorkflowControlIntercomPayload {
+  readonly type: "notify" | "needs_attention";
+  readonly runId: string;
+  readonly mode: WorkflowDetails["mode"];
+  readonly status: WorkflowDetails["status"];
+  readonly message: string;
+  readonly parentSession?: string;
+  readonly createdAt: number;
+}
+
+export interface WorkflowResultIntercomPayload {
+  readonly runId: string;
+  readonly mode: WorkflowDetails["mode"];
+  readonly status: WorkflowDetails["status"];
+  readonly details: WorkflowDetails;
+  readonly parentSession?: string;
+  readonly createdAt: number;
+}
+
+function parentSessionFromPort(port: WorkflowResultIntercomPort, override?: string): string | undefined {
+  if (override !== undefined) return override;
+  if (typeof port.parentSession === "function") return port.parentSession();
+  return port.parentSession;
+}
+
+function shouldEmitControl(delivery: WorkflowIntercomDelivery): boolean {
+  return delivery === "notify" || delivery === "control-and-result";
+}
+
+function shouldEmitResult(delivery: WorkflowIntercomDelivery): boolean {
+  return delivery === "result" || delivery === "control-and-result";
+}
+
+export function workflowIntercomAvailable(port: WorkflowResultIntercomPort | undefined): boolean {
+  return typeof port?.emit === "function";
+}
+
+export function emitWorkflowControlIntercom(
+  port: WorkflowResultIntercomPort | undefined,
+  details: WorkflowDetails,
+  message: string,
+  options: WorkflowIntercomEventOptions,
+): boolean {
+  if (!workflowIntercomAvailable(port) || !shouldEmitControl(options.delivery) || details.runId === undefined) {
+    return false;
+  }
+  const parentSession = parentSessionFromPort(port!, options.parentSession);
+  const payload: WorkflowControlIntercomPayload = {
+    type: "notify",
+    runId: details.runId,
+    mode: details.mode,
+    status: details.status,
+    message,
+    ...(parentSession !== undefined ? { parentSession } : {}),
+    createdAt: Date.now(),
+  };
+  port!.emit!("workflow:control-intercom", payload as unknown as Record<string, unknown>);
+  return true;
+}
+
+export function emitWorkflowResultIntercom(
+  port: WorkflowResultIntercomPort | undefined,
+  details: WorkflowDetails,
+  options: WorkflowIntercomEventOptions,
+): boolean {
+  if (!workflowIntercomAvailable(port) || !shouldEmitResult(options.delivery) || details.runId === undefined) {
+    return false;
+  }
+  const parentSession = parentSessionFromPort(port!, options.parentSession);
+  const payload: WorkflowResultIntercomPayload = {
+    runId: details.runId,
+    mode: details.mode,
+    status: details.status,
+    details,
+    ...(parentSession !== undefined ? { parentSession } : {}),
+    createdAt: Date.now(),
+  };
+  port!.emit!("workflow:result-intercom", payload as unknown as Record<string, unknown>);
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // Subscription
 // ---------------------------------------------------------------------------
@@ -135,9 +231,10 @@ export function subscribeIntercomControl(
     });
   };
 
-  pi.events!.on!("subagent:control-intercom", handler);
+  const unsubscribe = pi.events!.on!("subagent:control-intercom", handler);
 
   return () => {
     active = false;
+    if (typeof unsubscribe === "function") unsubscribe();
   };
 }

@@ -97,14 +97,14 @@ const schemaWorkflow = defineWorkflow("schema-test")
 describe("dispatch — list", () => {
   test("returns empty items when registry is empty", async () => {
     const registry = createRegistry();
-    const result = await dispatch({ name: "", inputs: {}, action: "list" }, { registry });
+    const result = await dispatch({ workflow: "", inputs: {}, action: "list" }, { registry });
     const list = asList(result);
     assert.deepEqual(list.items, []);
   });
 
   test("returns one item per registered workflow with metadata", async () => {
     const registry = createRegistry([helloWorkflow, schemaWorkflow]);
-    const result = await dispatch({ name: "", inputs: {}, action: "list" }, { registry });
+    const result = await dispatch({ workflow: "", inputs: {}, action: "list" }, { registry });
     const list = asList(result);
     const names = list.items.map((i) => i.name);
     assert.ok(names.includes("hello-world"));
@@ -117,6 +117,76 @@ describe("dispatch — list", () => {
   });
 });
 
+describe("runtime.runDirect — workflow intercom", () => {
+  test("async direct parallel runs auto-deliver control and result events", async () => {
+    const activeStore = createStore();
+    const emitted: Array<{ event: string; payload: Record<string, unknown> }> = [];
+    const runtime = createExtensionRuntime({
+      store: activeStore,
+      adapters: noopAdapters,
+      intercom: {
+        parentSession: "parent-session",
+        emit(event, payload) {
+          emitted.push({ event, payload });
+        },
+      },
+    });
+
+    const accepted = await runtime.runDirect({
+      async: true,
+      tasks: [
+        { name: "alpha", task: "inspect alpha" },
+        { name: "beta", task: "inspect beta" },
+      ],
+    });
+
+    assert.equal(accepted.status, "accepted");
+    assert.equal(accepted.mode, "parallel");
+    assert.deepEqual(accepted.intercom, {
+      enabled: true,
+      delivery: "control-and-result",
+      parentSession: "parent-session",
+    });
+    assert.ok(accepted.runId);
+
+    await waitForRunEnded(activeStore, accepted.runId);
+    const deadline = Date.now() + 500;
+    while (!emitted.some((entry) => entry.event === "workflow:result-intercom") && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    assert.ok(emitted.some((entry) => entry.event === "workflow:control-intercom"));
+    const result = emitted.find((entry) => entry.event === "workflow:result-intercom");
+    assert.notEqual(result, undefined);
+    assert.equal(result?.payload["runId"], accepted.runId);
+    assert.equal(result?.payload["mode"], "parallel");
+    assert.equal(result?.payload["status"], "completed");
+    assert.equal(result?.payload["parentSession"], "parent-session");
+    const details = result?.payload["details"] as { results?: Array<{ name: string; text: string }> } | undefined;
+    assert.deepEqual(details?.results?.map((item) => item.name), ["alpha", "beta"]);
+  });
+
+  test("foreground direct single runs keep intercom off unless requested", async () => {
+    const emitted: Array<{ event: string; payload: Record<string, unknown> }> = [];
+    const runtime = createExtensionRuntime({
+      adapters: noopAdapters,
+      intercom: {
+        emit(event, payload) {
+          emitted.push({ event, payload });
+        },
+      },
+    });
+
+    const result = await runtime.runDirect({
+      task: { name: "solo", task: "inspect solo" },
+    });
+
+    assert.equal(result.status, "completed");
+    assert.equal(result.intercom, undefined);
+    assert.deepEqual(emitted, []);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // dispatch: inputs
 // ---------------------------------------------------------------------------
@@ -125,7 +195,7 @@ describe("dispatch — inputs", () => {
   test("returns not-found result (not throw) for unknown workflow", async () => {
     const registry = createRegistry();
     const result = await dispatch(
-      { name: "no-such-workflow", inputs: {}, action: "inputs" },
+      { workflow: "no-such-workflow", inputs: {}, action: "inputs" },
       { registry },
     );
     const inp = asInputs(result);
@@ -136,7 +206,7 @@ describe("dispatch — inputs", () => {
   test("returns schema entries for known workflow", async () => {
     const registry = createRegistry([schemaWorkflow]);
     const result = await dispatch(
-      { name: "schema-test", inputs: {}, action: "inputs" },
+      { workflow: "schema-test", inputs: {}, action: "inputs" },
       { registry },
     );
     const inp = asInputs(result);
@@ -156,7 +226,7 @@ describe("dispatch — inputs", () => {
 describe("dispatch — run", () => {
   test("returns structured failed result when workflow not found", async () => {
     const registry = createRegistry();
-    const result = await dispatch({ name: "ghost", inputs: {}, action: "run" }, { registry });
+    const result = await dispatch({ workflow: "ghost", inputs: {}, action: "run" }, { registry });
     const run = asRun(result);
     assert.equal(run.status, "failed");
     assert.ok(run.error!.includes("ghost"));
@@ -167,7 +237,7 @@ describe("dispatch — run", () => {
     const registry = createRegistry([helloWorkflow]);
     const activeStore = createStore();
     const result = await dispatch(
-      { name: "hello-world", inputs: { name: "Alice" }, action: "run" },
+      { workflow: "hello-world", inputs: { name: "Alice" }, action: "run" },
       { registry, adapters: noopAdapters, store: activeStore },
     );
     const accepted = asRun(result);
@@ -191,7 +261,7 @@ describe("dispatch — run", () => {
     const registry = createRegistry([failingWorkflow]);
     const activeStore = createStore();
     const result = await dispatch(
-      { name: "fail-me", inputs: {}, action: "run" },
+      { workflow: "fail-me", inputs: {}, action: "run" },
       { registry, adapters: noopAdapters, store: activeStore },
     );
     const accepted = asRun(result);
@@ -207,7 +277,7 @@ describe("dispatch — run", () => {
     const registry = createRegistry([helloWorkflow]);
     const activeStore = createStore();
     const result = await dispatch(
-      { name: "hello-world", inputs: {}, action: "run" }, // missing required `name`
+      { workflow: "hello-world", inputs: {}, action: "run" }, // missing required `name`
       { registry, adapters: noopAdapters, store: activeStore },
     );
     const run = asRun(result);
@@ -227,7 +297,7 @@ describe("dispatch — unknown action", () => {
   test("throws for unrecognised action", async () => {
     const registry = createRegistry();
     await assert.rejects(dispatch(
-        { name: "", inputs: {}, action: "status" as "list" },
+        { workflow: "", inputs: {}, action: "status" as "list" },
         { registry },
       ), { message: /unknown action/ });
   });
@@ -256,7 +326,7 @@ describe("createExtensionRuntime", () => {
 
   test("dispatch delegates to registry", async () => {
     const runtime = createExtensionRuntime({ definitions: [helloWorkflow] });
-    const result = await runtime.dispatch({ name: "", inputs: {}, action: "list" });
+    const result = await runtime.dispatch({ workflow: "", inputs: {}, action: "list" });
     const list = asList(result);
     assert.ok(list.items.some((i) => i.name === "hello-world"));
   });
@@ -311,7 +381,7 @@ describe("renderResult — run variant", () => {
   test("inputs not-found carries error field in result", async () => {
     const registry = createRegistry();
     const result = await dispatch(
-      { name: "ghost", inputs: {}, action: "inputs" },
+      { workflow: "ghost", inputs: {}, action: "inputs" },
       { registry },
     );
     const inp = asInputs(result);
@@ -377,7 +447,7 @@ describe("WorkflowPersistencePort — runtime persistence forwarding", () => {
       persistence,
     });
 
-    const result = await runtime.dispatch({ name: "persist-forwarding-test", inputs: {}, action: "run" });
+    const result = await runtime.dispatch({ workflow: "persist-forwarding-test", inputs: {}, action: "run" });
     const accepted = asRun(result);
     assert.equal(accepted.status, "running");
     await waitForRunEnded(activeStore, accepted.runId);
@@ -404,7 +474,7 @@ describe("WorkflowPersistencePort — runtime persistence forwarding", () => {
       persistence,
     });
 
-    const result = await runtime.dispatch({ name: "persist-forwarding-test", inputs: {}, action: "run" });
+    const result = await runtime.dispatch({ workflow: "persist-forwarding-test", inputs: {}, action: "run" });
     const accepted = asRun(result);
     await waitForRunEnded(activeStore, accepted.runId);
 
@@ -423,7 +493,7 @@ describe("WorkflowPersistencePort — runtime persistence forwarding", () => {
       store: activeStore,
     });
 
-    const result = await runtime.dispatch({ name: "persist-forwarding-test", inputs: {}, action: "run" });
+    const result = await runtime.dispatch({ workflow: "persist-forwarding-test", inputs: {}, action: "run" });
     const accepted = asRun(result);
     await waitForRunEnded(activeStore, accepted.runId);
     const settled = activeStore.runs().find((r) => r.id === accepted.runId);

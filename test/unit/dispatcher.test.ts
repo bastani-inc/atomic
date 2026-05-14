@@ -84,13 +84,13 @@ describe("dispatch inputs", () => {
   test("returns schema for a known workflow", async () => {
     const wf = makeWorkflow("beta");
     const registry = createRegistry([wf]);
-    const result = await dispatch({ action: "inputs", name: "beta" }, { registry });
+    const result = await dispatch({ action: "inputs", workflow: "beta" }, { registry });
     assert.equal(result.action, "inputs");
   });
 
   test("unknown workflow returns an error result", async () => {
     const registry = createRegistry([]);
-    const result = await dispatch({ action: "inputs", name: "no-such" }, { registry });
+    const result = await dispatch({ action: "inputs", workflow: "no-such" }, { registry });
     assert.equal(result.action, "inputs");
     if (result.action === "inputs") {
       assert.match(result.error!, /not found/i);
@@ -107,7 +107,7 @@ describe("dispatch run (always background)", () => {
     const wf = makeWorkflow("bg-wf");
     const registry = createRegistry([wf]);
     const result = await dispatch(
-      { action: "run", name: "bg-wf", inputs: {} },
+      { action: "run", workflow: "bg-wf", inputs: {} },
       { registry, ...freshDeps() },
     );
     assert.equal(result.action, "run");
@@ -131,7 +131,7 @@ describe("dispatch run (always background)", () => {
     const registry = createRegistry([slowWf]);
     const t0 = Date.now();
     const result = await dispatch(
-      { action: "run", name: "slow-bg-wf", inputs: {} },
+      { action: "run", workflow: "slow-bg-wf", inputs: {} },
       { registry, ...freshDeps() },
     );
     const elapsed = Date.now() - t0;
@@ -144,7 +144,7 @@ describe("dispatch run (always background)", () => {
   test("not-found workflow returns failed result with empty runId", async () => {
     const registry = createRegistry([]);
     const result = await dispatch(
-      { action: "run", name: "ghost", inputs: {} },
+      { action: "run", workflow: "ghost", inputs: {} },
       { registry, ...freshDeps() },
     );
     assert.equal(result.action, "run");
@@ -159,7 +159,7 @@ describe("dispatch run (always background)", () => {
     const wf = makeWorkflow("named-bg");
     const registry = createRegistry([wf]);
     const result = await dispatch(
-      { action: "run", name: "named-bg", inputs: {} },
+      { action: "run", workflow: "named-bg", inputs: {} },
       { registry, ...freshDeps() },
     );
     if (result.action === "run") {
@@ -200,7 +200,7 @@ describe("dispatch run forwards persistence", () => {
     const deps = freshDeps();
 
     const result = await dispatch(
-      { action: "run", name: "dispatch-persist-test", inputs: {} },
+      { action: "run", workflow: "dispatch-persist-test", inputs: {} },
       { registry, adapters: noopAdapters, persistence, ...deps },
     );
     assert.equal(result.action, "run");
@@ -231,7 +231,7 @@ describe("dispatch run forwards persistence", () => {
     const registry = createRegistry([stageWorkflow]);
     const deps = freshDeps();
     const result = await dispatch(
-      { action: "run", name: "dispatch-persist-test", inputs: {} },
+      { action: "run", workflow: "dispatch-persist-test", inputs: {} },
       { registry, adapters: noopAdapters, ...deps },
     );
     assert.equal(result.action, "run");

@@ -4,9 +4,10 @@
  */
 
 export interface WorkflowToolArgs {
-  name?: string;
+  workflow?: string;
   inputs?: Record<string, unknown>;
-  action?: "run" | "list" | "status" | "kill" | "resume" | "inputs";
+  action?: "run" | "list" | "get" | "status" | "interrupt" | "resume" | "inputs" | "doctor";
+  runId?: string;
 }
 
 /**
@@ -15,7 +16,7 @@ export interface WorkflowToolArgs {
  */
 export function renderCall(args: WorkflowToolArgs): string {
   const action = args.action ?? "run";
-  const name = args.name ?? "(unnamed)";
+  const name = args.workflow ?? args.runId ?? "(unnamed)";
 
   switch (action) {
     case "list":
@@ -26,10 +27,14 @@ export function renderCall(args: WorkflowToolArgs): string {
       return `workflow: show inputs for "${name}"`;
     case "run":
       return `workflow: run "${name}"`;
-    case "kill":
-      return `workflow: kill run "${name}"`;
+    case "interrupt":
+      return `workflow: interrupt run "${name}"`;
     case "resume":
       return `workflow: resume run "${name}"`;
+    case "get":
+      return `workflow: get "${name}"`;
+    case "doctor":
+      return "workflow: doctor";
     default:
       return `workflow: ${action} "${name}"`;
   }

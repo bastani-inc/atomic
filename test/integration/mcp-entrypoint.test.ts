@@ -166,13 +166,13 @@ describe("MCP entrypoints — workflow tool execute", () => {
   });
 
   test("tool execute emits mcp.scope.set (set then clear) when running mcp-restricted workflow", async () => {
-    const out = await toolExecute({ action: "run", name: "mcp-restricted", inputs: {} }, {});
+    const out = await toolExecute({ action: "run", workflow: "mcp-restricted", inputs: {} }, {});
     await waitForToolResult(out);
     assertScopeEmitSequence(emits);
   });
 
   test("set payload stageId is a non-empty string", async () => {
-    const out = await toolExecute({ action: "run", name: "mcp-restricted", inputs: {} }, {});
+    const out = await toolExecute({ action: "run", workflow: "mcp-restricted", inputs: {} }, {});
     await waitForToolResult(out);
     const setEmit = emits.find((e) => e.payload.allow !== null);
     assert.equal(typeof setEmit!.payload.stageId, "string");
@@ -180,7 +180,7 @@ describe("MCP entrypoints — workflow tool execute", () => {
   });
 
   test("clear payload uses same stageId as set payload", async () => {
-    const out = await toolExecute({ action: "run", name: "mcp-restricted", inputs: {} }, {});
+    const out = await toolExecute({ action: "run", workflow: "mcp-restricted", inputs: {} }, {});
     await waitForToolResult(out);
     const setEmit = emits.find((e) => e.payload.allow !== null)!;
     const clearEmit = emits.find((e) => e.payload.allow === null)!;
@@ -203,7 +203,7 @@ describe("MCP entrypoints — workflow tool execute", () => {
     });
     const execute = makeExecuteWorkflowTool(runtime, () => undefined);
     // Should not throw, should complete
-    const result = await execute({ action: "run", name: "mcp-restricted", inputs: {} }, {});
+    const result = await execute({ action: "run", workflow: "mcp-restricted", inputs: {} }, {});
     assert.equal((result as { action: string }).action, "run");
     // No events because pi.events absent
   });
@@ -228,12 +228,12 @@ describe("MCP entrypoints — slash command execute path", () => {
     //   const parts = args.trim().split(/\s+/);
     //   const workflowName = parts[0];
     //   const inputs = parseWorkflowArgs(parts.slice(1));
-    //   await runtimeProxy.dispatch({ name: workflowName, inputs, action: "run" });
+    //   await runtimeProxy.dispatch({ workflow: workflowName, inputs, action: "run" });
     const rawArgs = "mcp-restricted";
     const parts = rawArgs.trim().split(/\s+/);
     const workflowName = parts[0]!;
     const inputs = parseWorkflowArgs(parts.slice(1));
-    const result = await runtime.dispatch({ name: workflowName, inputs, action: "run" });
+    const result = await runtime.dispatch({ workflow: workflowName, inputs, action: "run" });
     await waitForDispatchResult(result);
 
     assertScopeEmitSequence(emits);
@@ -246,7 +246,7 @@ describe("MCP entrypoints — slash command execute path", () => {
     const tokens = rawParts[0] === "" ? [] : rawParts;
     const workflowName = tokens[0]!;
     const inputs = parseWorkflowArgs(tokens.slice(1));
-    const result = await runtime.dispatch({ name: workflowName, inputs, action: "run" });
+    const result = await runtime.dispatch({ workflow: workflowName, inputs, action: "run" });
     await waitForDispatchResult(result);
 
     assertScopeEmitSequence(emits);

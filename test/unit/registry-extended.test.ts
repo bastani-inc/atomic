@@ -50,17 +50,10 @@ describe("WorkflowRegistry extended operations", () => {
     assert.equal(r2.has("my-workflow"), false);
   });
 
-  test("upsert() is an alias for register()", () => {
-    const w = makeWorkflow("w1");
-    const r = createRegistry().upsert(w);
-    assert.equal(r.has("w1"), true);
-    assert.equal(r.get("w1")?.name, "w1");
-  });
-
-  test("upsert() replaces existing entry", () => {
+  test("register() replaces existing entry", () => {
     const w1a = makeWorkflow("w1", "original");
     const w1b = makeWorkflow("w1", "updated");
-    const r = createRegistry().upsert(w1a).upsert(w1b);
+    const r = createRegistry().register(w1a).register(w1b);
     assert.equal(r.get("w1")?.description, "updated");
     assert.equal(r.names().length, 1);
   });

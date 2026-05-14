@@ -39,7 +39,7 @@ function makePersistence(): { port: WorkflowPersistencePort; calls: Array<{ type
 }
 
 // ---------------------------------------------------------------------------
-// killRun — no persistence (backward compat)
+// killRun — no persistence port
 // ---------------------------------------------------------------------------
 
 describe("killRun — no persistence", () => {

@@ -2,6 +2,8 @@
  * Main DAG executor: run(def, inputs, opts) → RunResult
  */
 
+import { mkdir, writeFile } from "node:fs/promises";
+import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import type {
   WorkflowDefinition,
   WorkflowRunContext,
@@ -10,6 +12,18 @@ import type {
   WorkflowInputSchema,
   StageContext,
   StageOptions,
+  WorkflowTaskContextInput,
+  WorkflowTaskOptions,
+  WorkflowTaskResult,
+  WorkflowTaskStep,
+  WorkflowArtifact,
+  WorkflowMaxOutput,
+  WorkflowChainOptions,
+  WorkflowParallelOptions,
+  WorkflowDetails,
+  WorkflowDirectOptions,
+  WorkflowDirectTaskItem,
+  WorkflowChainStep,
   WorkflowMcpPort,
   WorkflowPersistencePort,
   WorkflowRuntimeConfig,
@@ -23,6 +37,15 @@ import { createStageContext } from "./stage-runner.js";
 import { GraphFrontierTracker } from "../shared/graph-inference.js";
 import { stageControlRegistry as defaultStageControlRegistry } from "./stage-control-registry.js";
 import { createRunLimiter } from "../shared/concurrency.js";
+import {
+  cleanupWorktrees,
+  createWorktrees,
+  diffWorktrees,
+  findWorktreeTaskCwdConflict,
+  formatWorktreeDiffSummary,
+  formatWorktreeTaskCwdConflict,
+  type WorktreeSetup,
+} from "../shared/worktree.js";
 import { store as defaultStore } from "../../shared/store.js";
 import {
   appendRunStart,
@@ -134,6 +157,568 @@ function makeUnavailableUIContext(): WorkflowUIContext {
 // raceAbort — races a promise against an AbortSignal
 // ---------------------------------------------------------------------------
 
+function normalizeTaskContexts(
+  previous: WorkflowTaskOptions["previous"],
+): Array<{ readonly name?: string; readonly text: string }> {
+  if (previous === undefined) return [];
+  const items = Array.isArray(previous) ? previous : [previous];
+  return items
+    .map((item: WorkflowTaskContextInput) => {
+      if (typeof item === "string") return { text: item };
+      return item.name ? { name: item.name, text: item.text } : { text: item.text };
+    })
+    .filter((item) => item.text.trim().length > 0);
+}
+
+function renderTaskContext(contexts: readonly { readonly name?: string; readonly text: string }[]): string {
+  if (contexts.length === 0) return "";
+  if (contexts.length === 1 && contexts[0]?.name === undefined) return contexts[0]!.text;
+  return contexts
+    .map((context, index) => {
+      const label = context.name ?? `context-${index + 1}`;
+      return `--- ${label} ---\n${context.text}`;
+    })
+    .join("\n\n");
+}
+
+function applyTaskContext(prompt: string, previous: WorkflowTaskOptions["previous"]): string {
+  const contexts = normalizeTaskContexts(previous);
+  if (contexts.length === 0) return prompt;
+
+  const lastPrevious = contexts[contexts.length - 1]?.text ?? "";
+  const rendered = renderTaskContext(contexts);
+  let next = prompt.replace(/\{previous\}/g, lastPrevious);
+
+  if (next !== prompt) return next;
+  next += `\n\n---\nContext:\n${rendered}`;
+  return next;
+}
+
+function taskPrompt(options: WorkflowTaskOptions): string {
+  const prompt = options.prompt ?? options.task;
+  if (prompt === undefined) {
+    throw new Error("pi-workflows: ctx.task requires options.prompt or options.task");
+  }
+  return prompt;
+}
+
+function taskPrevious(options: WorkflowTaskOptions): WorkflowTaskOptions["previous"] {
+  return options.previous;
+}
+
+function taskStageOptions(options: WorkflowTaskOptions): StageOptions {
+  const {
+    prompt: _prompt,
+    task: _task,
+    previous: _previous,
+    output: _output,
+    outputMode: _outputMode,
+    reads: _reads,
+    progress: _progress,
+    worktree: _worktree,
+    maxOutput: _maxOutput,
+    artifacts: _artifacts,
+    ...stageOptions
+  } = options;
+  return stageOptions;
+}
+
+function taskOptionsFromStep(step: WorkflowTaskStep, prompt: string, previous?: WorkflowTaskOptions["previous"]): WorkflowTaskOptions {
+  const {
+    name: _name,
+    prompt: _prompt,
+    task: _task,
+    previous: _previous,
+    output: _output,
+    outputMode: _outputMode,
+    reads: _reads,
+    progress: _progress,
+    worktree: _worktree,
+    ...stageOptions
+  } = step;
+  return previous === undefined
+    ? { ...stageOptions, prompt }
+    : { ...stageOptions, prompt, previous };
+}
+
+function replaceTaskPlaceholder(prompt: string, task: string): string {
+  return prompt.replace(/\{task\}/g, task);
+}
+
+function chainStepPrompt(step: WorkflowTaskStep, index: number): string {
+  return step.prompt ?? step.task ?? (index === 0 ? "{task}" : "{previous}");
+}
+
+function parallelFallbackTask(steps: readonly WorkflowTaskStep[], options?: WorkflowParallelOptions): string {
+  if (options?.task !== undefined) return options.task;
+  for (const step of steps) {
+    const task = step.prompt ?? step.task;
+    if (task !== undefined) return task;
+  }
+  return "";
+}
+
+function directTaskPrompt(item: WorkflowDirectTaskItem): string | undefined {
+  return item.prompt ?? item.task;
+}
+
+const DEFAULT_MAX_OUTPUT_BYTES = 200 * 1024;
+const DEFAULT_MAX_OUTPUT_LINES = 5000;
+
+function normalizeMaxOutput(maxOutput: WorkflowMaxOutput | undefined): Required<WorkflowMaxOutput> {
+  return {
+    bytes: maxOutput?.bytes ?? DEFAULT_MAX_OUTPUT_BYTES,
+    lines: maxOutput?.lines ?? DEFAULT_MAX_OUTPUT_LINES,
+  };
+}
+
+function truncateByLines(text: string, maxLines: number): { text: string; truncated: boolean } {
+  if (!Number.isFinite(maxLines) || maxLines <= 0) return { text: "", truncated: text.length > 0 };
+  const lines = text.split(/\r?\n/);
+  if (lines.length <= maxLines) return { text, truncated: false };
+  return {
+    text: lines.slice(0, maxLines).join("\n"),
+    truncated: true,
+  };
+}
+
+function truncateByBytes(text: string, maxBytes: number): { text: string; truncated: boolean } {
+  if (!Number.isFinite(maxBytes) || maxBytes <= 0) return { text: "", truncated: text.length > 0 };
+  if (Buffer.byteLength(text, "utf8") <= maxBytes) return { text, truncated: false };
+
+  let low = 0;
+  let high = text.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (Buffer.byteLength(text.slice(0, mid), "utf8") <= maxBytes) {
+      low = mid;
+    } else {
+      high = mid - 1;
+    }
+  }
+  return { text: text.slice(0, low), truncated: true };
+}
+
+function truncateTaskOutput(text: string, maxOutput: WorkflowMaxOutput | undefined): string {
+  const limits = normalizeMaxOutput(maxOutput);
+  const byLines = truncateByLines(text, limits.lines);
+  const byBytes = truncateByBytes(byLines.text, limits.bytes);
+  if (!byLines.truncated && !byBytes.truncated) return text;
+  return `${byBytes.text}\n\n[workflow output truncated; limits: ${limits.bytes} bytes, ${limits.lines} lines]`;
+}
+
+function directTaskWithDefaults(
+  item: WorkflowDirectTaskItem,
+  options: WorkflowDirectOptions,
+): WorkflowDirectTaskItem {
+  return {
+    ...item,
+    ...(item.context === undefined && options.context !== undefined ? { context: options.context } : {}),
+    ...(item.forkFromSessionFile === undefined && options.forkFromSessionFile !== undefined ? { forkFromSessionFile: options.forkFromSessionFile } : {}),
+    ...(item.cwd === undefined && options.cwd !== undefined ? { cwd: options.cwd } : {}),
+    ...(item.output === undefined && options.output !== undefined ? { output: options.output } : {}),
+    ...(item.outputMode === undefined && options.outputMode !== undefined ? { outputMode: options.outputMode } : {}),
+    ...(item.maxOutput === undefined && options.maxOutput !== undefined ? { maxOutput: options.maxOutput } : {}),
+    ...(item.artifacts === undefined && options.artifacts !== undefined ? { artifacts: options.artifacts } : {}),
+    ...(item.sessionDir === undefined && options.sessionDir !== undefined ? { sessionDir: options.sessionDir } : {}),
+  };
+}
+
+function directTaskToStep(
+  item: WorkflowDirectTaskItem,
+  fallbackPrompt?: string,
+  previous?: WorkflowTaskOptions["previous"],
+): WorkflowTaskStep {
+  const {
+    count: _count,
+    output: _output,
+    outputMode: _outputMode,
+    reads: _reads,
+    progress: _progress,
+    worktree: _worktree,
+    prompt,
+    task,
+    previous: itemPrevious,
+    ...stageOptions
+  } = item;
+  return {
+    ...stageOptions,
+    prompt: prompt ?? task ?? fallbackPrompt,
+    previous: previous ?? itemPrevious,
+  };
+}
+
+function expandedParallelTasks(tasks: readonly WorkflowDirectTaskItem[]): WorkflowDirectTaskItem[] {
+  const expanded: WorkflowDirectTaskItem[] = [];
+  for (const task of tasks) {
+    const count = task.count ?? 1;
+    if (!Number.isInteger(count) || count < 1) {
+      throw new Error(`pi-workflows: direct task "${task.name}" count must be a positive integer`);
+    }
+    for (let index = 0; index < count; index += 1) {
+      expanded.push(count === 1 ? task : {
+        ...task,
+        name: `${task.name}-${index + 1}`,
+        count: undefined,
+        output: namespaceRepeatedOutput(task.output, index),
+      });
+    }
+  }
+  return expanded;
+}
+
+function namespaceRepeatedOutput(output: WorkflowDirectTaskItem["output"], index: number): WorkflowDirectTaskItem["output"] {
+  if (typeof output !== "string") return output;
+  const ext = extname(output);
+  const base = basename(output, ext);
+  return join(dirname(output), `${base}-${index + 1}${ext}`);
+}
+
+interface PreparedDirectWorktrees {
+  readonly tasks: WorkflowDirectTaskItem[];
+  readonly setup?: WorktreeSetup;
+  readonly agents: string[];
+  readonly diffsDir?: string;
+}
+
+function directRunId(runOptions: RunOpts): string {
+  return runOptions.runId ?? crypto.randomUUID();
+}
+
+function hasDirectWorktreeIsolation(tasks: readonly WorkflowDirectTaskItem[], options: WorkflowDirectOptions): boolean {
+  return options.worktree === true || tasks.some((task) => task.worktree === true);
+}
+
+function resolveSharedDirectWorktreeCwd(tasks: readonly WorkflowDirectTaskItem[]): string {
+  const explicitCwd = tasks.find((task) => typeof task.cwd === "string")?.cwd;
+  if (explicitCwd === undefined) return process.cwd();
+  return isAbsolute(explicitCwd) ? explicitCwd : resolve(process.cwd(), explicitCwd);
+}
+
+function normalizeDirectTaskCwd(cwd: string | undefined): string | undefined {
+  if (cwd === undefined) return undefined;
+  return isAbsolute(cwd) ? cwd : resolve(process.cwd(), cwd);
+}
+
+function directWorktreeDiffsDir(options: WorkflowDirectOptions, setup: WorktreeSetup, runId: string, scope: string): string {
+  const baseDir = options.chainDir ?? join(setup.cwd, ".pi", "workflows");
+  return join(baseDir, "worktree-diffs", runId, scope);
+}
+
+function prepareDirectWorktrees(
+  tasks: readonly WorkflowDirectTaskItem[],
+  options: WorkflowDirectOptions,
+  runId: string,
+  scope: string,
+): PreparedDirectWorktrees {
+  if (!hasDirectWorktreeIsolation(tasks, options)) {
+    return {
+      tasks: [...tasks],
+      agents: tasks.map((task) => task.name),
+    };
+  }
+
+  const sharedCwd = resolveSharedDirectWorktreeCwd(tasks);
+  const conflict = findWorktreeTaskCwdConflict(
+    tasks.map((task) => ({ agent: task.name, cwd: normalizeDirectTaskCwd(task.cwd) })),
+    sharedCwd,
+  );
+  if (conflict !== undefined) {
+    throw new Error(formatWorktreeTaskCwdConflict(conflict, sharedCwd));
+  }
+
+  const agents = tasks.map((task) => task.name);
+  const setup = createWorktrees(sharedCwd, runId, tasks.length, { agents });
+  return {
+    tasks: tasks.map((task, index) => ({
+      ...task,
+      cwd: setup.worktrees[index]!.agentCwd,
+    })),
+    setup,
+    agents,
+    diffsDir: directWorktreeDiffsDir(options, setup, runId, scope),
+  };
+}
+
+function collectWorktreeDiffs(prepared: PreparedDirectWorktrees, enabled = true): {
+  artifacts: WorkflowArtifact[];
+  summary?: string;
+} {
+  if (!enabled || prepared.setup === undefined || prepared.diffsDir === undefined) {
+    return { artifacts: [] };
+  }
+
+  const diffs = diffWorktrees(prepared.setup, prepared.agents, prepared.diffsDir);
+  const artifacts = diffs.map((diff) => ({
+    kind: "diff" as const,
+    path: diff.patchPath,
+    taskName: diff.agent,
+    branch: diff.branch,
+    diffStat: diff.diffStat,
+    filesChanged: diff.filesChanged,
+    insertions: diff.insertions,
+    deletions: diff.deletions,
+  }));
+  const summary = formatWorktreeDiffSummary(diffs);
+  return {
+    artifacts,
+    ...(summary.length > 0 ? { summary } : {}),
+  };
+}
+
+function isRunOpts(value: WorkflowDirectOptions | RunOpts | undefined): value is RunOpts {
+  if (value === undefined) return false;
+  return (
+    "adapters" in value ||
+    "ui" in value ||
+    "store" in value ||
+    "persistence" in value ||
+    "mcp" in value ||
+    "cancellation" in value ||
+    "overlay" in value ||
+    "signal" in value ||
+    "config" in value ||
+    "depth" in value ||
+    "stageControlRegistry" in value ||
+    "runId" in value ||
+    "onRunStart" in value ||
+    "onStageStart" in value ||
+    "onStageEnd" in value ||
+    "onRunEnd" in value
+  );
+}
+
+async function writeDirectOutput(
+  item: Pick<WorkflowDirectTaskItem, "output" | "outputMode">,
+  result: WorkflowTaskResult,
+): Promise<{ result: WorkflowTaskResult; artifact?: WorkflowArtifact }> {
+  if (typeof item.output !== "string") return { result };
+
+  await mkdir(dirname(item.output), { recursive: true });
+  await writeFile(item.output, result.text, "utf8");
+
+  const visibleResult =
+    item.outputMode === "file-only"
+      ? { ...result, text: "" }
+      : result;
+
+  return {
+    result: visibleResult,
+    artifact: {
+      kind: "output",
+      path: item.output,
+      taskName: result.name,
+    },
+  };
+}
+
+function workflowDetailsFromRun(
+  mode: WorkflowDetails["mode"],
+  runResult: RunResult,
+  results: readonly WorkflowTaskResult[],
+  options: WorkflowDirectOptions = {},
+): WorkflowDetails {
+  const sessionArtifacts = options.artifacts === false ? [] : results.flatMap((result) =>
+    result.sessionFile === undefined
+      ? []
+      : [{ kind: "session" as const, path: result.sessionFile, taskName: result.name }],
+  );
+  const outputArtifacts = Array.isArray(runResult.result?.["artifacts"])
+    ? runResult.result["artifacts"] as WorkflowArtifact[]
+    : [];
+  const artifacts = [...outputArtifacts, ...sessionArtifacts];
+  return {
+    mode,
+    action: "run",
+    runId: runResult.runId,
+    status: runResult.status === "killed" ? "killed" : runResult.status === "failed" ? "failed" : "completed",
+    ...(options.context !== undefined ? { context: options.context } : {}),
+    results: [...results],
+    output: runResult.result,
+    progress: { completed: results.length, total: results.length },
+    ...(artifacts.length > 0 ? { artifacts } : {}),
+    ...(runResult.error !== undefined ? { error: runResult.error } : {}),
+  };
+}
+
+function defineDirectWorkflow(
+  name: string,
+  runFn: WorkflowDefinition["run"],
+): WorkflowDefinition {
+  return Object.freeze({
+    __piWorkflow: true,
+    name,
+    normalizedName: name,
+    description: "Direct workflow execution",
+    inputs: Object.freeze({}),
+    run: runFn,
+  });
+}
+
+/**
+ * SDK helper for direct single-task execution. It synthesizes an ephemeral
+ * workflow and reuses the normal executor so store snapshots, cancellation,
+ * persistence, and stage session behavior stay on the same runtime path.
+ */
+export function runTask(
+  task: WorkflowDirectTaskItem,
+  runOptions?: RunOpts,
+): Promise<WorkflowDetails>;
+export function runTask(
+  task: WorkflowDirectTaskItem,
+  options?: WorkflowDirectOptions,
+  runOptions?: RunOpts,
+): Promise<WorkflowDetails>;
+export async function runTask(
+  task: WorkflowDirectTaskItem,
+  optionsOrRunOptions: WorkflowDirectOptions | RunOpts = {},
+  maybeRunOptions: RunOpts = {},
+): Promise<WorkflowDetails> {
+  const options = isRunOpts(optionsOrRunOptions) ? {} : optionsOrRunOptions;
+  const runOptions = isRunOpts(optionsOrRunOptions) ? optionsOrRunOptions : maybeRunOptions;
+  const runId = directRunId(runOptions);
+  const prepared = prepareDirectWorktrees([directTaskWithDefaults(task, options)], options, runId, "single");
+  const preparedTask = prepared.tasks[0]!;
+  const direct = defineDirectWorkflow("direct-task", async (ctx) => {
+    try {
+      const rawResult = await ctx.task(preparedTask.name, directTaskToStep(preparedTask));
+      const { result, artifact } = await writeDirectOutput(preparedTask, rawResult);
+      const worktreeDiffs = collectWorktreeDiffs(prepared, options.artifacts !== false);
+      return {
+        results: [result],
+        text: result.text,
+        artifacts: [
+          ...worktreeDiffs.artifacts,
+          ...(artifact === undefined ? [] : [artifact]),
+        ],
+        ...(worktreeDiffs.summary === undefined ? {} : { worktreeSummary: worktreeDiffs.summary }),
+      };
+    } finally {
+      if (prepared.setup !== undefined) cleanupWorktrees(prepared.setup);
+    }
+  });
+  const runResult = await run(direct, {}, { ...runOptions, runId });
+  const results = (runResult.result?.["results"] ?? []) as WorkflowTaskResult[];
+  return workflowDetailsFromRun("single", runResult, results, options);
+}
+
+/** SDK helper for direct top-level parallel task execution. */
+export async function runParallel(
+  tasks: readonly WorkflowDirectTaskItem[],
+  options: WorkflowDirectOptions = {},
+  runOptions: RunOpts = {},
+): Promise<WorkflowDetails> {
+  const expanded = expandedParallelTasks(tasks.map((task) => directTaskWithDefaults(task, options)));
+  const runId = directRunId(runOptions);
+  const prepared = prepareDirectWorktrees(expanded, options, runId, "parallel");
+  const direct = defineDirectWorkflow("direct-parallel", async (ctx) => {
+    try {
+      const steps = prepared.tasks.map((task) => directTaskToStep(task));
+      const rawResults = await ctx.parallel(steps, { task: options.task });
+      const persisted = await Promise.all(
+        rawResults.map((result, index) => writeDirectOutput(prepared.tasks[index]!, result)),
+      );
+      const results = persisted.map((item) => item.result);
+      const worktreeDiffs = collectWorktreeDiffs(prepared, options.artifacts !== false);
+      const artifacts = [
+        ...worktreeDiffs.artifacts,
+        ...persisted.flatMap((item) => item.artifact === undefined ? [] : [item.artifact]),
+      ];
+      return {
+        results,
+        count: results.length,
+        artifacts,
+        ...(worktreeDiffs.summary === undefined ? {} : { worktreeSummary: worktreeDiffs.summary }),
+      };
+    } finally {
+      if (prepared.setup !== undefined) cleanupWorktrees(prepared.setup);
+    }
+  });
+  const runResult = await run(direct, {}, { ...runOptions, runId });
+  const results = (runResult.result?.["results"] ?? []) as WorkflowTaskResult[];
+  return workflowDetailsFromRun("parallel", runResult, results, options);
+}
+
+async function runDirectChainStep(
+  ctx: WorkflowRunContext,
+  step: WorkflowChainStep,
+  index: number,
+  rootTask: string,
+  prior: WorkflowTaskResult | readonly WorkflowTaskResult[] | undefined,
+  options: WorkflowDirectOptions,
+  runId: string,
+): Promise<{ results: WorkflowTaskResult[]; artifacts: WorkflowArtifact[] }> {
+  if ("parallel" in step) {
+    const expanded = expandedParallelTasks(step.parallel.map((item) => directTaskWithDefaults(item, options)));
+    const stepOptions = { ...options, worktree: options.worktree === true || step.worktree === true };
+    const prepared = prepareDirectWorktrees(expanded, stepOptions, `${runId}-s${index}`, `step-${index}`);
+    try {
+      const steps = prepared.tasks.map((item) =>
+        directTaskToStep(item, directTaskPrompt(item) ?? "{previous}", item.previous ?? prior),
+      );
+      const rawResults = await ctx.parallel(steps, { task: rootTask });
+      const persisted = await Promise.all(
+        rawResults.map((result, taskIndex) => writeDirectOutput(prepared.tasks[taskIndex]!, result)),
+      );
+      const worktreeDiffs = collectWorktreeDiffs(prepared, stepOptions.artifacts !== false);
+      return {
+        results: persisted.map((item) => item.result),
+        artifacts: [
+          ...worktreeDiffs.artifacts,
+          ...persisted.flatMap((item) => item.artifact === undefined ? [] : [item.artifact]),
+        ],
+      };
+    } finally {
+      if (prepared.setup !== undefined) cleanupWorktrees(prepared.setup);
+    }
+  }
+
+  const prompt = directTaskPrompt(step) ?? (index === 0 ? "{task}" : "{previous}");
+  const prepared = prepareDirectWorktrees([directTaskWithDefaults(step, options)], options, `${runId}-s${index}`, `step-${index}`);
+  const preparedStep = prepared.tasks[0]!;
+  try {
+    const rawResult = await ctx.task(
+      preparedStep.name,
+      directTaskToStep(preparedStep, replaceTaskPlaceholder(prompt, rootTask), preparedStep.previous ?? prior),
+    );
+    const { result, artifact } = await writeDirectOutput(preparedStep, rawResult);
+    const worktreeDiffs = collectWorktreeDiffs(prepared, options.artifacts !== false);
+    return {
+      results: [result],
+      artifacts: [
+        ...worktreeDiffs.artifacts,
+        ...(artifact === undefined ? [] : [artifact]),
+      ],
+    };
+  } finally {
+    if (prepared.setup !== undefined) cleanupWorktrees(prepared.setup);
+  }
+}
+
+/** SDK helper for direct sequential/parallel chain execution. */
+export async function runChain(
+  chain: readonly WorkflowChainStep[],
+  options: WorkflowDirectOptions = {},
+  runOptions: RunOpts = {},
+): Promise<WorkflowDetails> {
+  const runId = directRunId(runOptions);
+  const direct = defineDirectWorkflow("direct-chain", async (ctx) => {
+    const results: WorkflowTaskResult[] = [];
+    const artifacts: WorkflowArtifact[] = [];
+    let prior: WorkflowTaskResult | readonly WorkflowTaskResult[] | undefined;
+    for (let index = 0; index < chain.length; index += 1) {
+      const step = await runDirectChainStep(ctx, chain[index]!, index, options.task ?? "", prior, options, runId);
+      results.push(...step.results);
+      artifacts.push(...step.artifacts);
+      prior = step.results.length === 1 ? step.results[0] : step.results;
+    }
+    return { results, count: results.length, artifacts };
+  });
+  const runResult = await run(direct, {}, { ...runOptions, runId });
+  const results = (runResult.result?.["results"] ?? []) as WorkflowTaskResult[];
+  return workflowDetailsFromRun("chain", runResult, results, options);
+}
+
 function raceAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   if (signal.aborted) {
     return Promise.reject(signal.reason ?? new DOMException("workflow killed", "AbortError"));
@@ -204,8 +789,9 @@ export async function run(
 
   // 0. maxDepth guard — reject before any store/persistence side effects.
   const depth = opts.depth ?? 0;
-  if (opts.config !== undefined && depth >= opts.config.maxDepth) {
-    const max = opts.config.maxDepth;
+  const maxDepth = opts.config?.maxDepth ?? 4;
+  if (depth >= maxDepth) {
+    const max = maxDepth;
     return {
       runId: opts.runId ?? crypto.randomUUID(),
       status: "failed",
@@ -671,6 +1257,48 @@ export async function run(
         },
       };
       return stageContext;
+    },
+
+    async task(name: string, options: WorkflowTaskOptions): Promise<WorkflowTaskResult> {
+      const stage = ctx.stage(name, taskStageOptions(options));
+      const rawText = await stage.prompt(applyTaskContext(taskPrompt(options), taskPrevious(options)));
+      const text = truncateTaskOutput(rawText, options.maxOutput);
+      const sessionId = (() => {
+        try {
+          return stage.sessionId;
+        } catch {
+          return undefined;
+        }
+      })();
+      return {
+        name,
+        stageName: name,
+        text,
+        ...(sessionId !== undefined ? { sessionId } : {}),
+        ...(stage.sessionFile !== undefined ? { sessionFile: stage.sessionFile } : {}),
+      };
+    },
+
+    async chain(steps: readonly WorkflowTaskStep[], options: WorkflowChainOptions = {}): Promise<WorkflowTaskResult[]> {
+      const results: WorkflowTaskResult[] = [];
+      for (let index = 0; index < steps.length; index += 1) {
+        const step = steps[index]!;
+        const explicitPrevious = taskPrevious(step);
+        const previous = explicitPrevious ?? (index > 0 ? results[index - 1] : undefined);
+        const prompt = replaceTaskPlaceholder(chainStepPrompt(step, index), options.task ?? "");
+        results.push(await ctx.task(step.name, taskOptionsFromStep(step, prompt, previous)));
+      }
+      return results;
+    },
+
+    async parallel(steps: readonly WorkflowTaskStep[], options: WorkflowParallelOptions = {}): Promise<WorkflowTaskResult[]> {
+      const fallback = parallelFallbackTask(steps, options);
+      return Promise.all(
+        steps.map((step) => {
+          const prompt = replaceTaskPlaceholder(step.prompt ?? step.task ?? fallback, options.task ?? fallback);
+          return ctx.task(step.name, taskOptionsFromStep(step, prompt, taskPrevious(step)));
+        }),
+      );
     },
   };
 

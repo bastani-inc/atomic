@@ -106,7 +106,7 @@ describe("WorkflowRuntimeConfig — DispatcherOpts", () => {
     const registry = createRegistry([wf]);
     const store = createStore();
     const result = await dispatch(
-      { action: "run", name: "cfg-run-test", inputs: {} },
+      { action: "run", workflow: "cfg-run-test", inputs: {} },
       { registry, store, config: sampleConfig },
     );
     // Background dispatch — synchronous return is `running`; the eventual

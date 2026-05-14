@@ -17,10 +17,6 @@
  * Usage:
  *   // Full discovery (all sources):
  *   const result = await discoverWorkflows({ cwd: process.cwd(), homeDir: os.homedir() });
- *
- *   // Bundled-only (backward compat):
- *   const result = await discoverBundledWorkflows();
- *   const result = discoverBundledWorkflowsSync();
  */
 
 import { readdir, stat } from "node:fs/promises";
@@ -128,7 +124,7 @@ export interface DiscoveryOptions {
   includeBundled?: boolean;
 }
 
-/** Result returned by discoverWorkflows() and discoverBundledWorkflows(). */
+/** Result returned by discoverWorkflows(). */
 export interface DiscoveryResult {
   /** Registry populated with all valid, non-duplicate definitions (precedence-ordered). */
   readonly registry: WorkflowRegistry;
@@ -436,7 +432,7 @@ export async function discoverWorkflows(
 
   // 5. bundled
   if (includeBundled) {
-    const bundledResult = discoverBundledWorkflowsSync();
+    const bundledResult = discoverBundledManifest();
     // Merge bundled: only register names not already present (lower precedence)
     for (const def of bundledResult.registry.all()) {
       const key = def.normalizedName;
@@ -468,7 +464,7 @@ async function defaultHomeDir(): Promise<string> {
 }
 
 // ---------------------------------------------------------------------------
-// Bundled-only API (backward compat)
+// Startup seed discovery
 // ---------------------------------------------------------------------------
 
 /**
@@ -477,11 +473,11 @@ async function defaultHomeDir(): Promise<string> {
  *
  * Duplicate policy: first-seen wins (insertion order of the manifest export).
  */
-export async function discoverBundledWorkflows(): Promise<DiscoveryResult> {
-  return discoverBundledWorkflowsSync();
+export function discoverStartupWorkflowsSync(): DiscoveryResult {
+  return discoverBundledManifest();
 }
 
-export function discoverBundledWorkflowsSync(): DiscoveryResult {
+function discoverBundledManifest(): DiscoveryResult {
   const manifest = bundledManifest as Record<string, unknown>;
   const diagnostics: DiscoveryDiagnostic[] = [];
   const sources: DiscoverySource[] = [];

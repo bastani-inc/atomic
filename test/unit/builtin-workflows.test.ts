@@ -37,6 +37,13 @@ function makeMockCtx<TInputs extends Record<string, unknown>>(
   return {
     inputs,
     stage: (name: string) => makeStageContext(name),
+    task: async (name, options) => ({
+      name,
+      stageName: name,
+      text: await makeStageContext(name).prompt(options.prompt ?? options.task ?? ""),
+    }),
+    chain: async () => [],
+    parallel: async () => [],
     ui,
   };
 }

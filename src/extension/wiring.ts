@@ -80,11 +80,41 @@ function isTestContext(): boolean {
  * cross-ref: node_modules/@earendil-works/pi-coding-agent/docs/sdk.md
  *            node_modules/@earendil-works/pi-coding-agent/dist/core/sdk.d.ts
  */
+type PiCodingAgentSdk = typeof import("@earendil-works/pi-coding-agent");
+
+async function withDefaultStageResourceLoader(
+  options: CreateAgentSessionOptions | undefined,
+  sdk: PiCodingAgentSdk,
+): Promise<CreateAgentSessionOptions | undefined> {
+  if (options?.resourceLoader !== undefined) return options;
+
+  const cwd = options?.cwd ?? process.cwd();
+  const agentDir = options?.agentDir ?? sdk.getAgentDir();
+  const settingsManager =
+    options?.settingsManager ?? sdk.SettingsManager.create(cwd, agentDir);
+  const resourceLoader = new sdk.DefaultResourceLoader({
+    cwd,
+    agentDir,
+    settingsManager,
+    noExtensions: true,
+  });
+  await resourceLoader.reload();
+
+  return {
+    ...options,
+    cwd,
+    agentDir,
+    settingsManager,
+    resourceLoader,
+  };
+}
+
 async function createPiSdkAgentSession(
   options?: CreateAgentSessionOptions,
 ): Promise<{ session: StageSessionRuntime }> {
-  const sdk = await import("@earendil-works/pi-coding-agent");
-  const result = await sdk.createAgentSession(options);
+  const sdk: PiCodingAgentSdk = await import("@earendil-works/pi-coding-agent");
+  const sessionOptions = await withDefaultStageResourceLoader(options, sdk);
+  const result = await sdk.createAgentSession(sessionOptions);
   // `CreateAgentSessionResult` is `{ session, extensionsResult, modelFallbackMessage? }`;
   // workflow stages only consume `.session` (structurally an `AgentSession`,
   // which is a superset of our `StageSessionRuntime` projection).
@@ -169,11 +199,12 @@ export function buildRuntimeAdapters(
       async create(stageOptions: StageOptions): Promise<StageSessionRuntime> {
         // The pi SDK (`@earendil-works/pi-coding-agent` ≥ 0.74) handles
         // extension / skills / prompt-template / slash-command isolation
-        // via `SettingsManager` / `ResourceLoader` ctor args, so workflows
-        // do not pass those as per-call options. Stage sessions inherit
-        // the host's resource set unless the caller threads a custom
-        // `sessionManager` / `settingsManager` / `resourceLoader` through
-        // `stage(name, options)`.
+        // via `SettingsManager` / `ResourceLoader` ctor args. The production
+        // default wraps the SDK with a `DefaultResourceLoader({ noExtensions:
+        // true })` so workflow stages get core SDK chat/tools without
+        // recursively loading pi-workflows/pi-intercom/pi-subagents. Callers
+        // can still opt into a custom resource set by passing `resourceLoader`
+        // through `stage(name, options)`.
         const sessionOptions: CreateAgentSessionOptions = stripWorkflowOnlyOptions(stageOptions) ?? {};
         const result = await createSession(sessionOptions);
         return result.session;
@@ -196,11 +227,40 @@ export function buildRuntimeAdapters(
       // parameter is retained on the adapter signature for downstream
       // adapters that *can* propagate it (e.g. tests).
       subagent(opts: SubagentStageOpts, _meta?: StageExecutionMeta): Promise<string> {
-        const args: Record<string, unknown> = {
-          agent: opts.agent,
-          task: opts.task,
+        const args: Record<string, unknown> = {};
+        const setIfDefined = <K extends keyof SubagentStageOpts>(key: K): void => {
+          const value = opts[key];
+          if (value !== undefined) args[String(key)] = value;
         };
-        if (opts.context !== undefined) args["context"] = opts.context;
+        setIfDefined("agent");
+        setIfDefined("task");
+        setIfDefined("action");
+        setIfDefined("id");
+        setIfDefined("runId");
+        setIfDefined("dir");
+        setIfDefined("index");
+        setIfDefined("message");
+        setIfDefined("chainName");
+        setIfDefined("config");
+        setIfDefined("output");
+        setIfDefined("outputMode");
+        setIfDefined("skill");
+        setIfDefined("model");
+        setIfDefined("tasks");
+        setIfDefined("concurrency");
+        setIfDefined("worktree");
+        setIfDefined("chain");
+        setIfDefined("context");
+        setIfDefined("chainDir");
+        setIfDefined("clarify");
+        setIfDefined("agentScope");
+        setIfDefined("async");
+        setIfDefined("cwd");
+        setIfDefined("artifacts");
+        setIfDefined("includeProgress");
+        setIfDefined("share");
+        setIfDefined("sessionDir");
+        setIfDefined("control");
         return pi.callTool!("subagent", args);
       },
     };

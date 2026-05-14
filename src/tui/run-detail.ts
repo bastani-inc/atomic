@@ -99,7 +99,7 @@ function renderPlain(detail: RunDetail, now: number): string {
 
   // Action hints
   if (detail.endedAt === undefined) {
-    out.push(`  ▸ workflow kill   id=${sid}    cancel`);
+    out.push(`  ▸ workflow interrupt   id=${sid}    cancel`);
   } else {
     out.push(`  ▸ workflow resume id=${sid}    reopen graph`);
   }
@@ -172,7 +172,7 @@ function renderThemed(detail: RunDetail, now: number, theme: GraphTheme): string
   // Action hints
   if (detail.endedAt === undefined) {
     out.push(
-      `  ${dim}▸${RESET} ${accent}workflow kill   id=${sid}${RESET}${dim}    cancel${RESET}`,
+      `  ${dim}▸${RESET} ${accent}workflow interrupt   id=${sid}${RESET}${dim}    cancel${RESET}`,
     );
   } else {
     out.push(

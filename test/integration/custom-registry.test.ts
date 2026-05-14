@@ -26,7 +26,7 @@ import { discoverWorkflows } from "../../src/extension/discovery.js";
 import type { DiscoveryResult } from "../../src/extension/discovery.js";
 import { createExtensionRuntime } from "../../src/extension/runtime.js";
 import type { ExtensionRuntime } from "../../src/extension/runtime.js";
-import { buildDoctorReport } from "../../src/extension/doctor.js";
+import { buildDoctorPayload, buildDoctorReport } from "../../src/extension/doctor.js";
 import type { DoctorSiblingStatus } from "../../src/extension/doctor.js";
 import { runWorkflowFromCliFlags } from "../../src/runs/shared/cli-flags.js";
 import factory, {
@@ -84,6 +84,14 @@ const noSiblings: DoctorSiblingStatus = {
   persistenceAppendEntry: false,
   subagentAdapterVia: "unavailable",
 };
+
+function doctorReport(discovery: DiscoveryResult, siblings: DoctorSiblingStatus): string {
+  return buildDoctorReport(buildDoctorPayload({
+    discovery,
+    siblings,
+    companions: [],
+  }));
+}
 
 beforeAll(async () => {
   // Create isolated temp dirs
@@ -170,20 +178,20 @@ describe("discoverWorkflows — custom sources from temp cwd/home", () => {
 
 describe("ExtensionRuntime with custom registry — tool dispatch", () => {
   test("action='list' returns custom workflow name", async () => {
-    const result = await runtime.dispatch({ name: "", inputs: {}, action: "list" });
+    const result = await runtime.dispatch({ workflow: "", inputs: {}, action: "list" });
     assert.equal(result.action, "list");
     const r = result as { action: "list"; items: { name: string }[] };
     assert.ok(r.items.some((i) => i.name === CUSTOM_WF_NORM));
   });
 
   test("action='list' returns user-global workflow name", async () => {
-    const result = await runtime.dispatch({ name: "", inputs: {}, action: "list" });
+    const result = await runtime.dispatch({ workflow: "", inputs: {}, action: "list" });
     const r = result as { action: "list"; items: { name: string }[] };
     assert.ok(r.items.some((i) => i.name === USER_WF_NORM));
   });
 
   test("action='list' includes bundled workflows alongside custom", async () => {
-    const result = await runtime.dispatch({ name: "", inputs: {}, action: "list" });
+    const result = await runtime.dispatch({ workflow: "", inputs: {}, action: "list" });
     const r = result as { action: "list"; items: { name: string }[] };
     const names = r.items.map((i) => i.name);
     assert.ok(names.includes("deep-research-codebase"));
@@ -191,7 +199,7 @@ describe("ExtensionRuntime with custom registry — tool dispatch", () => {
   });
 
   test("action='inputs' for custom workflow returns declared inputs", async () => {
-    const result = await runtime.dispatch({ name: CUSTOM_WF_NORM, inputs: {}, action: "inputs" });
+    const result = await runtime.dispatch({ workflow: CUSTOM_WF_NORM, inputs: {}, action: "inputs" });
     assert.equal(result.action, "inputs");
     const r = result as { action: "inputs"; name: string; inputs: Array<{ name: string }> };
     assert.equal(r.name, CUSTOM_WF_NORM);
@@ -202,14 +210,14 @@ describe("ExtensionRuntime with custom registry — tool dispatch", () => {
   });
 
   test("action='inputs' for custom workflow has no error field", async () => {
-    const result = await runtime.dispatch({ name: CUSTOM_WF_NORM, inputs: {}, action: "inputs" });
+    const result = await runtime.dispatch({ workflow: CUSTOM_WF_NORM, inputs: {}, action: "inputs" });
     const r = result as { action: "inputs"; error?: string };
     assert.equal(r.error, undefined);
   });
 
   test("action='run' for custom workflow dispatches (returns run result, not unknown-action)", async () => {
     const result = await runtime.dispatch({
-      name: CUSTOM_WF_NORM,
+      workflow: CUSTOM_WF_NORM,
       inputs: { message: "hello" },
       action: "run",
     });
@@ -227,7 +235,7 @@ describe("ExtensionRuntime with custom registry — tool dispatch", () => {
   });
 
   test("shared registry: list from tool equals registry.names()", async () => {
-    const result = await runtime.dispatch({ name: "", inputs: {}, action: "list" });
+    const result = await runtime.dispatch({ workflow: "", inputs: {}, action: "list" });
     const r = result as { action: "list"; items: { name: string }[] };
     const toolNames = r.items.map((i) => i.name);
     const registryNames = discoveryResult.registry.names();
@@ -247,39 +255,39 @@ describe("ExtensionRuntime with custom registry — tool dispatch", () => {
 
 describe("buildDoctorReport — custom sources from temp cwd/home", () => {
   test("report contains project-local custom workflow id", () => {
-    const report = buildDoctorReport(discoveryResult, noSiblings);
+    const report = doctorReport(discoveryResult, noSiblings);
     assert.ok(report.includes(CUSTOM_WF_NORM));
   });
 
   test("report labels custom workflow source as 'project-local'", () => {
-    const report = buildDoctorReport(discoveryResult, noSiblings);
+    const report = doctorReport(discoveryResult, noSiblings);
     // New format renders the source kind as a dim hint suffix `(project-local)`.
     assert.ok(report.includes("(project-local)"));
   });
 
   test("report contains user-global workflow id", () => {
-    const report = buildDoctorReport(discoveryResult, noSiblings);
+    const report = doctorReport(discoveryResult, noSiblings);
     assert.ok(report.includes(USER_WF_NORM));
   });
 
   test("report labels user-global source as 'user-global'", () => {
-    const report = buildDoctorReport(discoveryResult, noSiblings);
+    const report = doctorReport(discoveryResult, noSiblings);
     assert.ok(report.includes("(user-global)"));
   });
 
   test("registry count in report equals total names count (bundled + custom)", () => {
-    const report = buildDoctorReport(discoveryResult, noSiblings);
+    const report = doctorReport(discoveryResult, noSiblings);
     const totalCount = discoveryResult.registry.names().length;
     assert.ok(report.includes(`${totalCount} workflow${totalCount === 1 ? "" : "s"} loaded`));
   });
 
   test("report includes the [ DIAGNOSTICS ] section", () => {
-    const report = buildDoctorReport(discoveryResult, noSiblings);
+    const report = doctorReport(discoveryResult, noSiblings);
     assert.ok(report.includes("[ DIAGNOSTICS ]"));
   });
 
   test("no error diagnostics for valid custom workflows in report", () => {
-    const report = buildDoctorReport(discoveryResult, noSiblings);
+    const report = doctorReport(discoveryResult, noSiblings);
     // Diagnostics section should not flag valid custom workflows as
     // INVALID_DEFINITION.
     const diagSection = report.match(/\[ DIAGNOSTICS \].*?(?=\n\[ |\nNext steps|$)/s)?.[0] ?? "";
@@ -344,7 +352,7 @@ describe("runWorkflowFromCliFlags — custom runtime dispatch", () => {
 
   test("CLI runtime uses same registry as tool: dispatches custom workflow that tool also sees", async () => {
     // Tool sees the workflow via action='inputs'
-    const toolResult = await runtime.dispatch({ name: CUSTOM_WF_NORM, inputs: {}, action: "inputs" });
+    const toolResult = await runtime.dispatch({ workflow: CUSTOM_WF_NORM, inputs: {}, action: "inputs" });
     assert.equal(toolResult.action, "inputs");
     // CLI can also run it (even if it fails in test env)
     const cliResult = await runWorkflowFromCliFlags({
@@ -431,7 +439,7 @@ function collectListEntryNames(sent: readonly SentMessage[]): string[] {
 }
 
 describe("/workflow slash command — bundled-and-custom shared registry", () => {
-  // The factory seeds the runtime from discoverBundledWorkflowsSync() synchronously,
+  // The factory seeds the runtime from discoverStartupWorkflowsSync() synchronously,
   // then upgrades async via discoverWorkflows(). For bundled workflows (always present)
   // we can verify slash command and tool see the same registry synchronously.
   let mock: ReturnType<typeof makeMockApiForRuntime>;
@@ -446,7 +454,7 @@ describe("/workflow slash command — bundled-and-custom shared registry", () =>
     const toolExecute = mock.tools[0]!.opts.execute;
     const toolOut = await toolExecute(
       "test-tool-call",
-      { name: "", inputs: {}, action: "list" },
+      { inputs: {}, action: "list" },
       undefined,
       undefined,
       {} as never,
@@ -478,7 +486,7 @@ describe("/workflow slash command — bundled-and-custom shared registry", () =>
     const toolExecute = mock.tools[0]!.opts.execute;
     const toolOut = await toolExecute(
       "test-tool-call",
-      { name: "", inputs: {}, action: "list" },
+      { inputs: {}, action: "list" },
       undefined,
       undefined,
       {} as never,
@@ -555,7 +563,7 @@ describe("/workflow <name> dispatch — no per-workflow aliases", () => {
     const toolExecute = mock.tools[0]!.opts.execute;
     const toolOut = await toolExecute(
       "test-tool-call",
-      { name: "ralph", inputs: { prompt: "test" }, action: "run" },
+      { workflow: "ralph", inputs: { prompt: "test" }, action: "run" },
       undefined,
       undefined,
       {} as never,
@@ -587,14 +595,14 @@ describe("/workflow <name> dispatch — no per-workflow aliases", () => {
 describe("shared registry invariant — all consumers see same workflows", () => {
   test("tool list, doctor registry count, and CLI dispatch all reflect same registry", async () => {
     // 1. Tool: list via runtime
-    const listResult = await runtime.dispatch({ name: "", inputs: {}, action: "list" });
+    const listResult = await runtime.dispatch({ workflow: "", inputs: {}, action: "list" });
     const toolNames = (listResult as { action: "list"; items: { name: string }[] }).items.map((i) => i.name);
 
     // 2. Doctor: registry count via buildDoctorReport. The new subtitle
     //    format is `atomic-workflows · N workflow(s) · N/N companions`,
     //    so we match the first "N workflow(s)" token after the program
     //    name to extract the loaded count.
-    const report = buildDoctorReport(discoveryResult, noSiblings);
+    const report = doctorReport(discoveryResult, noSiblings);
     const match = report.match(/atomic-workflows[^\n]*?(\d+)\s+workflows?\b/);
     assert.notEqual(match, null);
     const doctorCount = match ? parseInt(match[1]!, 10) : -1;
@@ -608,19 +616,19 @@ describe("shared registry invariant — all consumers see same workflows", () =>
     assert.equal(cliResult.handled, true);
   });
 
-  test("custom workflow visible to tool, doctor, and CLI but NOT in bundled-only registry", async () => {
-    // Bundled-only discovery (no temp dirs)
-    const { discoverBundledWorkflowsSync } = await import("../../src/extension/discovery.js");
-    const bundledResult = discoverBundledWorkflowsSync();
+  test("custom workflow visible to tool, doctor, and CLI but NOT in startup bundled registry", async () => {
+    // startup bundled discovery (no temp dirs)
+    const { discoverStartupWorkflowsSync } = await import("../../src/extension/discovery.js");
+    const bundledResult = discoverStartupWorkflowsSync();
     assert.ok(!bundledResult.registry.names().includes(CUSTOM_WF_NORM));
 
     // Custom-inclusive runtime includes it
-    const toolResult = await runtime.dispatch({ name: "", inputs: {}, action: "list" });
+    const toolResult = await runtime.dispatch({ workflow: "", inputs: {}, action: "list" });
     const toolNames = (toolResult as { action: "list"; items: { name: string }[] }).items.map((i) => i.name);
     assert.ok(toolNames.includes(CUSTOM_WF_NORM));
 
     // Doctor with full discovery shows it
-    const report = buildDoctorReport(discoveryResult, noSiblings);
+    const report = doctorReport(discoveryResult, noSiblings);
     assert.ok(report.includes(CUSTOM_WF_NORM));
 
     // CLI with custom runtime handles it
@@ -633,7 +641,7 @@ describe("shared registry invariant — all consumers see same workflows", () =>
 
   test("custom workflow inputs schema consistent across tool and CLI dispatch", async () => {
     // Tool: inputs action
-    const inputsResult = await runtime.dispatch({ name: CUSTOM_WF_NORM, inputs: {}, action: "inputs" });
+    const inputsResult = await runtime.dispatch({ workflow: CUSTOM_WF_NORM, inputs: {}, action: "inputs" });
     const r = inputsResult as { action: "inputs"; inputs: Array<{ name: string; type: string }> };
     const inputsByName = Object.fromEntries(r.inputs.map((i) => [i.name, i]));
 

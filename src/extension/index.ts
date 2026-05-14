@@ -3,6 +3,7 @@ import { renderResult } from "./render-result.js";
 import type { WorkflowToolResult, RenderResultOpts } from "./render-result.js";
 import { registerAskUserQuestionTool } from "./tools/ask-user-question/index.js";
 import { renderInputsSchema } from "../shared/render-inputs-schema.js";
+import { WorkflowParametersSchema } from "./workflow-schema.js";
 import { renderRunBanner, renderRunSummary } from "./renderers.js";
 import type { RunEndPayload, RunStartPayload } from "./renderers.js";
 import { store } from "../shared/store.js";
@@ -46,12 +47,11 @@ import { createExtensionRuntime } from "./runtime.js";
 import type { ExtensionRuntime } from "./runtime.js";
 import {
   discoverWorkflows,
-  discoverBundledWorkflows,
-  discoverBundledWorkflowsSync,
+  discoverStartupWorkflowsSync,
 } from "./discovery.js";
 import type { DiscoveryResult } from "./discovery.js";
 import { buildDoctorPayload, buildDoctorReport } from "./doctor.js";
-import type { DoctorSiblingStatus } from "./doctor.js";
+import type { DoctorPayload, DoctorSiblingStatus } from "./doctor.js";
 import { detectCompanions } from "./companions.js";
 import {
   registerWorkflowCliFlags,
@@ -68,6 +68,10 @@ import type {
   WorkflowPersistencePort,
   WorkflowMcpPort,
   WorkflowRuntimeConfig,
+  WorkflowChainStep,
+  WorkflowDirectTaskItem,
+  WorkflowDetails,
+  WorkflowMaxOutput,
 } from "../shared/types.js";
 import { buildRuntimeAdapters } from "./wiring.js";
 import type { PiUISurface } from "./wiring.js";
@@ -214,6 +218,7 @@ export interface PiExecuteContext {
   sessionId?: string;
   ui?: PiUISurface;
   hasUI?: boolean;
+  sessionManager?: SessionManager & { getSessionFile?: () => string | undefined };
   [key: string]: unknown;
 }
 
@@ -351,82 +356,201 @@ export interface ExtensionAPI {
 // ---------------------------------------------------------------------------
 
 export interface WorkflowToolArgs {
-  name?: string;
+  /** Canonical named workflow identifier. */
+  workflow?: string;
   inputs?: Record<string, unknown>;
-  action?: "run" | "list" | "status" | "kill" | "resume" | "inputs";
-  /**
-   * Run identifier for `status` / `kill` / `resume` actions. Accepts a full
-   * UUID or a unique short prefix. When `action === "status"` and `id` is
-   * set, the result is `statusDetail` (per-run block) instead of the
-   * multi-run status list.
-   */
-  id?: string;
+  action?: "run" | "list" | "get" | "status" | "interrupt" | "resume" | "inputs" | "doctor";
+  /** Canonical run identifier for status/interrupt/resume. */
+  runId?: string;
+  /** Direct single-task mode, or root task string when chain is present. */
+  task?: WorkflowDirectTaskItem | string;
+  /** Direct top-level parallel mode. */
+  tasks?: WorkflowDirectTaskItem[];
+  /** Direct sequential/parallel chain mode. */
+  chain?: WorkflowChainStep[];
+  chainName?: string;
+  context?: "fresh" | "fork";
+  /** Internal host-derived parent session file for context:"fork". */
+  forkFromSessionFile?: string;
+  concurrency?: number;
+  async?: boolean;
+  intercom?: {
+    enabled?: boolean;
+    delivery?: "off" | "notify" | "result" | "control-and-result";
+    parentSession?: string;
+    notifyOn?: Array<"active_long_running" | "needs_attention" | "completed" | "failed">;
+  };
+  cwd?: string;
+  output?: string | false;
+  outputMode?: "inline" | "file-only";
+  chainDir?: string;
+  maxOutput?: WorkflowMaxOutput;
+  artifacts?: boolean;
+  sessionDir?: string;
+  progress?: boolean;
+  worktree?: boolean;
 }
 
 // ---------------------------------------------------------------------------
 // Tool parameter schema
 // ---------------------------------------------------------------------------
 
-const workflowParameters = {
-  type: "object",
-  properties: {
-    name: {
-      type: "string",
-      description: "Workflow ID (use {action:'list'} to enumerate)",
+const workflowParameters = WorkflowParametersSchema;
+
+function hasDirectExecutionMode(args: WorkflowToolArgs): boolean {
+  return (
+    (args.task !== undefined && typeof args.task === "object") ||
+    Array.isArray(args.tasks) ||
+    Array.isArray(args.chain)
+  );
+}
+
+function directModeCount(args: WorkflowToolArgs): number {
+  return [
+    args.task !== undefined && typeof args.task === "object",
+    Array.isArray(args.tasks),
+    Array.isArray(args.chain),
+  ].filter(Boolean).length;
+}
+
+function hasNamedExecutionMode(args: WorkflowToolArgs): boolean {
+  return (
+    typeof args.workflow === "string" && args.workflow.trim().length > 0
+  );
+}
+
+function directRequestsFork(args: WorkflowToolArgs): boolean {
+  if (args.context === "fork") return true;
+  if (args.task !== undefined && typeof args.task === "object" && args.task.context === "fork") return true;
+  if (args.tasks?.some((task) => task.context === "fork")) return true;
+  return args.chain?.some((step) =>
+    "parallel" in step
+      ? step.parallel.some((task) => task.context === "fork")
+      : step.context === "fork",
+  ) ?? false;
+}
+
+function withForkParentSession(args: WorkflowToolArgs, ctx: PiExecuteContext): WorkflowToolArgs {
+  if (!directRequestsFork(args) || args.forkFromSessionFile !== undefined) return args;
+  const sessionFile = ctx.sessionManager?.getSessionFile?.();
+  return typeof sessionFile === "string" && sessionFile.length > 0
+    ? { ...args, forkFromSessionFile: sessionFile }
+    : args;
+}
+
+function workflowRunResultFromDetails(details: WorkflowDetails): WorkflowToolResult {
+  return {
+    action: "run",
+    name: `direct-${details.mode}`,
+    runId: details.runId ?? "",
+    status: details.status,
+    result: details.output,
+    details,
+    error: details.error,
+    stages: [],
+  };
+}
+
+function workflowGetResult(runtime: ExtensionRuntime, args: WorkflowToolArgs): WorkflowToolResult {
+  const workflow = args.workflow ?? "";
+  const def = runtime.registry.get(workflow);
+  if (!def) {
+    return {
+      action: "get",
+      workflow,
+      error: `Workflow not found: "${workflow}"`,
+    };
+  }
+  const inputs = Object.entries(def.inputs).map(([name, schema]) => ({
+    name,
+    type: schema.type,
+    description: schema.description,
+    required: schema.required,
+    default: "default" in schema ? schema.default : undefined,
+    choices: schema.type === "select" ? schema.choices : undefined,
+  }));
+  return {
+    action: "get",
+    workflow: def.normalizedName,
+    details: {
+      mode: "inspection",
+      action: "get",
+      status: "completed",
+      output: {
+        workflow: def.normalizedName,
+        name: def.name,
+        description: def.description,
+        inputs,
+      },
+      progress: { completed: 0, total: 0 },
     },
-    inputs: {
-      type: "object",
-      default: {},
-      description: "Key/value inputs passed to the workflow run",
-      additionalProperties: true,
+  };
+}
+
+function workflowDoctorResult(payload: DoctorPayload): WorkflowToolResult {
+  return {
+    action: "doctor",
+    payload,
+    details: {
+      mode: "doctor",
+      action: "doctor",
+      status: payload.counts.fail > 0 ? "failed" : "completed",
+      output: payload as unknown as Record<string, unknown>,
+      progress: {
+        completed: payload.counts.ok,
+        total: payload.counts.ok + payload.counts.warn + payload.counts.fail,
+      },
     },
-    action: {
-      anyOf: [
-        { const: "run" },
-        { const: "list" },
-        { const: "status" },
-        { const: "kill" },
-        { const: "resume" },
-        { const: "inputs" },
-      ],
-    },
-    id: {
-      type: "string",
-      description:
-        "Run identifier for status/kill/resume (UUID or unique short prefix)",
-    },
-  },
-} as const;
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Tool execute — dispatch with real registry for list/inputs/run (Phase E)
-//                + real status/kill/resume (Phase D)
+//                + real status/interrupt/resume (Phase D)
 // ---------------------------------------------------------------------------
 
 export function makeExecuteWorkflowTool(
   runtime: ExtensionRuntime | ((ctx: PiExecuteContext) => ExtensionRuntime),
   getPersistence: () => WorkflowPersistencePort | undefined,
+  getDoctorPayload?: (ctx: PiExecuteContext) => DoctorPayload | Promise<DoctorPayload>,
 ) {
   return async function executeWorkflowTool(
     args: WorkflowToolArgs,
     ctx: PiExecuteContext,
   ): Promise<WorkflowToolResult> {
     const action = args.action ?? "run";
-    const runId = args.name ?? "";
+    const runId = args.runId ?? "";
     const activeRuntime =
       typeof runtime === "function" ? runtime(ctx) : runtime;
 
     switch (action) {
+      case "doctor":
+        if (!getDoctorPayload) {
+          throw new Error('Workflow extension: action "doctor" is unavailable in this runtime');
+        }
+        return workflowDoctorResult(await getDoctorPayload(ctx));
+
+      case "get":
+        return workflowGetResult(activeRuntime, args);
+
       case "list":
       case "inputs":
       case "run":
+        if (action === "run" && hasDirectExecutionMode(args)) {
+          const normalModeCount = directModeCount(args) + (hasNamedExecutionMode(args) ? 1 : 0);
+          if (normalModeCount !== 1) {
+            throw new Error("Workflow extension: specify exactly one normal execution mode: workflow, task, tasks, or chain");
+          }
+          const details = await activeRuntime.runDirect(withForkParentSession(args, ctx));
+          return workflowRunResultFromDetails(details);
+        }
         // Delegate to registry-backed dispatcher.
         // Real errors propagate — no broad catch.
         return activeRuntime.dispatch(args);
 
       case "status": {
         // Detail mode — single-run lookup via id.
-        const target = args.id;
+        const target = args.runId;
         if (target !== undefined) {
           const result = inspectRun(target);
           if (result.ok) {
@@ -453,8 +577,8 @@ export function makeExecuteWorkflowTool(
         };
       }
 
-      case "kill": {
-        // Support "kill --all" via name sentinel
+      case "interrupt": {
+        // Support canonical interrupt-all via runId sentinel.
         if (runId === "--all") {
           const results = killAllRuns({
             cancellation: cancellationRegistry,
@@ -462,13 +586,13 @@ export function makeExecuteWorkflowTool(
           });
           const killed = results.filter((r) => r.ok).length;
           return {
-            action: "kill",
+            action,
             runId: "--all",
             status: killed > 0 ? "killed" : "noop",
             message:
               killed > 0
-                ? `Killed ${killed} run(s).`
-                : "No in-flight runs to kill.",
+                ? `Interrupted ${killed} run(s).`
+                : "No in-flight runs to interrupt.",
           };
         }
         const result = killRun(runId, {
@@ -477,14 +601,14 @@ export function makeExecuteWorkflowTool(
         });
         if (result.ok) {
           return {
-            action: "kill",
+            action,
             runId: result.runId,
             status: "killed",
-            message: `Run ${result.runId} killed (was ${result.previousStatus}).`,
+            message: `Run ${result.runId} interrupted (was ${result.previousStatus}).`,
           };
         }
         return {
-          action: "kill",
+          action,
           runId,
           status: "noop",
           message:
@@ -636,7 +760,7 @@ function installInputInterceptor(
 /**
  * Resolve a user-supplied run identifier (full UUID or unique prefix) to
  * a concrete runId. The widget surfaces an 8-char prefix to keep the
- * status line scannable; users copy that prefix straight into the kill
+ * status line scannable; users copy that prefix straight into the interrupt
  * slash command, so prefix matching is the expected affordance.
  */
 type RunIdResolution =
@@ -684,7 +808,7 @@ function printCliWorkflowResult(
 
 /**
  * Strip the clack-style `--yes` / `-y` confirmation skip flag from a token
- * list. Used by `/workflow kill` to skip the confirmation overlay.
+ * list. Used by `/workflow interrupt` to skip the confirmation overlay.
  */
 export function stripYesFlag(tokens: string[]): { tokens: string[]; yes: boolean } {
   const yes = tokens.some((t) => t === "--yes" || t === "-y");
@@ -872,7 +996,7 @@ function factory(pi: ExtensionAPI): void {
   const overlay: GraphOverlayPort = buildGraphOverlayAdapter(pi, store);
 
   // -------------------------------------------------------------------------
-  // 1. Create ExtensionRuntime — mutable ref seeded from sync bundled discovery,
+  // 1. Create ExtensionRuntime — mutable ref seeded from startup discovery,
   //    upgraded to unified async discovery once discoverWorkflows() resolves.
   //
   //    runtimeProxy delegates all calls to runtimeRef.current so every
@@ -909,14 +1033,23 @@ function factory(pi: ExtensionAPI): void {
     store,
     runtimeConfigRef.current,
   );
+  let intercomParentSession: string | null = null;
+  const intercomPort = {
+    emit:
+      typeof pi.events?.emit === "function"
+        ? (event: string, payload: Record<string, unknown>) => pi.events!.emit!(event, payload)
+        : undefined,
+    parentSession: () => intercomParentSession ?? undefined,
+  };
 
   const runtimeRef: { current: ExtensionRuntime } = {
     current: createExtensionRuntime({
-      registry: discoverBundledWorkflowsSync().registry,
+      registry: discoverStartupWorkflowsSync().registry,
       adapters,
       cancellation: cancellationRegistry,
       persistence: persistenceRef.current,
       mcp: mcpPort,
+      intercom: intercomPort,
       config: runtimeConfigRef.current,
     }),
   };
@@ -931,6 +1064,9 @@ function factory(pi: ExtensionAPI): void {
     dispatch(args) {
       return runtimeRef.current.dispatch(args);
     },
+    runDirect(args) {
+      return runtimeRef.current.runDirect(args);
+    },
   };
 
   // The runtime no longer depends on a per-command pi.ui adapter — all
@@ -941,9 +1077,51 @@ function factory(pi: ExtensionAPI): void {
     return runtimeProxy;
   }
 
+  let intercomControlUnsubscribe: (() => void) | null = null;
+
+  async function currentDoctorPayload(ctx?: { ui?: PiUISurface }): Promise<DoctorPayload> {
+    const discovery =
+      discoveryRef.current ?? discoverStartupWorkflowsSync();
+
+    const companions = detectCompanions(pi);
+    const piSubagentsInstalled = companions.some(
+      (c) => c.companion.name === "pi-subagents" && c.installed,
+    );
+
+    const subagentAdapterVia: DoctorSiblingStatus["subagentAdapterVia"] = piSubagentsInstalled
+      ? "pi-subagents tool"
+      : adapters.subagent !== undefined
+        ? "pi.callTool"
+        : "unavailable";
+
+    const siblings: DoctorSiblingStatus = {
+      taskDelegation: subagentAdapterVia !== "unavailable",
+      mcpScopeEvents: typeof pi.events?.emit === "function",
+      intercomEvents: typeof pi.events?.emit === "function" && typeof pi.events?.on === "function",
+      intercomControlSubscription: intercomControlUnsubscribe !== null,
+      sessionNaming: typeof pi.setSessionName === "function",
+      hil: ctx?.ui !== undefined,
+      uiCustom:
+        typeof ctx?.ui?.custom === "function" ||
+        typeof pi.ui?.custom === "function",
+      shortcut: typeof pi.registerShortcut === "function",
+      persistenceAppendEntry: typeof pi.appendEntry === "function",
+      agentSessionAdapter: adapters.agentSession !== undefined,
+      subagentAdapterVia,
+    };
+
+    return buildDoctorPayload({
+      discovery,
+      siblings,
+      companions,
+      configLoad: configLoadRef.current,
+    });
+  }
+
   const executeWorkflowTool = makeExecuteWorkflowTool(
     (ctx) => runtimeForContext(ctx),
     () => persistenceRef.current,
+    (ctx) => currentDoctorPayload(ctx),
   );
   let storeWidgetUnsubscribe: (() => void) | null = null;
 
@@ -997,6 +1175,7 @@ function factory(pi: ExtensionAPI): void {
       cancellation: cancellationRegistry,
       persistence: persistenceRef.current,
       mcp: mcpPort,
+      intercom: intercomPort,
       config: runtimeConfigRef.current,
     });
 
@@ -1051,12 +1230,12 @@ function factory(pi: ExtensionAPI): void {
    *
    *   connect [runId|prefix]              no arg → picker overlay; arg → attach to graph
    *   attach  [runId|prefix [stageId]]    open the in-place attach pane on a stage
-   *   kill    [runId|prefix|--all] [-y]   confirmation overlay unless -y
+   *   interrupt [runId|prefix|--all] [-y] confirmation overlay unless -y
    *   pause   [runId|prefix [stageId]]    pause a run or specific stage
    *   resume  [runId|prefix [stageId] …]  resume paused work or reopen snapshot
    */
   async function handleRunControlCommand(
-    action: "connect" | "kill" | "attach" | "pause" | "resume",
+    action: "connect" | "interrupt" | "attach" | "pause" | "resume",
     rest: string[],
     ctx: PiCommandContext,
   ): Promise<boolean> {
@@ -1097,7 +1276,7 @@ function factory(pi: ExtensionAPI): void {
           });
           print(
             killed.ok
-              ? `Run ${killed.runId.slice(0, 8)} killed.`
+              ? `Run ${killed.runId.slice(0, 8)} interrupted.`
               : `Run ${result.runId.slice(0, 8)} already ended.`,
           );
           return true;
@@ -1118,30 +1297,30 @@ function factory(pi: ExtensionAPI): void {
         return true;
       }
       overlay.open(resolved.runId, overlaySurfaceFromContext(ctx));
-      print(`Attached to ${resolved.runId.slice(0, 8)}. Press "h" or ctrl+d to hide, "q" to kill, esc to close.`);
+      print(`Attached to ${resolved.runId.slice(0, 8)}. Press "h" or ctrl+d to hide, "q" to interrupt, esc to close.`);
       return true;
     }
 
-    if (action === "kill") {
-      const { tokens: killArgs, yes } = stripYesFlag(rest);
-      let target = killArgs.find((t) => !t.startsWith("--"));
-      const wantsAll = killArgs.includes("--all");
+    if (action === "interrupt") {
+      const { tokens: interruptArgs, yes } = stripYesFlag(rest);
+      let target = interruptArgs.find((t) => !t.startsWith("--"));
+      const wantsAll = interruptArgs.includes("--all");
       if (!target && !wantsAll) {
         target = store.activeRunId() ?? undefined;
         if (!target) {
-          print("No in-flight runs to kill.");
+          print("No in-flight runs to interrupt.");
           return true;
         }
       }
       if (wantsAll) {
         const inFlight = store.runs().filter((r) => r.endedAt === undefined);
         if (inFlight.length === 0) {
-          print("No in-flight runs to kill.");
+          print("No in-flight runs to interrupt.");
           return true;
         }
         if (!yes && ctx.ui && typeof ctx.ui.confirm === "function") {
           const ok = await ctx.ui.confirm(
-            `Kill all ${inFlight.length} in-flight workflow runs?`,
+            `Interrupt all ${inFlight.length} in-flight workflow runs?`,
             `Aborts: ${inFlight.map((r) => `${r.name} (${r.id.slice(0, 8)})`).join(", ")}`,
           );
           if (!ok) {
@@ -1154,7 +1333,7 @@ function factory(pi: ExtensionAPI): void {
           persistence: persistenceRef.current,
         });
         const killed = results.filter((r) => r.ok).length;
-        print(killed > 0 ? `Killed ${killed} run(s).` : "No in-flight runs to kill.");
+        print(killed > 0 ? `Interrupted ${killed} run(s).` : "No in-flight runs to interrupt.");
         return true;
       }
       const resolved = resolveRunIdPrefix(target!);
@@ -1183,7 +1362,7 @@ function factory(pi: ExtensionAPI): void {
         persistence: persistenceRef.current,
       });
       if (result.ok) {
-        print(`Run ${result.runId.slice(0, 8)} killed (was ${result.previousStatus}).`);
+        print(`Run ${result.runId.slice(0, 8)} interrupted (was ${result.previousStatus}).`);
       } else {
         print(
           result.reason === "not_found"
@@ -1207,10 +1386,10 @@ function factory(pi: ExtensionAPI): void {
         const picked = await openSessionPicker(ui, store, theme, "connect");
         if (picked.kind === "close") return true;
         if (picked.kind !== "connect") {
-          // The picker may have surfaced kill from the `x` shortcut.
-          // Forward through the existing kill flow for clarity.
+          // The picker may have surfaced interrupt from the `x` shortcut.
+          // Forward through the existing interrupt flow for clarity.
           if (picked.kind === "kill") {
-            return handleRunControlCommand("kill", [picked.runId, "-y"], ctx);
+            return handleRunControlCommand("interrupt", [picked.runId, "-y"], ctx);
           }
           return true;
         }
@@ -1389,7 +1568,7 @@ function factory(pi: ExtensionAPI): void {
 
   registerWorkflowCommand(pi, "workflow", {
     description:
-      "Run or inspect pi workflows. Usage: /workflow <name> [key=value…] | /workflow [list|status|connect|attach|kill|pause|resume|inputs] [args]",
+      "Run or inspect pi workflows. Usage: /workflow <name> [key=value…] | /workflow [list|status|connect|attach|interrupt|pause|resume|inputs] [args]",
     handler: async (args: string, ctx: PiCommandContext) => {
       const print = (msg: string): void => ctx.ui.notify(msg, "info");
       // Quote-aware split so `prompt="map the codebase"` stays a single
@@ -1473,18 +1652,18 @@ function factory(pi: ExtensionAPI): void {
       }
 
       // -----------------------------------------------------------------------
-      // kill — top-level chat fast path (no confirmation overlay).
+      // interrupt — top-level chat fast path (no confirmation overlay).
       // -----------------------------------------------------------------------
-      if (subcommand === "kill") {
-        // The top-level chat command is the fast kill path surfaced by the
-        // widget hint (`/workflow kill <id>`). The user's explicit slash
+      if (subcommand === "interrupt") {
+        // The top-level chat command is the fast interrupt path surfaced by the
+        // widget hint (`/workflow interrupt <id>`). The user's explicit slash
         // command should abort immediately, even when a confirm surface is
         // unavailable or would steal focus from the running workflow.
-        const killArgs = parts.slice(1);
-        const hasYes = killArgs.some((t) => t === "--yes" || t === "-y");
+        const interruptArgs = parts.slice(1);
+        const hasYes = interruptArgs.some((t) => t === "--yes" || t === "-y");
         await handleRunControlCommand(
-          "kill",
-          hasYes ? killArgs : [...killArgs, "-y"],
+          "interrupt",
+          hasYes ? interruptArgs : [...interruptArgs, "-y"],
           ctx,
         );
         return;
@@ -1509,7 +1688,7 @@ function factory(pi: ExtensionAPI): void {
           return;
         }
         const result = await runtimeForContext(ctx).dispatch({
-          name: workflowName,
+          workflow: workflowName,
           inputs: {},
           action: "inputs",
         });
@@ -1535,9 +1714,9 @@ function factory(pi: ExtensionAPI): void {
       const workflowName = subcommand;
       const inputTokens = parts.slice(1);
 
-      if (inputTokens.includes("--help") || inputTokens.includes("-h")) {
+      if (inputTokens.includes("--help")) {
         const helpResult = await runtimeForContext(ctx).dispatch({
-          name: workflowName,
+          workflow: workflowName,
           inputs: {},
           action: "inputs",
         });
@@ -1593,7 +1772,7 @@ function factory(pi: ExtensionAPI): void {
           typeof ctx.ui?.custom === "function");
       if (canOpenPicker) {
         const schemaResult = await runtimeForContext(ctx).dispatch({
-          name: workflowName,
+          workflow: workflowName,
           inputs: {},
           action: "inputs",
         });
@@ -1645,7 +1824,7 @@ function factory(pi: ExtensionAPI): void {
       }
 
       const result = await runtimeForContext(ctx).dispatch({
-        name: workflowName,
+        workflow: workflowName,
         inputs: mergedInputs,
         action: "run",
       });
@@ -1744,7 +1923,7 @@ function factory(pi: ExtensionAPI): void {
           label: "status",
           description: "List in-flight runs",
         },
-        { value: "kill ", label: "kill", description: "Abort a run" },
+        { value: "interrupt ", label: "interrupt", description: "Interrupt a run" },
         { value: "pause ", label: "pause", description: "Pause a run or stage" },
         {
           value: "resume ",
@@ -1787,9 +1966,9 @@ function factory(pi: ExtensionAPI): void {
         return completeToken(partial, runIdItems());
       }
 
-      if (subcommand === "kill") {
+      if (subcommand === "interrupt") {
         return completeToken(partial, [
-          { value: "--all ", label: "--all", description: "Abort all in-flight runs" },
+          { value: "--all ", label: "--all", description: "Interrupt all in-flight runs" },
           { value: "--yes ", label: "--yes", description: "Skip confirmation" },
           { value: "-y ", label: "-y", description: "Skip confirmation" },
           ...runIdItems(),
@@ -1856,63 +2035,7 @@ function factory(pi: ExtensionAPI): void {
     description:
       "Diagnostics: loaded workflows, runtime capabilities, companion packages, config validation.",
     handler: async (_args: string, ctx: PiCommandContext) => {
-      // Use already-discovered unified registry when available; fall back to bundled-only.
-      const discovery =
-        discoveryRef.current ?? (await discoverBundledWorkflows());
-
-      // Companion-package detection is structural — it inspects pi's
-      // command/tool registries rather than `require()`ing the
-      // companion modules (which pi loads in isolated module roots).
-      // Computed before `siblings` so the doctor can derive
-      // subagent-adapter availability from the same source of truth.
-      const companions = detectCompanions(pi);
-      const piSubagentsInstalled = companions.some(
-        (c) => c.companion.name === "pi-subagents" && c.installed,
-      );
-
-      // Subagent delegation reaches the underlying runtime through one
-      // of two paths today:
-      //   - `"pi-subagents tool"` — pi-subagents companion is
-      //     installed; the LLM (or a future direct dispatcher) can
-      //     invoke the registered `subagent` tool.
-      //   - `"pi.callTool"` — reserved for hosts that add a direct
-      //     extension-to-extension call API. pi v0.74 does not
-      //     publish `callTool` on ExtensionAPI; this branch covers
-      //     forward-compat and bespoke embeddings (tests inject a
-      //     `callTool` to exercise the adapter path).
-      const subagentAdapterVia: DoctorSiblingStatus["subagentAdapterVia"] = piSubagentsInstalled
-        ? "pi-subagents tool"
-        : adapters.subagent !== undefined
-          ? "pi.callTool"
-          : "unavailable";
-
-      const siblings: DoctorSiblingStatus = {
-        taskDelegation: subagentAdapterVia !== "unavailable",
-        // MCP scope events: pi.events.emit present (used by setMcpScope to emit mcp.scope.set)
-        mcpScopeEvents: typeof pi.events?.emit === "function",
-        // pi exposes setSessionName on the ExtensionAPI.
-        sessionNaming: typeof pi.setSessionName === "function",
-        // HIL adapter available when command context exposes UI.
-        hil: ctx.ui !== undefined,
-        // ui.custom overlay available on the live command context.
-        uiCustom:
-          typeof ctx.ui?.custom === "function" ||
-          typeof pi.ui?.custom === "function",
-        // F2/shortcut registration available
-        shortcut: typeof pi.registerShortcut === "function",
-        // persistence appendEntry available
-        persistenceAppendEntry: typeof pi.appendEntry === "function",
-        // Runtime adapter capabilities mirror buildRuntimeAdapters.
-        agentSessionAdapter: adapters.agentSession !== undefined,
-        subagentAdapterVia,
-      };
-
-      const payload = buildDoctorPayload({
-        discovery,
-        siblings,
-        companions,
-        configLoad: configLoadRef.current,
-      });
+      const payload = await currentDoctorPayload(ctx);
 
       // Prefer the rich chat-surface card when the renderer is wired
       // (typical interactive run). Fall back to plain-text
@@ -1984,7 +2107,7 @@ function factory(pi: ExtensionAPI): void {
       // pi-intercom session naming lives here so we don't trip the
       // loader's "Action methods cannot be called during extension
       // loading" guard.
-      registerIntercomParentSession(pi);
+      intercomParentSession = registerIntercomParentSession(pi);
 
       // Ensure config+discovery are ready before restoring in-flight runs and
       // dispatching CLI workflow flags — tunables must be resolved first.
@@ -2018,6 +2141,8 @@ function factory(pi: ExtensionAPI): void {
       // Tie workflow lifecycle to the chat: when the chat ends, every
       // in-flight workflow is killed so we don't leave subprocesses
       // burning tokens with no UI to surface their progress.
+      intercomControlUnsubscribe?.();
+      intercomControlUnsubscribe = null;
       killAllRuns({
         store,
         cancellation: cancellationRegistry,
@@ -2076,7 +2201,7 @@ function factory(pi: ExtensionAPI): void {
   // pi-intercom: route subagent:control-intercom events to overlay/store callbacks.
   // buildIntercomCallbacks wires store.recordNotice, pi.ui.confirm (when present),
   // and pi.events.emit (when present) so escalations are never silently dropped.
-  subscribeIntercomControl(
+  intercomControlUnsubscribe = subscribeIntercomControl(
     pi,
     buildIntercomCallbacks({
       store,

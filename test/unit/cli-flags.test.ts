@@ -143,35 +143,30 @@ describe("parseWorkflowFlags", () => {
     assert.deepEqual(r?.inputs, { region: "us-east-1" });
   });
 
-  test("--workflow-inputs-file=<path> captures the path", () => {
+  test("--inputs=<path> captures the path", () => {
     const r = parseWorkflowFlags([
       "--workflow=flow",
-      "--workflow-inputs-file=/tmp/inputs.json",
+      "--inputs=/tmp/inputs.json",
     ]);
     assert.equal(r?.inputsFile, "/tmp/inputs.json");
     assert.deepEqual(r?.inputs, {});
     assert.equal(r?.error, undefined);
   });
 
-  test("--workflow-inputs-file <path> space-separated", () => {
+  test("--inputs <path> space-separated", () => {
     const r = parseWorkflowFlags([
       "--workflow=flow",
-      "--workflow-inputs-file",
+      "--inputs",
       "/tmp/inputs.json",
     ]);
     assert.equal(r?.inputsFile, "/tmp/inputs.json");
   });
 
-  test("-h sets workflow help mode", () => {
-    const r = parseWorkflowFlags(["--workflow=flow", "-h"]);
-    assert.deepEqual(r, { workflow: "flow", inputs: {}, help: true });
-  });
-
-  test("both --workflow-inputs and --workflow-inputs-file → error (mutually exclusive)", () => {
+  test("both --workflow-inputs and --inputs → error (mutually exclusive)", () => {
     const r = parseWorkflowFlags([
       "--workflow=flow",
       '--workflow-inputs={"a":1}',
-      "--workflow-inputs-file=/tmp/x.json",
+      "--inputs=/tmp/x.json",
     ]);
     assert.match(r?.error ?? "", /mutually exclusive/i);
   });
@@ -243,7 +238,13 @@ describe("runWorkflowFromCliFlags", () => {
       get registry() {
         return { names: () => [], get: () => undefined } as unknown as ExtensionRuntime["registry"];
       },
-      dispatch: (args) => dispatchImpl({ name: args.name ?? "", inputs: args.inputs ?? {} }),
+      dispatch: (args) => dispatchImpl({ name: args.workflow ?? "", inputs: args.inputs ?? {} }),
+      runDirect: async () => ({
+        mode: "single",
+        action: "run",
+        status: "failed",
+        error: "direct execution unavailable in cli flag test runtime",
+      }),
     };
   }
 
@@ -356,7 +357,7 @@ describe("runWorkflowFromCliFlags", () => {
     assert.equal(typeof result.handled, "boolean");
   });
 
-  test("dispatch payload contains action:run, name, and inputs", async () => {
+  test("dispatch payload contains action:run, workflow, and inputs", async () => {
     let captured: WorkflowToolArgs | null = null;
     const runtime: ExtensionRuntime = {
       get registry() {
@@ -364,8 +365,14 @@ describe("runWorkflowFromCliFlags", () => {
       },
       dispatch: async (args) => {
         captured = args;
-        return { action: "run", name: args.name!, runId: "r1", status: "completed", stages: [] };
+        return { action: "run", name: args.workflow ?? "", runId: "r1", status: "completed", stages: [] };
       },
+      runDirect: async () => ({
+        mode: "single",
+        action: "run",
+        status: "failed",
+        error: "direct execution unavailable in cli flag test runtime",
+      }),
     };
     await runWorkflowFromCliFlags({
       runtime,
@@ -374,7 +381,7 @@ describe("runWorkflowFromCliFlags", () => {
     assert.notEqual(captured, null);
     const c = captured!;
     assert.equal(c.action, "run");
-    assert.equal(c.name, "release");
+    assert.equal(c.workflow, "release");
     assert.deepEqual((c as WorkflowToolArgs & { inputs: Record<string, unknown> }).inputs, {
       prompt: "hello",
       max: 3,
@@ -383,7 +390,7 @@ describe("runWorkflowFromCliFlags", () => {
 });
 
 // ---------------------------------------------------------------------------
-// runWorkflowFromCliFlags — --workflow-inputs-file
+// runWorkflowFromCliFlags — --inputs
 // ---------------------------------------------------------------------------
 
 function makeRuntimeWithRegistry(
@@ -398,11 +405,17 @@ function makeRuntimeWithRegistry(
         get: (n: string) => byName.get(n),
       } as unknown as ExtensionRuntime["registry"];
     },
-    dispatch: (args) => dispatchImpl({ name: args.name ?? "", inputs: args.inputs ?? {} }),
+    dispatch: (args) => dispatchImpl({ name: args.workflow ?? "", inputs: args.inputs ?? {} }),
+    runDirect: async () => ({
+      mode: "single",
+      action: "run",
+      status: "failed",
+      error: "direct execution unavailable in cli flag test runtime",
+    }),
   };
 }
 
-describe("runWorkflowFromCliFlags — --workflow-inputs-file", () => {
+describe("runWorkflowFromCliFlags — --inputs", () => {
   test("reads + parses inputs from a JSON file", async () => {
     const path = writeInputsFile({ prompt: "from-file", count: 5 });
     let captured: Record<string, unknown> | null = null;
@@ -412,7 +425,7 @@ describe("runWorkflowFromCliFlags — --workflow-inputs-file", () => {
     });
     const result = await runWorkflowFromCliFlags({
       runtime,
-      argv: ["--workflow=flow", `--workflow-inputs-file=${path}`],
+      argv: ["--workflow=flow", `--inputs=${path}`],
     });
     assert.equal(result.handled, true);
     assert.deepEqual(captured, { prompt: "from-file", count: 5 });
@@ -426,13 +439,13 @@ describe("runWorkflowFromCliFlags — --workflow-inputs-file", () => {
     });
     const result = await runWorkflowFromCliFlags({
       runtime,
-      argv: ["--workflow=flow", "--workflow-inputs-file=/no/such/path/inputs.json"],
+      argv: ["--workflow=flow", "--inputs=/no/such/path/inputs.json"],
     });
     assert.equal(dispatched, false);
     assert.equal(result.handled, true);
     if (result.handled) {
       assert.equal(result.status, "failed");
-      assert.match(result.error ?? "", /--workflow-inputs-file/);
+      assert.match(result.error ?? "", /--inputs/);
     }
   });
 
@@ -447,7 +460,7 @@ describe("runWorkflowFromCliFlags — --workflow-inputs-file", () => {
     });
     const result = await runWorkflowFromCliFlags({
       runtime,
-      argv: ["--workflow=flow", `--workflow-inputs-file=${badPath}`],
+      argv: ["--workflow=flow", `--inputs=${badPath}`],
     });
     assert.equal(dispatched, false);
     if (result.handled) {
@@ -464,14 +477,14 @@ describe("runWorkflowFromCliFlags — --workflow-inputs-file", () => {
     }));
     const result = await runWorkflowFromCliFlags({
       runtime,
-      argv: ["--workflow=flow", `--workflow-inputs-file=${arrPath}`],
+      argv: ["--workflow=flow", `--inputs=${arrPath}`],
     });
     if (result.handled) {
       assert.equal(result.status, "failed");
     }
   });
 
-  test("file inputs with schema errors report --workflow-inputs-file", async () => {
+  test("file inputs with schema errors report --inputs", async () => {
     const path = writeInputsFile({ prompt: "hi", count: "three" });
     const def = makeDef("flow", {
       prompt: { type: "text", required: true },
@@ -485,14 +498,14 @@ describe("runWorkflowFromCliFlags — --workflow-inputs-file", () => {
 
     const result = await runWorkflowFromCliFlags({
       runtime,
-      argv: ["--workflow=flow", `--workflow-inputs-file=${path}`],
+      argv: ["--workflow=flow", `--inputs=${path}`],
     });
 
     assert.equal(dispatched, false);
     assert.equal(result.handled, true);
     if (result.handled) {
       assert.equal(result.status, "failed");
-      assert.match(result.error ?? "", /Invalid --workflow-inputs-file/);
+      assert.match(result.error ?? "", /Invalid --inputs/);
       assert.match(result.error ?? "", /count/);
       assert.match(result.error ?? "", /number/);
     }
@@ -517,30 +530,6 @@ describe("runWorkflowFromCliFlags — --workflow-help", () => {
     const result = await runWorkflowFromCliFlags({
       runtime,
       argv: ["--workflow=flow", "--workflow-help"],
-    });
-    assert.equal(dispatched, false);
-    assert.equal(result.handled, true);
-    if (result.handled) {
-      assert.equal(result.status, "completed");
-      assert.match(result.message ?? "", /Inputs for "flow"/);
-      assert.match(result.message ?? "", /prompt/);
-      assert.match(result.message ?? "", /max/);
-    }
-  });
-
-  test("prints input schema without dispatching when -h alias is set", async () => {
-    const def = makeDef("flow", {
-      prompt: { type: "text", required: true, description: "Topic" },
-      max: { type: "number", default: 3 },
-    });
-    let dispatched = false;
-    const runtime = makeRuntimeWithRegistry([def], async () => {
-      dispatched = true;
-      return { action: "run", name: "flow", runId: "r1", status: "completed", stages: [] };
-    });
-    const result = await runWorkflowFromCliFlags({
-      runtime,
-      argv: ["--workflow=flow", "-h"],
     });
     assert.equal(dispatched, false);
     assert.equal(result.handled, true);

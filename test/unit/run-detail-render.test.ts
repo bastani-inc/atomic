@@ -137,8 +137,8 @@ describe("renderRunDetail — themed", () => {
     assert.match(plain, /● planner/);
     assert.match(plain, /○ worker/);
 
-    // Active run gets the kill action hint (shortId crops to 6 chars).
-    assert.match(plain, /workflow kill\s+id=abc123/);
+    // Active run gets the interrupt action hint (shortId crops to 6 chars).
+    assert.match(plain, /workflow interrupt\s+id=abc123/);
     assert.doesNotMatch(plain, /workflow resume/);
     // Pill label uses the short id too.
     assert.match(plain, /RUN abc123/);
@@ -161,7 +161,7 @@ describe("renderRunDetail — themed", () => {
     // shortId() crops the pill label and the action hint to 6 chars.
     assert.match(plain, /workflow resume\s+id=doneru/);
     assert.match(plain, /duration/);
-    assert.doesNotMatch(plain, /workflow kill/);
+    assert.doesNotMatch(plain, /workflow interrupt/);
   });
 });
 

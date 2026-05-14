@@ -67,6 +67,26 @@ describe("buildRuntimeAdapters — SDK sessions", () => {
     assert.equal(result, "sdk:hello");
     assert.equal(stage.getLastAssistantText(), "sdk:hello");
   });
+
+  test("stage prompt output options do not override createAgentSession options", async () => {
+    const calls: Array<CreateAgentSessionOptions | undefined> = [];
+    const adapters = buildRuntimeAdapters({}, {
+      createAgentSession: async (options) => { calls.push(options); return { session: fakeSession() }; },
+    });
+    const stage = createStageContext({
+      stageId: "s",
+      stageName: "Stage",
+      runId: "r",
+      adapters,
+      stageOptions: { cwd: "/stage-cwd" },
+    });
+
+    await stage.prompt("hello", { cwd: "/prompt-cwd", context: "fork", sessionDir: "/prompt-sessions" });
+
+    assert.equal(calls[0]?.cwd, "/stage-cwd");
+    assert.equal((calls[0] as { context?: string } | undefined)?.context, undefined);
+    assert.equal((calls[0] as { sessionDir?: string } | undefined)?.sessionDir, undefined);
+  });
 });
 
 describe("subagent adapter — pi task bridge", () => {
@@ -89,6 +109,78 @@ describe("subagent adapter — pi task bridge", () => {
       assert.equal(Object.prototype.hasOwnProperty.call(calls[0]?.args, "action"), false);
     },
   );
+
+  test("forwards all subagent execution and management params to pi-subagents", async () => {
+    const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+    const pi: RuntimeWiringSurface = {
+      callTool: async (name, args) => { calls.push({ name, args }); return "ok"; },
+    };
+    const adapters = buildRuntimeAdapters(pi);
+
+    await adapters.subagent!.subagent({
+      agent: "worker",
+      task: "do it",
+      action: "resume",
+      id: "run-123",
+      runId: "run-456",
+      dir: "/tmp/run",
+      index: 1,
+      message: "continue",
+      chainName: "handoff",
+      config: { name: "custom" },
+      output: "reports/out.md",
+      outputMode: "file-only",
+      skill: ["tdd"],
+      model: "google/gemini-3-pro",
+      tasks: [{ agent: "a", task: "t", cwd: "/repo/a", count: 2, output: false, outputMode: "inline", reads: false, progress: true, skill: false, model: "m" }],
+      concurrency: 2,
+      worktree: true,
+      chain: [{ agent: "planner", task: "plan {task}" }, { parallel: [{ agent: "worker", task: "do {previous}" }], concurrency: 2, failFast: true, worktree: true }],
+      context: "fork",
+      chainDir: "/tmp/chain",
+      clarify: false,
+      agentScope: "both",
+      async: true,
+      cwd: "/repo",
+      artifacts: false,
+      includeProgress: true,
+      share: true,
+      sessionDir: "/tmp/sessions",
+      control: { enabled: true, notifyOn: ["needs_attention"] },
+    });
+
+    assert.deepEqual(calls[0]?.args, {
+      agent: "worker",
+      task: "do it",
+      action: "resume",
+      id: "run-123",
+      runId: "run-456",
+      dir: "/tmp/run",
+      index: 1,
+      message: "continue",
+      chainName: "handoff",
+      config: { name: "custom" },
+      output: "reports/out.md",
+      outputMode: "file-only",
+      skill: ["tdd"],
+      model: "google/gemini-3-pro",
+      tasks: [{ agent: "a", task: "t", cwd: "/repo/a", count: 2, output: false, outputMode: "inline", reads: false, progress: true, skill: false, model: "m" }],
+      concurrency: 2,
+      worktree: true,
+      chain: [{ agent: "planner", task: "plan {task}" }, { parallel: [{ agent: "worker", task: "do {previous}" }], concurrency: 2, failFast: true, worktree: true }],
+      context: "fork",
+      chainDir: "/tmp/chain",
+      clarify: false,
+      agentScope: "both",
+      async: true,
+      cwd: "/repo",
+      artifacts: false,
+      includeProgress: true,
+      share: true,
+      sessionDir: "/tmp/sessions",
+      control: { enabled: true, notifyOn: ["needs_attention"] },
+    });
+  });
 
   test("stage runner owns missing-subagent actionable error", async () => {
     const stage = createStageContext({ stageId: "s", stageName: "Stage", runId: "r", adapters: {} });

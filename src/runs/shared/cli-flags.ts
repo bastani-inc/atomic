@@ -1,5 +1,5 @@
 /**
- * cli-flags — parse --workflow / --workflow-inputs / --workflow-inputs-file
+ * cli-flags — parse --workflow / --workflow-inputs / --inputs
  * argv flags, validate against the declared schema, and dispatch the run.
  *
  * Entry points:
@@ -20,7 +20,7 @@
  *
  *   The current surface uses two literal flags:
  *     --workflow-inputs=<json>       — inline JSON object of inputs
- *     --workflow-inputs-file=<path>  — path to a JSON file of inputs
+ *     --inputs=<path>  — path to a JSON file of inputs
  *   These are mutually exclusive. Parsed inputs are validated against the
  *   workflow's declared input schema before the run is dispatched.
  *
@@ -46,9 +46,9 @@ export interface WorkflowFlagValues {
   workflow: string;
   /** Inputs parsed from --workflow-inputs=<json>. Empty when flag absent. */
   inputs: Record<string, unknown>;
-  /** Path captured from --workflow-inputs-file; resolved (read+parsed) in runWorkflowFromCliFlags. */
+  /** Path captured from --inputs; resolved (read+parsed) in runWorkflowFromCliFlags. */
   inputsFile?: string;
-  /** True when --workflow-help / -h was supplied alongside --workflow. */
+  /** True when --workflow-help was supplied alongside --workflow. */
   help?: boolean;
   /** Set when one of the input flags couldn't be parsed or both were given. */
   error?: string;
@@ -82,7 +82,7 @@ export type WorkflowCliResult =
 // ---------------------------------------------------------------------------
 
 /**
- * Register --workflow, --workflow-inputs, and --workflow-inputs-file flag
+ * Register --workflow, --workflow-inputs, and --inputs flag
  * metadata with the pi ExtensionAPI. All names are literal — pi rejects
  * placeholder/dynamic flag names at parse time.
  *
@@ -98,11 +98,11 @@ export function registerWorkflowCliFlags(pi: ExtensionAPI): void {
 
   pi.registerFlag("workflow-inputs", {
     description:
-      'JSON object of workflow inputs (e.g. --workflow-inputs=\'{"prompt":"...","count":3}\'). Repeating the flag overwrites previous values. Mutually exclusive with --workflow-inputs-file.',
+      'JSON object of workflow inputs (e.g. --workflow-inputs=\'{"prompt":"...","count":3}\'). Repeating the flag overwrites previous values. Mutually exclusive with --inputs.',
     type: "string",
   });
 
-  pi.registerFlag("workflow-inputs-file", {
+  pi.registerFlag("inputs", {
     description:
       "Path to a JSON file containing the workflow inputs object. Mutually exclusive with --workflow-inputs.",
     type: "string",
@@ -143,10 +143,10 @@ function parseInputsJson(raw: string, flagName: string): Record<string, unknown>
  * Supports:
  *   --workflow=<name>                    --workflow <name>
  *   --workflow-inputs=<json-object>      --workflow-inputs <json-object>
- *   --workflow-inputs-file=<path>        --workflow-inputs-file <path>
+ *   --inputs=<path>        --inputs <path>
  *
  * Returns null when --workflow is absent.  --workflow-inputs and
- * --workflow-inputs-file are mutually exclusive: supplying both sets `error`.
+ * --inputs are mutually exclusive: supplying both sets `error`.
  * Repeating --workflow-inputs replaces any prior value (last wins).
  * Malformed JSON populates `error` but still returns a non-null result so the
  * caller can surface diagnostics.
@@ -176,17 +176,17 @@ export function parseWorkflowFlags(argv: string[]): WorkflowFlagValues | null {
       continue;
     }
 
-    if (arg === "--workflow-help" || arg === "-h") {
+    if (arg === "--workflow-help") {
       help = true;
       continue;
     }
 
-    if (arg.startsWith("--workflow-inputs-file=")) {
-      inputsFile = arg.slice("--workflow-inputs-file=".length);
+    if (arg.startsWith("--inputs=")) {
+      inputsFile = arg.slice("--inputs=".length);
       continue;
     }
 
-    if (arg === "--workflow-inputs-file") {
+    if (arg === "--inputs") {
       const next = argv[i + 1];
       if (next !== undefined && !next.startsWith("--")) {
         inputsFile = next;
@@ -235,7 +235,7 @@ export function parseWorkflowFlags(argv: string[]): WorkflowFlagValues | null {
     return {
       workflow,
       inputs: {},
-      error: "--workflow-inputs and --workflow-inputs-file are mutually exclusive",
+      error: "--workflow-inputs and --inputs are mutually exclusive",
     };
   }
 
@@ -256,9 +256,9 @@ function loadInputsFile(path: string): Record<string, unknown> | Error {
     raw = readFileSync(path, "utf8");
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return new Error(`--workflow-inputs-file: ${msg}`);
+    return new Error(`--inputs: ${msg}`);
   }
-  return parseInputsJson(raw, "--workflow-inputs-file");
+  return parseInputsJson(raw, "--inputs");
 }
 
 // ---------------------------------------------------------------------------
@@ -269,7 +269,7 @@ function formatValidationFailure(
   workflowName: string,
   schema: Parameters<typeof renderInputsSchema>[1] extends infer _ ? Record<string, import("../../shared/types.js").WorkflowInputSchema> : never,
   errors: ValidationError[],
-  sourceFlag: "--workflow-inputs" | "--workflow-inputs-file",
+  sourceFlag: "--workflow-inputs" | "--inputs",
 ): string {
   // renderInputsSchema needs WorkflowInputEntry[]; rebuild from the raw schema
   // so the user sees the same shape they'd see from `/workflow inputs <name>`.
@@ -298,7 +298,7 @@ function formatValidationFailure(
  *
  * Fail-fast (status:"failed", no dispatch) when:
  *   - --workflow-inputs JSON is malformed
- *   - --workflow-inputs-file path is missing/unreadable or contains bad JSON
+ *   - --inputs path is missing/unreadable or contains bad JSON
  *   - both input flags were supplied
  *   - declared input schema rejects the parsed payload
  */
@@ -342,14 +342,14 @@ export async function runWorkflowFromCliFlags(
   }
 
   let inputs = parsed.inputs;
-  let sourceFlag: "--workflow-inputs" | "--workflow-inputs-file" = "--workflow-inputs";
+  let sourceFlag: "--workflow-inputs" | "--inputs" = "--workflow-inputs";
   if (parsed.inputsFile !== undefined) {
     const loaded = loadInputsFile(parsed.inputsFile);
     if (loaded instanceof Error) {
       return { handled: true, status: "failed", error: loaded.message };
     }
     inputs = loaded;
-    sourceFlag = "--workflow-inputs-file";
+    sourceFlag = "--inputs";
   }
 
   // Validate against declared schema when the workflow is registered. When
@@ -370,7 +370,7 @@ export async function runWorkflowFromCliFlags(
   try {
     const result = await opts.runtime.dispatch({
       action: "run",
-      name: parsed.workflow,
+      workflow: parsed.workflow,
       inputs,
     });
 

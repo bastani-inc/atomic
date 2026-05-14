@@ -1,6 +1,6 @@
 /**
  * Unit tests for validateInputs — the schema validator used by the CLI flag
- * path to reject malformed --workflow-inputs (and --workflow-inputs-file)
+ * path to reject malformed --workflow-inputs (and --inputs)
  * before dispatching a run.
  */
 

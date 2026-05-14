@@ -1,7 +1,7 @@
 /**
  * validateInputs — check a parsed input bag against a workflow's declared
  * input schema. Used by the CLI flag path to reject malformed
- * --workflow-inputs / --workflow-inputs-file payloads before dispatch.
+ * --workflow-inputs / --inputs payloads before dispatch.
  *
  * Reports:
  *   - unknown input keys (catches typos like "propmt")

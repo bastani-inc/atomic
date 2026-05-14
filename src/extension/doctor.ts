@@ -38,6 +38,10 @@ export interface DoctorSiblingStatus {
   readonly taskDelegation: boolean;
   /** True when the host event bus can emit workflow-scoped MCP events. */
   readonly mcpScopeEvents: boolean;
+  /** True when pi-intercom-style event emit/on surfaces are present. */
+  readonly intercomEvents?: boolean;
+  /** True when workflow/subagent intercom control routing is subscribed. */
+  readonly intercomControlSubscription?: boolean;
   /** True when session naming is available for child-session correlation. */
   readonly sessionNaming: boolean;
   /** True when ctx.ui is present — HIL dialog adapter is available. */
@@ -147,6 +151,7 @@ export function buildDoctorPayload(input: BuildDoctorPayloadInput): DoctorPayloa
     diagnosticsSection(discovery, configLoad ?? null),
     tunablesSection(cfg),
     workflowsSection(workflowEntries),
+    directRuntimeSection(),
     capabilitiesSection(siblings),
     runtimeAdaptersSection(siblings),
     companionsSection(companions),
@@ -259,6 +264,24 @@ function workflowsSection(entries: ReadonlyArray<[string, { path: string }]>): D
   };
 }
 
+function directRuntimeSection(): DoctorSection {
+  return {
+    label: "DIRECT RUNTIME",
+    rows: [
+      {
+        label: "direct execution",
+        value: "single / parallel / chain",
+        status: "ok",
+      },
+      {
+        label: "output artifacts",
+        value: "inline / file-only",
+        status: "ok",
+      },
+    ],
+  };
+}
+
 function capabilitiesSection(s: DoctorSiblingStatus): DoctorSection {
   const taskValue = describeSubagentVia(s.subagentAdapterVia, "capability");
   return {
@@ -266,6 +289,7 @@ function capabilitiesSection(s: DoctorSiblingStatus): DoctorSection {
     rows: [
       { label: "task delegation", value: taskValue, status: BOOL_STATUS(s.taskDelegation) },
       { label: "mcp scope evts", value: s.mcpScopeEvents ? "known" : "unknown", status: BOOL_STATUS(s.mcpScopeEvents) },
+      { label: "intercom events", value: s.intercomEvents ? "emit/on available" : "unavailable", status: BOOL_STATUS(s.intercomEvents === true) },
       { label: "session naming", value: s.sessionNaming ? "present" : "unavailable", status: BOOL_STATUS(s.sessionNaming) },
       { label: "hil dialogs", value: s.hil ? "available" : "unavailable", status: BOOL_STATUS(s.hil) },
       { label: "ui.custom overlay", value: s.uiCustom ? "available" : "unavailable", status: BOOL_STATUS(s.uiCustom) },
@@ -283,6 +307,13 @@ function runtimeAdaptersSection(s: DoctorSiblingStatus): DoctorSection {
     rows: [
       { label: "agent session", value: s.agentSessionAdapter ? "configured via pi SDK" : "unconfigured", status: BOOL_STATUS(s.agentSessionAdapter === true) },
       { label: "subagent",      value: subagentValue, status: subagentStatus },
+      {
+        label: "intercom channels",
+        value: s.intercomControlSubscription
+          ? "workflow result/control + subagent bridge"
+          : "not subscribed",
+        status: BOOL_STATUS(s.intercomControlSubscription === true),
+      },
     ],
   };
 }
@@ -335,32 +366,8 @@ function tunableRow(label: string, value: unknown): DoctorRow {
  *
  * Format: one `[ LABEL ]` band per section, status-glyph + `key:
  * value` rows underneath, optional `▸ pi install …` hint block.
- *
- * Convenience overload: pass `(discovery, siblings, configLoad?)` to
- * skip building a payload manually. Companions default to empty
- * — callers that want companion detection should build the payload
- * themselves and call the single-arg form.
  */
-export function buildDoctorReport(payload: DoctorPayload): string;
-export function buildDoctorReport(
-  discovery: DiscoveryResult,
-  siblings: DoctorSiblingStatus,
-  configLoad?: ConfigLoadResult | null,
-): string;
-export function buildDoctorReport(
-  payloadOrDiscovery: DoctorPayload | DiscoveryResult,
-  siblings?: DoctorSiblingStatus,
-  configLoad?: ConfigLoadResult | null,
-): string {
-  const payload =
-    "sections" in payloadOrDiscovery
-      ? payloadOrDiscovery
-      : buildDoctorPayload({
-          discovery: payloadOrDiscovery,
-          siblings: siblings as DoctorSiblingStatus,
-          companions: [],
-          configLoad,
-        });
+export function buildDoctorReport(payload: DoctorPayload): string {
   return renderPayloadAsText(payload);
 }
 

@@ -1,8 +1,12 @@
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
-import { run, resolveInputs } from "../../src/runs/foreground/executor.js";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { run, runChain, runParallel, runTask, resolveInputs } from "../../src/runs/foreground/executor.js";
 import { createStore } from "../../src/shared/store.js";
 import { defineWorkflow } from "../../src/workflows/define-workflow.js";
+import type { AgentSession, CreateAgentSessionOptions } from "@earendil-works/pi-coding-agent";
 
 // ---------------------------------------------------------------------------
 // resolveInputs
@@ -77,6 +81,186 @@ describe("executor.run", () => {
     assert.equal(wfResult.stages.length, 1);
     assert.equal(wfResult.stages[0]?.name, "stage-one");
     assert.equal(wfResult.stages[0]?.status, "completed");
+  });
+
+  test("ctx.task creates a tracked stage and returns reusable previous output", async () => {
+    const seenPrompts: string[] = [];
+    const def = defineWorkflow("task-wf")
+      .run(async (ctx) => {
+        const scout = await ctx.task("scout", { prompt: "scout repo" });
+        const planner = await ctx.task("planner", {
+          prompt: "plan from {previous}",
+          previous: scout,
+        });
+        return { scout: scout.text, planner: planner.text };
+      })
+      .compile();
+
+    const wfResult = await run(def, {}, {
+      adapters: {
+        prompt: {
+          prompt: async (text) => {
+            seenPrompts.push(text);
+            return text === "scout repo" ? "scout findings" : "planner output";
+          },
+        },
+      },
+      store: createStore(),
+    });
+
+    assert.equal(wfResult.status, "completed");
+    assert.equal(wfResult.result?.["scout"], "scout findings");
+    assert.equal(wfResult.result?.["planner"], "planner output");
+    assert.deepEqual(seenPrompts, ["scout repo", "plan from scout findings"]);
+    assert.deepEqual(wfResult.stages.map((s) => s.name), ["scout", "planner"]);
+  });
+
+  test("ctx.task appends named previous output when no placeholder is present", async () => {
+    const seenPrompts: string[] = [];
+    const def = defineWorkflow("task-context-wf")
+      .run(async (ctx) => {
+        const first = await ctx.task("first", { prompt: "first" });
+        await ctx.task("second", {
+          prompt: "second",
+          previous: [first, { name: "notes", text: "manual notes" }],
+        });
+        return { done: true };
+      })
+      .compile();
+
+    const wfResult = await run(def, {}, {
+      adapters: {
+        prompt: {
+          prompt: async (text) => {
+            seenPrompts.push(text);
+            return text === "first" ? "first output" : "second output";
+          },
+        },
+      },
+      store: createStore(),
+    });
+
+    assert.equal(wfResult.status, "completed");
+    assert.match(seenPrompts[1]!, /Context:/);
+    assert.match(seenPrompts[1]!, /--- first ---\nfirst output/);
+    assert.match(seenPrompts[1]!, /--- notes ---\nmanual notes/);
+  });
+
+  test("ctx.chain follows pi-subagents direct-command previous defaults", async () => {
+    const seenPrompts: string[] = [];
+    const def = defineWorkflow("task-chain-wf")
+      .run(async (ctx) => {
+        const results = await ctx.chain([
+          { name: "scout" },
+          { name: "planner" },
+          { name: "worker", task: "implement from {previous}" },
+        ], { task: "analyze auth" });
+        return { final: results.at(-1)?.text };
+      })
+      .compile();
+
+    const wfResult = await run(def, {}, {
+      adapters: {
+        prompt: {
+          prompt: async (text) => {
+            seenPrompts.push(text);
+            return `out:${seenPrompts.length}`;
+          },
+        },
+      },
+      store: createStore(),
+    });
+
+    assert.equal(wfResult.status, "completed");
+    assert.deepEqual(seenPrompts, ["analyze auth", "out:1", "implement from out:2"]);
+    assert.equal(wfResult.result?.["final"], "out:3");
+  });
+
+  test("ctx.parallel follows pi-subagents direct-command shared task fallback", async () => {
+    const seenPrompts: string[] = [];
+    const def = defineWorkflow("task-parallel-wf")
+      .run(async (ctx) => {
+        const results = await ctx.parallel([
+          { name: "frontend", task: "audit UI" },
+          { name: "backend" },
+        ]);
+        return { count: results.length };
+      })
+      .compile();
+
+    const wfResult = await run(def, {}, {
+      adapters: {
+        prompt: {
+          prompt: async (text) => {
+            seenPrompts.push(text);
+            return `out:${text}`;
+          },
+        },
+      },
+      store: createStore(),
+    });
+
+    assert.equal(wfResult.status, "completed");
+    assert.deepEqual(seenPrompts.sort(), ["audit UI", "audit UI"]);
+    assert.equal(wfResult.result?.["count"], 2);
+  });
+
+  test("ctx.task forwards createAgentSession options to the SDK session", async () => {
+    const calls: CreateAgentSessionOptions[] = [];
+    const def = defineWorkflow("task-session-options-wf")
+      .run(async (ctx) => {
+        const result = await ctx.task("scout", {
+          task: "inspect",
+          cwd: "/repo",
+          tools: ["read"],
+          noTools: "builtin",
+          thinkingLevel: "high",
+        });
+        return { text: result.text };
+      })
+      .compile();
+
+    const wfResult = await run(def, {}, {
+      adapters: {
+        agentSession: {
+          async create(options) {
+            calls.push(options);
+            return mockSession();
+          },
+        },
+      },
+      store: createStore(),
+    });
+
+    assert.equal(wfResult.status, "completed");
+    assert.equal(calls[0]?.cwd, "/repo");
+    assert.deepEqual(calls[0]?.tools, ["read"]);
+    assert.equal(calls[0]?.noTools, "builtin");
+    assert.equal(calls[0]?.thinkingLevel, "high");
+  });
+
+  test("ctx.task applies maxOutput truncation to reusable task output", async () => {
+    const def = defineWorkflow("task-max-output-wf")
+      .run(async (ctx) => {
+        const result = await ctx.task("summarizer", {
+          task: "summarize",
+          maxOutput: { lines: 1, bytes: 8 },
+        });
+        return { text: result.text };
+      })
+      .compile();
+
+    const wfResult = await run(def, {}, {
+      adapters: {
+        prompt: {
+          prompt: async () => "first line\nsecond line",
+        },
+      },
+      store: createStore(),
+    });
+
+    assert.equal(wfResult.status, "completed");
+    assert.match(String(wfResult.result?.["text"]), /^first li\n\n\[workflow output truncated/);
   });
 
   test("runs parallel stages", async () => {
@@ -282,6 +466,223 @@ describe("executor.run", () => {
     assert.deepEqual(s1?.parentIds, []);
     assert.equal(s2?.parentIds.length, 1);
     assert.equal(s3?.parentIds.length, 1);
+  });
+});
+
+describe("direct SDK helpers", () => {
+  test("runTask executes through the workflow runtime and returns WorkflowDetails", async () => {
+    const details = await runTask(
+      { name: "scout", prompt: "inspect repo", thinkingLevel: "high" },
+      {
+        adapters: {
+          prompt: {
+            prompt: async (text) => `done:${text}`,
+          },
+        },
+        store: createStore(),
+      },
+    );
+
+    assert.equal(details.mode, "single");
+    assert.equal(details.action, "run");
+    assert.equal(details.status, "completed");
+    assert.equal(details.results?.[0]?.name, "scout");
+    assert.equal(details.results?.[0]?.text, "done:inspect repo");
+    assert.ok(details.runId);
+  });
+
+  test("runTask direct items forward createAgentSession options to the SDK session", async () => {
+    const calls: CreateAgentSessionOptions[] = [];
+    const details = await runTask(
+      {
+        name: "scout",
+        prompt: "inspect repo",
+        cwd: "/repo",
+        tools: ["read"],
+        noTools: "builtin",
+        thinkingLevel: "high",
+      },
+      {},
+      {
+        adapters: {
+          agentSession: {
+            async create(options) {
+              calls.push(options);
+              return mockSession();
+            },
+          },
+        },
+        store: createStore(),
+      },
+    );
+
+    assert.equal(details.mode, "single");
+    assert.equal(details.status, "completed");
+    assert.equal(calls[0]?.cwd, "/repo");
+    assert.deepEqual(calls[0]?.tools, ["read"]);
+    assert.equal(calls[0]?.noTools, "builtin");
+    assert.equal(calls[0]?.thinkingLevel, "high");
+  });
+
+  test("runTask direct options expose context and sessionDir", async () => {
+    const calls: CreateAgentSessionOptions[] = [];
+    const sessionDir = mkdtempSync(join(tmpdir(), "atomic-workflow-session-dir-"));
+    const details = await runTask(
+      { name: "scout", task: "inspect repo" },
+      { context: "fork", sessionDir },
+      {
+        adapters: {
+          agentSession: {
+            async create(options) {
+              calls.push(options);
+              return mockSession();
+            },
+          },
+        },
+        store: createStore(),
+      },
+    );
+
+    assert.equal(details.context, "fork");
+    assert.notEqual(calls[0]?.sessionManager, undefined);
+  });
+
+  test("runTask writes output artifacts and records them in WorkflowDetails", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "atomic-workflow-output-"));
+    const output = join(dir, "review.md");
+
+    const details = await runTask(
+      { name: "reviewer", task: "write report", output },
+      {
+        adapters: {
+          prompt: {
+            prompt: async (text) => `done:${text}`,
+          },
+        },
+        store: createStore(),
+      },
+    );
+
+    assert.equal(readFileSync(output, "utf8"), "done:write report");
+    assert.ok(details.artifacts?.some((artifact) =>
+      artifact.kind === "output" &&
+      artifact.path === output &&
+      artifact.taskName === "reviewer",
+    ));
+  });
+
+  test("runTask outputMode=file-only omits inline task text but still writes the file", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "atomic-workflow-output-"));
+    const output = join(dir, "file-only.md");
+
+    const details = await runTask(
+      { name: "reviewer", task: "write private report", output, outputMode: "file-only" },
+      {
+        adapters: {
+          prompt: {
+            prompt: async (text) => `done:${text}`,
+          },
+        },
+        store: createStore(),
+      },
+    );
+
+    assert.equal(readFileSync(output, "utf8"), "done:write private report");
+    assert.equal(details.results?.[0]?.text, "");
+  });
+
+  test("runParallel expands count and keeps repeated task names unique", async () => {
+    const seen: string[] = [];
+    const details = await runParallel(
+      [{ name: "reviewer", task: "review", count: 2 }],
+      {},
+      {
+        adapters: {
+          prompt: {
+            prompt: async (text) => {
+              seen.push(text);
+              return `out:${seen.length}`;
+            },
+          },
+        },
+        store: createStore(),
+      },
+    );
+
+    assert.equal(details.mode, "parallel");
+    assert.equal(details.status, "completed");
+    assert.deepEqual(details.results?.map((result) => result.name), ["reviewer-1", "reviewer-2"]);
+    assert.deepEqual(seen.sort(), ["review", "review"]);
+  });
+
+  test("runParallel namespaces repeated output paths when count expands a task", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "atomic-workflow-output-"));
+    const output = join(dir, "review.md");
+
+    const details = await runParallel(
+      [{ name: "reviewer", task: "review", count: 2, output }],
+      {},
+      {
+        adapters: {
+          prompt: {
+            prompt: async (_text, meta) => `out:${meta?.stageName ?? "unknown"}`,
+          },
+        },
+        store: createStore(),
+      },
+    );
+
+    const artifactPaths = details.artifacts
+      ?.filter((artifact) => artifact.kind === "output")
+      .map((artifact) => artifact.path)
+      .sort();
+    assert.deepEqual(artifactPaths, [
+      join(dir, "review-1.md"),
+      join(dir, "review-2.md"),
+    ]);
+    assert.equal(readFileSync(join(dir, "review-1.md"), "utf8"), "out:reviewer-1");
+    assert.equal(readFileSync(join(dir, "review-2.md"), "utf8"), "out:reviewer-2");
+  });
+
+  test("runChain supports sequential steps and parallel groups with previous handoff defaults", async () => {
+    const prompts: string[] = [];
+    const details = await runChain(
+      [
+        { name: "researcher" },
+        {
+          parallel: [
+            { name: "reviewer-a" },
+            { name: "reviewer-b", task: "check {previous}" },
+          ],
+        },
+        { name: "planner", task: "plan {previous}" },
+      ],
+      { task: "map workflow api" },
+      {
+        adapters: {
+          prompt: {
+            prompt: async (text) => {
+              prompts.push(text);
+              return `out:${prompts.length}`;
+            },
+          },
+        },
+        store: createStore(),
+      },
+    );
+
+    assert.equal(details.mode, "chain");
+    assert.equal(details.status, "completed");
+    assert.deepEqual(details.results?.map((result) => result.name), [
+      "researcher",
+      "reviewer-a",
+      "reviewer-b",
+      "planner",
+    ]);
+    assert.equal(prompts[0], "map workflow api");
+    assert.ok(prompts.includes("out:1"));
+    assert.ok(prompts.includes("check out:1"));
+    assert.match(prompts[3]!, /^plan /);
   });
 });
 
@@ -1038,7 +1439,6 @@ describe("executor.run — concurrency limiter", () => {
 
 import { createStageControlRegistry } from "../../src/runs/foreground/stage-control-registry.js";
 import type { StageSessionRuntime } from "../../src/runs/foreground/stage-runner.js";
-import type { AgentSession } from "@earendil-works/pi-coding-agent";
 
 function mockSession(): StageSessionRuntime {
   const listeners = new Set<(e: { type: string; [k: string]: unknown }) => void>();

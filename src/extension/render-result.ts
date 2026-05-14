@@ -3,7 +3,7 @@
  *
  * Rich background-workflow surfaces (status list, per-run detail) delegate
  * to the canonical Catppuccin renderers in `src/tui/`. Compact one-liners
- * (list/run/kill/resume) stay inline here.
+ * (list/run/interrupt/resume) stay inline here.
  *
  * cross-ref:
  *  - src/tui/status-list.ts  band-header status list
@@ -12,6 +12,8 @@
  */
 
 import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
+import type { WorkflowDetails } from "../shared/types.js";
+import type { DoctorPayload } from "./doctor.js";
 import type { RunDetail } from "../runs/background/status.js";
 import { renderInputsSchema } from "../shared/render-inputs-schema.js";
 import { renderStatusList } from "../tui/status-list.js";
@@ -72,12 +74,24 @@ type StatusDetailResult =
       error: string;
     };
 type InputsResult = { action: "inputs"; name: string; inputs: WorkflowInputEntry[]; error?: string };
+type GetResult = {
+  action: "get";
+  workflow: string;
+  details?: WorkflowDetails;
+  error?: string;
+};
+type DoctorResult = {
+  action: "doctor";
+  details: WorkflowDetails;
+  payload?: DoctorPayload;
+};
 type RunResult = {
   action: "run";
   name?: string;
   runId: string;
   status: string;
   result?: Record<string, unknown>;
+  details?: WorkflowDetails;
   error?: string;
   stages?: StageSnapshot[];
   /**
@@ -87,7 +101,7 @@ type RunResult = {
    */
   message?: string;
 };
-type KillResult = { action: "kill"; runId: string; status: string; message: string };
+type InterruptResult = { action: "interrupt"; runId: string; status: string; message: string };
 type ResumeResult = { action: "resume"; runId: string; status: string; message: string };
 
 export type WorkflowToolResult =
@@ -95,8 +109,10 @@ export type WorkflowToolResult =
   | StatusResult
   | StatusDetailResult
   | InputsResult
+  | GetResult
+  | DoctorResult
   | RunResult
-  | KillResult
+  | InterruptResult
   | ResumeResult;
 
 export interface RenderResultOpts {
@@ -152,6 +168,20 @@ export function renderResult(result: WorkflowToolResult, opts?: RenderResultOpts
       return renderInputsSchema(r.name, r.inputs);
     }
 
+    case "get": {
+      const r = result as GetResult;
+      if (r.error) return `workflow get (${r.workflow}): ${r.error}`;
+      const output = r.details?.output;
+      const description = typeof output?.["description"] === "string" ? ` — ${output["description"]}` : "";
+      return `workflow get (${r.workflow}): ${r.details?.status ?? "completed"}${description}`;
+    }
+
+    case "doctor": {
+      const r = result as DoctorResult;
+      const subtitle = typeof r.details.output?.["subtitle"] === "string" ? r.details.output["subtitle"] : "atomic-workflows";
+      return `workflow doctor: ${subtitle}`;
+    }
+
     case "run": {
       const r = result as RunResult;
       if (partial) return `workflow run ${r.runId}: ${r.status} (in progress…)`;
@@ -164,15 +194,23 @@ export function renderResult(result: WorkflowToolResult, opts?: RenderResultOpts
         const label = r.name ? ` (${r.name})` : "";
         return `workflow run ${r.runId}${label}: ${r.status} — ${r.error}`;
       }
+      if (r.details) {
+        const label = r.name ? ` (${r.name})` : "";
+        return `workflow run ${r.runId}${label}: ${r.details.mode} ${r.details.status}`;
+      }
+      if (r.status === "completed" || r.status === "killed") {
+        const label = r.name ? ` (${r.name})` : "";
+        return `workflow run ${r.runId}${label}: ${r.status}`;
+      }
       // Background dispatch — `runDetached()` returns status "running" and
       // a message; the workflow surfaces progress via store / overlay.
       const label = r.name ? ` (${r.name})` : "";
       return `workflow run ${r.runId}${label}: started in background — ${r.message ?? r.status}`;
     }
 
-    case "kill": {
-      const r = result as KillResult;
-      return `workflow kill ${r.runId}: ${r.message}`;
+    case "interrupt": {
+      const r = result as InterruptResult;
+      return `workflow interrupt ${r.runId}: ${r.message}`;
     }
 
     case "resume": {
