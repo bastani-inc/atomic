@@ -943,6 +943,7 @@ export class GraphView implements Component {
   private _counts(run: RunSnapshot): {
     pending: number;
     running: number;
+    awaiting_input: number;
     paused: number;
     blocked: number;
     completed: number;
@@ -951,6 +952,7 @@ export class GraphView implements Component {
     const c = {
       pending: 0,
       running: 0,
+      awaiting_input: 0,
       paused: 0,
       blocked: 0,
       completed: 0,

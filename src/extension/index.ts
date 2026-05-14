@@ -983,7 +983,16 @@ function factory(pi: ExtensionAPI): void {
   //    flow through the store-backed background adapter built inside
   //    `runDetached()` — they never touch pi.ui.
   // -------------------------------------------------------------------------
-  const adapters = buildRuntimeAdapters(pi);
+  const adapters = buildRuntimeAdapters(pi, {
+    hil: {
+      onAwaitingInputStart(meta) {
+        store.recordStageAwaitingInput(meta.runId, meta.stageId, true);
+      },
+      onAwaitingInputEnd(meta) {
+        store.recordStageAwaitingInput(meta.runId, meta.stageId, false);
+      },
+    },
+  });
 
   // Local registry of workflow command (name → handler). Populated by
   // `registerWorkflowCommand` calls below and consumed by the

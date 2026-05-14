@@ -162,6 +162,21 @@ describe("renderNodeCard — status border colours", () => {
     );
   });
 
+  test("awaiting_input status uses info border and response hint copy", () => {
+    const lines = renderNodeCard(
+      makeStage({ status: "awaiting_input", startedAt: Date.now() - 1000 }),
+      { theme, focused: true },
+    );
+    const infoFg = hexToAnsi(theme.info);
+    assert.ok(
+      lines[0]!.includes(infoFg),
+      "awaiting input border must use info token",
+    );
+    const rendered = stripAnsi(lines.join("\n"));
+    assert.match(rendered, /waiting for response/);
+    assert.match(rendered, /↵ enter to respond/);
+  });
+
   test("focused pending stage lifts to borderActive (not text)", () => {
     const lines = renderNodeCard(makeStage({ status: "pending" }), {
       theme,

@@ -101,6 +101,11 @@ export interface Store {
    */
   recordStageAttached(runId: string, stageId: string, attached: boolean): boolean;
   /**
+   * Mark a live stage as awaiting a user response from ask_user_question,
+   * or restore it to running after the tool resolves.
+   */
+  recordStageAwaitingInput(runId: string, stageId: string, awaiting: boolean, ts?: number): boolean;
+  /**
    * Mark a stage as `paused` and record `pausedAt`. Returns `true` when
    * the stage transitioned (was not already paused, blocked, or terminal).
    */
@@ -255,6 +260,7 @@ export function createStore(): Store {
       existing.durationMs = stage.durationMs;
       existing.result = stage.result;
       existing.error = stage.error;
+      delete existing.awaitingInputSince;
       _version++;
       notify();
     },
@@ -423,6 +429,28 @@ export function createStore(): Store {
       return true;
     },
 
+    recordStageAwaitingInput(runId: string, stageId: string, awaiting: boolean, ts?: number): boolean {
+      const run = findRun(runId);
+      if (!run) return false;
+      if (TERMINAL_STATUSES.has(run.status)) return false;
+      const stage = findStage(run, stageId);
+      if (!stage) return false;
+      if (stage.status === "completed" || stage.status === "failed" || stage.status === "paused" || stage.status === "blocked") return false;
+
+      if (awaiting) {
+        if (stage.status === "awaiting_input") return false;
+        stage.status = "awaiting_input";
+        stage.awaitingInputSince = ts ?? Date.now();
+      } else {
+        if (stage.status !== "awaiting_input") return false;
+        stage.status = "running";
+        delete stage.awaitingInputSince;
+      }
+      _version++;
+      notify();
+      return true;
+    },
+
     recordStageBlocked(runId: string, stageId: string, blockedBy: string): boolean {
       const run = findRun(runId);
       if (!run) return false;
@@ -436,6 +464,7 @@ export function createStore(): Store {
       } else {
         stage.status = "blocked";
         stage.blockedByStageId = blockedBy;
+        delete stage.awaitingInputSince;
       }
       _version++;
       notify();
@@ -449,6 +478,7 @@ export function createStore(): Store {
       if (!stage || stage.status !== "blocked") return false;
       stage.status = "pending";
       delete stage.blockedByStageId;
+      delete stage.awaitingInputSince;
       _version++;
       notify();
       return true;
@@ -476,6 +506,7 @@ export function createStore(): Store {
       stage.status = "paused";
       stage.pausedAt = pausedAt ?? Date.now();
       stage.resumedAt = undefined;
+      delete stage.awaitingInputSince;
       _version++;
       notify();
       return true;
@@ -491,6 +522,7 @@ export function createStore(): Store {
       stage.resumedAt = resumedAt ?? Date.now();
       stage.pausedAt = undefined;
       delete stage.blockedByStageId;
+      delete stage.awaitingInputSince;
       _version++;
       notify();
       return true;

@@ -4,7 +4,14 @@
  */
 
 export type RunStatus = "pending" | "running" | "paused" | "completed" | "failed" | "killed";
-export type StageStatus = "pending" | "running" | "paused" | "blocked" | "completed" | "failed";
+export type StageStatus =
+  | "pending"
+  | "running"
+  | "awaiting_input"
+  | "paused"
+  | "blocked"
+  | "completed"
+  | "failed";
 
 /**
  * Human-in-the-loop prompt kind. Mirrors the four `WorkflowUIContext` methods.
@@ -60,6 +67,8 @@ export interface StageSnapshot {
   result?: string;
   error?: string;
   readonly toolEvents: ToolEvent[];
+  /** True while an in-stage ask_user_question tool is waiting on the user. */
+  awaitingInputSince?: number;
   blockedByStageId?: string;
   notices?: StageNotice[];
   /**

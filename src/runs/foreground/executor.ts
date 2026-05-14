@@ -153,6 +153,39 @@ function makeUnavailableUIContext(): WorkflowUIContext {
   };
 }
 
+type AskUserQuestionToolEvent =
+  | { phase: "start"; callId: string }
+  | { phase: "end"; callId: string; nameMatched: boolean };
+
+function stringField(value: Record<string, unknown>, keys: readonly string[]): string | undefined {
+  for (const key of keys) {
+    const candidate = value[key];
+    if (typeof candidate === "string" && candidate.length > 0) return candidate;
+  }
+  return undefined;
+}
+
+function isAskUserQuestionToolName(name: string | undefined): boolean {
+  if (name === undefined) return false;
+  return name.toLowerCase().replace(/[^a-z0-9]/g, "") === "askuserquestion";
+}
+
+function askUserQuestionToolEvent(event: unknown): AskUserQuestionToolEvent | undefined {
+  if (event === null || typeof event !== "object") return undefined;
+  const record = event as Record<string, unknown>;
+  const type = typeof record["type"] === "string" ? record["type"] : "";
+  const toolName = stringField(record, ["toolName", "tool_name", "name"]);
+  const callId = stringField(record, ["toolCallId", "tool_call_id", "toolUseId", "tool_use_id", "id"]) ?? "__ask_user_question__";
+
+  if (type === "tool_execution_start" && isAskUserQuestionToolName(toolName)) {
+    return { phase: "start", callId };
+  }
+  if (type === "tool_execution_end" || type === "tool_execution_error" || type === "tool_result") {
+    return { phase: "end", callId, nameMatched: isAskUserQuestionToolName(toolName) };
+  }
+  return undefined;
+}
+
 // ---------------------------------------------------------------------------
 // raceAbort — races a promise against an AbortSignal
 // ---------------------------------------------------------------------------
@@ -999,6 +1032,29 @@ export async function run(
         signal: ownController.signal,
         stageOptions: options,
       });
+      const activeAskUserQuestionCalls = new Set<string>();
+      const unsubscribeAskUserQuestionWatcher = innerCtx.subscribe((event) => {
+        const toolEvent = askUserQuestionToolEvent(event);
+        if (!toolEvent) return;
+        if (toolEvent.phase === "start") {
+          activeAskUserQuestionCalls.add(toolEvent.callId);
+          activeStore.recordStageAwaitingInput(runId, stageId, true);
+          return;
+        }
+
+        if (toolEvent.nameMatched || activeAskUserQuestionCalls.has(toolEvent.callId)) {
+          activeAskUserQuestionCalls.delete(toolEvent.callId);
+          if (activeAskUserQuestionCalls.size === 0) {
+            activeStore.recordStageAwaitingInput(runId, stageId, false);
+          }
+        }
+      });
+      const disposeInnerContext = async (): Promise<void> => {
+        unsubscribeAskUserQuestionWatcher();
+        activeAskUserQuestionCalls.clear();
+        activeStore.recordStageAwaitingInput(runId, stageId, false);
+        await innerCtx.__dispose();
+      };
 
       // e. Register a live stage-control handle so attached panes can
       //    prompt/steer/pause/resume the underlying Pi session lazily.
@@ -1078,7 +1134,7 @@ export async function run(
           } catch (err) {
             activeStore.recordStageAttachable(runId, stageId, false);
             unregisterStageHandle();
-            await innerCtx.__dispose();
+            await disposeInnerContext();
             throw err;
           }
         }
@@ -1168,7 +1224,7 @@ export async function run(
           activeStore.recordStageAttachable(runId, stageId, false);
           unregisterStageHandle();
           try {
-            await innerCtx.__dispose();
+            await disposeInnerContext();
           } finally {
             limiter.release();
           }

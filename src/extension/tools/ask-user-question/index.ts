@@ -18,4 +18,8 @@
  *  - src/extension/index.ts (calls registerAskUserQuestionTool)
  *  - ./ask-user-question.ts (tool definition + execute pipeline)
  */
-export { registerAskUserQuestionTool } from "./ask-user-question.js";
+export {
+  createAskUserQuestionTool,
+  registerAskUserQuestionTool,
+} from "./ask-user-question.js";
+export type { AskUserQuestionToolLifecycle } from "./ask-user-question.js";

@@ -142,12 +142,21 @@ export function renderHeader(run: RunSnapshot, opts: HeaderOpts): string[] {
   const { width, theme } = opts;
   const pill = pillFor(run, theme);
 
-  const counts = { pending: 0, running: 0, paused: 0, blocked: 0, completed: 0, failed: 0 };
+  const counts = {
+    pending: 0,
+    running: 0,
+    awaiting_input: 0,
+    paused: 0,
+    blocked: 0,
+    completed: 0,
+    failed: 0,
+  };
   for (const s of run.stages) counts[s.status]++;
 
   const badges: BandBadge[] = [];
   if (counts.completed > 0) badges.push({ text: `✓ ${counts.completed}`, fg: theme.success });
   if (counts.running > 0) badges.push({ text: `● ${counts.running}`, fg: theme.warning });
+  if (counts.awaiting_input > 0) badges.push({ text: `↵ ${counts.awaiting_input}`, fg: theme.info });
   if (counts.paused > 0) badges.push({ text: `⏸ ${counts.paused}`, fg: theme.accent });
   if (counts.pending > 0) badges.push({ text: `○ ${counts.pending}`, fg: theme.dim });
   if (counts.failed > 0) badges.push({ text: `✗ ${counts.failed}`, fg: theme.error });

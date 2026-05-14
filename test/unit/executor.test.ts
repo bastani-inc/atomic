@@ -1569,4 +1569,61 @@ describe("executor — stage-control registry integration", () => {
     const stage = store.runs()[0]!.stages[0]!;
     assert.equal(stage.attachable, undefined);
   });
+
+  test("ask_user_question tool execution marks the stage awaiting input transiently", async () => {
+    const def = defineWorkflow("stage-hil-wf")
+      .run(async (ctx) => {
+        await ctx.stage("ask").prompt("ask the user");
+        return {};
+      })
+      .compile();
+    const listeners = new Set<(event: { type: string; [key: string]: unknown }) => void>();
+    const session: StageSessionRuntime = {
+      ...mockSession(),
+      async prompt() {
+        for (const listener of listeners) {
+          listener({
+            type: "tool_execution_start",
+            toolCallId: "tool-1",
+            toolName: "ask_user_question",
+          });
+        }
+        await new Promise<void>((resolve) => queueMicrotask(resolve));
+        for (const listener of listeners) {
+          listener({
+            type: "tool_execution_end",
+            toolCallId: "tool-1",
+            toolName: "ask_user_question",
+          });
+        }
+      },
+      subscribe(listener) {
+        listeners.add(listener as (event: { type: string; [key: string]: unknown }) => void);
+        return () => {
+          listeners.delete(listener as (event: { type: string; [key: string]: unknown }) => void);
+        };
+      },
+    };
+    const store = createStore();
+    const observedStatuses: string[] = [];
+    const unsubscribe = store.subscribe((snap) => {
+      const status = snap.runs[0]?.stages[0]?.status;
+      if (status) observedStatuses.push(status);
+    });
+    await run(def, {}, {
+      adapters: {
+        agentSession: {
+          async create() {
+            return session;
+          },
+        },
+      },
+      store,
+      stageControlRegistry: createStageControlRegistry(),
+    });
+    unsubscribe();
+
+    assert.ok(observedStatuses.includes("awaiting_input"));
+    assert.equal(store.runs()[0]!.stages[0]!.status, "completed");
+  });
 });

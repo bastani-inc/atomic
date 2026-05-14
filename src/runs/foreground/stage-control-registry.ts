@@ -26,6 +26,7 @@ import type { AgentSession, AgentSessionEvent } from "@earendil-works/pi-coding-
 export type StageControlStatus =
   | "pending"
   | "running"
+  | "awaiting_input"
   | "paused"
   | "blocked"
   | "completed"

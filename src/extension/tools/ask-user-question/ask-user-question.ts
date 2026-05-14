@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { loadConfig, validateGuidanceFields } from "./config.js";
 import { QuestionnaireSession } from "./state/questionnaire-session.js";
 import { ROW_INTENT_META, sentinelsToAppend } from "./state/row-intent.js";
@@ -16,6 +16,11 @@ import { validateQuestionnaire } from "./tool/validate-questionnaire.js";
 import type { WrappingSelectItem } from "./view/components/wrapping-select.js";
 
 const ERROR_NO_UI = "Error: UI not available (running in non-interactive mode)";
+
+export interface AskUserQuestionToolLifecycle {
+	beforeExecute?: (params: QuestionParams) => void;
+	afterExecute?: (params: QuestionParams) => void;
+}
 
 export function buildItemsForQuestion(question: QuestionData): WrappingSelectItem[] {
 	const items: WrappingSelectItem[] = question.options.map((o) => ({
@@ -38,9 +43,11 @@ export const DEFAULT_PROMPT_GUIDELINES: string[] = [
 	"Do not stack multiple ask_user_question calls back-to-back — group all clarifying questions into one invocation.",
 ];
 
-export function registerAskUserQuestionTool(pi: ExtensionAPI): void {
+export function createAskUserQuestionTool(
+	lifecycle: AskUserQuestionToolLifecycle = {},
+): ToolDefinition<typeof QuestionParamsSchema, unknown> {
 	const guidance = validateGuidanceFields(loadConfig().guidance);
-	pi.registerTool({
+	return {
 		name: "ask_user_question",
 		label: "Ask User Question",
 		description: `Ask the user one or more structured questions during execution. Use when you need to:
@@ -81,20 +88,29 @@ Preview content is rendered as markdown in a monospace box. Multi-line text with
 
 			const itemsByTab: WrappingSelectItem[][] = typed.questions.map((q) => buildItemsForQuestion(q));
 
-			const result = await ctx.ui.custom<QuestionnaireResult>((tui, theme, _kb, done) => {
-				const session = new QuestionnaireSession({
-					tui,
-					theme,
-					params: typed,
-					itemsByTab,
-					done,
+			lifecycle.beforeExecute?.(typed);
+			try {
+				const result = await ctx.ui.custom<QuestionnaireResult>((tui, theme, _kb, done) => {
+					const session = new QuestionnaireSession({
+						tui,
+						theme,
+						params: typed,
+						itemsByTab,
+						done,
+					});
+					return session.component;
 				});
-				return session.component;
-			});
 
-			return buildQuestionnaireResponse(result, typed);
+				return buildQuestionnaireResponse(result, typed);
+			} finally {
+				lifecycle.afterExecute?.(typed);
+			}
 		},
-	});
+	};
+}
+
+export function registerAskUserQuestionTool(pi: ExtensionAPI): void {
+	pi.registerTool(createAskUserQuestionTool());
 }
 
 export { buildQuestionnaireResponse, buildToolResult };

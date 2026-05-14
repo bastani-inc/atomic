@@ -11,10 +11,10 @@
  * `ctx.stage(name, options?)`; the executor strips workflow-only `mcp`
  * before session creation.
  *
- * HIL routing (workflow `ctx.ui.input/confirm/select/editor`) does NOT live
- * here. Background workflows route through the store-backed background UI
- * adapter in `src/extension/background-ui-adapter.ts`; pi.ui dialogs are
- * reserved for chrome (kill confirm, picker overlays, the graph viewer).
+ * Workflow-level HIL routing (`ctx.ui.input/confirm/select/editor`) stays in
+ * the store-backed background UI adapter. In-stage HIL (`ask_user_question`)
+ * is injected here because it must bind the stage SDK session to pi's live UI
+ * context and mark the corresponding graph node as awaiting user input.
  *
  * cross-ref: src/runs/foreground/stage-runner.ts
  *            src/extension/index.ts
@@ -24,6 +24,7 @@
 import type { CreateAgentSessionOptions } from "@earendil-works/pi-coding-agent";
 import type { StageAdapters, StageSessionRuntime } from "../runs/foreground/stage-runner.js";
 import type { StageExecutionMeta, StageOptions, SubagentStageOpts } from "../shared/types.js";
+import { createAskUserQuestionTool } from "./tools/ask-user-question/index.js";
 
 // ---------------------------------------------------------------------------
 // Minimal pi surface
@@ -52,6 +53,7 @@ export interface PiExecOpts {
 
 export interface RuntimeWiringSurface {
   exec?: (command: string, args: string[], opts?: PiExecOpts) => Promise<PiExecResult>;
+  ui?: PiUISurface;
   /** Test seam: inject a stub session factory instead of importing the SDK. */
   createAgentSession?: (options?: CreateAgentSessionOptions) => Promise<{ session: StageSessionRuntime }>;
   callTool?: (name: string, args: Record<string, unknown>) => Promise<string>;
@@ -60,7 +62,17 @@ export interface RuntimeWiringSurface {
 export interface RuntimeAdapterBuildOptions {
   /** Test seam for SDK session creation. */
   createAgentSession?: (options?: CreateAgentSessionOptions) => Promise<{ session: StageSessionRuntime }>;
+  hil?: {
+    onAwaitingInputStart?: (meta: StageExecutionMeta) => void;
+    onAwaitingInputEnd?: (meta: StageExecutionMeta) => void;
+  };
 }
+
+type BindableStageSession = StageSessionRuntime & {
+  bindExtensions?: (bindings: {
+    uiContext?: ReturnType<typeof makeStageExtensionUiContext>;
+  }) => Promise<void>;
+};
 
 
 function isTestContext(): boolean {
@@ -170,6 +182,67 @@ function stripWorkflowOnlyOptions(options: StageOptions | undefined): CreateAgen
   return sessionOptions;
 }
 
+function customToolNames(options: CreateAgentSessionOptions): Set<string> {
+  const tools = options.customTools ?? [];
+  return new Set(tools.map((tool) => tool.name));
+}
+
+function withAskUserQuestionTool(
+  options: CreateAgentSessionOptions,
+  meta: StageExecutionMeta | undefined,
+  hooks: RuntimeAdapterBuildOptions["hil"] | undefined,
+): CreateAgentSessionOptions {
+  if (!meta) return options;
+  if (customToolNames(options).has("ask_user_question")) return options;
+
+  const customTools = [
+    ...(options.customTools ?? []),
+    createAskUserQuestionTool({
+      beforeExecute: () => hooks?.onAwaitingInputStart?.(meta),
+      afterExecute: () => hooks?.onAwaitingInputEnd?.(meta),
+    }),
+  ];
+
+  return {
+    ...options,
+    customTools,
+  };
+}
+
+function makeStageExtensionUiContext(ui: PiUISurface) {
+  return {
+    select: ui.select ?? (async () => undefined),
+    confirm: ui.confirm ?? (async () => false),
+    input: ui.input ?? (async () => undefined),
+    notify: ui.notify ?? (() => undefined),
+    onTerminalInput: ui.onTerminalInput ?? (() => () => undefined),
+    setStatus: ui.setStatus ?? (() => undefined),
+    setWorkingMessage: ui.setWorkingMessage ?? (() => undefined),
+    setWorkingVisible: ui.setWorkingVisible ?? (() => undefined),
+    setWorkingIndicator: ui.setWorkingIndicator ?? (() => undefined),
+    setHiddenThinkingLabel: ui.setHiddenThinkingLabel ?? (() => undefined),
+    setWidget: ui.setWidget ?? (() => undefined),
+    setFooter: ui.setFooter ?? (() => undefined),
+    setHeader: ui.setHeader ?? (() => undefined),
+    setTitle: ui.setTitle ?? (() => undefined),
+    custom: ui.custom
+      ? async <T = undefined>(factory: PiCustomOverlayFactory<T>, options?: PiCustomOverlayOptions): Promise<T> => {
+        const result = await ui.custom!(factory as PiCustomOverlayFactory, options ?? { overlay: true });
+        return result as T;
+      }
+      : async () => {
+        throw new Error("pi-workflows: ask_user_question UI is unavailable");
+      },
+    pasteToEditor: ui.pasteToEditor ?? (() => undefined),
+    setEditorText: ui.setEditorText ?? (() => undefined),
+    getEditorText: ui.getEditorText ?? (() => ""),
+    editor: ui.editor ?? (async () => undefined),
+    addAutocompleteProvider: ui.addAutocompleteProvider ?? (() => undefined),
+    setEditorComponent: ui.setEditorComponent ?? (() => undefined),
+    getEditorComponent: ui.getEditorComponent ?? (() => undefined),
+  };
+}
+
 /**
  * Build StageAdapters from available pi runtime surfaces.
  *
@@ -196,7 +269,7 @@ export function buildRuntimeAdapters(
     (isTestContext() ? createTestAgentSession : createPiSdkAgentSession);
   const adapters: StageAdapters = {
     agentSession: {
-      async create(stageOptions: StageOptions): Promise<StageSessionRuntime> {
+      async create(stageOptions: StageOptions, meta?: StageExecutionMeta): Promise<StageSessionRuntime> {
         // The pi SDK (`@earendil-works/pi-coding-agent` ≥ 0.74) handles
         // extension / skills / prompt-template / slash-command isolation
         // via `SettingsManager` / `ResourceLoader` ctor args. The production
@@ -205,8 +278,18 @@ export function buildRuntimeAdapters(
         // recursively loading pi-workflows/pi-intercom/pi-subagents. Callers
         // can still opt into a custom resource set by passing `resourceLoader`
         // through `stage(name, options)`.
-        const sessionOptions: CreateAgentSessionOptions = stripWorkflowOnlyOptions(stageOptions) ?? {};
+        const strippedOptions: CreateAgentSessionOptions = stripWorkflowOnlyOptions(stageOptions) ?? {};
+        const sessionOptions =
+          typeof pi.ui?.custom === "function"
+            ? withAskUserQuestionTool(strippedOptions, meta, options.hil)
+            : strippedOptions;
         const result = await createSession(sessionOptions);
+        const bindable = result.session as BindableStageSession;
+        if (typeof pi.ui?.custom === "function" && typeof bindable.bindExtensions === "function") {
+          await bindable.bindExtensions({
+            uiContext: makeStageExtensionUiContext(pi.ui),
+          });
+        }
         return result.session;
       },
     },
@@ -406,17 +489,17 @@ export interface PiCustomOverlayFactoryTui {
 export type PiTheme = unknown;
 export type PiKeybindings = unknown;
 
-export type PiCustomOverlayFactory = (
+export type PiCustomOverlayFactory<T = unknown> = (
   tui: PiCustomOverlayFactoryTui,
   theme: PiTheme,
   keybindings: PiKeybindings,
-  done: (result: undefined) => void,
+  done: (result: T) => void,
 ) => PiCustomComponent | Promise<PiCustomComponent>;
 
 export type PiCustomOverlayFunction = (
   factory: PiCustomOverlayFactory,
   options: PiCustomOverlayOptions,
-) => Promise<undefined> | undefined;
+) => Promise<unknown> | unknown;
 
 /**
  * Structural shape of pi's custom editor component. Interactive mode
@@ -481,14 +564,31 @@ export interface PiUISurface {
   select?: (title: string, options: string[], opts?: PiUIDialogOptions) => Promise<string | undefined>;
   /** Show a multi-line editor. Returns undefined when user dismisses. */
   editor?: (title: string, prefill?: string) => Promise<string | undefined>;
+  notify?: (message: string, type?: "info" | "warning" | "error") => void;
+  onTerminalInput?: (handler: unknown) => () => void;
+  setStatus?: (key: string, text: string | undefined) => void;
+  setWorkingMessage?: (message?: string) => void;
+  setWorkingVisible?: (visible: boolean) => void;
+  setWorkingIndicator?: (options?: unknown) => void;
+  setHiddenThinkingLabel?: (label?: string) => void;
   /** Set a live widget above or below the editor. */
   setWidget?: (
     key: string,
-    factory: ((tui: unknown, theme: unknown) => { render(width: number): string[]; dispose?(): void }) | undefined,
+    factory:
+      | string[]
+      | ((tui: unknown, theme: unknown) => { render(width: number): string[]; dispose?(): void })
+      | undefined,
     opts?: { placement?: string },
   ) => void;
+  setFooter?: (factory: unknown) => void;
+  setHeader?: (factory: unknown) => void;
+  setTitle?: (title: string) => void;
   /** Show a custom component or overlay. */
   custom?: PiCustomOverlayFunction;
+  pasteToEditor?: (text: string) => void;
+  setEditorText?: (text: string) => void;
+  getEditorText?: () => string;
+  addAutocompleteProvider?: (factory: unknown) => void;
   /**
    * Install a custom editor (replaces the bottom input bar) until cleared
    * with `setEditorComponent(undefined)`. Used by the inline workflow
@@ -504,9 +604,10 @@ export interface PiUISurface {
  * Runtime surface that includes the optional UI dialog surface.
  * Used by command/overlay code (slash command kill confirm, graph overlay
  * mount, picker overlays) to interact with `pi.ui.custom`, `pi.ui.confirm`,
- * etc.  HIL routing — `ctx.ui.input/confirm/select/editor` inside a workflow
- * body — no longer flows through this surface; that's the store-backed
- * background adapter's job (`src/extension/background-ui-adapter.ts`).
+ * etc. Workflow-level HIL routing — `ctx.ui.input/confirm/select/editor`
+ * inside a workflow body — stays in the store-backed background adapter.
+ * In-stage `ask_user_question` uses this surface to bind the live pi UI into
+ * SDK stage sessions.
  */
 export interface UIWiringSurface {
   ui?: PiUISurface;

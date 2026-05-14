@@ -122,6 +122,7 @@ const store: Store = {
   recordToolStart: () => {},
   recordToolEnd: () => {},
   recordStageEnd: () => {},
+  recordStageAwaitingInput: () => false,
   recordRunEnd: () => false,
   recordNotice: () => {},
   ackNotice: () => false,

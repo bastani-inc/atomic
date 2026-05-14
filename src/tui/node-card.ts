@@ -64,6 +64,9 @@ function pickBorder(
       // Focus locks the pulse at peak. Status colour wins either way.
       if (focused) return theme.warning;
       return lerpColor(theme.borderDim, theme.warning, pulseT(phase));
+    case "awaiting_input":
+      if (focused) return theme.info;
+      return lerpColor(theme.borderDim, theme.info, pulseT(phase));
     case "completed":
       return theme.success;
     case "failed":
@@ -82,6 +85,8 @@ function durationColor(status: StageStatus, theme: GraphTheme): string {
   switch (status) {
     case "running":
       return theme.warning;
+    case "awaiting_input":
+      return theme.info;
     case "completed":
       return theme.success;
     case "failed":
@@ -241,7 +246,18 @@ export function renderNodeCard(stage: StageSnapshot, opts: NodeCardOpts): string
     }) +
     `${bg}${bc}│${RESET}`;
 
-  const interior: string[] = [durLine];
+  const interior: string[] =
+    stage.status === "awaiting_input"
+      ? [
+          durLine,
+          `${bg}${bc}│${RESET}` +
+            centreColored("waiting for response", innerWidth, theme.info, bg) +
+            `${bg}${bc}│${RESET}`,
+          `${bg}${bc}│${RESET}` +
+            centreColored("↵ enter to respond", innerWidth, theme.dim, bg) +
+            `${bg}${bc}│${RESET}`,
+        ]
+      : [durLine];
 
   // Pad / clip to exactly `height` lines.
   const contentRows = Math.max(0, height - 2);

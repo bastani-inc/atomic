@@ -36,6 +36,34 @@ function makeNotice(id: string, overrides: Partial<StageNotice> = {}): StageNoti
 }
 
 describe("store stage blocking", () => {
+  test("transitions running → awaiting_input → running for in-stage HIL", () => {
+    const s = createStore();
+    s.recordRunStart(makeRun("r1", [makeStage("a", { status: "running" })]));
+
+    assert.equal(s.recordStageAwaitingInput("r1", "a", true, 123), true);
+    let stage = s.snapshot().runs[0]!.stages[0]!;
+    assert.equal(stage.status, "awaiting_input");
+    assert.equal(stage.awaitingInputSince, 123);
+
+    assert.equal(s.recordStageAwaitingInput("r1", "a", false), true);
+    stage = s.snapshot().runs[0]!.stages[0]!;
+    assert.equal(stage.status, "running");
+    assert.equal("awaitingInputSince" in stage, false);
+  });
+
+  test("awaiting_input does not override paused or terminal stages", () => {
+    const s = createStore();
+    s.recordRunStart(makeRun("r1", [
+      makeStage("paused", { status: "paused" }),
+      makeStage("completed", { status: "completed" }),
+      makeStage("failed", { status: "failed" }),
+    ]));
+
+    assert.equal(s.recordStageAwaitingInput("r1", "paused", true), false);
+    assert.equal(s.recordStageAwaitingInput("r1", "completed", true), false);
+    assert.equal(s.recordStageAwaitingInput("r1", "failed", true), false);
+  });
+
   test("transitions pending → blocked → pending and snapshots only include blockedByStageId while set", () => {
     const s = createStore();
     s.recordRunStart(makeRun("r1", [makeStage("a")]));

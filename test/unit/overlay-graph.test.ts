@@ -54,6 +54,7 @@ function makeStore(snap: StoreSnapshot): Store {
     recordToolStart: () => {},
     recordToolEnd: () => {},
     recordStageEnd: () => {},
+    recordStageAwaitingInput: () => false,
     recordRunEnd: () => false,
     recordNotice: () => {},
     ackNotice: () => false,
