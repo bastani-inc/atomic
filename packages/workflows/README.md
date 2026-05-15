@@ -259,7 +259,7 @@ Scout + research-history chain → two parallel specialist waves → aggregator.
 | Input            | Type     | Required | Default | Description                                       |
 | ---------------- | -------- | -------- | ------- | ------------------------------------------------- |
 | `prompt`         | `text`   | ✓        | —       | Research question or topic to investigate.        |
-| `max_partitions` | `number` | —        | `4`     | Maximum number of codebase partitions to explore. |
+| `max_partitions` | `number` | —        | `100`   | Maximum number of codebase partitions to explore. |
 
 ### `ralph`
 

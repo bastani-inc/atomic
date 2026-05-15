@@ -938,7 +938,7 @@ describe("MockExtensionAPI — tool inputs returns schema for deep-research-code
     assert.equal(byName["prompt"]?.required, true);
     assert.notEqual(byName["max_partitions"], undefined);
     assert.equal(byName["max_partitions"]?.type, "number");
-    assert.equal(byName["max_partitions"]?.default, 4);
+    assert.equal(byName["max_partitions"]?.default, 100);
   });
 
   test("action='inputs' for deep-research-codebase has no error field", async () => {
