@@ -100,18 +100,22 @@ interface CardComponent {
 
 type RawRenderer = (payload: unknown) => string | CardComponent | undefined;
 
-let rendererRegistered = false;
+const rendererRegisteredHosts = new WeakSet<object>();
 
 /**
- * Wire the chat-surface message renderer once. Theme is captured at
- * registration; later theme changes don't retro-style historical entries
- * (acceptable — these are scrollback snapshots, not live UI).
+ * Wire the chat-surface message renderer once per live ExtensionAPI host. pi
+ * creates a new extension host on `/new`, `/resume`, `/fork`, and `/reload`,
+ * while jiti may keep this module cached. A process-global boolean would skip
+ * registration in the replacement session and leave emitted workflow chat cards
+ * without a renderer. Theme is captured at registration; later theme changes
+ * don't retro-style historical entries (acceptable — these are scrollback
+ * snapshots, not live UI).
  */
 export function registerChatSurfaceRenderer(
   pi: ExtensionAPI,
   theme: GraphTheme,
 ): void {
-  if (rendererRegistered) return;
+  if (rendererRegisteredHosts.has(pi)) return;
   const register = pi.registerMessageRenderer;
   if (typeof register !== "function") return;
 
@@ -132,7 +136,7 @@ export function registerChatSurfaceRenderer(
     CHAT_SURFACE_CUSTOM_TYPE,
     renderer,
   );
-  rendererRegistered = true;
+  rendererRegisteredHosts.add(pi);
 }
 
 /**

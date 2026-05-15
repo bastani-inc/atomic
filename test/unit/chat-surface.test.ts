@@ -16,6 +16,10 @@ import {
   ELLIPSIS,
 } from "../../packages/workflows/src/tui/chat-surface.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
+import {
+  CHAT_SURFACE_CUSTOM_TYPE,
+  registerChatSurfaceRenderer,
+} from "../../packages/workflows/src/tui/chat-surface-message.js";
 
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
 const stripAnsi = (s: string) => s.replace(ANSI_RE, "");
@@ -214,6 +218,33 @@ describe("renderHintRows", () => {
 
   test("empty rows yields empty string", () => {
     assert.equal(renderHintRows([]), "");
+  });
+});
+
+describe("registerChatSurfaceRenderer", () => {
+  test("registers once per live ExtensionAPI host", () => {
+    class ClassBackedPi {
+      readonly renderers = new Map<string, (payload: unknown) => unknown>();
+      calls = 0;
+
+      registerMessageRenderer(event: string, renderer: (payload: unknown) => unknown): void {
+        this.calls += 1;
+        this.renderers.set(event, renderer);
+      }
+    }
+
+    const pi = new ClassBackedPi();
+    registerChatSurfaceRenderer(pi as never, deriveGraphTheme({}));
+    const first = pi.renderers.get(CHAT_SURFACE_CUSTOM_TYPE);
+    registerChatSurfaceRenderer(pi as never, deriveGraphTheme({}));
+    const second = pi.renderers.get(CHAT_SURFACE_CUSTOM_TYPE);
+    assert.equal(first, second);
+    assert.equal(pi.calls, 1);
+
+    const replacementPi = new ClassBackedPi();
+    registerChatSurfaceRenderer(replacementPi as never, deriveGraphTheme({}));
+    assert.equal(replacementPi.calls, 1);
+    assert.notEqual(replacementPi.renderers.get(CHAT_SURFACE_CUSTOM_TYPE), undefined);
   });
 });
 

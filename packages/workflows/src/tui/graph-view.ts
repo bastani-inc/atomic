@@ -15,6 +15,7 @@
  *   - github.com/flora131/atomic packages/atomic-sdk/src/components/session-graph-panel.tsx
  *   - DESIGN.md §4 (Elevation), §5 (Components)
  */
+import type { Component } from "@earendil-works/pi-tui";
 import {
   matchesKey,
   truncateToWidth,
@@ -155,13 +156,6 @@ const ANIMATION_TICK_MS = 100;
  * eased lerp inside `pickBorder` traces one full breath per cycle.
  */
 const PULSE_PERIOD_MS = 2000;
-
-interface Component {
-  render(width: number): string[];
-  handleInput?(data: string): boolean | void;
-  invalidate?(): void;
-  dispose?(): void;
-}
 
 export class GraphView implements Component {
   private mode: GraphViewMode;

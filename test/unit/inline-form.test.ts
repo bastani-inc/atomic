@@ -422,11 +422,15 @@ interface FakeCtx {
 
 function makeFakeCtx(): FakeCtx {
   const installed: { factory: unknown | undefined }[] = [];
+  let current: unknown | undefined;
   return {
     installed,
     ui: {
-      setEditorComponent: (factory) => { installed.push({ factory }); },
-      getEditorComponent: () => undefined,
+      setEditorComponent: (factory) => {
+        current = factory;
+        installed.push({ factory });
+      },
+      getEditorComponent: () => current,
     },
   };
 }
@@ -605,6 +609,52 @@ test("overlay: cancelling via esc returns {kind:'cancel'} + freezes state", asyn
   assert.equal(getForm(formId)?.status, "cancelled");
 });
 
+test("overlay: late settle after host editor reset does not restore stale previous editor", async () => {
+  _resetForms();
+  const { pi } = makeFakePi();
+  const previousFactory = () => ({
+    render: () => [],
+    handleInput: () => undefined,
+    invalidate: () => undefined,
+  });
+  const installed: { factory: unknown | undefined }[] = [];
+  let current: unknown | undefined = previousFactory;
+  const ctx = {
+    ui: {
+      setEditorComponent: (factory: unknown | undefined) => {
+        current = factory;
+        installed.push({ factory });
+      },
+      getEditorComponent: () => current,
+    },
+  };
+
+  const pending = openInlineInputsForm(pi as never, ctx as never, {
+    workflowName: "ralph",
+    fields: FIELDS,
+    theme: deriveGraphTheme({}),
+  });
+
+  assert.equal(installed.length, 1);
+  const formFactory = installed[0]!.factory as
+    | ((tui: unknown, theme: unknown, kb: unknown) => InlineFormEditor);
+  const editor = formFactory({ requestRender: () => {} }, {}, makeFakeKeybindings());
+
+  // Simulate pi's `/new` session-replacement reset restoring the default editor
+  // before the old workflow form promise settles.
+  ctx.ui.setEditorComponent(undefined);
+  editor.handleInput("\x1b");
+
+  const result = await pending;
+  assert.equal(result.kind, "cancel");
+  assert.equal(
+    installed.length,
+    2,
+    "old form must not write previousFactory into the new session",
+  );
+  assert.equal(installed[1]!.factory, undefined);
+});
+
 test("overlay: missing setEditorComponent → immediate unsupported (headless)", async () => {
   _resetForms();
   const { pi } = makeFakePi();
@@ -641,8 +691,10 @@ test("overlay: prefilled values seed rawText", async () => {
 test("overlay: registerInlineFormRenderer preserves class-backed pi method binding", () => {
   class ClassBackedPi {
     readonly renderers = new Map<string, (payload: unknown) => unknown>();
+    calls = 0;
 
     registerMessageRenderer(event: string, renderer: (payload: unknown) => unknown): void {
+      this.calls += 1;
       this.renderers.set(event, renderer);
     }
   }
@@ -652,8 +704,16 @@ test("overlay: registerInlineFormRenderer preserves class-backed pi method bindi
   const first = pi.renderers.get("workflows:input-form");
   registerInlineFormRenderer(pi as never, deriveGraphTheme({}));
   const second = pi.renderers.get("workflows:input-form");
-  // Second call did not re-register (same fn reference, or unchanged).
+  // Second call on the same live host did not re-register.
   assert.equal(first, second);
+  assert.equal(pi.calls, 1);
+
+  // A replacement session gets a fresh ExtensionAPI host while the module stays
+  // cached, so renderer registration must happen for that new host too.
+  const replacementPi = new ClassBackedPi();
+  registerInlineFormRenderer(replacementPi as never, deriveGraphTheme({}));
+  assert.equal(replacementPi.calls, 1);
+  assert.notEqual(replacementPi.renderers.get("workflows:input-form"), undefined);
 });
 // ── multi-line text field (rich-text prompt box) ──────────────────────────
 

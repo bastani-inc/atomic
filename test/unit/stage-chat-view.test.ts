@@ -12,16 +12,21 @@
  * cross-ref: src/tui/stage-chat-view.ts
  */
 
-import { describe, test } from "bun:test";
+import { beforeAll, describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { makeFakeKeybindings } from "../support/fake-keybindings.js";
 import { StageChatView } from "../../packages/workflows/src/tui/stage-chat-view.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import type { StageControlHandle } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
-import { SessionManager, type AgentSession, type AgentSessionEvent } from "@earendil-works/pi-coding-agent";
+import { initTheme, SessionManager, type AgentSession, type AgentSessionEvent } from "@earendil-works/pi-coding-agent";
+
+beforeAll(() => {
+  initTheme("dark", false);
+});
 
 interface HandleState {
   promptCalls: Array<string>;
@@ -114,6 +119,37 @@ async function flush(): Promise<void> {
 }
 
 describe("StageChatView", () => {
+  test("uses coding-agent CustomEditor when pi overlay host objects are provided", async () => {
+    const store = createStore();
+    setupRun(store, "run-1", "stage-a", "pending");
+    const { handle, state } = makeHandle();
+    const view = new StageChatView({
+      store,
+      graphTheme: deriveGraphTheme({}),
+      runId: "run-1",
+      stageId: "stage-a",
+      workflowName: "test-wf",
+      handle,
+      onDetach: () => {},
+      onClose: () => {},
+      piTui: {
+        requestRender: () => {},
+        terminal: { rows: 40, columns: 96 },
+      } as never,
+      piKeybindings: makeFakeKeybindings(),
+    });
+
+    for (const ch of "hello") view.handleInput(ch);
+    assert.equal(view._inputBuffer, "hello");
+    assert.match(view.render(96).join("\n"), /hello/);
+    view.handleInput("\r");
+    await flush();
+    await flush();
+    assert.deepEqual(state.promptCalls, ["hello"]);
+    assert.equal(view._inputBuffer, "");
+    view.dispose();
+  });
+
   test("idle Enter calls handle.prompt", async () => {
     const store = createStore();
     setupRun(store, "run-1", "stage-a", "pending");
@@ -652,9 +688,8 @@ describe("StageChatView", () => {
     assert.equal(entry?.text.includes("ok"), true);
     const renderedLines = view.render(96);
     assert.match(renderedLines.join("\n"), /ok/);
-    const toolLine = renderedLines.find((line) => line.includes("bash"));
+    const toolLine = renderedLines.find((line) => line.includes("$ ls"));
     assert.notEqual(toolLine, undefined);
-    assert.equal(toolLine!.indexOf("\x1b[0m"), toolLine!.length - "\x1b[0m".length);
     view.dispose();
   });
 

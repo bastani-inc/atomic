@@ -19,6 +19,7 @@
  *  - src/runs/foreground/stage-control-registry.ts (live handles)
  */
 
+import type { Component, TUI } from "@earendil-works/pi-tui";
 import type { Store } from "../shared/store.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { GraphView } from "./graph-view.js";
@@ -62,6 +63,9 @@ export interface WorkflowAttachPaneOpts {
   onKill?: (runId: string) => void;
   /** Called when the user resolves a HIL prompt via the graph view. */
   onPromptResolve?: (runId: string, promptId: string, response: unknown) => void;
+  /** Live pi-tui host objects used by attached stage chat to reuse coding-agent editor UI. */
+  piTui?: TUI;
+  piKeybindings?: unknown;
   /**
    * Optional override: pre-select chat mode for a stage on construction.
    * Used by `/workflow attach <runId> <stageId>` so the popup opens
@@ -88,13 +92,6 @@ export interface WorkflowAttachPaneOpts {
 
 export type WorkflowAttachPaneMode = "graph" | "stage-chat";
 
-interface Component {
-  render(width: number): string[];
-  handleInput?(data: string): boolean | void;
-  invalidate?(): void;
-  dispose?(): void;
-}
-
 const STATUS_KEY = "pi-workflows";
 
 export class WorkflowAttachPane implements Component {
@@ -109,6 +106,8 @@ export class WorkflowAttachPane implements Component {
   private onPromptResolve?: (runId: string, promptId: string, response: unknown) => void;
   private getViewportRows?: () => number | undefined;
   private hostRequestRender?: () => void;
+  private piTui?: TUI;
+  private piKeybindings?: unknown;
 
   private mode: WorkflowAttachPaneMode = "graph";
   private graphView: GraphView;
@@ -128,6 +127,8 @@ export class WorkflowAttachPane implements Component {
     this.onPromptResolve = opts.onPromptResolve;
     this.getViewportRows = opts.getViewportRows;
     this.hostRequestRender = opts.requestRender;
+    this.piTui = opts.piTui;
+    this.piKeybindings = opts.piKeybindings;
 
     this.graphView = this._buildGraphView();
 
@@ -201,6 +202,8 @@ export class WorkflowAttachPane implements Component {
       onDetach: () => this._detachFromStage(),
       onClose: this.onClose,
       requestRender: this.hostRequestRender,
+      piTui: this.piTui,
+      piKeybindings: this.piKeybindings,
       getViewportRows: this.getViewportRows,
     });
     this.store.recordStageAttached(runId, stageId, true);

@@ -67,7 +67,7 @@ export interface OpenInlineFormOpts {
 // Message renderer registration
 // ---------------------------------------------------------------------------
 
-let rendererRegistered = false;
+const rendererRegisteredHosts = new WeakSet<object>();
 
 /**
  * Renderer return shape (subset of pi-tui's `Component`). Defined locally so
@@ -82,15 +82,18 @@ interface CardComponent {
 type RawRenderer = (payload: unknown) => string | CardComponent | undefined;
 
 /**
- * Wire the message renderer once. Safe to call repeatedly — the second call
- * is a no-op so the closure (and captured theme) survives.
+ * Wire the message renderer once per live ExtensionAPI host. pi creates a new
+ * extension host on `/new`, `/resume`, `/fork`, and `/reload`, while jiti may
+ * keep this module cached. A process-global boolean would skip registration in
+ * the replacement session and leave emitted workflow form messages without a
+ * renderer.
  *
  * Theme is captured at registration. If pi's active theme changes later the
  * renderer continues with the original; acceptable since these cards are
  * mostly historical artefacts.
  */
 export function registerInlineFormRenderer(pi: ExtensionAPI, theme: GraphTheme): void {
-  if (rendererRegistered) return;
+  if (rendererRegisteredHosts.has(pi)) return;
   const register = pi.registerMessageRenderer;
   if (typeof register !== "function") return;
 
@@ -132,7 +135,7 @@ export function registerInlineFormRenderer(pi: ExtensionAPI, theme: GraphTheme):
     CUSTOM_TYPE,
     renderer,
   );
-  rendererRegistered = true;
+  rendererRegisteredHosts.add(pi);
 }
 
 // ---------------------------------------------------------------------------
@@ -212,7 +215,30 @@ export async function openInlineInputsForm(
   return new Promise<InlineFormResult>((resolve) => {
     let resolved = false;
     let activeEditor: PiEditorComponent | undefined;
+    let installedFactory: PiEditorFactory | undefined;
+    const shouldRestorePreviousEditor = (): boolean => {
+      if (typeof getEditor !== "function") return true;
+      try {
+        return getEditor.call(ctx.ui) === installedFactory;
+      } catch (err) {
+        // During `/new`, `/resume`, `/fork`, and `/reload`, pi marks the old
+        // extension command context as stale before tearing down the old editor
+        // surface. A workflow form that settles after that point must not write
+        // its captured pre-switch editor factory back into the fresh session.
+        if (
+          err instanceof Error &&
+          err.message.includes("This extension ctx is stale")
+        ) {
+          return false;
+        }
+        // Preserve the previous best-effort behavior for older or unusual hosts:
+        // if introspection fails for a non-stale reason, still try the restore
+        // and let the existing setEditor catch below keep the command safe.
+        return true;
+      }
+    };
     const restorePreviousEditor = (): void => {
+      if (!shouldRestorePreviousEditor()) return;
       try {
         setEditor.call(ctx.ui, previous);
       } catch {
@@ -252,6 +278,8 @@ export async function openInlineInputsForm(
       });
       return activeEditor;
     };
+
+    installedFactory = factory;
 
     try {
       setEditor.call(ctx.ui, factory);

@@ -1,25 +1,16 @@
 /**
- * StageChatView — Pi-box-style chat surface for an attached workflow stage.
+ * StageChatView — attached workflow-stage chat surface.
  *
- * Visual contract: ui/stage-chat-mockup.html. Same outer popup chrome as the
- * orchestrator graph; only the interior swaps. The interior reuses pi-tui
- * component primitives (`Box`, `Text`, `Spacer`) for the leaf cells so the
- * surface reads as Pi-native:
- *  - **user** messages render as full-width filled bars (`Box` with surface0 bg)
- *  - **assistant** prose renders as plain `Text` with no chrome
- *  - **thinking** renders as italic-dim `Text`
- *  - **tool** invocations render as filled bars tinted by state (pending /
- *    success / error) with name + args + badge head and an optional output row
- *  - **notices** (workflow steering ops persisted on `StageSnapshot.notices`
- *    by `setModel` / `setThinkingLevel` / `compact` / …) render as inline
- *    `~ kw → value   meta` rows
- *  - **paused** / **completed** / **failed** banners are full-width filled bars
- *  - the **loader** is a top rule + ` ⠴ Working · … ` + bottom rule when the
- *    handle is streaming
- *  - the **editor** is a single ` ❯ … ` row sandwiched between two rules,
- *    matching Pi's `CustomEditor` band
- *  - the **footer** is two dim lines mirroring Pi's `FooterComponent`
- *  - the **hint strip** sits below a dashed rule
+ * The overlay keeps workflow-specific chrome for stage metadata / controls, but
+ * the chat body now delegates to packages/coding-agent's exported interactive
+ * components instead of maintaining parallel workflow message widgets:
+ *  - user rows use `UserMessageComponent`
+ *  - assistant/thinking rows use `AssistantMessageComponent`
+ *  - tool rows use `ToolExecutionComponent` and built-in tool renderers
+ *  - input uses `CustomEditor` when the live pi overlay host provides `tui` and
+ *    `keybindings` (tests/headless fall back to the historical one-line editor)
+ *  - workflow notices remain lightweight workflow-specific rows because they
+ *    are not coding-agent chat messages
  *
  * Behaviour:
  *  - **Idle** stage (empty transcript, not streaming, not settled): welcome
@@ -44,13 +35,22 @@
  *  - node_modules/@earendil-works/pi-tui/src/components/{box,text,spacer}.ts
  */
 
-import { Box, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
-import type { MarkdownTheme } from "@earendil-works/pi-tui";
+import {
+  AssistantMessageComponent,
+  CustomEditor,
+  SessionManager,
+  ToolExecutionComponent,
+  UserMessageComponent,
+  type AgentSession,
+  type AgentSessionEvent,
+  type SessionMessageEntry,
+} from "@earendil-works/pi-coding-agent";
+import { Box, Spacer, Text } from "@earendil-works/pi-tui";
+import type { Component, EditorTheme, TUI } from "@earendil-works/pi-tui";
 import type { Store } from "../shared/store.js";
 import type { StageNotice, StageSnapshot } from "../shared/store-types.js";
 import type { GraphTheme } from "./graph-theme.js";
 import type { StageControlHandle } from "../runs/foreground/stage-control-registry.js";
-import { SessionManager, type AgentSession, type AgentSessionEvent, type SessionMessageEntry } from "@earendil-works/pi-coding-agent";
 import { BOLD, RESET, hexBg, hexToAnsi, lerpColor } from "./color-utils.js";
 import { truncateToWidth, visibleWidth } from "./text-helpers.js";
 
@@ -76,6 +76,9 @@ export interface StageChatViewOpts {
   onClose: () => void;
   /** Request a host TUI repaint after SDK events mutate local chat state. */
   requestRender?: () => void;
+  /** Live pi-tui host objects. When present, stage input uses coding-agent's CustomEditor. */
+  piTui?: TUI;
+  piKeybindings?: unknown;
   /**
    * Optional accessor returning the current terminal row count. The chat
    * surface expands its body band to roughly `viewportRows` minus the fixed
@@ -132,19 +135,6 @@ type TranscriptEntry =
   | NoticeEntry;
 type AgentSnapshotMessage = AgentSession["messages"][number];
 
-/**
- * Local Component interface mirroring pi-tui's `Component` shape so the
- * `WorkflowAttachPane` can treat us as a peer of `GraphView`. We keep
- * `handleInput` returning `boolean | void` for the existing parent-pane
- * absorb-or-bubble contract.
- */
-interface Component {
-  render(width: number): string[];
-  handleInput?(data: string): boolean | void;
-  invalidate?(): void;
-  dispose?(): void;
-}
-
 // ---------------------------------------------------------------------------
 // Frame budget
 // ---------------------------------------------------------------------------
@@ -175,13 +165,9 @@ const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", 
 const ANIMATION_FRAME_MS = 80;
 
 const ITALIC = "\x1b[3m";
-const UNDERLINE = "\x1b[4m";
-const STRIKETHROUGH = "\x1b[9m";
 const FG_RESET = "\x1b[39m";
 const WEIGHT_RESET = "\x1b[22m";
 const ITALIC_RESET = "\x1b[23m";
-const UNDERLINE_RESET = "\x1b[24m";
-const STRIKETHROUGH_RESET = "\x1b[29m";
 
 // ---------------------------------------------------------------------------
 // StageChatView
@@ -198,6 +184,7 @@ export class StageChatView implements Component {
   private onClose: () => void;
   private requestRender: (() => void) | undefined;
   private getViewportRows?: () => number | undefined;
+  private editor: CustomEditor | undefined;
 
   private inputBuffer = "";
   private transcript: TranscriptEntry[] = [];
@@ -234,6 +221,7 @@ export class StageChatView implements Component {
     this.onClose = opts.onClose;
     this.requestRender = opts.requestRender;
     this.getViewportRows = opts.getViewportRows;
+    this.editor = this._createEditor(opts.piTui, opts.piKeybindings);
 
     // Seed transcript from the live SDK session at attach time, plus any
     // stage notices the workflow body has already recorded.
@@ -268,6 +256,23 @@ export class StageChatView implements Component {
       });
     }
     this._syncAnimationTick();
+  }
+
+  private _createEditor(tui: TUI | undefined, keybindings: unknown): CustomEditor | undefined {
+    if (!tui || !keybindings) return undefined;
+    const editor = new CustomEditor(
+      tui,
+      editorThemeFromGraphTheme(this.theme),
+      keybindings as ConstructorParameters<typeof CustomEditor>[2],
+      { paddingX: 1, autocompleteMaxVisible: 5 },
+    );
+    editor.onChange = (text) => {
+      this.inputBuffer = text;
+    };
+    editor.onSubmit = (text) => {
+      void this._submit("auto", text);
+    };
+    return editor;
   }
 
   // -------------------------------------------------------------------------
@@ -963,23 +968,21 @@ export class StageChatView implements Component {
   }
 
   // -------------------------------------------------------------------------
-  // Transcript entry → pi-tui Component. Each variant matches a Pi-box
-  // primitive (UserMessageComponent / AssistantMessageComponent /
-  // ToolExecutionComponent / inline-thinking / CustomMessageComponent) so
-  // the in-overlay interior reads as Pi-native chrome — see
-  // https://pi.dev/docs/latest/tui for the canonical contract.
+  // Transcript entry → pi/coding-agent Component. Stage chat deliberately uses
+  // the same exported message/tool components as the main interactive chat
+  // instead of maintaining parallel workflow-specific bubbles.
   // -------------------------------------------------------------------------
 
   private _renderEntry(entry: TranscriptEntry): Component {
     switch (entry.role) {
       case "user":
-        return this._userBar(entry);
+        return new UserMessageComponent(entry.text);
       case "assistant":
-        return this._assistantProse(entry);
+        return new AssistantMessageComponent(assistantMessageForText(entry.text));
       case "thinking":
-        return this._thinkingProse(entry);
+        return new AssistantMessageComponent(assistantMessageForThinking(entry.text));
       case "tool":
-        return this._toolBar(entry);
+        return this._toolExecution(entry);
       case "notice":
         return this._noticeRow(entry);
       case "system":
@@ -987,72 +990,35 @@ export class StageChatView implements Component {
     }
   }
 
-  private _userBar(entry: UserEntry): Component {
-    // Pi's UserMessageComponent is a filled Box containing Markdown. Keep the
-    // same structure, but use background-preserving inline styles so the fill
-    // covers the complete row even after bold/code/list tokens reset styling.
-    const bg = this.theme.backgroundPanel;
-    const box = new Box(1, 1, bgFn(bg));
-    box.addChild(
-      new Markdown(entry.text, 0, 0, markdownTheme(this.theme, "fill"), {
-        color: (content: string) => paintOnFill(content, this.theme.text),
-      }),
+  private _toolExecution(entry: ToolEntry): Component {
+    const component = new ToolExecutionComponent(
+      entry.name,
+      entry.toolCallId ?? `workflow-${entry.name}`,
+      toolArgsForRender(entry),
+      { showImages: true },
+      undefined,
+      this._toolTui(),
+      process.cwd(),
     );
-    return box;
-  }
-
-  private _assistantProse(entry: AssistantEntry): Component {
-    // Fork Pi's AssistantMessageComponent behavior: assistant prose is
-    // Markdown, not plain Text, so lists, headings, links and code fences
-    // render with the same terminal-native hierarchy as the main chat.
-    return new Markdown(entry.text.trim(), 1, 0, markdownTheme(this.theme, "normal"), {
-      color: (content: string) => paint(content, this.theme.text),
-    });
-  }
-
-  private _thinkingProse(entry: ThinkingEntry): Component {
-    // Fork Pi's thinking block rendering: Markdown plus dim italic default
-    // style, not plain text, so model reasoning preserves structure.
-    return new Markdown(entry.text.trim(), 1, 0, markdownTheme(this.theme, "normal"), {
-      color: (content: string) => paint(content, this.theme.dim),
-      italic: true,
-    });
-  }
-
-  private _toolBar(entry: ToolEntry): Component {
-    const t = this.theme;
-    // Tint the bar bg toward the state colour. Mirrors Pi's
-    // pi-tool-{pending,success,error}-bg vocabulary — dim the status hue
-    // against the canvas so the bar reads as "a tool ran here" without
-    // screaming.
-    const tint =
-      entry.state === "success"
-        ? blendBg(t.bg, t.success, 0.12)
-        : entry.state === "error"
-        ? blendBg(t.bg, t.error, 0.14)
-        : blendBg(t.bg, t.textMuted, 0.10);
-    const badgeColor =
-      entry.state === "success" ? t.success : entry.state === "error" ? t.error : t.accent;
-    const badge =
-      entry.state === "pending"
-        ? `${spinnerFrame()} RUNNING`
-        : entry.state === "success"
-        ? "✓"
-        : "✗";
-
-    const head =
-      paintOnFill(stripAnsi(entry.name), t.text, { bold: true }) +
-      (entry.args ? "  " + paintOnFill(stripAnsi(entry.args), t.textMuted) : "") +
-      "  " +
-      paintOnFill(badge, badgeColor, { bold: true });
-
-    const box = new Box(2, 0, bgFn(tint));
-    box.addChild(new Text(head, 0, 0));
-    if (entry.output) {
-      const trimmed = entry.output.length > 240 ? entry.output.slice(0, 240) + "…" : entry.output;
-      box.addChild(new Text(paintOnFill(stripAnsi(trimmed), t.textMuted), 0, 0));
+    if (entry.state !== "pending" || entry.output) {
+      component.updateResult(
+        {
+          content: entry.output
+            ? [{ type: "text", text: entry.output }]
+            : [],
+          isError: entry.state === "error",
+          details: {},
+        },
+        entry.state === "pending",
+      );
     }
-    return box;
+    return component;
+  }
+
+  private _toolTui(): TUI {
+    return {
+      requestRender: () => this.requestRender?.(),
+    } as TUI;
   }
 
   private _noticeRow(entry: NoticeEntry): Component {
@@ -1148,6 +1114,9 @@ export class StageChatView implements Component {
     const t = this.theme;
     // Disabled (settled or blocked) uses surface1 rules + dim placeholder.
     const disabled = flags.settled || flags.blocked || !this.handle;
+    if (!disabled && this.editor) {
+      return this.editor.render(width);
+    }
     const ruleHex = disabled ? t.borderDim : t.border;
     const rule = hexToAnsi(ruleHex) + "─".repeat(width) + RESET;
 
@@ -1334,6 +1303,11 @@ export class StageChatView implements Component {
       void this._submit("followUp");
       return true;
     }
+    if (this.editor) {
+      if (blocked) return true;
+      this.editor.handleInput(data);
+      return true;
+    }
     if (data === "\r" || data === "\n") {
       if (blocked) return true;
       void this._submit("auto");
@@ -1374,10 +1348,11 @@ export class StageChatView implements Component {
     }
   }
 
-  private async _submit(mode: "auto" | "followUp"): Promise<void> {
-    const text = this.inputBuffer.trim();
+  private async _submit(mode: "auto" | "followUp", submittedText?: string): Promise<void> {
+    const text = (submittedText ?? this.inputBuffer).trim();
     if (!text) return;
     this.inputBuffer = "";
+    this.editor?.setText("");
     if (!this.handle) {
       this.statusMessage = "no live handle on this stage";
       this.transcript.push({
@@ -1433,6 +1408,7 @@ export class StageChatView implements Component {
       clearInterval(this.animationTimer);
       this.animationTimer = undefined;
     }
+    this.editor = undefined;
   }
 
   // ---- Test seams ----
@@ -1456,6 +1432,34 @@ export class StageChatView implements Component {
 // ---------------------------------------------------------------------------
 // Module-private helpers
 // ---------------------------------------------------------------------------
+
+type AssistantComponentMessage = NonNullable<
+  ConstructorParameters<typeof AssistantMessageComponent>[0]
+>;
+
+function assistantMessageForText(text: string): AssistantComponentMessage {
+  return {
+    role: "assistant",
+    content: [{ type: "text", text }],
+    stopReason: "stop",
+  } as AssistantComponentMessage;
+}
+
+function assistantMessageForThinking(text: string): AssistantComponentMessage {
+  return {
+    role: "assistant",
+    content: [{ type: "thinking", thinking: text }],
+    stopReason: "stop",
+  } as AssistantComponentMessage;
+}
+
+function toolArgsForRender(entry: ToolEntry): Record<string, unknown> {
+  if (!entry.args) return {};
+  if (entry.name === "bash") {
+    return { command: entry.args.replace(/^command=/, "") };
+  }
+  return { input: entry.args };
+}
 
 function isMessageLike(message: unknown): message is { role?: unknown; content?: unknown; stopReason?: unknown; errorMessage?: unknown } {
   return message !== null && typeof message === "object" && "role" in message;
@@ -1707,25 +1711,20 @@ function bgFn(hex: string): (text: string) => string {
   return (text: string) => open + text + RESET;
 }
 
-function markdownTheme(t: GraphTheme, mode: "normal" | "fill"): MarkdownTheme {
-  const color = mode === "fill" ? paintOnFill : paint;
-  const decorate = mode === "fill" ? decorateOnFill : decorateNormal;
+function editorThemeFromGraphTheme(t: GraphTheme): EditorTheme {
+  const selected = (text: string): string => hexBg(t.backgroundPanel) + hexToAnsi(t.text) + text + RESET;
+  const normal = (text: string): string => hexToAnsi(t.text) + text + RESET;
   return {
-    heading: (text: string) => color(text, t.accent, { bold: true }),
-    link: (text: string) => color(text, t.info),
-    linkUrl: (text: string) => color(text, t.dim),
-    code: (text: string) => color(text, t.warning),
-    codeBlock: (text: string) => color(text, t.textMuted),
-    codeBlockBorder: (text: string) => color(text, t.borderDim),
-    quote: (text: string) => color(text, t.textMuted, { italic: true }),
-    quoteBorder: (text: string) => color(text, t.borderDim),
-    hr: (text: string) => color(text, t.borderDim),
-    listBullet: (text: string) => color(text, t.accent),
-    bold: (text: string) => decorate(text, "bold"),
-    italic: (text: string) => decorate(text, "italic"),
-    underline: (text: string) => decorate(text, "underline"),
-    strikethrough: (text: string) => decorate(text, "strikethrough"),
-  };
+    borderColor: (text: string) => hexToAnsi(t.border) + text + RESET,
+    selectList: {
+      selectedPrefix: selected,
+      selectedText: selected,
+      description: (text: string) => hexToAnsi(t.dim) + text + RESET,
+      scrollInfo: (text: string) => hexToAnsi(t.dim) + text + RESET,
+      noMatch: (text: string) => hexToAnsi(t.warning) + text + RESET,
+      normal,
+    },
+  } as EditorTheme;
 }
 
 interface PaintOpts {
@@ -1757,22 +1756,6 @@ function paintOnFill(text: string, fg: string, opts: PaintOpts = {}): string {
   if (opts.bold) close += WEIGHT_RESET;
   if (opts.italic) close += ITALIC_RESET;
   return out + text + close;
-}
-
-function decorateNormal(text: string, kind: "bold" | "italic" | "underline" | "strikethrough"): string {
-  const open = kind === "bold" ? BOLD : kind === "italic" ? ITALIC : kind === "underline" ? UNDERLINE : STRIKETHROUGH;
-  return open + text + RESET;
-}
-
-function decorateOnFill(text: string, kind: "bold" | "italic" | "underline" | "strikethrough"): string {
-  const [open, close] = kind === "bold"
-    ? [BOLD, WEIGHT_RESET]
-    : kind === "italic"
-    ? [ITALIC, ITALIC_RESET]
-    : kind === "underline"
-    ? [UNDERLINE, UNDERLINE_RESET]
-    : [STRIKETHROUGH, STRIKETHROUGH_RESET];
-  return open + text + close;
 }
 
 function stripAnsi(s: string): string {
