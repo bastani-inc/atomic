@@ -111,6 +111,7 @@ import { isInstallTelemetryEnabled } from "../../core/telemetry.js";
 import type { TruncationResult } from "../../core/tools/truncate.js";
 import {
   getChangelogPath,
+  getEntriesForVersion,
   getNewEntries,
   parseChangelog,
 } from "../../utils/changelog.js";
@@ -663,7 +664,7 @@ export class InteractiveMode {
     this.chatContainer.addChild(new DynamicBorder());
     if (this.settingsManager.getCollapseChangelog()) {
       const versionMatch = this.changelogMarkdown.match(
-        /##\s+\[?(\d+\.\d+\.\d+)\]?/,
+        /##\s+\[?((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:0|[1-9]\d*))?)\]?/,
       );
       const latestVersion = versionMatch ? versionMatch[1] : this.version;
       const condensedText = `Updated to v${latestVersion}. Use ${theme.bold("/changelog")} to view full changelog.`;
@@ -1003,11 +1004,12 @@ export class InteractiveMode {
       return undefined;
     }
 
-    const newEntries = getNewEntries(entries, lastVersion);
-    if (newEntries.length > 0) {
+    const newEntries = getNewEntries(entries, lastVersion, VERSION);
+    const currentEntries = getEntriesForVersion(newEntries, VERSION);
+    if (currentEntries.length > 0) {
       this.settingsManager.setLastChangelogVersion(VERSION);
       this.reportInstallTelemetry(VERSION);
-      return newEntries.map((e) => e.content).join("\n\n");
+      return currentEntries.map((e) => e.content).join("\n\n");
     }
 
     return undefined;
