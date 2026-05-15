@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.8.1-1] - 2026-05-15
+
+### Fixed
+
+- Fixed the Atomic changelog viewer to show only the current release notes instead of including older sections.
+
 ## [0.8.1-0] - 2026-05-15
 
 ### Fixed
