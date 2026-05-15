@@ -38,7 +38,18 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // DESIGN.json fallback for existing projects.
 const CONTEXT_DIR = resolveContextDir(process.cwd());
 const DEFAULT_POLL_TIMEOUT = 600_000;   // 10 min — agent re-polls on timeout anyway
+const MIN_POLL_TIMEOUT = 1_000;
+const MAX_POLL_TIMEOUT = 600_000;
+const DEFAULT_LEASE_MS = 30_000;
+const MIN_LEASE_MS = 1_000;
+const MAX_LEASE_MS = 300_000;
 const SSE_HEARTBEAT_INTERVAL = 30_000;  // keepalive ping every 30s
+
+function readBoundedInteger(value, fallback, min, max) {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  if (!Number.isSafeInteger(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
+}
 
 // ---------------------------------------------------------------------------
 // Port detection
@@ -600,8 +611,8 @@ function handlePollGet(req, res, url) {
     res.end(JSON.stringify({ error: 'Unauthorized' }));
     return;
   }
-  const timeout = parseInt(url.searchParams.get('timeout') || DEFAULT_POLL_TIMEOUT, 10);
-  const leaseMs = parseInt(url.searchParams.get('leaseMs') || '30000', 10);
+  const timeout = readBoundedInteger(url.searchParams.get('timeout'), DEFAULT_POLL_TIMEOUT, MIN_POLL_TIMEOUT, MAX_POLL_TIMEOUT);
+  const leaseMs = readBoundedInteger(url.searchParams.get('leaseMs'), DEFAULT_LEASE_MS, MIN_LEASE_MS, MAX_LEASE_MS);
   const available = findAvailablePendingEvent();
   if (available) {
     res.writeHead(200, { 'Content-Type': 'application/json' });

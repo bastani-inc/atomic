@@ -3,6 +3,9 @@ name: Tests
 env:
   PREK_DISABLE_INSTALL: "1"
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: [main]

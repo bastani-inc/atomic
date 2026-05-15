@@ -44,12 +44,13 @@ Output (JSON):
   }
 
   const id = argVal(args, '--id');
-  const variantNum = argVal(args, '--variant');
+  const variantNumRaw = argVal(args, '--variant');
   const paramValuesRaw = argVal(args, '--param-values');
   const isDiscard = args.includes('--discard');
 
   if (!id) { console.error('Missing --id'); process.exit(1); }
-  if (!isDiscard && !variantNum) { console.error('Need --discard or --variant N'); process.exit(1); }
+  if (!isDiscard && !variantNumRaw) { console.error('Need --discard or --variant N'); process.exit(1); }
+  const variantNum = isDiscard ? null : parseVariantNumber(variantNumRaw);
 
   let paramValues = null;
   if (paramValuesRaw) {
@@ -307,50 +308,92 @@ function expandReplaceRange(block, lines, isJsx) {
 function stripStyleAndJoin(lines, block) {
   const out = [];
   let inStyle = false;
+
   for (let i = block.start; i <= block.end; i++) {
-    let line = lines[i];
-
-    if (!inStyle) {
-      // Strip any complete <style> elements on this line (self-closed or
-      // same-line-closed), including their body content.
-      line = line
-        .replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/g, '')
-        .replace(/<style\b[^>]*\/\s*>/g, '');
-
-      // If a <style> opener remains (multi-line body starts here), strip from
-      // the opener to end-of-line and flip into skip mode.
-      const openerIdx = line.search(/<style\b/);
-      if (openerIdx !== -1) {
-        line = line.slice(0, openerIdx);
-        inStyle = true;
-      }
-      out.push(line);
-    } else {
-      // In multi-line style body; drop everything until we see </style>.
-      const closeIdx = line.search(/<\/style\s*>/);
-      if (closeIdx !== -1) {
-        inStyle = false;
-        out.push(line.slice(closeIdx).replace(/<\/style\s*>/, ''));
-      }
-      // else: skip line entirely
-    }
+    const { text, stillInStyle } = stripStyleSegmentsFromLine(lines[i], inStyle);
+    inStyle = stillInStyle;
+    if (text !== null) out.push(text);
   }
+
   return out.join('\n');
 }
 
+function stripStyleSegmentsFromLine(line, startsInStyle) {
+  let remaining = line;
+  let output = '';
+  let inStyle = startsInStyle;
+
+  while (remaining.length > 0) {
+    const lower = remaining.toLowerCase();
+
+    if (inStyle) {
+      const closeIdx = lower.indexOf('</style');
+      if (closeIdx === -1) return { text: output || null, stillInStyle: true };
+      const closeEnd = lower.indexOf('>', closeIdx);
+      if (closeEnd === -1) return { text: output || null, stillInStyle: true };
+      remaining = remaining.slice(closeEnd + 1);
+      inStyle = false;
+      continue;
+    }
+
+    const openIdx = lower.indexOf('<style');
+    if (openIdx === -1) {
+      output += remaining;
+      remaining = '';
+      break;
+    }
+
+    output += remaining.slice(0, openIdx);
+    const openEnd = lower.indexOf('>', openIdx);
+    if (openEnd === -1) break;
+
+    const opener = remaining.slice(openIdx, openEnd + 1);
+    if (/\/\s*>$/.test(opener)) {
+      remaining = remaining.slice(openEnd + 1);
+      continue;
+    }
+
+    const afterOpen = remaining.slice(openEnd + 1);
+    const afterOpenLower = afterOpen.toLowerCase();
+    const sameLineClose = afterOpenLower.indexOf('</style');
+    if (sameLineClose === -1) {
+      inStyle = true;
+      remaining = '';
+      break;
+    }
+
+    const closeEnd = afterOpenLower.indexOf('>', sameLineClose);
+    if (closeEnd === -1) {
+      inStyle = true;
+      remaining = '';
+      break;
+    }
+    remaining = afterOpen.slice(closeEnd + 1);
+  }
+
+  return { text: output, stillInStyle: inStyle };
+}
+
 /**
- * Find the inner content of `<TAG ...attrMatch...>…</TAG>` inside `text`,
- * handling nested same-tag elements via depth counting. `attrMatch` is a
- * regex source fragment that must appear inside the opener tag.
- * Returns the inner string (may be empty), or null if not found.
+ * Find the inner content of `<TAG ...attrName="attrValue"...>…</TAG>` inside
+ * `text`, handling nested same-tag elements via depth counting. Returns the
+ * inner string (may be empty), or null if not found.
  */
-function extractInnerByAttr(text, attrMatch) {
-  const openerRe = new RegExp('<([A-Za-z][A-Za-z0-9]*)\\b[^>]*' + attrMatch + '[^>]*>');
-  const openMatch = text.match(openerRe);
+function extractInnerByAttr(text, attrName, attrValue) {
+  const attrNeedle = attrName + '="' + attrValue + '"';
+  const attrIdx = text.indexOf(attrNeedle);
+  if (attrIdx === -1) return null;
+
+  const openStart = text.lastIndexOf('<', attrIdx);
+  const openEnd = text.indexOf('>', attrIdx);
+  if (openStart === -1 || openEnd === -1 || openStart > attrIdx || openEnd < attrIdx) return null;
+
+  const opener = text.slice(openStart, openEnd + 1);
+  const openMatch = opener.match(/^<([A-Za-z][A-Za-z0-9]*)\b/);
   if (!openMatch) return null;
 
   const tagName = openMatch[1];
-  const innerStart = openMatch.index + openMatch[0].length;
+  const innerStart = openEnd + 1;
 
   // Match any opener or closer of this tag name after innerStart.
   // (Does not match self-closing <TAG … />, which doesn't contribute to depth.)
@@ -378,7 +421,7 @@ function extractInnerByAttr(text, attrMatch) {
  */
 function extractOriginal(lines, block) {
   const text = stripStyleAndJoin(lines, block);
-  const inner = extractInnerByAttr(text, 'data-impeccable-variant="original"');
+  const inner = extractInnerByAttr(text, 'data-impeccable-variant', 'original');
   if (inner === null) return [];
   return inner.split('\n');
 }
@@ -389,7 +432,7 @@ function extractOriginal(lines, block) {
  */
 function extractVariant(lines, block, variantNum) {
   const text = stripStyleAndJoin(lines, block);
-  const inner = extractInnerByAttr(text, 'data-impeccable-variant="' + variantNum + '"');
+  const inner = extractInnerByAttr(text, 'data-impeccable-variant', String(variantNum));
   if (inner === null) return null;
   const result = inner.split('\n');
   // Collapse a lone empty leading/trailing line (common after string splice).
@@ -584,6 +627,14 @@ function searchDir(dir, query, seen, depth) {
 function argVal(args, flag) {
   const idx = args.indexOf(flag);
   return idx !== -1 && idx + 1 < args.length ? args[idx + 1] : null;
+}
+
+function parseVariantNumber(value) {
+  if (!/^(?:0|[1-9]\d{0,2})$/.test(value ?? '')) {
+    console.error('Invalid --variant value; expected an integer from 0 to 999');
+    process.exit(1);
+  }
+  return Number(value);
 }
 
 // Auto-execute when run directly
