@@ -4,10 +4,14 @@
 
 This repo is the private `atomic-monorepo` Bun workspace. It currently houses:
 
-- `@bastani/atomic` in `packages/coding-agent` — the Atomic-branded fork of pi's coding-agent CLI.
+- `@bastani/atomic` in `packages/coding-agent` — the Atomic-branded fork of pi's coding-agent CLI and the only independently published package.
 - `@bastani/workflows` in `packages/workflows` — a first-party extension for Atomic/pi that brings multi-stage, DAG-driven workflow execution to agent sessions.
+- `@bastani/subagents` in `packages/subagents` — builtin subagent orchestration, reusable agent definitions, skills, prompts, chains, and TUI clarification support.
+- `@bastani/mcp` in `packages/mcp` — builtin MCP adapter extension that exposes MCP servers as agent tools.
+- `@bastani/web-access` in `packages/web-access` — builtin web search, URL fetching, GitHub repository, PDF, and video extraction tools.
+- `@bastani/intercom` in `packages/intercom` — builtin coordination channel for parent/child and cross-session agent communication.
 
-`@bastani/workflows` ships as **raw TypeScript** (no compile step) and is loaded directly by the host. The coding-agent package follows upstream pi's compiled-package layout.
+Companion packages under `packages/*` ship as **raw TypeScript** (no compile step) and are bundled into `@bastani/atomic` at build time rather than published independently. The coding-agent package follows upstream pi's compiled-package layout.
 
 ## Tech Stack
 
@@ -119,6 +123,14 @@ pi:
 ## Releasing
 
 Atomic mirrors pi's tag-driven release flow: bump versions locally, commit, push a `v<version>` git tag, and CI publishes to npm with OIDC provenance and creates the GitHub Release with cross-compiled binaries attached.
+
+### Agent publishing requests
+
+If a user asks you to publish the package:
+
+- Ask the user with the `ask_user_question`/ask-question tool what version to publish if they have not supplied a version.
+- Ask whether they want a release or prerelease if that cannot be inferred from the supplied version, or if the version is in an incorrect format. Valid formats are `MAJOR.MINOR.PATCH` for releases and `MAJOR.MINOR.PATCH-NUMBER` for prereleases.
+- Remember that publishing is triggered by the git tag flow: create `git tag v<version>` and push it with `git push origin v<version>` after the version bump commit is on the branch. A branch push or PR merge alone does not publish.
 
 ### Bumping Versions
 
