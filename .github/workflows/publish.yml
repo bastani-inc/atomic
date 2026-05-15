@@ -54,7 +54,7 @@ jobs:
           fi
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           ref: ${{ steps.checkout_ref.outputs.ref }}
           fetch-depth: 0
