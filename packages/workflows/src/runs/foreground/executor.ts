@@ -76,6 +76,12 @@ export interface RunOpts {
   /** AbortSignal that requests cancellation from the caller side. */
   signal?: AbortSignal;
   /**
+   * Internal background-runner seam. When true, the executor records the run
+   * synchronously, then yields to the next event-loop turn before invoking user
+   * workflow code so detached dispatch cannot be blocked by pre-await work.
+   */
+  deferWorkflowStart?: boolean;
+  /**
    * Resolved runtime configuration. Injected by the composition root after
    * merging file config with defaults. Downstream tasks (maxDepth, concurrency,
    * status writer) consume this; values are threaded here but not yet acted on.
@@ -890,6 +896,10 @@ function finalizeKilled(
 // Main executor
 // ---------------------------------------------------------------------------
 
+function nextEventLoopTurn(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 export async function run(
   def: WorkflowDefinition,
   inputs: Record<string, unknown>,
@@ -1453,6 +1463,13 @@ export async function run(
 
   // 6. Call def.run(ctx)
   try {
+    if (opts.deferWorkflowStart === true) {
+      await nextEventLoopTurn();
+      if (ownController.signal.aborted) {
+        return finalizeKilled(runId, runSnapshot, activeStore, opts.persistence, opts.onRunEnd);
+      }
+    }
+
     const result = await def.run(ctx);
 
     // Post-body abort check: if signal was aborted at any point before we record

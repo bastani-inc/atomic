@@ -65,6 +65,14 @@ function makeThrowingWorkflow(name: string): WorkflowDefinition {
     .compile() as WorkflowDefinition;
 }
 
+function busyWait(ms: number): void {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    // Intentional synchronous work used to prove detached dispatch does not
+    // run user workflow code before returning the accepted result.
+  }
+}
+
 // ---------------------------------------------------------------------------
 // RFC §4 (runner-level) — runDetached returns before background settles
 // ---------------------------------------------------------------------------
@@ -114,6 +122,62 @@ describe("runDetached — returns immediately", () => {
     const accepted = runDetached(def, {}, { store, cancellation, jobs });
     assert.ok(accepted.message.includes("named-wf-result"));
     assert.deepEqual(accepted.stages, []);
+  });
+
+  test("accepted result returns before synchronous workflow body prefix starts", async () => {
+    const store = createStore();
+    const cancellation = createCancellationRegistry();
+    const jobs = createJobTracker();
+    let bodyStarted = false;
+    const def = defineWorkflow("sync-prefix-wf")
+      .run(async () => {
+        bodyStarted = true;
+        busyWait(100);
+        return { done: true };
+      })
+      .compile() as WorkflowDefinition;
+
+    async function dispatchLike(): Promise<ReturnType<typeof runDetached>> {
+      return runDetached(def, {}, { store, cancellation, jobs });
+    }
+
+    const accepted = await dispatchLike();
+
+    assert.equal(bodyStarted, false);
+    assert.equal(accepted.status, "running");
+    assert.equal(jobs.has(accepted.runId), true);
+    assert.notEqual(store.runs().find((run) => run.id === accepted.runId), undefined);
+
+    const job = jobs.get(accepted.runId);
+    if (job === undefined) throw new Error("expected background job to be registered");
+    await job.promise;
+    assert.equal(bodyStarted, true);
+  });
+
+  test("killing before deferred workflow body starts prevents body execution", async () => {
+    const store = createStore();
+    const cancellation = createCancellationRegistry();
+    const jobs = createJobTracker();
+    let bodyStarted = false;
+    const def = defineWorkflow("killed-before-start-wf")
+      .run(async () => {
+        bodyStarted = true;
+        return { unreached: true };
+      })
+      .compile() as WorkflowDefinition;
+
+    const accepted = runDetached(def, {}, { store, cancellation, jobs });
+    const killed = killRun(accepted.runId, { store, cancellation });
+
+    assert.equal(killed.ok, true);
+
+    const job = jobs.get(accepted.runId);
+    if (job === undefined) throw new Error("expected background job to be registered");
+    await job.promise;
+
+    assert.equal(bodyStarted, false);
+    const run = store.runs().find((snapshot) => snapshot.id === accepted.runId);
+    assert.equal(run?.status, "killed");
   });
 });
 

@@ -44,7 +44,7 @@ export interface DetachedAccepted {
 }
 
 export interface DetachedRunOpts
-  extends Omit<RunOpts, "runId" | "signal" | "cancellation"> {
+  extends Omit<RunOpts, "runId" | "signal" | "cancellation" | "deferWorkflowStart"> {
   /**
    * Override CancellationRegistry (default: singleton cancellationRegistry).
    */
@@ -125,6 +125,7 @@ export function runDetached(
     cancellation: registry,
     store,
     ui: buildBackgroundUIAdapter(store, runId, controller.signal),
+    deferWorkflowStart: true,
   };
 
   // 5. Start background promise
