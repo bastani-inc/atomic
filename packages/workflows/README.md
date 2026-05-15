@@ -1,65 +1,19 @@
-<h1 align="center">Atomic</h1>
-
-<p align="center"><img width="800" height="450" alt="atomic-promo" src="./assets/atomic-promo.gif" /></p>
+<h1 align="center">Atomic Workflows</h1>
 
 <p align="center">
   <b>Turn coding agents into reliable engineering workflows.</b><br>
-  An open-source pi extension——install it, author workflows in TypeScript, run them from chat.
+  An open-source pi extension: install it, author workflows in TypeScript, run them from chat.
 </p>
 
 <p align="center">
-  <a href="#install"><b>Install →</b></a>
-  &nbsp;·&nbsp;
   <a href="#authoring-api">Authoring API</a>
   &nbsp;·&nbsp;
   <a href="#surfaces">Surfaces</a>
   &nbsp;·&nbsp;
   <a href="#builtin-workflows">Builtins</a>
   &nbsp;·&nbsp;
-  <a href="../../DEV_SETUP.md">Development</a>
 </p>
 
-<p align="center">
-  <a href="./package.json"><img src="https://img.shields.io/badge/version-0.8.0-blue" alt="Version 0.8.0"></a>
-  <a href="./package.json"><img src="https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white" alt="TypeScript"></a>
-  <a href="./package.json"><img src="https://img.shields.io/badge/Bun-%E2%89%A51.3.14-fbf0df?logo=bun&logoColor=000" alt="Bun ≥ 1.3.14"></a>
-  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
-</p>
-
----
-
-`@bastani/workflows` brings multi-stage, DAG-driven workflow execution to pi. Workflows are plain TypeScript files that export a compiled workflow definition; the DAG is inferred from your `async/await` and `Promise.all` call patterns at runtime — no YAML, no graph config. Each stage runs as an isolated sub-session. A live above-editor widget and on-demand DAG overlay give you real-time progress visibility. Runs are persisted to the session store so they can be inspected, restored, or resumed when supported by the active run state.
-
-The package ships as raw TypeScript (no build step) and is loaded by pi directly from source. Workflow stages run through pi's in-process SDK `AgentSession` surface, so stage options are forwarded to `createAgentSession()`.
-
----
-
-## Prerequisites
-
-- **pi** — install [pi](https://github.com/earendil-works/pi#installation).
-
-## Install
-
-`@bastani/workflows` is a private workspace package bundled into the Atomic CLI package. Install Atomic to get workflows plus the companion pi packages as builtin extensions:
-
-```bash
-bunx @bastani/atomic
-# or install globally
-bun install -g @bastani/atomic
-```
-
-Atomic loads the bundled package's `pi` manifest and auto-registers the extension entry at `src/extension/index.ts`. Reload from inside Atomic with `/reload`.
-
-### Companion pi packages
-
-Atomic bundles the runtime companion packages used by workflows:
-
-- `pi-subagents`
-- `pi-mcp-adapter`
-- `pi-web-access`
-- `pi-intercom`
-
-Detection is structural (slash-command + tool-registry inspection), so capability presence stays accurate across bundled, npm, git, and local-path installs.
 
 ### Custom workflow directories
 
@@ -245,8 +199,6 @@ Workflows always run as **background tasks** — the chat editor stays free whil
 
 ### `workflow` tool (LLM-callable)
 
-When `@bastani/workflows` is installed, the pi LLM gains access to the `workflow` tool:
-
 ```json
 {
   "name": "workflow",
@@ -344,11 +296,11 @@ Design-system onboarding → reference import → generation → refinement → 
 
 `@bastani/workflows` automatically discovers workflow files from three locations:
 
-| Location                          | Scope      | Example path                           |
-| --------------------------------- | ---------- | -------------------------------------- |
-| `.atomic/workflows/*.ts`          | Project    | `.atomic/workflows/my-workflow.ts`     |
+| Location                          | Scope      | Example path                               |
+| --------------------------------- | ---------- | ------------------------------------------ |
+| `.atomic/workflows/*.ts`          | Project    | `.atomic/workflows/my-workflow.ts`         |
 | `~/.atomic/agent/workflows/*.ts`  | User       | `~/.atomic/agent/workflows/my-workflow.ts` |
-| `workflows.<name>.path` in config | Configured | see config example below               |
+| `workflows.<name>.path` in config | Configured | see config example below                   |
 
 Config-based discovery (`~/.atomic/agent/extensions/workflow/config.json` or `.atomic/extensions/workflow/config.json`):
 
@@ -359,17 +311,6 @@ Config-based discovery (`~/.atomic/agent/extensions/workflow/config.json` or `.a
   }
 }
 ```
-
----
-
-## Host integration
-
-`@bastani/workflows` targets pi directly:
-
-- task delegation can be bridged through pi's `subagent` tool surface when available
-- stage sessions use pi's `createAgentSession()` SDK
-- MCP scope gating uses host event emission when available
-- detached-run HIL uses host session naming + event routing when available
 
 ---
 
