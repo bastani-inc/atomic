@@ -47,8 +47,9 @@ jobs:
           else
             ref="${GITHUB_REF#refs/tags/}"
           fi
-          if [[ ! "$ref" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-            echo "Unexpected tag format: $ref (expected vMAJOR.MINOR.PATCH[-PRE])" >&2
+          release_version_re='(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*))?'
+          if [[ ! "$ref" =~ ^v$release_version_re$ ]]; then
+            echo "Unexpected tag format: $ref (expected vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-NUMBER, e.g. v0.8.0 or v0.8.0-0)" >&2
             exit 1
           fi
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
@@ -85,15 +86,11 @@ jobs:
         run: |
           set -euo pipefail
 
+          release_version_re='(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*))?'
+
           root_name=$(bun --eval 'import pkg from "./package.json" with { type: "json" }; console.log(pkg.name);')
           if [ "$root_name" != "atomic-monorepo" ]; then
             echo "Unexpected root package name: $root_name" >&2
-            exit 1
-          fi
-
-          workflows_private=$(bun --eval 'import pkg from "./packages/workflows/package.json" with { type: "json" }; console.log(pkg.private === true ? "true" : "false");')
-          if [ "$workflows_private" != "true" ]; then
-            echo "packages/workflows is bundled into @bastani/atomic and must remain private (not independently published)." >&2
             exit 1
           fi
 
@@ -108,12 +105,49 @@ jobs:
             exit 1
           fi
 
+          if [[ ! "$version" =~ ^$release_version_re$ ]]; then
+            echo "$PACKAGE_DIR/package.json version $version is invalid (expected MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH-NUMBER, e.g. 0.8.0 or 0.8.0-0)." >&2
+            exit 1
+          fi
+
           if [ "$RELEASE_TAG" != "$expected_tag" ]; then
             echo "Tag $RELEASE_TAG does not match $PACKAGE_DIR/package.json version $version (expected $expected_tag)." >&2
             exit 1
           fi
 
           popd >/dev/null
+
+          while IFS=$'\t' read -r manifest_path manifest_name manifest_version manifest_private; do
+            if [[ ! "$manifest_version" =~ ^$release_version_re$ ]]; then
+              echo "$manifest_path version $manifest_version is invalid (expected MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH-NUMBER)." >&2
+              exit 1
+            fi
+
+            if [ "$manifest_version" != "$version" ]; then
+              echo "$manifest_path version $manifest_version does not match $PACKAGE_DIR/package.json version $version." >&2
+              exit 1
+            fi
+
+            if [ "$manifest_name" != "$PACKAGE_NAME" ] && [ "$manifest_private" != "true" ]; then
+              echo "$manifest_path ($manifest_name) is bundled into $PACKAGE_NAME and must remain private (not independently published)." >&2
+              exit 1
+            fi
+          done < <(bun --eval '
+            import { existsSync, readdirSync } from "node:fs";
+            const rootPkg = await Bun.file("package.json").json();
+            const paths = typeof rootPkg.version === "string" ? ["package.json"] : [];
+            paths.push(
+              ...readdirSync("packages", { withFileTypes: true })
+                .filter((entry) => entry.isDirectory())
+                .map((entry) => `packages/${entry.name}/package.json`)
+                .filter((path) => existsSync(path))
+                .sort(),
+            );
+            for (const path of paths) {
+              const pkg = await Bun.file(path).json();
+              console.log([path, pkg.name, pkg.version, pkg.private === true ? "true" : "false"].join("\t"));
+            }
+          ')
 
           if [[ "$version" == *-* ]]; then
             npm_tag="next"

@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * Bumps every packages/* workspace package to the same version.
+ * Bumps every versioned workspace package manifest to the same release version.
  *
  * Usage:
  *   bun run scripts/bump-version.ts <version>
@@ -10,6 +10,10 @@
  *   bun run scripts/bump-version.ts 0.8.0
  *   bun run scripts/bump-version.ts 0.8.0-0
  *   bun run scripts/bump-version.ts --from-branch   # extracts version from current branch name
+ *
+ * Accepted versions are strict release versions only:
+ *   0.8.0   for stable releases
+ *   0.8.0-0 for prereleases
  *
  * The --from-branch flag reads the current git branch and extracts the version
  * from branch names matching:
@@ -70,6 +74,10 @@ function findRepoRoot(startDir: string): string {
   }
 }
 
+const STRICT_RELEASE_VERSION_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(0|[1-9]\d*))?$/;
+const STABLE_RELEASE_BRANCH_RE = /^(?:release)\/v((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))$/;
+const NUMERIC_PRERELEASE_BRANCH_RE = /^(?:prerelease)\/v((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)-(?:0|[1-9]\d*))$/;
+
 const { rootOverride, positional } = parseArgv();
 
 /**
@@ -79,20 +87,23 @@ const { rootOverride, positional } = parseArgv();
 const ROOT = rootOverride ? resolve(rootOverride) : findRepoRoot(import.meta.dir);
 
 function parseVersionFromBranch(branch: string): string {
-  const match = branch.match(/^(?:release|prerelease)\/v(.+)$/);
-  if (!match) {
-    console.error(
-      `Error: branch "${branch}" does not match release/v<version> or prerelease/v<version>`,
-    );
-    process.exit(1);
-  }
-  return match[1] as string;
+  const stableMatch = branch.match(STABLE_RELEASE_BRANCH_RE);
+  if (stableMatch) return stableMatch[1] as string;
+
+  const prereleaseMatch = branch.match(NUMERIC_PRERELEASE_BRANCH_RE);
+  if (prereleaseMatch) return prereleaseMatch[1] as string;
+
+  console.error(
+    `Error: branch "${branch}" does not match release/vMAJOR.MINOR.PATCH or prerelease/vMAJOR.MINOR.PATCH-NUMBER`,
+  );
+  process.exit(1);
 }
 
 function validateVersion(version: string): void {
-  // Accept semver with optional prerelease suffix: 0.8.0, 0.8.0-0, 1.0.0-rc.1
-  if (!/^\d+\.\d+\.\d+(-[\w.]+)?$/.test(version)) {
-    console.error(`Error: "${version}" is not a valid semver version`);
+  if (!STRICT_RELEASE_VERSION_RE.test(version)) {
+    console.error(
+      `Error: "${version}" is not a valid release version. Expected MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH-NUMBER (for example, 0.8.0 or 0.8.0-0).`,
+    );
     process.exit(1);
   }
 }
@@ -100,7 +111,7 @@ function validateVersion(version: string): void {
 async function getVersion(): Promise<string> {
   const arg = positional[0];
 
-  if (!arg) {
+  if (!arg || positional.length !== 1) {
     console.error("Usage: bun run scripts/bump-version.ts <version|--from-branch>");
     process.exit(1);
   }
@@ -110,18 +121,33 @@ async function getVersion(): Promise<string> {
     return parseVersionFromBranch(branch);
   }
 
-  // Strip leading 'v' if provided.
-  return arg.replace(/^v/, "");
+  return arg;
 }
 
-function packageJsonTargets(): VersionTarget[] {
+async function hasVersionField(filePath: string): Promise<boolean> {
+  const fullPath = resolve(ROOT, filePath);
+  const content = (await Bun.file(fullPath).json()) as PackageJson;
+  return typeof content.version === "string";
+}
+
+async function packageJsonTargets(): Promise<VersionTarget[]> {
   const packagesDir = resolve(ROOT, "packages");
-  return readdirSync(packagesDir, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => `packages/${entry.name}/package.json`)
-    .filter((filePath) => existsSync(resolve(ROOT, filePath)))
-    .sort()
-    .map((filePath) => ({ kind: "json", filePath }));
+  const targets: VersionTarget[] = [];
+
+  if (existsSync(resolve(ROOT, "package.json")) && (await hasVersionField("package.json"))) {
+    targets.push({ kind: "json", filePath: "package.json" });
+  }
+
+  targets.push(
+    ...readdirSync(packagesDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => `packages/${entry.name}/package.json`)
+      .filter((filePath) => existsSync(resolve(ROOT, filePath)))
+      .sort()
+      .map((filePath) => ({ kind: "json" as const, filePath })),
+  );
+
+  return targets;
 }
 
 function readmeTargets(): VersionTarget[] {
@@ -134,8 +160,8 @@ function readmeTargets(): VersionTarget[] {
     .map((filePath) => ({ kind: "readme", filePath, optional: true }));
 }
 
-function versionTargets(): VersionTarget[] {
-  return [...packageJsonTargets(), ...readmeTargets()];
+async function versionTargets(): Promise<VersionTarget[]> {
+  return [...(await packageJsonTargets()), ...readmeTargets()];
 }
 
 function shieldBadgeVersion(version: string): string {
@@ -200,9 +226,9 @@ async function main(): Promise<void> {
   const version = await getVersion();
   validateVersion(version);
 
-  console.log(`Bumping packages/* versions to ${version}\n`);
+  console.log(`Bumping workspace package versions to ${version}\n`);
 
-  for (const target of versionTargets()) {
+  for (const target of await versionTargets()) {
     await bumpTarget(target, version);
   }
 
