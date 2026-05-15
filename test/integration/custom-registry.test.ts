@@ -1,13 +1,12 @@
 /**
- * Integration tests: custom registry shared by tool, slash commands, doctor, CLI.
+ * Integration tests: custom registry shared by tool, slash commands, and doctor.
  *
  * Proves that discoverWorkflows with a project-local workflow yields a registry
  * visible to:
  *   1. Tool dispatch (action='list' / 'inputs' / 'run')
  *   2. buildDoctorReport (custom sources section)
- *   3. runWorkflowFromCliFlags (headless CLI dispatch)
- *   4. /workflow slash command (list output, completions)
- *   5. no per-workflow /workflow:<name> aliases; /workflow <name> dispatch path
+ *   3. /workflow slash command (list output, completions)
+ *   4. no per-workflow /workflow:<name> aliases; /workflow <name> dispatch path
  *
  * All consumers close over the same ExtensionRuntime (runtimeProxy pattern) —
  * the tests verify this shared-registry invariant end-to-end.
@@ -28,7 +27,6 @@ import { createExtensionRuntime } from "../../src/extension/runtime.js";
 import type { ExtensionRuntime } from "../../src/extension/runtime.js";
 import { buildDoctorPayload, buildDoctorReport } from "../../src/extension/doctor.js";
 import type { DoctorSiblingStatus } from "../../src/extension/doctor.js";
-import { runWorkflowFromCliFlags } from "../../src/runs/shared/cli-flags.js";
 import factory, {
   type ExtensionAPI,
   type PiToolOpts,
@@ -296,75 +294,7 @@ describe("buildDoctorReport — custom sources from temp cwd/home", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 4. runWorkflowFromCliFlags — dispatches to same custom runtime
-// ---------------------------------------------------------------------------
-
-describe("runWorkflowFromCliFlags — custom runtime dispatch", () => {
-  test("--workflow <customName> returns handled: true", async () => {
-    const result = await runWorkflowFromCliFlags({
-      runtime,
-      argv: ["--workflow", CUSTOM_WF_NORM],
-    });
-    assert.equal(result.handled, true);
-  });
-
-  test("--workflow <customName> result has status completed or failed (not silent)", async () => {
-    const result = await runWorkflowFromCliFlags({
-      runtime,
-      argv: ["--workflow", CUSTOM_WF_NORM],
-    });
-    assert.equal(result.handled, true);
-    if (result.handled) {
-      assert.ok(["completed", "failed"].includes(result.status));
-    }
-  });
-
-  test("--workflow unknown-xyz returns handled: true with failed status (not silent)", async () => {
-    const result = await runWorkflowFromCliFlags({
-      runtime,
-      argv: ["--workflow", "unknown-xyz-custom"],
-    });
-    assert.equal(result.handled, true);
-    if (result.handled) {
-      assert.equal(result.status, "failed");
-    }
-  });
-
-  test("--workflow absent returns handled: false", async () => {
-    const result = await runWorkflowFromCliFlags({
-      runtime,
-      argv: ["--other-flag", "value"],
-    });
-    assert.equal(result.handled, false);
-  });
-
-  test("--workflow-inputs JSON passed to custom workflow dispatch", async () => {
-    const result = await runWorkflowFromCliFlags({
-      runtime,
-      argv: ["--workflow", CUSTOM_WF_NORM, '--workflow-inputs={"message":"hello"}'],
-    });
-    assert.equal(result.handled, true);
-    // Result may be completed or failed (no real adapters), but it must have dispatched
-    if (result.handled) {
-      assert.ok(["completed", "failed"].includes(result.status));
-    }
-  });
-
-  test("CLI runtime uses same registry as tool: dispatches custom workflow that tool also sees", async () => {
-    // Tool sees the workflow via action='inputs'
-    const toolResult = await runtime.dispatch({ workflow: CUSTOM_WF_NORM, inputs: {}, action: "inputs" });
-    assert.equal(toolResult.action, "inputs");
-    // CLI can also run it (even if it fails in test env)
-    const cliResult = await runWorkflowFromCliFlags({
-      runtime,
-      argv: ["--workflow", CUSTOM_WF_NORM],
-    });
-    assert.equal(cliResult.handled, true);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// 5. /workflow slash command — list and completions see custom registry
+// 4. /workflow slash command — list and completions see custom registry
 // ---------------------------------------------------------------------------
 
 interface MockCmd {
@@ -589,11 +519,11 @@ describe("/workflow <name> dispatch — no per-workflow aliases", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 7. Shared registry invariant — end-to-end across all consumers
+// 6. Shared registry invariant — end-to-end across extension consumers
 // ---------------------------------------------------------------------------
 
-describe("shared registry invariant — all consumers see same workflows", () => {
-  test("tool list, doctor registry count, and CLI dispatch all reflect same registry", async () => {
+describe("shared registry invariant — extension consumers see same workflows", () => {
+  test("tool list and doctor registry count reflect same registry", async () => {
     // 1. Tool: list via runtime
     const listResult = await runtime.dispatch({ workflow: "", inputs: {}, action: "list" });
     const toolNames = (listResult as { action: "list"; items: { name: string }[] }).items.map((i) => i.name);
@@ -607,16 +537,9 @@ describe("shared registry invariant — all consumers see same workflows", () =>
     assert.notEqual(match, null);
     const doctorCount = match ? parseInt(match[1]!, 10) : -1;
     assert.equal(doctorCount, toolNames.length);
-
-    // 3. CLI: can handle one of the custom workflow names
-    const cliResult = await runWorkflowFromCliFlags({
-      runtime,
-      argv: ["--workflow", CUSTOM_WF_NORM],
-    });
-    assert.equal(cliResult.handled, true);
   });
 
-  test("custom workflow visible to tool, doctor, and CLI but NOT in startup bundled registry", async () => {
+  test("custom workflow visible to tool and doctor but NOT in startup bundled registry", async () => {
     // startup bundled discovery (no temp dirs)
     const { discoverStartupWorkflowsSync } = await import("../../src/extension/discovery.js");
     const bundledResult = discoverStartupWorkflowsSync();
@@ -630,17 +553,9 @@ describe("shared registry invariant — all consumers see same workflows", () =>
     // Doctor with full discovery shows it
     const report = doctorReport(discoveryResult, noSiblings);
     assert.ok(report.includes(CUSTOM_WF_NORM));
-
-    // CLI with custom runtime handles it
-    const cliResult = await runWorkflowFromCliFlags({
-      runtime,
-      argv: ["--workflow", CUSTOM_WF_NORM],
-    });
-    assert.equal(cliResult.handled, true);
   });
 
-  test("custom workflow inputs schema consistent across tool and CLI dispatch", async () => {
-    // Tool: inputs action
+  test("custom workflow inputs schema is available through tool dispatch", async () => {
     const inputsResult = await runtime.dispatch({ workflow: CUSTOM_WF_NORM, inputs: {}, action: "inputs" });
     const r = inputsResult as { action: "inputs"; inputs: Array<{ name: string; type: string }> };
     const inputsByName = Object.fromEntries(r.inputs.map((i) => [i.name, i]));
@@ -649,12 +564,5 @@ describe("shared registry invariant — all consumers see same workflows", () =>
     assert.equal(inputsByName["message"]!.type, "string");
     assert.notEqual(inputsByName["count"], undefined);
     assert.equal(inputsByName["count"]!.type, "number");
-
-    // CLI: dispatch with well-formed inputs (same schema path)
-    const cliResult = await runWorkflowFromCliFlags({
-      runtime,
-      argv: ["--workflow", CUSTOM_WF_NORM, '--workflow-inputs={"message":"hello"}'],
-    });
-    assert.equal(cliResult.handled, true);
   });
 });

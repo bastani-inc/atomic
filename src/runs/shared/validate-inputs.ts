@@ -1,7 +1,7 @@
 /**
  * validateInputs — check a parsed input bag against a workflow's declared
- * input schema. Used by the CLI flag path to reject malformed
- * --workflow-inputs / --inputs payloads before dispatch.
+ * input schema. Used by slash-command and programmatic SDK dispatch paths to
+ * reject malformed input payloads before dispatch.
  *
  * Reports:
  *   - unknown input keys (catches typos like "propmt")

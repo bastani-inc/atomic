@@ -1,15 +1,14 @@
 /**
  * Integration tests: MCP scope events emitted via public extension entrypoints.
  *
- * Asserts that registered tool execute, slash command execute path, and CLI
- * flag run all cause pi.events.emit to receive:
+ * Asserts that registered tool execute and slash command execute paths cause
+ * pi.events.emit to receive:
  *   mcp.scope.set { allow: ["github"], deny: ["filesystem"] }  ← stage open
  *   mcp.scope.set { allow: null, deny: null }                  ← stage clear (after settle)
  *
  * cross-ref: src/extension/index.ts (factory, makeMcpPort,
  *            makeExecuteWorkflowTool)
  *            src/integrations/mcp.ts (setMcpScope, clearMcpScope)
- *            src/cli-flags.ts (runWorkflowFromCliFlags)
  */
 
 import { beforeEach, describe, test } from "bun:test";
@@ -24,7 +23,6 @@ import {
 } from "../../src/extension/index.js";
 import { createExtensionRuntime } from "../../src/extension/runtime.js";
 import { defineWorkflow } from "../../src/workflows/define-workflow.js";
-import { runWorkflowFromCliFlags } from "../../src/runs/shared/cli-flags.js";
 import type { McpScopeSetPayload } from "../../src/extension/mcp.js";
 import type { StageAdapters } from "../../src/runs/foreground/stage-runner.js";
 import { waitForRun } from "../support/helpers.ts";
@@ -253,56 +251,3 @@ describe("MCP entrypoints — slash command execute path", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// CLI flag entrypoint
-// ---------------------------------------------------------------------------
-
-describe("MCP entrypoints — CLI flag run", () => {
-  let emits: ScopeEmit[];
-  let runtime: ReturnType<typeof buildTestRuntime>;
-
-  beforeEach(() => {
-    const { pi, emits: e } = makeMockPiWithEvents();
-    emits = e;
-    runtime = buildTestRuntime(pi);
-  });
-
-  test("runWorkflowFromCliFlags emits mcp.scope.set (set then clear) when running mcp-restricted workflow", async () => {
-    const result = await runWorkflowFromCliFlags({
-      runtime,
-      argv: ["--workflow=mcp-restricted"],
-    });
-
-    assert.equal(result.handled, true);
-    if (result.handled && result.result) {
-      await waitForDispatchResult(result.result);
-    }
-    assertScopeEmitSequence(emits);
-  });
-
-  test("CLI clear event has allow: null and deny: null per integrations/mcp.ts clearMcpScope", async () => {
-    const cli = await runWorkflowFromCliFlags({
-      runtime,
-      argv: ["--workflow=mcp-restricted"],
-    });
-    if (cli.handled && cli.result) await waitForDispatchResult(cli.result);
-
-    const clearEmit = emits.find((e) => e.payload.allow === null && e.payload.deny === null);
-    assert.notEqual(clearEmit, undefined);
-    assert.equal(clearEmit!.payload.allow, null);
-    assert.equal(clearEmit!.payload.deny, null);
-  });
-
-  test("CLI set event fires before clear event", async () => {
-    const cli = await runWorkflowFromCliFlags({
-      runtime,
-      argv: ["--workflow=mcp-restricted"],
-    });
-    if (cli.handled && cli.result) await waitForDispatchResult(cli.result);
-
-    const setIdx = emits.findIndex((e) => e.payload.allow !== null);
-    const clearIdx = emits.findIndex((e) => e.payload.allow === null);
-    assert.ok(setIdx >= 0);
-    assert.ok(clearIdx > setIdx);
-  });
-});

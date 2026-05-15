@@ -12,8 +12,8 @@ export type { WorkflowRegistry } from "./workflows/registry.js";
 
 export { run, runTask, runParallel, runChain, resolveInputs } from "./runs/foreground/executor.js";
 export type { RunOpts, RunResult, ResolvedInputs } from "./runs/foreground/executor.js";
-export { parseWorkflowSdkFlags, runWorkflowSdkEntrypoint, runWorkflowSdkSpec } from "./runs/shared/workflow-sdk-entrypoint.js";
-export type { WorkflowSdkEntrypointOptions, WorkflowSdkEntrypointResult, WorkflowSdkEntrypointSpec, WorkflowSdkFlagParseResult } from "./runs/shared/workflow-sdk-entrypoint.js";
+export { runWorkflow } from "./runs/shared/workflow-runner.js";
+export type { WorkflowOptions, WorkflowRunOptions } from "./runs/shared/workflow-runner.js";
 export type { AgentSessionAdapter, StageAdapters } from "./runs/foreground/stage-runner.js";
 export { GraphFrontierTracker } from "./runs/shared/graph-inference.js";
 export type { StageNode } from "./runs/shared/graph-inference.js";

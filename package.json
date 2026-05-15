@@ -28,7 +28,7 @@
     "url": "https://github.com/flora131/atomic/issues"
   },
   "keywords": [
-    "pi-plugin",
+    "pi-package",
     "pi",
     "workflow",
     "orchestration",
@@ -65,6 +65,10 @@
     ],
     "skills": [
       "./skills"
+    ],
+    "prompts": [],
+    "themes": [
+      "themes/*.json"
     ]
   },
   "peerDependencies": {

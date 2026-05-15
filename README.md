@@ -1,8 +1,10 @@
-<h1 align="center">@bastani/atomic-workflows</h1>
+<h1 align="center">Atomic</h1>
+
+<p align="center"><img width="800" height="450" alt="atomic-promo" src="./assets/atomic-promo.gif" /></p>
 
 <p align="center">
-  <b>Multi-stage workflow authoring and execution for <a href="https://github.com/earendil-works/pi">pi</a>.</b><br>
-  An pi extension — install it, author workflows in TypeScript, run them from chat.
+  <b>Turn coding agents into reliable engineering workflows.</b><br>
+  An open-source pi extension——install it, author workflows in TypeScript, run them from chat.
 </p>
 
 <p align="center">
@@ -20,13 +22,13 @@
 <p align="center">
   <a href="./package.json"><img src="https://img.shields.io/badge/version-0.0.1-blue" alt="Version 0.0.1"></a>
   <a href="./package.json"><img src="https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white" alt="TypeScript"></a>
-  <a href="./package.json"><img src="https://img.shields.io/badge/Bun-%E2%89%A51.3.7-fbf0df?logo=bun&logoColor=000" alt="Bun ≥ 1.3.7"></a>
+  <a href="./package.json"><img src="https://img.shields.io/badge/Bun-%E2%89%A51.3.14-fbf0df?logo=bun&logoColor=000" alt="Bun ≥ 1.3.14"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
 </p>
 
 ---
 
-`@bastani/atomic-workflows` brings multi-stage, DAG-driven workflow execution to pi. Workflows are plain TypeScript files that export a `WorkflowDefinition`; the DAG is inferred from your `async/await` and `Promise.all` call patterns at runtime — no YAML, no graph config. Each stage runs as an isolated sub-session. A live above-editor widget and on-demand DAG overlay give you real-time progress visibility. Completed runs are persisted to the session store and can be resumed.
+`@bastani/atomic-workflows` brings multi-stage, DAG-driven workflow execution to pi. Workflows are plain TypeScript files that export a compiled workflow definition; the DAG is inferred from your `async/await` and `Promise.all` call patterns at runtime — no YAML, no graph config. Each stage runs as an isolated sub-session. A live above-editor widget and on-demand DAG overlay give you real-time progress visibility. Runs are persisted to the session store so they can be inspected, restored, or resumed when supported by the active run state.
 
 The package ships as raw TypeScript (no build step) and is loaded by pi directly from source. Workflow stages run through pi's in-process SDK `AgentSession` surface, so stage options are forwarded to `createAgentSession()`.
 
@@ -48,7 +50,7 @@ pi reads the package's `pi` manifest and auto-registers the extension entry at `
 
 ### Companion pi packages
 
-`@bastani/atomic-workflows` orchestrates a few first-party pi packages at runtime. They are installed independently so pi's npm-identity deduplication can share them with any other extensions you already have:
+`@bastani/atomic-workflows` can integrate with a few companion pi packages at runtime. They are installed independently so pi's package deduplication can share them with any other extensions you already have:
 
 ```bash
 pi install npm:pi-subagents
@@ -59,11 +61,9 @@ pi install npm:pi-intercom
 
 These are idempotent — if a package is already installed globally or per-project, `pi install` is a no-op for it. Inside pi, run **`/workflows-doctor`** to see a live status card listing which companions are installed, which are missing, and the exact `pi install` line to fix each gap. Detection is structural (slash-command + tool-registry inspection), so the card stays accurate across npm, git, and local-path installs.
 
-> Not yet published — until v0.0.1 lands on npm, see [DEV_SETUP.md](./DEV_SETUP.md) for the local-path install used while iterating on the extension itself.
-
 ### Custom workflow directories
 
-Adding workflow files under `.pi/workflows/` (project scope) or `~/.pi/agent/workflows/` (user scope) makes them discoverable automatically. To register additional discovery paths, edit your pi settings (`~/.pi/agent/config.yml` for global, `.pi/settings.json` for project):
+Adding workflow files under `.pi/workflows/` (project scope) or `~/.pi/agent/workflows/` (user scope) makes them discoverable automatically. To register additional discovery paths, add a workflow extension config file at `.pi/extensions/workflow/config.json` for a project or `~/.pi/agent/extensions/workflow/config.json` for your user account:
 
 ```json
 {
@@ -155,7 +155,7 @@ export default defineWorkflow("review-and-merge")
 
 ### Model fallbacks
 
-Stages and high-level task helpers can retry transient provider/model failures with an ordered `fallbackModels` list. The primary `model` is tried first, then each fallback, and finally the current pi-selected model when available. Fallbacks are only used for retryable model/provider failures such as rate limits, quota/auth/provider outages, unavailable models, network timeouts, and 5xx errors — ordinary tool, shell, test, validation, cancellation, and workflow-code failures are not retried.
+Stages and high-level task helpers can retry transient provider/model failures with an ordered `fallbackModels` list. The primary `model` is tried first, then each fallback, and finally the current pi-selected model when available. Fallbacks are only used for retryable model/provider failures such as rate limits, quota/auth/provider outages, unavailable models, network timeouts, and 5xx errors — ordinary tool, shell, validation, cancellation, and workflow-code failures are not retried.
 
 ```typescript
 import { defineWorkflow } from "@bastani/atomic-workflows";
@@ -185,7 +185,7 @@ Direct helpers and workflow tool direct modes can set task-local fallbacks or a 
 ```typescript
 await runParallel([
   { name: "runtime-review", task: "Review runtime changes", model: "anthropic/claude-sonnet-4" },
-  { name: "test-review", task: "Review tests", fallbackModels: ["openai/gpt-5-mini"] },
+  { name: "quality-review", task: "Review quality risks", fallbackModels: ["openai/gpt-5-mini"] },
 ], {
   fallbackModels: ["github-copilot/gpt-5-mini"],
 });
@@ -208,19 +208,19 @@ const registry = createRegistry()
   .merge(createRegistry().register(gamma));
 
 registry.names();      // ["alpha", "beta", "gamma"]
-registry.all();        // WorkflowDefinition[]
-registry.get("alpha"); // WorkflowDefinition | undefined
+registry.all();        // compiled workflow definitions
+registry.get("alpha"); // compiled workflow definition | undefined
 ```
 
 ### Input types
 
-| Type      | Description        | Extra options                       |
-| --------- | ------------------ | ----------------------------------- |
-| `text`    | Free-form string   | `default`, `required`               |
-| `string`  | Alias for `text`   | `default`, `required`               |
-| `number`  | Numeric value      | `default`, `required`, `min`, `max` |
-| `boolean` | True/false toggle  | `default`                           |
-| `select`  | Enumerated choices | `options: string[]`, `default`      |
+| Type      | Description        | Extra options                              |
+| --------- | ------------------ | ------------------------------------------ |
+| `text`    | Free-form string   | `default`, `required`                      |
+| `string`  | Alias for `text`   | `default`, `required`                      |
+| `number`  | Numeric value      | `default`, `required`                      |
+| `boolean` | True/false toggle  | `default`, `required`                      |
+| `select`  | Enumerated choices | `choices: string[]`, `default`, `required` |
 
 ---
 
@@ -228,17 +228,19 @@ registry.get("alpha"); // WorkflowDefinition | undefined
 
 ### Slash commands
 
-| Command                            | Description                                              |
-| ---------------------------------- | -------------------------------------------------------- |
-| `/workflow <name> [key=value ...]` | Start a named workflow, passing optional input overrides |
-| `/workflow <name> --help`          | Print the workflow's input schema (alias: `-h`)          |
-| `/workflow list`                   | List all registered workflows with descriptions          |
-| `/workflow status`                 | Show status of active runs                               |
-| `/workflow connect [run-id]`       | Attach to a workflow run overlay                         |
-| `/workflow kill [run-id\|--all]`   | Stop the active run (or all runs)                        |
-| `/workflow resume <run-id>`        | Re-open the overlay for a previously paused/failed run   |
-| `/workflow inputs <name>`          | Print the input schema for a workflow                    |
-| `/workflows-doctor`                | Diagnose registration, discovery, and peer-dep issues    |
+| Command                               | Description                                              |
+| ------------------------------------- | -------------------------------------------------------- |
+| `/workflow <name> [key=value ...]`    | Start a named workflow, passing optional input overrides |
+| `/workflow <name> --help`             | Print the workflow's input schema                        |
+| `/workflow list`                      | List all registered workflows with descriptions          |
+| `/workflow status [run-id]`           | Show active runs or details for one run                  |
+| `/workflow connect [run-id]`          | Attach to a workflow run overlay                         |
+| `/workflow attach [run-id] [stage]`   | Open the attach/chat pane for a run or stage             |
+| `/workflow pause [run-id] [stage]`    | Pause a live run or stage                                |
+| `/workflow interrupt [run-id\|--all]` | Stop the active run, a named run, or all active runs     |
+| `/workflow resume <run-id>`           | Resume paused work or re-open a run snapshot             |
+| `/workflow inputs <name>`             | Print the input schema for a workflow                    |
+| `/workflows-doctor`                   | Diagnose registration, discovery, and peer-dep issues    |
 
 Input overrides are bare `key=value` tokens (no leading `--`). Values are JSON-parsed when possible, so numbers, booleans, and quoted strings work as expected (e.g. `count=3`, `flag=true`, `prompt="multi word value"`). A whole-object override can be passed as a single JSON token (e.g. `{"prompt":"...","count":3}`).
 
@@ -253,46 +255,45 @@ When `@bastani/atomic-workflows` is installed, the pi LLM gains access to the `w
   "name": "workflow",
   "description": "Run a defined multi-stage workflow by name.",
   "parameters": {
-    "name": "string  — workflow ID or normalized name",
+    "workflow": "string (optional) — workflow ID or normalized name",
     "inputs": "object (optional) — key/value map of workflow inputs",
-    "action": "'run' | 'list' | 'status' | 'kill' | 'resume' | 'inputs'"
+    "action": "'run' | 'list' | 'get' | 'inputs' | 'status' | 'interrupt' | 'resume' | 'doctor'",
+    "task/tasks/chain": "optional direct workflow-native orchestration modes"
   }
 }
 ```
 
-- **`renderCall`** — renders a live DAG chip in the chat scroll as the workflow executes.
-- **`renderResult`** — renders a "started in background" banner once dispatch returns; the live DAG continues updating via the widget and graph viewer. Background is the only execution mode — there is no synchronous return path.
+- **`renderCall`** — renders a compact workflow call summary in the chat scroll.
+- **`renderResult`** — renders the result or dispatch banner; live progress continues through the widget and graph viewer. Named workflow runs are background-oriented.
 
 ### F2 keyboard shortcut
 
 Press **F2** while a workflow is running to open the DAG overlay for the active run.
 
-### CLI flags
+### Execution model
 
-The extension registers two CLI flags: `--workflow=<name>` selects the workflow to run, and `--workflow-inputs=<json>` (or `--workflow-inputs-file=<path>`) supplies its inputs. Combine with pi's `-p` for non-interactive execution:
+`@bastani/atomic-workflows` follows pi's package/extension model: pi loads `src/extension/index.ts` from the package `pi.extensions` manifest, then the extension registers the `workflow` tool, `/workflow` slash command, renderers, widget, and lifecycle hooks in-process.
 
-```bash
-pi -p --workflow=deep-research-codebase \
-  --workflow-inputs='{"prompt":"Investigate the auth module","max_partitions":6}'
+For interactive use, run workflows through `/workflow <name> [key=value ...]` or let the LLM call the `workflow` tool. For library or scripted use, call the explicit programmatic runner:
+
+```ts
+import { runWorkflow, type WorkflowOptions } from "@bastani/atomic-workflows";
+
+const definition = {
+  mode: "workflow",
+  workflow: "deep-research-codebase",
+  inputs: {
+    prompt: "Investigate the auth module",
+    max_partitions: 6,
+  },
+} as const;
+
+const options: WorkflowOptions = {};
+
+await runWorkflow(definition, options);
 ```
 
-For complex inputs you can store them in a JSON file and pass the path:
-
-```bash
-pi -p --workflow=deep-research-codebase --workflow-inputs-file=./inputs.json
-```
-
-`--workflow-inputs` is parsed as a single JSON object — keys map to your workflow's declared input names, values are typed (strings, numbers, booleans, arrays, nested objects). Parsed inputs are validated against the workflow's declared input schema before dispatch; a schema mismatch prints the schema and fails fast without running the workflow.
-
-To inspect a workflow's input schema before invoking it:
-
-```bash
-pi --workflow=deep-research-codebase --workflow-help
-```
-
-Or, from inside pi, `/workflow inputs <name>` or `/workflow <name> --help`.
-
-> Why a single JSON flag rather than `--workflow-input-<key>=<value>` per input? The extension registers literal CLI flags only. A single typed JSON value stays expressive for arbitrary input shapes.
+To inspect a workflow's input schema inside pi, use `/workflow inputs <name>` or `/workflow <name> --help`.
 
 ---
 
@@ -306,9 +307,9 @@ Scout + research-history chain → two parallel specialist waves → aggregator.
 /workflow deep-research-codebase prompt="How does session persistence work?"
 ```
 
-| Input            | Type     | Required | Default | Description                                   |
-| ---------------- | -------- | -------- | ------- | --------------------------------------------- |
-| `prompt`         | `text`   | ✓        | —       | Research question or topic to investigate.    |
+| Input            | Type     | Required | Default | Description                                       |
+| ---------------- | -------- | -------- | ------- | ------------------------------------------------- |
+| `prompt`         | `text`   | ✓        | —       | Research question or topic to investigate.        |
 | `max_partitions` | `number` | —        | `4`     | Maximum number of codebase partitions to explore. |
 
 ### `ralph`
@@ -319,10 +320,10 @@ Plan → orchestrate → simplify → infrastructure discovery → parallel revi
 /workflow ralph prompt="Migrate the database layer to Drizzle ORM"
 ```
 
-| Input            | Type     | Required | Default | Description                                 |
-| ---------------- | -------- | -------- | ------- | ------------------------------------------- |
-| `prompt`         | `text`   | ✓        | —       | High-level task or goal to accomplish.      |
-| `max_loops`      | `number` | —        | `10`    | Maximum plan → orchestrate → review loops.     |
+| Input       | Type     | Required | Default | Description                                |
+| ----------- | -------- | -------- | ------- | ------------------------------------------ |
+| `prompt`    | `text`   | ✓        | —       | High-level task or goal to accomplish.     |
+| `max_loops` | `number` | —        | `10`    | Maximum plan → orchestrate → review loops. |
 
 ### `open-claude-design`
 
@@ -332,13 +333,13 @@ Design-system onboarding → reference import → generation → refinement → 
 /workflow open-claude-design prompt="Design a kanban board" output_type=prototype
 ```
 
-| Input            | Type     | Required | Default     | Description                                           |
-| ---------------- | -------- | -------- | ----------- | ----------------------------------------------------- |
-| `prompt`         | `text`   | ✓        | —           | Design brief or description.                          |
-| `reference`      | `text`   | —        | —           | Optional URL, path, screenshot, or design doc.         |
-| `output_type`    | `select` | —        | `prototype` | `prototype`, `wireframe`, `page`, `component`, `theme`, or `tokens`. |
-| `design_system`  | `text`   | —        | —           | Existing design-system reference / Design.md path.    |
-| `max_refinements`| `number` | —        | `3`         | Maximum critique/apply refinement iterations.         |
+| Input             | Type     | Required | Default     | Description                                                          |
+| ----------------- | -------- | -------- | ----------- | -------------------------------------------------------------------- |
+| `prompt`          | `text`   | ✓        | —           | Design brief or description.                                         |
+| `reference`       | `text`   | —        | —           | Optional URL, path, screenshot, or design doc.                       |
+| `output_type`     | `select` | —        | `prototype` | `prototype`, `wireframe`, `page`, `component`, `theme`, or `tokens`. |
+| `design_system`   | `text`   | —        | —           | Existing design-system reference / Design.md path.                   |
+| `max_refinements` | `number` | —        | `3`         | Maximum critique/apply refinement iterations.                        |
 
 ---
 
@@ -350,9 +351,9 @@ Design-system onboarding → reference import → generation → refinement → 
 | --------------------------------- | ---------- | -------------------------------------- |
 | `.pi/workflows/*.ts`              | Project    | `.pi/workflows/my-workflow.ts`         |
 | `~/.pi/agent/workflows/*.ts`      | User       | `~/.pi/agent/workflows/my-workflow.ts` |
-| `workflows.name.path` in settings | Configured | see `~/.pi/agent/config.yml` example   |
+| `workflows.<name>.path` in config | Configured | see config example below               |
 
-Settings-based discovery (`~/.pi/agent/config.yml` / `.pi/settings.json`):
+Config-based discovery (`~/.pi/agent/extensions/workflow/config.json`, `.pi/extensions/workflow/config.json`, or `.pi/agent/extensions/workflow/config.json`):
 
 ```json
 {
@@ -368,8 +369,8 @@ Settings-based discovery (`~/.pi/agent/config.yml` / `.pi/settings.json`):
 
 `@bastani/atomic-workflows` targets pi directly:
 
-- task delegation is bridged through the built-in `subagent`/task tool surface
-- stage sessions use the host-provided `createAgentSession()` SDK
+- task delegation can be bridged through pi's `subagent` tool surface when available
+- stage sessions use pi's `createAgentSession()` SDK
 - MCP scope gating uses host event emission when available
 - detached-run HIL uses host session naming + event routing when available
 

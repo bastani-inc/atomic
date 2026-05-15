@@ -5,6 +5,7 @@ metadata:
     github-ref: refs/heads/main
     github-repo: https://github.com/anthropics/skills
     github-tree-sha: 3cf9a8db32597ba3e24b584a3d696f4e11c7d7b6
+    internal: true
 name: skill-creator
 ---
 # Skill Creator

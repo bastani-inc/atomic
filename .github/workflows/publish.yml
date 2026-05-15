@@ -1,0 +1,246 @@
+name: Publish
+
+on:
+  # Matches the repository release flow: merge a release/vX.Y.Z or
+  # prerelease/vX.Y.Z-prerelease branch to main, then publish that version.
+  pull_request:
+    types: [closed]
+    branches: [main]
+  # Also allow publishing from an existing GitHub Release/tag. The automatic
+  # release job below skips this event to avoid creating a release loop.
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish (for example, v0.1.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  # Required by npm trusted publishing / `npm publish --provenance`.
+  id-token: write
+
+concurrency:
+  group: publish-${{ github.event.release.tag_name || github.event.inputs.tag || github.event.pull_request.head.ref || github.ref }}
+  # Never cancel a publish in flight: npm versions are immutable.
+  cancel-in-progress: false
+
+env:
+  # This package ships raw TypeScript as a pi package; there is no build step.
+  # Pi discovers resources from package.json's `pi` manifest (extensions,
+  # skills, themes, and this package's workflow manifest extension).
+  PREK_DISABLE_INSTALL: "1"
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  publish:
+    name: Publish @bastani/atomic-workflows
+    if: >-
+      github.event_name != 'pull_request'
+      || (github.event.pull_request.merged == true
+      && (startsWith(github.event.pull_request.head.ref, 'release/')
+      || startsWith(github.event.pull_request.head.ref, 'prerelease/')))
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.package.outputs.version }}
+      npm_tag: ${{ steps.package.outputs.npm_tag }}
+
+    steps:
+      - name: Resolve checkout ref
+        id: checkout_ref
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name || '' }}
+          DISPATCH_TAG: ${{ github.event.inputs.tag || '' }}
+        run: |
+          set -euo pipefail
+          if [ -n "$RELEASE_TAG" ]; then
+            ref="$RELEASE_TAG"
+          elif [ -n "$DISPATCH_TAG" ]; then
+            ref="$DISPATCH_TAG"
+          else
+            ref="$GITHUB_SHA"
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.checkout_ref.outputs.ref }}
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # The repo uses Bun for installs/tests. Node is set up only so the npm CLI
+      # can perform OIDC-backed publishing with provenance.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Test
+        run: bun run test:all
+
+      - name: Validate pi package metadata
+        id: package
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name || '' }}
+          DISPATCH_TAG: ${{ github.event.inputs.tag || '' }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref || '' }}
+        run: |
+          set -euo pipefail
+
+          name=$(bun --eval 'import pkg from "./package.json" with { type: "json" }; console.log(pkg.name);')
+          version=$(bun --eval 'import pkg from "./package.json" with { type: "json" }; console.log(pkg.version);')
+          expected_tag="v$version"
+          ref_tag="${RELEASE_TAG:-$DISPATCH_TAG}"
+
+          if [ -n "$ref_tag" ] && [ "$ref_tag" != "$expected_tag" ]; then
+            echo "Tag $ref_tag does not match package.json version $version (expected $expected_tag)." >&2
+            exit 1
+          fi
+
+          if [ -n "$PR_HEAD_REF" ]; then
+            case "$PR_HEAD_REF" in
+              release/v*) branch_version="${PR_HEAD_REF#release/v}" ;;
+              prerelease/v*) branch_version="${PR_HEAD_REF#prerelease/v}" ;;
+              *) branch_version="" ;;
+            esac
+
+            if [ -n "$branch_version" ] && [ "$branch_version" != "$version" ]; then
+              echo "Release branch $PR_HEAD_REF does not match package.json version $version." >&2
+              exit 1
+            fi
+          fi
+
+          bun --eval '
+            import { existsSync, readdirSync, statSync } from "node:fs";
+            import path from "node:path";
+            import pkg from "./package.json" with { type: "json" };
+
+            const failures = [];
+            const clean = (value) => String(value).replace(/^\.\//, "").replace(/\/$/, "");
+            const walk = (dir) => {
+              if (!existsSync(dir)) return [];
+              const entries = [];
+              for (const name of readdirSync(dir)) {
+                const full = path.join(dir, name);
+                const stat = statSync(full);
+                if (stat.isDirectory()) entries.push(...walk(full));
+                else entries.push(full.replaceAll(path.sep, "/"));
+              }
+              return entries;
+            };
+            const exists = (pattern) => {
+              const normalized = clean(pattern);
+              if (!normalized.includes("*")) return existsSync(normalized);
+              const star = normalized.indexOf("*");
+              const slash = normalized.lastIndexOf("/", star);
+              const dir = slash === -1 ? "." : normalized.slice(0, slash);
+              const suffix = normalized.slice(normalized.lastIndexOf("*") + 1).replace(/^\//, "");
+              return walk(dir).some((file) => suffix === "" || file.endsWith(suffix));
+            };
+            const requirePath = (label, value) => {
+              if (!value || !exists(value)) failures.push(`${label}: ${value}`);
+            };
+
+            if (pkg.private) failures.push("package.json must not set private=true");
+            requirePath("main", pkg.main);
+            requirePath("types", pkg.types);
+
+            const pi = pkg.pi ?? {};
+            for (const key of ["extensions", "skills", "prompts", "themes", "workflows"]) {
+              const entries = pi[key];
+              if (!Array.isArray(entries)) continue;
+              for (const entry of entries) requirePath(`pi.${key}`, entry);
+            }
+
+            if (failures.length > 0) {
+              console.error("Invalid package metadata/resource paths:");
+              for (const failure of failures) console.error(`- ${failure}`);
+              process.exit(1);
+            }
+          '
+
+          if [[ "$version" == *-* ]]; then
+            npm_tag="next"
+          else
+            npm_tag="latest"
+          fi
+
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "npm_tag=$npm_tag" >> "$GITHUB_OUTPUT"
+          echo "Publishing $name@$version with npm tag '$npm_tag'."
+
+      - name: Check npm registry
+        id: registry
+        shell: bash
+        env:
+          PACKAGE_NAME: ${{ steps.package.outputs.name }}
+          PACKAGE_VERSION: ${{ steps.package.outputs.version }}
+        run: |
+          set -euo pipefail
+          if bun pm view "$PACKAGE_NAME@$PACKAGE_VERSION" version >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "$PACKAGE_NAME@$PACKAGE_VERSION is already on npm; skipping publish."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Verify npm tarball contents
+        if: steps.registry.outputs.exists != 'true'
+        run: bun pm pack --dry-run
+
+      - name: Publish to npm
+        if: steps.registry.outputs.exists != 'true'
+        shell: bash
+        env:
+          NPM_CONFIG_PROVENANCE: "true"
+          NPM_TAG: ${{ steps.package.outputs.npm_tag }}
+        run: npm publish --provenance --access public --tag "$NPM_TAG" --registry https://registry.npmjs.org
+
+  release:
+    name: Create GitHub Release
+    needs: [publish]
+    if: github.event_name != 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Determine release type
+        id: release_type
+        shell: bash
+        env:
+          VERSION: ${{ needs.publish.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ "$VERSION" == *-* ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "make_latest=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            echo "make_latest=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Matches flora131/atomic: use the release action directly instead of
+      # shelling out to `gh`. The action creates (or updates) the GitHub Release.
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: v${{ needs.publish.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          name: v${{ needs.publish.outputs.version }}
+          draft: false
+          prerelease: ${{ steps.release_type.outputs.prerelease == 'true' }}
+          make_latest: ${{ steps.release_type.outputs.make_latest }}
+          generate_release_notes: true

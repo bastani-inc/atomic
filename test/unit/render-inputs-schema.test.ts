@@ -3,8 +3,7 @@
  *   - renderResult({action: "inputs"}) (LLM tool path)
  *   - /workflow inputs <name> slash command
  *   - /workflow <name> --help slash form
- *   - --workflow=<name> --workflow-help CLI path
- *   - fail-fast on missing required CLI inputs
+ *   - programmatic SDK validation failures
  */
 
 import { describe, test } from "bun:test";

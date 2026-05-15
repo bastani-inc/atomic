@@ -82,7 +82,7 @@ What's **deleted** at the wipe commit:
 - `tests/`, `scripts/`, `examples/`, `rest-api/`, `assets/`.
 - Build artifacts: `dist/`, `node_modules/`, `bun.lock`, `package-lock.json`.
 - Root manifest: `package.json` (will be re-created fresh).
-- Lint/build config: `bunfig.toml`, `tsconfig.json`, `tsconfig.build.json`, `oxlint.json`, `verdaccio.yaml` (will be re-created fresh per Spec 1's needs).
+- Lint/build config: `bunfig.toml`, `tsconfig.json`, `tsconfig.build.json`, `oxlint.json` (will be re-created fresh per Spec 1's needs).
 - Installer scripts: `install.sh`, `install.cmd`, `install.ps1`.
 - CI: `.github/workflows/` (rebuilt in Spec 2 for Atomic).
 - Devcontainer: `.devcontainer/` (rebuilt minimal in Spec 2).

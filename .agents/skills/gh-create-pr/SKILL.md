@@ -1,6 +1,8 @@
 ---
 name: gh-create-pr
 description: Commit unstaged changes, push changes, submit a pull request.
+metadata:
+    internal: true
 ---
 
 # Create Pull Request

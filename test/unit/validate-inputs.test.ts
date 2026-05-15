@@ -1,7 +1,6 @@
 /**
- * Unit tests for validateInputs — the schema validator used by the CLI flag
- * path to reject malformed --workflow-inputs (and --inputs)
- * before dispatching a run.
+ * Unit tests for validateInputs — the schema validator used by slash-command
+ * and programmatic SDK dispatch paths before starting a run.
  */
 
 import { describe, test } from "bun:test";

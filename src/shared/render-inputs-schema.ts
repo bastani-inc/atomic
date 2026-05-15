@@ -6,8 +6,7 @@
  *   - renderResult({ action: "inputs", ... })  (LLM tool path; see render-result.ts)
  *   - /workflow inputs <name>                  (slash command; extension/index.ts)
  *   - /workflow <name> --help                  (slash help branch)
- *   - --workflow=<name> --workflow-help        (CLI help flag; cli-flags.ts)
- *   - fail-fast on missing required CLI inputs
+ *   - programmatic workflow validation failures (workflow-runner.ts)
  *
  * The renderer has two output modes:
  *
@@ -175,7 +174,7 @@ function renderPretty(
   }
 
   // Summary footer — total/required count + the two-path hint that
-  // teaches the CLI flag form and the picker fallback in one line.
+  // teaches the slash key=value form and the picker fallback in one line.
   const required = inputs.filter((i) => i.required).length;
   const total = inputs.length;
   const totalLabel = `${total} input${total === 1 ? "" : "s"}`;

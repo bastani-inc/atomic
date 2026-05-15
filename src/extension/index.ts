@@ -54,10 +54,6 @@ import { buildDoctorPayload, buildDoctorReport } from "./doctor.js";
 import type { DoctorPayload, DoctorSiblingStatus } from "./doctor.js";
 import { detectCompanions } from "./companions.js";
 import {
-  registerWorkflowCliFlags,
-  runWorkflowFromCliFlags,
-} from "../runs/shared/cli-flags.js";
-import {
   loadWorkflowConfig,
   toScopedDiscoveryConfig,
   WORKFLOW_CONFIG_DEFAULTS,
@@ -803,23 +799,6 @@ function overlaySurfaceFromContext(ctx?: {
   // hand us a print-only `ui.notify` which would otherwise shadow
   // `pi.ui` inside the adapter and short-circuit the open.
   return typeof ctx?.ui?.custom === "function" ? { ui: ctx.ui } : undefined;
-}
-
-function printCliWorkflowResult(
-  result: Awaited<ReturnType<typeof runWorkflowFromCliFlags>>,
-): void {
-  if (!result.handled) return;
-  if (result.error) {
-    console.error(result.error);
-    return;
-  }
-  if (result.message) {
-    console.log(result.message);
-    return;
-  }
-  if (result.result) {
-    console.log(renderResult(result.result, {}));
-  }
 }
 
 /**
@@ -2141,16 +2120,7 @@ function factory(pi: ExtensionAPI): void {
   }
 
   // -------------------------------------------------------------------------
-  // 5. Register CLI flags (§5.13) + wire runWorkflowFromCliFlags
-  //    registerWorkflowCliFlags replaces manual pi.registerFlag calls.
-  //    runWorkflowFromCliFlags is dispatched on session_start (pi.on available)
-  //    or after discovery resolves as a safe fallback.
-  // -------------------------------------------------------------------------
-  registerWorkflowCliFlags(pi);
-
-  // -------------------------------------------------------------------------
-  // 6. Persistence: session_start restore + session_before_compact hook (§5.6, Phase D)
-  //    + runWorkflowFromCliFlags startup dispatch (§5.13)
+  // 5. Persistence: session_start restore + session_before_compact hook (§5.6, Phase D)
   // -------------------------------------------------------------------------
   if (typeof pi.on === "function") {
     pi.on("session_start", async (_event, ctx) => {
@@ -2171,18 +2141,13 @@ function factory(pi: ExtensionAPI): void {
       // loading" guard.
       intercomParentSession = registerIntercomParentSession(pi);
 
-      // Ensure config+discovery are ready before restoring in-flight runs and
-      // dispatching CLI workflow flags — tunables must be resolved first.
+      // Ensure config+discovery are ready before restoring in-flight runs —
+      // tunables must be resolved first.
       await discoveryPromise;
       if (ctx?.ui) {
         storeWidgetUnsubscribe?.();
         storeWidgetUnsubscribe = installStoreWidget({ ui: ctx.ui }, store);
       }
-
-      const cliResult = await runWorkflowFromCliFlags({
-        runtime: runtimeForContext(ctx),
-      });
-      printCliWorkflowResult(cliResult);
 
       const sessionManager = ctx?.sessionManager ?? pi.sessionManager;
       if (sessionManager) {
@@ -2213,20 +2178,13 @@ function factory(pi: ExtensionAPI): void {
       storeWidgetUnsubscribe?.();
       storeWidgetUnsubscribe = null;
     });
-  } else {
-    // Safe fallback when pi.on is unavailable: dispatch CLI flags after discovery.
-    void discoveryPromise.then(() => {
-      void runWorkflowFromCliFlags({ runtime: runtimeProxy }).then(
-        printCliWorkflowResult,
-      );
-    });
   }
 
   storeWidgetUnsubscribe = installStoreWidget(pi, store);
   installToolExecutionHooks(pi, store);
 
   // -------------------------------------------------------------------------
-  // 7b. Register F2 keyboard shortcut — open graph overlay for active run.
+  // 6. Register F2 keyboard shortcut — open graph overlay for active run.
   //     Falls back to noop when pi.registerShortcut is absent (degraded runtime).
   //     Existing API shape: (key, { description, handler }).
   //
@@ -2253,7 +2211,7 @@ function factory(pi: ExtensionAPI): void {
   }
 
   // -------------------------------------------------------------------------
-  // 8. Register sibling integrations (Phase G — §5.8, §5.9, §5.10)
+  // 7. Register sibling integrations (Phase G — §5.8, §5.9, §5.10)
   // All registration calls are guarded; no throw when sibling is absent.
   // Note: registerIntercomParentSession (pi-intercom session naming) calls
   // pi.setSessionName which is an action method — see session_start handler
@@ -2279,7 +2237,7 @@ function factory(pi: ExtensionAPI): void {
   );
 
   // -------------------------------------------------------------------------
-  // 9. Suppress pi's optimistic "Working… (esc to interrupt)" loader
+  // 8. Suppress pi's optimistic "Working… (esc to interrupt)" loader
   //    for our slash commands. Workflow commands are synchronous picker /
   //    connect / inspect UIs, not streaming turns — the loader is noise
   //    that pads chrome above the picker. The `on("input")` hook fires

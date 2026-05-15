@@ -6,7 +6,7 @@ This document covers setup, the local dev loop, testing patterns, and project la
 
 ## Prerequisites
 
-- **[Bun](https://bun.sh) ≥ 1.3.7** — the runtime, package manager, and test runner for this repo
+- **[Bun](https://bun.sh) ≥ 1.3.14** — the runtime, package manager, and test runner for this repo
 - **[pi](https://github.com/earendil-works/pi)** — the host that loads the extension
 
 This repo uses **Bun** for all development, scripts, and testing.
@@ -173,7 +173,7 @@ Bun resolves `.js` import specifiers to the underlying `.ts` source files direct
 │   ├── runs/
 │   │   ├── foreground/      # Synchronous executor and stage runner
 │   │   ├── background/      # Detached runner, cancellation registry, status helpers
-│   │   └── shared/          # Concurrency, graph-inference, cli-flags
+│   │   └── shared/          # Concurrency, graph-inference, validation, workflow runner
 │   ├── shared/              # store, store-types, types, persistence-{compaction,restore,session-entries}
 │   ├── tui/                 # Above-editor widget and DAG overlay
 │   ├── workflows/           # defineWorkflow, createRegistry, identity helpers

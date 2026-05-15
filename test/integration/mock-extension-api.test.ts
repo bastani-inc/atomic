@@ -1,7 +1,7 @@
 /**
  * Integration tests: MockExtensionAPI registration.
  * Verifies factory(pi) registers workflow tool, slash commands,
- * message renderers, and CLI flags against a minimal MockExtensionAPI.
+ * and message renderers against a minimal MockExtensionAPI.
  *
  * cross-ref: spec §5.2 workflow tool, §5.3 slash commands,
  *            §5.6 renderer registration, §8.3 Phase B tests
@@ -138,10 +138,6 @@ function getRenderer(
   return renderers.find((r) => r.event === event)?.renderer;
 }
 
-function getFlag(flags: RegisteredFlag[], name: string): RegisteredFlag | undefined {
-  return flags.find((f) => f.name === name);
-}
-
 function expectRegisteredCommand(
   commands: RegisteredCommand[],
   name: string,
@@ -156,18 +152,6 @@ function expectRegisteredCommand(
   assert.ok(cmd.options.description.length > 0);
   assert.equal(typeof cmd.options.handler, "function");
   return cmd;
-}
-
-function expectRegisteredFlag(flags: RegisteredFlag[], name: string): RegisteredFlag {
-  const flag = getFlag(flags, name);
-  if (flag === undefined) {
-    throw new Error(`Expected flag "${name}" to be registered`);
-  }
-
-  assert.equal(flag.name, name);
-  assert.equal(typeof flag.options.description, "string");
-  assert.ok(flag.options.description.length > 0);
-  return flag;
 }
 
 // ---------------------------------------------------------------------------
@@ -791,42 +775,16 @@ describe("MockExtensionAPI — message renderer registration", () => {
 // CLI flag registration
 // ---------------------------------------------------------------------------
 
-describe("MockExtensionAPI — CLI flag registration", () => {
-  let mock: ReturnType<typeof makeMock>;
-
-  beforeEach(() => {
-    mock = makeMock();
+describe("MockExtensionAPI — no CLI flag registration", () => {
+  test("factory does not register process-level workflow flags", () => {
+    const mock = makeMock();
     factory(mock);
-  });
-
-  test("registers at least two flags", () => {
-    assert.ok(mock.flags.length >= 2);
-  });
-
-  test("registers 'workflow' flag", () => {
-    expectRegisteredFlag(mock.flags, "workflow");
-  });
-
-  test("'workflow' flag is type 'string'", () => {
-    assert.equal(expectRegisteredFlag(mock.flags, "workflow").options.type, "string");
-  });
-
-  test("'workflow' flag has non-empty description", () => {
-    expectRegisteredFlag(mock.flags, "workflow");
-  });
-
-  test("registers 'workflow-inputs' flag (literal name; pi rejects placeholder names)", () => {
-    expectRegisteredFlag(mock.flags, "workflow-inputs");
-  });
-
-  test("'workflow-inputs' flag is type 'string'", () => {
-    assert.equal(expectRegisteredFlag(mock.flags, "workflow-inputs").options.type, "string");
+    assert.deepEqual(mock.flags, []);
   });
 
   test("skips flag registration when registerFlag absent", () => {
     assert.doesNotThrow(() => factory({}));
   });
-
 });
 
 // ---------------------------------------------------------------------------

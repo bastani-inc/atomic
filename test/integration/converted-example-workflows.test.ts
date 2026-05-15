@@ -2,86 +2,84 @@ import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import type { CreateAgentSessionOptions } from "@earendil-works/pi-coding-agent";
 import { discoverWorkflows } from "../../src/extension/discovery.js";
-import {
-  runWorkflowSdkEntrypoint,
-  type WorkflowSdkEntrypointResult,
-} from "../../src/runs/shared/workflow-sdk-entrypoint.js";
+import { runWorkflow } from "../../src/runs/shared/workflow-runner.js";
+import type { WorkflowDetails } from "../../src/shared/types.js";
 import type { StageSessionRuntime } from "../../src/runs/foreground/stage-runner.js";
 
 const convertedExamples = [
   {
     name: "atomic-example-hello-world",
-    args: ["who=pi"],
+    inputs: { who: "pi" },
     expectedStages: 1,
   },
   {
     name: "atomic-example-goodbye",
-    args: ["tone=casual"],
+    inputs: { tone: "casual" },
     expectedStages: 1,
   },
   {
     name: "atomic-example-commander-embed-greet",
-    args: ["who=Alex"],
+    inputs: { who: "Alex" },
     expectedStages: 1,
   },
   {
     name: "atomic-example-explain-file",
-    args: ["path=src/index.ts"],
+    inputs: { path: "src/index.ts" },
     expectedStages: 1,
   },
   {
     name: "atomic-example-sequential-describe-summarize",
-    args: ["topic=TypeScript"],
+    inputs: { topic: "TypeScript" },
     expectedStages: 2,
   },
   {
     name: "atomic-example-parallel-hello-world",
-    args: ["topic=project launch", "tone=warm"],
+    inputs: { topic: "project launch", tone: "warm" },
     expectedStages: 4,
   },
   {
     name: "atomic-example-headless-fanout",
-    args: ["prompt=TypeScript"],
+    inputs: { prompt: "TypeScript" },
     expectedStages: 6,
   },
   {
     name: "atomic-example-hil-favorite-color",
-    args: [],
+    inputs: {},
     expectedStages: 2,
   },
   {
     name: "atomic-example-hil-favorite-color-headless",
-    args: [],
+    inputs: {},
     expectedStages: 1,
   },
   {
     name: "atomic-example-structured-output",
-    args: ["prompt=Python"],
+    inputs: { prompt: "Python" },
     expectedStages: 1,
   },
   {
     name: "atomic-example-review-fix-loop",
-    args: ["topic=adopting Bun", "max_iterations=3"],
+    inputs: { topic: "adopting Bun", max_iterations: 3 },
     expectedStages: 2,
   },
   {
     name: "atomic-example-reviewer-tool-test",
-    args: [],
+    inputs: {},
     expectedStages: 1,
   },
   {
     name: "atomic-example-pane-navigation",
-    args: [],
+    inputs: {},
     expectedStages: 3,
   },
   {
     name: "atomic-example-background-subagents",
-    args: [],
+    inputs: {},
     expectedStages: 2,
   },
   {
     name: "atomic-example-empty-fanout",
-    args: ["branches=0"],
+    inputs: { branches: 0 },
     expectedStages: 1,
   },
 ] as const;
@@ -177,12 +175,8 @@ function makeSessionFactory(prompts: string[]) {
   };
 }
 
-function assertCompleted(
-  result: WorkflowSdkEntrypointResult,
-): asserts result is Extract<WorkflowSdkEntrypointResult, { status: "completed" }> {
-  assert.equal(result.handled, true);
-  assert.equal(result.status, "completed", "workflow SDK entrypoint should complete");
-  assert.equal(result.details.status, "completed");
+function assertCompleted(result: WorkflowDetails): void {
+  assert.equal(result.status, "completed", "programmatic workflow runner should complete");
 }
 
 describe("converted project-local example workflows", () => {
@@ -214,17 +208,19 @@ describe("converted project-local example workflows", () => {
   });
 
   for (const workflow of convertedExamples) {
-    test(`runs ${workflow.name} through the non-interactive SDK path`, async () => {
+    test(`runs ${workflow.name} through the programmatic workflow runner`, async () => {
       const prompts: string[] = [];
-      const result = await runWorkflowSdkEntrypoint({
-        argv: ["--workflow", workflow.name, ...workflow.args],
-        cwd: process.cwd(),
-        homeDir: `${process.cwd()}/.pi/tmp/home-for-converted-example-tests`,
-        adapterOptions: { createAgentSession: makeSessionFactory(prompts) },
-      });
+      const result = await runWorkflow(
+        { mode: "workflow", workflow: workflow.name, inputs: workflow.inputs },
+        {
+          cwd: process.cwd(),
+          homeDir: `${process.cwd()}/.pi/tmp/home-for-converted-example-tests`,
+          adapterOptions: { createAgentSession: makeSessionFactory(prompts) },
+        },
+      );
 
       assertCompleted(result);
-      const { progress } = result.details;
+      const { progress } = result;
       assert.ok(progress);
       assert.equal(progress.total, workflow.expectedStages);
       assert.equal(progress.completed, workflow.expectedStages);
