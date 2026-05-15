@@ -66,36 +66,13 @@ See [Providers & Models](./packages/coding-agent/README.md#providers--models) fo
 > ⚠️ Workflows run with agent permission checks **disabled** so pipelines don't block on prompts. Run autonomous workflows inside a devcontainer, VM, or remote dev machine — not your host machine.
 
 <details>
-<summary><b>Prerequisites, version pinning, devcontainer, SDK-only</b></summary>
+<summary><b>Prerequisites, devcontainer</b></summary>
 
 **Prerequisites** — Atomic is a self-contained coding-agent binary. The only requirement is access to a supported model provider: either an API key (Anthropic, OpenAI, Google, Azure, Bedrock, Vertex, …) or an existing subscription (Claude Pro/Max, ChatGPT Plus/Pro, GitHub Copilot) via `/login`. See [Providers & Models](./packages/coding-agent/README.md#providers--models).
 
-**Pin a version:** `bash install.sh 0.8.0` (same trailing-arg form works for `.ps1`).
-
 **Devcontainer / VM** — recommended for autonomous workflows. Atomic runs in any standard devcontainer or VM image; install it inside the container with `npm install -g @bastani/atomic` (or the install script) and supply provider credentials via environment variables.
 
-**SDK-only** — embed Atomic in your own app via the published package:
-
-```bash
-bun init -y && bun add @bastani/atomic
-```
-
 See [Programmatic Usage](./packages/coding-agent/README.md#programmatic-usage) for the SDK and RPC entry points.
-
-</details>
-
-<details>
-<summary><b>Upgrading from a previous version</b></summary>
-
-**From 0.6.x or earlier (SDK users):** the SDK moved from `@bastani/atomic` to `@bastani/atomic-sdk`.
-
-```bash
-bun remove @bastani/atomic && bun add @bastani/atomic-sdk
-```
-
-Update imports: `from "@bastani/atomic/workflows"` → `from "@bastani/atomic-sdk/workflows"`. The CLI keeps the same package name.
-
-For SDK API changes (`createWorkflowCli` removal, `source: import.meta.path`, etc.), see [SDK migration](#migration-from-0x).
 
 </details>
 
@@ -150,8 +127,6 @@ Structured capability modules that give agents best practices and reusable patte
 | `tdd`               | Red-green-refactor loop with a built-in testing-anti-patterns guide                                                                                                   |
 | `playwright-cli`    | Automate browser interactions, tests, and screenshots                                                                                                                 |
 | `impeccable`        | Design, redesign, audit, or polish frontend interfaces (Anthropic's frontend-design skill, vendored from [pbakaus/impeccable](https://github.com/pbakaus/impeccable)) |
-
-Source on disk: `ls packages/workflows/skills/`, `ls packages/subagents/skills/`, and `ls packages/intercom/skills/`. All three skill directories are bundled into `@bastani/atomic` at build time and loaded as builtin pi packages.
 
 ### 3. Specialized sub-agents
 
