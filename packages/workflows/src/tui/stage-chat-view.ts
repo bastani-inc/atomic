@@ -7,8 +7,9 @@
  *  - user rows use `UserMessageComponent`
  *  - assistant/thinking rows use `AssistantMessageComponent`
  *  - tool rows use `ToolExecutionComponent` and built-in tool renderers
- *  - input uses `CustomEditor` when the live pi overlay host provides `tui` and
- *    `keybindings` (tests/headless fall back to the historical one-line editor)
+ *  - input reuses the host's custom editor factory when one is installed,
+ *    otherwise `CustomEditor`; tests/headless fall back to the historical
+ *    one-line editor
  *  - workflow notices remain lightweight workflow-specific rows because they
  *    are not coding-agent chat messages
  *
@@ -38,15 +39,17 @@
 import {
   AssistantMessageComponent,
   CustomEditor,
+  parseSkillBlock,
   SessionManager,
+  SkillInvocationMessageComponent,
   ToolExecutionComponent,
   UserMessageComponent,
   type AgentSession,
   type AgentSessionEvent,
   type SessionMessageEntry,
-} from "@earendil-works/pi-coding-agent";
-import { Box, Spacer, Text } from "@earendil-works/pi-tui";
-import type { Component, EditorTheme, TUI } from "@earendil-works/pi-tui";
+} from "@bastani/atomic";
+import { Box, Container, Spacer, Text } from "@earendil-works/pi-tui";
+import type { Component, EditorComponent, EditorTheme, TUI } from "@earendil-works/pi-tui";
 import type { Store } from "../shared/store.js";
 import type { StageNotice, StageSnapshot } from "../shared/store-types.js";
 import type { GraphTheme } from "./graph-theme.js";
@@ -76,9 +79,11 @@ export interface StageChatViewOpts {
   onClose: () => void;
   /** Request a host TUI repaint after SDK events mutate local chat state. */
   requestRender?: () => void;
-  /** Live pi-tui host objects. When present, stage input uses coding-agent's CustomEditor. */
+  /** Live pi-tui host objects. When present, stage input uses pi's editor UI. */
   piTui?: TUI;
   piKeybindings?: unknown;
+  /** Currently installed host editor factory, inherited from extension `ctx.ui.setEditorComponent()`. */
+  piEditorFactory?: (tui: TUI, theme: EditorTheme, keybindings: unknown) => EditorComponent;
   /**
    * Optional accessor returning the current terminal row count. The chat
    * surface expands its body band to roughly `viewportRows` minus the fixed
@@ -170,6 +175,45 @@ const WEIGHT_RESET = "\x1b[22m";
 const ITALIC_RESET = "\x1b[23m";
 
 // ---------------------------------------------------------------------------
+// Pi chat transcript adapter
+// ---------------------------------------------------------------------------
+
+/**
+ * Composes stage transcript rows with the same spacing rules as pi's
+ * InteractiveMode chat container. Workflow chrome (header, loader, footer,
+ * hints) remains owned by StageChatView; the base chat body is just the
+ * canonical coding-agent message components inside a pi-tui Container.
+ */
+class PiChatTranscriptComponent implements Component {
+  constructor(
+    private readonly entries: readonly TranscriptEntry[],
+    private readonly renderEntry: (entry: TranscriptEntry) => Component,
+  ) {}
+
+  render(width: number): string[] {
+    const container = new Container();
+    for (const entry of this.entries) {
+      addTranscriptEntry(container, this.renderEntry(entry), entry.role);
+    }
+    return container.render(width);
+  }
+
+  invalidate(): void {}
+}
+
+function addTranscriptEntry(container: Container, component: Component, role: TranscriptEntry["role"]): void {
+  // Mirror InteractiveMode.addMessageToChat:
+  // - user/custom/system-like rows get a spacer only when something already
+  //   exists above them;
+  // - assistant rows own their leading whitespace internally;
+  // - tool rows attach directly below the assistant turn that requested them.
+  if ((role === "user" || role === "notice" || role === "system") && container.children.length > 0) {
+    container.addChild(new Spacer(1));
+  }
+  container.addChild(component);
+}
+
+// ---------------------------------------------------------------------------
 // StageChatView
 // ---------------------------------------------------------------------------
 
@@ -184,7 +228,7 @@ export class StageChatView implements Component {
   private onClose: () => void;
   private requestRender: (() => void) | undefined;
   private getViewportRows?: () => number | undefined;
-  private editor: CustomEditor | undefined;
+  private editor: EditorComponent | undefined;
 
   private inputBuffer = "";
   private transcript: TranscriptEntry[] = [];
@@ -221,7 +265,7 @@ export class StageChatView implements Component {
     this.onClose = opts.onClose;
     this.requestRender = opts.requestRender;
     this.getViewportRows = opts.getViewportRows;
-    this.editor = this._createEditor(opts.piTui, opts.piKeybindings);
+    this.editor = this._createEditor(opts.piTui, opts.piKeybindings, opts.piEditorFactory);
 
     // Seed transcript from the live SDK session at attach time, plus any
     // stage notices the workflow body has already recorded.
@@ -258,14 +302,20 @@ export class StageChatView implements Component {
     this._syncAnimationTick();
   }
 
-  private _createEditor(tui: TUI | undefined, keybindings: unknown): CustomEditor | undefined {
+  private _createEditor(
+    tui: TUI | undefined,
+    keybindings: unknown,
+    editorFactory: ((tui: TUI, theme: EditorTheme, keybindings: unknown) => EditorComponent) | undefined,
+  ): EditorComponent | undefined {
     if (!tui || !keybindings) return undefined;
-    const editor = new CustomEditor(
-      tui,
-      editorThemeFromGraphTheme(this.theme),
-      keybindings as ConstructorParameters<typeof CustomEditor>[2],
-      { paddingX: 1, autocompleteMaxVisible: 5 },
-    );
+    const editorTheme = editorThemeFromGraphTheme(this.theme);
+    const editor = this._createInheritedEditor(tui, editorTheme, keybindings, editorFactory) ??
+      new CustomEditor(
+        tui,
+        editorTheme,
+        keybindings as ConstructorParameters<typeof CustomEditor>[2],
+        { paddingX: 1, autocompleteMaxVisible: 5 },
+      );
     editor.onChange = (text) => {
       this.inputBuffer = text;
     };
@@ -273,6 +323,20 @@ export class StageChatView implements Component {
       void this._submit("auto", text);
     };
     return editor;
+  }
+
+  private _createInheritedEditor(
+    tui: TUI,
+    editorTheme: EditorTheme,
+    keybindings: unknown,
+    editorFactory: ((tui: TUI, theme: EditorTheme, keybindings: unknown) => EditorComponent) | undefined,
+  ): EditorComponent | undefined {
+    if (!editorFactory) return undefined;
+    try {
+      return editorFactory(tui, editorTheme, keybindings);
+    } catch {
+      return undefined;
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -885,12 +949,12 @@ export class StageChatView implements Component {
       components.push(new Spacer(1));
     }
 
-    // Transcript entries, separated by one-row spacers (mirrors Pi's
-    // `Spacer(1)` between every assistant / tool block in InteractiveMode).
-    this.transcript.forEach((entry, idx) => {
-      if (idx > 0 || components.length > 0) components.push(new Spacer(1));
-      components.push(this._renderEntry(entry));
-    });
+    // Base chat body: delegate transcript composition to the Pi-style
+    // transcript component so the attached stage chat uses the same message
+    // spacing and coding-agent message widgets as the main interactive chat.
+    if (this.transcript.length > 0) {
+      components.push(new PiChatTranscriptComponent(this.transcript, (entry) => this._renderEntry(entry)));
+    }
 
     // Stream a static status message (e.g. "pausing…") as a dim trailing row.
     if (this.statusMessage) {
@@ -976,7 +1040,7 @@ export class StageChatView implements Component {
   private _renderEntry(entry: TranscriptEntry): Component {
     switch (entry.role) {
       case "user":
-        return new UserMessageComponent(entry.text);
+        return this._userMessage(entry.text);
       case "assistant":
         return new AssistantMessageComponent(assistantMessageForText(entry.text));
       case "thinking":
@@ -988,6 +1052,18 @@ export class StageChatView implements Component {
       case "system":
         return new Text(paint(entry.text, this.theme.dim), 2, 0);
     }
+  }
+
+  private _userMessage(text: string): Component {
+    const skillBlock = parseSkillBlock(text);
+    if (!skillBlock) return new UserMessageComponent(text);
+
+    const container = new Container();
+    container.addChild(new SkillInvocationMessageComponent(skillBlock));
+    if (skillBlock.userMessage) {
+      container.addChild(new UserMessageComponent(skillBlock.userMessage));
+    }
+    return container;
   }
 
   private _toolExecution(entry: ToolEntry): Component {

@@ -146,5 +146,44 @@ describe("buildRuntimeAdapters — SDK sessions", () => {
 
     assert.equal(typeof bindCalls[0]?.uiContext?.custom, "function");
   });
+
+  test("binds inherited theme and UI extension helpers onto stage sessions", async () => {
+    const bindCalls: Array<{ uiContext?: Record<string, unknown> }> = [];
+    const session = {
+      ...fakeSession(),
+      async bindExtensions(bindings: { uiContext?: Record<string, unknown> }): Promise<void> {
+        bindCalls.push(bindings);
+      },
+    };
+    const theme = { name: "host-theme" };
+    const adapters = buildRuntimeAdapters(
+      {
+        ui: {
+          custom: async () => undefined,
+          theme,
+          getAllThemes: () => [{ name: "host-theme", path: "/themes/host.json" }],
+          getTheme: (name: string) => (name === "host-theme" ? theme : undefined),
+          setTheme: () => ({ success: true }),
+          getToolsExpanded: () => true,
+          setToolsExpanded: () => undefined,
+        },
+      },
+      { createAgentSession: async () => ({ session }) },
+    );
+
+    await adapters.agentSession!.create({}, {
+      runId: "run-1",
+      stageId: "stage-1",
+      stageName: "worker-a",
+      signal: new AbortController().signal,
+    });
+
+    const uiContext = bindCalls[0]?.uiContext;
+    assert.equal(uiContext?.theme, theme);
+    assert.deepEqual((uiContext?.getAllThemes as () => unknown)(), [{ name: "host-theme", path: "/themes/host.json" }]);
+    assert.equal((uiContext?.getTheme as (name: string) => unknown)("host-theme"), theme);
+    assert.equal((uiContext?.setTheme as (name: string) => { success: boolean })("host-theme").success, true);
+    assert.equal((uiContext?.getToolsExpanded as () => boolean)(), true);
+  });
 });
 

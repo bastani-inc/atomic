@@ -27,6 +27,7 @@ import type {
   PiCustomOverlayFactoryTui,
   PiCustomOverlayFunction,
   PiCustomOverlayOptions,
+  PiEditorFactory,
   PiKeybindings,
   PiOverlayHandle,
   PiOverlayOptions,
@@ -35,6 +36,7 @@ import type {
 
 export interface OverlayUISurface {
   custom?: PiCustomOverlayFunction;
+  getEditorComponent?: () => PiEditorFactory | undefined;
 }
 
 export interface OverlayPiSurface {
@@ -218,6 +220,7 @@ export function buildGraphOverlayAdapter(
         piTui: tui,
         piTheme: theme,
         piKeybindings: keybindings,
+        piEditorFactory: ui?.getEditorComponent?.(),
         // Pi-tui owns terminal dimensions; thread its row count down
         // so the overlay frame fills the actual viewport rather than
         // a hard-coded 32-row rectangle. Returning `undefined` keeps

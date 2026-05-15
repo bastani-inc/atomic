@@ -86,28 +86,47 @@ function isTestContext(): boolean {
  * cross-ref: node_modules/@earendil-works/pi-coding-agent/docs/sdk.md
  *            node_modules/@earendil-works/pi-coding-agent/dist/core/sdk.d.ts
  */
-type PiCodingAgentSdk = typeof import("@earendil-works/pi-coding-agent");
+interface PiSdkSettingsManager {}
+interface PiSdkResourceLoader {
+  reload(): Promise<void>;
+}
+interface PiCodingAgentSdk {
+  getAgentDir(): string;
+  SettingsManager: {
+    create(cwd?: string, agentDir?: string): PiSdkSettingsManager;
+  };
+  DefaultResourceLoader: new (options: {
+    cwd: string;
+    agentDir: string;
+    settingsManager?: PiSdkSettingsManager;
+  }) => PiSdkResourceLoader;
+  createAgentSession(options?: AtomicCreateAgentSessionOptions): Promise<{ session: StageSessionRuntime }>;
+}
+type AtomicCreateAgentSessionOptions = Omit<CreateAgentSessionOptions, "settingsManager" | "resourceLoader"> & {
+  settingsManager?: PiSdkSettingsManager;
+  resourceLoader?: PiSdkResourceLoader;
+};
 
 async function withDefaultStageResourceLoader(
   options: CreateAgentSessionOptions | undefined,
   sdk: PiCodingAgentSdk,
-): Promise<CreateAgentSessionOptions | undefined> {
-  if (options?.resourceLoader !== undefined) return options;
+): Promise<AtomicCreateAgentSessionOptions | undefined> {
+  const atomicOptions = options as AtomicCreateAgentSessionOptions | undefined;
+  if (atomicOptions?.resourceLoader !== undefined) return atomicOptions;
 
-  const cwd = options?.cwd ?? process.cwd();
-  const agentDir = options?.agentDir ?? sdk.getAgentDir();
+  const cwd = atomicOptions?.cwd ?? process.cwd();
+  const agentDir = atomicOptions?.agentDir ?? sdk.getAgentDir();
   const settingsManager =
-    options?.settingsManager ?? sdk.SettingsManager.create(cwd, agentDir);
+    atomicOptions?.settingsManager ?? sdk.SettingsManager.create(cwd, agentDir);
   const resourceLoader = new sdk.DefaultResourceLoader({
     cwd,
     agentDir,
     settingsManager,
-    noExtensions: true,
   });
   await resourceLoader.reload();
 
   return {
-    ...options,
+    ...atomicOptions,
     cwd,
     agentDir,
     settingsManager,
@@ -118,7 +137,7 @@ async function withDefaultStageResourceLoader(
 async function createPiSdkAgentSession(
   options?: CreateAgentSessionOptions,
 ): Promise<{ session: StageSessionRuntime }> {
-  const sdk: PiCodingAgentSdk = await import("@earendil-works/pi-coding-agent");
+  const sdk = await import("@bastani/atomic") as PiCodingAgentSdk;
   const sessionOptions = await withDefaultStageResourceLoader(options, sdk);
   const result = await sdk.createAgentSession(sessionOptions);
   // `CreateAgentSessionResult` is `{ session, extensionsResult, modelFallbackMessage? }`;
@@ -208,6 +227,12 @@ function makeStageExtensionUiContext(ui: PiUISurface) {
     addAutocompleteProvider: ui.addAutocompleteProvider ?? (() => undefined),
     setEditorComponent: ui.setEditorComponent ?? (() => undefined),
     getEditorComponent: ui.getEditorComponent ?? (() => undefined),
+    theme: ui.theme,
+    getAllThemes: ui.getAllThemes ?? (() => []),
+    getTheme: ui.getTheme ?? (() => undefined),
+    setTheme: ui.setTheme ?? (() => ({ success: false, error: "pi-workflows: theme UI is unavailable" })),
+    getToolsExpanded: ui.getToolsExpanded ?? (() => false),
+    setToolsExpanded: ui.setToolsExpanded ?? (() => undefined),
   };
 }
 
@@ -238,12 +263,11 @@ export function buildRuntimeAdapters(
   const adapters: StageAdapters = {
     agentSession: {
       async create(stageOptions: CreateAgentSessionOptions & Pick<StageOptions, "mcp" | "fallbackModels">, _meta?: StageExecutionMeta): Promise<StageSessionRuntime> {
-        // The pi SDK (`@earendil-works/pi-coding-agent` ≥ 0.74) handles
-        // extension / skills / prompt-template / slash-command isolation
-        // via `SettingsManager` / `ResourceLoader` ctor args. The production
-        // default wraps the SDK with a `DefaultResourceLoader({ noExtensions:
-        // true })` so workflow stages get core SDK chat/tools without
-        // recursively loading pi-workflows/pi-intercom/pi-subagents. Callers
+        // Atomic's SDK handles extension / skills / prompt-template /
+        // slash-command discovery via the SettingsManager / ResourceLoader.
+        // The production default deliberately uses normal DefaultResourceLoader
+        // discovery so stage sessions inherit the same project/global theme,
+        // extensions, tools, prompts, and skills as the parent chat. Callers
         // can still opt into a custom resource set by passing `resourceLoader`
         // through `stage(name, options)`.
         const sessionOptions: CreateAgentSessionOptions = stripWorkflowOnlyOptions(stageOptions) ?? {};
@@ -508,6 +532,13 @@ export interface PiUISurface {
   setEditorComponent?: (factory: PiEditorFactory | undefined) => void;
   /** Return the currently-installed editor factory, or undefined for the default. */
   getEditorComponent?: () => PiEditorFactory | undefined;
+  /** Current resolved Pi theme and theme helpers, forwarded to stage extensions. */
+  theme?: unknown;
+  getAllThemes?: () => Array<{ name: string; path: string | undefined }>;
+  getTheme?: (name: string) => unknown;
+  setTheme?: (theme: string | unknown) => { success: boolean; error?: string };
+  getToolsExpanded?: () => boolean;
+  setToolsExpanded?: (expanded: boolean) => void;
 }
 
 /**

@@ -21,6 +21,7 @@ import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { makeFakeKeybindings } from "../support/fake-keybindings.js";
 import { StageChatView } from "../../packages/workflows/src/tui/stage-chat-view.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
+import type { EditorComponent } from "@earendil-works/pi-tui";
 import type { StageControlHandle } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { initTheme, SessionManager, type AgentSession, type AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 
@@ -139,6 +140,7 @@ describe("StageChatView", () => {
       piKeybindings: makeFakeKeybindings(),
     });
 
+    assert.match(view.render(96).join("\n"), /❯/);
     for (const ch of "hello") view.handleInput(ch);
     assert.equal(view._inputBuffer, "hello");
     assert.match(view.render(96).join("\n"), /hello/);
@@ -147,6 +149,53 @@ describe("StageChatView", () => {
     await flush();
     assert.deepEqual(state.promptCalls, ["hello"]);
     assert.equal(view._inputBuffer, "");
+    view.dispose();
+  });
+
+  test("inherits the host extension editor factory when provided", async () => {
+    const store = createStore();
+    setupRun(store, "run-1", "stage-a", "pending");
+    const { handle, state } = makeHandle();
+    class ExtensionEditor implements EditorComponent {
+      onSubmit?: (text: string) => void;
+      onChange?: (text: string) => void;
+      private text = "";
+      getText(): string { return this.text; }
+      setText(text: string): void { this.text = text; this.onChange?.(text); }
+      handleInput(data: string): void {
+        if (data === "\r" || data === "\n") {
+          this.onSubmit?.(this.text);
+          return;
+        }
+        this.text += data;
+        this.onChange?.(this.text);
+      }
+      render(width: number): string[] { return [`EXT-EDITOR:${this.text}`.padEnd(width, " ")]; }
+      invalidate(): void {}
+    }
+    const view = new StageChatView({
+      store,
+      graphTheme: deriveGraphTheme({}),
+      runId: "run-1",
+      stageId: "stage-a",
+      workflowName: "test-wf",
+      handle,
+      onDetach: () => {},
+      onClose: () => {},
+      piTui: {
+        requestRender: () => {},
+        terminal: { rows: 40, columns: 96 },
+      } as never,
+      piKeybindings: makeFakeKeybindings(),
+      piEditorFactory: () => new ExtensionEditor(),
+    });
+
+    assert.match(view.render(96).join("\n"), /EXT-EDITOR/);
+    for (const ch of "hello") view.handleInput(ch);
+    view.handleInput("\r");
+    await flush();
+    await flush();
+    assert.deepEqual(state.promptCalls, ["hello"]);
     view.dispose();
   });
 

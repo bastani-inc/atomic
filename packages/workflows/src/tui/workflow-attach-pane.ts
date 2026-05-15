@@ -19,7 +19,7 @@
  *  - src/runs/foreground/stage-control-registry.ts (live handles)
  */
 
-import type { Component, TUI } from "@earendil-works/pi-tui";
+import type { Component, EditorComponent, EditorTheme, TUI } from "@earendil-works/pi-tui";
 import type { Store } from "../shared/store.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { GraphView } from "./graph-view.js";
@@ -66,6 +66,8 @@ export interface WorkflowAttachPaneOpts {
   /** Live pi-tui host objects used by attached stage chat to reuse coding-agent editor UI. */
   piTui?: TUI;
   piKeybindings?: unknown;
+  /** Host custom editor factory installed by extensions via ctx.ui.setEditorComponent(). */
+  piEditorFactory?: (tui: TUI, theme: EditorTheme, keybindings: unknown) => EditorComponent;
   /**
    * Optional override: pre-select chat mode for a stage on construction.
    * Used by `/workflow attach <runId> <stageId>` so the popup opens
@@ -108,6 +110,7 @@ export class WorkflowAttachPane implements Component {
   private hostRequestRender?: () => void;
   private piTui?: TUI;
   private piKeybindings?: unknown;
+  private piEditorFactory?: (tui: TUI, theme: EditorTheme, keybindings: unknown) => EditorComponent;
 
   private mode: WorkflowAttachPaneMode = "graph";
   private graphView: GraphView;
@@ -129,6 +132,7 @@ export class WorkflowAttachPane implements Component {
     this.hostRequestRender = opts.requestRender;
     this.piTui = opts.piTui;
     this.piKeybindings = opts.piKeybindings;
+    this.piEditorFactory = opts.piEditorFactory;
 
     this.graphView = this._buildGraphView();
 
@@ -204,6 +208,7 @@ export class WorkflowAttachPane implements Component {
       requestRender: this.hostRequestRender,
       piTui: this.piTui,
       piKeybindings: this.piKeybindings,
+      piEditorFactory: this.piEditorFactory,
       getViewportRows: this.getViewportRows,
     });
     this.store.recordStageAttached(runId, stageId, true);
