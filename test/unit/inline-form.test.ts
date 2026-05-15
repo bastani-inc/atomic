@@ -27,6 +27,7 @@ import {
   registerInlineFormRenderer,
 } from "../../packages/workflows/src/tui/inline-form-overlay.ts";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.ts";
+import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.ts";
 import type { WorkflowInputEntry } from "../../packages/workflows/src/extension/render-result.ts";
 import { makeFakeKeybindings } from "../support/fake-keybindings.ts";
 
@@ -176,6 +177,51 @@ test("card: focused text field shows the caret so the bottom editor can stay hid
   });
   const txt = plain(renderInlineCard({ width: 80, state, theme: deriveGraphTheme({}) }));
   assert.match(txt, /bu▋ild/);
+});
+
+function assertLinesWithinWidth(lines: string[], width: number): void {
+  for (const line of lines) {
+    assert.ok(
+      visibleWidth(line) <= width,
+      `line exceeds ${width} cells: ${visibleWidth(line)} ${JSON.stringify(plain([line]))}`,
+    );
+  }
+}
+
+test("card: live form lines stay within the requested width", () => {
+  const width = 113;
+  const longDescription = "Maximum number of codebase partitions to explore in parallel. Actual partitions scale by one per 10K LoC, capped by this value.";
+  const state = makeState({
+    workflowName: "deep-research-codebase-with-a-very-long-name-that-should-not-overflow-the-terminal",
+    description: "Prepare a comprehensive multi-agent research workflow with enough prose to exceed the viewport.",
+    fields: [
+      { name: "prompt", type: "text", required: true, description: "Research question or investigation focus for the codebase." },
+      { name: "max_partitions", type: "number", required: false, default: 4, description: longDescription },
+    ],
+    rawText: { prompt: "", max_partitions: "4" },
+    focusedIdx: 1,
+    caret: 1,
+  });
+
+  const lines = renderInlineCard({ width, state, theme: deriveGraphTheme({}) });
+  assertLinesWithinWidth(lines, width);
+});
+
+test("card: frozen form lines stay within the requested width", () => {
+  const width = 72;
+  const state = makeState({
+    workflowName: "deep-research-codebase-with-a-very-long-name-that-should-not-overflow-the-terminal",
+    rawText: {
+      prompt: "build a very long response that would otherwise make the submitted command line wider than the terminal",
+      iters: "5",
+      focus: "minimal",
+      verbose: "false",
+    },
+    status: "submitted",
+  });
+
+  const lines = renderInlineCard({ width, state, theme: deriveGraphTheme({}) });
+  assertLinesWithinWidth(lines, width);
 });
 
 // ── editor ───────────────────────────────────────────────────────────────

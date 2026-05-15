@@ -47,6 +47,7 @@ import type { GraphTheme } from "./graph-theme.js";
 import { invalidForField } from "./inputs-picker.js";
 import { renderOutlinePill } from "./header.js";
 import { BOLD, RESET, hexBg, hexToAnsi, paint } from "./color-utils.js";
+import { truncateToWidth, visibleWidth } from "./text-helpers.js";
 
 export interface InlineCardOpts {
   width: number;
@@ -59,10 +60,10 @@ export interface InlineCardOpts {
 // ---------------------------------------------------------------------------
 
 export function renderInlineCard(opts: InlineCardOpts): string[] {
-  const { state, theme } = opts;
-  if (state.status === "submitted") return [renderSubmittedLine(state, theme)];
-  if (state.status === "cancelled") return [renderCancelledLine(state, theme)];
-  return renderEditingCard(opts);
+  const { state, theme, width } = opts;
+  if (state.status === "submitted") return [fitLine(renderSubmittedLine(state, theme), width)];
+  if (state.status === "cancelled") return [fitLine(renderCancelledLine(state, theme), width)];
+  return renderEditingCard(opts).map((line) => fitLine(line, width));
 }
 
 function renderEditingCard(opts: InlineCardOpts): string[] {
@@ -206,7 +207,7 @@ function renderFieldCard(
   const bottom = `${bc}╰${"─".repeat(inner)}╯${RESET}`;
 
   const contentLines = renderFieldContent(field, raw, focused, usable, theme, caret).map(
-    (row) => `${bc}│${RESET} ${row}${" ".repeat(Math.max(0, usable - visibleLen(row)))} ${bc}│${RESET}`,
+    (row) => `${bc}│${RESET} ${row}${" ".repeat(Math.max(0, usable - visibleWidth(row)))} ${bc}│${RESET}`,
   );
 
   // Caption: type · required|optional · description
@@ -349,15 +350,12 @@ function composeCommand(state: InlineFormState): string {
 // Layout primitives
 // ---------------------------------------------------------------------------
 
-function visibleLen(ansi: string): number {
-  // eslint-disable-next-line no-control-regex
-  return ansi.replace(/\x1b\[[0-9;]*m/g, "").length;
+function fitLine(ansi: string, width: number): string {
+  return truncateToWidth(ansi, Math.max(0, width), "…", true);
 }
 
 function clip(ansi: string, budget: number): string {
-  const plain = ansi.replace(/\x1b\[[0-9;]*m/g, "");
-  if (plain.length <= budget) return ansi;
-  return plain.slice(0, Math.max(0, budget - 1)) + "…";
+  return truncateToWidth(ansi, Math.max(0, budget), "…", true);
 }
 
 /**
