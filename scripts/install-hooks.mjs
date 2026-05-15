@@ -13,9 +13,18 @@ if (installDisabled || isCi) {
   process.exit(0);
 }
 
-const result = spawnSync("prek", ["install", "--prepare-hooks"], {
-  shell: process.platform === "win32",
-  stdio: "inherit",
-});
+const result = spawnSync(
+  process.execPath,
+  ["x", "--bun", "--no-install", "prek", "install", "--prepare-hooks"],
+  {
+    shell: false,
+    stdio: "inherit",
+  },
+);
+
+if (result.error) {
+  console.error(`Failed to install prek hooks: ${result.error.message}`);
+  process.exit(1);
+}
 
 process.exit(result.status ?? 1);

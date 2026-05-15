@@ -11,8 +11,8 @@
   ],
   "scripts": {
     "prepare": "bun scripts/install-hooks.mjs",
-    "hooks:install": "prek install --prepare-hooks",
-    "hooks:run": "prek run --all-files",
+    "hooks:install": "bunx --bun --no-install prek install --prepare-hooks",
+    "hooks:run": "bunx --bun --no-install prek run --all-files",
     "test": "bun run test:unit",
     "test:unit": "bun test test/unit",
     "test:integration": "bun test test/integration",

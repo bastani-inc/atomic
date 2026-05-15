@@ -234,7 +234,7 @@ dde0159 Claude Code [] Test work item (#7) (origin/main, origin/HEAD)
 
 ## Important Notes
 
-- By default, pre-commit checks (defined in `.pre-commit-config.yaml`) will run to ensure code quality
+- By default, pre-commit checks (defined in `prek.toml`) will run to ensure code quality
     - IMPORTANT: DO NOT SKIP pre-commit checks
 - ALWAYS attribute AI-Assisted Code Authorship
 - If specific files are already staged, the command will only commit those files

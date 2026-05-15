@@ -21,6 +21,8 @@ cd atomic
 bun install
 ```
 
+`bun install` runs the root `prepare` script, which installs Git hooks with [`prek`](https://prek.j178.dev/) from [`prek.toml`](./prek.toml). The hook shims installed by default come from `default_install_hook_types`; currently that is `pre-commit`. To reinstall hooks manually, run `bun run hooks:install`. Set `PREK_DISABLE_INSTALL=1` to skip hook installation for a local install; CI skips it automatically.
+
 The root `package.json` is a private workspace package named `atomic-monorepo`. The only publishable package is `packages/coding-agent` (`@bastani/atomic`); other `packages/*` workspaces are bundled or internal.
 
 ---
@@ -129,8 +131,10 @@ Run these from the workspace root:
 | `bun run test:integration` | Run integration tests       |
 | `bun run test:all`         | Run both unit + integration |
 | `bun run lint`             | Alias for typecheck         |
+| `bun run hooks:install`    | Install `prek.toml` Git hooks using `default_install_hook_types` |
+| `bun run hooks:run`        | Run all `prek.toml` hooks across the repository |
 
-Both `typecheck` and `lint` run `tsc --noEmit`. There is no separate ESLint pipeline.
+Both `typecheck` and `lint` run `tsc --noEmit`. There is no separate ESLint pipeline. Git hook configuration lives in [`prek.toml`](./prek.toml), not `.pre-commit-config.yaml`.
 
 ---
 

@@ -88,7 +88,7 @@ Use this structure for the PR body. Omit sections that are not applicable.
 
 ## Important Notes
 
-- By default, pre-commit checks (defined in `.pre-commit-config.yaml`) will run to ensure code quality
+- By default, pre-commit checks (defined in `prek.toml`) will run to ensure code quality
     - IMPORTANT: DO NOT SKIP pre-commit checks
 - ALWAYS attribute AI-Assisted Code Authorship in commit messages
 - Always review the diff before generating the title and description to ensure accuracy
