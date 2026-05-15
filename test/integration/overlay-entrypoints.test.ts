@@ -60,6 +60,21 @@ interface CapturedCustomCall {
   handle: PiOverlayHandle;
 }
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForRenderCount(
+  count: () => number,
+  target: number,
+  polls = 80,
+  pollMs = 25,
+): Promise<void> {
+  for (let i = 0; i < polls && count() < target; i++) {
+    await delay(pollMs);
+  }
+}
+
 /** A controllable in-memory `PiOverlayHandle` used by the mock. */
 function buildOverlayHandle(): {
   handle: PiOverlayHandle;
@@ -875,13 +890,18 @@ describe("buildGraphOverlayAdapter — animation tick visibility gating", () => 
     const adapter = buildGraphOverlayAdapter({ ui: { custom: customFn } }, store);
     adapter.open(runId);
     assert.ok(component, "factory should return a component");
-    // Animation tick is 100ms; 250ms wall-clock gives at least two ticks.
-    await new Promise((r) => setTimeout(r, 250));
-    component!.dispose?.();
-    assert.ok(
-      renderCalls >= 2,
-      `expected tui.requestRender to fire on the animation tick (got ${renderCalls})`,
-    );
+    // Animation tick is 100ms, but Windows CI can starve the event loop long
+    // enough that a single wall-clock sleep observes only one interval turn.
+    // Poll across scheduler turns instead of assuming 250ms means two ticks.
+    try {
+      await waitForRenderCount(() => renderCalls, 2);
+      assert.ok(
+        renderCalls >= 2,
+        `expected tui.requestRender to fire on the animation tick (got ${renderCalls})`,
+      );
+    } finally {
+      component!.dispose?.();
+    }
   });
 
   test("requestRender suppresses tui.requestRender while overlay is hidden", async () => {

@@ -79,6 +79,21 @@ function makeStore(snap: StoreSnapshot): Store {
 
 const defaultTheme = deriveGraphTheme({});
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForRenderCount(
+  count: () => number,
+  target: number,
+  polls = 80,
+  pollMs = 25,
+): Promise<void> {
+  for (let i = 0; i < polls && count() < target; i++) {
+    await delay(pollMs);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Layout tests
 // ---------------------------------------------------------------------------
@@ -574,16 +589,18 @@ describe("GraphView animation timer", () => {
       graphTheme: defaultTheme,
       requestRender,
     });
-    // Tick is 100ms; wait long enough for at least two ticks. Use real
-    // timers — Bun's interval scheduler runs concurrently with the
-    // test, so a small wall-clock wait is the simplest way to observe
-    // the steady cadence without introducing a fake-timer dependency.
-    await new Promise((r) => setTimeout(r, 250));
-    view.dispose();
-    assert.ok(
-      requestRender.mock.calls.length >= 2,
-      `expected ≥ 2 ticks in 250ms, got ${requestRender.mock.calls.length}`,
-    );
+    // Tick is 100ms, but Windows CI can starve the event loop long enough
+    // that one wall-clock sleep observes only one interval turn. Poll across
+    // scheduler turns instead of assuming 250ms means two ticks.
+    try {
+      await waitForRenderCount(() => requestRender.mock.calls.length, 2);
+      assert.ok(
+        requestRender.mock.calls.length >= 2,
+        `expected ≥ 2 ticks, got ${requestRender.mock.calls.length}`,
+      );
+    } finally {
+      view.dispose();
+    }
   });
 
   it("does not start the timer in widget mode", async () => {
