@@ -40,7 +40,6 @@
     "src/**/*.ts",
     "builtin/**/*.ts",
     "skills/**/*",
-    "agents/",
     "prompts/**/*",
     "themes/*.json",
     "assets/**/*",

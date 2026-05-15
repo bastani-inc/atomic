@@ -26,13 +26,12 @@ describe("package metadata", () => {
   test("ships workflow, skill, and bundled agent assets through package metadata", () => {
     assert.ok(workflowsPackageJson.files.includes("builtin/**/*.ts"));
     assert.ok(workflowsPackageJson.files.includes("skills/**/*"));
-    assert.ok(workflowsPackageJson.files.includes("agents/"));
     assert.deepEqual(workflowsPackageJson.pi.skills, ["./skills"]);
     assert.deepEqual(workflowsPackageJson.pi.builtin, ["./builtin"]);
   });
 
-  test("workflows package ships bundled agent markdown files", () => {
-    const bundledAgents = markdownFiles("packages/workflows/agents");
+  test("subagents package ships bundled agent markdown files", () => {
+    const bundledAgents = markdownFiles("packages/subagents/agents");
     assert.ok(bundledAgents.length > 0, "expected at least one bundled agent markdown file");
   });
 });

@@ -1,43 +1,41 @@
 ---
-description: Parallel subagents review
+description: Parallel specialist review of the current work
 ---
 
-Launch parallel reviewers for an adversarial review of the current work.
+Launch parallel specialists for an adversarial review of the current work.
 
-Use fresh context, not forked context, unless I explicitly ask for forked context. Reviewers should inspect the repository, relevant instructions, and current diff directly from files and commands. Do not rely on the main conversation history.
+Use fresh context, not forked context, unless I explicitly ask for forked context. Specialists should inspect the repository, relevant instructions, and current diff directly from files and commands. Do not rely on the main conversation history.
 
-Give each reviewer a distinct angle. Generate the angles dynamically from the user's intent, the plan, the implemented code, and the current diff. If I specify angles, use mine. Otherwise, choose the highest-value review angles for this specific work.
+There is no generic `reviewer` agent — assemble the review from read-only specialists with distinct angles. Generate the angles dynamically from the user's intent, the plan, the implemented code, and the current diff. If I specify angles, use mine. Otherwise pick three of the following:
 
-These are examples, not fixed defaults:
+1. Correctness and regressions — `codebase-analyzer`
+   Trace the current diff and the surrounding flow to check whether the change satisfies the request, preserves existing behavior, handles edge cases, and avoids hidden runtime failures. Cite `file:line` for every claim.
 
-1. Correctness and regressions
-   Check whether the change satisfies the request, preserves existing behavior, handles edge cases, and avoids hidden runtime failures.
+2. Bug and failure-mode hunt — `debugger`
+   Treat the diff as a suspect change. Reproduce the relevant behavior when possible, hypothesize how it could break, and report findings with evidence. The `debugger` agent can write fixes — for this pass, explicitly instruct it to inspect and report only, not edit.
 
-2. Tests and validation
-   Check whether tests or validation were added at the right layer, whether assertions are meaningful, and whether the chosen verification commands are enough.
+3. Pattern fit and consistency — `codebase-pattern-finder`
+   Compare the implementation against existing analogous patterns and conventions in the codebase. Flag drift, divergence from established structure, or missed reuse opportunities with `file:line` snippets.
 
-3. Simplicity and maintainability
-   Check for unnecessary complexity, duplicate structure, single-use wrappers, brittle abstractions, confusing names, verbosity, and cleanup that is clearly worth doing.
+4. Prior decisions and constraints — `codebase-research-locator` then `codebase-research-analyzer`
+   When prior research or specs likely constrain the change, surface the relevant docs and extract the decisions the new code must honor.
 
-Choose or adapt angles when the work calls for it:
-- TypeScript-heavy changes: include type safety, source-of-truth types, casts, and error-boundary discipline.
-- UI-heavy changes: include UX, accessibility, copy, and visual quality.
-- Security-sensitive changes: include unsafe input/output handling, auth boundaries, privacy, and data exposure.
-- Docs-heavy changes: include clarity, accuracy, completeness, reader flow, and non-robotic prose.
-- Large multi-file changes: consider a fourth reviewer for structural friction, module boundaries, and testability.
+5. External-spec or API conformance — `codebase-online-researcher`
+   When the change implements an external contract (API, RFC, library behavior), verify the implementation against the authoritative source.
 
-Prefer three strong reviewers over many vague reviewers.
+Cleanup-style angles (simplicity, slop, verbosity) belong in `/parallel-cleanup`; use that instead of overloading this pass.
 
-Give every reviewer a specific task prompt naming its angle. Ask reviewers to return concise, evidence-backed findings with file/line references and suggested fixes. The response should be review feedback, not a context summary. Reviewers must not edit files unless I explicitly ask for a writer pass.
+Give every specialist a specific task prompt naming its angle. Ask them to return concise, evidence-backed findings with file/line references and suggested fixes. The response should be review feedback, not a context summary. Specialists must not edit files in this pass, even when the agent type can — say so explicitly in the prompt.
 
-While reviewers run, do your own narrow inspection if useful. After they return, synthesize the feedback into:
-- fixes worth doing now
-- optional improvements
-- feedback to ignore or defer, with a short reason
+While they run, do your own narrow inspection if useful. After they return, synthesize the feedback into:
 
-Do not blindly apply every reviewer suggestion.
+- fixes worth doing now;
+- optional improvements;
+- feedback to ignore or defer, with a short reason.
 
-Autofix mode: if the invocation contains the exact word `autofix`, treat it as workflow control, not review scope. Remove it before deciding the review target. After synthesis, apply only fixes worth doing now, validate, and summarize. Do not apply optional improvements unless explicitly requested. If there are no fixes worth doing now, do not edit.
+Do not blindly apply every finding.
+
+Autofix mode: if the invocation contains the exact word `autofix`, treat it as workflow control, not review scope. Remove it before deciding the review target. After synthesis, launch a single async writer (`debugger` for correctness or regression fixes, `code-simplifier` for cleanup-shaped feedback) with the explicit fix list as scope. Validate, and summarize. Do not apply optional improvements unless explicitly requested. If there are no fixes worth doing now, do not edit.
 
 Without autofix mode, ask before applying fixes unless I already told you to address review feedback. When you ask, end with a compact numbered menu so I can respond with a number. Use wording suited to the findings, but include these choices when applicable:
 
@@ -51,4 +49,4 @@ Additional review target or focus from the slash command invocation:
 
 $@
 
-If the invocation provides a URL, issue link, file path, plan path, or freeform focus, treat it as the primary review scope. Read or fetch that target before assigning reviewer angles, and pass the target explicitly into each reviewer task.
+If the invocation provides a URL, issue link, file path, plan path, or freeform focus, treat it as the primary review scope. Read or fetch that target before assigning reviewer angles, and pass the target explicitly into each specialist task.

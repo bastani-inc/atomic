@@ -1,21 +1,22 @@
 ---
-name: pi-intercom
+name: intercom
 description: |
-  Streamline session-to-session coordination with pi-intercom. Send messages,
-  delegate tasks, and coordinate work across multiple pi sessions on the same
-  machine. Use for planner-worker workflows, cross-session context sharing,
-  and real-time collaboration between sessions.
+  Streamline session-to-session coordination with the intercom extension. Send
+  messages, delegate tasks, and coordinate work across multiple pi sessions on
+  the same machine. Use for planner-worker workflows, cross-session context
+  sharing, and real-time collaboration between sessions.
 ---
 
-# Pi Intercom Skill
+# Intercom Skill
 
 Use this skill when you need to coordinate work across multiple pi sessions
 running on the same machine. Pi-intercom enables direct 1:1 messaging between
 sessions for delegation, context sharing, and collaborative workflows.
 
-When you are supervising `pi-subagents`, delegated child agents can escalate to
-you via `contact_supervisor` if `pi-subagents` supplied child bridge metadata.
-This skill covers how to handle those orchestrator-side escalations.
+When you are supervising with the `subagent` skill, delegated child agents can
+escalate to you via `contact_supervisor` if the subagent runtime supplied child
+bridge metadata. This skill covers how to handle those orchestrator-side
+escalations.
 
 ## When to Use
 
@@ -128,9 +129,9 @@ intercom({
 
 ### Pattern 6: Handle Subagent Escalations (Orchestrator Side)
 
-When `pi-subagents` spawns a delegated child and supplies child bridge metadata,
-that child can reach you through `contact_supervisor`. You receive a formatted
-message that includes run metadata:
+When the `subagent` runtime spawns a delegated child and supplies child bridge
+metadata, that child can reach you through `contact_supervisor`. You receive a
+formatted message that includes run metadata:
 
 ```
 **From subagent-worker-78f659a3-1**
@@ -187,10 +188,10 @@ intercom({ action: "pending" })
 intercom({ action: "reply", to: "subagent-worker-78f659a3-1", message: "Use the v2 API." })
 ```
 
-**Important:** Only sessions where `pi-subagents` supplied child bridge metadata
-get the `contact_supervisor` tool. Normal sessions use the regular `intercom`
-tool. If you see the formatted supervisor decision/progress update message, treat
-it as a `contact_supervisor` escalation.
+**Important:** Only sessions where the `subagent` runtime supplied child bridge
+metadata get the `contact_supervisor` tool. Normal sessions use the regular
+`intercom` tool. If you see the formatted supervisor decision/progress update
+message, treat it as a `contact_supervisor` escalation.
 
 ## Key Differences
 

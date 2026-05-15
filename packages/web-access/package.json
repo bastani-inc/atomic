@@ -19,7 +19,6 @@
   },
   "files": [
     "*.ts",
-    "skills/**/*",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"
@@ -27,9 +26,6 @@
   "pi": {
     "extensions": [
       "./index.ts"
-    ],
-    "skills": [
-      "./skills"
     ]
   },
   "peerDependencies": {

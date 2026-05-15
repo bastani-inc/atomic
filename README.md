@@ -137,23 +137,25 @@ Run `/workflow list` to see installed workflows and `/workflow inputs <name>` fo
 
 ### 2. Skills
 
-Structured capability modules that give agents best practices and reusable patterns. Atomic bundles **7 skills** from [`packages/workflows/skills/`](./packages/workflows/skills/). They auto-invoke when the agent detects a relevant trigger, or you can call them directly with `/skill:<name>`.
+Structured capability modules that give agents best practices and reusable patterns. Atomic bundles **9 skills** — 7 from [`packages/workflows/skills/`](./packages/workflows/skills/), 1 from [`packages/subagents/skills/`](./packages/subagents/skills/), and 1 from [`packages/intercom/skills/`](./packages/intercom/skills/). They auto-invoke when the agent detects a relevant trigger, or you can call them directly with `/skill:<name>`.
 
 | Skill               | Purpose                                                                                                                                                               |
 | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `research-codebase` | Dispatch parallel sub-agents to analyze the codebase and write a dated research doc under `research/`                                                                 |
 | `create-spec`       | Produce a technical execution spec (in `specs/`) grounded in research documents                                                                                       |
 | `workflow`          | Create, run, inspect, and improve pi/atomic workflows — scaffolds `defineWorkflow()` files, drives `/workflow run/status/resume`                                      |
+| `subagent`          | Delegate work to bundled or custom sub-agents with chains, parallel groups, async runs, and forked context — the orchestration skill behind the bundled sub-agents    |
+| `intercom`          | Coordinate session-to-session — send messages, delegate tasks, and handle `contact_supervisor` escalations from child sub-agents on the same machine                  |
 | `prompt-engineer`   | Sharpen prompts, research questions, and workflow inputs using prompt-engineering best practices                                                                      |
 | `tdd`               | Red-green-refactor loop with a built-in testing-anti-patterns guide                                                                                                   |
 | `playwright-cli`    | Automate browser interactions, tests, and screenshots                                                                                                                 |
 | `impeccable`        | Design, redesign, audit, or polish frontend interfaces (Anthropic's frontend-design skill, vendored from [pbakaus/impeccable](https://github.com/pbakaus/impeccable)) |
 
-Source on disk: `ls packages/workflows/skills/`. The skills directory is bundled into `@bastani/atomic` at build time and loaded as a builtin pi package.
+Source on disk: `ls packages/workflows/skills/`, `ls packages/subagents/skills/`, and `ls packages/intercom/skills/`. All three skill directories are bundled into `@bastani/atomic` at build time and loaded as builtin pi packages.
 
 ### 3. Specialized sub-agents
 
-Purpose-built agents with scoped context, tools, and termination conditions. Atomic bundles **8 sub-agents** from [`packages/workflows/agents/`](./packages/workflows/agents/). They're auto-dispatched by skills and workflows.
+Purpose-built agents with scoped context, tools, and termination conditions. Atomic bundles **8 sub-agents** from [`packages/subagents/agents/`](./packages/subagents/agents/). They're auto-dispatched by skills and workflows.
 
 | Sub-agent                    | Purpose                                                                                               |
 | ---------------------------- | ----------------------------------------------------------------------------------------------------- |
@@ -169,7 +171,7 @@ Purpose-built agents with scoped context, tools, and termination conditions. Ato
 <details>
 <summary><i>Why specialized agents instead of one general agent?</i></summary>
 
-LLMs have an architectural limitation: the more context they hold, the harder it is to attend to the right information. A single agent juggling a spec, dozens of files, tool outputs, and its own reasoning will lose details, repeat work, or hallucinate connections. Specialized sub-agents fix this with **context isolation** (fresh, minimal context per job), **tool scoping** (a `reviewer` can't edit files; a `worker` can't spawn other workers), and **parallel execution** (independent agents run concurrently).
+LLMs have an architectural limitation: the more context they hold, the harder it is to attend to the right information. A single agent juggling a spec, dozens of files, tool outputs, and its own reasoning will lose details, repeat work, or hallucinate connections. Specialized sub-agents fix this with **context isolation** (fresh, minimal context per job), **tool scoping** (a `codebase-locator` can't edit files; a `code-simplifier` can't reach the web), and **parallel execution** (independent agents run concurrently).
 
 </details>
 

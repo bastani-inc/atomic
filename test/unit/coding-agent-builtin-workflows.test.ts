@@ -73,7 +73,7 @@ describe("coding-agent builtin resources", () => {
     }
 
     const skillNames = new Set(loader.getSkills().skills.map((skill) => skill.name));
-    for (const skillName of ["workflow", "pi-subagents", "librarian", "pi-intercom"]) {
+    for (const skillName of ["workflow", "subagent", "intercom"]) {
       assert.ok(skillNames.has(skillName), `expected builtin skill ${skillName}`);
     }
   });
