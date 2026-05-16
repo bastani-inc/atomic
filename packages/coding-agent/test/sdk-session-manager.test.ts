@@ -92,4 +92,21 @@ describe("createAgentSession session manager defaults", () => {
 
 		session.dispose();
 	});
+
+	it("enables ask_user_question and todo by default", async () => {
+		const model = getModel("anthropic", "claude-sonnet-4-5");
+		expect(model).toBeTruthy();
+
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir,
+			model: model!,
+		});
+
+		expect(session.getActiveToolNames()).toEqual(
+			expect.arrayContaining(["read", "bash", "edit", "write", "ask_user_question", "todo"]),
+		);
+
+		session.dispose();
+	});
 });
