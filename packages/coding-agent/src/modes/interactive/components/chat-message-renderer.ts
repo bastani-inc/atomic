@@ -284,7 +284,7 @@ export class LiveChatEntriesController {
   private appendAssistantTextDelta(delta: string): boolean {
     const current = this.currentStreamingAssistantMessage();
     const content = current ? [...current.content] : [];
-    const lastText = content.findLast((item) => item.type === "text");
+    const lastText = [...content].reverse().find((item) => item.type === "text");
     if (lastText && lastText.type === "text") lastText.text += delta;
     else content.push({ type: "text", text: delta });
     return this.updateAssistantMessage({
@@ -296,7 +296,7 @@ export class LiveChatEntriesController {
   private appendAssistantThinkingDelta(delta: string): boolean {
     const current = this.currentStreamingAssistantMessage();
     const content = current ? [...current.content] : [];
-    const lastThinking = content.findLast((item) => item.type === "thinking");
+    const lastThinking = [...content].reverse().find((item) => item.type === "thinking");
     if (lastThinking && lastThinking.type === "thinking") lastThinking.thinking += delta;
     else content.push({ type: "thinking", thinking: delta });
     return this.updateAssistantMessage({
