@@ -7,7 +7,7 @@ import * as path from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
 import type { FSWatcher } from "node:fs";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { APP_NAME } from "@bastani/atomic";
+import { APP_NAME, getEnvValue } from "@bastani/atomic";
 
 const ENV_PREFIX = APP_NAME.toUpperCase();
 const SUBAGENT_MAX_DEPTH_ENV = `${ENV_PREFIX}_SUBAGENT_MAX_DEPTH`;
@@ -650,7 +650,7 @@ export function normalizeMaxSubagentDepth(value: unknown): number | undefined {
 }
 
 export function resolveCurrentMaxSubagentDepth(configMaxDepth?: number): number {
-	return normalizeMaxSubagentDepth(process.env[SUBAGENT_MAX_DEPTH_ENV])
+	return normalizeMaxSubagentDepth(getEnvValue(SUBAGENT_MAX_DEPTH_ENV))
 		?? normalizeMaxSubagentDepth(configMaxDepth)
 		?? DEFAULT_SUBAGENT_MAX_DEPTH;
 }
@@ -662,14 +662,14 @@ export function resolveChildMaxSubagentDepth(parentMaxDepth: number, agentMaxDep
 }
 
 export function checkSubagentDepth(configMaxDepth?: number): { blocked: boolean; depth: number; maxDepth: number } {
-	const depth = Number(process.env[SUBAGENT_DEPTH_ENV] ?? "0");
+	const depth = Number(getEnvValue(SUBAGENT_DEPTH_ENV) ?? "0");
 	const maxDepth = resolveCurrentMaxSubagentDepth(configMaxDepth);
 	const blocked = Number.isFinite(depth) && depth >= maxDepth;
 	return { blocked, depth, maxDepth };
 }
 
 export function getSubagentDepthEnv(maxDepth?: number): Record<string, string> {
-	const parentDepth = Number(process.env[SUBAGENT_DEPTH_ENV] ?? "0");
+	const parentDepth = Number(getEnvValue(SUBAGENT_DEPTH_ENV) ?? "0");
 	const nextDepth = Number.isFinite(parentDepth) ? parentDepth + 1 : 1;
 	return {
 		[SUBAGENT_DEPTH_ENV]: String(nextDepth),

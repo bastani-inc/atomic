@@ -1,9 +1,9 @@
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { APP_NAME, CONFIG_DIR_NAME } from "@bastani/atomic";
+import { APP_NAME, CONFIG_DIR_NAME, getAgentDirs as getAtomicAgentDirs, getEnvValue } from "@bastani/atomic";
 
 export function getAgentDir(): string {
-  const configured = process.env[`${APP_NAME.toUpperCase()}_CODING_AGENT_DIR`]?.trim();
+  const configured = getEnvValue(`${APP_NAME.toUpperCase()}_CODING_AGENT_DIR`)?.trim();
   if (!configured) {
     return join(homedir(), CONFIG_DIR_NAME, "agent");
   }
@@ -16,6 +16,15 @@ export function getAgentDir(): string {
   return resolve(configured);
 }
 
+export function getAgentDirs(): string[] {
+  const configured = getEnvValue(`${APP_NAME.toUpperCase()}_CODING_AGENT_DIR`)?.trim();
+  return configured ? [getAgentDir()] : getAtomicAgentDirs();
+}
+
 export function getAgentPath(...segments: string[]): string {
   return join(getAgentDir(), ...segments);
+}
+
+export function getAgentPaths(...segments: string[]): string[] {
+  return getAgentDirs().map((dir) => join(dir, ...segments));
 }

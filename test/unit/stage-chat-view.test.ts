@@ -401,6 +401,123 @@ describe("StageChatView", () => {
     view.dispose();
   });
 
+  test("inherits custom message renderers from parent chat settings", () => {
+    const store = createStore();
+    setupRun(store, "run-1", "stage-a");
+    const customMessage: AgentSession["messages"][number] = {
+      role: "custom",
+      customType: "workflow-note",
+      content: "custom rendered from SDK history",
+      display: true,
+      timestamp: Date.now(),
+    };
+    const { handle } = makeHandle(undefined, [customMessage]);
+    const view = new StageChatView({
+      store,
+      graphTheme: deriveGraphTheme({}),
+      runId: "run-1",
+      stageId: "stage-a",
+      workflowName: "test-wf",
+      handle,
+      onDetach: () => {},
+      onClose: () => {},
+      getChatRenderSettings: () => ({
+        getCustomMessageRenderer: () => () => ({
+          render: () => ["PARENT-CUSTOM-RENDERER"],
+          invalidate: () => {},
+        }),
+      }),
+    });
+    assert.match(view.render(96).join("\n"), /PARENT-CUSTOM-RENDERER/);
+    view.dispose();
+  });
+
+  test("updates inherited chat settings without remounting", () => {
+    const store = createStore();
+    setupRun(store, "run-1", "stage-a");
+    const assistantMessage: AgentSession["messages"][number] = {
+      role: "assistant",
+      content: [{ type: "thinking", thinking: "private chain" }],
+      api: "test-api",
+      provider: "test-provider",
+      model: "test-model",
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: "stop",
+      timestamp: Date.now(),
+    };
+    const { handle } = makeHandle(undefined, [assistantMessage]);
+    let hidden = false;
+    const view = new StageChatView({
+      store,
+      graphTheme: deriveGraphTheme({}),
+      runId: "run-1",
+      stageId: "stage-a",
+      workflowName: "test-wf",
+      handle,
+      onDetach: () => {},
+      onClose: () => {},
+      getChatRenderSettings: () => ({
+        hideThinkingBlock: hidden,
+        hiddenThinkingLabel: "Parent hidden thinking",
+      }),
+    });
+
+    assert.match(view.render(96).join("\n"), /private chain/);
+    hidden = true;
+    const rendered = view.render(96).join("\n");
+    assert.match(rendered, /Parent hidden thinking/);
+    assert.doesNotMatch(rendered, /private chain/);
+    view.dispose();
+  });
+
+  test("inherits hidden thinking settings from parent chat settings", () => {
+    const store = createStore();
+    setupRun(store, "run-1", "stage-a");
+    const assistantMessage: AgentSession["messages"][number] = {
+      role: "assistant",
+      content: [{ type: "thinking", thinking: "private chain" }],
+      api: "test-api",
+      provider: "test-provider",
+      model: "test-model",
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: "stop",
+      timestamp: Date.now(),
+    };
+    const { handle } = makeHandle(undefined, [assistantMessage]);
+    const view = new StageChatView({
+      store,
+      graphTheme: deriveGraphTheme({}),
+      runId: "run-1",
+      stageId: "stage-a",
+      workflowName: "test-wf",
+      handle,
+      onDetach: () => {},
+      onClose: () => {},
+      getChatRenderSettings: () => ({
+        hideThinkingBlock: true,
+        hiddenThinkingLabel: "Parent hidden thinking",
+      }),
+    });
+    const rendered = view.render(96).join("\n");
+    assert.match(rendered, /Parent hidden thinking/);
+    assert.doesNotMatch(rendered, /private chain/);
+    view.dispose();
+  });
+
   test("renders custom SDK snapshot messages instead of crashing", () => {
     const store = createStore();
     setupRun(store, "run-1", "stage-a");
@@ -483,6 +600,58 @@ describe("StageChatView", () => {
     assert.match(rendered, /persisted prompt/);
     assert.match(rendered, /persisted answer/);
     assert.match(rendered, /2 messages/);
+    view.dispose();
+  });
+
+  test("reopens persisted tool calls with their original arguments", () => {
+    const store = createStore();
+    setupRun(store, "run-1", "stage-a", "completed");
+    const sessionDir = mkdtempSync(join(tmpdir(), "atomic-stage-session-tools-"));
+    const manager = SessionManager.create(process.cwd(), sessionDir);
+    manager.appendMessage({
+      role: "assistant",
+      content: [{ type: "toolCall", id: "tool-1", name: "bash", arguments: { command: "echo persisted" } }],
+      api: "test-api",
+      provider: "test-provider",
+      model: "test-model",
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: "toolUse",
+      timestamp: Date.now(),
+    } as Parameters<SessionManager["appendMessage"]>[0]);
+    manager.appendMessage({
+      role: "toolResult",
+      toolCallId: "tool-1",
+      toolName: "bash",
+      content: [{ type: "text", text: "persisted\n" }],
+      isError: false,
+      timestamp: Date.now(),
+    } as Parameters<SessionManager["appendMessage"]>[0]);
+    store.recordStageSession("run-1", "stage-a", {
+      sessionId: manager.getSessionId(),
+      sessionFile: manager.getSessionFile(),
+    });
+
+    const view = new StageChatView({
+      store,
+      graphTheme: deriveGraphTheme({}),
+      runId: "run-1",
+      stageId: "stage-a",
+      workflowName: "test-wf",
+      onDetach: () => {},
+      onClose: () => {},
+    });
+
+    const rendered = view.render(96).join("\n");
+    assert.match(rendered, /\$ echo persisted/);
+    assert.doesNotMatch(rendered, /\$ \.\.\./);
+    assert.match(rendered, /persisted/);
     view.dispose();
   });
 
@@ -895,6 +1064,78 @@ describe("StageChatView", () => {
     const narrowOccurrences = narrow.render(96).join("\n").split("\n").filter((line) => line.includes("msg-")).length;
     assert.ok(wideOccurrences > narrowOccurrences, `expected wider viewport to show more entries (${wideOccurrences} <= ${narrowOccurrences})`);
     narrow.dispose();
+    view.dispose();
+  });
+
+  test("PageUp and PageDown scroll attached chat history", async () => {
+    const store = createStore();
+    setupRun(store, "run-1", "stage-a", "pending");
+    const { handle } = makeHandle();
+    const view = new StageChatView({
+      store,
+      graphTheme: deriveGraphTheme({}),
+      runId: "run-1",
+      stageId: "stage-a",
+      workflowName: "test-wf",
+      handle,
+      onDetach: () => {},
+      onClose: () => {},
+    });
+
+    for (let i = 0; i < 18; i++) {
+      for (const ch of `scroll-msg-${i}`) view.handleInput(ch);
+      view.handleInput("\r");
+      await flush();
+      await flush();
+    }
+
+    const bottomText = view.render(96).join("\n");
+    assert.match(bottomText, /scroll-msg-17/);
+    assert.doesNotMatch(bottomText, /scroll-msg-0/);
+    assert.ok(view._lastBodyMaxScroll > 0);
+
+    view.handleInput("\x1b[5~");
+    const offsetAfterPageUp = view._bodyScrollFromBottom;
+    const olderText = view.render(96).join("\n");
+    assert.ok(offsetAfterPageUp > 0);
+    assert.notEqual(olderText, bottomText);
+
+    view.handleInput("\x1b[6~");
+    view.render(96);
+    assert.equal(view._bodyScrollFromBottom, 0);
+    view.dispose();
+  });
+
+  test("mouse wheel scrolls history without typing SGR bytes into the editor", async () => {
+    const store = createStore();
+    setupRun(store, "run-1", "stage-a", "pending");
+    const { handle } = makeHandle();
+    const view = new StageChatView({
+      store,
+      graphTheme: deriveGraphTheme({}),
+      runId: "run-1",
+      stageId: "stage-a",
+      workflowName: "test-wf",
+      handle,
+      onDetach: () => {},
+      onClose: () => {},
+    });
+
+    for (let i = 0; i < 18; i++) {
+      for (const ch of `wheel-msg-${i}`) view.handleInput(ch);
+      view.handleInput("\r");
+      await flush();
+      await flush();
+    }
+    view.render(96);
+
+    view.handleInput("\x1b[<64;10;10M");
+    view.render(96);
+    assert.ok(view._bodyScrollFromBottom > 0);
+
+    const before = view._inputBuffer;
+    view.handleInput("\x1b[<0;10;10M");
+    assert.equal(view._inputBuffer, before);
     view.dispose();
   });
 });

@@ -1,7 +1,5 @@
 import { existsSync, readFileSync } from "fs";
-import { join } from "path";
-import { homedir } from "os";
-import { CONFIG_DIR_NAME } from "@bastani/atomic";
+import { getAgentConfigPaths } from "@bastani/atomic";
 
 export interface IntercomConfig {
   /** Broker command used to spawn the broker process (e.g. "npx" or "bun") */
@@ -23,7 +21,8 @@ export interface IntercomConfig {
   replyHint: boolean;
 }
 
-const CONFIG_PATH = join(homedir(), CONFIG_DIR_NAME, "agent", "intercom", "config.json");
+const CONFIG_PATHS = getAgentConfigPaths("intercom", "config.json");
+const CONFIG_PATH = CONFIG_PATHS.find((path) => existsSync(path)) ?? CONFIG_PATHS[0]!;
 
 const defaults: IntercomConfig = {
   brokerCommand: "npx",

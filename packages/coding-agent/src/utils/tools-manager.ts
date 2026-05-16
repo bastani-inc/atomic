@@ -5,14 +5,14 @@ import { arch, platform } from "os";
 import { join } from "path";
 import { Readable } from "stream";
 import { pipeline } from "stream/promises";
-import { APP_NAME, ENV_OFFLINE, getBinDir } from "../config.js";
+import { APP_NAME, ENV_OFFLINE, getBinDir, getEnvValue } from "../config.js";
 
 const TOOLS_DIR = getBinDir();
 const NETWORK_TIMEOUT_MS = 10_000;
 const DOWNLOAD_TIMEOUT_MS = 120_000;
 
 function isOfflineModeEnabled(): boolean {
-	const value = process.env[ENV_OFFLINE];
+	const value = getEnvValue(ENV_OFFLINE);
 	if (!value) return false;
 	return value === "1" || value.toLowerCase() === "true" || value.toLowerCase() === "yes";
 }

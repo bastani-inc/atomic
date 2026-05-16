@@ -8,7 +8,7 @@ import { formatSkillsForPrompt, type Skill } from "./skills.js";
 export interface BuildSystemPromptOptions {
 	/** Custom system prompt (replaces default). */
 	customPrompt?: string;
-	/** Tools to include in prompt. Default: [read, bash, edit, write] */
+	/** Tools to include in prompt. Default: [read, bash, edit, write, ask_user_question, todo] */
 	selectedTools?: string[];
 	/** Optional one-line tool snippets keyed by tool name. */
 	toolSnippets?: Record<string, string>;

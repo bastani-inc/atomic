@@ -255,7 +255,7 @@ describe("renderNodeCard — duration line", () => {
       { theme },
     );
     const body = stripAnsi(lines[1]!);
-    // fmtDuration(65000) → "1m5s" (per status-helpers.ts).
-    assert.match(body, /1m5s/);
+    // fmtDuration(65000) → "1m 5s" (per status-helpers.ts).
+    assert.match(body, /1m 5s/);
   });
 });

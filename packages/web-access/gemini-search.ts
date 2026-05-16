@@ -7,6 +7,7 @@ import { getApiKey, API_BASE, DEFAULT_MODEL } from "./gemini-api.js";
 import { isGeminiWebAvailable, queryWithCookies } from "./gemini-web.js";
 import { isPerplexityAvailable, searchWithPerplexity, type SearchResult, type SearchResponse, type SearchOptions } from "./perplexity.js";
 import { hasExaApiKey, isExaAvailable, searchWithExa } from "./exa.js";
+import { findReadableConfigPath } from "./config-paths.ts";
 
 export type SearchProvider = "auto" | "perplexity" | "gemini" | "exa";
 export type ResolvedSearchProvider = Exclude<SearchProvider, "auto">;
@@ -15,7 +16,7 @@ export interface AttributedSearchResponse extends SearchResponse {
 	provider: ResolvedSearchProvider;
 }
 
-const CONFIG_PATH = join(homedir(), CONFIG_DIR_NAME, "web-search.json");
+const CONFIG_PATH = findReadableConfigPath();
 
 let cachedSearchConfig: { searchProvider: SearchProvider; searchModel?: string } | null = null;
 

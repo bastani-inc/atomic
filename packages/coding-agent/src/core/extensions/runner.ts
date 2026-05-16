@@ -219,6 +219,15 @@ const noOpUIContext: ExtensionUIContext = {
 	setTheme: (_theme: string | Theme) => ({ success: false, error: "UI not available" }),
 	getToolsExpanded: () => false,
 	setToolsExpanded: () => {},
+	getChatRenderSettings: () => ({
+		hideThinkingBlock: false,
+		hiddenThinkingLabel: "Thinking...",
+		toolOutputExpanded: false,
+		showImages: false,
+		imageWidthCells: 60,
+		getToolDefinition: () => undefined,
+		getCustomMessageRenderer: () => undefined,
+	}),
 };
 
 export class ExtensionRunner {

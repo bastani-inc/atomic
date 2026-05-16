@@ -29,20 +29,22 @@
 
 ## Get started
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/flora131/atomic/main/install.sh | sh
-```
-
-**Windows** (PowerShell 5.1+ or 7+):
-
-```powershell
-irm https://raw.githubusercontent.com/flora131/atomic/main/install.ps1 | iex
-```
-
-Or with npm:
+With npm:
 
 ```bash
 npm install -g @bastani/atomic
+```
+
+With pnpm:
+
+```bash
+pnpm add -g @bastani/atomic
+```
+
+With bun:
+
+```bash
+bun add -g @bastani/atomic
 ```
 
 **Authenticate and run**

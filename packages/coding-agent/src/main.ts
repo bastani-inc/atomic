@@ -22,6 +22,8 @@ import {
 	ENV_STARTUP_BENCHMARK,
 	expandTildePath,
 	getAgentDir,
+	getEnvValue,
+	setEnvValue,
 	VERSION,
 } from "./config.js";
 import { type CreateAgentSessionRuntimeFactory, createAgentSessionRuntime } from "./core/agent-session-runtime.js";
@@ -432,10 +434,10 @@ export interface MainOptions {
 
 export async function main(args: string[], options?: MainOptions) {
 	resetTimings();
-	const offlineMode = args.includes("--offline") || isTruthyEnvFlag(process.env[ENV_OFFLINE]);
+	const offlineMode = args.includes("--offline") || isTruthyEnvFlag(getEnvValue(ENV_OFFLINE));
 	if (offlineMode) {
-		process.env[ENV_OFFLINE] = "1";
-		process.env[ENV_SKIP_VERSION_CHECK] = "1";
+		setEnvValue(ENV_OFFLINE, "1");
+		setEnvValue(ENV_SKIP_VERSION_CHECK, "1");
 	}
 
 	if (await handlePackageCommand(args)) {
@@ -503,7 +505,7 @@ export async function main(args: string[], options?: MainOptions) {
 	// settings, resources, provider registrations, and models must be resolved only after
 	// the target session cwd is known. The startup-cwd settings manager is used only for
 	// sessionDir lookup during session selection.
-	const envSessionDir = process.env[ENV_SESSION_DIR];
+	const envSessionDir = getEnvValue(ENV_SESSION_DIR);
 	const sessionDir =
 		parsed.sessionDir ??
 		(envSessionDir ? expandTildePath(envSessionDir) : undefined) ??
@@ -676,7 +678,7 @@ export async function main(args: string[], options?: MainOptions) {
 		process.exit(1);
 	}
 
-	const startupBenchmark = isTruthyEnvFlag(process.env[ENV_STARTUP_BENCHMARK]);
+	const startupBenchmark = isTruthyEnvFlag(getEnvValue(ENV_STARTUP_BENCHMARK));
 	if (startupBenchmark && appMode !== "interactive") {
 		console.error(chalk.red(`Error: ${ENV_STARTUP_BENCHMARK} only supports interactive mode`));
 		process.exit(1);

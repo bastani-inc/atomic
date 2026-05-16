@@ -312,6 +312,37 @@ describe("open-claude-design", () => {
     assert.equal(result["output_type"], "prototype");
   });
 
+  test("browser display prompts bootstrap a missing Playwright browser", async () => {
+    const mod = await import("../../packages/workflows/builtin/open-claude-design.js");
+    const d = mod.default as unknown as WorkflowDefinition;
+    const ctx = makeMockCtx(
+      {
+        prompt: "Design a dashboard",
+        reference: "https://example.com/reference",
+        design_system: "Use the existing app design system.",
+        max_refinements: 1,
+      },
+      {
+        task: (name) => {
+          if (name.startsWith("user-feedback-")) return "refinement complete";
+          if (name === "pre-export-scan") return "no blocking findings";
+          return undefined;
+        },
+      },
+    );
+
+    await d.run(ctx);
+
+    const webCapturePrompt = ctx.calls.prompts["web-capture"]?.[0] ?? "";
+    const previewPrompt = ctx.calls.prompts["preview-display-initial"]?.[0] ?? "";
+    const finalPrompt = ctx.calls.prompts["final-display"]?.[0] ?? "";
+    for (const displayPrompt of [webCapturePrompt, previewPrompt, finalPrompt]) {
+      assert.match(displayPrompt, /playwright-cli install-browser chrome-for-testing/);
+      assert.match(displayPrompt, /Do not install playwright-cli itself/);
+      assert.match(displayPrompt, /missing browser executable/);
+    }
+  });
+
   test("definition is frozen (immutable)", async () => {
     const mod = await import("../../packages/workflows/builtin/open-claude-design.js");
     const d = mod.default;

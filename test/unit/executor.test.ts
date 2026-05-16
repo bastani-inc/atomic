@@ -573,6 +573,42 @@ describe("direct SDK helpers", () => {
     assert.equal(calls[0]?.thinkingLevel, "high");
   });
 
+  test("runTask applies top-level createAgentSession defaults to direct items", async () => {
+    const calls: CreateAgentSessionOptions[] = [];
+    const details = await runTask(
+      {
+        name: "scout",
+        prompt: "inspect repo",
+      },
+      {
+        cwd: "/repo",
+        agentDir: "/agent",
+        tools: ["read", "todo"],
+        noTools: "builtin",
+        thinkingLevel: "high",
+      },
+      {
+        adapters: {
+          agentSession: {
+            async create(options) {
+              calls.push(options);
+              return mockSession();
+            },
+          },
+        },
+        store: createStore(),
+      },
+    );
+
+    assert.equal(details.mode, "single");
+    assert.equal(details.status, "completed");
+    assert.equal(calls[0]?.cwd, "/repo");
+    assert.equal(calls[0]?.agentDir, "/agent");
+    assert.deepEqual(calls[0]?.tools, ["read", "todo"]);
+    assert.equal(calls[0]?.noTools, "builtin");
+    assert.equal(calls[0]?.thinkingLevel, "high");
+  });
+
   test("runTask retries fallback models and returns attempt metadata", async () => {
     const calls: string[] = [];
     const details = await runTask(

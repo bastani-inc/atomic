@@ -405,24 +405,20 @@ export interface WorkflowParallelChainStep {
 
 export type WorkflowChainStep = WorkflowDirectTaskItem | WorkflowParallelChainStep;
 
-export interface WorkflowDirectOptions extends WorkflowModelFallbackFields {
+export interface WorkflowDirectOptions extends StageOptions {
   /** Shared/root task used for `{task}` in direct parallel or chain steps. */
   task?: string;
   /** Optional named chain identifier for status/artifact grouping. */
   chainName?: string;
-  context?: "fresh" | "fork";
-  forkFromSessionFile?: string;
   concurrency?: number;
   failFast?: boolean;
   chainDir?: string;
-  cwd?: string;
   output?: string | false;
   outputMode?: WorkflowOutputMode;
   progress?: boolean;
   worktree?: boolean;
   maxOutput?: WorkflowMaxOutput;
   artifacts?: boolean;
-  sessionDir?: string;
 }
 
 // ---------------------------------------------------------------------------

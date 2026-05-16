@@ -6,7 +6,7 @@ import type { AgentSessionEvent } from "../../../src/core/agent-session.js";
 import type { SessionContext } from "../../../src/core/session-manager.js";
 import type { ToolExecutionComponent } from "../../../src/modes/interactive/components/tool-execution.js";
 import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode.js";
-import { initTheme } from "../../../src/modes/interactive/theme/theme.js";
+import { getMarkdownTheme, initTheme } from "../../../src/modes/interactive/theme/theme.js";
 import { stripAnsi } from "../../../src/utils/ansi.js";
 
 const TOOL_CALL_ID = "tool-4167";
@@ -37,12 +37,18 @@ type RenderSessionContextThis = {
 		getImageWidthCells(): number;
 	};
 	sessionManager: { getCwd(): string };
-	session: { retryAttempt: number };
+	session: { retryAttempt: number; extensionRunner: { getMessageRenderer(customType: string): undefined } };
+	hideThinkingBlock: boolean;
+	hiddenThinkingLabel: string;
 	toolOutputExpanded: boolean;
 	isInitialized: boolean;
+	editor: { addToHistory(text: string): void };
 	updateEditorBorderColor(): void;
+	getMarkdownThemeWithSettings(): ReturnType<typeof getMarkdownTheme>;
 	getRegisteredToolDefinition(toolName: string): undefined;
 	addMessageToChat(message: AgentMessage, options?: { populateHistory?: boolean }): void;
+	chatMessageRenderOptions(): unknown;
+	addRenderedChatEntry(entry: unknown): unknown;
 };
 
 type RenderSessionContext = (
@@ -55,6 +61,10 @@ type HandleEvent = (this: RenderSessionContextThis, event: AgentSessionEvent) =>
 
 function createFakeInteractiveModeThis(): RenderSessionContextThis {
 	const chatContainer = new Container();
+	const proto = InteractiveMode.prototype as unknown as {
+		chatMessageRenderOptions: () => unknown;
+		addRenderedChatEntry: (entry: unknown) => unknown;
+	};
 	return {
 		pendingTools: new Map<string, ToolExecutionComponent>(),
 		chatContainer,
@@ -65,11 +75,17 @@ function createFakeInteractiveModeThis(): RenderSessionContextThis {
 			getImageWidthCells: () => 60,
 		},
 		sessionManager: { getCwd: () => process.cwd() },
-		session: { retryAttempt: 0 },
+		session: { retryAttempt: 0, extensionRunner: { getMessageRenderer: () => undefined } },
+		hideThinkingBlock: false,
+		hiddenThinkingLabel: "Thinking...",
 		toolOutputExpanded: false,
 		isInitialized: true,
+		editor: { addToHistory: vi.fn() },
 		updateEditorBorderColor: vi.fn(),
+		getMarkdownThemeWithSettings: () => getMarkdownTheme(),
 		getRegisteredToolDefinition: (_toolName: string) => undefined,
+		chatMessageRenderOptions: proto.chatMessageRenderOptions,
+		addRenderedChatEntry: proto.addRenderedChatEntry,
 		addMessageToChat(message: AgentMessage) {
 			chatContainer.addChild(new Text(message.role, 0, 0));
 		},

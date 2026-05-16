@@ -153,23 +153,47 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
     };
   }
 
+  function withoutUndefinedProperties<T extends object>(value: T): Partial<T> {
+    return Object.fromEntries(
+      Object.entries(value).filter(([, field]) => field !== undefined),
+    ) as Partial<T>;
+  }
+
   function directOptions(args: WorkflowToolArgs): WorkflowDirectOptions {
+    const {
+      workflow: _workflow,
+      inputs: _inputs,
+      action: _action,
+      runId: _runId,
+      task,
+      tasks: _tasks,
+      chain: _chain,
+      chainName,
+      concurrency,
+      async: _async,
+      intercom: _intercom,
+      output,
+      outputMode,
+      chainDir,
+      maxOutput,
+      artifacts,
+      progress,
+      worktree,
+      ...stageOptions
+    } = args;
+
     return {
-      ...(typeof args.task === "string" ? { task: args.task } : {}),
-      ...(typeof args.chainName === "string" ? { chainName: args.chainName } : {}),
-      ...(args.context !== undefined ? { context: args.context } : {}),
-      ...(typeof args.forkFromSessionFile === "string" ? { forkFromSessionFile: args.forkFromSessionFile } : {}),
-      ...(typeof args.concurrency === "number" ? { concurrency: args.concurrency } : {}),
-      ...(typeof args.chainDir === "string" ? { chainDir: args.chainDir } : {}),
-      ...(typeof args.cwd === "string" ? { cwd: args.cwd } : {}),
-      ...(args.output !== undefined ? { output: args.output } : {}),
-      ...(args.outputMode !== undefined ? { outputMode: args.outputMode } : {}),
-      ...(args.maxOutput !== undefined ? { maxOutput: args.maxOutput } : {}),
-      ...(typeof args.artifacts === "boolean" ? { artifacts: args.artifacts } : {}),
-      ...(typeof args.sessionDir === "string" ? { sessionDir: args.sessionDir } : {}),
-      ...(typeof args.progress === "boolean" ? { progress: args.progress } : {}),
-      ...(typeof args.worktree === "boolean" ? { worktree: args.worktree } : {}),
-      ...(Array.isArray(args.fallbackModels) ? { fallbackModels: args.fallbackModels } : {}),
+      ...withoutUndefinedProperties(stageOptions),
+      ...(typeof task === "string" ? { task } : {}),
+      ...(typeof chainName === "string" ? { chainName } : {}),
+      ...(typeof concurrency === "number" ? { concurrency } : {}),
+      ...(typeof chainDir === "string" ? { chainDir } : {}),
+      ...(output !== undefined ? { output } : {}),
+      ...(outputMode !== undefined ? { outputMode } : {}),
+      ...(maxOutput !== undefined ? { maxOutput } : {}),
+      ...(typeof artifacts === "boolean" ? { artifacts } : {}),
+      ...(typeof progress === "boolean" ? { progress } : {}),
+      ...(typeof worktree === "boolean" ? { worktree } : {}),
     };
   }
 
@@ -182,7 +206,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
   function directModelRequests(args: WorkflowToolArgs): Array<{ readonly model?: WorkflowDirectTaskItem["model"]; readonly fallbackModels?: readonly string[] }> {
     const options = directOptions(args);
     const withFallbackDefault = (item: WorkflowDirectTaskItem) => ({
-      model: item.model,
+      model: item.model ?? options.model,
       fallbackModels: item.fallbackModels ?? options.fallbackModels,
     });
     if (args.task !== undefined && typeof args.task === "object") return [withFallbackDefault(args.task)];

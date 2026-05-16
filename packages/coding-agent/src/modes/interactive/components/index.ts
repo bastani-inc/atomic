@@ -3,6 +3,22 @@ export { ArminComponent } from "./armin.js";
 export { AssistantMessageComponent } from "./assistant-message.js";
 export { BashExecutionComponent } from "./bash-execution.js";
 export { BorderedLoader } from "./bordered-loader.js";
+export {
+  chatEntriesFromAgentMessages,
+  LiveChatEntriesController,
+  renderChatMessageEntry,
+  type ChatMessageEntry,
+  type ChatMessageRenderOptions,
+} from "./chat-message-renderer.js";
+export {
+  addChatTranscriptEntry,
+  ChatTranscriptComponent,
+  ScrollableChatTranscriptComponent,
+  ScrollableComponentViewport,
+  type ChatTranscriptEntryLike,
+  type ChatTranscriptRenderer,
+  type ChatTranscriptRole,
+} from "./chat-transcript.js";
 export { BranchSummaryMessageComponent } from "./branch-summary-message.js";
 export { CompactionSummaryMessageComponent } from "./compaction-summary-message.js";
 export { CustomEditor } from "./custom-editor.js";

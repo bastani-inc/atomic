@@ -78,6 +78,11 @@ function makeStore(snap: StoreSnapshot): Store {
 }
 
 const defaultTheme = deriveGraphTheme({});
+const ANSI_RE = /\x1b\[[0-9;]*m/g;
+
+function visibleText(lines: string[]): string {
+  return lines.join("\n").replace(ANSI_RE, "");
+}
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -257,13 +262,13 @@ describe("fmtDuration", () => {
     assert.equal(fmtDuration(45000), "45s");
   });
 
-  it("84000ms → 1m24s", () => {
-    assert.equal(fmtDuration(84000), "1m24s");
+  it("84000ms → 1m 24s", () => {
+    assert.equal(fmtDuration(84000), "1m 24s");
   });
 
-  it("3h2m → 3h2m", () => {
+  it("3h2m → 3h 2m", () => {
     const ms = 3 * 3600000 + 2 * 60000;
-    assert.equal(fmtDuration(ms), "3h2m");
+    assert.equal(fmtDuration(ms), "3h 2m");
   });
 
   it("60s → 1m", () => {
@@ -464,6 +469,96 @@ describe("GraphView keyboard navigation", () => {
     view.dispose();
   });
 
+  it("Enter in switcher attaches the selected stage when chat attach is available", () => {
+    const stages = [makeStage("A"), makeStage("B"), makeStage("C")];
+    const snap = makeSnap(stages);
+    const store = makeStore(snap);
+    const onStageAttach = mock(() => {});
+    const view = new GraphView({
+      mode: "overlay",
+      runId: "run-1",
+      store,
+      graphTheme: defaultTheme,
+      onStageAttach,
+    });
+
+    view.handleInput("/");
+    // ArrowDown to select index 1 (stage B), then Enter should open
+    // B's chat directly instead of leaving the user on the graph node.
+    view.handleInput("\x1b[B");
+    view.handleInput("\r");
+
+    assert.equal(view._switcherOpen, false);
+    assert.equal(view._focusedIndex, 1);
+    assert.equal(onStageAttach.mock.calls.length, 1);
+    assert.deepEqual(onStageAttach.mock.calls[0], ["run-1", "B"]);
+    view.dispose();
+  });
+
+  it("switcher overlays only its panel and does not erase graph nodes to the right", () => {
+    const stages = [
+      makeStage("root"),
+      makeStage("branch-left", ["root"]),
+      makeStage("branch-right", ["root"]),
+      makeStage("merge", ["branch-left", "branch-right"]),
+      makeStage("tail-a", ["merge"]),
+      makeStage("tail-b", ["tail-a"]),
+    ];
+    const view = makeView(stages);
+
+    assert.match(visibleText(view.render(200)), /╭──── branch-right/);
+    view.handleInput("/");
+    const withSwitcher = visibleText(view.render(200));
+    assert.match(withSwitcher, /stages/);
+    assert.match(withSwitcher, /^│ ○ root\s+│/m);
+    assert.doesNotMatch(withSwitcher, /^│ ▸/m);
+    assert.match(withSwitcher, /╭──── branch-right/);
+    view.dispose();
+  });
+
+  it("keeps the node-card graph view for long workflows while the switcher is open", () => {
+    const stages = Array.from({ length: 16 }, (_, i) =>
+      makeStage(`stage-${i}`, i === 0 ? [] : [`stage-${i - 1}`]),
+    );
+    const snap = makeSnap(stages);
+    const store = makeStore(snap);
+    const view = new GraphView({
+      mode: "overlay",
+      runId: "run-1",
+      store,
+      graphTheme: defaultTheme,
+      getViewportRows: () => 40,
+    });
+
+    view.handleInput("/");
+    const withSwitcher = visibleText(view.render(160));
+    assert.match(withSwitcher, /stages/);
+    assert.match(withSwitcher, /╭.*stage-0/);
+    assert.doesNotMatch(withSwitcher, /^\s*○ stage-0\s+pending/m);
+    view.dispose();
+  });
+
+  it("horizontally scrolls wide fan-out graphs instead of switching to a compact list", () => {
+    const stages = [
+      makeStage("root"),
+      makeStage("child-0", ["root"]),
+      makeStage("child-1", ["root"]),
+      makeStage("child-2", ["root"]),
+      makeStage("child-3", ["root"]),
+      makeStage("child-4", ["root"]),
+      makeStage("child-5", ["root"]),
+    ];
+    const view = makeView(stages);
+
+    assert.doesNotMatch(visibleText(view.render(80)), /╭.*child-5/);
+    view.handleInput("\x1b[B");
+    for (let i = 0; i < 5; i++) view.handleInput("\x1b[C");
+    const afterNav = visibleText(view.render(80));
+    assert.match(afterNav, /╭.*child-5/);
+    assert.doesNotMatch(afterNav, /^\s*○ child-5\s+pending/m);
+    view.dispose();
+  });
+
   it("render returns lines in overlay mode", () => {
     const stages = [makeStage("A"), makeStage("B", ["A"])];
     const view = makeView(stages);
@@ -550,6 +645,59 @@ describe("GraphView keyboard navigation", () => {
     });
     const lines = view.render(96);
     assert.equal(lines.length, 32);
+    view.dispose();
+  });
+
+  it("ArrowDown scrolls a tall graph so the focused node stays visible", () => {
+    const stages = [
+      makeStage("stage-0"),
+      makeStage("stage-1", ["stage-0"]),
+      makeStage("stage-2", ["stage-1"]),
+      makeStage("stage-3", ["stage-2"]),
+      makeStage("stage-4", ["stage-3"]),
+      makeStage("stage-5", ["stage-4"]),
+    ];
+    const snap = makeSnap(stages);
+    const store = makeStore(snap);
+    const view = new GraphView({
+      mode: "overlay",
+      runId: "run-1",
+      store,
+      graphTheme: defaultTheme,
+      getViewportRows: () => 32,
+    });
+
+    assert.doesNotMatch(visibleText(view.render(96)), /stage-5/);
+    for (let i = 0; i < 5; i++) view.handleInput("\x1b[B");
+    assert.match(visibleText(view.render(96)), /stage-5/);
+    view.dispose();
+  });
+
+  it("mouse wheel input scrolls a tall graph without moving focus", () => {
+    const stages = [
+      makeStage("stage-0"),
+      makeStage("stage-1", ["stage-0"]),
+      makeStage("stage-2", ["stage-1"]),
+      makeStage("stage-3", ["stage-2"]),
+      makeStage("stage-4", ["stage-3"]),
+      makeStage("stage-5", ["stage-4"]),
+    ];
+    const snap = makeSnap(stages);
+    const store = makeStore(snap);
+    const view = new GraphView({
+      mode: "overlay",
+      runId: "run-1",
+      store,
+      graphTheme: defaultTheme,
+      getViewportRows: () => 32,
+    });
+
+    view.render(96);
+    assert.equal(view._focusedIndex, 0);
+    view.handleInput("\x1b[<65;10;10M"); // SGR mouse wheel down
+    view.render(96);
+    assert.equal(view._focusedIndex, 0);
+    assert.ok(view._graphScrollOffset > 0);
     view.dispose();
   });
 

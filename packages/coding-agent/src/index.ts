@@ -1,7 +1,28 @@
 // Core session management
 
 // Config paths
-export { APP_NAME, APP_TITLE, CONFIG_DIR_NAME, getAgentDir, PACKAGE_NAME, VERSION } from "./config.js";
+export {
+	APP_NAME,
+	APP_TITLE,
+	CONFIG_DIR_NAME,
+	CONFIG_DIR_NAMES,
+	LEGACY_CONFIG_DIR_NAME,
+	LEGACY_ENV_PREFIX,
+	getAgentConfigPaths,
+	getAgentDir,
+	getAgentDirs,
+	getLegacyAgentDir,
+	getProjectConfigDirs,
+	getProjectConfigPaths,
+	getEnvNames,
+	getEnvValue,
+	getUserConfigDirs,
+	getUserConfigPaths,
+	hasEnvValue,
+	PACKAGE_NAME,
+	setEnvValue,
+	VERSION,
+} from "./config.js";
 export {
 	AgentSession,
 	type AgentSessionConfig,
@@ -302,6 +323,17 @@ export {
 	AssistantMessageComponent,
 	BashExecutionComponent,
 	BorderedLoader,
+	chatEntriesFromAgentMessages,
+	ChatTranscriptComponent,
+	LiveChatEntriesController,
+	renderChatMessageEntry,
+	type ChatMessageEntry,
+	type ChatMessageRenderOptions,
+	ScrollableChatTranscriptComponent,
+	ScrollableComponentViewport,
+	type ChatTranscriptEntryLike,
+	type ChatTranscriptRenderer,
+	type ChatTranscriptRole,
 	BranchSummaryMessageComponent,
 	CompactionSummaryMessageComponent,
 	CustomEditor,

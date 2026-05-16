@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Reduced the Atomic startup banner to a compact three-line mark.
+
 ## [0.8.1] - 2026-05-15
 
 ### Fixed

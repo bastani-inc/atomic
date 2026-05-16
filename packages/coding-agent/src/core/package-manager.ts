@@ -27,7 +27,7 @@ import type { Readable } from "node:stream";
 import { globSync } from "glob";
 import ignore from "ignore";
 import { minimatch } from "minimatch";
-import { CONFIG_DIR_NAME, ENV_OFFLINE } from "../config.js";
+import { CONFIG_DIR_NAME, ENV_OFFLINE, getAgentDir, getAgentDirs, getEnvValue, getProjectConfigDirs } from "../config.js";
 import { shouldUseWindowsShell } from "../utils/child-process.js";
 import { type GitSource, parseGitUrl } from "../utils/git.js";
 import { canonicalizePath, isLocalPath } from "../utils/paths.js";
@@ -39,7 +39,7 @@ const UPDATE_CHECK_CONCURRENCY = 4;
 const GIT_UPDATE_CONCURRENCY = 4;
 
 function isOfflineModeEnabled(): boolean {
-	const value = process.env[ENV_OFFLINE];
+	const value = getEnvValue(ENV_OFFLINE);
 	if (!value) return false;
 	return value === "1" || value.toLowerCase() === "true" || value.toLowerCase() === "yes";
 }
@@ -812,17 +812,46 @@ export class DefaultPackageManager implements PackageManager {
 	getInstalledPath(source: string, scope: "user" | "project"): string | undefined {
 		const parsed = this.parseSource(source);
 		if (parsed.type === "npm") {
-			const path = this.getNpmInstallPath(parsed, scope);
-			return existsSync(path) ? path : undefined;
+			return this.getExistingNpmInstallPath(parsed, scope);
 		}
 		if (parsed.type === "git") {
-			const path = this.getGitInstallPath(parsed, scope);
-			return existsSync(path) ? path : undefined;
+			return this.getExistingGitInstallPath(parsed, scope);
 		}
 		if (parsed.type === "local") {
-			const baseDir = this.getBaseDirForScope(scope);
-			const path = this.resolvePathFromBase(parsed.path, baseDir);
-			return existsSync(path) ? path : undefined;
+			for (const baseDir of this.getBaseDirsForScope(scope)) {
+				const path = this.resolvePathFromBase(parsed.path, baseDir);
+				if (existsSync(path)) return path;
+			}
+		}
+		return undefined;
+	}
+
+	private getExistingNpmInstallPath(source: NpmSource, scope: SourceScope): string | undefined {
+		const candidates = [this.getNpmInstallPath(source, scope)];
+		if (scope === "project") {
+			for (const configDir of getProjectConfigDirs(this.cwd)) {
+				candidates.push(join(configDir, "npm", "node_modules", source.name));
+			}
+		}
+		for (const candidate of Array.from(new Set(candidates))) {
+			if (existsSync(candidate)) return candidate;
+		}
+		return undefined;
+	}
+
+	private getExistingGitInstallPath(source: GitSource, scope: SourceScope): string | undefined {
+		const candidates = [this.getGitInstallPath(source, scope)];
+		if (scope === "project") {
+			for (const configDir of getProjectConfigDirs(this.cwd)) {
+				candidates.push(join(configDir, "git", source.host, source.path));
+			}
+		} else if (scope === "user") {
+			for (const agentDir of this.getBaseDirsForScope("user")) {
+				candidates.push(join(agentDir, "git", source.host, source.path));
+			}
+		}
+		for (const candidate of Array.from(new Set(candidates))) {
+			if (existsSync(candidate)) return candidate;
 		}
 		return undefined;
 	}
@@ -868,33 +897,41 @@ export class DefaultPackageManager implements PackageManager {
 
 		const globalBaseDir = this.agentDir;
 		const projectBaseDir = join(this.cwd, CONFIG_DIR_NAME);
+		const globalBaseDirs = this.getBaseDirsForScope("user");
+		const projectBaseDirs = this.getBaseDirsForScope("project");
 
 		for (const resourceType of RESOURCE_TYPES) {
 			const target = this.getTargetMap(accumulator, resourceType);
 			const globalEntries = (globalSettings[resourceType] ?? []) as string[];
 			const projectEntries = (projectSettings[resourceType] ?? []) as string[];
-			this.resolveLocalEntries(
-				projectEntries,
-				resourceType,
-				target,
-				{
-					source: "local",
-					scope: "project",
-					origin: "top-level",
-				},
-				projectBaseDir,
-			);
-			this.resolveLocalEntries(
-				globalEntries,
-				resourceType,
-				target,
-				{
-					source: "local",
-					scope: "user",
-					origin: "top-level",
-				},
-				globalBaseDir,
-			);
+			for (const baseDir of projectBaseDirs) {
+				this.resolveLocalEntries(
+					projectEntries,
+					resourceType,
+					target,
+					{
+						source: "local",
+						scope: "project",
+						origin: "top-level",
+						baseDir,
+					},
+					baseDir,
+				);
+			}
+			for (const baseDir of globalBaseDirs) {
+				this.resolveLocalEntries(
+					globalEntries,
+					resourceType,
+					target,
+					{
+						source: "local",
+						scope: "user",
+						origin: "top-level",
+						baseDir,
+					},
+					baseDir,
+				);
+			}
 		}
 
 		this.addAutoDiscoveredResources(accumulator, globalSettings, projectSettings, globalBaseDir, projectBaseDir);
@@ -1084,8 +1121,8 @@ export class DefaultPackageManager implements PackageManager {
 	}
 
 	private async shouldUpdateNpmSource(source: NpmSource, scope: InstalledSourceScope): Promise<boolean> {
-		const installedPath = this.getNpmInstallPath(source, scope);
-		const installedVersion = existsSync(installedPath) ? this.getInstalledNpmVersion(installedPath) : undefined;
+		const installedPath = this.getExistingNpmInstallPath(source, scope);
+		const installedVersion = installedPath ? this.getInstalledNpmVersion(installedPath) : undefined;
 		if (!installedVersion) {
 			return true;
 		}
@@ -1152,8 +1189,8 @@ export class DefaultPackageManager implements PackageManager {
 				}
 
 				if (parsed.type === "npm") {
-					const installedPath = this.getNpmInstallPath(parsed, entry.scope);
-					if (!existsSync(installedPath)) {
+					const installedPath = this.getExistingNpmInstallPath(parsed, entry.scope);
+					if (!installedPath) {
 						return undefined;
 					}
 					const hasUpdate = await this.npmHasAvailableUpdate(parsed, installedPath);
@@ -1168,8 +1205,8 @@ export class DefaultPackageManager implements PackageManager {
 					};
 				}
 
-				const installedPath = this.getGitInstallPath(parsed, entry.scope);
-				if (!existsSync(installedPath)) {
+				const installedPath = this.getExistingGitInstallPath(parsed, entry.scope);
+				if (!installedPath) {
 					return undefined;
 				}
 				const hasUpdate = await this.gitHasAvailableUpdate(installedPath);
@@ -1200,8 +1237,9 @@ export class DefaultPackageManager implements PackageManager {
 			const metadata: PathMetadata = { source: sourceStr, scope, origin: "package" };
 
 			if (parsed.type === "local") {
-				const baseDir = this.getBaseDirForScope(scope);
-				this.resolveLocalExtensionSource(parsed, accumulator, filter, metadata, baseDir);
+				for (const baseDir of this.getBaseDirsForScope(scope)) {
+					this.resolveLocalExtensionSource(parsed, accumulator, filter, { ...metadata, baseDir }, baseDir);
+				}
 				continue;
 			}
 
@@ -1221,21 +1259,23 @@ export class DefaultPackageManager implements PackageManager {
 			};
 
 			if (parsed.type === "npm") {
-				const installedPath = this.getNpmInstallPath(parsed, scope);
+				let installedPath = this.getExistingNpmInstallPath(parsed, scope);
 				const needsInstall =
-					!existsSync(installedPath) ||
+					!installedPath ||
 					(parsed.pinned && !(await this.installedNpmMatchesPinnedVersion(parsed, installedPath)));
+				if (needsInstall) installedPath = this.getNpmInstallPath(parsed, scope);
 				if (needsInstall) {
 					const installed = await installMissing();
 					if (!installed) continue;
 				}
+				if (!installedPath) continue;
 				metadata.baseDir = installedPath;
 				this.collectPackageResources(installedPath, accumulator, filter, metadata);
 				continue;
 			}
 
 			if (parsed.type === "git") {
-				const installedPath = this.getGitInstallPath(parsed, scope);
+				let installedPath = this.getExistingGitInstallPath(parsed, scope) ?? this.getGitInstallPath(parsed, scope);
 				if (!existsSync(installedPath)) {
 					const installed = await installMissing();
 					if (!installed) continue;
@@ -1731,7 +1771,7 @@ export class DefaultPackageManager implements PackageManager {
 	}
 
 	private async updateGit(source: GitSource, scope: SourceScope): Promise<void> {
-		const targetDir = this.getGitInstallPath(source, scope);
+		const targetDir = this.getExistingGitInstallPath(source, scope) ?? this.getGitInstallPath(source, scope);
 		if (!existsSync(targetDir)) {
 			await this.installGit(source, scope);
 			return;
@@ -1895,13 +1935,17 @@ export class DefaultPackageManager implements PackageManager {
 	}
 
 	private getBaseDirForScope(scope: SourceScope): string {
+		return this.getBaseDirsForScope(scope)[0]!;
+	}
+
+	private getBaseDirsForScope(scope: SourceScope): string[] {
 		if (scope === "project") {
-			return join(this.cwd, CONFIG_DIR_NAME);
+			return getProjectConfigDirs(this.cwd);
 		}
 		if (scope === "user") {
-			return this.agentDir;
+			return this.agentDir === getAgentDir() ? getAgentDirs() : [this.agentDir];
 		}
-		return this.cwd;
+		return [this.cwd];
 	}
 
 	private resolvePath(input: string): string {
@@ -2152,18 +2196,8 @@ export class DefaultPackageManager implements PackageManager {
 			themes: (projectSettings.themes ?? []) as string[],
 		};
 
-		const userDirs = {
-			extensions: join(globalBaseDir, "extensions"),
-			skills: join(globalBaseDir, "skills"),
-			prompts: join(globalBaseDir, "prompts"),
-			themes: join(globalBaseDir, "themes"),
-		};
-		const projectDirs = {
-			extensions: join(projectBaseDir, "extensions"),
-			skills: join(projectBaseDir, "skills"),
-			prompts: join(projectBaseDir, "prompts"),
-			themes: join(projectBaseDir, "themes"),
-		};
+		const userConfigDirs = this.getBaseDirsForScope("user");
+		const projectConfigDirs = this.getBaseDirsForScope("project");
 		const userAgentsSkillsDir = join(getHomeDir(), ".agents", "skills");
 		const projectAgentsSkillDirs = collectAncestorAgentsSkillDirs(this.cwd).filter(
 			(dir) => resolve(dir) !== resolve(userAgentsSkillsDir),
@@ -2183,23 +2217,37 @@ export class DefaultPackageManager implements PackageManager {
 			}
 		};
 
-		// Project extensions from .atomic/
-		addResources(
-			"extensions",
-			collectAutoExtensionEntries(projectDirs.extensions),
-			projectMetadata,
-			projectOverrides.extensions,
-			projectBaseDir,
-		);
-
-		// Project skills from .atomic/
-		addResources(
-			"skills",
-			collectAutoSkillEntries(projectDirs.skills, "pi"),
-			projectMetadata,
-			projectOverrides.skills,
-			projectBaseDir,
-		);
+		for (const configDir of projectConfigDirs) {
+			const metadata: PathMetadata = { ...projectMetadata, baseDir: configDir };
+			addResources(
+				"extensions",
+				collectAutoExtensionEntries(join(configDir, "extensions")),
+				metadata,
+				projectOverrides.extensions,
+				configDir,
+			);
+			addResources(
+				"skills",
+				collectAutoSkillEntries(join(configDir, "skills"), "pi"),
+				metadata,
+				projectOverrides.skills,
+				configDir,
+			);
+			addResources(
+				"prompts",
+				collectAutoPromptEntries(join(configDir, "prompts")),
+				metadata,
+				projectOverrides.prompts,
+				configDir,
+			);
+			addResources(
+				"themes",
+				collectAutoThemeEntries(join(configDir, "themes")),
+				metadata,
+				projectOverrides.themes,
+				configDir,
+			);
+		}
 
 		// Project skills from .agents/ (each with its own baseDir)
 		for (const agentsSkillsDir of projectAgentsSkillDirs) {
@@ -2217,38 +2265,37 @@ export class DefaultPackageManager implements PackageManager {
 			);
 		}
 
-		addResources(
-			"prompts",
-			collectAutoPromptEntries(projectDirs.prompts),
-			projectMetadata,
-			projectOverrides.prompts,
-			projectBaseDir,
-		);
-		addResources(
-			"themes",
-			collectAutoThemeEntries(projectDirs.themes),
-			projectMetadata,
-			projectOverrides.themes,
-			projectBaseDir,
-		);
-
-		// User extensions from ~/.atomic/agent/
-		addResources(
-			"extensions",
-			collectAutoExtensionEntries(userDirs.extensions),
-			userMetadata,
-			userOverrides.extensions,
-			globalBaseDir,
-		);
-
-		// User skills from ~/.atomic/agent/
-		addResources(
-			"skills",
-			collectAutoSkillEntries(userDirs.skills, "pi"),
-			userMetadata,
-			userOverrides.skills,
-			globalBaseDir,
-		);
+		for (const configDir of userConfigDirs) {
+			const metadata: PathMetadata = { ...userMetadata, baseDir: configDir };
+			addResources(
+				"extensions",
+				collectAutoExtensionEntries(join(configDir, "extensions")),
+				metadata,
+				userOverrides.extensions,
+				configDir,
+			);
+			addResources(
+				"skills",
+				collectAutoSkillEntries(join(configDir, "skills"), "pi"),
+				metadata,
+				userOverrides.skills,
+				configDir,
+			);
+			addResources(
+				"prompts",
+				collectAutoPromptEntries(join(configDir, "prompts")),
+				metadata,
+				userOverrides.prompts,
+				configDir,
+			);
+			addResources(
+				"themes",
+				collectAutoThemeEntries(join(configDir, "themes")),
+				metadata,
+				userOverrides.themes,
+				configDir,
+			);
+		}
 
 		// User skills from ~/.agents/ (with its own baseDir)
 		const userAgentsBaseDir = dirname(userAgentsSkillsDir);
@@ -2264,20 +2311,6 @@ export class DefaultPackageManager implements PackageManager {
 			userAgentsBaseDir,
 		);
 
-		addResources(
-			"prompts",
-			collectAutoPromptEntries(userDirs.prompts),
-			userMetadata,
-			userOverrides.prompts,
-			globalBaseDir,
-		);
-		addResources(
-			"themes",
-			collectAutoThemeEntries(userDirs.themes),
-			userMetadata,
-			userOverrides.themes,
-			globalBaseDir,
-		);
 	}
 
 	private collectFilesFromPaths(paths: string[], resourceType: ResourceType): string[] {

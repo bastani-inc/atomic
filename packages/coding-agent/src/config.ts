@@ -303,7 +303,7 @@ export function getUpdateInstruction(packageName: string): string {
 export function getPackageDir(): string {
 	// Allow override via environment variable (useful for Nix/Guix where store paths tokenize poorly).
 	// This runs before package.json/piConfig is read, so the env var name is hardcoded.
-	const envDir = process.env.ATOMIC_PACKAGE_DIR;
+	const envDir = process.env.ATOMIC_PACKAGE_DIR ?? process.env.PI_PACKAGE_DIR;
 	if (envDir) {
 		if (envDir === "~") return homedir();
 		if (envDir.startsWith("~/")) return homedir() + envDir.slice(1);
@@ -423,12 +423,16 @@ export const PACKAGE_NAME: string = pkg.name || "@bastani/atomic";
 export const APP_NAME: string = piConfigName || "pi";
 export const APP_TITLE: string = piConfigName ? APP_NAME : "π";
 export const CONFIG_DIR_NAME: string = pkg.piConfig?.configDir || ".pi";
+export const LEGACY_CONFIG_DIR_NAME = ".pi";
+export const CONFIG_DIR_NAMES: readonly string[] =
+	CONFIG_DIR_NAME === LEGACY_CONFIG_DIR_NAME ? [CONFIG_DIR_NAME] : [CONFIG_DIR_NAME, LEGACY_CONFIG_DIR_NAME];
 export const VERSION: string = pkg.version || "0.0.0";
 export const CHANGELOG_URL: string | undefined = pkg.piConfig?.changelogUrl?.trim() || undefined;
 
 const ENV_PREFIX = APP_NAME.toUpperCase();
+export const LEGACY_ENV_PREFIX = "PI";
 
-// e.g., ATOMIC_CODING_AGENT_DIR
+// e.g., ATOMIC_CODING_AGENT_DIR (with PI_CODING_AGENT_DIR as a compatibility alias)
 export const ENV_AGENT_DIR = `${ENV_PREFIX}_CODING_AGENT_DIR`;
 export const ENV_SESSION_DIR = `${ENV_PREFIX}_CODING_AGENT_SESSION_DIR`;
 export const ENV_PACKAGE_DIR = `${ENV_PREFIX}_PACKAGE_DIR`;
@@ -441,6 +445,27 @@ export const ENV_CLEAR_ON_SHRINK = `${ENV_PREFIX}_CLEAR_ON_SHRINK`;
 export const ENV_HARDWARE_CURSOR = `${ENV_PREFIX}_HARDWARE_CURSOR`;
 export const ENV_TIMING = `${ENV_PREFIX}_TIMING`;
 
+export function getEnvNames(name: string): string[] {
+	if (ENV_PREFIX === LEGACY_ENV_PREFIX || !name.startsWith(`${ENV_PREFIX}_`)) return [name];
+	return [name, `${LEGACY_ENV_PREFIX}_${name.slice(ENV_PREFIX.length + 1)}`];
+}
+
+export function getEnvValue(name: string): string | undefined {
+	for (const candidate of getEnvNames(name)) {
+		const value = process.env[candidate];
+		if (value !== undefined) return value;
+	}
+	return undefined;
+}
+
+export function hasEnvValue(name: string): boolean {
+	return getEnvValue(name) !== undefined;
+}
+
+export function setEnvValue(name: string, value: string): void {
+	process.env[name] = value;
+}
+
 export function expandTildePath(path: string): string {
 	if (path === "~") return homedir();
 	if (path.startsWith("~/")) return homedir() + path.slice(1);
@@ -451,7 +476,7 @@ const DEFAULT_SHARE_VIEWER_URL = "https://pi.dev/session/";
 
 /** Get the share viewer URL for a gist ID */
 export function getShareViewerUrl(gistId: string): string {
-	const baseUrl = process.env[ENV_SHARE_VIEWER_URL] || DEFAULT_SHARE_VIEWER_URL;
+	const baseUrl = getEnvValue(ENV_SHARE_VIEWER_URL) || DEFAULT_SHARE_VIEWER_URL;
 	return `${baseUrl}#${gistId}`;
 }
 
@@ -461,11 +486,51 @@ export function getShareViewerUrl(gistId: string): string {
 
 /** Get the agent config directory (e.g., ~/.atomic/agent/) */
 export function getAgentDir(): string {
-	const envDir = process.env[ENV_AGENT_DIR];
+	const envDir = getEnvValue(ENV_AGENT_DIR);
 	if (envDir) {
 		return expandTildePath(envDir);
 	}
 	return join(homedir(), CONFIG_DIR_NAME, "agent");
+}
+
+/** Get the legacy pi agent config directory (e.g., ~/.pi/agent/) */
+export function getLegacyAgentDir(): string {
+	return join(homedir(), LEGACY_CONFIG_DIR_NAME, "agent");
+}
+
+/** Get agent config directories in precedence order (primary first, then legacy). */
+export function getAgentDirs(): string[] {
+	const primary = getAgentDir();
+	if (hasEnvValue(ENV_AGENT_DIR) || CONFIG_DIR_NAME === LEGACY_CONFIG_DIR_NAME) {
+		return [primary];
+	}
+	const legacy = getLegacyAgentDir();
+	return legacy === primary ? [primary] : [primary, legacy];
+}
+
+/** Get user config root directories in precedence order (primary first, then legacy). */
+export function getUserConfigDirs(): string[] {
+	return CONFIG_DIR_NAMES.map((name) => join(homedir(), name));
+}
+
+/** Get project config directories in precedence order (primary first, then legacy). */
+export function getProjectConfigDirs(cwd: string): string[] {
+	return CONFIG_DIR_NAMES.map((name) => join(cwd, name));
+}
+
+/** Get a path inside every user config root directory. */
+export function getUserConfigPaths(...segments: string[]): string[] {
+	return getUserConfigDirs().map((dir) => join(dir, ...segments));
+}
+
+/** Get a path inside every agent config directory. */
+export function getAgentConfigPaths(...segments: string[]): string[] {
+	return getAgentDirs().map((dir) => join(dir, ...segments));
+}
+
+/** Get a path inside every project config directory. */
+export function getProjectConfigPaths(cwd: string, ...segments: string[]): string[] {
+	return getProjectConfigDirs(cwd).map((dir) => join(dir, ...segments));
 }
 
 /** Get path to user's custom themes directory */

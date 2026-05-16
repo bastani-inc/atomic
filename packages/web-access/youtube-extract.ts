@@ -9,8 +9,9 @@ import { isGeminiApiAvailable, queryGeminiApiWithVideo } from "./gemini-api.js";
 import { searchWithPerplexity } from "./perplexity.js";
 import { extractHeadingTitle, type ExtractedContent, type FrameResult, type VideoFrame } from "./extract.js";
 import { formatSeconds, readExecError, isTimeoutError, trimErrorText, mapFfmpegError } from "./utils.js";
+import { findReadableConfigPath } from "./config-paths.ts";
 
-const CONFIG_PATH = join(homedir(), CONFIG_DIR_NAME, "web-search.json");
+const CONFIG_PATH = findReadableConfigPath();
 
 const YOUTUBE_PROMPT = `Extract the complete content of this YouTube video. Include:
 1. Video title, channel name, and duration

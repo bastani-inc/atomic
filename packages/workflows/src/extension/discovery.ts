@@ -21,7 +21,7 @@
 
 import { readdir, stat } from "node:fs/promises";
 import { join, resolve, extname, isAbsolute } from "node:path";
-import { CONFIG_DIR_NAME } from "@bastani/atomic";
+import { CONFIG_DIR_NAMES, getProjectConfigPaths } from "@bastani/atomic";
 import type { WorkflowDefinition } from "../shared/types.js";
 import { createRegistry } from "../workflows/registry.js";
 import type { WorkflowRegistry } from "../workflows/registry.js";
@@ -408,8 +408,7 @@ export async function discoverWorkflows(
   }
 
   // 2. project-local
-  {
-    const dir = join(cwd, CONFIG_DIR_NAME, "workflows");
+  for (const dir of getProjectConfigPaths(cwd, "workflows").reverse()) {
     const candidates = await loadFromDir(dir, "project-local", diagnostics);
     registry = applyBatch(candidates, registry, sources, diagnostics);
   }
@@ -424,9 +423,8 @@ export async function discoverWorkflows(
     }
   }
 
-  // 4. user-global — canonical Atomic path: ~/.atomic/agent/workflows/
-  {
-    const dir = join(homeDir, CONFIG_DIR_NAME, "agent", "workflows");
+  // 4. user-global — canonical Atomic path plus legacy pi path
+  for (const dir of CONFIG_DIR_NAMES.map((name) => join(homeDir, name, "agent", "workflows")).reverse()) {
     const candidates = await loadFromDir(dir, "user-global", diagnostics);
     registry = applyBatch(candidates, registry, sources, diagnostics);
   }

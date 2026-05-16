@@ -20,6 +20,7 @@
  */
 
 import type { Component, EditorComponent, EditorTheme, TUI } from "@earendil-works/pi-tui";
+import type { ChatMessageRenderOptions } from "@bastani/atomic";
 import type { Store } from "../shared/store.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { GraphView } from "./graph-view.js";
@@ -68,6 +69,8 @@ export interface WorkflowAttachPaneOpts {
   piKeybindings?: unknown;
   /** Host custom editor factory installed by extensions via ctx.ui.setEditorComponent(). */
   piEditorFactory?: (tui: TUI, theme: EditorTheme, keybindings: unknown) => EditorComponent;
+  /** Parent chat rendering settings and extension renderers, inherited from the host UI. */
+  getChatRenderSettings?: () => Partial<Omit<ChatMessageRenderOptions, "ui" | "cwd" | "markdownTheme">> | undefined;
   /**
    * Optional override: pre-select chat mode for a stage on construction.
    * Used by `/workflow attach <runId> <stageId>` so the popup opens
@@ -90,6 +93,12 @@ export interface WorkflowAttachPaneOpts {
    * visibility so a hidden pane stays cheap.
    */
   requestRender?: () => void;
+  /**
+   * Host hook for terminal mouse reporting. Graph mode uses wheel input
+   * for canvas scrolling; stage-chat mode uses it for transcript history
+   * scrolling and drops non-wheel mouse bytes before they reach the editor.
+   */
+  setMouseScrollTracking?: (enabled: boolean) => void;
 }
 
 export type WorkflowAttachPaneMode = "graph" | "stage-chat";
@@ -108,9 +117,11 @@ export class WorkflowAttachPane implements Component {
   private onPromptResolve?: (runId: string, promptId: string, response: unknown) => void;
   private getViewportRows?: () => number | undefined;
   private hostRequestRender?: () => void;
+  private setMouseScrollTracking?: (enabled: boolean) => void;
   private piTui?: TUI;
   private piKeybindings?: unknown;
   private piEditorFactory?: (tui: TUI, theme: EditorTheme, keybindings: unknown) => EditorComponent;
+  private getChatRenderSettings?: () => Partial<Omit<ChatMessageRenderOptions, "ui" | "cwd" | "markdownTheme">> | undefined;
 
   private mode: WorkflowAttachPaneMode = "graph";
   private graphView: GraphView;
@@ -130,9 +141,11 @@ export class WorkflowAttachPane implements Component {
     this.onPromptResolve = opts.onPromptResolve;
     this.getViewportRows = opts.getViewportRows;
     this.hostRequestRender = opts.requestRender;
+    this.setMouseScrollTracking = opts.setMouseScrollTracking;
     this.piTui = opts.piTui;
     this.piKeybindings = opts.piKeybindings;
     this.piEditorFactory = opts.piEditorFactory;
+    this.getChatRenderSettings = opts.getChatRenderSettings;
 
     this.graphView = this._buildGraphView();
 
@@ -140,6 +153,7 @@ export class WorkflowAttachPane implements Component {
       this._attachToStage(this.runId, opts.initialAttachStageId);
     } else {
       this._setBaseStatus();
+      this._syncMouseScrollTracking();
     }
   }
 
@@ -209,11 +223,13 @@ export class WorkflowAttachPane implements Component {
       piTui: this.piTui,
       piKeybindings: this.piKeybindings,
       piEditorFactory: this.piEditorFactory,
+      getChatRenderSettings: this.getChatRenderSettings,
       getViewportRows: this.getViewportRows,
     });
     this.store.recordStageAttached(runId, stageId, true);
     this.mode = "stage-chat";
     this._setAttachedStatus(runId, stageId);
+    this._syncMouseScrollTracking();
   }
 
   private _detachFromStage(): void {
@@ -229,6 +245,7 @@ export class WorkflowAttachPane implements Component {
     this.graphView = this._buildGraphView(this.lastAttachedStageId ?? undefined);
     this.mode = "graph";
     this._setBaseStatus();
+    this._syncMouseScrollTracking();
   }
 
   private _setBaseStatus(): void {
@@ -240,6 +257,17 @@ export class WorkflowAttachPane implements Component {
   private _setAttachedStatus(runId: string, stageId: string): void {
     const value = `pi-workflows/${this._workflowName(runId)}/${this._stageName(runId, stageId)}`;
     this.uiStatus?.setStatus?.(STATUS_KEY, value);
+  }
+
+  private _syncMouseScrollTracking(): void {
+    this.setMouseScrollTracking?.(this.wantsMouseScrollTracking());
+  }
+
+  wantsMouseScrollTracking(): boolean {
+    if (this.mode === "stage-chat" && this.chatView) {
+      return this.chatView.wantsMouseScrollTracking();
+    }
+    return this.mode === "graph";
   }
 
   render(width: number): string[] {
@@ -265,6 +293,7 @@ export class WorkflowAttachPane implements Component {
     this.chatView?.dispose();
     this.chatView = null;
     this.graphView.dispose();
+    this.setMouseScrollTracking?.(false);
     // Clear the pi-workflows status tag so it doesn't follow the user
     // back into chat. Without this, every subsequent message header
     // keeps rendering `pi-workflows/<workflow>` (or `…/<stage>`) until

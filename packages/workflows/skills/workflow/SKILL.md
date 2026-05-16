@@ -1,17 +1,17 @@
 ---
 name: workflow
-description: Create, run, inspect, and improve pi/atomic workflows. Use whenever the user wants a reusable multi-stage automation, DAG or staged agent pipeline, workflow definition, defineWorkflow file, ctx.task/ctx.parallel/ctx.chain/ctx.stage orchestration, /workflow run/status/resume help, custom workflow discovery, or context-engineered multi-session process.
+description: Create, run, inspect, and improve pi/atomic workflows. Use whenever the user wants reusable multi-stage automation, a DAG or staged agent pipeline, workflow definitions with defineWorkflow, ctx.task/ctx.parallel/ctx.chain/ctx.stage/ctx.ui orchestration, workflow tool calls, /workflow list/inputs/connect/attach/pause/resume/status help, custom workflow discovery, model fallback chains, or context-engineered multi-session processes.
 ---
 
 # Workflow Skill
 
-You help users create and operate pi/atomic workflows. A workflow is a reusable TypeScript definition that orchestrates named stages, parallel branches, handoffs, artifacts, user-input prompts, status UI, and resumable runs through pi's workflow extension.
+You help users create and operate pi/atomic workflows. A workflow is a reusable TypeScript definition that orchestrates named stages, parallel branches, handoffs, artifacts, human-in-the-loop prompts, live graph/status UI, attachable stage chats, model fallback chains, and resumable background runs through pi's workflow extension.
 
 This skill is for people using workflows. Default to helping users author workflow definitions and run them through pi. Only discuss package implementation details if the user explicitly asks to modify the `@bastani/workflows` package itself.
 
 Use this skill for two user journeys:
 
-1. **Run or inspect an existing workflow** — use the workflow tool or `/workflow` surface. Load `references/running-workflows.md`.
+1. **Run, inspect, attach to, pause, or resume an existing workflow** — use the workflow tool or `/workflow` surface. Load `references/running-workflows.md`.
 2. **Create or edit a workflow definition** — design the information flow, then author a `defineWorkflow(...).run(...).compile()` TypeScript file. Load `references/sdk-authoring.md` and `references/design-checklist.md`.
 
 ## Reference Files
@@ -20,8 +20,8 @@ Load references on demand. Keep this file lean; put details in references.
 
 | File | Load when |
 | --- | --- |
-| `references/sdk-authoring.md` | Creating/editing workflow definition files, inputs, `ctx.task`, `ctx.parallel`, `ctx.chain`, `ctx.stage`, or programmatic runner usage. |
-| `references/running-workflows.md` | Running, monitoring, interrupting, resuming, or inspecting workflows. |
+| `references/sdk-authoring.md` | Creating/editing workflow definition files, inputs, `ctx.task`, `ctx.parallel`, `ctx.chain`, `ctx.stage`, `ctx.ui`, model fallbacks, registries, or programmatic runner usage. |
+| `references/running-workflows.md` | Running, monitoring, connecting/attaching, pausing, interrupting, resuming, or inspecting workflows. |
 | `references/design-checklist.md` | Before implementing or shipping any non-trivial workflow. |
 | `references/context-engineering.md` | Any multi-stage or multi-agent workflow; routes to copied context-engineering references. |
 | `references/context-engineering/context-fundamentals.md` | Prompt/context basics, token budgeting, prompt placement, progressive disclosure. |
@@ -42,9 +42,9 @@ Load references on demand. Keep this file lean; put details in references.
 
 Classify the user's ask before acting:
 
-- **Run**: "run workflow X", "kick off ralph", "is it done?", "resume", "interrupt", "status", "what inputs does it need?" → load `references/running-workflows.md`; list/inspect first if needed; execute rather than merely printing commands when tools allow.
-- **Author**: "create a workflow", "turn this process into a workflow", "add a stage", "make a reusable workflow", "defineWorkflow", "ctx.parallel", "workflow schema" → load `references/sdk-authoring.md`; design before coding.
-- **Design/architecture**: "make this workflow robust", "multi-agent pipeline", "context handoff", "review/fix loop" → load `references/design-checklist.md` and `references/context-engineering.md` before writing code.
+- **Run**: "run workflow X", "kick off ralph", "is it done?", "resume", "interrupt", "pause", "attach", "status", "what inputs does it need?" → load `references/running-workflows.md`; list/inspect first if needed; execute rather than merely printing commands when tools allow.
+- **Author**: "create a workflow", "turn this process into a workflow", "add a stage", "make a reusable workflow", "defineWorkflow", "ctx.parallel", "ctx.ui", "workflow schema" → load `references/sdk-authoring.md`; design before coding.
+- **Design/architecture**: "make this workflow robust", "multi-agent pipeline", "context handoff", "review/fix loop", "fallback models", "human approval gate" → load `references/design-checklist.md` and `references/context-engineering.md` before writing code.
 
 ## Running Existing Workflows
 
@@ -52,8 +52,9 @@ Inspect before running unfamiliar named workflows:
 
 ```ts
 workflow({ action: "list" })
+workflow({ action: "get", workflow: "deep-research-codebase" })
 workflow({ action: "inputs", workflow: "deep-research-codebase" })
-workflow({ workflow: "deep-research-codebase", inputs: { prompt: "map workflow runtime" } })
+workflow({ action: "run", workflow: "deep-research-codebase", inputs: { prompt: "map workflow runtime" } })
 ```
 
 Slash equivalents:
@@ -61,13 +62,18 @@ Slash equivalents:
 ```text
 /workflow list
 /workflow inputs deep-research-codebase
+/workflow deep-research-codebase --help
 /workflow deep-research-codebase prompt="map src" max_partitions=2
+/workflow connect <run-id>
+/workflow attach <run-id> <stage-id-or-name>
+/workflow pause <run-id> [stage-id-or-name]
 /workflow status --all
 /workflow status <run-id>
-/workflow resume <run-id>
+/workflow interrupt <run-id|--all>
+/workflow resume <run-id> [stage-id-or-name] [message]
 ```
 
-Named workflow dispatch is background-oriented: expect a run id and then monitor status/attention states.
+Named workflow dispatch is always background-oriented: expect a run id, then monitor status/attention states. Press F2 or run `/workflow connect <run-id>` to open the live graph viewer. HIL prompts from `ctx.ui.input/confirm/select/editor` appear in that workflow UI, not as modal chat dialogs.
 
 ## Direct Workflow-Native Orchestration
 
@@ -129,8 +135,9 @@ Task options mirror pi session options plus workflow-owned fields such as `outpu
 
 For user-authored workflows, place definitions where pi discovers them:
 
-- Project-local: `.atomic/workflows/*.ts` inside the current project.
-- User-global: `~/.atomic/agent/workflows/*.ts` for workflows available across projects.
+- Project-local: `.atomic/workflows/*.{ts,js,mjs,cjs}` inside the current project. Legacy `.pi/workflows/` is also checked for compatibility.
+- User-global: `~/.atomic/agent/workflows/*.{ts,js,mjs,cjs}` for workflows available across projects. Legacy `~/.pi/agent/workflows/` is also checked.
+- Configured directories: `.atomic/extensions/workflow/config.json` or `~/.atomic/agent/extensions/workflow/config.json` may add named `workflows.<name>.path` entries; legacy `.pi/...` config paths are also considered.
 - Package workflows: a pi package can expose bundled workflow directories through `package.json` under `pi.builtin`.
 
 If an existing project has workflow examples, inspect those first for import style and naming conventions. In a normal consumer project, import from the package:
@@ -169,7 +176,7 @@ export default defineWorkflow("explain-file")
   .input("path", { type: "text", required: true, description: "File path to explain." })
   .run(async (ctx) => {
     const explanation = await ctx.task("explain", {
-      task: `Read ${ctx.inputs.path} and explain purpose, risks, and key symbols.`,
+      prompt: `Read ${String(ctx.inputs.path)} and explain purpose, risks, and key symbols.`,
       context: "fresh",
     });
 
@@ -186,7 +193,7 @@ Builder rules:
 - `.run(async (ctx) => ({ ... }))` defines the workflow body.
 - `.compile()` returns the workflow definition for discovery.
 
-Input types: `text`, `string`, `number`, `boolean`, `select`. All support `description` and `required`; defaults are type-specific; `select` requires `choices`.
+Input types: `text`, `string`, `number`, `boolean`, `select`. All support `description` and `required`; defaults are type-specific; `select` requires `choices`. Runtime validation rejects unknown keys, missing required values, type mismatches, and select values outside `choices`.
 
 ### 4. Pick the right primitive
 
@@ -196,7 +203,7 @@ Input types: `text`, `string`, `number`, `boolean`, `select`. All support `descr
 | Independent branches | `ctx.parallel(steps, { task? })` |
 | Dependent stages | `ctx.chain(steps, { task? })` |
 | Low-level session controls | `ctx.stage(name, options)` then `stage.prompt/complete` |
-| User interaction during run | `ctx.ui` primitives |
+| User interaction during run | `ctx.ui.input/confirm/select/editor` |
 | Pure computation / file I/O / parsing | Plain TypeScript in `.run()` or helpers |
 
 Use `previous` plus `{previous}` for context handoff. If no placeholder is present, the runtime appends context. Chain defaults: first missing task uses `{task}`, later missing tasks use `{previous}`, and missing tasks inside chain-parallel groups use `{previous}`.
@@ -220,8 +227,9 @@ Prefer concise structured returns and durable artifacts over dumping full transc
 
 Use these supported workflow surfaces:
 
-- `/workflow <name> key=value ...` for interactive pi use.
-- The `workflow` tool for LLM-initiated orchestration.
+- `/workflow <name> key=value ...` for interactive pi use; omit required args to open the input picker when the TUI is available.
+- `/workflow connect|attach|pause|interrupt|resume|status|inputs` for live control and inspection.
+- The `workflow` tool for LLM-initiated orchestration and direct one-off task/parallel/chain runs.
 - `runWorkflow(definition)` for explicit library/script usage.
 
 Programmatic runner example:
@@ -245,10 +253,10 @@ await runWorkflow(definition, options);
 
 ## Safety and Compatibility Rules
 
-- Do not fabricate workflow names or inputs; list/inspect first.
+- Do not fabricate workflow names or inputs; list/inspect first with `list`, `get`, or `inputs`.
 - Do not use legacy workflow tool fields such as `agent`, `stage`, or run-control `name`.
 - Do not expect workflow-tool `create`, `update`, or `delete`; reusable definitions are code-authored.
-- Use `/workflow` slash commands for named runs, inspection, status, and diagnostics.
+- Use `/workflow` slash commands for named runs, input picker/help, graph attach, pause/resume, status, and diagnostics.
 - Prefer `ctx.task`, `ctx.parallel`, and `ctx.chain`; drop to `ctx.stage` only for lower-level controls.
 - Keep stage names user-readable because they appear in workflow status/UI.
 - Put deterministic code outside standalone stages.

@@ -376,21 +376,45 @@ function truncateTaskOutput(text: string, maxOutput: WorkflowMaxOutput | undefin
   return `${byBytes.text}\n\n[workflow output truncated; limits: ${limits.bytes} bytes, ${limits.lines} lines]`;
 }
 
+function withoutUndefinedProperties<T extends object>(value: T): Partial<T> {
+  return Object.fromEntries(
+    Object.entries(value).filter(([, field]) => field !== undefined),
+  ) as Partial<T>;
+}
+
 function directTaskWithDefaults(
   item: WorkflowDirectTaskItem,
   options: WorkflowDirectOptions,
 ): WorkflowDirectTaskItem {
+  const {
+    task: _task,
+    chainName: _chainName,
+    concurrency: _concurrency,
+    failFast: _failFast,
+    chainDir: _chainDir,
+    output,
+    outputMode,
+    progress,
+    worktree,
+    maxOutput,
+    artifacts,
+    ...stageDefaults
+  } = options;
+
+  const taskWithStageDefaults = {
+    ...withoutUndefinedProperties(stageDefaults),
+    ...withoutUndefinedProperties(item),
+    name: item.name,
+  } as WorkflowDirectTaskItem;
+
   return {
-    ...item,
-    ...(item.context === undefined && options.context !== undefined ? { context: options.context } : {}),
-    ...(item.forkFromSessionFile === undefined && options.forkFromSessionFile !== undefined ? { forkFromSessionFile: options.forkFromSessionFile } : {}),
-    ...(item.cwd === undefined && options.cwd !== undefined ? { cwd: options.cwd } : {}),
-    ...(item.output === undefined && options.output !== undefined ? { output: options.output } : {}),
-    ...(item.outputMode === undefined && options.outputMode !== undefined ? { outputMode: options.outputMode } : {}),
-    ...(item.maxOutput === undefined && options.maxOutput !== undefined ? { maxOutput: options.maxOutput } : {}),
-    ...(item.artifacts === undefined && options.artifacts !== undefined ? { artifacts: options.artifacts } : {}),
-    ...(item.sessionDir === undefined && options.sessionDir !== undefined ? { sessionDir: options.sessionDir } : {}),
-    ...(item.fallbackModels === undefined && options.fallbackModels !== undefined ? { fallbackModels: options.fallbackModels } : {}),
+    ...taskWithStageDefaults,
+    ...(item.output === undefined && output !== undefined ? { output } : {}),
+    ...(item.outputMode === undefined && outputMode !== undefined ? { outputMode } : {}),
+    ...(item.progress === undefined && progress !== undefined ? { progress } : {}),
+    ...(item.worktree === undefined && worktree !== undefined ? { worktree } : {}),
+    ...(item.maxOutput === undefined && maxOutput !== undefined ? { maxOutput } : {}),
+    ...(item.artifacts === undefined && artifacts !== undefined ? { artifacts } : {}),
   };
 }
 

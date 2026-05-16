@@ -22,6 +22,7 @@
  */
 
 import type { CreateAgentSessionOptions } from "@earendil-works/pi-coding-agent";
+import type { ChatMessageRenderOptions } from "@bastani/atomic";
 import type { StageAdapters, StageSessionRuntime } from "../runs/foreground/stage-runner.js";
 import type { StageExecutionMeta, StageOptions } from "../shared/types.js";
 
@@ -233,6 +234,7 @@ function makeStageExtensionUiContext(ui: PiUISurface) {
     setTheme: ui.setTheme ?? (() => ({ success: false, error: "pi-workflows: theme UI is unavailable" })),
     getToolsExpanded: ui.getToolsExpanded ?? (() => false),
     setToolsExpanded: ui.setToolsExpanded ?? (() => undefined),
+    getChatRenderSettings: ui.getChatRenderSettings ?? (() => undefined),
   };
 }
 
@@ -539,6 +541,7 @@ export interface PiUISurface {
   setTheme?: (theme: string | unknown) => { success: boolean; error?: string };
   getToolsExpanded?: () => boolean;
   setToolsExpanded?: (expanded: boolean) => void;
+  getChatRenderSettings?: () => Partial<Omit<ChatMessageRenderOptions, "ui" | "cwd" | "markdownTheme">> | undefined;
 }
 
 /**

@@ -43,11 +43,11 @@ These are injected into the React tree via `EventBusProvider` (`src/events/event
 
 Three SDK-specific adapters normalize vendor events to `BusEvent`s:
 
-| Adapter | File | Pattern | SDK API |
-|---------|------|---------|---------|
-| `ClaudeStreamAdapter` | `src/events/adapters/claude-adapter.ts:56` | Pull-based `AsyncIterable` | `query()` generator |
-| `CopilotStreamAdapter` | `src/events/adapters/copilot-adapter.ts:82` | Push-based `EventEmitter` | `session.on()` events |
-| `OpenCodeStreamAdapter` | `src/events/adapters/opencode-adapter.ts:73` | Hybrid pull+push | SSE + `client.on()` |
+| Adapter                 | File                                         | Pattern                    | SDK API               |
+| ----------------------- | -------------------------------------------- | -------------------------- | --------------------- |
+| `ClaudeStreamAdapter`   | `src/events/adapters/claude-adapter.ts:56`   | Pull-based `AsyncIterable` | `query()` generator   |
+| `CopilotStreamAdapter`  | `src/events/adapters/copilot-adapter.ts:82`  | Push-based `EventEmitter`  | `session.on()` events |
+| `OpenCodeStreamAdapter` | `src/events/adapters/opencode-adapter.ts:73` | Hybrid pull+push           | SSE + `client.on()`   |
 
 Each adapter publishes normalized events to the bus:
 - `stream.text.delta` / `stream.text.complete` — text content
@@ -88,16 +88,16 @@ Parts are stored in a sorted `Part[]` array using binary search insertion (`src/
 
 `MessageBubbleParts` at `src/ui/components/parts/message-bubble-parts.tsx:130` iterates the `Part[]` array and dispatches each part to a type-specific renderer via `PART_REGISTRY` (`src/ui/components/parts/registry.tsx:22`):
 
-| Part Type | Renderer | Visual |
-|-----------|----------|--------|
-| `text` | `TextPartDisplay` | `●` bullet prefix + markdown content |
-| `reasoning` | `ReasoningPartDisplay` | `∴ Thinking...` / `∴ Thought (Xs)` with dimmed style |
-| `tool` | `ToolPartDisplay` | Tool-specific renderers via `ToolResultRegistry` |
-| `agent` | `AgentPartDisplay` | `ParallelAgentsTree` with foreground/background split |
-| `task-list` | `TaskListPartDisplay` | `TaskListBox` with topological sorting |
-| `skill-load` | `SkillLoadPartDisplay` | Skill loading status |
-| `mcp-snapshot` | `McpSnapshotPartDisplay` | MCP server status |
-| `compaction` | `CompactionPartDisplay` | Context compaction banner |
+| Part Type      | Renderer                 | Visual                                                |
+| -------------- | ------------------------ | ----------------------------------------------------- |
+| `text`         | `TextPartDisplay`        | `●` bullet prefix + markdown content                  |
+| `reasoning`    | `ReasoningPartDisplay`   | `∴ Thinking...` / `∴ Thought (Xs)` with dimmed style  |
+| `tool`         | `ToolPartDisplay`        | Tool-specific renderers via `ToolResultRegistry`      |
+| `agent`        | `AgentPartDisplay`       | `ParallelAgentsTree` with foreground/background split |
+| `task-list`    | `TaskListPartDisplay`    | `TaskListBox` with topological sorting                |
+| `skill-load`   | `SkillLoadPartDisplay`   | Skill loading status                                  |
+| `mcp-snapshot` | `McpSnapshotPartDisplay` | MCP server status                                     |
+| `compaction`   | `CompactionPartDisplay`  | Context compaction banner                             |
 
 #### 1.6 Token Count Display
 
@@ -163,13 +163,13 @@ Sub-agents are executed via `context.spawnSubagentParallel` implemented at `src/
 
 The `WorkflowEventAdapter` (`src/events/adapters/workflow-adapter.ts:31`) publishes:
 
-| Event | Published At | UI Consumer |
-|-------|-------------|-------------|
-| `workflow.step.start` | `executor.ts:268-273` | **None** |
-| `workflow.step.complete` | `executor.ts:259-263` | **None** |
-| `workflow.task.update` | `executor.ts:290-296` | **None** |
-| `stream.agent.start` | `executor.ts:196-198` | Yes — `chat.tsx:2813` |
-| `stream.agent.complete` | `executor.ts:205-210` | Yes — `chat.tsx:2885` |
+| Event                    | Published At          | UI Consumer           |
+| ------------------------ | --------------------- | --------------------- |
+| `workflow.step.start`    | `executor.ts:268-273` | **None**              |
+| `workflow.step.complete` | `executor.ts:259-263` | **None**              |
+| `workflow.task.update`   | `executor.ts:290-296` | **None**              |
+| `stream.agent.start`     | `executor.ts:196-198` | Yes — `chat.tsx:2813` |
+| `stream.agent.complete`  | `executor.ts:205-210` | Yes — `chat.tsx:2885` |
 
 The `stream.agent.*` events are consumed, so the sub-agent tree **does** show workflow agents. However, these agents appear without tool progress, streaming text, thinking blocks, or token counts because the independent SDK sessions don't publish to the shared bus.
 
@@ -185,18 +185,18 @@ The `stream.agent.*` events are consumed, so the sub-agent tree **does** show wo
 
 ### 3. Gap Analysis: Chat vs Workflow Rendering
 
-| Feature | Main Chat | Workflow Executor |
-|---------|-----------|-------------------|
-| Streaming text | ✅ Incremental via `stream.text.delta` | ❌ Text accumulated silently, output truncated to 4000 chars |
-| Token counts | ✅ Via `stream.usage` → `CompletionSummary` | ❌ Not tracked or displayed |
-| Thinking blocks | ✅ Via `stream.thinking.delta` → `ReasoningPart` | ❌ Not captured from sub-agent streams |
-| Spinner with metadata | ✅ Elapsed time, tokens, thinking duration | ⚠️ Basic streaming flag only via `context.setStreaming(true)` |
-| Sub-agent tree | ✅ Full tree with tool counts, current tool, duration | ⚠️ Tree shows but without live tool progress |
-| Tool blocks | ✅ Rendered inline with status, collapsible output | ❌ Tool uses counted but not rendered |
-| Text blocks | ✅ Markdown-rendered with `●` bullet prefix | ❌ Only start/completion static messages |
-| Code blocks | ✅ Syntax-highlighted via `CodeBlock` component | ❌ Not applicable (no streaming content) |
-| Completion summary | ✅ Duration, tokens, thinking time | ❌ No per-agent or per-step summary |
-| Parts-based rendering | ✅ Full `Part[]` pipeline with registry dispatch | ❌ Not used — only `context.addMessage()` |
+| Feature               | Main Chat                                            | Workflow Executor                                            |
+| --------------------- | ---------------------------------------------------- | ------------------------------------------------------------ |
+| Streaming text        | ✅ Incremental via `stream.text.delta`                | ❌ Text accumulated silently, output truncated to 4000 chars  |
+| Token counts          | ✅ Via `stream.usage` → `CompletionSummary`           | ❌ Not tracked or displayed                                   |
+| Thinking blocks       | ✅ Via `stream.thinking.delta` → `ReasoningPart`      | ❌ Not captured from sub-agent streams                        |
+| Spinner with metadata | ✅ Elapsed time, tokens, thinking duration            | ⚠️ Basic streaming flag only via `context.setStreaming(true)` |
+| Sub-agent tree        | ✅ Full tree with tool counts, current tool, duration | ⚠️ Tree shows but without live tool progress                  |
+| Tool blocks           | ✅ Rendered inline with status, collapsible output    | ❌ Tool uses counted but not rendered                         |
+| Text blocks           | ✅ Markdown-rendered with `●` bullet prefix           | ❌ Only start/completion static messages                      |
+| Code blocks           | ✅ Syntax-highlighted via `CodeBlock` component       | ❌ Not applicable (no streaming content)                      |
+| Completion summary    | ✅ Duration, tokens, thinking time                    | ❌ No per-agent or per-step summary                           |
+| Parts-based rendering | ✅ Full `Part[]` pipeline with registry dispatch      | ❌ Not used — only `context.addMessage()`                     |
 
 ### 4. Integration Points for Unification
 
@@ -274,7 +274,7 @@ Workflow Executor
 #### 5.1 Visual Differentiation (Already Exists)
 
 - **Teal border**: `src/ui/chat.tsx:6014-6017` — input border changes to `themeColors.accent` when `workflowActive`
-- **Footer hints**: `src/ui/chat.tsx:6106-6132` — shows "workflow · esc to interrupt · ctrl+c twice to exit"
+- **Footer hints**: `src/ui/chat.tsx:6106-6132` — shows "workflow · Esc to interrupt · ctrl+c twice to exit"
 - **Auto-approval**: `src/ui/chat.tsx:3071-3076, 3139-3147` — HITL prompts auto-approved during workflow
 
 #### 5.2 Task List Rendering (Two Modes)
@@ -294,18 +294,18 @@ At `src/ui/chat.tsx:814-843`, the `WorkflowChatState` tracks:
 
 The `CommandContext` at `src/ui/commands/registry.ts:75-168` is the interface between workflow executors and the TUI:
 
-| Method | Purpose | Used by Workflow |
-|--------|---------|-----------------|
-| `addMessage()` | Static text into chat | ✅ Start/completion messages |
-| `setStreaming()` | Toggle streaming indicator | ✅ On/off only |
-| `sendSilentMessage()` | Send message without user input | ❌ |
-| `spawnSubagentParallel()` | Run parallel SDK sessions | ✅ Silent execution |
-| `streamAndWait()` | Stream through normal pipeline | ❌ Not used by executor |
-| `waitForUserInput()` | Block for user response | ❌ Not used by executor |
-| `updateWorkflowState()` | Update workflow UI state | ✅ Active/type/config |
-| `setWorkflowSessionDir()` | Enable task panel | ✅ On first tasks |
-| `setWorkflowSessionId()` | Set session ID | ✅ On first tasks |
-| `setWorkflowTaskIds()` | Guard task persistence | ✅ On first tasks |
+| Method                    | Purpose                         | Used by Workflow            |
+| ------------------------- | ------------------------------- | --------------------------- |
+| `addMessage()`            | Static text into chat           | ✅ Start/completion messages |
+| `setStreaming()`          | Toggle streaming indicator      | ✅ On/off only               |
+| `sendSilentMessage()`     | Send message without user input | ❌                           |
+| `spawnSubagentParallel()` | Run parallel SDK sessions       | ✅ Silent execution          |
+| `streamAndWait()`         | Stream through normal pipeline  | ❌ Not used by executor      |
+| `waitForUserInput()`      | Block for user response         | ❌ Not used by executor      |
+| `updateWorkflowState()`   | Update workflow UI state        | ✅ Active/type/config        |
+| `setWorkflowSessionDir()` | Enable task panel               | ✅ On first tasks            |
+| `setWorkflowSessionId()`  | Set session ID                  | ✅ On first tasks            |
+| `setWorkflowTaskIds()`    | Guard task persistence          | ✅ On first tasks            |
 
 Key observation: `streamAndWait()` already pipes through the full rendering pipeline but the workflow executor uses `spawnSubagentParallel()` instead.
 
@@ -414,36 +414,36 @@ UNIFIED PATH — Workflows Using Chat Pipeline:
 
 ### Event Type Coverage
 
-| BusEventType | Published by Chat | Published by Workflow | Consumed by UI |
-|---|---|---|---|
-| `stream.text.delta` | ✅ via SDK adapter | ❌ | ✅ `StreamPipelineConsumer` |
-| `stream.text.complete` | ✅ via SDK adapter | ❌ | ✅ `StreamPipelineConsumer` |
-| `stream.thinking.delta` | ✅ via SDK adapter | ❌ | ✅ `StreamPipelineConsumer` |
-| `stream.thinking.complete` | ✅ via SDK adapter | ❌ | ✅ `chat.tsx:2789` |
-| `stream.tool.start` | ✅ via SDK adapter | ❌ | ✅ `StreamPipelineConsumer` |
-| `stream.tool.complete` | ✅ via SDK adapter | ❌ | ✅ `StreamPipelineConsumer` |
-| `stream.agent.start` | ✅ via SDK adapter | ✅ via workflow adapter | ✅ `chat.tsx:2813` |
-| `stream.agent.update` | ✅ via SDK adapter | ⚠️ method exists, never called | ✅ `chat.tsx:2870` |
-| `stream.agent.complete` | ✅ via SDK adapter | ✅ via workflow adapter | ✅ `chat.tsx:2885` |
-| `stream.usage` | ✅ via SDK adapter | ❌ | ✅ `chat.tsx:2755` |
-| `workflow.step.start` | N/A | ✅ via workflow adapter | ❌ **No consumer** |
-| `workflow.step.complete` | N/A | ✅ via workflow adapter | ❌ **No consumer** |
-| `workflow.task.update` | N/A | ✅ via workflow adapter | ❌ **No consumer** |
+| BusEventType               | Published by Chat | Published by Workflow         | Consumed by UI             |
+| -------------------------- | ----------------- | ----------------------------- | -------------------------- |
+| `stream.text.delta`        | ✅ via SDK adapter | ❌                             | ✅ `StreamPipelineConsumer` |
+| `stream.text.complete`     | ✅ via SDK adapter | ❌                             | ✅ `StreamPipelineConsumer` |
+| `stream.thinking.delta`    | ✅ via SDK adapter | ❌                             | ✅ `StreamPipelineConsumer` |
+| `stream.thinking.complete` | ✅ via SDK adapter | ❌                             | ✅ `chat.tsx:2789`          |
+| `stream.tool.start`        | ✅ via SDK adapter | ❌                             | ✅ `StreamPipelineConsumer` |
+| `stream.tool.complete`     | ✅ via SDK adapter | ❌                             | ✅ `StreamPipelineConsumer` |
+| `stream.agent.start`       | ✅ via SDK adapter | ✅ via workflow adapter        | ✅ `chat.tsx:2813`          |
+| `stream.agent.update`      | ✅ via SDK adapter | ⚠️ method exists, never called | ✅ `chat.tsx:2870`          |
+| `stream.agent.complete`    | ✅ via SDK adapter | ✅ via workflow adapter        | ✅ `chat.tsx:2885`          |
+| `stream.usage`             | ✅ via SDK adapter | ❌                             | ✅ `chat.tsx:2755`          |
+| `workflow.step.start`      | N/A               | ✅ via workflow adapter        | ❌ **No consumer**          |
+| `workflow.step.complete`   | N/A               | ✅ via workflow adapter        | ❌ **No consumer**          |
+| `workflow.task.update`     | N/A               | ✅ via workflow adapter        | ❌ **No consumer**          |
 
 ### Component File Inventory
 
-| Directory | Files | Purpose |
-|---|---|---|
-| `src/ui/parts/` | 24 (12 impl + 12 test) | Stream pipeline, part store, handlers, guards, types |
-| `src/ui/components/parts/` | 15 (10 impl + 5 test) | Part renderer components |
-| `src/ui/components/` | 27 (17 impl + 10 test) | UI components (tree, indicators, dialogs) |
-| `src/ui/utils/` | 38 (18 impl + 20 test) | Formatting, state, lifecycle, background agents |
-| `src/events/` | 14 (7 impl + 7 test) | Event bus core, batching, hooks |
-| `src/events/adapters/` | 7 (5 impl + 2 test) | SDK-specific stream adapters |
-| `src/events/consumers/` | 6 (3 impl + 3 test) | Event consumers, correlation, echo suppression |
-| `src/workflows/` | 7 | Executor, session, index |
-| `src/workflows/graph/` | ~15 | Graph engine, builder, types, node factories |
-| `src/workflows/ralph/` | ~10 | Ralph-specific graph, state, prompts, definition |
+| Directory                  | Files                  | Purpose                                              |
+| -------------------------- | ---------------------- | ---------------------------------------------------- |
+| `src/ui/parts/`            | 24 (12 impl + 12 test) | Stream pipeline, part store, handlers, guards, types |
+| `src/ui/components/parts/` | 15 (10 impl + 5 test)  | Part renderer components                             |
+| `src/ui/components/`       | 27 (17 impl + 10 test) | UI components (tree, indicators, dialogs)            |
+| `src/ui/utils/`            | 38 (18 impl + 20 test) | Formatting, state, lifecycle, background agents      |
+| `src/events/`              | 14 (7 impl + 7 test)   | Event bus core, batching, hooks                      |
+| `src/events/adapters/`     | 7 (5 impl + 2 test)    | SDK-specific stream adapters                         |
+| `src/events/consumers/`    | 6 (3 impl + 3 test)    | Event consumers, correlation, echo suppression       |
+| `src/workflows/`           | 7                      | Executor, session, index                             |
+| `src/workflows/graph/`     | ~15                    | Graph engine, builder, types, node factories         |
+| `src/workflows/ralph/`     | ~10                    | Ralph-specific graph, state, prompts, definition     |
 
 ## Historical Context (from research/)
 

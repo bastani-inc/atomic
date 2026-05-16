@@ -961,14 +961,14 @@ The footer is a single-line status bar below the chatbox. It adapts based on str
 
 ```
 [CHATBOX]
-esc to interrupt · [N] local agents · ctrl+f to kill all background tasks
+Esc to interrupt · [N] local agents · ctrl+f to kill all background tasks
 ```
 
 **When streaming with no background agents**:
 
 ```
 [CHATBOX]
-esc to interrupt
+Esc to interrupt
 ```
 
 Agent status updates flow through the standard event pipeline — `agent.start`, `agent.update`, `agent.complete` events update the agent maps in the reducer, and the footer re-renders via Zustand selector subscription.
@@ -984,7 +984,7 @@ function Footer() {
   const { isStreaming, backgroundCount } = ctx.session(selectFooterState);
 
   const parts: string[] = [];
-  if (isStreaming) parts.push("esc to interrupt");
+  if (isStreaming) parts.push("Esc to interrupt");
   if (backgroundCount > 0) parts.push(`[${backgroundCount}] local agents · ctrl+f to kill all background tasks`);
   return <text>{parts.join(" · ")}</text>;
 }

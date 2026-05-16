@@ -208,7 +208,7 @@ export function printHelp(extensionFlags?: ExtensionFlag[]): void {
 					})
 					.join("\n")}\n`
 			: "";
-	console.log(`${chalk.bold(APP_NAME)} - AI coding assistant with read, bash, edit, write tools
+	console.log(`${chalk.bold(APP_NAME)} - AI coding assistant with read, bash, edit, write, ask_user_question, todo tools
 
 ${chalk.bold("Usage:")}
   ${APP_NAME} [options] [@files...] [messages...]
@@ -350,14 +350,17 @@ ${chalk.bold("Environment Variables:")}
   ${ENV_OFFLINE.padEnd(32)} - Disable startup network operations when set to 1/true/yes
   ${ENV_TELEMETRY.padEnd(32)} - Override install telemetry when set to 1/true/yes or 0/false/no
   ${ENV_SHARE_VIEWER_URL.padEnd(32)} - Base URL for /share command (default: https://pi.dev/session/)
+  PI_* aliases are also supported for app-specific variables above.
 
 ${chalk.bold("Built-in Tool Names:")}
-  read   - Read file contents
-  bash   - Execute bash commands
-  edit   - Edit files with find/replace
-  write  - Write files (creates/overwrites)
-  grep   - Search file contents (read-only, off by default)
-  find   - Find files by glob pattern (read-only, off by default)
-  ls     - List directory contents (read-only, off by default)
+  read              - Read file contents
+  bash              - Execute bash commands
+  edit              - Edit files with find/replace
+  write             - Write files (creates/overwrites)
+  ask_user_question - Ask structured questions in the TUI (default)
+  todo              - Manage file-based todos (default)
+  grep              - Search file contents (read-only, off by default)
+  find              - Find files by glob pattern (read-only, off by default)
+  ls                - List directory contents (read-only, off by default)
 `);
 }

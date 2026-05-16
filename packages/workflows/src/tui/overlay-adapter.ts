@@ -16,6 +16,7 @@
  */
 
 import type { Store } from "../shared/store.js";
+import type { ChatMessageRenderOptions } from "@bastani/atomic";
 import { WorkflowAttachPane } from "./workflow-attach-pane.js";
 import { deriveGraphThemeFromPiTheme } from "./graph-theme.js";
 import { killRun } from "../runs/background/status.js";
@@ -34,9 +35,12 @@ import type {
   PiTheme,
 } from "../extension/wiring.js";
 
+export type OverlayChatRenderSettings = Partial<Omit<ChatMessageRenderOptions, "ui" | "cwd" | "markdownTheme">>;
+
 export interface OverlayUISurface {
   custom?: PiCustomOverlayFunction;
   getEditorComponent?: () => PiEditorFactory | undefined;
+  getChatRenderSettings?: () => OverlayChatRenderSettings | undefined;
 }
 
 export interface OverlayPiSurface {
@@ -86,6 +90,14 @@ const FULLSCREEN_OVERLAY_OPTIONS: PiOverlayOptions = {
   margin: 0,
 };
 
+const MOUSE_SCROLL_TRACKING_ON = "\x1b[?1000h\x1b[?1006h";
+const MOUSE_SCROLL_TRACKING_OFF = "\x1b[?1006l\x1b[?1000l";
+
+function setMouseScrollTracking(enabled: boolean): void {
+  if (!process.stdout.isTTY) return;
+  process.stdout.write(enabled ? MOUSE_SCROLL_TRACKING_ON : MOUSE_SCROLL_TRACKING_OFF);
+}
+
 export interface BuildGraphOverlayAdapterOpts {
   /**
    * Live stage-control registry threaded through to the attach shell.
@@ -110,6 +122,7 @@ export function buildGraphOverlayAdapter(
   let finishMounted: (() => void) | null = null;
 
   function close(): void {
+    setMouseScrollTracking(false);
     currentHandle?.hide();
     finishMounted?.();
     currentView?.dispose();
@@ -136,6 +149,7 @@ export function buildGraphOverlayAdapter(
    * running and can be re-attached.
    */
   function hideMounted(): void {
+    setMouseScrollTracking(false);
     if (currentHandle) {
       currentHandle.setHidden(true);
       currentHandle.unfocus();
@@ -164,6 +178,7 @@ export function buildGraphOverlayAdapter(
       },
       invalidate: () => tui.requestRender?.(),
       dispose: () => {
+        setMouseScrollTracking(false);
         unsubscribe();
         view.dispose();
       },
@@ -177,6 +192,7 @@ export function buildGraphOverlayAdapter(
   ): void {
     // Already mounted but hidden — flip visibility without remounting.
     if (mounted && currentHandle?.isHidden()) {
+      setMouseScrollTracking(currentView?.wantsMouseScrollTracking() ?? true);
       currentHandle.setHidden(false);
       currentHandle.focus();
       return;
@@ -198,6 +214,7 @@ export function buildGraphOverlayAdapter(
       const finish = (): void => {
         if (settled) return;
         settled = true;
+        setMouseScrollTracking(false);
         currentView?.dispose();
         currentView = null;
         currentHandle = null;
@@ -221,6 +238,7 @@ export function buildGraphOverlayAdapter(
         piTheme: theme,
         piKeybindings: keybindings,
         piEditorFactory: ui?.getEditorComponent?.(),
+        getChatRenderSettings: ui?.getChatRenderSettings,
         // Pi-tui owns terminal dimensions; thread its row count down
         // so the overlay frame fills the actual viewport rather than
         // a hard-coded 32-row rectangle. Returning `undefined` keeps
@@ -236,6 +254,7 @@ export function buildGraphOverlayAdapter(
           if (currentHandle?.isHidden() === true) return;
           tui.requestRender?.();
         },
+        setMouseScrollTracking,
       } as ConstructorParameters<typeof WorkflowAttachPane>[0] & {
         piTui?: PiCustomOverlayFactoryTui;
         piTheme?: PiTheme;
@@ -244,6 +263,7 @@ export function buildGraphOverlayAdapter(
       currentView = view;
       finishMounted = finish;
       mounted = true;
+      setMouseScrollTracking(view.wantsMouseScrollTracking());
       return makeComponent(view, tui);
     };
 
@@ -262,6 +282,9 @@ export function buildGraphOverlayAdapter(
     // no scroll-pollution).
     if (mounted && currentHandle) {
       const nowHidden = !currentHandle.isHidden();
+      setMouseScrollTracking(
+        nowHidden ? false : currentView?.wantsMouseScrollTracking() ?? true,
+      );
       currentHandle.setHidden(nowHidden);
       if (!nowHidden) currentHandle.focus();
       return;

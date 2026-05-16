@@ -15,7 +15,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { CONFIG_DIR_NAME } from "@bastani/atomic";
+import { getAgentConfigPaths, getEnvValue } from "@bastani/atomic";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { type ExtensionAPI, type ExtensionContext, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Box, Container, Spacer, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
@@ -74,13 +74,14 @@ function getSubagentSessionRoot(parentSessionFile: string | null): string {
 }
 
 function loadConfig(): ExtensionConfig {
-	const configPath = path.join(os.homedir(), CONFIG_DIR_NAME, "agent", "extensions", "subagent", "config.json");
-	try {
-		if (fs.existsSync(configPath)) {
-			return JSON.parse(fs.readFileSync(configPath, "utf-8")) as ExtensionConfig;
+	for (const configPath of getAgentConfigPaths("extensions", "subagent", "config.json")) {
+		try {
+			if (fs.existsSync(configPath)) {
+				return JSON.parse(fs.readFileSync(configPath, "utf-8")) as ExtensionConfig;
+			}
+		} catch (error) {
+			console.error(`Failed to load subagent config from '${configPath}':`, error);
 		}
-	} catch (error) {
-		console.error(`Failed to load subagent config from '${configPath}':`, error);
 	}
 	return {};
 }
@@ -221,7 +222,7 @@ class SubagentControlNoticeComponent implements Component {
 }
 
 export default function registerSubagentExtension(pi: ExtensionAPI): void {
-	if (process.env[SUBAGENT_CHILD_ENV] === "1") return;
+	if (getEnvValue(SUBAGENT_CHILD_ENV) === "1") return;
 	const globalStore = globalThis as Record<string, unknown>;
 	const runtimeCleanupStoreKey = "__piSubagentRuntimeCleanup";
 	const previousRuntimeCleanup = globalStore[runtimeCleanupStoreKey];

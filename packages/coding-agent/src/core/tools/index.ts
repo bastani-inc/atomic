@@ -107,6 +107,15 @@ export const allToolNames: Set<ToolName> = new Set([
 	"todo",
 ]);
 
+export const defaultToolNames: readonly ToolName[] = [
+	"read",
+	"bash",
+	"edit",
+	"write",
+	"ask_user_question",
+	"todo",
+];
+
 export interface ToolsOptions {
 	read?: ReadToolOptions;
 	bash?: BashToolOptions;

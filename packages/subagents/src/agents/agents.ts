@@ -6,7 +6,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { CONFIG_DIR_NAME } from "@bastani/atomic";
+import { CONFIG_DIR_NAME, getAgentConfigPaths, getProjectConfigDirs } from "@bastani/atomic";
 import type { OutputMode } from "../shared/types.ts";
 import { KNOWN_FIELDS } from "./agent-serializer.ts";
 import { parseChain } from "./chain-serializer.ts";
@@ -132,7 +132,15 @@ interface AgentDiscoveryResult {
 }
 
 function getUserChainDir(): string {
-	return path.join(os.homedir(), CONFIG_DIR_NAME, "agent", "chains");
+	return getAgentConfigPaths("chains")[0] ?? path.join(os.homedir(), CONFIG_DIR_NAME, "agent", "chains");
+}
+
+function getUserChainDirs(): string[] {
+	return getAgentConfigPaths("chains");
+}
+
+function getUserAgentDirs(): string[] {
+	return getAgentConfigPaths("agents");
 }
 
 function splitToolList(rawTools: string[] | undefined): { tools?: string[]; mcpDirectTools?: string[] } {
@@ -207,7 +215,7 @@ function cloneOverrideValue(override: BuiltinAgentOverrideConfig): BuiltinAgentO
 function findNearestProjectRoot(cwd: string): string | null {
 	let currentDir = cwd;
 	while (true) {
-		if (isDirectory(path.join(currentDir, CONFIG_DIR_NAME)) || isDirectory(path.join(currentDir, ".agents"))) {
+		if (getProjectConfigDirs(currentDir).some(isDirectory) || isDirectory(path.join(currentDir, ".agents"))) {
 			return currentDir;
 		}
 
@@ -218,12 +226,21 @@ function findNearestProjectRoot(cwd: string): string | null {
 }
 
 function getUserAgentSettingsPath(): string {
-	return path.join(os.homedir(), CONFIG_DIR_NAME, "agent", "settings.json");
+	return getAgentConfigPaths("settings.json")[0] ?? path.join(os.homedir(), CONFIG_DIR_NAME, "agent", "settings.json");
+}
+
+function getUserAgentSettingsPaths(): string[] {
+	return getAgentConfigPaths("settings.json");
 }
 
 function getProjectAgentSettingsPath(cwd: string): string | null {
 	const projectRoot = findNearestProjectRoot(cwd);
-	return projectRoot ? path.join(projectRoot, CONFIG_DIR_NAME, "settings.json") : null;
+	return projectRoot ? path.join(getProjectConfigDirs(projectRoot)[0]!, "settings.json") : null;
+}
+
+function getProjectAgentSettingsPaths(cwd: string): string[] {
+	const projectRoot = findNearestProjectRoot(cwd);
+	return projectRoot ? getProjectConfigDirs(projectRoot).map((dir) => path.join(dir, "settings.json")) : [];
 }
 
 function readSettingsFileStrict(filePath: string): Record<string, unknown> {
@@ -411,6 +428,22 @@ function applyBuiltinOverride(
 	}
 
 	return next;
+}
+
+function readMergedSubagentSettings(filePaths: string[]): { settings: SubagentSettings; path: string | null } {
+	let settings = EMPTY_SUBAGENT_SETTINGS;
+	let path: string | null = null;
+	for (let i = filePaths.length - 1; i >= 0; i--) {
+		const filePath = filePaths[i]!;
+		if (!fs.existsSync(filePath)) continue;
+		const next = readSubagentSettings(filePath);
+		settings = {
+			disableBuiltins: next.disableBuiltins ?? settings.disableBuiltins,
+			overrides: { ...settings.overrides, ...next.overrides },
+		};
+		path = filePath;
+	}
+	return { settings, path };
 }
 
 function applyBuiltinOverrides(
@@ -700,10 +733,13 @@ function resolveNearestProjectAgentDirs(cwd: string): { readDirs: string[]; pref
 	if (!projectRoot) return { readDirs: [], preferredDir: null };
 
 	const legacyDir = path.join(projectRoot, ".agents");
-	const preferredDir = path.join(projectRoot, CONFIG_DIR_NAME, "agents");
+	const preferredDir = path.join(getProjectConfigDirs(projectRoot)[0]!, "agents");
 	const readDirs: string[] = [];
 	if (isDirectory(legacyDir)) readDirs.push(legacyDir);
-	if (isDirectory(preferredDir)) readDirs.push(preferredDir);
+	for (const configDir of getProjectConfigDirs(projectRoot).reverse()) {
+		const agentsDir = path.join(configDir, "agents");
+		if (isDirectory(agentsDir)) readDirs.push(agentsDir);
+	}
 
 	return {
 		readDirs,
@@ -715,22 +751,24 @@ function resolveNearestProjectChainDirs(cwd: string): { readDirs: string[]; pref
 	const projectRoot = findNearestProjectRoot(cwd);
 	if (!projectRoot) return { readDirs: [], preferredDir: null };
 
-	const preferredDir = path.join(projectRoot, CONFIG_DIR_NAME, "chains");
+	const preferredDir = path.join(getProjectConfigDirs(projectRoot)[0]!, "chains");
 	return {
-		readDirs: isDirectory(preferredDir) ? [preferredDir] : [],
+		readDirs: getProjectConfigDirs(projectRoot).reverse().map((configDir) => path.join(configDir, "chains")).filter(isDirectory),
 		preferredDir,
 	};
 }
 const BUILTIN_AGENTS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "agents");
 
 export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryResult {
-	const userDirOld = path.join(os.homedir(), CONFIG_DIR_NAME, "agent", "agents");
+	const userDirOld = getUserAgentDirs();
 	const userDirNew = path.join(os.homedir(), ".agents");
 	const { readDirs: projectAgentDirs, preferredDir: projectAgentsDir } = resolveNearestProjectAgentDirs(cwd);
-	const userSettingsPath = getUserAgentSettingsPath();
-	const projectSettingsPath = getProjectAgentSettingsPath(cwd);
-	const userSettings = scope === "project" ? EMPTY_SUBAGENT_SETTINGS : readSubagentSettings(userSettingsPath);
-	const projectSettings = scope === "user" ? EMPTY_SUBAGENT_SETTINGS : readSubagentSettings(projectSettingsPath);
+	const userSettingsLoad = readMergedSubagentSettings(getUserAgentSettingsPaths());
+	const projectSettingsLoad = readMergedSubagentSettings(getProjectAgentSettingsPaths(cwd));
+	const userSettingsPath = userSettingsLoad.path ?? getUserAgentSettingsPath();
+	const projectSettingsPath = projectSettingsLoad.path ?? getProjectAgentSettingsPath(cwd);
+	const userSettings = scope === "project" ? EMPTY_SUBAGENT_SETTINGS : userSettingsLoad.settings;
+	const projectSettings = scope === "user" ? EMPTY_SUBAGENT_SETTINGS : projectSettingsLoad.settings;
 
 	const builtinAgents = applyBuiltinOverrides(
 		loadAgentsFromDir(BUILTIN_AGENTS_DIR, "builtin"),
@@ -740,7 +778,7 @@ export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryRe
 		projectSettingsPath,
 	);
 
-	const userAgentsOld = scope === "project" ? [] : loadAgentsFromDir(userDirOld, "user");
+	const userAgentsOld = scope === "project" ? [] : userDirOld.flatMap((dir) => loadAgentsFromDir(dir, "user"));
 	const userAgentsNew = scope === "project" ? [] : loadAgentsFromDir(userDirNew, "user");
 	const userAgents = [...userAgentsOld, ...userAgentsNew];
 
@@ -763,15 +801,17 @@ export function discoverAgentsAll(cwd: string): {
 	userSettingsPath: string;
 	projectSettingsPath: string | null;
 } {
-	const userDirOld = path.join(os.homedir(), CONFIG_DIR_NAME, "agent", "agents");
+	const userDirOld = getUserAgentDirs();
 	const userDirNew = path.join(os.homedir(), ".agents");
 	const userChainDir = getUserChainDir();
 	const { readDirs: projectDirs, preferredDir: projectDir } = resolveNearestProjectAgentDirs(cwd);
 	const { readDirs: projectChainDirs, preferredDir: projectChainDir } = resolveNearestProjectChainDirs(cwd);
-	const userSettingsPath = getUserAgentSettingsPath();
-	const projectSettingsPath = getProjectAgentSettingsPath(cwd);
-	const userSettings = readSubagentSettings(userSettingsPath);
-	const projectSettings = readSubagentSettings(projectSettingsPath);
+	const userSettingsLoad = readMergedSubagentSettings(getUserAgentSettingsPaths());
+	const projectSettingsLoad = readMergedSubagentSettings(getProjectAgentSettingsPaths(cwd));
+	const userSettingsPath = userSettingsLoad.path ?? getUserAgentSettingsPath();
+	const projectSettingsPath = projectSettingsLoad.path ?? getProjectAgentSettingsPath(cwd);
+	const userSettings = userSettingsLoad.settings;
+	const projectSettings = projectSettingsLoad.settings;
 
 	const builtin = applyBuiltinOverrides(
 		loadAgentsFromDir(BUILTIN_AGENTS_DIR, "builtin"),
@@ -781,7 +821,7 @@ export function discoverAgentsAll(cwd: string): {
 		projectSettingsPath,
 	);
 	const user = [
-		...loadAgentsFromDir(userDirOld, "user"),
+		...userDirOld.flatMap((dir) => loadAgentsFromDir(dir, "user")),
 		...loadAgentsFromDir(userDirNew, "user"),
 	];
 	const projectMap = new Map<string, AgentConfig>();
@@ -799,11 +839,11 @@ export function discoverAgentsAll(cwd: string): {
 		}
 	}
 	const chains = [
-		...loadChainsFromDir(userChainDir, "user"),
+		...getUserChainDirs().flatMap((dir) => loadChainsFromDir(dir, "user")),
 		...Array.from(chainMap.values()),
 	];
 
-	const userDir = fs.existsSync(userDirNew) ? userDirNew : userDirOld;
+	const userDir = fs.existsSync(userDirNew) ? userDirNew : userDirOld[0]!;
 
 	return { builtin, user, project, chains, userDir, projectDir, userChainDir, projectChainDir, userSettingsPath, projectSettingsPath };
 }

@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { CONFIG_DIR_NAME } from "@bastani/atomic";
+import { EXA_USAGE_PATH, findReadableConfigPath } from "./config-paths.ts";
 import { activityMonitor } from "./activity.js";
 import type { ExtractedContent } from "./extract.js";
 import type { SearchOptions, SearchResponse } from "./perplexity.js";
@@ -9,8 +10,8 @@ import type { SearchOptions, SearchResponse } from "./perplexity.js";
 const EXA_ANSWER_URL = "https://api.exa.ai/answer";
 const EXA_SEARCH_URL = "https://api.exa.ai/search";
 const EXA_MCP_URL = "https://mcp.exa.ai/mcp";
-const CONFIG_PATH = join(homedir(), CONFIG_DIR_NAME, "web-search.json");
-const USAGE_PATH = join(homedir(), CONFIG_DIR_NAME, "exa-usage.json");
+const CONFIG_PATH = findReadableConfigPath();
+const USAGE_PATH = EXA_USAGE_PATH;
 
 const MONTHLY_LIMIT = 1000;
 const WARNING_THRESHOLD = 800;

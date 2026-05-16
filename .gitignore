@@ -6,7 +6,7 @@
 __MACOSX/
 .AppleDouble
 .LSOverride
-Icon[]
+Icon?
 
 # Thumbnails
 ._*
@@ -198,6 +198,3 @@ build/
 packages/*/.claude/
 packages/*/.opencode/
 
-# Verdaccio working state used by the publish-validation matrix
-.verdaccio-storage/
-.verdaccio-htpasswdui/

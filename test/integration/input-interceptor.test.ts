@@ -5,7 +5,7 @@
  *      registered command handler directly and returns
  *      `{ action: "handled" }` — short-circuiting pi's
  *      `startPendingSubmission` flow that otherwise echoes the message
- *      into chat scrollback AND starts the `Working… (esc to interrupt)`
+ *      into chat scrollback AND starts the `Working… (Esc to interrupt)`
  *      loader before `session.prompt` runs. The shape matches pi's
  *      `InputEventResult` discriminated union; `{ handled: true }` is
  *      silently ignored by the runner.
@@ -29,7 +29,10 @@ import type {
   PiCommandOptions,
 } from "../../packages/workflows/src/extension/index.js";
 
-type EventHandler = (event?: unknown, ctx?: PiCommandContext) => Promise<unknown> | unknown;
+type EventHandler = (
+  event?: unknown,
+  ctx?: PiCommandContext,
+) => Promise<unknown> | unknown;
 
 interface CapturedHandlerCall {
   name: string;
@@ -85,12 +88,16 @@ function buildMock(): MockSurface {
   return { pi, events, commandCalls };
 }
 
-describe("installInputInterceptor — pi.on(\"input\") wiring", () => {
+describe('installInputInterceptor — pi.on("input") wiring', () => {
   test("registers a single `input` handler", () => {
     const { pi, events } = buildMock();
     factory(pi);
     const handlers = events.get("input") ?? [];
-    assert.equal(handlers.length, 1, "exactly one input handler must be registered");
+    assert.equal(
+      handlers.length,
+      1,
+      "exactly one input handler must be registered",
+    );
   });
 
   test("/workflow text short-circuits with { action: 'handled' } and dispatches the registered handler", async () => {
@@ -101,14 +108,21 @@ describe("installInputInterceptor — pi.on(\"input\") wiring", () => {
     assert.ok(handler, "input handler must be registered");
 
     const ctx: PiCommandContext = { ui: { notify: () => undefined } };
-    const result = await handler({ text: "/workflow list", source: "interactive" }, ctx);
+    const result = await handler(
+      { text: "/workflow list", source: "interactive" },
+      ctx,
+    );
 
     assert.deepEqual(
       result,
       { action: "handled" },
       "must short-circuit the host submit pipeline using pi's InputEventResult shape",
     );
-    assert.equal(commandCalls.length, 1, "must dispatch the workflow command handler exactly once");
+    assert.equal(
+      commandCalls.length,
+      1,
+      "must dispatch the workflow command handler exactly once",
+    );
     assert.equal(commandCalls[0]!.name, "workflow");
     assert.equal(commandCalls[0]!.args, "list");
   });
@@ -120,10 +134,21 @@ describe("installInputInterceptor — pi.on(\"input\") wiring", () => {
     const handler = (events.get("input") ?? [])[0]!;
     const ctx: PiCommandContext = { ui: { notify: () => undefined } };
 
-    const result = await handler({ text: "hello world, please help", source: "interactive" }, ctx);
+    const result = await handler(
+      { text: "hello world, please help", source: "interactive" },
+      ctx,
+    );
 
-    assert.equal(result, undefined, "must not short-circuit regular chat input");
-    assert.equal(commandCalls.length, 0, "must not invoke any workflow command");
+    assert.equal(
+      result,
+      undefined,
+      "must not short-circuit regular chat input",
+    );
+    assert.equal(
+      commandCalls.length,
+      0,
+      "must not invoke any workflow command",
+    );
   });
 
   test("unknown slash command falls through (returns undefined)", async () => {
@@ -133,7 +158,10 @@ describe("installInputInterceptor — pi.on(\"input\") wiring", () => {
     const handler = (events.get("input") ?? [])[0]!;
     const ctx: PiCommandContext = { ui: { notify: () => undefined } };
 
-    const result = await handler({ text: "/somebody-elses-command foo", source: "interactive" }, ctx);
+    const result = await handler(
+      { text: "/somebody-elses-command foo", source: "interactive" },
+      ctx,
+    );
 
     assert.equal(result, undefined);
     assert.equal(commandCalls.length, 0);
@@ -146,7 +174,10 @@ describe("installInputInterceptor — pi.on(\"input\") wiring", () => {
     const handler = (events.get("input") ?? [])[0]!;
     const ctx: PiCommandContext = { ui: { notify: () => undefined } };
 
-    const result = await handler({ text: undefined, source: "interactive" }, ctx);
+    const result = await handler(
+      { text: undefined, source: "interactive" },
+      ctx,
+    );
 
     assert.equal(result, undefined);
     assert.equal(commandCalls.length, 0);

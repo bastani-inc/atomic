@@ -37,16 +37,18 @@
  */
 
 import {
-  AssistantMessageComponent,
+  ChatTranscriptComponent,
   CustomEditor,
-  parseSkillBlock,
+  ScrollableComponentViewport,
   SessionManager,
-  SkillInvocationMessageComponent,
-  ToolExecutionComponent,
-  UserMessageComponent,
+  LiveChatEntriesController,
+  chatEntriesFromAgentMessages,
+  renderChatMessageEntry,
   type AgentSession,
   type AgentSessionEvent,
-  type SessionMessageEntry,
+  type ChatMessageEntry,
+  type ChatMessageRenderOptions,
+  type ChatTranscriptRole,
 } from "@bastani/atomic";
 import { Box, Container, Spacer, Text } from "@earendil-works/pi-tui";
 import type { Component, EditorComponent, EditorTheme, TUI } from "@earendil-works/pi-tui";
@@ -84,6 +86,8 @@ export interface StageChatViewOpts {
   piKeybindings?: unknown;
   /** Currently installed host editor factory, inherited from extension `ctx.ui.setEditorComponent()`. */
   piEditorFactory?: (tui: TUI, theme: EditorTheme, keybindings: unknown) => EditorComponent;
+  /** Parent chat rendering settings and extension renderers inherited from the host UI. */
+  getChatRenderSettings?: () => Partial<Omit<ChatMessageRenderOptions, "ui" | "cwd" | "markdownTheme">> | undefined;
   /**
    * Optional accessor returning the current terminal row count. The chat
    * surface expands its body band to roughly `viewportRows` minus the fixed
@@ -100,7 +104,7 @@ export interface StageChatViewOpts {
  * canonical user-visible string without knowing about the Pi-box payload.
  */
 interface BaseEntry {
-  readonly role: "user" | "assistant" | "thinking" | "tool" | "notice" | "system";
+  readonly role: ChatTranscriptRole;
   readonly text: string;
 }
 interface UserEntry extends BaseEntry {
@@ -137,7 +141,8 @@ type TranscriptEntry =
   | ThinkingEntry
   | SystemEntry
   | ToolEntry
-  | NoticeEntry;
+  | NoticeEntry
+  | ChatMessageEntry;
 type AgentSnapshotMessage = AgentSession["messages"][number];
 
 // ---------------------------------------------------------------------------
@@ -155,10 +160,6 @@ const VIEW_LINE_COUNT = 32;
 const HEADER_ROWS = 1;
 /** Single dim rule between header and body. */
 const SEP_ROWS = 1;
-/** Loader: top rule + body + bottom rule when streaming. */
-const LOADER_ROWS = 3;
-/** Editor: top rule + ` ❯ … ` + bottom rule, always present. */
-const EDITOR_ROWS = 3;
 /** Footer: two dim lines. */
 const FOOTER_ROWS = 2;
 /** Hint strip: dashed rule + key bindings line. */
@@ -173,45 +174,6 @@ const ITALIC = "\x1b[3m";
 const FG_RESET = "\x1b[39m";
 const WEIGHT_RESET = "\x1b[22m";
 const ITALIC_RESET = "\x1b[23m";
-
-// ---------------------------------------------------------------------------
-// Pi chat transcript adapter
-// ---------------------------------------------------------------------------
-
-/**
- * Composes stage transcript rows with the same spacing rules as pi's
- * InteractiveMode chat container. Workflow chrome (header, loader, footer,
- * hints) remains owned by StageChatView; the base chat body is just the
- * canonical coding-agent message components inside a pi-tui Container.
- */
-class PiChatTranscriptComponent implements Component {
-  constructor(
-    private readonly entries: readonly TranscriptEntry[],
-    private readonly renderEntry: (entry: TranscriptEntry) => Component,
-  ) {}
-
-  render(width: number): string[] {
-    const container = new Container();
-    for (const entry of this.entries) {
-      addTranscriptEntry(container, this.renderEntry(entry), entry.role);
-    }
-    return container.render(width);
-  }
-
-  invalidate(): void {}
-}
-
-function addTranscriptEntry(container: Container, component: Component, role: TranscriptEntry["role"]): void {
-  // Mirror InteractiveMode.addMessageToChat:
-  // - user/custom/system-like rows get a spacer only when something already
-  //   exists above them;
-  // - assistant rows own their leading whitespace internally;
-  // - tool rows attach directly below the assistant turn that requested them.
-  if ((role === "user" || role === "notice" || role === "system") && container.children.length > 0) {
-    container.addChild(new Spacer(1));
-  }
-  container.addChild(component);
-}
 
 // ---------------------------------------------------------------------------
 // StageChatView
@@ -229,6 +191,7 @@ export class StageChatView implements Component {
   private requestRender: (() => void) | undefined;
   private getViewportRows?: () => number | undefined;
   private editor: EditorComponent | undefined;
+  private getChatRenderSettings?: () => Partial<Omit<ChatMessageRenderOptions, "ui" | "cwd" | "markdownTheme">> | undefined;
 
   private inputBuffer = "";
   private transcript: TranscriptEntry[] = [];
@@ -250,6 +213,9 @@ export class StageChatView implements Component {
   private optimisticUserSignatures = new Set<string>();
   /** Chat-mode repaint driver for Pi-style loaders/spinners. */
   private animationTimer: ReturnType<typeof setInterval> | undefined;
+  /** Scrollable fixed-height body viewport for attached chat history. */
+  private bodyViewport = new ScrollableComponentViewport();
+  private liveChat: LiveChatEntriesController;
 
   private _unsubscribeStore: (() => void) | null = null;
   private _unsubscribeHandle: (() => void) | null = null;
@@ -265,6 +231,8 @@ export class StageChatView implements Component {
     this.onClose = opts.onClose;
     this.requestRender = opts.requestRender;
     this.getViewportRows = opts.getViewportRows;
+    this.getChatRenderSettings = opts.getChatRenderSettings;
+    this.liveChat = new LiveChatEntriesController(this.transcript);
     this.editor = this._createEditor(opts.piTui, opts.piKeybindings, opts.piEditorFactory);
 
     // Seed transcript from the live SDK session at attach time, plus any
@@ -345,10 +313,7 @@ export class StageChatView implements Component {
 
   private _snapshotMessagesFromHandle(): void {
     if (!this.handle) return;
-    for (const message of this.handle.messages) {
-      const entry = transcriptEntryFromSnapshotMessage(message);
-      if (entry) this.transcript.push(entry);
-    }
+    this.liveChat.appendMessages(this.handle.messages);
   }
 
   private _snapshotMessagesFromSessionFile(stage: StageSnapshot | undefined): void {
@@ -356,30 +321,36 @@ export class StageChatView implements Component {
     const sessionFile = this.handle?.sessionFile ?? stage?.sessionFile;
     if (sessionFile === undefined) return;
 
-    let entries: ReturnType<SessionManager["getEntries"]>;
+    let messages: readonly AgentSnapshotMessage[];
     try {
-      entries = SessionManager.open(sessionFile).getEntries();
+      messages = SessionManager.open(sessionFile).buildSessionContext().messages as readonly AgentSnapshotMessage[];
     } catch {
       return;
     }
 
-    for (const entry of entries) {
-      if (!isSessionMessageEntry(entry)) continue;
-      const transcriptEntry = transcriptEntryFromSnapshotMessage(entry.message as AgentSnapshotMessage);
-      if (transcriptEntry) this.transcript.push(transcriptEntry);
-    }
+    this.liveChat.appendMessages(messages);
   }
 
   private _appendEvent(event: AgentSessionEvent): boolean {
-    // This mirrors pi-coding-agent InteractiveMode's event controller shape:
-    // session events mutate a long-lived chat model, then the host TUI is
-    // asked to render. Assistant rows are driven from full message snapshots
-    // when present; delta-only events remain supported for SDK/test shims.
+    // Shared live transcript ingestion covers assistant/user/custom messages
+    // and tool start/update/end rows. StageChatView keeps workflow-only status
+    // events (pause, compaction captions, animation state) locally.
     const type = String((event as { type?: unknown }).type ?? "");
+    if (type === "message_start") {
+      const message = (event as { message?: unknown }).message;
+      if (isUserMessageLike(message)) {
+        const signature = userMessageSignature(extractMessageText(message.content));
+        if (this.optimisticUserSignatures.delete(signature)) return false;
+      }
+    }
+    if (isSharedLiveChatEvent(type)) {
+      return this.liveChat.applyEvent(event);
+    }
     switch (type) {
       case "agent_start":
         this.sdkBusy = true;
         this.toolEntryIndexes.clear();
+        this.liveChat.clearPendingTools();
         this.statusMessage = "";
         return true;
 
@@ -387,6 +358,7 @@ export class StageChatView implements Component {
         this.sdkBusy = false;
         this.streamingAssistantIndex = undefined;
         this.streamingThinkingIndex = undefined;
+        this.liveChat.clearPendingTools();
         this.statusMessage = "";
         return true;
 
@@ -538,7 +510,7 @@ export class StageChatView implements Component {
       changed = this._updateAssistantFromMessage(message) || changed;
       for (const [toolCallId, index] of this.toolEntryIndexes.entries()) {
         const entry = this.transcript[index];
-        if (entry?.role === "tool" && entry.state === "pending") {
+        if (isLocalToolEntry(entry) && entry.state === "pending") {
           this.transcript[index] = { ...entry, text: entry.text };
         }
         this.toolEntryIndexes.set(toolCallId, index);
@@ -586,7 +558,7 @@ export class StageChatView implements Component {
       return true;
     }
     const index = role === "assistant" ? this.streamingAssistantIndex : this.streamingThinkingIndex;
-    if (index !== undefined && this.transcript[index]?.role === role) {
+    if (index !== undefined && isLocalTextRoleEntry(this.transcript[index], role)) {
       if (this.transcript[index]?.text === text) return false;
       this.transcript[index] = { role, text } as TranscriptEntry;
       return true;
@@ -624,7 +596,7 @@ export class StageChatView implements Component {
     text: string,
   ): void {
     const last = this.transcript[this.transcript.length - 1];
-    if (last && last.role === role) {
+    if (isLocalTextRoleEntry(last, role)) {
       this.transcript[this.transcript.length - 1] = { role, text } as TranscriptEntry;
     } else {
       this.transcript.push({ role, text } as TranscriptEntry);
@@ -636,7 +608,7 @@ export class StageChatView implements Component {
     delta: string,
   ): void {
     const index = role === "assistant" ? this.streamingAssistantIndex : this.streamingThinkingIndex;
-    if (index !== undefined && this.transcript[index]?.role === role) {
+    if (index !== undefined && isLocalTextRoleEntry(this.transcript[index], role)) {
       const current = this.transcript[index];
       this.transcript[index] = { role, text: current.text + delta } as TranscriptEntry;
       return;
@@ -651,7 +623,7 @@ export class StageChatView implements Component {
     let changed = false;
     for (const [toolCallId, index] of this.toolEntryIndexes.entries()) {
       const entry = this.transcript[index];
-      if (entry?.role !== "tool" || entry.state !== "pending") continue;
+      if (!isLocalToolEntry(entry) || entry.state !== "pending") continue;
       changed = this._upsertToolEntry({
         toolCallId,
         name: entry.name,
@@ -673,7 +645,7 @@ export class StageChatView implements Component {
     const mappedIndex = update.toolCallId ? this.toolEntryIndexes.get(update.toolCallId) : undefined;
     const index = mappedIndex ?? findToolEntryIndex(this.transcript, update.toolCallId, update.name);
     const existing = index !== undefined && index >= 0 ? this.transcript[index] : undefined;
-    const previous = existing?.role === "tool" ? existing : undefined;
+    const previous = isLocalToolEntry(existing) ? existing : undefined;
     const output = update.output || previous?.output;
     const name = previous?.name ?? update.name;
     const args = update.args ?? previous?.args;
@@ -731,7 +703,8 @@ export class StageChatView implements Component {
   }
 
   private _hasPendingToolEntries(): boolean {
-    return this.transcript.some((entry) => entry.role === "tool" && entry.state === "pending");
+    return this.liveChat.pendingToolIds().length > 0 ||
+      this.transcript.some((entry) => isLocalToolEntry(entry) && entry.state === "pending");
   }
 
   private _syncAnimationTick(): void {
@@ -783,21 +756,23 @@ export class StageChatView implements Component {
       blocked,
       omitTopRule: loaderLines.length > 0,
     });
-    const footerLines = this._renderFooter(w, stage, { paused, streaming, settled });
     const hintsLines = this._renderHints(w, { paused, streaming, settled });
 
     const fixed =
-      headerLines.length +
-      sepLines.length +
+      HEADER_ROWS +
+      SEP_ROWS +
       loaderLines.length +
       editorLines.length +
-      footerLines.length +
-      hintsLines.length;
+      FOOTER_ROWS +
+      HINTS_ROWS;
     const totalRows = this._viewLineCount();
     const bodyBudget = Math.max(1, totalRows - fixed);
+    this.bodyViewport.setVisibleRows(bodyBudget);
+    if (blocked) this.bodyViewport.scrollToBottom();
     const bodyLines = blocked
       ? this._renderBlockedBody(w, bodyBudget, stage)
       : this._renderBody(w, bodyBudget, stage, { paused, streaming, settled });
+    const footerLines = this._renderFooter(w, stage, { paused, streaming, settled });
 
     const lines = [
       ...headerLines,
@@ -953,7 +928,9 @@ export class StageChatView implements Component {
     // transcript component so the attached stage chat uses the same message
     // spacing and coding-agent message widgets as the main interactive chat.
     if (this.transcript.length > 0) {
-      components.push(new PiChatTranscriptComponent(this.transcript, (entry) => this._renderEntry(entry)));
+      components.push(
+        new ChatTranscriptComponent(this.transcript, (entry) => this._renderEntry(entry)),
+      );
     }
 
     // Stream a static status message (e.g. "pausing…") as a dim trailing row.
@@ -962,24 +939,8 @@ export class StageChatView implements Component {
       components.push(new Text(paint(this.statusMessage, this.theme.dim), 2, 0));
     }
 
-    // Flatten from the tail + sticky-bottom — show the most recent content.
-    // This keeps the 80ms Pi-style spinner tick cheap even after long chats:
-    // off-screen history is not rebuilt just to be sliced away.
-    return this._renderComponentTail(components, width, budget);
-  }
-
-  private _renderComponentTail(components: Component[], width: number, budget: number): string[] {
-    const chunks: string[][] = [];
-    let lineCount = 0;
-    for (let i = components.length - 1; i >= 0; i--) {
-      const lines = components[i]!.render(width);
-      chunks.push(lines);
-      lineCount += lines.length;
-      if (lineCount >= budget) break;
-    }
-    const flat: string[] = [];
-    for (let i = chunks.length - 1; i >= 0; i--) flat.push(...chunks[i]!);
-    return this._fitToBudget(flat, budget, width);
+    this.bodyViewport.setComponents(components);
+    return this.bodyViewport.render(width);
   }
 
   private _fitToBudget(lines: string[], budget: number, width: number): string[] {
@@ -1038,57 +999,68 @@ export class StageChatView implements Component {
   // -------------------------------------------------------------------------
 
   private _renderEntry(entry: TranscriptEntry): Component {
+    if (isChatMessageEntry(entry)) {
+      return renderChatMessageEntry(entry, this._chatMessageRenderOptions());
+    }
     switch (entry.role) {
       case "user":
-        return this._userMessage(entry.text);
+        return renderChatMessageEntry(
+          { role: "user", kind: "user", text: entry.text },
+          this._chatMessageRenderOptions(),
+        );
       case "assistant":
-        return new AssistantMessageComponent(assistantMessageForText(entry.text));
+        return renderChatMessageEntry(
+          { role: "assistant", kind: "assistant", message: assistantMessageForText(entry.text) },
+          this._chatMessageRenderOptions(),
+        );
       case "thinking":
-        return new AssistantMessageComponent(assistantMessageForThinking(entry.text));
+        return renderChatMessageEntry(
+          { role: "assistant", kind: "assistant", message: assistantMessageForThinking(entry.text) },
+          this._chatMessageRenderOptions(),
+        );
       case "tool":
-        return this._toolExecution(entry);
+        return renderChatMessageEntry(this._toolEntryToChatMessage(entry), this._chatMessageRenderOptions());
       case "notice":
         return this._noticeRow(entry);
       case "system":
-        return new Text(paint(entry.text, this.theme.dim), 2, 0);
+        return renderChatMessageEntry(
+          { role: "system", kind: "system", text: entry.text },
+          this._chatMessageRenderOptions(),
+        );
     }
   }
 
-  private _userMessage(text: string): Component {
-    const skillBlock = parseSkillBlock(text);
-    if (!skillBlock) return new UserMessageComponent(text);
-
-    const container = new Container();
-    container.addChild(new SkillInvocationMessageComponent(skillBlock));
-    if (skillBlock.userMessage) {
-      container.addChild(new UserMessageComponent(skillBlock.userMessage));
-    }
-    return container;
+  private _toolEntryToChatMessage(entry: ToolEntry): ChatMessageEntry {
+    const toolCallId = entry.toolCallId ?? `workflow-${entry.name}`;
+    return {
+      role: "tool",
+      kind: "tool",
+      toolName: entry.name,
+      toolCallId,
+      args: toolArgsForRender(entry),
+      isPartial: entry.state === "pending",
+      result:
+        entry.state !== "pending" || entry.output
+          ? {
+              role: "toolResult",
+              toolCallId,
+              toolName: entry.name,
+              content: entry.output ? [{ type: "text", text: entry.output }] : [],
+              isError: entry.state === "error",
+              timestamp: Date.now(),
+            }
+          : undefined,
+    };
   }
 
-  private _toolExecution(entry: ToolEntry): Component {
-    const component = new ToolExecutionComponent(
-      entry.name,
-      entry.toolCallId ?? `workflow-${entry.name}`,
-      toolArgsForRender(entry),
-      { showImages: true },
-      undefined,
-      this._toolTui(),
-      process.cwd(),
-    );
-    if (entry.state !== "pending" || entry.output) {
-      component.updateResult(
-        {
-          content: entry.output
-            ? [{ type: "text", text: entry.output }]
-            : [],
-          isError: entry.state === "error",
-          details: {},
-        },
-        entry.state === "pending",
-      );
-    }
-    return component;
+  private _chatMessageRenderOptions(): ChatMessageRenderOptions {
+    const inherited = this.getChatRenderSettings?.();
+    return {
+      ...inherited,
+      ui: this._toolTui(),
+      cwd: process.cwd(),
+      showImages: inherited?.showImages ?? true,
+    };
   }
 
   private _toolTui(): TUI {
@@ -1249,9 +1221,15 @@ export class StageChatView implements Component {
     const top = layoutRow(width, " ", " " + lTop, rTop + " ", t);
 
     // Bottom line — left: messages / duration; right: caption
+    const history = this.bodyViewport.getMaxScroll() > 0
+      ? this.bodyViewport.getScrollFromBottom() > 0
+        ? ` · history ↑${this.bodyViewport.getScrollFromBottom()}`
+        : " · history bottom"
+      : "";
     const lBot =
       paint(`◇ ${messages} messages`, t.dim) +
-      (dur ? "  " + paint(`· ${dur}`, t.dim) : "");
+      (dur ? "  " + paint(`· ${dur}`, t.dim) : "") +
+      paint(history, t.dim);
     const rBot = flags.streaming
       ? paint("streaming · live", t.accent)
       : flags.paused
@@ -1303,8 +1281,10 @@ export class StageChatView implements Component {
     streaming: boolean;
     settled: boolean;
   }): Array<{ key: string; label: string; emphasis?: boolean }> {
+    const historyHint = { key: "PgUp/PgDn", label: "history" };
     if (flags.settled) {
       return [
+        historyHint,
         { key: "Ctrl+D", label: "back to graph", emphasis: true },
         { key: "Esc", label: "close" },
       ];
@@ -1313,6 +1293,7 @@ export class StageChatView implements Component {
       return [
         { key: "↵", label: "resume with message", emphasis: true },
         { key: "Ctrl+P", label: "resume empty" },
+        historyHint,
         { key: "Ctrl+D", label: "back" },
         { key: "Esc", label: "close" },
       ];
@@ -1322,6 +1303,7 @@ export class StageChatView implements Component {
         { key: "↵", label: "steer", emphasis: true },
         { key: "Ctrl+F", label: "follow-up", emphasis: true },
         { key: "Ctrl+P", label: "pause" },
+        historyHint,
         { key: "Ctrl+D", label: "back" },
         { key: "Esc", label: "interrupt" },
       ];
@@ -1330,6 +1312,7 @@ export class StageChatView implements Component {
       { key: "↵", label: "send", emphasis: true },
       { key: "Ctrl+F", label: "follow-up" },
       { key: "Ctrl+P", label: "pause" },
+      historyHint,
       { key: "Ctrl+D", label: "back" },
       { key: "Esc", label: "close" },
     ];
@@ -1351,11 +1334,18 @@ export class StageChatView implements Component {
     return " ".repeat(width);
   }
 
+  wantsMouseScrollTracking(): boolean {
+    return true;
+  }
+
   // -------------------------------------------------------------------------
   // Input
   // -------------------------------------------------------------------------
 
   handleInput(data: string): boolean {
+    if (this.bodyViewport.handleInput(data)) {
+      return true;
+    }
     if (data === "\x04") {
       this.onDetach();
       return true;
@@ -1438,7 +1428,8 @@ export class StageChatView implements Component {
       this.requestRender?.();
       return;
     }
-    this.transcript.push({ role: "user", text });
+    this.liveChat.appendUserText(text);
+    this.bodyViewport.scrollToBottom();
     this.optimisticUserSignatures.add(userMessageSignature(text));
     this.requestRender?.();
     try {
@@ -1491,8 +1482,22 @@ export class StageChatView implements Component {
   get _inputBuffer(): string {
     return this.inputBuffer;
   }
-  get _transcript(): readonly TranscriptEntry[] {
-    return this.transcript;
+  get _transcript(): ReadonlyArray<
+    TranscriptEntry & {
+      readonly text: string;
+      readonly toolCallId: string;
+      readonly state: string;
+      readonly output: string;
+    }
+  > {
+    return this.transcript.flatMap((entry) => transcriptDebugEntries(entry)) as ReadonlyArray<
+      TranscriptEntry & {
+        readonly text: string;
+        readonly toolCallId: string;
+        readonly state: string;
+        readonly output: string;
+      }
+    >;
   }
   get _statusMessage(): string {
     return this.statusMessage;
@@ -1503,15 +1508,112 @@ export class StageChatView implements Component {
   get _hasAnimationTick(): boolean {
     return this.animationTimer !== undefined;
   }
+  get _bodyScrollFromBottom(): number {
+    return this.bodyViewport.getScrollFromBottom();
+  }
+  get _lastBodyMaxScroll(): number {
+    return this.bodyViewport.getMaxScroll();
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Module-private helpers
 // ---------------------------------------------------------------------------
 
-type AssistantComponentMessage = NonNullable<
-  ConstructorParameters<typeof AssistantMessageComponent>[0]
->;
+type AssistantComponentMessage = Extract<ChatMessageEntry, { kind: "assistant" }>["message"];
+
+function transcriptDebugEntries(entry: TranscriptEntry): Array<TranscriptEntry & {
+  readonly text: string;
+  readonly toolCallId: string;
+  readonly state: string;
+  readonly output: string;
+}> {
+  if (isChatMessageEntry(entry) && entry.kind === "assistant") {
+    const entries: Array<TranscriptEntry & { text: string; toolCallId: string; state: string; output: string }> = [];
+    const thinking = extractThinkingText(entry.message.content);
+    const text = extractMessageText(entry.message.content);
+    if (thinking) entries.push({ role: "thinking", text: thinking, toolCallId: "", state: "", output: "" } as TranscriptEntry & { text: string; toolCallId: string; state: string; output: string });
+    if (text || entries.length === 0) entries.push({ ...entry, text, toolCallId: "", state: "", output: "" });
+    return entries;
+  }
+  return [{
+    ...entry,
+    text: transcriptDebugText(entry),
+    toolCallId: transcriptDebugToolCallId(entry),
+    state: transcriptDebugToolState(entry),
+    output: transcriptDebugToolOutput(entry),
+  } as TranscriptEntry & { text: string; toolCallId: string; state: string; output: string }];
+}
+
+function transcriptDebugText(entry: TranscriptEntry): string {
+  if ("text" in entry && typeof entry.text === "string") return entry.text;
+  if (isChatMessageEntry(entry)) {
+    switch (entry.kind) {
+      case "assistant":
+        return extractMessageText(entry.message.content);
+      case "tool":
+        return entry.result
+          ? extractToolResultText(entry.result)
+          : `${entry.toolName} ${typeof entry.args === "string" ? entry.args : JSON.stringify(entry.args ?? {})}`;
+      case "bashExecution":
+        return entry.message.output || entry.message.command;
+      case "user":
+      case "system":
+        return entry.text;
+      case "custom":
+        return extractMessageText(entry.message.content);
+      case "branchSummary":
+      case "compactionSummary":
+        return entry.message.summary;
+    }
+  }
+  return "";
+}
+
+function transcriptDebugToolCallId(entry: TranscriptEntry): string {
+  if (isChatMessageEntry(entry) && entry.kind === "tool") return entry.toolCallId;
+  if ("toolCallId" in entry && typeof entry.toolCallId === "string") return entry.toolCallId;
+  return "";
+}
+
+function transcriptDebugToolState(entry: TranscriptEntry): string {
+  if (isChatMessageEntry(entry) && entry.kind === "tool") {
+    if (entry.result?.isError) return "error";
+    return entry.isPartial === false ? "success" : "pending";
+  }
+  if ("state" in entry && typeof entry.state === "string") return entry.state;
+  return "";
+}
+
+function transcriptDebugToolOutput(entry: TranscriptEntry): string {
+  if (isChatMessageEntry(entry) && entry.kind === "tool") return entry.result ? extractToolResultText(entry.result) : "";
+  if ("output" in entry && typeof entry.output === "string") return entry.output;
+  return "";
+}
+
+function isSharedLiveChatEvent(type: string): boolean {
+  return type === "message_start" ||
+    type === "message_update" ||
+    type === "message_end" ||
+    type === "tool_execution_start" ||
+    type === "tool_execution_update" ||
+    type === "tool_execution_end";
+}
+
+function isChatMessageEntry(entry: TranscriptEntry): entry is ChatMessageEntry {
+  return "kind" in entry && entry.role !== "notice";
+}
+
+function isLocalToolEntry(entry: TranscriptEntry | undefined): entry is ToolEntry {
+  return entry?.role === "tool" && !("kind" in entry);
+}
+
+function isLocalTextRoleEntry<T extends "user" | "assistant" | "thinking" | "system">(
+  entry: TranscriptEntry | undefined,
+  role: T,
+): entry is Extract<TranscriptEntry, { role: T; text: string }> {
+  return entry?.role === role && !("kind" in entry) && "text" in entry;
+}
 
 function assistantMessageForText(text: string): AssistantComponentMessage {
   return {
@@ -1539,6 +1641,10 @@ function toolArgsForRender(entry: ToolEntry): Record<string, unknown> {
 
 function isMessageLike(message: unknown): message is { role?: unknown; content?: unknown; stopReason?: unknown; errorMessage?: unknown } {
   return message !== null && typeof message === "object" && "role" in message;
+}
+
+function isUserMessageLike(message: unknown): message is { role: "user"; content?: unknown } {
+  return isMessageLike(message) && message.role === "user";
 }
 
 function userMessageSignature(text: string): string {
@@ -1677,11 +1783,15 @@ function transcriptEntryFromSnapshotMessage(
   }
 }
 
-function isSessionMessageEntry(entry: unknown): entry is SessionMessageEntry {
-  return entry !== null &&
-    typeof entry === "object" &&
-    (entry as { type?: unknown }).type === "message" &&
-    "message" in entry;
+function extractThinkingText(content: unknown): string {
+  if (!Array.isArray(content)) return "";
+  const parts: string[] = [];
+  for (const item of content) {
+    if (item == null || typeof item !== "object") continue;
+    const thinking = (item as { type?: unknown; thinking?: unknown }).thinking;
+    if ((item as { type?: unknown }).type === "thinking" && typeof thinking === "string") parts.push(thinking);
+  }
+  return parts.join("\n\n");
 }
 
 function extractMessageText(content: unknown): string {
@@ -1716,12 +1826,12 @@ function findToolEntryIndex(
   if (toolCallId !== undefined) {
     for (let i = entries.length - 1; i >= 0; i--) {
       const entry = entries[i];
-      if (entry?.role === "tool" && entry.toolCallId === toolCallId) return i;
+      if (isLocalToolEntry(entry) && entry.toolCallId === toolCallId) return i;
     }
   }
   for (let i = entries.length - 1; i >= 0; i--) {
     const entry = entries[i];
-    if (entry?.role === "tool" && entry.name === name && entry.state === "pending") return i;
+    if (isLocalToolEntry(entry) && entry.name === name && entry.state === "pending") return i;
   }
   return -1;
 }

@@ -117,6 +117,16 @@ export interface WorkingIndicatorOptions {
 export type AutocompleteProviderFactory = (current: AutocompleteProvider) => AutocompleteProvider;
 export type EditorFactory = (tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) => EditorComponent;
 
+export interface ChatRenderSettings {
+	hideThinkingBlock: boolean;
+	hiddenThinkingLabel: string;
+	toolOutputExpanded: boolean;
+	showImages: boolean;
+	imageWidthCells: number;
+	getToolDefinition(toolName: string): ToolDefinition | undefined;
+	getCustomMessageRenderer(customType: string): MessageRenderer | undefined;
+}
+
 /**
  * UI context for extensions to request interactive UI.
  * Each mode (interactive, RPC, print) provides its own implementation.
@@ -272,6 +282,9 @@ export interface ExtensionUIContext {
 
 	/** Set tool output expansion state. */
 	setToolsExpanded(expanded: boolean): void;
+
+	/** Get current chat rendering preferences and extension renderers. */
+	getChatRenderSettings(): ChatRenderSettings;
 }
 
 // ============================================================================

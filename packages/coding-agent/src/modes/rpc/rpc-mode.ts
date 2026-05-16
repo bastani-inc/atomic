@@ -301,6 +301,18 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		setToolsExpanded(_expanded: boolean) {
 			// Tool expansion not supported in RPC mode - no TUI
 		},
+
+		getChatRenderSettings() {
+			return {
+				hideThinkingBlock: false,
+				hiddenThinkingLabel: "Thinking...",
+				toolOutputExpanded: false,
+				showImages: false,
+				imageWidthCells: 60,
+				getToolDefinition: () => undefined,
+				getCustomMessageRenderer: () => undefined,
+			};
+		},
 	});
 
 	runtimeHost.setRebindSession(async () => {

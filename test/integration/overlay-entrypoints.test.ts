@@ -218,6 +218,80 @@ function buildPrintCtxWithRealCustom(rows?: number): {
   return { ctx, messages, customCalls: calls };
 }
 
+const ANSI_RE = /\x1b\[[0-9;]*m/g;
+
+function visibleText(lines: string[]): string {
+  return lines.join("\n").replace(ANSI_RE, "");
+}
+
+function setupSequentialRun(store: ReturnType<typeof createStore>, runId: string, count: number): void {
+  store.recordRunStart({
+    id: runId,
+    name: "wf",
+    inputs: {},
+    status: "running",
+    stages: [],
+    startedAt: Date.now(),
+  });
+  for (let i = 0; i < count; i++) {
+    store.recordStageStart(runId, {
+      id: `stage-${i}`,
+      name: `stage-${i}`,
+      status: "pending",
+      parentIds: i === 0 ? [] : [`stage-${i - 1}`],
+      toolEvents: [],
+    });
+  }
+}
+
+function setupBranchingRun(store: ReturnType<typeof createStore>, runId: string): void {
+  const stages = [
+    { id: "root", parentIds: [] },
+    { id: "branch-left", parentIds: ["root"] },
+    { id: "branch-right", parentIds: ["root"] },
+    { id: "merge", parentIds: ["branch-left", "branch-right"] },
+    { id: "tail-a", parentIds: ["merge"] },
+    { id: "tail-b", parentIds: ["tail-a"] },
+  ];
+  setupRunFromStages(store, runId, stages);
+}
+
+function setupWideFanoutRun(store: ReturnType<typeof createStore>, runId: string): void {
+  setupRunFromStages(store, runId, [
+    { id: "root", parentIds: [] },
+    { id: "child-0", parentIds: ["root"] },
+    { id: "child-1", parentIds: ["root"] },
+    { id: "child-2", parentIds: ["root"] },
+    { id: "child-3", parentIds: ["root"] },
+    { id: "child-4", parentIds: ["root"] },
+    { id: "child-5", parentIds: ["root"] },
+  ]);
+}
+
+function setupRunFromStages(
+  store: ReturnType<typeof createStore>,
+  runId: string,
+  stages: Array<{ id: string; parentIds: string[] }>,
+): void {
+  store.recordRunStart({
+    id: runId,
+    name: "wf",
+    inputs: {},
+    status: "running",
+    stages: [],
+    startedAt: Date.now(),
+  });
+  for (const stage of stages) {
+    store.recordStageStart(runId, {
+      id: stage.id,
+      name: stage.id,
+      status: "pending",
+      parentIds: stage.parentIds,
+      toolEvents: [],
+    });
+  }
+}
+
 // ---------------------------------------------------------------------------
 // buildGraphOverlayAdapter — degraded runtime (no custom)
 // ---------------------------------------------------------------------------
@@ -280,6 +354,75 @@ describe("buildGraphOverlayAdapter — open with pi.ui.custom", () => {
     // `q` on an empty store completes without throwing — the input is
     // accepted by the GraphView even when there is no live run to kill.
     assert.doesNotThrow(() => calls[0]!.component.handleInput?.("q"));
+  });
+
+  test("mock pi overlay render scrolls a tall graph with arrow input", () => {
+    const { ui, calls } = buildMockUi({ rows: 32 });
+    const store = createStore();
+    const runId = "scroll-run";
+    setupSequentialRun(store, runId, 6);
+    const adapter = buildGraphOverlayAdapter({ ui }, store);
+
+    adapter.open(runId);
+
+    const component = calls[0]!.component;
+    assert.doesNotMatch(visibleText(component.render(96)), /stage-5/);
+    for (let i = 0; i < 5; i++) component.handleInput?.("\x1b[B");
+    assert.match(visibleText(component.render(96)), /stage-5/);
+  });
+
+  test("mock pi switcher render preserves graph cells outside the panel", () => {
+    const { ui, calls } = buildMockUi({ rows: 32 });
+    const store = createStore();
+    const runId = "switcher-run";
+    setupBranchingRun(store, runId);
+    const adapter = buildGraphOverlayAdapter({ ui }, store);
+
+    adapter.open(runId);
+
+    const component = calls[0]!.component;
+    assert.match(visibleText(component.render(200)), /╭──── branch-right/);
+    component.handleInput?.("/");
+    const withSwitcher = visibleText(component.render(200));
+    assert.match(withSwitcher, /stages/);
+    assert.match(withSwitcher, /^│ ○ root\s+│/m);
+    assert.doesNotMatch(withSwitcher, /^│ ▸/m);
+    assert.match(withSwitcher, /╭──── branch-right/);
+  });
+
+  test("mock pi switcher render keeps node-card graph for long workflows", () => {
+    const { ui, calls } = buildMockUi({ rows: 40 });
+    const store = createStore();
+    const runId = "long-switcher-run";
+    setupSequentialRun(store, runId, 16);
+    const adapter = buildGraphOverlayAdapter({ ui }, store);
+
+    adapter.open(runId);
+
+    const component = calls[0]!.component;
+    component.handleInput?.("/");
+    const withSwitcher = visibleText(component.render(160));
+    assert.match(withSwitcher, /stages/);
+    assert.match(withSwitcher, /╭.*stage-0/);
+    assert.doesNotMatch(withSwitcher, /^\s*○ stage-0\s+pending/m);
+  });
+
+  test("mock pi render horizontally scrolls wide fan-out graphs", () => {
+    const { ui, calls } = buildMockUi({ rows: 32 });
+    const store = createStore();
+    const runId = "wide-fanout-run";
+    setupWideFanoutRun(store, runId);
+    const adapter = buildGraphOverlayAdapter({ ui }, store);
+
+    adapter.open(runId);
+
+    const component = calls[0]!.component;
+    assert.doesNotMatch(visibleText(component.render(80)), /╭.*child-5/);
+    component.handleInput?.("\x1b[B");
+    for (let i = 0; i < 5; i++) component.handleInput?.("\x1b[C");
+    const afterNav = visibleText(component.render(80));
+    assert.match(afterNav, /╭.*child-5/);
+    assert.doesNotMatch(afterNav, /^\s*○ child-5\s+pending/m);
   });
 
   test("open(null) still calls pi.ui.custom with overlay:true", () => {
