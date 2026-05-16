@@ -33,14 +33,16 @@ import { createRequire } from "node:module";
 import { platform, homedir } from "node:os";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { CONFIG_DIR_NAME } from "@bastani/atomic";
+import { CONFIG_DIR_NAME, getUserConfigPaths } from "@bastani/atomic";
+import { findReadableConfigPath } from "./config-paths.ts";
 import { isPerplexityAvailable } from "./perplexity.js";
 import { isExaAvailable } from "./exa.js";
 import { isGeminiApiAvailable } from "./gemini-api.js";
 import { getActiveGoogleEmail, isGeminiWebAvailable } from "./gemini-web.js";
 import { isBrowserCookieAccessAllowed } from "./gemini-web-config.ts";
 
-const WEB_SEARCH_CONFIG_PATH = join(homedir(), CONFIG_DIR_NAME, "web-search.json");
+const WEB_SEARCH_CONFIG_PATH = getUserConfigPaths("web-search.json")[0] ?? join(homedir(), CONFIG_DIR_NAME, "web-search.json");
+const WEB_SEARCH_CONFIG_READ_PATH = findReadableConfigPath();
 
 interface WebSearchConfig {
 	provider?: string;
@@ -69,25 +71,26 @@ interface CuratorBootstrap {
 }
 
 function loadConfig(): WebSearchConfig {
-	if (!existsSync(WEB_SEARCH_CONFIG_PATH)) return {};
-	const raw = readFileSync(WEB_SEARCH_CONFIG_PATH, "utf-8");
+	if (!existsSync(WEB_SEARCH_CONFIG_READ_PATH)) return {};
+	const raw = readFileSync(WEB_SEARCH_CONFIG_READ_PATH, "utf-8");
 	try {
 		return JSON.parse(raw) as WebSearchConfig;
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
-		throw new Error(`Failed to parse ${WEB_SEARCH_CONFIG_PATH}: ${message}`);
+		throw new Error(`Failed to parse ${WEB_SEARCH_CONFIG_READ_PATH}: ${message}`);
 	}
 }
 
 function saveConfig(updates: Partial<WebSearchConfig>): void {
 	let config: Record<string, unknown> = {};
-	if (existsSync(WEB_SEARCH_CONFIG_PATH)) {
-		const raw = readFileSync(WEB_SEARCH_CONFIG_PATH, "utf-8");
+	const existingConfigPath = findReadableConfigPath();
+	if (existsSync(existingConfigPath)) {
+		const raw = readFileSync(existingConfigPath, "utf-8");
 		try {
 			config = JSON.parse(raw) as Record<string, unknown>;
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);
-			throw new Error(`Failed to parse ${WEB_SEARCH_CONFIG_PATH}: ${message}`);
+			throw new Error(`Failed to parse ${existingConfigPath}: ${message}`);
 		}
 	}
 

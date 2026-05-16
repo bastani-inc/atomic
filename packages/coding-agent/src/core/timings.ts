@@ -3,9 +3,9 @@
  * Enable with the app-specific timing environment variable (for Atomic, ATOMIC_TIMING=1).
  */
 
-import { ENV_TIMING } from "../config.js";
+import { ENV_TIMING, getEnvValue } from "../config.js";
 
-const ENABLED = process.env[ENV_TIMING] === "1";
+const ENABLED = getEnvValue(ENV_TIMING) === "1";
 const timings: Array<{ label: string; ms: number }> = [];
 let lastTime = Date.now();
 

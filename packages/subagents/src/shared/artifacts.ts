@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { CONFIG_DIR_NAME } from "@bastani/atomic";
+import { getAgentConfigPaths } from "@bastani/atomic";
 import { TEMP_ARTIFACTS_DIR, type ArtifactPaths } from "./types.ts";
 const CLEANUP_MARKER_FILE = ".last-cleanup";
 
@@ -75,25 +75,26 @@ export function cleanupOldArtifacts(dir: string, maxAgeDays: number): void {
 export function cleanupAllArtifactDirs(maxAgeDays: number): void {
 	cleanupOldArtifacts(TEMP_ARTIFACTS_DIR, maxAgeDays);
 
-	const sessionsBase = path.join(os.homedir(), CONFIG_DIR_NAME, "agent", "sessions");
-	if (!fs.existsSync(sessionsBase)) return;
+	for (const sessionsBase of getAgentConfigPaths("sessions")) {
+		if (!fs.existsSync(sessionsBase)) continue;
 
-	let dirs: string[];
-	try {
-		dirs = fs.readdirSync(sessionsBase);
-	} catch {
-		// Session artifact cleanup is best-effort. If the sessions root cannot be read,
-		// skip cleanup instead of failing extension startup.
-		return;
-	}
-
-	for (const dir of dirs) {
-		const artifactsDir = path.join(sessionsBase, dir, "subagent-artifacts");
+		let dirs: string[];
 		try {
-			cleanupOldArtifacts(artifactsDir, maxAgeDays);
+			dirs = fs.readdirSync(sessionsBase);
 		} catch {
-			// Session cleanup is best-effort. Keep going so one unreadable session dir
-			// does not block cleanup for the rest.
+			// Session artifact cleanup is best-effort. If the sessions root cannot be read,
+			// skip cleanup instead of failing extension startup.
+			continue;
+		}
+
+		for (const dir of dirs) {
+			const artifactsDir = path.join(sessionsBase, dir, "subagent-artifacts");
+			try {
+				cleanupOldArtifacts(artifactsDir, maxAgeDays);
+			} catch {
+				// Session cleanup is best-effort. Keep going so one unreadable session dir
+				// does not block cleanup for the rest.
+			}
 		}
 	}
 }

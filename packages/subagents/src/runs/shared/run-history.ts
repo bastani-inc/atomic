@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { CONFIG_DIR_NAME } from "@bastani/atomic";
+import { getAgentConfigPaths } from "@bastani/atomic";
 
 export interface RunEntry {
 	agent: string;
@@ -12,7 +12,8 @@ export interface RunEntry {
 	exit?: number;
 }
 
-const HISTORY_PATH = path.join(os.homedir(), CONFIG_DIR_NAME, "agent", "run-history.jsonl");
+const HISTORY_PATH = getAgentConfigPaths("run-history.jsonl")[0] ?? path.join(os.homedir(), ".atomic", "agent", "run-history.jsonl");
+const HISTORY_READ_PATHS = getAgentConfigPaths("run-history.jsonl");
 const ROTATE_READ_THRESHOLD = 1200;
 const ROTATE_KEEP = 1000;
 
@@ -34,15 +35,17 @@ export function recordRun(agent: string, task: string, exitCode: number, duratio
 }
 
 export function loadRunsForAgent(agent: string): RunEntry[] {
-	if (!fs.existsSync(HISTORY_PATH)) return [];
-	let raw: string;
-	try {
-		raw = fs.readFileSync(HISTORY_PATH, "utf-8");
-	} catch {
-		return [];
+	let lines: string[] = [];
+	for (const historyPath of HISTORY_READ_PATHS) {
+		if (!fs.existsSync(historyPath)) continue;
+		try {
+			lines.push(...fs.readFileSync(historyPath, "utf-8").split("\n"));
+		} catch {
+			continue;
+		}
 	}
-
-	let lines = raw.split("\n").map((line) => line.trim()).filter((line) => line.length > 0);
+	lines = lines.map((line) => line.trim()).filter((line) => line.length > 0);
+	if (lines.length === 0) return [];
 
 	if (lines.length > ROTATE_READ_THRESHOLD) {
 		lines = lines.slice(-ROTATE_KEEP);

@@ -18,7 +18,7 @@
 
 import { join, isAbsolute } from "node:path";
 import { homedir } from "node:os";
-import { CONFIG_DIR_NAME } from "@bastani/atomic";
+import { CONFIG_DIR_NAME, CONFIG_DIR_NAMES, getProjectConfigPaths } from "@bastani/atomic";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -439,37 +439,36 @@ export async function loadWorkflowConfig(
 
   const diagnostics: ConfigDiagnostic[] = [];
 
-  // Global config path
-  const globalPath = join(home, CONFIG_DIR_NAME, "agent", "extensions", "workflow", "config.json");
+  // Global config paths (primary Atomic first, then legacy pi)
+  const globalCandidates = CONFIG_DIR_NAMES.map((name) => join(home, name, "agent", "extensions", "workflow", "config.json"));
 
-  // Project-local config
-  const projectCandidates: string[] = [
-    join(projectRoot, CONFIG_DIR_NAME, "extensions", "workflow", "config.json"),
-  ];
+  // Project-local config paths (primary Atomic first, then legacy pi)
+  const projectCandidates: string[] = getProjectConfigPaths(projectRoot, "extensions", "workflow", "config.json");
 
-  // Load global config
+  // Load global config (primary overrides legacy)
   let globalConfig: WorkflowExtensionConfig | null = null;
-  {
+  for (let i = globalCandidates.length - 1; i >= 0; i--) {
+    const globalPath = globalCandidates[i]!;
     const outcome = await loadConfigFile(globalPath);
     if (outcome.kind === "error") {
       diagnostics.push(outcome.diagnostic);
     } else if (outcome.kind === "ok") {
-      globalConfig = outcome.parsed;
+      globalConfig = globalConfig ? mergeConfigs(globalConfig, outcome.parsed) : outcome.parsed;
     }
     // "missing" → silently skip
   }
 
-  // Load first existing project-local config
+  // Load project-local configs (primary overrides legacy)
   let projectConfig: WorkflowExtensionConfig | null = null;
-  for (const candidatePath of projectCandidates) {
+  for (let i = projectCandidates.length - 1; i >= 0; i--) {
+    const candidatePath = projectCandidates[i]!;
     const outcome = await loadConfigFile(candidatePath);
     if (outcome.kind === "missing") continue;
     if (outcome.kind === "error") {
       diagnostics.push(outcome.diagnostic);
     } else {
-      projectConfig = outcome.parsed;
+      projectConfig = projectConfig ? mergeConfigs(projectConfig, outcome.parsed) : outcome.parsed;
     }
-    break; // Only first existing candidate
   }
 
   // Merge: start from global, apply project override

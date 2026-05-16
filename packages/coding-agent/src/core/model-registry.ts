@@ -20,11 +20,10 @@ import {
 } from "@earendil-works/pi-ai";
 import { registerOAuthProvider, resetOAuthProviders } from "@earendil-works/pi-ai/oauth";
 import { existsSync, readFileSync } from "fs";
-import { join } from "path";
 import { type Static, Type } from "typebox";
 import { Compile } from "typebox/compile";
 import type { TLocalizedValidationError } from "typebox/error";
-import { getAgentDir } from "../config.js";
+import { getAgentConfigPaths } from "../config.js";
 import type { AuthStatus, AuthStorage } from "./auth-storage.js";
 import { BUILT_IN_PROVIDER_DISPLAY_NAMES } from "./provider-display-names.js";
 import {
@@ -337,17 +336,20 @@ export class ModelRegistry {
 
 	private constructor(
 		readonly authStorage: AuthStorage,
-		private modelsJsonPath: string | undefined,
+		private modelsJsonPaths: string[],
 	) {
 		this.loadModels();
 	}
 
-	static create(authStorage: AuthStorage, modelsJsonPath: string = join(getAgentDir(), "models.json")): ModelRegistry {
-		return new ModelRegistry(authStorage, modelsJsonPath);
+	static create(
+		authStorage: AuthStorage,
+		modelsJsonPath: string | string[] = getAgentConfigPaths("models.json"),
+	): ModelRegistry {
+		return new ModelRegistry(authStorage, Array.isArray(modelsJsonPath) ? modelsJsonPath : [modelsJsonPath]);
 	}
 
 	static inMemory(authStorage: AuthStorage): ModelRegistry {
-		return new ModelRegistry(authStorage, undefined);
+		return new ModelRegistry(authStorage, []);
 	}
 
 	/**
@@ -383,7 +385,7 @@ export class ModelRegistry {
 			overrides,
 			modelOverrides,
 			error,
-		} = this.modelsJsonPath ? this.loadCustomModels(this.modelsJsonPath) : emptyCustomModelsResult();
+		} = this.loadCustomModelsFromPaths(this.modelsJsonPaths);
 
 		if (error) {
 			this.loadError = error;
@@ -449,6 +451,25 @@ export class ModelRegistry {
 			}
 		}
 		return merged;
+	}
+
+	private loadCustomModelsFromPaths(modelsJsonPaths: string[]): CustomModelsResult {
+		let combined = emptyCustomModelsResult();
+		const errors: string[] = [];
+		for (let i = modelsJsonPaths.length - 1; i >= 0; i--) {
+			const result = this.loadCustomModels(modelsJsonPaths[i]!);
+			if (result.error) {
+				errors.push(result.error);
+				continue;
+			}
+			combined = {
+				models: this.mergeCustomModels(combined.models, result.models),
+				overrides: new Map([...combined.overrides, ...result.overrides]),
+				modelOverrides: new Map([...combined.modelOverrides, ...result.modelOverrides]),
+				error: undefined,
+			};
+		}
+		return { ...combined, error: errors.length > 0 ? errors.join("\n\n") : undefined };
 	}
 
 	private loadCustomModels(modelsJsonPath: string): CustomModelsResult {

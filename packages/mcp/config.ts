@@ -2,8 +2,8 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { CONFIG_DIR_NAME } from "@bastani/atomic";
-import { getAgentPath } from "./agent-dir.ts";
+import { CONFIG_DIR_NAME, getProjectConfigPaths } from "@bastani/atomic";
+import { getAgentPath, getAgentPaths } from "./agent-dir.ts";
 import type { McpConfig, ServerEntry, McpSettings, ImportKind, ServerProvenance } from "./types.ts";
 
 const GENERIC_GLOBAL_CONFIG_PATH = join(homedir(), ".config", "mcp", "mcp.json");
@@ -106,6 +106,10 @@ export function getProjectPiConfigPath(cwd = process.cwd()): string {
   return resolve(cwd, PROJECT_PI_CONFIG_NAME);
 }
 
+function getProjectPiConfigPaths(cwd = process.cwd()): string[] {
+  return getProjectConfigPaths(cwd, "mcp.json").map((p) => resolve(p));
+}
+
 export function getConfigDiscoveryPaths(overridePath?: string, cwd = process.cwd()): ConfigDiscoveryPath[] {
   return getConfigSources(overridePath, cwd).map((source) => ({
     label: source.label,
@@ -195,8 +199,9 @@ export function loadMcpConfig(overridePath?: string, cwd = process.cwd()): McpCo
 
 function getConfigSources(overridePath?: string, cwd = process.cwd()): ConfigSourceSpec[] {
   const userPath = getPiGlobalConfigPath(overridePath);
+  const userPaths = overridePath ? [userPath] : getAgentPaths("mcp.json");
   const projectPath = getProjectConfigPath(cwd);
-  const projectPiPath = getProjectPiConfigPath(cwd);
+  const projectPiPaths = getProjectPiConfigPaths(cwd);
   const sources: ConfigSourceSpec[] = [];
 
   if (GENERIC_GLOBAL_CONFIG_PATH !== userPath) {
@@ -212,15 +217,17 @@ function getConfigSources(overridePath?: string, cwd = process.cwd()): ConfigSou
     });
   }
 
-  sources.push({
-    id: "pi-global",
-    label: "Pi global override",
-    readPath: userPath,
-    writePath: userPath,
-    kind: "user",
-    shared: false,
-    scope: "global",
-  });
+  for (const readPath of userPaths.reverse()) {
+    sources.push({
+      id: "pi-global",
+      label: readPath === userPath ? "Pi global override" : "Pi legacy global override",
+      readPath,
+      writePath: userPath,
+      kind: "user",
+      shared: false,
+      scope: "global",
+    });
+  }
 
   if (projectPath !== userPath) {
     sources.push({
@@ -234,16 +241,18 @@ function getConfigSources(overridePath?: string, cwd = process.cwd()): ConfigSou
     });
   }
 
-  if (projectPiPath !== userPath && projectPiPath !== projectPath) {
-    sources.push({
-      id: "pi-project",
-      label: "project Pi override",
-      readPath: projectPiPath,
-      writePath: projectPiPath,
-      kind: "project",
-      shared: false,
-      scope: "project",
-    });
+  for (const projectPiPath of projectPiPaths.reverse()) {
+    if (projectPiPath !== userPath && projectPiPath !== projectPath) {
+      sources.push({
+        id: "pi-project",
+        label: projectPiPath === getProjectPiConfigPath(cwd) ? "project Pi override" : "project Pi legacy override",
+        readPath: projectPiPath,
+        writePath: getProjectPiConfigPath(cwd),
+        kind: "project",
+        shared: false,
+        scope: "project",
+      });
+    }
   }
 
   return sources;

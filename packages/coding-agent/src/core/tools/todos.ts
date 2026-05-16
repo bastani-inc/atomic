@@ -27,7 +27,7 @@ import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { Type } from "typebox";
-import { APP_NAME, CONFIG_DIR_NAME } from "../../config.js";
+import { APP_NAME, CONFIG_DIR_NAME, getEnvValue } from "../../config.js";
 import type { ExtensionContext, ToolDefinition } from "../extensions/types.js";
 import { keyHint } from "../../modes/interactive/components/keybinding-hints.js";
 import type { Theme } from "../../modes/interactive/theme/theme.js";
@@ -156,7 +156,7 @@ function sortTodos(todos: TodoFrontMatter[]): TodoFrontMatter[] {
 }
 
 function getTodosDir(cwd: string): string {
-	const overridePath = process.env[TODO_PATH_ENV];
+	const overridePath = getEnvValue(TODO_PATH_ENV);
 	if (overridePath && overridePath.trim()) {
 		return path.resolve(cwd, overridePath.trim());
 	}
@@ -164,7 +164,7 @@ function getTodosDir(cwd: string): string {
 }
 
 function getTodosDirLabel(cwd: string): string {
-	const overridePath = process.env[TODO_PATH_ENV];
+	const overridePath = getEnvValue(TODO_PATH_ENV);
 	if (overridePath && overridePath.trim()) {
 		return path.resolve(cwd, overridePath.trim());
 	}

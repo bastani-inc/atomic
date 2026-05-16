@@ -4,9 +4,10 @@ import { join } from "node:path";
 import { CONFIG_DIR_NAME } from "@bastani/atomic";
 import { activityMonitor } from "./activity.js";
 import type { ExtractedContent } from "./extract.js";
+import { findReadableConfigPath } from "./config-paths.ts";
 
 const PERPLEXITY_API_URL = "https://api.perplexity.ai/chat/completions";
-const CONFIG_PATH = join(homedir(), CONFIG_DIR_NAME, "web-search.json");
+const CONFIG_PATH = findReadableConfigPath();
 
 const RATE_LIMIT = {
 	maxRequests: 10,

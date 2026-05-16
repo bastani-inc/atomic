@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { pathToFileURL } from "node:url";
-import { APP_NAME, CONFIG_DIR_NAME } from "@bastani/atomic";
+import { APP_NAME, CONFIG_DIR_NAME, getAgentDirs, getEnvValue, getProjectConfigPaths } from "@bastani/atomic";
 
 const HOME = os.homedir();
 const AGENT_DIR_ENV = `${APP_NAME.toUpperCase()}_CODING_AGENT_DIR`;
@@ -15,13 +15,18 @@ function expandHome(input) {
   return path.resolve(input);
 }
 
-const AGENT_DIR = process.env[AGENT_DIR_ENV]?.trim()
-  ? expandHome(process.env[AGENT_DIR_ENV].trim())
+const AGENT_DIR_ENV_VALUE = getEnvValue(AGENT_DIR_ENV)?.trim();
+const AGENT_DIR = AGENT_DIR_ENV_VALUE
+  ? expandHome(AGENT_DIR_ENV_VALUE)
   : path.join(HOME, CONFIG_DIR_NAME, "agent");
 const PI_CONFIG_PATH = path.join(AGENT_DIR, "mcp.json");
+const PI_CONFIG_READ_PATHS = AGENT_DIR_ENV_VALUE
+  ? [PI_CONFIG_PATH]
+  : getAgentDirs().map((dir) => path.join(dir, "mcp.json"));
 const GENERIC_GLOBAL_CONFIG_PATH = path.join(HOME, ".config", "mcp", "mcp.json");
 const PROJECT_CONFIG_PATH = path.resolve(process.cwd(), ".mcp.json");
 const PROJECT_PI_CONFIG_PATH = path.resolve(process.cwd(), CONFIG_DIR_NAME, "mcp.json");
+const PROJECT_PI_CONFIG_READ_PATHS = getProjectConfigPaths(process.cwd(), "mcp.json");
 
 const IMPORT_PATHS = {
   cursor: [path.join(HOME, ".cursor", "mcp.json")],
@@ -50,14 +55,15 @@ function readJsonFile(filePath) {
 }
 
 function loadPiConfig() {
-  if (!fs.existsSync(PI_CONFIG_PATH)) {
+  const configPath = PI_CONFIG_READ_PATHS.find((candidate) => fs.existsSync(candidate));
+  if (!configPath) {
     return { mcpServers: {} };
   }
 
-  const raw = readJsonFile(PI_CONFIG_PATH);
+  const raw = readJsonFile(configPath);
   const mcpServers = raw.mcpServers ?? raw["mcp-servers"] ?? {};
   if (!mcpServers || typeof mcpServers !== "object" || Array.isArray(mcpServers)) {
-    throw new Error(`Invalid MCP config at ${PI_CONFIG_PATH}: expected \"mcpServers\" to be an object`);
+    throw new Error(`Invalid MCP config at ${configPath}: expected \"mcpServers\" to be an object`);
   }
 
   const normalized = { ...raw };

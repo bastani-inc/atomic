@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-age
 import { randomUUID } from "crypto";
 import { Type } from "typebox";
 import { Text } from "@mariozechner/pi-tui";
-import { APP_NAME } from "@bastani/atomic";
+import { APP_NAME, getEnvValue } from "@bastani/atomic";
 import { IntercomClient } from "./broker/client.ts";
 import { spawnBrokerIfNeeded } from "./broker/spawn.ts";
 import { SessionListOverlay } from "./ui/session-list.ts";
@@ -79,14 +79,14 @@ function formatAttachments(attachments: Attachment[]): string {
   return text;
 }
 function readChildOrchestratorMetadata(): ChildOrchestratorMetadata | null {
-  const orchestratorTarget = process.env[SUBAGENT_ORCHESTRATOR_TARGET_ENV]?.trim();
-  const runId = process.env[SUBAGENT_RUN_ID_ENV]?.trim();
-  const agent = process.env[SUBAGENT_CHILD_AGENT_ENV]?.trim();
-  const index = process.env[SUBAGENT_CHILD_INDEX_ENV]?.trim();
+  const orchestratorTarget = getEnvValue(SUBAGENT_ORCHESTRATOR_TARGET_ENV)?.trim();
+  const runId = getEnvValue(SUBAGENT_RUN_ID_ENV)?.trim();
+  const agent = getEnvValue(SUBAGENT_CHILD_AGENT_ENV)?.trim();
+  const index = getEnvValue(SUBAGENT_CHILD_INDEX_ENV)?.trim();
   if (!orchestratorTarget || !runId || !agent || !index) {
     return null;
   }
-  const sessionName = process.env[SUBAGENT_INTERCOM_SESSION_NAME_ENV]?.trim();
+  const sessionName = getEnvValue(SUBAGENT_INTERCOM_SESSION_NAME_ENV)?.trim();
   return {
     orchestratorTarget,
     runId,

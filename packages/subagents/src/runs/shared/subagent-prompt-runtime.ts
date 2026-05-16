@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { APP_NAME } from "@bastani/atomic";
+import { APP_NAME, getEnvValue } from "@bastani/atomic";
 
 const ENV_PREFIX = APP_NAME.toUpperCase();
 const SUBAGENT_INHERIT_PROJECT_CONTEXT_ENV = `${ENV_PREFIX}_SUBAGENT_INHERIT_PROJECT_CONTEXT`;
@@ -28,7 +28,7 @@ const SKILLS_HEADER = "\n\nThe following skills provide specialized instructions
 const DATE_HEADER = "\nCurrent date:";
 
 function readBooleanEnv(name: string): boolean | undefined {
-	const value = process.env[name];
+	const value = getEnvValue(name);
 	if (value === undefined) return undefined;
 	return value !== "0";
 }
@@ -134,7 +134,7 @@ export default function registerSubagentPromptRuntime(pi: ExtensionAPI): void {
 	});
 
 	pi.on("before_agent_start", async (event) => {
-		const intercomSessionName = process.env[SUBAGENT_INTERCOM_SESSION_NAME_ENV]?.trim();
+		const intercomSessionName = getEnvValue(SUBAGENT_INTERCOM_SESSION_NAME_ENV)?.trim();
 		if (intercomSessionName && typeof pi.setSessionName === "function") {
 			pi.setSessionName(intercomSessionName);
 		}

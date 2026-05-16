@@ -1,4 +1,4 @@
-import { ENV_OFFLINE, ENV_SKIP_VERSION_CHECK, PACKAGE_NAME } from "../config.js";
+import { ENV_OFFLINE, ENV_SKIP_VERSION_CHECK, PACKAGE_NAME, getEnvValue } from "../config.js";
 
 const LATEST_VERSION_URL = `https://registry.npmjs.org/${PACKAGE_NAME}/latest`;
 const DEFAULT_VERSION_CHECK_TIMEOUT_MS = 10000;
@@ -55,7 +55,7 @@ export function isNewerPackageVersion(candidateVersion: string, currentVersion: 
 export async function getLatestPiRelease(
 	options: { timeoutMs?: number } = {},
 ): Promise<LatestPiRelease | undefined> {
-	if (process.env[ENV_SKIP_VERSION_CHECK] || process.env[ENV_OFFLINE]) return undefined;
+	if (getEnvValue(ENV_SKIP_VERSION_CHECK) || getEnvValue(ENV_OFFLINE)) return undefined;
 
 	const response = await fetch(LATEST_VERSION_URL, {
 		headers: {

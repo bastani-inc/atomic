@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import chalk from "chalk";
-import { CONFIG_DIR_NAME } from "../config.js";
+import { getAgentDir, getAgentDirs, getProjectConfigDirs } from "../config.js";
 import { loadThemeFromPath, type Theme } from "../modes/interactive/theme/theme.js";
 import type { ResourceDiagnostic } from "./diagnostics.js";
 
@@ -83,10 +83,15 @@ export function loadProjectContextFiles(options: {
 	const contextFiles: Array<{ path: string; content: string }> = [];
 	const seenPaths = new Set<string>();
 
-	const globalContext = loadContextFileFromDir(resolvedAgentDir);
-	if (globalContext) {
-		contextFiles.push(globalContext);
-		seenPaths.add(globalContext.path);
+	const contextAgentDirs = Array.from(
+		new Set(resolvedAgentDir === getAgentDir() ? getAgentDirs() : [resolvedAgentDir]),
+	).reverse();
+	for (const agentDir of contextAgentDirs) {
+		const context = loadContextFileFromDir(agentDir);
+		if (context && !seenPaths.has(context.path)) {
+			contextFiles.push(context);
+			seenPaths.add(context.path);
+		}
 	}
 
 	const ancestorContextFiles: Array<{ path: string; content: string }> = [];
@@ -648,18 +653,18 @@ export class DefaultResourceLoader implements ResourceLoader {
 		}
 
 		const normalizedPath = resolve(filePath);
-		const agentRoots = [
-			join(this.agentDir, "skills"),
-			join(this.agentDir, "prompts"),
-			join(this.agentDir, "themes"),
-			join(this.agentDir, "extensions"),
-		];
-		const projectRoots = [
-			join(this.cwd, CONFIG_DIR_NAME, "skills"),
-			join(this.cwd, CONFIG_DIR_NAME, "prompts"),
-			join(this.cwd, CONFIG_DIR_NAME, "themes"),
-			join(this.cwd, CONFIG_DIR_NAME, "extensions"),
-		];
+		const agentRoots = this.getAgentDirs().flatMap((agentDir) => [
+			join(agentDir, "skills"),
+			join(agentDir, "prompts"),
+			join(agentDir, "themes"),
+			join(agentDir, "extensions"),
+		]);
+		const projectRoots = getProjectConfigDirs(this.cwd).flatMap((configDir) => [
+			join(configDir, "skills"),
+			join(configDir, "prompts"),
+			join(configDir, "themes"),
+			join(configDir, "extensions"),
+		]);
 
 		for (const root of agentRoots) {
 			if (this.isUnderPath(normalizedPath, root)) {
@@ -720,7 +725,10 @@ export class DefaultResourceLoader implements ResourceLoader {
 		const themes: Theme[] = [];
 		const diagnostics: ResourceDiagnostic[] = [];
 		if (includeDefaults) {
-			const defaultDirs = [join(this.agentDir, "themes"), join(this.cwd, CONFIG_DIR_NAME, "themes")];
+			const defaultDirs = [
+				...this.getAgentDirs().map((agentDir) => join(agentDir, "themes")),
+				...getProjectConfigDirs(this.cwd).map((configDir) => join(configDir, "themes")),
+			];
 
 			for (const dir of defaultDirs) {
 				this.loadThemesFromDir(dir, themes, diagnostics);
@@ -866,31 +874,23 @@ export class DefaultResourceLoader implements ResourceLoader {
 	}
 
 	private discoverSystemPromptFile(): string | undefined {
-		const projectPath = join(this.cwd, CONFIG_DIR_NAME, "SYSTEM.md");
-		if (existsSync(projectPath)) {
-			return projectPath;
-		}
-
-		const globalPath = join(this.agentDir, "SYSTEM.md");
-		if (existsSync(globalPath)) {
-			return globalPath;
-		}
-
-		return undefined;
+		const candidates = [
+			...getProjectConfigDirs(this.cwd).map((configDir) => join(configDir, "SYSTEM.md")),
+			...this.getAgentDirs().map((agentDir) => join(agentDir, "SYSTEM.md")),
+		];
+		return candidates.find((candidate) => existsSync(candidate));
 	}
 
 	private discoverAppendSystemPromptFile(): string | undefined {
-		const projectPath = join(this.cwd, CONFIG_DIR_NAME, "APPEND_SYSTEM.md");
-		if (existsSync(projectPath)) {
-			return projectPath;
-		}
+		const candidates = [
+			...getProjectConfigDirs(this.cwd).map((configDir) => join(configDir, "APPEND_SYSTEM.md")),
+			...this.getAgentDirs().map((agentDir) => join(agentDir, "APPEND_SYSTEM.md")),
+		];
+		return candidates.find((candidate) => existsSync(candidate));
+	}
 
-		const globalPath = join(this.agentDir, "APPEND_SYSTEM.md");
-		if (existsSync(globalPath)) {
-			return globalPath;
-		}
-
-		return undefined;
+	private getAgentDirs(): string[] {
+		return this.agentDir === getAgentDir() ? getAgentDirs() : [this.agentDir];
 	}
 
 	private isUnderPath(target: string, root: string): boolean {

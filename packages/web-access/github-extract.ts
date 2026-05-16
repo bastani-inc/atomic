@@ -6,8 +6,9 @@ import { CONFIG_DIR_NAME } from "@bastani/atomic";
 import { activityMonitor } from "./activity.js";
 import type { ExtractedContent } from "./extract.js";
 import { checkGhAvailable, checkRepoSize, fetchViaApi, showGhHint } from "./github-api.js";
+import { findReadableConfigPath } from "./config-paths.ts";
 
-const CONFIG_PATH = join(homedir(), CONFIG_DIR_NAME, "web-search.json");
+const CONFIG_PATH = findReadableConfigPath();
 
 const BINARY_EXTENSIONS = new Set([
 	".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp", ".svg", ".tiff", ".tif",

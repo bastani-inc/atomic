@@ -17,7 +17,7 @@ import { getOAuthApiKey, getOAuthProvider, getOAuthProviders } from "@earendil-w
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import lockfile from "proper-lockfile";
-import { getAgentDir } from "../config.js";
+import { getAgentConfigPaths, getAgentDir } from "../config.js";
 import { resolveConfigValue } from "./resolve-config-value.js";
 
 export type ApiKeyCredential = {
@@ -50,7 +50,10 @@ export interface AuthStorageBackend {
 }
 
 export class FileAuthStorageBackend implements AuthStorageBackend {
-	constructor(private authPath: string = join(getAgentDir(), "auth.json")) {}
+	constructor(
+		private authPath: string = join(getAgentDir(), "auth.json"),
+		private readPaths: string[] = [authPath],
+	) {}
 
 	private ensureParentDir(): void {
 		const dir = dirname(this.authPath);
@@ -93,16 +96,36 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 		throw (lastError as Error) ?? new Error("Failed to acquire auth storage lock");
 	}
 
+	private readMergedAuth(): string | undefined {
+		let merged: AuthStorageData = {};
+		let found = false;
+		for (let i = this.readPaths.length - 1; i >= 0; i--) {
+			const readPath = this.readPaths[i]!;
+			if (!existsSync(readPath)) continue;
+			const parsed = JSON.parse(readFileSync(readPath, "utf-8")) as AuthStorageData;
+			merged = { ...merged, ...parsed };
+			found = true;
+		}
+		return found ? JSON.stringify(merged, null, 2) : undefined;
+	}
+
 	withLock<T>(fn: (current: string | undefined) => LockResult<T>): T {
 		this.ensureParentDir();
-		this.ensureFileExists();
 
 		let release: (() => void) | undefined;
 		try {
-			release = this.acquireLockSyncWithRetry(this.authPath);
-			const current = existsSync(this.authPath) ? readFileSync(this.authPath, "utf-8") : undefined;
+			if (existsSync(this.authPath)) {
+				release = this.acquireLockSyncWithRetry(this.authPath);
+			}
+			const current = this.readMergedAuth();
 			const { result, next } = fn(current);
 			if (next !== undefined) {
+				if (!existsSync(this.authPath)) {
+					this.ensureFileExists();
+				}
+				if (!release) {
+					release = this.acquireLockSyncWithRetry(this.authPath);
+				}
 				writeFileSync(this.authPath, next, "utf-8");
 				chmodSync(this.authPath, 0o600);
 			}
@@ -116,7 +139,6 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 
 	async withLockAsync<T>(fn: (current: string | undefined) => Promise<LockResult<T>>): Promise<T> {
 		this.ensureParentDir();
-		this.ensureFileExists();
 
 		let release: (() => Promise<void>) | undefined;
 		let lockCompromised = false;
@@ -128,6 +150,9 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 		};
 
 		try {
+			if (!existsSync(this.authPath)) {
+				this.ensureFileExists();
+			}
 			release = await lockfile.lock(this.authPath, {
 				retries: {
 					retries: 10,
@@ -144,7 +169,7 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 			});
 
 			throwIfCompromised();
-			const current = existsSync(this.authPath) ? readFileSync(this.authPath, "utf-8") : undefined;
+			const current = this.readMergedAuth();
 			const { result, next } = await fn(current);
 			throwIfCompromised();
 			if (next !== undefined) {
@@ -200,7 +225,12 @@ export class AuthStorage {
 	}
 
 	static create(authPath?: string): AuthStorage {
-		return new AuthStorage(new FileAuthStorageBackend(authPath ?? join(getAgentDir(), "auth.json")));
+		return new AuthStorage(
+			new FileAuthStorageBackend(
+				authPath ?? join(getAgentDir(), "auth.json"),
+				authPath ? [authPath] : getAgentConfigPaths("auth.json"),
+			),
+		);
 	}
 
 	static fromStorage(storage: AuthStorageBackend): AuthStorage {

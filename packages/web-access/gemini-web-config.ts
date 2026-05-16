@@ -2,8 +2,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { APP_NAME, CONFIG_DIR_NAME } from "@bastani/atomic";
+import { findReadableConfigPath } from "./config-paths.ts";
 
-const CONFIG_PATH = join(homedir(), CONFIG_DIR_NAME, "web-search.json");
+const CONFIG_PATH = findReadableConfigPath();
 const ALLOW_BROWSER_COOKIES_ENV = `${APP_NAME.toUpperCase()}_ALLOW_BROWSER_COOKIES`;
 
 interface GeminiWebConfig {
