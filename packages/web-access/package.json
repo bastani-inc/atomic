@@ -1,6 +1,6 @@
 {
   "name": "@bastani/web-access",
-  "version": "0.8.1",
+  "version": "0.8.2-0",
   "private": true,
   "description": "Atomic extension for web search, URL fetching, GitHub repo cloning, PDF/video extraction.",
   "contributors": [
