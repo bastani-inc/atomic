@@ -1,6 +1,10 @@
 import { renderCall } from "./render-call.js";
 import { renderResult } from "./render-result.js";
-import type { RenderResultOpts, WorkflowInputEntry, WorkflowToolResult } from "./render-result.js";
+import type {
+  RenderResultOpts,
+  WorkflowInputEntry,
+  WorkflowToolResult,
+} from "./render-result.js";
 import { renderInputsSchema } from "../shared/render-inputs-schema.js";
 import { WorkflowParametersSchema } from "./workflow-schema.js";
 import { renderRunBanner, renderRunSummary } from "./renderers.js";
@@ -66,7 +70,9 @@ import type {
   WorkflowMaxOutput,
   WorkflowModelCatalogPort,
   WorkflowModelInfo,
-} from "../shared/types.js";import { buildRuntimeAdapters } from "./wiring.js";
+  StageOptions,
+} from "../shared/types.js";
+import { buildRuntimeAdapters } from "./wiring.js";
 import type { PiUISurface } from "./wiring.js";
 import { createStatusWriter } from "./status-writer.js";
 import type { StatusWriter } from "./status-writer.js";
@@ -137,9 +143,7 @@ export type PiArgumentCompletionResult = PiArgumentCompletion[] | null;
 export interface PiCommandOptions {
   description: string;
   handler: (args: string, ctx: PiCommandContext) => Promise<void> | void;
-  getArgumentCompletions?: (
-    partial: string,
-  ) => PiArgumentCompletionResult;
+  getArgumentCompletions?: (partial: string) => PiArgumentCompletionResult;
 }
 
 /**
@@ -225,7 +229,9 @@ export interface PiExecuteContext extends PiModelContext {
   sessionId?: string;
   ui?: PiUISurface;
   hasUI?: boolean;
-  sessionManager?: SessionManager & { getSessionFile?: () => string | undefined };
+  sessionManager?: SessionManager & {
+    getSessionFile?: () => string | undefined;
+  };
   [key: string]: unknown;
 }
 
@@ -362,11 +368,18 @@ export interface ExtensionAPI {
 // Workflow tool argument shape
 // ---------------------------------------------------------------------------
 
-export interface WorkflowToolArgs {
+export interface WorkflowToolArgs extends StageOptions {
   /** Canonical named workflow identifier. */
   workflow?: string;
   inputs?: Record<string, unknown>;
-  action?: "run" | "list" | "get" | "status" | "interrupt" | "resume" | "inputs";
+  action?:
+    | "run"
+    | "list"
+    | "get"
+    | "status"
+    | "interrupt"
+    | "resume"
+    | "inputs";
   /** Canonical run identifier for status/interrupt/resume. */
   runId?: string;
   /** Direct single-task mode, or root task string when chain is present. */
@@ -385,18 +398,17 @@ export interface WorkflowToolArgs {
     enabled?: boolean;
     delivery?: "off" | "notify" | "result" | "control-and-result";
     parentSession?: string;
-    notifyOn?: Array<"active_long_running" | "needs_attention" | "completed" | "failed">;
+    notifyOn?: Array<
+      "active_long_running" | "needs_attention" | "completed" | "failed"
+    >;
   };
-  cwd?: string;
   output?: string | false;
   outputMode?: "inline" | "file-only";
   chainDir?: string;
   maxOutput?: WorkflowMaxOutput;
   artifacts?: boolean;
-  sessionDir?: string;
   progress?: boolean;
   worktree?: boolean;
-  fallbackModels?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -422,31 +434,42 @@ function directModeCount(args: WorkflowToolArgs): number {
 }
 
 function hasNamedExecutionMode(args: WorkflowToolArgs): boolean {
-  return (
-    typeof args.workflow === "string" && args.workflow.trim().length > 0
-  );
+  return typeof args.workflow === "string" && args.workflow.trim().length > 0;
 }
 
 function directRequestsFork(args: WorkflowToolArgs): boolean {
   if (args.context === "fork") return true;
-  if (args.task !== undefined && typeof args.task === "object" && args.task.context === "fork") return true;
+  if (
+    args.task !== undefined &&
+    typeof args.task === "object" &&
+    args.task.context === "fork"
+  )
+    return true;
   if (args.tasks?.some((task) => task.context === "fork")) return true;
-  return args.chain?.some((step) =>
-    "parallel" in step
-      ? step.parallel.some((task) => task.context === "fork")
-      : step.context === "fork",
-  ) ?? false;
+  return (
+    args.chain?.some((step) =>
+      "parallel" in step
+        ? step.parallel.some((task) => task.context === "fork")
+        : step.context === "fork",
+    ) ?? false
+  );
 }
 
-function withForkParentSession(args: WorkflowToolArgs, ctx: PiExecuteContext): WorkflowToolArgs {
-  if (!directRequestsFork(args) || args.forkFromSessionFile !== undefined) return args;
+function withForkParentSession(
+  args: WorkflowToolArgs,
+  ctx: PiExecuteContext,
+): WorkflowToolArgs {
+  if (!directRequestsFork(args) || args.forkFromSessionFile !== undefined)
+    return args;
   const sessionFile = ctx.sessionManager?.getSessionFile?.();
   return typeof sessionFile === "string" && sessionFile.length > 0
     ? { ...args, forkFromSessionFile: sessionFile }
     : args;
 }
 
-function workflowRunResultFromDetails(details: WorkflowDetails): WorkflowToolResult {
+function workflowRunResultFromDetails(
+  details: WorkflowDetails,
+): WorkflowToolResult {
   return {
     action: "run",
     name: `direct-${details.mode}`,
@@ -459,7 +482,10 @@ function workflowRunResultFromDetails(details: WorkflowDetails): WorkflowToolRes
   };
 }
 
-function workflowGetResult(runtime: ExtensionRuntime, args: WorkflowToolArgs): WorkflowToolResult {
+function workflowGetResult(
+  runtime: ExtensionRuntime,
+  args: WorkflowToolArgs,
+): WorkflowToolResult {
   const workflow = args.workflow ?? "";
   const def = runtime.registry.get(workflow);
   if (!def) {
@@ -521,11 +547,16 @@ export function makeExecuteWorkflowTool(
       case "inputs":
       case "run":
         if (action === "run" && hasDirectExecutionMode(args)) {
-          const normalModeCount = directModeCount(args) + (hasNamedExecutionMode(args) ? 1 : 0);
+          const normalModeCount =
+            directModeCount(args) + (hasNamedExecutionMode(args) ? 1 : 0);
           if (normalModeCount !== 1) {
-            throw new Error("Workflow extension: specify exactly one normal execution mode: workflow, task, tasks, or chain");
+            throw new Error(
+              "Workflow extension: specify exactly one normal execution mode: workflow, task, tasks, or chain",
+            );
           }
-          const details = await activeRuntime.runDirect(withForkParentSession(args, ctx));
+          const details = await activeRuntime.runDirect(
+            withForkParentSession(args, ctx),
+          );
           return workflowRunResultFromDetails(details);
         }
         // Delegate to registry-backed dispatcher.
@@ -638,7 +669,7 @@ export function makeExecuteWorkflowTool(
  * `registerWorkflowCommand` alongside the host registration so the
  * `on("input", …)` interceptor below can dispatch our commands directly
  * — bypassing pi's optimistic `startPendingSubmission` flow which
- * fires the `Working… (esc to interrupt)` loader before the host knows
+ * fires the `Working… (Esc to interrupt)` loader before the host knows
  * the input is a synchronous picker/connect UI, not a streaming turn.
  *
  * See `installInputInterceptor()` for the dispatch path and rationale.
@@ -679,7 +710,7 @@ function registerWorkflowCommand(
  * pi's editor `onSubmit` handler unconditionally calls
  * `startPendingSubmission` for any text that isn't a built-in slash /
  * skill / bash / python command — this echoes the message into chat
- * scrollback AND starts the `Working… (esc to interrupt)` loader in
+ * scrollback AND starts the `Working… (Esc to interrupt)` loader in
  * `statusContainer` before `session.prompt` even runs. The loader is
  * an optimistic affordance for the agent-streaming case; for our
  * synchronous picker/connect UIs (`/workflow connect`, `/workflow run`,
@@ -721,7 +752,8 @@ function installInputInterceptor(
     // command from args; quote handling lives inside the command
     // handler itself (`tokenizeWorkflowArgs`).
     const firstSpace = trimmed.indexOf(" ");
-    const name = firstSpace === -1 ? trimmed.slice(1) : trimmed.slice(1, firstSpace);
+    const name =
+      firstSpace === -1 ? trimmed.slice(1) : trimmed.slice(1, firstSpace);
     const handler = commands.get(name);
     if (!handler) return undefined; // not ours — let host run its normal flow.
 
@@ -739,7 +771,6 @@ function installInputInterceptor(
     return { action: "handled" };
   });
 }
-
 
 /**
  * Resolve a user-supplied run identifier (full UUID or unique prefix) to
@@ -777,7 +808,10 @@ function overlaySurfaceFromContext(ctx?: {
  * Strip the clack-style `--yes` / `-y` confirmation skip flag from a token
  * list. Used by `/workflow interrupt` to skip the confirmation overlay.
  */
-export function stripYesFlag(tokens: string[]): { tokens: string[]; yes: boolean } {
+export function stripYesFlag(tokens: string[]): {
+  tokens: string[];
+  yes: boolean;
+} {
   const yes = tokens.some((t) => t === "--yes" || t === "-y");
   return { tokens: tokens.filter((t) => t !== "--yes" && t !== "-y"), yes };
 }
@@ -875,7 +909,6 @@ export function parseWorkflowArgs(tokens: string[]): Record<string, unknown> {
   }
   return result;
 }
-
 
 // ---------------------------------------------------------------------------
 // Persistence port builder
@@ -1004,7 +1037,8 @@ function factory(pi: ExtensionAPI): void {
   const intercomPort = {
     emit:
       typeof pi.events?.emit === "function"
-        ? (event: string, payload: Record<string, unknown>) => pi.events!.emit!(event, payload)
+        ? (event: string, payload: Record<string, unknown>) =>
+            pi.events!.emit!(event, payload)
         : undefined,
     parentSession: () => intercomParentSession ?? undefined,
   };
@@ -1040,11 +1074,16 @@ function factory(pi: ExtensionAPI): void {
     return `${String(model.provider)}/${model.id}`;
   }
 
-  function workflowModelCatalogFromContext(ctx?: PiModelContext): WorkflowModelCatalogPort | undefined {
-    if (ctx?.modelRegistry === undefined && ctx?.model === undefined) return undefined;
+  function workflowModelCatalogFromContext(
+    ctx?: PiModelContext,
+  ): WorkflowModelCatalogPort | undefined {
+    if (ctx?.modelRegistry === undefined && ctx?.model === undefined)
+      return undefined;
     return {
       listModels: async (): Promise<readonly WorkflowModelInfo[]> => {
-        const available = ctx.modelRegistry?.getAvailable() ?? (ctx.model === undefined ? [] : [ctx.model]);
+        const available =
+          ctx.modelRegistry?.getAvailable() ??
+          (ctx.model === undefined ? [] : [ctx.model]);
         return available.map((model) => ({
           provider: String(model.provider),
           id: model.id,
@@ -1054,14 +1093,18 @@ function factory(pi: ExtensionAPI): void {
       },
       ...(ctx.model !== undefined
         ? {
-            currentModel: ctx.model as NonNullable<CreateAgentSessionOptions["model"]>,
+            currentModel: ctx.model as NonNullable<
+              CreateAgentSessionOptions["model"]
+            >,
             preferredProvider: String(ctx.model.provider),
           }
         : {}),
     };
   }
 
-  function runtimeWithModels(models: WorkflowModelCatalogPort | undefined): ExtensionRuntime {
+  function runtimeWithModels(
+    models: WorkflowModelCatalogPort | undefined,
+  ): ExtensionRuntime {
     if (models === undefined) return runtimeProxy;
     return createExtensionRuntime({
       registry: runtimeRef.current.registry,
@@ -1077,7 +1120,9 @@ function factory(pi: ExtensionAPI): void {
 
   // The runtime normally does not depend on per-command UI, but model fallback
   // resolution uses the live command/tool context when pi exposes modelRegistry.
-  function runtimeForContext(ctx?: ({ ui?: PiUISurface } & PiModelContext)): ExtensionRuntime {
+  function runtimeForContext(
+    ctx?: { ui?: PiUISurface } & PiModelContext,
+  ): ExtensionRuntime {
     return runtimeWithModels(workflowModelCatalogFromContext(ctx));
   }
 
@@ -1093,57 +1138,58 @@ function factory(pi: ExtensionAPI): void {
   // On resolve: swap runtime ref so /workflow completions and dispatch see
   // project-local, user-global, and settings-provided workflows.
   // Load startup config before discovery so workflow paths and tunables are applied.
-  const discoveryPromise = pi.disableAsyncDiscovery ? Promise.resolve() : loadWorkflowConfig().then(async (configResult) => {
-    configLoadRef.current = configResult;
+  const discoveryPromise = pi.disableAsyncDiscovery
+    ? Promise.resolve()
+    : loadWorkflowConfig().then(async (configResult) => {
+        configLoadRef.current = configResult;
 
-    // Build scope-aware DiscoveryConfig: global entries → globalWorkflows (resolved
-    // under <homeDir>/.atomic/agent), project entries → projectWorkflows (resolved under
-    // projectRoot). Project keys override global keys. Paths pre-resolved to absolute.
-    const { homedir } = await import("node:os");
-    const hasGlobal = configResult.globalConfig != null;
-    const hasProject = configResult.projectConfig != null;
-    const discoveryConfig =
-      hasGlobal || hasProject
-        ? toScopedDiscoveryConfig(
-            configResult.globalConfig ?? null,
-            configResult.projectConfig ?? null,
-            { projectRoot: process.cwd(), homeDir: homedir() },
-          )
-        : undefined;
+        // Build scope-aware DiscoveryConfig: global entries → globalWorkflows (resolved
+        // under <homeDir>/.atomic/agent), project entries → projectWorkflows (resolved under
+        // projectRoot). Project keys override global keys. Paths pre-resolved to absolute.
+        const { homedir } = await import("node:os");
+        const hasGlobal = configResult.globalConfig != null;
+        const hasProject = configResult.projectConfig != null;
+        const discoveryConfig =
+          hasGlobal || hasProject
+            ? toScopedDiscoveryConfig(
+                configResult.globalConfig ?? null,
+                configResult.projectConfig ?? null,
+                { projectRoot: process.cwd(), homeDir: homedir() },
+              )
+            : undefined;
 
-    const result = await discoverWorkflows({ config: discoveryConfig });
-    discoveryRef.current = result;
+        const result = await discoverWorkflows({ config: discoveryConfig });
+        discoveryRef.current = result;
 
-    // Resolve effective config (fills in all defaults) and build WorkflowRuntimeConfig.
-    const effectiveConfig = withWorkflowDefaults(configResult.config ?? {});
-    runtimeConfigRef.current = {
-      maxDepth: effectiveConfig.maxDepth,
-      defaultConcurrency: effectiveConfig.defaultConcurrency,
-      persistRuns: effectiveConfig.persistRuns,
-      statusFile: effectiveConfig.statusFile,
-      resumeInFlight: effectiveConfig.resumeInFlight,
-    };
+        // Resolve effective config (fills in all defaults) and build WorkflowRuntimeConfig.
+        const effectiveConfig = withWorkflowDefaults(configResult.config ?? {});
+        runtimeConfigRef.current = {
+          maxDepth: effectiveConfig.maxDepth,
+          defaultConcurrency: effectiveConfig.defaultConcurrency,
+          persistRuns: effectiveConfig.persistRuns,
+          statusFile: effectiveConfig.statusFile,
+          resumeInFlight: effectiveConfig.resumeInFlight,
+        };
 
-    // Replace status writer with one that reflects the resolved config.
-    // Unsubscribe the prior (no-op) writer before creating the new one.
-    statusWriterRef.unsubscribe();
-    statusWriterRef = createStatusWriter(store, runtimeConfigRef.current);
+        // Replace status writer with one that reflects the resolved config.
+        // Unsubscribe the prior (no-op) writer before creating the new one.
+        statusWriterRef.unsubscribe();
+        statusWriterRef = createStatusWriter(store, runtimeConfigRef.current);
 
-    persistenceRef.current = makePersistencePort(
-      pi,
-      effectiveConfig.persistRuns,
-    );
-    runtimeRef.current = createExtensionRuntime({
-      registry: result.registry,
-      adapters,
-      cancellation: cancellationRegistry,
-      persistence: persistenceRef.current,
-      mcp: mcpPort,
-      intercom: intercomPort,
-      config: runtimeConfigRef.current,
-    });
-
-  });
+        persistenceRef.current = makePersistencePort(
+          pi,
+          effectiveConfig.persistRuns,
+        );
+        runtimeRef.current = createExtensionRuntime({
+          registry: result.registry,
+          adapters,
+          cancellation: cancellationRegistry,
+          persistence: persistenceRef.current,
+          mcp: mcpPort,
+          intercom: intercomPort,
+          config: runtimeConfigRef.current,
+        });
+      });
 
   // -------------------------------------------------------------------------
   // 1. Register the `workflow` tool
@@ -1173,7 +1219,6 @@ function factory(pi: ExtensionAPI): void {
       renderResult: (result, opts, _theme, _context) =>
         textRenderComponent(renderResult(result.details, opts)),
     });
-
   }
 
   // -------------------------------------------------------------------------
@@ -1221,7 +1266,9 @@ function factory(pi: ExtensionAPI): void {
           }
           const confirmed = await openKillConfirm(ui, run, theme);
           if (!confirmed) {
-            print(`Cancelled. Run ${result.runId.slice(0, 8)} is still active.`);
+            print(
+              `Cancelled. Run ${result.runId.slice(0, 8)} is still active.`,
+            );
             return true;
           }
           const killed = killRun(result.runId, {
@@ -1239,7 +1286,9 @@ function factory(pi: ExtensionAPI): void {
       }
       const resolved = resolveRunIdPrefix(target);
       if (resolved.kind === "not_found") {
-        print(`Run not found: ${target}\n\n${renderSessionList(store.runs(), { theme, includeAll: true })}`);
+        print(
+          `Run not found: ${target}\n\n${renderSessionList(store.runs(), { theme, includeAll: true })}`,
+        );
         return true;
       }
       if (resolved.kind === "ambiguous") {
@@ -1251,7 +1300,9 @@ function factory(pi: ExtensionAPI): void {
         return true;
       }
       overlay.open(resolved.runId, overlaySurfaceFromContext(ctx));
-      print(`Attached to ${resolved.runId.slice(0, 8)}. Press "h" or ctrl+d to hide, "q" to interrupt, esc to close.`);
+      print(
+        `Attached to ${resolved.runId.slice(0, 8)}. Press "h" or ctrl+d to hide, "q" to interrupt, esc to close.`,
+      );
       return true;
     }
 
@@ -1287,7 +1338,11 @@ function factory(pi: ExtensionAPI): void {
           persistence: persistenceRef.current,
         });
         const killed = results.filter((r) => r.ok).length;
-        print(killed > 0 ? `Interrupted ${killed} run(s).` : "No in-flight runs to interrupt.");
+        print(
+          killed > 0
+            ? `Interrupted ${killed} run(s).`
+            : "No in-flight runs to interrupt.",
+        );
         return true;
       }
       const resolved = resolveRunIdPrefix(target!);
@@ -1307,7 +1362,9 @@ function factory(pi: ExtensionAPI): void {
       if (!yes && run && run.endedAt === undefined && ctx.ui) {
         const confirmed = await openKillConfirm(ctx.ui, run, theme);
         if (!confirmed) {
-          print(`Cancelled. Run ${resolved.runId.slice(0, 8)} is still active.`);
+          print(
+            `Cancelled. Run ${resolved.runId.slice(0, 8)} is still active.`,
+          );
           return true;
         }
       }
@@ -1316,7 +1373,9 @@ function factory(pi: ExtensionAPI): void {
         persistence: persistenceRef.current,
       });
       if (result.ok) {
-        print(`Run ${result.runId.slice(0, 8)} interrupted (was ${result.previousStatus}).`);
+        print(
+          `Run ${result.runId.slice(0, 8)} interrupted (was ${result.previousStatus}).`,
+        );
       } else {
         print(
           result.reason === "not_found"
@@ -1334,7 +1393,9 @@ function factory(pi: ExtensionAPI): void {
       if (!target) {
         const ui = ctx.ui;
         if (!ui || typeof ui.custom !== "function") {
-          print(`${renderSessionList(store.runs(), { theme, includeAll: false })}\n\nPicker requires a UI surface. Pass a runId: /workflow attach <id> [stageId]`);
+          print(
+            `${renderSessionList(store.runs(), { theme, includeAll: false })}\n\nPicker requires a UI surface. Pass a runId: /workflow attach <id> [stageId]`,
+          );
           return true;
         }
         const picked = await openSessionPicker(ui, store, theme, "connect");
@@ -1343,7 +1404,11 @@ function factory(pi: ExtensionAPI): void {
           // The picker may have surfaced interrupt from the `x` shortcut.
           // Forward through the existing interrupt flow for clarity.
           if (picked.kind === "kill") {
-            return handleRunControlCommand("interrupt", [picked.runId, "-y"], ctx);
+            return handleRunControlCommand(
+              "interrupt",
+              [picked.runId, "-y"],
+              ctx,
+            );
           }
           return true;
         }
@@ -1355,7 +1420,9 @@ function factory(pi: ExtensionAPI): void {
           return true;
         }
         if (resolved.kind === "ambiguous") {
-          print(`Ambiguous run prefix "${target}" matches: ${resolved.matches.map((id) => id.slice(0, 12)).join(", ")}`);
+          print(
+            `Ambiguous run prefix "${target}" matches: ${resolved.matches.map((id) => id.slice(0, 12)).join(", ")}`,
+          );
           return true;
         }
         runId = resolved.runId;
@@ -1364,7 +1431,8 @@ function factory(pi: ExtensionAPI): void {
       let stageId: string | undefined;
       if (stageTarget && run) {
         const exact = run.stages.find((s) => s.id === stageTarget);
-        const prefix = exact ?? run.stages.find((s) => s.id.startsWith(stageTarget));
+        const prefix =
+          exact ?? run.stages.find((s) => s.id.startsWith(stageTarget));
         const byName = prefix ?? run.stages.find((s) => s.name === stageTarget);
         if (!byName) {
           print(`Stage not found in run ${runId.slice(0, 8)}: ${stageTarget}`);
@@ -1408,7 +1476,9 @@ function factory(pi: ExtensionAPI): void {
           return true;
         }
         if (resolved.kind === "ambiguous") {
-          print(`Ambiguous run prefix "${target}" matches: ${resolved.matches.map((id) => id.slice(0, 12)).join(", ")}`);
+          print(
+            `Ambiguous run prefix "${target}" matches: ${resolved.matches.map((id) => id.slice(0, 12)).join(", ")}`,
+          );
           return true;
         }
         runId = resolved.runId;
@@ -1416,7 +1486,12 @@ function factory(pi: ExtensionAPI): void {
       let stageId: string | undefined;
       if (stageTarget) {
         const run = store.runs().find((r) => r.id === runId);
-        const stage = run?.stages.find((s) => s.id === stageTarget || s.id.startsWith(stageTarget) || s.name === stageTarget);
+        const stage = run?.stages.find(
+          (s) =>
+            s.id === stageTarget ||
+            s.id.startsWith(stageTarget) ||
+            s.name === stageTarget,
+        );
         if (!stage) {
           print(`Stage not found in run ${runId.slice(0, 8)}: ${stageTarget}`);
           return true;
@@ -1429,16 +1504,16 @@ function factory(pi: ExtensionAPI): void {
           result.reason === "not_found"
             ? `Run not found: ${runId.slice(0, 8)}`
             : result.reason === "already_ended"
-            ? `Run ${runId.slice(0, 8)} already ended.`
-            : result.reason === "no_active_stages"
-            ? `No pausable stages on run ${runId.slice(0, 8)}.`
-            : `Stage not found: ${stageTarget ?? "(unknown)"}`;
+              ? `Run ${runId.slice(0, 8)} already ended.`
+              : result.reason === "no_active_stages"
+                ? `No pausable stages on run ${runId.slice(0, 8)}.`
+                : `Stage not found: ${stageTarget ?? "(unknown)"}`;
         print(why);
         return true;
       }
       // Open the orchestrator overlay (graph for run-level pause, stage
       // chat when a stage was named). This mirrors connect/attach/resume:
-      // the full-screen overlay hides Pi's "Working… (esc to interrupt)"
+      // the full-screen overlay hides Pi's "Working… (Esc to interrupt)"
       // spinner, which otherwise stays visible because the host session
       // is still streaming whatever was happening before the pause hit.
       if (typeof ctx.ui?.custom === "function") {
@@ -1473,7 +1548,9 @@ function factory(pi: ExtensionAPI): void {
           return true;
         }
         if (resolved.kind === "ambiguous") {
-          print(`Ambiguous run prefix "${target}" matches: ${resolved.matches.map((id) => id.slice(0, 12)).join(", ")}`);
+          print(
+            `Ambiguous run prefix "${target}" matches: ${resolved.matches.map((id) => id.slice(0, 12)).join(", ")}`,
+          );
           return true;
         }
         runId = resolved.runId;
@@ -1481,7 +1558,12 @@ function factory(pi: ExtensionAPI): void {
       let stageId: string | undefined;
       const run = store.runs().find((r) => r.id === runId);
       if (stageTarget) {
-        const stage = run?.stages.find((s) => s.id === stageTarget || s.id.startsWith(stageTarget) || s.name === stageTarget);
+        const stage = run?.stages.find(
+          (s) =>
+            s.id === stageTarget ||
+            s.id.startsWith(stageTarget) ||
+            s.name === stageTarget,
+        );
         if (!stage) {
           print(`Stage not found in run ${runId.slice(0, 8)}: ${stageTarget}`);
           return true;
@@ -1489,7 +1571,8 @@ function factory(pi: ExtensionAPI): void {
         stageId = stage.id;
       }
       const isPaused =
-        run?.status === "paused" || (run?.stages.some((s) => s.status === "paused") ?? false);
+        run?.status === "paused" ||
+        (run?.stages.some((s) => s.status === "paused") ?? false);
       const result = resumeRun(runId, { stageId, message });
       if (!result.ok) {
         print(`Run not found: ${runId.slice(0, 8)}`);
@@ -1520,467 +1603,535 @@ function factory(pi: ExtensionAPI): void {
     return false;
   }
 
-  registerWorkflowCommand(pi, "workflow", {
-    description:
-      "Run or inspect pi workflows. Usage: /workflow <name> [key=value…] | /workflow [list|status|connect|attach|interrupt|pause|resume|inputs] [args]",
-    handler: async (args: string, ctx: PiCommandContext) => {
-      const print = (msg: string): void => ctx.ui.notify(msg, "info");
-      // Quote-aware split so `prompt="map the codebase"` stays a single
-      // token. Plain `.split(/\s+/)` would mangle quoted multi-word values
-      // into `prompt="map`, `the`, `codebase"` — the dispatch confirm then
-      // renders `prompt=""map"` (see ui/qa-current-render-2.png).
-      const parts = tokenizeWorkflowArgs(args);
-      const subcommand = parts[0] ?? "";
+  registerWorkflowCommand(
+    pi,
+    "workflow",
+    {
+      description:
+        "Run or inspect pi workflows. Usage: /workflow <name> [key=value…] | /workflow [list|status|connect|attach|interrupt|pause|resume|inputs] [args]",
+      handler: async (args: string, ctx: PiCommandContext) => {
+        const print = (msg: string): void => ctx.ui.notify(msg, "info");
+        // Quote-aware split so `prompt="map the codebase"` stays a single
+        // token. Plain `.split(/\s+/)` would mangle quoted multi-word values
+        // into `prompt="map`, `the`, `codebase"` — the dispatch confirm then
+        // renders `prompt=""map"` (see ui/qa-current-render-2.png).
+        const parts = tokenizeWorkflowArgs(args);
+        const subcommand = parts[0] ?? "";
 
-      // -----------------------------------------------------------------------
-      // connect — open the orchestrator pane (picker if no id).
-      // attach  — open the in-place attach pane on a stage (or pick run).
-      // pause   — pause a run or specific stage.
-      // -----------------------------------------------------------------------
-      if (subcommand === "connect") {
-        await handleRunControlCommand("connect", parts.slice(1), ctx);
-        return;
-      }
-      if (subcommand === "attach") {
-        await handleRunControlCommand("attach", parts.slice(1), ctx);
-        return;
-      }
-      if (subcommand === "pause") {
-        await handleRunControlCommand("pause", parts.slice(1), ctx);
-        return;
-      }
-
-      // -----------------------------------------------------------------------
-      // list (default when no subcommand) — render the workflow catalogue
-      // via the same renderer used by the LLM tool path.
-      // -----------------------------------------------------------------------
-      if (!subcommand || subcommand === "list") {
-        const items = runtimeProxy.registry.all().map((def) => ({
-          name: def.normalizedName,
-          description: def.description,
-          inputs: Object.entries(def.inputs).map(([iname, schema]) => ({
-            name: iname,
-            required: schema.required === true,
-          })),
-        }));
-        emitChatSurface(pi, { kind: "list", entries: items });
-        return;
-      }
-
-      // -----------------------------------------------------------------------
-      // status — band-header rich list, or per-run detail when an id is
-      // supplied. `/workflow status` lists everything in-flight (`--all`
-      // includes ended runs older than an hour); `/workflow status <id>`
-      // drills into a single run via the inspectRun detail block.
-      // -----------------------------------------------------------------------
-      if (subcommand === "status") {
-        const target = parts[1];
-        if (target && !target.startsWith("--")) {
-          const resolved = resolveRunIdPrefix(target);
-          if (resolved.kind === "not_found") {
-            print(`Run not found: ${target}`);
-            return;
-          }
-          if (resolved.kind === "ambiguous") {
-            print(
-              `Ambiguous run prefix "${target}" matches: ${resolved.matches
-                .map((id) => id.slice(0, 12))
-                .join(", ")}`,
-            );
-            return;
-          }
-          const inspected = inspectRun(resolved.runId);
-          if (!inspected.ok) {
-            print(`Run not found: ${target}`);
-            return;
-          }
-          emitChatSurface(pi, { kind: "detail", detail: inspected.detail });
+        // -----------------------------------------------------------------------
+        // connect — open the orchestrator pane (picker if no id).
+        // attach  — open the in-place attach pane on a stage (or pick run).
+        // pause   — pause a run or specific stage.
+        // -----------------------------------------------------------------------
+        if (subcommand === "connect") {
+          await handleRunControlCommand("connect", parts.slice(1), ctx);
           return;
         }
-        // Mirror renderSessionList's filter: keep `--all` semantics, then
-        // hand the already-filtered snapshot to the chat-surface renderer.
-        const includeAll = parts.includes("--all");
-        const rows = selectRunsForPicker(store.runs(), "", includeAll, Date.now());
-        emitChatSurface(pi, { kind: "status", runs: rows.map((r) => r.run) });
-        return;
-      }
-
-      // -----------------------------------------------------------------------
-      // interrupt — top-level chat fast path (no confirmation overlay).
-      // -----------------------------------------------------------------------
-      if (subcommand === "interrupt") {
-        // The top-level chat command is the fast interrupt path surfaced by the
-        // widget hint (`/workflow interrupt <id>`). The user's explicit slash
-        // command should abort immediately, even when a confirm surface is
-        // unavailable or would steal focus from the running workflow.
-        const interruptArgs = parts.slice(1);
-        const hasYes = interruptArgs.some((t) => t === "--yes" || t === "-y");
-        await handleRunControlCommand(
-          "interrupt",
-          hasYes ? interruptArgs : [...interruptArgs, "-y"],
-          ctx,
-        );
-        return;
-      }
-
-      // -----------------------------------------------------------------------
-      // resume — non-paused runs reopen the orchestrator pane (legacy
-      // behaviour); paused runs resume live work through the registry.
-      // -----------------------------------------------------------------------
-      if (subcommand === "resume") {
-        await handleRunControlCommand("resume", parts.slice(1), ctx);
-        return;
-      }
-
-      // -----------------------------------------------------------------------
-      // inputs — pretty-printed via theme; falls back to plain in non-TTY tests.
-      // -----------------------------------------------------------------------
-      if (subcommand === "inputs") {
-        const workflowName = parts[1] ?? "";
-        if (!workflowName) {
-          print("Usage: /workflow inputs <name>");
+        if (subcommand === "attach") {
+          await handleRunControlCommand("attach", parts.slice(1), ctx);
           return;
         }
+        if (subcommand === "pause") {
+          await handleRunControlCommand("pause", parts.slice(1), ctx);
+          return;
+        }
+
+        // -----------------------------------------------------------------------
+        // list (default when no subcommand) — render the workflow catalogue
+        // via the same renderer used by the LLM tool path.
+        // -----------------------------------------------------------------------
+        if (!subcommand || subcommand === "list") {
+          const items = runtimeProxy.registry.all().map((def) => ({
+            name: def.normalizedName,
+            description: def.description,
+            inputs: Object.entries(def.inputs).map(([iname, schema]) => ({
+              name: iname,
+              required: schema.required === true,
+            })),
+          }));
+          emitChatSurface(pi, { kind: "list", entries: items });
+          return;
+        }
+
+        // -----------------------------------------------------------------------
+        // status — band-header rich list, or per-run detail when an id is
+        // supplied. `/workflow status` lists everything in-flight (`--all`
+        // includes ended runs older than an hour); `/workflow status <id>`
+        // drills into a single run via the inspectRun detail block.
+        // -----------------------------------------------------------------------
+        if (subcommand === "status") {
+          const target = parts[1];
+          if (target && !target.startsWith("--")) {
+            const resolved = resolveRunIdPrefix(target);
+            if (resolved.kind === "not_found") {
+              print(`Run not found: ${target}`);
+              return;
+            }
+            if (resolved.kind === "ambiguous") {
+              print(
+                `Ambiguous run prefix "${target}" matches: ${resolved.matches
+                  .map((id) => id.slice(0, 12))
+                  .join(", ")}`,
+              );
+              return;
+            }
+            const inspected = inspectRun(resolved.runId);
+            if (!inspected.ok) {
+              print(`Run not found: ${target}`);
+              return;
+            }
+            emitChatSurface(pi, { kind: "detail", detail: inspected.detail });
+            return;
+          }
+          // Mirror renderSessionList's filter: keep `--all` semantics, then
+          // hand the already-filtered snapshot to the chat-surface renderer.
+          const includeAll = parts.includes("--all");
+          const rows = selectRunsForPicker(
+            store.runs(),
+            "",
+            includeAll,
+            Date.now(),
+          );
+          emitChatSurface(pi, { kind: "status", runs: rows.map((r) => r.run) });
+          return;
+        }
+
+        // -----------------------------------------------------------------------
+        // interrupt — top-level chat fast path (no confirmation overlay).
+        // -----------------------------------------------------------------------
+        if (subcommand === "interrupt") {
+          // The top-level chat command is the fast interrupt path surfaced by the
+          // widget hint (`/workflow interrupt <id>`). The user's explicit slash
+          // command should abort immediately, even when a confirm surface is
+          // unavailable or would steal focus from the running workflow.
+          const interruptArgs = parts.slice(1);
+          const hasYes = interruptArgs.some((t) => t === "--yes" || t === "-y");
+          await handleRunControlCommand(
+            "interrupt",
+            hasYes ? interruptArgs : [...interruptArgs, "-y"],
+            ctx,
+          );
+          return;
+        }
+
+        // -----------------------------------------------------------------------
+        // resume — non-paused runs reopen the orchestrator pane (legacy
+        // behaviour); paused runs resume live work through the registry.
+        // -----------------------------------------------------------------------
+        if (subcommand === "resume") {
+          await handleRunControlCommand("resume", parts.slice(1), ctx);
+          return;
+        }
+
+        // -----------------------------------------------------------------------
+        // inputs — pretty-printed via theme; falls back to plain in non-TTY tests.
+        // -----------------------------------------------------------------------
+        if (subcommand === "inputs") {
+          const workflowName = parts[1] ?? "";
+          if (!workflowName) {
+            print("Usage: /workflow inputs <name>");
+            return;
+          }
+          const result = await runtimeForContext(ctx).dispatch({
+            workflow: workflowName,
+            inputs: {},
+            action: "inputs",
+          });
+          if (result.action === "inputs" && "inputs" in result) {
+            const r = result as Extract<
+              WorkflowToolResult,
+              { action: "inputs" }
+            >;
+            if (r.error) {
+              const available = runtimeProxy.registry.names();
+              print(
+                `${r.error}\nAvailable: ${available.length > 0 ? available.join(", ") : "(none)"}`,
+              );
+            } else {
+              print(
+                renderInputsSchema(workflowName, r.inputs, {
+                  theme: deriveGraphTheme({}),
+                }),
+              );
+            }
+          }
+          return;
+        }
+
+        // -----------------------------------------------------------------------
+        // Workflow name dispatch — workflows always run as background tasks.
+        // The chat editor remains usable; HIL prompts surface through the graph
+        // viewer overlay (F2 / `/workflow connect`).
+        // -----------------------------------------------------------------------
+        const workflowName = subcommand;
+        const inputTokens = parts.slice(1);
+
+        if (inputTokens.includes("--help")) {
+          const helpResult = await runtimeForContext(ctx).dispatch({
+            workflow: workflowName,
+            inputs: {},
+            action: "inputs",
+          });
+          if (helpResult.action === "inputs" && "inputs" in helpResult) {
+            const r = helpResult as Extract<
+              WorkflowToolResult,
+              { action: "inputs" }
+            >;
+            if (r.error) {
+              const available = runtimeProxy.registry.names();
+              print(
+                `${r.error}\nAvailable: ${available.length > 0 ? available.join(", ") : "(none)"}`,
+              );
+            } else {
+              print(
+                renderInputsSchema(workflowName, r.inputs, {
+                  theme: deriveGraphTheme({}),
+                }),
+              );
+            }
+          }
+          return;
+        }
+
+        const inputs = parseWorkflowArgs(inputTokens);
+        // -----------------------------------------------------------------------
+        // Interactive argument picker.
+        //
+        // Triggers when:
+        //   - the workflow has at least one declared input (zero-input
+        //     workflows go straight to dispatch — there's nothing to ask),
+        //   - the user did not pass `--no-picker`,
+        //   - an interactive TUI surface is available,
+        //   - AND either no key=value was supplied or one of the required
+        //     inputs is still missing after parsing.
+        //
+        // The picker is seeded with whatever the user *did* type, so a
+        // partial invocation like `/workflow gen-spec research_doc=notes.md`
+        // pre-fills that field and focuses the next unfilled required one.
+        // -----------------------------------------------------------------------
+        const wantsPickerSkip = inputTokens.includes("--no-picker");
+        let mergedInputs = inputs;
+        // Track whether the inputs picker actually showed a UI to the user.
+        // We use this below to mount the orchestrator overlay on dispatch
+        // success — same UX as `/workflow connect|attach|pause|resume`,
+        // which all cover Pi's `⠴ Working… (Esc to interrupt)` spinner
+        // with the full-screen overlay instead of leaving it visible in
+        // the chat while the workflow runs in the background.
+        let pickerWasShown = false;
+        // Prefer the sticky inline form when the host can install a custom
+        // editor. If the host rejects that editor contract at runtime, fall
+        // back to the supported overlay picker rather than surfacing the host
+        // exception as a workflow command error.
+        const canOpenPicker =
+          !wantsPickerSkip &&
+          (typeof ctx.ui?.setEditorComponent === "function" ||
+            typeof ctx.ui?.custom === "function");
+        if (canOpenPicker) {
+          const schemaResult = await runtimeForContext(ctx).dispatch({
+            workflow: workflowName,
+            inputs: {},
+            action: "inputs",
+          });
+          const schema =
+            schemaResult.action === "inputs" && "inputs" in schemaResult
+              ? (schemaResult as Extract<
+                  WorkflowToolResult,
+                  { action: "inputs" }
+                >)
+              : undefined;
+          const fields = schema?.inputs ?? [];
+          const hasFields = fields.length > 0;
+          const missingRequired = fields.some(
+            (f: WorkflowInputEntry) =>
+              f.required === true &&
+              (inputs[f.name] === undefined ||
+                (typeof inputs[f.name] === "string" &&
+                  (inputs[f.name] as string).trim() === "")),
+          );
+          const noTokensAtAll = inputTokens.length === 0;
+          if (hasFields && (noTokensAtAll || missingRequired)) {
+            pickerWasShown = true;
+            const pickerTheme = deriveGraphTheme({});
+            let pickerResult =
+              typeof ctx.ui?.setEditorComponent === "function"
+                ? await openInlineInputsForm(pi, ctx, {
+                    workflowName,
+                    fields,
+                    prefilled: inputs,
+                    theme: pickerTheme,
+                  })
+                : { kind: "unsupported" as const };
+            if (
+              pickerResult.kind === "unsupported" &&
+              typeof ctx.ui?.custom === "function"
+            ) {
+              pickerResult = await openInputsPicker(ctx.ui, {
+                workflowName,
+                fields,
+                prefilled: inputs,
+                theme: pickerTheme,
+              });
+            }
+            if (pickerResult.kind === "cancel") {
+              print(`Cancelled. /workflow ${workflowName} not started.`);
+              return;
+            }
+            if (pickerResult.kind === "run") {
+              mergedInputs = pickerResult.values;
+            }
+          }
+        }
+
         const result = await runtimeForContext(ctx).dispatch({
           workflow: workflowName,
-          inputs: {},
-          action: "inputs",
+          inputs: mergedInputs,
+          action: "run",
         });
-        if (result.action === "inputs" && "inputs" in result) {
-          const r = result as Extract<WorkflowToolResult, { action: "inputs" }>;
-          if (r.error) {
-            const available = runtimeProxy.registry.names();
-            print(
-              `${r.error}\nAvailable: ${available.length > 0 ? available.join(", ") : "(none)"}`,
-            );
-          } else {
-            print(renderInputsSchema(workflowName, r.inputs, { theme: deriveGraphTheme({}) }));
-          }
-        }
-        return;
-      }
-
-      // -----------------------------------------------------------------------
-      // Workflow name dispatch — workflows always run as background tasks.
-      // The chat editor remains usable; HIL prompts surface through the graph
-      // viewer overlay (F2 / `/workflow connect`).
-      // -----------------------------------------------------------------------
-      const workflowName = subcommand;
-      const inputTokens = parts.slice(1);
-
-      if (inputTokens.includes("--help")) {
-        const helpResult = await runtimeForContext(ctx).dispatch({
-          workflow: workflowName,
-          inputs: {},
-          action: "inputs",
-        });
-        if (helpResult.action === "inputs" && "inputs" in helpResult) {
-          const r = helpResult as Extract<
+        if (result.action === "run" && "runId" in result) {
+          const r = result as Extract<
             WorkflowToolResult,
-            { action: "inputs" }
+            { action: "run"; runId: string }
           >;
-          if (r.error) {
+          if (r.status === "failed" && r.runId === "") {
             const available = runtimeProxy.registry.names();
             print(
-              `${r.error}\nAvailable: ${available.length > 0 ? available.join(", ") : "(none)"}`,
+              `Workflow not found: ${workflowName}\nAvailable: ${available.length > 0 ? available.join(", ") : "(none)"}`,
+            );
+          } else if (r.status === "failed") {
+            print(
+              `Workflow "${workflowName}" failed: ${r.error ?? "unknown error"}`,
             );
           } else {
-            print(renderInputsSchema(workflowName, r.inputs, { theme: deriveGraphTheme({}) }));
+            // Always-background — the run is alive, the chat is free.
+            // Route via emitChatSurface so the band+card chrome receives the
+            // real chat content width via pi-tui's Component contract
+            // (registered renderer returns `{ render(width): string[] }`),
+            // not a `process.stdout.columns - 2` heuristic.
+            emitChatSurface(pi, {
+              kind: "dispatch",
+              workflowName,
+              runId: r.runId,
+              inputs: mergedInputs,
+            });
+            // When the user reached this path via the inputs picker (i.e.
+            // they didn't pre-supply all required args), open the
+            // orchestrator overlay. The full-screen overlay covers the
+            // chat statusContainer so Pi's working spinner is not left
+            // visible behind the dispatch card. Direct invocations with
+            // complete args remain opt-in via F2 / `/workflow connect`.
+            if (pickerWasShown && typeof ctx.ui?.custom === "function") {
+              overlay.open(r.runId, overlaySurfaceFromContext(ctx));
+            }
           }
         }
         return;
-      }
+      },
+      getArgumentCompletions: (partial: string): PiArgumentCompletionResult => {
+        const completeToken = (
+          argumentText: string,
+          candidates: PiArgumentCompletion[],
+        ): PiArgumentCompletionResult => {
+          const tokenStart = /\s$/.test(argumentText)
+            ? argumentText.length
+            : Math.max(
+                argumentText.lastIndexOf(" "),
+                argumentText.lastIndexOf("\t"),
+              ) + 1;
+          const head = argumentText.slice(0, tokenStart);
+          const token = argumentText.slice(tokenStart);
+          const filtered = candidates
+            .filter((candidate) => candidate.value.startsWith(token))
+            .map((candidate) => ({
+              ...candidate,
+              value: `${head}${candidate.value}`,
+            }));
+          return filtered.length > 0 ? filtered : null;
+        };
 
-      const inputs = parseWorkflowArgs(inputTokens);
-      // -----------------------------------------------------------------------
-      // Interactive argument picker.
-      //
-      // Triggers when:
-      //   - the workflow has at least one declared input (zero-input
-      //     workflows go straight to dispatch — there's nothing to ask),
-      //   - the user did not pass `--no-picker`,
-      //   - an interactive TUI surface is available,
-      //   - AND either no key=value was supplied or one of the required
-      //     inputs is still missing after parsing.
-      //
-      // The picker is seeded with whatever the user *did* type, so a
-      // partial invocation like `/workflow gen-spec research_doc=notes.md`
-      // pre-fills that field and focuses the next unfilled required one.
-      // -----------------------------------------------------------------------
-      const wantsPickerSkip = inputTokens.includes("--no-picker");
-      let mergedInputs = inputs;
-      // Track whether the inputs picker actually showed a UI to the user.
-      // We use this below to mount the orchestrator overlay on dispatch
-      // success — same UX as `/workflow connect|attach|pause|resume`,
-      // which all cover Pi's `⠴ Working… (esc to interrupt)` spinner
-      // with the full-screen overlay instead of leaving it visible in
-      // the chat while the workflow runs in the background.
-      let pickerWasShown = false;
-      // Prefer the sticky inline form when the host can install a custom
-      // editor. If the host rejects that editor contract at runtime, fall
-      // back to the supported overlay picker rather than surfacing the host
-      // exception as a workflow command error.
-      const canOpenPicker =
-        !wantsPickerSkip &&
-        (typeof ctx.ui?.setEditorComponent === "function" ||
-          typeof ctx.ui?.custom === "function");
-      if (canOpenPicker) {
-        const schemaResult = await runtimeForContext(ctx).dispatch({
-          workflow: workflowName,
-          inputs: {},
-          action: "inputs",
-        });
-        const schema =
-          schemaResult.action === "inputs" && "inputs" in schemaResult
-            ? (schemaResult as Extract<WorkflowToolResult, { action: "inputs" }>)
-            : undefined;
-        const fields = schema?.inputs ?? [];
-        const hasFields = fields.length > 0;
-        const missingRequired = fields.some(
-          (f: WorkflowInputEntry) =>
-            f.required === true &&
-            (inputs[f.name] === undefined ||
-              (typeof inputs[f.name] === "string" &&
-                (inputs[f.name] as string).trim() === "")),
-        );
-        const noTokensAtAll = inputTokens.length === 0;
-        if (hasFields && (noTokensAtAll || missingRequired)) {
-          pickerWasShown = true;
-          const pickerTheme = deriveGraphTheme({});
-          let pickerResult =
-            typeof ctx.ui?.setEditorComponent === "function"
-              ? await openInlineInputsForm(pi, ctx, {
-                  workflowName,
-                  fields,
-                  prefilled: inputs,
-                  theme: pickerTheme,
-                })
-              : { kind: "unsupported" as const };
-          if (
-            pickerResult.kind === "unsupported" &&
-            typeof ctx.ui?.custom === "function"
-          ) {
-            pickerResult = await openInputsPicker(ctx.ui, {
-              workflowName,
-              fields,
-              prefilled: inputs,
-              theme: pickerTheme,
-            });
-          }
-          if (pickerResult.kind === "cancel") {
-            print(`Cancelled. /workflow ${workflowName} not started.`);
-            return;
-          }
-          if (pickerResult.kind === "run") {
-            mergedInputs = pickerResult.values;
-          }
-        }
-      }
-
-      const result = await runtimeForContext(ctx).dispatch({
-        workflow: workflowName,
-        inputs: mergedInputs,
-        action: "run",
-      });
-      if (result.action === "run" && "runId" in result) {
-        const r = result as Extract<
-          WorkflowToolResult,
-          { action: "run"; runId: string }
-        >;
-        if (r.status === "failed" && r.runId === "") {
-          const available = runtimeProxy.registry.names();
-          print(
-            `Workflow not found: ${workflowName}\nAvailable: ${available.length > 0 ? available.join(", ") : "(none)"}`,
-          );
-        } else if (r.status === "failed") {
-          print(
-            `Workflow "${workflowName}" failed: ${r.error ?? "unknown error"}`,
-          );
-        } else {
-          // Always-background — the run is alive, the chat is free.
-          // Route via emitChatSurface so the band+card chrome receives the
-          // real chat content width via pi-tui's Component contract
-          // (registered renderer returns `{ render(width): string[] }`),
-          // not a `process.stdout.columns - 2` heuristic.
-          emitChatSurface(pi, {
-            kind: "dispatch",
-            workflowName,
-            runId: r.runId,
-            inputs: mergedInputs,
-          });
-          // When the user reached this path via the inputs picker (i.e.
-          // they didn't pre-supply all required args), open the
-          // orchestrator overlay. The full-screen overlay covers the
-          // chat statusContainer so Pi's working spinner is not left
-          // visible behind the dispatch card. Direct invocations with
-          // complete args remain opt-in via F2 / `/workflow connect`.
-          if (pickerWasShown && typeof ctx.ui?.custom === "function") {
-            overlay.open(r.runId, overlaySurfaceFromContext(ctx));
-          }
-        }
-      }
-      return;
-    },
-    getArgumentCompletions: (
-      partial: string,
-    ): PiArgumentCompletionResult => {
-      const completeToken = (
-        argumentText: string,
-        candidates: PiArgumentCompletion[],
-      ): PiArgumentCompletionResult => {
-        const tokenStart = /\s$/.test(argumentText)
-          ? argumentText.length
-          : Math.max(argumentText.lastIndexOf(" "), argumentText.lastIndexOf("\t")) + 1;
-        const head = argumentText.slice(0, tokenStart);
-        const token = argumentText.slice(tokenStart);
-        const filtered = candidates
-          .filter((candidate) => candidate.value.startsWith(token))
-          .map((candidate) => ({
-            ...candidate,
-            value: `${head}${candidate.value}`,
+        const workflowNameItems = (): PiArgumentCompletion[] =>
+          runtimeProxy.registry.names().map((name) => ({
+            value: `${name} `,
+            label: name,
+            description: `Run workflow: ${name}`,
           }));
-        return filtered.length > 0 ? filtered : null;
-      };
 
-      const workflowNameItems = (): PiArgumentCompletion[] =>
-        runtimeProxy.registry.names().map((name) => ({
-          value: `${name} `,
-          label: name,
-          description: `Run workflow: ${name}`,
-        }));
+        const runIdItems = (): PiArgumentCompletion[] =>
+          store.runs().map((run) => ({
+            value: `${run.id} `,
+            label: run.id.slice(0, 8),
+            description: `${run.name} — ${run.status}`,
+          }));
 
-      const runIdItems = (): PiArgumentCompletion[] =>
-        store.runs().map((run) => ({
-          value: `${run.id} `,
-          label: run.id.slice(0, 8),
-          description: `${run.name} — ${run.status}`,
-        }));
+        const adminCompletions: PiArgumentCompletion[] = [
+          {
+            value: "connect ",
+            label: "connect",
+            description: "Attach to a run (picker if no id)",
+          },
+          {
+            value: "attach ",
+            label: "attach",
+            description: "Open the in-place attach pane on a node",
+          },
+          {
+            value: "list ",
+            label: "list",
+            description: "List registered workflows",
+          },
+          {
+            value: "status ",
+            label: "status",
+            description: "List in-flight runs",
+          },
+          {
+            value: "interrupt ",
+            label: "interrupt",
+            description: "Interrupt a run",
+          },
+          {
+            value: "pause ",
+            label: "pause",
+            description: "Pause a run or stage",
+          },
+          {
+            value: "resume ",
+            label: "resume",
+            description: "Re-open overlay for a run",
+          },
+          {
+            value: "inputs ",
+            label: "inputs",
+            description: "Show a workflow's input schema",
+          },
+        ];
 
-      const adminCompletions: PiArgumentCompletion[] = [
-        {
-          value: "connect ",
-          label: "connect",
-          description: "Attach to a run (picker if no id)",
-        },
-        {
-          value: "attach ",
-          label: "attach",
-          description: "Open the in-place attach pane on a node",
-        },
-        {
-          value: "list ",
-          label: "list",
-          description: "List registered workflows",
-        },
-        {
-          value: "status ",
-          label: "status",
-          description: "List in-flight runs",
-        },
-        { value: "interrupt ", label: "interrupt", description: "Interrupt a run" },
-        { value: "pause ", label: "pause", description: "Pause a run or stage" },
-        {
-          value: "resume ",
-          label: "resume",
-          description: "Re-open overlay for a run",
-        },
-        {
-          value: "inputs ",
-          label: "inputs",
-          description: "Show a workflow's input schema",
-        },
-      ];
-
-      const parts = partial.trim().split(/\s+/).filter(Boolean);
-      const subcommand = parts[0] ?? "";
-      if (!partial.includes(" ")) {
-        return completeToken(partial, [...adminCompletions, ...workflowNameItems()]);
-      }
-
-      if (subcommand === "inputs") {
-        return completeToken(partial, workflowNameItems());
-      }
-
-      if (subcommand === "status") {
-        return completeToken(partial, [
-          { value: "--all ", label: "--all", description: "Include recently ended runs" },
-          ...runIdItems(),
-        ]);
-      }
-
-      if (subcommand === "connect") {
-        return completeToken(partial, runIdItems());
-      }
-
-      if (subcommand === "resume") {
-        return completeToken(partial, runIdItems());
-      }
-
-      if (subcommand === "attach" || subcommand === "pause") {
-        return completeToken(partial, runIdItems());
-      }
-
-      if (subcommand === "interrupt") {
-        return completeToken(partial, [
-          { value: "--all ", label: "--all", description: "Interrupt all in-flight runs" },
-          { value: "--yes ", label: "--yes", description: "Skip confirmation" },
-          { value: "-y ", label: "-y", description: "Skip confirmation" },
-          ...runIdItems(),
-        ]);
-      }
-
-      // `partial` ends with whitespace and no subcommand was typed yet
-      // (e.g. `/workflow `). pi's autocomplete is asking what to suggest
-      // after the trailing space; offer the same admin + workflow-name
-      // menu as the no-space branch above. Skipping this guard would call
-      // `registry.get("")`, which throws TypeError from normalizeWorkflowName.
-      if (!subcommand) {
-        return completeToken(partial, [...adminCompletions, ...workflowNameItems()]);
-      }
-
-      const workflow = runtimeProxy.registry.get(subcommand);
-      if (!workflow) return null;
-
-      const tokenStart = /\s$/.test(partial)
-        ? partial.length
-        : Math.max(partial.lastIndexOf(" "), partial.lastIndexOf("\t")) + 1;
-      const token = partial.slice(tokenStart);
-      const equalsIndex = token.indexOf("=");
-      if (equalsIndex > 0) {
-        const inputName = token.slice(0, equalsIndex);
-        const schema = workflow.inputs[inputName];
-        if (schema?.type === "select") {
-          return completeToken(
-            partial,
-            schema.choices.map((choice) => ({
-              value: `${inputName}=${choice} `,
-              label: choice,
-              description: inputName,
-            })),
-          );
-        }
-        if (schema?.type === "boolean") {
+        const parts = partial.trim().split(/\s+/).filter(Boolean);
+        const subcommand = parts[0] ?? "";
+        if (!partial.includes(" ")) {
           return completeToken(partial, [
-            { value: `${inputName}=true `, label: "true", description: inputName },
-            { value: `${inputName}=false `, label: "false", description: inputName },
+            ...adminCompletions,
+            ...workflowNameItems(),
           ]);
         }
-        return null;
-      }
 
-      const inputCompletions: PiArgumentCompletion[] = Object.entries(workflow.inputs)
-        .map(([name, schema]) => ({
+        if (subcommand === "inputs") {
+          return completeToken(partial, workflowNameItems());
+        }
+
+        if (subcommand === "status") {
+          return completeToken(partial, [
+            {
+              value: "--all ",
+              label: "--all",
+              description: "Include recently ended runs",
+            },
+            ...runIdItems(),
+          ]);
+        }
+
+        if (subcommand === "connect") {
+          return completeToken(partial, runIdItems());
+        }
+
+        if (subcommand === "resume") {
+          return completeToken(partial, runIdItems());
+        }
+
+        if (subcommand === "attach" || subcommand === "pause") {
+          return completeToken(partial, runIdItems());
+        }
+
+        if (subcommand === "interrupt") {
+          return completeToken(partial, [
+            {
+              value: "--all ",
+              label: "--all",
+              description: "Interrupt all in-flight runs",
+            },
+            {
+              value: "--yes ",
+              label: "--yes",
+              description: "Skip confirmation",
+            },
+            { value: "-y ", label: "-y", description: "Skip confirmation" },
+            ...runIdItems(),
+          ]);
+        }
+
+        // `partial` ends with whitespace and no subcommand was typed yet
+        // (e.g. `/workflow `). pi's autocomplete is asking what to suggest
+        // after the trailing space; offer the same admin + workflow-name
+        // menu as the no-space branch above. Skipping this guard would call
+        // `registry.get("")`, which throws TypeError from normalizeWorkflowName.
+        if (!subcommand) {
+          return completeToken(partial, [
+            ...adminCompletions,
+            ...workflowNameItems(),
+          ]);
+        }
+
+        const workflow = runtimeProxy.registry.get(subcommand);
+        if (!workflow) return null;
+
+        const tokenStart = /\s$/.test(partial)
+          ? partial.length
+          : Math.max(partial.lastIndexOf(" "), partial.lastIndexOf("\t")) + 1;
+        const token = partial.slice(tokenStart);
+        const equalsIndex = token.indexOf("=");
+        if (equalsIndex > 0) {
+          const inputName = token.slice(0, equalsIndex);
+          const schema = workflow.inputs[inputName];
+          if (schema?.type === "select") {
+            return completeToken(
+              partial,
+              schema.choices.map((choice) => ({
+                value: `${inputName}=${choice} `,
+                label: choice,
+                description: inputName,
+              })),
+            );
+          }
+          if (schema?.type === "boolean") {
+            return completeToken(partial, [
+              {
+                value: `${inputName}=true `,
+                label: "true",
+                description: inputName,
+              },
+              {
+                value: `${inputName}=false `,
+                label: "false",
+                description: inputName,
+              },
+            ]);
+          }
+          return null;
+        }
+
+        const inputCompletions: PiArgumentCompletion[] = Object.entries(
+          workflow.inputs,
+        ).map(([name, schema]) => ({
           value: `${name}=`,
           label: name,
           description: schema.description,
         }));
-      return completeToken(partial, [
-        { value: "--no-picker ", label: "--no-picker", description: "Skip interactive input picker" },
-        { value: "--help ", label: "--help", description: "Show this workflow's input schema" },
-        ...inputCompletions,
-      ]);
+        return completeToken(partial, [
+          {
+            value: "--no-picker ",
+            label: "--no-picker",
+            description: "Skip interactive input picker",
+          },
+          {
+            value: "--help ",
+            label: "--help",
+            description: "Show this workflow's input schema",
+          },
+          ...inputCompletions,
+        ]);
+      },
     },
-  }, workflowCommands);
+    workflowCommands,
+  );
 
   // -------------------------------------------------------------------------
   // 3. Register message renderers for lifecycle events (§5.6)
@@ -2128,7 +2279,7 @@ function factory(pi: ExtensionAPI): void {
   );
 
   // -------------------------------------------------------------------------
-  // 7. Suppress pi's optimistic "Working… (esc to interrupt)" loader
+  // 7. Suppress pi's optimistic "Working… (Esc to interrupt)" loader
   //    for our slash commands. Workflow commands are synchronous picker /
   //    connect / inspect UIs, not streaming turns — the loader is noise
   //    that pads chrome above the picker. The `on("input")` hook fires

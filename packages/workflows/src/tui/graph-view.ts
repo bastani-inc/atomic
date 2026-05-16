@@ -37,7 +37,7 @@ import { renderNodeCard } from "./node-card.js";
 import { renderSwitcher, filterStages } from "./switcher.js";
 import { renderToasts, createToastManager } from "./toast.js";
 import { hexToAnsi, hexBg, RESET, BOLD } from "./color-utils.js";
-import { fmtDuration, statusIcon, statusColor } from "./status-helpers.js";
+import { fmtDuration } from "./status-helpers.js";
 import { GraphCanvas } from "./graph-canvas.js";
 import {
   createPromptCardState,
@@ -156,6 +156,7 @@ const ANIMATION_TICK_MS = 100;
  * eased lerp inside `pickBorder` traces one full breath per cycle.
  */
 const PULSE_PERIOD_MS = 2000;
+const GRAPH_SCROLL_STEP_ROWS = 4;
 
 export class GraphView implements Component {
   private mode: GraphViewMode;
@@ -182,6 +183,9 @@ export class GraphView implements Component {
   private detailsExpanded = true;
   private cachedLayout: LayoutNode[] = [];
   private currentSnapshot: StoreSnapshot | null = null;
+  private graphScrollOffset = 0;
+  private graphScrollColOffset = 0;
+  private pendingEnsureFocusedVisible = true;
 
   private _intervalId: ReturnType<typeof setInterval> | null = null;
   private _lastGTime: number | null = null;
@@ -231,10 +235,19 @@ export class GraphView implements Component {
     const run = this._getCurrentRun();
     if (!run) {
       this.cachedLayout = [];
+      this.focusedIndex = 0;
+      this.graphScrollOffset = 0;
+      this.graphScrollColOffset = 0;
+      this.pendingEnsureFocusedVisible = true;
       this.promptState = null;
       return;
     }
-    this.cachedLayout = computeLayout(run.stages, { orientation: "vertical" });
+
+    const previousFocusedStageId = this.cachedLayout[this.focusedIndex]?.stage.id;
+    const nextLayout = computeLayout(run.stages, { orientation: "vertical" });
+    this.cachedLayout = nextLayout;
+
+    let focusNeedsReveal = this.pendingEnsureFocusedVisible;
     // One-shot: if the host passed `initialFocusedStageId`, snap the
     // cursor to that stage now that the layout exists. The attach shell
     // uses this when swapping back from chat mode so the focus lands on
@@ -243,9 +256,30 @@ export class GraphView implements Component {
       const idx = this.cachedLayout.findIndex(
         (n) => n.stage.id === this.initialFocusedStageId,
       );
-      if (idx >= 0) this.focusedIndex = idx;
+      if (idx >= 0 && idx !== this.focusedIndex) {
+        this.focusedIndex = idx;
+        focusNeedsReveal = true;
+      }
       this.initialFocusedStageId = undefined;
+    } else if (previousFocusedStageId !== undefined) {
+      const idx = this.cachedLayout.findIndex(
+        (n) => n.stage.id === previousFocusedStageId,
+      );
+      if (idx >= 0 && idx !== this.focusedIndex) {
+        this.focusedIndex = idx;
+        focusNeedsReveal = true;
+      }
     }
+
+    if (this.cachedLayout.length === 0) {
+      this.focusedIndex = 0;
+      this.graphScrollOffset = 0;
+      this.graphScrollColOffset = 0;
+    } else if (this.focusedIndex >= this.cachedLayout.length) {
+      this.focusedIndex = this.cachedLayout.length - 1;
+      focusNeedsReveal = true;
+    }
+    this.pendingEnsureFocusedVisible = focusNeedsReveal;
     this._syncPromptState(run.pendingPrompt);
   }
 
@@ -344,13 +378,16 @@ export class GraphView implements Component {
     //    stage panel — status colour on each card carries that signal.
     const graphLines = this._renderGraph(frameWidth);
     const bodyTarget = this._overlayBodyRows(this._overlayLineCount());
-    // Vertically centre the graph in the body band.
-    const topPad = Math.max(
-      0,
-      Math.floor((bodyTarget - graphLines.length) / 2),
+    const visibleGraph = this._visibleGraphLines(
+      graphLines,
+      frameWidth,
+      bodyTarget,
     );
-    for (let i = 0; i < topPad; i++) lines.push(this._blankRow(frameWidth));
-    for (const line of graphLines) {
+    // Vertically centre short graphs; tall graphs are clipped to the
+    // scroll window managed by keyboard focus and mouse wheel events.
+    for (let i = 0; i < visibleGraph.topPad; i++)
+      lines.push(this._blankRow(frameWidth));
+    for (const line of visibleGraph.lines) {
       lines.push(this._canvasRow(line, frameWidth));
     }
     while (lines.length < 3 + bodyTarget)
@@ -367,9 +404,11 @@ export class GraphView implements Component {
       const insertAt = 4; // beneath the header chrome band
       for (let i = 0; i < switcherLines.length; i++) {
         const lineIdx = insertAt + i;
-        const padded = this._padCanvas(switcherLines[i]!, frameWidth);
-        if (lineIdx < lines.length) lines[lineIdx] = padded;
-        else lines.push(padded);
+        const overlay = this._padCanvas(switcherLines[i]!, switcherWidth);
+        const base = lines[lineIdx] ?? this._blankRow(frameWidth);
+        const merged = this._overlayInline(base, overlay, 0, frameWidth);
+        if (lineIdx < lines.length) lines[lineIdx] = merged;
+        else lines.push(merged);
       }
     }
 
@@ -466,12 +505,20 @@ export class GraphView implements Component {
       (max, node) => Math.max(max, node.x + NODE_W),
       0,
     );
-    if (canvasWidth > graphInner || this.cachedLayout.length > 12) {
-      return this._renderCompactGraph(run.stages, graphInner);
+    // Centre the whole graph horizontally when it fits; otherwise keep a
+    // small gutter and reveal focused nodes by horizontally scrolling the
+    // graph canvas. Do not switch to a compact list: the orchestrator pane
+    // should always preserve the node-card graph view.
+    const leftMargin = Math.max(
+      2,
+      canvasWidth <= graphInner ? Math.floor((graphInner - canvasWidth) / 2) : 2,
+    );
+    const viewportWidth = Math.max(1, width - leftMargin);
+    const fullCanvasWidth = Math.max(canvasWidth, viewportWidth);
+    this._clampGraphHorizontalScroll(fullCanvasWidth, viewportWidth);
+    if (this.pendingEnsureFocusedVisible) {
+      this._scrollFocusedColumnIntoView(viewportWidth, fullCanvasWidth);
     }
-
-    // Centre the whole graph horizontally in the available canvas.
-    const leftMargin = Math.max(2, Math.floor((graphInner - canvasWidth) / 2));
 
     // Pulse phase ∈ [0, 1) derived from wall-clock time so cards lerp
     // their border colour on the same beat regardless of how often
@@ -545,15 +592,104 @@ export class GraphView implements Component {
       composed.push(this._composeRow(edgeRowChars, cards, edgeColor));
     }
 
-    // Pad each row out to the full overlay width with the body bg so
-    // nothing leaks through to the terminal default — cards/edges only
-    // paint the cells they occupy; everywhere else needs explicit bg.
+    // Pad the full graph canvas, then crop a horizontal viewport when the
+    // fan-out is wider than the terminal. Cards/edges only paint cells they
+    // occupy; everywhere else needs explicit bg so default terminal colours
+    // never leak through.
     const bg = hexBg(this.graphTheme.bg);
     const leftPad = `${bg}${" ".repeat(leftMargin)}${RESET}`;
     return composed.map((line) => {
-      const inner = this._padCanvas(line, width - leftMargin);
-      return `${leftPad}${inner}`;
+      const full = this._padCanvas(line, fullCanvasWidth);
+      const cells = this._splitVisible(full);
+      const sliced = this._sliceVisible(
+        cells,
+        this.graphScrollColOffset,
+        this.graphScrollColOffset + viewportWidth,
+      );
+      return `${leftPad}${this._padCanvas(sliced, viewportWidth)}`;
     });
+  }
+
+  private _visibleGraphLines(
+    graphLines: string[],
+    frameWidth: number,
+    bodyRows: number,
+  ): { lines: string[]; topPad: number } {
+    if (graphLines.length <= bodyRows) {
+      this.graphScrollOffset = 0;
+      this.pendingEnsureFocusedVisible = false;
+      return {
+        lines: graphLines,
+        topPad: Math.max(0, Math.floor((bodyRows - graphLines.length) / 2)),
+      };
+    }
+
+    this._clampGraphScroll(graphLines.length, bodyRows);
+    if (this.pendingEnsureFocusedVisible) {
+      this._scrollFocusedIntoView(frameWidth, bodyRows, graphLines.length);
+      this.pendingEnsureFocusedVisible = false;
+    }
+    this._clampGraphScroll(graphLines.length, bodyRows);
+    return {
+      lines: graphLines.slice(
+        this.graphScrollOffset,
+        this.graphScrollOffset + bodyRows,
+      ),
+      topPad: 0,
+    };
+  }
+
+  private _clampGraphScroll(totalRows: number, bodyRows: number): void {
+    const maxOffset = Math.max(0, totalRows - bodyRows);
+    this.graphScrollOffset = Math.max(
+      0,
+      Math.min(maxOffset, this.graphScrollOffset),
+    );
+  }
+
+  private _clampGraphHorizontalScroll(totalCols: number, viewportCols: number): void {
+    const maxOffset = Math.max(0, totalCols - viewportCols);
+    this.graphScrollColOffset = Math.max(
+      0,
+      Math.min(maxOffset, this.graphScrollColOffset),
+    );
+  }
+
+  private _scrollFocusedColumnIntoView(
+    viewportCols: number,
+    totalCols: number,
+  ): void {
+    const node = this.cachedLayout[this.focusedIndex];
+    if (!node) return;
+    const start = node.x;
+    const end = node.x + NODE_W - 1;
+    if (start < this.graphScrollColOffset) {
+      this.graphScrollColOffset = start;
+    } else if (end >= this.graphScrollColOffset + viewportCols) {
+      this.graphScrollColOffset = end - viewportCols + 1;
+    }
+    this._clampGraphHorizontalScroll(totalCols, viewportCols);
+  }
+
+  private _scrollFocusedIntoView(
+    frameWidth: number,
+    bodyRows: number,
+    totalRows: number,
+  ): void {
+    const range = this._focusedGraphRowRange(frameWidth);
+    if (!range) return;
+    if (range.start < this.graphScrollOffset) {
+      this.graphScrollOffset = range.start;
+    } else if (range.end >= this.graphScrollOffset + bodyRows) {
+      this.graphScrollOffset = range.end - bodyRows + 1;
+    }
+    this._clampGraphScroll(totalRows, bodyRows);
+  }
+
+  private _focusedGraphRowRange(frameWidth: number): { start: number; end: number } | null {
+    const node = this.cachedLayout[this.focusedIndex];
+    if (!node) return null;
+    return { start: node.y, end: node.y + NODE_H - 1 };
   }
 
   /**
@@ -790,45 +926,6 @@ export class GraphView implements Component {
     return out;
   }
 
-  private _renderCompactGraph(
-    stages: readonly StageSnapshot[],
-    width: number,
-  ): string[] {
-    const t = this.graphTheme;
-    const dim = hexToAnsi(t.dim);
-    const muted = hexToAnsi(t.textMuted);
-    const accent = hexToAnsi(t.accent);
-    const byId = new Map(stages.map((stage) => [stage.id, stage]));
-
-    const lines: string[] = [];
-    for (let i = 0; i < this.cachedLayout.length; i++) {
-      const node = this.cachedLayout[i]!;
-      const stage = node.stage;
-      const focused = i === this.focusedIndex;
-      const parents = stage.parentIds
-        .map((id) => byId.get(id)?.name ?? id)
-        .filter((name) => name.length > 0);
-      const parentLabel = parents.length > 0 ? ` ← ${parents.join(", ")}` : "";
-      const blockedBy = stage.blockedByStageId
-        ? (byId.get(stage.blockedByStageId)?.name ?? stage.blockedByStageId)
-        : "";
-      const blockedLabel = blockedBy ? ` · blocked by ${blockedBy}` : "";
-      const dur = this._duration(stage);
-      const cursor = focused ? `${accent}❯${RESET}` : ` `;
-      const sc = hexToAnsi(statusColor(stage.status, t));
-      const nameStyled = focused
-        ? `${accent}${BOLD}${stage.name}${RESET}`
-        : `${hexToAnsi(t.text)}${stage.name}${RESET}`;
-      const meta = `${dim}${stage.status}${dur ? ` · ${dur}` : ""}${blockedLabel}${parentLabel}${RESET}`;
-      const line = `  ${cursor} ${sc}${statusIcon(stage.status)}${RESET} ${nameStyled}  ${meta}`;
-      lines.push(truncateToWidth(line, width, "…", true));
-    }
-    if (lines.length === 0) {
-      lines.push(`  ${muted}(no stages)${RESET}`);
-    }
-    return lines;
-  }
-
   // -------------------------------------------------------------------------
   // Chrome / canvas / section helpers
   // -------------------------------------------------------------------------
@@ -927,6 +1024,30 @@ export class GraphView implements Component {
     return `${bg}${" ".repeat(leftPad)}${RESET}${cardLine}${bg}${" ".repeat(rightPadLen)}${RESET}`;
   }
 
+  /** Overlay a fixed-width panel on a row while preserving graph cells
+   * outside the panel bounds. Used by the stage switcher so the picker
+   * does not erase nodes to its right. */
+  private _overlayInline(
+    base: string,
+    overlay: string,
+    leftPad: number,
+    totalWidth: number,
+  ): string {
+    const baseCells = this._splitVisible(base);
+    const overlayWidth = Math.min(
+      Math.max(0, totalWidth - leftPad),
+      visibleWidth(overlay),
+    );
+    const left = this._sliceVisible(baseCells, 0, leftPad);
+    const panel = truncateToWidth(overlay, overlayWidth, "", true);
+    const right = this._sliceVisible(
+      baseCells,
+      leftPad + overlayWidth,
+      totalWidth,
+    );
+    return `${left}${panel}${right}`;
+  }
+
   private _duration(stage: StageSnapshot): string {
     if (stage.durationMs != null) return fmtDuration(stage.durationMs);
     if (stage.startedAt != null)
@@ -1006,6 +1127,11 @@ export class GraphView implements Component {
 
   private _handleGraphInput(data: string): boolean {
     const stageCount = this.cachedLayout.length;
+    const wheelDeltaRows = this._mouseWheelDeltaRows(data);
+    if (wheelDeltaRows !== 0) {
+      this._scrollGraphBy(wheelDeltaRows);
+      return true;
+    }
 
     // Vertical-graph navigation: up/down step between depth levels
     // (col), left/right step between siblings at the same depth (row).
@@ -1019,17 +1145,17 @@ export class GraphView implements Component {
     if (matchesKey(data, "left") || data === "\x1b[D")
       return this._moveBySibling(-1);
     if (matchesKey(data, "j")) {
-      this.focusedIndex = Math.min(this.focusedIndex + 1, stageCount - 1);
+      this._setFocusedIndex(Math.min(this.focusedIndex + 1, stageCount - 1));
       return true;
     }
     if (matchesKey(data, "k")) {
-      this.focusedIndex = Math.max(this.focusedIndex - 1, 0);
+      this._setFocusedIndex(Math.max(this.focusedIndex - 1, 0));
       return true;
     }
     if (matchesKey(data, "g")) {
       const now = Date.now();
       if (this._lastGTime != null && now - this._lastGTime < 500) {
-        this.focusedIndex = 0;
+        this._setFocusedIndex(0);
         this._lastGTime = null;
       } else {
         this._lastGTime = now;
@@ -1046,14 +1172,7 @@ export class GraphView implements Component {
       // attach shell swaps in the stage-chat view without remounting
       // the overlay; without a callback, fall back to the legacy
       // expand/collapse toggle so non-attach hosts still work.
-      if (this.onStageAttach) {
-        const node = this.cachedLayout[this.focusedIndex];
-        const run = this._getCurrentRun();
-        if (node && run) {
-          this.onStageAttach(run.id, node.stage.id);
-          return true;
-        }
-      }
+      if (this._attachFocusedStage()) return true;
       this.detailsExpanded = !this.detailsExpanded;
       return true;
     }
@@ -1103,7 +1222,14 @@ export class GraphView implements Component {
         const idx = this.cachedLayout.findIndex(
           (n) => n.stage.id === selected.id,
         );
-        if (idx !== -1) this.focusedIndex = idx;
+        if (idx !== -1) {
+          this._setFocusedIndex(idx);
+          // Selecting from the `/` switcher should complete the same
+          // action as pressing Enter on a graph node: jump straight
+          // into that stage's chat when the attach shell is present.
+          this.switcherOpen = false;
+          if (this._attachFocusedStage()) return true;
+        }
       }
       this.switcherOpen = false;
       return true;
@@ -1180,7 +1306,7 @@ export class GraphView implements Component {
         bestDist = d;
       }
     }
-    this.focusedIndex = best.i;
+    this._setFocusedIndex(best.i);
     return true;
   }
 
@@ -1200,8 +1326,49 @@ export class GraphView implements Component {
     if (pos === -1) return true;
     const next = siblings[pos + step];
     if (!next) return true;
-    this.focusedIndex = next.i;
+    this._setFocusedIndex(next.i);
     return true;
+  }
+
+  private _attachFocusedStage(): boolean {
+    if (!this.onStageAttach) return false;
+    const node = this.cachedLayout[this.focusedIndex];
+    const run = this._getCurrentRun();
+    if (!node || !run) return false;
+    this.onStageAttach(run.id, node.stage.id);
+    return true;
+  }
+
+  private _setFocusedIndex(index: number): void {
+    const max = Math.max(0, this.cachedLayout.length - 1);
+    const next = Math.max(0, Math.min(index, max));
+    if (next === this.focusedIndex) return;
+    this.focusedIndex = next;
+    this.pendingEnsureFocusedVisible = true;
+  }
+
+  private _scrollGraphBy(deltaRows: number): void {
+    this.pendingEnsureFocusedVisible = false;
+    this.graphScrollOffset = Math.max(0, this.graphScrollOffset + deltaRows);
+  }
+
+  private _mouseWheelDeltaRows(data: string): number {
+    const sgr = data.match(/^\x1b\[<(\d+);\d+;\d+M$/);
+    if (sgr) {
+      return this._wheelDeltaForButtonCode(Number.parseInt(sgr[1]!, 10));
+    }
+    if (data.startsWith("\x1b[M") && data.length >= 6) {
+      return this._wheelDeltaForButtonCode(data.charCodeAt(3) - 32);
+    }
+    return 0;
+  }
+
+  private _wheelDeltaForButtonCode(code: number): number {
+    if ((code & 64) === 0) return 0;
+    const direction = code & 3;
+    if (direction === 0) return -GRAPH_SCROLL_STEP_ROWS;
+    if (direction === 1) return GRAPH_SCROLL_STEP_ROWS;
+    return 0;
   }
 
   // ---- test seams ----
@@ -1213,5 +1380,8 @@ export class GraphView implements Component {
   }
   get _switcherState(): SwitcherState {
     return this.switcherState;
+  }
+  get _graphScrollOffset(): number {
+    return this.graphScrollOffset;
   }
 }

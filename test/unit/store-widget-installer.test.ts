@@ -56,16 +56,19 @@ function makeMockPi(): {
       ) => void;
       requestRender: () => void;
     };
+    on: (event: string, handler: (payload: unknown) => void) => void;
     events: {
       on: (event: string, handler: (payload: unknown) => void) => void;
     };
   };
   widgetCalls: SetWidgetCall[];
   eventHandlers: Map<string, (payload: unknown) => void>;
+  extensionHandlers: Map<string, (payload: unknown) => void>;
   renderRequests: { count: number };
 } {
   const widgetCalls: SetWidgetCall[] = [];
   const eventHandlers: Map<string, (payload: unknown) => void> = new Map();
+  const extensionHandlers: Map<string, (payload: unknown) => void> = new Map();
   const renderRequests = { count: 0 };
 
   const pi = {
@@ -81,6 +84,9 @@ function makeMockPi(): {
         renderRequests.count++;
       },
     },
+    on(event: string, handler: (payload: unknown) => void): void {
+      extensionHandlers.set(event, handler);
+    },
     events: {
       on(event: string, handler: (payload: unknown) => void): void {
         eventHandlers.set(event, handler);
@@ -88,7 +94,7 @@ function makeMockPi(): {
     },
   };
 
-  return { pi, widgetCalls, eventHandlers, renderRequests };
+  return { pi, widgetCalls, eventHandlers, extensionHandlers, renderRequests };
 }
 
 // ---------------------------------------------------------------------------
@@ -230,6 +236,16 @@ describe("installToolExecutionHooks", () => {
     assert.equal(eventHandlers.has("tool_execution_end"), true);
   });
 
+  test("subscribes to pi extension tool events", () => {
+    const { pi, extensionHandlers } = makeMockPi();
+    installToolExecutionHooks(pi, storeInstance);
+    assert.equal(extensionHandlers.has("tool_execution_start"), true);
+    assert.equal(extensionHandlers.has("tool_execution_update"), true);
+    assert.equal(extensionHandlers.has("tool_execution_end"), true);
+    assert.equal(extensionHandlers.has("tool_call"), true);
+    assert.equal(extensionHandlers.has("tool_result"), true);
+  });
+
   test("tool_execution_start records tool on active stage (fallback heuristic)", () => {
     const { pi, eventHandlers } = makeMockPi();
     installToolExecutionHooks(pi, storeInstance);
@@ -281,6 +297,66 @@ describe("installToolExecutionHooks", () => {
     assert.notEqual(evt, undefined);
     assert.equal(evt!.output, "ok");
     assert.notEqual(evt!.endedAt, undefined);
+  });
+
+  test("ask_user_question start marks the active stage awaiting input", () => {
+    const { pi, eventHandlers } = makeMockPi();
+    installToolExecutionHooks(pi, storeInstance);
+
+    const startHandler = eventHandlers.get("tool_execution_start")!;
+    startHandler({ toolName: "ask_user_question", toolCallId: "ask-1", ts: 123 });
+
+    const stage = storeInstance.snapshot().runs[0]!.stages[0]!;
+    assert.equal(stage.status, "awaiting_input");
+    assert.equal(stage.awaitingInputSince, 123);
+  });
+
+  test("ask_user_question end clears awaiting input even after no stage is running", () => {
+    const { pi, eventHandlers } = makeMockPi();
+    installToolExecutionHooks(pi, storeInstance);
+
+    eventHandlers.get("tool_execution_start")!({
+      toolName: "ask_user_question",
+      toolCallId: "ask-1",
+      ts: 123,
+    });
+    assert.equal(storeInstance.snapshot().runs[0]!.stages[0]!.status, "awaiting_input");
+
+    eventHandlers.get("tool_execution_end")!({
+      toolCallId: "ask-1",
+      endedAt: 456,
+      output: "answered",
+    });
+
+    const stage = storeInstance.snapshot().runs[0]!.stages[0]!;
+    assert.equal(stage.status, "running");
+    assert.equal(stage.awaitingInputSince, undefined);
+  });
+
+  test("ask_user_question tool_call/tool_result extension events update awaiting input", () => {
+    const { pi, extensionHandlers } = makeMockPi();
+    installToolExecutionHooks(pi, storeInstance);
+
+    extensionHandlers.get("tool_call")!({
+      type: "tool_call",
+      toolName: "ask_user_question",
+      toolCallId: "ask-2",
+      input: { questions: [] },
+    });
+    assert.equal(storeInstance.snapshot().runs[0]!.stages[0]!.status, "awaiting_input");
+
+    extensionHandlers.get("tool_result")!({
+      type: "tool_result",
+      toolName: "ask_user_question",
+      toolCallId: "ask-2",
+      input: { questions: [] },
+      content: [],
+      isError: false,
+    });
+
+    const stage = storeInstance.snapshot().runs[0]!.stages[0]!;
+    assert.equal(stage.status, "running");
+    assert.equal(stage.awaitingInputSince, undefined);
   });
 
   test("malformed payloads do not crash", () => {

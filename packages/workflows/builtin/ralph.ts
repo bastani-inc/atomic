@@ -152,6 +152,8 @@ export default defineWorkflow("ralph")
     let approved = false;
     let iterationsCompleted = 0;
 
+    let noAskQuestionToolSet = ["read, bash, edit, write, todo"];
+
     let plannerModelConfig = {
       model: "openai/gpt-5.5",
       fallbackModels: [
@@ -160,6 +162,7 @@ export default defineWorkflow("ralph")
         "github-copilot/claude-opus-4.7",
       ],
       thinkingLevel: "high" as const,
+      tools: noAskQuestionToolSet,
     };
 
     let orchestratorModelConfig = {
@@ -170,6 +173,7 @@ export default defineWorkflow("ralph")
         "github-copilot/claude-sonnet-4.6",
       ],
       thinkingLevel: "medium" as const,
+      tools: noAskQuestionToolSet,
     };
 
     let simplifierModelConfig = {
@@ -180,6 +184,7 @@ export default defineWorkflow("ralph")
         "github-copilot/claude-sonnet-4.6",
       ],
       thinkingLevel: "medium" as const,
+      tools: noAskQuestionToolSet,
     };
 
     let reviewerModelConfig = {
@@ -190,6 +195,7 @@ export default defineWorkflow("ralph")
         "github-copilot/claude-opus-4.7",
       ],
       thinkingLevel: "high" as const,
+      tools: noAskQuestionToolSet,
     };
 
     let explorerModelConfig = {
@@ -200,6 +206,7 @@ export default defineWorkflow("ralph")
         "github-copilot/claude-haiku-4.5",
       ],
       thinkingLevel: "low" as const,
+      tools: noAskQuestionToolSet,
     };
 
     for (let iteration = 1; iteration <= maxLoops; iteration += 1) {

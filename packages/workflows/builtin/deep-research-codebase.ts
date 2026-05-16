@@ -185,6 +185,8 @@ export default defineWorkflow("deep-research-codebase")
       codebaseLines,
     );
 
+    let noAskQuestionToolSet = ["read, bash, edit, write, todo"];
+
     let plannerModelConfig = {
       model: "openai/gpt-5.5",
       fallbackModels: [
@@ -193,6 +195,7 @@ export default defineWorkflow("deep-research-codebase")
         "github-copilot/claude-opus-4.7",
       ],
       thinkingLevel: "high" as const,
+      tools: noAskQuestionToolSet,
     };
 
     let explorerModelConfig = {
@@ -203,6 +206,7 @@ export default defineWorkflow("deep-research-codebase")
         "github-copilot/claude-haiku-4.5",
       ],
       thinkingLevel: "low" as const,
+      tools: noAskQuestionToolSet,
     };
 
     const initialDiscovery = await ctx.parallel(

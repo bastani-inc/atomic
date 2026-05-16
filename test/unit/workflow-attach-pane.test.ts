@@ -102,6 +102,33 @@ describe("WorkflowAttachPane", () => {
     pane.dispose();
   });
 
+  test("slash switcher selection swaps directly to selected stage chat", () => {
+    const store = createStore();
+    setupRun(store, "run-1", [
+      { id: "stage-a", name: "A" },
+      { id: "stage-b", name: "B" },
+    ]);
+    const registry = createStageControlRegistry();
+    registry.register(makeHandle("run-1", "stage-a"));
+    registry.register(makeHandle("run-1", "stage-b"));
+    const pane = new WorkflowAttachPane({
+      store,
+      graphTheme: deriveGraphTheme({}),
+      runId: "run-1",
+      stageControlRegistry: registry,
+      onClose: () => {},
+    });
+
+    pane.handleInput("/");
+    pane.handleInput("\x1b[B");
+    pane.handleInput("\r");
+
+    assert.equal(pane._mode, "stage-chat");
+    assert.equal(pane._lastAttachedStageId, "stage-b");
+    assert.equal(pane._hasChatView, true);
+    pane.dispose();
+  });
+
   test("Ctrl+D in stage-chat mode swaps back to graph with same stage focused", () => {
     const store = createStore();
     setupRun(store, "run-1", [{ id: "stage-a", name: "A" }, { id: "stage-b", name: "B" }]);
@@ -172,6 +199,32 @@ describe("WorkflowAttachPane", () => {
     assert.equal(pane._mode, "stage-chat");
     assert.equal(pane._lastAttachedStageId, "stage-a");
     pane.dispose();
+  });
+
+  test("keeps mouse scroll tracking active for graph and stage chat scrolling", () => {
+    const store = createStore();
+    setupRun(store, "run-1", [{ id: "stage-a", name: "A" }]);
+    const registry = createStageControlRegistry();
+    registry.register(makeHandle("run-1", "stage-a"));
+    const mouseTracking: boolean[] = [];
+    const pane = new WorkflowAttachPane({
+      store,
+      graphTheme: deriveGraphTheme({}),
+      runId: "run-1",
+      stageControlRegistry: registry,
+      onClose: () => {},
+      setMouseScrollTracking: (enabled) => mouseTracking.push(enabled),
+    });
+
+    assert.deepEqual(mouseTracking, [true]);
+    pane.handleInput("\r");
+    assert.equal(pane._mode, "stage-chat");
+    assert.deepEqual(mouseTracking, [true, true]);
+    pane.handleInput("\x04");
+    assert.equal(pane._mode, "graph");
+    assert.deepEqual(mouseTracking, [true, true, true]);
+    pane.dispose();
+    assert.deepEqual(mouseTracking, [true, true, true, false]);
   });
 
   test("forwards getViewportRows to graph mode", () => {

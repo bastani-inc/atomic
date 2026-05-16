@@ -22,7 +22,8 @@ import { defineWorkflow } from "../../packages/workflows/src/workflows/define-wo
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { renderResult } from "../../packages/workflows/src/extension/render-result.js";
 import type { WorkflowDefinition, WorkflowPersistencePort } from "../../packages/workflows/src/shared/types.js";
-import type { StageAdapters } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
+import type { CreateAgentSessionOptions } from "@earendil-works/pi-coding-agent";
+import type { StageAdapters, StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import type {
   WorkflowToolResult,
   WorkflowInputEntry,
@@ -71,6 +72,35 @@ const noopAdapters: StageAdapters = {
   prompt: { prompt: async (text) => `echo:${text}` },
   complete: { complete: async (text) => `echo:${text}` },
 };
+
+function fakeStageSession(): StageSessionRuntime {
+  let last = "";
+  return {
+    async prompt(text: string): Promise<string> { last = `echo:${text}`; return last; },
+    async steer(): Promise<void> {},
+    async followUp(): Promise<void> {},
+    subscribe: () => () => {},
+    sessionFile: undefined,
+    sessionId: "session-id",
+    async setModel(): Promise<void> {},
+    setThinkingLevel(): void {},
+    async cycleModel(): Promise<undefined> { return undefined; },
+    cycleThinkingLevel(): undefined { return undefined; },
+    agent: {} as StageSessionRuntime["agent"],
+    model: undefined,
+    thinkingLevel: "medium" as StageSessionRuntime["thinkingLevel"],
+    messages: [],
+    isStreaming: false,
+    async navigateTree(): Promise<{ cancelled: boolean }> { return { cancelled: true }; },
+    async compact(): ReturnType<StageSessionRuntime["compact"]> {
+      return undefined as unknown as Awaited<ReturnType<StageSessionRuntime["compact"]>>;
+    },
+    abortCompaction(): void {},
+    async abort(): Promise<void> {},
+    dispose(): void {},
+    getLastAssistantText(): string | undefined { return last; },
+  };
+}
 
 const helloWorkflow = defineWorkflow("hello-world")
   .description("Simple greeting")
@@ -184,6 +214,36 @@ describe("runtime.runDirect — workflow intercom", () => {
     assert.equal(result.status, "failed");
     assert.match(result.error ?? "", /missing\/model \(not available\)/);
     assert.equal(activeStore.runs().length, 0);
+  });
+
+  test("foreground direct single forwards top-level createAgentSession options", async () => {
+    const calls: CreateAgentSessionOptions[] = [];
+    const runtime = createExtensionRuntime({
+      adapters: {
+        agentSession: {
+          async create(options) {
+            calls.push(options);
+            return fakeStageSession();
+          },
+        },
+      },
+    });
+
+    const result = await runtime.runDirect({
+      task: { name: "solo", task: "inspect solo" },
+      cwd: "/repo",
+      agentDir: "/agent",
+      tools: ["read", "todo"],
+      noTools: "builtin",
+      thinkingLevel: "high",
+    });
+
+    assert.equal(result.status, "completed");
+    assert.equal(calls[0]?.cwd, "/repo");
+    assert.equal(calls[0]?.agentDir, "/agent");
+    assert.deepEqual(calls[0]?.tools, ["read", "todo"]);
+    assert.equal(calls[0]?.noTools, "builtin");
+    assert.equal(calls[0]?.thinkingLevel, "high");
   });
 
   test("foreground direct single runs keep intercom off unless requested", async () => {
