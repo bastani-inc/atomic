@@ -136,18 +136,17 @@ import { CountdownTimer } from "./components/countdown-timer.js";
 import { CustomEditor } from "./components/custom-editor.js";
 import { CustomMessageComponent } from "./components/custom-message.js";
 import { DaxnutsComponent } from "./components/daxnuts.js";
+import { ATOMIC_ANSI_BANNER_LINES } from "./components/atomic-banner.js";
 import { DynamicBorder } from "./components/dynamic-border.js";
 import { EarendilAnnouncementComponent } from "./components/earendil-announcement.js";
 import { ExtensionEditorComponent } from "./components/extension-editor.js";
 import { ExtensionInputComponent } from "./components/extension-input.js";
 import { ExtensionSelectorComponent } from "./components/extension-selector.js";
-import { FooterComponent } from "./components/footer.js";
+import { FooterComponent, UsageMeterComponent } from "./components/footer.js";
 import {
   formatKeyText,
   keyDisplayText,
-  keyHint,
   keyText,
-  rawKeyHint,
 } from "./components/keybinding-hints.js";
 import { LoginDialogComponent } from "./components/login-dialog.js";
 import { ModelSelectorComponent } from "./components/model-selector.js";
@@ -176,7 +175,6 @@ import {
   setThemeInstance,
   stopThemeWatcher,
   Theme,
-  type ThemeColor,
   theme,
 } from "./theme/theme.js";
 
@@ -301,6 +299,7 @@ export class InteractiveMode {
   private fdPath: string | undefined;
   private editorContainer: Container;
   private footer: FooterComponent;
+  private usageMeter: UsageMeterComponent;
   private footerDataProvider: FooterDataProvider;
   // Stored so the same manager can be injected into custom editors, selectors, and extension UI.
   private keybindings: KeybindingsManager;
@@ -460,7 +459,8 @@ export class InteractiveMode {
       this.sessionManager.getCwd(),
     );
     this.footer = new FooterComponent(this.session, this.footerDataProvider);
-    this.footer.setAutoCompactEnabled(this.session.autoCompactionEnabled);
+    this.usageMeter = new UsageMeterComponent(this.session);
+    this.usageMeter.setAutoCompactEnabled(this.session.autoCompactionEnabled);
 
     // Load hide thinking block setting
     this.hideThinkingBlock = this.settingsManager.getHideThinkingBlock();
@@ -703,62 +703,12 @@ export class InteractiveMode {
     // Add header container as first child
     this.ui.addChild(this.headerContainer);
 
-    // Add header with keybindings from config (unless silenced)
+    // Add the quiet startup identity (unless silenced). Resource details are
+    // disclosed separately in the chat canvas via the tools/resources toggle.
     if (this.options.verbose || !this.settingsManager.getQuietStartup()) {
-      const logo =
-        theme.bold(theme.fg("accent", APP_NAME)) +
-        theme.fg("dim", ` v${this.version}`);
-
-      // Build startup instructions using keybinding hint helpers
-      const hint = (keybinding: AppKeybinding, description: string) =>
-        keyHint(keybinding, description);
-
-      const expandedInstructions = [
-        hint("app.interrupt", "to interrupt"),
-        hint("app.clear", "to clear"),
-        rawKeyHint(`${keyText("app.clear")} twice`, "to exit"),
-        hint("app.exit", "to exit (empty)"),
-        hint("app.suspend", "to suspend"),
-        keyHint("tui.editor.deleteToLineEnd", "to delete to end"),
-        hint("app.thinking.cycle", "to cycle thinking level"),
-        rawKeyHint(
-          `${keyText("app.model.cycleForward")}/${keyText("app.model.cycleBackward")}`,
-          "to cycle models",
-        ),
-        hint("app.model.select", "to select model"),
-        hint("app.tools.expand", "to expand tools"),
-        hint("app.thinking.toggle", "to expand thinking"),
-        hint("app.editor.external", "for external editor"),
-        rawKeyHint("/", "for commands"),
-        rawKeyHint("!", "to run bash"),
-        rawKeyHint("!!", "to run bash (no context)"),
-        hint("app.message.followUp", "to queue follow-up"),
-        hint("app.message.dequeue", "to edit all queued messages"),
-        hint("app.clipboard.pasteImage", "to paste image"),
-        rawKeyHint("drop files", "to attach"),
-      ].join("\n");
-      const compactInstructions = [
-        hint("app.interrupt", "interrupt"),
-        rawKeyHint(
-          `${keyText("app.clear")}/${keyText("app.exit")}`,
-          "clear/exit",
-        ),
-        rawKeyHint("/", "commands"),
-        rawKeyHint("!", "bash"),
-        hint("app.tools.expand", "more"),
-      ].join(theme.fg("muted", " · "));
-      const compactOnboarding = theme.fg(
-        "dim",
-        `Press ${keyText("app.tools.expand")} to show full startup help and loaded resources.`,
-      );
-      const onboarding = theme.fg(
-        "dim",
-        `Atomic is built with Pi. Pi can explain its own features and look up its docs. Ask it how to use or extend Pi.`,
-      );
       this.builtInHeader = new ExpandableText(
-        () =>
-          `${logo}\n${compactInstructions}\n${compactOnboarding}\n\n${onboarding}`,
-        () => `${logo}\n${expandedInstructions}\n\n${onboarding}`,
+        () => this.getStartupIdentityText(),
+        () => this.getStartupIdentityText(),
         this.getStartupExpansionState(),
         1,
         0,
@@ -779,6 +729,7 @@ export class InteractiveMode {
     this.ui.addChild(this.statusContainer);
     this.renderWidgets(); // Initialize with default spacer
     this.ui.addChild(this.widgetContainerAbove);
+    this.ui.addChild(this.usageMeter);
     this.ui.addChild(this.editorContainer);
     this.ui.addChild(this.widgetContainerBelow);
     this.ui.addChild(this.footer);
@@ -1077,6 +1028,31 @@ export class InteractiveMode {
     }
 
     return this.formatDisplayPath(absolutePath);
+  }
+
+  private getStartupIdentityText(): string {
+    const appLabel = APP_NAME.length > 0
+      ? `${APP_NAME[0]!.toUpperCase()}${APP_NAME.slice(1)}`
+      : "Atomic";
+    const title = `${theme.bold(theme.fg("text", appLabel))} ${theme.fg("muted", `v${this.version}`)}`;
+    const model = this.session.state.model;
+    const provider = model ? theme.fg("dim", `(${model.provider})`) : theme.fg("dim", "(no-provider)");
+    const thinking = model?.reasoning ? ` ${this.session.thinkingLevel || "off"}` : "";
+    const modelLine = `${provider} ${theme.fg("muted", `${model?.id ?? "no-model"}${thinking}`)}`;
+    const cwd = theme.fg("muted", this.formatDisplayPath(this.sessionManager.getCwd()));
+    const metaLines = [title, modelLine, cwd];
+    const markLines = this.getAtomicAnsiMarkLines();
+
+    return markLines
+      .map((line, index) => `${line}  ${metaLines[index] ?? ""}`.trimEnd())
+      .join("\n");
+  }
+
+  private getAtomicAnsiMarkLines(): string[] {
+    // Each entry already carries its own truecolor SGR escapes (half-block
+    // pixel art rendered with split FG/BG colors), so do not wrap them with
+    // theme.fg — that would override the embedded gradient.
+    return [...ATOMIC_ANSI_BANNER_LINES];
   }
 
   private getStartupExpansionState(): boolean {
@@ -1497,6 +1473,99 @@ export class InteractiveMode {
     return lines.join("\n");
   }
 
+  private getResourceDiagnosticsTotal(values: ResourceDiagnostic[][]): number {
+    return values.reduce((total, diagnostics) => total + diagnostics.length, 0);
+  }
+
+  private formatResourceCount(count: number, singular: string, plural = `${singular}s`): string | undefined {
+    if (count <= 0) {
+      return undefined;
+    }
+    return `${count} ${count === 1 ? singular : plural}`;
+  }
+
+  private addResourceDisclosure(options: {
+    contextFiles: ReadonlyArray<{ path: string }>;
+    skills: ReadonlyArray<{ filePath: string; name: string }>;
+    prompts: ReadonlyArray<{ filePath: string; name: string }>;
+    templates: ReadonlyArray<{ filePath: string; name: string }>;
+    extensions: ReadonlyArray<{ path: string; sourceInfo?: SourceInfo }>;
+    themes: ReadonlyArray<{ name?: string; sourcePath?: string }>;
+    diagnosticsTotal: number;
+    expandedBody: string;
+  }): void {
+    const contextLabels = options.contextFiles.map((contextFile) =>
+      this.formatContextPath(contextFile.path),
+    );
+    const promptCount = options.prompts.length + options.templates.length;
+    const summaryParts = [
+      contextLabels.length > 0 ? contextLabels.join(", ") : "context ready",
+      this.formatResourceCount(options.skills.length, "skill"),
+      this.formatResourceCount(promptCount, "prompt"),
+      this.formatResourceCount(options.extensions.length, "extension"),
+      this.formatResourceCount(options.themes.length, "theme"),
+      this.formatResourceCount(options.diagnosticsTotal, "issue"),
+    ].filter((part): part is string => part !== undefined && part.length > 0);
+
+    const collapsed = `${theme.bold(theme.fg("muted", "RESOURCES"))} ${theme.fg("muted", summaryParts.join(" · "))}`;
+
+    const ok = theme.fg("success", "✓");
+    const pending = theme.fg("dim", "○");
+    const sep = theme.fg("dim", " · ");
+    const label = (value: string) => theme.bold(theme.fg("text", value.padEnd(10)));
+    const mutedList = (values: string[], maxItems = 4) => {
+      if (values.length === 0) {
+        return theme.fg("dim", "none");
+      }
+      const shown = values.slice(0, maxItems).join(", ");
+      const suffix = values.length > maxItems ? `, +${values.length - maxItems}` : "";
+      return theme.fg("dim", `${shown}${suffix}`);
+    };
+
+    const extensionLabels = this.getCompactExtensionLabels([...options.extensions]);
+    const themeLabels = options.themes.map((loadedTheme) =>
+      loadedTheme.name ??
+      (loadedTheme.sourcePath
+        ? this.getCompactPathLabel(loadedTheme.sourcePath, undefined)
+        : "theme"),
+    );
+    const expandedSummary = [
+      `${ok} ${label("Ready")} ${contextLabels.length > 0 ? contextLabels.join(", ") : "context loaded"}`,
+      `${ok} ${label("Skills")} ${options.skills.length} available${sep}${mutedList(options.skills.map((skill) => skill.name))}`,
+      `${ok} ${label("Prompts")} ${promptCount} available${sep}${mutedList([
+        ...options.templates.map((template) => `/${template.name}`),
+        ...options.prompts.map((prompt) => prompt.name),
+      ])}`,
+      `${ok} ${label("Extensions")} ${options.extensions.length} available${sep}${mutedList(extensionLabels)}`,
+    ];
+
+    if (themeLabels.length > 0) {
+      expandedSummary.push(
+        `${ok} ${label("Themes")} ${themeLabels.length} loaded${sep}${mutedList(themeLabels)}`,
+      );
+    }
+    if (options.diagnosticsTotal > 0) {
+      expandedSummary.push(
+        `${pending} ${label("Issues")} ${options.diagnosticsTotal} noted${sep}${theme.fg("dim", "details below")}`,
+      );
+    }
+
+    const expanded = `${collapsed}\n${expandedSummary.join("\n")}${
+      options.expandedBody.length > 0 ? `\n\n${options.expandedBody}` : ""
+    }`;
+
+    this.chatContainer.addChild(
+      new ExpandableText(
+        () => collapsed,
+        () => expanded,
+        this.getStartupExpansionState(),
+        0,
+        0,
+      ),
+    );
+    this.chatContainer.addChild(new Spacer(1));
+  }
+
   private showLoadedResources(options?: {
     extensions?: Array<{ path: string; sourceInfo?: SourceInfo }>;
     force?: boolean;
@@ -1511,37 +1580,6 @@ export class InteractiveMode {
     if (!showListing && !showDiagnostics) {
       return;
     }
-
-    const sectionHeader = (name: string, color: ThemeColor = "mdHeading") =>
-      theme.fg(color, `[${name}]`);
-    const formatCompactList = (
-      items: string[],
-      options?: { sort?: boolean },
-    ): string => {
-      const labels = items
-        .map((item) => item.trim())
-        .filter((item) => item.length > 0);
-      if (options?.sort !== false) {
-        labels.sort((a, b) => a.localeCompare(b));
-      }
-      return theme.fg("dim", `  ${labels.join(", ")}`);
-    };
-    const addLoadedSection = (
-      name: string,
-      collapsedBody: string,
-      expandedBody = collapsedBody,
-      color: ThemeColor = "mdHeading",
-    ): void => {
-      const section = new ExpandableText(
-        () => `${sectionHeader(name, color)}\n${collapsedBody}`,
-        () => `${sectionHeader(name, color)}\n${expandedBody}`,
-        this.getStartupExpansionState(),
-        0,
-        0,
-      );
-      this.chatContainer.addChild(section);
-      this.chatContainer.addChild(new Spacer(1));
-    };
 
     const skillsResult = this.session.resourceLoader.getSkills();
     const promptsResult = this.session.resourceLoader.getPrompts();
@@ -1579,18 +1617,16 @@ export class InteractiveMode {
     if (showListing) {
       const contextFiles =
         this.session.resourceLoader.getAgentsFiles().agentsFiles;
+      const templates = this.session.promptTemplates;
+      const customThemes = themesResult.themes.filter((t) => t.sourcePath);
+
+      const expandedSections: string[] = [];
       if (contextFiles.length > 0) {
-        this.chatContainer.addChild(new Spacer(1));
-        const contextList = contextFiles
-          .map((f) => theme.fg("dim", `  ${this.formatDisplayPath(f.path)}`))
-          .join("\n");
-        const contextCompactList = formatCompactList(
-          contextFiles.map((contextFile) =>
-            this.formatContextPath(contextFile.path),
-          ),
-          { sort: false },
+        expandedSections.push(
+          `${theme.bold(theme.fg("muted", "CONTEXT"))}\n${contextFiles
+            .map((contextFile) => theme.fg("dim", `  ${this.formatDisplayPath(contextFile.path)}`))
+            .join("\n")}`,
         );
-        addLoadedSection("Context", contextCompactList, contextList);
       }
 
       const skills = skillsResult.skills;
@@ -1601,18 +1637,15 @@ export class InteractiveMode {
             sourceInfo: skill.sourceInfo,
           })),
         );
-        const skillList = this.formatScopeGroups(groups, {
-          formatPath: (item) => this.formatDisplayPath(item.path),
-          formatPackagePath: (item) =>
-            this.getShortPath(item.path, item.sourceInfo),
-        });
-        const skillCompactList = formatCompactList(
-          skills.map((skill) => skill.name),
+        expandedSections.push(
+          `${theme.bold(theme.fg("muted", "SKILLS"))}\n${this.formatScopeGroups(groups, {
+            formatPath: (item) => this.formatDisplayPath(item.path),
+            formatPackagePath: (item) =>
+              this.getShortPath(item.path, item.sourceInfo),
+          })}`,
         );
-        addLoadedSection("Skills", skillCompactList, skillList);
       }
 
-      const templates = this.session.promptTemplates;
       if (templates.length > 0) {
         const groups = this.buildScopeGroups(
           templates.map((template) => ({
@@ -1621,49 +1654,54 @@ export class InteractiveMode {
           })),
         );
         const templateByPath = new Map(templates.map((t) => [t.filePath, t]));
-        const templateList = this.formatScopeGroups(groups, {
-          formatPath: (item) => {
-            const template = templateByPath.get(item.path);
-            return template
-              ? `/${template.name}`
-              : this.formatDisplayPath(item.path);
-          },
-          formatPackagePath: (item) => {
-            const template = templateByPath.get(item.path);
-            return template
-              ? `/${template.name}`
-              : this.formatDisplayPath(item.path);
-          },
-        });
-        const promptCompactList = formatCompactList(
-          templates.map((template) => `/${template.name}`),
+        expandedSections.push(
+          `${theme.bold(theme.fg("muted", "PROMPTS"))}\n${this.formatScopeGroups(groups, {
+            formatPath: (item) => {
+              const template = templateByPath.get(item.path);
+              return template
+                ? `/${template.name}`
+                : this.formatDisplayPath(item.path);
+            },
+            formatPackagePath: (item) => {
+              const template = templateByPath.get(item.path);
+              return template
+                ? `/${template.name}`
+                : this.formatDisplayPath(item.path);
+            },
+          })}`,
         );
-        addLoadedSection("Prompts", promptCompactList, templateList);
+      }
+
+      const prompts = promptsResult.prompts;
+      if (prompts.length > 0) {
+        const groups = this.buildScopeGroups(
+          prompts.map((prompt) => ({
+            path: prompt.filePath,
+            sourceInfo: prompt.sourceInfo,
+          })),
+        );
+        const promptByPath = new Map(prompts.map((prompt) => [prompt.filePath, prompt]));
+        expandedSections.push(
+          `${theme.bold(theme.fg("muted", "PROMPTS"))}\n${this.formatScopeGroups(groups, {
+            formatPath: (item) => promptByPath.get(item.path)?.name ?? this.formatDisplayPath(item.path),
+            formatPackagePath: (item) => promptByPath.get(item.path)?.name ?? this.formatDisplayPath(item.path),
+          })}`,
+        );
       }
 
       if (extensions.length > 0) {
         const groups = this.buildScopeGroups(extensions);
-        const extList = this.formatScopeGroups(groups, {
-          formatPath: (item) => this.formatExtensionDisplayPath(item.path),
-          formatPackagePath: (item) =>
-            this.formatExtensionDisplayPath(
-              this.getShortPath(item.path, item.sourceInfo),
-            ),
-        });
-        const extensionCompactList = formatCompactList(
-          this.getCompactExtensionLabels(extensions),
-        );
-        addLoadedSection(
-          "Extensions",
-          extensionCompactList,
-          extList,
-          "mdHeading",
+        expandedSections.push(
+          `${theme.bold(theme.fg("muted", "EXTENSIONS"))}\n${this.formatScopeGroups(groups, {
+            formatPath: (item) => this.formatExtensionDisplayPath(item.path),
+            formatPackagePath: (item) =>
+              this.formatExtensionDisplayPath(
+                this.getShortPath(item.path, item.sourceInfo),
+              ),
+          })}`,
         );
       }
 
-      // Show loaded themes (excluding built-in)
-      const loadedThemes = themesResult.themes;
-      const customThemes = loadedThemes.filter((t) => t.sourcePath);
       if (customThemes.length > 0) {
         const groups = this.buildScopeGroups(
           customThemes.map((loadedTheme) => ({
@@ -1671,23 +1709,48 @@ export class InteractiveMode {
             sourceInfo: loadedTheme.sourceInfo,
           })),
         );
-        const themeList = this.formatScopeGroups(groups, {
-          formatPath: (item) => this.formatDisplayPath(item.path),
-          formatPackagePath: (item) =>
-            this.getShortPath(item.path, item.sourceInfo),
-        });
-        const themeCompactList = formatCompactList(
-          customThemes.map(
-            (loadedTheme) =>
-              loadedTheme.name ??
-              this.getCompactPathLabel(
-                loadedTheme.sourcePath!,
-                loadedTheme.sourceInfo,
-              ),
-          ),
+        expandedSections.push(
+          `${theme.bold(theme.fg("muted", "THEMES"))}\n${this.formatScopeGroups(groups, {
+            formatPath: (item) => this.formatDisplayPath(item.path),
+            formatPackagePath: (item) =>
+              this.getShortPath(item.path, item.sourceInfo),
+          })}`,
         );
-        addLoadedSection("Themes", themeCompactList, themeList);
       }
+
+      const extensionDiagnostics: ResourceDiagnostic[] = [];
+      const extensionErrors =
+        this.session.resourceLoader.getExtensions().errors;
+      for (const error of extensionErrors) {
+        extensionDiagnostics.push({
+          type: "error",
+          message: error.error,
+          path: error.path,
+        });
+      }
+      extensionDiagnostics.push(
+        ...this.session.extensionRunner.getCommandDiagnostics(),
+        ...this.getBuiltInCommandConflictDiagnostics(
+          this.session.extensionRunner,
+        ),
+        ...this.session.extensionRunner.getShortcutDiagnostics(),
+      );
+
+      this.addResourceDisclosure({
+        contextFiles,
+        skills,
+        prompts,
+        templates,
+        extensions,
+        themes: customThemes,
+        diagnosticsTotal: this.getResourceDiagnosticsTotal([
+          skillsResult.diagnostics,
+          promptsResult.diagnostics,
+          extensionDiagnostics,
+          themesResult.diagnostics,
+        ]),
+        expandedBody: this.options.verbose ? expandedSections.join("\n\n") : "",
+      });
     }
 
     if (showDiagnostics) {
@@ -1876,7 +1939,8 @@ export class InteractiveMode {
 
   private applyRuntimeSettings(): void {
     this.footer.setSession(this.session);
-    this.footer.setAutoCompactEnabled(this.session.autoCompactionEnabled);
+    this.usageMeter.setSession(this.session);
+    this.usageMeter.setAutoCompactEnabled(this.session.autoCompactionEnabled);
     this.footerDataProvider.setCwd(this.sessionManager.getCwd());
     this.hideThinkingBlock = this.settingsManager.getHideThinkingBlock();
     this.ui.setShowHardwareCursor(this.settingsManager.getShowHardwareCursor());
@@ -4404,7 +4468,7 @@ export class InteractiveMode {
         {
           onAutoCompactChange: (enabled) => {
             this.session.setAutoCompactionEnabled(enabled);
-            this.footer.setAutoCompactEnabled(enabled);
+            this.usageMeter.setAutoCompactEnabled(enabled);
           },
           onShowImagesChange: (enabled) => {
             this.settingsManager.setShowImages(enabled);
