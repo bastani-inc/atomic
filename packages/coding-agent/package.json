@@ -1,6 +1,6 @@
 {
   "name": "@bastani/atomic",
-  "version": "0.8.2",
+  "version": "0.8.3-0",
   "description": "Atomic coding agent CLI with read, bash, edit, write tools and session management",
   "type": "module",
   "piConfig": {
