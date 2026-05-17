@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.8.3-0] - 2026-05-17
+
+### Changed
+
+- Pinned `@j178/prek` to 0.3.13 to keep hook installation stable.
+
 ## [0.8.2] - 2026-05-16
 
 ### Changed
