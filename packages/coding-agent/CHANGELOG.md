@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.8.4] - 2026-05-17
+
+### Added
+
+- Added selected model details to the system prompt for assistant model attribution.
+
+### Changed
+
+- Aligned package references with Atomic branding.
+
 ## [0.8.4-0] - 2026-05-17
 
 ### Added
