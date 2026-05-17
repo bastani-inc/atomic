@@ -172,6 +172,7 @@ MIT — see [LICENSE](LICENSE).
 
 ## Credits
 
+- [Pi](https://pi.dev)
 - [Superpowers](https://github.com/obra/superpowers)
 - [Anthropic Skills](https://github.com/anthropics/skills)
 - [Ralph Wiggum Method](https://ghuntley.com/ralph/)

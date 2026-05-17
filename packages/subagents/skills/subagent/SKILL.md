@@ -129,7 +129,7 @@ Builtin agents load at the lowest priority. Project agents override user agents,
 | `code-simplifier` | Clean up recently changed code without changing behavior | `openai/gpt-5.5` | low | read, edit, write, grep, find, ls, bash | **Writer.** Scopes to recently modified code by default; preserves all observable behavior. |
 | `debugger` | Reproduce, diagnose, and fix failing behavior | `openai/gpt-5.5` | high | read, edit, write, grep, find, ls, bash, web_search, fetch_content, get_search_content | **Writer.** Has the `tdd` and `playwright-cli` skills. Inspect-only mode requires an explicit instruction. |
 
-Each builtin declares an explicit `model` and `fallbackModels` chain (typically `github-copilot/<same>`, then `anthropic/claude-opus-4-7`, then `github-copilot/claude-opus-4.7`). Override per run with inline config:
+Each builtin declares an explicit `model` and `fallbackModels` chain (typically `github-copilot/<same>`, then `anthropic/claude-opus-4-7`, then `github-copilot/claude-opus-4.7`). The current user-selected model is automatically appended as the last fallback and de-duplicated. Override per run with inline config:
 
 ```text
 /run codebase-analyzer[model=anthropic/claude-sonnet-4] "Trace the auth flow"

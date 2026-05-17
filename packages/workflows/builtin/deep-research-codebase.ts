@@ -190,6 +190,7 @@ export default defineWorkflow("deep-research-codebase")
     let plannerModelConfig = {
       model: "openai/gpt-5.5",
       fallbackModels: [
+        "openai-codex/gpt-5.5",
         "github-copilot/gpt-5.5",
         "anthropic/claude-opus-4-7",
         "github-copilot/claude-opus-4.7",
@@ -201,6 +202,7 @@ export default defineWorkflow("deep-research-codebase")
     let explorerModelConfig = {
       model: "openai/gpt-5.4-mini",
       fallbackModels: [
+        "openai-codex/gpt-5.4-mini",
         "github-copilot/gpt-5.4-mini",
         "anthropic/claude-haiku-4-5",
         "github-copilot/claude-haiku-4.5",

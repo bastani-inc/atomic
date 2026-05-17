@@ -44,10 +44,11 @@ export function buildModelCandidates(
 	fallbackModels: string[] | undefined,
 	availableModels: AvailableModelInfo[] | undefined,
 	preferredProvider?: string,
+	currentModel?: string,
 ): string[] {
 	const seen = new Set<string>();
 	const candidates: string[] = [];
-	for (const raw of [primaryModel, ...(fallbackModels ?? [])]) {
+	for (const raw of [primaryModel, ...(fallbackModels ?? []), currentModel]) {
 		if (!raw) continue;
 		const normalized = resolveModelCandidate(raw.trim(), availableModels, preferredProvider);
 		if (!normalized || seen.has(normalized)) continue;
@@ -55,6 +56,11 @@ export function buildModelCandidates(
 		candidates.push(normalized);
 	}
 	return candidates;
+}
+
+export function currentModelFullId(model: { provider: string; id: string } | undefined): string | undefined {
+	if (!model) return undefined;
+	return `${String(model.provider)}/${model.id}`;
 }
 
 const RETRYABLE_MODEL_FAILURE_PATTERNS = [

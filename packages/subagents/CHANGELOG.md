@@ -14,6 +14,7 @@
 ### Added
 
 ### Fixed
+- Append the current user-selected model as the final subagent fallback candidate, so retryable provider/model failures still get one last attempt after configured `fallbackModels` are exhausted.
 
 ## [0.24.2] - 2026-05-10
 

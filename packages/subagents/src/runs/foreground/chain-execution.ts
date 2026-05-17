@@ -56,7 +56,7 @@ import {
 	MAX_CONCURRENCY,
 	resolveChildMaxSubagentDepth,
 } from "../../shared/types.ts";
-import { resolveModelCandidate } from "../shared/model-fallback.ts";
+import { currentModelFullId, resolveModelCandidate } from "../shared/model-fallback.ts";
 import { validateFileOnlyOutputMode } from "../shared/single-output.ts";
 
 interface ChainExecutionDetailsInput {
@@ -247,6 +247,7 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 				modelOverride: effectiveModel,
 				availableModels: input.availableModels,
 				preferredModelProvider: input.ctx.model?.provider,
+				currentModel: currentModelFullId(input.ctx.model),
 				skills: behavior.skills === false ? [] : behavior.skills,
 				onUpdate: input.onUpdate
 					? (progressUpdate) => {
@@ -796,6 +797,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				modelOverride: effectiveModel,
 				availableModels,
 				preferredModelProvider: ctx.model?.provider,
+				currentModel: currentModelFullId(ctx.model),
 				skills: behavior.skills === false ? [] : behavior.skills,
 				onUpdate: onUpdate
 					? (p) => {

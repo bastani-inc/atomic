@@ -13,7 +13,7 @@ import { handleManagementAction } from "../../agents/agent-management.ts";
 import { buildDoctorReport } from "../../extension/doctor.ts";
 import { clearPendingForegroundControlNotices } from "../../extension/control-notices.ts";
 import { runSync } from "./execution.ts";
-import { resolveModelCandidate } from "../shared/model-fallback.ts";
+import { currentModelFullId, resolveModelCandidate } from "../shared/model-fallback.ts";
 import { aggregateParallelOutputs } from "../shared/parallel-utils.ts";
 import { recordRun } from "../shared/run-history.ts";
 import {
@@ -481,6 +481,7 @@ async function resumeAsyncRun(input: {
 			cwd: input.requestCwd,
 			currentSessionId: input.deps.state.currentSessionId,
 			currentModelProvider: input.ctx.model?.provider,
+			currentModel: currentModelFullId(input.ctx.model),
 		},
 		cwd: effectiveCwd,
 		maxOutput: input.params.maxOutput,
@@ -891,6 +892,7 @@ function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): AgentTool
 		cwd: ctx.cwd,
 		currentSessionId: deps.state.currentSessionId!,
 		currentModelProvider: ctx.model?.provider,
+		currentModel: currentModelFullId(ctx.model),
 	};
 	const availableModels: ModelInfo[] = ctx.modelRegistry.getAvailable().map(toModelInfo);
 	const currentMaxSubagentDepth = resolveCurrentMaxSubagentDepth(deps.config.maxSubagentDepth);
@@ -1081,6 +1083,7 @@ async function runChainPath(data: ExecutionContextData, deps: ExecutorDeps): Pro
 			cwd: ctx.cwd,
 			currentSessionId: deps.state.currentSessionId!,
 			currentModelProvider: ctx.model?.provider,
+			currentModel: currentModelFullId(ctx.model),
 		};
 		const asyncChain = wrapChainTasksForFork(chainResult.requestedAsync.chain, params.context);
 		return executeAsyncChain(id, {
@@ -1314,6 +1317,7 @@ async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Pr
 			modelOverride: input.modelOverrides[index],
 			availableModels: input.availableModels,
 			preferredModelProvider: input.ctx.model?.provider,
+			currentModel: currentModelFullId(input.ctx.model),
 			skills: effectiveSkills === false ? [] : effectiveSkills,
 				onUpdate: input.onUpdate
 					? (progressUpdate) => {
@@ -1490,6 +1494,7 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 				cwd: ctx.cwd,
 				currentSessionId: deps.state.currentSessionId!,
 				currentModelProvider: ctx.model?.provider,
+				currentModel: currentModelFullId(ctx.model),
 			};
 			const parallelTasks = tasks.map((t, i) => {
 				const taskText = params.context === "fork" ? wrapForkTask(taskTexts[i]!) : taskTexts[i]!;
@@ -1767,6 +1772,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 				cwd: ctx.cwd,
 				currentSessionId: deps.state.currentSessionId!,
 				currentModelProvider: ctx.model?.provider,
+				currentModel: currentModelFullId(ctx.model),
 			};
 			return executeAsyncSingle(id, {
 				agent: params.agent!,
@@ -1873,6 +1879,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 		modelOverride,
 		availableModels,
 		preferredModelProvider: currentProvider,
+		currentModel: currentModelFullId(ctx.model),
 		skills: effectiveSkills,
 	});
 	if (foregroundControl?.currentIndex === 0) {

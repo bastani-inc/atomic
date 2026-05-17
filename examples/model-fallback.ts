@@ -11,7 +11,11 @@ export default defineWorkflow("model-fallback-example")
     const review = await ctx.task("reviewer", {
       prompt: `Review this topic and call out risks: ${String(ctx.inputs.topic)}`,
       model: "anthropic/claude-sonnet-4",
-      fallbackModels: ["openai/gpt-5-mini", "github-copilot/gpt-5-mini"],
+      fallbackModels: [
+        "openai/gpt-5-mini",
+        "openai-codex/gpt-5-mini",
+        "github-copilot/gpt-5-mini",
+      ],
     });
 
     return {

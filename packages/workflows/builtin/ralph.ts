@@ -157,6 +157,7 @@ export default defineWorkflow("ralph")
     let plannerModelConfig = {
       model: "openai/gpt-5.5",
       fallbackModels: [
+        "openai-codex/gpt-5.5",
         "github-copilot/gpt-5.5",
         "anthropic/claude-opus-4-7",
         "github-copilot/claude-opus-4.7",
@@ -168,6 +169,7 @@ export default defineWorkflow("ralph")
     let orchestratorModelConfig = {
       model: "openai/gpt-5.5",
       fallbackModels: [
+        "openai-codex/gpt-5.5",
         "github-copilot/gpt-5.5",
         "anthropic/claude-sonnet-4-6",
         "github-copilot/claude-sonnet-4.6",
@@ -179,6 +181,7 @@ export default defineWorkflow("ralph")
     let simplifierModelConfig = {
       model: "openai/gpt-5.5",
       fallbackModels: [
+        "openai-codex/gpt-5.5",
         "github-copilot/gpt-5.5",
         "anthropic/claude-sonnet-4-6",
         "github-copilot/claude-sonnet-4.6",
@@ -190,6 +193,7 @@ export default defineWorkflow("ralph")
     let reviewerModelConfig = {
       model: "openai/gpt-5.5",
       fallbackModels: [
+        "openai-codex/gpt-5.5",
         "github-copilot/gpt-5.5",
         "anthropic/claude-opus-4-7",
         "github-copilot/claude-opus-4.7",
@@ -201,6 +205,7 @@ export default defineWorkflow("ralph")
     let explorerModelConfig = {
       model: "openai/gpt-5.4-mini",
       fallbackModels: [
+        "openai-codex/gpt-5.4-mini",
         "github-copilot/gpt-5.4-mini",
         "anthropic/claude-haiku-4-5",
         "github-copilot/claude-haiku-4.5",
