@@ -131,12 +131,20 @@ async function runWorkflowTool(
   // tool returns `{ content, details }`. Tests assert against `details`.
   const out = await execute(
     "test-tool-call",
-    { workflow: "deep-research-codebase", inputs: { prompt: "test research question" }, action: "run" },
+    {
+      workflow: "deep-research-codebase",
+      inputs: { prompt: "test research question", max_partitions: 1 },
+      action: "run",
+    },
     undefined,
     undefined,
     {} as never,
   );
-  return out.details;
+  const result = out.details;
+  if (result.action === "run" && "runId" in result && result.runId !== "") {
+    await waitForRun(result.runId);
+  }
+  return result;
 }
 
 // ---------------------------------------------------------------------------
