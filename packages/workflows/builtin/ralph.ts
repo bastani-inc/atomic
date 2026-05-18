@@ -152,7 +152,19 @@ export default defineWorkflow("ralph")
     let approved = false;
     let iterationsCompleted = 0;
 
-    let noAskQuestionToolSet = ["read", "bash", "edit", "write", "todo"];
+    let noAskQuestionToolSet = [
+      "read",
+      "bash",
+      "edit",
+      "write",
+      "todo",
+      "subagent",
+      "web_search",
+      "code_search",
+      "fetch_content",
+      "get_search_content",
+      "intercom",
+    ];
 
     let plannerModelConfig = {
       model: "openai/gpt-5.5",
