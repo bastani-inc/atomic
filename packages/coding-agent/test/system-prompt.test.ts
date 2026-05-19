@@ -79,7 +79,7 @@ describe("buildSystemPrompt", () => {
 	});
 
 	describe("model attribution", () => {
-		test("includes selected model name before date and working directory", () => {
+		test("includes selected model name and reasoning level before date and working directory", () => {
 			const prompt = buildSystemPrompt({
 				selectedTools: [],
 				contextFiles: [],
@@ -90,11 +90,15 @@ describe("buildSystemPrompt", () => {
 					id: "claude-sonnet-4-5",
 					name: "Claude Sonnet 4.5",
 				},
+				selectedThinkingLevel: "high",
 			});
 
 			const modelLine = "Model name (used for commit attribution): Claude Sonnet 4.5";
+			const reasoningLine = "Model reasoning level: high";
 			expect(prompt).toContain(modelLine);
-			expect(prompt.indexOf(modelLine)).toBeLessThan(prompt.indexOf("Current date:"));
+			expect(prompt).toContain(reasoningLine);
+			expect(prompt.indexOf(modelLine)).toBeLessThan(prompt.indexOf(reasoningLine));
+			expect(prompt.indexOf(reasoningLine)).toBeLessThan(prompt.indexOf("Current date:"));
 			expect(prompt.indexOf("Current date:")).toBeLessThan(prompt.indexOf("Current working directory:"));
 		});
 

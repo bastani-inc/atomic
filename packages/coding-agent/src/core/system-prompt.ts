@@ -29,6 +29,8 @@ export interface BuildSystemPromptOptions {
   cwd: string;
   /** Currently selected model, used for model-aware prompt metadata. */
   selectedModel?: SystemPromptModel;
+  /** Current reasoning/thinking level for the selected model. */
+  selectedThinkingLevel?: string;
   /** Pre-loaded context files. */
   contextFiles?: Array<{ path: string; content: string }>;
   /** Pre-loaded skills. */
@@ -45,6 +47,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
     appendSystemPrompt,
     cwd,
     selectedModel,
+    selectedThinkingLevel,
     contextFiles: providedContextFiles,
     skills: providedSkills,
   } = options;
@@ -60,6 +63,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
   const appendSection = appendSystemPrompt ? `\n\n${appendSystemPrompt}` : "";
   const modelName =
     selectedModel?.name?.trim() || selectedModel?.id || "unknown";
+  const modelReasoningLevel = selectedThinkingLevel?.trim() || "off";
 
   const contextFiles = providedContextFiles ?? [];
   const skills = providedSkills ?? [];
@@ -87,8 +91,9 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
       prompt += formatSkillsForPrompt(skills);
     }
 
-    // Add model name, date, and working directory last
+    // Add model metadata, date, and working directory last
     prompt += `\nModel name (used for commit attribution): ${modelName}`;
+    prompt += `\nModel reasoning level: ${modelReasoningLevel}`;
     prompt += `\nCurrent date: ${date}`;
     prompt += `\nCurrent working directory: ${promptCwd}`;
 
@@ -254,8 +259,9 @@ Atomic (users may also call you Pi) documentation (read only when the user asks 
     prompt += formatSkillsForPrompt(skills);
   }
 
-  // Add model name, date, and working directory last
+  // Add model metadata, date, and working directory last
   prompt += `\nModel name (used for commit attribution): ${modelName}`;
+  prompt += `\nModel reasoning level: ${modelReasoningLevel}`;
   prompt += `\nCurrent date: ${date}`;
   prompt += `\nCurrent working directory: ${promptCwd}`;
 

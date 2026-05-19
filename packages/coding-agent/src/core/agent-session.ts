@@ -961,6 +961,7 @@ export class AgentSession {
 		this._baseSystemPromptOptions = {
 			cwd: this._cwd,
 			selectedModel: this.model,
+			selectedThinkingLevel: this.thinkingLevel,
 			skills: loadedSkills,
 			contextFiles: loadedContextFiles,
 			customPrompt: loaderSystemPrompt,
@@ -1547,6 +1548,7 @@ export class AgentSession {
 
 		if (isChanging) {
 			this.sessionManager.appendThinkingLevelChange(effectiveLevel);
+			this._refreshBaseSystemPromptFromActiveTools();
 			if (this.supportsThinking() || effectiveLevel !== "off") {
 				this.settingsManager.setDefaultThinkingLevel(effectiveLevel);
 			}
