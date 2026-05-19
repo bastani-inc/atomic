@@ -18,11 +18,12 @@ Pull request / push
   └─ scripts/build-binaries.sh --platform <native-x64> + atomic --version smoke test
 
 v<version> tag pushed
+  ├─ smoke test Linux x64 release archive in a dedicated job
+  ├─ smoke test Windows x64 release archive in a dedicated job
   ├─ validate tag matches packages/coding-agent/package.json
   ├─ validate packages/workflows is private
   ├─ bun run typecheck && bun run test:all
   ├─ scripts/build-binaries.sh (regular build + cross-compile 6 targets)
-  ├─ smoke test the Linux release archive with atomic --version
   ├─ validate dist/builtin contains all bundled extensions
   ├─ extract release notes from packages/coding-agent/CHANGELOG.md
   ├─ bun pm pack --dry-run from packages/coding-agent
@@ -126,7 +127,18 @@ The script updates every `packages/*/package.json` version and any package READM
 ```text
 git push origin v0.8.0
        │
-       ▼
+       ├─ Smoke Linux binary
+       │    · build linux-x64
+       │    · extract archive
+       │    · run --version and --no-session
+       │
+       ├─ Smoke Windows binary
+       │    · build windows-x64
+       │    · extract archive
+       │    · run --version and --no-session
+       │
+       └─ after both smoke jobs pass
+          ▼
 Publish @bastani/atomic
   · checkout the tag
   · setup Bun and Node (Node 24 only for npm provenance publish)
@@ -139,7 +151,6 @@ Publish @bastani/atomic
       - bun build --compile --target=bun-<platform> for all 6 targets
       - assemble per-platform asset trees
       - produce atomic-<platform>.tar.gz / .zip in packages/coding-agent/binaries/
-  · extract atomic-linux-x64.tar.gz and run atomic --version as a release-binary smoke check
   · validate dist/builtin has workflows, pi-subagents, pi-mcp-adapter, pi-web-access, pi-intercom
   · extract release notes from packages/coding-agent/CHANGELOG.md
   · determine npm tag: latest or next
@@ -220,7 +231,7 @@ The meaningful pre-publish checks are:
 | File | Trigger | Purpose |
 |------|---------|---------|
 | `test.yml` | Push to `main`, PR to `main` | Install, typecheck, build `@bastani/atomic`, unit tests, integration tests |
-| `publish.yml` | `v*` tag push, manual dispatch with tag input | Build binaries, publish `@bastani/atomic` to npm with OIDC provenance, create GitHub Release with binaries |
+| `publish.yml` | `v*` tag push, manual dispatch with tag input | Smoke test Linux/Windows binaries in parallel, build binaries, publish `@bastani/atomic` to npm with OIDC provenance, create GitHub Release with binaries |
 | `code-review.yml` | PR events | Claude-powered code review |
 | `pr-description.yml` | PR events | PR description generation |
 | `claude.yml` | `@claude` mentions and configured issue/PR events | Interactive Claude assistant |
