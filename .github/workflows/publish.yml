@@ -57,6 +57,9 @@ jobs:
           tar -xzf packages/coding-agent/binaries/atomic-linux-x64.tar.gz -C "$smoke_dir"
 
           "$smoke_dir/atomic/atomic" --version
+          for builtin in workflows subagents mcp web-access intercom; do
+            test -f "$smoke_dir/atomic/builtin/$builtin/package.json"
+          done
 
           # --version exits before builtin extensions are loaded. Start the
           # non-interactive runtime far enough to surface extension diagnostics,
@@ -109,6 +112,12 @@ jobs:
           & $atomic --version
           if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
+          }
+          foreach ($builtin in @("workflows", "subagents", "mcp", "web-access", "intercom")) {
+            $packageJson = Join-Path $smokeDir "builtin/$builtin/package.json"
+            if (-not (Test-Path $packageJson)) {
+              throw "Missing builtin package in archive: $builtin"
+            }
           }
 
           # --version exits before builtin extensions are loaded. Start the

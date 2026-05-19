@@ -41,11 +41,14 @@
 
 import type { GraphTheme } from "../tui/graph-theme.js";
 import { paint } from "../tui/color-utils.js";
+import { truncateToWidth } from "../tui/text-helpers.js";
 import type { WorkflowInputEntry } from "../extension/render-result.js";
 
 export interface RenderInputsSchemaOptions {
   /** When provided, output uses ANSI colours and the `▎ INPUTS` chrome. */
   theme?: GraphTheme;
+  /** Optional host render width in terminal cells. */
+  width?: number;
 }
 
 /**
@@ -58,9 +61,21 @@ export function renderInputsSchema(
   inputs: WorkflowInputEntry[],
   opts: RenderInputsSchemaOptions = {},
 ): string {
-  if (inputs.length === 0) return `Workflow "${name}" has no declared inputs.`;
-  if (opts.theme === undefined) return renderPlain(name, inputs);
-  return renderPretty(name, inputs, opts.theme);
+  if (inputs.length === 0) {
+    return fitBlock(`Workflow "${name}" has no declared inputs.`, opts.width);
+  }
+  const rendered = opts.theme === undefined
+    ? renderPlain(name, inputs)
+    : renderPretty(name, inputs, opts.theme);
+  return fitBlock(rendered, opts.width);
+}
+
+function fitBlock(block: string, width?: number): string {
+  if (width === undefined || width <= 0) return block;
+  return block
+    .split("\n")
+    .map((line) => truncateToWidth(line, width, "…"))
+    .join("\n");
 }
 
 // ---------------------------------------------------------------------------

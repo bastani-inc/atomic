@@ -227,10 +227,7 @@ function renderPayload(
     case "list":
       return renderWorkflowList(payload.entries, { theme, width });
     case "detail":
-      // run-detail uses a fixed-width band header by design; the width
-      // hint is unused — its surface mirrors the orchestrator panel
-      // (outline-pill chrome), not the flex chat band.
-      return renderRunDetail(payload.detail, { theme });
+      return renderRunDetail(payload.detail, { theme, width });
     case "killed":
       return renderWorkflowKilledNotice({
         width,

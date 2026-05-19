@@ -5,7 +5,7 @@
  *   - list / inputs are unchanged
  *   - run is always background — dispatch returns synchronously with
  *     `status: "running"`; final state lives on the store
- *   - renderResult for the run variant emits "started in background"
+ *   - renderResult for the run variant emits a dispatch confirmation card
  *   - persistence forwarding still fires the full lifecycle
  *
  * HIL routing (ctx.ui.input/confirm/select/editor) is no longer driven by
@@ -417,7 +417,7 @@ describe("createExtensionRuntime", () => {
 // ---------------------------------------------------------------------------
 
 describe("renderResult — run variant", () => {
-  test("running run renders as 'started in background'", () => {
+  test("running run renders a dispatch confirmation card", () => {
     const out = renderResult({
       action: "run",
       name: "hello-world",
@@ -428,7 +428,8 @@ describe("renderResult — run variant", () => {
     });
     assert.ok(out.includes("abc-123"));
     assert.ok(out.includes("hello-world"));
-    assert.ok(out.includes("started in background"));
+    assert.ok(out.includes("● running"));
+    assert.ok(out.includes("/workflow connect abc-123"));
   });
 
   test("failed run shows error", () => {

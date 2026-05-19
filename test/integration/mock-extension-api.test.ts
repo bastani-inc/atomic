@@ -27,6 +27,7 @@ import { renderCall } from "../../packages/workflows/src/extension/render-call.j
 import { renderResult } from "../../packages/workflows/src/extension/render-result.js";
 import { waitForRun } from "../support/helpers.ts";
 import { store as defaultStore } from "../../packages/workflows/src/shared/store.ts";
+import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.js";
 
 // ---------------------------------------------------------------------------
 // MockExtensionAPI
@@ -788,8 +789,20 @@ describe("renderCall — all action branches", () => {
     assert.ok(renderCall({ workflow: "wf-c" }).includes("run"));
   });
 
-  test("falls back to '(unnamed)' when name omitted", () => {
-    assert.ok(renderCall({}).includes("(unnamed)"));
+  test("describes direct task runs instead of an unnamed workflow", () => {
+    assert.equal(
+      renderCall({ task: { name: "subagent-tool-probe", prompt: "probe" } }),
+      'workflow: run "direct-task"',
+    );
+  });
+
+  test("respects host render width", () => {
+    const out = renderCall(
+      { action: "run", workflow: "deep-research-codebase-with-a-long-name" },
+      { width: 24 },
+    );
+    assert.ok(visibleWidth(out) <= 24);
+    assert.match(out, /…/);
   });
 });
 
@@ -816,6 +829,76 @@ describe("renderResult — all action branches", () => {
     assert.ok(out.includes("wf-b"));
     assert.ok(out.includes("Alpha"));
     assert.ok(out.includes("prompt"));
+  });
+
+  test("action='list' respects the host render width", () => {
+    const width = 48;
+    const out = renderResult(
+      {
+        action: "list",
+        items: [
+          {
+            name: "deep-research-codebase-with-a-very-long-name",
+            description: "Scout and aggregate a long codebase research pass.",
+            inputs: [{ name: "prompt", required: true }],
+          },
+        ],
+      },
+      { width },
+    );
+    for (const line of out.split("\n")) {
+      assert.ok(visibleWidth(line) <= width, `line exceeds ${width}: ${visibleWidth(line)} ${JSON.stringify(line)}`);
+    }
+  });
+
+  test("all compact tool results respect the host render width", () => {
+    const width = 46;
+    const cases: WorkflowToolResult[] = [
+      {
+        action: "get",
+        workflow: "deep-research-codebase",
+        details: {
+          action: "get",
+          mode: "inspection",
+          status: "completed",
+          output: { description: "A very long workflow description that must fit in the tool row." },
+          progress: { completed: 0, total: 0 },
+        },
+      },
+      { action: "run", runId: "run-abcdef", status: "running", message: "A very long background dispatch message." },
+      { action: "interrupt", runId: "run-abcdef", status: "paused", message: "A very long interrupt response message." },
+      { action: "kill", runId: "run-abcdef", status: "killed", message: "A very long kill response message." },
+      { action: "resume", runId: "run-abcdef", status: "ok", message: "A very long resume response message." },
+    ];
+
+    for (const result of cases) {
+      const out = renderResult(result, { width });
+      for (const line of out.split("\n")) {
+        assert.ok(visibleWidth(line) <= width, `${result.action} exceeds ${width}: ${visibleWidth(line)} ${JSON.stringify(line)}`);
+      }
+    }
+  });
+
+  test("action='inputs' respects the host render width", () => {
+    const width = 52;
+    const out = renderResult(
+      {
+        action: "inputs",
+        name: "deep-research-codebase-with-a-long-name",
+        inputs: [
+          {
+            name: "prompt_with_a_very_long_name",
+            type: "string",
+            required: true,
+            description: "A long prompt description that should truncate to fit the current tool width.",
+          },
+        ],
+      },
+      { width },
+    );
+    for (const line of out.split("\n")) {
+      assert.ok(visibleWidth(line) <= width, `inputs exceeds ${width}: ${visibleWidth(line)} ${JSON.stringify(line)}`);
+    }
   });
 
   test("action='status' empty snapshots renders empty band", () => {
@@ -868,6 +951,26 @@ describe("renderResult — all action branches", () => {
     );
     assert.ok(out.includes("not yet"));
     assert.ok(out.includes("r42"));
+  });
+
+  test("action='run' background dispatch reuses the slash-command dispatch card", () => {
+    const width = 64;
+    const out = renderResult(
+      {
+        action: "run",
+        name: "deep-research-codebase",
+        runId: "abcdef123456",
+        status: "running",
+        message: "started",
+      },
+      { width, runInputs: { prompt: "map the repo" } },
+    );
+    assert.match(out, /deep-research-codebase/);
+    assert.match(out, /prompt/);
+    assert.match(out, /\/workflow connect abcdef12/);
+    for (const line of out.split("\n")) {
+      assert.ok(visibleWidth(line) <= width, `dispatch exceeds ${width}: ${visibleWidth(line)} ${JSON.stringify(line)}`);
+    }
   });
 
   test("action='run' isPartial shows 'in progress'", () => {

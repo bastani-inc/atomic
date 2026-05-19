@@ -44,18 +44,18 @@ function fakeSession(): StageSessionRuntime {
 }
 
 
-function makeFakeAtomicSdk(defaultAgentDir: string): {
+function makeFakeAtomicSdk(defaultAgentDir: string, builtinPackagePaths: string[] = []): {
   readonly sdk: PiCodingAgentSdk;
-  readonly loaderOptions: Array<{ cwd: string; agentDir: string; settingsManager?: PiSdkSettingsManager }>;
+  readonly loaderOptions: Array<{ cwd: string; agentDir: string; settingsManager?: PiSdkSettingsManager; builtinPackagePaths?: string[] }>;
   readonly settingsCalls: Array<{ cwd?: string; agentDir?: string }>;
   readonly reloads: PiSdkResourceLoader[];
 } {
-  const loaderOptions: Array<{ cwd: string; agentDir: string; settingsManager?: PiSdkSettingsManager }> = [];
+  const loaderOptions: Array<{ cwd: string; agentDir: string; settingsManager?: PiSdkSettingsManager; builtinPackagePaths?: string[] }> = [];
   const settingsCalls: Array<{ cwd?: string; agentDir?: string }> = [];
   const reloads: PiSdkResourceLoader[] = [];
 
   class FakeResourceLoader implements PiSdkResourceLoader {
-    constructor(options: { cwd: string; agentDir: string; settingsManager?: PiSdkSettingsManager }) {
+    constructor(options: { cwd: string; agentDir: string; settingsManager?: PiSdkSettingsManager; builtinPackagePaths?: string[] }) {
       loaderOptions.push(options);
     }
 
@@ -66,6 +66,7 @@ function makeFakeAtomicSdk(defaultAgentDir: string): {
 
   const sdk: PiCodingAgentSdk = {
     getAgentDir: () => defaultAgentDir,
+    getBuiltinPackagePaths: () => builtinPackagePaths,
     SettingsManager: {
       create(cwd?: string, agentDir?: string): PiSdkSettingsManager {
         settingsCalls.push({ cwd, agentDir });
@@ -108,6 +109,23 @@ describe("prepareAtomicStageSessionOptions", () => {
 
     assert.equal(options?.agentDir, customAgentDir);
     assert.equal(loaderOptions[0]?.agentDir, customAgentDir);
+  });
+
+  test("loads Atomic builtin package extensions for workflow stage sessions", async () => {
+    const projectDir = join("/tmp", "project");
+    const atomicAgentDir = join("/home", "user", ".atomic", "agent");
+    const builtinPackagePaths = [
+      "/repo/packages/workflows",
+      "/repo/packages/subagents",
+      "/repo/packages/mcp",
+      "/repo/packages/web-access",
+      "/repo/packages/intercom",
+    ];
+    const { sdk, loaderOptions } = makeFakeAtomicSdk(atomicAgentDir, builtinPackagePaths);
+
+    await prepareAtomicStageSessionOptions({ cwd: projectDir }, sdk);
+
+    assert.deepEqual(loaderOptions[0]?.builtinPackagePaths, builtinPackagePaths);
   });
 });
 

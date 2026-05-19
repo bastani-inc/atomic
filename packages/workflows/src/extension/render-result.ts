@@ -19,6 +19,8 @@ import { renderStatusList } from "../tui/status-list.js";
 import { renderRunDetail } from "../tui/run-detail.js";
 import { renderWorkflowList } from "../tui/workflow-list.js";
 import { deriveGraphTheme } from "../tui/graph-theme.js";
+import { renderDispatchConfirm } from "../tui/dispatch-confirm.js";
+import { truncateToWidth } from "../tui/text-helpers.js";
 
 // ---------------------------------------------------------------------------
 // Result variants
@@ -113,6 +115,15 @@ export type WorkflowToolResult =
 export interface RenderResultOpts {
   isPartial?: boolean;
   /**
+   * Host-provided render width in terminal cells. Tool renderers pass the
+   * component width here so workflow tool output uses the same sizing path as
+   * `/workflow` slash-command chat surfaces.
+   */
+  width?: number;
+  /** Original workflow inputs from the tool call, used to render the same
+   * dispatch confirmation card as `/workflow <name> ...` for background runs. */
+  runInputs?: Readonly<Record<string, unknown>>;
+  /**
    * Suppress ANSI colour output (CLI flag paths / non-TTY consumers).
    * When false/undefined the canonical Catppuccin chrome is rendered.
    */
@@ -128,6 +139,11 @@ export interface RenderResultOpts {
  * fallback default below (`{ action: string }`) prevents TypeScript from
  * narrowing the union via `switch (result.action)`.
  */
+function fitLine(line: string, width?: number): string {
+  if (width === undefined || width <= 0) return line;
+  return truncateToWidth(line, width, "…");
+}
+
 export function renderResult(result: WorkflowToolResult, opts?: RenderResultOpts): string {
   const partial = opts?.isPartial === true;
   const themed = opts?.plain !== true;
@@ -137,6 +153,7 @@ export function renderResult(result: WorkflowToolResult, opts?: RenderResultOpts
       const r = result as ListResult;
       return renderWorkflowList(r.items, {
         theme: themed ? deriveGraphTheme({}) : undefined,
+        width: opts?.width,
       });
     }
 
@@ -144,78 +161,98 @@ export function renderResult(result: WorkflowToolResult, opts?: RenderResultOpts
       const r = result as StatusResult;
       return renderStatusList(r.snapshots, {
         theme: themed ? deriveGraphTheme({}) : undefined,
+        width: opts?.width,
       });
     }
 
     case "statusDetail": {
       if ("error" in result) {
         const r = result as Extract<StatusDetailResult, { error: string }>;
-        return `workflow status id=${r.runId}: ${r.error}`;
+        return fitLine(`workflow status id=${r.runId}: ${r.error}`, opts?.width);
       }
       const r = result as Extract<StatusDetailResult, { detail: RunDetail }>;
       return renderRunDetail(r.detail, {
         theme: themed ? deriveGraphTheme({}) : undefined,
+        width: opts?.width,
       });
     }
 
     case "inputs": {
       const r = result as InputsResult;
-      return renderInputsSchema(r.name, r.inputs);
+      return renderInputsSchema(r.name, r.inputs, {
+        theme: themed ? deriveGraphTheme({}) : undefined,
+        width: opts?.width,
+      });
     }
 
     case "get": {
       const r = result as GetResult;
-      if (r.error) return `workflow get (${r.workflow}): ${r.error}`;
+      if (r.error) return fitLine(`workflow get (${r.workflow}): ${r.error}`, opts?.width);
       const output = r.details?.output;
       const description = typeof output?.["description"] === "string" ? ` — ${output["description"]}` : "";
-      return `workflow get (${r.workflow}): ${r.details?.status ?? "completed"}${description}`;
+      return fitLine(
+        `workflow get (${r.workflow}): ${r.details?.status ?? "completed"}${description}`,
+        opts?.width,
+      );
     }
 
     case "run": {
       const r = result as RunResult;
-      if (partial) return `workflow run ${r.runId}: ${r.status} (in progress…)`;
+      if (partial) return fitLine(`workflow run ${r.runId}: ${r.status} (in progress…)`, opts?.width);
       if (r.status === "failed" && !r.runId) {
         // Not-found path — render the error verbatim, no fake runId banner.
         const label = r.name ? ` (${r.name})` : "";
-        return `workflow run${label}: ${r.error ?? "workflow not found"}`;
+        return fitLine(`workflow run${label}: ${r.error ?? "workflow not found"}`, opts?.width);
       }
       if (r.error) {
         const label = r.name ? ` (${r.name})` : "";
-        return `workflow run ${r.runId}${label}: ${r.status} — ${r.error}`;
+        return fitLine(`workflow run ${r.runId}${label}: ${r.status} — ${r.error}`, opts?.width);
       }
       if (r.details) {
         const label = r.name ? ` (${r.name})` : "";
-        return `workflow run ${r.runId}${label}: ${r.details.mode} ${r.details.status}`;
+        return fitLine(`workflow run ${r.runId}${label}: ${r.details.mode} ${r.details.status}`, opts?.width);
       }
       if (r.status === "completed" || r.status === "killed") {
         const label = r.name ? ` (${r.name})` : "";
-        return `workflow run ${r.runId}${label}: ${r.status}`;
+        return fitLine(`workflow run ${r.runId}${label}: ${r.status}`, opts?.width);
       }
-      // Background dispatch — `runDetached()` returns status "running" and
-      // a message; the workflow surfaces progress via store / overlay.
+      // Background dispatch — reuse the same confirmation card rendered by
+      // `/workflow <name> ...` when we have the workflow name and run id.
+      if (r.name && r.runId) {
+        return renderDispatchConfirm({
+          workflowName: r.name,
+          runId: r.runId,
+          inputs: opts?.runInputs ?? {},
+          theme: themed ? deriveGraphTheme({}) : undefined,
+          width: opts?.width,
+        });
+      }
       const label = r.name ? ` (${r.name})` : "";
-      return `workflow run ${r.runId}${label}: started in background — ${r.message ?? r.status}`;
+      return fitLine(
+        `workflow run ${r.runId}${label}: started in background — ${r.message ?? r.status}`,
+        opts?.width,
+      );
     }
 
     case "interrupt": {
       const r = result as InterruptResult;
-      return `workflow interrupt ${r.runId}: ${r.message}`;
+      return fitLine(`workflow interrupt ${r.runId}: ${r.message}`, opts?.width);
     }
 
     case "kill": {
       const r = result as KillResult;
-      return `workflow kill ${r.runId}: ${r.message}`;
+      return fitLine(`workflow kill ${r.runId}: ${r.message}`, opts?.width);
     }
 
     case "resume": {
       const r = result as ResumeResult;
-      return `workflow resume ${r.runId}: ${r.message}`;
+      return fitLine(`workflow resume ${r.runId}: ${r.message}`, opts?.width);
     }
 
     default: {
       // Runtime guard — handles values coerced from external sources.
       const fallback = result as { action: string; message?: string };
-      return `workflow: ${fallback.message ?? JSON.stringify(result)}`;
+      return fitLine(`workflow: ${fallback.message ?? JSON.stringify(result)}`, opts?.width);
     }
   }
 }

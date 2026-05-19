@@ -74,9 +74,9 @@ function isStale(err: unknown): boolean {
  */
 function widgetFactory(snap: StoreSnapshot): WidgetFactory {
   return (_tui, theme) => {
-    const lines = buildThemedWidgetLines(snap, theme as PiTheme | undefined);
     return {
-      render: (_width: number) => lines,
+      render: (width: number) =>
+        buildThemedWidgetLines(snap, theme as PiTheme | undefined, width),
     };
   };
 }

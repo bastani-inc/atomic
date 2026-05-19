@@ -139,6 +139,18 @@ describe("installStoreWidget", () => {
     assert.ok(lines.some((l) => l.includes("my-wf")));
   });
 
+  test("factory reflows the widget against the host render width", () => {
+    const { pi, widgetCalls } = makeMockPi();
+    installStoreWidget(pi, storeInstance);
+    storeInstance.recordRunStart(makeRun("r1", "my-wf"));
+    const factoryCall = widgetCalls.findLast((c) => typeof c.factory === "function")!;
+    const component = factoryCall.factory!(null, undefined) as { render(w: number): string[] };
+
+    const narrowLines = component.render(60);
+
+    assert.deepEqual(narrowLines, [" ▾  1 background · 1 ●"]);
+  });
+
   test("requests a render after each setWidget so pi flushes the change", () => {
     const { pi, widgetCalls, renderRequests } = makeMockPi();
     installStoreWidget(pi, storeInstance);

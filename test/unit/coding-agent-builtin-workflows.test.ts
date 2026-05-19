@@ -4,7 +4,7 @@ import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { DefaultResourceLoader } from "../../packages/coding-agent/src/core/resource-loader.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import { getBuiltinPackagePaths } from "../../packages/coding-agent/src/core/builtin-packages.js";
@@ -21,9 +21,42 @@ const expectedBuiltinPackages = [
   resolve("packages/intercom"),
 ];
 
+const builtinPackageFixtures = [
+  { packageName: "@bastani/workflows", dirname: "workflows", requiredEntry: join("src", "extension", "index.ts") },
+  { packageName: "@bastani/subagents", dirname: "subagents", requiredEntry: join("src", "extension", "index.ts") },
+  { packageName: "@bastani/mcp", dirname: "mcp", requiredEntry: "index.ts" },
+  { packageName: "@bastani/web-access", dirname: "web-access", requiredEntry: "index.ts" },
+  { packageName: "@bastani/intercom", dirname: "intercom", requiredEntry: "index.ts" },
+] as const;
+
+const fullBuiltinPackageLoadTimeoutMs = 60_000;
+
 describe("coding-agent builtin resources", () => {
   test("discovers bundled companion packages in development", () => {
     assert.deepEqual(getBuiltinPackagePaths(), expectedBuiltinPackages);
+  });
+
+  test("discovers shipped binary adjacent builtin packages", () => {
+    const packageDir = tempDir("atomic-binary-package-dir-");
+    const previousPackageDir = process.env.ATOMIC_PACKAGE_DIR;
+    try {
+      for (const fixture of builtinPackageFixtures) {
+        const builtinDir = join(packageDir, "builtin", fixture.dirname);
+        const entryPath = join(builtinDir, fixture.requiredEntry);
+        mkdirSync(dirname(entryPath), { recursive: true });
+        writeFileSync(join(builtinDir, "package.json"), JSON.stringify({ name: fixture.packageName }), "utf-8");
+        writeFileSync(entryPath, "export default function register() {}\n", "utf-8");
+      }
+      process.env.ATOMIC_PACKAGE_DIR = packageDir;
+
+      assert.deepEqual(
+        getBuiltinPackagePaths(),
+        builtinPackageFixtures.map((fixture) => join(packageDir, "builtin", fixture.dirname)),
+      );
+    } finally {
+      if (previousPackageDir === undefined) delete process.env.ATOMIC_PACKAGE_DIR;
+      else process.env.ATOMIC_PACKAGE_DIR = previousPackageDir;
+    }
   });
 
   test("exposes package workflow resources to extensions", async () => {
@@ -101,5 +134,5 @@ describe("coding-agent builtin resources", () => {
     for (const skillName of ["workflow", "subagent", "intercom"]) {
       assert.ok(skillNames.has(skillName), `expected builtin skill ${skillName}`);
     }
-  }, 20_000);
+  }, fullBuiltinPackageLoadTimeoutMs);
 });

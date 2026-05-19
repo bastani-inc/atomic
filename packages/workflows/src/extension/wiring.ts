@@ -96,6 +96,7 @@ interface PiSdkSessionManager {
 }
 export interface PiCodingAgentSdk {
   getAgentDir(): string;
+  getBuiltinPackagePaths?: () => string[];
   SettingsManager: {
     create(cwd?: string, agentDir?: string): PiSdkSettingsManager;
   };
@@ -103,6 +104,7 @@ export interface PiCodingAgentSdk {
     cwd: string;
     agentDir: string;
     settingsManager?: PiSdkSettingsManager;
+    builtinPackagePaths?: string[];
   }) => PiSdkResourceLoader;
   createAgentSession(options?: AtomicCreateAgentSessionOptions): Promise<{ session: StageSessionRuntime }>;
 }
@@ -147,6 +149,7 @@ export async function prepareAtomicStageSessionOptions(
     cwd,
     agentDir,
     settingsManager,
+    builtinPackagePaths: sdk.getBuiltinPackagePaths?.() ?? [],
   });
   await resourceLoader.reload();
 

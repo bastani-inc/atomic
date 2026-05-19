@@ -178,6 +178,7 @@ export type {
 	ResolvedPaths,
 	ResolvedResource,
 } from "./core/package-manager.js";
+export { getBuiltinPackagePaths } from "./core/builtin-packages.js";
 export { DefaultPackageManager } from "./core/package-manager.js";
 export type { ResourceCollision, ResourceDiagnostic, ResourceLoader } from "./core/resource-loader.js";
 export { DefaultResourceLoader, loadProjectContextFiles } from "./core/resource-loader.js";

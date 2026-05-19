@@ -112,12 +112,16 @@ export interface PiRenderComponent {
 }
 
 function textRenderComponent(text: string): PiRenderComponent {
+  return dynamicTextRenderComponent(() => text);
+}
+
+function dynamicTextRenderComponent(renderText: (width: number) => string): PiRenderComponent {
   return {
-    render(_width: number): string[] {
-      return text.split("\n");
+    render(width: number): string[] {
+      return renderText(width).split("\n");
     },
     includes(searchString: string): boolean {
-      return text.includes(searchString);
+      return renderText(120).includes(searchString);
     },
   };
 }
@@ -1401,9 +1405,15 @@ function factory(pi: ExtensionAPI): void {
         };
       },
       renderCall: (args, _theme, _context) =>
-        textRenderComponent(renderCall(args)),
-      renderResult: (result, opts, _theme, _context) =>
-        textRenderComponent(renderResult(result.details, opts)),
+        dynamicTextRenderComponent((width) => renderCall(args, { width })),
+      renderResult: (result, opts, _theme, context) =>
+        dynamicTextRenderComponent((width) =>
+          renderResult(result.details, {
+            ...opts,
+            width,
+            runInputs: (context as { args?: WorkflowToolArgs }).args?.inputs,
+          }),
+        ),
     });
   }
 
