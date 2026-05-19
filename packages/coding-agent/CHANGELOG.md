@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.8.7] - 2026-05-19
+
+### Changed
+
+- Prepared the 0.8.7 release.
+
 ## [0.8.7-0] - 2026-05-19
 
 ### Changed

@@ -1,6 +1,6 @@
 {
   "name": "@bastani/workflows",
-  "version": "0.8.7-0",
+  "version": "0.8.7",
   "private": true,
   "description": "pi extension for multi-stage workflow authoring and execution.",
   "contributors": [
