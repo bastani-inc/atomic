@@ -103,6 +103,11 @@ for platform in "${PLATFORMS[@]}"; do
     fi
 done
 
+echo "==> Copying runtime dependencies..."
+runtime_deps_dir="binaries/.runtime-node_modules"
+rm -rf "$runtime_deps_dir"
+bun run scripts/copy-runtime-dependencies.ts "$runtime_deps_dir"
+
 echo "==> Copying shared assets..."
 for platform in "${PLATFORMS[@]}"; do
     cp package.json "binaries/$platform/"
@@ -115,9 +120,12 @@ for platform in "${PLATFORMS[@]}"; do
     cp dist/modes/interactive/assets/* "binaries/$platform/assets/"
     cp -r dist/core/export-html "binaries/$platform/"
     cp -r dist/builtin "binaries/$platform/"
+    cp -r "$runtime_deps_dir" "binaries/$platform/node_modules"
     cp -r docs "binaries/$platform/"
     cp -r examples "binaries/$platform/"
 done
+
+rm -rf "$runtime_deps_dir"
 
 echo "==> Creating release archives..."
 cd binaries
