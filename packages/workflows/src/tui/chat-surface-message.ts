@@ -27,13 +27,14 @@
 
 import type { ExtensionAPI } from "../extension/index.js";
 import type { RunDetail } from "../runs/background/status.js";
-import type { RunSnapshot } from "../shared/store-types.js";
+import type { RunSnapshot, RunStatus } from "../shared/store-types.js";
 import type { GraphTheme } from "./graph-theme.js";
 import type { WorkflowListEntry } from "./workflow-list.js";
 import { renderDispatchConfirm } from "./dispatch-confirm.js";
 import { renderRunDetail } from "./run-detail.js";
 import { renderStatusList } from "./status-list.js";
 import { renderWorkflowList } from "./workflow-list.js";
+import { renderWorkflowKilledNotice } from "./session-confirm.js";
 
 /** Custom message type wired to {@link registerChatSurfaceRenderer}. */
 export const CHAT_SURFACE_CUSTOM_TYPE = "workflows:chat-surface";
@@ -78,11 +79,20 @@ export interface DetailPayload {
   detail: RunDetail;
 }
 
+/** Inline notice after a workflow run is destructively killed and removed. */
+export interface KilledPayload {
+  kind: "killed";
+  run: RunSnapshot;
+  previousStatus: RunStatus;
+  wasInFlight: boolean;
+}
+
 export type ChatSurfacePayload =
   | DispatchPayload
   | StatusPayload
   | ListPayload
-  | DetailPayload;
+  | DetailPayload
+  | KilledPayload;
 
 // ---------------------------------------------------------------------------
 // Renderer registration
@@ -177,6 +187,7 @@ function describePayload(payload: ChatSurfacePayload): string {
     case "status":   return `status · ${payload.runs.length} run${payload.runs.length === 1 ? "" : "s"}`;
     case "list":     return `workflows · ${payload.entries.length} registered`;
     case "detail":   return `run detail · ${payload.detail.runId.slice(0, 8)}`;
+    case "killed":   return `workflow killed · ${payload.run.id.slice(0, 8)}`;
   }
 }
 
@@ -220,5 +231,13 @@ function renderPayload(
       // hint is unused — its surface mirrors the orchestrator panel
       // (outline-pill chrome), not the flex chat band.
       return renderRunDetail(payload.detail, { theme });
+    case "killed":
+      return renderWorkflowKilledNotice({
+        width,
+        theme,
+        run: payload.run,
+        previousStatus: payload.previousStatus,
+        wasInFlight: payload.wasInFlight,
+      }).join("\n");
   }
 }

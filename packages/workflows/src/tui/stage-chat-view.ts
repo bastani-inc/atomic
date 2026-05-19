@@ -16,9 +16,9 @@
  * Behaviour:
  *  - **Idle** stage (empty transcript, not streaming, not settled): welcome
  *    panel describing the attached stage. Enter sends `handle.prompt(text)`.
- *  - **Running** stage with a live stream: Enter calls `handle.steer(text)`
- *    (interrupt mid-turn). Ctrl+F always queues a follow-up via
- *    `handle.followUp(text)`.
+ *  - **Running** stage with a live stream: Enter queues a Pi-style steering
+ *    message (interrupt mid-turn) without adding a premature transcript row.
+ *    Ctrl+F queues a follow-up the same way.
  *  - **Escape** mirrors the main coding-agent chat interrupt path for active
  *    live stages: it requests a controlled pause/abort while keeping the
  *    composer active. While paused, Enter calls `handle.resume(text)`.
@@ -201,6 +201,10 @@ export class StageChatView implements Component, Focusable {
   private workingMessage: string | undefined;
   /** User rows optimistically appended by this embedded editor, de-duped on SDK echo. */
   private optimisticUserSignatures = new Set<string>();
+  /** Pending steering messages emitted by AgentSession queue updates. */
+  private pendingSteeringMessages: readonly string[] = [];
+  /** Pending follow-up messages emitted by AgentSession queue updates. */
+  private pendingFollowUpMessages: readonly string[] = [];
   /** Chat-mode repaint driver for Pi-style loaders/spinners. */
   private animationTimer: ReturnType<typeof setInterval> | undefined;
   /** Coalesces high-frequency SDK deltas while the fixed overlay is streaming. */
@@ -393,6 +397,13 @@ export class StageChatView implements Component, Focusable {
         this.workingMessage = undefined;
         return true;
 
+      case "queue_update": {
+        const queue = event as Extract<AgentSessionEvent, { type: "queue_update" }>;
+        this.pendingSteeringMessages = queue.steering;
+        this.pendingFollowUpMessages = queue.followUp;
+        return true;
+      }
+
       // Compatibility with older/headless shims that predate the SDK's
       // tool_execution_* events. Project these shims into coding-agent's live
       // controller rather than maintaining a second workflow tool renderer.
@@ -535,6 +546,7 @@ export class StageChatView implements Component, Focusable {
 
     const headerLines = this._renderHeader(w, stage);
     const sepLines = [this._sepRule(w)];
+    const pendingLines = this._renderPendingMessages(w);
     const workingLines = this._renderWorkingStatus(w, stage, { streaming });
     const usageLines = this._renderUsage(w);
     const editorLines = this._renderEditor(w, blocked);
@@ -543,6 +555,7 @@ export class StageChatView implements Component, Focusable {
     const fixed =
       HEADER_ROWS +
       SEP_ROWS +
+      pendingLines.length +
       workingLines.length +
       usageLines.length +
       editorLines.length +
@@ -558,6 +571,7 @@ export class StageChatView implements Component, Focusable {
       ...headerLines,
       ...sepLines,
       ...bodyLines,
+      ...pendingLines,
       ...workingLines,
       ...usageLines,
       ...editorLines,
@@ -917,6 +931,36 @@ export class StageChatView implements Component, Focusable {
     }).render(width);
   }
 
+  private _renderPendingMessages(width: number): string[] {
+    if (
+      this.pendingSteeringMessages.length === 0 &&
+      this.pendingFollowUpMessages.length === 0
+    ) {
+      return [];
+    }
+    const lines = [this._blank(width)];
+    for (const message of this.pendingSteeringMessages) {
+      lines.push(...this._pendingMessageLine(width, "Steering", message));
+    }
+    for (const message of this.pendingFollowUpMessages) {
+      lines.push(...this._pendingMessageLine(width, "Follow-up", message));
+    }
+    return lines;
+  }
+
+  private _pendingMessageLine(
+    width: number,
+    label: "Steering" | "Follow-up",
+    message: string,
+  ): string[] {
+    const text = `${label}: ${message}`;
+    return new Text(
+      paint(truncateToWidth(text, Math.max(1, width - 2)), this.theme.dim),
+      1,
+      0,
+    ).render(width);
+  }
+
   private _renderUsage(width: number): string[] {
     const agentSession = this.handle?.agentSession;
     if (!agentSession) return [];
@@ -1069,26 +1113,33 @@ export class StageChatView implements Component, Focusable {
       this.requestRender?.();
       return;
     }
-    this.liveChat.appendUserText(text);
-    this.bodyViewport.scrollToBottom();
-    this.optimisticUserSignatures.add(userMessageSignature(text));
+    const isPaused = this._isPaused();
+    const isStreaming = this._isStreaming();
+    const shouldAppendOptimisticUser = mode === "auto" && !isStreaming;
+    if (shouldAppendOptimisticUser) {
+      this.liveChat.appendUserText(text);
+      this.bodyViewport.scrollToBottom();
+      this.optimisticUserSignatures.add(userMessageSignature(text));
+    }
     this.requestRender?.();
     try {
-      if (this._isPaused()) {
+      if (isPaused) {
         await this._resume(text);
         return;
       }
       if (mode === "followUp") {
-        await this.handle.followUp(text);
+        await this._queueFollowUp(text);
         return;
       }
-      if (this.handle.isStreaming) {
-        await this.handle.steer(text);
+      if (isStreaming) {
+        await this._queueSteer(text);
       } else {
         this.sdkBusy = true;
         this._syncAnimationTick();
         await this.handle.ensureAttached();
         await this.handle.prompt(text);
+        this.sdkBusy = false;
+        this._syncAnimationTick();
       }
     } catch (err) {
       this.sdkBusy = false;
@@ -1096,6 +1147,24 @@ export class StageChatView implements Component, Focusable {
       this._syncAnimationTick();
       this.requestRender?.();
     }
+  }
+
+  private async _queueSteer(text: string): Promise<void> {
+    const agentSession = this.handle?.agentSession;
+    if (agentSession?.isStreaming) {
+      await agentSession.prompt(text, { streamingBehavior: "steer" });
+      return;
+    }
+    await this.handle?.steer(text);
+  }
+
+  private async _queueFollowUp(text: string): Promise<void> {
+    const agentSession = this.handle?.agentSession;
+    if (agentSession?.isStreaming) {
+      await agentSession.prompt(text, { streamingBehavior: "followUp" });
+      return;
+    }
+    await this.handle?.followUp(text);
   }
 
   invalidate(): void {

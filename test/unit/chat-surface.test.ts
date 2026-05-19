@@ -246,6 +246,39 @@ describe("registerChatSurfaceRenderer", () => {
     assert.equal(replacementPi.calls, 1);
     assert.notEqual(replacementPi.renderers.get(CHAT_SURFACE_CUSTOM_TYPE), undefined);
   });
+
+  test("renders killed workflow notices inline in chat", () => {
+    class ClassBackedPi {
+      readonly renderers = new Map<string, (payload: unknown) => unknown>();
+      registerMessageRenderer(event: string, renderer: (payload: unknown) => unknown): void {
+        this.renderers.set(event, renderer);
+      }
+    }
+    const pi = new ClassBackedPi();
+    registerChatSurfaceRenderer(pi as never, deriveGraphTheme({}));
+    const renderer = pi.renderers.get(CHAT_SURFACE_CUSTOM_TYPE);
+    assert.notEqual(renderer, undefined);
+    const component = renderer!({
+      details: {
+        kind: "killed",
+        run: {
+          id: "abc12345-0000-0000-0000-000000000000",
+          name: "demo-kill",
+          inputs: {},
+          status: "running",
+          stages: [{ id: "s1", name: "plan", status: "running", parentIds: [], toolEvents: [] }],
+          startedAt: 1000,
+        },
+        previousStatus: "running",
+        wasInFlight: true,
+      },
+    }) as { render(width: number): string[] };
+    const rendered = stripAnsi(component.render(72).join("\n"));
+    assert.match(rendered, /Workflow killed/);
+    assert.match(rendered, /demo-kill/);
+    assert.match(rendered, /removed from live history/);
+    assert.doesNotMatch(rendered, /close/);
+  });
 });
 
 describe("chatWidth", () => {

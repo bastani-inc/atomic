@@ -1173,10 +1173,19 @@ function factory(pi: ExtensionAPI): void {
   // noopOverlay returned when pi.ui?.custom is absent (degraded runtime).
   const overlay: GraphOverlayPort = buildGraphOverlayAdapter(pi, store, {
     onKillRun: (runId) => {
-      destroyRun(runId, {
+      const run = store.runs().find((r) => r.id === runId);
+      const result = destroyRun(runId, {
         cancellation: cancellationRegistry,
         persistence: persistenceRef.current,
       });
+      if (run && result.ok) {
+        emitChatSurface(pi, {
+          kind: "killed",
+          run,
+          previousStatus: result.previousStatus,
+          wasInFlight: result.wasInFlight,
+        });
+      }
     },
   });
 
@@ -1453,6 +1462,14 @@ function factory(pi: ExtensionAPI): void {
             cancellation: cancellationRegistry,
             persistence: persistenceRef.current,
           });
+          if (killed.ok) {
+            emitChatSurface(pi, {
+              kind: "killed",
+              run,
+              previousStatus: killed.previousStatus,
+              wasInFlight: killed.wasInFlight,
+            });
+          }
           print(
             killed.ok
               ? `Run ${killed.runId.slice(0, 8)} killed and removed.`
@@ -1632,6 +1649,14 @@ function factory(pi: ExtensionAPI): void {
         persistence: persistenceRef.current,
       });
       if (result.ok) {
+        if (run) {
+          emitChatSurface(pi, {
+            kind: "killed",
+            run,
+            previousStatus: result.previousStatus,
+            wasInFlight: result.wasInFlight,
+          });
+        }
         print(
           `Run ${result.runId.slice(0, 8)} killed and removed (was ${result.previousStatus}).`,
         );

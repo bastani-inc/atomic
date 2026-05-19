@@ -36,7 +36,7 @@ export function truncateToWidth(
 
 /** Use pi-tui's key parser/matcher while preserving the local string API. */
 export function matchesKey(data: string, key: string): boolean {
-  return piMatchesKey(data, key as KeyId);
+  return data === key || piMatchesKey(data, key as KeyId);
 }
 
 /** Decode CSI-u / Kitty printable-key sequences emitted by terminals such as VSCode. */

@@ -19,7 +19,8 @@
  */
 
 import { keyText } from "@bastani/atomic";
-import type { RunSnapshot } from "../shared/store-types.js";
+import { Key } from "@earendil-works/pi-tui";
+import type { RunSnapshot, RunStatus } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { fmtDuration } from "./status-helpers.js";
@@ -194,15 +195,100 @@ export function handleKillConfirmInput(
   // Direct shortcuts bypass focus.
   if (data === "y" || data === "Y") return { kind: "confirm" };
   if (data === "n" || data === "N") return { kind: "cancel" };
-  if (matchesKey(data, "escape")) return { kind: "cancel" };
+  if (matchesKey(data, Key.escape)) return { kind: "cancel" };
 
   // Tab / arrows toggle focus.
-  if (matchesKey(data, "tab") || matchesKey(data, "right") || matchesKey(data, "left") || data === "h" || data === "l") {
+  if (matchesKey(data, Key.tab) || matchesKey(data, Key.right) || matchesKey(data, Key.left) || data === "h" || data === "l") {
     state.focusedButton = state.focusedButton === 0 ? 1 : 0;
     return { kind: "noop" };
   }
-  if (matchesKey(data, "enter")) {
+  if (matchesKey(data, Key.enter)) {
     return state.focusedButton === 1 ? { kind: "confirm" } : { kind: "cancel" };
   }
   return { kind: "noop" };
+}
+
+export interface WorkflowKilledNoticeRenderOpts {
+  width: number;
+  theme: GraphTheme;
+  run: RunSnapshot;
+  previousStatus: RunStatus;
+  wasInFlight: boolean;
+}
+
+const KILLED_TITLE = "Workflow killed";
+
+function renderKilledHeader(width: number, theme: GraphTheme): string {
+  const inner = Math.max(4, width - 2);
+  const border = hexToAnsi(theme.border);
+  const error = hexToAnsi(theme.error);
+  const padded = ` ${KILLED_TITLE} `;
+  const padLen = Math.max(0, inner - visibleWidth(padded));
+  const left = Math.min(2, padLen);
+  const right = padLen - left;
+  return `${border}╭${"─".repeat(left)}${RESET}${error}${BOLD}${padded}${RESET}${border}${"─".repeat(right)}╮${RESET}`;
+}
+
+function renderKilledFooter(width: number, theme: GraphTheme): string {
+  const inner = Math.max(4, width - 2);
+  const border = hexToAnsi(theme.border);
+  return `${border}╰${"─".repeat(inner)}╯${RESET}`;
+}
+
+function renderKilledTextRow(
+  inner: number,
+  theme: GraphTheme,
+  content: string,
+): string {
+  return renderTextRow(inner, theme, truncateToWidth(content, inner, "…", true));
+}
+
+export function renderWorkflowKilledNotice(
+  opts: WorkflowKilledNoticeRenderOpts,
+): string[] {
+  const { width, theme, run, previousStatus, wasInFlight } = opts;
+  const inner = Math.max(4, width - 2);
+  const idShort = run.id.slice(0, 8);
+  const stageCount = run.stages.length;
+  const runningStages = run.stages.filter((s) => s.status === "running").length;
+
+  const error = hexToAnsi(theme.error);
+  const success = hexToAnsi(theme.success);
+  const text = hexToAnsi(theme.text);
+  const dim = hexToAnsi(theme.dim);
+  const muted = hexToAnsi(theme.textMuted);
+  const panelBg = hexBg(theme.bg);
+
+  const lines: string[] = [];
+  lines.push(renderKilledHeader(width, theme));
+  lines.push(renderBlankRow(inner, theme));
+
+  const identityPrefixW = visibleWidth("   ⊘  ");
+  const identitySuffixW = visibleWidth(`  ·  ${idShort}`);
+  const nameBudget = Math.max(1, inner - identityPrefixW - identitySuffixW);
+  const name = truncateToWidth(run.name, nameBudget, "…");
+  const identity =
+    `   ${error}⊘${RESET}${panelBg}  ${text}${BOLD}${name}${RESET}${panelBg}  ${dim}·${RESET}${panelBg}  ${muted}${idShort}${RESET}`;
+  lines.push(renderKilledTextRow(inner, theme, identity));
+
+  const statusText = `${previousStatus} → killed`;
+  lines.push(renderKilledTextRow(
+    inner,
+    theme,
+    `      ${muted}${statusText}, ${runningStages}/${stageCount} stages were active${RESET}`,
+  ));
+  lines.push(renderBlankRow(inner, theme));
+
+  const action = wasInFlight
+    ? "Active stage work was aborted."
+    : "The completed run was removed.";
+  lines.push(renderKilledTextRow(inner, theme, `      ${success}✓${RESET}${panelBg} ${muted}${action}${RESET}`));
+  lines.push(renderKilledTextRow(
+    inner,
+    theme,
+    `      ${success}✓${RESET}${panelBg} ${muted}Run removed from live history and status.${RESET}`,
+  ));
+  lines.push(renderBlankRow(inner, theme));
+  lines.push(renderKilledFooter(width, theme));
+  return lines;
 }

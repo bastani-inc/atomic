@@ -703,7 +703,7 @@ describe("/workflow interrupt chat command", () => {
     const runId = `kill-chat-${Date.now()}`;
     store.recordRunStart(makeInflightRun(runId));
 
-    const { pi, commands } = buildMockPi();
+    const { pi, commands, sent } = buildMockPi();
     addFactoryStubs(pi);
 
     const factoryModule = await import("../../packages/workflows/src/extension/index.js");
@@ -728,6 +728,7 @@ describe("/workflow interrupt chat command", () => {
     assert.equal(confirmCalls, 0);
     assert.equal(run, undefined);
     assert.equal(msgs.some((m) => m.includes("killed and removed")), true);
+    assert.equal(sent.some((m) => (m.details as { kind?: string } | undefined)?.kind === "killed"), true);
   });
 
   test("top-level /workflow interrupt defaults to the active run", async () => {
