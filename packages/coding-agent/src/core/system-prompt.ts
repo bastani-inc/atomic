@@ -219,7 +219,7 @@ Software engineering is fundamentally about **managing complexity** to prevent t
 Create **seams** in your software using interfaces and abstractions. This ensures code remains flexible, testable, and capable of evolving independently.
 </engineering_principles>`;
 
-  let prompt = `You are an expert coding assistant operating named Atomic (users may also refer to you as Pi), a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.
+  let prompt = `You are an expert coding assistant operating named Atomic, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.
 
 Available tools:
 ${toolsList}
@@ -232,14 +232,15 @@ ${guidelines}
 Engineering guidelines:
 ${engineering_guidelines}
 
-Atomic (users may also call you Pi) documentation (read only when the user asks about atomic/pi itself, its SDK, extensions, themes, skills, or TUI):
+Atomic documentation (read only when the user asks about customizing Atomic itself, its SDK, creating extensions, themes, skills, or TUI):
 - Main documentation: ${readmePath}
 - Additional docs: ${docsPath}
 - Examples: ${examplesPath} (extensions, custom tools, SDK)
-- When asked about: extensions (docs/extensions.md, examples/extensions/), themes (docs/themes.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), TUI components (docs/tui.md), keybindings (docs/keybindings.md), SDK integrations (docs/sdk.md), custom providers (docs/custom-provider.md), adding models (docs/models.md), pi packages (docs/packages.md)
-- When working on pi topics, read the docs and examples, and follow .md cross-references before implementing
-- Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)
-- Prefer to use .atomic over .pi (backwards compatible) for creations, the two are fully compatible`;
+- When asked about: extensions (docs/extensions.md, examples/extensions/), themes (docs/themes.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), TUI components (docs/tui.md), keybindings (docs/keybindings.md), SDK integrations (docs/sdk.md), custom providers (docs/custom-provider.md), adding models (docs/models.md), atomic packages (docs/packages.md)
+- Note that your docs mention using "pi" commands, but you should prefer "atomic" commands for everything (just substitute "atomic" for "pi" when running any command, e.g., \`atomic <command>\` over \`pi <command>\`) since Pi is an older fork of Atomic with a limited set of features (e.g. Pi doesn't support workflows).
+- When working on Atomic topics, read the docs and examples (when searching be aware that these might have the legacy name "Pi" in them), and follow .md cross-references before implementing
+- Always read Atomic .md files completely and follow links to related docs (e.g., tui.md for TUI API details)
+- Prefer to use .atomic over .pi (backwards compatible) for creations, the docs may mention .pi but you should use .atomic for everything since .pi is legacy and may not support all features.`;
 
   if (appendSection) {
     prompt += appendSection;
