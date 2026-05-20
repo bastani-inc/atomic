@@ -115,6 +115,8 @@ Atomic discovers workflow definitions in this order:
 
 A workflow module may export one default workflow definition and/or named workflow definitions. Discovery checks the default export first, then named exports.
 
+Workflow files are loaded via [jiti](https://github.com/unjs/jiti), so TypeScript works without compilation.
+
 ## Workflow Configuration
 
 Configured workflow paths live in workflow extension config. Project config paths are relative to the project root. Global config paths are relative to `~/.atomic/agent`.
