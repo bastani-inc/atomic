@@ -1,7 +1,7 @@
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import { clearLegacyResultAnimationTimer, renderSubagentResult, widgetRenderKey } from "../../packages/subagents/src/tui/render.js";
+import { clearLegacyResultAnimationTimer, renderSubagentResult, syncResultAnimation, widgetRenderKey } from "../../packages/subagents/src/tui/render.js";
 import type { AsyncJobState, Details } from "../../packages/subagents/src/shared/types.js";
 
 type RenderTheme = Parameters<typeof renderSubagentResult>[2];
@@ -52,6 +52,59 @@ describe("subagent render stability", () => {
     const second = withMockedNow(10_080, () => renderSubagentResult(result, { expanded: false }, theme).render(120).join("\n"));
 
     assert.equal(second, first);
+  });
+
+  test("running result animation advances without progress changes", async () => {
+    const result: AgentToolResult<Details> = {
+      content: [{ type: "text", text: "running" }],
+      details: {
+        mode: "single",
+        results: [{
+          agent: "worker",
+          task: "do work",
+          exitCode: 0,
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+          progress: {
+            agent: "worker",
+            index: 0,
+            status: "running",
+            task: "do work",
+            durationMs: 2_000,
+            toolCount: 1,
+            tokens: 10,
+            recentTools: [],
+            recentOutput: [],
+          },
+        }],
+      },
+    };
+    let invalidations = 0;
+    const context = {
+      state: {} as { subagentResultAnimationTimer?: ReturnType<typeof setInterval> },
+      invalidate: () => { invalidations++; },
+    };
+
+    const first = renderSubagentResult(result, { expanded: false }, theme).render(120).join("\n");
+    syncResultAnimation(result, context);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const poll = setInterval(() => {
+          if (invalidations === 0) return;
+          clearTimeout(deadline);
+          clearInterval(poll);
+          resolve();
+        }, 10);
+        const deadline = setTimeout(() => {
+          clearInterval(poll);
+          reject(new Error("animation timer did not invalidate"));
+        }, 250);
+      });
+      const second = renderSubagentResult(result, { expanded: false }, theme).render(120).join("\n");
+
+      assert.notEqual(second, first);
+    } finally {
+      clearLegacyResultAnimationTimer(context);
+    }
   });
 
   test("widget render key is stable when only wall clock changes", () => {
