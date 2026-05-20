@@ -15,6 +15,7 @@
 
 ### Fixed
 - Append the current user-selected model as the final subagent fallback candidate, so retryable provider/model failures still get one last attempt after configured `fallbackModels` are exhausted.
+- Avoid timer-driven subagent spinner redraws by deriving running glyphs from progress state and only refreshing async widgets when render-relevant state changes.
 
 ## [0.24.2] - 2026-05-10
 

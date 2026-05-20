@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@bastani/atomic";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { renderWidget } from "../../tui/render.ts";
+import { renderWidget, widgetRenderKey } from "../../tui/render.ts";
 import { formatControlNoticeMessage } from "../shared/subagent-control.ts";
 import {
 	type AsyncJobState,
@@ -118,7 +118,9 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 				return;
 			}
 
+			let widgetChanged = false;
 			for (const job of state.asyncJobs.values()) {
+				const widgetStateBefore = widgetRenderKey(job);
 				try {
 					emitNewControlEvents(job);
 					const reconciliation = reconcileAsyncRun(job.asyncDir, {
@@ -153,7 +155,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 						job.currentStep = status.currentStep ?? job.currentStep;
 						job.chainStepCount = status.chainStepCount ?? job.chainStepCount;
 						job.startedAt = status.startedAt ?? job.startedAt;
-						job.updatedAt = status.lastUpdate ?? Date.now();
+						if (status.lastUpdate !== undefined) job.updatedAt = status.lastUpdate;
 						if (status.steps?.length) {
 							const groups = normalizeParallelGroups(status.parallelGroups, status.steps.length, status.chainStepCount ?? status.steps.length);
 							job.parallelGroups = groups.length ? groups : job.parallelGroups;
@@ -179,21 +181,27 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 						if ((job.status === "complete" || job.status === "failed" || job.status === "paused") && (previousStatus !== job.status || !state.cleanupTimers.has(job.asyncId))) {
 							scheduleCleanup(job.asyncId);
 						}
+						if (widgetRenderKey(job) !== widgetStateBefore) widgetChanged = true;
 						continue;
 					}
-					job.status = job.status === "queued" ? "running" : job.status;
-					job.updatedAt = Date.now();
+					if (job.status === "queued") {
+						job.status = "running";
+						job.updatedAt = Date.now();
+					}
 				} catch (error) {
-					console.error(`Failed to read async status for '${job.asyncDir}':`, error);
-					job.status = "failed";
-					job.updatedAt = Date.now();
+					if (job.status !== "failed") {
+						console.error(`Failed to read async status for '${job.asyncDir}':`, error);
+						job.status = "failed";
+						job.updatedAt = Date.now();
+					}
 					if (!state.cleanupTimers.has(job.asyncId)) {
 						scheduleCleanup(job.asyncId);
 					}
 				}
+				if (widgetRenderKey(job) !== widgetStateBefore) widgetChanged = true;
 			}
 
-			if (state.lastUiContext?.hasUI) rerenderWidget(state.lastUiContext);
+			if (widgetChanged && state.lastUiContext?.hasUI) rerenderWidget(state.lastUiContext);
 		}, pollIntervalMs);
 		state.poller.unref?.();
 	};

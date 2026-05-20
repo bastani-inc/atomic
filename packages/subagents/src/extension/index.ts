@@ -23,7 +23,7 @@ import { discoverAgents } from "../agents/agents.ts";
 import { cleanupAllArtifactDirs, cleanupOldArtifacts, getArtifactsDir } from "../shared/artifacts.ts";
 import { resolveCurrentSessionId } from "../shared/session-identity.ts";
 import { cleanupOldChainDirs } from "../shared/settings.ts";
-import { renderWidget, renderSubagentResult, stopResultAnimations, stopWidgetAnimation, syncResultAnimation } from "../tui/render.ts";
+import { clearLegacyResultAnimationTimer, renderWidget, renderSubagentResult } from "../tui/render.ts";
 import { SubagentParams } from "./schemas.ts";
 import { createSubagentExecutor, type SubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
 import { createAsyncJobTracker } from "../runs/background/async-job-tracker.ts";
@@ -144,14 +144,11 @@ function createSlashResultComponent(
 	details: SlashMessageDetails,
 	options: { expanded: boolean },
 	theme: ExtensionContext["ui"]["theme"],
-	requestRender: () => void,
 ): Container {
 	const container = new Container();
-	const animationState: { subagentResultAnimationTimer?: ReturnType<typeof setInterval> } = {};
 	let lastVersion = -1;
 	container.render = (width: number): string[] => {
 		const snapshot = getSlashRenderableSnapshot(details);
-		syncResultAnimation(snapshot.result, { state: animationState, invalidate: requestRender });
 		if (snapshot.version !== lastVersion || isSlashResultRunning(snapshot.result)) {
 			lastVersion = snapshot.version;
 			rebuildSlashResultContainer(container, snapshot.result, options, theme);
@@ -273,8 +270,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	primeExistingResults();
 
 	const runtimeCleanup = () => {
-		stopWidgetAnimation();
-		stopResultAnimations();
 		stopResultWatcher();
 		clearPendingForegroundControlNotices(state);
 		if (state.poller) {
@@ -299,7 +294,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	pi.registerMessageRenderer<SlashMessageDetails>(SLASH_RESULT_TYPE, (message, options, theme) => {
 		const details = resolveSlashMessageDetails(message.details);
 		if (!details) return undefined;
-		return createSlashResultComponent(details, options, theme, () => state.lastUiContext?.ui.requestRender?.());
+		return createSlashResultComponent(details, options, theme);
 	});
 
 	pi.registerMessageRenderer<SubagentNotifyDetails>("subagent-notify", (message, options, theme) => {
@@ -468,7 +463,7 @@ DIAGNOSTICS:
 		},
 
 		renderResult(result, options, theme, context) {
-			syncResultAnimation(result, context);
+			clearLegacyResultAnimationTimer(context);
 			return renderSubagentResult(result, options, theme);
 		},
 
@@ -516,6 +511,7 @@ DIAGNOSTICS:
 		state.lastUiContext = ctx;
 		if (state.asyncJobs.size > 0) {
 			renderWidget(ctx, Array.from(state.asyncJobs.values()));
+			ctx.ui.requestRender?.();
 			ensurePoller();
 		}
 	});
@@ -571,8 +567,6 @@ DIAGNOSTICS:
 		slashBridge.dispose();
 		promptTemplateBridge.cancelAll();
 		promptTemplateBridge.dispose();
-		stopWidgetAnimation();
-		stopResultAnimations();
 		if (globalStore[runtimeCleanupStoreKey] === runtimeCleanup) {
 			delete globalStore[runtimeCleanupStoreKey];
 		}
