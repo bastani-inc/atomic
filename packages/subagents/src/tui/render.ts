@@ -1217,6 +1217,7 @@ class LiveWidgetComponent implements Component {
     const container = new Container();
     for (const line of fitWidgetLineBudget(lines, this.theme, termWidth, expanded))
       container.addChild(new Text(line, 1, 0));
+    container.addChild(new Spacer(1));
     return container.render(termWidth);
   }
 

@@ -102,6 +102,63 @@ describe("coding-agent builtin resources", () => {
     assert.equal(command?.description, "workflow resources: 1");
   }, 20_000);
 
+  test("registers package workflow names in /workflow completions", async () => {
+    const cwd = tempDir("atomic-workflow-command-cwd-");
+    const agentDir = tempDir("atomic-workflow-command-agent-");
+    const packageDir = join(cwd, "workflow-command-package");
+    const workflowsDir = join(packageDir, "workflows");
+    mkdirSync(workflowsDir, { recursive: true });
+    writeFileSync(
+      join(packageDir, "package.json"),
+      JSON.stringify({ name: "workflow-command-package", keywords: ["atomic-package"] }),
+      "utf-8",
+    );
+    writeFileSync(
+      join(workflowsDir, "package-command.ts"),
+      [
+        `import { defineWorkflow } from "@bastani/workflows";`,
+        ``,
+        `export default defineWorkflow("package-command")`,
+        `  .description("Package command workflow")`,
+        `  .run(async (ctx) => {`,
+        `    await ctx.task("validation-smoke", { prompt: "validation smoke" });`,
+        `    return {};`,
+        `  })`,
+        `  .compile();`,
+      ].join("\n"),
+      "utf-8",
+    );
+
+    const settingsManager = SettingsManager.inMemory();
+    settingsManager.setPackages([packageDir]);
+    const loader = new DefaultResourceLoader({
+      cwd,
+      agentDir,
+      settingsManager,
+      builtinPackagePaths: [resolve("packages/workflows")],
+    });
+
+    await loader.reload();
+
+    const extensions = loader.getExtensions();
+    assert.deepEqual(extensions.errors, []);
+    const workflowExtension = extensions.extensions.find((extension) =>
+      extension.path.replace(/\\/g, "/").endsWith("packages/workflows/src/extension/index.ts"),
+    );
+    const workflowCommand = workflowExtension?.commands.get("workflow");
+    assert.notEqual(workflowCommand, undefined);
+
+    let labels: string[] = [];
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const completions = (await workflowCommand!.getArgumentCompletions?.("")) ?? [];
+      labels = completions.map((completion) => completion.label);
+      if (labels.includes("package-command")) break;
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+    }
+
+    assert.ok(labels.includes("package-command"), `expected package workflow completion in ${labels.join(", ")}`);
+  }, 20_000);
+
   test("loads builtin pi package resources", async () => {
     const cwd = tempDir("atomic-builtin-packages-cwd-");
     const agentDir = tempDir("atomic-builtin-packages-agent-");

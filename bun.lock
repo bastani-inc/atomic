@@ -139,6 +139,9 @@
     "packages/workflows": {
       "name": "@bastani/workflows",
       "version": "0.8.12",
+      "dependencies": {
+        "jiti": "^2.7.0",
+      },
       "peerDependencies": {
         "@bastani/atomic": "*",
         "@earendil-works/pi-tui": "*",

@@ -2,7 +2,7 @@
   "name": "@bastani/workflows",
   "version": "0.8.12",
   "private": true,
-  "description": "pi extension for multi-stage workflow authoring and execution.",
+  "description": "Atomic extension for multi-stage workflow authoring and execution.",
   "contributors": [
     "Norin Lavaee",
     "Alex Lavaee"
@@ -69,6 +69,9 @@
     "themes": [
       "themes/*.json"
     ]
+  },
+  "dependencies": {
+    "jiti": "^2.7.0"
   },
   "peerDependencies": {
     "@bastani/atomic": "*",

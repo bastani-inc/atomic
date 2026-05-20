@@ -2,9 +2,9 @@
   "name": "@bastani/subagents",
   "version": "0.8.12",
   "private": true,
-  "description": "Atomic extension for delegating tasks to subagents with chains, parallel execution, and TUI clarification.",
+  "description": "Atomic extension for delegating tasks to subagents with chains, parallel execution, and TUI clarification. Fork of: https://github.com/nicobailon/pi-subagents",
   "contributors": [
-    "Nico Bailon",
+    "Norin Lavaee",
     "Alex Lavaee"
   ],
   "license": "MIT",

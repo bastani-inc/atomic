@@ -6,6 +6,10 @@
   "engines": {
     "bun": ">=1.3.14"
   },
+  "contributors": [
+    "Norin Lavaee",
+    "Alex Lavaee"
+  ],
   "workspaces": [
     "packages/*"
   ],

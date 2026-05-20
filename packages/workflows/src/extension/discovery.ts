@@ -22,7 +22,9 @@
 
 import { readdir, stat } from "node:fs/promises";
 import { join, resolve, extname, isAbsolute } from "node:path";
+import { fileURLToPath } from "node:url";
 import { CONFIG_DIR_NAMES, getProjectConfigPaths } from "@bastani/atomic";
+import { createJiti } from "jiti/static";
 import type { WorkflowDefinition } from "../shared/types.js";
 import { createRegistry } from "../workflows/registry.js";
 import type { WorkflowRegistry } from "../workflows/registry.js";
@@ -273,8 +275,27 @@ async function scanWorkflowDir(dir: string): Promise<string[] | null> {
  *
  * Strategy: try the default export first, then every named export.
  * Both are collected — a file may export multiple workflow definitions.
- * Bun natively handles .ts, .js, .mjs, and .cjs via dynamic import.
+ * jiti loads package-authored .ts/.js/.mjs/.cjs files with the same
+ * @bastani/workflows authoring import that project/user workflow files use.
  */
+const workflowModuleLoader = createJiti(import.meta.url, {
+  moduleCache: false,
+  alias: {
+    "@bastani/workflows": fileURLToPath(new URL("../index.ts", import.meta.url)),
+  },
+});
+
+function normalizeWorkflowModule(mod: unknown): Record<string, unknown> {
+  if (mod !== null && typeof mod === "object") {
+    return mod as Record<string, unknown>;
+  }
+  return { default: mod };
+}
+
+async function loadWorkflowModule(filePath: string): Promise<Record<string, unknown>> {
+  return normalizeWorkflowModule(workflowModuleLoader(filePath));
+}
+
 async function importWorkflowFile(
   filePath: string,
   kind: DiscoveryKind,
@@ -282,7 +303,7 @@ async function importWorkflowFile(
 ): Promise<Array<{ value: unknown; exportKey: string; kind: DiscoveryKind; filePath: string }>> {
   let mod: Record<string, unknown>;
   try {
-    mod = (await import(filePath)) as Record<string, unknown>;
+    mod = await loadWorkflowModule(filePath);
   } catch (err) {
     diagnostics.push({
       level: "error",
@@ -346,15 +367,14 @@ async function loadFromPaths(
     const absPath = isAbsolute(rawPath) ? rawPath : resolve(baseCwd, rawPath);
 
     // Give a specific PATH_NOT_FOUND when we can detect the file is absent.
-    let exists = false;
+    let pathStats: Awaited<ReturnType<typeof stat>> | undefined;
     try {
-      await stat(absPath);
-      exists = true;
+      pathStats = await stat(absPath);
     } catch {
-      exists = false;
+      pathStats = undefined;
     }
 
-    if (!exists) {
+    if (pathStats === undefined) {
       diagnostics.push({
         level: "error",
         code: "PATH_NOT_FOUND",
@@ -364,7 +384,9 @@ async function loadFromPaths(
       continue;
     }
 
-    const candidates = await importWorkflowFile(absPath, kind, diagnostics);
+    const candidates = pathStats.isDirectory()
+      ? await loadFromDir(absPath, kind, diagnostics)
+      : await importWorkflowFile(absPath, kind, diagnostics);
     for (const c of candidates) {
       all.push({ ...c, ...(configuredName !== undefined ? { configuredName } : {}) });
     }

@@ -107,6 +107,41 @@ describe("subagent render stability", () => {
     }
   });
 
+  test("async widget leaves a blank line before the prompt box", () => {
+    let component: { render(width: number): string[] } | undefined;
+    const ctx = {
+      hasUI: true,
+      ui: {
+        setWidget: (_key: string, factory: ((tui: unknown, theme: RenderTheme) => { render(width: number): string[] }) | undefined) => {
+          component = factory?.({}, theme);
+        },
+        requestRender: () => {},
+        getToolsExpanded: () => false,
+      },
+    } as unknown as Parameters<typeof renderWidget>[0];
+    const job: AsyncJobState = {
+      asyncId: "abc123",
+      asyncDir: "/tmp/abc123",
+      status: "running",
+      mode: "single",
+      agents: ["worker"],
+      updatedAt: 10_000,
+      toolCount: 1,
+      turnCount: 2,
+    };
+
+    renderWidget(ctx, [job]);
+    try {
+      assert.ok(component, "expected widget component to be installed");
+      const lines = component.render(120);
+
+      assert.equal(lines.at(-1), "");
+      assert.notEqual(lines.at(-2), "");
+    } finally {
+      stopWidgetAnimation();
+    }
+  });
+
   test("running async widget animates without remounting the widget", async () => {
     let widgetUpdates = 0;
     let renderRequests = 0;

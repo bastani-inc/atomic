@@ -2,9 +2,9 @@
   "name": "@bastani/mcp",
   "version": "0.8.12",
   "private": true,
-  "description": "Atomic extension that adapts MCP (Model Context Protocol) servers into the coding agent.",
+  "description": "Atomic extension that adapts MCP (Model Context Protocol) servers into the coding agent. Fork of: https://github.com/nicobailon/pi-mcp-adapter",
   "contributors": [
-    "Nico Bailon",
+    "Norin Lavaee",
     "Alex Lavaee"
   ],
   "license": "MIT",

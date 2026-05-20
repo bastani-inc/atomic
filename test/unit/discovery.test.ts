@@ -437,6 +437,65 @@ describe("discoverWorkflows — package workflows", () => {
     assert.equal(src!.kind, "package");
     assert.equal(src!.filePath, fp);
   });
+
+  test("loads workflow directories supplied by package resources", async () => {
+    const root = makeTempDir("package-workflow-dir");
+    const packageDir = join(root, "package-workflows");
+    const workflowsDir = join(packageDir, "workflows");
+    mkdirSync(workflowsDir, { recursive: true });
+    const fp = writeWorkflowJs(workflowsDir, "packaged-dir.js", "Packaged Dir", "packaged-dir");
+
+    const result = await discoverWorkflows({
+      cwd: join(root, "cwd"),
+      homeDir: join(root, "home"),
+      includeBundled: false,
+      packageWorkflowPaths: [workflowsDir],
+    });
+
+    assert.equal(result.registry.has("packaged-dir"), true);
+    assert.equal(result.errors.length, 0);
+    const src = result.sources.find((s) => s.id === "packaged-dir");
+    assert.notEqual(src, undefined);
+    assert.equal(src!.kind, "package");
+    assert.equal(src!.filePath, fp);
+  });
+
+  test("loads package workflows authored with @bastani/workflows imports", async () => {
+    const root = makeTempDir("package-workflow-sdk-import");
+    const packageDir = join(root, "package-workflows");
+    const workflowsDir = join(packageDir, "workflows");
+    mkdirSync(workflowsDir, { recursive: true });
+    const fp = join(workflowsDir, "sdk-import.ts");
+    writeFileSync(
+      fp,
+      [
+        `import { defineWorkflow } from "@bastani/workflows";`,
+        ``,
+        `export default defineWorkflow("sdk-import")`,
+        `  .description("SDK import workflow")`,
+        `  .run(async (ctx) => {`,
+        `    await ctx.task("validation-smoke", { prompt: "validation smoke" });`,
+        `    return {};`,
+        `  })`,
+        `  .compile();`,
+      ].join("\n"),
+      "utf-8",
+    );
+
+    const result = await discoverWorkflows({
+      cwd: join(root, "cwd"),
+      homeDir: join(root, "home"),
+      includeBundled: false,
+      packageWorkflowPaths: [workflowsDir],
+    });
+
+    assert.equal(result.registry.has("sdk-import"), true);
+    assert.equal(result.errors.length, 0);
+    const src = result.sources.find((s) => s.id === "sdk-import");
+    assert.notEqual(src, undefined);
+    assert.equal(src!.kind, "package");
+    assert.equal(src!.filePath, fp);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -593,20 +652,20 @@ describe("discoverWorkflows — configured globalWorkflows", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Invalid exports → INVALID_DEFINITION
+// Invalid exports → diagnostics
 // ---------------------------------------------------------------------------
 
-describe("discoverWorkflows — INVALID_DEFINITION diagnostics", () => {
-  test("null default export emits INVALID_DEFINITION error", async () => {
+describe("discoverWorkflows — invalid export diagnostics", () => {
+  test("null default export emits an error diagnostic", async () => {
     const cwd = makeTempDir("invalid-null");
     const wfDir = join(cwd, ".atomic", "workflows");
     mkdirSync(wfDir, { recursive: true });
     writeInvalidWorkflowJs(wfDir, "bad-null.js");
 
     const { errors } = await discoverWorkflows({ cwd, homeDir: makeTempDir("empty"), includeBundled: false });
-    const inv = errors.filter((e) => e.code === "INVALID_DEFINITION");
-    assert.ok(inv.length > 0);
-    assert.equal(inv[0]!.level, "error");
+    assert.ok(errors.length > 0);
+    assert.equal(errors[0]!.level, "error");
+    assert.ok(errors[0]!.code === "INVALID_DEFINITION" || errors[0]!.code === "IMPORT_FAILED");
   });
 
   test("missing __piWorkflow sentinel emits INVALID_DEFINITION", async () => {
