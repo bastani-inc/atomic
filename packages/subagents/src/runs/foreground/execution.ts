@@ -214,6 +214,7 @@ async function runSingleAttempt(
 		let settled = false;
 		let detached = false;
 		let intercomStarted = false;
+		let assistantError: string | undefined;
 		let removeAbortListener: (() => void) | undefined;
 		let removeInterruptListener: (() => void) | undefined;
 		let activityTimer: NodeJS.Timeout | undefined;
@@ -259,7 +260,7 @@ async function runSingleAttempt(
 				const termSent = trySignalChild(proc, "SIGTERM");
 				if (!termSent) return;
 				forcedTerminationSignal = true;
-				if (!cleanTerminalAssistantStopReceived) {
+				if (!cleanTerminalAssistantStopReceived && !assistantError) {
 					result.error = result.error ?? `Subagent process did not exit within ${FINAL_STOP_GRACE_MS}ms after its final message. Forcing termination.`;
 				}
 				finalHardKillTimer = setTimeout(() => {
@@ -465,13 +466,15 @@ async function runSingleAttempt(
 						progress.tokens = result.usage.input + result.usage.output;
 					}
 					if (!result.model && evt.message.model) result.model = evt.message.model;
-					if (evt.message.errorMessage) result.error = evt.message.errorMessage;
-					appendRecentOutput(progress, extractTextFromContent(evt.message.content).split("\n").slice(-10));
+					if (evt.message.errorMessage) assistantError = evt.message.errorMessage;
+					const assistantText = extractTextFromContent(evt.message.content);
+					appendRecentOutput(progress, assistantText.split("\n").slice(-10));
 					// Final assistant message: start the exit drain window.
 					const stopReason = (evt.message as { stopReason?: string }).stopReason;
 					const hasToolCall = Array.isArray(evt.message.content)
 						&& evt.message.content.some((part) => (part as { type?: string }).type === "toolCall");
 					if (stopReason === "stop" && !hasToolCall) {
+						if (!evt.message.errorMessage && assistantText.trim()) assistantError = undefined;
 						cleanTerminalAssistantStopReceived ||= !evt.message.errorMessage;
 						startFinalDrain();
 					}
@@ -551,6 +554,7 @@ async function runSingleAttempt(
 			}
 			processClosed = true;
 			if (buf.trim()) processLine(buf);
+			if (!result.error && assistantError) result.error = assistantError;
 			const forcedDrainAfterFinalSuccess = forcedTerminationSignal && cleanTerminalAssistantStopReceived && !result.error;
 			if (code !== 0 && stderrBuf.trim() && !result.error && !forcedDrainAfterFinalSuccess) {
 				result.error = stderrBuf.trim();

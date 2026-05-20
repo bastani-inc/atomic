@@ -230,6 +230,7 @@ function runPiStreaming(
 		const usage = emptyUsage();
 		let model: string | undefined;
 		let error: string | undefined;
+		let assistantError: string | undefined;
 		let interrupted = false;
 		let observedMutationAttempt = false;
 		const rawStdoutLines: string[] = [];
@@ -290,7 +291,7 @@ function runPiStreaming(
 
 				if (event.type !== "message_end" || event.message.role !== "assistant") return;
 				if (event.message.model) model = event.message.model;
-				if (event.message.errorMessage) error = event.message.errorMessage;
+				if (event.message.errorMessage) assistantError = event.message.errorMessage;
 				const eventUsage = event.message.usage;
 				if (eventUsage) {
 					usage.turns++;
@@ -304,6 +305,7 @@ function runPiStreaming(
 				const hasToolCall = Array.isArray(event.message.content)
 					&& event.message.content.some((part) => (part as { type?: string }).type === "toolCall");
 				if (stopReason === "stop" && !hasToolCall) {
+					if (!event.message.errorMessage && extractTextFromContent(event.message.content).trim()) assistantError = undefined;
 					cleanTerminalAssistantStopReceived ||= !event.message.errorMessage;
 					startFinalDrain();
 				}
@@ -371,7 +373,7 @@ function runPiStreaming(
 				const termSent = trySignalChild(child, "SIGTERM");
 				if (!termSent) return;
 				forcedTerminationSignal = true;
-				if (!cleanTerminalAssistantStopReceived && !error) {
+				if (!cleanTerminalAssistantStopReceived && !error && !assistantError) {
 					error = `Subagent process did not exit within ${FINAL_STOP_GRACE_MS}ms after its final message. Forcing termination.`;
 				}
 				finalHardKillTimer = setTimeout(() => {
@@ -395,14 +397,15 @@ function runPiStreaming(
 			if (stderrBuf.trim()) appendChildLine("subagent.child.stderr", stderrBuf);
 			outputStream.end();
 			const finalOutput = getFinalOutput(messages) || rawStdoutLines.join("\n").trim();
-			const forcedDrainAfterFinalSuccess = forcedTerminationSignal && cleanTerminalAssistantStopReceived && !error;
+			const finalError = error ?? assistantError;
+			const forcedDrainAfterFinalSuccess = forcedTerminationSignal && cleanTerminalAssistantStopReceived && !finalError;
 			resolve({
 				stderr,
 				exitCode: interrupted || forcedDrainAfterFinalSuccess ? 0 : forcedTerminationSignal || signal ? (exitCode ?? 1) : exitCode,
 				messages,
 				usage,
 				model,
-				error: interrupted || forcedDrainAfterFinalSuccess ? undefined : error,
+				error: interrupted || forcedDrainAfterFinalSuccess ? undefined : finalError,
 				finalOutput,
 				interrupted,
 				observedMutationAttempt,
@@ -417,7 +420,7 @@ function runPiStreaming(
 			outputStream.end();
 			const finalOutput = getFinalOutput(messages) || rawStdoutLines.join("\n").trim();
 			const spawnErrorMessage = spawnError instanceof Error ? spawnError.message : String(spawnError);
-			resolve({ stderr, exitCode: 1, messages, usage, model, error: error ?? spawnErrorMessage, finalOutput, observedMutationAttempt });
+			resolve({ stderr, exitCode: 1, messages, usage, model, error: error ?? assistantError ?? spawnErrorMessage, finalOutput, observedMutationAttempt });
 		});
 	});
 }
