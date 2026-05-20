@@ -198,3 +198,7 @@ build/
 packages/*/.claude/
 packages/*/.opencode/
 
+.atomic/todos
+issues.md
+false
+
