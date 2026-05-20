@@ -1,6 +1,6 @@
 {
   "name": "@bastani/subagents",
-  "version": "0.8.11",
+  "version": "0.8.12-0",
   "private": true,
   "description": "Atomic extension for delegating tasks to subagents with chains, parallel execution, and TUI clarification.",
   "contributors": [

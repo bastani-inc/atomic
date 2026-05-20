@@ -1,6 +1,6 @@
 {
   "name": "@bastani/mcp",
-  "version": "0.8.11",
+  "version": "0.8.12-0",
   "private": true,
   "description": "Atomic extension that adapts MCP (Model Context Protocol) servers into the coding agent.",
   "contributors": [
