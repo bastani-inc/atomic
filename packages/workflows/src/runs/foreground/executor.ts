@@ -1340,11 +1340,12 @@ export async function run<TInputs extends Record<string, unknown>>(
         await innerCtx.__dispose();
       };
       let unregisterStageHandle = (): void => {};
+      let dropStageControlHandle = (): void => {};
       let liveHandleReleased = false;
       const releaseLiveHandle = async (): Promise<void> => {
         if (liveHandleReleased) return;
         liveHandleReleased = true;
-        activeStore.recordStageAttachable(runId, stageId, false);
+        dropStageControlHandle();
         unregisterStageHandle();
         await disposeInnerContext();
       };
@@ -1420,6 +1421,13 @@ export async function run<TInputs extends Record<string, unknown>>(
           return innerCtx.subscribe(listener);
         },
       };
+      let stageControlDropped = false;
+      dropStageControlHandle = (): void => {
+        if (stageControlDropped) return;
+        stageControlDropped = true;
+        activeStore.recordStageAttachable(runId, stageId, false);
+        stageRegistry.detachControl(runId, stageId, handle);
+      };
       unregisterStageHandle = stageRegistry.register(handle);
 
       // f. Record stage start in store (as pending), call onStageStart.
@@ -1438,9 +1446,7 @@ export async function run<TInputs extends Record<string, unknown>>(
           try {
             await barrier.promise;
           } catch (err) {
-            activeStore.recordStageAttachable(runId, stageId, false);
-            unregisterStageHandle();
-            await disposeInnerContext();
+            await releaseLiveHandle();
             throw err;
           }
         }
@@ -1546,6 +1552,11 @@ export async function run<TInputs extends Record<string, unknown>>(
           }
 
           tracker.onSettle(stageId);
+          // The stage has finished participating in workflow scheduling. Drop it
+          // from run-level pause/resume and cascade-pause lookups immediately,
+          // but keep the SDK session alive below while an attached chat pane is
+          // still using its direct handle.
+          dropStageControlHandle();
           if (stageSnapshot.attached === true) {
             let unsubscribeDetach: (() => void) | undefined;
             let abortListener: (() => void) | undefined;

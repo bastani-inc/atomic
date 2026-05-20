@@ -11,6 +11,10 @@
  *    and `/workflow resume` to fan an action across the stages that are
  *    actually pausable right now.
  *
+ * A completed stage may keep its chat handle alive while being detached from
+ * run-level pause/resume control. That lets the chat stay interactive without
+ * letting a finished stage keep blocking or pausing downstream work.
+ *
  * The registry does not know about Pi SDK details; it talks to the
  * stage-runner via a small interface so tests can fake it without a real
  * `AgentSession`.
@@ -85,7 +89,7 @@ export interface StageControlHandle {
  */
 export interface WorkflowRunControlHandle {
   readonly runId: string;
-  /** All stage handles known to the registry for this run. */
+  /** Stage handles still participating in run-level workflow control. */
   stages(): readonly StageControlHandle[];
   /** Currently paused stage handles. */
   pausedStages(): readonly StageControlHandle[];
@@ -106,13 +110,20 @@ export interface WorkflowRunControlHandle {
 
 export interface StageControlRegistry {
   /**
-   * Register a stage handle. The registry calls `onSettle()` when the
-   * handle should be removed (stage completed / failed / killed).
+   * Register a stage handle. The returned disposer removes the chat handle
+   * entirely. Stage completion should normally call `detachControl()` first so
+   * run-level pause/resume stops seeing the stage while any open chat pane can
+   * keep using its direct handle reference.
    */
   register(handle: StageControlHandle): () => void;
-  /** Resolve a single stage handle by run + stage id. */
+  /**
+   * Remove this stage from run-level pause/resume aggregates while keeping
+   * `get()` chat attachment live until the registration disposer runs.
+   */
+  detachControl(runId: string, stageId: string, handle?: StageControlHandle): boolean;
+  /** Resolve a single stage handle by run + stage id, including detached chats. */
   get(runId: string, stageId: string): StageControlHandle | undefined;
-  /** Resolve all currently-registered stage handles for a run. */
+  /** Resolve all currently-registered chat handles for a run. */
   forRun(runId: string): readonly StageControlHandle[];
   /** Build a run-level control aggregate. Cheap; not memoised. */
   run(runId: string): WorkflowRunControlHandle;
@@ -128,9 +139,14 @@ export interface StageControlRegistry {
  * so per-run lookups stay cheap as workflows scale.
  */
 export function createStageControlRegistry(): StageControlRegistry {
-  const _byRun = new Map<string, Map<string, StageControlHandle>>();
+  type RegistryEntry = {
+    handle: StageControlHandle;
+    controlsDependencies: boolean;
+  };
 
-  function ensureRun(runId: string): Map<string, StageControlHandle> {
+  const _byRun = new Map<string, Map<string, RegistryEntry>>();
+
+  function ensureRun(runId: string): Map<string, RegistryEntry> {
     let runMap = _byRun.get(runId);
     if (!runMap) {
       runMap = new Map();
@@ -139,39 +155,50 @@ export function createStageControlRegistry(): StageControlRegistry {
     return runMap;
   }
 
+  function controlledEntries(runId: string): RegistryEntry[] {
+    const runMap = _byRun.get(runId);
+    if (!runMap) return [];
+    return [...runMap.values()].filter((entry) => entry.controlsDependencies);
+  }
+
   function makeRunHandle(runId: string): WorkflowRunControlHandle {
     return {
       runId,
       stages(): readonly StageControlHandle[] {
-        const runMap = _byRun.get(runId);
-        if (!runMap) return [];
-        return [...runMap.values()];
+        return controlledEntries(runId).map((entry) => entry.handle);
       },
       pausedStages(): readonly StageControlHandle[] {
-        const runMap = _byRun.get(runId);
-        if (!runMap) return [];
-        return [...runMap.values()].filter((h) => h.status === "paused");
+        return controlledEntries(runId)
+          .map((entry) => entry.handle)
+          .filter((h) => h.status === "paused");
       },
       async pause(stageId?: string): Promise<readonly StageControlHandle[]> {
         const runMap = _byRun.get(runId);
         if (!runMap) return [];
+        const controlEntries = controlledEntries(runId);
         const targets = stageId
-          ? [runMap.get(stageId)].filter((h): h is StageControlHandle => h !== undefined)
-          : [...runMap.values()].filter(
-              (h) => h.status === "running" || h.status === "pending",
-            );
+          ? [runMap.get(stageId)]
+              .filter(
+                (entry): entry is RegistryEntry => entry !== undefined && entry.controlsDependencies,
+              )
+              .map((entry) => entry.handle)
+          : controlEntries
+              .map((entry) => entry.handle)
+              .filter((h) => h.status === "running" || h.status === "pending");
         const before = new Map(
-          [...runMap.values()].map((handle) => [handle.stageId, handle.status]),
+          controlEntries.map((entry) => [entry.handle.stageId, entry.handle.status]),
         );
         for (const handle of targets) {
           if (handle.status === "paused") continue;
           if (handle.status === "completed" || handle.status === "failed") continue;
           await handle.pause();
         }
-        return [...runMap.values()].filter((handle) => {
-          const previous = before.get(handle.stageId);
-          return previous !== handle.status && (handle.status === "paused" || handle.status === "blocked");
-        });
+        return controlledEntries(runId)
+          .map((entry) => entry.handle)
+          .filter((handle) => {
+            const previous = before.get(handle.stageId);
+            return previous !== handle.status && (handle.status === "paused" || handle.status === "blocked");
+          });
       },
       async resume(
         stageId?: string,
@@ -179,20 +206,27 @@ export function createStageControlRegistry(): StageControlRegistry {
       ): Promise<readonly StageControlHandle[]> {
         const runMap = _byRun.get(runId);
         if (!runMap) return [];
+        const controlEntries = controlledEntries(runId);
         const before = new Map(
-          [...runMap.values()].map((handle) => [handle.stageId, handle.status]),
+          controlEntries.map((entry) => [entry.handle.stageId, entry.handle.status]),
         );
         const targets = stageId
-          ? [runMap.get(stageId)].filter((h): h is StageControlHandle => h !== undefined)
-          : [...runMap.values()].filter((h) => h.status === "paused");
+          ? [runMap.get(stageId)]
+              .filter(
+                (entry): entry is RegistryEntry => entry !== undefined && entry.controlsDependencies,
+              )
+              .map((entry) => entry.handle)
+          : controlEntries.map((entry) => entry.handle).filter((h) => h.status === "paused");
         for (const handle of targets) {
           if (handle.status !== "paused") continue;
           await handle.resume(message);
         }
-        return [...runMap.values()].filter((handle) => {
-          const previous = before.get(handle.stageId);
-          return (previous === "paused" || previous === "blocked") && previous !== handle.status;
-        });
+        return controlledEntries(runId)
+          .map((entry) => entry.handle)
+          .filter((handle) => {
+            const previous = before.get(handle.stageId);
+            return (previous === "paused" || previous === "blocked") && previous !== handle.status;
+          });
       },
     };
   }
@@ -200,23 +234,31 @@ export function createStageControlRegistry(): StageControlRegistry {
   return {
     register(handle: StageControlHandle): () => void {
       const runMap = ensureRun(handle.runId);
-      runMap.set(handle.stageId, handle);
+      runMap.set(handle.stageId, { handle, controlsDependencies: true });
       return () => {
         const existing = _byRun.get(handle.runId);
         if (!existing) return;
-        if (existing.get(handle.stageId) === handle) {
+        if (existing.get(handle.stageId)?.handle === handle) {
           existing.delete(handle.stageId);
         }
         if (existing.size === 0) _byRun.delete(handle.runId);
       };
     },
+    detachControl(runId: string, stageId: string, handle?: StageControlHandle): boolean {
+      const entry = _byRun.get(runId)?.get(stageId);
+      if (!entry) return false;
+      if (handle !== undefined && entry.handle !== handle) return false;
+      if (!entry.controlsDependencies) return false;
+      entry.controlsDependencies = false;
+      return true;
+    },
     get(runId: string, stageId: string): StageControlHandle | undefined {
-      return _byRun.get(runId)?.get(stageId);
+      return _byRun.get(runId)?.get(stageId)?.handle;
     },
     forRun(runId: string): readonly StageControlHandle[] {
       const runMap = _byRun.get(runId);
       if (!runMap) return [];
-      return [...runMap.values()];
+      return [...runMap.values()].map((entry) => entry.handle);
     },
     run(runId: string): WorkflowRunControlHandle {
       return makeRunHandle(runId);

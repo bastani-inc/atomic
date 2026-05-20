@@ -3,6 +3,7 @@
  *
  * Verifies:
  *  - register/unregister keyed by runId + stageId
+ *  - detachControl keeps chat resolvable while dropping run-level control
  *  - run-level aggregate fans pause to currently-pausable stages
  *  - resume only releases paused stages
  *  - cleared/unknown handles are no-ops, not errors
@@ -80,6 +81,22 @@ describe("stageControlRegistry — register/get/forRun/run", () => {
     off();
     assert.equal(r.get("run-1", "stage-a"), undefined);
     assert.equal(r.get("run-1", "stage-b"), h2);
+  });
+
+  test("detachControl keeps chat attachment resolvable but removes run-level control", async () => {
+    const r = createStageControlRegistry();
+    const state = { pauseCalls: 0, resumeCalls: 0 };
+    const h = makeHandle("run-1", "stage-a", { status: "running", state });
+    r.register(h);
+
+    assert.equal(r.detachControl("run-1", "stage-a", h), true);
+    assert.equal(r.get("run-1", "stage-a"), h);
+    assert.equal(r.forRun("run-1")[0], h);
+    assert.deepEqual(r.run("run-1").stages(), []);
+
+    const paused = await r.run("run-1").pause("stage-a");
+    assert.deepEqual(paused, []);
+    assert.equal(state.pauseCalls, 0);
   });
 
   test("forRun returns empty for unknown run", () => {

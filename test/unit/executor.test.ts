@@ -2076,7 +2076,12 @@ describe("executor — stage-control registry integration", () => {
 
     assert.ok(attachedIds, "stage should have been attached before prompt");
     const retained = registry.get(attachedIds!.runId, attachedIds!.stageId);
-    assert.ok(retained, "attached completed stage should keep its live handle");
+    assert.ok(retained, "attached completed stage should keep its live chat handle");
+    assert.deepEqual(
+      registry.run(attachedIds!.runId).stages(),
+      [],
+      "completed stage should be detached from workflow pause/resume control",
+    );
     assert.equal(store.runs()[0]?.stages[0]?.status, "completed");
     assert.equal(disposeCalls, 0);
 

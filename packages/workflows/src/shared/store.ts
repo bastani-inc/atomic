@@ -97,9 +97,8 @@ export interface Store {
   ): boolean;
   /**
    * Toggle the `attachable` flag on a stage. The flag reflects whether
-   * a live `StageControlHandle` currently exists in the stage-control
-   * registry, which the attach UI uses to decide whether a stage's
-   * chat surface is interactive or inspect-only.
+   * the stage remains in the live workflow-control set. A completed stage may
+   * still have a detached chat handle while this flag is cleared.
    */
   recordStageAttachable(runId: string, stageId: string, attachable: boolean): boolean;
   /**

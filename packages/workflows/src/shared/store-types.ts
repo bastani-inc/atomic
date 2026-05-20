@@ -93,10 +93,9 @@ export interface StageSnapshot {
   /** Per-model fallback attempt outcomes. */
   modelAttempts?: readonly import("./types.js").WorkflowModelAttempt[];
   /**
-   * True while a live `StageControlHandle` exists for this stage in the
-   * stage-control registry. Used by the attach UI to decide whether to
-   * route prompts through the live handle or render an inspect-only
-   * view for a settled stage with no persisted session.
+   * True while the stage is still part of the live workflow-control set.
+   * Completion clears this even if an already-open chat pane keeps a detached
+   * chat handle alive for post-stage conversation.
    */
   attachable?: boolean;
   /** True while a user pane is actively attached to this stage. */
