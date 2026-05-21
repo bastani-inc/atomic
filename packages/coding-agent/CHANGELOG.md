@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## [0.8.13] - 2026-05-21
+
+### Changed
+
+- Promoted the 0.8.13 prerelease changes to a stable release.
+- Updated Atomic agent guidance.
+
+### Fixed
+
+- Fixed packaged workflow discovery so package-authored workflow resources load through `jiti` with the same `@bastani/workflows` SDK imports used by project and user workflows.
+- Preserved workflow discovery diagnostics for invalid default exports and supported SDK imports when running from the Bun binary.
+- Preserved spacing for async subagent widgets before the prompt box.
+
 ## [0.8.13-0] - 2026-05-21
 
 ### Fixed
