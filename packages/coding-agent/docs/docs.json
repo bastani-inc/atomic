@@ -86,11 +86,6 @@
       "github": "https://github.com/flora131/atomic"
     }
   },
-  "seo": {
-    "metatags": {
-      "canonical": "https://docs.bastani.ai"
-    }
-  },
   "redirects": [
     {
       "source": "/session",

@@ -16,7 +16,8 @@ pkg update && pkg upgrade
 # Install dependencies
 pkg install nodejs termux-api git
 
-# Install Atomic (choose one package manager available in Termux; npm is installed with nodejs)
+# Install Atomic (choose one package manager available in Termux)
+# npm is installed by `pkg install nodejs`; Bun and pnpm must be installed separately before using those commands.
 # npm
 npm install -g @bastani/atomic
 
