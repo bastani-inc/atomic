@@ -1,4 +1,4 @@
-# Atomic Monorepo
+# Development Rules
 
 ## Overview
 
@@ -41,7 +41,7 @@ Default to using **Bun**, not Node/npm/yarn/pnpm.
 ## Best Practices
 
 - Avoid ambiguous types like `any` and `unknown`. Use specific types instead.
-- Source files use `.js` import extensions (TypeScript ESM convention). The repo ships as `.ts` files; Bun resolves `.js` specifiers to the underlying `.ts` source directly — no loader hook required. pi's loader follows the same convention.
+- Source files use `.js` import extensions (TypeScript ESM convention). The repo ships as `.ts` files; Bun resolves `.js` specifiers to the underlying `.ts` source directly — no loader hook required. atomic's loader follows the same convention as pi.
 - Do not add a build step (`dist/`, `tsconfig.build.json`, etc.) to `packages/workflows`; it distributes raw TypeScript and the host loads it directly. `packages/coding-agent` is copied from upstream pi and keeps its existing build setup.
 - When using skills, if you see a frontmatter of `metadata: internal` set to `true` (if missing assume `false`), that means the skill is for internal developers of this package. If this flag is omitted, the skill is meant for consumers/everyday users. 
 
@@ -106,12 +106,12 @@ Relevant resources (use your `playwright-cli` skill if the information is not av
 
 ### Coding Agent Configuration Location
 
-pi:
+atomic:
  - global:
-     - Linux/MacOS: `~/.pi/agent/`
-     - Windows: `%HOMEPATH%\.pi\agent\\`
- - extensions: `~/.pi/agent/extensions/<name>/`
- - local: `.pi/` in the project directory
+     - Linux/MacOS: `~/.atomic/agent/`
+     - Windows: `%HOMEPATH%\.atomic\agent\\`
+ - extensions: `~/.atomic/agent/extensions/<name>/`
+ - local: `.atomic/` in the project directory
 
 **Agent Skill Locations**
     - local:
@@ -126,13 +126,49 @@ Atomic mirrors pi's tag-driven release flow: bump versions locally, commit, push
 
 ### Agent publishing requests
 
-If a user asks you to publish the package:
+If a user asks you to publish the package or create a release/prerelease:
 
-- Ask the user with the `ask_user_question`/ask-question tool what version to publish if they have not supplied a version.
-- Ask whether they want a release or prerelease if that cannot be inferred from the supplied version, or if the version is in an incorrect format. Valid formats are `MAJOR.MINOR.PATCH` for releases and `MAJOR.MINOR.PATCH-NUMBER` for prereleases.
-- Remember that publishing is triggered by the git tag flow: create `git tag v<version>` and push it with `git push origin v<version>` after the version bump commit is on the branch. A branch push or PR merge alone does not publish.
+1. Ask the user with the `ask_user_question`/ask-question tool what version to publish if they have not supplied a version.
+2. Ask whether they want a release or prerelease if that cannot be inferred from the supplied version, or if the version is in an incorrect format. Valid formats are `MAJOR.MINOR.PATCH` for releases and `MAJOR.MINOR.PATCH-NUMBER` for prereleases.
+3. Create a branch using the naming convention: `[prerelease | release]/v<version>` where `[prerelease | release]` changes depending on whether the version if a release or prerelease version.
+4. Follow the guidance in the "Changelog" section to update the `CHANGELOG.md` files.
+5. Follow the "Bumping Versions" guidance to correctly bump the package version.
+6. Commit all unstaged changes in the current branch.
+7. Create a PR to merge the branch to main.
+8.  Wait to make sure all of the CI checks pass using the `gh` tool.
+9.  Auto-merge when all CI checks pass. If the checks don't pass, ask the user what they want to do using the `ask_user_question` tool.
+10. If/when the branch is merged to main, switch back to main, and pull the latest changes from `origin/main`.
+11. A branch push or PR merge alone does not publish, so if all the steps above succeed, create the new release by creating a git tag with: `git tag v<version>` and push it with `git push origin v<version>`.
+12. Wait for the release to finish and monitor the status of the publish action. If the publish checks don't pass, ask the user what they want to do using the `ask_user_question` tool. Otherwise, provide a summary to the user.
 
-### Bumping Versions
+## Changelog
+
+Location: `packages/*/CHANGELOG.md` (each package has its own)
+
+### Format
+
+Use these sections under `## [Unreleased]`:
+
+- `### Breaking Changes` - API changes requiring migration
+- `### Added` - New features
+- `### Changed` - Changes to existing functionality
+- `### Fixed` - Bug fixes
+- `### Removed` - Removed features
+
+### Rules
+
+- Before adding entries, read the full `[Unreleased]` section to see which subsections already exist
+- New entries ALWAYS go under `## [Unreleased]` section
+- Append to existing subsections (e.g., `### Fixed`), do not create duplicates
+- NEVER modify already-released version sections (e.g., `## [0.12.2]`)
+- Each version section is immutable once released
+
+### Attribution
+
+- **Internal changes (from issues)**: `Fixed foo bar ([#123](https://github.com/earendil-works/pi-mono/issues/123))`
+- **External contributions**: `Added feature X ([#456](https://github.com/earendil-works/pi-mono/pull/456) by [@username](https://github.com/username))`
+
+## Bumping Versions
 
 Use the top-level `scripts/bump-version.ts` script to update every `packages/*/package.json` version and package README badge:
 
@@ -143,23 +179,6 @@ bun run scripts/bump-version.ts 0.1.0-0
 ```
 
 Run `bun install` afterward to refresh `bun.lock`.
-
-### Workflow
-
-1. Bump versions with `bun run scripts/bump-version.ts <version>`, then `bun install`.
-2. Move the `[Unreleased]` section in `packages/coding-agent/CHANGELOG.md` to a new `## [<version>] - <YYYY-MM-DD>` section. The publish workflow extracts release notes from this section.
-3. Run `bun run typecheck`, `cd packages/coding-agent && bun run build`, and the relevant tests.
-4. Commit with `chore(release): bump to v<version>`.
-5. Tag with `git tag v<version>` and push both branch and tag: `git push && git push origin v<version>`.
-6. The `v*` tag push triggers `.github/workflows/publish.yml`, which validates the tag matches `packages/coding-agent/package.json`, runs typecheck/tests, cross-compiles binaries via `scripts/build-binaries.sh`, publishes `@bastani/atomic@<version>` to npm with OIDC provenance, and creates the GitHub Release with binaries attached.
-
-Release automation behavior:
-
-- A `v<version>` tag (e.g. `v0.8.0`) publishes `@bastani/atomic@<version>` to npm with the `latest` tag and creates a non-prerelease GitHub Release marked as latest.
-- A prerelease tag like `v0.8.0-0` publishes with the `next` npm tag and creates a prerelease GitHub Release that is **not** marked latest.
-- `packages/workflows` and companion pi packages are bundled into `@bastani/atomic` at build time; they are not independently published.
-- GitHub Release uses `softprops/action-gh-release@v3` with release notes extracted from `packages/coding-agent/CHANGELOG.md` (pi-style awk extraction). Six binary archives are attached: `atomic-{darwin-arm64,darwin-x64,linux-x64,linux-arm64}.tar.gz` and `atomic-{windows-x64,windows-arm64}.zip`.
-- For recovery, `workflow_dispatch` accepts an explicit `tag` input.
 
 ## CI
 
