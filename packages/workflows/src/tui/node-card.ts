@@ -117,7 +117,6 @@ function durationText(stage: StageSnapshot): string {
 }
 
 function metaText(stage: StageSnapshot): string {
-  if (stage.model) return stage.model;
   const deps = stage.parentIds.length;
   if (deps === 0) return "root";
   return deps === 1 ? "1 dep" : `${deps} deps`;

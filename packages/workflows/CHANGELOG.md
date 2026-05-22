@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Removed model metadata from workflow node cards while retaining fallback dependency metadata ([#1011](https://github.com/flora131/atomic/issues/1011)).
 - Preserve the selected workflow switcher row highlight through truncation ellipses on long stage names.
 
 ## [0.0.1] — 2026-05-15
