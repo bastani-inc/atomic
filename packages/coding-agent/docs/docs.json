@@ -65,6 +65,12 @@
         "pages": [
           "development"
         ]
+      },
+      {
+        "group": "Changelog",
+        "pages": [
+          "changelog"
+        ]
       }
     ]
   },

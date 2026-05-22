@@ -1,0 +1,29 @@
+---
+title: "Changelog"
+description: "What's new in Atomic"
+---
+
+<Update label="May 22, 2026" tags={["v0.8.13"]}>
+
+## New features
+
+- **`/atomic` builtin slash command.** A new onboarding guide is now available from anywhere in Atomic. Run `/atomic` to get oriented, list sections, or jump to a topic by name. See [Usage](/usage).
+- **Model reasoning level in the system prompt.** Atomic now passes the active model's reasoning level into the system prompt, so responses better reflect the depth your selected model is configured for. See [Models](/models).
+- **Configurable HTTP idle timeout.** You can now tune how long Atomic keeps idle HTTP connections open via settings, which helps on slow or unreliable networks. See [Settings](/settings).
+
+## Updates
+
+- **Smoother subagent rendering.** Live subagent widgets now animate in place without remounting, and result rendering has been refreshed for clearer progress. See [Extensions](/extensions).
+- **Consistent duration display.** Elapsed times across bash, subagent, and workflow output are now shown as whole seconds and never go negative.
+- **Better Windows process handling.** Process spawning and self-update behavior have been improved on Windows. See [Windows](/windows).
+- **Workflow tool rendering is width-aware.** Tool output inside workflow stages now respects the terminal width and forwards builtin tools correctly to stage sessions. See [Workflows](/workflows).
+
+## Bug fixes
+
+- **Workflow package imports load reliably.** Package-authored workflows are now loaded through `jiti`, so `@bastani/workflows` imports resolve consistently, including inside the Bun-packaged binary. See [Workflows](/workflows).
+- **Binary archives bundle runtime dependencies.** Downloaded `atomic-*` archives now ship with the runtime deps they need, fixing missing-module errors on first run.
+- **Workflow text helpers resolve on all platforms.** Fixed a regression where text helpers failed to load in the packaged binary.
+- **`/atomic` handles long inputs safely.** Argument parsing for the guide command no longer slows down on adversarial punctuation-heavy input.
+- **Settled workflow stages detach from run control.** Completed stages no longer linger in the active run, keeping the workflow view accurate.
+
+</Update>
