@@ -41,6 +41,7 @@ function makeStage(opts: Partial<StageSnapshot> = {}): StageSnapshot {
     pausedAt: opts.pausedAt,
     resumedAt: opts.resumedAt,
     blockedByStageId: opts.blockedByStageId,
+    model: opts.model,
   };
 }
 
@@ -252,6 +253,32 @@ describe("renderNodeCard — status border colours", () => {
 
     assert.equal(pauseIconCount, 1);
     assert.match(rendered, /❚❚ paused/);
+  });
+});
+
+describe("renderNodeCard — metadata line", () => {
+  test("completed stages hide model metadata and keep fallback geometry", () => {
+    const lines = renderNodeCard(
+      makeStage({ status: "completed", durationMs: 1200, model: "gpt-5-mini" }),
+      { theme },
+    );
+    const rendered = stripAnsi(lines.join("\n"));
+
+    assert.doesNotMatch(rendered, /gpt-5-mini/);
+    assert.match(stripAnsi(lines[3]!), /root/);
+    assert.equal(lines.length, NODE_H);
+    for (const line of lines) {
+      assert.equal(stripAnsi(line).length, NODE_W);
+    }
+  });
+
+  test("running stages continue to show model metadata", () => {
+    const lines = renderNodeCard(
+      makeStage({ status: "running", startedAt: Date.now() - 1000, model: "gpt-5-mini" }),
+      { theme },
+    );
+
+    assert.match(stripAnsi(lines[3]!), /gpt-5-mini/);
   });
 });
 
