@@ -257,7 +257,7 @@ describe("renderNodeCard — status border colours", () => {
 });
 
 describe("renderNodeCard — metadata line", () => {
-  test("completed stages hide model metadata and keep fallback geometry", () => {
+  test("stages hide model metadata and keep fallback geometry", () => {
     const lines = renderNodeCard(
       makeStage({ status: "completed", durationMs: 1200, model: "gpt-5-mini" }),
       { theme },
@@ -272,17 +272,20 @@ describe("renderNodeCard — metadata line", () => {
     }
   });
 
-  test("running stages continue to show model metadata", () => {
+  test("running stages use dependency metadata instead of model metadata", () => {
     const lines = renderNodeCard(
       makeStage({
         status: "running",
+        parentIds: ["build"],
         startedAt: Date.now() - 1000,
         model: "gpt-5-mini",
       }),
       { theme },
     );
 
-    assert.match(stripAnsi(lines[3]!), /gpt-5-mini/);
+    const rendered = stripAnsi(lines.join("\n"));
+    assert.doesNotMatch(rendered, /gpt-5-mini/);
+    assert.match(stripAnsi(lines[3]!), /1 dep/);
   });
 });
 
