@@ -274,7 +274,11 @@ describe("renderNodeCard — metadata line", () => {
 
   test("running stages continue to show model metadata", () => {
     const lines = renderNodeCard(
-      makeStage({ status: "running", startedAt: Date.now() - 1000, model: "gpt-5-mini" }),
+      makeStage({
+        status: "running",
+        startedAt: Date.now() - 1000,
+        model: "gpt-5-mini",
+      }),
       { theme },
     );
 
