@@ -205,6 +205,7 @@ export interface PiToolOpts<TArgs, TDetails> {
   label: string;
   description: string;
   parameters: unknown; // TypeBox TSchema — pi consumes it opaquely
+  renderShell?: "default" | "self";
   /**
    * Pi calls execute positionally: `(toolCallId, params, signal, onUpdate, ctx)`.
    * cross-ref: pi-coding-agent dist/core/extensions/types.d.ts ToolDefinition.execute
@@ -1395,6 +1396,7 @@ function factory(pi: ExtensionAPI): void {
       label: "workflow",
       description: "Run a defined multi-stage workflow by name.",
       parameters: workflowParameters,
+      renderShell: "self",
       execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
         // Overlay is opt-in via F2 / ctrl+h; do not auto-open from a
         // tool-call dispatch path.

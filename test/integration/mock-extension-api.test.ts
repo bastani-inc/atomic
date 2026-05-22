@@ -552,6 +552,10 @@ describe("MockExtensionAPI — tool registration", () => {
     assert.equal(typeof mock.tools[0]!.opts.renderResult, "function");
   });
 
+  test("tool renders its own shell", () => {
+    assert.equal(mock.tools[0]!.opts.renderShell, "self");
+  });
+
   test("tool renderCall slot delegates correctly", () => {
     const slot = mock.tools[0]!.opts.renderCall!;
     const out = slot({ workflow: "test-wf", inputs: {}, action: "run" }, {} as never, {} as never);
