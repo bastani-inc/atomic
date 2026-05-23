@@ -511,6 +511,41 @@ describe("executor.run", () => {
     assert.ok(badStage?.error!.includes("explode"));
   });
 
+  test("ctx.task aggregator adapter failure marks run, stage, and store failed", async () => {
+    const testStore = createStore();
+    const def = defineWorkflow("fail-aggregator-task-wf")
+      .run(async (ctx) => {
+        await ctx.task("aggregator", { prompt: "aggregate findings" });
+        return { ok: true };
+      })
+      .compile();
+
+    const wfResult = await run(def, {}, {
+      adapters: {
+        prompt: {
+          prompt: async () => {
+            throw new Error("aggregator adapter exploded");
+          },
+        },
+      },
+      store: testStore,
+    });
+
+    const adapterError = /aggregator adapter exploded/;
+
+    assert.equal(wfResult.status, "failed");
+    assert.match(wfResult.error ?? "", adapterError);
+    const aggregatorStage = wfResult.stages.find((s) => s.name === "aggregator");
+    assert.equal(aggregatorStage?.status, "failed");
+    assert.match(aggregatorStage?.error ?? "", adapterError);
+
+    const snapshotRun = testStore.snapshot().runs.find((run) => run.id === wfResult.runId);
+    assert.equal(snapshotRun?.status, "failed");
+    assert.match(snapshotRun?.error ?? "", adapterError);
+    const snapshotStage = snapshotRun?.stages.find((stage) => stage.name === "aggregator");
+    assert.equal(snapshotStage?.status, "failed");
+    assert.match(snapshotStage?.error ?? "", adapterError);
+  });
 
   test("complete throws clear error when adapter absent", async () => {
     const def = defineWorkflow("complete-wf")

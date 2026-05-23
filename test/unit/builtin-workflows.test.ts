@@ -39,6 +39,24 @@ function makeTaskResult(name: string, text: string): WorkflowTaskResult {
   return { name, stageName: name, text };
 }
 
+function readPaths(options: WorkflowTaskOptions | undefined): readonly string[] {
+  return Array.isArray(options?.reads) ? options.reads : [];
+}
+
+function normalizePathSeparators(path: string): string {
+  return path.replace(/\\/g, "/");
+}
+
+function readPathEndsWith(
+  options: WorkflowTaskOptions | undefined,
+  suffix: string,
+): boolean {
+  const normalizedSuffix = normalizePathSeparators(suffix);
+  return readPaths(options).some((path) =>
+    normalizePathSeparators(path).endsWith(normalizedSuffix),
+  );
+}
+
 /** Mock WorkflowRunContext factory that records high-level SDK calls. */
 function makeMockCtx<TInputs extends Record<string, unknown>>(
   inputs: TInputs,
@@ -167,6 +185,61 @@ describe("deep-research-codebase", () => {
     assert.deepEqual(result["partitions"], ["auth logic", "token validation"]);
     assert.equal(result["specialist_count"], 8);
     assert.equal(result["max_concurrency"], 2);
+    assert.equal(typeof result["artifact_root"], "string");
+    assert.equal(result["artifact_count"], 11);
+  });
+
+  test("uses artifact handoffs so aggregation stays bounded", async () => {
+    const mod = await import("../../packages/workflows/builtin/deep-research-codebase.js");
+    const d = mod.default as unknown as WorkflowDefinition;
+    const largeSentinel = "SPECIALIST_INLINE_SENTINEL".repeat(200);
+    const ctx = makeMockCtx(
+      { prompt: "Trace auth behavior", max_partitions: 2, max_concurrency: 2 },
+      {
+        task: (name) => {
+          if (name === "partition") return "auth logic\ntoken validation";
+          if (/^(locator|pattern-finder|analyzer|online-researcher)-/.test(name)) {
+            return `${name}: ${largeSentinel}`;
+          }
+          return undefined;
+        },
+      },
+    );
+
+    const result = await d.run(ctx);
+    const aggregatorOptions = ctx.calls.taskOptions["aggregator"]?.[0];
+    const aggregatorPrompt = ctx.calls.prompts["aggregator"]?.[0] ?? "";
+    const normalizedAggregatorPrompt = normalizePathSeparators(aggregatorPrompt);
+    const aggregatorReads = readPaths(aggregatorOptions);
+
+    assert.deepEqual(result["partitions"], ["auth logic", "token validation"]);
+    assert.equal(aggregatorOptions?.previous, undefined);
+    assert.ok(Array.isArray(aggregatorOptions?.reads));
+    assert.equal(aggregatorReads.length, 11);
+    assert.match(normalizedAggregatorPrompt, /artifact_index/);
+    assert.match(normalizedAggregatorPrompt, /Read the artifacts listed below selectively/);
+    assert.match(normalizedAggregatorPrompt, /00-codebase-scout\.md/);
+    assert.match(normalizedAggregatorPrompt, /wave1\/locator-1\.md/);
+    assert.match(normalizedAggregatorPrompt, /wave2\/analyzer-2\.md/);
+    assert.doesNotMatch(normalizedAggregatorPrompt, /SPECIALIST_INLINE_SENTINEL/);
+    assert.doesNotMatch(normalizedAggregatorPrompt, /Context:/);
+
+    const scoutOutput = ctx.calls.taskOptions["codebase-scout"]?.[0];
+    const historyLocatorOutput = ctx.calls.taskOptions["history-locator"]?.[0];
+    const historyAnalyzerOutput = ctx.calls.taskOptions["history-analyzer"]?.[0];
+    assert.equal(scoutOutput?.outputMode, "file-only");
+    assert.equal(historyLocatorOutput?.outputMode, "file-only");
+    assert.equal(historyAnalyzerOutput?.outputMode, "file-only");
+    assert.notEqual(scoutOutput?.output, historyLocatorOutput?.output);
+
+    assert.equal(ctx.calls.taskOptions["partition"]?.[0]?.outputMode, undefined);
+    assert.ok(readPathEndsWith(ctx.calls.taskOptions["partition"]?.[0], "00-codebase-scout.md"));
+    assert.ok(readPathEndsWith(ctx.calls.taskOptions["locator-1"]?.[0], "00-codebase-scout.md"));
+    assert.ok(readPathEndsWith(ctx.calls.taskOptions["analyzer-1"]?.[0], "00-codebase-scout.md"));
+    assert.ok(readPathEndsWith(ctx.calls.taskOptions["analyzer-1"]?.[0], "wave1/locator-1.md"));
+    assert.ok(readPathEndsWith(ctx.calls.taskOptions["online-researcher-1"]?.[0], "wave1/locator-1.md"));
+    assert.equal(ctx.calls.taskOptions["locator-1"]?.[0]?.outputMode, "file-only");
+    assert.equal(ctx.calls.taskOptions["analyzer-1"]?.[0]?.outputMode, "file-only");
   });
 });
 

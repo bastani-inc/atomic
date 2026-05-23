@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Prevented `deep-research-codebase` aggregation from inlining large specialist transcripts by handing intermediate research to downstream stages as file-only artifacts ([#1016](https://github.com/flora131/atomic/issues/1016)).
 - Removed model metadata from workflow node cards while retaining fallback dependency metadata ([#1011](https://github.com/flora131/atomic/issues/1011)).
 - Preserve the selected workflow switcher row highlight through truncation ellipses on long stage names.
 
