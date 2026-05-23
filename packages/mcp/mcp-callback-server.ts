@@ -34,7 +34,7 @@ const HTML_SUCCESS = `<!DOCTYPE html>
 </body>
 </html>`
 
-const HTML_ERROR = () => `<!DOCTYPE html>
+const HTML_ERROR = (message: string) => `<!DOCTYPE html>
 <html>
 <head>
   <title>Pi - Authorization Failed</title>
@@ -50,10 +50,19 @@ const HTML_ERROR = () => `<!DOCTYPE html>
   <div class="container">
     <h1>Authorization Failed</h1>
     <p>An error occurred during authorization.</p>
-    <div class="error">Authorization request failed.</div>
+    <div class="error">${escapeHtml(message)}</div>
   </div>
 </body>
 </html>`
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;")
+}
 
 /** Pending authorization request */
 interface PendingAuth {

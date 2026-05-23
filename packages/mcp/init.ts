@@ -274,8 +274,21 @@ export function updateStatusBar(state: McpExtensionState): void {
     ui.setStatus("mcp", undefined);
     return;
   }
-  const connectedCount = state.manager.getAllConnections().size;
-  ui.setStatus("mcp", ui.theme.fg("accent", `MCP: ${connectedCount}/${total} servers`));
+  const connectedCount = [...state.manager.getAllConnections().values()].filter(
+    (connection) => connection.status === "connected",
+  ).length;
+  const text = `MCP: ${connectedCount}/${total} servers`;
+  ui.setStatus("mcp", colorizeStatusText(ui, text));
+}
+
+function colorizeStatusText(ui: NonNullable<McpExtensionState["ui"]>, text: string): string {
+  const theme = (ui as { theme?: { fg?: (color: string, text: string) => string } }).theme;
+  if (typeof theme?.fg !== "function") return text;
+  try {
+    return theme.fg("accent", text);
+  } catch {
+    return text;
+  }
 }
 
 export function getFailureAgeSeconds(state: McpExtensionState, serverName: string): number | null {

@@ -264,9 +264,10 @@ export async function maybeStartUiSession(
         active = false;
         cleanupStreamListener();
 
-        if (state.uiServer === handle) {
-          const messages = handle.getSessionMessages();
-          const stream = handle.getStreamSummary();
+        if (state.uiServer === handle && handle !== null) {
+          const completedHandle = handle;
+          const messages = completedHandle.getSessionMessages();
+          const stream = completedHandle.getStreamSummary();
           const hasContent =
             messages.prompts.length > 0 ||
             messages.intents.length > 0 ||
@@ -275,8 +276,8 @@ export async function maybeStartUiSession(
 
           if (hasContent) {
             state.completedUiSessions.push({
-              serverName: handle.serverName,
-              toolName: handle.toolName,
+              serverName: completedHandle.serverName,
+              toolName: completedHandle.toolName,
               completedAt: new Date(),
               reason,
               messages,
