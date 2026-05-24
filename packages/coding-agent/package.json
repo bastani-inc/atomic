@@ -58,7 +58,7 @@
     "cross-spawn": "7.0.6",
     "diff": "^8.0.2",
     "glob": "^13.0.1",
-    "highlight.js": "^10.7.3",
+    "highlight.js": "^11.11.1",
     "hosted-git-info": "^9.0.2",
     "ignore": "^7.0.5",
     "jiti": "^2.7.0",
