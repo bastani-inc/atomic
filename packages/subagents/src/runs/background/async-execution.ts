@@ -169,6 +169,13 @@ export function isAsyncAvailable(): boolean {
 /**
  * Spawn the async runner process
  */
+export function writeAsyncRunnerConfig(cfg: object, suffix: string): string {
+	fs.mkdirSync(TEMP_ROOT_DIR, { recursive: true });
+	const cfgPath = getAsyncConfigPath(suffix);
+	fs.writeFileSync(cfgPath, JSON.stringify(cfg), { mode: 0o600 });
+	return cfgPath;
+}
+
 function spawnRunner(cfg: object, suffix: string, cwd: string): { pid?: number; error?: string } {
 	if (!jitiCliPath) {
 		return { error: "upstream jiti for TypeScript execution could not be found; ensure package dependencies are installed" };
@@ -183,9 +190,7 @@ function spawnRunner(cfg: object, suffix: string, cwd: string): { pid?: number; 
 		return { error: `cwd does not exist: ${cwd}` };
 	}
 
-	fs.mkdirSync(TEMP_ROOT_DIR, { recursive: true });
-	const cfgPath = getAsyncConfigPath(suffix);
-	fs.writeFileSync(cfgPath, JSON.stringify(cfg));
+	const cfgPath = writeAsyncRunnerConfig(cfg, suffix);
 	const runner = path.join(path.dirname(fileURLToPath(import.meta.url)), "subagent-runner.ts");
 
 	const proc = spawn(process.execPath, [jitiCliPath, runner, cfgPath], {
@@ -327,9 +332,9 @@ export function executeAsyncChain(
 			cwd: stepCwd,
 			model,
 			thinking: resolveEffectiveThinking(model, a.thinking),
-			modelCandidates: buildModelCandidates(behavior.model ?? a.model, a.fallbackModels, availableModels, ctx.currentModelProvider, ctx.currentModel).map((candidate) =>
-				applyThinkingSuffix(candidate, a.thinking),
-			),
+			modelCandidates: buildModelCandidates(behavior.model ?? a.model, a.fallbackModels, availableModels, ctx.currentModelProvider, ctx.currentModel)
+				.map((candidate) => applyThinkingSuffix(candidate, a.thinking))
+				.filter((candidate): candidate is string => typeof candidate === "string"),
 			tools: a.tools,
 			extensions: a.extensions,
 			mcpDirectTools: a.mcpDirectTools,
@@ -603,9 +608,9 @@ export function executeAsyncSingle(
 						cwd: runnerCwd,
 						model,
 						thinking: resolveEffectiveThinking(model, agentConfig.thinking),
-						modelCandidates: buildModelCandidates(params.modelOverride ?? agentConfig.model, agentConfig.fallbackModels, availableModels, ctx.currentModelProvider, ctx.currentModel).map((candidate) =>
-							applyThinkingSuffix(candidate, agentConfig.thinking),
-						),
+						modelCandidates: buildModelCandidates(params.modelOverride ?? agentConfig.model, agentConfig.fallbackModels, availableModels, ctx.currentModelProvider, ctx.currentModel)
+							.map((candidate) => applyThinkingSuffix(candidate, agentConfig.thinking))
+							.filter((candidate): candidate is string => typeof candidate === "string"),
 						tools: agentConfig.tools,
 						extensions: agentConfig.extensions,
 						mcpDirectTools: agentConfig.mcpDirectTools,

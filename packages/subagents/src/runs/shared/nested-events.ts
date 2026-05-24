@@ -258,7 +258,7 @@ function sanitizeStep(input: unknown, depth: number): NestedStepSummary | undefi
 		: "pending";
 	return {
 		agent,
-		status,
+		status: status === "completed" ? "complete" : status,
 		...(stringValue(raw.sessionFile, 2048) ? { sessionFile: stringValue(raw.sessionFile, 2048) } : {}),
 		...(raw.activityState === "active_long_running" || raw.activityState === "needs_attention" ? { activityState: raw.activityState } : {}),
 		...(clampNumber(raw.lastActivityAt) !== undefined ? { lastActivityAt: clampNumber(raw.lastActivityAt) } : {}),

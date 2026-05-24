@@ -214,6 +214,7 @@ export function buildPiArgs(input: BuildPiArgsInput): BuildPiArgsResult {
 	if (input.childIndex !== undefined) {
 		env[SUBAGENT_CHILD_INDEX_ENV] = String(input.childIndex);
 	}
+	// Bare MCP_DIRECT_TOOLS is the MCP adapter contract: unset means config defaults, __none__ forces no direct tools.
 	if (input.mcpDirectTools?.length) {
 		env.MCP_DIRECT_TOOLS = input.mcpDirectTools.join(",");
 	} else {

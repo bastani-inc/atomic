@@ -118,6 +118,19 @@ describe("nested subagent event routes", () => {
     assert.equal(summary?.children?.length, MAX_NESTED_CHILDREN);
   });
 
+  test("normalizes legacy completed step status to complete", () => {
+    const summary = sanitizeSummary({
+      id: "child1",
+      parentRunId: "parent1",
+      depth: 0,
+      path: [],
+      state: "running",
+      steps: [{ agent: "worker", status: "completed" }],
+    });
+
+    assert.equal(summary?.steps?.[0]?.status, "complete");
+  });
+
   test("cleans stale nested route and nested async runtime directories", () => {
     const route = trackRoute(createNestedRoute(safeId("stale")));
     const nestedRunDir = path.join(NESTED_RUNS_DIR, route.rootRunId, "child1");

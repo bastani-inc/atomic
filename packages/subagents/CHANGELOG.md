@@ -17,6 +17,7 @@
 ### Fixed
 - Include selected direct MCP tool names in explicit child tool allowlists when metadata cache/config resolution is available.
 - Bound nested fanout control inbox retry/dedupe state and clean stale nested event/run directories during extension startup.
+- Write async runner config files with owner-only permissions so nested route capability tokens are not exposed through permissive umasks.
 - Treat provider-coerced single-run `output: "false"` the same as boolean `false`, preventing literal `false` output files.
 - Respect read-only completion guard overrides and document `completionGuard: false` as a user-authored frontmatter escape hatch.
 - Suppress flashing console windows when spawning child processes on Windows (`windowsHide: true`).

@@ -62,4 +62,25 @@ describe("subagent child CLI args", () => {
 
     assert.equal(result.env[SUBAGENT_PARENT_DEPTH_ENV], "");
   });
+
+  test("uses the MCP adapter direct-tool sentinel contract", () => {
+    const disabled = buildPiArgs({
+      baseArgs: [],
+      task: "hello",
+      sessionEnabled: false,
+      inheritProjectContext: true,
+      inheritSkills: true,
+    });
+    const selected = buildPiArgs({
+      baseArgs: [],
+      task: "hello",
+      sessionEnabled: false,
+      inheritProjectContext: true,
+      inheritSkills: true,
+      mcpDirectTools: ["github/search_code"],
+    });
+
+    assert.equal(disabled.env.MCP_DIRECT_TOOLS, "__none__");
+    assert.equal(selected.env.MCP_DIRECT_TOOLS, "github/search_code");
+  });
 });
