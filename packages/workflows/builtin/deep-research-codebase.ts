@@ -42,21 +42,6 @@ async function cleanupArtifactRoot(artifactRoot: string): Promise<void> {
 
 type PromptSection = readonly [tag: string, content: string];
 
-type DeepResearchArtifactRole =
-  | "scout"
-  | "history"
-  | "locator"
-  | "pattern-finder"
-  | "analyzer"
-  | "online-researcher";
-
-interface DeepResearchArtifact {
-  readonly stage: string;
-  readonly role: DeepResearchArtifactRole;
-  readonly partition?: string;
-  readonly path: string;
-}
-
 interface DeepResearchCodebaseResult extends Record<string, unknown> {
   readonly findings: string;
   readonly research_doc_path: string;
@@ -348,21 +333,9 @@ export default defineWorkflow("deep-research-codebase")
         mkdir(wave2ArtifactRoot, { recursive: true }),
       ]);
 
-      const artifacts: DeepResearchArtifact[] = [];
       const artifactPathsByStage = new Map<string, string>();
-      const addArtifact = (
-        stage: string,
-        role: DeepResearchArtifactRole,
-        path: string,
-        partition?: string,
-      ) => {
+      const addArtifact = (stage: string, path: string) => {
         artifactPathsByStage.set(stage, path);
-        if (partition === undefined) {
-          artifacts.push({ stage, role, path });
-          return path;
-        }
-
-        artifacts.push({ stage, role, path, partition });
         return path;
       };
       const fileOnlyOutput = (output: string): {
@@ -375,17 +348,18 @@ export default defineWorkflow("deep-research-codebase")
 
       const scoutPath = addArtifact(
         "codebase-scout",
-        "scout",
         join(artifactRoot, "00-codebase-scout.md"),
+      );
+      const partitionPlanPath = addArtifact(
+        "partition",
+        join(artifactRoot, "01-partition-plan.md"),
       );
       const historyLocatorPath = addArtifact(
         "history-locator",
-        "history",
         join(artifactRoot, "01-history-locator.md"),
       );
       const historyAnalyzerPath = addArtifact(
         "history-analyzer",
-        "history",
         join(artifactRoot, "02-history-analyzer.md"),
       );
 
@@ -566,6 +540,7 @@ export default defineWorkflow("deep-research-codebase")
           ["output_format", "Plain text only: one partition per line."],
         ]),
         previous: scout,
+        output: partitionPlanPath,
         reads: [scoutPath],
         ...plannerModelConfig,
       });
@@ -578,15 +553,11 @@ export default defineWorkflow("deep-research-codebase")
           const i = index + 1;
           const locatorPath = addArtifact(
             `locator-${i}`,
-            "locator",
             join(wave1ArtifactRoot, `locator-${i}.md`),
-            partition,
           );
           const patternFinderPath = addArtifact(
             `pattern-finder-${i}`,
-            "pattern-finder",
             join(wave1ArtifactRoot, `pattern-finder-${i}.md`),
-            partition,
           );
           locatorArtifactPaths.set(i, locatorPath);
           return [
@@ -693,15 +664,11 @@ export default defineWorkflow("deep-research-codebase")
               : `Read local artifact context before researching: ${displayPath(locatorPath)}\nCompact saved-output reference: {previous}`;
           const analyzerPath = addArtifact(
             `analyzer-${i}`,
-            "analyzer",
             join(wave2ArtifactRoot, `analyzer-${i}.md`),
-            partition,
           );
           const onlineResearcherPath = addArtifact(
             `online-researcher-${i}`,
-            "online-researcher",
             join(wave2ArtifactRoot, `online-researcher-${i}.md`),
-            partition,
           );
           return [
             {
@@ -803,8 +770,10 @@ export default defineWorkflow("deep-research-codebase")
         artifactPathsByStage,
       );
       await writeFile(specialistReportsPath, specialistReports, "utf8");
-      const artifactPaths = [
-        ...artifacts.map((artifact) => artifact.path),
+      const aggregatorReadPaths = [
+        scoutPath,
+        partitionPlanPath,
+        ...(historyOverview === "" ? [] : [historyAnalyzerPath]),
         specialistReportsPath,
       ];
 
@@ -816,12 +785,24 @@ export default defineWorkflow("deep-research-codebase")
             `Answer the research question comprehensively: ${prompt}`,
           ],
           [
+            "context_artifacts",
+            [
+              `Read the scout artifact at ${displayPath(scoutPath)}.`,
+              `Read the partition plan artifact at ${displayPath(partitionPlanPath)}.`,
+              historyOverview === ""
+                ? "No prior research overview artifact is available."
+                : `Read the prior research overview artifact at ${displayPath(historyAnalyzerPath)}.`,
+            ].join("\n"),
+          ],
+          [
             "prior_research_overview",
-            historyOverview || "(no prior research found)",
+            historyOverview === ""
+              ? "(no prior research found)"
+              : `Read the prior research overview artifact at ${displayPath(historyAnalyzerPath)}.`,
           ],
           [
             "specialist_reports",
-            `Read the complete specialist report artifact at ${displayPath(specialistReportsPath)}. It preserves the same partition, Locator, Pattern Finder, Analyzer, and Online Researcher structure as the original inline specialist handoff while keeping this prompt bounded.`,
+            `Read the complete specialist report artifact at ${displayPath(specialistReportsPath)}. It preserves every partition's Locator, Pattern Finder, Analyzer, and Online Researcher output from the original inline specialist handoff while keeping this prompt bounded.`,
           ],
           [
             "codebase_skills",
@@ -835,7 +816,7 @@ export default defineWorkflow("deep-research-codebase")
             "instructions",
             [
               "Synthesize; do not merely concatenate specialist reports.",
-              "Use the artifact index and supplied input files as the source of detailed specialist evidence instead of relying on inline transcripts.",
+              "Use the supplied input files as the source of detailed scout, partition, history, and specialist evidence instead of relying on inline transcripts.",
               "Prioritize claims supported by concrete paths, symbols, tests, docs, or cited external references.",
               "Resolve contradictions explicitly and preserve important uncertainty.",
               "Avoid inventing facts not supported by the supplied reports; state unknowns instead.",
@@ -854,7 +835,7 @@ export default defineWorkflow("deep-research-codebase")
             ].join("\n"),
           ],
         ]),
-        reads: artifactPaths,
+        reads: aggregatorReadPaths,
         ...explorerModelConfig,
       });
 

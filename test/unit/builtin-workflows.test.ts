@@ -62,11 +62,8 @@ function readPathEndsWith(
   );
 }
 
-function expectedDeepResearchArtifactCount(partitions: readonly unknown[]): number {
-  const fixedArtifacts = 3;
-  const artifactsPerPartition = 4;
-  const aggregateHandoffArtifacts = 1;
-  return fixedArtifacts + partitions.length * artifactsPerPartition + aggregateHandoffArtifacts;
+function expectedDeepResearchAggregatorReadCount(): number {
+  return 4;
 }
 
 function assertStringOutput(
@@ -263,17 +260,18 @@ describe("deep-research-codebase", () => {
     assert.deepEqual(result["partitions"], ["auth logic", "token validation"]);
     assert.equal(aggregatorOptions?.previous, undefined);
     assert.ok(Array.isArray(aggregatorOptions?.reads));
-    assert.equal(
-      aggregatorReads.length,
-      expectedDeepResearchArtifactCount(result["partitions"] as readonly unknown[]),
-    );
+    assert.equal(aggregatorReads.length, expectedDeepResearchAggregatorReadCount());
     assert.match(normalizedAggregatorPrompt, /specialist_reports/);
     assert.match(normalizedAggregatorPrompt, /03-specialist-reports\.md/);
     assert.match(normalizedAggregatorPrompt, /Read the complete specialist report artifact/);
     assert.doesNotMatch(normalizedAggregatorPrompt, /artifact_index/);
     assert.doesNotMatch(normalizedAggregatorPrompt, /SPECIALIST_INLINE_SENTINEL/);
     assert.doesNotMatch(normalizedAggregatorPrompt, /Context:/);
+    assert.ok(aggregatorReads.some((path) => normalizePathSeparators(path).endsWith("00-codebase-scout.md")));
+    assert.ok(aggregatorReads.some((path) => normalizePathSeparators(path).endsWith("01-partition-plan.md")));
+    assert.ok(aggregatorReads.some((path) => normalizePathSeparators(path).endsWith("02-history-analyzer.md")));
     assert.ok(aggregatorReads.some((path) => normalizePathSeparators(path).endsWith("03-specialist-reports.md")));
+    assert.equal(aggregatorReads.some((path) => /\/wave[12]\//.test(normalizePathSeparators(path))), false);
 
     const scoutOutput = ctx.calls.taskOptions["codebase-scout"]?.[0];
     const historyLocatorOutput = ctx.calls.taskOptions["history-locator"]?.[0];
@@ -283,8 +281,11 @@ describe("deep-research-codebase", () => {
     assert.equal(historyAnalyzerOutput?.outputMode, "file-only");
     assert.notEqual(scoutOutput?.output, historyLocatorOutput?.output);
 
-    assert.equal(ctx.calls.taskOptions["partition"]?.[0]?.outputMode, undefined);
-    assert.ok(readPathEndsWith(ctx.calls.taskOptions["partition"]?.[0], "00-codebase-scout.md"));
+    const partitionOutput = ctx.calls.taskOptions["partition"]?.[0];
+    assert.equal(partitionOutput?.outputMode, undefined);
+    assertStringOutput(partitionOutput?.output);
+    assert.ok(normalizePathSeparators(partitionOutput.output).endsWith("01-partition-plan.md"));
+    assert.ok(readPathEndsWith(partitionOutput, "00-codebase-scout.md"));
     assert.ok(readPathEndsWith(ctx.calls.taskOptions["locator-1"]?.[0], "00-codebase-scout.md"));
     assert.ok(readPathEndsWith(ctx.calls.taskOptions["analyzer-1"]?.[0], "00-codebase-scout.md"));
     assert.ok(readPathEndsWith(ctx.calls.taskOptions["analyzer-1"]?.[0], "wave1/locator-1.md"));
