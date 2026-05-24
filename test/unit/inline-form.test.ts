@@ -96,11 +96,16 @@ function plain(lines: string[]): string {
   return lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
 }
 
-test("card (live): shows header pill, workflow chip, all fields, footer hints", () => {
+function ansi(lines: string[]): string {
+  return lines.join("\n");
+}
+
+test("card (live): uses ask-user-question style tab chrome, not workflow/edit panels", () => {
   const state = makeState();
   const lines = renderInlineCard({ width: 80, state, theme: deriveGraphTheme({}) });
   const txt = plain(lines);
-  assert.match(txt, /WORKFLOW/);
+  assert.doesNotMatch(txt, /WORKFLOW/);
+  assert.doesNotMatch(txt, /EDIT/);
   assert.match(txt, /ralph/);
   assert.match(txt, /loop a thinker/);
   assert.match(txt, /prompt/);
@@ -109,11 +114,23 @@ test("card (live): shows header pill, workflow chip, all fields, footer hints", 
   assert.match(txt, /verbose/);
   assert.match(txt, /1 \/ 4/);
   assert.doesNotMatch(txt, /Run workflow/);
-  assert.match(txt, /EDIT/);
   assert.match(txt, /tab/);
   assert.match(txt, /ctrl\+x/);
   assert.doesNotMatch(txt, /ctrl\+enter/);
   assert.doesNotMatch(txt, /ctrl\+s/);
+
+  const plainLines = lines.map((line) => plain([line]));
+  assert.match(plainLines[0] ?? "", /^─+$/);
+  assert.match(plainLines[1] ?? "", /^ ← /);
+  assert.match(plainLines[1] ?? "", /□ prompt/);
+  assert.match(plainLines[1] ?? "", /■ iters/);
+  assert.match(plainLines[1] ?? "", /■ focus/);
+  assert.match(plainLines[1] ?? "", /■ verbose/);
+  assert.match(plainLines[1] ?? "", /✓ Run/);
+  assert.match(plainLines[1] ?? "", / →$/);
+  assert.ok(plainLines.slice(1).some((line) => /^─+$/.test(line)), "expected bottom dialog border");
+  assert.doesNotMatch(txt, /╭─ WORKFLOW ─/);
+  assert.doesNotMatch(txt, /╭─ EDIT ─/);
 });
 
 test("card (live): hint row is anchored at the bottom of the widget", () => {
@@ -125,17 +142,14 @@ test("card (live): hint row is anchored at the bottom of the widget", () => {
   assert.match(tail.join("\n"), /esc\s+Cancel/);
 });
 
-test("card (live): each field title is centred inside its top border", () => {
+test("card (live): active field body uses ask-user-question input rows, not inner boxes", () => {
   const state = makeState();
   const lines = renderInlineCard({ width: 80, state, theme: deriveGraphTheme({}) });
-  // A centred title row looks like `╭─...─ <name> ─...─╮` with leading
-  // dashes before the name. The original left-aligned `╭ <name> ─...─╮`
-  // must NOT appear.
   const visible = plain(lines);
-  for (const name of ["prompt", "iters", "focus", "verbose"]) {
-    assert.match(visible, new RegExp(`╭─+ ${name} ─+╮`));
-    assert.doesNotMatch(visible, new RegExp(`╭ ${name} ─+╮`));
-  }
+  assert.match(visible, / prompt\n  text\s+·\s+required\s+·\s+task\n\n❯ 1\.  /);
+  assert.match(ansi(lines), /\x1b\[7m \x1b\[0m/);
+  assert.doesNotMatch(visible, /╭─+ prompt ─+╮/);
+  assert.doesNotMatch(visible, /│\s+│/);
 });
 
 test("card (submitted): shows ✓ submitted ribbon + composed command", () => {
@@ -158,18 +172,19 @@ test("card (submitted): shows ✓ submitted ribbon + composed command", () => {
   assert.doesNotMatch(txt, /✎ editing/);
 });
 
-test("card (cancelled): shows ✗ cancelled ribbon", () => {
+test("card (cancelled): renders no cancellation artefact", () => {
   const state = makeState({ status: "cancelled" });
   const lines = renderInlineCard({ width: 80, state, theme: deriveGraphTheme({}) });
-  assert.match(plain(lines), /✗ cancelled/);
+  assert.deepEqual(lines, []);
 });
 
-test("card: select field renders all choices with dot markers", () => {
+test("card: select field renders choices as ask-user-question numbered rows", () => {
   const state = makeState({ focusedIdx: 2 });
   const txt = plain(renderInlineCard({ width: 80, state, theme: deriveGraphTheme({}) }));
-  assert.match(txt, /○ minimal/);
-  assert.match(txt, /● standard/);
-  assert.match(txt, /○ exhaustive/);
+  assert.match(txt, /  1\. minimal/);
+  assert.match(txt, /❯ 2\. standard/);
+  assert.match(txt, /  3\. exhaustive/);
+  assert.doesNotMatch(txt, /○ minimal/);
 });
 
 test("card: focused text field shows the caret so the bottom editor can stay hidden", () => {
@@ -178,8 +193,11 @@ test("card: focused text field shows the caret so the bottom editor can stay hid
     focusedIdx: 0,
     caret: 2,
   });
-  const txt = plain(renderInlineCard({ width: 80, state, theme: deriveGraphTheme({}) }));
-  assert.match(txt, /bu▋ild/);
+  const lines = renderInlineCard({ width: 80, state, theme: deriveGraphTheme({}) });
+  const txt = plain(lines);
+  assert.match(txt, /build/);
+  assert.match(ansi(lines), /\x1b\[7mi\x1b\[0m/);
+  assert.doesNotMatch(txt, /▋/);
 });
 
 function assertLinesWithinWidth(lines: string[], width: number): void {
@@ -623,9 +641,10 @@ test("overlay: host editor setup failure resolves unsupported without emitting c
   assert.equal(sentMessages.length, 0);
 });
 
-test("overlay: cancelling via esc returns {kind:'cancel'} + freezes state", async () => {
+test("overlay: cancelling via esc returns {kind:'cancel'} and renders no artefact", async () => {
   _resetForms();
-  const { pi, sentMessages } = makeFakePi();
+  const { pi, sentMessages, renderers } = makeFakePi();
+  registerInlineFormRenderer(pi as never, deriveGraphTheme({}));
   const ctx = makeFakeCtx();
   const pending = openInlineInputsForm(pi as never, ctx as never, {
     workflowName: "ralph",
@@ -638,8 +657,11 @@ test("overlay: cancelling via esc returns {kind:'cancel'} + freezes state", asyn
   editor.handleInput("\x1b");
   const result = await pending;
   assert.equal(result.kind, "cancel");
-  const formId = sentMessages[0]!.details!.formId!;
+  const message = sentMessages[0]!;
+  const formId = message.details!.formId!;
   assert.equal(getForm(formId)?.status, "cancelled");
+  const rendered = renderers.get("workflows:input-form")?.(message) as { render(width: number): string[] };
+  assert.deepEqual(rendered.render(80), []);
 });
 
 test("overlay: late settle after host editor reset does not restore stale previous editor", async () => {
@@ -828,20 +850,22 @@ test("card: focused multi-line text field renders newlines as real rows, no `⏎
   const txt = plain(renderInlineCard({ width: 80, state, theme: deriveGraphTheme({}) }));
   // Real visual line break inside the prompt box.
   assert.match(txt, /first line/);
-  assert.match(txt, /▋second line/);
+  assert.match(txt, /second line/);
+  assert.match(ansi(renderInlineCard({ width: 80, state, theme: deriveGraphTheme({}) })), /\x1b\[7ms\x1b\[0m/);
   // No literal `⏎` glyph anywhere — we render newlines as rows, not as a sigil.
   assert.doesNotMatch(txt, /⏎/);
 });
 
-test("card: unfocused multi-line text field also renders rows, not collapsed", () => {
+test("card: inactive filled fields are summarized in the tab row while only the active field body renders", () => {
   const state = makeState({
     rawText: { prompt: "first line\nsecond line", iters: "5", focus: "standard", verbose: "false" },
-    focusedIdx: 1, // focus on iters, prompt is unfocused
+    focusedIdx: 1, // focus on iters, prompt is represented by the answered tab
     caret: 1,
   });
   const txt = plain(renderInlineCard({ width: 80, state, theme: deriveGraphTheme({}) }));
-  assert.match(txt, /first line/);
-  assert.match(txt, /second line/);
+  assert.match(txt, /■ prompt/);
+  assert.match(txt, / iters\n  number\s+·\s+optional\n\n❯ 1\. 5/);
+  assert.doesNotMatch(txt, /first line/);
   assert.doesNotMatch(txt, /⏎/);
 });
 

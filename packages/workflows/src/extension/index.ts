@@ -2182,7 +2182,6 @@ function factory(pi: ExtensionAPI): void {
               });
             }
             if (pickerResult.kind === "cancel") {
-              print(`Cancelled. /workflow ${workflowName} not started.`);
               return;
             }
             if (pickerResult.kind === "run") {
