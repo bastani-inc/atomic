@@ -34,6 +34,7 @@ export const selectOptionListProps: PerTabSelector<OptionListViewProps> = (state
 		selectedIndex: state.optionIndex,
 		focused,
 		inputBuffer: ctx.inputBuffer,
+		inputCaret: ctx.inputCaret,
 		...(confirmed ? { confirmed } : {}),
 	};
 };

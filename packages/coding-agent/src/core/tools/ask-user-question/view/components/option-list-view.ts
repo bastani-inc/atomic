@@ -23,6 +23,7 @@ export interface OptionListViewProps {
 	selectedIndex: number;
 	focused: boolean;
 	inputBuffer: string;
+	inputCaret: number;
 	/** Optional previously-confirmed indicator. Omit when no marker should be drawn. */
 	confirmed?: { index: number; labelOverride?: string };
 }
@@ -51,6 +52,7 @@ export class OptionListView implements StatefulView<OptionListViewProps> {
 		this.select.setFocused(props.focused);
 		this.select.setConfirmedIndex(props.confirmed?.index, props.confirmed?.labelOverride);
 		this.select.setInputBuffer(props.inputBuffer);
+		this.select.setInputCursor(props.inputCaret);
 	}
 
 	handleInput(_data: string): void {}

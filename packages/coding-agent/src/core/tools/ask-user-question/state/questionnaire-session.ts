@@ -10,9 +10,18 @@ import { computeFocusedOptionHasPreview } from "./selectors/derivations.ts";
 import type { QuestionnaireRuntime, QuestionnaireState } from "./state.ts";
 import { type ApplyContext, type Effect, reduce } from "./state-reducer.ts";
 
-// Module-level constant; reused for cursor-end mutations after setValue rehydration.
-// Ctrl-E → tui.editor.cursorLineEnd (public path; pi-tui keybindings.js:25-28).
-const CURSOR_END = "\x05";
+function readInputCursor(input: Input): number {
+	const value = input.getValue();
+	const raw = Reflect.get(input, "cursor");
+	return typeof raw === "number" && Number.isFinite(raw)
+		? Math.max(0, Math.min(raw, value.length))
+		: value.length;
+}
+
+function writeInputCursor(input: Input, cursor: number): void {
+	const value = input.getValue();
+	Reflect.set(input, "cursor", Math.max(0, Math.min(cursor, value.length)));
+}
 
 export interface QuestionnaireSessionConfig {
 	tui: { terminal: { columns: number }; requestRender(): void };
@@ -41,6 +50,8 @@ function initialState(): QuestionnaireState {
 		focusedOptionHasPreview: false,
 		submitChoiceIndex: 0,
 		notesDraft: "",
+		customDraftByTab: new Map(),
+		customCaretByTab: new Map(),
 	};
 }
 
@@ -108,6 +119,7 @@ export class QuestionnaireSession {
 	}
 
 	private commit(action: QuestionnaireAction): void {
+		this.state = this.mirrorInlineInputDraft(this.state);
 		const result = reduce(this.state, action, this.applyContext());
 		this.state = result.state;
 		for (const effect of result.effects) this.runEffect(effect);
@@ -120,14 +132,25 @@ export class QuestionnaireSession {
 		return s.notesDraft === draft ? s : { ...s, notesDraft: draft };
 	}
 
+	private mirrorInlineInputDraft(s: QuestionnaireState): QuestionnaireState {
+		if (!s.inputMode) return s;
+		const value = this.inlineInput.getValue();
+		const caret = readInputCursor(this.inlineInput);
+		if (s.customDraftByTab.get(s.currentTab) === value && s.customCaretByTab.get(s.currentTab) === caret) {
+			return s;
+		}
+		const customDraftByTab = new Map(s.customDraftByTab);
+		const customCaretByTab = new Map(s.customCaretByTab);
+		customDraftByTab.set(s.currentTab, value);
+		customCaretByTab.set(s.currentTab, caret);
+		return { ...s, customDraftByTab, customCaretByTab };
+	}
+
 	private runEffect(effect: Effect): void {
 		switch (effect.kind) {
 			case "set_input_buffer":
 				this.inlineInput.setValue(effect.value);
-				this.inlineInput.handleInput(CURSOR_END);
-				return;
-			case "clear_input_buffer":
-				this.inlineInput.setValue("");
+				writeInputCursor(this.inlineInput, effect.caret);
 				return;
 			case "set_notes_value":
 				this.notesInput.setValue(effect.value);
@@ -151,15 +174,16 @@ export class QuestionnaireSession {
 	 * doing so would corrupt split-chunk pastes (a `\x05` byte mid-paste lands
 	 * verbatim in `pasteBuffer` and survives `handlePaste`'s narrow strip).
 	 * Cursor advances naturally via `insertCharacter` on typing/paste; cursor-
-	 * movement keys (Left/Right/Home/End/word-jumps) are now functional, with
-	 * the always-end visual cursor marker drawn independently by
-	 * `WrappingSelect.renderInlineInputRow`. `viewAdapter.apply` is called
-	 * directly without a reducer round-trip — preserves the D3 fast-path
+	 * movement keys (Left/Right/Home/End/word-jumps) are now functional, and
+	 * the live buffer/caret are mirrored into canonical state so rendering can
+	 * draw the same thick cursor at the editing caret. `viewAdapter.apply` is
+	 * called directly without a reducer round-trip — preserves the D3 fast-path
 	 * latency profile from Phase 11.
 	 */
 	private handleIgnoreInline(data: string): void {
 		if (!this.state.inputMode) return;
 		this.inlineInput.handleInput(data);
+		this.state = this.mirrorInlineInputDraft(this.state);
 		this.viewAdapter.apply(this.state);
 	}
 

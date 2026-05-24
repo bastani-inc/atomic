@@ -47,7 +47,8 @@ export class WrappingSelect implements Component {
 	private static readonly ACTIVE_POINTER = "❯ ";
 	private static readonly INACTIVE_POINTER = "  ";
 	private static readonly NUMBER_SEPARATOR = ". ";
-	private static readonly INPUT_CURSOR = "▌";
+	private static readonly CURSOR_INVERSE_START = "\x1b[7m";
+	private static readonly CURSOR_INVERSE_END = "\x1b[0m";
 	private static readonly CONFIRMED_MARK = " ✔";
 	private static readonly MIN_CONTENT_WIDTH = 1;
 
@@ -60,6 +61,7 @@ export class WrappingSelect implements Component {
 	private selectedIndex = 0;
 	private focused = true;
 	private inputBuffer = "";
+	private inputCursor: number | undefined = undefined;
 	/**
 	 * Index of the row that was previously confirmed for this list (e.g. the user's prior
 	 * answer when re-entering a multi-question tab). Renders `<label> ✔` in the active-row
@@ -123,6 +125,11 @@ export class WrappingSelect implements Component {
 
 	setInputBuffer(text: string): void {
 		this.inputBuffer = text;
+		if (this.inputCursor !== undefined) this.inputCursor = this.clampInputCursor(this.inputCursor);
+	}
+
+	setInputCursor(cursor: number): void {
+		this.inputCursor = this.clampInputCursor(cursor);
 	}
 
 	/** Intentionally empty — input is routed at the container level. */
@@ -210,19 +217,34 @@ export class WrappingSelect implements Component {
 	 * so long input doesn't run off the right edge or trip the parent renderer's
 	 * width invariant. Mirrors `renderLabelBlock`'s contract: first line carries
 	 * `rowPrefix`, continuation lines carry `continuationPrefix` (spaces), and every
-	 * emitted line passes through `theme.selectedText`. The trailing cursor glyph
-	 * `▌` is appended to the buffer pre-wrap so it lands at the visual end of the
-	 * input — `Input` only exposes `getValue()` (cursor offset is private), so
-	 * cursor-mid-string is intentionally not rendered here; that would require
-	 * either an `Input.getCursorOffset()` API or delegating to `Input.render`.
+	 * emitted line passes through `theme.selectedText`. The cursor mirrors the
+	 * main chat editor: inverse-video over the character at the caret, or an
+	 * inverse-video space at end-of-line.
 	 */
 	private renderInlineInputRow(rowPrefix: string, continuationPrefix: string, contentWidth: number): string[] {
-		const raw = `${this.inputBuffer}${WrappingSelect.INPUT_CURSOR}`;
+		const raw = this.inputTextWithCursor();
 		const wrapped = wrapTextWithAnsi(raw, contentWidth);
 		return wrapped.map((segment, index) => {
 			const prefix = index === 0 ? rowPrefix : continuationPrefix;
 			return this.theme.selectedText(`${prefix}${segment}`);
 		});
+	}
+
+	private inputTextWithCursor(): string {
+		const cursor = this.clampInputCursor(this.inputCursor ?? this.inputBuffer.length);
+		const before = this.inputBuffer.slice(0, cursor);
+		const after = this.inputBuffer.slice(cursor);
+		const [at = ""] = Array.from(after);
+		if (at === "") {
+			return `${before}${WrappingSelect.CURSOR_INVERSE_START} ${WrappingSelect.CURSOR_INVERSE_END}`;
+		}
+		const rest = after.slice(at.length);
+		return `${before}${WrappingSelect.CURSOR_INVERSE_START}${at}${WrappingSelect.CURSOR_INVERSE_END}${rest}`;
+	}
+
+	private clampInputCursor(cursor: number): number {
+		if (!Number.isFinite(cursor)) return this.inputBuffer.length;
+		return Math.max(0, Math.min(cursor, this.inputBuffer.length));
 	}
 
 	private renderLabelBlock(

@@ -65,12 +65,15 @@ export class QuestionnairePropsAdapter {
 		const paneIndex = selectActivePreviewPaneIndex(state.currentTab, totalQuestions);
 		const activePreviewPane = this.tabsByIndex[paneIndex]?.preview ?? this.tabsByIndex[0]!.preview;
 
+		const inputBuffer = state.customDraftByTab.get(state.currentTab) ?? this.inlineInput.getValue();
+		const inputCaret = state.customCaretByTab.get(state.currentTab) ?? inputBuffer.length;
 		const ctx: BindingContext = {
 			questions: this.questions,
 			itemsByTab: this.itemsByTab,
 			totalQuestions,
 			activeView,
-			inputBuffer: this.inlineInput.getValue(),
+			inputBuffer,
+			inputCaret,
 			activePreviewPane,
 		};
 

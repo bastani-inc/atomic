@@ -230,17 +230,12 @@ test("Submit tab with missing required fields focuses invalid", () => {
   assert.deepEqual(s.invalidIndices, [0]);
 });
 
-test("Submit tab returns coerced values and Cancel row cancels", () => {
+test("Submit button returns coerced values", () => {
   const s = createInputsPickerState(FIELDS, { prompt: "hi", focus: "minimal" });
   s.rawText.iters = "8";
   s.rawText.verbose = "true";
   s.focusedIdx = FIELDS.length;
 
-  handleInputsPickerInput("\x1b[B", s, FIELDS, KB);
-  assert.equal(s.submitChoiceIdx, 1);
-  assert.deepEqual(handleInputsPickerInput("\r", s, FIELDS, KB), { kind: "cancel" });
-
-  s.submitChoiceIdx = 0;
   const run = handleInputsPickerInput("\r", s, FIELDS, KB);
   assert.equal(run.kind, "run");
   if (run.kind === "run") {
@@ -253,28 +248,22 @@ test("Submit tab returns coerced values and Cancel row cancels", () => {
   }
 });
 
-test("Submit tab number hotkeys submit or cancel immediately", () => {
+test("Submit button ignores numeric hotkeys", () => {
   const submit = createInputsPickerState(FIELDS, { prompt: "hi", focus: "minimal" });
   submit.focusedIdx = FIELDS.length;
   const run = handleInputsPickerInput("1", submit, FIELDS, KB);
-  assert.equal(run.kind, "run");
-
-  const cancel = createInputsPickerState(FIELDS, { prompt: "hi", focus: "minimal" });
-  cancel.focusedIdx = FIELDS.length;
-  assert.deepEqual(handleInputsPickerInput("2", cancel, FIELDS, KB), { kind: "cancel" });
-  assert.equal(cancel.submitChoiceIdx, 1);
+  assert.equal(run.kind, "noop");
 });
 
-test("Submit tab arrow keys move between submit and cancel rows", () => {
+test("Submit button arrow keys return to the questions", () => {
   const s = createInputsPickerState(FIELDS, { prompt: "hi", focus: "minimal" });
   s.focusedIdx = FIELDS.length;
 
+  handleInputsPickerInput("\x1b[A", s, FIELDS, KB);
+  assert.equal(s.focusedIdx, FIELDS.length - 1);
+  s.focusedIdx = FIELDS.length;
   handleInputsPickerInput("\x1b[B", s, FIELDS, KB);
-  assert.equal(s.submitChoiceIdx, 1);
-  handleInputsPickerInput("\x1b[A", s, FIELDS, KB);
-  assert.equal(s.submitChoiceIdx, 0);
-  handleInputsPickerInput("\x1b[A", s, FIELDS, KB);
-  assert.equal(s.submitChoiceIdx, 1);
+  assert.equal(s.focusedIdx, 0);
 });
 
 // ── Coercion ──────────────────────────────────────────────────────────────
@@ -323,7 +312,7 @@ test("wrapPlainText preserves empty rows for empty and whitespace-only input", (
   assert.deepEqual(wrapPlainText("   \t  ", 80), [""]);
 });
 
-test("renderInputsPicker mirrors ask-question list style for the active field", () => {
+test("renderInputsPicker uses boxed field styling for the active field", () => {
   const theme = deriveGraphTheme({});
   const state = createInputsPickerState(FIELDS, { prompt: "build" });
   const lines = renderInputsPicker({
@@ -336,24 +325,25 @@ test("renderInputsPicker mirrors ask-question list style for the active field", 
   });
   // eslint-disable-next-line no-control-regex
   const joined = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
-  assert.match(joined, /←\s+■ prompt/);
-  assert.match(joined, /■ iters/);
-  assert.match(joined, /✓ Submit/);
-  assert.match(joined, /task to do/);
-  assert.match(joined, /❯ 1\. build/);
+  assert.doesNotMatch(joined, /←\s+■ prompt/);
+  assert.doesNotMatch(joined, /✓ Submit/);
+  assert.match(joined, /╭ prompt ─+╮/);
+  assert.match(joined, /│build/);
+  assert.match(joined, /text · required · task to do/);
   assert.doesNotMatch(joined, /loop a thinker/);
-  assert.doesNotMatch(joined, /1 \/ 4/);
-  assert.doesNotMatch(joined, /text\s+·\s+required/);
-  assert.doesNotMatch(joined, /╭/);
-  assert.doesNotMatch(joined, /╰/);
+  assert.match(joined, /WORKFLOW/);
+  assert.match(joined, /ralph/);
+  assert.match(joined, /1 \/ 4/);
+  assert.match(joined, /╭/);
+  assert.match(joined, /╰/);
   assert.doesNotMatch(joined, /Run workflow/);
-  assert.match(joined, /Tab to switch input fields/);
+  assert.match(joined, /enter Submit/);
   assert.doesNotMatch(joined, /ctrl\+x/);
   assert.doesNotMatch(joined, /Chat about this/);
-  assert.match(joined, /Esc to cancel/);
+  assert.match(joined, /esc Cancel/);
 });
 
-test("renderInputsPicker shows a Submit section instead of a confirm modal", () => {
+test("renderInputsPicker shows all questions with Submit at the end", () => {
   const theme = deriveGraphTheme({});
   const state = createInputsPickerState(FIELDS, { prompt: "build a tui" });
   state.focusedIdx = FIELDS.length;
@@ -367,20 +357,18 @@ test("renderInputsPicker shows a Submit section instead of a confirm modal", () 
   });
   // eslint-disable-next-line no-control-regex
   const joined = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
-  assert.match(joined, /Review your inputs/);
-  assert.match(joined, /\/workflow ralph/);
-  assert.match(joined, /● prompt/);
-  assert.match(joined, /→ build a tui/);
-  assert.match(joined, /Ready to submit your inputs\?/);
-  assert.match(joined, /● verbose\n\s+→ off/);
-  assert.doesNotMatch(joined, /→ false/);
-  assert.match(joined, /❯ 1\. Submit answers/);
-  assert.match(joined, /2\. Cancel/);
-  assert.doesNotMatch(joined, /ready to run/);
+  assert.match(joined, /╭ prompt ─+╮\n│build a tui/);
+  assert.match(joined, /╭ iters ─+╮\n│5/);
+  assert.match(joined, /╭ focus ─+╮\n│\s+1\. minimal\s+│\n│\s+2\. ✓ standard/);
+  assert.match(joined, /╭ verbose ─+╮\n│\s+1\. on\s+│\n│\s+2\. ✓ off/);
+  assert.match(joined, / SUBMIT /);
+  assert.doesNotMatch(joined, /Review your inputs/);
+  assert.doesNotMatch(joined, /Ready to submit your inputs\?/);
+  assert.doesNotMatch(joined, /2\. Cancel/);
   assert.doesNotMatch(joined, /ctrl\+x/);
 });
 
-test("renderInputsPicker normalizes true-like boolean review values", () => {
+test("renderInputsPicker normalizes true-like boolean field values", () => {
   const theme = deriveGraphTheme({});
   const state = createInputsPickerState(FIELDS, { prompt: "build a tui", verbose: 1 });
   state.focusedIdx = FIELDS.length;
@@ -394,11 +382,11 @@ test("renderInputsPicker normalizes true-like boolean review values", () => {
   });
   // eslint-disable-next-line no-control-regex
   const joined = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
-  assert.match(joined, /● verbose\n\s+→ on/);
-  assert.doesNotMatch(joined, /→ 1/);
+  assert.match(joined, /╭ verbose ─+╮\n│\s+1\. ✓ on\s+│\n│\s+2\. off/);
+  assert.doesNotMatch(joined, /✓ off/);
 });
 
-test("renderInputsPicker shows empty boolean review values as empty", () => {
+test("renderInputsPicker shows empty boolean fields without selecting off", () => {
   const theme = deriveGraphTheme({});
   const fields: WorkflowInputEntry[] = [
     { name: "enabled", type: "boolean", required: true },
@@ -416,8 +404,8 @@ test("renderInputsPicker shows empty boolean review values as empty", () => {
   });
   // eslint-disable-next-line no-control-regex
   const joined = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
-  assert.match(joined, /● enabled\n\s+→ <empty>/);
-  assert.doesNotMatch(joined, /→ off/);
+  assert.match(joined, /╭ enabled ─+╮\n│\s+1\. on\s+│\n│\s+2\. off/);
+  assert.doesNotMatch(joined, /✓ off/);
 });
 
 test("renderInputsPicker wraps invalid Submit prompt instead of clipping", () => {
@@ -444,14 +432,14 @@ test("renderInputsPicker wraps invalid Submit prompt instead of clipping", () =>
   assert.match(joined, /submitting:/);
   assert.match(joined, /alpha_required_prompt/);
   assert.match(joined, /beta_required_context/);
-  assert.match(joined, /Submit answers \(2 missing\)/);
+  assert.match(joined, / SUBMIT /);
   const promptStart = plainLines.findIndex((line) => line.startsWith("Answer remaining"));
   const promptLines = plainLines.slice(promptStart, promptStart + 4).join("\n");
   assert.doesNotMatch(promptLines, /…/);
   for (const line of plainLines) assert.ok(line.length <= width, `row exceeds width: ${JSON.stringify(line)}`);
 });
 
-test("renderInputsPicker preserves multiline values in Submit review", () => {
+test("renderInputsPicker preserves multiline values on the single page", () => {
   const theme = deriveGraphTheme({});
   const state = createInputsPickerState(FIELDS, { prompt: "line one\nline two" });
   state.focusedIdx = FIELDS.length;
@@ -465,7 +453,7 @@ test("renderInputsPicker preserves multiline values in Submit review", () => {
   });
   // eslint-disable-next-line no-control-regex
   const joined = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
-  assert.match(joined, /→ line one\n\s+line two/);
+  assert.match(joined, /│line one\s+│\n│line two/);
   assert.doesNotMatch(joined, /line one line two/);
 });
 
@@ -486,12 +474,12 @@ test("renderInputsPicker keeps Submit visible in a narrow tab bar", () => {
     cursorOn: true,
   });
   // eslint-disable-next-line no-control-regex
-  const tab = (lines[1] ?? "").replace(/\x1b\[[0-9;]*m/g, "");
-  assert.match(tab, /Submit/);
-  assert.ok(tab.length <= 16);
+  const footer = (lines.at(-1) ?? "").replace(/\x1b\[[0-9;]*m/g, "");
+  assert.match(footer, /SUBMIT/);
+  assert.ok(footer.length <= 16);
 });
 
-test("renderInputsPicker renders only the active input as ask-style rows", () => {
+test("renderInputsPicker renders all inputs as boxed fields", () => {
   const theme = deriveGraphTheme({});
   const width = 80;
   const state = createInputsPickerState(FIELDS);
@@ -507,8 +495,9 @@ test("renderInputsPicker renders only the active input as ask-style rows", () =>
   const stripAnsi = (s: string): string => s.replace(/\x1b\[[0-9;]*m/g, "");
   const plain = lines.map(stripAnsi);
 
-  assert.ok(plain.some((row) => row.startsWith("❯ 1.")), "active field should render with ask-style pointer");
-  assert.ok(plain.every((row) => !row.startsWith("╭") && !row.startsWith("╰")), "field cards should not render");
+  assert.ok(plain.some((row) => row.startsWith("╭ prompt ")), "prompt should render as a field box");
+  assert.ok(plain.some((row) => /^│5\s+│$/.test(row)), "scalar fields should render without numbering");
+  assert.ok(plain.some((row) => /^│\s+1\. minimal/.test(row)), "choice lists should keep numbering");
   for (const row of plain) {
     assert.ok(row.length <= width, `row exceeds width: ${JSON.stringify(row)}`);
   }
@@ -536,8 +525,8 @@ test("renderInputsPicker wraps long descriptions and choice labels without ellip
   });
   // eslint-disable-next-line no-control-regex
   const joined = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
-  assert.match(joined, /prioritizes safety across multiple/);
-  assert.match(joined, /production regions and rollback windows/);
+  assert.match(joined, /prioritizes safety/);
+  assert.match(joined, /across multiple production regions and rollback windows/);
   assert.match(joined, /roll out gradually across production regions/);
   assert.match(joined, /automated rollback and/);
   assert.match(joined, /operator checkpoints/);
@@ -567,46 +556,38 @@ test("renderInputsPicker stays well-formed across a wide range of widths (resize
         row.length <= width,
         `width=${width}: row exceeds budget (${row.length} > ${width}): ${JSON.stringify(row)}`,
       );
-      assert.ok(!row.startsWith("╭") && !row.startsWith("╰"), `width=${width}: field card border rendered`);
+
     }
   }
 });
 
-test("renderInputsPicker footer uses ask-question input-field copy", () => {
+test("renderInputsPicker footer uses compact static submit button", () => {
   const theme = deriveGraphTheme({});
   const state = createInputsPickerState(FIELDS);
   // eslint-disable-next-line no-control-regex
   const stripAnsi = (s: string): string => s.replace(/\x1b\[[0-9;]*m/g, "");
-  const lastNonEmpty = (lines: string[]): string => {
-    for (let i = lines.length - 1; i >= 0; i -= 1) {
-      if (lines[i] && stripAnsi(lines[i]!).trim() !== "") return stripAnsi(lines[i]!);
-    }
-    return "";
-  };
-  const renderAt = (width: number): string =>
-    lastNonEmpty(
-      renderInputsPicker({
-        width,
-        theme,
-        workflowName: "ralph",
-        fields: FIELDS,
-        state,
-        cursorOn: true,
-      }),
-    );
+  const renderFooterAt = (width: number): string =>
+    stripAnsi(renderInputsPicker({
+      width,
+      theme,
+      workflowName: "ralph",
+      fields: FIELDS,
+      state,
+      cursorOn: true,
+    }).at(-1) ?? "");
 
-  const wide = renderAt(120);
-  assert.match(wide, /Enter to select/);
-  assert.match(wide, /↑\/↓ to navigate/);
-  assert.match(wide, /Tab to switch input fields/);
-  assert.match(wide, /Esc to cancel/);
+  const wide = renderFooterAt(120);
+  assert.match(wide, / SUBMIT /);
+  assert.doesNotMatch(wide, /EDIT/);
+  assert.match(wide, /enter Submit/);
+  assert.match(wide, /tab Next/);
+  assert.match(wide, /shift\+tab Prev/);
+  assert.match(wide, /esc Cancel/);
   assert.doesNotMatch(wide, /ctrl\+x/);
 
-  const narrow = renderAt(24);
+  const narrow = renderFooterAt(24);
   assert.ok(narrow.length <= 24);
-  assert.match(narrow, /Enter/);
-  assert.match(narrow, /Tab/);
-  assert.match(narrow, /Esc/);
+  assert.match(narrow, /SUBMIT|…/);
 });
 
 // ── renderInputsSchema ────────────────────────────────────────────────────

@@ -1,6 +1,6 @@
 import type { WorkflowInputEntry } from "../extension/render-result.js";
 import type { GraphTheme } from "./graph-theme.js";
-import { paint } from "./color-utils.js";
+import { BOLD, hexBg, hexToAnsi, paint, RESET } from "./color-utils.js";
 import {
   formatReviewValue,
   renderWrappedPrefixedLines,
@@ -19,15 +19,15 @@ export interface SubmitPaneRenderOpts {
 
 export interface SubmitControlsRenderOpts {
   invalidFieldNames: readonly string[];
-  submitChoiceIdx: number;
+  submitFocused: boolean;
   theme: GraphTheme;
   width: number;
 }
 
 export function renderWorkflowFormFooterHints(theme: GraphTheme, width: number): string {
   const hints = [
-    "Enter to select · ↑/↓ to navigate · Tab to switch input fields · Esc to cancel",
-    "Enter · ↑/↓ · Tab · Esc",
+    "Enter to select · ↑/↓ to navigate · Tab through questions to Submit · Esc to cancel",
+    "Enter · ↑/↓ · Tab to Submit · Esc",
     "Enter · Tab · Esc",
     "Esc",
   ];
@@ -67,23 +67,74 @@ export function renderSubmitReview(opts: SubmitPaneRenderOpts): string[] {
 }
 
 export function renderSubmitControls(opts: SubmitControlsRenderOpts): string[] {
-  const { invalidFieldNames, submitChoiceIdx, theme, width } = opts;
+  const { invalidFieldNames, submitFocused, theme, width } = opts;
   const invalidCount = invalidFieldNames.length;
-  const promptText = invalidCount === 0
-    ? "Ready to submit your inputs?"
-    : `Answer remaining inputs before submitting: ${invalidFieldNames.join(", ")}`;
-  const promptColor = invalidCount === 0 ? theme.textMuted : theme.warning;
-  const submitLabel = invalidCount === 0
-    ? "Submit answers"
-    : `Submit answers (${invalidCount} missing)`;
-  return [
-    ...wrapPlainText(promptText, width).map((line) => paint(line, promptColor)),
-    "",
-    ...renderAskChoiceRows(1, submitLabel, submitChoiceIdx === 0, theme, width),
-    ...renderAskChoiceRows(2, "Cancel", submitChoiceIdx === 1, theme, width),
-    "",
-    renderWorkflowFormFooterHints(theme, width),
-  ];
+  const submitLabel = "SUBMIT";
+  const lines: string[] = [];
+  if (invalidCount > 0) {
+    lines.push(
+      ...wrapPlainText(
+        `Answer remaining inputs before submitting: ${invalidFieldNames.join(", ")}`,
+        width,
+      ).map((line) => paint(line, theme.warning)),
+      "",
+    );
+  }
+  lines.push(...renderSubmitToolbar(submitLabel, submitFocused, theme, width));
+  return lines;
+}
+
+function renderSubmitToolbar(
+  label: string,
+  focused: boolean,
+  theme: GraphTheme,
+  width: number,
+): string[] {
+  const chromeBg = hexBg(theme.backgroundPanel);
+  const button = renderCompactSubmitButton(label, focused, theme, chromeBg);
+  const textFg = hexToAnsi(theme.text);
+  const mutedFg = hexToAnsi(theme.textMuted);
+  const dimFg = hexToAnsi(theme.dim);
+  const hint = (key: string, description: string): string =>
+    `${chromeBg}${textFg}${BOLD}${key}${RESET}${chromeBg}${mutedFg} ${description}${RESET}${chromeBg}`;
+  const hints = [
+    hint("enter", "Submit"),
+    hint("tab", "Next"),
+    hint("shift+tab", "Prev"),
+    hint("esc", "Cancel"),
+  ].join(`${chromeBg}${dimFg}  ·  ${RESET}${chromeBg}`);
+  const leftPad = 1;
+  const gap = 2;
+  const rightPad = 1;
+  const hintBudget = Math.max(0, width - leftPad - button.visibleWidth - gap - rightPad);
+  const fittedHints = truncateToWidth(hints, hintBudget, "…", true);
+  const hintWidth = visibleWidth(fittedHints);
+  const filler = Math.max(0, width - leftPad - button.visibleWidth - gap - hintWidth - rightPad);
+  const line = `${chromeBg} ${button.text}${chromeBg}${" ".repeat(gap)}${fittedHints}${chromeBg}${" ".repeat(filler)} ${RESET}`;
+  const clipped = truncateToWidth(line, width, "", true);
+  return [`${clipped}${chromeBg}${" ".repeat(Math.max(0, width - visibleWidth(clipped)))}${RESET}`];
+}
+
+function renderCompactSubmitButton(
+  label: string,
+  focused: boolean,
+  theme: GraphTheme,
+  chromeBg: string,
+): { text: string; visibleWidth: number } {
+  const plain = ` ${label} `;
+  if (focused) {
+    const accentBg = hexBg(theme.accent);
+    const fg = hexToAnsi(theme.backgroundPanel);
+    return {
+      text: `${accentBg}${fg}${BOLD}${plain}${RESET}${chromeBg}`,
+      visibleWidth: visibleWidth(plain),
+    };
+  }
+  const labelFg = hexToAnsi(theme.accent);
+  return {
+    text: `${chromeBg}${labelFg}${BOLD}${plain}${RESET}${chromeBg}`,
+    visibleWidth: visibleWidth(plain),
+  };
 }
 
 function renderReviewValueRows(

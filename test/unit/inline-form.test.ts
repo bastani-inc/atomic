@@ -100,91 +100,84 @@ function ansi(lines: string[]): string {
   return lines.join("\n");
 }
 
-test("card (live): uses ask-user-question style tab chrome, not workflow/edit panels", () => {
+test("card (live): renders workflow header and continuous footer chrome", () => {
   const state = makeState();
   const lines = renderInlineCard({ width: 80, state, theme: deriveGraphTheme({}) });
   const txt = plain(lines);
-  assert.doesNotMatch(txt, /WORKFLOW/);
-  assert.doesNotMatch(txt, /EDIT/);
+  assert.match(txt, /WORKFLOW/);
+  assert.match(txt, /ralph/);
+  assert.match(txt, /1 \/ 4/);
+  assert.doesNotMatch(txt, /←/);
+  assert.doesNotMatch(txt, /✓ Submit/);
   assert.doesNotMatch(txt, /loop a thinker/);
-  assert.match(txt, /prompt/);
-  assert.match(txt, /iters/);
-  assert.match(txt, /focus/);
-  assert.match(txt, /verbose/);
-  assert.match(txt, /task/);
-  assert.doesNotMatch(txt, /1 \/ 4/);
-  assert.doesNotMatch(txt, /Run workflow/);
-  assert.match(txt, /Tab to switch input fields/);
+  assert.match(txt, /╭ prompt /);
+  assert.match(txt, /╭ iters /);
+  assert.match(txt, /╭ focus /);
+  assert.match(txt, /╭ verbose /);
+  assert.doesNotMatch(txt, /╭────────╮/);
+  assert.match(txt, / SUBMIT /);
+  assert.doesNotMatch(txt, /EDIT/);
+  assert.match(txt, /enter Submit/);
+  assert.match(txt, /tab Next/);
+  assert.match(txt, /shift\+tab Prev/);
+  assert.match(txt, /esc Cancel/);
   assert.doesNotMatch(txt, /ctrl\+x/);
   assert.doesNotMatch(txt, /ctrl\+enter/);
   assert.doesNotMatch(txt, /ctrl\+s/);
-
-  const plainLines = lines.map((line) => plain([line]));
-  assert.match(plainLines[0] ?? "", /^─+$/);
-  assert.match(plainLines[1] ?? "", /^ ← /);
-  assert.match(plainLines[1] ?? "", /□ prompt/);
-  assert.match(plainLines[1] ?? "", /■ iters/);
-  assert.match(plainLines[1] ?? "", /■ focus/);
-  assert.match(plainLines[1] ?? "", /■ verbose/);
-  assert.match(plainLines[1] ?? "", /✓ Submit/);
-  assert.match(plainLines[1] ?? "", / →$/);
-  assert.ok(plainLines.slice(1).some((line) => /^─+$/.test(line)), "expected bottom dialog border");
-  assert.doesNotMatch(txt, /╭─ WORKFLOW ─/);
-  assert.doesNotMatch(txt, /╭─ EDIT ─/);
 });
 
-test("card (live): hint row is anchored at the bottom of the widget", () => {
+test("card (live): compact hint row is anchored at the bottom of the widget", () => {
   const state = makeState();
   const lines = renderInlineCard({ width: 80, state, theme: deriveGraphTheme({}) });
-  // The footer band is the trailing lines; hints live beneath the bottom rule.
-  const tail = lines.slice(-3).map((l) => plain([l]));
-  assert.match(tail.join("\n"), /Enter to select/);
-  assert.match(tail.join("\n"), /Tab to switch input fields/);
-  assert.match(tail.join("\n"), /Esc to cancel/);
-  assert.doesNotMatch(tail.join("\n"), /ctrl\+x/);
+  const tail = plain([lines.at(-1) ?? ""]);
+  assert.match(tail, / SUBMIT /);
+  assert.doesNotMatch(tail, /EDIT/);
+  assert.match(tail, /enter Submit/);
+  assert.match(tail, /tab Next/);
+  assert.match(tail, /esc Cancel/);
+  assert.doesNotMatch(tail, /ctrl\+x/);
 });
 
-test("card (live): active field body uses ask-user-question input rows, not inner boxes", () => {
+test("card (live): active field body uses boxed field styling", () => {
   const state = makeState();
   const lines = renderInlineCard({ width: 80, state, theme: deriveGraphTheme({}) });
   const visible = plain(lines);
-  assert.match(visible, /task\n\n❯ 1\.  /);
+  assert.match(visible, /╭ prompt ─+╮/);
+  assert.match(visible, /│\s+│/);
+  assert.match(visible, /text · required · task/);
   assert.match(ansi(lines), /\x1b\[7m \x1b\[0m/);
-  assert.doesNotMatch(visible, /╭─+ prompt ─+╮/);
-  assert.doesNotMatch(visible, /│\s+│/);
 });
 
-test("card (live): Submit section reviews inputs and offers visible actions", () => {
+test("card (live): shows all questions with Submit at the end", () => {
   const state = makeState({
     rawText: { prompt: "build me a tui", iters: "5", focus: "minimal", verbose: "false" },
     focusedIdx: FIELDS.length,
   });
   const txt = plain(renderInlineCard({ width: 80, state, theme: deriveGraphTheme({}) }));
-  assert.match(txt, /✓ Submit/);
-  assert.match(txt, /Review your inputs/);
-  assert.match(txt, /\/workflow ralph/);
-  assert.match(txt, /● prompt/);
-  assert.match(txt, /→ build me a tui/);
-  assert.match(txt, /Ready to submit your inputs\?/);
-  assert.match(txt, /● verbose\n\s+→ off/);
-  assert.doesNotMatch(txt, /→ false/);
-  assert.match(txt, /❯ 1\. Submit answers/);
-  assert.match(txt, /2\. Cancel/);
+  assert.match(txt, / SUBMIT /);
+  assert.match(txt, /╭ prompt ─+╮\n│build me a tui/);
+  assert.match(txt, /╭ iters ─+╮\n│5/);
+  assert.match(txt, /╭ focus ─+╮\n│\s+1\. ✓ minimal/);
+  assert.match(txt, /╭ verbose ─+╮\n│\s+1\. on\s+│\n│\s+2\. ✓ off/);
+  assert.doesNotMatch(txt, /❯ Submit answers/);
+  assert.doesNotMatch(txt, /Review your inputs/);
+  assert.doesNotMatch(txt, /Ready to submit your inputs\?/);
+  assert.doesNotMatch(txt, /2\. Cancel/);
   assert.doesNotMatch(txt, /Chat about this/);
   assert.doesNotMatch(txt, /ctrl\+x/);
 });
 
-test("card (live): normalizes true-like boolean review values", () => {
+test("card (live): normalizes true-like boolean field values", () => {
   const state = makeState({
     rawText: { prompt: "build me a tui", iters: "5", focus: "minimal", verbose: "1" },
     focusedIdx: FIELDS.length,
   });
   const txt = plain(renderInlineCard({ width: 80, state, theme: deriveGraphTheme({}) }));
-  assert.match(txt, /● verbose\n\s+→ on/);
-  assert.doesNotMatch(txt, /→ 1/);
+  assert.match(txt, /╭ verbose ─+╮\n│\s+1\. ✓ on\s+│\n│\s+2\. off/);
+  assert.doesNotMatch(txt, /✓ off/);
 });
 
-test("card (live): shows empty boolean review values as empty", () => {
+test("card (live): shows empty boolean fields without selecting off", () => {
   const fields: readonly WorkflowInputEntry[] = [
     { name: "enabled", type: "boolean", required: true },
   ];
@@ -195,8 +188,8 @@ test("card (live): shows empty boolean review values as empty", () => {
     caret: 0,
   });
   const txt = plain(renderInlineCard({ width: 80, state, theme: deriveGraphTheme({}) }));
-  assert.match(txt, /● enabled\n\s+→ <empty>/);
-  assert.doesNotMatch(txt, /→ off/);
+  assert.match(txt, /╭ enabled ─+╮\n│\s+1\. on\s+│\n│\s+2\. off/);
+  assert.doesNotMatch(txt, /✓ off/);
 });
 
 test("card (live): wraps invalid Submit prompt instead of clipping", () => {
@@ -218,20 +211,20 @@ test("card (live): wraps invalid Submit prompt instead of clipping", () => {
   assert.match(txt, /submitting:/);
   assert.match(txt, /alpha_required_prompt/);
   assert.match(txt, /beta_required_context/);
-  assert.match(txt, /Submit answers \(2 missing\)/);
+  assert.match(txt, / SUBMIT /);
   const promptStart = plainLines.findIndex((line) => line.startsWith("Answer remaining"));
   const promptLines = plainLines.slice(promptStart, promptStart + 4).join("\n");
   assert.doesNotMatch(promptLines, /…/);
   assertLinesWithinWidth(lines, width);
 });
 
-test("card (live): Submit review preserves multiline values", () => {
+test("card (live): single-page form preserves multiline values", () => {
   const state = makeState({
     rawText: { prompt: "line one\nline two", iters: "5", focus: "minimal", verbose: "false" },
     focusedIdx: FIELDS.length,
   });
   const txt = plain(renderInlineCard({ width: 80, state, theme: deriveGraphTheme({}) }));
-  assert.match(txt, /→ line one\n\s+line two/);
+  assert.match(txt, /│line one\s+│\n│line two/);
   assert.doesNotMatch(txt, /line one line two/);
 });
 
@@ -273,9 +266,9 @@ test("card: keeps Submit visible in a narrow tab bar", () => {
     caret: 0,
   });
   const lines = renderInlineCard({ width: 16, state, theme: deriveGraphTheme({}) });
-  const tab = plain([lines[1] ?? ""]);
-  assert.match(tab, /Submit/);
-  assert.ok(tab.length <= 16);
+  const footer = plain([lines.at(-1) ?? ""]);
+  assert.match(footer, /SUBMIT/);
+  assert.ok(footer.length <= 16);
 });
 
 test("card: select field renders choices as ask-user-question numbered rows", () => {
@@ -326,8 +319,8 @@ test("card: wraps long descriptions and choice labels without ellipses", () => {
     caret: 0,
   });
   const txt = plain(renderInlineCard({ width: 80, state, theme: deriveGraphTheme({}) }));
-  assert.match(txt, /prioritizes safety across multiple/);
-  assert.match(txt, /production regions and rollback windows/);
+  assert.match(txt, /prioritizes safety/);
+  assert.match(txt, /across multiple production regions and rollback windows/);
   assert.match(txt, /roll out gradually across production regions/);
   assert.match(txt, /automated rollback and/);
   assert.match(txt, /operator checkpoints/);
@@ -463,52 +456,28 @@ test("editor: Submit section validates and submits via visible row", () => {
   e.dispose();
 });
 
-test("editor: Submit section cancel row exits on Enter", () => {
-  const state = makeState({
-    focusedIdx: FIELDS.length,
-    submitChoiceIdx: 1,
-    rawText: { prompt: "build", iters: "5", focus: "standard", verbose: "false" },
-  });
-  const e = makeEditor(state);
-  e.editor.handleInput("\r");
-  assert.deepEqual(e.getExited(), { outcome: "cancel" });
-  e.dispose();
-});
-
-test("editor: Submit section number hotkeys submit or cancel immediately", () => {
+test("editor: Submit button ignores numeric hotkeys", () => {
   const submitState = makeState({
     focusedIdx: FIELDS.length,
     rawText: { prompt: "build", iters: "5", focus: "standard", verbose: "false" },
   });
   const submit = makeEditor(submitState);
   submit.editor.handleInput("1");
-  assert.deepEqual(submit.getExited(), { outcome: "submit" });
+  assert.equal(submit.getExited(), null);
   submit.dispose();
-
-  const cancelState = makeState({
-    formId: "wf-cancel-hotkey",
-    focusedIdx: FIELDS.length,
-    rawText: { prompt: "build", iters: "5", focus: "standard", verbose: "false" },
-  });
-  const cancel = makeEditor(cancelState);
-  cancel.editor.handleInput("2");
-  assert.deepEqual(cancel.getExited(), { outcome: "cancel" });
-  assert.equal(cancelState.submitChoiceIdx, 1);
-  cancel.dispose();
 });
 
-test("editor: Submit section arrow keys move between submit and cancel rows", () => {
+test("editor: Submit button arrow keys return to questions", () => {
   const state = makeState({
     focusedIdx: FIELDS.length,
     rawText: { prompt: "build", iters: "5", focus: "standard", verbose: "false" },
   });
   const e = makeEditor(state);
+  e.editor.handleInput("\x1b[A");
+  assert.equal(state.focusedIdx, FIELDS.length - 1);
+  state.focusedIdx = FIELDS.length;
   e.editor.handleInput("\x1b[B");
-  assert.equal(state.submitChoiceIdx, 1);
-  e.editor.handleInput("\x1b[A");
-  assert.equal(state.submitChoiceIdx, 0);
-  e.editor.handleInput("\x1b[A");
-  assert.equal(state.submitChoiceIdx, 1);
+  assert.equal(state.focusedIdx, 0);
   e.dispose();
 });
 
@@ -1068,16 +1037,16 @@ test("card: focused multi-line text field renders newlines as real rows, no `⏎
   assert.doesNotMatch(txt, /⏎/);
 });
 
-test("card: inactive filled fields are summarized in the tab row while only the active field body renders", () => {
+test("card: inactive filled fields remain visible on the single page", () => {
   const state = makeState({
     rawText: { prompt: "first line\nsecond line", iters: "5", focus: "standard", verbose: "false" },
-    focusedIdx: 1, // focus on iters, prompt is represented by the answered tab
+    focusedIdx: 1,
     caret: 1,
   });
   const txt = plain(renderInlineCard({ width: 80, state, theme: deriveGraphTheme({}) }));
-  assert.match(txt, /■ prompt/);
-  assert.match(txt, /iters\n\n❯ 1\. 5/);
-  assert.doesNotMatch(txt, /first line/);
+  assert.match(txt, /╭ prompt /);
+  assert.match(txt, /│first line\s+│\n│second line/);
+  assert.match(txt, /╭ iters ─+╮\n│5/);
   assert.doesNotMatch(txt, /⏎/);
 });
 

@@ -25,6 +25,10 @@ export interface QuestionnaireState {
 	submitChoiceIndex: number;
 	/** Canonical mirror of the in-flight notes editor; runtime mirrors after `forward_notes_keystroke`. */
 	notesDraft: string;
+	/** In-flight custom "Type something." drafts keyed by question tab. Preserved when focus leaves the row. */
+	customDraftByTab: ReadonlyMap<number, string>;
+	/** Caret offsets for in-flight custom drafts keyed by question tab. */
+	customCaretByTab: ReadonlyMap<number, number>;
 }
 
 /**

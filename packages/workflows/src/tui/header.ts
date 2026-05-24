@@ -49,6 +49,8 @@ export interface BandHeaderOpts {
   theme: GraphTheme;
 }
 
+export interface CompactBandHeaderOpts extends BandHeaderOpts {}
+
 interface PillStyle {
   border: string;
   label: string;
@@ -88,6 +90,40 @@ export function renderOutlinePill(
  * Always returns exactly 3 lines. When `badges` is empty the right
  * column is whitespace only.
  */
+export function renderCompactBandHeader(opts: CompactBandHeaderOpts): string[] {
+  const { label, subtitle = "", badges = [], width, theme } = opts;
+  const accentHex = opts.accent ?? theme.accent;
+  const chromeBg = hexBg(theme.backgroundPanel);
+  const accent = hexToAnsi(accentHex);
+  const muted = hexToAnsi(theme.textMuted);
+
+  const rightVisible = badges.map((b) => b.text).join("  ");
+  const rightW = visibleWidth(rightVisible);
+  const rightStyled = badges
+    .map((b) => `${hexToAnsi(b.fg)}${b.text}${RESET}${chromeBg}`)
+    .join(`${chromeBg}  `);
+
+  const labelVisible = ` ${label} `;
+  const labelW = visibleWidth(labelVisible);
+  const rightEdgePad = 2;
+  const subtitleBudget = Math.max(0, width - labelW - rightW - rightEdgePad - 2);
+  const subtitleText = subtitle.length > 0 && subtitleBudget > 0
+    ? truncateToWidth(subtitle, subtitleBudget, "…")
+    : "";
+  const subtitleVisible = subtitleText.length > 0 ? `  ${subtitleText}` : "";
+  const subtitleW = visibleWidth(subtitleVisible);
+  const filler = Math.max(0, width - labelW - subtitleW - rightW - rightEdgePad);
+
+  const labelStyled = `${chromeBg}${accent}${BOLD}${labelVisible}${RESET}${chromeBg}`;
+  const subtitleStyled = subtitleText.length > 0
+    ? `${chromeBg}  ${muted}${subtitleText}${RESET}${chromeBg}`
+    : `${chromeBg}`;
+  const line = `${labelStyled}${subtitleStyled}${" ".repeat(filler)}${rightStyled}${chromeBg}${" ".repeat(rightEdgePad)}${RESET}`;
+  const fitted = truncateToWidth(line, width, "", true);
+  const pad = Math.max(0, width - visibleWidth(fitted));
+  return [`${fitted}${chromeBg}${" ".repeat(pad)}${RESET}`];
+}
+
 export function renderBandHeader(opts: BandHeaderOpts): string[] {
   const { label, subtitle = "", badges = [], width, theme } = opts;
   const accentHex = opts.accent ?? theme.accent;

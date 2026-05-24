@@ -18,8 +18,7 @@ export interface ApplyContext {
  * (compiler-enforced exhaustive). No string-keyed escape hatch.
  */
 export type Effect =
-	| { kind: "set_input_buffer"; value: string }
-	| { kind: "clear_input_buffer" }
+	| { kind: "set_input_buffer"; value: string; caret: number }
 	| { kind: "set_notes_value"; value: string }
 	| { kind: "set_notes_focused"; focused: boolean }
 	| { kind: "forward_notes_keystroke"; data: string }
@@ -88,6 +87,31 @@ function persistMultiSelectAnswer(state: QuestionnaireState, ctx: ApplyContext):
 	return out;
 }
 
+function clampCaret(value: string, caret: number | undefined): number {
+	if (caret === undefined || !Number.isFinite(caret)) return value.length;
+	return Math.max(0, Math.min(caret, value.length));
+}
+
+function customDraftValue(state: QuestionnaireState): string {
+	const draft = state.customDraftByTab.get(state.currentTab);
+	if (draft !== undefined) return draft;
+	const prior = state.answers.get(state.currentTab);
+	return prior?.kind === "custom" && typeof prior.answer === "string" ? prior.answer : "";
+}
+
+function hydrateCustomInputResult(state: QuestionnaireState): ApplyResult {
+	const value = customDraftValue(state);
+	const caret = clampCaret(value, state.customCaretByTab.get(state.currentTab));
+	const customDraftByTab = new Map(state.customDraftByTab);
+	const customCaretByTab = new Map(state.customCaretByTab);
+	customDraftByTab.set(state.currentTab, value);
+	customCaretByTab.set(state.currentTab, caret);
+	return {
+		state: { ...state, customDraftByTab, customCaretByTab },
+		effects: [{ kind: "set_input_buffer", value, caret }],
+	};
+}
+
 function switchTabResult(state: QuestionnaireState, nextTab: number, ctx: ApplyContext): ApplyResult {
 	const notesValue = state.notesByTab.get(nextTab) ?? state.answers.get(nextTab)?.notes ?? "";
 	const transitioned: QuestionnaireState = {
@@ -131,14 +155,7 @@ const navHandler: Handler<"nav"> = (state, action, ctx) => {
 	const item = items[action.nextIndex];
 	const inputMode = item ? ROW_INTENT_META[item.kind].activatesInputMode : false;
 	const next = withFocusedOptionHasPreview({ ...state, optionIndex: action.nextIndex, inputMode }, ctx.questions);
-	if (!inputMode) {
-		return { state: next, effects: [{ kind: "clear_input_buffer" }] };
-	}
-	const prior = state.answers.get(state.currentTab);
-	if (prior?.kind === "custom" && typeof prior.answer === "string") {
-		return { state: next, effects: [{ kind: "set_input_buffer", value: prior.answer }] };
-	}
-	return { state: next, effects: [] };
+	return inputMode ? hydrateCustomInputResult(next) : { state: next, effects: [] };
 };
 
 const tabSwitchHandler: Handler<"tab_switch"> = (state, action, ctx) => switchTabResult(state, action.nextTab, ctx);
@@ -237,7 +254,7 @@ const focusOptionsHandler: Handler<"focus_options"> = (state, action, ctx) => {
 		{ ...state, chatFocused: false, optionIndex: action.optionIndex, inputMode },
 		ctx.questions,
 	);
-	return { state: next, effects: inputMode ? [] : [{ kind: "clear_input_buffer" }] };
+	return inputMode ? hydrateCustomInputResult(next) : { state: next, effects: [] };
 };
 
 const cancelHandler: Handler<"cancel"> = (s, _a, c) => doneFor(s, c, true);
