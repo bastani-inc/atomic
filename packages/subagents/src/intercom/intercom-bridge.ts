@@ -2,14 +2,15 @@ import { execSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { CONFIG_DIR_NAME as CONFIG_DIR } from "@bastani/atomic";
+import { getProjectConfigDirs } from "@bastani/atomic";
 import type { AgentConfig } from "../agents/agents.ts";
 import type { ExtensionConfig, IntercomBridgeConfig, IntercomBridgeMode } from "../shared/types.ts";
+import { getAgentDir } from "../shared/utils.ts";
 
 const PI_INTERCOM_PACKAGE_NAME = "pi-intercom";
 
 function defaultAgentDir(): string {
-	return path.join(os.homedir(), CONFIG_DIR, "agent");
+	return getAgentDir();
 }
 
 function defaultIntercomExtensionDir(agentDir = defaultAgentDir()): string {
@@ -168,8 +169,9 @@ function packageEntryAllowsExtensions(entry: unknown): boolean {
 function findNearestProjectConfigDir(cwd: string): string | undefined {
 	let current = path.resolve(cwd);
 	while (true) {
-		const configDir = path.join(current, CONFIG_DIR);
-		if (fs.existsSync(path.join(configDir, "settings.json"))) return configDir;
+		for (const configDir of getProjectConfigDirs(current)) {
+			if (fs.existsSync(path.join(configDir, "settings.json"))) return configDir;
+		}
 		const parent = path.dirname(current);
 		if (parent === current) return undefined;
 		current = parent;

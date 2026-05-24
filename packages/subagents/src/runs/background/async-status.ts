@@ -2,10 +2,12 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { formatDuration, formatModelThinking, formatTokens, shortenPath } from "../../shared/formatters.ts";
 import { formatActivityLabel, formatParallelOutcome } from "../../shared/status-format.ts";
-import { type ActivityState, type AsyncJobStep, type AsyncParallelGroupStatus, type AsyncStatus, type SubagentRunMode, type TokenUsage } from "../../shared/types.ts";
+import { type ActivityState, type AsyncJobStep, type AsyncParallelGroupStatus, type AsyncStatus, type NestedRunSummary, type SubagentRunMode, type TokenUsage } from "../../shared/types.ts";
 import { readStatus } from "../../shared/utils.ts";
+import { attachRootChildrenToSteps, findNestedRouteForRootId, projectNestedRegistryForRoot } from "../shared/nested-events.ts";
+import { formatNestedRunStatusLines } from "../shared/nested-render.ts";
 import { flatToLogicalStepIndex, normalizeParallelGroups } from "./parallel-groups.ts";
-import { reconcileAsyncRun } from "./stale-run-reconciler.ts";
+import { reconcileAsyncRun, reconcileNestedAsyncDescendants } from "./stale-run-reconciler.ts";
 
 interface AsyncRunStepSummary {
 	index: number;
@@ -28,6 +30,7 @@ interface AsyncRunStepSummary {
 	thinking?: string;
 	attemptedModels?: string[];
 	error?: string;
+	children?: NestedRunSummary[];
 }
 
 export interface AsyncRunSummary {
@@ -55,6 +58,8 @@ export interface AsyncRunSummary {
 	outputFile?: string;
 	totalTokens?: TokenUsage;
 	sessionFile?: string;
+	nestedChildren?: NestedRunSummary[];
+	nestedWarnings?: string[];
 }
 
 interface AsyncRunListOptions {
@@ -112,7 +117,7 @@ function deriveAsyncActivityState(asyncDir: string, status: AsyncStatus): { acti
 	};
 }
 
-function statusToSummary(asyncDir: string, status: AsyncStatus & { cwd?: string }): AsyncRunSummary {
+function statusToSummary(asyncDir: string, status: AsyncStatus & { cwd?: string }, nestedWarnings: string[] = []): AsyncRunSummary {
 	if (status.sessionId !== undefined && typeof status.sessionId !== "string") {
 		throw new Error(`Invalid async status '${path.join(asyncDir, "status.json")}': sessionId must be a string.`);
 	}
@@ -120,6 +125,42 @@ function statusToSummary(asyncDir: string, status: AsyncStatus & { cwd?: string 
 	const steps = status.steps ?? [];
 	const chainStepCount = status.chainStepCount ?? steps.length;
 	const parallelGroups = normalizeParallelGroups(status.parallelGroups, steps.length, chainStepCount);
+	let nestedChildren: NestedRunSummary[] = [];
+	if (nestedWarnings.length === 0) {
+		try {
+			nestedChildren = projectNestedRegistryForRoot(status.runId || path.basename(asyncDir))?.children ?? [];
+		} catch (error) {
+			nestedWarnings.push(`Nested status unavailable: ${getErrorMessage(error)}`);
+		}
+	}
+	const summarizedSteps = steps.map((step, index) => {
+		const stepActivityState = step.activityState;
+		const stepLastActivityAt = step.lastActivityAt;
+		return {
+			index,
+			agent: step.agent,
+			status: step.status,
+			...(stepActivityState ? { activityState: stepActivityState } : {}),
+			...(stepLastActivityAt ? { lastActivityAt: stepLastActivityAt } : {}),
+			...(step.currentTool ? { currentTool: step.currentTool } : {}),
+			...(step.currentToolArgs ? { currentToolArgs: step.currentToolArgs } : {}),
+			...(step.currentToolStartedAt ? { currentToolStartedAt: step.currentToolStartedAt } : {}),
+			...(step.currentPath ? { currentPath: step.currentPath } : {}),
+			...(step.recentTools ? { recentTools: step.recentTools.map((tool) => ({ ...tool })) } : {}),
+			...(step.recentOutput ? { recentOutput: [...step.recentOutput] } : {}),
+			...(step.turnCount !== undefined ? { turnCount: step.turnCount } : {}),
+			...(step.toolCount !== undefined ? { toolCount: step.toolCount } : {}),
+			...(step.durationMs !== undefined ? { durationMs: step.durationMs } : {}),
+			...(step.tokens ? { tokens: step.tokens } : {}),
+			...(step.skills ? { skills: step.skills } : {}),
+			...(step.model ? { model: step.model } : {}),
+			...(step.thinking ? { thinking: step.thinking } : {}),
+			...(step.attemptedModels ? { attemptedModels: step.attemptedModels } : {}),
+			...(step.error ? { error: step.error } : {}),
+			...(step.children?.length ? { children: step.children } : {}),
+		};
+	});
+	attachRootChildrenToSteps(status.runId || path.basename(asyncDir), summarizedSteps, nestedChildren);
 	return {
 		id: status.runId || path.basename(asyncDir),
 		asyncDir,
@@ -140,32 +181,9 @@ function statusToSummary(asyncDir: string, status: AsyncStatus & { cwd?: string 
 		currentStep: status.currentStep,
 		...(status.chainStepCount !== undefined ? { chainStepCount: status.chainStepCount } : {}),
 		...(parallelGroups.length ? { parallelGroups } : {}),
-		steps: steps.map((step, index) => {
-			const stepActivityState = step.activityState;
-			const stepLastActivityAt = step.lastActivityAt;
-			return {
-				index,
-				agent: step.agent,
-				status: step.status,
-				...(stepActivityState ? { activityState: stepActivityState } : {}),
-				...(stepLastActivityAt ? { lastActivityAt: stepLastActivityAt } : {}),
-				...(step.currentTool ? { currentTool: step.currentTool } : {}),
-				...(step.currentToolArgs ? { currentToolArgs: step.currentToolArgs } : {}),
-				...(step.currentToolStartedAt ? { currentToolStartedAt: step.currentToolStartedAt } : {}),
-				...(step.currentPath ? { currentPath: step.currentPath } : {}),
-				...(step.recentTools ? { recentTools: step.recentTools.map((tool) => ({ ...tool })) } : {}),
-				...(step.recentOutput ? { recentOutput: [...step.recentOutput] } : {}),
-				...(step.turnCount !== undefined ? { turnCount: step.turnCount } : {}),
-				...(step.toolCount !== undefined ? { toolCount: step.toolCount } : {}),
-				...(step.durationMs !== undefined ? { durationMs: step.durationMs } : {}),
-				...(step.tokens ? { tokens: step.tokens } : {}),
-				...(step.skills ? { skills: step.skills } : {}),
-				...(step.model ? { model: step.model } : {}),
-				...(step.thinking ? { thinking: step.thinking } : {}),
-				...(step.attemptedModels ? { attemptedModels: step.attemptedModels } : {}),
-				...(step.error ? { error: step.error } : {}),
-			};
-		}),
+		steps: summarizedSteps,
+		...(nestedChildren.length ? { nestedChildren } : {}),
+		...(nestedWarnings.length ? { nestedWarnings } : {}),
 		...(status.sessionDir ? { sessionDir: status.sessionDir } : {}),
 		...(status.outputFile ? { outputFile: status.outputFile } : {}),
 		...(status.totalTokens ? { totalTokens: status.totalTokens } : {}),
@@ -212,7 +230,14 @@ export function listAsyncRuns(asyncDirRoot: string, options: AsyncRunListOptions
 			: reconcileAsyncRun(asyncDir, { resultsDir: options.resultsDir, kill: options.kill, now: options.now });
 		const status = (reconciliation?.status ?? readStatus(asyncDir)) as (AsyncStatus & { cwd?: string }) | null;
 		if (!status) continue;
-		const summary = statusToSummary(asyncDir, status);
+		const nestedWarnings: string[] = [];
+		try {
+			const nestedRoute = findNestedRouteForRootId(status.runId || path.basename(asyncDir));
+			if (nestedRoute) reconcileNestedAsyncDescendants(nestedRoute, { resultsDir: options.resultsDir, kill: options.kill, now: options.now });
+		} catch (error) {
+			nestedWarnings.push(`Nested status unavailable: ${getErrorMessage(error)}`);
+		}
+		const summary = statusToSummary(asyncDir, status, nestedWarnings);
 		if (allowedStates && !allowedStates.has(summary.state)) continue;
 		if (options.sessionId && summary.sessionId !== options.sessionId) continue;
 		runs.push(summary);
@@ -285,7 +310,12 @@ export function formatAsyncRunList(runs: AsyncRunSummary[], heading = "Active as
 		lines.push(`- ${formatRunHeader(run)}`);
 		for (const step of run.steps) {
 			lines.push(`  ${formatStepLine(step)}`);
+			lines.push(...formatNestedRunStatusLines(step.children, { indent: "    ", maxLines: 12 }));
 		}
+		const attached = new Set(run.steps.flatMap((step) => step.children?.map((child) => child.id) ?? []));
+		const unattached = run.nestedChildren?.filter((child) => !attached.has(child.id)) ?? [];
+		lines.push(...formatNestedRunStatusLines(unattached, { indent: "  ", maxLines: 12 }));
+		for (const warning of run.nestedWarnings ?? []) lines.push(`  Warning: ${warning}`);
 		const outputPath = formatAsyncRunOutputPath(run);
 		if (outputPath) lines.push(`  output: ${shortenPath(outputPath)}`);
 		if (run.sessionFile) lines.push(`  session: ${shortenPath(run.sessionFile)}`);

@@ -94,7 +94,7 @@ export function resolvePiCliScript(deps: PiSpawnDeps = {}): string | undefined {
 			return candidate;
 		}
 	} catch {
-		// CLI script resolution is optional; falling back to the app command lets PATH handle execution.
+		// Windows CLI resolution is optional; falling back to the app command lets PATH handle execution.
 		return undefined;
 	}
 

@@ -1,24 +1,28 @@
 <p>
-  <img src="https://raw.githubusercontent.com/nicobailon/pi-subagents/main/banner.png" alt="pi-subagents" width="1100">
+  <img src="https://raw.githubusercontent.com/nicobailon/pi-subagents/main/banner.png" alt="Atomic subagents" width="1100">
 </p>
 
-# pi-subagents
+# @bastani/subagents
 
-`pi-subagents` lets Pi delegate work to focused child agents. Use it for code review, scouting, implementation, parallel audits, saved workflows, background jobs, and anything else that benefits from a second or third set of model eyes.
+`@bastani/subagents` lets Atomic delegate work to focused child agents. It is Atomic's bundled adaptation of upstream `pi-subagents`; use it for code review, scouting, implementation, parallel audits, saved workflows, background jobs, and anything else that benefits from a second or third set of model eyes.
 
 https://github.com/user-attachments/assets/702554ec-faaf-4635-80aa-fb5d6e292fd1
 
 ## Installation
 
+Atomic bundles this extension through `@bastani/atomic`; no separate install is required for Atomic users.
+
+For upstream Pi installs, use:
+
 ```bash
 pi install npm:pi-subagents
 ```
 
-That is the only required step. You can add optional pieces later.
+You can add optional pieces later.
 
 ## Try this first
 
-You do not need to create agents, write config, or learn slash commands. After installing, ask Pi for delegation in plain language:
+You do not need to create agents, write config, or learn slash commands. Ask Atomic for delegation in plain language:
 
 ```text
 Use reviewer to review this diff.
@@ -141,7 +145,7 @@ For a persistent override, edit settings. This example pins the reviewer everywh
 }
 ```
 
-Use `~/.pi/agent/settings.json` for a user override or `.pi/settings.json` for a project override. The same `agentOverrides` block can change `tools`, `skills`, inherited context, prompt text, or disable a builtin. If you want a totally different agent, create a user or project agent with the same name; for normal tweaks, prefer overrides.
+Use `~/.atomic/agent/settings.json` for a user override or `.atomic/settings.json` for a project override; legacy `~/.pi/agent/settings.json` and `.pi/settings.json` paths are also checked for compatibility. The same `agentOverrides` block can change `tools`, `skills`, inherited context, prompt text, or disable a builtin. If you want a totally different agent, create a user or project agent with the same name; for normal tweaks, prefer overrides.
 
 ## Where running subagents show up
 
@@ -181,7 +185,7 @@ Use the optional prompt shortcuts below when you want the pattern to be repeatab
 
 Packaged `planner`, `worker`, and `oracle` default to forked context when a launch omits `context`; pass `context: "fresh"` when you intentionally want a fresh child run.
 
-Child-safety boundaries are enforced at runtime. Spawned child sessions do not register the `subagent` tool, do not receive the bundled `pi-subagents` skill, and receive explicit boundary instructions that they are not the parent orchestrator and must not propose or run subagents. Forked child context filtering also removes parent-only subagent artifacts (including old hidden orchestration-instruction messages, slash/status/control messages, and prior parent `subagent` tool-call/tool-result history) while preserving ordinary prose and unrelated tool calls/results.
+Child-safety boundaries are enforced at runtime. Spawned child sessions do not register the `subagent` tool or receive the bundled `pi-subagents` skill unless the parent intentionally selected an explicit fanout agent whose resolved builtin `tools` includes `subagent`. Non-fanout children receive boundary instructions that they are not the parent orchestrator and must not propose or run subagents; authorized fanout children get a narrower boundary that limits nested delegation to the assigned fanout. Forked child context filtering also removes parent-only subagent artifacts (including old hidden orchestration-instruction messages, slash/status/control messages, and prior parent `subagent` tool-call/tool-result history) while preserving ordinary prose and unrelated tool calls/results.
 
 ## Optional shortcuts
 
@@ -199,15 +203,15 @@ The package includes reusable prompt templates for common workflows. You do not 
 
 Add `autofix` to `/parallel-review` or `/parallel-cleanup` to apply only the synthesized fixes worth doing now after reviewers return.
 
-## Optional pi-intercom companion
+## Optional intercom companion
 
-`pi-subagents` works without `pi-intercom`. Install `pi-intercom` only if you want child agents to talk back to the parent Pi session while they are running.
+Atomic subagents work without intercom. Atomic bundles `@bastani/intercom`; upstream Pi users can install `pi-intercom` if they want child agents to talk back to the parent session while they are running.
 
 ```bash
 pi install npm:pi-intercom
 ```
 
-Most users do not call `intercom` directly. After `pi-intercom` is installed, `pi-subagents` can automatically give child agents a private coordination channel back to the parent session. The bridge recognizes the normal `pi install npm:pi-intercom` package install as well as legacy local extension checkouts.
+Most users do not call `intercom` directly. When the intercom companion is available, subagents can automatically give child agents a private coordination channel back to the parent session. The bridge recognizes Atomic's bundled intercom package, the normal upstream `pi install npm:pi-intercom` package install, and legacy local extension checkouts.
 
 Use it for work where the child might need a decision instead of guessing:
 
@@ -351,19 +355,19 @@ Picker screens use `↑↓`, `Enter`, `Escape`, and type-to-filter. The full-scr
 
 ## Agents and chains
 
-Agents are markdown files with YAML frontmatter and a system prompt body. They define the specialist that will run in the child Pi process.
+Agents are markdown files with YAML frontmatter and a system prompt body. They define the specialist that will run in the child Atomic process.
 
 Agent locations, lowest to highest priority:
 
 | Scope | Path |
 |-------|------|
-| Builtin | `~/.pi/agent/extensions/subagent/agents/` |
-| User | `~/.pi/agent/agents/**/*.md` |
-| Project | `.pi/agents/**/*.md` |
+| Builtin | bundled with `@bastani/atomic` / `~/.atomic/agent/extensions/subagent/agents/` |
+| User | `~/.atomic/agent/agents/**/*.md` |
+| Project | `.atomic/agents/**/*.md` |
 
-Project discovery also reads legacy `.agents/**/*.md` files. Nested subdirectories are discovered recursively. `.chain.md` files do not define agents. If both `.agents/` and `.pi/agents/` define the same parsed runtime agent name, `.pi/agents/` wins. Use `agentScope: "user" | "project" | "both"` to control discovery; `both` is the default and project definitions win runtime-name collisions.
+Project discovery also reads legacy `.agents/**/*.md` and `.pi/agents/**/*.md` files. Nested subdirectories are discovered recursively. `.chain.md` files do not define agents. If primary Atomic and legacy paths define the same parsed runtime agent name, the primary `.atomic/agents/` definition wins. Use `agentScope: "user" | "project" | "both"` to control discovery; `both` is the default and project definitions win runtime-name collisions.
 
-Builtin agents load at the lowest priority, so a user or project agent with the same name overrides them. They do not pin a provider model; they inherit your current Pi default model unless you set `subagents.agentOverrides.<name>.model`. `oracle` is an advisory reviewer that critiques direction and proposes an execution prompt without editing files. `worker` is the implementation agent for normal tasks and approved oracle handoffs.
+Builtin agents load at the lowest priority, so a user or project agent with the same name overrides them. They do not pin a provider model; they inherit your current Atomic default model unless you set `subagents.agentOverrides.<name>.model`. `oracle` is an advisory reviewer that critiques direction and proposes an execution prompt without editing files. `worker` is the implementation agent for normal tasks and approved oracle handoffs.
 
 The `researcher` builtin uses `web_search`, `fetch_content`, and `get_search_content`; those require [pi-web-access](https://github.com/nicobailon/pi-web-access):
 
@@ -375,8 +379,8 @@ pi install npm:pi-web-access
 
 You can override selected builtin fields without copying the whole agent. Overrides live in settings:
 
-- User: `~/.pi/agent/settings.json`
-- Project: `.pi/settings.json`
+- User: `~/.atomic/agent/settings.json` (legacy: `~/.pi/agent/settings.json`)
+- Project: `.atomic/settings.json` (legacy: `.pi/settings.json`)
 
 Example:
 
@@ -459,6 +463,7 @@ Important fields:
 | `defaultReads` | Files to read before running in chain/parallel behavior. |
 | `defaultProgress` | Maintain `progress.md`. |
 | `interactive` | Parsed for compatibility but not enforced in v1. |
+| `completionGuard` | Set to `false` to intentionally opt this agent out of automatic completion-guard reminders. Use sparingly for user-authored read-only/review agents whose prompt already prevents premature completion. |
 | `maxSubagentDepth` | Tightens nested delegation for this agent’s children. |
 
 ### Tool and extension selection
@@ -493,8 +498,8 @@ Chains are reusable `.chain.md` workflows stored separately from agent files.
 
 | Scope | Path |
 |-------|------|
-| User | `~/.pi/agent/chains/**/*.chain.md` |
-| Project | `.pi/chains/**/*.chain.md` |
+| User | `~/.atomic/agent/chains/**/*.chain.md` |
+| Project | `.atomic/chains/**/*.chain.md` |
 
 Nested subdirectories are discovered recursively. If user and project scopes define the same parsed runtime chain name, the project chain wins. Chains support the same optional `package` frontmatter as agents; `name: review-flow` plus `package: code-analysis` runs as `code-analysis.review-flow`.
 
@@ -555,13 +560,15 @@ Skills are `SKILL.md` files injected into an agent’s system prompt.
 
 Discovery uses project-first precedence:
 
-1. `.pi/skills/{name}/SKILL.md`
+1. `.atomic/skills/{name}/SKILL.md`
 2. Project packages and project settings packages via `package.json -> pi.skills`
 3. Current task cwd package via `package.json -> pi.skills`
-4. `.pi/settings.json -> skills`
-5. `~/.pi/agent/skills/{name}/SKILL.md`
+4. `.atomic/settings.json -> skills`
+5. `~/.atomic/agent/skills/{name}/SKILL.md`
 6. User packages and user settings packages via `package.json -> pi.skills`
-7. `~/.pi/agent/settings.json -> skills`
+7. `~/.atomic/agent/settings.json -> skills`
+
+Legacy `.pi` and `~/.pi/agent` skill/settings paths are also checked for compatibility.
 
 Use agent defaults, override them at runtime, or disable them:
 
@@ -585,7 +592,7 @@ Missing skills do not fail execution. The result summary shows a warning.
 
 ### Bundled skill
 
-The package bundles a `pi-subagents` skill that is automatically available to the parent agent when the extension is installed. It is for the orchestrating parent only: child subagents never receive it, and their context is explicitly filtered to strip parent-only orchestration instructions.
+The package bundles a `subagent` skill that is automatically available to the parent agent when the extension is installed. It is for the orchestrating parent only: child subagents never receive it unless explicitly authorized for fanout, and their context is filtered to strip parent-only orchestration instructions.
 
 What the bundled skill covers:
 - **Delegation patterns**: when to launch which agent, whether to use single, parallel, chain, or async mode, and whether to use fresh or forked context
@@ -775,7 +782,7 @@ After a worktree parallel step completes, per-agent diff stats are appended to t
 
 ## Configuration
 
-`pi-subagents` reads optional JSON config from `~/.pi/agent/extensions/subagent/config.json`.
+Atomic subagents read optional JSON config from `~/.atomic/agent/extensions/subagent/config.json` and still check the legacy `~/.pi/agent/extensions/subagent/config.json` path for compatibility.
 
 ### `asyncByDefault`
 
@@ -809,7 +816,7 @@ Forces depth-0 single, parallel, and chain runs into background mode and bypasse
 ### `defaultSessionDir`
 
 ```json
-{ "defaultSessionDir": "~/.pi/agent/sessions/subagent/" }
+{ "defaultSessionDir": "~/.atomic/agent/sessions/subagent/" }
 ```
 
 Session directory precedence is: `params.sessionDir`, then `config.defaultSessionDir`, then a directory derived from the parent session. Sessions are always enabled.
@@ -838,9 +845,9 @@ Controls whether subagents receive runtime intercom coordination instructions an
 Fields:
 
 - `mode`: default `always`; use `fork-only` to inject only for forked runs, or `off` to disable the bridge.
-- `instructionFile`: optional Markdown template replacing the default bridge instructions. `{orchestratorTarget}` is interpolated. Relative paths resolve from `~/.pi/agent/extensions/subagent/`.
+- `instructionFile`: optional Markdown template replacing the default bridge instructions. `{orchestratorTarget}` is interpolated. Relative paths resolve from `~/.atomic/agent/extensions/subagent/` (or the legacy `~/.pi/agent/extensions/subagent/` path when used).
 
-Bridge activation also requires `pi-intercom` to be installed and enabled through `pi install npm:pi-intercom` or a legacy local extension checkout, a targetable current session name or fallback alias, and `pi-intercom` in any explicit agent `extensions` allowlist.
+Bridge activation also requires the Atomic intercom companion (or upstream `pi-intercom` installed through `pi install npm:pi-intercom` / a legacy local extension checkout), a targetable current session name or fallback alias, and the intercom extension in any explicit agent `extensions` allowlist.
 
 The default injected guidance tells children to use `contact_supervisor` with `reason: "need_decision"` when blocked or needing a decision, `reason: "progress_update"` only for meaningful blocked/progress updates, generic `intercom` as fallback plumbing, and avoid routine completion handoffs.
 
@@ -924,7 +931,7 @@ By default, nesting is limited to two levels: main session → subagent → sub-
 
 Configure the limit with:
 
-1. `PI_SUBAGENT_MAX_DEPTH` before starting Pi
+1. `ATOMIC_SUBAGENT_MAX_DEPTH` (or legacy `PI_SUBAGENT_MAX_DEPTH`) before starting Atomic
 2. `config.maxSubagentDepth`
 3. `maxSubagentDepth` in agent frontmatter, which can only tighten the inherited limit
 

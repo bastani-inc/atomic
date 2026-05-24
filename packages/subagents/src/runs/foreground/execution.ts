@@ -151,12 +151,17 @@ async function runSingleAttempt(
 		extensions: agent.extensions,
 		systemPrompt: shared.systemPrompt,
 		mcpDirectTools: agent.mcpDirectTools,
+		cwd: options.cwd ?? runtimeCwd,
 		promptFileStem: agent.name,
 		intercomSessionName: options.intercomSessionName,
 		orchestratorIntercomTarget: options.orchestratorIntercomTarget,
 		runId: options.runId,
 		childAgentName: agent.name,
 		childIndex: options.index ?? 0,
+		parentEventSink: options.nestedRoute?.eventSink,
+		parentControlInbox: options.nestedRoute?.controlInbox,
+		parentRootRunId: options.nestedRoute?.rootRunId,
+		parentCapabilityToken: options.nestedRoute?.capabilityToken,
 	});
 
 	const result: SingleResult = {
@@ -207,6 +212,7 @@ async function runSingleAttempt(
 			cwd: options.cwd ?? runtimeCwd,
 			env: spawnEnv,
 			stdio: ["ignore", "pipe", "pipe"],
+			windowsHide: true,
 		});
 		const jsonlWriter = createJsonlWriter(shared.jsonlPath, proc.stdout);
 		let buf = "";
@@ -666,8 +672,14 @@ async function runSingleAttempt(
 	};
 
 	let fullOutput = getFinalOutput(result.messages);
-	const completionGuard = result.exitCode === 0 && !result.error
-		? evaluateCompletionMutationGuard({ agent: agent.name, task, messages: result.messages })
+	const completionGuard = result.exitCode === 0 && !result.error && agent.completionGuard !== false
+		? evaluateCompletionMutationGuard({
+			agent: agent.name,
+			task,
+			messages: result.messages,
+			tools: agent.tools,
+			mcpDirectTools: agent.mcpDirectTools,
+		})
 		: undefined;
 	if (completionGuard?.triggered && !observedMutationAttempt) {
 		result.exitCode = 1;

@@ -159,8 +159,8 @@ For implementation handoffs to `debugger` or `code-simplifier`, name the approve
 
 Settings locations:
 
-- User scope: `~/.pi/agent/settings.json`
-- Project scope: `.pi/settings.json`
+- User scope: `~/.atomic/agent/settings.json` (legacy: `~/.pi/agent/settings.json`)
+- Project scope: `.atomic/settings.json` (legacy: `.pi/settings.json`)
 
 Direct settings example:
 
@@ -184,14 +184,14 @@ Useful override fields: `model`, `fallbackModels`, `thinking`, `systemPromptMode
 
 Agent files can live in:
 
-- `~/.pi/agent/agents/**/*.md` — user scope
-- `.pi/agents/**/*.md` — canonical project scope
-- legacy `.agents/**/*.md` — still read for compatibility, but `.pi/agents/` wins on conflicts
+- `~/.atomic/agent/agents/**/*.md` — user scope
+- `.atomic/agents/**/*.md` — canonical project scope
+- legacy `.agents/**/*.md` and `.pi/agents/**/*.md` — still read for compatibility, but `.atomic/agents/` wins on conflicts
 
 Chains live in:
 
-- `~/.pi/agent/chains/**/*.chain.md` — user scope
-- `.pi/chains/**/*.chain.md` — project scope
+- `~/.atomic/agent/chains/**/*.chain.md` — user scope
+- `.atomic/chains/**/*.chain.md` — project scope
 
 Discovery is recursive. `.chain.md` files do not define agents. Agents and chains can set optional frontmatter `package: code-analysis`; `name: codebase-analyzer` plus `package: code-analysis` registers as runtime name `code-analysis.codebase-analyzer` while serialization keeps `name` and `package` separate.
 
@@ -390,7 +390,7 @@ subagent({
 
 ## Subagent + Intercom Coordination
 
-`pi-subagents` works without `pi-intercom`. When `pi-intercom` is installed and enabled, the intercom bridge can automatically give child agents a private coordination channel back to the parent session.
+Atomic subagents work without intercom. When Atomic's bundled intercom companion or upstream `pi-intercom` is installed and enabled, the intercom bridge can automatically give child agents a private coordination channel back to the parent session.
 
 The builtin specialists in this skill do not declare the `intercom` tool, so they finish their pass and return without coordinating. They cannot pause to ask the parent for a decision mid-run; if you need that, write a custom agent that lists `intercom` (or that the runtime bridge can inject `contact_supervisor` into).
 
@@ -419,7 +419,7 @@ Message conventions:
 
 - `reason: "need_decision"` waits for the parent reply and returns it to the child.
 - `reason: "progress_update"` is non-blocking and should stay concise.
-- Child-side routine completion handoffs are not expected. With the intercom bridge active, parent-side `pi-subagents` sends grouped completion results through `pi-intercom`: one grouped message per foreground parent run and one per completed async result file. Acknowledged foreground delivery returns a compact receipt with artifact/session paths; if unacknowledged, the normal full output is preserved.
+- Child-side routine completion handoffs are not expected. With the intercom bridge active, parent-side subagents send grouped completion results through the intercom companion: one grouped message per foreground parent run and one per completed async result file. Acknowledged foreground delivery returns a compact receipt with artifact/session paths; if unacknowledged, the normal full output is preserved.
 
 Most agents should not call generic `intercom` directly unless bridge instructions provide a target and `contact_supervisor` is unavailable. Do not invent a target.
 
@@ -510,7 +510,7 @@ For many customizations, builtin overrides in settings are lower-friction than c
 
 The package includes prompt shortcuts for common workflows: `/parallel-review`, `/review-loop`, `/parallel-research`, `/parallel-context-build`, `/parallel-handoff-plan`, `/gather-context-and-clarify`, and `/parallel-cleanup`. Use them when the user wants repeatable review, review/fix loops, research, context handoff, implementation handoff, clarification, or cleanup-review patterns. `/parallel-review autofix` launches a `debugger` or `code-simplifier` writer (depending on feedback shape) to apply the synthesized fixes worth doing now. `/parallel-cleanup autofix` launches one `code-simplifier` writer to apply the synthesized cleanup fixes. Parent agents can also apply the same recipes directly with `subagent(...)` when the user describes the workflow in natural language instead of invoking a slash command.
 
-If `pi-prompt-template-model` is installed, additional user prompt templates can delegate into `pi-subagents`. This is useful when a slash command should always run through a particular agent or with forked context.
+If a prompt-template extension is installed, additional user prompt templates can delegate into subagents. This is useful when a slash command should always run through a particular agent or with forked context.
 
 ## Important Constraints
 
@@ -607,7 +607,7 @@ For complex work, risky changes, broad refactors, or many changed lines, increas
 
 For very large work, split into serial milestones instead of launching a swarm of writers. Each milestone gets one writer, a validation contract, fresh-context review, a fix pass, and parent acceptance before the next milestone starts. Use parallel subagents inside a milestone for read-only context, research, and review only.
 
-Keep orchestration authority in the parent session. Child subagents should not launch more subagents, read this skill, or run their own orchestration loops. Spawned subagents do not receive the `subagent` skill, parent-only status/control/slash messages, prior parent `subagent` tool-call/tool-result artifacts, or the `subagent` extension tool. Child context filtering also strips old hidden orchestration-instruction messages when they appear in inherited history. Every child also receives a boundary instruction that says the parent owns orchestration, the child must not propose or run subagents, and writer children must call real edit/write tools instead of printing pseudo tool calls. Pass children concrete role-specific work instead.
+Keep orchestration authority in the parent session. Child subagents should not launch more subagents, read this skill, or run their own orchestration loops unless the parent intentionally selected an explicit fanout agent whose resolved builtin `tools` includes `subagent` for that assigned fanout. Spawned non-fanout subagents do not receive the `subagent` skill, parent-only status/control/slash messages, prior parent `subagent` tool-call/tool-result artifacts, or the `subagent` extension tool. Child context filtering also strips old hidden orchestration-instruction messages when they appear in inherited history. Every child also receives a boundary instruction that says the parent owns orchestration, the child must not propose or run subagents unless explicitly authorized for fanout, and writer children must call real edit/write tools instead of printing pseudo tool calls. Pass children concrete role-specific work instead.
 
 1. Clarify first. Gather code context with `codebase-locator`, `codebase-analyzer`, `codebase-pattern-finder`, and prior research specialists; add `codebase-online-researcher` only when external evidence matters; then ask the user clarifying questions with `interview` until scope, acceptance criteria, constraints, and non-goals are clear.
 2. Define the validation contract. State what done means before implementation: expected behavior, checks to run, user flows to exercise, and evidence required in the writer handoff. For UI, CLI, integration, or workflow changes, include at least one validator angle that uses the product the way a user would rather than only reading code.

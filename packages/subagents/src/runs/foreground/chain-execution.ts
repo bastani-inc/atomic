@@ -34,6 +34,7 @@ import { runSync } from "./execution.ts";
 import { buildChainSummary } from "../../shared/formatters.ts";
 import { compactForegroundDetails, getSingleResultOutput, mapConcurrent, resolveChildCwd } from "../../shared/utils.ts";
 import { recordRun } from "../shared/run-history.ts";
+import { currentModelFullId } from "../shared/model-fallback.ts";
 import {
 	cleanupWorktrees,
 	createWorktrees,
@@ -51,12 +52,13 @@ import {
 	type ControlEvent,
 	type Details,
 	type IntercomEventBus,
+	type NestedRouteInfo,
 	type ResolvedControlConfig,
 	type SingleResult,
 	MAX_CONCURRENCY,
 	resolveChildMaxSubagentDepth,
 } from "../../shared/types.ts";
-import { currentModelFullId, resolveModelCandidate } from "../shared/model-fallback.ts";
+import { resolveModelCandidate } from "../shared/model-fallback.ts";
 import { validateFileOnlyOutputMode } from "../shared/single-output.ts";
 
 interface ChainExecutionDetailsInput {
@@ -112,6 +114,7 @@ interface ParallelChainRunInput {
 	totalSteps: number;
 	worktreeSetup?: WorktreeSetup;
 	maxSubagentDepth: number;
+	nestedRoute?: NestedRouteInfo;
 }
 
 function buildChainExecutionDetails(input: ChainExecutionDetailsInput): Details {
@@ -244,10 +247,11 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 				onControlEvent: input.onControlEvent,
 				intercomSessionName: input.childIntercomTarget?.(task.agent, input.globalTaskIndex + taskIndex),
 				orchestratorIntercomTarget: input.orchestratorIntercomTarget,
+				nestedRoute: input.nestedRoute,
 				modelOverride: effectiveModel,
 				availableModels: input.availableModels,
-				preferredModelProvider: input.ctx.model?.provider,
 				currentModel: currentModelFullId(input.ctx.model),
+				preferredModelProvider: input.ctx.model?.provider,
 				skills: behavior.skills === false ? [] : behavior.skills,
 				onUpdate: input.onUpdate
 					? (progressUpdate) => {
@@ -332,6 +336,7 @@ interface ChainExecutionParams {
 	chainSkills?: string[];
 	chainDir?: string;
 	maxSubagentDepth: number;
+	nestedRoute?: NestedRouteInfo;
 	worktreeSetupHook?: string;
 	worktreeSetupHookTimeoutMs?: number;
 }
@@ -592,6 +597,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 					childIntercomTarget,
 					orchestratorIntercomTarget,
 					foregroundControl,
+					nestedRoute: params.nestedRoute,
 					worktreeSetup,
 					maxSubagentDepth: params.maxSubagentDepth,
 				});
@@ -794,10 +800,11 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				onControlEvent,
 				intercomSessionName: childIntercomTarget?.(seqStep.agent, globalTaskIndex),
 				orchestratorIntercomTarget,
+				nestedRoute: params.nestedRoute,
 				modelOverride: effectiveModel,
 				availableModels,
-				preferredModelProvider: ctx.model?.provider,
 				currentModel: currentModelFullId(ctx.model),
+				preferredModelProvider: ctx.model?.provider,
 				skills: behavior.skills === false ? [] : behavior.skills,
 				onUpdate: onUpdate
 					? (p) => {

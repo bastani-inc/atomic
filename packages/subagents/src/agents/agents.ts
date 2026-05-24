@@ -6,7 +6,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { CONFIG_DIR_NAME, getAgentConfigPaths, getProjectConfigDirs } from "@bastani/atomic";
+import { CONFIG_DIR_NAME, getAgentConfigPaths, getEnvValue, getProjectConfigDirs } from "@bastani/atomic";
 import type { OutputMode } from "../shared/types.ts";
 import { KNOWN_FIELDS } from "./agent-serializer.ts";
 import { parseChain } from "./chain-serializer.ts";
@@ -46,6 +46,7 @@ export interface BuiltinAgentOverrideBase {
 	skills?: string[];
 	tools?: string[];
 	mcpDirectTools?: string[];
+	completionGuard?: boolean;
 }
 
 interface BuiltinAgentOverrideConfig {
@@ -60,6 +61,7 @@ interface BuiltinAgentOverrideConfig {
 	systemPrompt?: string;
 	skills?: string[] | false;
 	tools?: string[] | false;
+	completionGuard?: boolean;
 }
 
 interface BuiltinAgentOverrideInfo {
@@ -92,6 +94,7 @@ export interface AgentConfig {
 	defaultProgress?: boolean;
 	interactive?: boolean;
 	maxSubagentDepth?: number;
+	completionGuard?: boolean;
 	disabled?: boolean;
 	extraFields?: Record<string, string>;
 	override?: BuiltinAgentOverrideInfo;
@@ -191,6 +194,7 @@ function cloneOverrideBase(agent: AgentConfig): BuiltinAgentOverrideBase {
 		skills: agent.skills ? [...agent.skills] : undefined,
 		tools: agent.tools ? [...agent.tools] : undefined,
 		mcpDirectTools: agent.mcpDirectTools ? [...agent.mcpDirectTools] : undefined,
+		completionGuard: agent.completionGuard,
 	};
 }
 
@@ -209,6 +213,7 @@ function cloneOverrideValue(override: BuiltinAgentOverrideConfig): BuiltinAgentO
 		...(override.systemPrompt !== undefined ? { systemPrompt: override.systemPrompt } : {}),
 		...(override.skills !== undefined ? { skills: override.skills === false ? false : [...override.skills] } : {}),
 		...(override.tools !== undefined ? { tools: override.tools === false ? false : [...override.tools] } : {}),
+		...(override.completionGuard !== undefined ? { completionGuard: override.completionGuard } : {}),
 	};
 }
 
@@ -354,6 +359,14 @@ function parseBuiltinOverrideEntry(
 		}
 	}
 
+	if ("completionGuard" in input) {
+		if (typeof input.completionGuard === "boolean") {
+			override.completionGuard = input.completionGuard;
+		} else {
+			throw new Error(`Builtin override '${name}' in '${filePath}' has invalid 'completionGuard'; expected a boolean.`);
+		}
+	}
+
 	if ("systemPrompt" in input) {
 		if (typeof input.systemPrompt === "string") override.systemPrompt = input.systemPrompt;
 		else throw new Error(`Builtin override '${name}' in '${filePath}' has invalid 'systemPrompt'; expected a string.`);
@@ -399,6 +412,22 @@ function readSubagentSettings(filePath: string | null): SubagentSettings {
 	return { overrides: parsed, disableBuiltins };
 }
 
+function readMergedSubagentSettings(filePaths: string[]): { settings: SubagentSettings; path: string | null } {
+	let settings = EMPTY_SUBAGENT_SETTINGS;
+	let path: string | null = null;
+	for (let i = filePaths.length - 1; i >= 0; i--) {
+		const filePath = filePaths[i]!;
+		if (!fs.existsSync(filePath)) continue;
+		const next = readSubagentSettings(filePath);
+		settings = {
+			disableBuiltins: next.disableBuiltins ?? settings.disableBuiltins,
+			overrides: { ...settings.overrides, ...next.overrides },
+		};
+		path = filePath;
+	}
+	return { settings, path };
+}
+
 function applyBuiltinOverride(
 	agent: AgentConfig,
 	override: BuiltinAgentOverrideConfig,
@@ -426,24 +455,9 @@ function applyBuiltinOverride(
 		next.tools = tools;
 		next.mcpDirectTools = mcpDirectTools;
 	}
+	if (override.completionGuard !== undefined) next.completionGuard = override.completionGuard;
 
 	return next;
-}
-
-function readMergedSubagentSettings(filePaths: string[]): { settings: SubagentSettings; path: string | null } {
-	let settings = EMPTY_SUBAGENT_SETTINGS;
-	let path: string | null = null;
-	for (let i = filePaths.length - 1; i >= 0; i--) {
-		const filePath = filePaths[i]!;
-		if (!fs.existsSync(filePath)) continue;
-		const next = readSubagentSettings(filePath);
-		settings = {
-			disableBuiltins: next.disableBuiltins ?? settings.disableBuiltins,
-			overrides: { ...settings.overrides, ...next.overrides },
-		};
-		path = filePath;
-	}
-	return { settings, path };
 }
 
 function applyBuiltinOverrides(
@@ -481,7 +495,7 @@ function applyBuiltinOverrides(
 
 export function buildBuiltinOverrideConfig(
 	base: BuiltinAgentOverrideBase,
-	draft: Pick<AgentConfig, "model" | "fallbackModels" | "thinking" | "systemPromptMode" | "inheritProjectContext" | "inheritSkills" | "defaultContext" | "disabled" | "systemPrompt" | "skills" | "tools" | "mcpDirectTools">,
+	draft: Pick<AgentConfig, "model" | "fallbackModels" | "thinking" | "systemPromptMode" | "inheritProjectContext" | "inheritSkills" | "defaultContext" | "disabled" | "systemPrompt" | "skills" | "tools" | "mcpDirectTools" | "completionGuard">,
 ): BuiltinAgentOverrideConfig | undefined {
 	const override: BuiltinAgentOverrideConfig = {};
 
@@ -499,6 +513,9 @@ export function buildBuiltinOverrideConfig(
 	const baseTools = joinToolList(base);
 	const draftTools = joinToolList(draft);
 	if (!arraysEqual(draftTools, baseTools)) override.tools = draftTools ? [...draftTools] : false;
+	if ((draft.completionGuard !== false) !== (base.completionGuard !== false)) {
+		override.completionGuard = draft.completionGuard !== false;
+	}
 
 	return Object.keys(override).length > 0 ? override : undefined;
 }
@@ -664,6 +681,11 @@ function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig[] {
 		}
 
 		const parsedMaxSubagentDepth = Number(frontmatter.maxSubagentDepth);
+		const completionGuard = frontmatter.completionGuard === "false"
+			? false
+			: frontmatter.completionGuard === "true"
+				? true
+				: undefined;
 
 		agents.push({
 			name: runtimeName,
@@ -692,6 +714,7 @@ function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig[] {
 				Number.isInteger(parsedMaxSubagentDepth) && parsedMaxSubagentDepth >= 0
 					? parsedMaxSubagentDepth
 					: undefined,
+			completionGuard,
 			extraFields: Object.keys(extraFields).length > 0 ? extraFields : undefined,
 		});
 	}
@@ -843,7 +866,9 @@ export function discoverAgentsAll(cwd: string): {
 		...Array.from(chainMap.values()),
 	];
 
-	const userDir = fs.existsSync(userDirNew) ? userDirNew : userDirOld[0]!;
+	const legacyUserAgentDir = userDirOld[0]!;
+	// ATOMIC_CODING_AGENT_DIR is already applied by getUserAgentDirs(); prefer that resolved path over ~/.agents.
+	const userDir = getEnvValue("ATOMIC_CODING_AGENT_DIR") ? legacyUserAgentDir : fs.existsSync(userDirNew) ? userDirNew : legacyUserAgentDir;
 
 	return { builtin, user, project, chains, userDir, projectDir, userChainDir, projectChainDir, userSettingsPath, projectSettingsPath };
 }
