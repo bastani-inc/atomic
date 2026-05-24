@@ -33,6 +33,7 @@ interface MockCalls {
 interface MockResponders {
   task?: (name: string, options: WorkflowTaskOptions, calls: MockCalls) => string | undefined;
   omitParallelResults?: readonly string[];
+  skipOutputWrites?: readonly string[];
 }
 
 function promptText(options: WorkflowTaskOptions): string {
@@ -103,7 +104,10 @@ function makeMockCtx<TInputs extends Record<string, unknown>>(
     calls.taskOptions[name] = [...(calls.taskOptions[name] ?? []), options];
     const override = responders.task?.(name, options, calls);
     const resultText = override ?? `[mock-task:${name}] ${text.slice(0, 80)}`;
-    if (typeof options.output === "string") {
+    if (
+      typeof options.output === "string" &&
+      responders.skipOutputWrites?.includes(name) !== true
+    ) {
       mkdirSync(dirname(options.output), { recursive: true });
       writeFileSync(options.output, resultText);
     }
@@ -289,6 +293,31 @@ describe("deep-research-codebase", () => {
     assert.equal(ctx.calls.taskOptions["analyzer-1"]?.[0]?.outputMode, "file-only");
   });
 
+  test("does not use a saved-output reference when history artifact is unavailable", async () => {
+    const mod = await import("../../packages/workflows/builtin/deep-research-codebase.js");
+    const d = mod.default as unknown as WorkflowDefinition;
+    const ctx = makeMockCtx(
+      { prompt: "Trace auth behavior", max_partitions: 1, max_concurrency: 1 },
+      {
+        skipOutputWrites: ["history-analyzer"],
+        task: (name) => {
+          if (name === "partition") return "auth logic";
+          if (name === "history-analyzer") {
+            return "Output saved to: /tmp/history-analyzer.md (123 bytes). Read this file if needed.";
+          }
+          return undefined;
+        },
+      },
+    );
+
+    const result = await d.run(ctx);
+    const aggregatorPrompt = ctx.calls.prompts["aggregator"]?.[0] ?? "";
+
+    assert.doesNotMatch(aggregatorPrompt, /Output saved to:/);
+    assert.match(aggregatorPrompt, /\(no prior research found\)/);
+    assert.equal(result["history"], "");
+  });
+
   test("falls back to scout context when a wave1 locator result is missing", async () => {
     const mod = await import("../../packages/workflows/builtin/deep-research-codebase.js");
     const d = mod.default as unknown as WorkflowDefinition;
@@ -357,6 +386,33 @@ describe("deep-research-codebase", () => {
     const scoutOutput = ctx.calls.taskOptions["codebase-scout"]?.[0]?.output;
     assertStringOutput(scoutOutput);
     assert.equal(existsSync(dirname(scoutOutput)), false);
+  });
+
+  test("does not overwrite an existing default research document", async () => {
+    const mod = await import("../../packages/workflows/builtin/deep-research-codebase.js");
+    const d = mod.default as unknown as WorkflowDefinition;
+    const date = new Date().toISOString().slice(0, 10);
+    const existingPath = join("research", "docs", `${date}-trace-auth-behavior.md`);
+    mkdirSync(dirname(existingPath), { recursive: true });
+    writeFileSync(existingPath, "existing research", "utf8");
+    const ctx = makeMockCtx(
+      { prompt: "Trace auth behavior", max_partitions: 1, max_concurrency: 1 },
+      {
+        task: (name) => {
+          if (name === "partition") return "auth logic";
+          if (name === "aggregator") return "final synthesized findings";
+          return undefined;
+        },
+      },
+    );
+
+    const result = await d.run(ctx);
+    const researchDocPath = result["research_doc_path"];
+
+    assert.equal(readFileSync(existingPath, "utf8"), "existing research");
+    assert.ok(typeof researchDocPath === "string");
+    assert.ok(normalizePathSeparators(researchDocPath).endsWith(`${date}-trace-auth-behavior-2.md`));
+    assert.equal(readFileSync(researchDocPath, "utf8"), "final synthesized findings");
   });
 
   test("removes temporary artifact handoff directory after aggregation failure", async () => {

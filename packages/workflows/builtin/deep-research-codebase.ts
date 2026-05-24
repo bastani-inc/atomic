@@ -10,7 +10,7 @@
 
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, extname, join } from "node:path";
 import { defineWorkflow } from "../src/index.js";
 import type {
   WorkflowOutputMode,
@@ -182,16 +182,49 @@ function defaultResearchDocPath(prompt: string, now = new Date()): string {
   return join(DEFAULT_RESEARCH_DOC_DIR, `${date}-${slugifyResearchTopic(prompt)}.md`);
 }
 
-function researchDocPath(prompt: string, outputPath: string | undefined): string {
-  const trimmed = outputPath?.trim();
-  return trimmed === undefined || trimmed.length === 0
-    ? defaultResearchDocPath(prompt)
-    : trimmed;
+interface ResearchDocPath {
+  readonly path: string;
+  readonly shouldAvoidOverwrite: boolean;
 }
 
-async function writeResearchDoc(path: string, content: string): Promise<void> {
+function researchDocPath(prompt: string, outputPath: string | undefined): ResearchDocPath {
+  const trimmed = outputPath?.trim();
+  return trimmed === undefined || trimmed.length === 0
+    ? { path: defaultResearchDocPath(prompt), shouldAvoidOverwrite: true }
+    : { path: trimmed, shouldAvoidOverwrite: false };
+}
+
+function suffixedPath(path: string, suffix: number): string {
+  const extension = extname(path);
+  const stem = extension.length === 0 ? path : path.slice(0, -extension.length);
+  return `${stem}-${suffix}${extension}`;
+}
+
+function isFileExistsError(error: unknown): boolean {
+  return error instanceof Error && (error as { readonly code?: string }).code === "EEXIST";
+}
+
+async function writeResearchDoc(
+  path: string,
+  content: string,
+  options: { readonly avoidOverwrite?: boolean } = {},
+): Promise<string> {
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, content, "utf8");
+  if (options.avoidOverwrite !== true) {
+    await writeFile(path, content, "utf8");
+    return path;
+  }
+
+  for (let suffix = 0; ; suffix += 1) {
+    const candidate = suffix === 0 ? path : suffixedPath(path, suffix + 1);
+    try {
+      await writeFile(candidate, content, { encoding: "utf8", flag: "wx" });
+      return candidate;
+    } catch (error) {
+      if (isFileExistsError(error)) continue;
+      throw error;
+    }
+  }
 }
 
 async function readArtifactText(path: string | undefined, fallback: string): Promise<string> {
@@ -280,7 +313,7 @@ export default defineWorkflow("deep-research-codebase")
   .input("output_path", {
     type: "text",
     description:
-      "Optional path for the final Markdown research document. Defaults to research/docs/YYYY-MM-DD-<topic>.md.",
+      "Optional path for the final Markdown research document. Defaults to a current-working-directory-relative research/docs/YYYY-MM-DD-<topic>.md path, with a numeric suffix added if needed to avoid overwriting an existing default document.",
   })
   .run(async (ctx) => {
     const inputs = ctx.inputs as {
@@ -298,7 +331,7 @@ export default defineWorkflow("deep-research-codebase")
       inputs.max_concurrency,
       DEFAULT_MAX_CONCURRENCY,
     );
-    const finalResearchDocPath = researchDocPath(prompt, inputs.output_path);
+    const finalResearchDoc = researchDocPath(prompt, inputs.output_path);
     const codebaseLines = countCodebaseLines();
     const partitionCap = calculatePartitionCap(
       requestedMaxPartitions,
@@ -466,7 +499,7 @@ export default defineWorkflow("deep-research-codebase")
         findResult(initialDiscovery, "codebase-scout") ?? initialDiscovery[0]!;
       const historyLocator =
         findResult(initialDiscovery, "history-locator") ?? initialDiscovery[1]!;
-      const history = await ctx.chain(
+      await ctx.chain(
         [
           {
             name: "history-analyzer",
@@ -763,10 +796,7 @@ export default defineWorkflow("deep-research-codebase")
         task: prompt,
         concurrency: maxConcurrency,
       });
-      const historyOverview = await readArtifactText(
-        historyAnalyzerPath,
-        history.at(-1)?.text ?? "",
-      );
+      const historyOverview = await readArtifactText(historyAnalyzerPath, "");
       const specialistReportsPath = join(artifactRoot, "03-specialist-reports.md");
       const specialistReports = await specialistSummaryFromArtifacts(
         partitions,
@@ -828,7 +858,11 @@ export default defineWorkflow("deep-research-codebase")
         ...explorerModelConfig,
       });
 
-      await writeResearchDoc(finalResearchDocPath, aggregate.text);
+      const finalResearchDocPath = await writeResearchDoc(
+        finalResearchDoc.path,
+        aggregate.text,
+        { avoidOverwrite: finalResearchDoc.shouldAvoidOverwrite },
+      );
 
       const result: DeepResearchCodebaseResult = {
         findings: aggregate.text,

@@ -39,7 +39,7 @@ The user's research question/request is: **$ARGUMENTS**
     - Use the **codebase-locator** agent to find WHERE files and components live
     - Use the **codebase-analyzer** agent to understand HOW specific code works (without critiquing it)
     - Use the **codebase-pattern-finder** agent to find examples of existing patterns (without evaluating them)
-    - Output directory: `research/docs/`
+    - Output directory: `research/docs/` relative to the current working directory
     - Examples:
         - The database logic is found and can be documented in `research/docs/2024-01-10-database-implementation.md`
         - The authentication flow is found and can be documented in `research/docs/2024-01-11-authentication-flow.md`
