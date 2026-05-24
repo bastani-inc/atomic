@@ -745,6 +745,18 @@ Content`,
 			expect(runCommandSpy).toHaveBeenCalledWith("npm", ["install", "--omit=dev"], { cwd: targetDir });
 		});
 
+		it("should reject unsafe pinned git refs before invoking git", async () => {
+			const targetDir = join(agentDir, "git", "github.com", "user", "repo");
+			mkdirSync(targetDir, { recursive: true });
+			const runCommandSpy = vi.spyOn(packageManager as any, "runCommand").mockResolvedValue(undefined);
+
+			await expect(packageManager.install("git:github.com/user/repo@--upload-pack=sh")).rejects.toThrow(
+				"Invalid git ref",
+			);
+
+			expect(runCommandSpy).not.toHaveBeenCalled();
+		});
+
 		it("should reconcile an existing git checkout to a pinned ref during install", async () => {
 			const source = "git:github.com/user/repo@v2";
 			const targetDir = join(agentDir, "git", "github.com", "user", "repo");
@@ -765,7 +777,7 @@ Content`,
 
 			await packageManager.install(source);
 
-			expect(runCommandSpy).toHaveBeenCalledWith("git", ["fetch", "origin", "v2"], { cwd: targetDir });
+			expect(runCommandSpy).toHaveBeenCalledWith("git", ["fetch", "origin", "--", "v2"], { cwd: targetDir });
 			expect(runCommandSpy).toHaveBeenCalledWith("git", ["reset", "--hard", "FETCH_HEAD^{commit}"], {
 				cwd: targetDir,
 			});

@@ -370,7 +370,7 @@ describe("DefaultPackageManager git update", () => {
 
 			await packageManager.update();
 
-			expect(executedCommands).toContain("git fetch origin v1");
+			expect(executedCommands).toContain("git fetch origin -- v1");
 			expect(executedCommands.some((command) => command.startsWith("git reset --hard"))).toBe(false);
 			expect(executedCommands).not.toContain("git clean -fdx");
 			expect(getCurrentCommit(installedDir)).toBe(taggedCommit);

@@ -1816,11 +1816,34 @@ export class DefaultPackageManager implements PackageManager {
 		await this.runNpmCommand(["uninstall", source.name, "--prefix", installRoot]);
 	}
 
+	private getSafeGitRef(ref: string): string {
+		if (!this.isSafeGitRef(ref)) {
+			throw new Error(`Invalid git ref: ${JSON.stringify(ref)}`);
+		}
+		return ref;
+	}
+
+	private isSafeGitRef(ref: string): boolean {
+		if (!ref || ref === "@" || ref.startsWith("-") || ref.endsWith(".") || ref.endsWith("/")) {
+			return false;
+		}
+		if (/[\x00-\x1f\x7f\s~^:?*\[\]\\]/u.test(ref)) {
+			return false;
+		}
+		if (ref.includes("..") || ref.includes("@{") || ref.includes("//")) {
+			return false;
+		}
+		return ref
+			.split("/")
+			.every((part) => part && part !== "." && part !== ".." && !part.startsWith(".") && !part.endsWith(".lock"));
+	}
+
 	private async installGit(source: GitSource, scope: SourceScope): Promise<void> {
+		const safeRef = source.ref ? this.getSafeGitRef(source.ref) : undefined;
 		const targetDir = this.getGitInstallPath(source, scope);
 		if (existsSync(targetDir)) {
-			if (source.ref) {
-				await this.ensureGitRef(targetDir, ["fetch", "origin", source.ref], "FETCH_HEAD");
+			if (safeRef) {
+				await this.ensureGitRef(targetDir, ["fetch", "origin", "--", safeRef], "FETCH_HEAD");
 				return;
 			}
 			const target = await this.getLocalGitUpdateTarget(targetDir);
@@ -1834,8 +1857,8 @@ export class DefaultPackageManager implements PackageManager {
 		mkdirSync(dirname(targetDir), { recursive: true });
 
 		await this.runCommand("git", ["clone", "--", source.repo, targetDir]);
-		if (source.ref) {
-			await this.runCommand("git", ["checkout", source.ref], { cwd: targetDir });
+		if (safeRef) {
+			await this.runCommand("git", ["checkout", safeRef], { cwd: targetDir });
 		}
 		const packageJsonPath = join(targetDir, "package.json");
 		if (existsSync(packageJsonPath)) {
@@ -1844,14 +1867,15 @@ export class DefaultPackageManager implements PackageManager {
 	}
 
 	private async updateGit(source: GitSource, scope: SourceScope): Promise<void> {
+		const safeRef = source.ref ? this.getSafeGitRef(source.ref) : undefined;
 		const targetDir = this.getExistingGitInstallPath(source, scope) ?? this.getGitInstallPath(source, scope);
 		if (!existsSync(targetDir)) {
 			await this.installGit(source, scope);
 			return;
 		}
 
-		if (source.ref) {
-			await this.ensureGitRef(targetDir, ["fetch", "origin", source.ref], "FETCH_HEAD");
+		if (safeRef) {
+			await this.ensureGitRef(targetDir, ["fetch", "origin", "--", safeRef], "FETCH_HEAD");
 			return;
 		}
 
