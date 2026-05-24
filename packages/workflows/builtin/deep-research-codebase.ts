@@ -8,8 +8,7 @@
  * ctx.parallel(), and ctx.chain().
  */
 
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, extname, join } from "node:path";
 import { defineWorkflow } from "../src/index.js";
 import type {
@@ -21,30 +20,17 @@ import type {
 const DEFAULT_MAX_PARTITIONS = 100;
 const DEFAULT_MAX_CONCURRENCY = 4;
 const LOC_PER_PARTITION = 10_000;
-const CLEANUP_RETRY_COUNT = 3;
-const CLEANUP_RETRY_DELAY_MS = 100;
-const DEFAULT_RESEARCH_DOC_DIR = join("research", "docs");
+const DEFAULT_RESEARCH_DOC_DIR = "research";
+const DEEP_RESEARCH_RUN_DIR_PREFIX = ".deep-research-";
 const MAX_RESEARCH_DOC_SLUG_LENGTH = 80;
-
-async function cleanupArtifactRoot(artifactRoot: string): Promise<void> {
-  try {
-    await rm(artifactRoot, {
-      recursive: true,
-      force: true,
-      maxRetries: CLEANUP_RETRY_COUNT,
-      retryDelay: CLEANUP_RETRY_DELAY_MS,
-    });
-  } catch {
-    // Cleanup is best-effort: once aggregation has produced final findings,
-    // a transient filesystem cleanup failure should not discard the answer.
-  }
-}
 
 type PromptSection = readonly [tag: string, content: string];
 
 interface DeepResearchCodebaseResult extends Record<string, unknown> {
   readonly findings: string;
   readonly research_doc_path: string;
+  readonly artifact_dir: string;
+  readonly manifest_path: string;
   readonly partitions: readonly string[];
   readonly explorer_count: number;
   readonly specialist_count: number;
@@ -167,6 +153,18 @@ function defaultResearchDocPath(prompt: string, now = new Date()): string {
   return join(DEFAULT_RESEARCH_DOC_DIR, `${date}-${slugifyResearchTopic(prompt)}.md`);
 }
 
+function sanitizeRunId(value: string): string {
+  const sanitized = value
+    .trim()
+    .replace(/[^A-Za-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return sanitized.length > 0 ? sanitized : "run";
+}
+
+function timestampRunId(now: Date): string {
+  return sanitizeRunId(now.toISOString().replace(/[:.]/g, "-"));
+}
+
 interface ResearchDocPath {
   readonly path: string;
   readonly shouldAvoidOverwrite: boolean;
@@ -187,6 +185,43 @@ function suffixedPath(path: string, suffix: number): string {
 
 function isFileExistsError(error: unknown): boolean {
   return error instanceof Error && (error as { readonly code?: string }).code === "EEXIST";
+}
+
+interface DeepResearchArtifactRoot {
+  readonly runId: string;
+  readonly artifactRoot: string;
+}
+
+async function createArtifactRoot(startedAt: Date): Promise<DeepResearchArtifactRoot> {
+  await mkdir(DEFAULT_RESEARCH_DOC_DIR, { recursive: true });
+  const baseRunId = timestampRunId(startedAt);
+  for (let suffix = 0; ; suffix += 1) {
+    const runId = suffix === 0 ? baseRunId : `${baseRunId}-${suffix + 1}`;
+    const artifactRoot = join(
+      DEFAULT_RESEARCH_DOC_DIR,
+      `${DEEP_RESEARCH_RUN_DIR_PREFIX}${runId}`,
+    );
+    try {
+      await mkdir(artifactRoot, { recursive: false });
+      return { runId, artifactRoot };
+    } catch (error) {
+      if (isFileExistsError(error)) continue;
+      throw error;
+    }
+  }
+}
+
+interface DeepResearchManifest {
+  readonly runId: string;
+  readonly startedAt: string;
+  readonly completedAt?: string;
+  readonly researchQuestion: string;
+  readonly finalAsset: string;
+  readonly artifacts: Record<string, string>;
+}
+
+async function writeManifest(path: string, manifest: DeepResearchManifest): Promise<void> {
+  await writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
 }
 
 async function writeResearchDoc(
@@ -221,40 +256,49 @@ async function readArtifactText(path: string | undefined, fallback: string): Pro
   }
 }
 
-async function specialistSummaryFromArtifacts(
-  partitions: readonly string[],
+async function specialistHandoffFromArtifacts(
+  partition: string,
+  index: number,
   artifactPathsByStage: ReadonlyMap<string, string>,
 ): Promise<string> {
-  const sections = await Promise.all(
-    partitions.map(async (partition, index) => {
-      const i = index + 1;
-      const locator = await readArtifactText(
-        artifactPathsByStage.get(`locator-${i}`),
-        "(no locator output)",
-      );
-      const patterns = await readArtifactText(
-        artifactPathsByStage.get(`pattern-finder-${i}`),
-        "(no pattern output)",
-      );
-      const analyzer = await readArtifactText(
-        artifactPathsByStage.get(`analyzer-${i}`),
-        "(no analyzer output)",
-      );
-      const online = await readArtifactText(
-        artifactPathsByStage.get(`online-researcher-${i}`),
-        "(no online research output)",
-      );
-      return [
-        `## Partition ${i}: ${partition}`,
-        `### Locator\n${locator}`,
-        `### Pattern Finder\n${patterns}`,
-        `### Analyzer\n${analyzer}`,
-        `### Online Researcher\n${online}`,
-      ].join("\n\n");
-    }),
+  const i = index + 1;
+  const locator = await readArtifactText(
+    artifactPathsByStage.get(`locator-${i}`),
+    "(no locator output)",
   );
+  const patterns = await readArtifactText(
+    artifactPathsByStage.get(`pattern-finder-${i}`),
+    "(no pattern output)",
+  );
+  const analyzer = await readArtifactText(
+    artifactPathsByStage.get(`analyzer-${i}`),
+    "(no analyzer output)",
+  );
+  const online = await readArtifactText(
+    artifactPathsByStage.get(`online-${i}`),
+    "(no online research output)",
+  );
+  return [
+    `## Partition ${i}: ${partition}`,
+    `### Locator\n${locator}`,
+    `### Pattern Finder\n${patterns}`,
+    `### Analyzer\n${analyzer}`,
+    `### Online Researcher\n${online}`,
+  ].join("\n\n");
+}
 
-  return sections.join("\n\n---\n\n");
+function manifestArtifactPaths(
+  artifactPathsByStage: ReadonlyMap<string, string>,
+  manifestPath: string,
+): Record<string, string> {
+  const artifacts: Record<string, string> = {};
+  for (const [stage, path] of artifactPathsByStage) {
+    if (/^(?:locator|pattern-finder|analyzer|online|explorer)-\d+$/.test(stage)) {
+      artifacts[stage] = displayPath(path);
+    }
+  }
+  artifacts.manifest = displayPath(manifestPath);
+  return artifacts;
 }
 
 function findResult(
@@ -298,7 +342,7 @@ export default defineWorkflow("deep-research-codebase")
   .input("output_path", {
     type: "text",
     description:
-      "Optional path for the final Markdown research document. Defaults to a current-working-directory-relative research/docs/YYYY-MM-DD-<topic>.md path, with a numeric suffix added if needed to avoid overwriting an existing default document.",
+      "Optional path for the final Markdown research document. Defaults to a current-working-directory-relative research/YYYY-MM-DD-<topic>.md path, with a numeric suffix added if needed to avoid overwriting an existing default document.",
   })
   .run(async (ctx) => {
     const inputs = ctx.inputs as {
@@ -316,22 +360,17 @@ export default defineWorkflow("deep-research-codebase")
       inputs.max_concurrency,
       DEFAULT_MAX_CONCURRENCY,
     );
+    const startedAt = new Date();
     const finalResearchDoc = researchDocPath(prompt, inputs.output_path);
     const codebaseLines = countCodebaseLines();
     const partitionCap = calculatePartitionCap(
       requestedMaxPartitions,
       codebaseLines,
     );
-    const artifactRoot = await mkdtemp(
-      join(tmpdir(), "atomic-deep-research-codebase-"),
-    );
-    try {
-      const wave1ArtifactRoot = join(artifactRoot, "wave1");
-      const wave2ArtifactRoot = join(artifactRoot, "wave2");
-      await Promise.all([
-        mkdir(wave1ArtifactRoot, { recursive: true }),
-        mkdir(wave2ArtifactRoot, { recursive: true }),
-      ]);
+    const { runId, artifactRoot } = await createArtifactRoot(startedAt);
+    {
+      const wave1ArtifactRoot = artifactRoot;
+      const wave2ArtifactRoot = artifactRoot;
 
       const artifactPathsByStage = new Map<string, string>();
       const addArtifact = (stage: string, path: string) => {
@@ -667,8 +706,8 @@ export default defineWorkflow("deep-research-codebase")
             join(wave2ArtifactRoot, `analyzer-${i}.md`),
           );
           const onlineResearcherPath = addArtifact(
-            `online-researcher-${i}`,
-            join(wave2ArtifactRoot, `online-researcher-${i}.md`),
+            `online-${i}`,
+            join(wave2ArtifactRoot, `online-${i}.md`),
           );
           return [
             {
@@ -764,17 +803,27 @@ export default defineWorkflow("deep-research-codebase")
         concurrency: maxConcurrency,
       });
       const historyOverview = await readArtifactText(historyAnalyzerPath, "");
-      const specialistReportsPath = join(artifactRoot, "03-specialist-reports.md");
-      const specialistReports = await specialistSummaryFromArtifacts(
-        partitions,
-        artifactPathsByStage,
+      const explorerPaths = await Promise.all(
+        partitions.map(async (partition, index) => {
+          const i = index + 1;
+          const explorerPath = addArtifact(
+            `explorer-${i}`,
+            join(artifactRoot, `explorer-${i}.md`),
+          );
+          const explorer = await specialistHandoffFromArtifacts(
+            partition,
+            index,
+            artifactPathsByStage,
+          );
+          await writeFile(explorerPath, explorer, "utf8");
+          return explorerPath;
+        }),
       );
-      await writeFile(specialistReportsPath, specialistReports, "utf8");
       const aggregatorReadPaths = [
         scoutPath,
         partitionPlanPath,
         ...(historyOverview === "" ? [] : [historyAnalyzerPath]),
-        specialistReportsPath,
+        ...explorerPaths,
       ];
 
       const aggregate = await ctx.task("aggregator", {
@@ -802,7 +851,7 @@ export default defineWorkflow("deep-research-codebase")
           ],
           [
             "specialist_reports",
-            `Read the complete specialist report artifact at ${displayPath(specialistReportsPath)}. It preserves every partition's Locator, Pattern Finder, Analyzer, and Online Researcher output from the original inline specialist handoff while keeping this prompt bounded.`,
+            `Read the complete explorer handoff artifact(s) at ${displayPaths(explorerPaths)}. They preserve every partition's Locator, Pattern Finder, Analyzer, and Online Researcher output from the original inline specialist handoff while keeping this prompt bounded.`,
           ],
           [
             "codebase_skills",
@@ -844,10 +893,22 @@ export default defineWorkflow("deep-research-codebase")
         aggregate.text,
         { avoidOverwrite: finalResearchDoc.shouldAvoidOverwrite },
       );
+      const manifestPath = join(artifactRoot, "manifest.json");
+      const completedAt = new Date();
+      await writeManifest(manifestPath, {
+        runId,
+        startedAt: startedAt.toISOString(),
+        completedAt: completedAt.toISOString(),
+        researchQuestion: prompt,
+        finalAsset: displayPath(finalResearchDocPath),
+        artifacts: manifestArtifactPaths(artifactPathsByStage, manifestPath),
+      });
 
       const result: DeepResearchCodebaseResult = {
         findings: aggregate.text,
         research_doc_path: displayPath(finalResearchDocPath),
+        artifact_dir: displayPath(artifactRoot),
+        manifest_path: displayPath(manifestPath),
         partitions,
         explorer_count: partitions.length,
         specialist_count: wave1.length + wave2.length,
@@ -855,8 +916,6 @@ export default defineWorkflow("deep-research-codebase")
         history: historyOverview,
       };
       return result;
-    } finally {
-      await cleanupArtifactRoot(artifactRoot);
     }
   })
   .compile();

@@ -6,10 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Updated `deep-research-codebase` output layout to write public reports under `research/` and hidden per-run handoff artifacts under `research/.deep-research-<run-id>/`.
+
 ### Fixed
 
-- Persisted `deep-research-codebase` final reports as dated Markdown research docs while retaining temporary file-only handoffs for bounded aggregation.
-- Prevented `deep-research-codebase` aggregation from inlining large specialist transcripts by using temporary file-only handoff artifacts that are removed after aggregation ([#1016](https://github.com/flora131/atomic/issues/1016)).
+- Persisted `deep-research-codebase` final reports as dated Markdown research docs while retaining file-only handoffs for bounded aggregation.
+- Prevented `deep-research-codebase` aggregation from inlining large specialist transcripts by using file-only handoff artifacts ([#1016](https://github.com/flora131/atomic/issues/1016)).
 - Removed model metadata from workflow node cards while retaining fallback dependency metadata ([#1011](https://github.com/flora131/atomic/issues/1011)).
 - Preserve the selected workflow switcher row highlight through truncation ellipses on long stage names.
 

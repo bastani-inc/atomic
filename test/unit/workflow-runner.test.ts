@@ -177,18 +177,25 @@ describe("programmatic workflow runner", () => {
   test("runs a named workflow from an explicit definition object", async () => {
     const prompts: string[] = [];
     const dir = mkdtempSync(join(tmpdir(), "workflow-runner-deep-research-"));
-    const result = await runWorkflow(
-      {
-        mode: "workflow",
-        workflow: "deep-research-codebase",
-        inputs: {
-          prompt: "map workflow sdk",
-          max_partitions: 1,
-          output_path: join(dir, "research.md"),
+    const previousCwd = process.cwd();
+    let result: Awaited<ReturnType<typeof runWorkflow>>;
+    try {
+      process.chdir(dir);
+      result = await runWorkflow(
+        {
+          mode: "workflow",
+          workflow: "deep-research-codebase",
+          inputs: {
+            prompt: "map workflow sdk",
+            max_partitions: 1,
+            output_path: join(dir, "research.md"),
+          },
         },
-      },
-      { adapterOptions: { createAgentSession: makeSessionFactory(prompts) } },
-    );
+        { adapterOptions: { createAgentSession: makeSessionFactory(prompts) } },
+      );
+    } finally {
+      process.chdir(previousCwd);
+    }
 
     assert.equal(result.mode, "named");
     assert.equal(result.status, "completed");
