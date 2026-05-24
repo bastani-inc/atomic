@@ -200,7 +200,11 @@ describe("deep-research-codebase", () => {
     assert.equal((d.inputs["max_partitions"] as { default?: number }).default, 100);
     assert.equal(d.inputs["max_concurrency"]?.type, "number");
     assert.equal((d.inputs["max_concurrency"] as { default?: number }).default, 4);
-    assert.match(d.inputs["output_path"]?.type ?? "", /^(text|string)$/);
+    assert.deepEqual(Object.keys(d.inputs).sort(), [
+      "max_concurrency",
+      "max_partitions",
+      "prompt",
+    ]);
   });
 
   test("runs scout/history, specialist waves, and aggregator via task primitives", async () => {
@@ -390,7 +394,18 @@ describe("deep-research-codebase", () => {
     assert.match(normalizePathSeparators(artifactDir), /^research\/\.deep-research-/);
     assert.equal(existsSync(artifactDir), true);
 
-    for (const filename of ["locator-1.md", "pattern-finder-1.md", "analyzer-1.md", "online-1.md", "explorer-1.md", "manifest.json"]) {
+    for (const filename of [
+      "00-codebase-scout.md",
+      "01-partition-plan.md",
+      "01-history-locator.md",
+      "02-history-analyzer.md",
+      "locator-1.md",
+      "pattern-finder-1.md",
+      "analyzer-1.md",
+      "online-1.md",
+      "explorer-1.md",
+      "manifest.json",
+    ]) {
       assert.equal(existsSync(join(artifactDir, filename)), true, `expected ${filename}`);
     }
     for (const path of aggregatorReadPaths) {
@@ -412,6 +427,10 @@ describe("deep-research-codebase", () => {
     assert.equal(manifest.researchQuestion, "Trace auth behavior");
     assert.equal(manifest.finalAsset, normalizePathSeparators(join("research", `${new Date().toISOString().slice(0, 10)}-trace-auth-behavior.md`)));
     assert.deepEqual(manifest.artifacts, {
+      "codebase-scout": normalizePathSeparators(join(artifactDir, "00-codebase-scout.md")),
+      partition: normalizePathSeparators(join(artifactDir, "01-partition-plan.md")),
+      "history-locator": normalizePathSeparators(join(artifactDir, "01-history-locator.md")),
+      "history-analyzer": normalizePathSeparators(join(artifactDir, "02-history-analyzer.md")),
       "locator-1": normalizePathSeparators(join(artifactDir, "locator-1.md")),
       "pattern-finder-1": normalizePathSeparators(join(artifactDir, "pattern-finder-1.md")),
       "analyzer-1": normalizePathSeparators(join(artifactDir, "analyzer-1.md")),

@@ -188,7 +188,6 @@ describe("programmatic workflow runner", () => {
           inputs: {
             prompt: "map workflow sdk",
             max_partitions: 1,
-            output_path: join(dir, "research.md"),
           },
         },
         { adapterOptions: { createAgentSession: makeSessionFactory(prompts) } },

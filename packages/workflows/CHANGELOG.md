@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Included `deep-research-codebase` discovery-stage handoff files in the persisted run manifest.
 - Persisted `deep-research-codebase` final reports as dated Markdown research docs while retaining file-only handoffs for bounded aggregation.
 - Prevented `deep-research-codebase` aggregation from inlining large specialist transcripts by using file-only handoff artifacts ([#1016](https://github.com/flora131/atomic/issues/1016)).
 - Removed model metadata from workflow node cards while retaining fallback dependency metadata ([#1011](https://github.com/flora131/atomic/issues/1011)).
