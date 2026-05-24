@@ -287,6 +287,7 @@ Scout + research-history chain → two parallel specialist waves → aggregator.
 | `prompt`          | `text`   | ✓        | —       | Research question or topic to investigate.                |
 | `max_partitions`  | `number` | —        | `100`   | Maximum number of codebase partitions to explore.         |
 | `max_concurrency` | `number` | —        | `4`     | Maximum number of workflow stages to run concurrently.    |
+| `output_path`     | `text`   | —        | dated `research/docs/` path | Optional final Markdown research document path. |
 
 ### `ralph`
 

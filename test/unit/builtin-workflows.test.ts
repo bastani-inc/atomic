@@ -4,10 +4,11 @@
  * the high-level ctx.task / ctx.parallel / ctx.chain primitives.
  */
 
-import { describe, test } from "bun:test";
+import { afterEach, beforeEach, describe, test } from "bun:test";
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
-import { dirname } from "node:path";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import type {
   WorkflowChainOptions,
   WorkflowDefinition,
@@ -31,6 +32,7 @@ interface MockCalls {
 
 interface MockResponders {
   task?: (name: string, options: WorkflowTaskOptions, calls: MockCalls) => string | undefined;
+  omitParallelResults?: readonly string[];
 }
 
 function promptText(options: WorkflowTaskOptions): string {
@@ -62,7 +64,8 @@ function readPathEndsWith(
 function expectedDeepResearchArtifactCount(partitions: readonly unknown[]): number {
   const fixedArtifacts = 3;
   const artifactsPerPartition = 4;
-  return fixedArtifacts + partitions.length * artifactsPerPartition;
+  const aggregateHandoffArtifacts = 1;
+  return fixedArtifacts + partitions.length * artifactsPerPartition + aggregateHandoffArtifacts;
 }
 
 function assertStringOutput(
@@ -99,7 +102,12 @@ function makeMockCtx<TInputs extends Record<string, unknown>>(
     calls.prompts[name] = [...(calls.prompts[name] ?? []), text];
     calls.taskOptions[name] = [...(calls.taskOptions[name] ?? []), options];
     const override = responders.task?.(name, options, calls);
-    return makeTaskResult(name, override ?? `[mock-task:${name}] ${text.slice(0, 80)}`);
+    const resultText = override ?? `[mock-task:${name}] ${text.slice(0, 80)}`;
+    if (typeof options.output === "string") {
+      mkdirSync(dirname(options.output), { recursive: true });
+      writeFileSync(options.output, resultText);
+    }
+    return makeTaskResult(name, resultText);
   };
 
   const ctx: WorkflowRunContext<TInputs> & { calls: MockCalls } = {
@@ -127,7 +135,11 @@ function makeMockCtx<TInputs extends Record<string, unknown>>(
     ): Promise<WorkflowTaskResult[]> => {
       calls.parallel.push(steps.map((step) => step.name));
       calls.parallelOptions.push(options);
-      return Promise.all(steps.map((step) => runTask(step.name, step)));
+      const results = await Promise.all(steps.map((step) => runTask(step.name, step)));
+      const omitted = new Set(responders.omitParallelResults ?? []);
+      return omitted.size === 0
+        ? results
+        : results.filter((result) => result.name === undefined || !omitted.has(result.name));
     },
     ui,
   };
@@ -154,6 +166,22 @@ function assertWorkflowDefinition(def: unknown): asserts def is WorkflowDefiniti
 // ---------------------------------------------------------------------------
 
 describe("deep-research-codebase", () => {
+  let previousCwd = process.cwd();
+  let tempCwd: string | undefined;
+
+  beforeEach(() => {
+    previousCwd = process.cwd();
+    tempCwd = mkdtempSync(join(tmpdir(), "atomic-deep-research-test-"));
+    process.chdir(tempCwd);
+  });
+
+  afterEach(() => {
+    process.chdir(previousCwd);
+    if (tempCwd !== undefined) {
+      rmSync(tempCwd, { recursive: true, force: true });
+      tempCwd = undefined;
+    }
+  });
   test("loads and has correct shape", async () => {
     const mod = await import("../../packages/workflows/builtin/deep-research-codebase.js");
     const def = mod.default as unknown as WorkflowDefinition;
@@ -171,6 +199,7 @@ describe("deep-research-codebase", () => {
     assert.equal((d.inputs["max_partitions"] as { default?: number }).default, 100);
     assert.equal(d.inputs["max_concurrency"]?.type, "number");
     assert.equal((d.inputs["max_concurrency"] as { default?: number }).default, 4);
+    assert.match(d.inputs["output_path"]?.type ?? "", /^(text|string)$/);
   });
 
   test("runs scout/history, specialist waves, and aggregator via task primitives", async () => {
@@ -201,6 +230,7 @@ describe("deep-research-codebase", () => {
     assert.equal(result["max_concurrency"], 2);
     assert.equal("artifact_root" in result, false);
     assert.equal("artifact_count" in result, false);
+    assert.equal(typeof result["research_doc_path"], "string");
   });
 
   test("uses artifact handoffs so aggregation stays bounded", async () => {
@@ -233,13 +263,13 @@ describe("deep-research-codebase", () => {
       aggregatorReads.length,
       expectedDeepResearchArtifactCount(result["partitions"] as readonly unknown[]),
     );
-    assert.match(normalizedAggregatorPrompt, /artifact_index/);
-    assert.match(normalizedAggregatorPrompt, /Read the artifacts listed below selectively/);
-    assert.match(normalizedAggregatorPrompt, /00-codebase-scout\.md/);
-    assert.match(normalizedAggregatorPrompt, /wave1\/locator-1\.md/);
-    assert.match(normalizedAggregatorPrompt, /wave2\/analyzer-2\.md/);
+    assert.match(normalizedAggregatorPrompt, /specialist_reports/);
+    assert.match(normalizedAggregatorPrompt, /03-specialist-reports\.md/);
+    assert.match(normalizedAggregatorPrompt, /Read the complete specialist report artifact/);
+    assert.doesNotMatch(normalizedAggregatorPrompt, /artifact_index/);
     assert.doesNotMatch(normalizedAggregatorPrompt, /SPECIALIST_INLINE_SENTINEL/);
     assert.doesNotMatch(normalizedAggregatorPrompt, /Context:/);
+    assert.ok(aggregatorReads.some((path) => normalizePathSeparators(path).endsWith("03-specialist-reports.md")));
 
     const scoutOutput = ctx.calls.taskOptions["codebase-scout"]?.[0];
     const historyLocatorOutput = ctx.calls.taskOptions["history-locator"]?.[0];
@@ -259,12 +289,13 @@ describe("deep-research-codebase", () => {
     assert.equal(ctx.calls.taskOptions["analyzer-1"]?.[0]?.outputMode, "file-only");
   });
 
-  test("removes temporary artifact handoff directory after aggregation", async () => {
+  test("falls back to scout context when a wave1 locator result is missing", async () => {
     const mod = await import("../../packages/workflows/builtin/deep-research-codebase.js");
     const d = mod.default as unknown as WorkflowDefinition;
     const ctx = makeMockCtx(
       { prompt: "Trace auth behavior", max_partitions: 1, max_concurrency: 1 },
       {
+        omitParallelResults: ["locator-1"],
         task: (name) => {
           if (name === "partition") return "auth logic";
           return undefined;
@@ -273,6 +304,55 @@ describe("deep-research-codebase", () => {
     );
 
     await d.run(ctx);
+
+    const analyzerOptions = ctx.calls.taskOptions["analyzer-1"]?.[0];
+    const onlineOptions = ctx.calls.taskOptions["online-researcher-1"]?.[0];
+    const normalizedAnalyzerPrompt = normalizePathSeparators(ctx.calls.prompts["analyzer-1"]?.[0] ?? "");
+    const normalizedOnlinePrompt = normalizePathSeparators(ctx.calls.prompts["online-researcher-1"]?.[0] ?? "");
+
+    assert.equal(readPaths(analyzerOptions).length, 1);
+    assert.ok(readPathEndsWith(analyzerOptions, "00-codebase-scout.md"));
+    assert.equal(readPathEndsWith(analyzerOptions, "wave1/locator-1.md"), false);
+    assert.doesNotMatch(normalizedAnalyzerPrompt, /wave1\/locator-1\.md/);
+
+    assert.equal(readPaths(onlineOptions).length, 1);
+    assert.ok(readPathEndsWith(onlineOptions, "00-codebase-scout.md"));
+    assert.equal(readPathEndsWith(onlineOptions, "wave1/locator-1.md"), false);
+    assert.match(normalizedOnlinePrompt, /Read scout context before researching/);
+    assert.doesNotMatch(normalizedOnlinePrompt, /wave1\/locator-1\.md/);
+  });
+
+  test("keeps artifact handoffs available to the aggregator, then removes them", async () => {
+    const mod = await import("../../packages/workflows/builtin/deep-research-codebase.js");
+    const d = mod.default as unknown as WorkflowDefinition;
+    let aggregatorReadPaths: readonly string[] = [];
+    const ctx = makeMockCtx(
+      { prompt: "Trace auth behavior", max_partitions: 1, max_concurrency: 1 },
+      {
+        task: (name, options) => {
+          if (name === "partition") return "auth logic";
+          if (name === "aggregator") {
+            aggregatorReadPaths = readPaths(options);
+            assert.ok(aggregatorReadPaths.length > 0);
+            for (const path of aggregatorReadPaths) {
+              assert.equal(existsSync(path), true, `expected aggregator read path to exist: ${path}`);
+            }
+            return "final synthesized findings";
+          }
+          return undefined;
+        },
+      },
+    );
+
+    const result = await d.run(ctx);
+
+    assert.equal(result["findings"], "final synthesized findings");
+    assert.equal(typeof result["research_doc_path"], "string");
+    assert.equal(readFileSync(result["research_doc_path"] as string, "utf8"), "final synthesized findings");
+    assert.ok(aggregatorReadPaths.length > 0);
+    for (const path of aggregatorReadPaths) {
+      assert.equal(existsSync(path), false, `expected handoff artifact to be cleaned up: ${path}`);
+    }
 
     const scoutOutput = ctx.calls.taskOptions["codebase-scout"]?.[0]?.output;
     assertStringOutput(scoutOutput);
