@@ -266,6 +266,48 @@ describe("StageChatView", () => {
     await assert.rejects(pending, /stage chat view disposed/);
   });
 
+  test("unmounts stage custom UI when its request is rejected externally", async () => {
+    const store = createStore();
+    setupRun(store, "run-1", "stage-a");
+    const broker = new StageUiBroker(store);
+    const { handle } = makeHandle();
+    const controller = new AbortController();
+    let renderRequests = 0;
+    let disposed = false;
+    const view = new StageChatView({
+      store,
+      graphTheme: deriveGraphTheme({}),
+      runId: "run-1",
+      stageId: "stage-a",
+      workflowName: "test-wf",
+      handle,
+      onDetach: () => {},
+      onClose: () => {},
+      requestRender: () => { renderRequests += 1; },
+      piTui: { requestRender: () => {}, terminal: { rows: 32, columns: 80 } } as unknown as TUI,
+      piTheme: {},
+      piKeybindings: makeFakeKeybindings(),
+      stageUiBroker: broker,
+    });
+
+    const pending = broker.requestCustomUi("run-1", "stage-a", () => ({
+      render: () => ["pending question"],
+      invalidate: () => {},
+      dispose: () => { disposed = true; },
+    }), undefined, controller.signal);
+    await flush();
+    assert.match(stripAnsi(view.render(80).join("\n")), /pending question/);
+
+    controller.abort(new Error("cancelled by test"));
+    await assert.rejects(pending, /cancelled by test/);
+    await flush();
+
+    assert.equal(disposed, true);
+    assert.doesNotMatch(stripAnsi(view.render(80).join("\n")), /pending question/);
+    assert.ok(renderRequests > 0);
+    view.dispose();
+  });
+
   test("propagates focus to mounted stage custom UI", async () => {
     const store = createStore();
     setupRun(store, "run-1", "stage-a");
@@ -776,6 +818,35 @@ describe("StageChatView", () => {
     view.dispose();
   });
 
+  test("failed resume keeps the local paused state", async () => {
+    const store = createStore();
+    setupRun(store, "run-1", "stage-a", "paused");
+    const { handle } = makeHandle(undefined, [], "paused");
+    Object.assign(handle, {
+      async resume() {
+        throw new Error("resume failed");
+      },
+    });
+    const view = new StageChatView({
+      store,
+      graphTheme: deriveGraphTheme({}),
+      runId: "run-1",
+      stageId: "stage-a",
+      workflowName: "test-wf",
+      handle,
+      onDetach: () => {},
+      onClose: () => {},
+    });
+
+    for (const ch of "go on") view.handleInput(ch);
+    view.handleInput("\r");
+    await flush();
+    await flush();
+
+    assert.equal(view._isLocalPaused, true);
+    view.dispose();
+  });
+
   test("idle attached stage renders no welcome panel and keeps a cursor in the editor", () => {
     const store = createStore();
     setupRun(store, "run-1", "stage-a", "pending");
@@ -1175,6 +1246,12 @@ describe("StageChatView", () => {
     setupRun(store, "run-1", "stage-a", "completed");
     const { handle, state } = makeHandle(undefined, [], "completed");
     Object.defineProperty(handle, "isDisposed", { value: true });
+    Object.defineProperty(handle, "messages", {
+      get: () => { throw new Error("disposed handle messages should not be read"); },
+    });
+    Object.defineProperty(handle, "sessionFile", {
+      get: () => { throw new Error("disposed handle session file should not be read"); },
+    });
     const view = new StageChatView({
       store,
       graphTheme: deriveGraphTheme({}),

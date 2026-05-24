@@ -112,6 +112,33 @@ describe("store.recordPendingPrompt", () => {
 });
 
 describe("store.recordStagePendingPrompt", () => {
+  test("rejects a stage prompt waiter when that stage ends", async () => {
+    const s = createStore();
+    s.recordRunStart(makeRun("r1"));
+    const stage = makeStage("s1");
+    s.recordStageStart("r1", stage);
+    assert.equal(s.recordStagePendingPrompt("r1", "s1", makePrompt("p1")), true);
+    const pending = s.awaitStagePendingPrompt("r1", "s1", "p1");
+
+    s.recordStageEnd("r1", { ...stage, status: "failed", endedAt: Date.now(), error: "boom" });
+
+    await assert.rejects(pending, /stage s1 ended before prompt resolved/);
+    assert.equal(getRun(s, "r1").stages[0]?.pendingPrompt, undefined);
+  });
+
+  test("rejects a stage prompt waiter when the run ends", async () => {
+    const s = createStore();
+    s.recordRunStart(makeRun("r1"));
+    s.recordStageStart("r1", makeStage("s1"));
+    assert.equal(s.recordStagePendingPrompt("r1", "s1", makePrompt("p1")), true);
+    const pending = s.awaitStagePendingPrompt("r1", "s1", "p1");
+
+    s.recordRunEnd("r1", "killed", undefined, "user abort");
+
+    await assert.rejects(pending, /run r1 ended before prompt resolved/);
+    assert.equal(getRun(s, "r1").stages[0]?.pendingPrompt, undefined);
+  });
+
   test("records independent prompts on multiple stages in the same run", async () => {
     const s = createStore();
     s.recordRunStart(makeRun("r1"));

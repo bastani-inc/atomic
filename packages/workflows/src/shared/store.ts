@@ -204,12 +204,16 @@ export function createStore(): Store {
     entry.reject(new Error(reason));
   }
 
+  function rejectStagePrompt(stage: StageSnapshot, reason: string): void {
+    const prompt = stage.pendingPrompt;
+    if (!prompt) return;
+    stage.pendingPrompt = undefined;
+    rejectPrompt(prompt.id, reason);
+  }
+
   function rejectAllStagePrompts(run: RunSnapshot, reason: string): void {
     for (const stage of run.stages) {
-      const prompt = stage.pendingPrompt;
-      if (!prompt) continue;
-      stage.pendingPrompt = undefined;
-      rejectPrompt(prompt.id, reason);
+      rejectStagePrompt(stage, reason);
     }
   }
 
@@ -302,6 +306,7 @@ export function createStore(): Store {
       existing.result = stage.result;
       existing.error = stage.error;
       delete existing.awaitingInputSince;
+      rejectStagePrompt(existing, `pi-workflows: stage ${stage.id} ended before prompt resolved`);
       _version++;
       notify();
     },

@@ -15,7 +15,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { getAgentConfigPaths, getEnvValue } from "@bastani/atomic";
+import { APP_NAME, getAgentConfigPaths, getEnvValue } from "@bastani/atomic";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import {
   type ExtensionAPI,
@@ -104,7 +104,7 @@ function getSubagentSessionRoot(parentSessionFile: string | null): string {
     const sessionsDir = path.dirname(parentSessionFile);
     return path.join(sessionsDir, baseName);
   }
-  return fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-session-"));
+  return fs.mkdtempSync(path.join(os.tmpdir(), `${APP_NAME}-subagent-session-`));
 }
 
 function loadConfig(): ExtensionConfig {
@@ -526,7 +526,7 @@ EXECUTION (use exactly ONE mode):
 CHAIN TEMPLATE VARIABLES (use in task strings):
 • {task} - The original task/request from the user
 • {previous} - Text response from the previous step (empty for first step)
-• {chain_dir} - Shared directory for chain files (e.g., <tmpdir>/pi-subagents-<scope>/chain-runs/abc123/)
+• {chain_dir} - Shared directory for chain files (e.g., <tmpdir>/${APP_NAME}-subagents-<scope>/chain-runs/abc123/)
 
 Example: { chain: [{agent:"agent-a", task:"Analyze {task}"}, {agent:"agent-b", task:"Plan based on {previous}"}] }
 

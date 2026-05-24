@@ -249,11 +249,8 @@ export class StageChatView implements Component, Focusable {
           const handle = this._liveHandle();
           if (!handle) throw new Error("no live handle on this stage");
           this.localPaused = true;
-          try {
-            await handle.resume(message);
-          } finally {
-            this.localPaused = false;
-          }
+          await handle.resume(message);
+          this.localPaused = false;
         },
         runBash: async (request) => {
           const handle = this._liveHandle();
@@ -290,6 +287,9 @@ export class StageChatView implements Component, Focusable {
     this._unregisterStageUiHost = this.stageUiBroker.registerHost(this.runId, this.stageId, {
       showCustomUi: (request) => {
         void this._showCustomUi(request);
+      },
+      hideCustomUi: (request) => {
+        this._hideMountedCustomUi(request);
       },
     });
 
@@ -378,14 +378,15 @@ export class StageChatView implements Component, Focusable {
   // -------------------------------------------------------------------------
 
   private _snapshotMessagesFromHandle(): void {
-    if (!this.handle) return;
-    this.chatHost.appendMessages(this.handle.messages);
+    const handle = this._liveHandle();
+    if (!handle) return;
+    this.chatHost.appendMessages(handle.messages);
   }
 
   private _snapshotMessagesFromSessionFile(
     stage: StageSnapshot | undefined,
   ): void {
-    this.chatHost.loadSessionFile(this.handle?.sessionFile ?? stage?.sessionFile);
+    this.chatHost.loadSessionFile(this._liveHandle()?.sessionFile ?? stage?.sessionFile);
   }
 
   private _absorbStageNotices(stage: StageSnapshot | undefined): boolean {
@@ -844,10 +845,20 @@ export class StageChatView implements Component, Focusable {
     this._unsubscribeStore = null;
     this._unsubscribeHandle?.();
     this._unsubscribeHandle = null;
+    this._rejectMountedCustomUi("stage chat view disposed");
     this._unregisterStageUiHost?.();
     this._unregisterStageUiHost = null;
-    this._rejectMountedCustomUi("stage chat view disposed");
     this.chatHost.dispose();
+  }
+
+  private _hideMountedCustomUi(request: StageCustomUiRequest): void {
+    const mounted = this.mountedCustomUi;
+    if (!mounted || mounted.request.id !== request.id) return;
+    this.mountedCustomUi = null;
+    mounted.component.dispose?.();
+    this.chatHost.focused = this.focused;
+    this.chatHost.scrollToBottom();
+    this.requestRender?.();
   }
 
   private _rejectMountedCustomUi(message: string): void {

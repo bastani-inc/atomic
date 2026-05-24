@@ -328,6 +328,7 @@ export {
 	BashExecutionComponent,
 	BorderedLoader,
 	chatEntriesFromAgentMessages,
+	// Internal host seam for bundled workflow stage chat; not yet a stable extension API.
 	ChatSessionHost,
 	type ChatSessionHostBashRequest,
 	type ChatSessionHostCommands,

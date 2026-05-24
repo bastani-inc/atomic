@@ -1357,13 +1357,37 @@ export async function run<TInputs extends Record<string, unknown>>(
           await releaseLiveHandle();
           return;
         }
+
+        // The queued-work branch installs asynchronous cleanup and returns once
+        // the release watcher is armed. Inner-context events normally trigger
+        // the subscription when streaming/pending-message counters change, but
+        // SDK prompt/tool cleanup can also drain after the stage has stopped
+        // emitting workflow-visible events. The unref'd 250 ms interval is a
+        // fallback for that silent drain path and is cleared as soon as the
+        // handle becomes idle.
         let unsubscribe = (): void => {};
-        const releaseIfIdle = (): void => {
-          if (hasQueuedLiveWork()) return;
+        let pollTimer: ReturnType<typeof setInterval> | undefined;
+        const cleanupWatcher = (): void => {
           unsubscribe();
-          void releaseLiveHandle().catch(() => {});
+          if (pollTimer !== undefined) {
+            clearInterval(pollTimer);
+            pollTimer = undefined;
+          }
+        };
+        const releaseIfIdle = (): void => {
+          if (liveHandleReleased) {
+            cleanupWatcher();
+            return;
+          }
+          if (hasQueuedLiveWork()) return;
+          cleanupWatcher();
+          void releaseLiveHandle().catch((error: unknown) => {
+            console.debug("pi-workflows: failed to release idle stage handle", error);
+          });
         };
         unsubscribe = innerCtx.subscribe(() => queueMicrotask(releaseIfIdle));
+        pollTimer = setInterval(releaseIfIdle, 250);
+        pollTimer.unref?.();
         releaseIfIdle();
       };
 

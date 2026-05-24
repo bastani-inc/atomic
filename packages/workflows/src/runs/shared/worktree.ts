@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { APP_NAME } from "@bastani/atomic";
 
 export interface WorktreeSetup {
 	cwd: string;
@@ -149,11 +150,11 @@ function safePatchAgentName(agent: string): string {
 }
 
 function buildWorktreeBranch(runId: string, index: number): string {
-	return `pi-parallel-${runId}-${index}`;
+	return `${APP_NAME}-parallel-${runId}-${index}`;
 }
 
 function buildWorktreePath(runId: string, index: number): string {
-	return path.join(os.tmpdir(), `pi-worktree-${runId}-${index}`);
+	return path.join(os.tmpdir(), `${APP_NAME}-worktree-${runId}-${index}`);
 }
 
 function resolveRepoCwdRelative(cwd: string): string {

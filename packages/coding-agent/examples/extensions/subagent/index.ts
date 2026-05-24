@@ -20,6 +20,7 @@ import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { Message } from "@earendil-works/pi-ai";
 import { StringEnum } from "@earendil-works/pi-ai";
 import {
+  APP_NAME,
   type ExtensionAPI,
   getMarkdownTheme,
   withFileMutationQueue,
@@ -235,7 +236,7 @@ async function writePromptToTempFile(
   prompt: string,
 ): Promise<{ dir: string; filePath: string }> {
   const tmpDir = await fs.promises.mkdtemp(
-    path.join(os.tmpdir(), "pi-subagent-"),
+    path.join(os.tmpdir(), `${APP_NAME}-subagent-`),
   );
   const safeName = agentName.replace(/[^\w.-]+/g, "_");
   const filePath = path.join(tmpDir, `prompt-${safeName}.md`);

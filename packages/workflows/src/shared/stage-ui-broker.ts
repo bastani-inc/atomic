@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { Component, Focusable, TUI } from "@earendil-works/pi-tui";
 import type { Store } from "./store.js";
 import { store as defaultStore } from "./store.js";
@@ -16,6 +17,7 @@ export interface StageCustomUiRequest<T = unknown> {
 
 export interface StageCustomUiHost {
   showCustomUi(request: StageCustomUiRequest): void;
+  hideCustomUi?(request: StageCustomUiRequest, reason: unknown): void;
 }
 
 function key(runId: string, stageId: string): string {
@@ -23,7 +25,7 @@ function key(runId: string, stageId: string): string {
 }
 
 function nextRequestId(): string {
-  return `stage-ui-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  return `stage-ui-${randomUUID()}`;
 }
 
 export class StageUiBroker {
@@ -35,13 +37,46 @@ export class StageUiBroker {
     this.store = store;
   }
 
+  private hideHost(host: StageCustomUiHost | undefined, request: StageCustomUiRequest, reason: unknown): void {
+    try {
+      host?.hideCustomUi?.(request, reason);
+    } catch {
+      // Host teardown is best-effort; request settlement must still continue.
+    }
+  }
+
+  private showHostOrReject(host: StageCustomUiHost, request: StageCustomUiRequest): void {
+    try {
+      host.showCustomUi(request);
+    } catch (error) {
+      this.reject(request, error);
+    }
+  }
+
   registerHost(runId: string, stageId: string, host: StageCustomUiHost): () => void {
     const hostKey = key(runId, stageId);
-    this.hosts.set(hostKey, host);
+    const previousHost = this.hosts.get(hostKey);
     const request = this.pending.get(hostKey);
-    if (request) host.showCustomUi(request);
+    if (previousHost && previousHost !== host && request) {
+      this.hideHost(
+        previousHost,
+        request,
+        new Error(`pi-workflows: stage ${stageId} custom UI host replaced`),
+      );
+    }
+    this.hosts.set(hostKey, host);
+    const activeRequest = this.pending.get(hostKey);
+    if (activeRequest) this.showHostOrReject(host, activeRequest);
     return () => {
-      if (this.hosts.get(hostKey) === host) this.hosts.delete(hostKey);
+      if (this.hosts.get(hostKey) !== host) return;
+      this.hosts.delete(hostKey);
+      const pendingRequest = this.pending.get(hostKey);
+      if (pendingRequest) {
+        this.reject(
+          pendingRequest,
+          new Error(`pi-workflows: stage ${stageId} custom UI host unregistered`),
+        );
+      }
     };
   }
 
@@ -75,14 +110,18 @@ export class StageUiBroker {
       };
     });
 
-    this.pending.set(hostKey, request);
-    this.store.recordStageAwaitingInput(runId, stageId, true, request.createdAt);
-    this.hosts.get(hostKey)?.showCustomUi(request);
-
     const onAbort = (): void => {
       this.reject(request, signal?.reason ?? new Error("pi-workflows: stage UI request aborted"));
     };
     signal?.addEventListener("abort", onAbort, { once: true });
+
+    this.pending.set(hostKey, request);
+    this.store.recordStageAwaitingInput(runId, stageId, true, request.createdAt);
+    const host = this.hosts.get(hostKey);
+    if (host) this.showHostOrReject(host, request);
+    // Re-check after listener registration and host display; AbortSignal does
+    // not replay an already-fired abort event for listeners added later.
+    if (signal?.aborted) onAbort();
 
     return promise.finally(() => {
       signal?.removeEventListener("abort", onAbort);
@@ -94,6 +133,7 @@ export class StageUiBroker {
     if (this.pending.get(hostKey)?.id !== request.id) return;
     this.pending.delete(hostKey);
     this.store.recordStageAwaitingInput(request.runId, request.stageId, false);
+    this.hideHost(this.hosts.get(hostKey), request, undefined);
     request.resolve(value);
   }
 
@@ -102,6 +142,7 @@ export class StageUiBroker {
     if (this.pending.get(hostKey)?.id !== request.id) return;
     this.pending.delete(hostKey);
     this.store.recordStageAwaitingInput(request.runId, request.stageId, false);
+    this.hideHost(this.hosts.get(hostKey), request, reason);
     request.reject(reason);
   }
 }

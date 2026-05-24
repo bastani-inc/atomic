@@ -6,6 +6,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
+import { APP_NAME } from "@bastani/atomic";
 import { formatToolCall } from "./formatters.ts";
 import type { AgentProgress, AsyncStatus, Details, DisplayItem, ErrorInfo, SingleResult, ToolCallSummary } from "./types.ts";
 
@@ -165,7 +166,7 @@ export function findLatestSessionFile(sessionDir: string): string | null {
  * Write a prompt to a temporary file
  */
 function writePrompt(agent: string, prompt: string): { dir: string; path: string } {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-"));
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), `${APP_NAME}-subagent-`));
 	const p = path.join(dir, `${agent.replace(/[^\w.-]/g, "_")}.md`);
 	fs.writeFileSync(p, prompt, { mode: 0o600 });
 	return { dir, path: p };

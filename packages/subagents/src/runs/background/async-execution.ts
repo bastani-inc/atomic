@@ -8,7 +8,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
-import type { ExtensionAPI } from "@bastani/atomic";
+import { APP_NAME, type ExtensionAPI } from "@bastani/atomic";
 import type { AgentConfig } from "../../agents/agents.ts";
 import { applyThinkingSuffix } from "../shared/pi-args.ts";
 import { injectSingleOutputInstruction, resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.ts";
@@ -191,7 +191,7 @@ function spawnRunner(cfg: object, suffix: string, cwd: string): { pid?: number; 
 		windowsHide: true,
 	});
 	proc.on("error", (error) => {
-		console.error(`[pi-subagents] async spawn failed: ${error.message}`);
+		console.error(`[${APP_NAME}-subagents] async spawn failed: ${error.message}`);
 	});
 	if (typeof proc.pid !== "number") {
 		return { error: `async runner did not produce a pid for cwd: ${cwd}` };

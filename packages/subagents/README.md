@@ -868,7 +868,7 @@ stdin is a JSON object with `repoRoot`, `worktreePath`, `agentCwd`, `branch`, `i
 Each chain run creates a user-scoped temp directory like:
 
 ```text
-<tmpdir>/pi-subagents-<scope>/chain-runs/{runId}/
+<tmpdir>/atomic-subagents-<scope>/chain-runs/{runId}/
 ```
 
 It may contain files such as `context.md`, `plan.md`, `progress.md`, and `parallel-{stepIndex}/.../output.md`. Directories older than 24 hours are cleaned up on extension startup.
@@ -889,7 +889,7 @@ Async completions notify only the originating session. The result watcher emits 
 Async runs write:
 
 ```text
-<tmpdir>/pi-subagents-<scope>/async-subagent-runs/<id>/
+<tmpdir>/atomic-subagents-<scope>/async-subagent-runs/<id>/
   status.json
   events.jsonl
   output-<n>.log

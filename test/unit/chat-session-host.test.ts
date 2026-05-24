@@ -359,6 +359,25 @@ test("ChatSessionHost dedupes repeated optimistic prompts independently", async 
   host.dispose();
 });
 
+test("ChatSessionHost does not swallow a later matching user event after prompt failure", async () => {
+  const host = makeHost({
+    commands: {
+      prompt: async () => {
+        throw new Error("prompt failed");
+      },
+    },
+  });
+
+  for (const ch of "yes") host.handleInput(ch);
+  host.handleInput("\r");
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+
+  const changed = host.applyAgentEvent({ type: "message_start", message: { role: "user", content: [{ type: "text", text: "yes" }] } } as never);
+
+  assert.equal(changed, true);
+  host.dispose();
+});
+
 test("ChatSessionHost does not duplicate tool output echoed as a toolResult message", () => {
   const host = makeHost();
   const answerText = "User has answered your questions: \"What is your favorite color?\"=\"Blue\".";
@@ -441,6 +460,43 @@ test("ChatSessionHost queues prompts during compaction and flushes after success
 
   assert.deepEqual(prompts, ["first"]);
   assert.deepEqual(followUps, ["second"]);
+  host.dispose();
+});
+
+test("ChatSessionHost preserves compaction queued messages when flush fails", async () => {
+  const host = makeHost({
+    getActionKeyDisplay: (action) => (action === "app.message.dequeue" ? "⌥↑" : action),
+    commands: {
+      prompt: async () => {
+        throw new Error("prompt unavailable");
+      },
+      followUp: async () => {},
+    },
+  });
+
+  host.applyAgentEvent({ type: "compaction_start", reason: "manual" } as never);
+  for (const ch of "first") host.handleInput(ch);
+  host.handleInput("\r");
+  for (const ch of "second") host.handleInput(ch);
+  host.handleInput("\r");
+  await Promise.resolve();
+  await Promise.resolve();
+
+  host.applyAgentEvent({
+    type: "compaction_end",
+    reason: "manual",
+    result: {},
+    aborted: false,
+    willRetry: false,
+  } as never);
+  await Promise.resolve();
+  await Promise.resolve();
+
+  const pending = host.renderPendingMessages(80).join("\n");
+  assert.match(pending, /first/);
+  assert.match(pending, /second/);
+  assert.equal(host.restoreQueuedMessagesToEditor(), true);
+  assert.equal(host.inputText(), "first\n\nsecond");
   host.dispose();
 });
 

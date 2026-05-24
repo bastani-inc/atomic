@@ -2950,7 +2950,9 @@ export class InteractiveMode {
   }
 
   private async handleClipboardImagePaste(): Promise<void> {
-    await pasteClipboardImageToEditor(this.editor, () => this.ui.requestRender());
+    await pasteClipboardImageToEditor(this.editor, () => this.ui.requestRender(), {
+      showWarning: (message) => this.showWarning(message),
+    });
   }
 
   private setupEditorSubmitHandler(): void {

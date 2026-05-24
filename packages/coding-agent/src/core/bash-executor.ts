@@ -10,6 +10,7 @@ import { randomBytes } from "node:crypto";
 import { createWriteStream, type WriteStream } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { APP_NAME } from "../config.ts";
 import { stripAnsi } from "../utils/ansi.ts";
 import { sanitizeBinaryOutput } from "../utils/shell.ts";
 import type { BashOperations } from "./tools/bash.ts";
@@ -66,7 +67,7 @@ export async function executeBashWithOperations(
 			return;
 		}
 		const id = randomBytes(8).toString("hex");
-		tempFilePath = join(tmpdir(), `pi-bash-${id}.log`);
+		tempFilePath = join(tmpdir(), `${APP_NAME}-bash-${id}.log`);
 		tempFileStream = createWriteStream(tempFilePath);
 		for (const chunk of outputChunks) {
 			tempFileStream.write(chunk);

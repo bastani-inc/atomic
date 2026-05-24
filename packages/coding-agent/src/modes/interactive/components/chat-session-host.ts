@@ -209,6 +209,19 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
     return this.transcript;
   }
 
+  private incrementOptimisticUserSignature(signature: string): void {
+    this.optimisticUserSignatureCounts.set(
+      signature,
+      (this.optimisticUserSignatureCounts.get(signature) ?? 0) + 1,
+    );
+  }
+
+  private decrementOptimisticUserSignature(signature: string): void {
+    const count = this.optimisticUserSignatureCounts.get(signature) ?? 0;
+    if (count <= 1) this.optimisticUserSignatureCounts.delete(signature);
+    else this.optimisticUserSignatureCounts.set(signature, count - 1);
+  }
+
   applyAgentEvent(event: AgentSessionEvent): boolean {
     const type = String((event as { type?: unknown }).type ?? "");
     if (type === "message_start") {
@@ -219,8 +232,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
         );
         const count = this.optimisticUserSignatureCounts.get(signature) ?? 0;
         if (count > 0) {
-          if (count === 1) this.optimisticUserSignatureCounts.delete(signature);
-          else this.optimisticUserSignatureCounts.set(signature, count - 1);
+          this.decrementOptimisticUserSignature(signature);
           return false;
         }
       }
@@ -514,14 +526,13 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
     const isPaused = this.isPaused?.() === true;
     const isStreaming = this.isStreaming();
     const shouldAppendOptimisticUser = mode === "auto" && !isStreaming;
-    if (shouldAppendOptimisticUser) {
+    const optimisticSignature = shouldAppendOptimisticUser
+      ? userMessageSignature(text)
+      : undefined;
+    if (optimisticSignature !== undefined) {
       this.liveChat.appendUserText(text);
       this.bodyViewport.scrollToBottom();
-      const signature = userMessageSignature(text);
-      this.optimisticUserSignatureCounts.set(
-        signature,
-        (this.optimisticUserSignatureCounts.get(signature) ?? 0) + 1,
-      );
+      this.incrementOptimisticUserSignature(optimisticSignature);
     }
     this.requestRender?.();
     try {
@@ -551,6 +562,9 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
         this.syncAnimationTick();
       }
     } catch (err) {
+      if (optimisticSignature !== undefined) {
+        this.decrementOptimisticUserSignature(optimisticSignature);
+      }
       this.sdkBusy = false;
       this.statusMessage = errorMessage(err);
       this.syncAnimationTick();
@@ -671,7 +685,11 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
     const previousPasteImage = actionEditor.onPasteImage;
     actionEditor.onPasteImage = () => {
       previousPasteImage?.();
-      void pasteClipboardImageToEditor(this.editorAccess(), () => this.requestRender?.());
+      void pasteClipboardImageToEditor(
+        this.editorAccess(),
+        () => this.requestRender?.(),
+        { showWarning: (message) => this.notifyWarning(message) },
+      );
     };
     const previousEscape = actionEditor.onEscape;
     actionEditor.onEscape = () => {
@@ -891,9 +909,24 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
     const queued = [...this.compactionQueuedMessages];
     this.compactionQueuedMessages = [];
     if (queued.length === 0) return;
-    const [first, ...rest] = queued;
-    if (first !== undefined) await this.requiredCommand("prompt")(first);
-    for (const message of rest) await this.queueFollowUp(message);
+    let nextIndex = 0;
+    try {
+      const first = queued[0];
+      if (first !== undefined) {
+        await this.requiredCommand("prompt")(first);
+        nextIndex = 1;
+      }
+      for (; nextIndex < queued.length; nextIndex++) {
+        await this.queueFollowUp(queued[nextIndex]!);
+      }
+    } catch (err) {
+      this.compactionQueuedMessages = [
+        ...queued.slice(nextIndex),
+        ...this.compactionQueuedMessages,
+      ];
+      this.notifyWarning(errorMessage(err));
+      this.requestRender?.();
+    }
   }
 
   private async queueSteer(text: string): Promise<void> {

@@ -12,6 +12,7 @@ import {
   getOAuthCallbackPort,
   setOAuthCallbackPort,
 } from "./mcp-oauth-provider.ts"
+import { logger } from "./logger.ts"
 
 // HTML templates for callback responses
 const HTML_SUCCESS = `<!DOCTYPE html>
@@ -34,7 +35,7 @@ const HTML_SUCCESS = `<!DOCTYPE html>
 </body>
 </html>`
 
-const HTML_ERROR = (message: string) => `<!DOCTYPE html>
+export const renderCallbackErrorHtml = () => `<!DOCTYPE html>
 <html>
 <head>
   <title>Pi - Authorization Failed</title>
@@ -50,19 +51,10 @@ const HTML_ERROR = (message: string) => `<!DOCTYPE html>
   <div class="container">
     <h1>Authorization Failed</h1>
     <p>An error occurred during authorization.</p>
-    <div class="error">${escapeHtml(message)}</div>
+    <div class="error">Return to Atomic and try again.</div>
   </div>
 </body>
 </html>`
-
-function escapeHtml(value: string): string {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;")
-}
 
 /** Pending authorization request */
 interface PendingAuth {
@@ -87,7 +79,7 @@ interface EnsureCallbackServerOptions {
 /**
  * Handle incoming HTTP requests to the callback server.
  */
-function handleRequest(req: IncomingMessage, res: ServerResponse): void {
+export function handleRequest(req: IncomingMessage, res: ServerResponse): void {
   const url = new URL(req.url || "/", `http://${req.headers.host}`)
 
   // Only handle the callback path
@@ -104,9 +96,9 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
 
   // Enforce state parameter presence for CSRF protection
   if (!state) {
-    const errorMsg = "Missing required state parameter - potential CSRF attack"
+    logger.debug("OAuth callback rejected: missing state parameter")
     res.writeHead(400, { "Content-Type": "text/html" })
-    res.end(HTML_ERROR(errorMsg))
+    res.end(renderCallbackErrorHtml())
     return
   }
 
@@ -115,7 +107,7 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
     const errorMsg = errorDescription || error
     // Send HTTP response first before rejecting promise
     res.writeHead(200, { "Content-Type": "text/html" })
-    res.end(HTML_ERROR(errorMsg))
+    res.end(renderCallbackErrorHtml())
     // Reject promise after response is sent (defer to allow test to attach handler)
     if (pendingAuths.has(state)) {
       const pending = pendingAuths.get(state)!
@@ -129,15 +121,15 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
   // Require authorization code
   if (!code) {
     res.writeHead(400, { "Content-Type": "text/html" })
-    res.end(HTML_ERROR("No authorization code provided"))
+    res.end(renderCallbackErrorHtml())
     return
   }
 
   // Validate state parameter
   if (!pendingAuths.has(state)) {
-    const errorMsg = "Invalid or expired state parameter - potential CSRF attack"
+    logger.debug("OAuth callback rejected: invalid or expired state parameter")
     res.writeHead(400, { "Content-Type": "text/html" })
-    res.end(HTML_ERROR(errorMsg))
+    res.end(renderCallbackErrorHtml())
     return
   }
 
