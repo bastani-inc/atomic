@@ -41,6 +41,7 @@ import {
 } from "../intercom/result-intercom.js";
 import { validateWorkflowModels } from "../runs/shared/model-fallback.js";
 import { runDetached } from "../runs/background/runner.js";
+import { classifyWorkflowFailure } from "../shared/workflow-failures.js";
 
 // ---------------------------------------------------------------------------
 // Options
@@ -325,10 +326,33 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
     return stage.id === identifier || stage.name === identifier || stage.id.startsWith(identifier);
   }
 
+  function stageLabel(stage: RunSnapshot["stages"][number]): string {
+    return `${stage.name} (${stage.id.slice(0, 12)})`;
+  }
+
+  function resolveUniqueResumeStage(source: RunSnapshot, identifier: string): { ok: true; stage: RunSnapshot["stages"][number] } | { ok: false; message: string } {
+    const exactId = source.stages.find((stage) => stage.id === identifier);
+    if (exactId !== undefined) return { ok: true, stage: exactId };
+
+    const exactNames = source.stages.filter((stage) => stage.name === identifier);
+    if (exactNames.length === 1) return { ok: true, stage: exactNames[0]! };
+    if (exactNames.length > 1) {
+      return { ok: false, message: `insufficient_state: ambiguous stage identifier "${identifier}" matches: ${exactNames.map(stageLabel).join(", ")}` };
+    }
+
+    const matches = source.stages.filter((stage) => matchesResumeStageIdentifier(stage, identifier));
+    if (matches.length === 0) return { ok: false, message: `insufficient_state: stage not found in source run ${source.id}: ${identifier}` };
+    if (matches.length > 1) {
+      return { ok: false, message: `insufficient_state: ambiguous stage identifier "${identifier}" matches: ${matches.map(stageLabel).join(", ")}` };
+    }
+    return { ok: true, stage: matches[0]! };
+  }
+
   function resolveResumeStage(source: RunSnapshot, stageId?: string): { ok: true; stageId: string } | { ok: false; message: string } {
     if (stageId !== undefined) {
-      const stage = source.stages.find((candidate) => matchesResumeStageIdentifier(candidate, stageId));
-      if (stage === undefined) return { ok: false, message: `insufficient_state: stage not found in source run ${source.id}: ${stageId}` };
+      const resolved = resolveUniqueResumeStage(source, stageId);
+      if (!resolved.ok) return { ok: false, message: resolved.message };
+      const stage = resolved.stage;
       if (stage.status !== "failed") return { ok: false, message: `insufficient_state: stage ${stage.name} is ${stage.status}, not failed` };
       return { ok: true, stageId: stage.id };
     }
@@ -392,7 +416,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
         runId,
         status: "failed",
         progress: { completed: 0, total: directProgressTotal(args) },
-        error: error instanceof Error ? error.message : String(error),
+        error: classifyWorkflowFailure(error).userMessage,
       }, delivery, parentSession);
     }
     const background = runDirectForeground(args, runId);
@@ -407,7 +431,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
           runId,
           status: "failed",
           progress: { completed: 0, total: directProgressTotal(args) },
-          error: error instanceof Error ? error.message : String(error),
+          error: classifyWorkflowFailure(error).userMessage,
         }, delivery, parentSession);
         emitDirectIntercom(details, delivery, parentSession);
       },

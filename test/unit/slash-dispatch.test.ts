@@ -31,6 +31,7 @@ import { defineWorkflow } from "../../packages/workflows/src/workflows/define-wo
 import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
+import { WORKFLOW_AUTH_FAILURE_MESSAGE } from "../../packages/workflows/src/shared/workflow-failures.js";
 import type {
   PiCustomComponent,
   PiCustomOverlayFactoryTui,
@@ -1006,6 +1007,56 @@ describe("tool run-control actions", () => {
     const r = result as { action: string; status: string; runId: string };
     assert.equal(r.status, "ok");
     assert.equal(r.runId, runId);
+  });
+
+  test("runtime runDirect classifies direct pre-run model auth failures", async () => {
+    const runtime = createExtensionRuntime({
+      registry: createRegistry([]),
+      models: {
+        async listModels() {
+          throw { message: "request failed", status: 401 };
+        },
+      },
+    });
+
+    const result = await runtime.runDirect({ task: { name: "scout", task: "inspect repo", model: "openai/gpt" }, async: true });
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.error, WORKFLOW_AUTH_FAILURE_MESSAGE);
+  });
+
+  test("makeExecuteWorkflowTool resume rejects ambiguous stage prefixes", async () => {
+    const runId = `resume-tool-ambiguous-stage-${Date.now()}`;
+    store.recordRunStart(makeInflightRun(runId));
+    for (const stageId of ["ambiguous-stage-aaa", "ambiguous-stage-bbb"]) {
+      store.recordStageStart(runId, {
+        id: stageId,
+        name: stageId,
+        status: "failed",
+        parentIds: [],
+        toolEvents: [],
+      });
+      store.recordStageEnd(runId, {
+        id: stageId,
+        name: stageId,
+        status: "failed",
+        parentIds: [],
+        toolEvents: [],
+        error: "boom",
+      });
+    }
+    store.recordRunEnd(runId, "failed", undefined, "boom", { resumable: true, failedStageId: "ambiguous-stage-aaa" });
+    const handler = makeToolHandler();
+
+    const result = await handler({ action: "resume", runId, stageId: "ambiguous-stage" }, {} as never);
+
+    assert.equal(result.action, "resume");
+    const r = result as { action: string; status: string; runId: string; message: string };
+    assert.equal(r.status, "noop");
+    assert.equal(r.runId, runId);
+    assert.match(r.message, /Ambiguous stage identifier/);
+    assert.match(r.message, /ambiguous-stage-aaa/);
+    assert.match(r.message, /ambiguous-stage-bbb/);
   });
 
   test("makeExecuteWorkflowTool resume starts linked continuation for failed resumable workflow", async () => {

@@ -759,6 +759,10 @@ async function writeDirectOutput(
   };
 }
 
+function directFailureMessage(error: unknown): string {
+  return classifyWorkflowFailure(error).userMessage;
+}
+
 function failedDirectDetails(
   mode: WorkflowDetails["mode"],
   runId: string,
@@ -774,7 +778,7 @@ function failedDirectDetails(
     ...(options.context !== undefined ? { context: options.context } : {}),
     results: [],
     progress: { completed: 0, total },
-    error: error instanceof Error ? error.message : String(error),
+    error: directFailureMessage(error),
   };
 }
 
@@ -1086,7 +1090,7 @@ function runFailureMetadata(err: unknown, stages: readonly StageSnapshot[]): Run
     failureKind,
     failureMessage: failedStage?.failureMessage ?? classified.message,
     ...(failedStage !== undefined ? { failedStageId: failedStage.id } : {}),
-    resumable: failureKind !== "cancelled",
+    resumable: classified.resumable,
   };
 }
 

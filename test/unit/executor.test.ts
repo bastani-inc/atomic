@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { run, runChain, runParallel, runTask, resolveInputs } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { WORKFLOW_AUTH_FAILURE_MESSAGE } from "../../packages/workflows/src/shared/workflow-failures.js";
 import { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
 import type { AgentSession, CreateAgentSessionOptions } from "@bastani/atomic";
 
@@ -1190,6 +1191,31 @@ describe("direct SDK helpers", () => {
     assert.equal(details.results?.[0]?.text, "fallback ok");
     assert.deepEqual(details.results?.[0]?.attemptedModels, ["anthropic/primary", "openai/fallback"]);
     assert.deepEqual(details.results?.[0]?.modelAttempts?.map((attempt) => attempt.success), [false, true]);
+  });
+
+  test("runTask reports classified auth guidance for direct stage failures", async () => {
+    const details = await runTask(
+      { name: "scout", prompt: "inspect repo" },
+      {},
+      {
+        adapters: {
+          agentSession: {
+            async create() {
+              return {
+                ...mockSession(),
+                async prompt() {
+                  throw { message: "request failed", status: 401 };
+                },
+              };
+            },
+          },
+        },
+        store: createStore(),
+      },
+    );
+
+    assert.equal(details.status, "failed");
+    assert.equal(details.error, WORKFLOW_AUTH_FAILURE_MESSAGE);
   });
 
   test("runTask invalid fallback model fails before session and output side effects", async () => {

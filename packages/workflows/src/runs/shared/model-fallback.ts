@@ -214,13 +214,15 @@ export async function validateWorkflowModels(input: {
   };
 
   const failures: ModelResolutionFailure[] = [];
-  const availableModels = input.catalog === undefined ? undefined : await input.catalog.listModels().catch(() => undefined);
-  if (input.catalog !== undefined && availableModels === undefined) {
-    if (input.catalog.currentModel !== undefined) {
+  let availableModels: readonly WorkflowModelInfo[] | undefined;
+  if (input.catalog !== undefined) {
+    try {
+      availableModels = await input.catalog.listModels();
+    } catch (err) {
+      if (input.catalog.currentModel === undefined) throw err;
       recordWarning(catalogUnavailableWarning());
       return warnings;
     }
-    throw new WorkflowModelValidationError([{ input: "model catalog", reason: "unavailable and no current model is configured" }]);
   }
 
   for (const request of relevant) {

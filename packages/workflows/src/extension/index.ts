@@ -956,16 +956,34 @@ type ToolStageTarget =
   | { ok: true; stageId?: string }
   | { ok: false; message: string };
 
-function resolveToolStageTarget(runId: string, stageTarget?: string): ToolStageTarget {
+function stageMatchesIdentifier(stage: { readonly id: string; readonly name: string }, target: string): boolean {
+  return stage.id === target || stage.name === target || stage.id.startsWith(target);
+}
+
+function stageMatchLabel(stage: { readonly id: string; readonly name: string }): string {
+  return `${stage.name} (${stage.id.slice(0, 12)})`;
+}
+
+function resolveStageTarget(runId: string, stageTarget?: string): ToolStageTarget {
   const target = stageTarget?.trim();
   if (!target) return { ok: true };
 
   const run = store.runs().find((r) => r.id === runId);
-  const stage = run?.stages.find(
-    (s) => s.id === target || s.id.startsWith(target) || s.name === target,
-  );
-  if (!stage) return { ok: false, message: `Stage not found in run ${runId.slice(0, 8)}: ${target}` };
-  return { ok: true, stageId: stage.id };
+  const exactId = run?.stages.find((stage) => stage.id === target);
+  if (exactId !== undefined) return { ok: true, stageId: exactId.id };
+
+  const exactNames = run?.stages.filter((stage) => stage.name === target) ?? [];
+  if (exactNames.length === 1) return { ok: true, stageId: exactNames[0]!.id };
+  if (exactNames.length > 1) return { ok: false, message: `Ambiguous stage identifier "${target}" matches: ${exactNames.map(stageMatchLabel).join(", ")}` };
+
+  const matches = run?.stages.filter((stage) => stageMatchesIdentifier(stage, target)) ?? [];
+  if (matches.length === 0) return { ok: false, message: `Stage not found in run ${runId.slice(0, 8)}: ${target}` };
+  if (matches.length > 1) return { ok: false, message: `Ambiguous stage identifier "${target}" matches: ${matches.map(stageMatchLabel).join(", ")}` };
+  return { ok: true, stageId: matches[0]!.id };
+}
+
+function resolveToolStageTarget(runId: string, stageTarget?: string): ToolStageTarget {
+  return resolveStageTarget(runId, stageTarget);
 }
 
 function ambiguousRunMessage(target: string, matches: readonly string[]): string {
@@ -1864,19 +1882,12 @@ function factory(pi: ExtensionAPI): void {
       }
       let stageId: string | undefined;
       const run = store.runs().find((r) => r.id === runId);
-      if (stageTarget) {
-        const stage = run?.stages.find(
-          (s) =>
-            s.id === stageTarget ||
-            s.id.startsWith(stageTarget) ||
-            s.name === stageTarget,
-        );
-        if (!stage) {
-          print(`Stage not found in run ${runId.slice(0, 8)}: ${stageTarget}`);
-          return true;
-        }
-        stageId = stage.id;
+      const resolvedStage = resolveStageTarget(runId, stageTarget);
+      if (!resolvedStage.ok) {
+        print(resolvedStage.message);
+        return true;
       }
+      stageId = resolvedStage.stageId;
       const isPaused =
         run?.status === "paused" ||
         (run?.stages.some((s) => s.status === "paused") ?? false);
