@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.8.14-0] - 2026-05-25
+
 ### Changed
 
 - Synced Atomic's coding-agent fork with upstream Pi patches since v0.75.4 and updated bundled Pi libraries to 0.75.5.
