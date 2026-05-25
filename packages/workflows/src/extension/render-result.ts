@@ -194,6 +194,21 @@ function renderNotice(
   });
 }
 
+const TRANSCRIPT_NOTICE_ENTRY_LIMIT = 5;
+const TRANSCRIPT_NOTICE_CHAR_LIMIT = 240;
+
+function transcriptNoticeText(entries: readonly TranscriptEntry[]): string {
+  if (entries.length === 0) return "no transcript entries";
+  const shown = entries.slice(0, TRANSCRIPT_NOTICE_ENTRY_LIMIT);
+  const text = shown
+    .map((entry) => `${entry.role}: ${entry.text ?? entry.output ?? entry.toolName ?? "(no body)"}`)
+    .join(" | ");
+  const entrySuffix = entries.length > shown.length
+    ? ` … (+${entries.length - shown.length} more)`
+    : "";
+  return fitLine(`${text}${entrySuffix}`, TRANSCRIPT_NOTICE_CHAR_LIMIT);
+}
+
 export function renderResult(result: WorkflowToolResult, opts?: RenderResultOpts): string {
   const partial = opts?.isPartial === true;
   const themed = opts?.plain !== true;
@@ -304,9 +319,9 @@ export function renderResult(result: WorkflowToolResult, opts?: RenderResultOpts
 
     case "transcript": {
       const r = result as TranscriptResult;
-      const text = r.entries.map((entry) => `${entry.role}: ${entry.text ?? entry.output ?? entry.toolName ?? ""}`).join(" | ");
+      const text = transcriptNoticeText(r.entries);
       const suffix = r.truncated ? " (truncated)" : "";
-      return renderNotice("WORKFLOW TRANSCRIPT", `${r.runId}/${r.stageId.slice(0, 12)} ${r.source}: ${text || "no transcript entries"}${suffix}`, opts, themed);
+      return renderNotice("WORKFLOW TRANSCRIPT", `${r.runId}/${r.stageId.slice(0, 12)} ${r.source}: ${text}${suffix}`, opts, themed);
     }
 
     case "send": {

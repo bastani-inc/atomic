@@ -115,7 +115,7 @@ export const WorkflowParametersSchema = Type.Object({
     description: "Run identifier or unique prefix for status/stages/stage/transcript/send/pause/resume/interrupt/kill. Use '--all' or all:true for supported bulk run-control actions.",
   })),
   all: Type.Optional(Type.Boolean({
-    description: "Apply supported run-control actions (pause/interrupt/kill) to all in-flight runs instead of one run.",
+    description: "Apply supported run-control actions (pause/interrupt/kill) to all in-flight runs instead of one run; cannot be combined with stageId.",
   })),
   stageId: Type.Optional(Type.String({
     description: "Stage id, unique prefix, or stage name for stage-scoped inspection, transcript, send, pause, or resume.",
@@ -140,13 +140,13 @@ export const WorkflowParametersSchema = Type.Object({
     description: "Agent-visible output format for data-bearing inspection actions.",
   })),
   limit: Type.Optional(Type.Number({
-    description: "Maximum number of most recent transcript entries to return; applied before tool output is serialized.",
+    description: "Transcript-only: maximum number of most recent transcript entries to return; applied before tool output is serialized.",
   })),
   tail: Type.Optional(Type.Number({
-    description: "Return only the last N transcript entries; overrides limit when both are provided.",
+    description: "Transcript-only: return only the last N transcript entries; overrides limit when both are provided.",
   })),
   includeToolOutput: Type.Optional(Type.Boolean({
-    description: "Include captured tool output entries when building transcript results from stage snapshots; live session transcripts may not expose tool output.",
+    description: "Transcript-only: include captured tool output entries when building results from stage snapshots; live session transcripts may not expose tool output.",
   })),
   text: Type.Optional(Type.String({
     description: "Text to send to a stage for prompt answers, steering, follow-ups, or resume messages.",

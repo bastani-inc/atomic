@@ -538,12 +538,17 @@ function compactWorkflowToolMessage(
     action: "send" | "pause" | "reload" | "interrupt" | "kill" | "resume";
   }>,
 ): string {
-  switch (result.action) {
-    case "reload":
-      return `${result.action}: ${result.status} — ${result.message}`;
-    default:
-      return `${result.action}: ${result.runId} ${result.status} — ${result.message}`;
+  if (result.action === "reload") {
+    return `${result.action}: ${result.status} — ${result.message}`;
   }
+  const target = [
+    result.runId,
+    result.action === "send" ? result.stageId : undefined,
+  ].filter((part): part is string => part !== undefined && part.length > 0)
+    .join("/");
+  return target.length > 0
+    ? `${result.action}: ${target} ${result.status} — ${result.message}`
+    : `${result.action}: ${result.status} — ${result.message}`;
 }
 
 function renderTranscriptToolContent(
@@ -575,6 +580,9 @@ function renderTranscriptToolContent(
     if (entry.output !== undefined) {
       lines.push("tool output:");
       lines.push(entry.output);
+    }
+    if (entry.text === undefined && entry.output === undefined) {
+      lines.push("(no body)");
     }
   });
   return lines.join("\n");
@@ -744,9 +752,11 @@ function summarizeStage(stage: StageSnapshot): WorkflowStageSummary {
   };
 }
 
+const DEFAULT_TRANSCRIPT_LIMIT = 50;
+
 function boundedCount(args: WorkflowToolArgs): number {
   const raw = args.tail ?? args.limit;
-  if (raw === undefined) return 50;
+  if (raw === undefined) return DEFAULT_TRANSCRIPT_LIMIT;
   if (!Number.isFinite(raw) || raw <= 0) return 0;
   return Math.floor(raw);
 }
@@ -782,12 +792,14 @@ function messageText(content: MessageLike["content"]): string | undefined {
 }
 
 function transcriptEntryFromMessage(message: MessageLike): WorkflowTranscriptEntry {
-  return {
-    role: message.role ?? "unknown",
-    text: messageText(message.content),
-    toolName: message.toolName ?? message.name,
-    timestamp: message.timestamp ?? message.createdAt,
-  };
+  const entry: WorkflowTranscriptEntry = { role: message.role ?? "unknown" };
+  const text = messageText(message.content);
+  if (text !== undefined) entry.text = text;
+  const toolName = message.toolName ?? message.name;
+  if (toolName !== undefined) entry.toolName = toolName;
+  const timestamp = message.timestamp ?? message.createdAt;
+  if (timestamp !== undefined) entry.timestamp = timestamp;
+  return entry;
 }
 
 function transcriptEntriesFromToolEvents(
@@ -907,6 +919,10 @@ function inFlightRunCount(): number {
 
 function reloadBlockedMessage(count = inFlightRunCount()): string {
   return `Reload skipped: ${count} workflow run(s) still in flight. Wait for them to finish, or pause/kill them before reloading workflow resources.`;
+}
+
+function allStageConflictMessage(action: "pause" | "interrupt" | "kill"): string {
+  return `Cannot ${action} --all with a stageId; omit stageId or target a single run.`;
 }
 
 class WorkflowReloadBlockedError extends Error {
@@ -1229,6 +1245,14 @@ export function makeExecuteWorkflowTool(
       case "pause": {
         const target = resolveToolRunTarget(args, "No in-flight runs to pause.");
         if (target.kind === "all") {
+          if (args.stageId !== undefined && args.stageId.length > 0) {
+            return {
+              action,
+              runId: "--all",
+              status: "noop",
+              message: allStageConflictMessage("pause"),
+            };
+          }
           const results = pauseAllRuns();
           const paused = results.filter((r) => r.ok).length;
           return {
@@ -1287,6 +1311,14 @@ export function makeExecuteWorkflowTool(
       case "kill": {
         const target = resolveToolRunTarget(args, "No in-flight runs to kill.");
         if (target.kind === "all") {
+          if (args.stageId !== undefined && args.stageId.length > 0) {
+            return {
+              action,
+              runId: "--all",
+              status: "noop",
+              message: allStageConflictMessage("kill"),
+            };
+          }
           const results = destroyAllRuns({
             cancellation: cancellationRegistry,
             persistence: getPersistence(),
@@ -1332,6 +1364,14 @@ export function makeExecuteWorkflowTool(
         // Interrupt is resumable: it pauses live work and keeps runs in history/status.
         const target = resolveToolRunTarget(args, "No in-flight runs to interrupt.");
         if (target.kind === "all") {
+          if (args.stageId !== undefined && args.stageId.length > 0) {
+            return {
+              action,
+              runId: "--all",
+              status: "noop",
+              message: allStageConflictMessage("interrupt"),
+            };
+          }
           const results = interruptAllRuns();
           const interrupted = results.filter((r) => r.ok).length;
           return {

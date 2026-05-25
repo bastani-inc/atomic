@@ -1030,6 +1030,25 @@ describe("tool run-control actions", () => {
     assert.equal(parsed.entries[0].text, longText);
   });
 
+  test("registered workflow tool content elides empty send targets", async () => {
+    const tool = await makeRegisteredWorkflowTool();
+
+    const result = await tool.execute(
+      "tool-content-send-empty-target",
+      { action: "send", text: "hello" },
+      undefined,
+      undefined,
+      {} as never,
+    );
+
+    assert.equal(result.details.action, "send");
+    const textBlock = result.content[0];
+    assert.equal(textBlock?.type, "text");
+    const textContent = textBlock.type === "text" ? textBlock.text : "";
+    assert.match(textContent, /^send: noop — /);
+    assert.doesNotMatch(textContent, /^send:\s{2,}noop/);
+  });
+
   test("makeExecuteWorkflowTool kill without runId defaults to the active run", async () => {
     const runId = `kill-tool-active-${Date.now()}`;
     store.recordRunStart(makeInflightRun(runId));
@@ -1088,6 +1107,21 @@ describe("tool run-control actions", () => {
     assert.equal(r.runId, "--all");
     assert.equal(r.status, "noop");
     assert.match(r.message, /No in-flight runs to pause/);
+  });
+
+  test("makeExecuteWorkflowTool rejects all run-control with stageId", async () => {
+    const runId = `pause-tool-all-stage-${Date.now()}`;
+    store.recordRunStart(makeInflightRun(runId));
+    const handler = makeToolHandler();
+
+    const result = await handler({ action: "pause", all: true, stageId: "stage-a" }, {} as never);
+
+    assert.equal(result.action, "pause");
+    const r = result as { action: string; status: string; runId: string; message: string };
+    assert.equal(r.runId, "--all");
+    assert.equal(r.status, "noop");
+    assert.match(r.message, /Cannot pause --all with a stageId/);
+    assert.equal(store.runs().find((run) => run.id === runId)?.status, "running");
   });
 
   test("makeExecuteWorkflowTool interrupt without runId defaults to the active run", async () => {
@@ -1251,6 +1285,37 @@ describe("tool run-control actions", () => {
     assert.deepEqual(transcript.entries, [{ role: "assistant", text: "done" }]);
   });
 
+  test("makeExecuteWorkflowTool applies limit and lets tail override limit", async () => {
+    const runId = `stage-tool-transcript-limit-${Date.now()}`;
+    store.recordRunStart(makeInflightRun(runId));
+    store.recordStageStart(runId, {
+      id: "stage-transcript-limit-1",
+      name: "limited",
+      status: "completed",
+      parentIds: [],
+      toolEvents: [
+        { name: "one", output: "1", startedAt: 1, endedAt: 1 },
+        { name: "two", output: "2", startedAt: 2, endedAt: 2 },
+        { name: "three", output: "3", startedAt: 3, endedAt: 3 },
+      ],
+      result: "done",
+      endedAt: 4,
+    });
+    const handler = makeToolHandler();
+
+    const limited = await handler({ action: "transcript", runId, stageId: "limited", limit: 2, includeToolOutput: true }, {} as never);
+    assert.equal(limited.action, "transcript");
+    const limitedTranscript = limited as { action: string; truncated: boolean; entries: Array<{ role: string; toolName?: string; text?: string }> };
+    assert.equal(limitedTranscript.truncated, true);
+    assert.deepEqual(limitedTranscript.entries.map((entry) => entry.toolName ?? entry.text), ["three", "done"]);
+
+    const tailOverride = await handler({ action: "transcript", runId, stageId: "limited", limit: 3, tail: 1, includeToolOutput: true }, {} as never);
+    assert.equal(tailOverride.action, "transcript");
+    const tailTranscript = tailOverride as { action: string; truncated: boolean; entries: Array<{ text?: string }> };
+    assert.equal(tailTranscript.truncated, true);
+    assert.deepEqual(tailTranscript.entries, [{ role: "assistant", text: "done", timestamp: 4 }]);
+  });
+
   test("makeExecuteWorkflowTool preserves empty live transcript text blocks", async () => {
     const runId = `stage-tool-live-empty-block-${Date.now()}`;
     store.recordRunStart(makeInflightRun(runId));
@@ -1278,6 +1343,37 @@ describe("tool run-control actions", () => {
       assert.equal(transcript.entries[0]?.role, "user");
       assert.equal(transcript.entries[0]?.text, "");
       assert.equal(Object.hasOwn(transcript.entries[0]!, "text"), true);
+    } finally {
+      dispose();
+    }
+  });
+
+  test("makeExecuteWorkflowTool omits text for live non-text content blocks", async () => {
+    const runId = `stage-tool-live-non-text-${Date.now()}`;
+    store.recordRunStart(makeInflightRun(runId));
+    store.recordStageStart(runId, {
+      id: "stage-live-non-text-1",
+      name: "live-non-text",
+      status: "running",
+      parentIds: [],
+      toolEvents: [],
+    });
+    const { dispose } = registerLiveStageHandle(runId, "stage-live-non-text-1", {
+      messages: [
+        { role: "user", content: [{ type: "image", data: "", mimeType: "image/png" }], timestamp: 1 },
+      ],
+    });
+    const handler = makeToolHandler();
+
+    try {
+      const result = await handler({ action: "transcript", runId, stageId: "live-non-text" }, {} as never);
+
+      assert.equal(result.action, "transcript");
+      const transcript = result as { action: string; source: string; entries: Array<{ role: string; text?: string }> };
+      assert.equal(transcript.source, "live");
+      assert.equal(transcript.entries.length, 1);
+      assert.equal(Object.hasOwn(transcript.entries[0]!, "text"), false);
+      assert.equal(transcript.entries[0]?.text, undefined);
     } finally {
       dispose();
     }

@@ -209,12 +209,20 @@ Workflows always run as **background tasks** — the chat editor stays free whil
     "workflow": "string (optional) — workflow ID or normalized name",
     "inputs": "object (optional) — key/value map of workflow inputs",
     "action": "'run' | 'list' | 'get' | 'inputs' | 'status' | 'stages' | 'stage' | 'transcript' | 'send' | 'pause' | 'interrupt' | 'kill' | 'resume' | 'reload'",
-    "runId": "optional run id or unique prefix; control actions default to the active run where safe; use '--all' or all:true for interrupt/kill all",
-    "stageId": "optional stage id, prefix, or name for stage-scoped actions",
+    "runId": "optional run id or unique prefix; control actions default to the active run where safe; use '--all' or all:true for pause/interrupt/kill all",
+    "stageId": "optional stage id, prefix, or name for stage-scoped actions; cannot be combined with all:true",
+    "statusFilter": "optional stages filter: pending/running/awaiting_input/paused/blocked/completed/failed/skipped/all",
+    "format": "optional agent-facing output format: text or json",
+    "limit": "transcript-only maximum number of most recent entries; default 50",
+    "tail": "transcript-only last-N entry count; overrides limit",
+    "includeToolOutput": "transcript-only flag for snapshot tool-event output; live transcripts may not expose tool output",
     "text": "optional string payload for send/resume; explicit empty text answers pending prompts",
     "response": "optional structured payload for answering pending prompts; explicit empty response is valid",
     "message": "optional string payload for send/resume when text is not provided",
-    "all": "optional boolean for pause/interrupt/kill all",
+    "delivery": "optional send delivery mode: auto, answer, prompt, steer, followUp, or resume",
+    "promptId": "optional pending prompt identifier for send/answer",
+    "reason": "optional human-readable reload reason",
+    "all": "optional boolean for pause/interrupt/kill all; cannot be combined with stageId",
     "task/tasks/chain": "optional direct workflow-native orchestration modes"
   }
 }
