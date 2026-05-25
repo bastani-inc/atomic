@@ -146,7 +146,7 @@ export const WorkflowParametersSchema = Type.Object({
     description: "Return only the last N transcript entries; overrides limit when both are provided.",
   })),
   includeToolOutput: Type.Optional(Type.Boolean({
-    description: "Include captured tool output entries when building transcript results from stage snapshots.",
+    description: "Include captured tool output entries when building transcript results from stage snapshots; live session transcripts may not expose tool output.",
   })),
   text: Type.Optional(Type.String({
     description: "Text to send to a stage for prompt answers, steering, follow-ups, or resume messages.",

@@ -275,6 +275,11 @@ export interface ExtensionAPI {
     event: string,
     renderer: (payload: unknown) => string,
   ) => void;
+  /**
+   * Inject a custom message into chat history. Used by inline workflow surfaces
+   * such as `workflows:input-form`; cards stay in scrollback and are
+   * re-rendered by the registered renderer on every `tui.requestRender()`.
+   */
   sendMessage?: <T = unknown>(
     message: {
       customType: string;
@@ -525,7 +530,7 @@ function workflowRunResultFromDetails(
 }
 
 function stringifyWorkflowToolResult(result: WorkflowToolResult): string {
-  return JSON.stringify(result, null, 2) ?? String(result);
+  return JSON.stringify(result, null, 2);
 }
 
 function compactWorkflowToolMessage(
@@ -733,7 +738,9 @@ function summarizeStage(stage: StageSnapshot): WorkflowStageSummary {
     sessionFile: stage.sessionFile,
     error: stage.error,
     awaitingInputSince: stage.awaitingInputSince,
-    pendingPrompt: stage.pendingPrompt,
+    pendingPrompt: stage.pendingPrompt === undefined
+      ? undefined
+      : structuredClone(stage.pendingPrompt),
   };
 }
 
@@ -761,15 +768,17 @@ function applyEntryLimit<T>(
 function messageText(content: MessageLike["content"]): string | undefined {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return undefined;
+  let sawTextBlock = false;
   const text = content
-    .map((block) =>
-      block.type === "text" && typeof block.text === "string"
-        ? block.text
-        : "",
-    )
-    .filter(Boolean)
+    .map((block) => {
+      if (block.type === "text" && typeof block.text === "string") {
+        sawTextBlock = true;
+        return block.text;
+      }
+      return "";
+    })
     .join("");
-  return text || undefined;
+  return sawTextBlock ? text : undefined;
 }
 
 function transcriptEntryFromMessage(message: MessageLike): WorkflowTranscriptEntry {
@@ -875,7 +884,11 @@ function snapshotTranscriptEntries(
   return sortTranscriptEntriesChronologically(entries);
 }
 
-function stageFailureMessage(runId: string, resultReason: string): string {
+function stageFailureMessage(
+  runId: string,
+  resultReason: string,
+  action: "pause" | "interrupt",
+): string {
   switch (resultReason) {
     case "not_found":
       return `Run not found: ${runId}`;
@@ -884,7 +897,7 @@ function stageFailureMessage(runId: string, resultReason: string): string {
     case "stage_not_found":
       return `Stage not found for run: ${runId}`;
     default:
-      return `No active stages to interrupt for run: ${runId}`;
+      return `No active stages to ${action} for run: ${runId}`;
   }
 }
 
@@ -1234,10 +1247,17 @@ export function makeExecuteWorkflowTool(
         const result = pauseRun(target.runId, { stageId: stage.stageId });
         return result.ok
           ? { action, runId: result.runId, status: "paused", message: `Paused ${result.paused.length} stage(s) on run ${result.runId.slice(0, 8)}.` }
-          : { action, runId: target.runId, status: "noop", message: stageFailureMessage(target.runId, result.reason) };
+          : {
+              action,
+              runId: target.runId,
+              status: "noop",
+              message: stageFailureMessage(target.runId, result.reason, "pause"),
+            };
       }
 
       case "reload": {
+        // Fast UX check; reloadWorkflowResourcesNow re-checks inside the
+        // serialized reload queue and remains the authoritative TOCTOU guard.
         const activeRuns = inFlightRunCount();
         if (activeRuns > 0) {
           return {
@@ -1349,7 +1369,7 @@ export function makeExecuteWorkflowTool(
           action,
           runId: target.runId,
           status: "noop",
-          message: stageFailureMessage(target.runId, result.reason),
+          message: stageFailureMessage(target.runId, result.reason, "interrupt"),
         };
       }
 

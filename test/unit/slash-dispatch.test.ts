@@ -953,20 +953,31 @@ describe("tool run-control actions", () => {
   function registerLiveStageHandle(
     runId: string,
     stageId: string,
-  ): { followUps: string[]; dispose: () => void } {
+    options?: {
+      status?: StageControlHandle["status"];
+      isStreaming?: boolean;
+      messages?: StageControlHandle["messages"];
+    },
+  ): { followUps: string[]; prompts: string[]; steers: string[]; dispose: () => void } {
     const followUps: string[] = [];
+    const prompts: string[] = [];
+    const steers: string[] = [];
     const handle: StageControlHandle = {
       runId,
       stageId,
       stageName: "ask",
-      status: "running",
+      status: options?.status ?? "running",
       sessionId: undefined,
       sessionFile: undefined,
-      isStreaming: false,
-      messages: [],
+      isStreaming: options?.isStreaming ?? false,
+      messages: options?.messages ?? [],
       async ensureAttached(): Promise<void> {},
-      async prompt(): Promise<void> {},
-      async steer(): Promise<void> {},
+      async prompt(text: string): Promise<void> {
+        prompts.push(text);
+      },
+      async steer(text: string): Promise<void> {
+        steers.push(text);
+      },
       async followUp(text: string): Promise<void> {
         followUps.push(text);
       },
@@ -974,7 +985,7 @@ describe("tool run-control actions", () => {
       async resume(): Promise<void> {},
       subscribe: () => () => {},
     };
-    return { followUps, dispose: stageControlRegistry.register(handle) };
+    return { followUps, prompts, steers, dispose: stageControlRegistry.register(handle) };
   }
 
   test("registered workflow tool content preserves full transcript text and supports JSON format", async () => {
@@ -1067,6 +1078,18 @@ describe("tool run-control actions", () => {
     assert.equal(store.runs().some((run) => run.id === ended), true);
   });
 
+  test("makeExecuteWorkflowTool pause all reports noop when no runs are in flight", async () => {
+    const handler = makeToolHandler();
+
+    const result = await handler({ action: "pause", all: true }, {} as never);
+
+    assert.equal(result.action, "pause");
+    const r = result as { action: string; status: string; runId: string; message: string };
+    assert.equal(r.runId, "--all");
+    assert.equal(r.status, "noop");
+    assert.match(r.message, /No in-flight runs to pause/);
+  });
+
   test("makeExecuteWorkflowTool interrupt without runId defaults to the active run", async () => {
     const runId = `interrupt-tool-active-${Date.now()}`;
     store.recordRunStart(makeInflightRun(runId));
@@ -1080,6 +1103,32 @@ describe("tool run-control actions", () => {
     assert.equal(r.runId, runId);
     assert.match(r.message, /No active stages to interrupt/);
     assert.equal(store.runs().find((run) => run.id === runId)?.status, "running");
+  });
+
+  test("makeExecuteWorkflowTool pause reports pause wording for inactive stages", async () => {
+    const runId = `pause-tool-inactive-stage-${Date.now()}`;
+    store.recordRunStart(makeInflightRun(runId));
+    store.recordStageStart(runId, {
+      id: "stage-paused-1",
+      name: "paused-stage",
+      status: "paused",
+      parentIds: [],
+      toolEvents: [],
+    });
+    const { dispose } = registerLiveStageHandle(runId, "stage-paused-1", { status: "paused" });
+    const handler = makeToolHandler();
+
+    try {
+      const result = await handler({ action: "pause", runId, stageId: "paused-stage" }, {} as never);
+
+      assert.equal(result.action, "pause");
+      const r = result as { action: string; status: string; message: string };
+      assert.equal(r.status, "noop");
+      assert.match(r.message, /No active stages to pause/);
+      assert.doesNotMatch(r.message, /interrupt/);
+    } finally {
+      dispose();
+    }
   });
 
   test("makeExecuteWorkflowTool lists and inspects workflow stages", async () => {
@@ -1100,6 +1149,36 @@ describe("tool run-control actions", () => {
     const detail = detailResult as { action: string; stage?: { id: string; name: string; status: string } };
     assert.equal(detail.stage?.id, "stage-running-1");
     assert.equal(detail.stage?.status, "running");
+  });
+
+  test("makeExecuteWorkflowTool stages clones pending prompts", async () => {
+    const runId = `stage-tool-prompt-clone-${Date.now()}`;
+    store.recordRunStart(makeInflightRun(runId));
+    store.recordStageStart(runId, { id: "stage-prompt-clone", name: "ask", status: "awaiting_input", parentIds: [], toolEvents: [] });
+    store.recordStagePendingPrompt(runId, "stage-prompt-clone", { id: "prompt-clone", kind: "select", message: "Original?", choices: ["yes"], createdAt: Date.now() });
+    const handler = makeToolHandler();
+
+    const result = await handler({ action: "stages", runId }, {} as never);
+
+    assert.equal(result.action, "stages");
+    const stages = result as { action: string; stages: Array<{ pendingPrompt?: { message: string; choices?: string[] } }> };
+    assert.equal(stages.stages[0]?.pendingPrompt?.message, "Original?");
+    stages.stages[0]!.pendingPrompt!.message = "Mutated";
+    stages.stages[0]!.pendingPrompt!.choices!.push("no");
+    const storedPrompt = store.runs().find((run) => run.id === runId)?.stages[0]?.pendingPrompt;
+    assert.equal(storedPrompt?.message, "Original?");
+    assert.deepEqual(storedPrompt?.choices, ["yes"]);
+  });
+
+  test("makeExecuteWorkflowTool stage rejects all-run inspection", async () => {
+    const handler = makeToolHandler();
+
+    const result = await handler({ action: "stage", all: true }, {} as never);
+
+    assert.equal(result.action, "stage");
+    const stage = result as { action: string; runId: string; error?: string };
+    assert.equal(stage.runId, "--all");
+    assert.match(stage.error ?? "", /requires a single run/);
   });
 
   test("makeExecuteWorkflowTool stages supports all stage status filters", async () => {
@@ -1170,6 +1249,38 @@ describe("tool run-control actions", () => {
     assert.equal(transcript.sessionFile, "/tmp/session.jsonl");
     assert.equal(transcript.truncated, true);
     assert.deepEqual(transcript.entries, [{ role: "assistant", text: "done" }]);
+  });
+
+  test("makeExecuteWorkflowTool preserves empty live transcript text blocks", async () => {
+    const runId = `stage-tool-live-empty-block-${Date.now()}`;
+    store.recordRunStart(makeInflightRun(runId));
+    store.recordStageStart(runId, {
+      id: "stage-live-empty-block-1",
+      name: "live-empty",
+      status: "running",
+      parentIds: [],
+      toolEvents: [],
+    });
+    const { dispose } = registerLiveStageHandle(runId, "stage-live-empty-block-1", {
+      messages: [
+        { role: "user", content: [{ type: "text", text: "" }], timestamp: 1 },
+      ],
+    });
+    const handler = makeToolHandler();
+
+    try {
+      const result = await handler({ action: "transcript", runId, stageId: "live-empty" }, {} as never);
+
+      assert.equal(result.action, "transcript");
+      const transcript = result as { action: string; source: string; entries: Array<{ role: string; text?: string }> };
+      assert.equal(transcript.source, "live");
+      assert.equal(transcript.entries.length, 1);
+      assert.equal(transcript.entries[0]?.role, "user");
+      assert.equal(transcript.entries[0]?.text, "");
+      assert.equal(Object.hasOwn(transcript.entries[0]!, "text"), true);
+    } finally {
+      dispose();
+    }
   });
 
   test("makeExecuteWorkflowTool returns no truncation marker for tail zero", async () => {
@@ -1351,6 +1462,50 @@ describe("tool run-control actions", () => {
       assert.equal(send.delivery, "followUp");
       assert.equal(send.status, "ok");
       assert.deepEqual(followUps, ["next"]);
+    } finally {
+      dispose();
+    }
+  });
+
+  test("makeExecuteWorkflowTool sends explicit prompt delivery to live handles", async () => {
+    const runId = `stage-tool-send-prompt-live-${Date.now()}`;
+    store.recordRunStart(makeInflightRun(runId));
+    store.recordStageStart(runId, { id: "stage-prompt-live", name: "ask", status: "running", parentIds: [], toolEvents: [] });
+    const { followUps, prompts, steers, dispose } = registerLiveStageHandle(runId, "stage-prompt-live");
+    const handler = makeToolHandler();
+
+    try {
+      const result = await handler({ action: "send", runId, stageId: "ask", delivery: "prompt", text: "start next" }, {} as never);
+
+      assert.equal(result.action, "send");
+      const send = result as { action: string; delivery: string; status: string };
+      assert.equal(send.delivery, "prompt");
+      assert.equal(send.status, "ok");
+      assert.deepEqual(prompts, ["start next"]);
+      assert.deepEqual(steers, []);
+      assert.deepEqual(followUps, []);
+    } finally {
+      dispose();
+    }
+  });
+
+  test("makeExecuteWorkflowTool sends explicit steer delivery to live handles", async () => {
+    const runId = `stage-tool-send-steer-live-${Date.now()}`;
+    store.recordRunStart(makeInflightRun(runId));
+    store.recordStageStart(runId, { id: "stage-steer-live", name: "ask", status: "running", parentIds: [], toolEvents: [] });
+    const { followUps, prompts, steers, dispose } = registerLiveStageHandle(runId, "stage-steer-live", { isStreaming: true });
+    const handler = makeToolHandler();
+
+    try {
+      const result = await handler({ action: "send", runId, stageId: "ask", delivery: "steer", text: "adjust course" }, {} as never);
+
+      assert.equal(result.action, "send");
+      const send = result as { action: string; delivery: string; status: string };
+      assert.equal(send.delivery, "steer");
+      assert.equal(send.status, "ok");
+      assert.deepEqual(steers, ["adjust course"]);
+      assert.deepEqual(prompts, []);
+      assert.deepEqual(followUps, []);
     } finally {
       dispose();
     }
