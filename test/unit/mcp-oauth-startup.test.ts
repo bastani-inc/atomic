@@ -40,8 +40,8 @@ afterEach(async () => {
 test("MCP session startup leaves OAuth callback handling lazy", async () => {
   const tempDir = mkdtempSync(join(tmpdir(), "atomic-mcp-oauth-startup-"));
   const configPath = join(tempDir, "mcp.json");
-  const oauthServer = { url: "https://example.invalid/mcp" } satisfies ServerEntry;
-  writeFileSync(configPath, JSON.stringify({ mcpServers: { oauthServer } }));
+  const remoteServer = { url: "https://example.invalid/mcp" } satisfies ServerEntry;
+  writeFileSync(configPath, JSON.stringify({ mcpServers: { remote: remoteServer } }));
   process.chdir(tempDir);
   process.env.ATOMIC_CODING_AGENT_DIR = join(tempDir, "agent");
   process.env.MCP_DIRECT_TOOLS = "__none__";
@@ -49,8 +49,8 @@ test("MCP session startup leaves OAuth callback handling lazy", async () => {
   saveMetadataCache({
     version: 1,
     servers: {
-      oauthServer: {
-        configHash: computeServerHash(oauthServer),
+      remote: {
+        configHash: computeServerHash(remoteServer),
         tools: [],
         resources: [],
         cachedAt: Date.now(),
