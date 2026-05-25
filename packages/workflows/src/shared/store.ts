@@ -53,6 +53,14 @@ export interface PromptAnswerRecord {
   readonly answeredAt: number;
 }
 
+export interface ResolveStagePendingPromptOptions {
+  /**
+   * Whether to retain the response in the live-only prompt answer ledger for
+   * continuation replay. Abort/default resolutions should set this to false.
+   */
+  readonly recordAnswer?: boolean;
+}
+
 export interface Store {
   runs(): readonly RunSnapshot[];
   notices(): readonly WorkflowNotice[];
@@ -128,6 +136,7 @@ export interface Store {
     stageId: string,
     promptId: string,
     response: unknown,
+    options?: ResolveStagePendingPromptOptions,
   ): boolean;
   /** Wait for a stage/node-scoped HIL prompt to resolve. */
   awaitStagePendingPrompt(runId: string, stageId: string, promptId: string): Promise<unknown>;
@@ -525,6 +534,7 @@ export function createStore(): Store {
       stageId: string,
       promptId: string,
       response: unknown,
+      options: ResolveStagePendingPromptOptions = {},
     ): boolean {
       const run = findRun(runId);
       if (!run) return false;
@@ -532,15 +542,20 @@ export function createStore(): Store {
       if (!stage) return false;
       const pending = stage.pendingPrompt;
       if (!pending || pending.id !== promptId) return false;
-      _stagePromptAnswers.set(stagePromptAnswerKey(runId, stageId), {
-        runId,
-        stageId,
-        promptId,
-        kind: pending.kind,
-        value: response,
-        answeredAt: Date.now(),
-      });
-      stage.promptAnswerState = "available";
+      if (options.recordAnswer !== false) {
+        _stagePromptAnswers.set(stagePromptAnswerKey(runId, stageId), {
+          runId,
+          stageId,
+          promptId,
+          kind: pending.kind,
+          value: response,
+          answeredAt: Date.now(),
+        });
+        stage.promptAnswerState = "available";
+      } else {
+        _stagePromptAnswers.delete(stagePromptAnswerKey(runId, stageId));
+        delete stage.promptAnswerState;
+      }
       stage.pendingPrompt = undefined;
       if (stage.status === "awaiting_input") {
         stage.status = "running";

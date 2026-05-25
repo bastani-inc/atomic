@@ -199,6 +199,8 @@ Input overrides are bare `key=value` tokens (no leading `--`). Values are JSON-p
 
 Workflows always run as **background tasks** — the chat editor stays free while a run executes. Press **F2** (or `/workflow connect <run-id>`) to attach to the live graph viewer; HIL prompts (`ctx.ui.input/confirm/select/editor`) appear as awaiting-input graph nodes. Press Enter on the node to answer locally, never as a modal dialog over the chat.
 
+Prompt answer replay is live-memory only. `StageSnapshot.promptAnswerState` reports whether continuation can replay a prompt answer (`available`), must ask again because the private ledger entry is gone (`unavailable`), or must ask again because multiple matching prompt nodes are ambiguous (`ambiguous`). Raw answers stay in a private `PromptAnswerRecord` ledger and are never serialized to snapshots or persistence.
+
 ### `workflow` tool (LLM-callable)
 
 ```json

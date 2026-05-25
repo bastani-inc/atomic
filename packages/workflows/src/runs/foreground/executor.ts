@@ -234,6 +234,8 @@ function promptDescriptorHash(descriptor: PromptDescriptor): string {
     kind: descriptor.kind,
     message: descriptor.message,
     choices: descriptor.choices ?? [],
+    // Include input/editor initial text because it is visible prompt context;
+    // changing it should not replay a stale answer from the same callsite.
     initial: descriptor.initial ?? null,
   });
 }
@@ -1740,8 +1742,13 @@ export async function run<TInputs extends Record<string, unknown>>(
       try {
         const response = await new Promise<unknown>((resolve, reject) => {
           const onAbort = (): void => {
-            activeStore.resolveStagePendingPrompt(runId, stageId, prompt.id, fallbackForPromptDescriptor(descriptor));
-            activeStore.clearStagePromptAnswer(runId, stageId);
+            activeStore.resolveStagePendingPrompt(
+              runId,
+              stageId,
+              prompt.id,
+              fallbackForPromptDescriptor(descriptor),
+              { recordAnswer: false },
+            );
             reject(hilAbortError(ownController.signal));
           };
           if (ownController.signal.aborted) {
@@ -1900,7 +1907,7 @@ export async function run<TInputs extends Record<string, unknown>>(
         const rejectReplayMutation = (action: string): never => {
           throw new Error(`pi-workflows: replayed stage "${name}" cannot ${action}`);
         };
-        const replayContext: StageContext & Pick<InternalStageContext, "__modelFallbackMeta"> = {
+        const replayContext: InternalStageContext = {
           name,
           prompt: replayText,
           complete: replayText,
@@ -1922,11 +1929,24 @@ export async function run<TInputs extends Record<string, unknown>>(
           compact: async () => rejectReplayMutation("compact"),
           abortCompaction: () => rejectReplayMutation("abort compaction"),
           abort: async () => rejectReplayMutation("abort"),
+          __dispose: async () => {},
+          __getLastAssistantText: () => replayResult,
+          getLastAssistantText: () => replayResult,
+          __ensureSession: async () => {},
+          __sessionMeta: () => ({
+            sessionId: replaySource.sessionId,
+            sessionFile: replaySource.sessionFile,
+          }),
+          __agentSession: () => undefined,
+          __pendingMessageCount: () => 0,
           __modelFallbackMeta: () => ({
             ...(replaySource.model !== undefined ? { model: replaySource.model } : {}),
             ...(replaySource.attemptedModels !== undefined ? { attemptedModels: replaySource.attemptedModels } : {}),
             ...(replaySource.modelAttempts !== undefined ? { modelAttempts: replaySource.modelAttempts } : {}),
           }),
+          __requestPause: async () => rejectReplayMutation("pause"),
+          __resume: async () => rejectReplayMutation("resume"),
+          __isPaused: () => false,
         };
         return replayContext;
       }

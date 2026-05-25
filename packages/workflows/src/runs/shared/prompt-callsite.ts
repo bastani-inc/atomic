@@ -5,7 +5,7 @@
  * selected frame is hashed by the executor and never persisted in raw form.
  */
 
-import { relative, win32 } from "node:path";
+import { relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export interface PromptCallsiteFrame {
@@ -41,8 +41,6 @@ export function normalizeStackPath(framePath: string): string {
 
   const cwd = normalizeSlashes(process.cwd());
   if (normalized.startsWith(`${cwd}/`)) {
-    normalized = normalizeSlashes(relative(process.cwd(), normalized));
-  } else if (normalized.startsWith("/") && !win32.isAbsolute(normalized)) {
     normalized = normalizeSlashes(relative(process.cwd(), normalized));
   }
 

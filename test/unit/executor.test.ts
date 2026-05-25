@@ -726,6 +726,13 @@ describe("executor.run", () => {
       })
       .compile();
 
+    const observedPromptAnswerStates: Array<unknown> = [];
+    const unsubscribe = st.subscribe((snapshot) => {
+      const promptStage = snapshot.runs
+        .flatMap((candidate) => candidate.stages)
+        .find((stage) => stage.name === "input");
+      if (promptStage !== undefined) observedPromptAnswerStates.push(promptStage.promptAnswerState);
+    });
     const runPromise = run(def, {}, {
       store: st,
       signal: controller.signal,
@@ -735,6 +742,7 @@ describe("executor.run", () => {
 
     controller.abort(new Error("workflow killed"));
     const result = await runPromise;
+    unsubscribe();
 
     assert.equal(result.status, "killed");
     assert.equal(st.getStagePromptAnswer(prompt.runId, prompt.stageId), undefined);
@@ -744,6 +752,7 @@ describe("executor.run", () => {
     assert.equal(stage.status, "skipped");
     assert.equal(stage.skippedReason, "run-aborted");
     assert.equal(stage.promptAnswerState, undefined);
+    assert.equal(observedPromptAnswerStates.includes("available"), false);
   });
 
   test("continuation maps replayed ctx.ui prompt nodes before downstream stages", async () => {

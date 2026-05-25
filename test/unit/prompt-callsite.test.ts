@@ -81,6 +81,16 @@ describe("prompt callsite stack frame filtering", () => {
     assert.equal(isWorkflowRuntimeFrame("packages/coding-agent/dist/builtin/workflows/builtin/ralph.ts"), false);
   });
 
+  test("selects an author frame from a real Bun Error stack", () => {
+    function captureAuthorFrame(): string | undefined {
+      return selectPromptCallsiteFrame(new Error().stack ?? "");
+    }
+
+    const frame = captureAuthorFrame();
+
+    assert.match(frame ?? "", /test\/unit\/prompt-callsite\.test\.ts:\d+:\d+$/);
+  });
+
   test("selects different author callsites behind packaged runtime frames", () => {
     const stackForLine10 = [
       "Error",
