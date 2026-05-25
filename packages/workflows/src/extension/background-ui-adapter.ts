@@ -19,6 +19,10 @@
  * rejects via `recordRunEnd` so the executor can finalise cleanly — no leaked
  * pending promises.
  *
+ * @internal Legacy fallback retained for tests and non-executor callers.
+ * TODO(workflows): delete after all tests and fallback entrypoints migrate to
+ * executor-owned synthetic prompt nodes.
+ *
  * cross-ref:
  *   src/shared/store-types.ts PendingPrompt
  *   src/shared/store.ts recordPendingPrompt / resolvePendingPrompt / awaitPendingPrompt

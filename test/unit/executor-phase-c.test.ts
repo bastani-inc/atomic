@@ -254,11 +254,7 @@ describe("executor input resolution — Phase C", () => {
 // ---------------------------------------------------------------------------
 
 describe("executor adapter errors — Phase C", () => {
-  test("prompt adapter absent — stage fails with error message", async () => {
-    // NODE_ENV=test enables stub in stage-runner; force non-test to get real error
-    // Instead: don't set adapters, verify via result (in test env, stub is used — test directly)
-    // To test the real "no adapter" path: pass empty adapters object without using NODE_ENV
-    // complete — no adapter, no stub → must throw
+  test("complete adapters absent — stage fails with complete-specific error message", async () => {
     const def = defineWorkflow("phaseC-no-complete")
       .run(async (ctx) => {
         await ctx.stage("s").complete("summarize");
@@ -268,7 +264,11 @@ describe("executor adapter errors — Phase C", () => {
 
     const result = await run(def, {}, { adapters: {}, store: createStore() });
     assert.equal(result.status, "failed");
-    assert.ok(result.error!.includes("prompt adapter not configured"));
+    assert.ok(
+      result.error!.includes(
+        "ctx.complete requires either RunOpts.adapters.complete or RunOpts.adapters.agentSession",
+      ),
+    );
   });
 
 

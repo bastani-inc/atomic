@@ -193,6 +193,8 @@ function makePendingPrompt(overrides: Partial<PendingPrompt> = {}): PendingPromp
 class FakePromptEditor implements EditorComponent {
   text = "";
   focused = false;
+  disposeCalls = 0;
+  readonly receivedInput: string[] = [];
   borderColor?: (str: string) => string;
   onSubmit?: (text: string) => void;
   onChange?: (text: string) => void;
@@ -202,6 +204,7 @@ class FakePromptEditor implements EditorComponent {
   }
 
   handleInput(data: string): void {
+    this.receivedInput.push(data);
     if (data === "\r" || data === "\n") {
       this.onSubmit?.(this.text);
       return;
@@ -218,6 +221,10 @@ class FakePromptEditor implements EditorComponent {
 
   setText(text: string): void {
     this.text = text;
+  }
+
+  dispose(): void {
+    this.disposeCalls += 1;
   }
 }
 
@@ -310,7 +317,47 @@ describe("StageChatView", () => {
 
     assert.equal(await pending, "seed!");
     assert.equal(store.runs()[0]?.stages[0]?.pendingPrompt, undefined);
+    assert.equal(createdEditor?.disposeCalls, 1);
     view.dispose();
+  });
+
+  test("lets the host prompt editor handle page keys", () => {
+    const store = createStore();
+    setupRun(store, "run-1", "stage-a");
+    const prompt = makePendingPrompt({
+      kind: "editor",
+      initial: "seed",
+      message: "Edit a long response before continuing.",
+    });
+    assert.equal(store.recordStagePendingPrompt("run-1", "stage-a", prompt), true);
+    const { handle } = makeHandle();
+    let createdEditor: FakePromptEditor | undefined;
+    const view = new StageChatView({
+      store,
+      graphTheme: deriveGraphTheme({}),
+      runId: "run-1",
+      stageId: "stage-a",
+      workflowName: "test-wf",
+      handle,
+      onDetach: () => {},
+      onClose: () => {},
+      piTui: { requestRender: () => {}, terminal: { rows: 12, columns: 80 } } as unknown as TUI,
+      piTheme: {},
+      piKeybindings: makeFakeKeybindings(),
+      piEditorFactory: () => {
+        createdEditor = new FakePromptEditor();
+        return createdEditor;
+      },
+      getViewportRows: () => 12,
+    });
+
+    view.render(80);
+    view.handleInput("pageUp");
+    view.handleInput("pageDown");
+
+    assert.deepEqual(createdEditor?.receivedInput, ["pageUp", "pageDown"]);
+    view.dispose();
+    assert.equal(createdEditor?.disposeCalls, 1);
   });
 
   test("scrolls long structured stage pending prompts", () => {

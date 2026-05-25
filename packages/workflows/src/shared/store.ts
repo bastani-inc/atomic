@@ -131,7 +131,11 @@ export interface Store {
   ): boolean;
   /** Wait for a stage/node-scoped HIL prompt to resolve. */
   awaitStagePendingPrompt(runId: string, stageId: string, promptId: string): Promise<unknown>;
-  /** Return the live-only prompt answer record for a completed prompt stage, if still available. */
+  /**
+   * Return the live-only prompt answer record for a completed prompt stage, if
+   * still available. The returned value may contain secrets and must never be
+   * logged, serialized, or copied into snapshots/persistence.
+   */
   getStagePromptAnswer(runId: string, stageId: string): PromptAnswerRecord | undefined;
   /** Clear the live-only prompt answer record for a stage. Primarily used by tests/cleanup. */
   clearStagePromptAnswer(runId: string, stageId: string): void;
@@ -582,7 +586,17 @@ export function createStore(): Store {
     },
 
     clearStagePromptAnswer(runId: string, stageId: string): void {
-      _stagePromptAnswers.delete(stagePromptAnswerKey(runId, stageId));
+      const removed = _stagePromptAnswers.delete(stagePromptAnswerKey(runId, stageId));
+      const run = findRun(runId);
+      const stage = run ? findStage(run, stageId) : undefined;
+      const clearAvailabilityMarker = stage?.promptAnswerState === "available";
+      if (clearAvailabilityMarker) {
+        delete stage.promptAnswerState;
+      }
+      if (removed || clearAvailabilityMarker) {
+        _version++;
+        notify();
+      }
     },
 
     recordStageSession(

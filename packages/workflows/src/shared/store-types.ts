@@ -63,7 +63,7 @@ export interface StageSnapshot {
   readonly id: string;
   readonly name: string;
   status: StageStatus;
-  readonly parentIds: readonly string[];
+  parentIds: readonly string[];
   startedAt?: number;
   endedAt?: number;
   durationMs?: number;

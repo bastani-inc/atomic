@@ -190,6 +190,29 @@ describe("store.recordStagePendingPrompt", () => {
     assert.equal(s.resolveStagePendingPrompt("r1", "s2", "p2", "green"), true);
     assert.equal(await w2, "green");
   });
+
+  test("removeRun purges prompt answer ledger entries for every stage in the run", async () => {
+    const s = createStore();
+    s.recordRunStart(makeRun("r1"));
+    s.recordStageStart("r1", makeStage("s1"));
+    s.recordStageStart("r1", makeStage("s2"));
+
+    assert.equal(s.recordStagePendingPrompt("r1", "s1", makePrompt("p1")), true);
+    assert.equal(s.recordStagePendingPrompt("r1", "s2", makePrompt("p2")), true);
+    const w1 = s.awaitStagePendingPrompt("r1", "s1", "p1");
+    const w2 = s.awaitStagePendingPrompt("r1", "s2", "p2");
+
+    assert.equal(s.resolveStagePendingPrompt("r1", "s1", "p1", "blue"), true);
+    assert.equal(s.resolveStagePendingPrompt("r1", "s2", "p2", "green"), true);
+    assert.equal(await w1, "blue");
+    assert.equal(await w2, "green");
+    assert.equal(s.getStagePromptAnswer("r1", "s1")?.value, "blue");
+    assert.equal(s.getStagePromptAnswer("r1", "s2")?.value, "green");
+
+    assert.equal(s.removeRun("r1"), true);
+    assert.equal(s.getStagePromptAnswer("r1", "s1"), undefined);
+    assert.equal(s.getStagePromptAnswer("r1", "s2"), undefined);
+  });
 });
 
 describe("store.resolvePendingPrompt", () => {

@@ -481,8 +481,11 @@ export class StageChatView implements Component, Focusable {
   }
 
   private _disposePromptEditor(): void {
+    const editor = this.promptEditor;
     this.promptEditor = null;
     this.promptEditorPromptId = null;
+    const disposable = editor as (EditorComponent & { dispose?: () => void }) | null;
+    disposable?.dispose?.();
   }
 
   private _resolvePromptResponse(promptId: string, response: unknown): void {
@@ -981,7 +984,7 @@ export class StageChatView implements Component, Focusable {
       return true;
     }
     if (this.promptState) {
-      if (this._handlePromptScrollInput(data)) return true;
+      if (this._handlePromptScrollInput(data, this.promptEditor === null)) return true;
       this._handlePromptInput(data);
       return true;
     }
@@ -1015,13 +1018,14 @@ export class StageChatView implements Component, Focusable {
     return this.chatHost.handleInput(data);
   }
 
-  private _handlePromptScrollInput(data: string): boolean {
+  private _handlePromptScrollInput(data: string, includeKeyboard = true): boolean {
     const wheelDeltaRows = this._mouseWheelDeltaRows(data);
     if (wheelDeltaRows !== 0) {
       this._scrollPromptBy(wheelDeltaRows);
       return true;
     }
     if (this._isMouseSequence(data)) return true;
+    if (!includeKeyboard) return false;
     if (matchesKey(data, "pageUp")) {
       this._scrollPromptBy(-this._promptPageSize());
       return true;

@@ -697,6 +697,36 @@ describe("executor.run", () => {
     assert.deepEqual(completedCapture.parentIds, [promptStage.id]);
   });
 
+  test("aborting a pending ctx.ui prompt node does not keep a replayable answer", async () => {
+    const st = createStore();
+    const controller = new AbortController();
+    const def = defineWorkflow("prompt-node-abort-answer-ledger-wf")
+      .run(async (ctx) => {
+        await ctx.ui.input("Secret token?");
+        return {};
+      })
+      .compile();
+
+    const runPromise = run(def, {}, {
+      store: st,
+      signal: controller.signal,
+      usePromptNodesForUi: true,
+    });
+    const prompt = await waitForExecutorStagePendingPrompt(st);
+
+    controller.abort(new Error("workflow killed"));
+    const result = await runPromise;
+
+    assert.equal(result.status, "killed");
+    assert.equal(st.getStagePromptAnswer(prompt.runId, prompt.stageId), undefined);
+    const stage = st.runs()
+      .find((candidate) => candidate.id === prompt.runId)!
+      .stages.find((candidate) => candidate.id === prompt.stageId)!;
+    assert.equal(stage.status, "skipped");
+    assert.equal(stage.skippedReason, "run-aborted");
+    assert.equal(stage.promptAnswerState, undefined);
+  });
+
   test("continuation maps replayed ctx.ui prompt nodes before downstream stages", async () => {
     const st = createStore();
     const def = defineWorkflow("resume-prompt-node-parent-wf")
@@ -1498,7 +1528,11 @@ describe("executor.run", () => {
 
     const wfResult = await run(def, {}, { store: createStore() });
     assert.equal(wfResult.status, "failed");
-    assert.ok(wfResult.error!.includes("prompt adapter not configured"));
+    assert.ok(
+      wfResult.error!.includes(
+        "ctx.complete requires either RunOpts.adapters.complete or RunOpts.adapters.agentSession",
+      ),
+    );
   });
 
   test("resolves inputs with schema defaults", async () => {

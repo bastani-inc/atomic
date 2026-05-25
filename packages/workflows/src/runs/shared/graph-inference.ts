@@ -37,6 +37,17 @@ export class GraphFrontierTracker {
   }
 
   /**
+   * Snapshot the current frontier without registering or mutating a stage.
+   *
+   * Use this when an already-spawned stage needs its parents refreshed before
+   * it starts; `onSpawn` must only be called for the initial `ctx.stage()`
+   * invocation that creates the graph node.
+   */
+  currentParents(): string[] {
+    return Array.from(this.frontier);
+  }
+
+  /**
    * Replace the recorded parents for a stage before it settles.
    *
    * Continuation replay uses source-run topology as authoritative: a replayed

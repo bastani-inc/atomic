@@ -1,3 +1,10 @@
+/**
+ * Prompt replay keys include a normalized workflow-author callsite so two
+ * `ctx.ui.*` prompts with identical descriptors can still replay the matching
+ * answer after continuation. Runtime/framework frames are filtered out; the
+ * selected frame is hashed by the executor and never persisted in raw form.
+ */
+
 import { relative, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 

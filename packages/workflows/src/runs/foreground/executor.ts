@@ -243,6 +243,8 @@ function promptReplayKey(descriptor: PromptDescriptor): string {
 }
 
 function promptCallsiteHash(): string {
+  // Capturing an Error stack is intentional here: HIL prompts are an
+  // interactive slow path, and the author callsite is part of the replay key.
   const frame = selectPromptCallsiteFrame(new Error().stack ?? "") ?? "unknown";
   return stableHash(frame);
 }
@@ -1506,7 +1508,7 @@ export async function run<TInputs extends Record<string, unknown>>(
     runSnapshot.stages.find((stage) => stage.id === stageId);
 
   const setStageParentIds = (stage: StageSnapshot, parentIds: readonly string[]): void => {
-    (stage as { parentIds: readonly string[] }).parentIds = Object.freeze([...parentIds]);
+    stage.parentIds = Object.freeze([...parentIds]);
   };
 
   const hasAncestor = (stage: StageSnapshot, ancestorId: string): boolean => {
@@ -1739,6 +1741,7 @@ export async function run<TInputs extends Record<string, unknown>>(
         const response = await new Promise<unknown>((resolve, reject) => {
           const onAbort = (): void => {
             activeStore.resolveStagePendingPrompt(runId, stageId, prompt.id, fallbackForPromptDescriptor(descriptor));
+            activeStore.clearStagePromptAnswer(runId, stageId);
             reject(hilAbortError(ownController.signal));
           };
           if (ownController.signal.aborted) {
@@ -1972,7 +1975,7 @@ export async function run<TInputs extends Record<string, unknown>>(
         unregisterStageHandle();
         await disposeInnerContext();
       };
-      const releaseLiveHandleWhenIdle = async (): Promise<void> => {
+      const dropStageControlForCompletion = async (): Promise<void> => {
         // Completion removes the stage from workflow-level pause/resume and
         // dependency cascades, but must not turn the attached/reopenable chat
         // into a read-only archive. Keep the direct live handle registered for
@@ -2106,7 +2109,7 @@ export async function run<TInputs extends Record<string, unknown>>(
         markSkippedForParallelFailFast();
         finalizeStageSnapshot();
         void innerCtx.abort().catch(() => {});
-        void releaseLiveHandleWhenIdle().catch(() => {});
+        void dropStageControlForCompletion().catch(() => {});
       };
       stageFailFastScope?.activeStages.set(stageId, { skip: skipForParallelFailFast });
 
@@ -2161,8 +2164,9 @@ export async function run<TInputs extends Record<string, unknown>>(
         }
 
         if (opts.continuation === undefined && stageSnapshot.startedAt === undefined) {
-          const actualParentIds = tracker.onSpawn(stageId, name);
+          const actualParentIds = tracker.currentParents();
           if (!sameStringSet(actualParentIds, stageSnapshot.parentIds)) {
+            tracker.replaceParents(stageId, actualParentIds);
             setStageParentIds(stageSnapshot, actualParentIds);
           }
         }
@@ -2234,7 +2238,7 @@ export async function run<TInputs extends Record<string, unknown>>(
           // from run-level pause/resume and cascade-pause lookups immediately,
           // while retaining the direct chat handle so completed nodes can be
           // reopened and continued instead of becoming read-only archives.
-          await releaseLiveHandleWhenIdle().catch(() => {});
+          await dropStageControlForCompletion().catch(() => {});
           limiter.release();
         }
       };

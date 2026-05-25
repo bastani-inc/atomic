@@ -157,7 +157,14 @@ function stripWorkflowOnlyOptions(options: StageOptions | undefined): CreateAgen
   return sessionOptions as CreateAgentSessionOptions;
 }
 
-function missingAdapter(): never {
+type AgentSessionConsumer = "prompt" | "complete";
+
+function missingAdapter(consumer: AgentSessionConsumer): never {
+  if (consumer === "complete") {
+    throw new Error(
+      "pi-workflows: ctx.complete requires either RunOpts.adapters.complete or RunOpts.adapters.agentSession",
+    );
+  }
   throw new Error(
     "pi-workflows: prompt adapter not configured — provide an AgentSessionAdapter via RunOpts.adapters.agentSession",
   );
@@ -457,27 +464,30 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
     return created;
   }
 
-  async function createSession(candidate: WorkflowResolvedModelCandidate | undefined): Promise<StageSessionRuntime> {
+  async function createSession(
+    candidate: WorkflowResolvedModelCandidate | undefined,
+    consumer: AgentSessionConsumer,
+  ): Promise<StageSessionRuntime> {
     const created = adapters.agentSession
       ? await adapters.agentSession.create(stripWorkflowOnlyOptions(stageOptionsForCandidate(candidate)) as StageSessionCreateOptions, {
         ...meta,
         stageOptions: stageOptionsForCandidate(candidate),
       })
-      : missingAdapter();
+      : missingAdapter(consumer);
     return attachSession(created);
   }
 
-  async function ensureSession(): Promise<StageSessionRuntime> {
+  async function ensureSession(consumer: AgentSessionConsumer = "prompt"): Promise<StageSessionRuntime> {
     if (disposed) throw new Error(`pi-workflows: stage "${stageName}" session has been disposed`);
     if (!sessionPromise) {
       sessionPromise = (async () => {
-        if (!hasExplicitModelFallbackConfig) return createSession(undefined);
+        if (!hasExplicitModelFallbackConfig) return createSession(undefined, consumer);
         const candidates = await modelCandidates();
         const first = candidates[0];
-        if (first === undefined) return createSession(undefined);
+        if (first === undefined) return createSession(undefined, consumer);
         activeCandidateIndex = 0;
         selectedModel = first.id;
-        return createSession(first);
+        return createSession(first, consumer);
       })();
     }
     return sessionPromise;
@@ -531,15 +541,19 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
     }
   }
 
-  async function promptWithFallback(text: string, sdkOptions: PromptOptions | undefined): Promise<void> {
+  async function promptWithFallback(
+    text: string,
+    sdkOptions: PromptOptions | undefined,
+    consumer: AgentSessionConsumer = "prompt",
+  ): Promise<void> {
     if (!hasExplicitModelFallbackConfig) {
-      await promptWithPauseResume(await ensureSession(), text, sdkOptions);
+      await promptWithPauseResume(await ensureSession(consumer), text, sdkOptions);
       return;
     }
 
     const candidates = await modelCandidates();
     if (candidates.length === 0) {
-      await promptWithPauseResume(await ensureSession(), text, sdkOptions);
+      await promptWithPauseResume(await ensureSession(consumer), text, sdkOptions);
       return;
     }
 
@@ -548,7 +562,7 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
       const candidate = candidates[index]!;
       const activeSession = session && activeCandidateIndex === index
         ? session
-        : await createSession(candidate);
+        : await createSession(candidate, consumer);
       activeCandidateIndex = index;
       selectedModel = candidate.id;
       try {
@@ -608,7 +622,10 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
           "pi-workflows: complete options require a CompleteAdapter via RunOpts.adapters.complete",
         );
       }
-      await promptWithFallback(text, undefined);
+      // Intentional fallback: when a CompleteAdapter is not configured,
+      // `ctx.complete()` can still use the stage AgentSession for simple text
+      // completions. Completion-specific options require the dedicated adapter.
+      await promptWithFallback(text, undefined, "complete");
       lastAssistantText = lastAssistantTextFromSession(session, lastAssistantText) ?? "";
       return lastAssistantText;
     },
