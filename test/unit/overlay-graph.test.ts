@@ -1065,30 +1065,33 @@ describe("GraphView animation timer", () => {
     // locks at the peak colour by design (see `pickBorder`), so we
     // need at least two nodes — focus stays on the first and the
     // second carries the animation we observe.
-    const startedAt = Date.now() - 100;
-    const stages: StageSnapshot[] = [
-      { ...makeStage("A"), status: "running" as const, startedAt },
-      { ...makeStage("B", ["A"]), status: "running" as const, startedAt },
-    ];
-    const snap = makeSnap(stages);
-    const store = makeStore(snap);
-    const view = new GraphView({
-      mode: "overlay",
-      runId: "run-1",
-      store,
-      graphTheme: defaultTheme,
-    });
-    const frameA = view.render(96).join("\n");
-    // Wait long enough to land at a clearly different point in the
-    // 2s pulse cycle (~25% of period). The sine eased lerp inside
-    // `pickBorder` produces a visibly different RGB triple.
-    const sleepUntil = Date.now() + 500;
-    while (Date.now() < sleepUntil) {
-      // busy-wait to advance Date.now() without yielding the event
-      // loop; we want a synchronous render with a newer timestamp.
+    const originalNow = Date.now;
+    let view: GraphView | undefined;
+    try {
+      Date.now = () => 4_000;
+      const startedAt = 0;
+      const stages: StageSnapshot[] = [
+        { ...makeStage("A"), status: "running" as const, startedAt },
+        { ...makeStage("B", ["A"]), status: "running" as const, startedAt },
+      ];
+      const snap = makeSnap(stages);
+      const store = makeStore(snap);
+      view = new GraphView({
+        mode: "overlay",
+        runId: "run-1",
+        store,
+        graphTheme: defaultTheme,
+      });
+      const frameA = view.render(96).join("\n");
+      // Advance to a deterministic point in the 2s pulse cycle (~25%
+      // of period) without crossing a duration-formatting boundary,
+      // so the frame delta specifically covers the border pulse.
+      Date.now = () => 4_500;
+      const frameB = view.render(96).join("\n");
+      assert.notEqual(frameA, frameB, "pulse phase must change between renders");
+    } finally {
+      view?.dispose();
+      Date.now = originalNow;
     }
-    const frameB = view.render(96).join("\n");
-    view.dispose();
-    assert.notEqual(frameA, frameB, "pulse phase must change between renders");
   });
 });
