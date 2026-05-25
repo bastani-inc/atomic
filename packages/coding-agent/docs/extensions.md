@@ -133,7 +133,7 @@ Additional paths via `settings.json`:
 }
 ```
 
-To share extensions via npm or git as Atomic packages, see [packages.md](packages.md).
+To share extensions via npm or git as Atomic packages, see [Atomic packages](/packages).
 
 ## Available Imports
 
@@ -368,7 +368,7 @@ pi.on("resources_discover", async (event, _ctx) => {
 
 ### Session Events
 
-See [Session Format](session-format.md) for session storage internals and the SessionManager API.
+See [Session Format](/session-format) for session storage internals and the SessionManager API.
 
 #### session_start
 
@@ -420,7 +420,7 @@ Do cleanup work in `session_shutdown`, then reestablish any in-memory state in `
 
 #### session_before_compact / session_compact
 
-Fired on compaction. See [compaction.md](compaction.md) for details.
+Fired on compaction. See [Compaction](/compaction) for details.
 
 ```typescript
 pi.on("session_before_compact", async (event, ctx) => {
@@ -447,7 +447,7 @@ pi.on("session_compact", async (event, ctx) => {
 
 #### session_before_tree / session_tree
 
-Fired on `/tree` navigation. See [Sessions](sessions.md) for tree navigation concepts.
+Fired on `/tree` navigation. See [Sessions](/sessions) for tree navigation concepts.
 
 ```typescript
 pi.on("session_before_tree", async (event, ctx) => {
@@ -601,7 +601,7 @@ pi.on("tool_execution_end", async (event, ctx) => {
 
 #### context
 
-Fired before each LLM call. Modify messages non-destructively. See [Session Format](session-format.md) for message types.
+Fired before each LLM call. Modify messages non-destructively. See [Session Format](/session-format) for message types.
 
 ```typescript
 pi.on("context", async (event, ctx) => {
@@ -872,7 +872,7 @@ UI methods for user interaction. See [Custom UI](#custom-ui) for full details.
 
 ### ctx.hasUI
 
-`false` in print mode (`-p`) and JSON mode. `true` in interactive and RPC mode. In RPC mode, dialog methods (`select`, `confirm`, `input`, `editor`) work via the extension UI sub-protocol, and fire-and-forget methods (`notify`, `setStatus`, `setWidget`, `setTitle`, `setEditorText`) emit requests to the client. Some TUI-specific methods are no-ops or return defaults (see [rpc.md](rpc.md#extension-ui-protocol)).
+`false` in print mode (`-p`) and JSON mode. `true` in interactive and RPC mode. In RPC mode, dialog methods (`select`, `confirm`, `input`, `editor`) work via the extension UI sub-protocol, and fire-and-forget methods (`notify`, `setStatus`, `setWidget`, `setTitle`, `setEditorText`) emit requests to the client. Some TUI-specific methods are no-ops or return defaults (see [RPC mode](/rpc#extension-ui-protocol)).
 
 ### ctx.cwd
 
@@ -880,7 +880,7 @@ Current working directory.
 
 ### ctx.sessionManager
 
-Read-only access to session state. See [Session Format](session-format.md) for the full SessionManager API and entry types.
+Read-only access to session state. See [Session Format](/session-format) for the full SessionManager API and entry types.
 
 For `tool_call`, this state is synchronized through the current assistant message before handlers run. In parallel tool execution mode it is still not guaranteed to include sibling tool results from the same assistant message.
 
@@ -1456,7 +1456,7 @@ Register a custom TUI renderer for messages with your `customType`. See [Custom 
 
 ### pi.registerShortcut(shortcut, options)
 
-Register a keyboard shortcut. See [keybindings.md](keybindings.md) for the shortcut format and built-in keybindings.
+Register a keyboard shortcut. See [Keybindings](/keybindings) for the shortcut format and built-in keybindings.
 
 ```typescript
 pi.registerShortcut("ctrl+shift+p", {
@@ -1521,7 +1521,7 @@ Typical `sourceInfo.source` values:
 
 ### pi.setModel(model)
 
-Set the current model. Returns `false` if no API key is available for the model. See [models.md](models.md) for configuring custom models.
+Set the current model. Returns `false` if no API key is available for the model. See [Custom models](/models) for configuring custom models.
 
 ```typescript
 const model = ctx.modelRegistry.find("anthropic", "claude-sonnet-4-5");
@@ -1619,7 +1619,7 @@ pi.registerProvider("corporate-ai", {
 - `oauth` - OAuth provider config for `/login` support. When provided, the provider appears in the login menu.
 - `streamSimple` - Custom streaming implementation for non-standard APIs.
 
-See [custom-provider.md](custom-provider.md) for advanced topics: custom streaming APIs, OAuth details, model definition reference.
+See [Custom providers](/custom-provider) for advanced topics: custom streaming APIs, OAuth details, model definition reference.
 
 ### pi.unregisterProvider(name)
 
@@ -1987,7 +1987,7 @@ export default function (pi: ExtensionAPI) {
 
 ### Custom Rendering
 
-Tools can provide `renderCall` and `renderResult` for custom TUI display. See [tui.md](tui.md) for the full component API and [tool-execution.ts](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/modes/interactive/components/tool-execution.ts) for how tool rows are composed.
+Tools can provide `renderCall` and `renderResult` for custom TUI display. See [TUI components](/tui) for the full component API and [tool-execution.ts](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/modes/interactive/components/tool-execution.ts) for how tool rows are composed.
 
 By default, tool output is wrapped in a `Box` that handles padding and background. A defined `renderCall` or `renderResult` must return a `Component`. If a slot renderer is not defined, `tool-execution.ts` uses fallback rendering for that slot.
 
@@ -2088,7 +2088,7 @@ Use namespaced keybinding ids:
 - Coding-agent ids use the `app.*` namespace, for example `app.tools.expand`, `app.editor.external`, `app.session.rename`
 - Shared TUI ids use the `tui.*` namespace, for example `tui.select.confirm`, `tui.select.cancel`, `tui.input.tab`
 
-For the exhaustive list of keybinding ids and defaults, see [keybindings.md](keybindings.md). `keybindings.json` uses those same namespaced ids.
+For the exhaustive list of keybinding ids and defaults, see [Keybindings](/keybindings). `keybindings.json` uses those same namespaced ids.
 
 Custom editors and `ctx.ui.custom()` components receive `keybindings: KeybindingsManager` as an injected argument. They should use that injected manager directly instead of calling `getKeybindings()` or `setKeybindings()`.
 
@@ -2114,7 +2114,7 @@ If a slot renderer is not defined or throws:
 
 Extensions can interact with users via `ctx.ui` methods and customize how messages/tools render.
 
-**For custom components, see [tui.md](tui.md)** which has copy-paste patterns for:
+**For custom components, see [TUI components](/tui)** which has copy-paste patterns for:
 - Selection dialogs (SelectList)
 - Async operations with cancel (BorderedLoader)
 - Settings toggles (SettingsList)
@@ -2367,7 +2367,7 @@ The callback receives:
 - `keybindings` - App keybinding manager (for checking shortcuts)
 - `done(value)` - Call to close component and return value
 
-See [tui.md](tui.md) for the full component API.
+See [TUI components](/tui) for the full component API.
 
 #### Overlay Mode (Experimental)
 
@@ -2393,7 +2393,7 @@ const result = await ctx.ui.custom<string | null>(
 );
 ```
 
-See [tui.md](tui.md) for the full `OverlayOptions` API and [overlay-qa-tests.ts](https://github.com/flora131/atomic/blob/main/packages/coding-agent/examples/extensions/overlay-qa-tests.ts) for examples.
+See [TUI components](/tui) for the full `OverlayOptions` API and [overlay-qa-tests.ts](https://github.com/flora131/atomic/blob/main/packages/coding-agent/examples/extensions/overlay-qa-tests.ts) for examples.
 
 ### Custom Editor
 
@@ -2444,7 +2444,7 @@ ctx.ui.setEditorComponent((tui, theme, keybindings) =>
 );
 ```
 
-See [tui.md](tui.md) Pattern 7 for a complete example with mode indicator.
+See [TUI components](/tui) Pattern 7 for a complete example with mode indicator.
 
 ### Message Rendering
 
@@ -2479,7 +2479,7 @@ pi.sendMessage({
 
 ### Theme Colors
 
-All render functions receive a `theme` object. See [themes.md](themes.md) for creating custom themes and the full color palette.
+All render functions receive a `theme` object. See [Themes](/themes) for creating custom themes and the full color palette.
 
 ```typescript
 // Foreground colors
@@ -2521,8 +2521,8 @@ const highlighted = highlightCode(code, lang, theme);
 | Mode | UI Methods | Notes |
 |------|-----------|-------|
 | Interactive | Full TUI | Normal operation |
-| RPC (`--mode rpc`) | JSON protocol | Host handles UI, see [rpc.md](rpc.md) |
-| JSON (`--mode json`) | No-op | Event stream to stdout, see [json.md](json.md) |
+| RPC (`--mode rpc`) | JSON protocol | Host handles UI, see [RPC mode](/rpc) |
+| JSON (`--mode json`) | No-op | Event stream to stdout, see [JSON mode](/json) |
 | Print (`-p`) | No-op | Extensions run but can't prompt |
 
 In non-interactive modes, check `ctx.hasUI` before using UI methods.

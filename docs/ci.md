@@ -12,6 +12,7 @@ No other workspace package is published. The companion packages under `packages/
 Pull request / push
   ├─ bun install --frozen-lockfile
   ├─ bun run typecheck
+  ├─ cd packages/coding-agent && bun run docs:check
   ├─ cd packages/coding-agent && bun run build
   ├─ bun run test:unit
   ├─ bun run test:integration
@@ -24,6 +25,7 @@ v<version> tag pushed
      ├─ resolve and validate the release tag
      ├─ bun install --frozen-lockfile
      ├─ bun run typecheck && bun run test:all
+     ├─ cd packages/coding-agent && bun run docs:check
      ├─ validate package metadata, synced versions, and private bundled packages
      ├─ scripts/build-binaries.sh (regular build + cross-compile 6 targets)
      ├─ validate dist/builtin contains all bundled extensions
@@ -76,11 +78,12 @@ Steps:
 2. Set up Bun.
 3. Install dependencies with `bun install --frozen-lockfile`.
 4. Run `bun run typecheck`.
-5. Build `@bastani/atomic` with `cd packages/coding-agent && bun run build`.
-6. Run `bun run test:unit`.
-7. Run `bun run test:integration`.
-8. Build the native release binary with `scripts/build-binaries.sh --platform <native-x64>`.
-9. Extract the generated release archive and run `atomic --version` from the extracted binary. The PR/push smoke tests do not run the longer `--no-session` runtime smoke; that coverage is reserved for the release smoke jobs.
+5. Validate hosted-docs routes and internal links with `cd packages/coding-agent && bun run docs:check`.
+6. Build `@bastani/atomic` with `cd packages/coding-agent && bun run build`.
+7. Run `bun run test:unit`.
+8. Run `bun run test:integration`.
+9. Build the native release binary with `scripts/build-binaries.sh --platform <native-x64>`.
+10. Extract the generated release archive and run `atomic --version` from the extracted binary. The PR/push smoke tests do not run the longer `--no-session` runtime smoke; that coverage is reserved for the release smoke jobs.
 
 ### Code Review (`code-review.yml`)
 
@@ -149,6 +152,7 @@ Publish @bastani/atomic
   · setup Bun and Node (Node 24 for npm provenance publish)
   · bun install --frozen-lockfile
   · bun run typecheck && bun run test:all
+  · cd packages/coding-agent && bun run docs:check
   · validate tag matches packages/coding-agent/package.json
   · validate every package manifest has a synced version
   · validate bundled packages remain private and are not independently publishable
@@ -227,6 +231,7 @@ The meaningful pre-publish checks are:
 
 - TypeScript typechecking
 - unit and integration tests
+- docs route/internal-link validation with `cd packages/coding-agent && bun run docs:check`
 - `@bastani/atomic` build output validation
 - builtin extension/resource validation under `dist/builtin/`
 - `bun pm pack --dry-run` from `packages/coding-agent`
@@ -237,8 +242,8 @@ The meaningful pre-publish checks are:
 
 | File | Trigger | Purpose |
 |------|---------|---------|
-| `test.yml` | Push to `main`, PR to `main` | Install, typecheck, build `@bastani/atomic`, unit/integration tests, build native Linux/Windows binaries, and run `atomic --version` archive smoke tests |
-| `publish.yml` | `v*` tag push, manual dispatch with tag input | Smoke test Linux/Windows binaries in parallel, build binaries, publish `@bastani/atomic` to npm with OIDC provenance, create GitHub Release with binaries |
+| `test.yml` | Push to `main`, PR to `main` | Install, typecheck, validate docs links, build `@bastani/atomic`, unit/integration tests, build native Linux/Windows binaries, and run `atomic --version` archive smoke tests |
+| `publish.yml` | `v*` tag push, manual dispatch with tag input | Smoke test Linux/Windows binaries in parallel, validate docs links before publish metadata checks, build binaries, publish `@bastani/atomic` to npm with OIDC provenance, create GitHub Release with binaries |
 | `code-review.yml` | PR opened/synchronized | Claude-powered code review |
 | `pr-description.yml` | PR opened/synchronized | Claude-powered PR description generation, skipped for Dependabot |
 | `claude.yml` | Issue/PR comments, issues, PR reviews | Interactive Claude assistant gated on `@claude` mentions |
@@ -260,7 +265,8 @@ The meaningful pre-publish checks are:
 
    ```sh
    bun run typecheck
-   cd packages/coding-agent && bun run build
+   cd packages/coding-agent && bun run docs:check
+   bun run build
    cd ../..
    bun run test:unit
    bun run test:integration
@@ -284,6 +290,6 @@ The meaningful pre-publish checks are:
    git push origin v0.8.0
    ```
 
-5. Confirm `publish.yml` cross-compiles binaries, publishes `@bastani/atomic` to npm with OIDC provenance, and creates the GitHub Release with binaries attached.
+5. Confirm `publish.yml` runs docs link validation, cross-compiles binaries, publishes `@bastani/atomic` to npm with OIDC provenance, and creates the GitHub Release with binaries attached.
 
 For prereleases, substitute `0.8.0-0` and tag `v0.8.0-0`.

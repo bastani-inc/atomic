@@ -135,10 +135,10 @@ cd /path/to/skill && pnpm install
 ```
 ````
 
-Use relative paths from the skill directory:
+Use relative file paths from the skill directory (these are bundled skill files, not docs routes):
 
 ```markdown
-See [the reference guide](references/REFERENCE.md) for details.
+See the API reference at `references/api-reference.md` for details.
 ```
 
 ## Frontmatter

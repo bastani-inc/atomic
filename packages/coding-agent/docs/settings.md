@@ -121,6 +121,31 @@ When a provider requests a retry delay longer than `retry.provider.maxRetryDelay
 }
 ```
 
+### HTTP
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `httpIdleTimeoutMs` | number | `300000` | HTTP header/body idle timeout in milliseconds. Must be a non-negative finite number; decimals are rounded down. Set to `0` to disable the idle timeout. |
+
+Atomic applies this timeout to the global HTTP dispatcher used by `fetch` and provider SDK HTTP clients. The default is 300,000 ms (5 minutes), which keeps long-running requests working while reclaiming stale idle connections.
+
+The `/settings` picker offers these presets:
+
+| Label | Value |
+|-------|-------|
+| `30 sec` | `30000` |
+| `1 min` | `60000` |
+| `5 min` | `300000` |
+| `10 min` | `600000` |
+| `30 min` | `1800000` |
+| `Disabled` | `0` |
+
+```json
+{
+  "httpIdleTimeoutMs": 300000
+}
+```
+
 ### Message Delivery
 
 | Setting | Type | Default | Description |
@@ -230,7 +255,7 @@ Object form filters which resources to load:
 }
 ```
 
-See [packages.md](packages.md) for package management details.
+See [Atomic packages](/packages) for package management details.
 
 ## Example
 
@@ -249,6 +274,7 @@ See [packages.md](packages.md) for package management details.
     "enabled": true,
     "maxRetries": 3
   },
+  "httpIdleTimeoutMs": 300000,
   "enabledModels": ["claude-*", "gpt-4o"],
   "warnings": {
     "anthropicExtraUsage": true

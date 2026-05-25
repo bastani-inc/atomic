@@ -139,7 +139,7 @@ Atomic bundles three workflows that cover the most common multi-stage jobs. They
 | Workflow | What it does | When to use |
 |---|---|---|
 | `deep-research-codebase` | Scout + research-history chain → parallel specialist waves → aggregator. Indexes the whole repo and synthesizes findings. | Broad or cross-cutting research before you decide what to change. Prefer `/skill:research-codebase` for one subsystem. |
-| `ralph` | Bounded plan → orchestrate → simplify → parallel review loop. Reviewer findings feed back into the next planner. | Larger implementation loops where you want implementation, review, and validation built in. |
+| `ralph` | Bounded plan/spec → orchestrate → simplify → parallel review loop → final PR preparation. Reviewer findings feed back into the next planner. | Larger implementation loops where you want implementation, review, validation, and conditional PR creation built in. |
 | `open-claude-design` | Design-system onboarding → reference import → HTML generation → impeccable-driven refinement → quality gate → rich HTML handoff. Renders a live `preview.html` you can iterate against (opens through `playwright-cli` when available). | UI, page, component, theme, or design-token work that benefits from generation + critique loops. |
 
 ### `deep-research-codebase`
@@ -169,6 +169,22 @@ workflow({
 })
 ```
 
+Output locations and result fields:
+
+| Field | Meaning |
+|---|---|
+| `findings` | Final Markdown research report text. |
+| `research_doc_path` | Public report path under `research/<date>-<topic>.md`. If a file already exists, the workflow writes a suffixed filename. |
+| `artifact_dir` | Hidden per-run handoff directory under `research/.deep-research-<run-id>/`. |
+| `manifest_path` | Manifest JSON path inside the hidden artifact directory. |
+| `partitions` | Codebase partitions the specialists explored. |
+| `explorer_count` | Number of partition explorer groups used. |
+| `specialist_count` | Number of specialist stages run across the research waves. |
+| `max_concurrency` | Concurrency limit used for the run. |
+| `history` | Prior-research/history overview included in the final synthesis. |
+
+The dated Markdown report is intended for people to read and commit or share. The hidden artifact directory keeps large scout, history, and specialist handoff files available for audit without cluttering the visible research index.
+
 ### `ralph`
 
 Inputs:
@@ -186,7 +202,22 @@ Run examples:
 /workflow ralph prompt="Migrate the database layer to Drizzle" max_loops=5 base_branch=develop
 ```
 
-Ralph writes each planner RFC to `specs/<date>-<topic>.md` in the current workspace, returns the path as `plan_path`, then instructs the orchestrator to read that spec path instead of inlining the full plan. The orchestrator also maintains OS-temp implementation notes, returned as `implementation_notes_path`, for decisions, spec deviations, tradeoffs, blockers, and validation outcomes. After the review loop, Ralph runs a final PR-preparation phase that reviews changes against `base_branch` and creates a pull request when repository state and GitHub credentials allow it; when multiple GitHub accounts are logged in, it uses `git config` identity as a hint and tries available credentials until one works. If it creates a PR, the final phase posts the implementation notes contents as a PR comment.
+Ralph writes each planner RFC to `specs/<date>-<topic>.md` in the current workspace, returns the path as `plan_path`, then instructs the orchestrator to read that spec path instead of inlining the full plan. The orchestrator also maintains OS-temp implementation notes, returned as `implementation_notes_path`, for decisions, spec deviations, tradeoffs, blockers, and validation outcomes.
+
+After the review loop, Ralph runs a final PR-preparation phase. It reviews changes against `base_branch`, checks the current diff and untracked files, checks local git identity (`git config user.name` and `git config user.email`), and looks for GitHub credentials. It creates a pull request only when there are meaningful changes, a usable remote/branch target, suitable repository state, and credentials that can access the repository. When multiple GitHub accounts are logged in, it uses local git identity as a hint and tries available credentials until one works. If PR creation succeeds, the final phase posts the implementation notes contents as a PR comment. If not, `pr_report` explains what blocked creation and the commands or steps to run later.
+
+Result fields:
+
+| Field | Meaning |
+|---|---|
+| `result` | Final orchestrator summary. |
+| `plan` | Last planner output text. |
+| `plan_path` | Path to the latest planner RFC under `specs/`. |
+| `implementation_notes_path` | OS-temp Markdown notes maintained during orchestration. |
+| `pr_report` | Final PR-preparation report, including created PR URL or why no PR was created. |
+| `approved` | Whether the review loop approved the patch. |
+| `iterations_completed` | Number of plan/orchestrate/review loops run. |
+| `review_report` | Last structured review report used to decide whether to stop. |
 
 A typical end-to-end flow is `/skill:research-codebase` → `/skill:create-spec` → `/workflow ralph prompt="Implement specs/<date>-<topic>.md"`.
 
@@ -459,9 +490,10 @@ In the TUI, `/workflow <name>` opens an input picker when the workflow declares 
 /workflow interrupt <run-id|--all>
 /workflow kill <run-id|--all>
 /workflow resume <run-id> [stage-id-or-name] [message]
+/workflow reload
 ```
 
-Use `connect` for the workflow graph. Use `attach` when you want a chat pane for a specific stage. Use `interrupt`, `pause`, and `resume` for resumable live work; `resume` on a non-paused run reopens the saved snapshot or overlay. Use `kill` only when the run should be terminated and removed from live history/status. `/workflow status` lists in-flight runs by default; `/workflow status --all` includes retained ended runs.
+Use `connect` for the workflow graph. Use `attach` when you want a chat pane for a specific stage. Use `interrupt`, `pause`, and `resume` for resumable live work; `resume` on a non-paused run reopens the saved snapshot or overlay. Use `kill` only when the run should be terminated and removed from live history/status. Use `/workflow reload` after adding, editing, installing, or removing workflow resources and you want Atomic to rediscover them in-process. `/workflow status` lists in-flight runs by default; `/workflow status --all` includes retained ended runs.
 
 <p align="center"><img src="images/workflow-graph.png" alt="Workflow Graph Viewer" width="600" /></p>
 
@@ -475,6 +507,17 @@ The workflow tool exposes lifecycle controls for non-interactive use:
 workflow({ action: "status" })
 workflow({ action: "status", runId: "<id-or-prefix>" })
 
+workflow({ action: "stages", runId: "<id-or-prefix>", statusFilter: "all" })
+workflow({ action: "stage", runId: "<id-or-prefix>", stageId: "review" })
+workflow({ action: "transcript", runId: "<id-or-prefix>", stageId: "review", tail: 40 })
+workflow({ action: "transcript", runId: "<id-or-prefix>", stageId: "review", includeToolOutput: true })
+
+workflow({ action: "send", runId: "<id-or-prefix>", stageId: "review", text: "please focus on tests" })
+workflow({ action: "send", runId: "<id-or-prefix>", stageId: "approval", response: true, delivery: "answer" })
+
+workflow({ action: "pause", runId: "<id-or-prefix>" })
+workflow({ action: "pause", runId: "<id-or-prefix>", stageId: "review" })
+
 workflow({ action: "interrupt", runId: "<id-or-prefix>" })
 workflow({ action: "interrupt", all: true })
 
@@ -483,15 +526,23 @@ workflow({ action: "resume", runId: "<id-or-prefix>", stageId: "review", message
 
 workflow({ action: "kill", runId: "<id-or-prefix>" })
 workflow({ action: "kill", all: true })
+
+workflow({ action: "reload", reason: "added team workflow" })
 ```
 
 Control behavior:
 
-- `runId` accepts full run ids or unique prefixes for `status`, `interrupt`, `resume`, and `kill`.
-- `interrupt` and `kill` default to the active run when `runId` is omitted.
+- `runId` accepts full run ids or unique prefixes for lifecycle and inspection actions.
+- `stages` lists stage summaries. Use `statusFilter: "all"` to include completed, failed, skipped, and pending stages.
+- `stage` returns details for one stage by stage id, unique prefix, or stage name.
+- `transcript` reads recent messages for a stage. `tail` overrides `limit`; `includeToolOutput` includes captured snapshot tool output when available.
+- `send` can answer pending prompts, steer streaming stages, queue follow-ups, or resume paused work. `delivery: "auto"` chooses in that order; use `delivery: "answer"` with `promptId` or `response` for explicit prompt answers.
+- `pause`, `interrupt`, and `kill` can target one run or `all: true`; `stageId` cannot be combined with `all: true`.
 - `interrupt` is resumable: it pauses live work when pausable stages exist and keeps the run in live history/status.
+- `pause` is useful for pausing a live run or a single live stage without treating it as a destructive abort.
 - `resume` can target a stage with `stageId`; the target may be a stage id, unique prefix, or stage name. `message` is forwarded to paused work.
 - `kill` is destructive: it aborts in-flight work and removes the run from live history/status.
+- `reload` refreshes discovered workflow resources in-process; the optional `reason` is echoed in the result.
 
 Use slash commands for graph connect and stage attach because those are interactive TUI surfaces. When a run needs user input or attention, surface that to the user instead of polling silently.
 
@@ -682,7 +733,7 @@ Common task/stage options include:
 `@bastani/workflows` is an Atomic package extension. It registers:
 
 - `/workflow <name> key=value ...` for interactive named runs
-- `/workflow connect|attach|pause|interrupt|resume|status|inputs` for live control and inspection
+- `/workflow connect|attach|pause|interrupt|resume|status|inputs|reload` for live control, inspection, and rediscovery
 - the `workflow` tool for agent-initiated orchestration and direct one-off runs
 - `runWorkflow(definition)` for explicit library or script usage
 

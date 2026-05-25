@@ -7,7 +7,7 @@ This page gets you from install to a useful first Atomic session.
 - **Node.js 24 LTS or newer** — Atomic requires the latest Node LTS runtime. Check with `node --version`.
 - **A package manager** — use npm (included with Node), pnpm, Yarn, or Bun. Use Bun 1.3.14+ for Bun installs or workflow-authoring examples.
 - **Model-provider access** — bring an API key or sign in with `/login` after startup.
-- **A compatible terminal** — for the best TUI experience, use a terminal with Kitty keyboard protocol support. See [Terminal setup](terminal-setup.md). On Windows, use Git Bash or WSL.
+- **A compatible terminal** — for the best TUI experience, use a terminal with Kitty keyboard protocol support. See [Terminal setup](/terminal-setup). On Windows, use Git Bash or WSL.
 
 ## Install
 
@@ -58,7 +58,7 @@ atomic
 
 You can also run `/login` and select an API-key provider to store the key in `~/.atomic/agent/auth.json`.
 
-See [Providers](providers.md) for all supported providers, environment variables, and cloud-provider setup.
+See [Providers](/providers) for all supported providers, environment variables, and cloud-provider setup.
 
 ## First session
 
@@ -73,7 +73,7 @@ Atomic ships with three workflows you can run immediately. Use `/workflow list` 
 | Workflow | When to use | Example |
 |---|---|---|
 | `deep-research-codebase` | Broad, cross-cutting research before you decide what to change. Scout → research-history → parallel specialist waves → aggregator. | `/workflow deep-research-codebase prompt="How do payment retries work end to end?"` |
-| `ralph` | Larger implementation loops with built-in plan → orchestrate → simplify → parallel review iteration. | `/workflow ralph prompt="Implement specs/2026-03-rate-limit.md and validate the behavior" max_loops=5` |
+| `ralph` | Larger implementation loops with built-in plan → orchestrate → simplify → review iteration, plus final PR preparation when repo state, branch target, and GitHub credentials allow it. | `/workflow ralph prompt="Implement specs/2026-03-rate-limit.md and validate the behavior" max_loops=5` |
 | `open-claude-design` | UI and design-system work with generation, critique, and refinement loops; renders a live `preview.html` you can iterate against. | `/workflow open-claude-design prompt="Refresh the settings page hierarchy" output_type=page` |
 
 <p align="center"><img src="images/workflow-list.png" alt="Workflow List" width="600" /></p>
@@ -86,7 +86,7 @@ You can also launch workflows with **natural language** — just describe the ta
 Run a deep codebase research workflow on how the rate limiter behaves under burst traffic.
 ```
 
-Atomic picks the workflow, fills in inputs from the request, and confirms before launch.
+Atomic picks the workflow, fills in inputs from the request, and confirms before launch. Ralph may create a pull request at the end only when the current repository state, remote/branch target, and available GitHub credentials make that safe; otherwise it reports the exact follow-up steps.
 
 ### Monitor and steer a run
 
@@ -101,7 +101,7 @@ Named workflow runs execute in the background. After launch you get a run id; us
 /workflow kill <run-id>           # destructive abort
 ```
 
-Human-in-the-loop prompts (`ctx.ui.input`, `confirm`, `select`, `editor`) surface in the graph viewer, not as chat modals — connect to the run to answer them. See [Workflows](workflows.md) for the full reference and authoring guide.
+Human-in-the-loop prompts (`ctx.ui.input`, `confirm`, `select`, `editor`) surface in the graph viewer, not as chat modals — connect to the run to answer them. See [Workflows](/workflows) for the full reference and authoring guide.
 
 ### Top skills to invoke directly
 
@@ -119,7 +119,7 @@ Use `/skill:research-codebase` for a focused area and `/workflow deep-research-c
 
 ### Create your own workflow in natural language
 
-You do not have to write TypeScript to add a new workflow. Describe what you want in plain chat and Atomic will design and write it for you using the [Workflows](workflows.md) reference as the source of truth:
+You do not have to write TypeScript to add a new workflow. Describe what you want in plain chat and Atomic will design and write it for you using the [Workflows](/workflows) reference as the source of truth:
 
 ```text
 Create a reusable Atomic workflow called review-changes. It takes one
@@ -136,7 +136,7 @@ Atomic will:
 - write a `.atomic/workflows/<name>.ts` definition that uses `defineWorkflow(...).input(...).run(...).compile()`,
 - and reload so you can immediately run it with `/workflow <name>`.
 
-The same plain-chat approach works for editing or hardening an existing workflow — ask Atomic to add a stage, switch a model, save artifacts, or wire in a human approval gate. For the full authoring reference, see [Workflows](workflows.md).
+The same plain-chat approach works for editing or hardening an existing workflow — ask Atomic to add a stage, switch a model, save artifacts, or wire in a human approval gate. For the full authoring reference, see [Workflows](/workflows).
 
 ### Default tools and prompts
 
@@ -229,12 +229,12 @@ Use `--mode json` for JSON event output or `--mode rpc` for process integration.
 
 ## Next steps
 
-- [Using Atomic](usage.md) - interactive mode, slash commands, sessions, context files, and CLI reference.
-- [Workflows](workflows.md) - run, inspect, and author multi-stage automation (including the three built-in workflows).
-- [Skills](skills.md) - reusable expert instructions invoked with `/skill:<name>`.
-- [Providers](providers.md) - authentication and model setup.
-- [Settings](settings.md) - global and project configuration.
-- [Keybindings](keybindings.md) - shortcuts and customization.
-- [Atomic Packages](packages.md) - install shared extensions, skills, prompts, and themes.
+- [Using Atomic](/usage) - interactive mode, slash commands, sessions, context files, and CLI reference.
+- [Workflows](/workflows) - run, inspect, and author multi-stage automation (including the three built-in workflows).
+- [Skills](/skills) - reusable expert instructions invoked with `/skill:<name>`.
+- [Providers](/providers) - authentication and model setup.
+- [Settings](/settings) - global and project configuration.
+- [Keybindings](/keybindings) - shortcuts and customization.
+- [Atomic Packages](/packages) - install shared extensions, skills, prompts, and themes.
 
-Platform notes: [Windows](windows.md), [Termux](termux.md), [tmux](tmux.md), [Terminal setup](terminal-setup.md), [Shell aliases](shell-aliases.md).
+Platform notes: [Windows](/windows), [Termux](/termux), [tmux](/tmux), [Terminal setup](/terminal-setup), [Shell aliases](/shell-aliases).

@@ -1,0 +1,157 @@
+---
+title: "Subagents"
+description: "Run focused Atomic child agents"
+---
+
+# Subagents
+
+Atomic bundles `@bastani/subagents`, an extension for running focused child agents with their own context. Use it when a task benefits from isolation, parallel investigation, background execution, or a specialist pass for locating code, analyzing behavior, researching references, debugging, or simplifying code.
+
+You do not need to install anything separately when you use `@bastani/atomic`.
+
+## Start with natural language
+
+Ask Atomic to coordinate subagents in plain language:
+
+```text
+Map the authentication flow with focused subagents before we change it.
+```
+
+```text
+Run a parallel review composition: one pass for current behavior, one for failure modes, and one for existing patterns.
+```
+
+```text
+Research the upstream library behavior online, then compare it with our local implementation.
+```
+
+Atomic decides whether to call the bundled `subagent` tool, which specialist fits each part, and whether the work should run as a single child, parallel group, chain, foreground run, or background run.
+
+## Bundled agents
+
+Atomic currently bundles these agents from `@bastani/subagents`:
+
+| Agent | Use it for | Edit files? |
+|---|---|---|
+| `codebase-locator` | Find relevant files, directories, tests, configs, and docs for a topic. | No |
+| `codebase-analyzer` | Explain how specific code works and trace data flow with file references. | No |
+| `codebase-pattern-finder` | Find similar implementations, conventions, and test examples to model after. | No |
+| `codebase-research-locator` | Locate prior `research/` and `specs/` documents related to the task. | No |
+| `codebase-research-analyzer` | Extract decisions, constraints, and still-relevant conclusions from prior local docs. | No |
+| `codebase-online-researcher` | Research official docs, ecosystem behavior, and open-source source references online. | Can write research notes |
+| `debugger` | Reproduce, diagnose, and fix failures or unexpected behavior. | Yes |
+| `code-simplifier` | Clean up recently changed code while preserving behavior. | Yes |
+
+Read-oriented agents should inspect and report. `debugger` and `code-simplifier` can edit files, so run them with an explicit scope and validation target.
+
+## Review compositions
+
+Atomic does not bundle a single generic review agent. Instead, compose specialists with distinct angles and let the parent session synthesize their findings before applying any fix.
+
+Common review angles:
+
+| Angle | Specialist pattern |
+|---|---|
+| Current behavior and regressions | `codebase-analyzer` inspects the changed flow and cites file/line evidence. |
+| Failure modes | `debugger` runs in inspect-only mode to reproduce or reason about likely failures without editing. |
+| Fit with project conventions | `codebase-pattern-finder` compares the patch with existing local examples. |
+| Prior decisions | `codebase-research-locator` finds relevant docs, then `codebase-research-analyzer` extracts applicable constraints. |
+| External API or library conformance | `codebase-online-researcher` checks authoritative sources and version-specific behavior. |
+
+Example request:
+
+```text
+Review the current diff with fresh-context specialists: analyze correctness, inspect failure modes without editing, and compare the implementation to existing patterns. Synthesize only issues worth fixing now.
+```
+
+Useful prompt templates include `/parallel-review`, `/review-loop`, `/parallel-research`, `/parallel-context-build`, `/parallel-handoff-plan`, and `/parallel-cleanup`. Treat them as reusable compositions, not as separate bundled agent names.
+
+## Background work and control
+
+Foreground subagents stream progress in the conversation. Background subagents keep working after control returns to you and report completion later.
+
+Natural-language examples:
+
+```text
+Run the local research scan in the background.
+```
+
+```text
+Show me the current async subagent runs.
+```
+
+Tool examples:
+
+```ts
+subagent({ agent: "codebase-analyzer", task: "Trace the auth flow with file references.", async: true })
+subagent({ action: "status" })
+subagent({ action: "status", id: "<run-id>" })
+subagent({ action: "interrupt", id: "<run-id>" })
+subagent({ action: "resume", id: "<run-id>", message: "continue with the test failures" })
+subagent({ action: "doctor" })
+```
+
+Use `interrupt` when you want a resumable stop. Use `resume` to send a follow-up to a reachable async child, or to revive a completed child from its saved session when the run has enough metadata. Use `doctor` for read-only setup diagnostics.
+
+Background runs are detached. If Atomic has no useful independent work while a background subagent runs, it should end the turn instead of polling in a loop; the run will notify the originating session when it completes.
+
+## Context and execution modes
+
+Subagents can run with fresh or forked context:
+
+- `context: "fresh"` starts a separate child with only the task and selected agent context.
+- `context: "fork"` creates a real branched child session from the parent session leaf. It fails fast if the parent session cannot be forked; it does not silently downgrade to fresh context.
+
+For adversarial review or research, prefer fresh context so the specialist inspects the repository directly. Use forked context when a writer needs the parent conversation history in a separate branch.
+
+For parallel implementation work, `worktree: true` can give each child an isolated git worktree so concurrent edits do not clobber each other.
+
+## Nested and fanout boundaries
+
+Child-safety boundaries are enforced by the bundled subagent extension:
+
+- Normal child sessions do not receive the `subagent` tool or the parent-only subagents skill.
+- Child context is filtered to remove parent orchestration artifacts, old control/status messages, and prior parent `subagent` tool calls/results.
+- Non-fanout children are instructed that they are not the parent orchestrator and must not propose or run subagents.
+- Nested fanout is available only for explicitly authorized agents whose resolved tools include `subagent`. Authorized fanout children receive narrower instructions that limit delegation to the assigned fanout.
+
+This keeps the parent session responsible for orchestration unless you deliberately choose a fanout-capable custom agent.
+
+## Custom agents
+
+Custom agents are Markdown files with YAML frontmatter and a system prompt body. Common locations are:
+
+| Scope | Path |
+|---|---|
+| User | `~/.atomic/agent/agents/**/*.md` |
+| Project | `.atomic/agents/**/*.md` |
+
+A small custom read-only inspection agent:
+
+```markdown
+---
+name: strict-inspector
+description: Inspect code for correctness and regressions
+tools: read, grep, bash
+model: anthropic/claude-sonnet-4
+fallbackModels: openai/gpt-5-mini
+inheritProjectContext: true
+completionGuard: false
+---
+
+You are a read-only inspector. Inspect the current diff, cite evidence with file paths, and return only issues worth fixing now. Do not edit files.
+```
+
+Use `completionGuard: false` sparingly. It opts a user-authored agent out of automatic completion-guard reminders and is intended for read-only agents whose prompt already prevents premature completion. Do not use it to bypass required implementation or validation work.
+
+## Fallback models
+
+Agents can define ordered `fallbackModels` for retryable provider or model failures such as rate limits, quota/auth problems, unavailable models, network timeouts, or 5xx errors. Atomic tries the requested primary model first, then configured fallbacks, and finally appends the current user-selected model as the last fallback candidate when available.
+
+Fallbacks do not retry ordinary task failures, validation failures, tool failures, cancellations, or workflow-code errors. Because a fallback may send the same prompt and context to a different provider, choose models that match your cost, privacy, and data-handling requirements.
+
+## Related docs
+
+- [Workflows](/workflows) for multi-stage reusable automation.
+- [Skills](/skills) for reusable instructions invoked with `/skill:<name>`.
+- [Settings](/settings) for user and project configuration.

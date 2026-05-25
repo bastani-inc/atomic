@@ -29,6 +29,7 @@
         "pages": [
           "extensions",
           "skills",
+          "subagents",
           "workflows",
           "prompt-templates",
           "themes",

@@ -29,48 +29,49 @@ atomic
 
 Authenticate with `/login` for subscription providers, or set an API key such as `ANTHROPIC_API_KEY` before starting Atomic.
 
-For the full first-run flow, see [Quickstart](quickstart.md).
+For the full first-run flow, see [Quickstart](/quickstart).
 
 ## Start here
 
-- [Quickstart](quickstart.md) - install, authenticate, and run a first session.
-- [Using Atomic](usage.md) - interactive mode, slash commands, context files, and CLI reference.
-- [Providers](providers.md) - subscription and API-key setup for built-in providers.
-- [Settings](settings.md) - global and project settings.
-- [Keybindings](keybindings.md) - default shortcuts and custom keybindings.
-- [Sessions](sessions.md) - session management, branching, and tree navigation.
-- [Compaction](compaction.md) - context compaction and branch summarization.
+- [Quickstart](/quickstart) - install, authenticate, and run a first session.
+- [Using Atomic](/usage) - interactive mode, slash commands, context files, and CLI reference.
+- [Providers](/providers) - subscription and API-key setup for built-in providers.
+- [Settings](/settings) - global and project settings.
+- [Keybindings](/keybindings) - default shortcuts and custom keybindings.
+- [Sessions](/sessions) - session management, branching, and tree navigation.
+- [Compaction](/compaction) - context compaction and branch summarization.
 
 ## Customization
 
-- [Extensions](extensions.md) - TypeScript modules for tools, commands, events, and custom UI.
-- [Skills](skills.md) - Agent Skills for reusable on-demand capabilities.
-- [Workflows](workflows.md) - reusable multi-stage automation with tracked stages and resumable runs.
-- [Prompt templates](prompt-templates.md) - reusable prompts that expand from slash commands.
-- [Themes](themes.md) - built-in and custom terminal themes.
-- [Atomic packages](packages.md) - bundle and share extensions, skills, prompts, and themes.
-- [Custom models](models.md) - add model entries for supported provider APIs.
-- [Custom providers](custom-provider.md) - implement custom APIs and OAuth flows.
+- [Extensions](/extensions) - TypeScript modules for tools, commands, events, and custom UI.
+- [Skills](/skills) - Agent Skills for reusable on-demand capabilities.
+- [Subagents](/subagents) - focused child agents for research, analysis, debugging, cleanup, and review compositions.
+- [Workflows](/workflows) - reusable multi-stage automation with tracked stages and resumable runs.
+- [Prompt templates](/prompt-templates) - reusable prompts that expand from slash commands.
+- [Themes](/themes) - built-in and custom terminal themes.
+- [Atomic packages](/packages) - bundle and share extensions, skills, prompts, and themes.
+- [Custom models](/models) - add model entries for supported provider APIs.
+- [Custom providers](/custom-provider) - implement custom APIs and OAuth flows.
 
 ## Programmatic usage
 
-- [SDK](sdk.md) - embed Atomic in Node.js applications.
-- [RPC mode](rpc.md) - integrate over stdin/stdout JSONL.
-- [JSON event stream mode](json.md) - print mode with structured events.
-- [TUI components](tui.md) - build custom terminal UI for extensions.
+- [SDK](/sdk) - embed Atomic in Node.js applications.
+- [RPC mode](/rpc) - integrate over stdin/stdout JSONL.
+- [JSON event stream mode](/json) - print mode with structured events.
+- [TUI components](/tui) - build custom terminal UI for extensions.
 
 ## Reference
 
-- [Session format](session-format.md) - JSONL session file format, entry types, and SessionManager API.
+- [Session format](/session-format) - JSONL session file format, entry types, and SessionManager API.
 
 ## Platform setup
 
-- [Windows](windows.md)
-- [Termux on Android](termux.md)
-- [tmux](tmux.md)
-- [Terminal setup](terminal-setup.md)
-- [Shell aliases](shell-aliases.md)
+- [Windows](/windows)
+- [Termux on Android](/termux)
+- [tmux](/tmux)
+- [Terminal setup](/terminal-setup)
+- [Shell aliases](/shell-aliases)
 
 ## Development
 
-- [Development](development.md) - local setup, project structure, and debugging.
+- [Development](/development) - local setup, project structure, and debugging.

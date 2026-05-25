@@ -1,4 +1,4 @@
-> pi can help you use the SDK. Ask it to build an integration for your use case.
+> Atomic can help you use the SDK. Ask it to build an integration for your use case.
 
 # SDK
 
@@ -582,7 +582,7 @@ await loader.reload();
 const { session } = await createAgentSession({ resourceLoader: loader });
 ```
 
-Extensions can register tools, subscribe to events, add commands, and more. See [extensions.md](extensions.md) for the full API.
+Extensions can register tools, subscribe to events, add commands, and more. See [Extensions](/extensions) for the full API.
 
 **Event Bus:** Extensions can communicate via `pi.events`. Pass a shared `eventBus` to `DefaultResourceLoader` if you need to emit or listen from outside:
 
@@ -598,7 +598,7 @@ await loader.reload();
 eventBus.on("my-extension:status", (data) => console.log(data));
 ```
 
-> See [examples/sdk/06-extensions.ts](https://github.com/flora131/atomic/blob/main/packages/coding-agent/examples/sdk/06-extensions.ts) and [docs/extensions.md](extensions.md)
+> See [examples/sdk/06-extensions.ts](https://github.com/flora131/atomic/blob/main/packages/coding-agent/examples/sdk/06-extensions.ts) and [Extensions](/extensions)
 
 ### Skills
 
@@ -781,7 +781,7 @@ sm.branchWithSummary(id, "Summary...");  // Branch with context summary
 sm.createBranchedSession(leafId);       // Extract path to new file
 ```
 
-> See [examples/sdk/11-sessions.ts](https://github.com/flora131/atomic/blob/main/packages/coding-agent/examples/sdk/11-sessions.ts) and [Session Format](session-format.md)
+> See [examples/sdk/11-sessions.ts](https://github.com/flora131/atomic/blob/main/packages/coding-agent/examples/sdk/11-sessions.ts) and [Session Format](/session-format)
 
 ### Settings Management
 
@@ -1074,17 +1074,17 @@ const runtime = await createAgentSessionRuntime(createRuntime, {
 await runRpcMode(runtime);
 ```
 
-See [RPC documentation](rpc.md) for the JSON protocol.
+See [RPC documentation](/rpc) for the JSON protocol.
 
 ## RPC Mode Alternative
 
 For subprocess-based integration without building with the SDK, use the CLI directly:
 
 ```bash
-pi --mode rpc --no-session
+atomic --mode rpc --no-session
 ```
 
-See [RPC documentation](rpc.md) for the JSON protocol.
+See [RPC documentation](/rpc) for the JSON protocol.
 
 The SDK is preferred when:
 - You want type safety
@@ -1140,4 +1140,4 @@ type PromptTemplate
 type Tool
 ```
 
-For extension types, see [extensions.md](extensions.md) for the full API.
+For extension types, see [Extensions](/extensions) for the full API.

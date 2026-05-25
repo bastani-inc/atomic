@@ -3,27 +3,53 @@ title: "Changelog"
 description: "What's new in Atomic"
 ---
 
-<Update label="May 22, 2026" tags={["v0.8.13"]}>
+<Update label="May 25, 2026" tags={["v0.8.14-0"]}>
+
+## Prerelease updates
+
+- **Synced with upstream Pi patches.** Atomic's coding-agent fork is now aligned with upstream Pi patches since v0.75.4 and bundles Pi libraries at 0.75.5.
+- **Bundled workflow docs are current.** The docs now describe Ralph's final PR-preparation phase, deep-research report artifacts, and newer workflow inspection/control actions such as `stages`, `stage`, `transcript`, `send`, `pause`, and `reload`. See [Workflows](/workflows).
+- **Bundled subagent guidance is easier to find.** Atomic now documents how to use bundled subagents for delegation, background work, nested fanout boundaries, model fallbacks, and custom agent guardrails. See [Subagents](/subagents).
+
+## Fixes carried forward
+
+- Managed extension installs, git package ref reconciliation, async file tools, export HTML escaping, OpenCode session headers, OAuth device-code login, footer path abbreviation, clipboard native loading, and collapsed read output rendering received upstream fixes.
+- The built-in header model label now refreshes when you change models, matching the footer below the chat box.
+
+</Update>
+
+<Update label="May 21, 2026" tags={["v0.8.13"]}>
+
+## Stable release
+
+- **0.8.13 is the stable promotion of the 0.8.13 prerelease.** It keeps the workflow discovery and async subagent widget fixes from the prerelease while updating Atomic agent guidance.
+
+## Fixes
+
+- **Packaged workflow discovery loads reliably.** Package-authored workflow resources load through `jiti`, so SDK imports such as `@bastani/workflows` resolve consistently from the Bun-packaged binary. See [Workflows](/workflows).
+- **Workflow diagnostics are preserved.** Invalid default exports and supported SDK import diagnostics remain visible when workflows are discovered from packaged resources.
+- **Async subagent widget spacing is stable.** Background subagent widgets preserve spacing before the prompt box. See [Subagents](/subagents).
+
+</Update>
+
+<Update label="May 20, 2026" tags={["v0.8.12"]}>
 
 ## New features
 
-- **`/atomic` builtin slash command.** A new onboarding guide is now available from anywhere in Atomic. Run `/atomic` to get oriented, list sections, or jump to a topic by name. See [Usage](/usage).
-- **Model reasoning level in the system prompt.** Atomic now passes the active model's reasoning level into the system prompt, so responses better reflect the depth your selected model is configured for. See [Models](/models).
-- **Configurable HTTP idle timeout.** You can now tune how long Atomic keeps idle HTTP connections open via settings, which helps on slow or unreliable networks. See [Settings](/settings).
+- **Configurable HTTP idle timeout.** Tune how long Atomic keeps idle HTTP connections open, with presets from 30 seconds through 30 minutes and an option to disable the timeout. See [Settings](/settings).
+- **Workflow documentation and navigation.** Atomic added the Workflows docs page so users can discover built-in workflows, authoring patterns, package setup, and run control from the docs site. See [Workflows](/workflows).
 
 ## Updates
 
-- **Smoother subagent rendering.** Live subagent widgets now animate in place without remounting, and result rendering has been refreshed for clearer progress. See [Extensions](/extensions).
-- **Consistent duration display.** Elapsed times across bash, subagent, and workflow output are now shown as whole seconds and never go negative.
-- **Better Windows process handling.** Process spawning and self-update behavior have been improved on Windows. See [Windows](/windows).
-- **Workflow tool rendering is width-aware.** Tool output inside workflow stages now respects the terminal width and forwards builtin tools correctly to stage sessions. See [Workflows](/workflows).
+- **Model reasoning level in the system prompt.** Atomic now includes the active model's reasoning level in generated system prompts and project context markup. See [Models](/models).
+- **Runtime and extension compatibility.** Internal runtime, tool, TUI, tests, and extension example imports moved to explicit `.ts` specifiers for better raw-TypeScript extension compatibility.
+- **Atomic docs refresh.** Package usage, customization, workflows, and release guidance were refreshed for Atomic branding.
 
-## Bug fixes
+## Fixes
 
-- **Workflow package imports load reliably.** Package-authored workflows are now loaded through `jiti`, so `@bastani/workflows` imports resolve consistently, including inside the Bun-packaged binary. See [Workflows](/workflows).
-- **Binary archives bundle runtime dependencies.** Downloaded `atomic-*` archives now ship with the runtime deps they need, fixing missing-module errors on first run.
-- **Workflow text helpers resolve on all platforms.** Fixed a regression where text helpers failed to load in the packaged binary.
-- **`/atomic` handles long inputs safely.** Argument parsing for the guide command no longer slows down on adversarial punctuation-heavy input.
-- **Settled workflow stages detach from run control.** Completed stages no longer linger in the active run, keeping the workflow view accurate.
+- **Better Windows self-update behavior.** Package-manager installs now handle native dependency cleanup, quarantine cases, and unavailable updates more clearly. See [Windows](/windows).
+- **Smoother subagent rendering.** Live subagent result rendering, async render updates, transient child-error recovery, and live widget animations are more stable. See [Subagents](/subagents).
+- **Workflow stages settle cleanly.** Completed stages detach from run-control tracking, and the empty workflow graph waiting state is centered. See [Workflows](/workflows).
+- **Consistent duration display.** Elapsed times across bash, subagent, and workflow output are shown as whole seconds and never go negative.
 
 </Update>

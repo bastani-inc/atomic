@@ -32,6 +32,9 @@ jobs:
         run: bun install --frozen-lockfile
       - name: Typecheck
         run: bun run typecheck
+      - name: Docs link validation
+        working-directory: packages/coding-agent
+        run: bun run docs:check
       - name: Build @bastani/atomic package
         working-directory: packages/coding-agent
         run: bun run build

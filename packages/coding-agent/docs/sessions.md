@@ -16,7 +16,7 @@ atomic --fork <path|id>    # Fork a session file or partial session ID into a ne
 
 Use `/session` in interactive mode to see the current session file, session ID, message count, tokens, and cost.
 
-For the JSONL file format and SessionManager API, see [Session Format](session-format.md).
+For the JSONL file format and SessionManager API, see [Session Format](/session-format).
 
 ## Session Commands
 
@@ -29,7 +29,7 @@ For the JSONL file format and SessionManager API, see [Session Format](session-f
 | `/tree` | Navigate the current session tree |
 | `/fork` | Create a new session from a previous user message |
 | `/clone` | Duplicate the current active branch into a new session |
-| `/compact [prompt]` | Summarize older context; see [Compaction](compaction.md) |
+| `/compact [prompt]` | Summarize older context; see [Compaction](/compaction) |
 | `/export [file]` | Export session to HTML |
 | `/share` | Upload as private GitHub gist with shareable HTML link |
 
@@ -89,7 +89,7 @@ Example shape:
 | Escape/CTRL+C | Cancel |
 | CTRL+O | Cycle filter mode |
 
-Filter modes are: default, no-tools, user-only, labeled-only, and all. Configure the default with `treeFilterMode` in [Settings](settings.md).
+Filter modes are: default, no-tools, user-only, labeled-only, and all. Configure the default with `treeFilterMode` in [Settings](/settings).
 
 ### Selection Behavior
 
@@ -128,10 +128,10 @@ When prompted, choose one of:
 2. summarize with the default prompt
 3. summarize with custom focus instructions
 
-See [Compaction](compaction.md) for branch summarization internals and extension hooks.
+See [Compaction](/compaction) for branch summarization internals and extension hooks.
 
 ## Session Format
 
 Session files are JSONL and contain message entries, model changes, thinking-level changes, labels, compactions, branch summaries, and extension entries.
 
-For parsers, extensions, SDK usage, and the full SessionManager API, see [Session Format](session-format.md).
+For parsers, extensions, SDK usage, and the full SessionManager API, see [Session Format](/session-format).

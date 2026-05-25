@@ -27,7 +27,7 @@ The editor can be replaced temporarily by built-in UI such as `/settings` or by 
 | Hidden shell command | `!!command` runs without sending output to the model |
 | External editor | CTRL+G opens `$VISUAL` or `$EDITOR` |
 
-See [Keybindings](keybindings.md) for all shortcuts and customization.
+See [Keybindings](/keybindings) for all shortcuts and customization.
 
 ## Slash Commands
 
@@ -64,9 +64,9 @@ You can submit messages while the agent is still working:
 - **Escape** aborts and restores queued messages to the editor.
 - **ALT+Up** retrieves queued messages back to the editor.
 
-On Windows Terminal, ALT+Enter is fullscreen by default. Remap it as described in [Terminal setup](terminal-setup.md) if you want Atomic to receive the shortcut.
+On Windows Terminal, ALT+Enter is fullscreen by default. Remap it as described in [Terminal setup](/terminal-setup) if you want Atomic to receive the shortcut.
 
-Configure delivery in [Settings](settings.md) with `steeringMode` and `followUpMode`.
+Configure delivery in [Settings](/settings) with `steeringMode` and `followUpMode`.
 
 ## Sessions
 
@@ -88,7 +88,7 @@ Useful session commands:
 - `/clone` duplicates the current active branch into a new session file.
 - `/compact` summarizes older messages to free context.
 
-See [Sessions](sessions.md) and [Compaction](compaction.md) for details.
+See [Sessions](/sessions) and [Compaction](/compaction) for details.
 
 ## Context Files
 
@@ -137,7 +137,7 @@ atomic list                      # List installed packages
 atomic config                    # Enable/disable package resources
 ```
 
-See [Atomic Packages](packages.md) for package sources and security notes.
+See [Atomic Packages](/packages) for package sources and security notes.
 
 ### Modes
 
@@ -145,8 +145,8 @@ See [Atomic Packages](packages.md) for package sources and security notes.
 |------|-------------|
 | default | Interactive mode |
 | `-p`, `--print` | Print response and exit |
-| `--mode json` | Output all events as JSON lines; see [JSON mode](json.md) |
-| `--mode rpc` | RPC mode over stdin/stdout; see [RPC mode](rpc.md) |
+| `--mode json` | Output all events as JSON lines; see [JSON mode](/json) |
+| `--mode rpc` | RPC mode over stdin/stdout; see [RPC mode](/rpc) |
 | `--export <in> [out]` | Export a session to HTML |
 
 In print mode, Atomic also reads piped stdin and merges it into the initial prompt:

@@ -216,6 +216,10 @@ jobs:
       - name: Test
         run: bun run test:all
 
+      - name: Docs link validation
+        working-directory: ${{ env.PACKAGE_DIR }}
+        run: bun run docs:check
+
       - name: Validate single publish target and package metadata
         id: package
         shell: bash
