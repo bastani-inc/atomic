@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Updated Ralph's orchestrator prompt to discover project initialization needs from repository evidence before implementation work proceeds ([#1048](https://github.com/flora131/atomic/issues/1048)).
 - Added a final Ralph PR-preparation phase that reviews changes against the configured base branch, tries available GitHub credentials using local git identity as a hint, posts implementation notes as a PR comment, and creates a pull request when possible.
 - Updated Ralph to persist planner RFCs under `specs/`, keep OS-temp implementation notes during orchestration, and pass file paths rather than the full plan text to later stages ([#1037](https://github.com/flora131/atomic/issues/1037)).
 - Updated `deep-research-codebase` output layout to write public reports under `research/` and hidden per-run handoff artifacts under `research/.deep-research-<run-id>/`.

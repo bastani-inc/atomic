@@ -631,6 +631,38 @@ describe("ralph", () => {
     assert.doesNotMatch(reviewerPrompt, /echo pwn/);
   });
 
+  test("prompts orchestrator to discover project initialization generically", async () => {
+    const mod = await import("../../packages/workflows/builtin/ralph.js");
+    const d = mod.default as unknown as WorkflowDefinition;
+    const ctx = makeMockCtx(
+      { prompt: "Refactor tests", max_loops: 1 },
+      {
+        task: (name) => {
+          if (name.startsWith("reviewer-")) return approvedReviewJson();
+          return undefined;
+        },
+      },
+    );
+
+    const result = await d.run(ctx);
+
+    const orchestratorPrompt = ctx.calls.prompts["orchestrator-1"]?.[0] ?? "";
+    assert.equal(ctx.calls.task.includes("project-setup-1"), false);
+    assert.match(orchestratorPrompt, /project_initialization_preflight/);
+    assert.match(orchestratorPrompt, /actual language, framework, and build system/);
+    assert.match(orchestratorPrompt, /Do not rely on hard-coded assumptions/);
+    assert.match(orchestratorPrompt, /Infer the project type and setup requirements from repository evidence/);
+    assert.match(orchestratorPrompt, /source layout, setup docs, package\/build manifests/);
+    assert.match(orchestratorPrompt, /dependencies, generated files, local toolchains, submodules/);
+    assert.match(orchestratorPrompt, /When repository evidence shows missing initialization/);
+    assert.match(orchestratorPrompt, /run or delegate the appropriate documented setup command/);
+    assert.match(orchestratorPrompt, /You are responsible for initializing the checkout/);
+    assert.match(orchestratorPrompt, /not user handoff work/);
+    assert.match(orchestratorPrompt, /delegate a focused discovery task before implementation instead of guessing/);
+    assert.match(orchestratorPrompt, /complete or delegate required setup before implementation delegation/);
+    assert.equal("project_readiness" in result, false);
+  });
+
   test("writes planner spec to specs and passes only the path to orchestrator", async () => {
     const mod = await import("../../packages/workflows/builtin/ralph.js");
     const d = mod.default as unknown as WorkflowDefinition;
