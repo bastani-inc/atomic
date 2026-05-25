@@ -5,11 +5,44 @@
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import {
+  NON_BLOCKING_MCP_OAUTH_INIT_MESSAGE,
   WORKFLOW_AUTH_FAILURE_MESSAGE,
   classifyWorkflowFailure,
+  sanitizeWorkflowVisibleError,
 } from "../../packages/workflows/src/shared/workflow-failures.js";
 
+describe("sanitizeWorkflowVisibleError", () => {
+  test("removes the benign MCP OAuth initialization line with LF or CRLF", () => {
+    assert.equal(
+      sanitizeWorkflowVisibleError(`${NON_BLOCKING_MCP_OAUTH_INIT_MESSAGE}\nNo API key found for openai.`),
+      "No API key found for openai.",
+    );
+    assert.equal(
+      sanitizeWorkflowVisibleError(`${NON_BLOCKING_MCP_OAUTH_INIT_MESSAGE}\r\nNo API key found for openai.`),
+      "No API key found for openai.",
+    );
+  });
+
+  test("does not suppress blocking MCP or explicit OAuth authentication errors", () => {
+    for (const message of [
+      "MCP initialization failed: connection refused",
+      'OAuth authentication failed for "github": callback server unavailable',
+      `${NON_BLOCKING_MCP_OAUTH_INIT_MESSAGE}: callback server unavailable`,
+    ]) {
+      assert.equal(sanitizeWorkflowVisibleError(message), message);
+    }
+  });
+});
+
 describe("classifyWorkflowFailure", () => {
+  test("preserves diagnostic message while sanitizing benign MCP OAuth noise for users", () => {
+    const message = `${NON_BLOCKING_MCP_OAUTH_INIT_MESSAGE}\nA later stage failed unexpectedly.`;
+    const failure = classifyWorkflowFailure(new Error(message));
+    assert.equal(failure.kind, "unknown");
+    assert.equal(failure.message, message);
+    assert.equal(failure.userMessage, "A later stage failed unexpectedly.");
+  });
+
   test("normalizes auth/no-key failures to workflow login guidance", () => {
     const failure = classifyWorkflowFailure(new Error("No API key found for provider"));
     assert.equal(failure.kind, "auth");

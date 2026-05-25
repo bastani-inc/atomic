@@ -14,6 +14,20 @@ export interface WorkflowFailure {
 export const WORKFLOW_AUTH_FAILURE_MESSAGE =
   "You must be logged in to run workflows. Run /login and try again.";
 
+export const NON_BLOCKING_MCP_OAUTH_INIT_MESSAGE = "MCP OAuth initialization failed";
+
+const NON_BLOCKING_MCP_OAUTH_INIT_PREFIXES = [
+  `${NON_BLOCKING_MCP_OAUTH_INIT_MESSAGE}\r\n`,
+  `${NON_BLOCKING_MCP_OAUTH_INIT_MESSAGE}\n`,
+] as const;
+
+export function sanitizeWorkflowVisibleError(message: string): string {
+  for (const prefix of NON_BLOCKING_MCP_OAUTH_INIT_PREFIXES) {
+    if (message.startsWith(prefix)) return message.slice(prefix.length);
+  }
+  return message;
+}
+
 const WORKFLOW_FAILURE_KINDS: ReadonlySet<WorkflowFailureKind> = new Set([
   "auth",
   "rate_limit",
@@ -39,7 +53,7 @@ function makeWorkflowFailure(
   return {
     kind,
     message,
-    userMessage: opts.userMessage ?? message,
+    userMessage: opts.userMessage ?? sanitizeWorkflowVisibleError(message),
     retryable: opts.retryable,
     resumable: opts.resumable,
     cause: opts.cause,

@@ -8,7 +8,7 @@ import { flushMetadataCache, initializeMcp, updateStatusBar } from "./init.ts";
 import { loadMetadataCache } from "./metadata-cache.ts";
 import { executeCall, executeConnect, executeDescribe, executeList, executeSearch, executeStatus, executeUiMessages } from "./proxy-modes.ts";
 import { getConfigPathFromArgv, truncateAtWord } from "./utils.ts";
-import { initializeOAuth, shutdownOAuth } from "./mcp-auth-flow.ts";
+import { shutdownOAuth } from "./mcp-auth-flow.ts";
 import { renderMcpToolResult } from "./tool-result-renderer.ts";
 
 export default function mcpAdapter(pi: ExtensionAPI) {
@@ -103,10 +103,6 @@ export default function mcpAdapter(pi: ExtensionAPI) {
     if (generation !== lifecycleGeneration) {
       return;
     }
-
-    await initializeOAuth().catch(() => {
-      console.error("MCP OAuth initialization failed");
-    });
 
     const promise = initializeMcp(pi, ctx);
     initPromise = promise;
