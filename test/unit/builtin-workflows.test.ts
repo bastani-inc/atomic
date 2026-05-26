@@ -564,16 +564,21 @@ describe("ralph", () => {
     assert.equal(mod.default.name, "ralph");
   });
 
-  test("declares only objective and base_branch inputs", async () => {
+  test("declares objective, max_turns, and base_branch inputs", async () => {
     const mod = await import("../../packages/workflows/builtin/ralph.js");
     assert.equal(mod.default.inputs["objective"]?.type, "text");
     assert.equal(mod.default.inputs["objective"]?.required, true);
+    assert.equal(mod.default.inputs["max_turns"]?.type, "number");
+    assert.equal(
+      (mod.default.inputs["max_turns"] as { default?: number }).default,
+      10,
+    );
     assert.equal(mod.default.inputs["base_branch"]?.type, "string");
     assert.equal(
       (mod.default.inputs["base_branch"] as { default?: string }).default,
       "origin/main",
     );
-    assert.deepEqual(Object.keys(mod.default.inputs).sort(), ["base_branch", "objective"]);
+    assert.deepEqual(Object.keys(mod.default.inputs).sort(), ["base_branch", "max_turns", "objective"]);
   });
 
   test("renders Codex-style goal continuation context", async () => {
@@ -771,7 +776,7 @@ describe("ralph", () => {
     assert.match(thirdTurnPrompt, /risk-reviewer-2 gap/);
   });
 
-  test("uses fixed default controller limits", async () => {
+  test("uses default max_turns when omitted", async () => {
     const mod = await import("../../packages/workflows/builtin/ralph.js");
     const d = mod.default as unknown as WorkflowDefinition;
     const ctx = makeMockCtx(
@@ -873,7 +878,7 @@ describe("ralph", () => {
     assert.match(String(result["remaining_work"]), /missing production credentials/);
   });
 
-  test("stops as needs_human when fixed max turns are exhausted without quorum", async () => {
+  test("stops as needs_human when default max_turns are exhausted without quorum", async () => {
     const mod = await import("../../packages/workflows/builtin/ralph.js");
     const d = mod.default as unknown as WorkflowDefinition;
     const ctx = makeMockCtx(
@@ -896,6 +901,34 @@ describe("ralph", () => {
     assert.equal(result["status"], "needs_human");
     assert.equal(result["approved"], false);
     assert.equal(result["turns_completed"], 10);
+    assert.match(String(result["remaining_work"]), /published docs proof missing/);
+  });
+
+  test("honors custom max_turns before requiring human follow-up", async () => {
+    const mod = await import("../../packages/workflows/builtin/ralph.js");
+    const d = mod.default as unknown as WorkflowDefinition;
+    const ctx = makeMockCtx(
+      { objective: "Finish documentation", max_turns: 2 },
+      {
+        task: (name) => {
+          if (name.startsWith("completion-reviewer-")) {
+            return reviewJson("complete", { evidence: ["draft exists"] });
+          }
+          if (name.startsWith("evidence-reviewer-") || name.startsWith("risk-reviewer-")) {
+            return reviewJson("continue", { gaps: ["published docs proof missing"] });
+          }
+          return undefined;
+        },
+      },
+    );
+
+    const result = await d.run(ctx);
+
+    assert.equal(result["status"], "needs_human");
+    assert.equal(result["approved"], false);
+    assert.equal(result["turns_completed"], 2);
+    assert.equal(ctx.calls.task.includes("work-turn-3"), false);
+    assert.match(ctx.calls.prompts["work-turn-1"]?.[0] ?? "", /Turn: 1\/2/);
     assert.match(String(result["remaining_work"]), /published docs proof missing/);
   });
 

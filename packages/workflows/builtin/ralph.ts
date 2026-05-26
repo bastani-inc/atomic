@@ -128,8 +128,15 @@ type ReducerOutcome = {
 
 type RalphInputs = {
   readonly objective?: string;
+  readonly max_turns?: number;
   readonly base_branch?: string;
 };
+
+function positiveInteger(value: number | undefined, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? Math.floor(value)
+    : fallback;
+}
 
 const reviewDecisionSchema = {
   type: "object",
@@ -942,6 +949,12 @@ export default defineWorkflow("ralph")
     required: true,
     description: "The objective for the Goal Runner workflow.",
   })
+  .input("max_turns", {
+    type: "number",
+    default: DEFAULT_MAX_TURNS,
+    description:
+      "Maximum worker/review turns before Ralph stops as needs_human.",
+  })
   .input("base_branch", {
     type: "string",
     default: "origin/main",
@@ -955,7 +968,7 @@ export default defineWorkflow("ralph")
       throw new Error("ralph requires an objective input.");
     }
 
-    const maxTurns = DEFAULT_MAX_TURNS;
+    const maxTurns = positiveInteger(inputs.max_turns, DEFAULT_MAX_TURNS);
     const reviewQuorum = DEFAULT_REVIEW_QUORUM;
     const blockerThreshold = DEFAULT_BLOCKER_THRESHOLD;
     const comparisonBaseBranch = normalizeBranchInput(inputs.base_branch, "origin/main");

@@ -192,9 +192,10 @@ Inputs:
 | Input | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `objective` | text | yes | — | Goal-runner objective. |
+| `max_turns` | number | no | `10` | Maximum worker/review turns before human follow-up is needed. |
 | `base_branch` | string | no | `origin/main` | Branch reviewers compare the current code delta against. |
 
-Ralph uses fixed controller defaults internally: 10 worker/review turns, 2 reviewer `complete` votes for completion, and 3 consecutive same-blocker turns before blocked status.
+Ralph defaults to 10 worker/review turns. Reviewer quorum and blocker threshold remain fixed internally: 2 reviewer `complete` votes for completion and 3 consecutive same-blocker turns before blocked status.
 
 Run examples:
 
@@ -205,7 +206,7 @@ Run examples:
 
 Ralph creates an OS-temp `goal-ledger.json` artifact, renders goal-continuation context for each worker turn, writes each worker receipt to `work-turn-N.md`, and appends receipts, reviewer decisions, blockers, and reducer decisions to the ledger. The objective is treated as user-provided data, not higher-priority instructions, and token budget / budget-limit behavior is intentionally excluded.
 
-The worker may claim readiness, but it cannot finalize completion. Three reviewers independently inspect the ledger, worker receipt, repository state, and diff against `base_branch`; each returns structured JSON with `decision: complete | continue | blocked`, evidence, gaps, and an optional blocker. A TypeScript reducer marks the goal complete only when the fixed reviewer quorum says `complete`, marks blocked only when the same blocker repeats for the fixed blocker threshold, continues when evidence is missing, and returns `needs_human` when the fixed turn limit is exhausted.
+The worker may claim readiness, but it cannot finalize completion. Three reviewers independently inspect the ledger, worker receipt, repository state, and diff against `base_branch`; each returns structured JSON with `decision: complete | continue | blocked`, evidence, gaps, and an optional blocker. A TypeScript reducer marks the goal complete only when the fixed reviewer quorum says `complete`, marks blocked only when the same blocker repeats for the fixed blocker threshold, continues when evidence is missing, and returns `needs_human` when `max_turns` is exhausted.
 
 Result fields:
 

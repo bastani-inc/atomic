@@ -314,12 +314,13 @@ Goal Runner workflow: initialize a persisted goal ledger with a per-run goal id 
 /workflow ralph objective="Migrate the database layer to Drizzle ORM" base_branch=develop
 ```
 
-| Input         | Type     | Required | Default       | Description                                      |
-| ------------- | -------- | -------- | ------------- | ------------------------------------------------ |
-| `objective`   | `text`   | ✓        | —             | Goal-runner objective.                           |
-| `base_branch` | `string` | —        | `origin/main` | Branch reviewers compare the current delta with. |
+| Input         | Type     | Required | Default       | Description                                                   |
+| ------------- | -------- | -------- | ------------- | ------------------------------------------------------------- |
+| `objective`   | `text`   | ✓        | —             | Goal-runner objective.                                        |
+| `max_turns`   | `number` | —        | `10`          | Maximum worker/review turns before human follow-up is needed. |
+| `base_branch` | `string` | —        | `origin/main` | Branch reviewers compare the current delta with.              |
 
-Ralph uses fixed controller defaults internally: 10 worker/review turns, 2 reviewer `complete` votes for completion, and 3 consecutive same-blocker turns before blocked status.
+Ralph defaults to 10 worker/review turns. Reviewer quorum and blocker threshold remain fixed internally: 2 reviewer `complete` votes for completion and 3 consecutive same-blocker turns before blocked status.
 
 ### `open-claude-design`
 

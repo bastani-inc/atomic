@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Breaking Changes
 
-- Removed Ralph's configurable `max_turns`, `review_quorum`, and `blocker_threshold` inputs; the workflow now only accepts `objective` and `base_branch` while keeping fixed controller defaults ([#1061](https://github.com/flora131/atomic/issues/1061)).
+- Removed Ralph's configurable `review_quorum` and `blocker_threshold` inputs; `max_turns` remains configurable while reviewer quorum and blocker threshold use fixed controller defaults ([#1061](https://github.com/flora131/atomic/issues/1061)).
 
 ### Changed
 
