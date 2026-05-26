@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+## [0.8.15-0] - 2026-05-25
+
+### Breaking Changes
+
+- Changed workflow `ctx.ui.*` prompts to render as synthetic graph stage nodes with `awaiting_input` status, including new `StageSnapshot.promptAnswerState` metadata.
+- Changed `ctx.ui.select(..., [])` to throw before creating a prompt node instead of returning an empty string.
+
+### Added
+
+- Added live-memory prompt answer replay for workflow continuations.
+- Added workflow control and subagents documentation updates, plus bundled docs link validation.
+
+### Changed
+
+- Updated Ralph around an autonomous goal contract so stages infer verifiable criteria, require receipts, and judge completion against the verification oracle.
+- Updated Ralph to discover project initialization needs from repository evidence before implementation work proceeds.
+
+### Fixed
+
+- Returned the workflow overlay to the graph orchestrator after answering or skipping a `ctx.ui` prompt node.
+- Stopped eagerly starting MCP OAuth callback handling during session startup.
+- Carried forward bundled subagent fixes for nested fanout state, child allowlists, async runner config permissions, fallback models, read-only guard overrides, Windows child process spawning, stable running glyphs, and recovered intermediate child errors.
+
 ## [0.8.14] - 2026-05-25
 
 ### Changed
