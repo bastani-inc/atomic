@@ -1259,7 +1259,7 @@ function setEditorBorderColor(
   const candidate = editor as EditorComponent & {
     borderColor?: (text: string) => string;
   };
-  if (candidate.borderColor !== undefined) candidate.borderColor = borderColor;
+  if ("borderColor" in candidate) candidate.borderColor = borderColor;
 }
 
 function isChatMessageEntry(entry: TranscriptEntry): entry is ChatMessageEntry {

@@ -294,6 +294,8 @@ export class GraphView implements Component {
     const hasStagePrompt = run.stages.some((stage) => stage.pendingPrompt !== undefined);
     if (!hasStagePrompt) return [...run.stages];
     return run.stages.filter((stage) => {
+      // Prompt-node injection can leave unstarted author stages in the store
+      // while the prompt node owns focus; hide only these inert placeholders.
       const isUnstartedPlaceholder =
         stage.status === "pending" &&
         stage.startedAt === undefined &&

@@ -221,6 +221,7 @@ function makePrompt(descriptor: PromptDescriptor): PendingPrompt {
 }
 
 function stableHash(value: unknown): string {
+  // 128 bits is plenty for replay-key identity while keeping graph labels compact.
   return createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 32);
 }
 
@@ -1408,6 +1409,9 @@ export async function run<TInputs extends Record<string, unknown>>(
 ): Promise<RunResult> {
   const activeStore = opts.store ?? defaultStore;
   const adapters = opts.adapters ?? {};
+  if (opts.usePromptNodesForUi === true && opts.ui !== undefined) {
+    console.warn("pi-workflows: usePromptNodesForUi ignores the provided RunOpts.ui adapter");
+  }
 
   // 0. maxDepth guard — reject before any store/persistence side effects.
   const depth = opts.depth ?? 0;

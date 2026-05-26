@@ -216,6 +216,26 @@ describe("store.recordStagePendingPrompt", () => {
     assert.equal(stage.replayed, true);
   });
 
+  test("prompt answer ledger keys keep colon-bearing run and stage ids distinct", async () => {
+    const s = createStore();
+    s.recordRunStart(makeRun("run:a"));
+    s.recordRunStart(makeRun("run"));
+    s.recordStageStart("run:a", makeStage("stage"));
+    s.recordStageStart("run", makeStage("a:stage"));
+
+    assert.equal(s.recordStagePendingPrompt("run:a", "stage", makePrompt("p1")), true);
+    assert.equal(s.recordStagePendingPrompt("run", "a:stage", makePrompt("p2")), true);
+    const w1 = s.awaitStagePendingPrompt("run:a", "stage", "p1");
+    const w2 = s.awaitStagePendingPrompt("run", "a:stage", "p2");
+    assert.equal(s.resolveStagePendingPrompt("run:a", "stage", "p1", "left"), true);
+    assert.equal(s.resolveStagePendingPrompt("run", "a:stage", "p2", "right"), true);
+    assert.equal(await w1, "left");
+    assert.equal(await w2, "right");
+
+    assert.equal(s.getStagePromptAnswer("run:a", "stage")?.value, "left");
+    assert.equal(s.getStagePromptAnswer("run", "a:stage")?.value, "right");
+  });
+
   test("removeRun purges prompt answer ledger entries for every stage in the run", async () => {
     const s = createStore();
     s.recordRunStart(makeRun("r1"));

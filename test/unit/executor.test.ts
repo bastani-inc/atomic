@@ -702,6 +702,36 @@ describe("executor.run", () => {
     assert.deepEqual(completedCapture.parentIds, [promptStage.id]);
   });
 
+  test("warns when prompt-node UI overrides an injected UI adapter", async () => {
+    const previousWarn = console.warn;
+    let warning = "";
+    console.warn = (message?: unknown) => {
+      warning = String(message ?? "");
+    };
+    try {
+      const st = createStore();
+      const def = defineWorkflow("prompt-node-ui-precedence-wf")
+        .run(async () => ({}))
+        .compile();
+
+      const result = await run(def, {}, {
+        store: st,
+        usePromptNodesForUi: true,
+        ui: {
+          input: async () => "ignored",
+          confirm: async () => true,
+          select: async (_message, options) => options[0]!,
+          editor: async () => "ignored",
+        },
+      });
+
+      assert.equal(result.status, "completed");
+      assert.match(warning, /usePromptNodesForUi ignores the provided RunOpts\.ui adapter/);
+    } finally {
+      console.warn = previousWarn;
+    }
+  });
+
   test("ctx.ui.select with empty options fails without creating a prompt node", async () => {
     const st = createStore();
     const def = defineWorkflow("prompt-node-empty-select-wf")

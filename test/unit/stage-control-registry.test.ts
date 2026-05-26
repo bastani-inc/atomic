@@ -146,9 +146,9 @@ describe("stageControlRegistry — register/get/forRun/run", () => {
 
   test("clear observes asynchronous dispose failures", async () => {
     const r = createStageControlRegistry();
-    const previousDebug = console.debug;
+    const previousWarn = console.warn;
     let logged = false;
-    console.debug = () => {
+    console.warn = () => {
       logged = true;
     };
     try {
@@ -165,7 +165,7 @@ describe("stageControlRegistry — register/get/forRun/run", () => {
       assert.equal(logged, true);
       assert.equal(r.get("run-1", "stage-a"), undefined);
     } finally {
-      console.debug = previousDebug;
+      console.warn = previousWarn;
     }
   });
 });

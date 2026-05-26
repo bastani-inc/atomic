@@ -261,7 +261,7 @@ export function createStore(): Store {
   }
 
   function stagePromptAnswerKey(runId: string, stageId: string): string {
-    return `${runId}:${stageId}`;
+    return JSON.stringify([runId, stageId]);
   }
 
   function rejectStagePrompt(stage: StageSnapshot, reason: string): void {
