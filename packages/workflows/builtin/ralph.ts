@@ -360,6 +360,15 @@ function safeWorktreePathSegment(value: string): string {
   return segment.length > 0 ? segment.slice(0, 60) : "worktree";
 }
 
+function requireGitRepositoryForWorktree(cwd = process.cwd()): void {
+  const repoRootResult = runGit(["rev-parse", "--show-toplevel"], cwd);
+  if (repoRootResult.status !== 0) {
+    throw new Error(
+      `git_worktree_dir requires Ralph to be invoked from inside a Git repository. Start Ralph from a Git checkout or omit git_worktree_dir. Git reported: ${gitFailureMessage(repoRootResult)}`,
+    );
+  }
+}
+
 function defaultGitWorktreePath(baseBranch: string, cwd = process.cwd()): string {
   const repoRootResult = runGit(["rev-parse", "--show-toplevel"], cwd);
   if (repoRootResult.status !== 0) {
@@ -411,6 +420,8 @@ async function createGitWorktreeIfRequested(
 ): Promise<GitWorktreeSetup> {
   const trimmed = value?.trim();
   if (!trimmed) return { created: false };
+
+  requireGitRepositoryForWorktree(cwd);
 
   const requestedWorktreeDir = resolveOptionalWorktreePath(value, cwd);
   if (requestedWorktreeDir !== undefined) {
@@ -1351,7 +1362,7 @@ export default defineWorkflow("ralph")
     type: "string",
     default: "",
     description:
-      "Optional git worktree checkout path. Ralph assumes it is invoked from inside the host repository; relative paths resolve from that repository cwd. When set, all Ralph stages run from a detached-HEAD worktree created from base_branch. Successful runs remove the worktree; failed runs preserve it for recovery. Do not share one worktree path across concurrent runs.",
+      "Optional git worktree checkout path. Ralph must be invoked from inside a Git repository when this is set; otherwise it fails fast. Relative paths resolve from that repository cwd. When set, all Ralph stages run from a detached-HEAD worktree created from base_branch. Successful runs remove the worktree; failed runs preserve it for recovery. Do not share one worktree path across concurrent runs.",
   })
   .run(async (ctx) => {
     const ralphCtx = ctx as WorkflowRunContext<RalphInputs>;

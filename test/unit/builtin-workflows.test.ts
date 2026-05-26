@@ -1324,7 +1324,7 @@ describe("ralph", () => {
       "",
     );
     const description = mod.default.inputs["git_worktree_dir"]?.description ?? "";
-    assert.match(description, /host repository/);
+    assert.match(description, /inside a Git repository/);
     assert.match(description, /detached-HEAD worktree/);
     assert.match(description, /failed runs preserve it for recovery/);
     assert.match(description, /concurrent runs/);

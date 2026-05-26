@@ -203,6 +203,25 @@ describe("ralph git worktree integration", () => {
     assertWorktreeWasRemoved(repo, expectedWorktree);
   });
 
+  test("fails fast outside a git repo when git_worktree_dir is requested", async () => {
+    const mod = await import("../../packages/workflows/builtin/ralph.js");
+    const d = mod.default as unknown as WorkflowDefinition;
+    const requestedWorktree = join(requireTempRoot(), "outside-repo-worktree");
+    const ctx = makeMockCtx({
+      prompt: "Add a small feature",
+      max_loops: 1,
+      base_branch: "main",
+      git_worktree_dir: requestedWorktree,
+    });
+
+    await assert.rejects(
+      () => d.run(ctx),
+      /git_worktree_dir requires Ralph to be invoked from inside a Git repository/,
+    );
+    assert.deepEqual(ctx.calls.task, []);
+    assert.equal(existsSync(requestedWorktree), false);
+  });
+
   test("creates an absolute git_worktree_dir and removes it after success", async () => {
     const mod = await import("../../packages/workflows/builtin/ralph.js");
     const d = mod.default as unknown as WorkflowDefinition;
