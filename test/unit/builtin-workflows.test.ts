@@ -32,6 +32,11 @@ interface MockCalls {
 
 interface MockResponders {
   task?: (name: string, options: WorkflowTaskOptions, calls: MockCalls) => string | undefined;
+  parallel?: (
+    steps: readonly WorkflowTaskStep[],
+    options: WorkflowParallelOptions,
+    calls: MockCalls,
+  ) => Promise<WorkflowTaskResult[] | undefined> | WorkflowTaskResult[] | undefined;
   omitParallelResults?: readonly string[];
   skipOutputWrites?: readonly string[];
 }
@@ -136,6 +141,8 @@ function makeMockCtx<TInputs extends Record<string, unknown>>(
     ): Promise<WorkflowTaskResult[]> => {
       calls.parallel.push(steps.map((step) => step.name));
       calls.parallelOptions.push(options);
+      const override = await responders.parallel?.(steps, options, calls);
+      if (override !== undefined) return override;
       const results = await Promise.all(steps.map((step) => runTask(step.name, step)));
       const omitted = new Set(responders.omitParallelResults ?? []);
       return omitted.size === 0
@@ -558,6 +565,38 @@ describe("ralph", () => {
     assert.equal(mod.default.inputs["max_loops"], undefined);
   });
 
+  test("sanitizes reviewer comparison base branch input", async () => {
+    const mod = await import("../../packages/workflows/builtin/ralph.js");
+    const d = mod.default as unknown as WorkflowDefinition;
+    const reviewerResponder = (name: string) => {
+      if (name.endsWith("reviewer-1")) return reviewJson("complete");
+      return undefined;
+    };
+
+    for (const baseBranch of ["main; echo pwn", "--upload-pack=evil", "..", "feature//foo", "foo.lock"]) {
+      const ctx = makeMockCtx(
+        { objective: "Review safely", max_turns: 1, base_branch: baseBranch },
+        { task: reviewerResponder },
+      );
+      await d.run(ctx);
+      const prompt = ctx.calls.prompts["completion-reviewer-1"]?.[0] ?? "";
+      assert.ok(prompt.includes("git diff origin/main"), baseBranch);
+      assert.ok(prompt.includes("baseline branch is `origin/main`"), baseBranch);
+      assert.equal(prompt.includes(baseBranch), false, baseBranch);
+    }
+
+    for (const baseBranch of ["feature/foo", "v1.0"]) {
+      const ctx = makeMockCtx(
+        { objective: "Review safely", max_turns: 1, base_branch: baseBranch },
+        { task: reviewerResponder },
+      );
+      await d.run(ctx);
+      const prompt = ctx.calls.prompts["completion-reviewer-1"]?.[0] ?? "";
+      assert.ok(prompt.includes(`git diff ${baseBranch}`), baseBranch);
+      assert.ok(prompt.includes(`baseline branch is \`${baseBranch}\``), baseBranch);
+    }
+  });
+
   test("persists a goal ledger and completes only after reviewer quorum", async () => {
     const mod = await import("../../packages/workflows/builtin/ralph.js");
     const d = mod.default as unknown as WorkflowDefinition;
@@ -602,7 +641,6 @@ describe("ralph", () => {
     const ledger = JSON.parse(readFileSync(result["ledger_path"] as string, "utf8")) as {
       goal_id: string;
       objective: string;
-      objective_revision: number;
       status: string;
       turns: number;
       created_at: string;
@@ -615,7 +653,7 @@ describe("ralph", () => {
     };
     assert.equal(ledger.goal_id, result["goal_id"]);
     assert.equal(ledger.objective, "Refactor tests");
-    assert.equal(ledger.objective_revision, 1);
+    assert.equal(Object.hasOwn(ledger, "objective_revision"), false);
     assert.equal(ledger.status, "complete");
     assert.equal(ledger.turns, 1);
     assert.equal(typeof ledger.created_at, "string");
@@ -664,6 +702,33 @@ describe("ralph", () => {
     };
     assert.deepEqual(ledger.decisions.map((decision) => decision.decision), ["continue", "complete"]);
     assert.equal(ledger.blockers.length, 0);
+  });
+
+  test("carries prior reviewer turns into later worker continuation", async () => {
+    const mod = await import("../../packages/workflows/builtin/ralph.js");
+    const d = mod.default as unknown as WorkflowDefinition;
+    const ctx = makeMockCtx(
+      { objective: "Finish the migration", max_turns: 3, review_quorum: 3 },
+      {
+        task: (name, _options, calls) => {
+          if (name.startsWith("completion-reviewer-") || name.startsWith("evidence-reviewer-") || name.startsWith("risk-reviewer-")) {
+            const reviewingFinalTurn = calls.task.includes("work-turn-3");
+            return reviewingFinalTurn
+              ? reviewJson("complete", { evidence: [`${name} final evidence`] })
+              : reviewJson("continue", { gaps: [`${name} gap`] });
+          }
+          return undefined;
+        },
+      },
+    );
+
+    await d.run(ctx);
+
+    const thirdTurnPrompt = ctx.calls.prompts["work-turn-3"]?.[0] ?? "";
+    assert.match(thirdTurnPrompt, /turn 1 completion-reviewer-1/);
+    assert.match(thirdTurnPrompt, /completion-reviewer-1 gap/);
+    assert.match(thirdTurnPrompt, /turn 2 risk-reviewer-2/);
+    assert.match(thirdTurnPrompt, /risk-reviewer-2 gap/);
   });
 
   test("falls back from fractional positive integer controls", async () => {
@@ -738,6 +803,56 @@ describe("ralph", () => {
     assert.match(String(result["remaining_work"]), /missing production credentials/);
   });
 
+  test("clamps blocker threshold to max turns", async () => {
+    const mod = await import("../../packages/workflows/builtin/ralph.js");
+    const d = mod.default as unknown as WorkflowDefinition;
+    const ctx = makeMockCtx(
+      { objective: "Deploy the app", max_turns: 2, blocker_threshold: 999 },
+      {
+        task: (name) => {
+          if (name.startsWith("completion-reviewer-") || name.startsWith("evidence-reviewer-") || name.startsWith("risk-reviewer-")) {
+            return reviewJson("blocked", {
+              blocker: "missing production credentials",
+              gaps: ["cannot deploy without credentials"],
+            });
+          }
+          return undefined;
+        },
+      },
+    );
+
+    const result = await d.run(ctx);
+
+    assert.equal(result["status"], "blocked");
+    assert.equal(result["turns_completed"], 2);
+    assert.match(String(result["remaining_work"]), /missing production credentials/);
+  });
+
+  test("does not block on the first blocker observation", async () => {
+    const mod = await import("../../packages/workflows/builtin/ralph.js");
+    const d = mod.default as unknown as WorkflowDefinition;
+    const ctx = makeMockCtx(
+      { objective: "Deploy the app", max_turns: 1, blocker_threshold: 999 },
+      {
+        task: (name) => {
+          if (name.startsWith("completion-reviewer-") || name.startsWith("evidence-reviewer-") || name.startsWith("risk-reviewer-")) {
+            return reviewJson("blocked", {
+              blocker: "missing production credentials",
+              gaps: ["cannot deploy without credentials"],
+            });
+          }
+          return undefined;
+        },
+      },
+    );
+
+    const result = await d.run(ctx);
+
+    assert.equal(result["status"], "needs_human");
+    assert.equal(result["turns_completed"], 1);
+    assert.match(String(result["remaining_work"]), /missing production credentials/);
+  });
+
   test("stops as needs_human when max turns are exhausted without quorum", async () => {
     const mod = await import("../../packages/workflows/builtin/ralph.js");
     const d = mod.default as unknown as WorkflowDefinition;
@@ -762,6 +877,79 @@ describe("ralph", () => {
     assert.equal(result["approved"], false);
     assert.equal(result["turns_completed"], 1);
     assert.match(String(result["remaining_work"]), /published docs proof missing/);
+  });
+
+  test("worker failures stop with needs_human and persist a decision", async () => {
+    const mod = await import("../../packages/workflows/builtin/ralph.js");
+    const d = mod.default as unknown as WorkflowDefinition;
+    const ctx = makeMockCtx(
+      { objective: "Finish documentation", max_turns: 3, review_quorum: 2 },
+      {
+        task: (name) => {
+          if (name === "work-turn-1") {
+            throw new Error("provider outage");
+          }
+          return undefined;
+        },
+      },
+    );
+
+    const result = await d.run(ctx);
+
+    assert.equal(result["status"], "needs_human");
+    assert.equal(result["approved"], false);
+    assert.equal(result["turns_completed"], 1);
+    assert.match(String(result["remaining_work"]), /provider outage/);
+    assert.equal(result["review_report"], "");
+    assert.equal(ctx.calls.parallel.length, 0);
+    const ledger = JSON.parse(readFileSync(result["ledger_path"] as string, "utf8")) as {
+      status: string;
+      turns: number;
+      receipts: readonly unknown[];
+      reviews: readonly unknown[];
+      decisions: readonly { decision: string; reason: string }[];
+      lifecycle: readonly { event: string; status: string; turn: number }[];
+    };
+    assert.equal(ledger.status, "needs_human");
+    assert.equal(ledger.turns, 1);
+    assert.equal(ledger.receipts.length, 0);
+    assert.equal(ledger.reviews.length, 0);
+    assert.deepEqual(ledger.decisions.map((decision) => decision.decision), ["needs_human"]);
+    assert.match(ledger.decisions[0]!.reason, /provider outage/);
+    assert.deepEqual(
+      ledger.lifecycle.map((event) => event.event),
+      ["created", "work_turn_started", "status_decided"],
+    );
+  });
+
+  test("reviewer batch failures become a synthetic continue decision", async () => {
+    const mod = await import("../../packages/workflows/builtin/ralph.js");
+    const d = mod.default as unknown as WorkflowDefinition;
+    const ctx = makeMockCtx(
+      { objective: "Finish documentation", max_turns: 1, review_quorum: 2 },
+      {
+        parallel: () => {
+          throw new Error("parallel transport failed");
+        },
+      },
+    );
+
+    const result = await d.run(ctx);
+
+    assert.equal(result["status"], "needs_human");
+    assert.equal(result["approved"], false);
+    assert.equal(result["turns_completed"], 1);
+    assert.match(String(result["remaining_work"]), /parallel transport failed/);
+    assert.match(String(result["review_report"]), /parallel transport failed/);
+    const ledger = JSON.parse(readFileSync(result["ledger_path"] as string, "utf8")) as {
+      reviews: readonly { reviewer: string; decision: string; explanation: string }[];
+      decisions: readonly { decision: string }[];
+    };
+    assert.equal(ledger.reviews.length, 1);
+    assert.equal(ledger.reviews[0]!.reviewer, "reviewer-error-1");
+    assert.equal(ledger.reviews[0]!.decision, "continue");
+    assert.match(ledger.reviews[0]!.explanation, /parallel transport failed/);
+    assert.deepEqual(ledger.decisions.map((decision) => decision.decision), ["needs_human"]);
   });
 });
 

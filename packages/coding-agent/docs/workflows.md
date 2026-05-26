@@ -194,7 +194,7 @@ Inputs:
 | `objective` | text | yes | — | Goal-runner objective. |
 | `max_turns` | number | no | `10` | Maximum worker/review turns. |
 | `review_quorum` | number | no | `2` | Reviewer `complete` votes required before completion. |
-| `blocker_threshold` | number | no | `3` | Consecutive turns with the same blocker required before `blocked`. |
+| `blocker_threshold` | number | no | `3` | Consecutive turns with the same blocker required before `blocked`; requires at least two observations and is capped by `max_turns` when possible. |
 | `base_branch` | string | no | `origin/main` | Branch reviewers compare the current code delta against. |
 
 Run examples:

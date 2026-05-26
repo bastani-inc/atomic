@@ -17,6 +17,7 @@ const DEFAULT_MAX_TURNS = 10;
 const DEFAULT_REVIEW_QUORUM = 2;
 const DEFAULT_BLOCKER_THRESHOLD = 3;
 const REVIEWER_COUNT = 3;
+const REVIEW_HISTORY_TURN_COUNT = 3;
 const LEDGER_FILENAME = "goal-ledger.json";
 
 type GoalStatus = "active" | "complete" | "blocked" | "needs_human";
@@ -75,7 +76,6 @@ type GoalLifecycleEvent = {
 type GoalLedger = {
   readonly goal_id: string;
   readonly objective: string;
-  readonly objective_revision: number;
   status: GoalStatus;
   turns: number;
   readonly created_at: string;
@@ -235,6 +235,16 @@ function boundedPositiveInteger(
   return Math.min(positiveInteger(value, fallback), maximum);
 }
 
+function repeatedBlockerThreshold(
+  value: number | undefined,
+  fallback: number,
+  maxTurns: number,
+): number {
+  const threshold = positiveInteger(value, fallback);
+  if (maxTurns < 2) return 2;
+  return Math.min(Math.max(threshold, 2), maxTurns);
+}
+
 function normalizeBranchInput(
   value: string | undefined,
   fallback: string,
@@ -295,7 +305,7 @@ function reviewerErrorDecision(message: string): ReviewGateDecision {
   return {
     decision: "continue",
     evidence: [],
-    gaps: ["Reviewer did not return a parseable structured decision."],
+    gaps: [`Reviewer did not return a parseable structured decision: ${message}`],
     blocker: null,
     confidence_score: 0,
     explanation: message,
@@ -325,7 +335,6 @@ async function createGoalLedger(
   const ledger: GoalLedger = {
     goal_id: randomUUID(),
     objective,
-    objective_revision: 1,
     status: "active",
     turns: 0,
     created_at: now,
@@ -349,7 +358,6 @@ async function writeGoalLedger(
   ledger.updated_at = new Date().toISOString();
   await writeFile(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`, {
     encoding: "utf8",
-    flag: "w",
   });
 }
 
@@ -358,7 +366,12 @@ function renderReviewHistory(ledger: GoalLedger): string {
     return "No previous reviewer findings; this is the first worker turn.";
   }
 
-  const recentReviews = ledger.reviews.slice(-REVIEWER_COUNT);
+  const recentTurns = [...new Set(ledger.reviews.map((review) => review.turn))]
+    .slice(-REVIEW_HISTORY_TURN_COUNT);
+  const recentTurnSet = new Set(recentTurns);
+  const recentReviews = ledger.reviews.filter((review) =>
+    recentTurnSet.has(review.turn),
+  );
   return [
     "Previous reviewer findings:",
     ...recentReviews.map((review) => {
@@ -645,7 +658,7 @@ export default defineWorkflow("ralph")
     type: "number",
     default: DEFAULT_BLOCKER_THRESHOLD,
     description:
-      "Consecutive turns with the same blocker required before blocked status.",
+      "Consecutive turns with the same blocker required before blocked status; requires at least two observations and is capped by max_turns when possible.",
   })
   .input("base_branch", {
     type: "string",
@@ -669,9 +682,10 @@ export default defineWorkflow("ralph")
       DEFAULT_REVIEW_QUORUM,
       REVIEWER_COUNT,
     );
-    const blockerThreshold = positiveInteger(
+    const blockerThreshold = repeatedBlockerThreshold(
       inputs.blocker_threshold,
       DEFAULT_BLOCKER_THRESHOLD,
+      maxTurns,
     );
     const comparisonBaseBranch = normalizeBranchInput(inputs.base_branch, "origin/main");
     const { ledger, ledgerPath, artifactDir } = await createGoalLedger(objective);
@@ -702,6 +716,7 @@ export default defineWorkflow("ralph")
     };
 
     let latestReviews: ReviewRecord[] = [];
+    let terminalRemainingWork: string | undefined;
 
     for (let turn = 1; turn <= maxTurns && ledger.status === "active"; turn += 1) {
       appendLifecycleEvent(ledger, "work_turn_started", `Worker turn ${turn} started.`, turn);
@@ -716,20 +731,39 @@ export default defineWorkflow("ralph")
         blockerThreshold,
       );
 
-      const worker = await ctx.task(`work-turn-${turn}`, {
-        prompt: [
-          goalContext,
-          "",
-          "<worker_turn_contract>",
-          WORKER_RECEIPT_CONTRACT,
-          "</worker_turn_contract>",
-          "",
-          "Return Markdown with headings: Progress made, Files changed, Commands run, Evidence, Blockers, Ready for review, Remaining work.",
-        ].join("\n"),
-        reads: [ledgerPath],
-        output: workTurnPath,
-        ...workerModelConfig,
-      });
+      let worker: WorkflowTaskResult;
+      try {
+        worker = await ctx.task(`work-turn-${turn}`, {
+          prompt: [
+            goalContext,
+            "",
+            "<worker_turn_contract>",
+            WORKER_RECEIPT_CONTRACT,
+            "</worker_turn_contract>",
+            "",
+            "Return Markdown with headings: Progress made, Files changed, Commands run, Evidence, Blockers, Ready for review, Remaining work.",
+          ].join("\n"),
+          reads: [ledgerPath],
+          output: workTurnPath,
+          ...workerModelConfig,
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        terminalRemainingWork = `Worker turn ${turn} failed before producing a receipt: ${message}`;
+        latestReviews = [];
+        ledger.turns = turn;
+        ledger.status = "needs_human";
+        ledger.decisions.push({
+          turn,
+          decision: "needs_human",
+          reason: terminalRemainingWork,
+          complete_votes: 0,
+          review_quorum: reviewQuorum,
+        });
+        appendLifecycleEvent(ledger, "status_decided", terminalRemainingWork, turn);
+        await writeGoalLedger(ledgerPath, ledger);
+        break;
+      }
 
       ledger.turns = turn;
       ledger.receipts.push({
@@ -858,7 +892,7 @@ export default defineWorkflow("ralph")
 
     const remainingWork = ledger.status === "complete"
       ? "none"
-      : collectRemainingWork(latestReviews);
+      : terminalRemainingWork ?? collectRemainingWork(latestReviews);
     const finalReport = renderFinalReport(ledger, ledgerPath, remainingWork);
     const reviewReport = formatReviewReport(latestReviews);
 

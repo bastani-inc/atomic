@@ -319,7 +319,7 @@ Goal Runner workflow: initialize a persisted goal ledger with a per-run goal id 
 | `objective`         | `text`   | ✓        | —             | Goal-runner objective.                           |
 | `max_turns`         | `number` | —        | `10`          | Maximum worker/review turns.                     |
 | `review_quorum`     | `number` | —        | `2`           | Reviewer `complete` votes required to complete.  |
-| `blocker_threshold` | `number` | —        | `3`           | Consecutive same-blocker turns required to block. |
+| `blocker_threshold` | `number` | —        | `3`           | Consecutive same-blocker turns required to block; requires at least two observations and is capped by `max_turns` when possible. |
 | `base_branch`       | `string` | —        | `origin/main` | Branch reviewers compare the current delta with. |
 
 ### `open-claude-design`
