@@ -135,16 +135,36 @@ describe("ralph git worktree integration", () => {
     }
   }
 
-  function assertWorktreeRegistered(repo: string, worktreePath: string): void {
+  function worktreeListEntries(repo: string): readonly string[] {
+    return execFileSync("git", ["-C", repo, "worktree", "list", "--porcelain"])
+      .toString()
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("worktree "))
+      .map((line) => line.slice("worktree ".length));
+  }
+
+  function normalizePathForComparison(path: string): string {
+    const normalized = path.replace(/\\/g, "/");
+    return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+  }
+
+  function assertWorktreeRegistered(_repo: string, worktreePath: string): void {
     assert.equal(existsSync(join(worktreePath, ".git")), true, "expected git worktree checkout");
-    const worktreeList = execFileSync("git", ["-C", repo, "worktree", "list", "--porcelain"]).toString();
-    assert.equal(worktreeList.includes(worktreePath), true, "expected git worktree metadata to be present");
+    assert.equal(
+      execFileSync("git", ["-C", worktreePath, "rev-parse", "--is-inside-work-tree"]).toString().trim(),
+      "true",
+      "expected git to recognize the worktree checkout",
+    );
   }
 
   function assertWorktreeWasRemoved(repo: string, worktreePath: string): void {
     assert.equal(existsSync(worktreePath), false, "expected Ralph-created worktree checkout to be removed");
-    const worktreeList = execFileSync("git", ["-C", repo, "worktree", "list", "--porcelain"]).toString();
-    assert.equal(worktreeList.includes(worktreePath), false, "expected git worktree metadata to be removed");
+    const expectedPath = normalizePathForComparison(worktreePath);
+    assert.equal(
+      worktreeListEntries(repo).some((entry) => normalizePathForComparison(entry) === expectedPath),
+      false,
+      "expected git worktree metadata to be removed",
+    );
   }
 
   test("creates a relative git_worktree_dir and removes it after success", async () => {
