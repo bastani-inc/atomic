@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
-- Added Ralph `git_worktree_dir` support for running stages from an optional Git worktree, reusing existing worktrees as-is and leaving worktrees in place for retries.
+- Added Ralph `git_worktree_dir` support for running stages from an optional Git worktree, reusing existing worktrees as-is, preventing concurrent reuse with an active `.ralph.lock` PID/timestamp file, and leaving worktrees in place for retries.
 
 ### Changed
 

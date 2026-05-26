@@ -1330,6 +1330,7 @@ describe("ralph", () => {
     assert.match(description, /absolute paths are used as-is/);
     assert.match(description, /relative paths resolve from the repo root/);
     assert.match(description, /existing Git worktrees are reused as-is/);
+    assert.match(description, /active \.ralph\.lock files prevent concurrent use/);
     assert.deepEqual(Object.keys(mod.default.inputs).sort(), ["base_branch", "git_worktree_dir", "max_loops", "prompt"]);
   });
 
@@ -1362,6 +1363,8 @@ describe("ralph", () => {
     assert.match(prompt, /detached HEAD/);
     assert.match(prompt, /git checkout -b <branch>/);
     assert.ok(prompt.includes("git push origin HEAD:refs/heads/<branch>"));
+    assert.match(prompt, /`\.ralph\.lock` file while a git_worktree_dir run is active/);
+    assert.match(prompt, /do not stage, commit, or describe it as a meaningful change/);
     assert.match(prompt, /does not remove git_worktree_dir automatically/);
     assert.equal(prompt.includes("Worktree cleanup: safe-to-remove"), false);
     assert.equal(prompt.includes("Worktree cleanup: preserve"), false);

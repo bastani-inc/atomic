@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, test } from "bun:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type {
@@ -92,6 +92,8 @@ function makeMockCtx<TInputs extends Record<string, unknown>>(
     ui,
   };
 }
+
+const RALPH_LOCK_FILENAME = ".ralph.lock";
 
 describe("ralph git worktree integration", () => {
   let previousCwd: string;
@@ -190,6 +192,21 @@ describe("ralph git worktree integration", () => {
     execFileSync("git", ["worktree", "add", "--detach", worktreePath, "main"], { cwd: repo, stdio: "ignore" });
   }
 
+  function ralphLockPath(worktreePath: string): string {
+    return join(worktreePath, RALPH_LOCK_FILENAME);
+  }
+
+  function assertNoRalphLock(worktreePath: string): void {
+    assert.equal(existsSync(ralphLockPath(worktreePath)), false, "expected Ralph lock to be removed");
+  }
+
+  function assertOwnedRalphLock(worktreePath: string): void {
+    const content = readFileSync(ralphLockPath(worktreePath), "utf8");
+    const [pidLine, createdAtLine] = content.trimEnd().split(/\r?\n/);
+    assert.equal(Number.parseInt(pidLine ?? "", 10), process.pid, "expected lock to be owned by this process");
+    assert.match(createdAtLine ?? "", /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+  }
+
   test("creates a relative git_worktree_dir from repo root and leaves it after success", async () => {
     const mod = await import("../../packages/workflows/builtin/ralph.js");
     const d = mod.default as unknown as WorkflowDefinition;
@@ -214,6 +231,7 @@ describe("ralph git worktree integration", () => {
               execFileSync("git", ["-C", expectedWorktree, "rev-parse", "HEAD"]).toString().trim(),
               execFileSync("git", ["-C", repo, "rev-parse", "main"]).toString().trim(),
             );
+            assertOwnedRalphLock(expectedWorktree);
           }
           return undefined;
         },
@@ -229,6 +247,7 @@ describe("ralph git worktree integration", () => {
     assert.ok(Array.isArray(orchestratorReads) && orchestratorReads.includes(planPath));
     assertEveryRalphStageCwd(ctx, expectedWorktree);
     assertWorktreeRegistered(repo, expectedWorktree);
+    assertNoRalphLock(expectedWorktree);
   });
 
   test("fails fast outside a git repo when git_worktree_dir is requested", async () => {
@@ -292,6 +311,62 @@ describe("ralph git worktree integration", () => {
     assertWorktreeRegistered(repo, expectedWorktree);
   });
 
+  test("fails fast when an existing git worktree has an active Ralph lock", async () => {
+    const mod = await import("../../packages/workflows/builtin/ralph.js");
+    const d = mod.default as unknown as WorkflowDefinition;
+    const repo = initializeGitRepository();
+    const expectedWorktree = join(requireTempRoot(), "locked-worktree");
+    addDetachedWorktree(repo, expectedWorktree);
+    const activeLockContent = `${process.pid}\n${new Date().toISOString()}\n`;
+    writeFileSync(ralphLockPath(expectedWorktree), activeLockContent, "utf8");
+    process.chdir(repo);
+    const ctx = makeMockCtx({
+      prompt: "Add a small feature",
+      max_loops: 1,
+      base_branch: "main",
+      git_worktree_dir: expectedWorktree,
+    });
+
+    await assert.rejects(
+      () => d.run(ctx),
+      /git_worktree_dir is already locked by active Ralph process/,
+    );
+
+    assert.deepEqual(ctx.calls.task, []);
+    assert.equal(readFileSync(ralphLockPath(expectedWorktree), "utf8"), activeLockContent);
+  });
+
+  test("fails fast with recovery guidance when an existing Ralph lock is stale", async () => {
+    const mod = await import("../../packages/workflows/builtin/ralph.js");
+    const d = mod.default as unknown as WorkflowDefinition;
+    const repo = initializeGitRepository();
+    const expectedWorktree = join(requireTempRoot(), "stale-locked-worktree");
+    addDetachedWorktree(repo, expectedWorktree);
+    const exited = spawnSync(process.execPath, ["--version"], { stdio: "ignore" });
+    assert.equal(exited.status, 0);
+    const exitedPid = exited.pid;
+    if (typeof exitedPid !== "number" || exitedPid <= 0) {
+      throw new Error("expected exited child process to have a PID");
+    }
+    const staleLockContent = `${exitedPid}\n2024-01-01T00:00:00.000Z\n`;
+    writeFileSync(ralphLockPath(expectedWorktree), staleLockContent, "utf8");
+    process.chdir(repo);
+    const ctx = makeMockCtx({
+      prompt: "Add a small feature",
+      max_loops: 1,
+      base_branch: "main",
+      git_worktree_dir: expectedWorktree,
+    });
+
+    await assert.rejects(
+      () => d.run(ctx),
+      /git_worktree_dir has a stale Ralph lock/,
+    );
+
+    assert.deepEqual(ctx.calls.task, []);
+    assert.equal(readFileSync(ralphLockPath(expectedWorktree), "utf8"), staleLockContent);
+  });
+
   test("can re-run with the same git_worktree_dir without cleanup", async () => {
     const mod = await import("../../packages/workflows/builtin/ralph.js");
     const d = mod.default as unknown as WorkflowDefinition;
@@ -314,11 +389,13 @@ describe("ralph git worktree integration", () => {
 
     await d.run(firstCtx);
     assertWorktreeRegistered(repo, expectedWorktree);
+    assertNoRalphLock(expectedWorktree);
     await d.run(secondCtx);
 
     assertEveryRalphStageCwd(firstCtx, expectedWorktree);
     assertEveryRalphStageCwd(secondCtx, expectedWorktree);
     assertWorktreeRegistered(repo, expectedWorktree);
+    assertNoRalphLock(expectedWorktree);
   });
 
   test("fails fast when base_branch does not exist for a missing worktree path", async () => {
@@ -424,6 +501,7 @@ describe("ralph git worktree integration", () => {
     }
     assertEveryRalphStageCwd(ctx, expectedWorktree);
     assertWorktreeRegistered(repo, expectedWorktree);
+    assertNoRalphLock(expectedWorktree);
   });
 
   test("leaves the worktree for recovery when the workflow fails", async () => {
@@ -441,7 +519,10 @@ describe("ralph git worktree integration", () => {
       },
       {
         task: (name) => {
-          if (name === "planner-1") throw new Error("planner failed");
+          if (name === "planner-1") {
+            assertOwnedRalphLock(expectedWorktree);
+            throw new Error("planner failed");
+          }
           return undefined;
         },
       },
@@ -450,5 +531,6 @@ describe("ralph git worktree integration", () => {
     await assert.rejects(() => d.run(ctx), /planner failed/);
 
     assertWorktreeRegistered(repo, expectedWorktree);
+    assertNoRalphLock(expectedWorktree);
   });
 });

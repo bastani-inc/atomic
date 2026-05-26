@@ -8,7 +8,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { defineWorkflow } from "../src/index.js";
@@ -368,8 +368,16 @@ function requireGitRepositoryForWorktree(cwd = process.cwd()): string {
   return repoRootResult.stdout.trim();
 }
 
+const RALPH_WORKTREE_LOCK_FILENAME = ".ralph.lock";
+
+type RalphWorktreeLock = {
+  readonly path: string;
+  readonly content: string;
+};
+
 type GitWorktreeSetup = {
   readonly cwd?: string;
+  readonly lock?: RalphWorktreeLock;
 };
 
 async function addGitWorktree(
@@ -399,8 +407,111 @@ async function pathExists(path: string): Promise<boolean> {
     await stat(path);
     return true;
   } catch (error) {
-    if ((error as { readonly code?: string }).code === "ENOENT") return false;
+    if (errorCode(error) === "ENOENT") return false;
     throw error;
+  }
+}
+
+function errorCode(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null || !("code" in error)) return undefined;
+  const code = (error as { readonly code?: unknown }).code;
+  return typeof code === "string" ? code : undefined;
+}
+
+function processIdIsAlive(pid: number): boolean {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return errorCode(error) !== "ESRCH";
+  }
+}
+
+function parseRalphWorktreeLock(content: string): { readonly pid?: number; readonly createdAt?: string } {
+  const [pidLine, createdAtLine] = content.trimEnd().split(/\r?\n/);
+  const pid = Number.parseInt(pidLine ?? "", 10);
+  return {
+    ...(Number.isSafeInteger(pid) && pid > 0 ? { pid } : {}),
+    ...(createdAtLine === undefined || createdAtLine.trim() === "" ? {} : { createdAt: createdAtLine.trim() }),
+  };
+}
+
+function activeRalphWorktreeLockError(lockPath: string, content: string): Error | undefined {
+  const existingLock = parseRalphWorktreeLock(content);
+  if (existingLock.pid === undefined || !processIdIsAlive(existingLock.pid)) return undefined;
+
+  const createdAt = existingLock.createdAt ?? "unknown time";
+  return new Error(
+    [
+      `git_worktree_dir is already locked by active Ralph process ${existingLock.pid} since ${createdAt}: ${lockPath}`,
+      "Use a different git_worktree_dir, wait for that run to exit, or remove the lock only after confirming the process is gone.",
+    ].join("\n"),
+  );
+}
+
+function staleRalphWorktreeLockError(lockPath: string, content: string): Error {
+  const existingLock = parseRalphWorktreeLock(content);
+  const pid = existingLock.pid === undefined ? "unknown PID" : `PID ${existingLock.pid}`;
+  const createdAt = existingLock.createdAt ?? "unknown time";
+  return new Error(
+    [
+      `git_worktree_dir has a stale Ralph lock for ${pid} since ${createdAt}: ${lockPath}`,
+      "Remove the lock only after confirming no Ralph run is active for this worktree, then retry.",
+    ].join("\n"),
+  );
+}
+
+async function acquireRalphWorktreeLock(worktreeDir: string): Promise<RalphWorktreeLock> {
+  const lockPath = join(worktreeDir, RALPH_WORKTREE_LOCK_FILENAME);
+  const content = `${process.pid}\n${new Date().toISOString()}\n`;
+
+  try {
+    await writeFile(lockPath, content, { encoding: "utf8", flag: "wx" });
+    return { path: lockPath, content };
+  } catch (error) {
+    if (errorCode(error) !== "EEXIST") {
+      throw new Error(`Failed to create Ralph worktree lock at ${lockPath}: ${errorMessage(error)}`);
+    }
+  }
+
+  let existingContent: string;
+  try {
+    existingContent = await readFile(lockPath, "utf8");
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return await acquireRalphWorktreeLock(worktreeDir);
+    throw new Error(`git_worktree_dir lock already exists at ${lockPath}, but Ralph could not read it: ${errorMessage(error)}`);
+  }
+
+  const activeLockError = activeRalphWorktreeLockError(lockPath, existingContent);
+  if (activeLockError !== undefined) throw activeLockError;
+  throw staleRalphWorktreeLockError(lockPath, existingContent);
+}
+
+async function releaseRalphWorktreeLock(lock: RalphWorktreeLock | undefined): Promise<void> {
+  if (lock === undefined) return;
+
+  let currentContent: string;
+  try {
+    currentContent = await readFile(lock.path, "utf8");
+  } catch (error) {
+    if (errorCode(error) !== "ENOENT") {
+      console.warn(`Failed to read Ralph worktree lock during cleanup at ${lock.path}: ${errorMessage(error)}`);
+    }
+    return;
+  }
+
+  if (currentContent !== lock.content) {
+    console.warn(`Preserving Ralph worktree lock because it no longer belongs to this run: ${lock.path}`);
+    return;
+  }
+
+  try {
+    await unlink(lock.path);
+  } catch (error) {
+    if (errorCode(error) !== "ENOENT") {
+      console.warn(`Failed to remove Ralph worktree lock at ${lock.path}: ${errorMessage(error)}`);
+    }
   }
 }
 
@@ -426,7 +537,8 @@ async function createGitWorktreeIfRequested(
   const requestedWorktreeDir = resolveWorktreePath(trimmed, repoRoot);
   if (await pathExists(requestedWorktreeDir)) {
     if (existingPathIsGitWorktree(requestedWorktreeDir)) {
-      return { cwd: requestedWorktreeDir };
+      const lock = await acquireRalphWorktreeLock(requestedWorktreeDir);
+      return { cwd: requestedWorktreeDir, lock };
     }
     throw new Error(`git_worktree_dir already exists but is not a Git worktree: ${requestedWorktreeDir}`);
   }
@@ -440,7 +552,8 @@ async function createGitWorktreeIfRequested(
       ].join("\n"),
     );
   }
-  return { cwd: requestedWorktreeDir };
+  const lock = await acquireRalphWorktreeLock(requestedWorktreeDir);
+  return { cwd: requestedWorktreeDir, lock };
 }
 
 function workflowCwdOption(workflowCwd: string | undefined): { cwd?: string } {
@@ -827,6 +940,7 @@ async function runRalphWorkflow(
           [
             `Start by reading the spec file at ${specPath}.`,
             "Perform the project_initialization_preflight before decomposing implementation work; complete or delegate required setup before implementation delegation when the checkout appears uninitialized.",
+            "If `.ralph.lock` exists in the workspace, treat it as Ralph's concurrency lock: do not edit, stage, commit, report, or delegate it as part of the requested code change.",
             "Decompose the work into delegated subagent tasks based on that spec file.",
             "Pass each subagent the relevant task, constraints, files, validation expectations, any prior review findings from the spec, and instructions to report implementation-note-worthy decisions or tradeoffs.",
             "Coordinate subagent results into the smallest coherent set of changes that satisfies the spec.",
@@ -1286,7 +1400,7 @@ async function runRalphWorkflow(
           "If no logged-in account can access the repository or create the PR, do not fake success; report each credential/account tried, what failed, and provide the command the user can run later.",
           "When you successfully create or update the PR, create a PR comment containing the implementation notes file contents as the last action of this workflow stage.",
           "Ralph-created worktrees are detached HEAD checkouts. If you are preparing a PR from a detached HEAD, create and push a branch from the current HEAD, for example with `git checkout -b <branch>` or `git push origin HEAD:refs/heads/<branch>`, before opening the PR.",
-          "Ralph does not remove git_worktree_dir automatically. Leave the worktree intact for retries or user recovery.",
+          "Ralph writes a `.ralph.lock` file while a git_worktree_dir run is active, removes that lock on exit, and does not remove git_worktree_dir automatically. Treat `.ralph.lock` as internal run state: do not stage, commit, or describe it as a meaningful change. Leave the worktree intact for retries or user recovery.",
           "If PR creation is not possible, do not create a standalone comment elsewhere; include the implementation notes path and summary in your report instead.",
           "If the review loop did not approve, prefer reporting the remaining blockers over creating a PR unless the changes are still intentionally ready for human review.",
           "Do not make unrelated code edits in this phase. Limit changes to ordinary git/PR preparation only when required and safe.",
@@ -1348,7 +1462,7 @@ export default defineWorkflow("ralph")
     type: "string",
     default: "",
     description:
-      "Optional Git worktree path. Ralph must start inside a Git repo; absolute paths are used as-is, relative paths resolve from the repo root, existing Git worktrees are reused as-is, and missing paths are created from base_branch."
+      "Optional Git worktree path. Ralph must start inside a Git repo; absolute paths are used as-is, relative paths resolve from the repo root, existing Git worktrees are reused as-is, active .ralph.lock files prevent concurrent use, and missing paths are created from base_branch."
   })
   .run(async (ctx) => {
     const ralphCtx = ctx as WorkflowRunContext<RalphInputs>;
@@ -1368,12 +1482,16 @@ export default defineWorkflow("ralph")
       task: (name, options) => ralphCtx.task(name, options),
       parallel: (steps, options) => ralphCtx.parallel(steps, options),
     };
-    return await runRalphWorkflow(workflowCtx, {
-      prompt,
-      maxLoops,
-      comparisonBaseBranch,
-      workflowStartCwd,
-      workflowCwd: worktree.cwd,
-    });
+    try {
+      return await runRalphWorkflow(workflowCtx, {
+        prompt,
+        maxLoops,
+        comparisonBaseBranch,
+        workflowStartCwd,
+        workflowCwd: worktree.cwd,
+      });
+    } finally {
+      await releaseRalphWorktreeLock(worktree.lock);
+    }
   })
   .compile();
