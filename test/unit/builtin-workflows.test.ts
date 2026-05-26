@@ -516,6 +516,9 @@ describe("ralph", () => {
       overall_correctness: "patch is correct",
       overall_explanation: "No actionable findings remain.",
       overall_confidence_score: 0.9,
+      goal_oracle_satisfied: true,
+      receipt_assessment: "Receipts and validation match the inferred oracle.",
+      verification_remaining: "none",
       stop_review_loop: true,
       reviewer_error: null,
     });
@@ -668,12 +671,12 @@ describe("ralph", () => {
     assert.equal("project_readiness" in result, false);
   });
 
-  test("writes planner spec to specs and passes only the path to orchestrator", async () => {
+  test("writes planner goal contract to OS-temp artifacts and passes only the path to orchestrator", async () => {
     const mod = await import("../../packages/workflows/builtin/ralph.js");
     const d = mod.default as unknown as WorkflowDefinition;
-    const planText = "# SPEC SENTINEL\n\nFull planner RFC body.";
+    const planText = "# GOAL CONTRACT SENTINEL\n\nFull planner goal contract body.";
     const ctx = makeMockCtx(
-      { prompt: "Write specs", max_loops: 1 },
+      { prompt: "Write goal contract", max_loops: 1 },
       {
         task: (name) => {
           if (name === "planner-1") return planText;
@@ -687,7 +690,8 @@ describe("ralph", () => {
 
     const planPath = result["plan_path"];
     assert.equal(typeof planPath, "string");
-    assert.match(normalizePathSeparators(planPath as string), /^specs\/\d{4}-\d{2}-\d{2}-write-specs\.md$/);
+    assert.ok(isAbsolute(planPath as string));
+    assert.match(normalizePathSeparators(planPath as string), /atomic-goal-notes-[^/]+\/goal-contract\.md$/);
     assert.equal(readFileSync(planPath as string, "utf8"), `${planText}\n`);
     assert.equal(result["plan"], planText);
 
@@ -695,9 +699,9 @@ describe("ralph", () => {
     const normalizedOrchestratorPrompt = normalizePathSeparators(orchestratorPrompt);
     assert.match(
       normalizedOrchestratorPrompt,
-      new RegExp(String.raw`specs/\d{4}-\d{2}-\d{2}-write-specs\.md`),
+      new RegExp(normalizePathSeparators(planPath as string).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
     );
-    assert.doesNotMatch(orchestratorPrompt, /SPEC SENTINEL/);
+    assert.doesNotMatch(orchestratorPrompt, /GOAL CONTRACT SENTINEL/);
     const implementationNotesPath = result["implementation_notes_path"];
     assert.equal(typeof implementationNotesPath, "string");
     assert.ok(isAbsolute(implementationNotesPath as string));
@@ -718,7 +722,7 @@ describe("ralph", () => {
     assert.equal(orchestratorOptions?.previous, undefined);
   });
 
-  test("runs final PR phase after review loop", async () => {
+  test("embeds final audit requirements in reviewers before PR phase", async () => {
     const mod = await import("../../packages/workflows/builtin/ralph.js");
     const d = mod.default as unknown as WorkflowDefinition;
     const ctx = makeMockCtx(
@@ -734,12 +738,20 @@ describe("ralph", () => {
 
     const result = await d.run(ctx);
 
+    assert.equal(ctx.calls.task.includes("final-audit"), false);
     assert.equal(ctx.calls.task.at(-1), "pull-request");
+    assert.equal("final_audit_report" in result, false);
     assert.equal(result["pr_report"], "PR unavailable: credentials missing.");
     const planPath = result["plan_path"];
     assert.equal(typeof planPath, "string");
     const implementationNotesPath = result["implementation_notes_path"];
     assert.equal(typeof implementationNotesPath, "string");
+    const reviewerPrompt = ctx.calls.prompts["reviewer-a"]?.[0] ?? "";
+    assert.match(reviewerPrompt, /completion audit for the current iteration/);
+    assert.match(reviewerPrompt, /original owner outcome/);
+    assert.match(reviewerPrompt, /verification oracle/);
+    assert.match(reviewerPrompt, /planning, discovery, task selection/);
+
     const prPrompt = ctx.calls.prompts["pull-request"]?.[0] ?? "";
     assert.match(prPrompt, /Review the changes since the base branch `feature-parent`/);
     assert.match(prPrompt, /create a pull request if possible/);
@@ -752,9 +764,10 @@ describe("ralph", () => {
     assert.match(prPrompt, /git status --short/);
     assert.match(prPrompt, /git diff feature-parent/);
     assert.match(prPrompt, /implementation notes/);
+    assert.match(prPrompt, /latest structured reviewer decisions/);
     assert.match(prPrompt, /PR comment/);
     assert.match(prPrompt, /last action/);
-    assert.match(normalizePathSeparators(prPrompt), /Planner spec path: specs\//);
+    assert.match(normalizePathSeparators(prPrompt), /Planner goal contract path: .*goal-contract\.md/);
     assert.match(normalizePathSeparators(prPrompt), /Implementation notes path: .*implementation-notes\.md/);
     const prOptions = ctx.calls.taskOptions["pull-request"]?.[0];
     assert.deepEqual(prOptions?.reads, [planPath, implementationNotesPath]);
@@ -779,11 +792,20 @@ describe("ralph", () => {
     assert.deepEqual(ctx.calls.stage, []);
     assert.ok(ctx.calls.task.includes("planner-1"));
     const plannerPrompt = ctx.calls.prompts["planner-1"]?.[0] ?? "";
-    assert.match(plannerPrompt, /investigation-first RFC authoring/);
+    assert.match(plannerPrompt, /investigation-first goal-charter and goal contract authoring/);
+    assert.match(plannerPrompt, /concrete goal contract/);
+    assert.match(plannerPrompt, /verification oracle/);
+    assert.match(plannerPrompt, /work surface/);
+    assert.match(plannerPrompt, /review criteria tied to the oracle/);
+    assert.match(plannerPrompt, /supporting context rather than the primary success criterion/);
     assert.match(plannerPrompt, /report after investigation, not a substitute/);
     assert.ok(ctx.calls.task.includes("orchestrator-1"));
     const orchestratorPrompt = ctx.calls.prompts["orchestrator-1"]?.[0] ?? "";
     assert.match(orchestratorPrompt, /not the implementer/);
+    assert.match(orchestratorPrompt, /concrete goal contract/);
+    assert.match(orchestratorPrompt, /largest safe useful slice/);
+    assert.match(orchestratorPrompt, /active, blocked, completed, and verification status/);
+    assert.match(orchestratorPrompt, /receipt/);
     assert.match(orchestratorPrompt, /completion report, not the task itself/);
     assert.match(orchestratorPrompt, /Use the `todo` tool as your active control ledger/);
     assert.match(orchestratorPrompt, /After subagents have done the work/);
@@ -791,22 +813,36 @@ describe("ralph", () => {
     const simplifierPrompt = ctx.calls.prompts["code-simplifier-1"]?.[0] ?? "";
     assert.match(simplifierPrompt, /active code-refinement stage, not just a commentary stage/);
     assert.match(simplifierPrompt, /edits actually applied from observations only/);
-    assert.ok(ctx.calls.parallel.some((names) => names.includes("infra-locate-1") && names.includes("infra-patterns-1")));
-    const locatePrompt = ctx.calls.prompts["infra-locate-1"]?.[0] ?? "";
-    assert.match(locatePrompt, /repository-discovery stage/);
-    assert.match(locatePrompt, /not a substitute for discovery/);
-    const analyzePrompt = ctx.calls.prompts["infra-analyze-1"]?.[0] ?? "";
-    assert.match(analyzePrompt, /actual repository coupling, not generic integration risks/);
-    assert.match(analyzePrompt, /Copy validation commands from actual repository scripts/);
-    const patternsPrompt = ctx.calls.prompts["infra-patterns-1"]?.[0] ?? "";
-    assert.match(patternsPrompt, /evidence-gathering stage for repository conventions/);
-    assert.match(patternsPrompt, /Do not describe generic best practices/);
+    assert.equal(ctx.calls.task.some((name) => name.startsWith("infra-")), false);
+    assert.equal(ctx.calls.parallel.some((names) => names.some((name) => name.startsWith("infra-"))), false);
     assert.ok(ctx.calls.parallel.some((names) => names.includes("reviewer-a") && names.includes("reviewer-b")));
     const reviewerPrompt = ctx.calls.prompts["reviewer-a"]?.[0] ?? "";
     assert.match(reviewerPrompt, /grumpy senior developer/);
+    assert.match(reviewerPrompt, /verification oracle/);
+    assert.match(reviewerPrompt, /receipts/);
+    assert.match(reviewerPrompt, /not whether the supporting goal contract looks complete/);
+    assert.match(reviewerPrompt, /testing, linting, typecheck, build, generated-artifact, and CI patterns/);
+    assert.match(reviewerPrompt, /commands and conventions copied from actual repository scripts\/configs/);
+    assert.match(reviewerPrompt, /targeted tests, lint, typecheck, build/);
+    assert.match(reviewerPrompt, /end-to-end QA check/);
+    assert.match(reviewerPrompt, /tmux skill for terminal app environments/);
+    assert.match(reviewerPrompt, /playwright-cli for web app environments/);
+    assert.match(reviewerPrompt, /capture a screenshot as a certificate of correct completion/);
+    assert.match(reviewerPrompt, /capture the terminal window\/output that shows proof of correctness/);
     assert.match(reviewerPrompt, /download or install them/);
     assert.match(reviewerPrompt, /only valid after you inspect the actual repository state/);
     assert.match(reviewerPrompt, /parsing the JSON object returned by this tool/);
+    const allStagePrompts = Object.values(ctx.calls.prompts).flat().join("\n\n---\n\n");
+    const promptBrandLeakPattern = new RegExp(
+      [
+        ["Goal", "Buddy"].join(""),
+        ["goal", "buddy"].join(""),
+        [["design"].join(""), ["inspi", "ration"].join("")].join(" "),
+        [["Intent", " -> Oracle"].join(""), " -> Surface -> Loop -> Proof"].join(""),
+        "Ralph",
+      ].join("|"),
+    );
+    assert.doesNotMatch(allStagePrompts, promptBrandLeakPattern);
     const reviewerOptions = ctx.calls.taskOptions["reviewer-a"]?.[0];
     assert.ok(reviewerOptions?.customTools?.some((tool) => tool.name === "review_decision"));
     assert.equal(ctx.calls.parallelOptions.at(-1)?.failFast, false);
@@ -841,6 +877,9 @@ describe("ralph", () => {
               overall_correctness: "patch is incorrect",
               overall_explanation: "Actionable findings remain.",
               overall_confidence_score: 0.8,
+              goal_oracle_satisfied: false,
+              receipt_assessment: "Receipts do not yet prove the oracle.",
+              verification_remaining: "Edge-case tests remain.",
               stop_review_loop: false,
               reviewer_error: null,
             });

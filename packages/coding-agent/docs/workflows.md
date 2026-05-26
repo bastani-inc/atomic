@@ -139,7 +139,7 @@ Atomic bundles three workflows that cover the most common multi-stage jobs. They
 | Workflow | What it does | When to use |
 |---|---|---|
 | `deep-research-codebase` | Scout + research-history chain → parallel specialist waves → aggregator. Indexes the whole repo and synthesizes findings. | Broad or cross-cutting research before you decide what to change. Prefer `/skill:research-codebase` for one subsystem. |
-| `ralph` | Bounded plan/spec → orchestrate → simplify → parallel review loop → final PR preparation. Reviewer findings feed back into the next planner. | Larger implementation loops where you want implementation, review, validation, and conditional PR creation built in. |
+| `ralph` | Goal contract → orchestrate → simplify → parallel review/audit loop → PR preparation. Reviewer findings feed back into the next planner and completion is judged against an inferred verification oracle. | Larger autonomous implementation loops where you want implementation, receipts, review, validation, audit, and conditional PR creation built in. |
 | `open-claude-design` | Design-system onboarding → reference import → HTML generation → impeccable-driven refinement → quality gate → rich HTML handoff. Renders a live `preview.html` you can iterate against (opens through `playwright-cli` when available). | UI, page, component, theme, or design-token work that benefits from generation + critique loops. |
 
 ### `deep-research-codebase`
@@ -202,9 +202,9 @@ Run examples:
 /workflow ralph prompt="Migrate the database layer to Drizzle" max_loops=5 base_branch=develop
 ```
 
-Ralph writes each planner RFC to `specs/<date>-<topic>.md` in the current workspace, returns the path as `plan_path`, then instructs the orchestrator to read that spec path instead of inlining the full plan. The orchestrator also maintains OS-temp implementation notes, returned as `implementation_notes_path`, for decisions, spec deviations, tradeoffs, blockers, and validation outcomes.
+Ralph writes each planner goal contract to an OS-temp workflow artifact, returns the path as `plan_path`, then instructs the orchestrator to read that path instead of inlining the full plan. The goal contract captures owner intent, verification oracle, work surface, execution loop, and proof requirements; any user-supplied spec remains supporting input rather than the primary success criterion. The orchestrator also maintains OS-temp implementation notes, returned as `implementation_notes_path`, for the active work surface, receipts, decisions, goal-contract deviations, tradeoffs, blockers, and validation outcomes.
 
-After the review loop, Ralph runs a final PR-preparation phase. It reviews changes against `base_branch`, checks the current diff and untracked files, checks local git identity (`git config user.name` and `git config user.email`), and looks for GitHub credentials. It creates a pull request only when there are meaningful changes, a usable remote/branch target, suitable repository state, and credentials that can access the repository. When multiple GitHub accounts are logged in, it uses local git identity as a hint and tries available credentials until one works. If PR creation succeeds, the final phase posts the implementation notes contents as a PR comment. If not, `pr_report` explains what blocked creation and the commands or steps to run later.
+The review loop also performs the completion audit: reviewers map receipts and verification results back to the original owner outcome and inferred oracle before approving. After approval or loop exhaustion, Ralph runs PR preparation: reviewing changes against `base_branch`, checking the current diff and untracked files, checking local git identity (`git config user.name` and `git config user.email`), and looking for GitHub credentials. It creates a pull request only when there are meaningful changes, a usable remote/branch target, suitable repository state, and credentials that can access the repository. When multiple GitHub accounts are logged in, it uses local git identity as a hint and tries available credentials until one works. If PR creation succeeds, the final phase posts the implementation notes and reviewer approval summary as a PR comment. If not, `pr_report` explains what blocked creation and the commands or steps to run later.
 
 Result fields:
 
@@ -212,14 +212,14 @@ Result fields:
 |---|---|
 | `result` | Final orchestrator summary. |
 | `plan` | Last planner output text. |
-| `plan_path` | Path to the latest planner RFC under `specs/`. |
+| `plan_path` | OS-temp path to the latest planner goal contract. |
 | `implementation_notes_path` | OS-temp Markdown notes maintained during orchestration. |
 | `pr_report` | Final PR-preparation report, including created PR URL or why no PR was created. |
 | `approved` | Whether the review loop approved the patch. |
 | `iterations_completed` | Number of plan/orchestrate/review loops run. |
-| `review_report` | Last structured review report used to decide whether to stop. |
+| `review_report` | Last structured review report used to decide whether to stop, including oracle satisfaction and remaining verification. |
 
-A typical end-to-end flow is `/skill:research-codebase` → `/skill:create-spec` → `/workflow ralph prompt="Implement specs/<date>-<topic>.md"`.
+A typical end-to-end flow is `/skill:research-codebase` → `/workflow ralph prompt="Implement the researched rate-limit behavior and validate it"`. If you already have a spec, pass it in the prompt as supporting input.
 
 ### `open-claude-design`
 
