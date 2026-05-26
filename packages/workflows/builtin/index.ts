@@ -6,5 +6,6 @@
  */
 
 export { default as deepResearchCodebase } from "./deep-research-codebase.js";
+export { default as goal } from "./goal.js";
 export { default as ralph } from "./ralph.js";
 export { default as openClaudeDesign } from "./open-claude-design.js";

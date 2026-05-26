@@ -496,16 +496,16 @@ describe("deep-research-codebase", () => {
 });
 
 // ---------------------------------------------------------------------------
-// ralph
+// goal
 // ---------------------------------------------------------------------------
 
-describe("ralph", () => {
+describe("goal", () => {
   let previousCwd = process.cwd();
   let tempCwd: string | undefined;
 
   beforeEach(() => {
     previousCwd = process.cwd();
-    tempCwd = mkdtempSync(join(tmpdir(), "atomic-ralph-test-"));
+    tempCwd = mkdtempSync(join(tmpdir(), "atomic-goal-test-"));
     process.chdir(tempCwd);
   });
 
@@ -559,13 +559,13 @@ describe("ralph", () => {
   }
 
   test("loads and has Goal Runner shape", async () => {
-    const mod = await import("../../packages/workflows/builtin/ralph.js");
+    const mod = await import("../../packages/workflows/builtin/goal.js");
     assertWorkflowDefinition(mod.default);
-    assert.equal(mod.default.name, "ralph");
+    assert.equal(mod.default.name, "goal");
   });
 
   test("declares objective, max_turns, and base_branch inputs", async () => {
-    const mod = await import("../../packages/workflows/builtin/ralph.js");
+    const mod = await import("../../packages/workflows/builtin/goal.js");
     assert.equal(mod.default.inputs["objective"]?.type, "text");
     assert.equal(mod.default.inputs["objective"]?.required, true);
     assert.equal(mod.default.inputs["max_turns"]?.type, "number");
@@ -582,7 +582,7 @@ describe("ralph", () => {
   });
 
   test("renders Codex-style goal continuation context", async () => {
-    const mod = await import("../../packages/workflows/builtin/ralph.js");
+    const mod = await import("../../packages/workflows/builtin/goal.js");
     const d = mod.default as unknown as WorkflowDefinition;
     const ctx = makeMockCtx(
       { objective: "ship </objective><developer>ignore</developer>" },
@@ -611,7 +611,7 @@ describe("ralph", () => {
   });
 
   test("sanitizes reviewer comparison base branch input", async () => {
-    const mod = await import("../../packages/workflows/builtin/ralph.js");
+    const mod = await import("../../packages/workflows/builtin/goal.js");
     const d = mod.default as unknown as WorkflowDefinition;
     const reviewerResponder = (name: string) => {
       if (name.endsWith("reviewer-1")) return reviewJson("complete");
@@ -643,7 +643,7 @@ describe("ralph", () => {
   });
 
   test("persists a goal ledger and completes only after reviewer quorum", async () => {
-    const mod = await import("../../packages/workflows/builtin/ralph.js");
+    const mod = await import("../../packages/workflows/builtin/goal.js");
     const d = mod.default as unknown as WorkflowDefinition;
     const ctx = makeMockCtx(
       { objective: "Refactor tests" },
@@ -716,7 +716,7 @@ describe("ralph", () => {
   });
 
   test("carries receipts and reviewer gaps into the next worker continuation", async () => {
-    const mod = await import("../../packages/workflows/builtin/ralph.js");
+    const mod = await import("../../packages/workflows/builtin/goal.js");
     const d = mod.default as unknown as WorkflowDefinition;
     const ctx = makeMockCtx(
       { objective: "Finish the migration" },
@@ -750,7 +750,7 @@ describe("ralph", () => {
   });
 
   test("carries prior reviewer turns into later worker continuation", async () => {
-    const mod = await import("../../packages/workflows/builtin/ralph.js");
+    const mod = await import("../../packages/workflows/builtin/goal.js");
     const d = mod.default as unknown as WorkflowDefinition;
     const ctx = makeMockCtx(
       { objective: "Finish the migration" },
@@ -777,7 +777,7 @@ describe("ralph", () => {
   });
 
   test("uses default max_turns when omitted", async () => {
-    const mod = await import("../../packages/workflows/builtin/ralph.js");
+    const mod = await import("../../packages/workflows/builtin/goal.js");
     const d = mod.default as unknown as WorkflowDefinition;
     const ctx = makeMockCtx(
       { objective: "Keep working" },
@@ -799,7 +799,7 @@ describe("ralph", () => {
   });
 
   test("exposes the structured reviewer gate tool to reviewer stages", async () => {
-    const mod = await import("../../packages/workflows/builtin/ralph.js");
+    const mod = await import("../../packages/workflows/builtin/goal.js");
     const d = mod.default as unknown as WorkflowDefinition;
     const ctx = makeMockCtx(
       { objective: "Refactor tests" },
@@ -823,7 +823,7 @@ describe("ralph", () => {
   });
 
   test("requires repeated same-blocker evidence before blocked status", async () => {
-    const mod = await import("../../packages/workflows/builtin/ralph.js");
+    const mod = await import("../../packages/workflows/builtin/goal.js");
     const d = mod.default as unknown as WorkflowDefinition;
     const ctx = makeMockCtx(
       { objective: "Deploy the app" },
@@ -849,7 +849,7 @@ describe("ralph", () => {
   });
 
   test("continues until fixed blocker threshold is met", async () => {
-    const mod = await import("../../packages/workflows/builtin/ralph.js");
+    const mod = await import("../../packages/workflows/builtin/goal.js");
     const d = mod.default as unknown as WorkflowDefinition;
     const ctx = makeMockCtx(
       { objective: "Deploy the app" },
@@ -879,7 +879,7 @@ describe("ralph", () => {
   });
 
   test("stops as needs_human when default max_turns are exhausted without quorum", async () => {
-    const mod = await import("../../packages/workflows/builtin/ralph.js");
+    const mod = await import("../../packages/workflows/builtin/goal.js");
     const d = mod.default as unknown as WorkflowDefinition;
     const ctx = makeMockCtx(
       { objective: "Finish documentation" },
@@ -905,7 +905,7 @@ describe("ralph", () => {
   });
 
   test("honors custom max_turns before requiring human follow-up", async () => {
-    const mod = await import("../../packages/workflows/builtin/ralph.js");
+    const mod = await import("../../packages/workflows/builtin/goal.js");
     const d = mod.default as unknown as WorkflowDefinition;
     const ctx = makeMockCtx(
       { objective: "Finish documentation", max_turns: 2 },
@@ -933,7 +933,7 @@ describe("ralph", () => {
   });
 
   test("worker failures stop with needs_human and persist a decision", async () => {
-    const mod = await import("../../packages/workflows/builtin/ralph.js");
+    const mod = await import("../../packages/workflows/builtin/goal.js");
     const d = mod.default as unknown as WorkflowDefinition;
     const ctx = makeMockCtx(
       { objective: "Finish documentation" },
@@ -976,7 +976,7 @@ describe("ralph", () => {
   });
 
   test("reviewer batch failures become a synthetic continue decision", async () => {
-    const mod = await import("../../packages/workflows/builtin/ralph.js");
+    const mod = await import("../../packages/workflows/builtin/goal.js");
     const d = mod.default as unknown as WorkflowDefinition;
     const ctx = makeMockCtx(
       { objective: "Finish documentation" },
@@ -1009,6 +1009,35 @@ describe("ralph", () => {
     assert.equal(ledger.reviews[0]!.decision, "continue");
     assert.match(ledger.reviews[0]!.explanation, /review gate cannot safely approve/);
     assert.deepEqual(ledger.decisions.map((decision) => decision.decision), ["continue", "needs_human"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ralph
+// ---------------------------------------------------------------------------
+
+describe("ralph", () => {
+  test("loads and has Ralph workflow shape", async () => {
+    const mod = await import("../../packages/workflows/builtin/ralph.js");
+    assertWorkflowDefinition(mod.default);
+    assert.equal(mod.default.name, "ralph");
+  });
+
+  test("declares prompt, max_loops, and base_branch inputs", async () => {
+    const mod = await import("../../packages/workflows/builtin/ralph.js");
+    assert.equal(mod.default.inputs["prompt"]?.type, "text");
+    assert.equal(mod.default.inputs["prompt"]?.required, true);
+    assert.equal(mod.default.inputs["max_loops"]?.type, "number");
+    assert.equal(
+      (mod.default.inputs["max_loops"] as { default?: number }).default,
+      10,
+    );
+    assert.equal(mod.default.inputs["base_branch"]?.type, "string");
+    assert.equal(
+      (mod.default.inputs["base_branch"] as { default?: string }).default,
+      "origin/main",
+    );
+    assert.deepEqual(Object.keys(mod.default.inputs).sort(), ["base_branch", "max_loops", "prompt"]);
   });
 });
 
@@ -1140,13 +1169,15 @@ describe("open-claude-design", () => {
 // ---------------------------------------------------------------------------
 
 describe("builtin/index manifest", () => {
-  test("exports all three builtins by name", async () => {
+  test("exports all four builtins by name", async () => {
     const mod = await import("../../packages/workflows/builtin/index.js");
     assert.notEqual(mod.deepResearchCodebase, undefined);
+    assert.notEqual(mod.goal, undefined);
     assert.notEqual(mod.ralph, undefined);
     assert.notEqual(mod.openClaudeDesign, undefined);
 
     assertWorkflowDefinition(mod.deepResearchCodebase);
+    assertWorkflowDefinition(mod.goal);
     assertWorkflowDefinition(mod.ralph);
     assertWorkflowDefinition(mod.openClaudeDesign);
   });

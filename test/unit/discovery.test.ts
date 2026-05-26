@@ -2,7 +2,7 @@
  * Tests for src/extension/discovery.ts
  *
  * Covers:
- *   - discoverStartupWorkflowsSync() happy path: all three builtins registered
+ *   - discoverStartupWorkflowsSync() happy path: all four builtins registered
  *   - DiscoveryResult shape: registry, sources, errors
  *   - sources array: one entry per bundled workflow with correct id/kind/name
  *   - No errors on clean manifest
@@ -58,13 +58,14 @@ describe("discoverStartupWorkflowsSync — bundled manifest", () => {
     assert.equal(Array.isArray(result.errors), true);
   });
 
-  test("registers exactly the three bundled workflows", async () => {
+  test("registers exactly the four bundled workflows", async () => {
     const { registry } = await discoverStartupWorkflowsSync();
     const names = registry.names();
     assert.ok(names.includes("deep-research-codebase"));
+    assert.ok(names.includes("goal"));
     assert.ok(names.includes("ralph"));
     assert.ok(names.includes("open-claude-design"));
-    assert.equal(names.length, 3);
+    assert.equal(names.length, 4);
   });
 
   test("no errors on clean manifest", async () => {
@@ -74,9 +75,10 @@ describe("discoverStartupWorkflowsSync — bundled manifest", () => {
 
   test("sources array has one entry per registered workflow", async () => {
     const { sources } = await discoverStartupWorkflowsSync();
-    assert.equal(sources.length, 3);
+    assert.equal(sources.length, 4);
     const ids = sources.map((s: DiscoverySource) => s.id);
     assert.ok(ids.includes("deep-research-codebase"));
+    assert.ok(ids.includes("goal"));
     assert.ok(ids.includes("ralph"));
     assert.ok(ids.includes("open-claude-design"));
   });
@@ -107,7 +109,7 @@ describe("discoverStartupWorkflowsSync — bundled manifest", () => {
 
   test("registry.get by normalizedName returns valid WorkflowDefinition", async () => {
     const { registry } = await discoverStartupWorkflowsSync();
-    for (const name of ["deep-research-codebase", "ralph", "open-claude-design"]) {
+    for (const name of ["deep-research-codebase", "goal", "ralph", "open-claude-design"]) {
       const def = registry.get(name);
       assert.notEqual(def, undefined);
       assert.equal(def!.__piWorkflow, true);
@@ -232,14 +234,14 @@ describe("DiscoverySource shape", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Registry integration: all() returns all three definitions
+// Registry integration: all() returns all four definitions
 // ---------------------------------------------------------------------------
 
 describe("registry.all() after discovery", () => {
-  test("all() returns three WorkflowDefinition objects", async () => {
+  test("all() returns four WorkflowDefinition objects", async () => {
     const { registry } = await discoverStartupWorkflowsSync();
     const all = registry.all();
-    assert.equal(all.length, 3);
+    assert.equal(all.length, 4);
     for (const def of all) {
       assert.equal(def.__piWorkflow, true);
       assert.equal(typeof def.name, "string");
