@@ -372,7 +372,7 @@ describe("ralph git worktree integration", () => {
       prompt: "Add a small feature",
       max_loops: 1,
       base_branch: "main",
-      git_worktree_dir: "invalid path",
+      git_worktree_dir: "invalid\0path",
     });
 
     await assert.rejects(
