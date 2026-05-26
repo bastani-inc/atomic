@@ -216,6 +216,7 @@ describe("executor input resolution — Phase C", () => {
     const def = defineWorkflow("phaseC-defaults")
       .input("greeting", { type: "text", default: "hi" })
       .run(async (ctx) => {
+        await ctx.stage("read-default").prompt("x");
         return { greeting: ctx.inputs["greeting"] };
       })
       .compile() as WorkflowDefinition;
@@ -228,7 +229,10 @@ describe("executor input resolution — Phase C", () => {
   test("caller-provided value takes precedence over default", async () => {
     const def = defineWorkflow("phaseC-override")
       .input("name", { type: "text", default: "default-name" })
-      .run(async (ctx) => ({ name: ctx.inputs["name"] }))
+      .run(async (ctx) => {
+        await ctx.stage("read-override").prompt("x");
+        return { name: ctx.inputs["name"] };
+      })
       .compile() as WorkflowDefinition;
 
     const result = await run(def, { name: "custom" }, {

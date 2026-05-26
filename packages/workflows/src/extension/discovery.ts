@@ -152,15 +152,6 @@ export interface DiscoveryResult {
  * Validate a candidate value as a WorkflowDefinition.
  * Returns null when valid, or a human-readable rejection reason string.
  */
-function workflowRunCreatesStage(run: WorkflowDefinition["run"]): boolean {
-  // Discovery must not execute workflow bodies: run functions are arbitrary
-  // user code and may perform I/O before the first stage. Use a conservative
-  // static guard instead so obvious no-stage definitions are rejected before
-  // they can register and render an empty graph.
-  const source = Function.prototype.toString.call(run);
-  return /\.\s*(?:stage|task|chain|parallel)\s*\(/.test(source);
-}
-
 function validateDefinition(value: unknown): string | null {
   if (value === null || typeof value !== "object") {
     return "export is not an object";
@@ -178,9 +169,6 @@ function validateDefinition(value: unknown): string | null {
   }
   if (typeof d["run"] !== "function") {
     return "run must be a function";
-  }
-  if (!workflowRunCreatesStage(d["run"] as WorkflowDefinition["run"])) {
-    return "run must create at least one workflow stage via ctx.stage(), ctx.task(), ctx.chain(), or ctx.parallel(); otherwise the workflow graph is empty (cachedLayout.length === 0)";
   }
   return null;
 }

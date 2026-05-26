@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Replaced regex-based workflow discovery stage validation with runtime empty-graph validation based on actual stage creation.
 - Split worker project-initialization preflight guidance from Goal receipt/reporting instructions.
 
 ## [0.8.17] - 2026-05-26

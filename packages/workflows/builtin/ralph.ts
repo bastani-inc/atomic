@@ -1358,17 +1358,7 @@ export default defineWorkflow("ralph")
     const maxLoops = positiveInteger(inputs.max_loops, DEFAULT_MAX_LOOPS);
     const comparisonBaseBranch = normalizeBranchInput(inputs.base_branch, "origin/main");
     const worktree = await createGitWorktreeIfRequested(inputs.git_worktree_dir, comparisonBaseBranch, workflowStartCwd);
-    // Discovery's static workflowRunCreatesStage guard in
-    // packages/workflows/src/extension/discovery.ts checks this run function
-    // for direct stage primitive calls without executing helper bodies. Keep
-    // this live adapter explicit so Ralph remains discoverable while
-    // runRalphWorkflow owns the real orchestration body.
-    const workflowCtx: WorkflowRunContext<RalphInputs> = {
-      ...ralphCtx,
-      task: (name, options) => ralphCtx.task(name, options),
-      parallel: (steps, options) => ralphCtx.parallel(steps, options),
-    };
-    return await runRalphWorkflow(workflowCtx, {
+    return await runRalphWorkflow(ralphCtx, {
       prompt,
       maxLoops,
       comparisonBaseBranch,

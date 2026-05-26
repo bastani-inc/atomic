@@ -94,10 +94,14 @@ describe("runtime tunables — maxDepth", () => {
 
   test("depth < maxDepth executes normally", async () => {
     const wf = defineWorkflow("rt-below-max-depth")
-      .run(async () => ({ ran: true }))
+      .run(async (ctx) => {
+        await ctx.task("depth-check", { prompt: "depth check" });
+        return { ran: true };
+      })
       .compile();
 
     const result = await run(wf, {}, {
+      adapters: { prompt: { prompt: async () => "ok" } },
       store: createStore(),
       config: baseConfig({ maxDepth: 4 }),
       depth: 3,

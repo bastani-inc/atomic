@@ -117,6 +117,18 @@ describe("executor.run", () => {
     assert.equal(wfResult.stages[0]?.status, "completed");
   });
 
+  test("fails completed workflows that create no stages", async () => {
+    const def = defineWorkflow("empty-graph-wf")
+      .run(async () => ({ ok: true }))
+      .compile();
+
+    const wfResult = await run(def, {}, { store: createStore() });
+
+    assert.equal(wfResult.status, "failed");
+    assert.equal(wfResult.stages.length, 0);
+    assert.match(wfResult.error ?? "", /completed without creating any workflow stages/);
+  });
+
   test("ctx.task creates a tracked stage and returns reusable previous output", async () => {
     const seenPrompts: string[] = [];
     const def = defineWorkflow("task-wf")
@@ -711,10 +723,14 @@ describe("executor.run", () => {
     try {
       const st = createStore();
       const def = defineWorkflow("prompt-node-ui-precedence-wf")
-        .run(async () => ({}))
+        .run(async (ctx) => {
+          await ctx.task("warning-smoke", { prompt: "go" });
+          return {};
+        })
         .compile();
 
       const result = await run(def, {}, {
+        adapters: { prompt: { prompt: async () => "ok" } },
         store: st,
         usePromptNodesForUi: true,
         ui: {
@@ -2106,11 +2122,16 @@ describe("executor.run — HIL adapter injection", () => {
     const def = defineWorkflow("hil-input-wf")
       .run(async (ctx) => {
         const value = await ctx.ui.input("What is your name?");
+        await ctx.task("after-input", { prompt: "record input" });
         return { value };
       })
       .compile();
 
-    const wfResult = await run(def, {}, { ui: uiAdapter, store: createStore() });
+    const wfResult = await run(def, {}, {
+      adapters: { prompt: { prompt: async () => "ok" } },
+      ui: uiAdapter,
+      store: createStore(),
+    });
 
     assert.equal(wfResult.status, "completed");
     assert.equal(wfResult.result?.["value"], "user-input");
@@ -2128,11 +2149,16 @@ describe("executor.run — HIL adapter injection", () => {
     const def = defineWorkflow("hil-confirm-wf")
       .run(async (ctx) => {
         const ok = await ctx.ui.confirm("Continue?");
+        await ctx.task("after-confirm", { prompt: "record confirm" });
         return { ok };
       })
       .compile();
 
-    const wfResult = await run(def, {}, { ui: uiAdapter, store: createStore() });
+    const wfResult = await run(def, {}, {
+      adapters: { prompt: { prompt: async () => "ok" } },
+      ui: uiAdapter,
+      store: createStore(),
+    });
 
     assert.equal(wfResult.status, "completed");
     assert.equal(wfResult.result?.["ok"], true);
@@ -2149,11 +2175,16 @@ describe("executor.run — HIL adapter injection", () => {
     const def = defineWorkflow("hil-select-wf")
       .run(async (ctx) => {
         const choice = await ctx.ui.select("Pick one", ["a", "b", "c"] as const);
+        await ctx.task("after-select", { prompt: "record select" });
         return { choice };
       })
       .compile();
 
-    const wfResult = await run(def, {}, { ui: uiAdapter, store: createStore() });
+    const wfResult = await run(def, {}, {
+      adapters: { prompt: { prompt: async () => "ok" } },
+      ui: uiAdapter,
+      store: createStore(),
+    });
 
     assert.equal(wfResult.status, "completed");
     assert.equal(wfResult.result?.["choice"], "b");
@@ -2170,11 +2201,16 @@ describe("executor.run — HIL adapter injection", () => {
     const def = defineWorkflow("hil-editor-wf")
       .run(async (ctx) => {
         const content = await ctx.ui.editor("draft");
+        await ctx.task("after-editor", { prompt: "record editor" });
         return { content };
       })
       .compile();
 
-    const wfResult = await run(def, {}, { ui: uiAdapter, store: createStore() });
+    const wfResult = await run(def, {}, {
+      adapters: { prompt: { prompt: async () => "ok" } },
+      ui: uiAdapter,
+      store: createStore(),
+    });
 
     assert.equal(wfResult.status, "completed");
     assert.equal(wfResult.result?.["content"], "edited: draft");
@@ -2302,10 +2338,14 @@ describe("executor.run — lifecycle persistence", () => {
     const { persistence, calls } = makePersistence();
 
     const def = defineWorkflow("payload-wf")
-      .run(async (_ctx) => ({}))
+      .run(async (ctx) => {
+        await ctx.task("payload-smoke", { prompt: "go" });
+        return {};
+      })
       .compile();
 
     const wfResult = await run(def, { x: 1 }, {
+      adapters: { prompt: { prompt: async () => "ok" } },
       store: createStore(),
       persistence,
     });
@@ -2365,14 +2405,41 @@ describe("executor.run — lifecycle persistence", () => {
     const { persistence, calls } = makePersistence();
 
     const def = defineWorkflow("run-end-wf")
-      .run(async (_ctx) => ({ x: 1 }))
+      .run(async (ctx) => {
+        await ctx.task("run-end-smoke", { prompt: "go" });
+        return { x: 1 };
+      })
       .compile();
 
-    await run(def, {}, { store: createStore(), persistence });
+    await run(def, {}, {
+      adapters: { prompt: { prompt: async () => "ok" } },
+      store: createStore(),
+      persistence,
+    });
 
     const runEnd = calls.find((c) => c.type === "workflow.run.end");
     assert.equal(runEnd?.payload["status"], "completed");
     assert.equal(typeof runEnd?.payload["ts"], "number");
+  });
+
+  test("empty graph validation appends failed run.end without stage entries", async () => {
+    const { persistence, calls } = makePersistence();
+
+    const def = defineWorkflow("empty-persist-wf")
+      .run(async () => ({ ok: true }))
+      .compile();
+
+    const wfResult = await run(def, {}, {
+      store: createStore(),
+      persistence,
+    });
+
+    assert.equal(wfResult.status, "failed");
+    assert.match(wfResult.error ?? "", /completed without creating any workflow stages/);
+    assert.deepEqual(calls.map((c) => c.type), ["workflow.run.start", "workflow.run.end"]);
+    const runEnd = calls.find((c) => c.type === "workflow.run.end");
+    assert.equal(runEnd?.payload["status"], "failed");
+    assert.match(String(runEnd?.payload["error"] ?? ""), /completed without creating any workflow stages/);
   });
 
   test("failed stage: stage.end status=failed, run.end status=failed", async () => {
@@ -2502,10 +2569,14 @@ describe("executor.run — lifecycle persistence", () => {
     };
 
     const def = defineWorkflow("guard-wf")
-      .run(async (_ctx) => ({}))
+      .run(async (ctx) => {
+        await ctx.task("guard-smoke", { prompt: "go" });
+        return {};
+      })
       .compile();
 
     await run(def, {}, {
+      adapters: { prompt: { prompt: async () => "ok" } },
       store: guardedStore as import("../../packages/workflows/src/shared/store.js").Store,
       persistence,
     });

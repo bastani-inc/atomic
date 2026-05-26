@@ -884,6 +884,13 @@ function workflowDetailsFromRun(
   };
 }
 
+const EMPTY_WORKFLOW_GRAPH_ERROR_MESSAGE = "Workflow run completed without creating any workflow stages. Create at least one stage with ctx.stage(), ctx.task(), ctx.chain(), or ctx.parallel().";
+
+function assertWorkflowCreatedStage(runSnapshot: RunSnapshot): void {
+  if (runSnapshot.stages.length > 0) return;
+  throw new Error(EMPTY_WORKFLOW_GRAPH_ERROR_MESSAGE);
+}
+
 function defineDirectWorkflow(
   name: string,
   runFn: WorkflowDefinition["run"],
@@ -2474,6 +2481,8 @@ export async function run<TInputs extends Record<string, unknown>>(
     if (ownController.signal.aborted) {
       return finalizeKilled(runId, runSnapshot, activeStore, opts.persistence, opts.onRunEnd);
     }
+
+    assertWorkflowCreatedStage(runSnapshot);
 
     const recorded = activeStore.recordRunEnd(runId, "completed", result);
     opts.onRunEnd?.(runId, "completed", result);

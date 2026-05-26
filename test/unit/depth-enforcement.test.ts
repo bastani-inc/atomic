@@ -24,9 +24,14 @@ import type { WorkflowDefinition } from "../../packages/workflows/src/shared/typ
 
 function makeWf(name = "depth-test-wf"): WorkflowDefinition {
   return defineWorkflow(name)
-    .run(async (_ctx) => ({ ok: true }))
+    .run(async (ctx) => {
+      await ctx.task("depth-check", { prompt: "depth check" });
+      return { ok: true };
+    })
     .compile() as WorkflowDefinition;
 }
+
+const promptAdapter = { prompt: async () => "ok" };
 
 const configMaxDepth2: WorkflowRuntimeConfig = {
   maxDepth: 2,
@@ -69,6 +74,7 @@ describe("maxDepth enforcement — executor.run", () => {
   test("depth < maxDepth executes normally", async () => {
     const wf = makeWf("shallow-wf");
     const result = await run(wf, {}, {
+      adapters: { prompt: promptAdapter },
       store: createStore(),
       config: configMaxDepth2,
       depth: 1, // one below maxDepth → should run
@@ -81,6 +87,7 @@ describe("maxDepth enforcement — executor.run", () => {
   test("depth 0 (default) executes normally with maxDepth 2", async () => {
     const wf = makeWf("top-level-wf");
     const result = await run(wf, {}, {
+      adapters: { prompt: promptAdapter },
       store: createStore(),
       config: configMaxDepth2,
       // depth omitted → defaults to 0
@@ -131,7 +138,7 @@ describe("maxDepth enforcement — executor.run", () => {
     const wf = makeWf("md1-wf");
     const config: WorkflowRuntimeConfig = { ...configMaxDepth2, maxDepth: 1 };
 
-    const depthZero = await run(wf, {}, { store: createStore(), config, depth: 0 });
+    const depthZero = await run(wf, {}, { adapters: { prompt: promptAdapter }, store: createStore(), config, depth: 0 });
     assert.equal(depthZero.status, "completed");
 
     const depthOne = await run(wf, {}, { store: createStore(), config, depth: 1 });
@@ -143,7 +150,7 @@ describe("maxDepth enforcement — executor.run", () => {
     const config: WorkflowRuntimeConfig = { ...configMaxDepth2, maxDepth: 4 };
     const wf = makeWf("md4-wf");
 
-    const atBoundary = await run(wf, {}, { store: createStore(), config, depth: 3 });
+    const atBoundary = await run(wf, {}, { adapters: { prompt: promptAdapter }, store: createStore(), config, depth: 3 });
     assert.equal(atBoundary.status, "completed");
 
     const exceeded = await run(wf, {}, { store: createStore(), config, depth: 4 });
