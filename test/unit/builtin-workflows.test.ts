@@ -517,40 +517,74 @@ describe("goal", () => {
     }
   });
 
+  type ReviewJsonFinding = {
+    readonly title: string;
+    readonly body: string;
+    readonly confidence_score: number;
+    readonly priority: number | null;
+    readonly code_location: {
+      readonly absolute_file_path: string;
+      readonly line_range: { readonly start: number; readonly end: number };
+    };
+  };
+
+  type ReviewerErrorKind =
+    | "validation_unavailable"
+    | "dependency_unavailable"
+    | "tool_failure"
+    | "reviewer_failure";
+
+  function finding(
+    title: string,
+    body: string,
+    priority: number | null,
+  ): ReviewJsonFinding {
+    return {
+      title,
+      body,
+      confidence_score: 0.9,
+      priority,
+      code_location: {
+        absolute_file_path: join(process.cwd(), "changed.ts"),
+        line_range: { start: 1, end: 1 },
+      },
+    };
+  }
+
   function reviewJson(
     decision: "complete" | "continue" | "blocked",
     overrides: Partial<{
       evidence: readonly string[];
       gaps: readonly string[];
+      findings: readonly ReviewJsonFinding[];
       blocker: string | null;
       explanation: string;
+      verificationRemaining: string;
+      reviewerErrorKind: ReviewerErrorKind;
+      overallCorrectness: "patch is correct" | "patch is incorrect";
+      goalOracleSatisfied: boolean;
+      stopReviewLoop: boolean;
     }> = {},
   ): string {
     const evidence = overrides.evidence ?? ["focused validation passed"];
     const gaps = overrides.gaps ?? [];
     const blocker = overrides.blocker ?? null;
     const explanation = overrides.explanation ?? `${decision} decision from test reviewer`;
+    const findings = overrides.findings ?? gaps.map((gap, index) =>
+      finding(`[P2] Address gap ${index + 1}`, gap, 2),
+    );
     return JSON.stringify({
-      findings: gaps.map((gap, index) => ({
-        title: `[P2] Address gap ${index + 1}`,
-        body: gap,
-        confidence_score: 0.9,
-        priority: 2,
-        code_location: {
-          absolute_file_path: join(process.cwd(), "changed.ts"),
-          line_range: { start: 1, end: 1 },
-        },
-      })),
-      overall_correctness: decision === "complete" ? "patch is correct" : "patch is incorrect",
+      findings,
+      overall_correctness: overrides.overallCorrectness ?? (decision === "complete" ? "patch is correct" : "patch is incorrect"),
       overall_explanation: explanation,
       overall_confidence_score: 0.9,
-      goal_oracle_satisfied: decision === "complete",
+      goal_oracle_satisfied: overrides.goalOracleSatisfied ?? decision === "complete",
       receipt_assessment: evidence.join("; "),
-      verification_remaining: decision === "complete" ? "none" : (blocker ?? (gaps.join("; ") || "work remains")),
-      stop_review_loop: decision === "complete",
+      verification_remaining: overrides.verificationRemaining ?? (decision === "complete" ? "none" : (blocker ?? (gaps.join("; ") || "work remains"))),
+      stop_review_loop: overrides.stopReviewLoop ?? decision === "complete",
       reviewer_error: decision === "blocked"
         ? {
-            kind: "dependency_unavailable",
+            kind: overrides.reviewerErrorKind ?? "dependency_unavailable",
             message: blocker ?? "external blocker",
             attempted_recovery: "confirmed repeated blocker in current evidence",
           }
@@ -607,7 +641,7 @@ describe("goal", () => {
     assert.match(prompt, /This goal persists across turns/);
     assert.match(prompt, /Use the current worktree and external state as authoritative/);
     assert.match(prompt, /The audit must prove completion/);
-    assert.match(prompt, /at least three consecutive goal turns/);
+    assert.match(prompt, /Blocked threshold: same blocker must repeat for at least 3 consecutive turns/);
   });
 
   test("sanitizes reviewer comparison base branch input", async () => {
@@ -715,6 +749,110 @@ describe("goal", () => {
     assert.equal(existsSync(ledger.receipts[0]!.artifact_path), true);
   });
 
+  test("allows approval when correct reviewers only include P3 nice-to-have findings", async () => {
+    const mod = await import("../../packages/workflows/builtin/goal.js");
+    const d = mod.default as unknown as WorkflowDefinition;
+    const p3Finding = finding(
+      "[P3] Consider a small cleanup",
+      "This is a low-priority nice-to-have that should not block completion.",
+      3,
+    );
+    const ctx = makeMockCtx(
+      { objective: "Refactor tests" },
+      {
+        task: (name) => {
+          if (name.startsWith("completion-reviewer-") || name.startsWith("evidence-reviewer-")) {
+            return reviewJson("complete", { findings: [p3Finding] });
+          }
+          if (name.startsWith("risk-reviewer-")) return reviewJson("continue");
+          return undefined;
+        },
+      },
+    );
+
+    const result = await d.run(ctx);
+
+    assert.equal(result["status"], "complete");
+    assert.equal(result["approved"], true);
+  });
+
+  test("requires verification_remaining to be none before approval", async () => {
+    const mod = await import("../../packages/workflows/builtin/goal.js");
+    const d = mod.default as unknown as WorkflowDefinition;
+    const ctx = makeMockCtx(
+      { objective: "Refactor tests", max_turns: 1 },
+      {
+        task: (name) => {
+          if (name.startsWith("completion-reviewer-") || name.startsWith("evidence-reviewer-")) {
+            return reviewJson("complete", { verificationRemaining: "manual QA is still required" });
+          }
+          if (name.startsWith("risk-reviewer-")) return reviewJson("continue");
+          return undefined;
+        },
+      },
+    );
+
+    const result = await d.run(ctx);
+
+    assert.equal(result["status"], "needs_human");
+    assert.equal(result["approved"], false);
+    assert.match(String(result["remaining_work"]), /manual QA is still required/);
+  });
+
+  test("treats empty verification_remaining as none", async () => {
+    const mod = await import("../../packages/workflows/builtin/goal.js");
+    const d = mod.default as unknown as WorkflowDefinition;
+    const ctx = makeMockCtx(
+      { objective: "Refactor tests" },
+      {
+        task: (name) => {
+          if (name.startsWith("completion-reviewer-") || name.startsWith("evidence-reviewer-")) {
+            return reviewJson("complete", { verificationRemaining: "   " });
+          }
+          if (name.startsWith("risk-reviewer-")) return reviewJson("continue");
+          return undefined;
+        },
+      },
+    );
+
+    const result = await d.run(ctx);
+
+    assert.equal(result["status"], "complete");
+    const ledger = JSON.parse(readFileSync(result["ledger_path"] as string, "utf8")) as {
+      reviews: readonly { reviewer: string; gaps: readonly string[] }[];
+    };
+    const completionReview = ledger.reviews.find((review) => review.reviewer === "completion-reviewer-1");
+    assert.deepEqual(completionReview?.gaps, []);
+  });
+
+  test("does not report approval explanations as remaining work", async () => {
+    const mod = await import("../../packages/workflows/builtin/goal.js");
+    const d = mod.default as unknown as WorkflowDefinition;
+    const verboseExplanation = "Inspected the entire repository state and found no objective-relevant defects.";
+    const ctx = makeMockCtx(
+      { objective: "Refactor tests", max_turns: 1 },
+      {
+        task: (name) => {
+          if (name.startsWith("completion-reviewer-")) {
+            return reviewJson("complete", { explanation: verboseExplanation });
+          }
+          if (name.startsWith("evidence-reviewer-") || name.startsWith("risk-reviewer-")) {
+            return reviewJson("continue", {
+              explanation: verboseExplanation,
+              verificationRemaining: "none",
+            });
+          }
+          return undefined;
+        },
+      },
+    );
+
+    const result = await d.run(ctx);
+
+    assert.equal(result["status"], "needs_human");
+    assert.equal(String(result["remaining_work"]).includes(verboseExplanation), false);
+  });
+
   test("carries receipts and reviewer gaps into the next worker continuation", async () => {
     const mod = await import("../../packages/workflows/builtin/goal.js");
     const d = mod.default as unknown as WorkflowDefinition;
@@ -798,6 +936,28 @@ describe("goal", () => {
     assert.equal(result["turns_completed"], 10);
   });
 
+  test("uses default max_turns when fractional input floors below one", async () => {
+    const mod = await import("../../packages/workflows/builtin/goal.js");
+    const d = mod.default as unknown as WorkflowDefinition;
+    const ctx = makeMockCtx(
+      { objective: "Keep working", max_turns: 0.5 },
+      {
+        task: (name) => {
+          if (name.startsWith("completion-reviewer-") || name.startsWith("evidence-reviewer-") || name.startsWith("risk-reviewer-")) {
+            return reviewJson("continue", { gaps: ["not done yet"] });
+          }
+          return undefined;
+        },
+      },
+    );
+
+    const result = await d.run(ctx);
+
+    assert.equal(result["status"], "needs_human");
+    assert.equal(result["approved"], false);
+    assert.equal(result["turns_completed"], 10);
+  });
+
   test("exposes the structured reviewer gate tool to reviewer stages", async () => {
     const mod = await import("../../packages/workflows/builtin/goal.js");
     const d = mod.default as unknown as WorkflowDefinition;
@@ -819,6 +979,10 @@ describe("goal", () => {
     const reviewerOptions = ctx.calls.taskOptions["completion-reviewer-1"]?.[0];
     assert.ok(reviewerOptions?.customTools?.some((tool) => tool.name === "review_decision"));
     assert.ok(reviewerOptions?.tools?.includes("review_decision"));
+    assert.match(
+      ctx.calls.prompts["completion-reviewer-1"]?.[0] ?? "",
+      /echo the prior turn's exact blocker string/i,
+    );
 
   });
 
@@ -846,6 +1010,66 @@ describe("goal", () => {
     assert.equal(result["turns_completed"], 3);
     assert.equal(ctx.calls.task.includes("work-turn-4"), false);
     assert.match(String(result["remaining_work"]), /missing production credentials/);
+  });
+
+  test("does not treat validation_unavailable as a repeated blocker", async () => {
+    const mod = await import("../../packages/workflows/builtin/goal.js");
+    const d = mod.default as unknown as WorkflowDefinition;
+    const ctx = makeMockCtx(
+      { objective: "Deploy the app", max_turns: 3 },
+      {
+        task: (name) => {
+          if (name.startsWith("completion-reviewer-") || name.startsWith("evidence-reviewer-") || name.startsWith("risk-reviewer-")) {
+            return reviewJson("blocked", {
+              reviewerErrorKind: "validation_unavailable",
+              blocker: "Bun is not installed",
+              verificationRemaining: "Bun is not installed",
+            });
+          }
+          return undefined;
+        },
+      },
+    );
+
+    const result = await d.run(ctx);
+
+    assert.equal(result["status"], "needs_human");
+    assert.equal(result["turns_completed"], 3);
+    const ledger = JSON.parse(readFileSync(result["ledger_path"] as string, "utf8")) as {
+      blockers: readonly unknown[];
+      decisions: readonly { decision: string }[];
+    };
+    assert.equal(ledger.blockers.length, 0);
+    assert.deepEqual(ledger.decisions.map((decision) => decision.decision), ["continue", "continue", "needs_human"]);
+  });
+
+  test("clamps blocker threshold to custom max_turns", async () => {
+    const mod = await import("../../packages/workflows/builtin/goal.js");
+    const d = mod.default as unknown as WorkflowDefinition;
+    const ctx = makeMockCtx(
+      { objective: "Deploy the app", max_turns: 2 },
+      {
+        task: (name) => {
+          if (name.startsWith("completion-reviewer-") || name.startsWith("evidence-reviewer-") || name.startsWith("risk-reviewer-")) {
+            return reviewJson("blocked", {
+              blocker: "missing production credentials",
+              gaps: ["cannot deploy without credentials"],
+            });
+          }
+          return undefined;
+        },
+      },
+    );
+
+    const result = await d.run(ctx);
+
+    assert.equal(result["status"], "blocked");
+    assert.equal(result["turns_completed"], 2);
+    const ledger = JSON.parse(readFileSync(result["ledger_path"] as string, "utf8")) as {
+      decisions: readonly { decision: string; reason: string }[];
+    };
+    assert.deepEqual(ledger.decisions.map((decision) => decision.decision), ["continue", "blocked"]);
+    assert.match(ledger.decisions[1]!.reason, /2\/2 consecutive turns/);
   });
 
   test("continues until fixed blocker threshold is met", async () => {
@@ -979,14 +1203,8 @@ describe("goal", () => {
     const mod = await import("../../packages/workflows/builtin/goal.js");
     const d = mod.default as unknown as WorkflowDefinition;
     const ctx = makeMockCtx(
-      { objective: "Finish documentation" },
+      { objective: "Finish documentation", max_turns: 1 },
       {
-        task: (name) => {
-          if (name === "work-turn-2") {
-            throw new Error("stop after synthetic review");
-          }
-          return undefined;
-        },
         parallel: () => {
           throw new Error("parallel transport failed");
         },
@@ -997,8 +1215,8 @@ describe("goal", () => {
 
     assert.equal(result["status"], "needs_human");
     assert.equal(result["approved"], false);
-    assert.equal(result["turns_completed"], 2);
-    assert.match(String(result["remaining_work"]), /stop after synthetic review/);
+    assert.equal(result["turns_completed"], 1);
+    assert.match(String(result["remaining_work"]), /Recover reviewer execution/);
     assert.match(String(result["review_report"]), /parallel transport failed/);
     const ledger = JSON.parse(readFileSync(result["ledger_path"] as string, "utf8")) as {
       reviews: readonly { reviewer: string; decision: string; explanation: string }[];
@@ -1008,6 +1226,38 @@ describe("goal", () => {
     assert.equal(ledger.reviews[0]!.reviewer, "reviewer-error-1");
     assert.equal(ledger.reviews[0]!.decision, "continue");
     assert.match(ledger.reviews[0]!.explanation, /review gate cannot safely approve/);
+    assert.deepEqual(ledger.decisions.map((decision) => decision.decision), ["needs_human"]);
+  });
+
+  test("worker failures clear stale reviewer reports from earlier turns", async () => {
+    const mod = await import("../../packages/workflows/builtin/goal.js");
+    const d = mod.default as unknown as WorkflowDefinition;
+    const ctx = makeMockCtx(
+      { objective: "Finish documentation" },
+      {
+        task: (name) => {
+          if (name === "work-turn-2") {
+            throw new Error("provider outage on second turn");
+          }
+          if (name.startsWith("completion-reviewer-") || name.startsWith("evidence-reviewer-") || name.startsWith("risk-reviewer-")) {
+            return reviewJson("continue", { gaps: ["published docs proof missing"] });
+          }
+          return undefined;
+        },
+      },
+    );
+
+    const result = await d.run(ctx);
+
+    assert.equal(result["status"], "needs_human");
+    assert.equal(result["turns_completed"], 2);
+    assert.match(String(result["remaining_work"]), /provider outage on second turn/);
+    assert.equal(result["review_report"], "");
+    const ledger = JSON.parse(readFileSync(result["ledger_path"] as string, "utf8")) as {
+      reviews: readonly unknown[];
+      decisions: readonly { decision: string }[];
+    };
+    assert.equal(ledger.reviews.length, 3);
     assert.deepEqual(ledger.decisions.map((decision) => decision.decision), ["continue", "needs_human"]);
   });
 });

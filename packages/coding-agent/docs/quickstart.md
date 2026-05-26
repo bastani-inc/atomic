@@ -68,12 +68,13 @@ For an interactive tour any time, run `/atomic` inside the TUI; `/atomic overvie
 
 ### Try the built-in workflows
 
-Atomic ships with three workflows you can run immediately. Use `/workflow list` to see them and `/workflow inputs <name>` to inspect their inputs in your environment.
+Atomic ships with four workflows you can run immediately. Use `/workflow list` to see them and `/workflow inputs <name>` to inspect their inputs in your environment.
 
 | Workflow | When to use | Example |
 |---|---|---|
 | `deep-research-codebase` | Broad, cross-cutting research before you decide what to change. Scout → research-history → parallel specialist waves → aggregator. | `/workflow deep-research-codebase prompt="How do payment retries work end to end?"` |
-| `ralph` | Larger implementation loops with a persisted goal ledger, bounded worker turns, parallel reviewer gate, reviewer quorum, repeated-blocker detection, and explicit final status. | `/workflow ralph objective="Implement specs/2026-03-rate-limit.md and validate the behavior"` |
+| `goal` | Focused implementation against a clear objective or spec. Persists a goal ledger, captures worker receipts, gates completion through reviewer quorum, and stops as complete, blocked, or needing human follow-up. | `/workflow goal objective="Implement specs/2026-03-rate-limit.md and validate the behavior"` |
+| `ralph` | Heavier spec-to-PR work. Writes an RFC-style plan, delegates implementation through sub-agents, simplifies, discovers review infrastructure, runs reviewers, iterates, and prepares a PR report. | `/workflow ralph prompt="Plan, implement, review, and prepare a PR for specs/2026-03-rate-limit.md"` |
 | `open-claude-design` | UI and design-system work with generation, critique, and refinement loops; renders a live `preview.html` you can iterate against. | `/workflow open-claude-design prompt="Refresh the settings page hierarchy" output_type=page` |
 
 <p align="center"><img src="images/workflow-list.png" alt="Workflow List" width="600" /></p>
@@ -86,7 +87,7 @@ You can also launch workflows with **natural language** — just describe the ta
 Run a deep codebase research workflow on how the rate limiter behaves under burst traffic.
 ```
 
-Atomic picks the workflow, fills in inputs from the request, and confirms before launch. Ralph persists receipts in a goal ledger and stops only when reviewer quorum proves completion, the same blocker repeats enough times, or the turn limit requires human follow-up.
+Atomic picks the workflow, fills in inputs from the request, and confirms before launch. `goal` persists receipts in a goal ledger and stops only when reviewer quorum proves completion, the same blocker repeats enough times, or the turn limit requires human follow-up. `ralph` adds a planning/spec stage, sub-agent implementation orchestration, simplification, review-infrastructure discovery, and PR handoff.
 
 ### Monitor and steer a run
 
@@ -115,7 +116,7 @@ Skills are reusable expert instructions. Trigger one with `/skill:<name>` follow
 | `tdd` | Test-first feature or bug work. | `/skill:tdd` |
 | `impeccable` | Critique or refine frontend and product UI. | `/skill:impeccable` |
 
-Use `/skill:research-codebase` for a focused area and `/workflow deep-research-codebase` when the answer spans the whole repo. A typical flow is `/skill:research-codebase` → `/skill:create-spec` → `/workflow ralph` to implement and validate.
+Use `/skill:research-codebase` for a focused area and `/workflow deep-research-codebase` when the answer spans the whole repo. A typical focused flow is `/skill:research-codebase` → `/skill:create-spec` → `/workflow goal` to implement and validate; use `/workflow ralph` when you also want an RFC-style plan, sub-agent orchestration, iterative review, and PR handoff.
 
 ### Create your own workflow in natural language
 
@@ -230,7 +231,7 @@ Use `--mode json` for JSON event output or `--mode rpc` for process integration.
 ## Next steps
 
 - [Using Atomic](/usage) - interactive mode, slash commands, sessions, context files, and CLI reference.
-- [Workflows](/workflows) - run, inspect, and author multi-stage automation (including the three built-in workflows).
+- [Workflows](/workflows) - run, inspect, and author multi-stage automation (including the built-in workflows).
 - [Skills](/skills) - reusable expert instructions invoked with `/skill:<name>`.
 - [Providers](/providers) - authentication and model setup.
 - [Settings](/settings) - global and project configuration.

@@ -132,15 +132,18 @@ Turn research into an implementation-ready plan:
 
 If you are not sure what you want yet, brainstorm with Atomic first: explore trade-offs, compare approaches, then ask it to save the selected direction as a spec. Either way, the output is a repo-native artifact under `specs/` that an engineer can review before implementation starts.
 
-### 3. Implement with Ralph
+### 3. Implement with a built-in workflow
 
-Pass the spec to the implementation workflow:
+Pass the spec to the workflow that matches the amount of structure you want:
 
 ```text
-/workflow ralph objective="Implement specs/2026-03-rate-limit.md and validate the behavior"
+/workflow goal objective="Implement specs/2026-03-rate-limit.md and validate the behavior"
+/workflow ralph prompt="Plan, implement, review, and prepare a PR for specs/2026-03-rate-limit.md"
 ```
 
-`ralph` now runs a Goal Runner loop: it persists the objective, renders continuation context, runs bounded worker turns, captures receipts, gates completion through parallel reviewers, and lets a TypeScript reducer decide complete/continue/blocked/needs_human.
+`goal` is the focused Goal Runner loop: it persists the objective, renders continuation context, runs bounded worker turns, captures receipts, gates completion through parallel reviewers, and lets a TypeScript reducer decide `complete`, `blocked`, or `needs_human`.
+
+`ralph` is the heavier spec-to-PR workflow: it writes an RFC-style plan, delegates implementation through sub-agents, runs simplification and infrastructure discovery, reviews the patch, iterates until approved or the loop limit is reached, then prepares a pull-request report.
 
 ---
 
@@ -229,7 +232,8 @@ Workflows define the outer loop: inputs, steps, branches, parallelism, retries, 
 
 | Workflow                 | What it does                                                                                                                                                                                                                                                                           | Example input                                                                                                                                                                                 |
 | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ralph`                  | Goal Runner loop with a persisted ledger, bounded worker turns, parallel reviewer gate, reviewer quorum, repeated-blocker detection, and final status report. Use it for implementation from a reviewed issue, goal, or spec. | `/workflow ralph objective="Implement specs/2026-03-rate-limit.md and validate the behavior"`                                                                                                    |
+| `goal`                   | Focused Goal Runner loop with a persisted ledger, bounded worker turns, worker receipts, parallel reviewer gate, reviewer quorum, repeated-blocker detection, and final status report. Use it when you have a clear objective or spec and want autonomous implementation with auditable stop decisions. | `/workflow goal objective="Implement specs/2026-03-rate-limit.md and validate the behavior"`                                                                                                  |
+| `ralph`                  | Heavier plan → orchestrate → simplify → discover → review loop that writes RFC-style specs, delegates implementation through sub-agents, repeats until reviewers approve or the loop limit is reached, and prepares a PR report. Use it for larger spec-to-PR work.                  | `/workflow ralph prompt="Plan, implement, review, and prepare a PR for specs/2026-03-rate-limit.md"`                                                                                          |
 | `deep-research-codebase` | Repo-wide research for broad, cross-cutting questions. It scouts the codebase, runs parallel specialist waves, aggregates findings, and writes durable research artifacts under `research/`. Prefer `/skill:research-codebase` for a focused subsystem or question.                    | `/workflow deep-research-codebase prompt="How do payment retries work end to end?"`                                                                                                           |
 | `open-claude-design`     | End-to-end design generation: discovers your design system, generates from a prompt, refines with feedback, and exports a handoff directory.                                                                                                                                           | `/workflow open-claude-design prompt="Team activity feed" reference=./mocks/feed.png output_type=prototype`                                                                                   |
 | _author your own_        | Anything outside the built-ins: issue-to-PR, review-to-merge, migration, triage, release, compliance, or team-specific review pipelines. Describe the process in natural language and Atomic can scaffold a `defineWorkflow()` file with typed CLI flags.                              | _"Create a reusable workflow that takes an issue, writes a plan, creates a branch, runs implementation and review stages, runs tests and lint, then stops for approval before final output."_ |

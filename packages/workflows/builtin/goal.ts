@@ -133,9 +133,11 @@ type GoalInputs = {
 };
 
 function positiveInteger(value: number | undefined, fallback: number): number {
-  return typeof value === "number" && Number.isFinite(value) && value > 0
-    ? Math.floor(value)
-    : fallback;
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return fallback;
+  }
+  const floored = Math.floor(value);
+  return floored >= 1 ? floored : fallback;
 }
 
 const reviewDecisionSchema = {
@@ -273,7 +275,7 @@ const GOAL_CONTINUATION_REFERENCE = [
   "",
   "Blocked audit:",
   "- Do not report blocked the first time a blocker appears.",
-  "- Only use blocked when the same blocking condition has repeated for at least three consecutive goal turns, counting the original worker turn and any workflow continuations.",
+  "- Only use blocked when the same blocking condition has repeated for the configured blocker threshold of consecutive goal turns, counting the original worker turn and any workflow continuations.",
   "- Use blocked only when you are truly at an impasse and cannot make meaningful progress without user input or an external-state change.",
   "- Once the blocked threshold is satisfied, do not keep reporting that you are still blocked while leaving the goal active; report blocked.",
   "- Never use blocked merely because the work is hard, slow, uncertain, incomplete, or would benefit from clarification.",
@@ -381,11 +383,15 @@ function parseReviewDecision(text: string): ReviewDecision | undefined {
 }
 
 function reviewApproved(decision: ReviewDecision): boolean {
+  const hasBlockingFindings = decision.findings.some(
+    (finding) => finding.priority !== 3,
+  );
   return (
     decision.stop_review_loop === true &&
     decision.overall_correctness === "patch is correct" &&
     decision.goal_oracle_satisfied === true &&
-    decision.findings.length === 0 &&
+    !hasBlockingFindings &&
+    verificationRemainingIsNone(decision.verification_remaining) &&
     decision.reviewer_error == null
   );
 }
@@ -412,13 +418,22 @@ function reviewerErrorDecision(message: string): ReviewDecision {
 }
 
 function verificationRemainingIsNone(value: string): boolean {
-  return /^(none|no(ne)? remaining|nothing remains|n\/a)$/i.test(value.trim());
+  const trimmed = value.trim();
+  return (
+    trimmed.length === 0 ||
+    /^(none|no(ne)? remaining|nothing remains|n\/a)$/i.test(trimmed)
+  );
 }
 
 function blockerFromReviewDecision(decision: ReviewDecision): string | null {
   const reviewerError = decision.reviewer_error;
   if (reviewerError == null) return null;
-  if (reviewerError.kind === "reviewer_failure") return null;
+  if (
+    reviewerError.kind !== "dependency_unavailable" &&
+    reviewerError.kind !== "tool_failure"
+  ) {
+    return null;
+  }
   const blocker = reviewerError.message.trim();
   return blocker.length > 0 ? blocker : null;
 }
@@ -844,6 +859,7 @@ function renderReviewerPrompt(args: {
       [
         `Reviewer quorum is ${args.reviewQuorum}; same blocker threshold is ${args.blockerThreshold}. You do not decide final workflow status. The reducer does.`,
         "If the strict blocked audit is satisfied by current evidence, do not invent a finding. Set stop_review_loop=false, goal_oracle_satisfied=false, verification_remaining to the concise blocker, and reviewer_error.kind to dependency_unavailable or tool_failure with reviewer_error.message set to the same concise blocker.",
+        "When the same dependency or tool blocker from prior reviewer history is still present, echo the prior turn's exact blocker string in verification_remaining and reviewer_error.message instead of rephrasing it.",
         "Use reviewer_error for a blocker only when there is a real impasse that prevents meaningful progress without user input or an external-state change; never for ordinary incomplete work, uncertainty, or useful work remaining.",
       ].join("\n"),
     ],
@@ -862,7 +878,8 @@ function renderReviewerPrompt(args: {
         "You have a structured-output tool named review_decision. Use it after your investigation and validation attempts.",
         "The tool terminates the turn and provides the structured data; do not emit a separate final assistant response after calling it.",
         "The review gate decides completion only by parsing the JSON object returned by this tool; invalid JSON, missing fields, reviewer_error, or stop_review_loop=false are treated as not approved for safety.",
-        "Set stop_review_loop=true only when findings is empty, overall_correctness is patch is correct, goal_oracle_satisfied is true, verification_remaining is `none` or equivalent, and reviewer_error is null/omitted.",
+        "Set stop_review_loop=true only when there are no P0/P1/P2 findings, overall_correctness is patch is correct, goal_oracle_satisfied is true, verification_remaining is `none` or equivalent, and reviewer_error is null/omitted.",
+        "P3 nice-to-have findings are non-blocking when the rest of the approval contract is satisfied; do not use P3 for work required by the objective or verification oracle.",
         "If you hit a reviewer/tool/validation error, still return the object with stop_review_loop=false and reviewer_error populated instead of pretending the patch is approved.",
         "The JSON must match this schema exactly:",
         "{",
@@ -970,7 +987,7 @@ export default defineWorkflow("goal")
 
     const maxTurns = positiveInteger(inputs.max_turns, DEFAULT_MAX_TURNS);
     const reviewQuorum = DEFAULT_REVIEW_QUORUM;
-    const blockerThreshold = DEFAULT_BLOCKER_THRESHOLD;
+    const blockerThreshold = Math.min(DEFAULT_BLOCKER_THRESHOLD, maxTurns);
     const comparisonBaseBranch = normalizeBranchInput(inputs.base_branch, "origin/main");
     const { ledger, ledgerPath, artifactDir } = await createGoalLedger(objective);
 
@@ -1034,6 +1051,7 @@ export default defineWorkflow("goal")
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         terminalRemainingWork = `Worker turn ${turn} failed before producing a receipt: ${message}`;
+        latestReviews = [];
         ledger.turns = turn;
         ledger.status = "needs_human";
         ledger.decisions.push({

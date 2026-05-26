@@ -306,12 +306,12 @@ Scout + research-history chain → two parallel specialist waves → aggregator.
 
 Final Markdown research documents are written to dated `research/` paths relative to the current working directory, with a numeric suffix if needed to avoid overwriting an existing document. Hidden run artifacts are written under `research/.deep-research-<run-id>/`.
 
-### `ralph`
+### `goal`
 
 Goal Runner workflow: initialize a persisted goal ledger with a per-run goal id and lifecycle events, render goal-continuation context, run bounded worker LM turns, append receipts, run three independent reviewers, and let a TypeScript reducer decide `complete`, `continue`, `blocked`, or `needs_human`. Token budget behavior is intentionally excluded.
 
 ```text
-/workflow ralph objective="Migrate the database layer to Drizzle ORM" base_branch=develop
+/workflow goal objective="Migrate the database layer to Drizzle ORM" base_branch=develop
 ```
 
 | Input         | Type     | Required | Default       | Description                                                   |
@@ -320,7 +320,21 @@ Goal Runner workflow: initialize a persisted goal ledger with a per-run goal id 
 | `max_turns`   | `number` | —        | `10`          | Maximum worker/review turns before human follow-up is needed. |
 | `base_branch` | `string` | —        | `origin/main` | Branch reviewers compare the current delta with.              |
 
-Ralph defaults to 10 worker/review turns. Reviewer quorum and blocker threshold remain fixed internally: 2 reviewer `complete` votes for completion and 3 consecutive same-blocker turns before blocked status.
+`goal` defaults to 10 worker/review turns. Reviewer quorum is fixed internally at 2 reviewer `complete` votes. The repeated-blocker threshold defaults to 3 consecutive same-blocker turns and is clamped to `max_turns` when you run fewer than 3 turns.
+
+### `ralph`
+
+Plan → orchestrate → simplify → discover → review → PR-handoff workflow: write an RFC-style technical design document under `specs/`, delegate implementation through sub-agents, simplify recent changes, discover review infrastructure, run parallel reviewers, iterate until approval or the loop limit, then prepare a pull-request report.
+
+```text
+/workflow ralph prompt="Plan and migrate the database layer to Drizzle ORM" max_loops=3 base_branch=develop
+```
+
+| Input         | Type     | Required | Default       | Description                                                   |
+| ------------- | -------- | -------- | ------------- | ------------------------------------------------------------- |
+| `prompt`      | `text`   | ✓        | —             | Task, feature request, issue summary, or spec path to plan, execute, refine, review, and prepare for PR. |
+| `max_loops`   | `number` | —        | `10`          | Maximum plan/orchestrate/review iterations before PR handoff. |
+| `base_branch` | `string` | —        | `origin/main` | Branch reviewers and PR-prep compare the current delta with.  |
 
 ### `open-claude-design`
 
