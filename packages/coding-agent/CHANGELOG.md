@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.8.19] - 2026-05-27
+
+### Changed
+
+- Renamed the SDK tool exclusion option from `excludeTools` to `excludedTools` for consistency with internal system prompt terminology, while preserving backward-compatible handling for existing SDK callers.
+
 ## [0.8.19-0] - 2026-05-27
 
 ### Changed
