@@ -271,6 +271,60 @@ describe("executor.run", () => {
     assert.equal(wfResult.result?.["count"], 2);
   });
 
+  test("worktreeFromInputs defaults ctx.cwd and stages to the reusable worktree cwd", async () => {
+    const tempRoot = realpathSync.native(mkdtempSync(join(tmpdir(), "atomic-workflow-input-worktree-")));
+    const repo = join(tempRoot, "repo");
+    mkdirSync(join(repo, "nested"), { recursive: true });
+    execFileSync("git", ["init", "-b", "main"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["config", "user.name", "Test User"], { cwd: repo, stdio: "ignore" });
+    writeFileSync(join(repo, "nested", "fixture.txt"), "fixture\n", "utf8");
+    execFileSync("git", ["add", "nested/fixture.txt"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-m", "initial"], { cwd: repo, stdio: "ignore" });
+    const invocationCwd = join(repo, "nested");
+    const worktreeRoot = join(repo, "worktrees", "input-bound");
+    const expectedCwd = join(worktreeRoot, "nested");
+    const expectedArtifact = join(expectedCwd, "specs", "artifact.md");
+    const calls: CreateAgentSessionOptions[] = [];
+    const def = defineWorkflow("input-worktree-cwd-wf")
+      .input("git_worktree_dir", { type: "string", default: "" })
+      .input("base_branch", { type: "string", default: "main" })
+      .worktreeFromInputs({ gitWorktreeDir: "git_worktree_dir", baseBranch: "base_branch" })
+      .run(async (ctx) => {
+        if (ctx.cwd === undefined) throw new Error("expected workflow cwd");
+        mkdirSync(join(ctx.cwd, "specs"), { recursive: true });
+        writeFileSync(join(ctx.cwd, "specs", "artifact.md"), "artifact\n", "utf8");
+        await ctx.task("worker", { task: "inspect" });
+        await ctx.task("relative-worker", { task: "inspect relative", cwd: "deeper" });
+        return { cwd: ctx.cwd, artifact: join(ctx.cwd, "specs", "artifact.md") };
+      })
+      .compile();
+
+    const wfResult = await run(def, {
+      git_worktree_dir: join("worktrees", "input-bound"),
+      base_branch: "main",
+    }, {
+      cwd: invocationCwd,
+      adapters: {
+        agentSession: {
+          async create(options) {
+            calls.push(options);
+            return mockSession();
+          },
+        },
+      },
+      store: createStore(),
+    });
+
+    assert.equal(wfResult.status, "completed");
+    assert.equal(wfResult.result?.["cwd"], expectedCwd);
+    assert.equal(wfResult.result?.["artifact"], expectedArtifact);
+    assert.equal(calls[0]?.cwd, expectedCwd);
+    assert.equal(calls[1]?.cwd, join(expectedCwd, "deeper"));
+    assert.equal(existsSync(expectedArtifact), true);
+    assert.equal(existsSync(join(invocationCwd, "specs", "artifact.md")), false);
+  });
+
   test("ctx.stage defaults cwd to gitWorktreeDir while preserving the workflow relative cwd", async () => {
     const tempRoot = realpathSync.native(mkdtempSync(join(tmpdir(), "atomic-workflow-git-worktree-")));
     const repo = join(tempRoot, "repo");

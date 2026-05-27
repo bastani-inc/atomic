@@ -751,7 +751,7 @@ function stageOptionsWithInputDefaults<T extends StageOptions>(options: T | unde
   return { ...defaults, ...withoutUndefinedProperties(options ?? {}) } as T;
 }
 
-function stageOptionsWithGitWorktree<T extends StageOptions>(options: T | undefined, workflowCwd: string): T | undefined {
+function stageOptionsWithGitWorktree<T extends StageOptions>(options: T | undefined, workflowInvocationCwd: string): T | undefined {
   if (options === undefined) return undefined;
   if (typeof options.gitWorktreeDir !== "string" || options.gitWorktreeDir.trim().length === 0) {
     return options;
@@ -759,10 +759,21 @@ function stageOptionsWithGitWorktree<T extends StageOptions>(options: T | undefi
   const setup = setupGitWorktree({
     gitWorktreeDir: options.gitWorktreeDir,
     baseBranch: options.baseBranch,
-    cwd: workflowCwd,
+    cwd: workflowInvocationCwd,
   });
   const explicitCwd = resolveWorktreeCwdOverride(options.cwd, setup.cwd);
   return { ...options, gitWorktreeDir: undefined, baseBranch: undefined, cwd: explicitCwd ?? setup.cwd };
+}
+
+function workflowCwdWithInputWorktree(inputDefaults: Partial<StageOptions>, workflowInvocationCwd: string): string {
+  if (typeof inputDefaults.gitWorktreeDir !== "string" || inputDefaults.gitWorktreeDir.trim().length === 0) {
+    return workflowInvocationCwd;
+  }
+  return setupGitWorktree({
+    gitWorktreeDir: inputDefaults.gitWorktreeDir,
+    baseBranch: inputDefaults.baseBranch,
+    cwd: workflowInvocationCwd,
+  }).cwd;
 }
 
 function directWorktreeDiffsDir(options: WorkflowDirectOptions, setup: WorktreeSetup, runId: string, scope: string): string {
@@ -1553,6 +1564,12 @@ export async function run<TInputs extends Record<string, unknown>>(
   const tracker = new GraphFrontierTracker();
   const inputConcurrency = resolveInputConcurrency(def.inputs, resolvedInputs);
   const inputRuntimeDefaults = resolveInputRuntimeDefaults(def, resolvedInputs);
+  const workflowInvocationCwd = opts.cwd ?? process.cwd();
+  let workflowCwd: string | undefined;
+  const resolveWorkflowCwd = (): string => {
+    workflowCwd ??= workflowCwdWithInputWorktree(inputRuntimeDefaults, workflowInvocationCwd);
+    return workflowCwd;
+  };
   const limiter = createRunLimiter(inputConcurrency ?? opts.config?.defaultConcurrency);
   interface ReleaseBarrier {
     readonly promise: Promise<void>;
@@ -1885,16 +1902,15 @@ export async function run<TInputs extends Record<string, unknown>>(
   };
 
   // 5. Build WorkflowRunContext
-  const workflowCwd = opts.cwd ?? process.cwd();
   const ctx: WorkflowRunContext<TInputs> = {
     inputs: resolvedInputs as TInputs,
-    cwd: workflowCwd,
+    get cwd() { return resolveWorkflowCwd(); },
     // Prompt nodes and caller-provided UI adapters are mutually exclusive;
     // executor-owned prompt nodes intentionally take precedence when enabled.
     ui: opts.usePromptNodesForUi === true ? buildPromptNodeUiAdapter() : opts.ui ?? makeUnavailableUIContext(),
 
     stage(name: string, options?: StageOptions, stageFailFastScope?: ParallelFailFastScope) {
-      options = stageOptionsWithGitWorktree(stageOptionsWithInputDefaults(options, inputRuntimeDefaults), workflowCwd);
+      options = stageOptionsWithGitWorktree(stageOptionsWithInputDefaults(options, inputRuntimeDefaults), workflowInvocationCwd);
       // a. Generate stageId
       const stageId = crypto.randomUUID();
 
@@ -2440,7 +2456,7 @@ export async function run<TInputs extends Record<string, unknown>>(
 
     async task(name: string, options: WorkflowTaskOptions, stageFailFastScope?: ParallelFailFastScope): Promise<WorkflowTaskResult> {
       const runTaskOnce = async (taskOptions: WorkflowTaskOptions): Promise<WorkflowTaskResult> => {
-        const resolvedTaskOptions = stageOptionsWithGitWorktree(stageOptionsWithInputDefaults(taskOptions, inputRuntimeDefaults), workflowCwd) ?? taskOptions;
+        const resolvedTaskOptions = stageOptionsWithGitWorktree(stageOptionsWithInputDefaults(taskOptions, inputRuntimeDefaults), workflowInvocationCwd) ?? taskOptions;
         const stage = (ctx.stage as typeof ctx.stage & ((stageName: string, stageOptions?: StageOptions, scope?: ParallelFailFastScope) => StageContext))(
           name,
           taskStageOptions(resolvedTaskOptions),

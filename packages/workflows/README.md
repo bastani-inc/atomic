@@ -107,7 +107,7 @@ export default defineWorkflow("review-and-merge")
 
 ### Reusable Git worktrees
 
-Use `gitWorktreeDir` when a workflow should run stages in a reusable Git worktree instead of the invoking checkout. The executor creates the worktree if it is missing, reuses it when it already exists as a same-repository worktree root, and defaults the stage/task `cwd` to the matching path inside that worktree.
+Use `gitWorktreeDir` when a workflow should run in a reusable Git worktree instead of the invoking checkout. The executor creates the worktree if it is missing, reuses it when it already exists as a same-repository worktree root, defaults workflow `ctx.cwd` to the matching path inside that worktree for `worktreeFromInputs`, and defaults stage/task `cwd` to that worktree path.
 
 ```typescript
 import { defineWorkflow } from "@bastani/workflows";
@@ -155,7 +155,7 @@ Worktree semantics:
 - `gitWorktreeDir` must be used from inside a Git repository. Relative paths resolve from the logical invoking repository root; absolute paths are used as-is.
 - If the requested path exists, it must be an actual Git worktree/checkout root belonging to the invoking repository. Existing subdirectories are rejected so writes do not silently land in the main checkout.
 - If the path is missing, the parent directory is created and Git runs `git worktree add --detach <path> <baseBranch>`. `baseBranch` defaults to `HEAD` when omitted.
-- The default execution cwd preserves the caller's repo-relative cwd inside the worktree. For example, invoking a workflow from `repo/packages/api` with `gitWorktreeDir=../repo-wt` runs stages from `../repo-wt/packages/api`.
+- The default execution cwd preserves the caller's repo-relative cwd inside the worktree. For example, invoking a workflow from `repo/packages/api` with `gitWorktreeDir=../repo-wt` uses `../repo-wt/packages/api` for workflow `ctx.cwd` and stage/task execution.
 - Symlinked repo/worktree paths preserve their logical spelling in the default cwd, matching Codex-style worktree behavior.
 - Explicit `cwd` still wins. Relative `cwd` values are resolved against the worktree default cwd; absolute `cwd` values are used as provided.
 

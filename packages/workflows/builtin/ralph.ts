@@ -403,8 +403,9 @@ async function runRalphWorkflow(
   let finalPlanPath = "";
   let finalResult = "";
   let finalPrReport = "";
-  // Keep generated specs under the directory where Ralph was invoked, not in
-  // the worktree, so plan artifacts remain easy to find across retries.
+  // Keep generated specs under the workflow runtime cwd. When Ralph is invoked
+  // with git_worktree_dir, the executor defaults ctx.cwd to the matching
+  // worktree cwd so specs and stage writes land in the same checkout.
   const workflowSpecPath = resolve(workflowStartCwd, defaultSpecPath(prompt));
   const implementationNotesPath = await createImplementationNotesFile(prompt);
   let approved = false;
