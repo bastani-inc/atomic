@@ -292,6 +292,48 @@ describe("ralph git worktree integration", () => {
     assertWorktreeRegistered(repo, expectedWorktree);
   });
 
+  test("fails fast when existing git_worktree_dir is a worktree from another repository", async () => {
+    const mod = await import("../../packages/workflows/builtin/ralph.js");
+    const d = mod.default as unknown as WorkflowDefinition;
+    const repo = initializeGitRepository("repo");
+    const otherRepo = initializeGitRepository("other-repo");
+    const foreignWorktree = join(requireTempRoot(), "foreign-worktree");
+    addDetachedWorktree(otherRepo, foreignWorktree);
+    process.chdir(repo);
+    const ctx = makeMockCtx({
+      prompt: "Add a small feature",
+      max_loops: 1,
+      base_branch: "main",
+      git_worktree_dir: foreignWorktree,
+    });
+
+    await assert.rejects(
+      () => d.run(ctx),
+      /git_worktree_dir already exists but does not belong to the invoking Git repository/,
+    );
+    assert.deepEqual(ctx.calls.task, []);
+  });
+
+  test("fails fast when existing git_worktree_dir is another repository checkout", async () => {
+    const mod = await import("../../packages/workflows/builtin/ralph.js");
+    const d = mod.default as unknown as WorkflowDefinition;
+    const repo = initializeGitRepository("repo");
+    const otherRepo = initializeGitRepository("other-repo");
+    process.chdir(repo);
+    const ctx = makeMockCtx({
+      prompt: "Add a small feature",
+      max_loops: 1,
+      base_branch: "main",
+      git_worktree_dir: otherRepo,
+    });
+
+    await assert.rejects(
+      () => d.run(ctx),
+      /git_worktree_dir already exists but does not belong to the invoking Git repository/,
+    );
+    assert.deepEqual(ctx.calls.task, []);
+  });
+
   test("can re-run with the same git_worktree_dir without cleanup", async () => {
     const mod = await import("../../packages/workflows/builtin/ralph.js");
     const d = mod.default as unknown as WorkflowDefinition;

@@ -8,6 +8,7 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { realpathSync } from "node:fs";
 import { mkdir, mkdtemp, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, extname, isAbsolute, join, resolve } from "node:path";
@@ -389,9 +390,46 @@ async function addGitWorktree(
   return runGit(["worktree", "add", "--detach", worktreeDir, baseBranch], cwd);
 }
 
-function existingPathIsGitWorktree(worktreeDir: string): boolean {
-  const result = runGit(["-C", worktreeDir, "rev-parse", "--is-inside-work-tree"]);
-  return result.status === 0 && result.stdout.trim() === "true";
+type ExistingGitWorktreeStatus = "same-repository" | "foreign-repository" | "not-git-worktree";
+
+function comparableGitPath(path: string): string {
+  let canonical = path;
+  try {
+    canonical = realpathSync.native(path);
+  } catch {
+    canonical = resolve(path);
+  }
+  const normalized = canonical.replace(/\\/g, "/");
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function resolveGitPath(value: string, cwd: string): string | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  return isAbsolute(trimmed) ? resolve(trimmed) : resolve(cwd, trimmed);
+}
+
+function gitCommonDir(cwd: string): string | undefined {
+  const result = runGit(["-C", cwd, "rev-parse", "--git-common-dir"]);
+  if (result.status !== 0) return undefined;
+  return resolveGitPath(result.stdout, cwd);
+}
+
+function existingPathGitWorktreeStatus(worktreeDir: string, repoRoot: string): ExistingGitWorktreeStatus {
+  const insideWorkTreeResult = runGit(["-C", worktreeDir, "rev-parse", "--is-inside-work-tree"]);
+  if (insideWorkTreeResult.status !== 0 || insideWorkTreeResult.stdout.trim() !== "true") {
+    return "not-git-worktree";
+  }
+
+  const repoCommonDir = gitCommonDir(repoRoot);
+  const worktreeCommonDir = gitCommonDir(worktreeDir);
+  if (repoCommonDir === undefined || worktreeCommonDir === undefined) {
+    return "not-git-worktree";
+  }
+
+  return comparableGitPath(repoCommonDir) === comparableGitPath(worktreeCommonDir)
+    ? "same-repository"
+    : "foreign-repository";
 }
 
 async function pathExists(path: string): Promise<boolean> {
@@ -425,8 +463,12 @@ async function createGitWorktreeIfRequested(
 
   const requestedWorktreeDir = resolveWorktreePath(trimmed, repoRoot);
   if (await pathExists(requestedWorktreeDir)) {
-    if (existingPathIsGitWorktree(requestedWorktreeDir)) {
+    const existingStatus = existingPathGitWorktreeStatus(requestedWorktreeDir, repoRoot);
+    if (existingStatus === "same-repository") {
       return { cwd: requestedWorktreeDir };
+    }
+    if (existingStatus === "foreign-repository") {
+      throw new Error(`git_worktree_dir already exists but does not belong to the invoking Git repository: ${requestedWorktreeDir}`);
     }
     throw new Error(`git_worktree_dir already exists but is not a Git worktree: ${requestedWorktreeDir}`);
   }
@@ -1348,7 +1390,7 @@ export default defineWorkflow("ralph")
     type: "string",
     default: "",
     description:
-      "Optional Git worktree path. Ralph must start inside a Git repo; absolute paths are used as-is, relative paths resolve from the repo root, existing Git worktrees are reused as-is, and missing paths are created from base_branch."
+      "Optional Git worktree path. Ralph must start inside a Git repo; absolute paths are used as-is, relative paths resolve from the repo root, existing Git worktrees from the invoking repository are reused as-is, and missing paths are created from base_branch."
   })
   .run(async (ctx) => {
     const ralphCtx = ctx as WorkflowRunContext<RalphInputs>;

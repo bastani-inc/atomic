@@ -1329,7 +1329,7 @@ describe("ralph", () => {
     assert.match(description, /inside a Git repo/);
     assert.match(description, /absolute paths are used as-is/);
     assert.match(description, /relative paths resolve from the repo root/);
-    assert.match(description, /existing Git worktrees are reused as-is/);
+    assert.match(description, /existing Git worktrees from the invoking repository are reused as-is/);
     assert.deepEqual(Object.keys(mod.default.inputs).sort(), ["base_branch", "git_worktree_dir", "max_loops", "prompt"]);
   });
 
