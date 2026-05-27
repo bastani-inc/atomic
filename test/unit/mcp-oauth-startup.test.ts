@@ -13,7 +13,6 @@ type SessionStartContext = { readonly cwd: string; readonly hasUI: false; readon
 type SessionStartHandler = (event: SessionStartEvent, ctx: SessionStartContext) => Promise<void> | void;
 
 const originalArgv = [...process.argv];
-const originalCwd = process.cwd();
 const originalAtomicAgentDir = process.env.ATOMIC_CODING_AGENT_DIR;
 const originalMcpDirectTools = process.env.MCP_DIRECT_TOOLS;
 
@@ -23,7 +22,6 @@ beforeEach(async () => {
 
 afterEach(async () => {
   process.argv = [...originalArgv];
-  process.chdir(originalCwd);
   if (originalAtomicAgentDir === undefined) {
     delete process.env.ATOMIC_CODING_AGENT_DIR;
   } else {
@@ -42,7 +40,6 @@ test("MCP session startup leaves OAuth callback handling lazy", async () => {
   const configPath = join(tempDir, "mcp.json");
   const remoteServer = { url: "https://example.invalid/mcp" } satisfies ServerEntry;
   writeFileSync(configPath, JSON.stringify({ mcpServers: { remote: remoteServer } }));
-  process.chdir(tempDir);
   process.env.ATOMIC_CODING_AGENT_DIR = join(tempDir, "agent");
   process.env.MCP_DIRECT_TOOLS = "__none__";
   process.argv = [...originalArgv, "--mcp-config", configPath];

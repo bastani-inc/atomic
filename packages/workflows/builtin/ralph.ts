@@ -1370,6 +1370,24 @@ async function runRalphWorkflow(
   };
 }
 
+export async function runRalphWorkflowFromCwd(
+  ctx: WorkflowRunContext<RalphInputs>,
+  workflowStartCwd = process.cwd(),
+): Promise<RalphWorkflowResult> {
+  const inputs = ctx.inputs;
+  const prompt = inputs.prompt ?? "";
+  const maxLoops = positiveInteger(inputs.max_loops, DEFAULT_MAX_LOOPS);
+  const comparisonBaseBranch = normalizeBranchInput(inputs.base_branch, "origin/main");
+  const worktree = await createGitWorktreeIfRequested(inputs.git_worktree_dir, comparisonBaseBranch, workflowStartCwd);
+  return await runRalphWorkflow(ctx, {
+    prompt,
+    maxLoops,
+    comparisonBaseBranch,
+    workflowStartCwd,
+    workflowCwd: worktree.cwd,
+  });
+}
+
 export default defineWorkflow("ralph")
   .description(
     "Plan → orchestrate → simplify → parallel review loop with bounded iteration.",
@@ -1396,20 +1414,5 @@ export default defineWorkflow("ralph")
     description:
       "Optional Git worktree path. Ralph must start inside a Git repo; absolute paths are used as-is, relative paths resolve from the repo root, existing Git worktrees from the invoking repository are reused/shared as-is, and missing paths are created from base_branch."
   })
-  .run(async (ctx) => {
-    const ralphCtx = ctx as WorkflowRunContext<RalphInputs>;
-    const inputs = ralphCtx.inputs;
-    const workflowStartCwd = process.cwd();
-    const prompt = inputs.prompt ?? "";
-    const maxLoops = positiveInteger(inputs.max_loops, DEFAULT_MAX_LOOPS);
-    const comparisonBaseBranch = normalizeBranchInput(inputs.base_branch, "origin/main");
-    const worktree = await createGitWorktreeIfRequested(inputs.git_worktree_dir, comparisonBaseBranch, workflowStartCwd);
-    return await runRalphWorkflow(ralphCtx, {
-      prompt,
-      maxLoops,
-      comparisonBaseBranch,
-      workflowStartCwd,
-      workflowCwd: worktree.cwd,
-    });
-  })
+  .run(async (ctx) => runRalphWorkflowFromCwd(ctx as WorkflowRunContext<RalphInputs>))
   .compile();
