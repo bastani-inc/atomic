@@ -13,7 +13,7 @@
 
 import { afterAll, describe, test } from "bun:test";
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -694,21 +694,47 @@ describe("discoverWorkflows — INVALID_DEFINITION diagnostics", () => {
     assert.equal(registry.names().length, 0);
   });
 
-  test("workflow that completes without creating stages emits INVALID_DEFINITION", async () => {
-    const cwd = makeTempDir("invalid-no-stages");
+  test("workflow that completes without creating stages registers structurally", async () => {
+    const cwd = makeTempDir("structural-no-stages");
     const wfDir = join(cwd, ".atomic", "workflows");
     mkdirSync(wfDir, { recursive: true });
     writeNoStageWorkflowJs(wfDir, "no-stage.js");
 
-    const { registry, errors } = await discoverWorkflows({ cwd, homeDir: makeTempDir("empty-invalid-no-stages"), includeBundled: false });
+    const { registry, errors } = await discoverWorkflows({ cwd, homeDir: makeTempDir("empty-structural-no-stages"), includeBundled: false });
 
-    assert.equal(registry.has("no-stage-workflow"), false);
-    const inv = errors.filter((e) => e.code === "INVALID_DEFINITION");
-    assert.equal(inv.length, 1);
-    assert.match(inv[0]!.message, /run must create at least one workflow stage/);
+    assert.equal(registry.has("no-stage-workflow"), true);
+    assert.equal(errors.filter((e) => e.code === "INVALID_DEFINITION").length, 0);
   });
 
-  test("workflow that reaches a stage through an aliased primitive registers", async () => {
+  test("discovery does not invoke workflow run bodies", async () => {
+    const cwd = makeTempDir("no-run-body-side-effects");
+    const wfDir = join(cwd, ".atomic", "workflows");
+    mkdirSync(wfDir, { recursive: true });
+    const sideEffectPath = join(cwd, "side-effect.txt");
+    writeFileSync(
+      join(wfDir, "side-effect.js"),
+      [
+        `import { writeFileSync } from "node:fs";`,
+        `export default {`,
+        `  __piWorkflow: true,`,
+        `  name: "Side Effect Workflow",`,
+        `  normalizedName: "side-effect-workflow",`,
+        `  description: "Would write during run if discovery invoked it",`,
+        `  inputs: {},`,
+        `  run: async () => { writeFileSync(${JSON.stringify(sideEffectPath)}, "ran"); return {}; },`,
+        `};`,
+      ].join("\n"),
+      "utf-8",
+    );
+
+    const { registry, errors } = await discoverWorkflows({ cwd, homeDir: makeTempDir("empty-no-run-body-side-effects"), includeBundled: false });
+
+    assert.equal(registry.has("side-effect-workflow"), true);
+    assert.equal(errors.length, 0);
+    assert.equal(existsSync(sideEffectPath), false);
+  });
+
+  test("workflow that reaches a stage through an aliased primitive registers structurally", async () => {
     const cwd = makeTempDir("valid-aliased-stage-primitive");
     const wfDir = join(cwd, ".atomic", "workflows");
     mkdirSync(wfDir, { recursive: true });
@@ -731,65 +757,6 @@ describe("discoverWorkflows — INVALID_DEFINITION diagnostics", () => {
 
     assert.equal(registry.has("aliased-stage-workflow"), true);
     assert.equal(errors.filter((e) => e.code === "INVALID_DEFINITION").length, 0);
-  });
-
-  test("workflow that throws during the startup probe registers with a warning", async () => {
-    const cwd = makeTempDir("valid-probe-warning");
-    const wfDir = join(cwd, ".atomic", "workflows");
-    mkdirSync(wfDir, { recursive: true });
-    writeFileSync(
-      join(wfDir, "throws-before-stage.js"),
-      [
-        `export default {`,
-        `  __piWorkflow: true,`,
-        `  name: "Throws Before Stage",`,
-        `  normalizedName: "throws-before-stage",`,
-        `  description: "Throws before creating a stage",`,
-        `  inputs: {},`,
-        `  run: async () => { throw new Error("probe boom"); },`,
-        `};`,
-      ].join("\n"),
-      "utf-8",
-    );
-
-    const { registry, errors } = await discoverWorkflows({ cwd, homeDir: makeTempDir("empty-probe-warning"), includeBundled: false });
-
-    assert.equal(registry.has("throws-before-stage"), true);
-    assert.equal(errors.filter((e) => e.code === "INVALID_DEFINITION").length, 0);
-    const warnings = errors.filter((e) => e.code === "VALIDATION_PROBE_FAILED");
-    assert.equal(warnings.length, 1);
-    assert.equal(warnings[0]!.level, "warn");
-    assert.match(warnings[0]!.message, /probe boom/);
-  });
-
-  test("required text inputs use non-empty probe values before stage validation", async () => {
-    const cwd = makeTempDir("valid-required-text-probe");
-    const wfDir = join(cwd, ".atomic", "workflows");
-    mkdirSync(wfDir, { recursive: true });
-    writeFileSync(
-      join(wfDir, "required-text.js"),
-      [
-        `export default {`,
-        `  __piWorkflow: true,`,
-        `  name: "Required Text Probe",`,
-        `  normalizedName: "required-text-probe",`,
-        `  description: "Validates text input before creating a stage",`,
-        `  inputs: { prompt: { type: "text", required: true } },`,
-        `  run: async (ctx) => {`,
-        `    if (!String(ctx.inputs.prompt ?? "").trim()) throw new Error("prompt is required");`,
-        `    await ctx.task("validation-smoke", { prompt: String(ctx.inputs.prompt) });`,
-        `    return {};`,
-        `  },`,
-        `};`,
-      ].join("\n"),
-      "utf-8",
-    );
-
-    const { registry, errors } = await discoverWorkflows({ cwd, homeDir: makeTempDir("empty-required-text-probe"), includeBundled: false });
-
-    assert.equal(registry.has("required-text-probe"), true);
-    assert.equal(errors.filter((e) => e.code === "INVALID_DEFINITION").length, 0);
-    assert.equal(errors.filter((e) => e.code === "VALIDATION_PROBE_FAILED").length, 0);
   });
 
   test("PATH_NOT_FOUND for configured path that does not exist", async () => {

@@ -26,11 +26,7 @@ import { createRequire } from "node:module";
 import { join, resolve, extname, isAbsolute } from "node:path";
 import { CONFIG_DIR_NAMES, getProjectConfigPaths, isBunBinary } from "@bastani/atomic";
 import { createJiti } from "jiti/static";
-import type {
-  WorkflowDefinition,
-  WorkflowInputSchema,
-  WorkflowRunContext,
-} from "../shared/types.js";
+import type { WorkflowDefinition } from "../shared/types.js";
 import * as workflowsSdkSurface from "../sdk-surface.js";
 import { createRegistry } from "../workflows/registry.js";
 import type { WorkflowRegistry } from "../workflows/registry.js";
@@ -86,18 +82,16 @@ export type DiagnosticLevel = "error" | "warn";
  * condition (e.g. a duplicate that was skipped).
  *
  * Codes:
- *   INVALID_DEFINITION      — failed definition validation
- *   VALIDATION_PROBE_FAILED — startup stage-validation probe threw before observing stage creation
- *   DUPLICATE_NAME          — normalizedName already registered; skipped (warn)
- *   IMPORT_FAILED           — dynamic import of a workflow file threw
- *   PATH_NOT_FOUND          — a config-specified path does not exist
- *   CONFIG_INVALID          — DiscoveryConfig has an invalid structure
+ *   INVALID_DEFINITION — failed structural validation
+ *   DUPLICATE_NAME     — normalizedName already registered; skipped (warn)
+ *   IMPORT_FAILED      — dynamic import of a workflow file threw
+ *   PATH_NOT_FOUND     — a config-specified path does not exist
+ *   CONFIG_INVALID     — DiscoveryConfig has an invalid structure
  */
 export interface DiscoveryDiagnostic {
   readonly level: DiagnosticLevel;
   readonly code:
     | "INVALID_DEFINITION"
-    | "VALIDATION_PROBE_FAILED"
     | "DUPLICATE_NAME"
     | "IMPORT_FAILED"
     | "PATH_NOT_FOUND"
@@ -154,29 +148,15 @@ export interface DiscoveryResult {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-const WORKFLOW_STAGE_OBSERVED = Symbol("workflow-stage-observed");
-const WORKFLOW_STAGE_VALIDATION_ERROR =
-  "run must create at least one workflow stage with ctx.stage(), ctx.task(), ctx.chain(), or ctx.parallel()";
-
-interface DefinitionValidationResult {
-  readonly reason: string | null;
-  readonly warning?: string;
-}
-
-function validationSuccess(warning?: string): DefinitionValidationResult {
-  return warning === undefined ? { reason: null } : { reason: null, warning };
-}
-
-function validationFailure(reason: string): DefinitionValidationResult {
-  return { reason };
-}
-
-function diagnosticErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 /**
  * Validate a candidate value as a WorkflowDefinition by shape only.
+ *
+ * Discovery intentionally does not invoke workflow run functions: user-authored
+ * run bodies may perform filesystem, network, or other side effects before the
+ * first ctx.stage()/ctx.task()/ctx.chain()/ctx.parallel() call. Runtime empty
+ * graph validation remains the authoritative guard that a workflow creates at
+ * least one stage when it is actually invoked.
+ *
  * Returns null when valid, or a human-readable rejection reason string.
  */
 function validateDefinitionShape(value: unknown): string | null {
@@ -198,90 +178,6 @@ function validateDefinitionShape(value: unknown): string | null {
     return "run must be a function";
   }
   return null;
-}
-
-function validationInputValue(schema: WorkflowInputSchema): unknown {
-  switch (schema.type) {
-    case "text":
-    case "string":
-      return schema.default ?? (schema.required === true ? "__atomic_workflow_validation_probe_input__" : "");
-    case "number":
-      return schema.default ?? 0;
-    case "boolean":
-      return schema.default ?? false;
-    case "select":
-      return schema.default ?? schema.choices[0] ?? "";
-  }
-}
-
-function validationInputsFor(def: WorkflowDefinition): Record<string, unknown> {
-  const rawInputs = (def as { readonly inputs?: unknown }).inputs;
-  if (rawInputs === null || typeof rawInputs !== "object") return {};
-
-  const inputs: Record<string, unknown> = {};
-  for (const [name, schema] of Object.entries(rawInputs as Record<string, WorkflowInputSchema>)) {
-    inputs[name] = validationInputValue(schema);
-  }
-  return inputs;
-}
-
-async function validateWorkflowCreatesStage(def: WorkflowDefinition): Promise<DefinitionValidationResult> {
-  let stageObserved = false;
-
-  const markStageObserved = (): never => {
-    stageObserved = true;
-    throw WORKFLOW_STAGE_OBSERVED;
-  };
-
-  const ctx: WorkflowRunContext = {
-    inputs: validationInputsFor(def),
-    cwd: process.cwd(),
-    stage: () => markStageObserved(),
-    task: () => markStageObserved(),
-    chain: (steps) => {
-      if (steps.length > 0) markStageObserved();
-      return Promise.resolve([]);
-    },
-    parallel: (steps) => {
-      if (steps.length > 0) markStageObserved();
-      return Promise.resolve([]);
-    },
-    ui: {
-      input: async () => "",
-      confirm: async () => true,
-      select: async (_message, options) => options[0] ?? "",
-      editor: async (initial) => initial ?? "",
-    },
-  };
-
-  try {
-    await def.run(ctx);
-  } catch (err) {
-    // Discovery validation is a startup graph-shape probe, not a full workflow
-    // execution. If the workflow reaches any stage-producing primitive, it is
-    // valid for startup purposes. If it throws before that point, keep the
-    // workflow registered so runtime execution can report the original failure
-    // with run context, but emit a warning so startup feedback is not silent or
-    // confused with a clean empty-graph completion.
-    if (stageObserved || err === WORKFLOW_STAGE_OBSERVED) return validationSuccess();
-    return validationSuccess(
-      `run threw during startup stage-validation probe before creating a workflow stage; runtime execution will report the original error if invoked: ${diagnosticErrorMessage(err)}`,
-    );
-  }
-
-  return stageObserved ? validationSuccess() : validationFailure(WORKFLOW_STAGE_VALIDATION_ERROR);
-}
-
-/**
- * Validate a candidate value as a WorkflowDefinition and dry-run enough of the
- * authored run function to confirm it reaches a stage-producing primitive.
- * Returns null when valid, or a human-readable rejection reason string.
- */
-async function validateDefinition(value: unknown): Promise<DefinitionValidationResult> {
-  const shapeReason = validateDefinitionShape(value);
-  if (shapeReason !== null) return validationFailure(shapeReason);
-
-  return await validateWorkflowCreatesStage(value as WorkflowDefinition);
 }
 
 /**
@@ -321,20 +217,12 @@ async function applyBatch(
   diagnostics: DiscoveryDiagnostic[],
 ): Promise<WorkflowRegistry> {
   for (const { value, exportKey, kind, filePath, configuredName } of candidates) {
-    const validation = await validateDefinition(value);
-    if (validation.warning !== undefined) {
-      diagnostics.push({
-        level: "warn",
-        code: "VALIDATION_PROBE_FAILED",
-        message: `${kind} export "${exportKey}" probe warning: ${validation.warning}`,
-        source: filePath ?? exportKey,
-      });
-    }
-    if (validation.reason !== null) {
+    const reason = validateDefinitionShape(value);
+    if (reason !== null) {
       diagnostics.push({
         level: "error",
         code: "INVALID_DEFINITION",
-        message: `${kind} export "${exportKey}" rejected: ${validation.reason}`,
+        message: `${kind} export "${exportKey}" rejected: ${reason}`,
         source: filePath ?? exportKey,
       });
       continue;

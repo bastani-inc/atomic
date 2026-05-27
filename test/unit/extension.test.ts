@@ -19,15 +19,14 @@ test("session_start warns when discovered workflows fail validation", async () =
   try {
     const workflowDir = join(root, "workflows");
     mkdirSync(workflowDir, { recursive: true });
-    const workflowPath = join(workflowDir, "empty-graph.js");
+    const workflowPath = join(workflowDir, "invalid-shape.js");
     writeFileSync(
       workflowPath,
       [
         "export default {",
-        "  __piWorkflow: true,",
         "  name: 'Invalid Workflow',",
         "  normalizedName: 'invalid-workflow',",
-        "  description: 'invalid because it creates no stages',",
+        "  description: 'invalid because it is missing the workflow sentinel',",
         "  inputs: {},",
         "  run: async () => ({ ok: true }),",
         "};",
@@ -64,8 +63,8 @@ test("session_start warns when discovered workflows fail validation", async () =
     const warning = notifications.find((entry) => entry.message.includes("Workflow discovery diagnostics"));
     assert.notEqual(warning, undefined);
     assert.equal(warning?.type, "warning");
-    assert.match(warning!.message, /empty-graph\.js/);
-    assert.match(warning!.message, /run must create at least one workflow stage/);
+    assert.match(warning!.message, /invalid-shape\.js/);
+    assert.match(warning!.message, /missing or incorrect __piWorkflow sentinel/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
