@@ -320,7 +320,7 @@ function writeNoStageWorkflowJs(dir: string, filename: string): string {
       `  __piWorkflow: true,`,
       `  name: "No Stage Workflow",`,
       `  normalizedName: "no-stage-workflow",`,
-      `  description: "Discovery accepts this structurally; runtime validates stage creation",`,
+      `  description: "Discovery rejects this because it creates no stages",`,
       `  inputs: {},`,
       `  run: async () => ({ ok: true }),`,
       `};`,
@@ -694,17 +694,43 @@ describe("discoverWorkflows — INVALID_DEFINITION diagnostics", () => {
     assert.equal(registry.names().length, 0);
   });
 
-  test("workflow with no source-visible stage primitive is registered by structural discovery", async () => {
-    const cwd = makeTempDir("valid-no-source-visible-stages");
+  test("workflow that completes without creating stages emits INVALID_DEFINITION", async () => {
+    const cwd = makeTempDir("invalid-no-stages");
     const wfDir = join(cwd, ".atomic", "workflows");
     mkdirSync(wfDir, { recursive: true });
     writeNoStageWorkflowJs(wfDir, "no-stage.js");
 
-    const { registry, errors } = await discoverWorkflows({ cwd, homeDir: makeTempDir("empty-no-source-visible-stages"), includeBundled: false });
+    const { registry, errors } = await discoverWorkflows({ cwd, homeDir: makeTempDir("empty-invalid-no-stages"), includeBundled: false });
 
-    assert.equal(registry.has("no-stage-workflow"), true);
+    assert.equal(registry.has("no-stage-workflow"), false);
     const inv = errors.filter((e) => e.code === "INVALID_DEFINITION");
-    assert.equal(inv.length, 0);
+    assert.equal(inv.length, 1);
+    assert.match(inv[0]!.message, /run must create at least one workflow stage/);
+  });
+
+  test("workflow that reaches a stage through an aliased primitive registers", async () => {
+    const cwd = makeTempDir("valid-aliased-stage-primitive");
+    const wfDir = join(cwd, ".atomic", "workflows");
+    mkdirSync(wfDir, { recursive: true });
+    writeFileSync(
+      join(wfDir, "aliased.js"),
+      [
+        `export default {`,
+        `  __piWorkflow: true,`,
+        `  name: "Aliased Stage Workflow",`,
+        `  normalizedName: "aliased-stage-workflow",`,
+        `  description: "Uses an aliased task primitive",`,
+        `  inputs: {},`,
+        `  run: async (ctx) => { const { task } = ctx; await task("validation-smoke", { prompt: "validation smoke" }); return {}; },`,
+        `};`,
+      ].join("\n"),
+      "utf-8",
+    );
+
+    const { registry, errors } = await discoverWorkflows({ cwd, homeDir: makeTempDir("empty-aliased-stage-primitive"), includeBundled: false });
+
+    assert.equal(registry.has("aliased-stage-workflow"), true);
+    assert.equal(errors.filter((e) => e.code === "INVALID_DEFINITION").length, 0);
   });
 
   test("PATH_NOT_FOUND for configured path that does not exist", async () => {

@@ -26,7 +26,11 @@ import { createRequire } from "node:module";
 import { join, resolve, extname, isAbsolute } from "node:path";
 import { CONFIG_DIR_NAMES, getProjectConfigPaths, isBunBinary } from "@bastani/atomic";
 import { createJiti } from "jiti/static";
-import type { WorkflowDefinition } from "../shared/types.js";
+import type {
+  WorkflowDefinition,
+  WorkflowInputSchema,
+  WorkflowRunContext,
+} from "../shared/types.js";
 import * as workflowsSdkSurface from "../sdk-surface.js";
 import { createRegistry } from "../workflows/registry.js";
 import type { WorkflowRegistry } from "../workflows/registry.js";
@@ -148,11 +152,15 @@ export interface DiscoveryResult {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
+const WORKFLOW_STAGE_OBSERVED = Symbol("workflow-stage-observed");
+const WORKFLOW_STAGE_VALIDATION_ERROR =
+  "run must create at least one workflow stage with ctx.stage(), ctx.task(), ctx.chain(), or ctx.parallel()";
+
 /**
- * Validate a candidate value as a WorkflowDefinition.
+ * Validate a candidate value as a WorkflowDefinition by shape only.
  * Returns null when valid, or a human-readable rejection reason string.
  */
-function validateDefinition(value: unknown): string | null {
+function validateDefinitionShape(value: unknown): string | null {
   if (value === null || typeof value !== "object") {
     return "export is not an object";
   }
@@ -171,6 +179,85 @@ function validateDefinition(value: unknown): string | null {
     return "run must be a function";
   }
   return null;
+}
+
+function validationInputValue(schema: WorkflowInputSchema): unknown {
+  switch (schema.type) {
+    case "text":
+    case "string":
+      return schema.default ?? "";
+    case "number":
+      return schema.default ?? 0;
+    case "boolean":
+      return schema.default ?? false;
+    case "select":
+      return schema.default ?? schema.choices[0] ?? "";
+  }
+}
+
+function validationInputsFor(def: WorkflowDefinition): Record<string, unknown> {
+  const rawInputs = (def as { readonly inputs?: unknown }).inputs;
+  if (rawInputs === null || typeof rawInputs !== "object") return {};
+
+  const inputs: Record<string, unknown> = {};
+  for (const [name, schema] of Object.entries(rawInputs as Record<string, WorkflowInputSchema>)) {
+    inputs[name] = validationInputValue(schema);
+  }
+  return inputs;
+}
+
+async function validateWorkflowCreatesStage(def: WorkflowDefinition): Promise<string | null> {
+  let stageObserved = false;
+
+  const markStageObserved = (): never => {
+    stageObserved = true;
+    throw WORKFLOW_STAGE_OBSERVED;
+  };
+
+  const ctx: WorkflowRunContext = {
+    inputs: validationInputsFor(def),
+    stage: () => markStageObserved(),
+    task: () => markStageObserved(),
+    chain: (steps) => {
+      if (steps.length > 0) markStageObserved();
+      return Promise.resolve([]);
+    },
+    parallel: (steps) => {
+      if (steps.length > 0) markStageObserved();
+      return Promise.resolve([]);
+    },
+    ui: {
+      input: async () => "",
+      confirm: async () => true,
+      select: async (_message, options) => options[0] ?? "",
+      editor: async (initial) => initial ?? "",
+    },
+  };
+
+  try {
+    await def.run(ctx);
+  } catch (err) {
+    // Discovery validation is a structural/startup guard, not a full workflow
+    // execution. If the workflow reaches any stage-producing primitive, it is
+    // valid for startup purposes; if it throws before that point, fail open and
+    // leave the real executor to report the runtime failure with run context.
+    if (stageObserved || err === WORKFLOW_STAGE_OBSERVED) return null;
+    return null;
+  }
+
+  return stageObserved ? null : WORKFLOW_STAGE_VALIDATION_ERROR;
+}
+
+/**
+ * Validate a candidate value as a WorkflowDefinition and dry-run enough of the
+ * authored run function to confirm it reaches a stage-producing primitive.
+ * Returns null when valid, or a human-readable rejection reason string.
+ */
+async function validateDefinition(value: unknown): Promise<string | null> {
+  const shapeReason = validateDefinitionShape(value);
+  if (shapeReason !== null) return shapeReason;
+
+  return await validateWorkflowCreatesStage(value as WorkflowDefinition);
 }
 
 /**
@@ -203,14 +290,58 @@ function validateConfig(config: unknown): string | null {
 }
 
 /** Merge a batch of candidates into registry state, first-seen wins. */
-function applyBatch(
+async function applyBatch(
+  candidates: Array<{ value: unknown; exportKey: string; kind: DiscoveryKind; filePath?: string; configuredName?: string }>,
+  registry: WorkflowRegistry,
+  sources: DiscoverySource[],
+  diagnostics: DiscoveryDiagnostic[],
+): Promise<WorkflowRegistry> {
+  for (const { value, exportKey, kind, filePath, configuredName } of candidates) {
+    const reason = await validateDefinition(value);
+    if (reason !== null) {
+      diagnostics.push({
+        level: "error",
+        code: "INVALID_DEFINITION",
+        message: `${kind} export "${exportKey}" rejected: ${reason}`,
+        source: filePath ?? exportKey,
+      });
+      continue;
+    }
+
+    const def = value as WorkflowDefinition;
+    const key = def.normalizedName;
+
+    if (registry.has(key)) {
+      diagnostics.push({
+        level: "warn",
+        code: "DUPLICATE_NAME",
+        message: `${kind} export "${exportKey}" skipped: normalizedName "${key}" already registered`,
+        source: filePath ?? exportKey,
+      });
+      continue;
+    }
+
+    registry = registry.register(def);
+    sources.push({
+      id: key,
+      kind,
+      name: def.name,
+      ...(filePath !== undefined ? { filePath } : {}),
+      ...(configuredName !== undefined ? { configuredName } : {}),
+    });
+  }
+  return registry;
+}
+
+/** Merge bundled startup candidates with shape-only validation to keep startup seeding synchronous. */
+function applyBatchShapeOnly(
   candidates: Array<{ value: unknown; exportKey: string; kind: DiscoveryKind; filePath?: string; configuredName?: string }>,
   registry: WorkflowRegistry,
   sources: DiscoverySource[],
   diagnostics: DiscoveryDiagnostic[],
 ): WorkflowRegistry {
   for (const { value, exportKey, kind, filePath, configuredName } of candidates) {
-    const reason = validateDefinition(value);
+    const reason = validateDefinitionShape(value);
     if (reason !== null) {
       diagnostics.push({
         level: "error",
@@ -496,14 +627,14 @@ export async function discoverWorkflows(
     const hasEntries = Array.isArray(pw) ? pw.length > 0 : Object.keys(pw).length > 0;
     if (hasEntries) {
       const candidates = await loadFromPaths(pw, "settings-project", cwd, diagnostics);
-      registry = applyBatch(candidates, registry, sources, diagnostics);
+      registry = await applyBatch(candidates, registry, sources, diagnostics);
     }
   }
 
   // 2. project-local
   for (const dir of getProjectConfigPaths(cwd, "workflows").reverse()) {
     const candidates = await loadFromDir(dir, "project-local", diagnostics);
-    registry = applyBatch(candidates, registry, sources, diagnostics);
+    registry = await applyBatch(candidates, registry, sources, diagnostics);
   }
 
   // 3. settings-global
@@ -512,14 +643,14 @@ export async function discoverWorkflows(
     const hasEntries = Array.isArray(gw) ? gw.length > 0 : Object.keys(gw).length > 0;
     if (hasEntries) {
       const candidates = await loadFromPaths(gw, "settings-global", homeDir, diagnostics);
-      registry = applyBatch(candidates, registry, sources, diagnostics);
+      registry = await applyBatch(candidates, registry, sources, diagnostics);
     }
   }
 
   // 4. user-global — canonical Atomic path plus legacy pi path
   for (const dir of CONFIG_DIR_NAMES.map((name) => join(homeDir, name, "agent", "workflows")).reverse()) {
     const candidates = await loadFromDir(dir, "user-global", diagnostics);
-    registry = applyBatch(candidates, registry, sources, diagnostics);
+    registry = await applyBatch(candidates, registry, sources, diagnostics);
   }
 
   // 5. package workflows
@@ -527,7 +658,7 @@ export async function discoverWorkflows(
     const hasEntries = Array.isArray(packageWorkflowPaths) ? packageWorkflowPaths.length > 0 : Object.keys(packageWorkflowPaths).length > 0;
     if (hasEntries) {
       const candidates = await loadFromPaths(packageWorkflowPaths, "package", cwd, diagnostics);
-      registry = applyBatch(candidates, registry, sources, diagnostics);
+      registry = await applyBatch(candidates, registry, sources, diagnostics);
     }
   }
 
@@ -590,7 +721,7 @@ function discoverBundledManifest(): DiscoveryResult {
     kind: "bundled" as DiscoveryKind,
   }));
 
-  registry = applyBatch(candidates, registry, sources, diagnostics);
+  registry = applyBatchShapeOnly(candidates, registry, sources, diagnostics);
 
   return { registry, sources, errors: diagnostics };
 }

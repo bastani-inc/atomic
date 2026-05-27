@@ -24,9 +24,10 @@ test("session_start warns when discovered workflows fail validation", async () =
       workflowPath,
       [
         "export default {",
+        "  __piWorkflow: true,",
         "  name: 'Invalid Workflow',",
         "  normalizedName: 'invalid-workflow',",
-        "  description: 'invalid because it is missing the workflow sentinel',",
+        "  description: 'invalid because it creates no stages',",
         "  inputs: {},",
         "  run: async () => ({ ok: true }),",
         "};",
@@ -64,7 +65,7 @@ test("session_start warns when discovered workflows fail validation", async () =
     assert.notEqual(warning, undefined);
     assert.equal(warning?.type, "warning");
     assert.match(warning!.message, /empty-graph\.js/);
-    assert.match(warning!.message, /missing or incorrect __piWorkflow sentinel/);
+    assert.match(warning!.message, /run must create at least one workflow stage/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
