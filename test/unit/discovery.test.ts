@@ -721,7 +721,7 @@ describe("discoverWorkflows — INVALID_DEFINITION diagnostics", () => {
         `  normalizedName: "side-effect-workflow",`,
         `  description: "Would write during run if discovery invoked it",`,
         `  inputs: {},`,
-        `  run: async () => { writeFileSync(${JSON.stringify(sideEffectPath)}, "ran"); return {}; },`,
+        `  run: async () => { writeFileSync(new URL("../../side-effect.txt", import.meta.url), "ran"); return {}; },`,
         `};`,
       ].join("\n"),
       "utf-8",
