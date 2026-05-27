@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.8.18-0] - 2026-05-27
+
 ### Added
 
 - Added SDK `excludeTools` support for omitting named built-in, extension, and custom tools from `createAgentSession()` sessions while preserving existing `tools` and `noTools` behavior ([#1070](https://github.com/flora131/atomic/issues/1070)).
