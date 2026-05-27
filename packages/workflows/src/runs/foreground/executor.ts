@@ -82,6 +82,8 @@ export interface RunContinuationOpts {
 
 export interface RunOpts {
   adapters?: StageAdapters;
+  /** Invocation working directory exposed to workflow definitions as ctx.cwd. */
+  cwd?: string;
   /** HIL adapter injected by the pi runtime or test harness. */
   ui?: WorkflowUIAdapter;
   /** Internal detached-run mode: surface ctx.ui.* as node-local workflow prompt stages. */
@@ -1826,6 +1828,7 @@ export async function run<TInputs extends Record<string, unknown>>(
   // 5. Build WorkflowRunContext
   const ctx: WorkflowRunContext<TInputs> = {
     inputs: resolvedInputs as TInputs,
+    cwd: opts.cwd ?? process.cwd(),
     // Prompt nodes and caller-provided UI adapters are mutually exclusive;
     // executor-owned prompt nodes intentionally take precedence when enabled.
     ui: opts.usePromptNodesForUi === true ? buildPromptNodeUiAdapter() : opts.ui ?? makeUnavailableUIContext(),

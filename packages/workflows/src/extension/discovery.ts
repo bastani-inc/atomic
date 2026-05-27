@@ -204,7 +204,7 @@ function validationInputValue(schema: WorkflowInputSchema): unknown {
   switch (schema.type) {
     case "text":
     case "string":
-      return schema.default ?? "";
+      return schema.default ?? (schema.required === true ? "__atomic_workflow_validation_probe_input__" : "");
     case "number":
       return schema.default ?? 0;
     case "boolean":
@@ -235,6 +235,7 @@ async function validateWorkflowCreatesStage(def: WorkflowDefinition): Promise<De
 
   const ctx: WorkflowRunContext = {
     inputs: validationInputsFor(def),
+    cwd: process.cwd(),
     stage: () => markStageObserved(),
     task: () => markStageObserved(),
     chain: (steps) => {

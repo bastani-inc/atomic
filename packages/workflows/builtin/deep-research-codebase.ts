@@ -905,5 +905,5 @@ export default defineWorkflow("deep-research-codebase")
     description:
       "Maximum number of workflow stages to run concurrently during deep research.",
   })
-  .run(async (ctx) => runDeepResearchCodebaseWorkflow(ctx))
+  .run(async (ctx) => runDeepResearchCodebaseWorkflow(ctx, ctx.cwd))
   .compile();

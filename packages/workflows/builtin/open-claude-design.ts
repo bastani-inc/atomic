@@ -114,7 +114,7 @@ function joinResults(results: readonly WorkflowTaskResult[]): string {
  * stay next to the project and are discoverable by pi. Falls back to the OS
  * tmpdir when the project tree is not writable (CI sandboxes, mocks, etc.).
  */
-function prepareArtifactDir(): {
+function prepareArtifactDir(cwd = process.cwd()): {
   readonly runId: string;
   readonly artifactDir: string;
   readonly previewPath: string;
@@ -122,7 +122,7 @@ function prepareArtifactDir(): {
 } {
   const runId = `${new Date().toISOString().replace(/[:.]/g, "-")}-${Math.random().toString(36).slice(2, 8)}`;
   const candidates = [
-    join(process.cwd(), "specs", "design", runId),
+    join(cwd, "specs", "design", runId),
     join(tmpdir(), "open-claude-design", runId),
   ];
   for (const candidate of candidates) {
@@ -222,7 +222,7 @@ export default defineWorkflow("open-claude-design")
       DEFAULT_MAX_REFINEMENTS,
     );
 
-    const { runId, artifactDir, previewPath, specPath } = prepareArtifactDir();
+    const { runId, artifactDir, previewPath, specPath } = prepareArtifactDir(ctx.cwd);
     const previewFileUrl = `file://${previewPath}`;
     const specFileUrl = `file://${specPath}`;
 

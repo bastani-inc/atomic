@@ -505,6 +505,8 @@ export interface StageContext {
 export interface WorkflowRunContext<TInputs extends Record<string, unknown> = Record<string, unknown>> {
   /** Typed inputs provided by the caller, validated against the input schema. */
   readonly inputs: TInputs;
+  /** Invocation working directory for workflow-owned artifacts. Defaults to the host process cwd when omitted. */
+  readonly cwd?: string;
   /**
    * Create and register a named stage synchronously. Stage work starts when
    * a stage method such as prompt() or complete() is awaited; the executor

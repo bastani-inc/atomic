@@ -762,6 +762,36 @@ describe("discoverWorkflows — INVALID_DEFINITION diagnostics", () => {
     assert.match(warnings[0]!.message, /probe boom/);
   });
 
+  test("required text inputs use non-empty probe values before stage validation", async () => {
+    const cwd = makeTempDir("valid-required-text-probe");
+    const wfDir = join(cwd, ".atomic", "workflows");
+    mkdirSync(wfDir, { recursive: true });
+    writeFileSync(
+      join(wfDir, "required-text.js"),
+      [
+        `export default {`,
+        `  __piWorkflow: true,`,
+        `  name: "Required Text Probe",`,
+        `  normalizedName: "required-text-probe",`,
+        `  description: "Validates text input before creating a stage",`,
+        `  inputs: { prompt: { type: "text", required: true } },`,
+        `  run: async (ctx) => {`,
+        `    if (!String(ctx.inputs.prompt ?? "").trim()) throw new Error("prompt is required");`,
+        `    await ctx.task("validation-smoke", { prompt: String(ctx.inputs.prompt) });`,
+        `    return {};`,
+        `  },`,
+        `};`,
+      ].join("\n"),
+      "utf-8",
+    );
+
+    const { registry, errors } = await discoverWorkflows({ cwd, homeDir: makeTempDir("empty-required-text-probe"), includeBundled: false });
+
+    assert.equal(registry.has("required-text-probe"), true);
+    assert.equal(errors.filter((e) => e.code === "INVALID_DEFINITION").length, 0);
+    assert.equal(errors.filter((e) => e.code === "VALIDATION_PROBE_FAILED").length, 0);
+  });
+
   test("PATH_NOT_FOUND for configured path that does not exist", async () => {
     const cwd = makeTempDir("path-not-found");
     const missingPath = join(makeTempDir("ghost-dir"), "ghost.js");

@@ -1436,5 +1436,5 @@ export default defineWorkflow("ralph")
     description:
       "Optional Git worktree path. Ralph must start inside a Git repo; absolute paths are used as-is, relative paths resolve from the repo root, existing Git worktrees from the invoking repository are reused/shared as-is, and missing paths are created from base_branch."
   })
-  .run(async (ctx) => runRalphWorkflowFromCwd(ctx as WorkflowRunContext<RalphInputs>))
+  .run(async (ctx) => runRalphWorkflowFromCwd(ctx as WorkflowRunContext<RalphInputs>, ctx.cwd))
   .compile();

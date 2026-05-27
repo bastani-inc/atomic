@@ -91,6 +91,7 @@ function runOptionsWithAdapters(
 
   return {
     ...options.runOptions,
+    cwd: options.cwd ?? options.runOptions?.cwd,
     ...(config !== undefined ? { config } : {}),
     adapters: buildRuntimeAdapters(options.pi ?? {}, adapterOptions),
     store: createStore(),
