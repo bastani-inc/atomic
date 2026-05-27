@@ -149,7 +149,7 @@ describe("ralph git worktree integration", () => {
   let tempRoot: string | undefined;
 
   beforeEach(() => {
-    tempRoot = mkdtempSync(join(tmpdir(), "atomic-ralph-integration-"));
+    tempRoot = realpathSync.native(mkdtempSync(join(tmpdir(), "atomic-ralph-integration-")));
   });
 
   afterEach(() => {
