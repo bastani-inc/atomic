@@ -9,9 +9,9 @@
 
 ## 1. Executive Summary
 
-GitHub issue [flora131/atomic#1070](https://github.com/flora131/atomic/issues/1070) requests a new SDK option, `excludeTools`, on `createAgentSession()`. SDK consumers can already provide a positive `tools` allowlist, but removing one or two default tools currently requires reconstructing the full desired tool list manually. The motivating example is disabling the built-in `ask_user_question` tool while preserving the rest of Atomic’s default tools.
+GitHub issue [flora131/atomic#1070](https://github.com/flora131/atomic/issues/1070) requests a new SDK option, `excludedTools`, on `createAgentSession()`. SDK consumers can already provide a positive `tools` allowlist, but removing one or two default tools currently requires reconstructing the full desired tool list manually. The motivating example is disabling the built-in `ask_user_question` tool while preserving the rest of Atomic’s default tools.
 
-This RFC proposes adding `excludeTools?: string[]` to the public `CreateAgentSessionOptions` API, matching the existing `tools?: string[]` tool-name identifier shape in `packages/coding-agent/src/core/sdk.ts`. The exclusion will be enforced inside `AgentSession`’s runtime tool registry refresh path so it applies consistently to built-in tools, SDK `customTools`, extension-registered tools, dynamic tool registration, and reloads. When `excludeTools` is omitted, existing behavior remains unchanged.
+This RFC proposes adding `excludedTools?: string[]` to the public `CreateAgentSessionOptions` API, matching the existing `tools?: string[]` tool-name identifier shape in `packages/coding-agent/src/core/sdk.ts`. The exclusion will be enforced inside `AgentSession`’s runtime tool registry refresh path so it applies consistently to built-in tools, SDK `customTools`, extension-registered tools, dynamic tool registration, and reloads. When `excludedTools` is omitted, existing behavior remains unchanged.
 
 The implementation should primarily touch:
 
@@ -70,7 +70,7 @@ Documentation already presents tool selection as a name-based SDK API:
 There is also a higher-level workflow consumer:
 
 - `StageOptions` extends `Omit<CreateAgentSessionOptions, "model">` in `packages/workflows/src/shared/types.ts:145`, so programmatic workflow stages inherit SDK option additions at the type level.
-- The workflow direct tool schema hardcodes stage session option properties, including `tools` and `noTools`, in `packages/workflows/src/extension/workflow-schema.ts:36-58`. Whether to mirror `excludeTools` there is an open product/scope question for workflow direct tool calls.
+- The workflow direct tool schema hardcodes stage session option properties, including `tools` and `noTools`, in `packages/workflows/src/extension/workflow-schema.ts:36-58`. Whether to mirror `excludedTools` there is an open product/scope question for workflow direct tool calls.
 
 ### 2.2 The Problem
 
@@ -78,7 +78,7 @@ SDK callers that want “defaults minus one tool” currently have to manually e
 
 ```ts
 await createAgentSession({
-  excludeTools: ["ask_user_question"],
+  excludedTools: ["ask_user_question"],
 });
 ```
 
@@ -94,29 +94,29 @@ This creates several problems:
 
 ### 3.1 Functional Goals
 
-1. Add `excludeTools?: string[]` to `CreateAgentSessionOptions` in `packages/coding-agent/src/core/sdk.ts`.
+1. Add `excludedTools?: string[]` to `CreateAgentSessionOptions` in `packages/coding-agent/src/core/sdk.ts`.
 2. Use the same tool identifier type shape as the existing `tools?: string[]` field.
 3. Remove excluded names from the final exposed session tool set:
    - `session.getAllTools()`
    - `session.getActiveToolNames()`
    - `session.agent.state.tools`
    - generated system prompt tool listings
-4. Ensure `excludeTools: ["ask_user_question"]` omits the built-in `ask_user_question` tool while preserving the remaining normal defaults.
+4. Ensure `excludedTools: ["ask_user_question"]` omits the built-in `ask_user_question` tool while preserving the remaining normal defaults.
 5. Apply exclusions consistently across:
    - built-in tools from `createAllToolDefinitions()`
    - SDK `customTools`
    - extension-registered tools
    - dynamically registered tools after `session.bindExtensions({})`
    - tool registry rebuilds and `/reload`-style refreshes
-6. Preserve current behavior exactly when `excludeTools` is omitted.
+6. Preserve current behavior exactly when `excludedTools` is omitted.
 7. Preserve current `tools` and `noTools` behavior, with exclusions applied as a final subtractive filter.
 8. Add service-based pass-through support in `CreateAgentSessionFromServicesOptions` and `createAgentSessionFromServices()`.
 9. Add tests covering:
    - excluding `ask_user_question`
-   - `tools` allowlist combined with `excludeTools`
+   - `tools` allowlist combined with `excludedTools`
    - service-based forwarding
    - extension or SDK custom tool exclusion where practical
-   - no-regression behavior when `excludeTools` is omitted
+   - no-regression behavior when `excludedTools` is omitted
 10. Update SDK docs, examples, and changelog entries where applicable.
 
 ### 3.2 Non-Goals (Out of Scope)
@@ -138,11 +138,11 @@ Add a new optional SDK field:
 ```ts
 export interface CreateAgentSessionOptions {
   tools?: string[];
-  excludeTools?: string[];
+  excludedTools?: string[];
 }
 ```
 
-The SDK will pass `excludeTools` into `AgentSession` as `excludedToolNames`. `AgentSession` will store the names in a `Set<string>` and enforce them in `_refreshToolRegistry()` alongside the existing allowlist logic.
+The SDK will pass `excludedTools` into `AgentSession` as `excludedToolNames`. `AgentSession` will store the names in a `Set<string>` and enforce them in `_refreshToolRegistry()` alongside the existing allowlist logic.
 
 The key design decision is to enforce exclusion at registry construction time, not only in `createAgentSession()`’s initial option normalization. This ensures dynamic extension tools and SDK custom tools with excluded names never become exposed after `bindExtensions()`, `refreshTools()`, or reload.
 
@@ -150,7 +150,7 @@ The key design decision is to enforce exclusion at registry construction time, n
 
 ```mermaid
 flowchart TD
-    Caller["SDK caller<br/>createAgentSession({ tools?, noTools?, excludeTools? })"]
+    Caller["SDK caller<br/>createAgentSession({ tools?, noTools?, excludedTools? })"]
     Services["createAgentSessionFromServices()<br/>packages/coding-agent/src/core/agent-session-services.ts"]
     SDK["createAgentSession()<br/>packages/coding-agent/src/core/sdk.ts"]
     Session["AgentSession<br/>packages/coding-agent/src/core/agent-session.ts"]
@@ -185,7 +185,7 @@ This change follows the existing **Facade + Registry Filtering** pattern:
 
 - `createAgentSession()` is the public facade that accepts ergonomic SDK options and translates them into internal session configuration (`packages/coding-agent/src/core/sdk.ts:231-465`).
 - `AgentSession` owns the runtime tool registry and active tool state (`packages/coding-agent/src/core/agent-session.ts:2344-2432`).
-- Filtering by name is already the established pattern for `allowedToolNames`; `excludeTools` should extend that filtering seam rather than adding a parallel runtime path.
+- Filtering by name is already the established pattern for `allowedToolNames`; `excludedTools` should extend that filtering seam rather than adding a parallel runtime path.
 
 This preserves single responsibility:
 
@@ -197,9 +197,9 @@ This preserves single responsibility:
 
 | Component | Responsibility | Technology Stack | Justification |
 | --------- | -------------- | ---------------- | ------------- |
-| `CreateAgentSessionOptions` (`packages/coding-agent/src/core/sdk.ts`) | Public SDK option contract; add `excludeTools?: string[]` next to `tools?: string[]`. | TypeScript ESM | This is the exact public API requested by issue #1070. |
+| `CreateAgentSessionOptions` (`packages/coding-agent/src/core/sdk.ts`) | Public SDK option contract; add `excludedTools?: string[]` next to `tools?: string[]`. | TypeScript ESM | This is the exact public API requested by issue #1070. |
 | `createAgentSession()` (`packages/coding-agent/src/core/sdk.ts`) | Preserve existing `tools` / `noTools` normalization and pass exclusions into `AgentSession`. | TypeScript, `@earendil-works/pi-agent-core` | Current option-to-session mapping already lives here at `sdk.ts:326-331` and `sdk.ts:460-465`. |
-| `CreateAgentSessionFromServicesOptions` (`packages/coding-agent/src/core/agent-session-services.ts`) | Allow service-based session callers to pass `excludeTools`. | TypeScript | This mirrors existing `tools`, `noTools`, and `customTools` forwarding at `agent-session-services.ts:49-58` and `agent-session-services.ts:180-198`. |
+| `CreateAgentSessionFromServicesOptions` (`packages/coding-agent/src/core/agent-session-services.ts`) | Allow service-based session callers to pass `excludedTools`. | TypeScript | This mirrors existing `tools`, `noTools`, and `customTools` forwarding at `agent-session-services.ts:49-58` and `agent-session-services.ts:180-198`. |
 | `AgentSessionConfig` (`packages/coding-agent/src/core/agent-session.ts`) | Carry `excludedToolNames` into the runtime session. | TypeScript class config | `AgentSession` already stores `allowedToolNames` and initial active tools at `agent-session.ts:354-360`. |
 | `_refreshToolRegistry()` (`packages/coding-agent/src/core/agent-session.ts`) | Enforce `allowedToolNames` and `excludedToolNames` against built-ins, extension tools, and SDK custom tools. | TypeScript `Map` / `Set` | This is the central registry refresh path for all final exposed tools, including dynamic registrations. |
 | Built-in tool registry (`packages/coding-agent/src/core/tools/index.ts`) | Continue defining canonical built-in names and definitions, including `ask_user_question`. | TypeScript factory functions | Exclusion should consume this registry, not change it. |
@@ -212,7 +212,7 @@ This preserves single responsibility:
 
 #### Public SDK option
 
-Add `excludeTools` next to `tools` in `packages/coding-agent/src/core/sdk.ts`:
+Add `excludedTools` next to `tools` in `packages/coding-agent/src/core/sdk.ts`:
 
 ```ts
 export interface CreateAgentSessionOptions {
@@ -220,7 +220,7 @@ export interface CreateAgentSessionOptions {
    * Optional allowlist of tool names.
    *
    * When provided, only the listed tool names are enabled, minus any names in
-   * `excludeTools`.
+   * `excludedTools`.
    */
   tools?: string[];
 
@@ -230,7 +230,7 @@ export interface CreateAgentSessionOptions {
    * When provided, matching built-in, extension, and SDK custom tools are omitted
    * from the final session tool registry and active tool set.
    */
-  excludeTools?: string[];
+  excludedTools?: string[];
 }
 ```
 
@@ -243,7 +243,7 @@ Extend `packages/coding-agent/src/core/agent-session-services.ts`:
 ```ts
 export interface CreateAgentSessionFromServicesOptions {
   tools?: string[];
-  excludeTools?: CreateAgentSessionOptions["excludeTools"];
+  excludedTools?: CreateAgentSessionOptions["excludedTools"];
   noTools?: CreateAgentSessionOptions["noTools"];
   customTools?: ToolDefinition[];
 }
@@ -255,7 +255,7 @@ Forward it in `createAgentSessionFromServices()`:
 return createAgentSession({
   // existing fields...
   tools: options.tools,
-  excludeTools: options.excludeTools,
+  excludedTools: options.excludedTools,
   noTools: options.noTools,
   customTools: options.customTools,
 });
@@ -293,14 +293,14 @@ this._excludedToolNames = config.excludedToolNames
 
 | Input Combination | Resulting Semantics |
 | ----------------- | ------------------- |
-| No `tools`, no `noTools`, no `excludeTools` | Existing default behavior: default built-ins active plus extension/custom tools active. |
-| `excludeTools: ["ask_user_question"]` | Normal default set minus `ask_user_question`; `read`, `bash`, `edit`, `write`, `todo`, and non-excluded extension/custom tools remain available according to existing defaults. |
-| `tools: ["read", "bash", "ask_user_question"], excludeTools: ["ask_user_question"]` | Positive allowlist is resolved first, then exclusions subtract; final set is `read`, `bash`. |
-| `tools: []` with any `excludeTools` | Empty allowlist remains empty. |
-| `noTools: "all"` with any `excludeTools` | Existing all-tools suppression remains empty. |
-| `noTools: "builtin", excludeTools: ["dynamic_tool"]` | Built-in defaults remain inactive per existing behavior; extension/custom tools remain active unless excluded. |
-| Unknown names in `excludeTools` | Ignored, matching existing unknown-name behavior for `setActiveToolsByName()` at `packages/coding-agent/src/core/agent-session.ts:853-868`. |
-| Duplicate names in `excludeTools` | Deduplicated by `Set`; no user-visible difference. |
+| No `tools`, no `noTools`, no `excludedTools` | Existing default behavior: default built-ins active plus extension/custom tools active. |
+| `excludedTools: ["ask_user_question"]` | Normal default set minus `ask_user_question`; `read`, `bash`, `edit`, `write`, `todo`, and non-excluded extension/custom tools remain available according to existing defaults. |
+| `tools: ["read", "bash", "ask_user_question"], excludedTools: ["ask_user_question"]` | Positive allowlist is resolved first, then exclusions subtract; final set is `read`, `bash`. |
+| `tools: []` with any `excludedTools` | Empty allowlist remains empty. |
+| `noTools: "all"` with any `excludedTools` | Existing all-tools suppression remains empty. |
+| `noTools: "builtin", excludedTools: ["dynamic_tool"]` | Built-in defaults remain inactive per existing behavior; extension/custom tools remain active unless excluded. |
+| Unknown names in `excludedTools` | Ignored, matching existing unknown-name behavior for `setActiveToolsByName()` at `packages/coding-agent/src/core/agent-session.ts:853-868`. |
+| Duplicate names in `excludedTools` | Deduplicated by `Set`; no user-visible difference. |
 
 ### 5.2 Data Model / Schema
 
@@ -310,10 +310,10 @@ New in-memory / TypeScript-only fields:
 
 ```ts
 // Public SDK surface
-excludeTools?: string[];
+excludedTools?: string[];
 
 // Service wrapper surface
-excludeTools?: CreateAgentSessionOptions["excludeTools"];
+excludedTools?: CreateAgentSessionOptions["excludedTools"];
 
 // Internal runtime config
 excludedToolNames?: string[];
@@ -335,7 +335,7 @@ No changes are required to:
 If workflow direct tool calls are later included in scope, `packages/workflows/src/extension/workflow-schema.ts` would need a TypeBox schema addition:
 
 ```ts
-excludeTools: Type.Optional(Type.Array(Type.String())),
+excludedTools: Type.Optional(Type.Array(Type.String())),
 ```
 
 That schema currently hardcodes SDK-like options at `packages/workflows/src/extension/workflow-schema.ts:36-58`, so it will not automatically inherit new TypeScript fields at runtime.
@@ -397,7 +397,7 @@ Central filtering in `_refreshToolRegistry()` covers all these paths.
 
 #### State lifecycle
 
-- `excludeTools` is read once during session construction.
+- `excludedTools` is read once during session construction.
 - The exclusion set persists for the lifetime of the `AgentSession`.
 - `reload()` rebuilds tools but retains `_excludedToolNames` on the same `AgentSession` object.
 - New sessions created through `AgentSessionRuntime` receive the same fixed options only if the runtime factory closes over and passes them again, matching existing `tools` and `noTools` behavior in `packages/coding-agent/src/main.ts:541-608`.
@@ -407,7 +407,7 @@ Central filtering in `_refreshToolRegistry()` covers all these paths.
 | Option | Pros | Cons | Reason for Rejection |
 | ------ | ---- | ---- | -------------------- |
 | A. Keep current API and require callers to pass a full `tools` allowlist | No code change; current behavior is already tested. | Callers must duplicate defaults from `defaultToolNames`; disabling one tool is verbose and brittle; future default tools are missed. | Rejected because it does not satisfy issue #1070’s ergonomic and backwards-compatible “defaults minus X” request. |
-| B. Implement `excludeTools` only in `createAgentSession()` by subtracting from `initialActiveToolNames` and `allowedToolNames` | Smallest implementation; no new `AgentSessionConfig` field. | Does not reliably exclude dynamically registered extension tools or SDK custom tools after `bindExtensions()` / refresh; excluded allowlisted names could be reintroduced by registry refresh logic. | Rejected because the issue requires removal from the final resolved tool set, not only the initial default list. |
+| B. Implement `excludedTools` only in `createAgentSession()` by subtracting from `initialActiveToolNames` and `allowedToolNames` | Smallest implementation; no new `AgentSessionConfig` field. | Does not reliably exclude dynamically registered extension tools or SDK custom tools after `bindExtensions()` / refresh; excluded allowlisted names could be reintroduced by registry refresh logic. | Rejected because the issue requires removal from the final resolved tool set, not only the initial default list. |
 | C. Add `excludedToolNames` to `AgentSession` and enforce it in `_refreshToolRegistry()` | Covers built-ins, SDK custom tools, extension tools, dynamic registration, and reloads; reuses existing allowlist filtering seam. | Slightly more internal plumbing than SDK-only subtraction. | Selected because it is the most robust and aligns with current registry ownership. |
 | D. Add a generic `toolFilter: (name, source) => boolean` callback | Maximum flexibility for advanced SDK consumers. | Non-serializable, harder to document, harder to test, potentially leaks internal source metadata, and is more abstraction than the issue needs. | Rejected under KISS/YAGNI; issue only asks for name-based exclusions matching `tools`. |
 | E. Add a CLI `--exclude-tools` flag first | Useful for CLI users and subagent process spawning. | The request is for SDK `createAgentSession`; CLI surface increases parser/docs/test scope and creates product questions around short flags and precedence. | Rejected for iteration 1; can be revisited separately. |
@@ -417,13 +417,13 @@ Central filtering in `_refreshToolRegistry()` covers all these paths.
 
 ### 7.1 Security and Privacy
 
-`excludeTools` does not introduce new execution capability. It only removes named tools from the session’s exposed registry.
+`excludedTools` does not introduce new execution capability. It only removes named tools from the session’s exposed registry.
 
 Security implications:
 
 - Excluding mutating tools such as `bash`, `edit`, or `write` can reduce a session’s capability surface.
 - Excluding `ask_user_question` can prevent model-initiated human-input prompts, useful for unattended SDK integrations.
-- The option is not a sandbox or policy engine. If an extension registers another powerful tool under a different name, `excludeTools: ["bash"]` will not block that separate tool.
+- The option is not a sandbox or policy engine. If an extension registers another powerful tool under a different name, `excludedTools: ["bash"]` will not block that separate tool.
 - If a custom or extension tool intentionally uses the same name as a built-in tool, exclusion by that name should remove the final tool with that name regardless of source. This matches name-based allowlist behavior in `packages/coding-agent/src/core/agent-session.ts:2344-2400`.
 
 Privacy implications:
@@ -457,7 +457,7 @@ The design scales to extension-heavy sessions because filtering is linear in the
 
 ### 8.1 Deployment Strategy
 
-1. Implement `excludeTools` as an optional field with no behavior change when omitted.
+1. Implement `excludedTools` as an optional field with no behavior change when omitted.
 2. Add tests before implementation, following the project’s TDD guidance.
 3. Update SDK docs/examples and `packages/coding-agent/CHANGELOG.md` under `## [Unreleased]`.
 4. Run focused package tests, then repo-level type checks.
@@ -491,29 +491,29 @@ Use Bun to invoke existing repository/package test commands; do not use npm/yarn
 Recommended focused tests:
 
 1. **Default minus `ask_user_question`**
-   - Create a session with `excludeTools: ["ask_user_question"]`.
+   - Create a session with `excludedTools: ["ask_user_question"]`.
    - Assert `getActiveToolNames()` does not contain `ask_user_question`.
    - Assert `getAllTools().map(t => t.name)` does not contain `ask_user_question`.
    - Assert `systemPrompt` does not contain `ask_user_question`.
    - Assert default non-excluded tools such as `read`, `bash`, `edit`, `write`, and `todo` remain active.
 
 2. **Allowlist plus exclusion**
-   - Create a session with `tools: ["read", "bash", "ask_user_question"]` and `excludeTools: ["ask_user_question"]`.
+   - Create a session with `tools: ["read", "bash", "ask_user_question"]` and `excludedTools: ["ask_user_question"]`.
    - Assert only `read` and `bash` remain exposed/active.
 
 3. **SDK custom tool exclusion**
-   - Pass `customTools: [{ name: "sdk_tool", ... }]` and `excludeTools: ["sdk_tool"]`.
+   - Pass `customTools: [{ name: "sdk_tool", ... }]` and `excludedTools: ["sdk_tool"]`.
    - Assert `sdk_tool` is absent from `getAllTools()` and `getActiveToolNames()`.
 
 4. **Extension dynamic tool exclusion**
    - Mirror the setup pattern from `packages/coding-agent/test/agent-session-dynamic-tools.test.ts:28-78`.
    - Register `dynamic_tool` during `session_start`.
-   - Create the session with `excludeTools: ["dynamic_tool"]`.
+   - Create the session with `excludedTools: ["dynamic_tool"]`.
    - Call `await session.bindExtensions({})`.
    - Assert `dynamic_tool` remains absent.
 
 5. **Service pass-through**
-   - Use `createAgentSessionFromServices()` with `excludeTools: ["ask_user_question"]`.
+   - Use `createAgentSessionFromServices()` with `excludedTools: ["ask_user_question"]`.
    - Assert the same final tool set behavior.
    - Existing service-forwarding patterns are in `packages/coding-agent/test/suite/regressions/3592-no-builtin-tools-keeps-extension-tools.test.ts:98-117`.
 
@@ -521,8 +521,8 @@ Recommended focused tests:
    - Existing tests such as `packages/coding-agent/test/sdk-session-manager.test.ts:96-108` should continue to pass and prove default inclusion remains unchanged.
 
 7. **Type and docs validation**
-   - Ensure `CreateAgentSessionOptions` accepts `excludeTools`.
-   - Ensure `excludeTools` is documented in SDK docs and examples.
+   - Ensure `CreateAgentSessionOptions` accepts `excludedTools`.
+   - Ensure `excludedTools` is documented in SDK docs and examples.
    - Run `bun run typecheck` from the repo root.
    - Run focused package tests, for example:
      - `bun --cwd packages/coding-agent run test -- test/suite/regressions/1070-exclude-tools.test.ts`
@@ -532,8 +532,8 @@ Recommended focused tests:
 
 ## 9. Open Questions / Unresolved Issues
 
-1. **Should workflow direct tool schemas accept `excludeTools` in the same iteration?**  
-   `[OWNER: workflows team]` `StageOptions` inherits `CreateAgentSessionOptions` at the TypeScript level (`packages/workflows/src/shared/types.ts:145`), but `WorkflowParametersSchema` hardcodes SDK-like fields and currently includes `tools` / `noTools` but not `excludeTools` (`packages/workflows/src/extension/workflow-schema.ts:36-58`). This RFC treats workflow schema support as out of scope unless the workflow owner wants SDK parity for direct workflow tool calls now.
+1. **Should workflow direct tool schemas accept `excludedTools` in the same iteration?**  
+   `[OWNER: workflows team]` `StageOptions` inherits `CreateAgentSessionOptions` at the TypeScript level (`packages/workflows/src/shared/types.ts:145`), but `WorkflowParametersSchema` hardcodes SDK-like fields and currently includes `tools` / `noTools` but not `excludedTools` (`packages/workflows/src/extension/workflow-schema.ts:36-58`). This RFC treats workflow schema support as out of scope unless the workflow owner wants SDK parity for direct workflow tool calls now.
 
 2. **Should a CLI `--exclude-tools` flag be added later?**  
    `[OWNER: product / CLI maintainers]` The current issue targets SDK consumers only. A CLI flag would require parser, help text, docs, and process-spawning considerations for subagents that currently use `--tools`.
@@ -541,8 +541,8 @@ Recommended focused tests:
 3. **Should excluded tools be omitted from `getAllTools()` or only inactive?**  
    `[OWNER: SDK maintainers]` This RFC proposes omission from `getAllTools()` because the issue asks for excluded tools to be omitted from the final tools exposed to the session. If maintainers prefer “available but inactive,” `_refreshToolRegistry()` would need different semantics; however, that would allow later reactivation and would be less consistent with existing allowlist filtering.
 
-4. **Should the SDK docs correct existing default-tool inconsistencies while adding `excludeTools`?**  
-   `[OWNER: docs maintainers]` Code defaults include `ask_user_question` and `todo` (`packages/coding-agent/src/core/tools/index.ts:111-118`), while some user-facing docs/examples describe only `read`, `bash`, `edit`, and `write` as defaults. The `excludeTools` docs should avoid reinforcing stale default lists.
+4. **Should the SDK docs correct existing default-tool inconsistencies while adding `excludedTools`?**  
+   `[OWNER: docs maintainers]` Code defaults include `ask_user_question` and `todo` (`packages/coding-agent/src/core/tools/index.ts:111-118`), while some user-facing docs/examples describe only `read`, `bash`, `edit`, and `write` as defaults. The `excludedTools` docs should avoid reinforcing stale default lists.
 
-5. **Should `excludeTools` support future direct MCP selector syntax such as `mcp:server/tool`?**  
-   `[OWNER: MCP/subagents maintainers]` Existing subagent tooling has separate handling for `mcp:` selectors in tool lists. This RFC defines `excludeTools` as plain final tool-name exclusion for `createAgentSession()` only and does not specify MCP selector semantics.
+5. **Should `excludedTools` support future direct MCP selector syntax such as `mcp:server/tool`?**  
+   `[OWNER: MCP/subagents maintainers]` Existing subagent tooling has separate handling for `mcp:` selectors in tool lists. This RFC defines `excludedTools` as plain final tool-name exclusion for `createAgentSession()` only and does not specify MCP selector semantics.

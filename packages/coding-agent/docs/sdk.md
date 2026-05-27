@@ -75,7 +75,7 @@ const { session } = await createAgentSession({
   model: myModel,
   tools: ["read", "bash"],
   // Or keep defaults and remove specific tools:
-  // excludeTools: ["ask_user_question"],
+  // excludedTools: ["ask_user_question"],
   sessionManager: SessionManager.inMemory(),
 });
 ```
@@ -487,9 +487,9 @@ Specify which tools to expose by name:
 - Built-in tool names: `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`, `ask_user_question`, `todo`
 - The default active built-ins include `ask_user_question` and `todo` in addition to file and shell tools.
 - `tools` is an allowlist: when provided, only the listed built-in, extension, and custom tool names are exposed.
-- `excludeTools` is a blocklist: matching built-in, extension, and custom tool names are omitted from the final registry and active tool set. If both are provided, `tools` is applied first and `excludeTools` subtracts from it.
+- `excludedTools` is a blocklist: matching built-in, extension, and custom tool names are omitted from the final registry and active tool set. If both are provided, `tools` is applied first and `excludedTools` subtracts from it.
 - `noTools: "all"` disables all tools
-- `noTools: "builtin"` disables default built-ins while keeping extension and custom tools enabled, except names listed in `excludeTools`
+- `noTools: "builtin"` disables default built-ins while keeping extension and custom tools enabled, except names listed in `excludedTools`
 
 ```typescript
 import { createAgentSession } from "@bastani/atomic";
@@ -506,13 +506,13 @@ const { session } = await createAgentSession({
 
 // Keep defaults but remove HITL prompts
 const { session } = await createAgentSession({
-  excludeTools: ["ask_user_question"],
+  excludedTools: ["ask_user_question"],
 });
 
 // Allowlist first, then subtract exclusions
 const { session } = await createAgentSession({
   tools: ["read", "bash", "ask_user_question"],
-  excludeTools: ["ask_user_question"], // final tools: read, bash
+  excludedTools: ["ask_user_question"], // final tools: read, bash
 });
 ```
 
@@ -571,7 +571,7 @@ Use `defineTool()` for standalone definitions and arrays like `customTools: [myT
 
 Custom tools passed via `customTools` are combined with extension-registered tools. Extensions loaded by the ResourceLoader can also register tools via `pi.registerTool()`.
 
-If you pass `tools`, include each custom or extension tool name you want enabled, for example `tools: ["read", "bash", "my_tool"]`. Use `excludeTools` to remove a custom or extension tool by name from the final exposed set.
+If you pass `tools`, include each custom or extension tool name you want enabled, for example `tools: ["read", "bash", "my_tool"]`. Use `excludedTools` to remove a custom or extension tool by name from the final exposed set.
 
 > See [examples/sdk/05-tools.ts](https://github.com/flora131/atomic/blob/main/packages/coding-agent/examples/sdk/05-tools.ts)
 

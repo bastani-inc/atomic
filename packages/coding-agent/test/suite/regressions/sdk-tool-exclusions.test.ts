@@ -32,7 +32,7 @@ describe("SDK tool exclusions", () => {
 	async function createSession(
 		options: {
 			tools?: string[];
-			excludeTools?: string[];
+			excludedTools?: string[];
 			noTools?: "all" | "builtin";
 			customTools?: Parameters<typeof createAgentSession>[0]["customTools"];
 			extensionToolName?: string;
@@ -74,7 +74,7 @@ describe("SDK tool exclusions", () => {
 			sessionManager,
 			resourceLoader,
 			tools: options.tools,
-			excludeTools: options.excludeTools,
+			excludedTools: options.excludedTools,
 			noTools: options.noTools,
 			customTools: options.customTools,
 		});
@@ -83,7 +83,7 @@ describe("SDK tool exclusions", () => {
 
 	it("excludes ask_user_question while retaining other default tools", async () => {
 		const session = await createSession({
-			excludeTools: ["ask_user_question", "ask_user_question", "not_a_real_tool"],
+			excludedTools: ["ask_user_question", "ask_user_question", "not_a_real_tool"],
 		});
 
 		expect(session.getAllTools().map((tool) => tool.name)).not.toContain("ask_user_question");
@@ -97,7 +97,7 @@ describe("SDK tool exclusions", () => {
 		session.dispose();
 	});
 
-	it("preserves static ask_user_question guidance for allowlisted sessions when excludeTools is omitted", async () => {
+	it("preserves static ask_user_question guidance for allowlisted sessions when excludedTools is omitted", async () => {
 		const session = await createSession({
 			tools: ["read"],
 		});
@@ -111,10 +111,10 @@ describe("SDK tool exclusions", () => {
 		session.dispose();
 	});
 
-	it("applies the tools allowlist before excludeTools", async () => {
+	it("applies the tools allowlist before excludedTools", async () => {
 		const session = await createSession({
 			tools: ["read", "bash", "ask_user_question"],
-			excludeTools: ["ask_user_question"],
+			excludedTools: ["ask_user_question"],
 		});
 
 		expect(session.getAllTools().map((tool) => tool.name).sort()).toEqual(["bash", "read"]);
@@ -129,7 +129,7 @@ describe("SDK tool exclusions", () => {
 	it("preserves noTools builtin behavior while making excluded names unavailable", async () => {
 		const session = await createSession({
 			noTools: "builtin",
-			excludeTools: ["ask_user_question"],
+			excludedTools: ["ask_user_question"],
 		});
 
 		expect(session.getAllTools().map((tool) => tool.name)).not.toContain("ask_user_question");
@@ -145,7 +145,7 @@ describe("SDK tool exclusions", () => {
 
 	it("excludes SDK custom tools from the available and active tool sets", async () => {
 		const session = await createSession({
-			excludeTools: ["sdk_tool"],
+			excludedTools: ["sdk_tool"],
 			customTools: [
 				{
 					name: "sdk_tool",
@@ -171,7 +171,7 @@ describe("SDK tool exclusions", () => {
 	it("keeps dynamically registered extension tools excluded after extensions bind", async () => {
 		const session = await createSession({
 			extensionToolName: "dynamic_tool",
-			excludeTools: ["dynamic_tool"],
+			excludedTools: ["dynamic_tool"],
 		});
 
 		await session.bindExtensions({});
@@ -183,7 +183,7 @@ describe("SDK tool exclusions", () => {
 		session.dispose();
 	});
 
-	it("forwards excludeTools through service-based session creation", async () => {
+	it("forwards excludedTools through service-based session creation", async () => {
 		const settingsManager = SettingsManager.create(tempDir, agentDir);
 		const sessionManager = SessionManager.inMemory(tempDir);
 		const services = await createAgentSessionServices({
@@ -196,7 +196,7 @@ describe("SDK tool exclusions", () => {
 			services,
 			sessionManager,
 			model: getModel("anthropic", "claude-sonnet-4-5")!,
-			excludeTools: ["ask_user_question"],
+			excludedTools: ["ask_user_question"],
 		});
 
 		expect(session.getAllTools().map((tool) => tool.name)).not.toContain("ask_user_question");

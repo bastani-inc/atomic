@@ -405,7 +405,7 @@ export async function runDeepResearchCodebaseWorkflow(
       "github-copilot/claude-opus-4.7",
     ],
     thinkingLevel: "high" as const,
-    excludeTools: ["ask_user_question"],
+    excludedTools: ["ask_user_question"],
   };
 
   const explorerModelConfig = {
@@ -417,7 +417,7 @@ export async function runDeepResearchCodebaseWorkflow(
       "github-copilot/claude-haiku-4.5",
     ],
     thinkingLevel: "low" as const,
-    excludeTools: ["ask_user_question"],
+    excludedTools: ["ask_user_question"],
   };
 
   const initialDiscovery = await ctx.parallel(

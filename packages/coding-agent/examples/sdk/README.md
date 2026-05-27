@@ -64,7 +64,7 @@ const { session } = await createAgentSession({ resourceLoader: loader, authStora
 const { session } = await createAgentSession({ tools: ["read", "grep", "find", "ls"], authStorage, modelRegistry });
 
 // Defaults minus one tool
-const { session } = await createAgentSession({ excludeTools: ["ask_user_question"], authStorage, modelRegistry });
+const { session } = await createAgentSession({ excludedTools: ["ask_user_question"], authStorage, modelRegistry });
 
 // In-memory
 const { session } = await createAgentSession({
@@ -118,7 +118,7 @@ await session.prompt("Hello");
 | `model` | From settings/first available | Model to use |
 | `thinkingLevel` | From settings/"off" | off, low, medium, high |
 | `tools` | Default active built-ins | Allowlist tool names across built-in, extension, and custom tools |
-| `excludeTools` | `[]` | Blocklist tool names across built-in, extension, and custom tools; applied after `tools` |
+| `excludedTools` | `[]` | Blocklist tool names across built-in, extension, and custom tools; applied after `tools` |
 | `customTools` | `[]` | Additional tool definitions |
 | `resourceLoader` | DefaultResourceLoader | Resource loader for extensions, skills, prompts, themes |
 | `sessionManager` | `SessionManager.create(cwd)` | Persistence |

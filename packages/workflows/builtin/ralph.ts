@@ -421,7 +421,7 @@ async function runRalphWorkflow(
       "github-copilot/claude-opus-4.7",
     ],
     thinkingLevel: "high" as const,
-    excludeTools: ["ask_user_question"],
+    excludedTools: ["ask_user_question"],
   };
 
   const orchestratorModelConfig = {
@@ -433,7 +433,7 @@ async function runRalphWorkflow(
       "github-copilot/claude-sonnet-4.6",
     ],
     thinkingLevel: "medium" as const,
-    excludeTools: ["ask_user_question"],
+    excludedTools: ["ask_user_question"],
   };
 
   const simplifierModelConfig = {
@@ -445,7 +445,7 @@ async function runRalphWorkflow(
       "github-copilot/claude-sonnet-4.6",
     ],
     thinkingLevel: "medium" as const,
-    excludeTools: ["ask_user_question"],
+    excludedTools: ["ask_user_question"],
   };
 
   const reviewerModelConfig = {
@@ -457,7 +457,7 @@ async function runRalphWorkflow(
       "github-copilot/claude-opus-4.7",
     ],
     thinkingLevel: "high" as const,
-    excludeTools: ["ask_user_question"],
+    excludedTools: ["ask_user_question"],
     customTools: [reviewDecisionTool],
   };
 
@@ -470,7 +470,7 @@ async function runRalphWorkflow(
       "github-copilot/claude-haiku-4.5",
     ],
     thinkingLevel: "low" as const,
-    excludeTools: ["ask_user_question"],
+    excludedTools: ["ask_user_question"],
   };
 
   for (let iteration = 1; iteration <= maxLoops; iteration += 1) {

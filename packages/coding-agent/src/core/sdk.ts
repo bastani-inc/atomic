@@ -79,7 +79,7 @@ export interface CreateAgentSessionOptions {
    * ask_user_question, todo) and leaves extension/custom tools enabled unless
    * `noTools` changes that default.
    * When provided, only the listed tool names are enabled, minus any names in
-   * `excludeTools`.
+   * `excludedTools`.
    */
   tools?: string[];
   /**
@@ -88,7 +88,7 @@ export interface CreateAgentSessionOptions {
    * Matching built-in, extension, and SDK custom tools are omitted from the
    * final session tool registry and active tool set. Unknown names are ignored.
    */
-  excludeTools?: string[];
+  excludedTools?: string[];
   /** Custom tools to register (in addition to built-in tools). */
   customTools?: ToolDefinition[];
 
@@ -470,7 +470,7 @@ export async function createAgentSession(
     modelRegistry,
     initialActiveToolNames,
     allowedToolNames,
-    excludedToolNames: options.excludeTools,
+    excludedToolNames: options.excludedTools,
     extensionRunnerRef,
     sessionStartEvent: options.sessionStartEvent,
   });
