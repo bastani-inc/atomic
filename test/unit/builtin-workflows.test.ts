@@ -1349,6 +1349,41 @@ describe("ralph", () => {
     assert.equal(prompt.includes("Worktree cleanup: safe-to-remove"), false);
     assert.equal(prompt.includes("Worktree cleanup: preserve"), false);
   });
+
+  test("revises the original Ralph spec file across planner iterations", async () => {
+    const mod = await import("../../packages/workflows/builtin/ralph.js");
+    const prompt = "Collision spec";
+    const cwd = requireRalphTempCwd();
+    const specsDir = join(cwd, "specs");
+    const date = new Date().toISOString().slice(0, 10);
+    const expectedSpecPath = join(specsDir, `${date}-collision-spec.md`);
+    mkdirSync(specsDir, { recursive: true });
+    writeFileSync(expectedSpecPath, "pre-existing spec\n", "utf8");
+
+    const ctx = makeMockCtx(
+      {
+        prompt,
+        max_loops: 2,
+        base_branch: "main",
+      },
+      {
+        task: (name) => {
+          if (name === "planner-1") return "first generated spec";
+          if (name === "planner-2") return "second revised spec";
+          return undefined;
+        },
+      },
+    );
+
+    const result = await mod.runRalphWorkflowFromCwd(ctx, cwd);
+
+    assert.equal(result["plan_path"], expectedSpecPath);
+    assert.equal(readFileSync(expectedSpecPath, "utf8"), "second revised spec\n");
+    assert.deepEqual(readPaths(ctx.calls.taskOptions["planner-1"]?.[0]), []);
+    assert.deepEqual(readPaths(ctx.calls.taskOptions["planner-2"]?.[0]), [expectedSpecPath]);
+    assert.match(ctx.calls.prompts["planner-2"]?.[0] ?? "", /full updated RFC markdown that should replace the original spec/);
+    assert.equal(existsSync(join(specsDir, `${date}-collision-spec-2.md`)), false);
+  });
 });
 
 // ---------------------------------------------------------------------------

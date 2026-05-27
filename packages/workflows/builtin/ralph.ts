@@ -11,7 +11,7 @@ import { spawnSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { mkdir, mkdtemp, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, extname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { defineWorkflow } from "../src/index.js";
 import type { WorkflowRunContext, WorkflowTaskResult } from "../src/shared/types.js";
 import { WORKER_PREFLIGHT_CONTRACT } from "./shared-prompts.js";
@@ -263,32 +263,12 @@ function defaultSpecPath(prompt: string, now = new Date()): string {
   return join(DEFAULT_SPEC_DIR, `${date}-${slugifySpecTopic(prompt)}.md`);
 }
 
-function suffixedPath(path: string, suffix: number): string {
-  const extension = extname(path);
-  const stem = extension.length === 0 ? path : path.slice(0, -extension.length);
-  return `${stem}-${suffix}${extension}`;
-}
-
-function isFileExistsError(error: unknown): boolean {
-  return error instanceof Error && (error as { readonly code?: string }).code === "EEXIST";
-}
-
 async function writeSpecFile(path: string, content: string): Promise<string> {
   await mkdir(dirname(path), { recursive: true });
-
-  for (let suffix = 0; ; suffix += 1) {
-    const candidate = suffix === 0 ? path : suffixedPath(path, suffix + 1);
-    try {
-      await writeFile(candidate, content.endsWith("\n") ? content : `${content}\n`, {
-        encoding: "utf8",
-        flag: "wx",
-      });
-      return candidate;
-    } catch (error) {
-      if (isFileExistsError(error)) continue;
-      throw error;
-    }
-  }
+  await writeFile(path, content.endsWith("\n") ? content : `${content}\n`, {
+    encoding: "utf8",
+  });
+  return path;
 }
 
 type GitCommandResult = {
@@ -354,7 +334,7 @@ function gitFailureMessage(result: GitCommandResult): string {
 function resolveWorktreePath(value: string, cwd = process.cwd()): string {
   const trimmed = value.trim();
   if (trimmed.includes("\0")) {
-    throw new Error("git_worktree_dir contains an unusable null byte path segment; provide a valid path or omit git_worktree_dir.");
+    throw new Error("git_worktree_dir contains an unusable null byte; provide a valid path or omit git_worktree_dir.");
   }
   return isAbsolute(trimmed) ? resolve(trimmed) : resolve(cwd, trimmed);
 }
@@ -657,6 +637,9 @@ async function runRalphWorkflow(
   let finalPlanPath = "";
   let finalResult = "";
   let finalPrReport = "";
+  // Keep generated specs under the directory where Ralph was invoked, not in
+  // the worktree, so plan artifacts remain easy to find across retries.
+  const workflowSpecPath = resolve(workflowStartCwd, defaultSpecPath(prompt));
   const implementationNotesPath = await createImplementationNotesFile(prompt);
   let approved = false;
   let iterationsCompleted = 0;
@@ -764,6 +747,19 @@ async function runRalphWorkflow(
             : "No prior review findings; this is the first iteration.",
         ],
         [
+          "spec_revision_target",
+          iteration === 1
+            ? [
+                `Ralph will write your final RFC markdown for this workflow run to: ${workflowSpecPath}`,
+                "Treat this as the original spec file for the run.",
+              ].join("\n")
+            : [
+                `The existing RFC/spec file for this workflow run is: ${workflowSpecPath}`,
+                "Read that original spec before drafting; revise it in response to review findings and current repository evidence.",
+                "Your final output must be the full updated RFC markdown that should replace the original spec, not a diff, patch, or commentary.",
+              ].join("\n"),
+        ],
+        [
           "input_spec_files",
           [
             "If the user specification is a file path instead of raw prose, read that file and use it as source material for the RFC.",
@@ -821,13 +817,12 @@ async function runRalphWorkflow(
       ...(reviewReport
         ? { previous: { name: "review-report", text: reviewReport } }
         : {}),
+      ...(iteration > 1 ? { reads: [workflowSpecPath] } : {}),
       ...plannerModelConfig,
       ...cwdOption,
     });
     finalPlan = planner.text;
-    // Keep generated specs under the directory where Ralph was invoked, not in
-    // the worktree, so plan artifacts remain easy to find across retries.
-    const specPath = await writeSpecFile(resolve(workflowStartCwd, defaultSpecPath(prompt)), planner.text);
+    const specPath = await writeSpecFile(workflowSpecPath, planner.text);
     finalPlanPath = specPath;
 
     const orchestrator = await ctx.task(`orchestrator-${iteration}`, {
@@ -843,7 +838,7 @@ async function runRalphWorkflow(
         [
           "spec_file",
           [
-            `The technical specification for this iteration was written to: ${specPath}`,
+            `The current technical specification for this workflow run is written to: ${specPath}`,
             "This is an absolute host-repository path and may be outside the worktree cwd; read it exactly as provided, not as a path relative to the worktree.",
             "Read this file before delegating or implementing anything.",
             "Do not rely on an inline planner transcript; the spec file is the authoritative plan for this iteration.",

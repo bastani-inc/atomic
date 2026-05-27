@@ -20,6 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Avoided blank deep-research display paths when a displayed artifact path equals the workflow invocation directory.
 - Warned when workflow startup stage-validation probes throw before observing stage creation instead of silently accepting the workflow.
 - Distinguished Ralph same-repository worktree classification failures from definitely non-Git existing `git_worktree_dir` paths.
+- Updated Ralph to revise a stable original spec file across planner iterations and clarified `git_worktree_dir` null-byte diagnostics.
 
 ## [0.8.17] - 2026-05-26
 

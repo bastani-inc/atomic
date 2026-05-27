@@ -402,7 +402,7 @@ describe("ralph git worktree integration", () => {
 
     await assert.rejects(
       () => mod.runRalphWorkflowFromCwd(ctx, repo),
-      /git_worktree_dir contains an unusable null byte path segment/,
+      /git_worktree_dir contains an unusable null byte/,
     );
     assert.deepEqual(ctx.calls.task, []);
   });
