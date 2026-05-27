@@ -11,6 +11,11 @@
 
 ## [Unreleased]
 
+## [0.8.18] - 2026-05-27
+
+### Changed
+- Promoted the 0.8.18 prerelease package version to a stable release.
+
 ## [0.8.17] - 2026-05-26
 
 ### Changed

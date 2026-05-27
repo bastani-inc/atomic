@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.8.18] - 2026-05-27
+
+### Changed
+
+- Promoted the 0.8.18 prerelease changes to a stable release.
+
 ## [0.8.18-0] - 2026-05-27
 
 ### Added
