@@ -4,7 +4,7 @@
 
 <p align="center">
   <b>Atomic is the workflow layer for coding agents, giving developers a programmable control plane for complex engineering work.</b><br>
-  The model-backed agent session does the work. Atomic makes sure it follows the process.
+  <i>An open-source, model-agnostic take on dynamic workflows for software engineering — with Pi extensions, custom models, MCP, sub-agents, artifacts, and review gates.</i>
 </p>
 
 <p align="center">
@@ -120,6 +120,8 @@ For heavy work — migrations, large refactors, cross-cutting behavior, or anyth
 /workflow deep-research-codebase prompt="Map every callsite of the legacy auth middleware so we can migrate to session-v2"
 ```
 
+*You can also invoke workflows conversationally — for example, `run deep research to map every callsite of the legacy auth middleware so we can migrate to session-v2` — if you prefer not to use a slash command.*
+
 `deep-research-codebase` works like a repo indexing pass: scout the codebase, fan out parallel specialist research, aggregate the findings, and write durable Markdown artifacts under `research/`. That research becomes shared project memory.
 
 ### 2. Create the spec
@@ -134,11 +136,11 @@ If you are not sure what you want yet, brainstorm with Atomic first: explore tra
 
 ### 3. Implement with `goal` or `ralph`
 
-Pass the spec or a direct objective to the workflow that matches the scope:
+Ask Atomic in natural language to use the workflow that matches the scope:
 
 ```text
-/workflow goal objective="Implement specs/2026-03-rate-limit.md, run the focused rate-limit tests, and finish when burst traffic returns 429 with Retry-After"
-/workflow ralph prompt="Plan, implement, review, and prepare a PR for specs/2026-03-rate-limit.md"
+Use goal to implement specs/2026-03-rate-limit.md, run the focused rate-limit tests, and finish when burst traffic returns 429 with Retry-After.
+Run ralph to port the VS Code desktop shell from Electron to Tauri/Rust while preserving extension loading, IPC, workspace state, and settings migration.
 ```
 
 Use `goal` for small-to-medium scope changes when you can identify the work surface, state the exact outcome you want, and name the validation that proves it is done — for example specific tests, lint/typecheck commands, docs builds, or observable behavior. It keeps the run bounded, captures receipts in a goal ledger, gates completion through reviewers, and stops as `complete`, `blocked`, or `needs_human`.
@@ -302,6 +304,22 @@ Use interactive coding tools when you want a fast back-and-forth session. Use At
 
 Atomic is not running those tools under the hood. It is a Pi-based coding-agent harness that connects to model providers directly.
 
+### How is Atomic different from Claude Code Dynamic Workflows?
+
+Claude Code Dynamic Workflows and Atomic are trying to solve a similar class of problem: important software engineering work is too large for one agent pass, so the system should split the job into stages, run agents in parallel, verify the result, and keep enough state to finish long-running work.
+
+The difference is where control lives.
+
+| Dimension | Atomic | Claude Code Dynamic Workflows |
+| --- | --- | --- |
+| Core idea | Open-source, repo-native workflow automation for coding agents. You can run built-ins, tell the coding agent to use a workflow for a task, describe new workflows in natural language for Atomic to scaffold dynamically, or version them as explicit TypeScript files. | Claude dynamically creates orchestration scripts for a task and fans work out to many parallel Claude subagents. |
+| Best fit | Teams that want repeatable software engineering workflows they can inspect, version, extend, and run across providers. | Claude Code users who want Claude to decide when a task needs a larger dynamic workflow and orchestrate it automatically. |
+| Workflow control | The process is explicit: stages, inputs, handoffs, retries, artifacts, model choices, and human gates are part of the workflow definition. | The process is generated dynamically by Claude for the current task, with confirmation before the first workflow run. |
+| Models | Model-agnostic. Atomic connects directly to supported API-key and subscription providers, and workflows can use model fallback chains. | Claude-first. Availability is tied to Claude Code, Claude plans, and Anthropic-supported API/cloud channels. |
+| Extensibility | Built on Pi extensions: add tools, TUI, MCP, web access, intercom, skills, prompt templates, themes, custom providers, and packaged workflows. | Optimized for Claude Code's built-in dynamic orchestration experience rather than an open extension SDK you own in-repo. |
+| Artifacts and auditability | Research docs, specs, logs, transcripts, reviewer notes, check output, and final summaries can live in the repo or workflow run directory. | Progress is saved and resumable, but the orchestration is primarily a Claude Code runtime behavior. |
+| Cost/scale posture | You choose the graph and concurrency. Atomic can be small and deterministic, or broad when you intentionally design a larger workflow. | Designed for large fan-outs, including tens to hundreds of subagents; Anthropic notes it can consume substantially more tokens than a typical Claude Code session. |
+
 ### Why not markdown checklists or CLAUDE.md?
 
 Markdown instructions help set context, but the model still has to remember and follow them. Atomic turns the process into executable workflow steps: which stage runs, what context it receives, what artifact it must produce, what checks run next, and where a human must approve.
@@ -322,7 +340,7 @@ Research lives in `research/`, specs live in `specs/`, and workflow runs can per
 
 ## Documentation
 
-Full documentation lives at **[docs.bastani.ai](https://docs.bastani.ai/)** — the CLI and SDK reference, security model, containerized execution, the workflow panel, session management, configuration, troubleshooting, FAQ, and side-by-side comparisons with Spec-Kit, DeerFlow, and Hermes.
+Full documentation lives at **[docs.bastani.ai](https://docs.bastani.ai/)** — the CLI and SDK reference, security model, containerized execution, the workflow panel, session management, configuration, troubleshooting, FAQ, and side-by-side comparisons with Claude Code Dynamic Workflows, Spec-Kit, DeerFlow, and Hermes.
 
 The docs are open source in this repository under [`packages/coding-agent/docs`](./packages/coding-agent/docs). Open a PR against this project to suggest a change.
 
