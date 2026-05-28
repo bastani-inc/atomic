@@ -19,6 +19,12 @@
 import { join, isAbsolute } from "node:path";
 import { homedir } from "node:os";
 import { CONFIG_DIR_NAME, CONFIG_DIR_NAMES, getProjectConfigPaths } from "@bastani/atomic";
+import {
+  WORKFLOW_LIFECYCLE_NOTICE_KINDS,
+  type WorkflowLifecycleNoticeKind,
+} from "./lifecycle-notifications.js";
+
+const WORKFLOW_LIFECYCLE_NOTICE_KIND_SET = new Set<string>(WORKFLOW_LIFECYCLE_NOTICE_KINDS);
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -34,6 +40,15 @@ export interface WorkflowConfigEntry {
  * The parsed shape of a workflow extension config file.
  * All fields optional; absence means "use default".
  */
+export interface WorkflowNotificationsConfig {
+  /** Emit lifecycle notices into the main chat. Default: true. */
+  readonly enabled?: boolean;
+  /** Lifecycle states that should create chat notices. */
+  readonly notifyOn?: readonly WorkflowLifecycleNoticeKind[];
+  /** Whether an inserted notice should trigger an assistant turn. Default: false. */
+  readonly triggerTurn?: boolean;
+}
+
 export interface WorkflowExtensionConfig {
   /** Explicit named workflows to register by module path. */
   readonly workflows?: Readonly<Record<string, WorkflowConfigEntry>>;
@@ -47,6 +62,8 @@ export interface WorkflowExtensionConfig {
   readonly statusFile?: boolean;
   /** Behaviour on session_start for in-flight runs. Default: "ask". */
   readonly resumeInFlight?: "ask" | "auto" | "never";
+  /** Main-chat workflow lifecycle notices. */
+  readonly workflowNotifications?: WorkflowNotificationsConfig;
 }
 
 /** Severity of a config diagnostic. */
@@ -126,6 +143,10 @@ async function tryReadFile(filePath: string): Promise<string | null> {
  * Validate a parsed JSON value as a WorkflowExtensionConfig.
  * Returns null when valid, or a human-readable rejection reason.
  */
+function isWorkflowLifecycleNoticeKind(value: unknown): value is WorkflowLifecycleNoticeKind {
+  return typeof value === "string" && WORKFLOW_LIFECYCLE_NOTICE_KIND_SET.has(value);
+}
+
 function validateConfig(value: unknown): string | null {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     return "config must be a JSON object";
@@ -152,6 +173,31 @@ function validateConfig(value: unknown): string | null {
     const v = c["resumeInFlight"];
     if (v !== "ask" && v !== "auto" && v !== "never") {
       return `"resumeInFlight" must be "ask", "auto", or "never", got ${JSON.stringify(v)}`;
+    }
+  }
+
+  if ("workflowNotifications" in c) {
+    const value = c["workflowNotifications"];
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      return `"workflowNotifications" must be a JSON object, got ${JSON.stringify(typeof value)}`;
+    }
+    const notifications = value as Record<string, unknown>;
+    if ("enabled" in notifications && typeof notifications["enabled"] !== "boolean") {
+      return `"workflowNotifications.enabled" must be a boolean, got ${JSON.stringify(notifications["enabled"])}`;
+    }
+    if ("triggerTurn" in notifications && typeof notifications["triggerTurn"] !== "boolean") {
+      return `"workflowNotifications.triggerTurn" must be a boolean, got ${JSON.stringify(notifications["triggerTurn"])}`;
+    }
+    if ("notifyOn" in notifications) {
+      const notifyOn = notifications["notifyOn"];
+      if (!Array.isArray(notifyOn)) {
+        return `"workflowNotifications.notifyOn" must be an array, got ${JSON.stringify(typeof notifyOn)}`;
+      }
+      for (const item of notifyOn) {
+        if (!isWorkflowLifecycleNoticeKind(item)) {
+          return `"workflowNotifications.notifyOn" entries must be "completed", "failed", or "awaiting_input", got ${JSON.stringify(item)}`;
+        }
+      }
     }
   }
 
@@ -268,6 +314,14 @@ function mergeConfigs(
     ...(base.resumeInFlight !== undefined || override.resumeInFlight !== undefined
       ? { resumeInFlight: override.resumeInFlight ?? base.resumeInFlight }
       : {}),
+    ...(base.workflowNotifications !== undefined || override.workflowNotifications !== undefined
+      ? {
+          workflowNotifications: {
+            ...(base.workflowNotifications ?? {}),
+            ...(override.workflowNotifications ?? {}),
+          },
+        }
+      : {}),
     ...(workflows !== undefined ? { workflows } : {}),
   };
 }
@@ -289,6 +343,11 @@ export const WORKFLOW_CONFIG_DEFAULTS = {
   persistRuns: true,
   statusFile: false,
   resumeInFlight: "ask" as const,
+  workflowNotifications: {
+    enabled: true,
+    notifyOn: ["completed", "failed", "awaiting_input"] as const,
+    triggerTurn: false,
+  },
 } as const;
 
 /**
@@ -301,6 +360,11 @@ export interface WorkflowEffectiveConfig {
   readonly persistRuns: boolean;
   readonly statusFile: boolean;
   readonly resumeInFlight: "ask" | "auto" | "never";
+  readonly workflowNotifications: {
+    readonly enabled: boolean;
+    readonly notifyOn: readonly WorkflowLifecycleNoticeKind[];
+    readonly triggerTurn: boolean;
+  };
   readonly workflows?: Readonly<Record<string, WorkflowConfigEntry>>;
 }
 
@@ -321,6 +385,17 @@ export function withWorkflowDefaults(
     statusFile: config.statusFile ?? WORKFLOW_CONFIG_DEFAULTS.statusFile,
     resumeInFlight:
       config.resumeInFlight ?? WORKFLOW_CONFIG_DEFAULTS.resumeInFlight,
+    workflowNotifications: {
+      enabled:
+        config.workflowNotifications?.enabled
+        ?? WORKFLOW_CONFIG_DEFAULTS.workflowNotifications.enabled,
+      notifyOn:
+        config.workflowNotifications?.notifyOn
+        ?? WORKFLOW_CONFIG_DEFAULTS.workflowNotifications.notifyOn,
+      triggerTurn:
+        config.workflowNotifications?.triggerTurn
+        ?? WORKFLOW_CONFIG_DEFAULTS.workflowNotifications.triggerTurn,
+    },
     ...(config.workflows !== undefined ? { workflows: config.workflows } : {}),
   };
 }

@@ -138,6 +138,7 @@ interface CustomMessage {
   display: boolean;              // Show in TUI
   details?: any;                 // Extension-specific metadata
   timestamp: number;
+  excludeFromContext?: boolean;  // true for display-only appended messages
 }
 
 interface BranchSummaryMessage {
@@ -259,16 +260,23 @@ Use `customType` to identify your extension's entries on reload.
 
 ### CustomMessageEntry
 
-Extension-injected messages that DO participate in LLM context.
+Extension-injected messages participate in LLM context by default. Entries with `excludeFromContext: true` remain visible/persisted but are display-only and are skipped when building future model context and compaction input.
 
 ```json
 {"type":"custom_message","id":"i9j0k1l2","parentId":"h8i9j0k1","timestamp":"2024-12-03T14:25:00.000Z","customType":"my-extension","content":"Injected context...","display":true}
+```
+
+Display-only custom message:
+
+```json
+{"type":"custom_message","id":"j0k1l2m3","parentId":"i9j0k1l2","timestamp":"2024-12-03T14:26:00.000Z","customType":"my-extension:notice","content":"Background job completed.","display":true,"excludeFromContext":true}
 ```
 
 Fields:
 - `content`: String or `(TextContent | ImageContent)[]` (same as UserMessage)
 - `display`: `true` = show in TUI with distinct styling, `false` = hidden
 - `details`: Optional extension-specific metadata (not sent to LLM)
+- `excludeFromContext`: Optional; when `true`, the message is visible and persisted but excluded from future LLM context and compaction input. Omitted/`false` preserves legacy context-participating behavior.
 
 ### LabelEntry
 
@@ -385,7 +393,7 @@ Key methods for working with sessions programmatically.
 - `appendCompaction(summary, firstKeptEntryId, tokensBefore, details?, fromHook?)` - Add compaction
 - `appendCustomEntry(customType, data?)` - Extension state (not in context)
 - `appendSessionInfo(name)` - Set session display name
-- `appendCustomMessageEntry(customType, content, display, details?)` - Extension message (in context)
+- `appendCustomMessageEntry(customType, content, display, details?, options?)` - Extension message; context-participating by default, or display-only when `options.excludeFromContext` is `true`
 - `appendLabelChange(targetId, label)` - Set/clear label
 
 ### Instance Methods - Tree Navigation

@@ -3,6 +3,7 @@ import {
 	type BranchSummaryEntry,
 	buildSessionContext,
 	type CompactionEntry,
+	type CustomMessageEntry,
 	type ModelChangeEntry,
 	type SessionEntry,
 	type SessionMessageEntry,
@@ -50,6 +51,24 @@ function compaction(id: string, parentId: string | null, summary: string, firstK
 
 function branchSummary(id: string, parentId: string | null, summary: string, fromId: string): BranchSummaryEntry {
 	return { type: "branch_summary", id, parentId, timestamp: "2025-01-01T00:00:00Z", summary, fromId };
+}
+
+function customMessage(
+	id: string,
+	parentId: string | null,
+	content: string,
+	excludeFromContext?: boolean,
+): CustomMessageEntry {
+	return {
+		type: "custom_message",
+		id,
+		parentId,
+		timestamp: "2025-01-01T00:00:00Z",
+		customType: "test:notice",
+		content,
+		display: true,
+		...(excludeFromContext === undefined ? {} : { excludeFromContext }),
+	};
 }
 
 function thinkingLevel(id: string, parentId: string | null, level: string): ThinkingLevelChangeEntry {
@@ -168,6 +187,35 @@ describe("buildSessionContext", () => {
 			// Should use second summary, keep from 4
 			expect(ctx.messages).toHaveLength(4);
 			expect((ctx.messages[0] as any).summary).toContain("Second summary");
+		});
+	});
+
+	describe("with custom messages", () => {
+		it("preserves excludeFromContext when rebuilding custom messages", () => {
+			const entries: SessionEntry[] = [
+				msg("1", null, "user", "hello"),
+				customMessage("2", "1", "display-only notice", true),
+			];
+
+			const ctx = buildSessionContext(entries);
+
+			expect(ctx.messages).toHaveLength(2);
+			expect(ctx.messages[1]).toMatchObject({
+				role: "custom",
+				customType: "test:notice",
+				content: "display-only notice",
+				excludeFromContext: true,
+			});
+		});
+
+		it("keeps unflagged custom messages context-participating by default", () => {
+			const entries: SessionEntry[] = [customMessage("1", null, "legacy custom")];
+
+			const ctx = buildSessionContext(entries);
+
+			expect(ctx.messages).toHaveLength(1);
+			expect(ctx.messages[0]).toMatchObject({ role: "custom", content: "legacy custom" });
+			expect("excludeFromContext" in ctx.messages[0]).toBe(false);
 		});
 	});
 

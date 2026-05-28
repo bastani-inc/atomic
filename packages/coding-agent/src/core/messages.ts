@@ -50,6 +50,8 @@ export interface CustomMessage<T = unknown> {
 	display: boolean;
 	details?: T;
 	timestamp: number;
+	/** If true, this custom message is visible/persisted but excluded from LLM context. */
+	excludeFromContext?: boolean;
 }
 
 export interface BranchSummaryMessage {
@@ -70,7 +72,9 @@ export interface CompactionSummaryMessage {
 declare module "@earendil-works/pi-agent-core" {
 	interface CustomAgentMessages {
 		bashExecution: BashExecutionMessage;
-		custom: CustomMessage;
+		// Keep this tied to the merged AgentMessage member so downstream/upstream
+		// declaration identity stays compatible while CustomMessage remains assignable.
+		custom: Extract<AgentMessage, { role: "custom" }>;
 		branchSummary: BranchSummaryMessage;
 		compactionSummary: CompactionSummaryMessage;
 	}
@@ -126,8 +130,9 @@ export function createCustomMessage(
 	display: boolean,
 	details: unknown | undefined,
 	timestamp: string,
+	excludeFromContext?: boolean,
 ): CustomMessage {
-	return {
+	const message: CustomMessage = {
 		role: "custom",
 		customType,
 		content,
@@ -135,6 +140,10 @@ export function createCustomMessage(
 		details,
 		timestamp: new Date(timestamp).getTime(),
 	};
+	if (excludeFromContext !== undefined) {
+		message.excludeFromContext = excludeFromContext;
+	}
+	return message;
 }
 
 /**
@@ -145,6 +154,10 @@ export function createCustomMessage(
  * - Compaction's generateSummary (for summarization)
  * - Custom extensions and tools
  */
+function isExcludedFromContext(message: object): boolean {
+	return "excludeFromContext" in message && message.excludeFromContext === true;
+}
+
 export function convertToLlm(messages: AgentMessage[]): Message[] {
 	return messages
 		.map((m): Message | undefined => {
@@ -160,6 +173,9 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
 						timestamp: m.timestamp,
 					};
 				case "custom": {
+					if (isExcludedFromContext(m)) {
+						return undefined;
+					}
 					const content = typeof m.content === "string" ? [{ type: "text" as const, text: m.content }] : m.content;
 					return {
 						role: "user",

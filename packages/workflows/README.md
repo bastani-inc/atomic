@@ -27,6 +27,22 @@ Adding workflow files under `.atomic/workflows/` (project scope) or `~/.atomic/a
 }
 ```
 
+### Workflow lifecycle notifications
+
+Workflow lifecycle notices are enabled by default. They append passive main-chat messages when a run completes, fails, or pauses for input. Configure them in the same extension config file:
+
+```json
+{
+  "workflowNotifications": {
+    "enabled": true,
+    "notifyOn": ["completed", "failed", "awaiting_input"],
+    "triggerTurn": false
+  }
+}
+```
+
+Set `enabled` to `false` to disable all notices, or narrow `notifyOn` to selected events. Keep `triggerTurn` at its default `false` for append-only notices; setting it to `true` opts into active follow-up delivery.
+
 ---
 
 ## Authoring API
@@ -429,6 +445,11 @@ Config-based discovery (`~/.atomic/agent/extensions/workflow/config.json` or `.a
 {
   "workflows": {
     "my-team-workflows": { "path": "/shared/team/workflows" }
+  },
+  "workflowNotifications": {
+    "enabled": true,
+    "notifyOn": ["completed", "failed", "awaiting_input"],
+    "triggerTurn": false
   }
 }
 ```

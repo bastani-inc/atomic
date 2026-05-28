@@ -39,6 +39,13 @@ describe("withWorkflowDefaults — empty config applies all defaults", () => {
     assert.equal(withWorkflowDefaults({}).resumeInFlight, WORKFLOW_CONFIG_DEFAULTS.resumeInFlight,);
   });
 
+  test("workflowNotifications defaults are applied", () => {
+    assert.deepEqual(
+      withWorkflowDefaults({}).workflowNotifications,
+      WORKFLOW_CONFIG_DEFAULTS.workflowNotifications,
+    );
+  });
+
   test("workflows is undefined when absent from config", () => {
     assert.equal(withWorkflowDefaults({}).workflows, undefined);
   });
@@ -67,6 +74,16 @@ describe("withWorkflowDefaults — explicit values are preserved", () => {
 
   test("resumeInFlight 'never' is preserved", () => {
     assert.equal(withWorkflowDefaults({ resumeInFlight: "never" }).resumeInFlight, "never");
+  });
+
+  test("workflowNotifications override is merged with defaults", () => {
+    assert.deepEqual(withWorkflowDefaults({
+      workflowNotifications: { enabled: false, notifyOn: ["failed"] },
+    }).workflowNotifications, {
+      enabled: false,
+      notifyOn: ["failed"],
+      triggerTurn: false,
+    });
   });
 
   test("workflows map is passed through unchanged", () => {
@@ -99,6 +116,7 @@ describe("withWorkflowDefaults — partial config: only absent fields get defaul
       persistRuns: false,
       statusFile: true,
       resumeInFlight: "never",
+      workflowNotifications: { enabled: false, notifyOn: ["completed"], triggerTurn: true },
       workflows: { wf: { path: "/x.ts" } },
     };
     const result = withWorkflowDefaults(config);
@@ -107,6 +125,7 @@ describe("withWorkflowDefaults — partial config: only absent fields get defaul
     assert.equal(result.persistRuns, false);
     assert.equal(result.statusFile, true);
     assert.equal(result.resumeInFlight, "never");
+    assert.deepEqual(result.workflowNotifications, { enabled: false, notifyOn: ["completed"], triggerTurn: true });
     assert.deepEqual(result.workflows, { wf: { path: "/x.ts" } });
   });
 });
@@ -139,6 +158,14 @@ describe("withWorkflowDefaults — WORKFLOW_CONFIG_DEFAULTS constants", () => {
 
   test("WORKFLOW_CONFIG_DEFAULTS.resumeInFlight is 'ask'", () => {
     assert.equal(WORKFLOW_CONFIG_DEFAULTS.resumeInFlight, "ask");
+  });
+
+  test("WORKFLOW_CONFIG_DEFAULTS.workflowNotifications enables all lifecycle notices", () => {
+    assert.deepEqual(WORKFLOW_CONFIG_DEFAULTS.workflowNotifications, {
+      enabled: true,
+      notifyOn: ["completed", "failed", "awaiting_input"],
+      triggerTurn: false,
+    });
   });
 });
 

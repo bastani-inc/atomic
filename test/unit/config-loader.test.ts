@@ -542,3 +542,56 @@ describe("ConfigDiagnostic shape", () => {
     assert.ok(diag.source!.includes("config.json"));
   });
 });
+
+describe("loadWorkflowConfig — workflowNotifications", () => {
+  let tmpHome: string;
+  let tmpProject: string;
+
+  beforeAll(async () => {
+    tmpHome = await mkdtemp(join(tmpdir(), "wf-home-notifications-"));
+    tmpProject = await mkdtemp(join(tmpdir(), "wf-project-notifications-"));
+  });
+
+  afterAll(async () => {
+    await rm(tmpHome, { recursive: true, force: true });
+    await rm(tmpProject, { recursive: true, force: true });
+  });
+
+  test("accepts valid notification config", async () => {
+    const dir = await makeDir(tmpProject, ".atomic", "extensions", "workflow");
+    await writeJson(dir, "config.json", {
+      workflowNotifications: {
+        enabled: false,
+        notifyOn: ["failed", "awaiting_input"],
+        triggerTurn: true,
+      },
+    });
+
+    const result = await loadWorkflowConfig({ homeDir: tmpHome, projectRoot: tmpProject });
+    assert.deepEqual(result.config?.workflowNotifications, {
+      enabled: false,
+      notifyOn: ["failed", "awaiting_input"],
+      triggerTurn: true,
+    });
+    assert.equal(result.diagnostics.length, 0);
+  });
+
+  test("rejects invalid notifyOn entries", async () => {
+    const home = await mkdtemp(join(tmpdir(), "wf-home-notifications-invalid-"));
+    const project = await mkdtemp(join(tmpdir(), "wf-project-notifications-invalid-"));
+    try {
+      const dir = await makeDir(project, ".atomic", "extensions", "workflow");
+      await writeJson(dir, "config.json", {
+        workflowNotifications: { notifyOn: ["completed", "killed"] },
+      });
+
+      const result = await loadWorkflowConfig({ homeDir: home, projectRoot: project });
+      assert.equal(result.config, null);
+      assert.equal(result.diagnostics.length, 1);
+      assert.match(result.diagnostics[0]?.message ?? "", /workflowNotifications\.notifyOn/);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+      await rm(project, { recursive: true, force: true });
+    }
+  });
+});

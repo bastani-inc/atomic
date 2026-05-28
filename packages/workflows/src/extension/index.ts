@@ -64,6 +64,15 @@ import {
   WORKFLOW_CONFIG_DEFAULTS,
   withWorkflowDefaults,
 } from "./config-loader.js";
+import {
+  createWorkflowLifecycleNotificationState,
+  installWorkflowLifecycleNotifications,
+  registerLifecycleNoticeRenderer,
+  resetWorkflowLifecycleNotificationState,
+  seedWorkflowLifecycleNotificationState,
+  withWorkflowLifecycleNotificationsSuppressed,
+} from "./lifecycle-notifications.js";
+import type { WorkflowLifecycleNotificationConfig } from "./lifecycle-notifications.js";
 import type { ConfigLoadResult } from "./config-loader.js";
 import type {
   WorkflowPersistencePort,
@@ -289,7 +298,7 @@ export interface ExtensionAPI {
     },
     options?: {
       triggerTurn?: boolean;
-      deliverAs?: "steer" | "followUp" | "nextTurn";
+      deliverAs?: "steer" | "followUp" | "nextTurn" | "append";
     },
   ) => void | Promise<void>;
   registerFlag?: (name: string, opts: PiFlagNamedOpts) => void;
@@ -1977,6 +1986,35 @@ function factory(pi: ExtensionAPI): void {
     store,
     runtimeConfigRef.current,
   );
+  let lifecycleNotificationsUnsubscribe: (() => void) | null = null;
+  let lifecycleNotificationsActive = false;
+  const lifecycleNotificationState = createWorkflowLifecycleNotificationState();
+  const lifecycleNotificationConfigRef: { current: WorkflowLifecycleNotificationConfig } = {
+    current: WORKFLOW_CONFIG_DEFAULTS.workflowNotifications,
+  };
+  registerLifecycleNoticeRenderer({
+    registerMessageRenderer: pi.registerMessageRenderer
+      ? (event, renderer) =>
+          pi.registerMessageRenderer?.(
+            event,
+            renderer as (payload: unknown) => string,
+          )
+      : undefined,
+  });
+  const reinstallLifecycleNotifications = (): void => {
+    lifecycleNotificationsUnsubscribe?.();
+    lifecycleNotificationsUnsubscribe = null;
+    if (!lifecycleNotificationsActive) return;
+    lifecycleNotificationsUnsubscribe = installWorkflowLifecycleNotifications({
+      store,
+      config: lifecycleNotificationConfigRef.current,
+      state: lifecycleNotificationState,
+      seedExisting: true,
+      sendMessage: pi.sendMessage
+        ? (message, options) => pi.sendMessage?.(message, options)
+        : undefined,
+    });
+  };
   let intercomParentSession: string | null = null;
   const intercomPort = {
     emit:
@@ -2127,6 +2165,8 @@ function factory(pi: ExtensionAPI): void {
       statusFile: effectiveConfig.statusFile,
       resumeInFlight: effectiveConfig.resumeInFlight,
     };
+    lifecycleNotificationConfigRef.current = effectiveConfig.workflowNotifications;
+    reinstallLifecycleNotifications();
 
     // Replace status writer with one that reflects the resolved config.
     // Unsubscribe the prior (no-op) writer before creating the new one.
@@ -3333,6 +3373,7 @@ function factory(pi: ExtensionAPI): void {
         persistence: persistenceRef.current,
       });
       store.clear();
+      resetWorkflowLifecycleNotificationState(lifecycleNotificationState);
       stageControlRegistry.clear();
 
       // pi-intercom session naming lives here so we don't trip the
@@ -3343,6 +3384,8 @@ function factory(pi: ExtensionAPI): void {
       // Ensure config+discovery are ready before restoring in-flight runs —
       // tunables must be resolved first.
       await discoveryPromise;
+      lifecycleNotificationsActive = true;
+      reinstallLifecycleNotifications();
       if (ctx?.ui) {
         const diagnostics = formatStartupDiagnostics(configLoadRef.current, discoveryRef.current);
         if (diagnostics !== null) {
@@ -3355,13 +3398,22 @@ function factory(pi: ExtensionAPI): void {
       const sessionManager = ctx?.sessionManager ?? pi.sessionManager;
       if (sessionManager) {
         const cfg = configLoadRef.current?.config;
-        restoreOnSessionStart(
-          sessionManager,
-          {
-            resumeInFlight: cfg?.resumeInFlight ?? "ask",
-            persistRuns: cfg?.persistRuns ?? true,
+        withWorkflowLifecycleNotificationsSuppressed(
+          lifecycleNotificationState,
+          () => {
+            restoreOnSessionStart(
+              sessionManager,
+              {
+                resumeInFlight: cfg?.resumeInFlight ?? "ask",
+                persistRuns: cfg?.persistRuns ?? true,
+              },
+              store,
+            );
+            seedWorkflowLifecycleNotificationState(
+              lifecycleNotificationState,
+              store.snapshot(),
+            );
           },
-          store,
         );
       }
     });
@@ -3385,6 +3437,9 @@ function factory(pi: ExtensionAPI): void {
       }
       storeWidgetUnsubscribe?.();
       storeWidgetUnsubscribe = null;
+      lifecycleNotificationsActive = false;
+      lifecycleNotificationsUnsubscribe?.();
+      lifecycleNotificationsUnsubscribe = null;
     });
   }
 

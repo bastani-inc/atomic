@@ -10,14 +10,18 @@ import {
 	compact,
 	DEFAULT_COMPACTION_SETTINGS,
 	estimateContextTokens,
+	estimateTokens,
 	findCutPoint,
+	findTurnStartIndex,
 	getLastAssistantUsage,
+	prepareBranchEntries,
 	prepareCompaction,
 	shouldCompact,
 } from "../src/core/compaction/index.ts";
 import {
 	buildSessionContext,
 	type CompactionEntry,
+	type CustomMessageEntry,
 	type ModelChangeEntry,
 	migrateSessionEntries,
 	parseSessionEntries,
@@ -116,6 +120,22 @@ function createModelChangeEntry(provider: string, modelId: string): ModelChangeE
 		timestamp: new Date().toISOString(),
 		provider,
 		modelId,
+	};
+	lastId = id;
+	return entry;
+}
+
+function createCustomMessageEntry(content: string, excludeFromContext?: boolean): CustomMessageEntry {
+	const id = `test-id-${entryCounter++}`;
+	const entry: CustomMessageEntry = {
+		type: "custom_message",
+		id,
+		parentId: lastId,
+		timestamp: new Date().toISOString(),
+		customType: "test:notice",
+		content,
+		display: true,
+		...(excludeFromContext === undefined ? {} : { excludeFromContext }),
 	};
 	lastId = id;
 	return entry;
@@ -244,6 +264,63 @@ describe("shouldCompact", () => {
 		};
 
 		expect(shouldCompact(95000, 100000, settings)).toBe(false);
+	});
+});
+
+describe("display-only custom message compaction behavior", () => {
+	it("estimates excluded custom messages as zero tokens while preserving legacy custom token estimates", () => {
+		expect(
+			estimateTokens({
+				role: "custom",
+				customType: "test:notice",
+				content: "display-only notice with many words",
+				display: true,
+				timestamp: 1,
+				excludeFromContext: true,
+			}),
+		).toBe(0);
+		expect(
+			estimateTokens({
+				role: "custom",
+				customType: "test:context",
+				content: "legacy custom",
+				display: true,
+				timestamp: 1,
+			}),
+		).toBeGreaterThan(0);
+	});
+
+	it("does not treat excluded custom message entries as turn starts", () => {
+		const entries: SessionEntry[] = [
+			createMessageEntry(createUserMessage("real user turn")),
+			createCustomMessageEntry("display-only notice", true),
+			createMessageEntry(createAssistantMessage("assistant reply")),
+		];
+
+		expect(findTurnStartIndex(entries, 2, 0)).toBe(0);
+	});
+
+	it("still treats legacy custom message entries as turn starts", () => {
+		const entries: SessionEntry[] = [
+			createMessageEntry(createUserMessage("real user turn")),
+			createCustomMessageEntry("legacy context message"),
+			createMessageEntry(createAssistantMessage("assistant reply")),
+		];
+
+		expect(findTurnStartIndex(entries, 2, 0)).toBe(1);
+	});
+
+	it("preserves exclusion metadata for branch summarization context", () => {
+		const entries: SessionEntry[] = [createCustomMessageEntry("branch display-only notice", true)];
+
+		const prepared = prepareBranchEntries(entries);
+
+		expect(prepared.messages).toHaveLength(1);
+		expect(prepared.messages[0]).toMatchObject({
+			role: "custom",
+			content: "branch display-only notice",
+			excludeFromContext: true,
+		});
 	});
 });
 

@@ -325,6 +325,73 @@ describe("AgentSession queue characterization", () => {
 		).toBe(true);
 	});
 
+	it("appends custom messages with deliverAs append while streaming without steering", async () => {
+		const waiting = await createWaitingHarness();
+		const { harness, waitForToolStart, promptPromise, releaseToolExecution } = waiting;
+		harnesses.push(harness);
+		let sawCustomMessage = false;
+
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
+			(context) => {
+				sawCustomMessage = context.messages.some(
+					(message) =>
+						message.role === "user" &&
+						typeof message.content !== "string" &&
+						message.content.some((part) => part.type === "text" && part.text === "append custom"),
+				);
+				return fauxAssistantMessage("done");
+			},
+		]);
+
+		await waitForToolStart;
+		await harness.session.sendCustomMessage(
+			{ customType: "queue-test", content: "append custom", display: true, details: { value: 1 } },
+			{ deliverAs: "append", triggerTurn: false },
+		);
+		const appendedMessage = harness.session.messages.find(
+			(message) => message.role === "custom" && message.customType === "queue-test",
+		);
+		expect(appendedMessage).toMatchObject({ excludeFromContext: true });
+		const appendedEntry = harness.sessionManager
+			.getEntries()
+			.find((entry) => entry.type === "custom_message" && entry.customType === "queue-test");
+		expect(appendedEntry).toMatchObject({ excludeFromContext: true });
+		releaseToolExecution();
+		await promptPromise;
+
+		expect(sawCustomMessage).toBe(false);
+		expect(getAssistantTexts(harness)).toEqual(["", "done"]);
+	});
+
+	it("does not inject appended custom messages into a later prompt", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		let sawCustomMessage = false;
+
+		await harness.session.sendCustomMessage(
+			{ customType: "append-later", content: "do not carry this", display: true, details: {} },
+			{ deliverAs: "append", triggerTurn: false },
+		);
+
+		harness.setResponses([
+			(context) => {
+				sawCustomMessage = context.messages.some(
+					(message) =>
+						message.role === "user" &&
+						typeof message.content !== "string" &&
+						message.content.some((part) => part.type === "text" && part.text === "do not carry this"),
+				);
+				return fauxAssistantMessage("done");
+			},
+		]);
+
+		await harness.session.prompt("normal prompt");
+
+		expect(sawCustomMessage).toBe(false);
+		expect(harness.session.messages.map((message) => message.role)).toEqual(["custom", "user", "assistant"]);
+	});
+
 	it("injects nextTurn custom messages into the next prompt", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);

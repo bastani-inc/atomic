@@ -4,7 +4,13 @@
 
 ### Added
 
+- Added `deliverAs: "append"` for extension custom messages that should be appended passively without steering or triggering model turns.
 - Added session-scoped `orchestrationContext` support to SDK agent sessions and extension contexts for workflow-stage policy enforcement.
+
+### Fixed
+
+- Ensured extension custom messages delivered with `deliverAs: "append"` remain display-only and do not enter future LLM context or compaction input ([#1085](https://github.com/flora131/atomic/issues/1085)).
+- Restored `role: "custom"` messages to the public `AgentMessage` TypeScript union while preserving `excludeFromContext` display-only metadata for custom messages ([#1085](https://github.com/flora131/atomic/issues/1085)).
 
 ## [0.8.19] - 2026-05-27
 
