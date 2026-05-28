@@ -301,6 +301,19 @@ describe("restoreOnSessionStart", () => {
     assert.equal(run.stages[0]!.status, "completed");
   });
 
+  test("skips completed terminal runs with incomplete stage end data", () => {
+    const st = createStore();
+    const entries: SessionEntry[] = [
+      { id: "e1", type: "workflow.run.start", payload: { runId: "r1", name: "wf", inputs: {}, ts: 1 } },
+      { id: "e2", type: "workflow.stage.start", payload: { runId: "r1", stageId: "s1", name: "fetch", parentIds: [], ts: 2 } },
+      { id: "e3", type: "workflow.run.end", payload: { runId: "r1", status: "completed", ts: 3 } },
+    ];
+
+    restoreOnSessionStart(makeSessionManager(entries), { resumeInFlight: "never", persistRuns: true }, st);
+
+    assert.deepEqual(st.runs(), []);
+  });
+
   test("ignores invalid run failureKind from run.end entries", () => {
     const st = createStore();
     const entries: SessionEntry[] = [

@@ -1383,6 +1383,7 @@ export function makeExecuteWorkflowTool(
           status: "noop",
           message: result.reason === "already_ended"
             ? formatAlreadyEndedRetainedMessage(target.runId)
+            // Defensive fallback: resolveRunTarget already found this run, and killRun no longer removes runs.
             : `Run not found: ${target.runId}`,
         };
       }
@@ -2398,7 +2399,7 @@ function factory(pi: ExtensionAPI): void {
         }
         if (!yes && ctx.ui && typeof ctx.ui.confirm === "function") {
           const ok = await ctx.ui.confirm(
-            `Kill and retain all ${inFlight.length} in-flight workflow runs?`,
+            `Kill ${inFlight.length} in-flight workflow runs? Killed runs are retained for inspection.`,
             `Aborts: ${inFlight.map((r) => `${r.name} (${r.id.slice(0, 8)})`).join(", ")}`,
           );
           if (!ok) {

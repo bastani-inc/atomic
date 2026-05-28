@@ -284,7 +284,10 @@ export function renderWorkflowKilledNotice(
   ));
   lines.push(renderBlankRow(inner, theme));
 
-  lines.push(renderKilledTextRow(inner, theme, `      ${success}✓${RESET}${panelBg} ${muted}Active stage work was aborted.${RESET}`));
+  const action = runningStages > 0
+    ? "Active stage work was aborted."
+    : "Run was marked killed; no stages were actively running.";
+  lines.push(renderKilledTextRow(inner, theme, `      ${success}✓${RESET}${panelBg} ${muted}${action}${RESET}`));
   lines.push(renderKilledTextRow(
     inner,
     theme,

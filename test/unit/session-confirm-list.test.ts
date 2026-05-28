@@ -126,6 +126,24 @@ test("workflow killed notice renders transparent completion details", () => {
   }
 });
 
+test("workflow killed notice handles paused runs without active stages", () => {
+  const theme = deriveGraphTheme({});
+  const lines = renderWorkflowKilledNotice({
+    width: 72,
+    theme,
+    run: makeRun({
+      id: "abc12345-0000-0000-0000-000000000000",
+      name: "paused-workflow",
+      status: "paused",
+      stages: [{ id: "s1", name: "await-input", status: "paused", parentIds: [], toolEvents: [] }],
+    }),
+    previousStatus: "paused",
+  });
+  const joined = lines.join("\n");
+  assert.match(joined, /no stages were actively running/i);
+  assert.doesNotMatch(joined, /Active stage work was aborted/);
+});
+
 test("workflow killed notice stays within narrow panes", () => {
   const theme = deriveGraphTheme({});
   const width = 40;

@@ -334,6 +334,7 @@ function restoreTerminalRuns(entries: readonly SessionEntry[], store: Store): vo
 
     const runMeta = findRunStartMetadata(entries, runId);
     const stages = _buildStageSnapshots(entries, runId);
+    if (status === "completed" && stages.some((stage) => stage.status !== "completed")) continue;
     store.recordRunStart({
       id: runId,
       name: start.name,

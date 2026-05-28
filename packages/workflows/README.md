@@ -248,7 +248,7 @@ registry.get("alpha"); // compiled workflow definition | undefined
 | `/workflow attach [run-id] [stage]`   | Open the attach/chat pane for a run or stage             |
 | `/workflow pause [run-id] [stage]`    | Pause a live run or stage                                |
 | `/workflow interrupt [run-id\|--all]` | Pause active/named/all active runs so they can resume    |
-| `/workflow kill [run-id\|--all]`      | Abort in-flight work, mark runs killed, and retain them for inspection |
+| `/workflow kill [run-id\|--all]`      | Kill in-flight workflow runs; killed runs are retained for inspection |
 | `/workflow resume <run-id>`           | Resume paused work or re-open a run snapshot             |
 | `/workflow reload`                    | Reload discovered workflow resources in-process          |
 | `/workflow inputs <name>`             | Print the input schema for a workflow                    |
