@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- Warn before starting a new session when workflows are still running, allowing users to cancel before those runs are killed and current-session workflow history is cleared ([#1082](https://github.com/flora131/atomic/issues/1082)).
+- Warn before starting or resuming another session when workflows are still in flight, allowing users to cancel before those runs are killed and current-session workflow history is cleared ([#1082](https://github.com/flora131/atomic/issues/1082)).
 
 ## [0.8.18] - 2026-05-27
 

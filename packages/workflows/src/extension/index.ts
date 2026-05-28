@@ -3260,22 +3260,25 @@ function factory(pi: ExtensionAPI): void {
       const reason = typeof event === "object" && event !== null && "reason" in event
         ? (event as { readonly reason?: string }).reason
         : undefined;
-      if (reason !== "new") return undefined;
+      if (reason !== "new" && reason !== "resume") return undefined;
 
-      const runningWorkflowCount = store.runs().filter((run) => run.endedAt === undefined).length;
-      if (runningWorkflowCount === 0) return undefined;
+      const inFlightWorkflowCount = inFlightRunCount();
+      if (inFlightWorkflowCount === 0) return undefined;
 
-      const confirmNewSession = ctx?.ui?.confirm;
-      if (typeof confirmNewSession !== "function") return undefined;
+      const confirmSessionSwitch = ctx?.ui?.confirm;
+      // Headless/non-interactive callers intentionally fail open so automation cannot wedge.
+      if (typeof confirmSessionSwitch !== "function") return undefined;
 
-      const workflowPlural = runningWorkflowCount === 1 ? "" : "s";
-      const promptTitle = `Start a new session and stop ${runningWorkflowCount} running workflow${workflowPlural}?`;
+      const workflowPlural = inFlightWorkflowCount === 1 ? "" : "s";
+      const actionLabel = reason === "new" ? "Start a new session" : "Resume another session";
+      const promptTitle = `${actionLabel} and stop ${inFlightWorkflowCount} in-flight workflow${workflowPlural}?`;
       const promptMessage =
-        "Starting a new session will stop/kill running workflows and clear workflow history tied to the current session.";
-      const shouldStartNewSession = await confirmNewSession(promptTitle, promptMessage);
-      if (shouldStartNewSession) return undefined;
+        `${actionLabel} will stop/kill in-flight workflows and clear workflow history tied to the current session.`;
+      const shouldSwitchSession = await confirmSessionSwitch(promptTitle, promptMessage);
+      if (shouldSwitchSession) return undefined;
 
-      ctx?.ui?.notify?.("New session cancelled; running workflows were left unchanged.", "info");
+      const cancelledLabel = reason === "new" ? "New session" : "Resume";
+      ctx?.ui?.notify?.(`${cancelledLabel} cancelled; in-flight workflows were left unchanged.`, "info");
       return { cancel: true };
     });
 

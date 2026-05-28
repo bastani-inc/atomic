@@ -55,83 +55,107 @@ test("extension factory runs without error (no-op)", () => {
   assert.doesNotThrow(() => factory({}));
 });
 
-test("session_before_switch prompts for /new when workflows are in flight", async () => {
-  store.clear();
-  try {
-    store.recordRunStart(workflowRun());
-    const handler = getSessionBeforeSwitchHandler();
+test("session_before_switch prompts for /new and /resume when workflows are in flight", async () => {
+  for (const reason of ["new", "resume"] as const) {
+    store.clear();
+    try {
+      store.recordRunStart(workflowRun());
+      const handler = getSessionBeforeSwitchHandler();
 
-    const prompts: Array<{ title: string; message?: string }> = [];
-    const result = await handler({ reason: "new" }, {
-      ui: {
-        confirm: async (title: string, message?: string) => {
-          prompts.push({ title, message });
-          return true;
+      const prompts: Array<{ title: string; message?: string }> = [];
+      const result = await handler({ reason }, {
+        ui: {
+          confirm: async (title: string, message?: string) => {
+            prompts.push({ title, message });
+            return true;
+          },
         },
-      },
-    });
+      });
 
-    assert.equal(result, undefined);
-    assert.equal(prompts.length, 1);
-    const promptText = `${prompts[0]?.title}\n${prompts[0]?.message}`;
-    assert.match(promptText, /new session/i);
-    assert.match(promptText, /stop|kill/i);
-    assert.match(promptText, /running workflows/i);
-    assert.match(promptText, /clear workflow history tied to (the )?current session/i);
-    assert.equal(store.runs().length, 1);
-    assert.equal(store.runs()[0]?.endedAt, undefined);
-  } finally {
-    store.clear();
+      assert.equal(result, undefined);
+      assert.equal(prompts.length, 1);
+      const promptText = `${prompts[0]?.title}\n${prompts[0]?.message}`;
+      assert.match(promptText, reason === "new" ? /new session/i : /resume another session/i);
+      assert.match(promptText, /stop|kill/i);
+      assert.match(promptText, /in-flight workflows/i);
+      assert.match(promptText, /clear workflow history tied to (the )?current session/i);
+      assert.equal(store.runs().length, 1);
+      assert.equal(store.runs()[0]?.endedAt, undefined);
+    } finally {
+      store.clear();
+    }
   }
 });
 
-test("session_before_switch cancels /new when warning is declined", async () => {
-  store.clear();
-  try {
-    store.recordRunStart(workflowRun());
-    const handler = getSessionBeforeSwitchHandler();
-    const notifications: Array<{ message: string; type?: string }> = [];
-
-    const result = await handler({ reason: "new" }, {
-      ui: {
-        confirm: async () => false,
-        notify: (message: string, type?: string) => notifications.push({ message, type }),
-      },
-    });
-
-    assert.deepEqual(result, { cancel: true });
-    assert.equal(store.runs().length, 1);
-    assert.equal(store.runs()[0]?.endedAt, undefined);
-    assert.equal(notifications.at(-1)?.type, "info");
-  } finally {
+test("session_before_switch cancels /new and /resume when warning is declined", async () => {
+  for (const reason of ["new", "resume"] as const) {
     store.clear();
+    try {
+      store.recordRunStart(workflowRun());
+      const handler = getSessionBeforeSwitchHandler();
+      const notifications: Array<{ message: string; type?: string }> = [];
+
+      const result = await handler({ reason }, {
+        ui: {
+          confirm: async () => false,
+          notify: (message: string, type?: string) => notifications.push({ message, type }),
+        },
+      });
+
+      assert.deepEqual(result, { cancel: true });
+      assert.equal(store.runs().length, 1);
+      assert.equal(store.runs()[0]?.endedAt, undefined);
+      assert.equal(notifications.at(-1)?.type, "info");
+      assert.match(notifications.at(-1)?.message ?? "", reason === "new" ? /New session cancelled/i : /Resume cancelled/i);
+    } finally {
+      store.clear();
+    }
   }
 });
 
-test("session_before_switch does not prompt without in-flight workflows or confirm UI", async () => {
+test("session_before_switch does not prompt without in-flight workflows", async () => {
   store.clear();
   try {
     store.recordRunStart(workflowRun({ id: "done", status: "running" }));
     store.recordRunEnd("done", "completed", {});
     const handler = getSessionBeforeSwitchHandler();
     let confirmCalls = 0;
-    const declineNewSession = async () => {
-      confirmCalls += 1;
-      return false;
-    };
 
     assert.equal(
-      await handler({ reason: "new" }, { ui: { confirm: declineNewSession } }),
+      await handler({ reason: "new" }, { ui: { confirm: async () => { confirmCalls += 1; return false; } } }),
       undefined,
     );
-    assert.equal(
-      await handler({ reason: "resume" }, { ui: { confirm: declineNewSession } }),
-      undefined,
-    );
-    store.recordRunStart(workflowRun({ id: "running" }));
-    assert.equal(await handler({ reason: "new" }, { ui: {} }), undefined);
     assert.equal(confirmCalls, 0);
-    assert.equal(store.runs().length, 2);
+  } finally {
+    store.clear();
+  }
+});
+
+test("session_before_switch does not prompt for unrelated switch reasons", async () => {
+  store.clear();
+  try {
+    store.recordRunStart(workflowRun());
+    const handler = getSessionBeforeSwitchHandler();
+    let confirmCalls = 0;
+
+    assert.equal(
+      await handler({ reason: "fork" }, { ui: { confirm: async () => { confirmCalls += 1; return false; } } }),
+      undefined,
+    );
+    assert.equal(confirmCalls, 0);
+  } finally {
+    store.clear();
+  }
+});
+
+test("session_before_switch does not prompt without confirm UI", async () => {
+  store.clear();
+  try {
+    store.recordRunStart(workflowRun());
+    const handler = getSessionBeforeSwitchHandler();
+
+    assert.equal(await handler({ reason: "new" }, { ui: {} }), undefined);
+    assert.equal(store.runs().length, 1);
   } finally {
     store.clear();
   }
