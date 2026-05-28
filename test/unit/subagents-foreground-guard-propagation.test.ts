@@ -199,7 +199,6 @@ function makeExecutor(cwd: string, agents: MinimalAgentConfig[]) {
 			runSync: runSyncMock,
 			executeAsyncChain: executeAsyncChainMock,
 			executeAsyncSingle: executeAsyncSingleMock,
-			formatAsyncStartedMessage: (message: string) => `Started ${message}`,
 			isAsyncAvailable: () => true,
 		},
 	} satisfies ExecutorDepsForTest;
@@ -222,7 +221,7 @@ function resetCapturedCalls(): void {
 }
 
 function assertNoErrorFlag(result: ExecutorResultForTest): void {
-	assert.equal("isError" in result ? result.isError : undefined, undefined);
+	assert.equal(result.isError, undefined);
 }
 
 function assertGuardedRunSyncCalls(expectedAgentNames: string[]): void {

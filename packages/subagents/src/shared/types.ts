@@ -256,6 +256,7 @@ export interface Details {
 	currentStepIndex?: number;   // 0-indexed current step (for running chains)
 }
 
+// Upstream AgentToolResult omits the runtime isError flag that subagent tool results still emit/read.
 export type SubagentToolResult = AgentToolResult<Details> & { isError?: boolean };
 
 // ============================================================================
