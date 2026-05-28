@@ -3256,6 +3256,29 @@ function factory(pi: ExtensionAPI): void {
   // 4. Persistence: session_start restore + session_before_compact hook (§5.6, Phase D)
   // -------------------------------------------------------------------------
   if (typeof pi.on === "function") {
+    pi.on("session_before_switch", async (event, ctx) => {
+      const reason = typeof event === "object" && event !== null && "reason" in event
+        ? (event as { readonly reason?: string }).reason
+        : undefined;
+      if (reason !== "new") return undefined;
+
+      const runningWorkflowCount = store.runs().filter((run) => run.endedAt === undefined).length;
+      if (runningWorkflowCount === 0) return undefined;
+
+      const confirmNewSession = ctx?.ui?.confirm;
+      if (typeof confirmNewSession !== "function") return undefined;
+
+      const workflowPlural = runningWorkflowCount === 1 ? "" : "s";
+      const promptTitle = `Start a new session and stop ${runningWorkflowCount} running workflow${workflowPlural}?`;
+      const promptMessage =
+        "Starting a new session will stop/kill running workflows and clear workflow history tied to the current session.";
+      const shouldStartNewSession = await confirmNewSession(promptTitle, promptMessage);
+      if (shouldStartNewSession) return undefined;
+
+      ctx?.ui?.notify?.("New session cancelled; running workflows were left unchanged.", "info");
+      return { cancel: true };
+    });
+
     pi.on("session_start", async (_event, ctx) => {
       // Workflow lifecycle is scoped to the originating chat session.
       // A new session inherits a clean store; any leftover runs from a
