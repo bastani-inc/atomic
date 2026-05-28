@@ -18,6 +18,7 @@ import factory, {
   type PiToolOpts,
   type PiCommandOptions,
   type PiFlagNamedOpts,
+  type PiMessageRendererResult,
   type WorkflowToolArgs,
 } from "../../packages/workflows/src/extension/index.js";
 import type { WorkflowToolResult } from "../../packages/workflows/src/extension/render-result.js";
@@ -44,7 +45,7 @@ interface RegisteredCommand {
 
 interface RegisteredRenderer {
   event: string;
-  renderer: (payload: Record<string, unknown>) => string;
+  renderer: (payload: Record<string, unknown>) => PiMessageRendererResult;
 }
 
 interface RegisteredFlag {
@@ -93,7 +94,7 @@ function makeMock(): ExtensionAPI & {
       commands.push({ name, options });
     },
 
-    registerMessageRenderer(event: string, renderer: (payload: Record<string, unknown>) => string) {
+    registerMessageRenderer(event: string, renderer: (payload: Record<string, unknown>) => PiMessageRendererResult) {
       renderers.push({ event, renderer });
     },
 
@@ -154,8 +155,15 @@ function getCommand(commands: RegisteredCommand[], name: string): RegisteredComm
 function getRenderer(
   renderers: RegisteredRenderer[],
   event: string,
-): ((payload: Record<string, unknown>) => string) | undefined {
+): ((payload: Record<string, unknown>) => PiMessageRendererResult) | undefined {
   return renderers.find((r) => r.event === event)?.renderer;
+}
+
+function expectStringRendererOutput(output: PiMessageRendererResult): string {
+  if (typeof output !== "string") {
+    throw new Error("Expected renderer to return a string");
+  }
+  return output;
 }
 
 function expectRegisteredCommand(
@@ -747,8 +755,7 @@ describe("MockExtensionAPI — message renderer registration", () => {
 
   test("workflow.run.start renderer returns non-empty string", () => {
     const renderer = getRenderer(mock.renderers, "workflow.run.start")!;
-    const out = renderer({ runId: "r1", name: "my-wf", inputs: { foo: "bar" } });
-    assert.equal(typeof out, "string");
+    const out = expectStringRendererOutput(renderer({ runId: "r1", name: "my-wf", inputs: { foo: "bar" } }));
     assert.ok(out.length > 0);
     assert.ok(out.includes("my-wf"));
     assert.ok(out.includes("r1"));
@@ -756,20 +763,20 @@ describe("MockExtensionAPI — message renderer registration", () => {
 
   test("workflow.run.start renderer shows input count", () => {
     const renderer = getRenderer(mock.renderers, "workflow.run.start")!;
-    const out = renderer({ runId: "r1", name: "wf", inputs: { a: 1, b: 2 } });
+    const out = expectStringRendererOutput(renderer({ runId: "r1", name: "wf", inputs: { a: 1, b: 2 } }));
     assert.ok(out.includes("2"));
   });
 
   test("workflow.run.end renderer ok status shows success emoji", () => {
     const renderer = getRenderer(mock.renderers, "workflow.run.end")!;
-    const out = renderer({ runId: "r1", status: "ok" });
+    const out = expectStringRendererOutput(renderer({ runId: "r1", status: "ok" }));
     assert.ok(out.includes("✅"));
     assert.ok(out.includes("r1"));
   });
 
   test("workflow.run.end renderer error status shows failure emoji", () => {
     const renderer = getRenderer(mock.renderers, "workflow.run.end")!;
-    const out = renderer({ runId: "r1", status: "error" });
+    const out = expectStringRendererOutput(renderer({ runId: "r1", status: "error" }));
     assert.ok(out.includes("❌"));
   });
 
@@ -1392,7 +1399,7 @@ describe("MockExtensionAPI — graceful degradation", () => {
 
   test("factory with partial API (only registerMessageRenderer) does not throw", () => {
     const api: ExtensionAPI = {
-      registerMessageRenderer(event: string, renderer: (payload: Record<string, unknown>) => string) {
+      registerMessageRenderer(event: string, renderer: (payload: Record<string, unknown>) => PiMessageRendererResult) {
         void event;
         void renderer;
       },

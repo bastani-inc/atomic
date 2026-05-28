@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   createWorkflowLifecycleNotificationState,
   installWorkflowLifecycleNotifications,
+  formatWorkflowLifecycleNoticeText,
   LIFECYCLE_NOTICE_CUSTOM_TYPE,
   LIFECYCLE_NOTICE_SNIPPET_LIMIT,
   registerLifecycleNoticeRenderer,
@@ -406,6 +407,31 @@ describe("installWorkflowLifecycleNotifications", () => {
     assert.deepEqual(sent.map((message) => message.details?.runId), ["run-live"]);
   });
 
+  test("escapes workflow names and structured response ids in notice text", () => {
+    const runId = 'run"\\id';
+    const stageId = 'stage"\\id';
+    const promptId = 'prompt"\\id';
+    const text = formatWorkflowLifecycleNoticeText({
+      kind: "awaiting_input",
+      scope: "stage",
+      runId,
+      workflowName: 'release "canary"',
+      status: "awaiting_input",
+      stageId,
+      stageName: 'review "gate"',
+      promptId,
+      promptKind: "confirm",
+      promptMessage: "Approve?",
+      createdAt: 1,
+    });
+
+    assert.match(text, /Workflow "release \\"canary\\"" needs input/);
+    assert.match(text, /workflow\(\{ action: "send"/);
+    assert.ok(text.includes(`runId: ${JSON.stringify(runId)}`));
+    assert.ok(text.includes(`stageId: ${JSON.stringify(stageId)}`));
+    assert.ok(text.includes(`promptId: ${JSON.stringify(promptId)}`));
+  });
+
   test("always triggers a steer turn for emitted lifecycle notices", () => {
     const store = createStore();
     const options: SendOptions[] = [];
@@ -417,6 +443,66 @@ describe("installWorkflowLifecycleNotifications", () => {
     store.recordRunStart({ id: "run-7", name: "turn", inputs: {}, status: "running", stages: [], startedAt: 1 });
     store.recordRunEnd("run-7", "completed", {});
     assert.deepEqual(options, [{ triggerTurn: true, deliverAs: "steer" }]);
+  });
+
+  test("warns about send failures when workflow debug logging is enabled", () => {
+    const store = createStore();
+    const previousDebug = process.env.ATOMIC_WORKFLOW_DEBUG;
+    const originalWarn = console.warn;
+    const warnings: unknown[][] = [];
+    process.env.ATOMIC_WORKFLOW_DEBUG = "1";
+    console.warn = (...args: unknown[]) => { warnings.push(args); };
+    try {
+      installWorkflowLifecycleNotifications({
+        store,
+        config: { enabled: true, notifyOn: ["completed"] },
+        sendMessage() {
+          throw new Error("send failed");
+        },
+      });
+      store.recordRunStart({ id: "run-debug-throw", name: "debug", inputs: {}, status: "running", stages: [], startedAt: 1 });
+      assert.equal(store.recordRunEnd("run-debug-throw", "completed", {}), true);
+    } finally {
+      console.warn = originalWarn;
+      if (previousDebug === undefined) {
+        delete process.env.ATOMIC_WORKFLOW_DEBUG;
+      } else {
+        process.env.ATOMIC_WORKFLOW_DEBUG = previousDebug;
+      }
+    }
+
+    assert.equal(warnings.length, 1);
+    assert.match(String(warnings[0]?.[0] ?? ""), /workflow lifecycle notice/i);
+    assert.match(String(warnings[0]?.[1] ?? ""), /send failed/);
+  });
+
+  test("does not warn about send failures unless workflow debug logging is enabled", () => {
+    const store = createStore();
+    const previousDebug = process.env.ATOMIC_WORKFLOW_DEBUG;
+    const originalWarn = console.warn;
+    const warnings: unknown[][] = [];
+    delete process.env.ATOMIC_WORKFLOW_DEBUG;
+    console.warn = (...args: unknown[]) => { warnings.push(args); };
+    try {
+      installWorkflowLifecycleNotifications({
+        store,
+        config: { enabled: true, notifyOn: ["completed"] },
+        sendMessage() {
+          throw new Error("send failed");
+        },
+      });
+      store.recordRunStart({ id: "run-debug-off", name: "debug off", inputs: {}, status: "running", stages: [], startedAt: 1 });
+      assert.equal(store.recordRunEnd("run-debug-off", "completed", {}), true);
+    } finally {
+      console.warn = originalWarn;
+      if (previousDebug === undefined) {
+        delete process.env.ATOMIC_WORKFLOW_DEBUG;
+      } else {
+        process.env.ATOMIC_WORKFLOW_DEBUG = previousDebug;
+      }
+    }
+
+    assert.equal(warnings.length, 0);
   });
 
   test("swallows synchronous send failures so sibling subscribers still receive snapshots", () => {

@@ -135,16 +135,8 @@ export function registerChatSurfaceRenderer(
     return makeComponent(payload, theme);
   };
 
-  // The project's local `ExtensionAPI` types `registerMessageRenderer` as
-  // returning a plain string. pi's runtime also accepts a Component (see
-  // docs/extensions.md §Custom UI). Cast through `unknown` so the call
-  // typechecks against both shapes. `.call(pi, …)` preserves `this` for
-  // pi's class-backed ExtensionAPI.
-  (register as unknown as (event: string, r: RawRenderer) => void).call(
-    pi,
-    CHAT_SURFACE_CUSTOM_TYPE,
-    renderer,
-  );
+  // `.call(pi, …)` preserves `this` for pi's class-backed ExtensionAPI.
+  register.call(pi, CHAT_SURFACE_CUSTOM_TYPE, renderer);
   rendererRegisteredHosts.add(pi);
 }
 

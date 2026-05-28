@@ -1,4 +1,8 @@
-import type { ExtensionAPI } from "./index.js";
+import type {
+  ExtensionAPI,
+  PiMessageRenderComponent,
+  PiMessageRendererResult,
+} from "./index.js";
 import type { Store } from "../shared/store.js";
 import type {
   PendingPrompt,
@@ -59,13 +63,10 @@ export interface WorkflowLifecycleNotificationOptions {
   readonly seedExisting?: boolean;
 }
 
-interface CardComponent {
-  render(width: number): string[];
-  invalidate?(): void;
-}
+type RawRenderer = (payload: unknown) => PiMessageRendererResult;
 
-type RawRenderer = (payload: unknown) => string | CardComponent | undefined;
-
+// Process-lifetime registration dedupe: extension hosts are object identities
+// and may be garbage-collected, but renderer registrations are not unregistered.
 const rendererRegisteredHosts = new WeakSet<object>();
 
 export function createWorkflowLifecycleNotificationState(): WorkflowLifecycleNotificationState {
@@ -152,8 +153,9 @@ export function installWorkflowLifecycleNotifications(
           },
           { triggerTurn: true, deliverAs: "steer" },
         ),
-      ).catch(() => undefined);
-    } catch {
+      ).catch((error: unknown) => warnLifecycleSendFailure(error));
+    } catch (error) {
+      warnLifecycleSendFailure(error);
       // Best-effort notification only; keep store delivery isolated.
     }
   };
@@ -230,32 +232,30 @@ export function registerLifecycleNoticeRenderer(
     return makeNoticeComponent(message.details);
   };
 
-  (register as unknown as (event: string, renderer: RawRenderer) => void)(
-    LIFECYCLE_NOTICE_CUSTOM_TYPE,
-    renderer,
-  );
+  register(LIFECYCLE_NOTICE_CUSTOM_TYPE, renderer);
   rendererRegisteredHosts.add(host);
 }
 
 export function formatWorkflowLifecycleNoticeText(details: WorkflowLifecycleNoticeDetails): string {
+  const workflowName = escapeQuotedText(details.workflowName);
   if (details.kind === "completed") {
-    return `✅ Workflow "${details.workflowName}" completed (run ${details.runId}). Inspect: /workflow status ${details.runId}`;
+    return `✅ Workflow "${workflowName}" completed (run ${details.runId}). Inspect: /workflow status ${details.runId}`;
   }
   if (details.kind === "failed") {
     const stage = details.stageName ?? details.failedStageId;
     const stageText = stage ? `, stage ${stage}` : "";
     const errorText = details.error ? `: ${details.error}` : "";
-    return `❌ Workflow "${details.workflowName}" failed (run ${details.runId}${stageText})${errorText}. Inspect: /workflow status ${details.runId}`;
+    return `❌ Workflow "${workflowName}" failed (run ${details.runId}${stageText})${errorText}. Inspect: /workflow status ${details.runId}`;
   }
   const prompt = details.promptMessage ? ` Prompt: ${details.promptMessage}` : "";
   if (details.scope === "run") {
-    return `❓ Workflow "${details.workflowName}" needs input (run ${details.runId}).${prompt} Respond: /workflow connect ${details.runId} to answer this run-level prompt.`;
+    return `❓ Workflow "${workflowName}" needs input (run ${details.runId}).${prompt} Respond: /workflow connect ${details.runId} to answer this run-level prompt.`;
   }
   const stage = details.stageName ?? details.stageId ?? "unknown";
   const responseHint = details.stageId && details.promptId
-    ? `/workflow connect ${details.runId} or workflow({ action: "send", runId: "${details.runId}", stageId: "${details.stageId}", promptId: "${details.promptId}", response: ... })`
+    ? `/workflow connect ${details.runId} or workflow({ action: "send", runId: ${jsonString(details.runId)}, stageId: ${jsonString(details.stageId)}, promptId: ${jsonString(details.promptId)}, response: ... })`
     : `/workflow connect ${details.runId}`;
-  return `❓ Workflow "${details.workflowName}" needs input (run ${details.runId}, stage ${stage}).${prompt} Respond: ${responseHint}.`;
+  return `❓ Workflow "${workflowName}" needs input (run ${details.runId}, stage ${stage}).${prompt} Respond: ${responseHint}.`;
 }
 
 function makeTerminalNotice(
@@ -275,6 +275,7 @@ function makeTerminalNotice(
     ...(run.failedStageId ? { failedStageId: run.failedStageId } : {}),
     ...(failedStage ? { stageId: failedStage.id, stageName: failedStage.name } : {}),
     ...(run.durationMs !== undefined ? { durationMs: run.durationMs } : {}),
+    // Normal store paths stamp endedAt; Date.now() is defensive for malformed restored snapshots.
     createdAt: run.endedAt ?? Date.now(),
   };
 }
@@ -290,6 +291,7 @@ function makeStageAwaitingInputNotice(run: RunSnapshot, stage: StageSnapshot): W
     stageId: stage.id,
     stageName: stage.name,
     ...(prompt ? promptFields(prompt) : {}),
+    // Normal store paths stamp awaitingInputSince; Date.now() is defensive for malformed restored snapshots.
     createdAt: prompt?.createdAt ?? stage.awaitingInputSince ?? Date.now(),
   };
 }
@@ -304,6 +306,20 @@ function makeRunAwaitingInputNotice(run: RunSnapshot, prompt: PendingPrompt): Wo
     ...promptFields(prompt),
     createdAt: prompt.createdAt,
   };
+}
+
+function warnLifecycleSendFailure(error: unknown): void {
+  if (process.env.ATOMIC_WORKFLOW_DEBUG !== "1") return;
+  const message = error instanceof Error ? error.message : String(error);
+  console.warn("[workflows] workflow lifecycle notice send failed", message);
+}
+
+function escapeQuotedText(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+function jsonString(value: string): string {
+  return JSON.stringify(value);
 }
 
 function terminalRunKey(kind: "completed" | "failed", runId: string): string {
@@ -336,7 +352,7 @@ function truncateSnippet(value: string): string {
   return `${normalized.slice(0, LIFECYCLE_NOTICE_SNIPPET_LIMIT - 1)}…`;
 }
 
-function makeNoticeComponent(details: WorkflowLifecycleNoticeDetails): CardComponent {
+function makeNoticeComponent(details: WorkflowLifecycleNoticeDetails): PiMessageRenderComponent {
   return {
     render(): string[] {
       return [formatWorkflowLifecycleNoticeText(details)];

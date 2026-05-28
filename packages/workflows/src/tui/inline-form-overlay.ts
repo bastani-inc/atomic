@@ -124,16 +124,8 @@ export function registerInlineFormRenderer(pi: ExtensionAPI, theme: GraphTheme):
     };
   };
 
-  // The project's local `ExtensionAPI` types `registerMessageRenderer` as
-  // returning a plain string. The real pi runtime also accepts a Component
-  // (see docs/extensions.md §Custom UI). Cast through `unknown` so the call
-  // typechecks against both shapes. Call through `pi` so pi's
-  // class-backed ExtensionAPI keeps its `this` binding.
-  (register as unknown as (event: string, r: RawRenderer) => void).call(
-    pi,
-    CUSTOM_TYPE,
-    renderer,
-  );
+  // Call through `pi` so pi's class-backed ExtensionAPI keeps its `this` binding.
+  register.call(pi, CUSTOM_TYPE, renderer);
   rendererRegisteredHosts.add(pi);
 }
 

@@ -122,6 +122,13 @@ export interface PiRenderComponent {
   includes(searchString: string): boolean;
 }
 
+export interface PiMessageRenderComponent {
+  render(width: number): string[];
+  invalidate?: () => void;
+}
+
+export type PiMessageRendererResult = string | PiMessageRenderComponent | undefined;
+
 function textRenderComponent(text: string): PiRenderComponent {
   return dynamicTextRenderComponent(() => text);
 }
@@ -282,7 +289,7 @@ export interface ExtensionAPI {
   registerCommand?: (name: string, options: PiCommandOptions) => void;
   registerMessageRenderer?: (
     event: string,
-    renderer: (payload: unknown) => string,
+    renderer: (payload: unknown) => PiMessageRendererResult,
   ) => void;
   /**
    * Inject a custom message into chat history. Used by inline workflow surfaces
@@ -1995,11 +2002,7 @@ function factory(pi: ExtensionAPI): void {
   registerLifecycleNoticeRenderer({
     rendererHost: pi,
     registerMessageRenderer: pi.registerMessageRenderer
-      ? (event, renderer) =>
-          pi.registerMessageRenderer?.(
-            event,
-            renderer as (payload: unknown) => string,
-          )
+      ? (event, renderer) => pi.registerMessageRenderer?.(event, renderer)
       : undefined,
   });
   const reinstallLifecycleNotifications = (): void => {

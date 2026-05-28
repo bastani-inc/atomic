@@ -592,4 +592,24 @@ describe("loadWorkflowConfig — workflowNotifications", () => {
       await rm(project, { recursive: true, force: true });
     }
   });
+
+  test("rejects empty notifyOn arrays", async () => {
+    const home = await mkdtemp(join(tmpdir(), "wf-home-notifications-empty-"));
+    const project = await mkdtemp(join(tmpdir(), "wf-project-notifications-empty-"));
+    try {
+      const dir = await makeDir(project, ".atomic", "extensions", "workflow");
+      await writeJson(dir, "config.json", {
+        workflowNotifications: { notifyOn: [] },
+      });
+
+      const result = await loadWorkflowConfig({ homeDir: home, projectRoot: project });
+      assert.equal(result.config, null);
+      assert.equal(result.diagnostics.length, 1);
+      assert.match(result.diagnostics[0]?.message ?? "", /workflowNotifications\.notifyOn/);
+      assert.match(result.diagnostics[0]?.message ?? "", /non-empty|at least one/);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+      await rm(project, { recursive: true, force: true });
+    }
+  });
 });

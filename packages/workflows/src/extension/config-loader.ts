@@ -188,6 +188,9 @@ function validateConfig(value: unknown): string | null {
       if (!Array.isArray(notifyOn)) {
         return `"workflowNotifications.notifyOn" must be an array, got ${JSON.stringify(typeof notifyOn)}`;
       }
+      if (notifyOn.length === 0) {
+        return `"workflowNotifications.notifyOn" must be a non-empty array`;
+      }
       for (const item of notifyOn) {
         if (!isWorkflowLifecycleNoticeKind(item)) {
           return `"workflowNotifications.notifyOn" entries must be "completed", "failed", or "awaiting_input", got ${JSON.stringify(item)}`;

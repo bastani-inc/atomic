@@ -40,7 +40,7 @@ Workflow lifecycle notices are enabled by default. They send steer prompts into 
 }
 ```
 
-Set `enabled` to `false` to disable all notices, or narrow `notifyOn` to selected events. Emitted notices use steer delivery and wake an idle model so the lifecycle update enters the model context when it happens.
+Set `enabled` to `false` to disable all notices, or narrow `notifyOn` to a non-empty list of selected events. Emitted notices use steer delivery and wake an idle model so the lifecycle update enters the model context when it happens.
 
 ---
 
