@@ -12,11 +12,12 @@
     },
     "packages/coding-agent": {
       "name": "@bastani/atomic",
-      "version": "0.8.19-0",
+      "version": "0.8.19",
       "bin": {
         "atomic": "dist/cli.js",
       },
       "dependencies": {
+        "@bufbuild/protobuf": "^2.10.2",
         "@earendil-works/pi-agent-core": "^0.75.5",
         "@earendil-works/pi-ai": "^0.75.5",
         "@earendil-works/pi-tui": "^0.75.5",
@@ -60,9 +61,24 @@
         "@mariozechner/clipboard": "^0.3.6",
       },
     },
+    "packages/cursor-provider": {
+      "name": "@bastani/cursor-provider",
+      "version": "0.8.19",
+      "dependencies": {
+        "@bufbuild/protobuf": "^2.10.2",
+      },
+      "peerDependencies": {
+        "@bastani/atomic": "*",
+        "@earendil-works/pi-ai": "*",
+      },
+      "optionalPeers": [
+        "@bastani/atomic",
+        "@earendil-works/pi-ai",
+      ],
+    },
     "packages/intercom": {
       "name": "@bastani/intercom",
-      "version": "0.8.19-0",
+      "version": "0.8.19",
       "dependencies": {
         "typebox": "^1.1.24",
       },
@@ -77,7 +93,7 @@
     },
     "packages/mcp": {
       "name": "@bastani/mcp",
-      "version": "0.8.19-0",
+      "version": "0.8.19",
       "dependencies": {
         "@modelcontextprotocol/ext-apps": "^1.2.2",
         "@modelcontextprotocol/sdk": "^1.25.1",
@@ -99,7 +115,7 @@
     },
     "packages/subagents": {
       "name": "@bastani/subagents",
-      "version": "0.8.19-0",
+      "version": "0.8.19",
       "dependencies": {
         "jiti": "^2.7.0",
         "typebox": "^1.1.24",
@@ -119,7 +135,7 @@
     },
     "packages/web-access": {
       "name": "@bastani/web-access",
-      "version": "0.8.19-0",
+      "version": "0.8.19",
       "dependencies": {
         "@mozilla/readability": "^0.6.0",
         "linkedom": "^0.16.0",
@@ -138,7 +154,7 @@
     },
     "packages/workflows": {
       "name": "@bastani/workflows",
-      "version": "0.8.19-0",
+      "version": "0.8.19",
       "dependencies": {
         "jiti": "^2.7.0",
       },
@@ -209,6 +225,8 @@
 
     "@bastani/atomic": ["@bastani/atomic@workspace:packages/coding-agent"],
 
+    "@bastani/cursor-provider": ["@bastani/cursor-provider@workspace:packages/cursor-provider"],
+
     "@bastani/intercom": ["@bastani/intercom@workspace:packages/intercom"],
 
     "@bastani/mcp": ["@bastani/mcp@workspace:packages/mcp"],
@@ -218,6 +236,8 @@
     "@bastani/web-access": ["@bastani/web-access@workspace:packages/web-access"],
 
     "@bastani/workflows": ["@bastani/workflows@workspace:packages/workflows"],
+
+    "@bufbuild/protobuf": ["@bufbuild/protobuf@2.12.0", "", {}, "sha512-B/XlCaFIP8LOwzo+bz5uFzATYokcwCKQcghqnlfwSmM5eX/qTkvDBnDPs+gXtX/RyjxJ4DRikECcPJbyALA8FA=="],
 
     "@earendil-works/pi-agent-core": ["@earendil-works/pi-agent-core@0.75.5", "", { "dependencies": { "@earendil-works/pi-ai": "^0.75.5", "ignore": "7.0.5", "typebox": "1.1.38", "yaml": "2.9.0" } }, "sha512-LHygOgsW2pgXKb3IkXkOAeZPovHr9VF+EixgXVsDNuB4jmhEOXgshy/zksZ7slkUAx10OQ9W1Ed/2jsnhd1NqA=="],
 

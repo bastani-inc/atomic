@@ -13,11 +13,12 @@ Atomic supports subscription-based providers via OAuth and API key providers via
 
 ## Subscriptions
 
-Use `/login` in interactive mode, then select a provider:
+Use `/login` in interactive mode, then select a provider. You can also jump directly to a provider with `/login <provider>`, for example `/login cursor`.
 
 - ChatGPT Plus/Pro (Codex)
 - Claude Pro/Max
 - GitHub Copilot
+- Cursor (experimental/unofficial built-in extension)
 
 Use `/logout` to clear credentials. Tokens are stored in `~/.atomic/agent/auth.json` and auto-refresh when expired.
 
@@ -34,6 +35,24 @@ Anthropic subscription auth is active for Claude Pro/Max accounts. Third-party h
 
 - Press Enter for github.com, or enter your GitHub Enterprise Server domain
 - If you get "model not supported", enable it in VS Code: Copilot Chat → model selector → select model → "Enable"
+
+### Cursor (experimental/unofficial)
+
+Cursor support is provided by the bundled private workspace extension `@bastani/cursor-provider`.
+
+```text
+/login cursor
+/model cursor/<available-model>
+```
+
+Important warnings:
+
+- This integration is experimental and uses Cursor private APIs; it is not affiliated with or endorsed by Cursor and may break without notice.
+- A Cursor account/subscription with model access is required.
+- The provider binds a local OpenAI-compatible proxy on `127.0.0.1` only.
+- Run with `--no-extensions` to disable bundled extensions, including Cursor.
+
+The bundled extension registers authentication first, then discovers live Cursor/Composer models after `/login cursor`, token refresh, or startup hydration from stored Cursor OAuth credentials. Chat requests are routed through a localhost-only OpenAI-compatible proxy backed by a package-local Node HTTP/2/protobuf bridge; all proxy routes, including `GET /v1/models`, require the per-process bearer secret returned by the provider auth flow. Cursor-native filesystem/shell tools are rejected; Cursor MCP tool-call events are translated to OpenAI `delta.tool_calls` for Atomic to execute.
 
 ## API Keys
 

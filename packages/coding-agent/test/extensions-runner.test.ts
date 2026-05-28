@@ -471,6 +471,52 @@ describe("ExtensionRunner", () => {
 		});
 	});
 
+	describe("provider request hooks", () => {
+		it("passes selected provider and model metadata to before_provider_request handlers", async () => {
+			const runner = new ExtensionRunner(
+				[
+					{
+						path: "metadata-extension.ts",
+						resolvedPath: "metadata-extension.ts",
+						sourceInfo: { path: "metadata-extension.ts", source: "test", scope: "temporary", origin: "top-level" },
+						handlers: new Map([
+							[
+								"before_provider_request",
+								[
+									(event) => ({
+										...(event.payload as Record<string, unknown>),
+										observedProvider: event.provider,
+										observedModelId: event.modelId,
+									}),
+								],
+							],
+						]),
+						tools: new Map(),
+						messageRenderers: new Map(),
+						commands: new Map(),
+						flags: new Map(),
+						shortcuts: new Map(),
+					},
+				],
+				createExtensionRuntime(),
+				tempDir,
+				sessionManager,
+				modelRegistry,
+			);
+
+			await expect(
+				runner.emitBeforeProviderRequest(
+					{ model: "gpt-5" },
+					{ provider: "cursor", modelId: "gpt-5" },
+				),
+			).resolves.toMatchObject({
+				model: "gpt-5",
+				observedProvider: "cursor",
+				observedModelId: "gpt-5",
+			});
+		});
+	});
+
 	describe("message renderers", () => {
 		it("gets message renderer by type", async () => {
 			const extCode = `

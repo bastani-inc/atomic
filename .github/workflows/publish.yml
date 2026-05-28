@@ -68,6 +68,10 @@ jobs:
             builtin/web-access/index.ts \
             builtin/intercom/package.json \
             builtin/intercom/index.ts \
+            builtin/cursor-provider/package.json \
+            builtin/cursor-provider/index.ts \
+            builtin/cursor-provider/h2-bridge.mjs \
+            builtin/cursor-provider/proto/agent_pb.ts \
             node_modules/@modelcontextprotocol/ext-apps/package.json \
             node_modules/@mozilla/readability/package.json; do
             test -f "$smoke_dir/atomic/$required_path" || {
@@ -139,6 +143,10 @@ jobs:
             "builtin/web-access/index.ts",
             "builtin/intercom/package.json",
             "builtin/intercom/index.ts",
+            "builtin/cursor-provider/package.json",
+            "builtin/cursor-provider/index.ts",
+            "builtin/cursor-provider/h2-bridge.mjs",
+            "builtin/cursor-provider/proto/agent_pb.ts",
             "node_modules/@modelcontextprotocol/ext-apps/package.json",
             "node_modules/@mozilla/readability/package.json"
           )) {
@@ -314,7 +322,7 @@ jobs:
             import pkg from "./package.json" with { type: "json" };
 
             const failures = [];
-            const expectedBuiltins = ["workflows", "subagents", "mcp", "web-access", "intercom"];
+            const expectedBuiltins = ["workflows", "subagents", "mcp", "web-access", "intercom", "cursor-provider"];
             const clean = (value) => String(value).replace(/^\.\//, "").replace(/\/$/, "");
             const walk = (dir) => {
               if (!existsSync(dir)) return [];

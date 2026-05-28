@@ -1,5 +1,6 @@
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 interface BuiltinCopy {
 	label: string;
@@ -7,7 +8,8 @@ interface BuiltinCopy {
 	sourceDir: string;
 }
 
-const packageRoot = resolve(import.meta.dir, "..");
+const here = typeof import.meta.dir === "string" ? import.meta.dir : dirname(fileURLToPath(import.meta.url));
+const packageRoot = resolve(here, "..");
 const distBuiltinDir = join(packageRoot, "dist", "builtin");
 const packagesRoot = resolve(packageRoot, "..");
 
@@ -17,6 +19,7 @@ const WORKSPACE_BUILTINS = [
 	{ packageName: "@bastani/mcp", workspaceDirName: "mcp" },
 	{ packageName: "@bastani/web-access", workspaceDirName: "web-access" },
 	{ packageName: "@bastani/intercom", workspaceDirName: "intercom" },
+	{ packageName: "@bastani/cursor-provider", workspaceDirName: "cursor-provider" },
 ] as const;
 
 function readPackageName(packageDir: string): string | undefined {
@@ -35,19 +38,23 @@ function assertPackageDir(packageDir: string, expectedName: string): void {
 	}
 }
 
-function shouldSkipEntry(name: string): boolean {
+const SKIPPED_ENTRY_NAMES = new Set([
+	"node_modules",
+	".git",
+	".github",
+	"coverage",
+	".nyc_output",
+	".DS_Store",
+	".turbo",
+	".vite",
+	".vitest",
+	"test",
+	"tests",
+]);
+
+export function shouldSkipEntry(name: string): boolean {
 	return (
-		name === "node_modules" ||
-		name === ".git" ||
-		name === ".github" ||
-		name === "coverage" ||
-		name === ".nyc_output" ||
-		name === ".DS_Store" ||
-		name === ".turbo" ||
-		name === ".vite" ||
-		name === ".vitest" ||
-		name === "test" ||
-		name === "tests" ||
+		SKIPPED_ENTRY_NAMES.has(name) ||
 		name.endsWith(".test.ts") ||
 		name.endsWith(".test.mjs") ||
 		name.endsWith(".spec.ts") ||
@@ -55,7 +62,7 @@ function shouldSkipEntry(name: string): boolean {
 	);
 }
 
-function copyFilteredDirectory(sourceDir: string, destinationDir: string): void {
+export function copyFilteredDirectory(sourceDir: string, destinationDir: string): void {
 	mkdirSync(destinationDir, { recursive: true });
 	for (const entry of readdirSync(sourceDir)) {
 		if (shouldSkipEntry(entry)) {
@@ -90,11 +97,13 @@ function getCopyPlan(): BuiltinCopy[] {
 	});
 }
 
-rmSync(distBuiltinDir, { recursive: true, force: true });
-mkdirSync(distBuiltinDir, { recursive: true });
+if (import.meta.main) {
+	rmSync(distBuiltinDir, { recursive: true, force: true });
+	mkdirSync(distBuiltinDir, { recursive: true });
 
-for (const copy of getCopyPlan()) {
-	const destinationDir = join(distBuiltinDir, copy.destinationName);
-	copyFilteredDirectory(copy.sourceDir, destinationDir);
-	console.log(`Copied builtin ${copy.label} -> ${join("dist", "builtin", basename(destinationDir))}`);
+	for (const copy of getCopyPlan()) {
+		const destinationDir = join(distBuiltinDir, copy.destinationName);
+		copyFilteredDirectory(copy.sourceDir, destinationDir);
+		console.log(`Copied builtin ${copy.label} -> ${join("dist", "builtin", basename(destinationDir))}`);
+	}
 }

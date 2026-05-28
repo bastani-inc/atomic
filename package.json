@@ -20,9 +20,10 @@
     "test": "bun run test:unit",
     "test:unit": "bun test test/unit",
     "test:integration": "bun test test/integration",
-    "test:all": "bun run test:unit && bun run test:integration",
+    "test:all": "bun run test:unit && bun run test:integration && bun run test:cursor-provider",
     "typecheck": "tsc --noEmit",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test:cursor-provider": "bun test packages/cursor-provider/test"
   },
   "devDependencies": {
     "@j178/prek": "0.3.13",

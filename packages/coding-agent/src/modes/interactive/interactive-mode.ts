@@ -3039,9 +3039,14 @@ export class InteractiveMode {
         this.editor.setText("");
         return;
       }
-      if (text === "/login") {
-        this.showOAuthSelector("login");
+      if (text === "/login" || text.startsWith("/login ")) {
+        const providerQuery = text.slice("/login".length).trim();
         this.editor.setText("");
+        if (providerQuery) {
+          await this.loginProviderByIdOrName(providerQuery);
+        } else {
+          this.showOAuthSelector("login");
+        }
         return;
       }
       if (text === "/logout") {
@@ -5094,6 +5099,38 @@ export class InteractiveMode {
       ? options.filter((option) => option.authType === authType)
       : options;
     return filteredOptions.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  private async loginProviderByIdOrName(query: string): Promise<void> {
+    const normalizedQuery = query.trim().toLowerCase();
+    if (!normalizedQuery) {
+      this.showOAuthSelector("login");
+      return;
+    }
+
+    const providerOptions = this.getLoginProviderOptions();
+    const providerOption =
+      providerOptions.find(
+        (provider) => provider.id.toLowerCase() === normalizedQuery,
+      ) ??
+      providerOptions.find(
+        (provider) => provider.name.toLowerCase() === normalizedQuery,
+      );
+
+    if (!providerOption) {
+      this.showError(
+        `No login provider found matching "${query}". Run /login to choose from available providers.`,
+      );
+      return;
+    }
+
+    if (providerOption.authType === "oauth") {
+      await this.showLoginDialog(providerOption.id, providerOption.name);
+    } else if (providerOption.id === BEDROCK_PROVIDER_ID) {
+      this.showBedrockSetupDialog(providerOption.id, providerOption.name);
+    } else {
+      await this.showApiKeyLoginDialog(providerOption.id, providerOption.name);
+    }
   }
 
   private getLogoutProviderOptions(): AuthSelectorProvider[] {

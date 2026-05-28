@@ -20,6 +20,7 @@ const expectedBuiltinPackages = [
   resolve("packages/mcp"),
   resolve("packages/web-access"),
   resolve("packages/intercom"),
+  resolve("packages/cursor-provider"),
 ];
 
 const builtinPackageFixtures = [
@@ -28,6 +29,7 @@ const builtinPackageFixtures = [
   { packageName: "@bastani/mcp", dirname: "mcp", requiredEntry: "index.ts" },
   { packageName: "@bastani/web-access", dirname: "web-access", requiredEntry: "index.ts" },
   { packageName: "@bastani/intercom", dirname: "intercom", requiredEntry: "index.ts" },
+  { packageName: "@bastani/cursor-provider", dirname: "cursor-provider", requiredEntry: "index.ts" },
 ] as const;
 
 const fullBuiltinPackageLoadTimeoutMs = 60_000;
@@ -181,6 +183,7 @@ describe("coding-agent builtin resources", () => {
       "packages/mcp/index.ts",
       "packages/web-access/index.ts",
       "packages/intercom/index.ts",
+      "packages/cursor-provider/index.ts",
     ]) {
       assert.ok(
         extensionPaths.some((extensionPath) => extensionPath.endsWith(suffix)),

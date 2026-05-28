@@ -48,6 +48,7 @@
     "prepublishOnly": "bun run clean && bun run build"
   },
   "dependencies": {
+    "@bufbuild/protobuf": "^2.10.2",
     "@earendil-works/pi-agent-core": "^0.75.5",
     "@earendil-works/pi-ai": "^0.75.5",
     "@earendil-works/pi-tui": "^0.75.5",

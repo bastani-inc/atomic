@@ -26,10 +26,12 @@
       "@bastani/web-access": ["./packages/web-access/index.ts"],
       "@bastani/web-access/*": ["./packages/web-access/*"],
       "@bastani/intercom": ["./packages/intercom/index.ts"],
-      "@bastani/intercom/*": ["./packages/intercom/*"]
+      "@bastani/intercom/*": ["./packages/intercom/*"],
+      "@bastani/cursor-provider": ["./packages/cursor-provider/index.ts"],
+      "@bastani/cursor-provider/*": ["./packages/cursor-provider/*"]
     }
   },
-  "include": ["packages/workflows/**/*", "test/**/*", "examples/**/*"],
+  "include": ["packages/workflows/**/*", "packages/cursor-provider/**/*", "test/**/*", "examples/**/*"],
   "exclude": [
     "node_modules",
     "packages/coding-agent",

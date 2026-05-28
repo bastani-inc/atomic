@@ -1,0 +1,43 @@
+{
+  "name": "@bastani/cursor-provider",
+  "version": "0.8.19",
+  "private": true,
+  "description": "Experimental unofficial Cursor provider extension for Atomic/pi.",
+  "type": "module",
+  "engines": {
+    "node": ">=20.6.0",
+    "bun": ">=1.3.14"
+  },
+  "main": "./index.ts",
+  "types": "./index.ts",
+  "exports": {
+    ".": "./index.ts"
+  },
+  "files": [
+    "*.ts",
+    "*.mjs",
+    "proto",
+    "README.md",
+    "package.json"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "^2.10.2"
+  },
+  "peerDependencies": {
+    "@bastani/atomic": "*",
+    "@earendil-works/pi-ai": "*"
+  },
+  "peerDependenciesMeta": {
+    "@bastani/atomic": {
+      "optional": true
+    },
+    "@earendil-works/pi-ai": {
+      "optional": true
+    }
+  }
+}

@@ -54,6 +54,12 @@ const WORKSPACE_BUILTINS: readonly WorkspaceBuiltinSpec[] = [
 		distDirName: "intercom",
 		requiredEntry: "index.ts",
 	},
+	{
+		packageName: "@bastani/cursor-provider",
+		workspaceDirName: "cursor-provider",
+		distDirName: "cursor-provider",
+		requiredEntry: "index.ts",
+	},
 ];
 
 const BUILTIN_PACKAGES: readonly BuiltinPackageDescriptor[] = WORKSPACE_BUILTINS.map(
