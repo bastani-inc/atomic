@@ -169,6 +169,10 @@ function buildMockPi(overrides: Partial<ExtensionAPI> = {}): {
   const { ui, calls } = buildMockUi();
 
   const pi: ExtensionAPI = {
+    // The overlay tests assert registration/entrypoint behavior against the
+    // bundled startup registry. Disable project/global async discovery so each
+    // mock factory instance does not leave unrelated background work running.
+    disableAsyncDiscovery: true,
     registerTool: () => undefined,
     registerCommand: (name: string, options: PiCommandOptions) => {
       commands[name] = { name, options };

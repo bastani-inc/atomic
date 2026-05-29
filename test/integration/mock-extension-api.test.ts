@@ -85,6 +85,10 @@ function makeMock(): ExtensionAPI & {
     renderers,
     flags,
     sent,
+    // Keep integration tests deterministic: the startup registry already
+    // contains bundled workflows, and project/global async discovery can spawn
+    // background work that outlives each lightweight mock factory instance.
+    disableAsyncDiscovery: true,
 
     registerTool<TArgs, TResult>(opts: PiToolOpts<TArgs, TResult>) {
       tools.push({ opts: opts as unknown as PiToolOpts<WorkflowToolArgs, WorkflowToolResult> });
