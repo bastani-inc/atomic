@@ -11,6 +11,7 @@
 
 - Upgraded the pi runtime packages (`@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, `@earendil-works/pi-tui`) from 0.75.5 to 0.77.0 and bumped `@modelcontextprotocol/ext-apps` to 1.7.2, `highlight.js` to 11.x, `linkedom` to 0.18.x, `undici` to 8.x, and `vitest` (dev) to 4.x.
 - Switched the `highlight.js` import to the package-root default export and replaced the Node stream pipeline in the tools downloader with `Bun.write()` to align with the upgraded dependencies.
+- Pinned the footer (model + cwd identity) directly under the editor and moved below-editor widgets beneath it, so transient run status such as the workflow companion counter renders at the very bottom instead of separating the footer from the input. Rendering below-editor widgets last also keeps a live widget at the bottom of the buffer (within the viewport), preserving the workflow widget resize-flicker fix ([#1109](https://github.com/flora131/atomic/issues/1109)).
 
 ## [0.8.19] - 2026-05-27
 

@@ -758,8 +758,16 @@ export class InteractiveMode {
     this.ui.addChild(this.widgetContainerAbove);
     this.ui.addChild(this.usageMeter);
     this.ui.addChild(this.editorContainer);
-    this.ui.addChild(this.widgetContainerBelow);
+    // Footer (persistent model + cwd identity) stays pinned directly under the
+    // editor; below-editor widgets render after it, at the very bottom. This
+    // keeps the session identity line attached to the input and places
+    // transient run status (e.g. the workflow companion counter) beneath it.
+    // Rendering below-editor widgets last also keeps a live widget at the
+    // absolute bottom of the buffer (always within the viewport), so its
+    // per-tick updates never sit above the fold — preserving the #1109
+    // resize-flicker fix.
     this.ui.addChild(this.footer);
+    this.ui.addChild(this.widgetContainerBelow);
     this.ui.setFocus(this.editor);
 
     this.setupKeyHandlers();
