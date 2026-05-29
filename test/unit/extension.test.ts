@@ -38,6 +38,33 @@ function captureHandlers(): Map<string, SessionBeforeSwitchHandler> {
   return handlers;
 }
 
+function captureHandlersWithActiveTools(activeTools: readonly string[]): {
+  handlers: Map<string, SessionBeforeSwitchHandler>;
+  setCalls: string[][];
+} {
+  const handlers = new Map<string, SessionBeforeSwitchHandler>();
+  const setCalls: string[][] = [];
+  let current = [...activeTools];
+  const pi: ExtensionAPI = {
+    registerTool: () => undefined,
+    registerCommand: () => undefined,
+    registerMessageRenderer: () => undefined,
+    registerFlag: () => undefined,
+    registerShortcut: () => undefined,
+    getActiveTools: () => [...current],
+    setActiveTools: (names: string[]) => {
+      current = [...names];
+      setCalls.push([...names]);
+    },
+    on: (event, handler) => {
+      handlers.set(event, handler as SessionBeforeSwitchHandler);
+    },
+    disableAsyncDiscovery: true,
+  };
+  factory(pi);
+  return { handlers, setCalls };
+}
+
 function getSessionBeforeSwitchHandler(): SessionBeforeSwitchHandler {
   const handler = captureHandlers().get("session_before_switch");
   if (handler === undefined) {
@@ -258,4 +285,47 @@ test("session_start warns when discovered workflows fail validation", async () =
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Non-interactive (-p) mode: the `workflow` tool is removed from the model's
+// active tool set in session_start (ctx.hasUI === false). The host awaits
+// session_start during bindExtensions, before the first prompt, so the tool is
+// gone before the model's first turn.
+// ---------------------------------------------------------------------------
+
+test("session_start de-advertises the workflow tool in non-interactive sessions", async () => {
+  const { handlers, setCalls } = captureHandlersWithActiveTools(["read", "bash", "workflow", "todos"]);
+  const sessionStart = handlers.get("session_start");
+  assert.notEqual(sessionStart, undefined);
+
+  await sessionStart?.({ reason: "startup" }, { hasUI: false });
+
+  assert.deepEqual(setCalls, [["read", "bash", "todos"]]);
+});
+
+test("session_start keeps the workflow tool when a UI is available", async () => {
+  const { handlers, setCalls } = captureHandlersWithActiveTools(["read", "workflow"]);
+  const sessionStart = handlers.get("session_start");
+
+  await sessionStart?.({ reason: "startup" }, { hasUI: true });
+
+  assert.deepEqual(setCalls, []);
+});
+
+test("session_start leaves the active tool set untouched when workflow is already absent", async () => {
+  const { handlers, setCalls } = captureHandlersWithActiveTools(["read", "bash"]);
+  const sessionStart = handlers.get("session_start");
+
+  await sessionStart?.({ reason: "startup" }, { hasUI: false });
+
+  assert.deepEqual(setCalls, []);
+});
+
+test("session_start does not throw on hosts without the active-tools API", async () => {
+  const handlers = captureHandlers();
+  const sessionStart = handlers.get("session_start");
+  assert.notEqual(sessionStart, undefined);
+
+  await assert.doesNotReject(Promise.resolve(sessionStart?.({ reason: "startup" }, { hasUI: false })));
 });

@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Disabled workflows in non-interactive (`-p` / `--print` / `--mode json`) sessions, which bind a no-op UI surface and cannot drive workflow prompts, pickers, or the graph overlay: the `workflow` tool is removed from the model's active tool set at session start, and the `/workflow` command (reachable via `atomic -p "/workflow …"`) is refused — preventing headless runs from stalling on work that can never complete ([#1096](https://github.com/flora131/atomic/issues/1096)).
 - Escaped workflow lifecycle notice text and structured response hints, isolated lifecycle send failures from store subscribers, and rejected empty lifecycle notification event lists ([#1085](https://github.com/flora131/atomic/issues/1085)).
 - Fixed stage awaiting-input lifecycle notice dedupe so promptless pauses after resolved prompts are not suppressed by historical prompt metadata ([#1085](https://github.com/flora131/atomic/issues/1085)).
 - Reset workflow lifecycle-notification dedupe state at chat session boundaries so reused workflow run IDs in later sessions still emit completion/failure/input notices ([#1085](https://github.com/flora131/atomic/issues/1085)).

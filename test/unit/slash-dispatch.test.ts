@@ -19,6 +19,7 @@ import {
   parseWorkflowArgs,
   tokenizeWorkflowArgs,
   makeExecuteWorkflowTool,
+  WORKFLOW_NON_INTERACTIVE_MESSAGE,
 } from "../../packages/workflows/src/extension/index.js";
 import { renderResult } from "../../packages/workflows/src/extension/render-result.js";
 import type { WorkflowToolResult } from "../../packages/workflows/src/extension/render-result.js";
@@ -2234,5 +2235,70 @@ describe("tool run-control actions", () => {
     assert.equal(r.status, "noop");
     assert.equal(r.runId, runId);
     assert.match(r.message, /workflow_not_found/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Non-interactive (-p) mode: /workflow command is disabled (hasUI === false).
+// Mirrors the workflow-tool guard so print/JSON sessions cannot drive workflows
+// that have no UI to answer human-in-the-loop prompts.
+// ---------------------------------------------------------------------------
+
+describe("/workflow command disabled in non-interactive (-p) mode", () => {
+  async function registerWorkflowCommand(): Promise<{
+    handler: NonNullable<PiCommandOptions["handler"]>;
+    sent: SentMessage[];
+  }> {
+    const { pi, commands, sent } = buildMockPi();
+    await runFactory(pi);
+    const cmd = commands.find((c) => c.name === "workflow");
+    assert.ok(cmd, "expected /workflow command registration");
+    return { handler: cmd.options.handler, sent };
+  }
+
+  function commandCtx(hasUI: boolean | undefined): { ctx: PiCommandContext; messages: string[] } {
+    const messages: string[] = [];
+    const ctx: PiCommandContext = {
+      ...(hasUI === undefined ? {} : { hasUI }),
+      ui: {
+        notify: (msg: string) => {
+          messages.push(msg);
+        },
+      },
+    };
+    return { ctx, messages };
+  }
+
+  test("/workflow notifies and short-circuits when no UI is available", async () => {
+    const { handler, sent } = await registerWorkflowCommand();
+    const { ctx, messages } = commandCtx(false);
+
+    await handler("list", ctx);
+
+    assert.equal(sent.length, 0);
+    assert.ok(
+      messages.some((m) => m === WORKFLOW_NON_INTERACTIVE_MESSAGE),
+      `expected non-interactive notice, got: ${JSON.stringify(messages)}`,
+    );
+  });
+
+  test("/workflow proceeds when a UI is available", async () => {
+    const { handler, sent } = await registerWorkflowCommand();
+    const { ctx, messages } = commandCtx(true);
+
+    await handler("list", ctx);
+
+    assert.equal(messages.some((m) => m === WORKFLOW_NON_INTERACTIVE_MESSAGE), false);
+    assert.ok(sent.length > 0, "expected /workflow list to emit a chat surface");
+  });
+
+  test("/workflow proceeds when hasUI is unset (degraded runtimes)", async () => {
+    const { handler, sent } = await registerWorkflowCommand();
+    const { ctx, messages } = commandCtx(undefined);
+
+    await handler("list", ctx);
+
+    assert.equal(messages.some((m) => m === WORKFLOW_NON_INTERACTIVE_MESSAGE), false);
+    assert.ok(sent.length > 0, "expected /workflow list to emit a chat surface");
   });
 });
