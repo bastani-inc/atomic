@@ -9,7 +9,7 @@ description: |
   - Code that has gotten messy after several iterations.
 tools: read, edit, write, grep, find, ls, bash
 model: openai/gpt-5.5
-fallbackModels: openai-codex/gpt-5.5, github-copilot/gpt-5.5, anthropic/claude-opus-4-7, github-copilot/claude-opus-4.7
+fallbackModels: openai-codex/gpt-5.5, github-copilot/gpt-5.5, anthropic/claude-opus-4-8, github-copilot/claude-opus-4.7
 thinking: low
 ---
 

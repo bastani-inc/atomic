@@ -222,12 +222,14 @@ export default defineWorkflow("open-claude-design")
       DEFAULT_MAX_REFINEMENTS,
     );
 
-    const { runId, artifactDir, previewPath, specPath } = prepareArtifactDir(ctx.cwd);
+    const { runId, artifactDir, previewPath, specPath } = prepareArtifactDir(
+      ctx.cwd,
+    );
     const previewFileUrl = `file://${previewPath}`;
     const specFileUrl = `file://${specPath}`;
 
     const designModelConfig = {
-      model: "anthropic/claude-opus-4-7",
+      model: "anthropic/claude-opus-4-8",
       fallbackModels: [
         "github-copilot/claude-opus-4.7",
         "anthropic/claude-sonnet-4-6",
@@ -710,7 +712,10 @@ export default defineWorkflow("open-claude-design")
               ["preview_path", previewPath],
               ["preview_file_url", previewFileUrl],
               ["current_design_and_feedback", "{previous}"],
-              ["playwright_browser_bootstrap", PLAYWRIGHT_BROWSER_BOOTSTRAP_RULES],
+              [
+                "playwright_browser_bootstrap",
+                PLAYWRIGHT_BROWSER_BOOTSTRAP_RULES,
+              ],
               [
                 "instructions",
                 [
@@ -798,7 +803,10 @@ export default defineWorkflow("open-claude-design")
             ],
             ["preview_path", previewPath],
             ["preview_file_url", previewFileUrl],
-            ["playwright_browser_bootstrap", PLAYWRIGHT_BROWSER_BOOTSTRAP_RULES],
+            [
+              "playwright_browser_bootstrap",
+              PLAYWRIGHT_BROWSER_BOOTSTRAP_RULES,
+            ],
             [
               "instructions",
               [

@@ -401,7 +401,7 @@ export async function runDeepResearchCodebaseWorkflow(
     fallbackModels: [
       "openai-codex/gpt-5.5",
       "github-copilot/gpt-5.5",
-      "anthropic/claude-opus-4-7",
+      "anthropic/claude-opus-4-8",
       "github-copilot/claude-opus-4.7",
     ],
     thinkingLevel: "high" as const,
