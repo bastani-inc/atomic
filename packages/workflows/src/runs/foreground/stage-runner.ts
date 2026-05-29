@@ -209,6 +209,35 @@ function lastOutputTextFromMessages(messages: AgentSession["messages"]): string 
   return undefined;
 }
 
+/**
+ * When an agent turn ends on a tool that returned `terminate: true`, control
+ * returns with the tool result as the final conversational message and no
+ * trailing assistant response (see the structured-output contract in the
+ * Atomic extension docs). That tool result is the deterministic output of the
+ * turn, so it must win over any prose the model emitted *before* the tool call
+ * in the same assistant message (which `getLastAssistantText()` would otherwise
+ * surface). This keeps terminating structured-output tools such as the `goal`
+ * and `ralph` review gates' `review_decision` tool deterministic regardless of
+ * surrounding narration.
+ *
+ * Returns the trailing tool-result text when the most recent conversational
+ * message is a tool result, or `undefined` when the turn ended on an assistant
+ * response (the normal, non-terminating case).
+ */
+function terminatingToolResultText(messages: AgentSession["messages"]): string | undefined {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!message) continue;
+    if (message.role === "toolResult") {
+      const text = extractMessageText(message).trim();
+      return text.length > 0 ? text : undefined;
+    }
+    if (message.role === "assistant") return undefined;
+    // Skip non-conversational roles (system/user) while locating the tail.
+  }
+  return undefined;
+}
+
 function asAgentSession(activeSession: StageSessionRuntime | undefined): AgentSession | undefined {
   if (!activeSession) return undefined;
   const candidate = activeSession as StageSessionRuntime & Partial<Pick<AgentSession, "state" | "sessionManager" | "modelRegistry" | "getContextUsage">>;
@@ -228,6 +257,11 @@ function lastAssistantTextFromSession(
   fallback: string | undefined,
 ): string | undefined {
   if (!activeSession) return fallback;
+  // A `terminate: true` tool result is the deterministic turn output and must
+  // take precedence over prose the model emitted before the terminating tool
+  // call (which getLastAssistantText() would surface).
+  const terminatingText = terminatingToolResultText(activeSession.messages);
+  if (terminatingText !== undefined) return terminatingText;
   const direct = activeSession.getLastAssistantText?.();
   if (direct !== undefined && direct.trim()) return direct;
   return lastOutputTextFromMessages(activeSession.messages) ?? direct ?? fallback;

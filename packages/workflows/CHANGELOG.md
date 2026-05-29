@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Added a deterministic readiness gate after `ask_user_question` tool calls inside workflow stages: when a model turn issues an `ask_user_question` call, the workflow asks "Are you ready to move on to the next stage?" (`y`/`n`) before completing/advancing the stage. Answering `n` keeps execution in the current stage (re-arming detection so a subsequent question + turn end re-prompts), while `y` resumes normal sequential and dependent parallel progression. The gate applies to all `ask_user_question` calls (including "Chat about this") and is independent of how the underlying UI is implemented ([#1099](https://github.com/flora131/atomic/issues/1099)).
 
+### Fixed
+
+- Made `terminate: true` tool results deterministic when deriving a stage/task's result text: when an agent turn ends on a terminating tool, the stage runner now returns that tool result's output instead of any prose the model emitted before the tool call. This fixes the `goal` and `ralph` review gates, whose terminating `review_decision` structured-output tool emits clean JSON — previously the preceding assistant narration was captured instead, so the strict `JSON.parse` failed and a valid verdict was misclassified as a reviewer failure ("returned invalid structured JSON"), blocking quorum and forcing extra turns ([#1099](https://github.com/flora131/atomic/issues/1099)).
+
 ## [0.8.20] - 2026-05-29
 
 ### Changed

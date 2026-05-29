@@ -594,6 +594,50 @@ describe("createStageContext — lazy attach", () => {
     assert.equal(result, '{"stop_review_loop":true}');
     assert.equal(ctx.getLastAssistantText(), '{"stop_review_loop":true}');
   });
+
+  test("terminating tool result wins over assistant prose emitted before the tool call", async () => {
+    // Mirrors the real review_decision (goal/ralph) case: the model narrates in
+    // prose and then ends the turn on the terminating structured-output tool.
+    // The deterministic turn output must be the tool result JSON, not the prose.
+    const verdict =
+      '{"stop_review_loop":true,"overall_correctness":"patch is correct"}';
+    const messages = [
+      {
+        role: "user",
+        content: [{ type: "text", text: "question" }],
+        timestamp: Date.now(),
+      },
+    ] as AgentSession["messages"];
+    const { session } = makeMockSession({
+      async prompt() {
+        messages.push({
+          role: "assistant",
+          content: [
+            { type: "text", text: "All validation passes; the patch looks correct." },
+            { type: "toolCall", id: "call-1", name: "review_decision", arguments: {} },
+          ],
+          timestamp: Date.now(),
+        } as AgentSession["messages"][number]);
+        messages.push({
+          role: "toolResult",
+          toolCallId: "call-1",
+          toolName: "review_decision",
+          content: [{ type: "text", text: verdict }],
+          isError: false,
+          timestamp: Date.now(),
+        } as AgentSession["messages"][number]);
+      },
+      messages,
+      getLastAssistantText: () => "All validation passes; the patch looks correct.",
+    });
+    const agentSession: AgentSessionAdapter = { async create() { return session; } };
+    const ctx = createStageContext(makeOpts({ adapters: { agentSession } })) as InternalStageContext;
+
+    const result = await ctx.prompt("question");
+
+    assert.equal(result, verdict);
+    assert.equal(ctx.getLastAssistantText(), verdict);
+  });
 });
 
 function flushMicrotasks(times = 8): Promise<void> {
