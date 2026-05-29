@@ -1,6 +1,6 @@
 {
   "name": "@bastani/intercom",
-  "version": "0.8.20-0",
+  "version": "0.8.20",
   "private": true,
   "description": "Atomic extension providing a private coordination channel between parent and child agent sessions. Fork of: https://github.com/nicobailon/pi-intercom",
   "contributors": [
