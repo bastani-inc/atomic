@@ -114,7 +114,7 @@ describe("package commands", () => {
         .map(([message]) => String(message))
         .join("\n");
       expect(stdout).toContain("Usage:");
-      expect(stdout).toContain("pi install <source> [-l]");
+      expect(stdout).toContain("atomic install <source> [-l]");
       expect(errorSpy).not.toHaveBeenCalled();
       expect(process.exitCode).toBeUndefined();
     } finally {
@@ -134,7 +134,7 @@ describe("package commands", () => {
         .join("\n");
       expect(stderr).toContain('Unknown option --unknown for "install".');
       expect(stderr).toContain(
-        'Use "pi --help" or "pi install <source> [-l]".',
+        'Use "atomic --help" or "atomic install <source> [-l]".',
       );
       expect(process.exitCode).toBe(1);
     } finally {
@@ -152,7 +152,7 @@ describe("package commands", () => {
         .map(([message]) => String(message))
         .join("\n");
       expect(stderr).toContain("Missing install source.");
-      expect(stderr).toContain("Usage: pi install <source> [-l]");
+      expect(stderr).toContain("Usage: atomic install <source> [-l]");
       expect(stderr).not.toContain("at ");
       expect(process.exitCode).toBe(1);
     } finally {
@@ -338,7 +338,7 @@ else {
     vi.stubGlobal(
       "fetch",
       vi.fn(async () =>
-        Response.json({ packageName: activePackageName, version: "0.73.0" }),
+        Response.json({ name: activePackageName, version: "0.73.0" }),
       ),
     );
 
@@ -408,7 +408,7 @@ if(args.includes("install")) process.exit(23);
     vi.stubGlobal(
       "fetch",
       vi.fn(async () =>
-        Response.json({ packageName: activePackageName, version: "0.73.0" }),
+        Response.json({ name: activePackageName, version: "0.73.0" }),
       ),
     );
 

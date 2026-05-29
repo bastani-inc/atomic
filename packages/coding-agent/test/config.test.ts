@@ -147,7 +147,7 @@ describe("detectInstallMethod", () => {
 
 		expect(detectInstallMethod()).toBe("pnpm");
 		expect(getUpdateInstruction("@bastani/atomic")).toBe(
-			"Run: pnpm install -g @bastani/atomic",
+			"Run: pnpm install -g --ignore-scripts @bastani/atomic",
 		);
 	});
 
@@ -169,8 +169,8 @@ describe("detectInstallMethod", () => {
 		expect(detectInstallMethod()).toBe("npm");
 		expect(command).toEqual({
 			command: "npm",
-			args: ["--prefix", prefix, "install", "-g", "@bastani/atomic"],
-			display: `npm --prefix ${prefix} install -g @bastani/atomic`,
+			args: ["--prefix", prefix, "install", "-g", "--ignore-scripts", "@bastani/atomic"],
+			display: `npm --prefix ${prefix} install -g --ignore-scripts @bastani/atomic`,
 		});
 	});
 
@@ -181,8 +181,8 @@ describe("detectInstallMethod", () => {
 
 		expect(command).toEqual({
 			command: "npm",
-			args: ["--prefix", prefix, "install", "-g", "@new-scope/pi"],
-			display: `npm --prefix ${prefix} uninstall -g @bastani/atomic && npm --prefix ${prefix} install -g @new-scope/pi`,
+			args: ["--prefix", prefix, "install", "-g", "--ignore-scripts", "@new-scope/pi"],
+			display: `npm --prefix ${prefix} uninstall -g @bastani/atomic && npm --prefix ${prefix} install -g --ignore-scripts @new-scope/pi`,
 			steps: [
 				{
 					command: "npm",
@@ -191,8 +191,8 @@ describe("detectInstallMethod", () => {
 				},
 				{
 					command: "npm",
-					args: ["--prefix", prefix, "install", "-g", "@new-scope/pi"],
-					display: `npm --prefix ${prefix} install -g @new-scope/pi`,
+					args: ["--prefix", prefix, "install", "-g", "--ignore-scripts", "@new-scope/pi"],
+					display: `npm --prefix ${prefix} install -g --ignore-scripts @new-scope/pi`,
 				},
 			],
 		});
@@ -205,8 +205,8 @@ describe("detectInstallMethod", () => {
 
 		expect(command).toEqual({
 			command: "npm",
-			args: ["--prefix", prefix, "install", "-g", "@bastani/atomic"],
-			display: `npm --prefix ${prefix} install -g @bastani/atomic`,
+			args: ["--prefix", prefix, "install", "-g", "--ignore-scripts", "@bastani/atomic"],
+			display: `npm --prefix ${prefix} install -g --ignore-scripts @bastani/atomic`,
 		});
 	});
 
@@ -215,7 +215,7 @@ describe("detectInstallMethod", () => {
 
 		const command = getSelfUpdateCommand("@bastani/atomic", []);
 
-		expect(command?.args).toEqual(["--prefix", prefix, "install", "-g", "@bastani/atomic"]);
+		expect(command?.args).toEqual(["--prefix", prefix, "install", "-g", "--ignore-scripts", "@bastani/atomic"]);
 	});
 
 	test("quotes npm self-update display paths", () => {
@@ -223,7 +223,7 @@ describe("detectInstallMethod", () => {
 
 		const command = getSelfUpdateCommand("@bastani/atomic");
 
-		expect(command?.display).toBe(`npm --prefix "${prefix}" install -g @bastani/atomic`);
+		expect(command?.display).toBe(`npm --prefix "${prefix}" install -g --ignore-scripts @bastani/atomic`);
 	});
 
 	test("does not infer Windows npm custom prefixes from package paths", () => {
@@ -233,7 +233,7 @@ describe("detectInstallMethod", () => {
 
 		expect(detectInstallMethod()).toBe("npm");
 		expect(getUpdateInstruction("@bastani/atomic")).toBe(
-			"Run: npm install -g @bastani/atomic",
+			"Run: npm install -g --ignore-scripts @bastani/atomic",
 		);
 	});
 
@@ -245,8 +245,8 @@ describe("detectInstallMethod", () => {
 		expect(detectInstallMethod()).toBe("bun");
 		expect(command).toEqual({
 			command: "bun",
-			args: ["install", "-g", "@bastani/atomic"],
-			display: "bun install -g @bastani/atomic",
+			args: ["install", "-g", "--ignore-scripts", "@bastani/atomic"],
+			display: "bun install -g --ignore-scripts @bastani/atomic",
 		});
 	});
 
@@ -258,8 +258,8 @@ describe("detectInstallMethod", () => {
 		expect(detectInstallMethod()).toBe("pnpm");
 		expect(command).toEqual({
 			command: "pnpm",
-			args: ["install", "-g", "@new-scope/pi"],
-			display: "pnpm remove -g @bastani/atomic && pnpm install -g @new-scope/pi",
+			args: ["install", "-g", "--ignore-scripts", "@new-scope/pi"],
+			display: "pnpm remove -g @bastani/atomic && pnpm install -g --ignore-scripts @new-scope/pi",
 			steps: [
 				{
 					command: "pnpm",
@@ -268,8 +268,8 @@ describe("detectInstallMethod", () => {
 				},
 				{
 					command: "pnpm",
-					args: ["install", "-g", "@new-scope/pi"],
-					display: "pnpm install -g @new-scope/pi",
+					args: ["install", "-g", "--ignore-scripts", "@new-scope/pi"],
+					display: "pnpm install -g --ignore-scripts @new-scope/pi",
 				},
 			],
 		});
@@ -283,8 +283,8 @@ describe("detectInstallMethod", () => {
 		expect(detectInstallMethod()).toBe("yarn");
 		expect(command).toEqual({
 			command: "yarn",
-			args: ["global", "add", "@new-scope/pi"],
-			display: "yarn global remove @bastani/atomic && yarn global add @new-scope/pi",
+			args: ["global", "add", "--ignore-scripts", "@new-scope/pi"],
+			display: "yarn global remove @bastani/atomic && yarn global add --ignore-scripts @new-scope/pi",
 			steps: [
 				{
 					command: "yarn",
@@ -293,8 +293,8 @@ describe("detectInstallMethod", () => {
 				},
 				{
 					command: "yarn",
-					args: ["global", "add", "@new-scope/pi"],
-					display: "yarn global add @new-scope/pi",
+					args: ["global", "add", "--ignore-scripts", "@new-scope/pi"],
+					display: "yarn global add --ignore-scripts @new-scope/pi",
 				},
 			],
 		});
@@ -308,8 +308,8 @@ describe("detectInstallMethod", () => {
 		expect(detectInstallMethod()).toBe("bun");
 		expect(command).toEqual({
 			command: "bun",
-			args: ["install", "-g", "@new-scope/pi"],
-			display: "bun uninstall -g @bastani/atomic && bun install -g @new-scope/pi",
+			args: ["install", "-g", "--ignore-scripts", "@new-scope/pi"],
+			display: "bun uninstall -g @bastani/atomic && bun install -g --ignore-scripts @new-scope/pi",
 			steps: [
 				{
 					command: "bun",
@@ -318,8 +318,8 @@ describe("detectInstallMethod", () => {
 				},
 				{
 					command: "bun",
-					args: ["install", "-g", "@new-scope/pi"],
-					display: "bun install -g @new-scope/pi",
+					args: ["install", "-g", "--ignore-scripts", "@new-scope/pi"],
+					display: "bun install -g --ignore-scripts @new-scope/pi",
 				},
 			],
 		});

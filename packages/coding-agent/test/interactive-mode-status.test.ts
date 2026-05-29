@@ -311,6 +311,12 @@ describe("InteractiveMode.showLoadedResources", () => {
 				(InteractiveMode as any).prototype.getCompactExtensionLabels.call(fakeThis, extensions),
 			formatDiagnostics: () => "diagnostics",
 			getBuiltInCommandConflictDiagnostics: () => [],
+			getResourceDiagnosticsTotal: (values: Array<{ length: number }[]>) =>
+				values.reduce((total, diagnostics) => total + diagnostics.length, 0),
+			formatResourceCount: (count: number, singular: string, plural?: string) =>
+				(InteractiveMode as any).prototype.formatResourceCount.call(fakeThis, count, singular, plural),
+			addResourceDisclosure: (disclosure: unknown) =>
+				(InteractiveMode as any).prototype.addResourceDisclosure.call(fakeThis, disclosure),
 		};
 
 		if (options.useRealScopeGroups) {
@@ -437,9 +443,11 @@ describe("InteractiveMode.showLoadedResources", () => {
 		});
 
 		const output = renderAll(fakeThis.chatContainer);
-		expect(output).toContain("[Skills]");
-		expect(output).toContain("commit");
-		expect(output).not.toContain("resource-list");
+		expect(output).toContain("RESOURCES");
+		expect(output).toContain("1 skill");
+		// compact summary only: no expanded detail rows, no per-resource names
+		expect(output).not.toContain("available");
+		expect(output).not.toContain("commit");
 	});
 
 	test("shows full resource listing when expanded", () => {
@@ -454,9 +462,9 @@ describe("InteractiveMode.showLoadedResources", () => {
 		});
 
 		const output = renderAll(fakeThis.chatContainer);
-		expect(output).toContain("[Skills]");
-		expect(output).toContain("resource-list");
-		expect(output).not.toContain("commit");
+		expect(output).toContain("Skills");
+		expect(output).toContain("available");
+		expect(output).toContain("commit");
 	});
 
 	test("shows full resource listing on verbose startup even when tool output is collapsed", () => {
@@ -472,14 +480,15 @@ describe("InteractiveMode.showLoadedResources", () => {
 		});
 
 		const output = renderAll(fakeThis.chatContainer);
-		expect(output).toContain("[Skills]");
-		expect(output).toContain("resource-list");
-		expect(output).not.toContain("commit");
+		expect(output).toContain("Skills");
+		expect(output).toContain("available");
+		expect(output).toContain("commit");
 	});
 
 	test("abbreviates extensions in compact listing", () => {
 		const fakeThis = createShowLoadedResourcesThis({
 			quietStartup: false,
+			toolOutputExpanded: true,
 			extensions: [{ path: "/tmp/extensions/answer.ts" }, { path: "/tmp/extensions/btw.ts" }],
 		});
 
@@ -488,7 +497,8 @@ describe("InteractiveMode.showLoadedResources", () => {
 		});
 
 		const output = renderAll(fakeThis.chatContainer);
-		expect(output).toContain("[Extensions]");
+		// abbreviated extension labels render in the expanded Extensions detail row
+		expect(output).toContain("Extensions");
 		expect(output).toContain("answer.ts, btw.ts");
 		expect(output).not.toContain("extensions/answer.ts");
 	});
@@ -504,9 +514,7 @@ describe("InteractiveMode.showLoadedResources", () => {
 			force: false,
 		});
 
-		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(`
-"[Extensions]
-  @scope/pi-scoped, answer.ts, cli-extension.ts, HazAT/pi-interactive-subagents, HazAT/pi-interactive-subagents:subagents, local-index, pi-markdown-preview, user-index"`);
+		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(`"RESOURCES context ready · 8 extensions"`);
 	});
 
 	test("adds more parent folders until local extension labels are unique", () => {
@@ -550,9 +558,7 @@ describe("InteractiveMode.showLoadedResources", () => {
 			force: false,
 		});
 
-		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(`
-"[Extensions]
-  alpha/one, beta/one, gamma/one"`);
+		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(`"RESOURCES context ready · 3 extensions"`);
 	});
 
 	test("strips index.ts from local extension label, showing parent dir", () => {
@@ -578,9 +584,7 @@ describe("InteractiveMode.showLoadedResources", () => {
 			force: false,
 		});
 
-		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(`
-"[Extensions]
-  plan-mode"`);
+		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(`"RESOURCES context ready · 1 extension"`);
 	});
 
 	test("strips index.js from local extension label, showing parent dir", () => {
@@ -606,9 +610,7 @@ describe("InteractiveMode.showLoadedResources", () => {
 			force: false,
 		});
 
-		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(`
-"[Extensions]
-  plan-mode"`);
+		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(`"RESOURCES context ready · 1 extension"`);
 	});
 
 	test("mixed single-file and subdirectory index.ts extensions strip index.ts", () => {
@@ -643,9 +645,7 @@ describe("InteractiveMode.showLoadedResources", () => {
 			force: false,
 		});
 
-		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(`
-"[Extensions]
-  plan-mode, webfetch.ts"`);
+		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(`"RESOURCES context ready · 2 extensions"`);
 	});
 
 	test("multiple index.ts with unique parent dirs need no disambiguation", () => {
@@ -680,9 +680,7 @@ describe("InteractiveMode.showLoadedResources", () => {
 			force: false,
 		});
 
-		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(`
-"[Extensions]
-  bar, foo"`);
+		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(`"RESOURCES context ready · 2 extensions"`);
 	});
 
 	test("multiple index.ts with same parent dir name disambiguated with grandparent", () => {
@@ -717,9 +715,7 @@ describe("InteractiveMode.showLoadedResources", () => {
 			force: false,
 		});
 
-		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(`
-"[Extensions]
-  alpha/tools, beta/tools"`);
+		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(`"RESOURCES context ready · 2 extensions"`);
 	});
 
 	test("non-index file in subdirectory stays as filename", () => {
@@ -745,9 +741,7 @@ describe("InteractiveMode.showLoadedResources", () => {
 			force: false,
 		});
 
-		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(`
-"[Extensions]
-  main.ts"`);
+		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(`"RESOURCES context ready · 1 extension"`);
 	});
 
 	test("package extensions still strip index.ts correctly (regression guard)", () => {
@@ -773,9 +767,7 @@ describe("InteractiveMode.showLoadedResources", () => {
 			force: false,
 		});
 
-		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(`
-"[Extensions]
-  pi-markdown-preview"`);
+		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(`"RESOURCES context ready · 1 extension"`);
 	});
 	test("captures mixed extension layouts in expanded output", () => {
 		const fakeThis = createShowLoadedResourcesThis({
@@ -790,21 +782,12 @@ describe("InteractiveMode.showLoadedResources", () => {
 		});
 
 		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(`
-"[Extensions]
-  project
-    /tmp/project/.pi/extensions/answer.ts
-    /tmp/project/.pi/extensions/local-index
-    git:github.com/HazAT/pi-interactive-subagents
-      extensions
-      extensions/subagents
-    npm:@scope/pi-scoped
-      extensions
-    npm:pi-markdown-preview
-      extensions
-  user
-    /tmp/agent/extensions/user-index
-  path
-    /tmp/temp/cli-extension.ts"`);
+			"RESOURCES context ready · 8 extensions
+			✓ Ready      context loaded
+			✓ Skills     0 available · none
+			✓ Prompts    0 available · none
+			✓ Extensions 8 available · answer.ts, local-index, user-index, pi-markdown-preview, +4"
+		`);
 	});
 
 	test("shows context paths relative to cwd while preserving full external paths", () => {
@@ -821,9 +804,11 @@ describe("InteractiveMode.showLoadedResources", () => {
 		});
 
 		const output = renderAll(fakeThis.chatContainer).replace(/\\/g, "/");
-		expect(output).toContain("[Context]");
+		expect(output).toContain("RESOURCES");
 		expect(output).toContain("~/.pi/agent/AGENTS.md, AGENTS.md");
 		expect(output).not.toContain(`${cwd.replace(/\\/g, "/")}/AGENTS.md`);
+		// compact summary only: no expanded detail rows
+		expect(output).not.toContain("available");
 	});
 
 	test("shows full context paths when expanded", () => {
@@ -841,10 +826,13 @@ describe("InteractiveMode.showLoadedResources", () => {
 		});
 
 		const output = renderAll(fakeThis.chatContainer).replace(/\\/g, "/");
-		expect(output).toContain("[Context]");
-		expect(output).toContain("~/.pi/agent/AGENTS.md");
-		expect(output).toContain("~/Development/pi-mono/AGENTS.md");
-		expect(output).not.toContain("~/.pi/agent/AGENTS.md, AGENTS.md");
+		expect(output).toContain("RESOURCES");
+		// expanded view adds the ✓ Ready detail rows not present in the compact summary
+		expect(output).toContain("Ready");
+		expect(output).toContain("available");
+		// external context path preserved in full; cwd-internal path relativized to its basename
+		expect(output).toContain("~/.pi/agent/AGENTS.md, AGENTS.md");
+		expect(output).not.toContain(`${cwd.replace(/\\/g, "/")}/AGENTS.md`);
 	});
 
 	test("does not show verbose listing on quiet startup during reload", () => {
