@@ -2326,21 +2326,34 @@ export class InteractiveMode {
       this.customFooter.dispose();
     }
 
-    // Remove current footer from UI
-    if (this.customFooter) {
-      this.ui.removeChild(this.customFooter);
+    // Swap the footer IN PLACE so it keeps its slot directly above
+    // `widgetContainerBelow`. Using removeChild + addChild would append the new
+    // footer to the very end of the UI (after the below-editor widgets), which
+    // breaks the ordering invariant established for #1109: the footer must stay
+    // pinned under the editor, and the below-editor widget container must remain
+    // the last UI child so a live widget's per-tick line stays within the bottom
+    // viewport (above-fold ticks trigger pi-tui's full-screen/scrollback clear).
+    const currentFooter: Component = this.customFooter ?? this.footer;
+    const footerIndex = this.ui.children.indexOf(currentFooter);
+
+    let nextFooter: Component;
+    if (factory) {
+      const created = factory(this.ui, theme, this.footerDataProvider);
+      this.customFooter = created;
+      nextFooter = created;
     } else {
-      this.ui.removeChild(this.footer);
+      this.customFooter = undefined;
+      nextFooter = this.footer;
     }
 
-    if (factory) {
-      // Create and add custom footer, passing the data provider
-      this.customFooter = factory(this.ui, theme, this.footerDataProvider);
-      this.ui.addChild(this.customFooter);
+    if (footerIndex !== -1) {
+      this.ui.children[footerIndex] = nextFooter;
     } else {
-      // Restore built-in footer
-      this.customFooter = undefined;
-      this.ui.addChild(this.footer);
+      // Footer slot not found (e.g. swapped before init attached it): append the
+      // footer, then re-attach the below-editor container so it stays last.
+      this.ui.addChild(nextFooter);
+      this.ui.removeChild(this.widgetContainerBelow);
+      this.ui.addChild(this.widgetContainerBelow);
     }
 
     this.ui.requestRender();
