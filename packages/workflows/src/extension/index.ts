@@ -195,6 +195,11 @@ export interface PiCommandContext extends PiModelContext {
   ui: {
     notify: (message: string, type?: "info" | "warning" | "error") => void;
   } & PiUISurface;
+  /**
+   * False when the host bound a no-op UI surface (print/JSON `-p` modes).
+   * Absent on older hosts and unit-test stubs; treat absence as interactive.
+   */
+  hasUI?: boolean;
 }
 
 /** CLI flag registration options. Mirrors the inline options on `ExtensionAPI.registerFlag`. */
@@ -322,6 +327,17 @@ export interface ExtensionAPI {
       handler: (ctx?: PiCommandContext) => void | Promise<void>;
     },
   ) => void;
+  /**
+   * Read the model's currently-active tool names. Present on pi's ExtensionAPI;
+   * absent on older runtimes.
+   */
+  getActiveTools?: () => string[];
+  /**
+   * Replace the model's active tool set by name. Used to drop the `workflow`
+   * tool in non-interactive sessions. Present on pi's ExtensionAPI; absent on
+   * older runtimes.
+   */
+  setActiveTools?: (toolNames: string[]) => void;
   /**
    * Sets the current session name. Present on pi's ExtensionAPI.
    */
@@ -963,6 +979,41 @@ function hasWorkflowStageSubagentGuardEnv(): boolean {
 
 function isWorkflowStageToolContext(ctx: PiExecuteContext): boolean {
   return hasWorkflowStageSubagentGuardEnv() || ctx.orchestrationContext?.kind === "workflow-stage";
+}
+
+/** Tool name registered for workflow execution; shared by the de-advertise guard. */
+const WORKFLOW_TOOL_NAME = "workflow";
+
+/**
+ * User-facing message shown when the `/workflow` command is invoked in a
+ * non-interactive (`-p` / `--print` / `--mode json`) session. Such sessions
+ * bind a no-op UI surface (`ctx.hasUI === false`) and cannot drive workflow
+ * pickers, the graph overlay, or human-in-the-loop prompts.
+ *
+ * The `workflow` tool is removed from the model's tool set in these sessions
+ * (see `deAdvertiseWorkflowToolWhenHeadless`). The slash command has no
+ * advertise layer and is still reachable via `atomic -p "/workflow …"` (print
+ * mode dispatches leading-slash commands through `session.prompt`), so it is
+ * refused here instead.
+ */
+export const WORKFLOW_NON_INTERACTIVE_MESSAGE =
+  "Workflows are disabled in non-interactive (-p) mode; run Atomic interactively to use workflows.";
+
+/**
+ * Remove the `workflow` tool from the model's active tool set in non-interactive
+ * (`-p` / `--mode json`) sessions, which bind a no-op UI (`ctx.hasUI === false`)
+ * and cannot drive workflow prompts or the graph overlay. Invoked from
+ * `session_start`, which the host awaits before the first prompt, so the tool is
+ * gone before the model's first turn. Interactive and RPC modes bind a real UI
+ * context (`hasUI: true`) and keep the tool. No-ops on hosts that predate the
+ * `getActiveTools`/`setActiveTools` extension API.
+ */
+function deAdvertiseWorkflowToolWhenHeadless(pi: ExtensionAPI, hasUI: boolean | undefined): void {
+  if (hasUI !== false) return;
+  if (typeof pi.getActiveTools !== "function" || typeof pi.setActiveTools !== "function") return;
+  const active = pi.getActiveTools();
+  if (!active.includes(WORKFLOW_TOOL_NAME)) return;
+  pi.setActiveTools(active.filter((name) => name !== WORKFLOW_TOOL_NAME));
 }
 
 // ---------------------------------------------------------------------------
@@ -2740,6 +2791,13 @@ function factory(pi: ExtensionAPI): void {
       description:
         "Run or inspect pi workflows. Usage: /workflow <name> [key=value…] | /workflow [list|status|connect|attach|interrupt|kill|pause|resume|inputs|reload] [args]",
       handler: async (args: string, ctx: PiCommandContext) => {
+        // Print/JSON (`-p`) sessions cannot drive workflow pickers, the graph
+        // overlay, or human-in-the-loop prompts. Refuse before parsing so the
+        // command surface matches the disabled `workflow` tool.
+        if (ctx.hasUI === false) {
+          ctx.ui.notify(WORKFLOW_NON_INTERACTIVE_MESSAGE, "warning");
+          return;
+        }
         const print = (msg: string): void => ctx.ui.notify(msg, "info");
         // Quote-aware split so `prompt="map the codebase"` stays a single
         // token. Plain `.split(/\s+/)` would mangle quoted multi-word values
@@ -3366,6 +3424,12 @@ function factory(pi: ExtensionAPI): void {
     });
 
     pi.on("session_start", async (_event, ctx) => {
+      // Non-interactive (`-p` / `--mode json`) sessions cannot drive workflow
+      // prompts or the graph overlay; drop the `workflow` tool from the model's
+      // tool set before the first turn. The host awaits this handler during
+      // bindExtensions, ahead of the initial prompt.
+      deAdvertiseWorkflowToolWhenHeadless(pi, ctx?.hasUI);
+
       // Workflow lifecycle is scoped to the originating chat session.
       // A new session inherits a clean store; any leftover live runs from a
       // previous session in the same pi process are killed (subprocess

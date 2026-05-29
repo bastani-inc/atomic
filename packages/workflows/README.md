@@ -317,7 +317,7 @@ Press **F2** while a workflow is running to open the DAG overlay for the active 
 
 `@bastani/workflows` follows pi's package/extension model: pi loads `src/extension/index.ts` from the package `pi.extensions` manifest, then the extension registers the `workflow` tool, `/workflow` slash command, renderers, widget, and lifecycle hooks in-process.
 
-For interactive use, run workflows through `/workflow <name> [key=value ...]` or let the LLM call the `workflow` tool. For library or scripted use, call the explicit programmatic runner:
+For interactive use, run workflows through `/workflow <name> [key=value ...]` or let the LLM call the `workflow` tool. Both the `/workflow` command and the `workflow` tool are disabled in non-interactive (`-p` / `--print` / `--mode json`) sessions, which bind a no-op UI surface and therefore cannot drive workflow pickers, the graph overlay, or human-in-the-loop prompts. For library or scripted use, call the explicit programmatic runner instead:
 
 ```ts
 import { runWorkflow, type WorkflowOptions } from "@bastani/workflows";
