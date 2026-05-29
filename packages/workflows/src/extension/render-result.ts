@@ -213,6 +213,19 @@ export function renderResult(result: WorkflowToolResult, opts?: RenderResultOpts
   const partial = opts?.isPartial === true;
   const themed = opts?.plain !== true;
 
+  // Runtime guard. The tool-result renderer passes `result.details`, which can
+  // be absent or not yet shaped during streaming/partial renders or on error
+  // paths that return content without a structured payload. Dereferencing a
+  // missing `action` here previously threw and crashed the TUI render loop, so
+  // degrade gracefully instead.
+  if (
+    result === null ||
+    typeof result !== "object" ||
+    typeof (result as { action?: unknown }).action !== "string"
+  ) {
+    return partial ? "" : renderNotice("WORKFLOW", "no result", opts, themed);
+  }
+
   switch (result.action) {
     case "list": {
       const r = result as ListResult;

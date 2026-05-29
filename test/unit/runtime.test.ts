@@ -459,6 +459,21 @@ describe("renderResult — run variant", () => {
     assert.ok(out.includes("in progress"));
   });
 
+  test("missing or actionless result degrades gracefully instead of crashing", () => {
+    // The tool-result renderer forwards `result.details`, which can be undefined
+    // during streaming/partial renders or on error paths that return content
+    // without a structured payload. renderResult must not dereference a missing
+    // `action` (previously threw and crashed the TUI render loop).
+    const missing = undefined as unknown as Parameters<typeof renderResult>[0];
+    assert.doesNotThrow(() => renderResult(missing));
+    assert.ok(renderResult(missing).includes("WORKFLOW"));
+    // A partial render of a missing payload yields nothing rather than a notice.
+    assert.equal(renderResult(missing, { isPartial: true }), "");
+    // A non-object / actionless payload is handled by the same guard.
+    const actionless = {} as unknown as Parameters<typeof renderResult>[0];
+    assert.doesNotThrow(() => renderResult(actionless));
+  });
+
   test("inputs not-found carries error field in result", async () => {
     const registry = createRegistry();
     const result = await dispatch(

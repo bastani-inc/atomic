@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Hardened the `/workflow` tool-result renderer against missing or unshaped payloads. `renderResult` is passed `result.details`, which can be absent during streaming/partial renders or on error paths, and previously dereferenced a missing `action` and crashed the TUI render loop. It now degrades gracefully (renders nothing for partials, a generic notice otherwise) ([#1099](https://github.com/flora131/atomic/issues/1099)).
 - Made `terminate: true` tool results deterministic when deriving a stage/task's result text: when an agent turn ends on a terminating tool, the stage runner now returns that tool result's output instead of any prose the model emitted before the tool call. This fixes the `goal` and `ralph` review gates, whose terminating `review_decision` structured-output tool emits clean JSON — previously the preceding assistant narration was captured instead, so the strict `JSON.parse` failed and a valid verdict was misclassified as a reviewer failure ("returned invalid structured JSON"), blocking quorum and forcing extra turns ([#1099](https://github.com/flora131/atomic/issues/1099)).
 
 ## [0.8.20] - 2026-05-29
