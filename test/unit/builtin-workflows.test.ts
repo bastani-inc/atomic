@@ -1,12 +1,22 @@
 /**
- * Smoke tests for the three builtin workflows.
+ * Smoke tests for the builtin workflows.
  * Validates definition shape, input schema, and that builtins are authored with
  * the high-level ctx.task / ctx.parallel / ctx.chain primitives.
  */
 
 import { afterEach, beforeEach, describe, test } from "bun:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type {
@@ -1390,6 +1400,2001 @@ describe("ralph", () => {
 });
 
 // ---------------------------------------------------------------------------
+// descent
+// ---------------------------------------------------------------------------
+
+describe("descent", () => {
+  type TestAxisName = "features" | "reliability" | "modularity";
+
+  const INVOKING_CHECKOUT_REJECTION = /separate reusable linked Git worktree|invoking checkout|primary-checkout/i;
+  const DIRTY_REUSABLE_WORKTREE_REJECTION = /clean reusable worktree|dirty reusable worktree/i;
+
+  function projectionJson(
+    overrides: Partial<{
+      implementor_goal: string;
+      evaluator_goal: string;
+      terminator_goal: string;
+      goal_weights: Record<TestAxisName, number>;
+    }> = {},
+  ): string {
+    return JSON.stringify({
+      implementor_goal: overrides.implementor_goal ?? "Implement the objective safely.",
+      evaluator_goal: overrides.evaluator_goal ?? "Score objective progress with evidence.",
+      terminator_goal: overrides.terminator_goal ?? "Stop only when validated.",
+      goal_weights: overrides.goal_weights ?? {
+        features: 1,
+        reliability: 1,
+        modularity: 1,
+      },
+    });
+  }
+
+  function axisJson(
+    axis: TestAxisName,
+    score: number,
+    issues: readonly string[] = [],
+  ): string {
+    return JSON.stringify({
+      axis,
+      score,
+      issues,
+      feedback: `${axis} scored ${score}`,
+    });
+  }
+
+  function symbolicReportJson(
+    overrides: Partial<{
+      available_checks: readonly string[];
+      findings: readonly string[];
+      suggestions: readonly string[];
+      failed: boolean;
+      feedback: string;
+    }> = {},
+  ): string {
+    return JSON.stringify({
+      available_checks: overrides.available_checks ?? ["bun test focused"],
+      findings: overrides.findings ?? [],
+      suggestions: overrides.suggestions ?? [],
+      failed: overrides.failed ?? false,
+      feedback: overrides.feedback ?? "passed",
+    });
+  }
+
+  function symbolicJson(failed = false): string {
+    return symbolicReportJson({
+      findings: failed ? ["symbolic check failed"] : [],
+      suggestions: failed ? ["fix failing check"] : [],
+      failed,
+      feedback: failed ? "failed" : "passed",
+    });
+  }
+
+  function radicalPlanJson(
+    overrides: Partial<{
+      diagnosis: string;
+      previous_approach_failures: readonly string[];
+      new_strategy: string;
+      steps: readonly {
+        file_or_area: string;
+        change: string;
+        verification: string;
+      }[];
+      what_not_to_do: readonly string[];
+    }> = {},
+  ): string {
+    return JSON.stringify({
+      diagnosis: overrides.diagnosis ?? "Rejected iterations are repeating shallow fixes.",
+      previous_approach_failures:
+        overrides.previous_approach_failures ?? ["Retried the same implementation path without new evidence."],
+      new_strategy: overrides.new_strategy ?? "Re-slice the objective around the failing validator evidence first.",
+      steps: overrides.steps ?? [
+        {
+          file_or_area: "packages/workflows/builtin/descent.ts",
+          change: "Change the controller approach before mutating more code.",
+          verification: "Run the focused descent workflow tests.",
+        },
+      ],
+      what_not_to_do: overrides.what_not_to_do ?? ["Do not repeat the rejected patch shape."],
+    });
+  }
+
+  function interventionJson(
+    result: "SUCCESS" | "FAILURE" | "CONTINUE",
+    extras: Partial<{ requires_rollback: boolean; revert_to: string }> = {},
+  ): string {
+    return JSON.stringify({
+      result,
+      reason: `intervention ${result}`,
+      recommendation: `recommendation ${result}`,
+      next_steps: ["inspect", "continue deliberately"],
+      ...extras,
+    });
+  }
+
+  function makeMockGit(...args: [initialRef?: string | undefined]) {
+    const calls: {
+      captureHead: string[];
+      currentBranchRef: string[];
+      createAcceptedSnapshot: string[];
+      createAcceptedSnapshotCwd: string[];
+      resetToRef: string[];
+      resetToRefCwd: string[];
+      hasChanges: string[];
+    } = {
+      captureHead: [],
+      currentBranchRef: [],
+      createAcceptedSnapshot: [],
+      createAcceptedSnapshotCwd: [],
+      resetToRef: [],
+      resetToRefCwd: [],
+      hasChanges: [],
+    };
+    let currentRef: string | undefined = args.length === 0 ? "base-ref" : args[0];
+    return {
+      calls,
+      port: {
+        captureHead: async (cwd: string) => {
+          calls.captureHead.push(cwd);
+          return currentRef;
+        },
+        currentBranchRef: async (cwd: string) => {
+          calls.currentBranchRef.push(cwd);
+          return "current-branch";
+        },
+        hasChanges: async (cwd: string) => {
+          calls.hasChanges.push(cwd);
+          return calls.hasChanges.length > 1;
+        },
+        createAcceptedSnapshot: async (cwd: string, message: string) => {
+          calls.createAcceptedSnapshotCwd.push(cwd);
+          calls.createAcceptedSnapshot.push(message);
+          currentRef = `accepted-${calls.createAcceptedSnapshot.length}`;
+          return currentRef;
+        },
+        resetToRef: async (cwd: string, ref: string) => {
+          calls.resetToRefCwd.push(cwd);
+          calls.resetToRef.push(ref);
+          currentRef = ref;
+        },
+      },
+    };
+  }
+
+  const GIT_LOCAL_ENV_KEYS = [
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_PREFIX",
+    "GIT_QUARANTINE_PATH",
+    "GIT_WORK_TREE",
+  ] as const;
+
+  function gitCommandEnv(): NodeJS.ProcessEnv {
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    for (const key of GIT_LOCAL_ENV_KEYS) delete env[key];
+    return env;
+  }
+
+  async function runGit(cwd: string, args: readonly string[]): Promise<string> {
+    const proc = Bun.spawn(["git", "-C", cwd, ...args], {
+      stdout: "pipe",
+      stderr: "pipe",
+      env: gitCommandEnv(),
+    });
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    if (exitCode !== 0) {
+      throw new Error(
+        `git ${args.join(" ")} failed (${exitCode}): ${stderr || stdout}`,
+      );
+    }
+    return stdout.trim();
+  }
+
+  async function configureGitUser(repo: string): Promise<void> {
+    await runGit(repo, ["config", "user.name", "Atomic Test"]);
+    await runGit(repo, ["config", "user.email", "atomic-test@example.invalid"]);
+  }
+
+  function writeRepoFile(repo: string, path: string, content: string): void {
+    const filePath = join(repo, path);
+    mkdirSync(dirname(filePath), { recursive: true });
+    writeFileSync(filePath, content, "utf8");
+  }
+
+  async function initializeDescentGitRepo(
+    repo: string,
+    files: Readonly<Record<string, string>> = { "tracked.txt": "baseline\n" },
+  ): Promise<void> {
+    await runGit(repo, ["init"]);
+    await configureGitUser(repo);
+    for (const [path, content] of Object.entries(files)) {
+      writeRepoFile(repo, path, content);
+    }
+    await runGit(repo, ["add", "."]);
+    await runGit(repo, ["commit", "--no-gpg-sign", "-m", "baseline"]);
+  }
+
+  async function addLinkedWorktree(repo: string, worktree: string): Promise<void> {
+    await runGit(repo, ["worktree", "add", "--detach", worktree, "HEAD"]);
+    await configureGitUser(worktree);
+  }
+
+  function installFailingGitHooks(repo: string, hooks: readonly string[]): void {
+    const hookScript = [
+      "#!/bin/sh",
+      `echo hook-ran > ${JSON.stringify(join(repo, "hook-marker.txt"))}`,
+      "exit 1",
+      "",
+    ].join("\n");
+
+    for (const hook of hooks) {
+      const hookPath = join(repo, ".git", "hooks", hook);
+      writeFileSync(hookPath, hookScript, "utf8");
+      chmodSync(hookPath, 0o755);
+    }
+  }
+
+  function descentResponder(scores: {
+    features: number;
+    reliability: number;
+    modularity: number;
+    symbolicFailed?: boolean;
+  }) {
+    return (name: string) => {
+      if (name === "setup-projection") return projectionJson();
+      for (const axis of ["features", "reliability", "modularity"] as const) {
+        if (name.startsWith(`validator-${axis}-`)) {
+          return axisJson(axis, scores[axis]);
+        }
+      }
+      if (name.startsWith("validator-symbolic")) {
+        return symbolicJson(scores.symbolicFailed === true);
+      }
+      if (name.startsWith("terminator-")) {
+        return JSON.stringify({
+          decision: "CONTINUE",
+          feedback: "continue from test",
+        });
+      }
+      if (name.startsWith("radical-plan-")) {
+        return radicalPlanJson();
+      }
+      return undefined;
+    };
+  }
+
+  function parallelIncludesNameFragment(
+    parallelCalls: readonly (readonly string[])[],
+    fragment: string,
+  ): boolean {
+    return parallelCalls.some((names) =>
+      names.some((name) => name.includes(fragment)),
+    );
+  }
+
+  test("loads and declares descent inputs plus reusable worktree binding", async () => {
+    const mod = await import("../../packages/workflows/builtin/descent.js");
+    assertWorkflowDefinition(mod.default);
+    assert.equal(mod.default.name, "descent");
+    assert.equal(mod.default.normalizedName, "descent");
+    assert.equal(mod.default.inputs["objective"]?.type, "text");
+    assert.equal(mod.default.inputs["objective"]?.required, true);
+    assert.equal((mod.default.inputs["max_iterations"] as { default?: number }).default, 10);
+    assert.equal((mod.default.inputs["max_reject"] as { default?: number }).default, 3);
+    assert.equal((mod.default.inputs["history_observe"] as { default?: number }).default, 3);
+    assert.equal((mod.default.inputs["git_worktree_dir"] as { default?: string }).default, "");
+    assert.equal("base_branch" in mod.default.inputs, false);
+    assert.equal("recover" in mod.default.inputs, false);
+    assert.deepEqual(Object.keys(mod.default.inputs).sort(), [
+      "git_worktree_dir",
+      "history_observe",
+      "max_iterations",
+      "max_reject",
+      "objective",
+    ]);
+    assert.deepEqual(mod.default.inputBindings?.worktree, {
+      gitWorktreeDir: "git_worktree_dir",
+    });
+  });
+
+  test("rejects an empty objective before creating workflow stages", async () => {
+    const mod = await import("../../packages/workflows/builtin/descent.js");
+    const ctx = makeMockCtx({ objective: "   ", max_iterations: 1 });
+
+    const d = mod.default as unknown as WorkflowDefinition;
+    await assert.rejects(() => d.run(ctx), /non-empty objective/);
+    assert.deepEqual(ctx.calls.stage, []);
+    assert.deepEqual(ctx.calls.task, []);
+    assert.deepEqual(ctx.calls.parallel, []);
+  });
+
+  test("runs setup, implementor triplet, validator fanout, and deterministic success", async () => {
+    const mod = await import("../../packages/workflows/builtin/descent.js");
+    const ctx = makeMockCtx(
+      { objective: "Implement the spec", max_iterations: 2, history_observe: 2 },
+      { task: descentResponder({ features: 95, reliability: 92, modularity: 91 }) },
+    );
+
+    const d = mod.default as unknown as WorkflowDefinition;
+    const result = await d.run(ctx);
+
+    assert.deepEqual(ctx.calls.stage, []);
+    assert.ok(ctx.calls.task.includes("setup-projection"));
+    assert.ok(ctx.calls.task.includes("implementor-research-1"));
+    assert.ok(ctx.calls.task.includes("implementor-plan-1"));
+    assert.ok(ctx.calls.task.includes("implementor-exec-1"));
+    assert.ok(ctx.calls.task.includes("implementor-research-2"));
+    assert.deepEqual(ctx.calls.parallel[0], [
+      "validator-features-1",
+      "validator-reliability-1",
+      "validator-modularity-1",
+      "validator-symbolic-1",
+    ]);
+    assert.equal(ctx.calls.parallelOptions[0]?.failFast, false);
+    const planPrevious = ctx.calls.taskOptions["implementor-plan-1"]?.[0]?.previous as WorkflowTaskResult | undefined;
+    const execPrevious = ctx.calls.taskOptions["implementor-exec-1"]?.[0]?.previous as WorkflowTaskResult | undefined;
+    assert.equal(planPrevious?.name, "implementor-research-1");
+    assert.equal(execPrevious?.name, "implementor-plan-1");
+    const validatorOptions = ctx.calls.taskOptions["validator-features-1"]?.[0];
+    assert.ok(validatorOptions?.customTools?.some((tool) => tool.name === "submit_axis_score"));
+    assert.ok(validatorOptions?.tools?.includes("submit_axis_score"));
+    assert.equal(result["status"], "success");
+    assert.equal(result["converged"], true);
+    assert.equal(result["iterations_completed"], 2);
+    assert.equal(result["approved_iterations"], 2);
+    assert.equal((result["final_scores"] as { features?: number }).features, 95);
+  });
+
+  test("approved unavailable-Git evaluations can converge in workflow memory", async () => {
+    const mod = await import("../../packages/workflows/builtin/descent.js");
+    const unavailableGit = makeMockGit(undefined);
+    const ctx = makeMockCtx(
+      { objective: "Implement the spec", max_iterations: 2, history_observe: 2 },
+      { task: descentResponder({ features: 95, reliability: 92, modularity: 91 }) },
+    );
+
+    const result = await mod.runDescentWorkflow(ctx, {
+      objective: "Implement the spec",
+      maxIterations: 2,
+      maxReject: 3,
+      historyObserve: 2,
+      gitWorktreeDir: "",
+      git: unavailableGit.port,
+    });
+    const history = result["history"] as readonly {
+      baseline_ref_after?: string;
+      evaluator_report?: string;
+    }[];
+
+    assert.equal(result["status"], "success");
+    assert.equal(result["converged"], true);
+    assert.equal(result["approved_iterations"], 2);
+    assert.equal(result["rejected_iterations"], 0);
+    assert.match(String(result["final_report"]), /Git mode: unavailable/);
+    assert.match(String(result["final_report"]), /Initial baseline ref: unavailable/);
+    assert.match(String(result["final_report"]), /Accepted baseline ref: unavailable/);
+    assert.deepEqual(unavailableGit.calls.currentBranchRef, [process.cwd()]);
+    assert.match(ctx.calls.prompts["validator-features-1"]?.[0] ?? "", /Comparison base branch\/ref: current-branch/);
+    assert.deepEqual(unavailableGit.calls.createAcceptedSnapshot, []);
+    assert.deepEqual(unavailableGit.calls.resetToRef, []);
+    assert.equal(history.length, 2);
+    assert.ok(history.every((entry) => entry.baseline_ref_after === undefined));
+    assert.match(history[1]?.evaluator_report ?? "", /accepted in workflow memory/i);
+    assert.match(history[1]?.evaluator_report ?? "", /without advancing a git ref|no git ref/i);
+  });
+
+  test("mutating descent prompts forbid commits and generated scratch artifacts", async () => {
+    const mod = await import("../../packages/workflows/builtin/descent.js");
+    const git = makeMockGit();
+    const ctx = makeMockCtx(
+      { objective: "Implement the spec", max_iterations: 1, max_reject: 1, git_worktree_dir: "/tmp/descent-worktree" },
+      {
+        task: (name) => {
+          if (name === "campaign-reliability-1") return "campaign reliability result";
+          if (name === "campaign-modularity-1") return "campaign modularity result";
+          return descentResponder({ features: 40, reliability: 30, modularity: 20 })(name);
+        },
+      },
+    );
+
+    await mod.runDescentWorkflow(ctx, {
+      objective: "Implement the spec",
+      maxIterations: 1,
+      maxReject: 1,
+      historyObserve: 3,
+      gitWorktreeDir: "/tmp/descent-worktree",
+      git: git.port,
+    });
+
+    function assertMutatingSafety(prompt: string, label: string): void {
+      const expectations: readonly [RegExp, string][] = [
+        [/Do not run `?git commit`?/i, "forbid git commit"],
+        [/workflow gate/i, "mention workflow gate ownership"],
+        [/accepted[- ]baseline/i, "mention accepted baseline ownership"],
+        [/\.atomic\/todos/i, "forbid .atomic/todos"],
+        [/\.atomic review scratch/i, "forbid .atomic review scratch files"],
+        [/research\/2026-05-28-\*\.md/i, "forbid visible generated research stubs"],
+        [/stub artifacts/i, "forbid stub artifacts"],
+        [/Do not create pull requests/i, "preserve no-PR guard"],
+        [/\.descend/i, "preserve no-.descend guard"],
+      ];
+
+      for (const [pattern, expectation] of expectations) {
+        assert.match(prompt, pattern, `${label} must ${expectation}`);
+      }
+    }
+
+    const mutatingPromptStages = [
+      ["implementor-exec-1", "implementor exec"],
+      ["campaign-reliability-1", "reliability campaign"],
+      ["campaign-modularity-1", "modularity campaign"],
+    ] as const;
+
+    for (const [stageName, label] of mutatingPromptStages) {
+      assertMutatingSafety(ctx.calls.prompts[stageName]?.[0] ?? "", label);
+    }
+  });
+
+  test("descent submit-tool stages expose role-appropriate repository tools", async () => {
+    const mod = await import("../../packages/workflows/builtin/descent.js");
+    const git = makeMockGit();
+    const ctx = makeMockCtx(
+      { objective: "Implement the spec", max_iterations: 1, max_reject: 1, git_worktree_dir: "/tmp/descent-worktree" },
+      {
+        task: (name) => {
+          if (name.startsWith("campaign-reliability-")) return "campaign reliability result";
+          if (name.startsWith("campaign-modularity-")) return "campaign modularity result";
+          return descentResponder({ features: 40, reliability: 30, modularity: 20 })(name);
+        },
+      },
+    );
+
+    await mod.runDescentWorkflow(ctx, {
+      objective: "Implement the spec",
+      maxIterations: 1,
+      maxReject: 1,
+      historyObserve: 3,
+      gitWorktreeDir: "/tmp/descent-worktree",
+      git: git.port,
+    });
+
+    const inspectionTools = ["read", "grep", "find", "ls"] as const;
+    const readOnlyTools = ["read", "bash", "grep", "find", "ls"] as const;
+    const mutatingTools = ["read", "bash", "edit", "write", "grep", "find", "ls"] as const;
+
+    function assertTools(stageName: string, expected: readonly string[]): void {
+      const tools = ctx.calls.taskOptions[stageName]?.[0]?.tools ?? [];
+      for (const tool of expected) {
+        assert.ok(tools.includes(tool), `${stageName} should expose ${tool}`);
+      }
+      if (!expected.includes("todo")) {
+        assert.equal(tools.includes("todo"), false, `${stageName} must not expose todo`);
+      }
+      assert.equal(tools.includes("ask_user_question"), false, `${stageName} must not expose ask_user_question`);
+    }
+
+    function assertNoMutationTools(stageName: string): void {
+      const tools = ctx.calls.taskOptions[stageName]?.[0]?.tools ?? [];
+      for (const excluded of ["bash", "edit", "write", "todo", "ask_user_question"]) {
+        assert.equal(tools.includes(excluded), false, `${stageName} must not expose ${excluded}`);
+      }
+    }
+
+    assertTools("setup-projection", [...inspectionTools, "submit_goal_projection"]);
+    assertNoMutationTools("setup-projection");
+    const setupPrompt = ctx.calls.prompts["setup-projection"]?.[0] ?? "";
+    assert.match(setupPrompt, /previous failure/i);
+    assert.match(setupPrompt, /previous attempt/i);
+    assertTools("implementor-research-1", inspectionTools);
+    assertNoMutationTools("implementor-research-1");
+    assertTools("implementor-plan-1", inspectionTools);
+    assertNoMutationTools("implementor-plan-1");
+    assertTools("implementor-exec-1", [...mutatingTools, "submit_implementor_result"]);
+    assertTools("validator-features-1", [...readOnlyTools, "submit_axis_score"]);
+    assertTools("validator-symbolic-1", [...readOnlyTools, "submit_symbolic_report"]);
+    assertTools("validator-symbolic-campaign-1", [...readOnlyTools, "submit_symbolic_report"]);
+    assertTools("radical-plan-1", [...readOnlyTools, "submit_radical_plan"]);
+    assertTools("terminator-1", [...readOnlyTools, "submit_terminator_decision"]);
+  });
+
+  test("absolute reusable worktree input reads executor-projected ctx.cwd before descent baseline capture", async () => {
+    const mod = await import("../../packages/workflows/builtin/descent.js");
+    const tempRoot = mkdtempSync(join(tmpdir(), "atomic-descent-cwd-baseline-"));
+    try {
+      const repo = join(tempRoot, "repo");
+      const worktree = join(tempRoot, "linked-worktree");
+      mkdirSync(repo);
+      await initializeDescentGitRepo(repo);
+      await addLinkedWorktree(repo, worktree);
+
+      let cwdReads = 0;
+      const baseCtx = makeMockCtx(
+        {
+          objective: "Implement the spec",
+          max_iterations: 1,
+          git_worktree_dir: worktree,
+        },
+        { task: descentResponder({ features: 95, reliability: 92, modularity: 91 }) },
+      );
+      Object.defineProperty(baseCtx, "cwd", {
+        configurable: true,
+        get() {
+          cwdReads += 1;
+          return worktree;
+        },
+      });
+      const d = mod.default as unknown as WorkflowDefinition;
+
+      const result = await d.run(baseCtx);
+
+      assert.ok(cwdReads > 0, "descent should force executor ctx.cwd for non-empty worktree input");
+      assert.match(String(result["final_report"]), /Git mode: reusable_worktree/);
+      assert.doesNotMatch(String(result["final_report"]), /Git mode: unavailable/);
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("direct descent entrypoints reject the invoking checkout as reusable before setup projection", async () => {
+    const mod = await import("../../packages/workflows/builtin/descent.js");
+    const tempRoot = mkdtempSync(join(tmpdir(), "atomic-descent-primary-reject-"));
+    try {
+      const repo = join(tempRoot, "repo");
+      mkdirSync(repo);
+      await initializeDescentGitRepo(repo);
+
+      const directCtx = {
+        ...makeMockCtx(
+          { objective: "Implement the spec", max_iterations: 1, git_worktree_dir: repo },
+          { task: descentResponder({ features: 95, reliability: 92, modularity: 91 }) },
+        ),
+        cwd: repo,
+      };
+      await assert.rejects(() => mod.runDescentWorkflow(directCtx, {
+        objective: "Implement the spec",
+        maxIterations: 1,
+        maxReject: 3,
+        historyObserve: 3,
+        gitWorktreeDir: repo,
+      }), INVOKING_CHECKOUT_REJECTION);
+      assert.deepEqual(directCtx.calls.task, []);
+
+      const defaultCtx = {
+        ...makeMockCtx(
+          { objective: "Implement the spec", max_iterations: 1, git_worktree_dir: repo },
+          { task: descentResponder({ features: 95, reliability: 92, modularity: 91 }) },
+        ),
+        cwd: repo,
+      };
+      const d = mod.default as unknown as WorkflowDefinition;
+      await assert.rejects(() => d.run(defaultCtx), INVOKING_CHECKOUT_REJECTION);
+      assert.deepEqual(defaultCtx.calls.task, []);
+      assert.equal(readFileSync(join(repo, "tracked.txt"), "utf8"), "baseline\n");
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("direct reusable descent rejects a symlink resolving to the invoking checkout", async () => {
+    const mod = await import("../../packages/workflows/builtin/descent.js");
+    const tempRoot = mkdtempSync(join(tmpdir(), "atomic-descent-primary-symlink-"));
+    try {
+      const repo = join(tempRoot, "repo");
+      const repoLink = join(tempRoot, "repo-link");
+      mkdirSync(repo);
+      await initializeDescentGitRepo(repo);
+      symlinkSync(repo, repoLink, "dir");
+
+      const ctx = {
+        ...makeMockCtx(
+          { objective: "Implement the spec", max_iterations: 1, git_worktree_dir: repoLink },
+          { task: descentResponder({ features: 95, reliability: 92, modularity: 91 }) },
+        ),
+        cwd: repo,
+      };
+
+      await assert.rejects(() => mod.runDescentWorkflow(ctx, {
+        objective: "Implement the spec",
+        maxIterations: 1,
+        maxReject: 3,
+        historyObserve: 3,
+        gitWorktreeDir: repoLink,
+      }), INVOKING_CHECKOUT_REJECTION);
+      assert.deepEqual(ctx.calls.task, []);
+      assert.equal(readFileSync(join(repo, "tracked.txt"), "utf8"), "baseline\n");
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("direct reusable descent preflight rejects dirty baselines before setup projection", async () => {
+    const mod = await import("../../packages/workflows/builtin/descent.js");
+    const dirtyCases = [
+      {
+        name: "tracked",
+        path: "tracked.txt",
+        expectedContent: "pre-existing tracked dirty\n",
+        dirty: async (worktree: string) => {
+          writeFileSync(join(worktree, "tracked.txt"), "pre-existing tracked dirty\n", "utf8");
+        },
+      },
+      {
+        name: "untracked",
+        path: "untracked.txt",
+        expectedContent: "pre-existing untracked scratch\n",
+        dirty: async (worktree: string) => {
+          writeFileSync(join(worktree, "untracked.txt"), "pre-existing untracked scratch\n", "utf8");
+        },
+      },
+      {
+        name: "ignored",
+        path: "ignored.log",
+        expectedContent: "pre-existing ignored artifact\n",
+        dirty: async (worktree: string) => {
+          writeFileSync(join(worktree, ".gitignore"), "ignored.log\n", "utf8");
+          await runGit(worktree, ["add", ".gitignore"]);
+          await runGit(worktree, ["commit", "--no-gpg-sign", "-m", "add ignore rules"]);
+          writeFileSync(join(worktree, "ignored.log"), "pre-existing ignored artifact\n", "utf8");
+        },
+      },
+    ] as const;
+
+    for (const dirtyCase of dirtyCases) {
+      const tempRoot = mkdtempSync(join(tmpdir(), `atomic-descent-dirty-${dirtyCase.name}-`));
+      try {
+        const repo = join(tempRoot, "repo");
+        const worktree = join(tempRoot, "linked-worktree");
+        mkdirSync(repo);
+        await runGit(repo, ["init"]);
+        await runGit(repo, ["config", "user.name", "Atomic Test"]);
+        await runGit(repo, ["config", "user.email", "atomic-test@example.invalid"]);
+        writeFileSync(join(repo, "tracked.txt"), "baseline\n", "utf8");
+        await runGit(repo, ["add", "."]);
+        await runGit(repo, ["commit", "--no-gpg-sign", "-m", "baseline"]);
+        await runGit(repo, ["branch", "-M", "main"]);
+        await runGit(repo, ["worktree", "add", "--detach", worktree, "main"]);
+        await dirtyCase.dirty(worktree);
+
+        const ctx = makeMockCtx(
+          { objective: "Implement the spec", max_iterations: 1, git_worktree_dir: worktree },
+          { task: descentResponder({ features: 95, reliability: 92, modularity: 91 }) },
+        );
+
+        await assert.rejects(() => mod.runDescentWorkflow(ctx, {
+          objective: "Implement the spec",
+          maxIterations: 1,
+          maxReject: 3,
+          historyObserve: 3,
+          gitWorktreeDir: worktree,
+        }), DIRTY_REUSABLE_WORKTREE_REJECTION, dirtyCase.name);
+
+        assert.deepEqual(ctx.calls.task, [], dirtyCase.name);
+        assert.equal(readFileSync(join(worktree, dirtyCase.path), "utf8"), dirtyCase.expectedContent, dirtyCase.name);
+      } finally {
+        rmSync(tempRoot, { recursive: true, force: true });
+      }
+    }
+  });
+
+  test("captures git baseline before setup projection runs", async () => {
+    const mod = await import("../../packages/workflows/builtin/descent.js");
+    const order: string[] = [];
+    const git = makeMockGit();
+    const originalCaptureHead = git.port.captureHead;
+    git.port.captureHead = async (cwd: string) => {
+      order.push("captureHead");
+      return originalCaptureHead(cwd);
+    };
+    const ctx = makeMockCtx(
+      { objective: "Implement the spec", max_iterations: 1, git_worktree_dir: "/tmp/descent-worktree" },
+      {
+        task: (name) => {
+          if (name === "setup-projection") order.push("setup-projection");
+          return descentResponder({ features: 95, reliability: 92, modularity: 91 })(name);
+        },
+      },
+    );
+
+    await mod.runDescentWorkflow(ctx, {
+      objective: "Implement the spec",
+      maxIterations: 1,
+      maxReject: 3,
+      historyObserve: 3,
+      gitWorktreeDir: "/tmp/descent-worktree",
+      git: git.port,
+    });
+
+    assert.deepEqual(order.slice(0, 2), ["captureHead", "setup-projection"]);
+  });
+
+  test("reject-streak stagnation warning uses max_reject independently of history_observe", async () => {
+    const mod = await import("../../packages/workflows/builtin/descent.js");
+    const rejectedHistory = [
+      { iteration: 1, evaluation_phase: "primary", decision: "reject", summary: "reject 1" },
+      { iteration: 2, evaluation_phase: "primary", decision: "error", summary: "reject 2" },
+    ] as const;
+
+    assert.match(
+      mod.shouldRecordStagnationWarning(rejectedHistory, 5, 2) ?? "",
+      /2 consecutive rejected\/error iterations reached max_reject=2/,
+    );
+    assert.equal(mod.shouldRecordStagnationWarning(rejectedHistory, 2, 5), undefined);
+  });
+
+  test("approval gate rejects zero axes and failed symbolic validation", async () => {
+    const mod = await import("../../packages/workflows/builtin/descent.js");
+    const ctx = makeMockCtx(
+      { objective: "Implement the spec", max_iterations: 1 },
+      { task: descentResponder({ features: 80, reliability: 0, modularity: 80, symbolicFailed: true }) },
+    );
+
+    const d = mod.default as unknown as WorkflowDefinition;
+    const result = await d.run(ctx);
+
+    assert.equal(result["status"], "needs_human");
+    assert.equal(result["converged"], false);
+    assert.equal(result["approved_iterations"], 0);
+    assert.equal(result["rejected_iterations"], 1);
+    assert.match(String(result["review_report"]), /Symbolic validation: failed/);
+  });
+
+  test("symbolic explicit FAIL markers block approval even when failed is false", async () => {
+    const mod = await import("../../packages/workflows/builtin/descent.js");
+    const cases: readonly {
+      readonly label: string;
+      readonly symbolic: string;
+    }[] = [
+      {
+        label: "findings marker",
+        symbolic: symbolicReportJson({
+          findings: ["FAIL: focused test command failed"],
+          failed: false,
+          feedback: "structured flag incorrectly says passed",
+        }),
+      },
+      {
+        label: "feedback marker",
+        symbolic: symbolicReportJson({
+          findings: [],
+          failed: false,
+          feedback: "fail: typecheck failed despite high model scores",
+        }),
+      },
+    ];
+
+    for (const testCase of cases) {
+      const ctx = makeMockCtx(
+        { objective: `Implement the spec (${testCase.label})`, max_iterations: 1 },
+        {
+          task: (name) => {
+            if (name === "setup-projection") return projectionJson();
+            if (name.startsWith("validator-features-")) return axisJson("features", 95);
+            if (name.startsWith("validator-reliability-")) return axisJson("reliability", 92);
+            if (name.startsWith("validator-modularity-")) return axisJson("modularity", 91);
+            if (name.startsWith("validator-symbolic")) return testCase.symbolic;
+            return undefined;
+          },
+        },
+      );
+
+      const d = mod.default as unknown as WorkflowDefinition;
+      const result = await d.run(ctx);
+
+      assert.equal(result["status"], "needs_human", testCase.label);
+      assert.equal(result["converged"], false, testCase.label);
+      assert.equal(result["approved_iterations"], 0, testCase.label);
+      assert.equal(result["rejected_iterations"], 1, testCase.label);
+      assert.match(String(result["review_report"]), /Symbolic validation: failed/, testCase.label);
+    }
+  });
+
+  test("malformed validator scores fail closed instead of being clamped into approval", async () => {
+    const mod = await import("../../packages/workflows/builtin/descent.js");
+    const malformedCases: readonly {
+      readonly label: string;
+      readonly scoreText: string;
+    }[] = [
+      {
+        label: "out-of-range high score",
+        scoreText: JSON.stringify({ axis: "features", score: 999, issues: [], feedback: "too high" }),
+      },
+      {
+        label: "fractional score",
+        scoreText: JSON.stringify({ axis: "features", score: 49.6, issues: [], feedback: "fractional" }),
+      },
+      {
+        label: "negative score",
+        scoreText: JSON.stringify({ axis: "features", score: -3, issues: [], feedback: "negative" }),
+      },
+      {
+        label: "missing score",
+        scoreText: JSON.stringify({ axis: "features", issues: [], feedback: "missing" }),
+      },
+      {
+        label: "missing axis",
+        scoreText: JSON.stringify({ score: 90, issues: [], feedback: "missing axis" }),
+      },
+      {
+        label: "wrong axis",
+        scoreText: JSON.stringify({ axis: "reliability", score: 90, issues: [], feedback: "wrong axis" }),
+      },
+      {
+        label: "wrong score type",
+        scoreText: JSON.stringify({ axis: "features", score: "80", issues: [], feedback: "string score" }),
+      },
+      {
+        label: "non-finite score",
+        scoreText: '{"axis":"features","score":Infinity,"issues":[],"feedback":"non-finite"}',
+      },
+    ];
+
+    for (const malformed of malformedCases) {
+      const ctx = makeMockCtx(
+        { objective: `Implement the spec (${malformed.label})`, max_iterations: 1 },
+        {
+          task: (name) => {
+            if (name === "setup-projection") return projectionJson();
+            if (name.startsWith("validator-features-")) return malformed.scoreText;
+            if (name.startsWith("validator-reliability-")) return axisJson("reliability", 80);
+            if (name.startsWith("validator-modularity-")) return axisJson("modularity", 80);
+            if (name.startsWith("validator-symbolic")) return symbolicJson(false);
+            return undefined;
+          },
+        },
+      );
+
+      const d = mod.default as unknown as WorkflowDefinition;
+      const result = await d.run(ctx);
+
+      assert.equal(result["approved_iterations"], 0, malformed.label);
+      assert.equal(result["rejected_iterations"], 1, malformed.label);
+      assert.equal((result["final_scores"] as { features?: number }).features, 0, malformed.label);
+      assert.match(String(result["review_report"]), /Fail-closed validator parse fallback/, malformed.label);
+    }
+  });
+
+  test("primary checkout rejection stops before campaigns terminator or next iteration", async () => {
+    const mod = await import("../../packages/workflows/builtin/descent.js");
+    const ctx = makeMockCtx(
+      { objective: "Implement the spec", max_iterations: 2, max_reject: 1 },
+      { task: descentResponder({ features: 40, reliability: 30, modularity: 20 }) },
+    );
+
+    const d = mod.default as unknown as WorkflowDefinition;
+    const result = await d.run(ctx);
+
+    assert.equal(result["status"], "needs_human");
+    assert.match(String(result["final_report"]), /primary_checkout|blocked_primary_checkout|human/i);
+    assert.equal(ctx.calls.task.some((name) => name.startsWith("campaign-")), false);
+    assert.equal(ctx.calls.task.some((name) => name.startsWith("radical-plan-")), false);
+    assert.equal(ctx.calls.task.some((name) => name.startsWith("terminator-")), false);
+    assert.equal(ctx.calls.task.some((name) => name.startsWith("recovery-")), false);
+    assert.equal(ctx.calls.task.includes("implementor-research-2"), false);
+  });
+
+  test("implementor exec failure becomes a structured error iteration and rolls back reusable worktree", async () => {
+    const mod = await import("../../packages/workflows/builtin/descent.js");
+    const git = makeMockGit();
+    const ctx = makeMockCtx(
+      { objective: "Implement the spec", max_iterations: 1, git_worktree_dir: "/tmp/descent-worktree" },
+      {
+        task: (name) => {
+          if (name === "setup-projection") return projectionJson();
+          if (name === "implementor-exec-1") throw new Error("exec session failed after partial edits");
+          return undefined;
+        },
+      },
+    );
+
+    const result = await mod.runDescentWorkflow(ctx, {
+      objective: "Implement the spec",
+      maxIterations: 1,
+      maxReject: 3,
+      historyObserve: 3,
+      gitWorktreeDir: "/tmp/descent-worktree",
+      git: git.port,
+    });
+    const history = result["history"] as readonly { decision: string; transition?: string; implementor_report?: string; evaluator_report?: string }[];
+
+    assert.equal(result["status"], "needs_human");
+    assert.equal(result["rejected_iterations"], 1);
+    assert.equal(history.length, 1);
+    assert.equal(history[0]?.decision, "error");
+    assert.equal(history[0]?.transition, "restored_to_accepted_baseline");
+    assert.match(history[0]?.implementor_report ?? "", /implementor exec failed/i);
+    assert.match(history[0]?.evaluator_report ?? "", /exec session failed after partial edits/);
+    assert.deepEqual(git.calls.resetToRef, ["base-ref"]);
+    assert.equal(ctx.calls.parallel.length, 0);
+    assert.equal(ctx.calls.task.includes("implementor-research-2"), false);
+  });
+
+  test("reusable worktree implementor exec error runs post-rollback campaigns and radical planning", async () => {
+    const mod = await import("../../packages/workflows/builtin/descent.js");
+    const git = makeMockGit();
+    const order: string[] = [];
+    const originalReset = git.port.resetToRef;
+    git.port.resetToRef = async (cwd: string, ref: string) => {
+      order.push(`reset:${ref}`);
+      await originalReset(cwd, ref);
+    };
+    const ctx = makeMockCtx(
+      { objective: "Implement the spec", max_iterations: 1, max_reject: 1, git_worktree_dir: "/tmp/descent-worktree" },
+      {
+        task: (name) => {
+          if (name === "setup-projection") return projectionJson();
+          if (name === "implementor-exec-1") throw new Error("exec session failed after partial edits");
+          if (name === "campaign-reliability-1") {
+            order.push(name);
+            return "CAMPAIGN-RELIABILITY-AFTER-IMPLEMENTOR-ERROR";
+          }
+          if (name === "campaign-modularity-1") {
+            order.push(name);
+            return "CAMPAIGN-MODULARITY-AFTER-IMPLEMENTOR-ERROR";
+          }
+          if (name === "validator-symbolic-campaign-1") return symbolicJson(false);
+          if (name.startsWith("validator-features-1-post-ultimate")) return axisJson("features", 96);
+          if (name.startsWith("validator-reliability-1-post-ultimate")) return axisJson("reliability", 94);
+          if (name.startsWith("validator-modularity-1-post-ultimate")) return axisJson("modularity", 93);
+          if (name.startsWith("validator-symbolic-1-post-ultimate")) return symbolicJson(false);
+          if (name.startsWith("radical-plan-")) return radicalPlanJson();
+          return undefined;
+        },
+      },
+    );
+
+    const result = await mod.runDescentWorkflow(ctx, {
+      objective: "Implement the spec",
+      maxIterations: 1,
+      maxReject: 1,
+      historyObserve: 3,
+      gitWorktreeDir: "/tmp/descent-worktree",
+      git: git.port,
+    });
+    const kinds = (result["ultimates"] as readonly { kind: string }[]).map((entry) => entry.kind);
+    const parallelNames = ctx.calls.parallel.flat();
+
+    assert.deepEqual(order.slice(0, 3), [
+      "reset:base-ref",
+      "campaign-reliability-1",
+      "campaign-modularity-1",
+    ]);
+    assert.deepEqual(git.calls.resetToRef, ["base-ref"]);
+    assert.ok(ctx.calls.task.includes("campaign-reliability-1"));
+    assert.ok(ctx.calls.task.includes("campaign-modularity-1"));
+    assert.ok(ctx.calls.task.includes("validator-symbolic-campaign-1"));
+    assert.match(ctx.calls.prompts["validator-symbolic-campaign-1"]?.[0] ?? "", /CAMPAIGN-MODULARITY-AFTER-IMPLEMENTOR-ERROR/);
+    assert.ok(ctx.calls.task.includes("radical-plan-1"));
+    assert.deepEqual(ctx.calls.parallel, [[
+      "validator-features-1-post-ultimate",
+      "validator-reliability-1-post-ultimate",
+      "validator-modularity-1-post-ultimate",
+      "validator-symbolic-1-post-ultimate",
+    ]]);
+    assert.equal(parallelNames.includes("validator-features-1"), false);
+    assert.equal(parallelNames.includes("validator-reliability-1"), false);
+    assert.equal(parallelNames.includes("validator-modularity-1"), false);
+    assert.equal(parallelNames.includes("validator-symbolic-1"), false);
+    assert.ok(kinds.includes("stagnation-warning"));
+    assert.ok(kinds.includes("reliability-campaign"));
+    assert.ok(kinds.includes("modularity-campaign"));
+    assert.ok(kinds.includes("symbolic-campaign-verification"));
+    assert.ok(kinds.includes("radical-plan"));
+    assert.equal(result["status"], "success");
+    assert.equal(result["rejected_iterations"], 1);
+  });
+
+  test("repeated reusable worktree implementor errors trigger intervention after rollback", async () => {
+    const mod = await import("../../packages/workflows/builtin/descent.js");
+    const git = makeMockGit();
+    const order: string[] = [];
+    const originalReset = git.port.resetToRef;
+    git.port.resetToRef = async (cwd: string, ref: string) => {
+      order.push(`reset:${ref}`);
+      await originalReset(cwd, ref);
+    };
+    const ctx = makeMockCtx(
+      { objective: "Implement the spec", max_iterations: 2, max_reject: 99, history_observe: 2, git_worktree_dir: "/tmp/descent-worktree" },
+      {
+        task: (name) => {
+          if (name === "setup-projection") return projectionJson();
+          if (name === "implementor-exec-1" || name === "implementor-exec-2") {
+            throw new Error(`${name} failed after partial edits`);
+          }
+          if (name === "intervention-2") {
+            order.push(name);
+            return interventionJson("SUCCESS");
+          }
+          return undefined;
+        },
+      },
+    );
+
+    const result = await mod.runDescentWorkflow(ctx, {
+      objective: "Implement the spec",
+      maxIterations: 2,
+      maxReject: 99,
+      historyObserve: 2,
+      gitWorktreeDir: "/tmp/descent-worktree",
+      git: git.port,
+    });
+    const ultimates = result["ultimates"] as readonly { kind: string; result: string }[];
+
+    assert.ok(ctx.calls.task.includes("intervention-2"));
+    assert.deepEqual(git.calls.resetToRef, ["base-ref", "base-ref"]);
+    assert.deepEqual(order.slice(-2), ["reset:base-ref", "intervention-2"]);
+    assert.ok(ultimates.some((entry) => entry.kind === "intervention" && entry.result === "applied"));
+    assert.equal(ctx.calls.task.some((name) => name.startsWith("campaign-")), false);
+    assert.equal(ctx.calls.task.some((name) => name.startsWith("radical-plan-")), false);
+    assert.equal(result["status"], "needs_human");
+    assert.match(String(result["final_report"]), /Intervention succeeded on the final allowed iteration/i);
+  });
+
+  test("implementor exec failure in the primary checkout stops before further mutation", async () => {
+    const mod = await import("../../packages/workflows/builtin/descent.js");
+    const ctx = makeMockCtx(
+      { objective: "Implement the spec", max_iterations: 2 },
+      {
+        task: (name) => {
+          if (name === "setup-projection") return projectionJson();
+          if (name === "implementor-exec-1") throw new Error("primary exec failed after edits");
+          return undefined;
+        },
+      },
+    );
+
+    const d = mod.default as unknown as WorkflowDefinition;
+    const result = await d.run(ctx);
+
+    assert.equal(result["status"], "needs_human");
+    assert.equal(result["rejected_iterations"], 1);
+    assert.match(String(result["final_report"]), /primary checkout|human/i);
+    assert.equal(ctx.calls.parallel.length, 0);
+    assert.equal(ctx.calls.task.some((name) => name.startsWith("intervention-")), false);
+    assert.equal(ctx.calls.task.some((name) => name.startsWith("campaign-")), false);
+    assert.equal(ctx.calls.task.some((name) => name.startsWith("radical-plan-")), false);
+    assert.equal(ctx.calls.task.some((name) => name.startsWith("terminator-")), false);
+    assert.equal(ctx.calls.task.some((name) => name.startsWith("recovery-")), false);
+    assert.equal(ctx.calls.task.includes("implementor-research-2"), false);
+  });
+
+  test("reusable worktree rejection rolls back accepted baseline before continuing", async () => {
+    const mod = await import("../../packages/workflows/builtin/descent.js");
+    const git = makeMockGit();
+    const resetOrder: string[] = [];
+    const ctx = makeMockCtx(
+      { objective: "Implement the spec", max_iterations: 2, max_reject: 3, git_worktree_dir: "/tmp/descent-worktree" },
+      {
+        task: (name) => {
+          if (name === "implementor-research-2") resetOrder.push("iteration-2-started");
+          return descentResponder({ features: 40, reliability: 30, modularity: 20 })(name);
+        },
+      },
+    );
+    const originalReset = git.port.resetToRef;
+    git.port.resetToRef = async (cwd: string, ref: string) => {
+      resetOrder.push(`reset:${ref}`);
+      await originalReset(cwd, ref);
+    };
+
+    const result = await mod.runDescentWorkflow(ctx, {
+      objective: "Implement the spec",
+      maxIterations: 2,
+      maxReject: 3,
+      historyObserve: 3,
+      gitWorktreeDir: "/tmp/descent-worktree",
+      git: git.port,
+    });
+
+    assert.equal(result["status"], "needs_human");
+    assert.deepEqual(git.calls.resetToRef, ["base-ref", "base-ref"]);
+    assert.deepEqual(resetOrder.slice(0, 2), ["reset:base-ref", "iteration-2-started"]);
+    assert.equal(ctx.calls.task.includes("implementor-research-2"), true);
+  });
+
+  test("approval advances accepted baseline in reusable worktree", async () => {
+    const mod = await import("../../packages/workflows/builtin/descent.js");
+    const git = makeMockGit();
+    const ctx = makeMockCtx(
+      { objective: "Implement the spec", max_iterations: 1, git_worktree_dir: "/tmp/descent-worktree" },
+      { task: descentResponder({ features: 95, reliability: 92, modularity: 91 }) },
+    );
+
+    const result = await mod.runDescentWorkflow(ctx, {
+      objective: "Implement the spec",
+      maxIterations: 1,
+      maxReject: 3,
+      historyObserve: 3,
+      gitWorktreeDir: "/tmp/descent-worktree",
+      git: git.port,
+    });
+
+    assert.deepEqual(git.calls.createAcceptedSnapshot, ["descent: accept iteration 1 primary"]);
+    assert.match(String(result["final_report"]), /Accepted baseline ref: accepted-1/);
+    assert.equal(result["approved_iterations"], 1);
+  });
+
+  test("accepted snapshot commit bypasses failing repository hooks", async () => {
+    const mod = await import("../../packages/workflows/builtin/descent.js");
+    const tempRoot = mkdtempSync(join(tmpdir(), "atomic-descent-hook-git-"));
+    try {
+      const repo = join(tempRoot, "repo");
+      const worktree = join(tempRoot, "linked-worktree");
+      mkdirSync(repo);
+      await initializeDescentGitRepo(repo);
+      await addLinkedWorktree(repo, worktree);
+      const baselineHead = await runGit(worktree, ["rev-parse", "HEAD"]);
+
+      installFailingGitHooks(repo, ["pre-commit", "commit-msg"]);
+
+      const ctx = makeMockCtx(
+        { objective: "Implement the spec", max_iterations: 2, git_worktree_dir: worktree },
+        {
+          task: (name) => {
+            if (name === "implementor-exec-1") {
+              writeFileSync(join(worktree, "tracked.txt"), "accepted mutation\n", "utf8");
+            }
+            return descentResponder({ features: 95, reliability: 92, modularity: 91 })(name);
+          },
+        },
+      );
+
+      const result = await mod.runDescentWorkflow(ctx, {
+        objective: "Implement the spec",
+        maxIterations: 2,
+        maxReject: 3,
+        historyObserve: 3,
+        gitWorktreeDir: worktree,
+      });
+
+      const acceptedHead = await runGit(worktree, ["rev-parse", "HEAD"]);
+      const commitMessage = await runGit(worktree, ["log", "-1", "--pretty=%B"]);
+      const committedContent = await runGit(worktree, ["show", "HEAD:tracked.txt"]);
+
+      assert.equal(result["status"], "success");
+      assert.notEqual(acceptedHead, baselineHead);
+      assert.equal(commitMessage, "descent: accept iteration 1 primary");
+      assert.equal(committedContent, "accepted mutation");
+      assert.equal(existsSync(join(repo, "hook-marker.txt")), false);
+      assert.match(String(result["final_report"]), new RegExp(`Accepted baseline ref: ${acceptedHead}`));
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("git baseline operations prefer explicit reusable worktree path over ctx.cwd", async () => {
+    const mod = await import("../../packages/workflows/builtin/descent.js");
+    const git = makeMockGit();
+    const baseCtx = makeMockCtx(
+      { objective: "Implement the spec", max_iterations: 1, git_worktree_dir: "/tmp/descent-explicit-worktree" },
+      { task: descentResponder({ features: 95, reliability: 92, modularity: 91 }) },
+    );
+    const ctx = { ...baseCtx, cwd: "/tmp/descent-different-cwd" };
+
+    await mod.runDescentWorkflow(ctx, {
+      objective: "Implement the spec",
+      maxIterations: 1,
+      maxReject: 3,
+      historyObserve: 3,
+      gitWorktreeDir: "/tmp/descent-explicit-worktree",
+      git: git.port,
+    });
+
+    assert.deepEqual(git.calls.captureHead, ["/tmp/descent-explicit-worktree"]);
+    assert.deepEqual(git.calls.createAcceptedSnapshotCwd, ["/tmp/descent-explicit-worktree"]);
+    assert.equal(git.calls.captureHead.includes("/tmp/descent-different-cwd"), false);
+    assert.equal(git.calls.createAcceptedSnapshotCwd.includes("/tmp/descent-different-cwd"), false);
+  });
+
+  test("git baseline operations resolve relative reusable worktree path instead of ctx.cwd", async () => {
+    const mod = await import("../../packages/workflows/builtin/descent.js");
+    const git = makeMockGit();
+    const baseCtx = makeMockCtx(
+      { objective: "Implement the spec", max_iterations: 1, git_worktree_dir: "relative-wt" },
+      { task: descentResponder({ features: 95, reliability: 92, modularity: 91 }) },
+    );
+    const ctx = { ...baseCtx, cwd: "/tmp/descent-invocation-cwd" };
+    const expectedWorktree = join(process.cwd(), "relative-wt");
+
+    await mod.runDescentWorkflow(ctx, {
+      objective: "Implement the spec",
+      maxIterations: 1,
+      maxReject: 3,
+      historyObserve: 3,
+      gitWorktreeDir: "relative-wt",
+      git: git.port,
+    });
+
+    assert.deepEqual(git.calls.captureHead, [expectedWorktree]);
+    assert.deepEqual(git.calls.createAcceptedSnapshotCwd, [expectedWorktree]);
+    assert.equal(git.calls.captureHead.includes("/tmp/descent-invocation-cwd"), false);
+    assert.equal(git.calls.createAcceptedSnapshotCwd.includes("/tmp/descent-invocation-cwd"), false);
+  });
+
+  test("reusable worktree rollback leaves final report on last accepted evaluation", async () => {
+    const mod = await import("../../packages/workflows/builtin/descent.js");
+    const git = makeMockGit();
+    const ctx = makeMockCtx(
+      { objective: "Implement the spec", max_iterations: 2, max_reject: 4, history_observe: 2, git_worktree_dir: "/tmp/descent-worktree" },
+      {
+        task: (name) => {
+          if (name === "setup-projection") return projectionJson();
+          if (name.startsWith("validator-features-1")) return axisJson("features", 95);
+          if (name.startsWith("validator-reliability-1")) return axisJson("reliability", 92);
+          if (name.startsWith("validator-modularity-1")) return axisJson("modularity", 91);
+          if (name.startsWith("validator-features-2")) return axisJson("features", 10);
+          if (name.startsWith("validator-reliability-2")) return axisJson("reliability", 20);
+          if (name.startsWith("validator-modularity-2")) return axisJson("modularity", 30);
+          if (name.startsWith("validator-symbolic")) return symbolicJson(false);
+          if (name.startsWith("intervention-")) return interventionJson("FAILURE");
+          if (name.startsWith("terminator-")) return JSON.stringify({ decision: "CONTINUE", feedback: "continue from test" });
+          return undefined;
+        },
+      },
+    );
+
+    const result = await mod.runDescentWorkflow(ctx, {
+      objective: "Implement the spec",
+      maxIterations: 2,
+      maxReject: 4,
+      historyObserve: 2,
+      gitWorktreeDir: "/tmp/descent-worktree",
+      git: git.port,
+    });
+    const history = result["history"] as readonly { decision: string; transition?: string }[];
+
+    assert.equal(result["status"], "needs_human");
+    assert.equal(result["final_score"], 93);
+    assert.deepEqual(result["final_scores"], { features: 95, reliability: 92, modularity: 91 });
+    assert.match(String(result["review_report"]), /features=95, reliability=92, modularity=91/);
+    assert.match(String(result["final_report"]), /Final weighted score: 93/);
+    assert.deepEqual(git.calls.resetToRef, ["accepted-1"]);
+    assert.equal(history.some((entry) => entry.decision === "reject" && entry.transition === "restored_to_accepted_baseline"), true);
+  });
+
+  test("reusable worktree rejected iteration cannot be accepted by model terminator SUCCESS", async () => {
+    const mod = await import("../../packages/workflows/builtin/descent.js");
+    const git = makeMockGit();
+    const ctx = makeMockCtx(
+      { objective: "Implement the spec", max_iterations: 2, max_reject: 4, history_observe: 2, git_worktree_dir: "/tmp/descent-worktree" },
+      {
+        task: (name) => {
+          if (name === "setup-projection") return projectionJson();
+          if (name.startsWith("validator-features-1")) return axisJson("features", 95);
+          if (name.startsWith("validator-reliability-1")) return axisJson("reliability", 92);
+          if (name.startsWith("validator-modularity-1")) return axisJson("modularity", 91);
+          if (name.startsWith("validator-symbolic-1")) return symbolicJson(false);
+          if (name.startsWith("validator-features-2")) return axisJson("features", 96);
+          if (name.startsWith("validator-reliability-2")) return axisJson("reliability", 93);
+          if (name.startsWith("validator-modularity-2")) return axisJson("modularity", 92);
+          if (name.startsWith("validator-symbolic-2")) return symbolicJson(true);
+          if (name === "terminator-2") return JSON.stringify({ decision: "SUCCESS", feedback: "model claims done after rollback" });
+          return undefined;
+        },
+      },
+    );
+
+    const result = await mod.runDescentWorkflow(ctx, {
+      objective: "Implement the spec",
+      maxIterations: 2,
+      maxReject: 4,
+      historyObserve: 2,
+      gitWorktreeDir: "/tmp/descent-worktree",
+      git: git.port,
+    });
+    const history = result["history"] as readonly { decision: string; transition?: string }[];
+
+    assert.equal(ctx.calls.task.includes("terminator-2"), true);
+    assert.equal(result["status"], "needs_human");
+    assert.equal(result["converged"], false);
+    assert.equal(result["final_score"], 93);
+    assert.deepEqual(result["final_scores"], { features: 95, reliability: 92, modularity: 91 });
+    assert.ok(history.some((entry) => entry.decision === "approve" && entry.transition === "accepted"));
+    assert.ok(history.some((entry) => entry.decision === "reject" && entry.transition === "restored_to_accepted_baseline"));
+    assert.deepEqual(git.calls.resetToRef, ["accepted-1"]);
+    assert.match(String(result["final_report"]), /Terminator SUCCESS ignored|latest validation/i);
+  });
+
+  test("invalid numeric inputs fall back to default loop values", async () => {
+    const mod = await import("../../packages/workflows/builtin/descent.js");
+    const ctx = makeMockCtx(
+      { objective: "Implement the spec", max_iterations: 0.5, max_reject: -1, history_observe: -2 },
+      { task: descentResponder({ features: 95, reliability: 92, modularity: 91 }) },
+    );
+
+    const d = mod.default as unknown as WorkflowDefinition;
+    await d.run(ctx);
+
+    assert.match(ctx.calls.prompts["implementor-research-1"]?.[0] ?? "", /Iteration 1\/10/);
+  });
+
+  test("records campaign and radical ultimates on reusable worktree rejection streaks", async () => {
+    const mod = await import("../../packages/workflows/builtin/descent.js");
+    const git = makeMockGit();
+    const ctx = makeMockCtx(
+      { objective: "Implement the spec", max_iterations: 1, max_reject: 1, git_worktree_dir: "/tmp/descent-worktree" },
+      {
+        task: (name) => {
+          if (name === "campaign-reliability-1") return "CAMPAIGN-RELIABILITY-RESULT";
+          if (name === "campaign-modularity-1") return "CAMPAIGN-MODULARITY-RESULT";
+          return descentResponder({ features: 40, reliability: 30, modularity: 20 })(name);
+        },
+      },
+    );
+
+    const result = await mod.runDescentWorkflow(ctx, {
+      objective: "Implement the spec",
+      maxIterations: 1,
+      maxReject: 1,
+      historyObserve: 3,
+      gitWorktreeDir: "/tmp/descent-worktree",
+      git: git.port,
+    });
+    const kinds = (result["ultimates"] as readonly { kind: string }[]).map((entry) => entry.kind);
+
+    assert.deepEqual(git.calls.resetToRef, ["base-ref", "base-ref"]);
+    assert.ok(ctx.calls.task.includes("campaign-reliability-1"));
+    assert.ok(ctx.calls.task.includes("campaign-modularity-1"));
+    assert.ok(ctx.calls.task.includes("validator-symbolic-campaign-1"));
+    assert.match(ctx.calls.prompts["validator-symbolic-campaign-1"]?.[0] ?? "", /CAMPAIGN-MODULARITY-RESULT/);
+    assert.ok(ctx.calls.task.includes("radical-plan-1"));
+    assert.ok(kinds.includes("reliability-campaign"));
+    assert.ok(kinds.includes("modularity-campaign"));
+    assert.ok(kinds.includes("symbolic-campaign-verification"));
+    assert.ok(kinds.includes("radical-plan"));
+    assert.equal(result["status"], "needs_human");
+  });
+
+  test("structured radical plan is preserved in the next prompt and final result", async () => {
+    const mod = await import("../../packages/workflows/builtin/descent.js");
+    const git = makeMockGit();
+    const ctx = makeMockCtx(
+      { objective: "Implement the spec", max_iterations: 2, max_reject: 1, git_worktree_dir: "/tmp/descent-worktree" },
+      {
+        task: (name) => {
+          if (name === "setup-projection") {
+            return projectionJson({
+              goal_weights: { features: 1, reliability: 0, modularity: 0 },
+            });
+          }
+          if (name.startsWith("validator-features-")) return axisJson("features", 40);
+          if (name.startsWith("validator-reliability-")) return axisJson("reliability", 1);
+          if (name.startsWith("validator-modularity-")) return axisJson("modularity", 1);
+          if (name.startsWith("validator-symbolic")) return symbolicJson(false);
+          if (name.startsWith("radical-plan-")) {
+            return radicalPlanJson({
+              diagnosis: "STRUCTURED DIAGNOSIS",
+              previous_approach_failures: ["OLD APPROACH FAILED"],
+              new_strategy: "NEW STRUCTURED STRATEGY",
+              steps: [
+                {
+                  file_or_area: "descent controller",
+                  change: "use the new strategy",
+                  verification: "verify the next prompt carries structure",
+                },
+              ],
+              what_not_to_do: ["DO NOT REPEAT OLD APPROACH"],
+            });
+          }
+          if (name.startsWith("terminator-")) {
+            return JSON.stringify({ decision: "CONTINUE", feedback: "continue from test" });
+          }
+          return undefined;
+        },
+      },
+    );
+
+    const result = await mod.runDescentWorkflow(ctx, {
+      objective: "Implement the spec",
+      maxIterations: 2,
+      maxReject: 1,
+      historyObserve: 3,
+      gitWorktreeDir: "/tmp/descent-worktree",
+      git: git.port,
+    });
+
+    const nextPrompt = ctx.calls.prompts["implementor-research-2"]?.[0] ?? "";
+    assert.match(nextPrompt, /Active radical plan/);
+    assert.match(nextPrompt, /STRUCTURED DIAGNOSIS/);
+    assert.match(nextPrompt, /OLD APPROACH FAILED/);
+    assert.match(nextPrompt, /NEW STRUCTURED STRATEGY/);
+    assert.match(nextPrompt, /descent controller/);
+    assert.match(nextPrompt, /DO NOT REPEAT OLD APPROACH/);
+
+    const radicalPlan = result["radical_plan"] as { diagnosis?: string; new_strategy?: string; steps?: readonly unknown[] } | undefined;
+    assert.equal(radicalPlan?.diagnosis, "STRUCTURED DIAGNOSIS");
+    assert.equal(radicalPlan?.new_strategy, "NEW STRUCTURED STRATEGY");
+    assert.equal(radicalPlan?.steps?.length, 1);
+    assert.match(String(result["final_report"]), /STRUCTURED DIAGNOSIS/);
+    assert.ok((result["ultimates"] as readonly { kind: string; result: string; details?: string }[]).some((entry) => entry.kind === "radical-plan" && entry.result === "applied" && /NEW STRUCTURED STRATEGY/.test(entry.details ?? "")));
+  });
+
+  test("malformed radical plan output fails closed without activating raw legacy text", async () => {
+    const mod = await import("../../packages/workflows/builtin/descent.js");
+    const git = makeMockGit();
+    const ctx = makeMockCtx(
+      { objective: "Implement the spec", max_iterations: 2, max_reject: 1, git_worktree_dir: "/tmp/descent-worktree" },
+      {
+        task: (name) => {
+          if (name === "setup-projection") {
+            return projectionJson({
+              goal_weights: { features: 1, reliability: 0, modularity: 0 },
+            });
+          }
+          if (name.startsWith("validator-features-")) return axisJson("features", 40);
+          if (name.startsWith("validator-reliability-")) return axisJson("reliability", 1);
+          if (name.startsWith("validator-modularity-")) return axisJson("modularity", 1);
+          if (name.startsWith("validator-symbolic")) return symbolicJson(false);
+          if (name.startsWith("radical-plan-")) {
+            return JSON.stringify({ plan: "LEGACY RAW PLAN", reason: "legacy shape" });
+          }
+          if (name.startsWith("terminator-")) {
+            return JSON.stringify({ decision: "CONTINUE", feedback: "continue from test" });
+          }
+          return undefined;
+        },
+      },
+    );
+
+    const result = await mod.runDescentWorkflow(ctx, {
+      objective: "Implement the spec",
+      maxIterations: 2,
+      maxReject: 1,
+      historyObserve: 3,
+      gitWorktreeDir: "/tmp/descent-worktree",
+      git: git.port,
+    });
+
+    const nextPrompt = ctx.calls.prompts["implementor-research-2"]?.[0] ?? "";
+    assert.match(nextPrompt, /Active radical plan: none/);
+    assert.doesNotMatch(nextPrompt, /LEGACY RAW PLAN/);
+    assert.equal(result["radical_plan"], undefined);
+    assert.doesNotMatch(String(result["final_report"]), /LEGACY RAW PLAN/);
+    const radicalUltimates = (result["ultimates"] as readonly { kind: string; result: string; details?: string }[]).filter((entry) => entry.kind === "radical-plan");
+    assert.ok(radicalUltimates.some((entry) => entry.result === "failed" && /malformed/i.test(entry.details ?? "")));
+    assert.equal(radicalUltimates.some((entry) => entry.result === "applied"), false);
+  });
+
+  test("failed campaign task is treated as possibly mutating and stops before terminator", async () => {
+    const mod = await import("../../packages/workflows/builtin/descent.js");
+    const git = makeMockGit();
+    const ctx = makeMockCtx(
+      { objective: "Implement the spec", max_iterations: 1, max_reject: 1, git_worktree_dir: "/tmp/descent-worktree" },
+      {
+        task: (name) => {
+          if (name === "setup-projection") return projectionJson();
+          if (name === "campaign-reliability-1") throw new Error("campaign edited then transport failed");
+          if (name.startsWith("validator-features-")) return axisJson("features", 40);
+          if (name.startsWith("validator-reliability-")) return axisJson("reliability", 30);
+          if (name.startsWith("validator-modularity-")) return axisJson("modularity", 20);
+          if (name.startsWith("validator-symbolic")) return symbolicJson(false);
+          return undefined;
+        },
+      },
+    );
+
+    const result = await mod.runDescentWorkflow(ctx, {
+      objective: "Implement the spec",
+      maxIterations: 1,
+      maxReject: 1,
+      historyObserve: 3,
+      gitWorktreeDir: "/tmp/descent-worktree",
+      git: git.port,
+    });
+    const ultimates = result["ultimates"] as readonly { kind: string; result: string; details?: string }[];
+    const history = result["history"] as readonly { decision: string; evaluation_phase: string; transition?: string }[];
+
+    assert.equal(result["status"], "failure");
+    assert.equal(ctx.calls.task.includes("campaign-reliability-1"), true);
+    assert.equal(ctx.calls.task.includes("campaign-modularity-1"), false);
+    assert.equal(ctx.calls.task.includes("validator-symbolic-campaign-1"), false);
+    assert.equal(ctx.calls.task.includes("terminator-1"), false);
+    assert.equal(parallelIncludesNameFragment(ctx.calls.parallel, "post-ultimate"), false);
+    assert.deepEqual(git.calls.resetToRef, ["base-ref", "base-ref"]);
+    assert.ok(ultimates.some((entry) => entry.kind === "reliability-campaign" && entry.result === "failed" && /transport failed/.test(entry.details ?? "")));
+    assert.ok(history.some((entry) => entry.decision === "error" && entry.evaluation_phase === "post-ultimate" && entry.transition === "restored_to_accepted_baseline"));
+  });
+
+  test("failed symbolic campaign verification gates post-ultimate acceptance", async () => {
+    const mod = await import("../../packages/workflows/builtin/descent.js");
+    const git = makeMockGit();
+    const ctx = makeMockCtx(
+      { objective: "Implement the spec", max_iterations: 1, max_reject: 1, git_worktree_dir: "/tmp/descent-worktree" },
+      {
+        task: (name) => {
+          if (name === "setup-projection") return projectionJson();
+          if (name === "campaign-reliability-1") return "reliability campaign mutation";
+          if (name === "campaign-modularity-1") return "modularity campaign mutation";
+          if (name === "validator-symbolic-campaign-1") {
+            return symbolicReportJson({
+              findings: [],
+              failed: false,
+              feedback: "FAIL: campaign verification failed despite a false structured flag",
+            });
+          }
+          if (name.startsWith("validator-features-1-post-ultimate")) return axisJson("features", 99);
+          if (name.startsWith("validator-reliability-1-post-ultimate")) return axisJson("reliability", 99);
+          if (name.startsWith("validator-modularity-1-post-ultimate")) return axisJson("modularity", 99);
+          if (name.startsWith("validator-features-")) return axisJson("features", 40);
+          if (name.startsWith("validator-reliability-")) return axisJson("reliability", 30);
+          if (name.startsWith("validator-modularity-")) return axisJson("modularity", 20);
+          if (name.startsWith("validator-symbolic")) return symbolicJson(false);
+          if (name.startsWith("radical-plan-")) return radicalPlanJson();
+          return undefined;
+        },
+      },
+    );
+
+    const result = await mod.runDescentWorkflow(ctx, {
+      objective: "Implement the spec",
+      maxIterations: 1,
+      maxReject: 1,
+      historyObserve: 3,
+      gitWorktreeDir: "/tmp/descent-worktree",
+      git: git.port,
+    });
+    const ultimates = result["ultimates"] as readonly { kind: string; result: string }[];
+    const history = result["history"] as readonly { decision: string; evaluation_phase: string; transition?: string }[];
+
+    assert.equal(result["status"], "failure");
+    assert.equal(ctx.calls.task.includes("validator-symbolic-campaign-1"), true);
+    assert.equal(parallelIncludesNameFragment(ctx.calls.parallel, "post-ultimate"), false);
+    assert.equal(result["final_score"], 0);
+    assert.deepEqual(git.calls.createAcceptedSnapshot, []);
+    assert.deepEqual(git.calls.resetToRef, ["base-ref", "base-ref"]);
+    assert.ok(ultimates.some((entry) => entry.kind === "symbolic-campaign-verification" && entry.result === "failed"));
+    assert.ok(history.some((entry) => entry.decision === "error" && entry.evaluation_phase === "post-ultimate" && entry.transition === "restored_to_accepted_baseline"));
+  });
+
+  test("post-campaign full re-evaluation drives final score and report", async () => {
+    const mod = await import("../../packages/workflows/builtin/descent.js");
+    const git = makeMockGit();
+    const ctx = makeMockCtx(
+      { objective: "Implement the spec", max_iterations: 1, max_reject: 1, git_worktree_dir: "/tmp/descent-worktree" },
+      {
+        task: (name) => {
+          if (name === "setup-projection") return projectionJson();
+          if (name.startsWith("validator-features-1-post-ultimate")) return axisJson("features", 96);
+          if (name.startsWith("validator-reliability-1-post-ultimate")) return axisJson("reliability", 94);
+          if (name.startsWith("validator-modularity-1-post-ultimate")) return axisJson("modularity", 93);
+          if (name.startsWith("validator-features-")) return axisJson("features", 40);
+          if (name.startsWith("validator-reliability-")) return axisJson("reliability", 30);
+          if (name.startsWith("validator-modularity-")) return axisJson("modularity", 20);
+          if (name.startsWith("validator-symbolic")) return symbolicJson(false);
+          if (name.startsWith("radical-plan-")) return radicalPlanJson();
+          return undefined;
+        },
+      },
+    );
+
+    const result = await mod.runDescentWorkflow(ctx, {
+      objective: "Implement the spec",
+      maxIterations: 1,
+      maxReject: 1,
+      historyObserve: 3,
+      gitWorktreeDir: "/tmp/descent-worktree",
+      git: git.port,
+    });
+
+    assert.deepEqual(ctx.calls.parallel[0], [
+      "validator-features-1",
+      "validator-reliability-1",
+      "validator-modularity-1",
+      "validator-symbolic-1",
+    ]);
+    assert.deepEqual(ctx.calls.parallel[1], [
+      "validator-features-1-post-ultimate",
+      "validator-reliability-1-post-ultimate",
+      "validator-modularity-1-post-ultimate",
+      "validator-symbolic-1-post-ultimate",
+    ]);
+    assert.equal(result["status"], "success");
+    assert.equal(result["final_score"], 94);
+    assert.match(String(result["review_report"]), /features=96, reliability=94, modularity=93/);
+    assert.deepEqual(git.calls.resetToRef, ["base-ref"]);
+    assert.deepEqual(git.calls.createAcceptedSnapshot, ["descent: accept iteration 1 post-ultimate"]);
+  });
+
+  test("intervention CONTINUE falls through to normal terminator handling", async () => {
+    const mod = await import("../../packages/workflows/builtin/descent.js");
+    const git = makeMockGit();
+    const ctx = makeMockCtx(
+      { objective: "Implement the spec", max_iterations: 2, max_reject: 3, history_observe: 2, git_worktree_dir: "/tmp/descent-worktree" },
+      {
+        task: (name) => {
+          if (name.startsWith("intervention-")) return interventionJson("CONTINUE");
+          return descentResponder({ features: 0, reliability: 60, modularity: 60 })(name);
+        },
+      },
+    );
+
+    const result = await mod.runDescentWorkflow(ctx, {
+      objective: "Implement the spec",
+      maxIterations: 2,
+      maxReject: 3,
+      historyObserve: 2,
+      gitWorktreeDir: "/tmp/descent-worktree",
+      git: git.port,
+    });
+
+    assert.ok(ctx.calls.task.includes("intervention-2"));
+    assert.ok(ctx.calls.task.includes("terminator-2"));
+    const interventionTools = ctx.calls.taskOptions["intervention-2"]?.[0]?.tools ?? [];
+    for (const tool of ["read", "bash", "grep", "find", "ls", "submit_intervention"]) {
+      assert.ok(interventionTools.includes(tool), `intervention-2 should expose ${tool}`);
+    }
+    assert.equal(interventionTools.includes("todo"), false);
+    assert.equal(interventionTools.includes("ask_user_question"), false);
+    assert.equal(result["status"], "needs_human");
+    assert.ok((result["ultimates"] as readonly { kind: string; result: string }[]).some((entry) => entry.kind === "intervention" && entry.result === "skipped"));
+  });
+
+  test("intervention FAILURE stops as needs_human before terminator", async () => {
+    const mod = await import("../../packages/workflows/builtin/descent.js");
+    const git = makeMockGit();
+    const ctx = makeMockCtx(
+      { objective: "Implement the spec", max_iterations: 2, max_reject: 3, history_observe: 2, git_worktree_dir: "/tmp/descent-worktree" },
+      {
+        task: (name) => {
+          if (name.startsWith("intervention-")) return interventionJson("FAILURE");
+          return descentResponder({ features: 0, reliability: 60, modularity: 60 })(name);
+        },
+      },
+    );
+
+    const result = await mod.runDescentWorkflow(ctx, {
+      objective: "Implement the spec",
+      maxIterations: 2,
+      maxReject: 3,
+      historyObserve: 2,
+      gitWorktreeDir: "/tmp/descent-worktree",
+      git: git.port,
+    });
+
+    assert.ok(ctx.calls.task.includes("intervention-2"));
+    assert.equal(ctx.calls.task.includes("terminator-2"), false);
+    assert.equal(result["status"], "needs_human");
+    assert.match(String(result["result"]), /recommendation FAILURE/);
+  });
+
+  test("intervention SUCCESS guidance reaches the next implementor prompt", async () => {
+    const mod = await import("../../packages/workflows/builtin/descent.js");
+    const git = makeMockGit();
+    const ctx = makeMockCtx(
+      { objective: "Implement the spec", max_iterations: 3, max_reject: 4, history_observe: 2, git_worktree_dir: "/tmp/descent-worktree" },
+      {
+        task: (name) => {
+          if (name.startsWith("intervention-")) {
+            return JSON.stringify({
+              result: "SUCCESS",
+              reason: "persistent zero-score axis failure",
+              recommendation: "FOLLOW INTERVENTION GUIDANCE",
+              next_steps: ["NEXT_STEP_A"],
+            });
+          }
+          return descentResponder({ features: 0, reliability: 60, modularity: 60 })(name);
+        },
+      },
+    );
+
+    const result = await mod.runDescentWorkflow(ctx, {
+      objective: "Implement the spec",
+      maxIterations: 3,
+      maxReject: 4,
+      historyObserve: 2,
+      gitWorktreeDir: "/tmp/descent-worktree",
+      git: git.port,
+    });
+
+    assert.ok(ctx.calls.task.includes("intervention-2"));
+    assert.ok(ctx.calls.task.includes("implementor-research-3"));
+    const nextResearchPrompt = ctx.calls.prompts["implementor-research-3"]?.[0] ?? "";
+    assert.match(nextResearchPrompt, /Active intervention guidance/);
+    assert.match(nextResearchPrompt, /FOLLOW INTERVENTION GUIDANCE/);
+    assert.match(nextResearchPrompt, /NEXT_STEP_A/);
+    assert.equal(result["status"], "needs_human");
+    assert.ok((result["ultimates"] as readonly { kind: string; result: string }[]).some((entry) => entry.kind === "intervention" && entry.result === "applied"));
+  });
+
+  test("final-iteration intervention SUCCESS skips campaigns radical plan and terminator", async () => {
+    const mod = await import("../../packages/workflows/builtin/descent.js");
+    const git = makeMockGit();
+    const ctx = makeMockCtx(
+      { objective: "Implement the spec", max_iterations: 2, max_reject: 2, history_observe: 2, git_worktree_dir: "/tmp/descent-worktree" },
+      {
+        task: (name) => {
+          if (name.startsWith("intervention-")) return interventionJson("SUCCESS");
+          if (name.startsWith("campaign-") || name.startsWith("radical-plan-") || name === "terminator-2") {
+            throw new Error(`${name} should be skipped after final intervention success`);
+          }
+          return descentResponder({ features: 0, reliability: 60, modularity: 60 })(name);
+        },
+      },
+    );
+
+    const result = await mod.runDescentWorkflow(ctx, {
+      objective: "Implement the spec",
+      maxIterations: 2,
+      maxReject: 2,
+      historyObserve: 2,
+      gitWorktreeDir: "/tmp/descent-worktree",
+      git: git.port,
+    });
+
+    assert.ok(ctx.calls.task.includes("intervention-2"));
+    assert.equal(ctx.calls.task.some((name) => name.startsWith("campaign-")), false);
+    assert.equal(ctx.calls.task.some((name) => name.startsWith("radical-plan-")), false);
+    assert.equal(ctx.calls.task.includes("terminator-2"), false);
+    assert.equal(result["status"], "needs_human");
+    assert.equal(result["converged"], false);
+    assert.match(String(result["final_report"]), /normal campaigns and terminator were skipped/i);
+    assert.ok((result["ultimates"] as readonly { kind: string; result: string }[]).some((entry) => entry.kind === "intervention" && entry.result === "applied"));
+  });
+
+  test("intervention SUCCESS with unsafe rollback request fails closed", async () => {
+    const mod = await import("../../packages/workflows/builtin/descent.js");
+    const git = makeMockGit();
+    const ctx = makeMockCtx(
+      { objective: "Implement the spec", max_iterations: 3, max_reject: 4, history_observe: 2, git_worktree_dir: "/tmp/descent-worktree" },
+      {
+        task: (name) => {
+          if (name.startsWith("intervention-")) {
+            return interventionJson("SUCCESS", { requires_rollback: true, revert_to: "untrusted-ref" });
+          }
+          return descentResponder({ features: 0, reliability: 60, modularity: 60 })(name);
+        },
+      },
+    );
+
+    const result = await mod.runDescentWorkflow(ctx, {
+      objective: "Implement the spec",
+      maxIterations: 3,
+      maxReject: 4,
+      historyObserve: 2,
+      gitWorktreeDir: "/tmp/descent-worktree",
+      git: git.port,
+    });
+
+    assert.ok(ctx.calls.task.includes("intervention-2"));
+    assert.equal(ctx.calls.task.includes("implementor-research-3"), false);
+    assert.equal(result["status"], "needs_human");
+    assert.match(String(result["result"]), /could not prove safe/i);
+    assert.deepEqual(git.calls.resetToRef, ["base-ref", "base-ref"]);
+    assert.ok((result["ultimates"] as readonly { kind: string; result: string }[]).some((entry) => entry.kind === "intervention" && entry.result === "failed"));
+  });
+
+  test("intervention SUCCESS with accepted-baseline rollback resets reusable worktree safely", async () => {
+    const mod = await import("../../packages/workflows/builtin/descent.js");
+    const git = makeMockGit();
+    const ctx = makeMockCtx(
+      { objective: "Implement the spec", max_iterations: 3, max_reject: 4, history_observe: 2, git_worktree_dir: "/tmp/descent-worktree" },
+      {
+        task: (name) => {
+          if (name.startsWith("intervention-")) {
+            return interventionJson("SUCCESS", { requires_rollback: true, revert_to: "base-ref" });
+          }
+          return descentResponder({ features: 0, reliability: 60, modularity: 60 })(name);
+        },
+      },
+    );
+
+    const result = await mod.runDescentWorkflow(ctx, {
+      objective: "Implement the spec",
+      maxIterations: 3,
+      maxReject: 4,
+      historyObserve: 2,
+      gitWorktreeDir: "/tmp/descent-worktree",
+      git: git.port,
+    });
+
+    assert.ok(ctx.calls.task.includes("intervention-2"));
+    assert.ok(ctx.calls.task.includes("implementor-research-3"));
+    assert.deepEqual(git.calls.resetToRef.slice(0, 3), ["base-ref", "base-ref", "base-ref"]);
+    assert.ok((result["ultimates"] as readonly { kind: string; result: string; details?: string }[]).some((entry) => entry.kind === "intervention" && entry.result === "applied" && /Rollback handled/.test(entry.details ?? "")));
+  });
+
+  test("terminator task rejection returns structured needs_human without next iteration", async () => {
+    const mod = await import("../../packages/workflows/builtin/descent.js");
+    const git = makeMockGit();
+    const ctx = makeMockCtx(
+      {
+        objective: "Implement the spec",
+        max_iterations: 3,
+        max_reject: 4,
+        history_observe: 3,
+        git_worktree_dir: "/tmp/descent-worktree",
+      },
+      {
+        task: (name) => {
+          if (name === "terminator-2") {
+            throw new Error("terminator provider unavailable");
+          }
+          if (name === "recovery-1" || name === "implementor-research-3") {
+            throw new Error(`${name} should not start after terminator failure`);
+          }
+          return descentResponder({ features: 60, reliability: 55, modularity: 55 })(name);
+        },
+      },
+    );
+
+    const result = await mod.runDescentWorkflow(ctx, {
+      objective: "Implement the spec",
+      maxIterations: 3,
+      maxReject: 4,
+      historyObserve: 3,
+      gitWorktreeDir: "/tmp/descent-worktree",
+      git: git.port,
+    });
+
+    const history = result["history"] as readonly {
+      decision: string;
+      transition?: string;
+      score?: number;
+    }[];
+
+    assert.equal(result["status"], "needs_human");
+    assert.equal(result["converged"], false);
+    assert.equal(history.length, 2);
+    assert.ok(history.every((entry) => entry.decision === "approve"));
+    assert.ok(history.every((entry) => entry.transition === "accepted"));
+    assert.equal(result["approved_iterations"], 2);
+    assert.equal(result["final_score"], 57);
+    assert.deepEqual(result["final_scores"], { features: 60, reliability: 55, modularity: 55 });
+    assert.deepEqual(git.calls.createAcceptedSnapshot, [
+      "descent: accept iteration 1 primary",
+      "descent: accept iteration 2 primary",
+    ]);
+    assert.ok(ctx.calls.task.includes("terminator-2"));
+    assert.equal(ctx.calls.task.includes("recovery-1"), false);
+    assert.equal(ctx.calls.task.includes("implementor-research-3"), false);
+    assert.match(String(result["result"]), /terminator-fallback/);
+    assert.match(String(result["result"]), /terminator-2/);
+    assert.match(String(result["result"]), /terminator provider unavailable/);
+    assert.match(String(result["final_report"]), /Stop source: terminator-fallback/);
+    assert.match(String(result["final_report"]), /terminator-2/);
+    assert.match(String(result["final_report"]), /terminator provider unavailable/);
+  });
+
+  test("explicit non-converged terminator FAILURE returns without retry pass", async () => {
+    const mod = await import("../../packages/workflows/builtin/descent.js");
+    const ctx = makeMockCtx(
+      { objective: "Implement the spec", max_iterations: 2 },
+      {
+        task: (name) => {
+          if (name === "terminator-2") return JSON.stringify({ decision: "FAILURE", feedback: "model says non-converged" });
+          return descentResponder({ features: 60, reliability: 55, modularity: 55 })(name);
+        },
+      },
+    );
+
+    const d = mod.default as unknown as WorkflowDefinition;
+    const result = await d.run(ctx);
+
+    assert.ok(ctx.calls.task.includes("terminator-2"));
+    assert.equal(ctx.calls.task.includes("recovery-1"), false);
+    assert.equal(ctx.calls.task.includes("implementor-research-recovery-1"), false);
+    assert.equal(result["status"], "failure");
+  });
+
+  test("non-convergence returns without automatic recovery pass", async () => {
+    const mod = await import("../../packages/workflows/builtin/descent.js");
+    const git = makeMockGit();
+    const ctx = makeMockCtx(
+      { objective: "Implement the spec", max_iterations: 1, git_worktree_dir: "/tmp/descent-worktree" },
+      { task: descentResponder({ features: 40, reliability: 30, modularity: 20 }) },
+    );
+
+    const result = await mod.runDescentWorkflow(ctx, {
+      objective: "Implement the spec",
+      maxIterations: 1,
+      maxReject: 3,
+      historyObserve: 3,
+      gitWorktreeDir: "/tmp/descent-worktree",
+      git: git.port,
+    });
+
+    assert.equal(ctx.calls.task.includes("recovery-1"), false);
+    assert.equal(ctx.calls.task.includes("implementor-research-recovery-1"), false);
+    assert.equal(result["status"], "needs_human");
+    assert.equal(result["iterations_completed"], 1);
+    assert.equal("recovery_report" in result, false);
+  });
+
+  test("reusable worktree rollback removes ignored generated outputs", async () => {
+    const mod = await import("../../packages/workflows/builtin/descent.js");
+    const tempRoot = mkdtempSync(join(tmpdir(), "atomic-descent-git-"));
+    try {
+      const repo = join(tempRoot, "repo");
+      const worktree = join(tempRoot, "linked-worktree");
+      mkdirSync(repo);
+      await initializeDescentGitRepo(repo, {
+        ".gitignore": "dist/\n",
+        "tracked.txt": "baseline\n",
+      });
+      await addLinkedWorktree(repo, worktree);
+
+      const ctx = makeMockCtx(
+        { objective: "Implement the spec", max_iterations: 1, git_worktree_dir: worktree },
+        {
+          task: (name) => {
+            if (name === "implementor-exec-1") {
+              writeFileSync(join(worktree, "tracked.txt"), "mutated\n", "utf8");
+              writeFileSync(join(worktree, "untracked.txt"), "temporary\n", "utf8");
+              mkdirSync(join(worktree, "dist"), { recursive: true });
+              writeFileSync(join(worktree, "dist", "generated.js"), "generated\n", "utf8");
+            }
+            return descentResponder({ features: 40, reliability: 30, modularity: 20 })(name);
+          },
+        },
+      );
+
+      await mod.runDescentWorkflow(ctx, {
+        objective: "Implement the spec",
+        maxIterations: 1,
+        maxReject: 3,
+        historyObserve: 3,
+        gitWorktreeDir: worktree,
+      });
+
+      assert.equal(readFileSync(join(worktree, "tracked.txt"), "utf8"), "baseline\n");
+      assert.equal(existsSync(join(worktree, "untracked.txt")), false);
+      assert.equal(existsSync(join(worktree, "dist", "generated.js")), false);
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("reusable worktree rollback from nested cwd cleans root tracked untracked and ignored files", async () => {
+    const mod = await import("../../packages/workflows/builtin/descent.js");
+    const tempRoot = mkdtempSync(join(tmpdir(), "atomic-descent-nested-git-"));
+    try {
+      const repo = join(tempRoot, "repo");
+      const worktree = join(tempRoot, "linked-worktree");
+      mkdirSync(repo);
+      await initializeDescentGitRepo(repo, {
+        ".gitignore": "dist/\nignored-root.log\n",
+        "tracked.txt": "baseline\n",
+        "packages/api/index.ts": "export const baseline = true;\n",
+      });
+      await addLinkedWorktree(repo, worktree);
+      const nestedCwd = join(worktree, "packages", "api");
+      const baseCtx = makeMockCtx(
+        { objective: "Implement the spec", max_iterations: 1, git_worktree_dir: "relative-reusable-worktree" },
+        {
+          task: (name) => {
+            if (name === "implementor-exec-1") {
+              writeFileSync(join(worktree, "tracked.txt"), "mutated\n", "utf8");
+              writeFileSync(join(worktree, "untracked-root.txt"), "temporary\n", "utf8");
+              mkdirSync(join(worktree, "dist"), { recursive: true });
+              writeFileSync(join(worktree, "dist", "generated.js"), "generated\n", "utf8");
+              writeFileSync(join(worktree, "ignored-root.log"), "ignored\n", "utf8");
+            }
+            return descentResponder({ features: 40, reliability: 30, modularity: 20 })(name);
+          },
+        },
+      );
+      const ctx = { ...baseCtx, cwd: nestedCwd };
+
+      const d = mod.default as unknown as WorkflowDefinition;
+      const result = await d.run(ctx);
+
+      assert.equal(result["status"], "needs_human");
+      assert.equal(readFileSync(join(worktree, "tracked.txt"), "utf8"), "baseline\n");
+      assert.equal(existsSync(join(worktree, "untracked-root.txt")), false);
+      assert.equal(existsSync(join(worktree, "dist", "generated.js")), false);
+      assert.equal(existsSync(join(worktree, "ignored-root.log")), false);
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // open-claude-design
 // ---------------------------------------------------------------------------
 
@@ -1517,16 +3522,18 @@ describe("open-claude-design", () => {
 // ---------------------------------------------------------------------------
 
 describe("builtin/index manifest", () => {
-  test("exports all four builtins by name", async () => {
+  test("exports all five builtins by name", async () => {
     const mod = await import("../../packages/workflows/builtin/index.js");
     assert.notEqual(mod.deepResearchCodebase, undefined);
     assert.notEqual(mod.goal, undefined);
     assert.notEqual(mod.ralph, undefined);
+    assert.notEqual(mod.descent, undefined);
     assert.notEqual(mod.openClaudeDesign, undefined);
 
     assertWorkflowDefinition(mod.deepResearchCodebase);
     assertWorkflowDefinition(mod.goal);
     assertWorkflowDefinition(mod.ralph);
+    assertWorkflowDefinition(mod.descent);
     assertWorkflowDefinition(mod.openClaudeDesign);
   });
 });

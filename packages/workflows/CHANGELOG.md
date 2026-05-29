@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Added the built-in `descent` workflow: an Atomic-native setup → implementor → validator → terminator optimization loop with feature/reliability/modularity/symbolic validation axes, prior-failure setup checks, anti-drift ultimates, and reusable worktree inputs.
+
 ### Fixed
 
 - Warn before starting or resuming another session when workflows are still in flight, allowing users to cancel before those runs are killed and current-session workflow history is cleared ([#1082](https://github.com/flora131/atomic/issues/1082)).

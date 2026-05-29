@@ -2,7 +2,7 @@
  * Tests for src/extension/discovery.ts
  *
  * Covers:
- *   - discoverStartupWorkflowsSync() happy path: all four builtins registered
+ *   - discoverStartupWorkflowsSync() happy path: all five builtins registered
  *   - DiscoveryResult shape: registry, sources, errors
  *   - sources array: one entry per bundled workflow with correct id/kind/name
  *   - No errors on clean manifest
@@ -13,7 +13,7 @@
 
 import { afterAll, describe, test } from "bun:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -24,6 +24,14 @@ import {
   type DiscoverySource,
   type DiscoveryDiagnostic,
 } from "../../packages/workflows/src/extension/discovery.js";
+
+const BUNDLED_WORKFLOW_NAMES = [
+  "deep-research-codebase",
+  "goal",
+  "ralph",
+  "descent",
+  "open-claude-design",
+] as const;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -46,6 +54,22 @@ function makeValidDef(
 }
 
 // ---------------------------------------------------------------------------
+// Quickstart docs
+// ---------------------------------------------------------------------------
+
+describe("quickstart workflow documentation", () => {
+  test("lists five workflows and includes descent", () => {
+    const quickstart = readFileSync(
+      join(process.cwd(), "packages/coding-agent/docs/quickstart.md"),
+      "utf8",
+    );
+
+    assert.match(quickstart, /Atomic ships with five workflows/);
+    assert.match(quickstart, /\| `descent` \|/);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Happy path: real bundled workflows
 // ---------------------------------------------------------------------------
 
@@ -58,14 +82,13 @@ describe("discoverStartupWorkflowsSync — bundled manifest", () => {
     assert.equal(Array.isArray(result.errors), true);
   });
 
-  test("registers exactly the four bundled workflows", async () => {
+  test("registers exactly the five bundled workflows", async () => {
     const { registry } = await discoverStartupWorkflowsSync();
     const names = registry.names();
-    assert.ok(names.includes("deep-research-codebase"));
-    assert.ok(names.includes("goal"));
-    assert.ok(names.includes("ralph"));
-    assert.ok(names.includes("open-claude-design"));
-    assert.equal(names.length, 4);
+    for (const name of BUNDLED_WORKFLOW_NAMES) {
+      assert.ok(names.includes(name));
+    }
+    assert.equal(names.length, BUNDLED_WORKFLOW_NAMES.length);
   });
 
   test("no errors on clean manifest", async () => {
@@ -75,12 +98,11 @@ describe("discoverStartupWorkflowsSync — bundled manifest", () => {
 
   test("sources array has one entry per registered workflow", async () => {
     const { sources } = await discoverStartupWorkflowsSync();
-    assert.equal(sources.length, 4);
+    assert.equal(sources.length, BUNDLED_WORKFLOW_NAMES.length);
     const ids = sources.map((s: DiscoverySource) => s.id);
-    assert.ok(ids.includes("deep-research-codebase"));
-    assert.ok(ids.includes("goal"));
-    assert.ok(ids.includes("ralph"));
-    assert.ok(ids.includes("open-claude-design"));
+    for (const name of BUNDLED_WORKFLOW_NAMES) {
+      assert.ok(ids.includes(name));
+    }
   });
 
   test("every source has kind='bundled'", async () => {
@@ -109,7 +131,7 @@ describe("discoverStartupWorkflowsSync — bundled manifest", () => {
 
   test("registry.get by normalizedName returns valid WorkflowDefinition", async () => {
     const { registry } = await discoverStartupWorkflowsSync();
-    for (const name of ["deep-research-codebase", "goal", "ralph", "open-claude-design"]) {
+    for (const name of BUNDLED_WORKFLOW_NAMES) {
       const def = registry.get(name);
       assert.notEqual(def, undefined);
       assert.equal(def!.__piWorkflow, true);
@@ -234,14 +256,14 @@ describe("DiscoverySource shape", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Registry integration: all() returns all four definitions
+// Registry integration: all() returns all five definitions
 // ---------------------------------------------------------------------------
 
 describe("registry.all() after discovery", () => {
-  test("all() returns four WorkflowDefinition objects", async () => {
+  test("all() returns five WorkflowDefinition objects", async () => {
     const { registry } = await discoverStartupWorkflowsSync();
     const all = registry.all();
-    assert.equal(all.length, 4);
+    assert.equal(all.length, 5);
     for (const def of all) {
       assert.equal(def.__piWorkflow, true);
       assert.equal(typeof def.name, "string");
@@ -960,6 +982,7 @@ describe("discoverWorkflows — includeBundled", () => {
     const cwd = makeTempDir("bundled-true");
     const { registry } = await discoverWorkflows({ cwd, homeDir: makeTempDir("empty-b") });
     assert.equal(registry.has("ralph"), true);
+    assert.equal(registry.has("descent"), true);
     assert.equal(registry.has("deep-research-codebase"), true);
     assert.equal(registry.has("open-claude-design"), true);
   });
@@ -972,6 +995,7 @@ describe("discoverWorkflows — includeBundled", () => {
       includeBundled: false,
     });
     assert.equal(registry.has("ralph"), false);
+    assert.equal(registry.has("descent"), false);
     assert.equal(registry.has("deep-research-codebase"), false);
     assert.equal(registry.has("open-claude-design"), false);
   });

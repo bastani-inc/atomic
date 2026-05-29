@@ -64,21 +64,30 @@ describe("renderWorkflowList — populated", () => {
             { name: "iterations", required: false },
           ],
         },
+        {
+          name: "descent",
+          description: "Iterative implementor, validator, and terminator optimization loop.",
+          inputs: [
+            { name: "objective", required: true },
+            { name: "max_iterations", required: false },
+          ],
+        },
       ],
       { theme: deriveGraphTheme({}), width: 110 },
     );
     const plain = stripAnsi(out);
 
-    assert.match(plain, /╭ WORKFLOWS  3 registered /);
-    assert.match(plain, /3 registered/);
+    assert.match(plain, /╭ WORKFLOWS  4 registered /);
+    assert.match(plain, /4 registered/);
 
     // Tag + description per workflow.
-    for (const name of ["deep-research-codebase", "open-claude-design", "ralph"]) {
+    for (const name of ["deep-research-codebase", "open-claude-design", "ralph", "descent"]) {
       assert.ok(plain.includes(name), `tag missing for ${name}`);
     }
     assert.match(plain, /Partitioned, parallel research/);
     assert.match(plain, /impeccable design skill/);
     assert.match(plain, /improvement loop/);
+    assert.match(plain, /terminator optimization loop/);
 
     // Inputs row: required and optional names; optional carries `?`.
     assert.match(plain, /inputs\s+prompt/);

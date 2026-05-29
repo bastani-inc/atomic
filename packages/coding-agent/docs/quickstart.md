@@ -68,18 +68,19 @@ For an interactive tour any time, run `/atomic` inside the TUI; `/atomic overvie
 
 ### Try the built-in workflows
 
-Atomic ships with four workflows you can run immediately. Use `/workflow list` to see them and `/workflow inputs <name>` to inspect their inputs in your environment.
+Atomic ships with five workflows you can run immediately. Use `/workflow list` to see them and `/workflow inputs <name>` to inspect their inputs in your environment.
 
 | Workflow | When to use | Example |
 |---|---|---|
 | `deep-research-codebase` | Broad, cross-cutting research before you decide what to change. Scout → research-history → parallel specialist waves → aggregator. | `/workflow deep-research-codebase prompt="How do payment retries work end to end?"` |
 | `goal` | Small-to-medium scope changes when you can identify the work surface, state the exact outcome, and name the validation that proves it is done — for example tests, lint/typecheck, docs builds, or observable behavior. Keeps the run bounded with a goal ledger, reviewer gates, and final status `complete`, `blocked`, or `needs_human`. | `/workflow goal objective="Implement specs/2026-03-rate-limit.md, run the focused tests, and finish when burst traffic returns 429"` |
 | `ralph` | Larger migrations, broad refactors, multi-package changes, and spec-to-PR work where you want Atomic to plan the approach, delegate implementation through sub-agents, simplify, review, iterate, and prepare a pull-request report. | `/workflow ralph prompt="Plan the database migration, implement it, review it, and prepare a PR"` |
+| `descent` | Iterative optimization when explicit feature/reliability/modularity scores, symbolic validation, campaign/radical triggers, and setup-time checks for prior failed attempts are useful. | `/workflow descent objective="Iteratively improve the rate-limit implementation until validators converge" max_iterations=5` |
 | `open-claude-design` | UI and design-system work with generation, critique, and refinement loops; renders a live `preview.html` you can iterate against. | `/workflow open-claude-design prompt="Refresh the settings page hierarchy" output_type=page` |
 
 <p align="center"><img src="images/workflow-list.png" alt="Workflow List" width="600" /></p>
 
-Inputs are bare `key=value` tokens. Values are JSON-parsed when possible, so `count=5`, `flag=true`, and `objective="multi word value"` preserve useful types. Some workflows expose reusable worktree inputs; for example, add `git_worktree_dir=../atomic-ralph-wt` to `ralph` to run its stages in a created/reused Git worktree while preserving your current repo-relative cwd. If you call `/workflow <name>` without required inputs, the TUI opens an inline picker; pass `--no-picker` to skip it.
+Inputs are bare `key=value` tokens. Values are JSON-parsed when possible, so `count=5`, `flag=true`, and `objective="multi word value"` preserve useful types. Some workflows expose reusable worktree inputs; for example, add `git_worktree_dir=../atomic-ralph-wt` to `ralph` or `descent` to run stages in a created/reused Git worktree while preserving your current repo-relative cwd. If you call `/workflow <name>` without required inputs, the TUI opens an inline picker; pass `--no-picker` to skip it.
 
 You can also launch workflows with **natural language** — just describe the task in chat and ask Atomic to run the matching workflow:
 
@@ -94,6 +95,8 @@ Use the goal workflow to update the CLI docs for --json, include one example, ru
 Atomic picks the workflow, fills in inputs from the request, and confirms before launch.
 
 Use `goal` for small-to-medium scope changes when you can identify the work surface, state the exact outcome you want, and name the validation that proves it is done — for example specific tests, lint/typecheck commands, docs builds, or observable behavior. It keeps the run bounded, captures receipts in a goal ledger, gates completion through reviewers, and stops as `complete`, `blocked`, or `needs_human`.
+
+Use `descent` when the work benefits from an explicit optimize/validate loop with scored feature, reliability, and modularity gates, symbolic validation, escalation campaigns, and setup-time incorporation of prior failure context.
 
 Keep using `ralph` for larger migrations, broad refactors, multi-package changes, and spec-to-PR work where you want Atomic to plan the approach, delegate implementation through sub-agents, simplify, review, iterate, and prepare a pull-request report.
 

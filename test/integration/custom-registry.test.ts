@@ -126,6 +126,7 @@ describe("discoverWorkflows — custom sources from temp cwd/home", () => {
     const names = discoveryResult.registry.names();
     assert.ok(names.includes("deep-research-codebase"));
     assert.ok(names.includes("ralph"));
+    assert.ok(names.includes("descent"));
   });
 
   test("result.sources contains a 'project-local' entry for custom workflow", () => {
@@ -175,6 +176,7 @@ describe("ExtensionRuntime with custom registry — tool dispatch", () => {
     const names = r.items.map((i) => i.name);
     assert.ok(names.includes("deep-research-codebase"));
     assert.ok(names.includes("ralph"));
+    assert.ok(names.includes("descent"));
   });
 
   test("action='inputs' for custom workflow returns declared inputs", async () => {
@@ -338,7 +340,7 @@ describe("/workflow slash command — bundled-and-custom shared registry", () =>
     const combined = messages.join("\n");
 
     // Every bundled name visible to tool is also in slash output.
-    for (const name of ["deep-research-codebase", "ralph", "open-claude-design"]) {
+    for (const name of ["deep-research-codebase", "ralph", "descent", "open-claude-design"]) {
       assert.ok(toolWorkflows.includes(name));
       assert.ok(
         listEntries.includes(name) || combined.includes(name),
@@ -379,7 +381,7 @@ describe("/workflow slash command — bundled-and-custom shared registry", () =>
     const completions = await cmd.options.getArgumentCompletions?.("") ?? [];
     const labels = completions.map((c) => c.label);
 
-    for (const name of ["deep-research-codebase", "ralph", "open-claude-design"]) {
+    for (const name of ["deep-research-codebase", "ralph", "descent", "open-claude-design"]) {
       assert.ok(labels.includes(name));
     }
   });

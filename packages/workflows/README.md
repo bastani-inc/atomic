@@ -153,15 +153,17 @@ await ctx.parallel([
 Worktree semantics:
 
 - `gitWorktreeDir` must be used from inside a Git repository. Relative paths resolve from the logical invoking repository root; absolute paths are used as-is.
-- If the requested path exists, it must be an actual Git worktree/checkout root belonging to the invoking repository. Existing subdirectories are rejected so writes do not silently land in the main checkout.
-- If the path is missing, the parent directory is created and Git runs `git worktree add --detach <path> <baseBranch>`. `baseBranch` defaults to `HEAD` when omitted.
+- For workflow input bindings, omit `gitWorktreeDir` or bind it to an empty workflow input value to run in primary-checkout mode instead of acquiring a reusable worktree. A non-empty `gitWorktreeDir` must be a separate reusable worktree root outside the invoking checkout, not the checkout itself or any descendant path inside it.
+- On the first acquisition in a workflow run, an existing requested path must be an actual Git worktree/checkout root belonging to the invoking repository, and it must be clean: no staged, tracked, untracked, or ignored files. Existing subdirectories are rejected so writes do not silently land in the main checkout.
+- After that first acquisition succeeds, the reusable worktree is considered owned by the workflow run. Later `ctx.stage`, `ctx.task`, `ctx.chain`, and `ctx.parallel` calls that use the same canonical repository/worktree pair reuse the acquired cwd and may inspect or build on intentional dirty state created by earlier workflow stages instead of re-running cleanliness checks.
+- If the path is missing on first acquisition, the parent directory is created and Git runs `git worktree add --detach <path> <baseBranch>`. `baseBranch` defaults to `HEAD` when omitted.
 - The default execution cwd preserves the caller's repo-relative cwd inside the worktree. For example, invoking a workflow from `repo/packages/api` with `gitWorktreeDir=../repo-wt` uses `../repo-wt/packages/api` for workflow `ctx.cwd` and stage/task execution.
 - Symlinked repo/worktree paths preserve their logical spelling in the default cwd, matching Codex-style worktree behavior.
 - Explicit `cwd` still wins. Relative `cwd` values are resolved against the worktree default cwd; absolute `cwd` values are used as provided.
 
 `worktree: true` is different: it creates temporary isolated worktrees for direct task/parallel/chain execution and cleans them up afterward. It is mutually exclusive with `gitWorktreeDir`, which is intended for named/reusable worktrees that remain available across retries.
 
-For advanced integrations, the SDK also exports `setupGitWorktree(options)`, which returns `{ worktreeRoot, cwd, repositoryRoot, created }` and uses the same validation/path behavior as the executor.
+For advanced integrations, the SDK also exports `setupGitWorktree(options)`, which requires a non-empty `gitWorktreeDir`, returns `{ worktreeRoot, cwd, repositoryRoot, created }`, and always performs the direct setup validation described above. The run-scoped ownership cache and workflow-input empty-value primary-checkout mode are executor-only and do not change direct `setupGitWorktree(options)` behavior.
 
 ### Model fallbacks
 
@@ -394,6 +396,24 @@ Plan → orchestrate → simplify → discover → review → PR-handoff workflo
 | `max_loops`        | `number` | —        | `10`          | Maximum plan/orchestrate/review iterations before PR handoff. |
 | `base_branch`      | `string` | —        | `origin/main` | Branch reviewers and PR-prep compare the current delta with; also used to create a missing worktree. |
 | `git_worktree_dir` | `string` | —        | `""`          | Optional reusable Git worktree root. Empty runs in the invoking checkout; non-empty values run Ralph stages in the created/reused worktree. |
+
+### `descent`
+
+Setup → implementor → validator → terminator optimization loop with anti-drift ultimates. Use it when a change benefits from explicit per-axis scoring, bounded improvement iterations, setup-time prior-failure checks, and fail-closed validator gates rather than a PR-prep flow.
+
+```text
+/workflow descent objective="Improve specs/2026-03-rate-limit.md implementation until feature, reliability, and modularity validators converge" max_iterations=5
+```
+
+| Input              | Type      | Required | Default       | Description                                                   |
+| ------------------ | --------- | -------- | ------------- | ------------------------------------------------------------- |
+| `objective`        | `text`    | ✓        | —             | Goal, issue summary, task, or spec path for the optimization loop. |
+| `max_iterations`   | `number`  | —        | `10`          | Maximum implement/validate/terminate iterations.              |
+| `max_reject`       | `number`  | —        | `3`           | Consecutive rejected/error iterations before reject-streak stagnation and campaign/radical triggers. |
+| `history_observe`  | `number`  | —        | `3`           | Recent score-history window for plateau/decreasing-score stagnation and cascading-failure checks. |
+| `git_worktree_dir` | `string`  | —        | `""`          | Optional separate reusable Git worktree root for isolated descent runs; must be clean on first acquisition. |
+
+`descent` keeps run state in TypeScript task results and final output fields; it does not create a repo-local `.descend/` state directory or use `.atomic/todos` scratch state. Setup inspects the objective and repository context for previous failure or previous attempt evidence and folds those lessons into the projected goals. Validators compare against the current CWD Git branch/ref discovered by the workflow, not a user-provided base-branch input. Approval requires at least one non-symbolic axis score ≥ 50, no zero non-symbolic scores, and passing symbolic validation. Reject-streak triggers use `max_reject`, while score plateau/decreasing-score and cascading-failure windows use `history_observe`. In an explicit `git_worktree_dir`, the directory must be a separate linked worktree root (not `.` or the invoking checkout) that is clean when first acquired by the workflow run; after the implementor mutates it, validator stages reuse the workflow-owned worktree and inspect those changes. Approved evaluations advance the accepted baseline and rejected/error evaluations reset the reusable worktree to that baseline before any next mutating stage. In the primary checkout, rejected/error evaluations stop as `needs_human` instead of running destructive reset/clean commands. Mutating campaign ultimates are followed by a second full validator fanout so terminator decisions, final scores, and `review_report` use post-campaign evidence.
 
 ### `open-claude-design`
 

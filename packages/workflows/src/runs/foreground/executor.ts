@@ -53,12 +53,14 @@ import { stageControlRegistry as defaultStageControlRegistry } from "./stage-con
 import { createRunLimiter } from "../shared/concurrency.js";
 import {
   cleanupWorktrees,
+  createRunScopedGitWorktreeAcquirer,
   createWorktrees,
   diffWorktrees,
   findWorktreeTaskCwdConflict,
   setupGitWorktree,
   formatWorktreeDiffSummary,
   formatWorktreeTaskCwdConflict,
+  type GitWorktreeAcquirer,
   type WorktreeSetup,
 } from "../shared/worktree.js";
 import { store as defaultStore } from "../../shared/store.js";
@@ -73,6 +75,7 @@ import { validateWorkflowModels } from "../shared/model-fallback.js";
 import type { WorkflowFailure } from "../../shared/workflow-failures.js";
 import { classifyWorkflowFailure } from "../../shared/workflow-failures.js";
 import { selectPromptCallsiteFrame } from "../shared/prompt-callsite.js";
+import { normalizeGitRefInput } from "../shared/git-ref.js";
 
 export interface ResolvedInputs extends Record<string, unknown> {}
 
@@ -189,19 +192,35 @@ function resolveInputConcurrency(
   return Math.floor(value);
 }
 
+function baseBranchFallbackForBinding(
+  def: Pick<WorkflowDefinition, "inputs">,
+  inputName: string | undefined,
+): string {
+  if (inputName === undefined) return "HEAD";
+  const defaultValue = def.inputs[inputName]?.default;
+  return typeof defaultValue === "string"
+    ? normalizeGitRefInput(defaultValue, "HEAD")
+    : "HEAD";
+}
+
 function resolveInputRuntimeDefaults(
-  def: Pick<WorkflowDefinition, "inputBindings">,
+  def: Pick<WorkflowDefinition, "inputBindings" | "inputs">,
   resolvedInputs: ResolvedInputs,
 ): Partial<StageOptions> {
   const defaults: Partial<StageOptions> = {};
   const worktree = def.inputBindings?.worktree;
-  if (worktree !== undefined) {
-    const gitWorktreeDir = resolvedInputs[worktree.gitWorktreeDir];
-    if (typeof gitWorktreeDir === "string" && gitWorktreeDir.trim().length > 0) {
-      defaults.gitWorktreeDir = gitWorktreeDir;
-      const baseBranch = worktree.baseBranch === undefined ? undefined : resolvedInputs[worktree.baseBranch];
-      if (typeof baseBranch === "string") defaults.baseBranch = baseBranch;
-    }
+  if (worktree === undefined) return defaults;
+
+  const gitWorktreeDir = resolvedInputs[worktree.gitWorktreeDir];
+  if (typeof gitWorktreeDir !== "string" || gitWorktreeDir.trim().length === 0) {
+    return defaults;
+  }
+
+  defaults.gitWorktreeDir = gitWorktreeDir;
+  const baseBranch = worktree.baseBranch === undefined ? undefined : resolvedInputs[worktree.baseBranch];
+  if (typeof baseBranch === "string") {
+    const fallbackBaseBranch = baseBranchFallbackForBinding(def, worktree.baseBranch);
+    defaults.baseBranch = normalizeGitRefInput(baseBranch, fallbackBaseBranch);
   }
   return defaults;
 }
@@ -751,12 +770,16 @@ function stageOptionsWithInputDefaults<T extends StageOptions>(options: T | unde
   return { ...defaults, ...withoutUndefinedProperties(options ?? {}) } as T;
 }
 
-function stageOptionsWithGitWorktree<T extends StageOptions>(options: T | undefined, workflowInvocationCwd: string): T | undefined {
+function stageOptionsWithGitWorktree<T extends StageOptions>(
+  options: T | undefined,
+  workflowInvocationCwd: string,
+  acquireGitWorktree: GitWorktreeAcquirer = setupGitWorktree,
+): T | undefined {
   if (options === undefined) return undefined;
   if (typeof options.gitWorktreeDir !== "string" || options.gitWorktreeDir.trim().length === 0) {
     return options;
   }
-  const setup = setupGitWorktree({
+  const setup = acquireGitWorktree({
     gitWorktreeDir: options.gitWorktreeDir,
     baseBranch: options.baseBranch,
     cwd: workflowInvocationCwd,
@@ -765,11 +788,15 @@ function stageOptionsWithGitWorktree<T extends StageOptions>(options: T | undefi
   return { ...options, gitWorktreeDir: undefined, baseBranch: undefined, cwd: explicitCwd ?? setup.cwd };
 }
 
-function workflowCwdWithInputWorktree(inputDefaults: Partial<StageOptions>, workflowInvocationCwd: string): string {
+function workflowCwdWithInputWorktree(
+  inputDefaults: Partial<StageOptions>,
+  workflowInvocationCwd: string,
+  acquireGitWorktree: GitWorktreeAcquirer = setupGitWorktree,
+): string {
   if (typeof inputDefaults.gitWorktreeDir !== "string" || inputDefaults.gitWorktreeDir.trim().length === 0) {
     return workflowInvocationCwd;
   }
-  return setupGitWorktree({
+  return acquireGitWorktree({
     gitWorktreeDir: inputDefaults.gitWorktreeDir,
     baseBranch: inputDefaults.baseBranch,
     cwd: workflowInvocationCwd,
@@ -1565,9 +1592,10 @@ export async function run<TInputs extends Record<string, unknown>>(
   const inputConcurrency = resolveInputConcurrency(def.inputs, resolvedInputs);
   const inputRuntimeDefaults = resolveInputRuntimeDefaults(def, resolvedInputs);
   const workflowInvocationCwd = opts.cwd ?? process.cwd();
+  const acquireGitWorktree = createRunScopedGitWorktreeAcquirer();
   let workflowCwd: string | undefined;
   const resolveWorkflowCwd = (): string => {
-    workflowCwd ??= workflowCwdWithInputWorktree(inputRuntimeDefaults, workflowInvocationCwd);
+    workflowCwd ??= workflowCwdWithInputWorktree(inputRuntimeDefaults, workflowInvocationCwd, acquireGitWorktree);
     return workflowCwd;
   };
   const limiter = createRunLimiter(inputConcurrency ?? opts.config?.defaultConcurrency);
@@ -1910,7 +1938,7 @@ export async function run<TInputs extends Record<string, unknown>>(
     ui: opts.usePromptNodesForUi === true ? buildPromptNodeUiAdapter() : opts.ui ?? makeUnavailableUIContext(),
 
     stage(name: string, options?: StageOptions, stageFailFastScope?: ParallelFailFastScope) {
-      options = stageOptionsWithGitWorktree(stageOptionsWithInputDefaults(options, inputRuntimeDefaults), workflowInvocationCwd);
+      options = stageOptionsWithGitWorktree(stageOptionsWithInputDefaults(options, inputRuntimeDefaults), workflowInvocationCwd, acquireGitWorktree);
       // a. Generate stageId
       const stageId = crypto.randomUUID();
 
@@ -2456,7 +2484,7 @@ export async function run<TInputs extends Record<string, unknown>>(
 
     async task(name: string, options: WorkflowTaskOptions, stageFailFastScope?: ParallelFailFastScope): Promise<WorkflowTaskResult> {
       const runTaskOnce = async (taskOptions: WorkflowTaskOptions): Promise<WorkflowTaskResult> => {
-        const resolvedTaskOptions = stageOptionsWithGitWorktree(stageOptionsWithInputDefaults(taskOptions, inputRuntimeDefaults), workflowInvocationCwd) ?? taskOptions;
+        const resolvedTaskOptions = stageOptionsWithGitWorktree(stageOptionsWithInputDefaults(taskOptions, inputRuntimeDefaults), workflowInvocationCwd, acquireGitWorktree) ?? taskOptions;
         const stage = (ctx.stage as typeof ctx.stage & ((stageName: string, stageOptions?: StageOptions, scope?: ParallelFailFastScope) => StageContext))(
           name,
           taskStageOptions(resolvedTaskOptions),

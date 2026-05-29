@@ -135,13 +135,14 @@ See [Writing a Workflow](#writing-a-workflow) for the full builder API and [Work
 
 ## Built-in Workflows
 
-Atomic bundles four workflows that cover the most common multi-stage jobs. They are available in every session — no install step required. Use `/workflow list` to confirm they are loaded, and `/workflow inputs <name>` to see the exact inputs in your environment.
+Atomic bundles five workflows that cover the most common multi-stage jobs. They are available in every session — no install step required. Use `/workflow list` to confirm they are loaded, and `/workflow inputs <name>` to see the exact inputs in your environment.
 
 | Workflow | What it does | When to use |
 |---|---|---|
 | `deep-research-codebase` | Scout + research-history chain → parallel specialist waves → aggregator. Indexes the whole repo and synthesizes findings. | Broad or cross-cutting research before you decide what to change. Prefer `/skill:research-codebase` for one subsystem. |
 | `goal` | Persisted goal ledger → bounded worker turns → receipts → three-reviewer gate → deterministic reducer → final report. | Small-to-medium scope changes when you can identify the work surface, state the exact outcome, and name the validation that proves it is done — for example tests, lint/typecheck, docs builds, or observable behavior. |
 | `ralph` | RFC planning → sub-agent orchestration → simplification → infrastructure discovery → parallel review → PR handoff. | Larger migrations, broad refactors, multi-package changes, and spec-to-PR work where you want Atomic to plan the approach, delegate implementation through sub-agents, simplify, review, iterate, and prepare a pull-request report. |
+| `descent` | Setup checks prior failure context → implementor research/plan/exec → feature, reliability, modularity, and symbolic validators → deterministic gate → anti-drift ultimates → terminator. | Iterative optimization work where explicit axis scores, fail-closed validation, campaign/radical triggers, and manual reruns with prior-failure context are more useful than PR preparation. |
 | `open-claude-design` | Design-system onboarding → reference import → HTML generation → impeccable-driven refinement → quality gate → rich HTML handoff. Renders a live `preview.html` you can iterate against (opens through `playwright-cli` when available). | UI, page, component, theme, or design-token work that benefits from generation + critique loops. |
 
 ### `deep-research-codebase`
@@ -250,7 +251,7 @@ Run examples:
 
 Each `ralph` iteration writes an RFC-style technical design document under `specs/`, initializes an OS-temp implementation notes file, delegates implementation through sub-agents, runs a behavior-preserving code simplifier, discovers review infrastructure, and asks two reviewers to inspect the patch against `base_branch`. The loop stops when every reviewer approves or `max_loops` is reached, then runs a pull-request preparation stage.
 
-Set `git_worktree_dir` when you want Ralph's worker stages isolated in a reusable Git worktree. Relative paths resolve from the invoking repository root, existing same-repository worktree roots are reused, and missing paths are created from `base_branch`. Ralph preserves the invoking repo-relative cwd inside the worktree, so launching from `repo/packages/api` with `git_worktree_dir=../repo-wt` runs stages from `../repo-wt/packages/api`.
+Set `git_worktree_dir` when you want Ralph's worker stages isolated in a reusable Git worktree. Relative paths resolve from the invoking repository root. On first acquisition in a workflow run, an existing same-repository worktree root is reused only when it is outside the invoking checkout (not the checkout itself or a descendant path) and clean (no staged, tracked, untracked, or ignored files), and missing paths are created from `base_branch`. After that acquisition succeeds, later Ralph stages reuse the workflow-owned worktree even if earlier stages intentionally made it dirty. Ralph preserves the invoking repo-relative cwd inside the worktree, so launching from `repo/packages/api` with `git_worktree_dir=../repo-wt` runs stages from `../repo-wt/packages/api`.
 
 Result fields:
 
@@ -265,7 +266,42 @@ Result fields:
 | `iterations_completed` | Number of plan/orchestrate/review loops completed. |
 | `review_report` | Markdown report containing the latest reviewer payloads. |
 
-A typical end-to-end flow is `/skill:research-codebase` → `/skill:create-spec` → `/workflow goal objective="Implement the researched rate-limit behavior, run the focused tests, and finish when the documented burst behavior is validated"` when you can identify the work surface, state the exact outcome, and name the validation that proves it is done. Keep using `/workflow ralph` for larger migrations, broad refactors, multi-package changes, and spec-to-PR work where you want Atomic to plan, delegate through sub-agents, simplify, review, iterate, and prepare a pull-request report.
+A typical end-to-end flow is `/skill:research-codebase` → `/skill:create-spec` → `/workflow goal objective="Implement the researched rate-limit behavior, run the focused tests, and finish when the documented burst behavior is validated"` when you can identify the work surface, state the exact outcome, and name the validation that proves it is done. Use `/workflow descent objective="..."` when you want an optimization loop with explicit validator scores and anti-drift controls. Keep using `/workflow ralph` for larger migrations, broad refactors, multi-package changes, and spec-to-PR work where you want Atomic to plan, delegate through sub-agents, simplify, review, iterate, and prepare a pull-request report.
+
+### `descent`
+
+Inputs:
+
+| Input | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `objective` | text | yes | — | Goal, issue summary, task, or spec path for the descent optimization loop. |
+| `max_iterations` | number | no | `10` | Maximum implement/validate/terminate iterations before returning `needs_human`. |
+| `max_reject` | number | no | `3` | Consecutive rejected/error iterations before reject-streak stagnation, campaigns, and radical-plan ultimates trigger. |
+| `history_observe` | number | no | `3` | Recent score-history window used for plateau/decreasing-score stagnation and cascading-failure detection. |
+| `git_worktree_dir` | string | no | `""` | Optional separate reusable Git worktree root for isolated descent runs; must be clean on first acquisition. |
+
+Run examples:
+
+```text
+/workflow descent objective="Iteratively implement specs/2026-03-rate-limit.md until feature, reliability, modularity, and symbolic validators converge" max_iterations=5
+/workflow descent objective="Improve the API refactor safely, accounting for the failed migration attempt noted in specs/2026-03-api-refactor.md" git_worktree_dir=../atomic-descent-api-wt
+```
+
+`descent` keeps state in TypeScript workflow memory and typed task-result handoffs. It does not create a `.descend/` state directory or use `.atomic/todos` scratch state. During setup, it inspects the objective and repository context for previous failure or previous attempt evidence and folds those lessons into the projected implementor, evaluator, and terminator goals. Validators compare against the current CWD Git branch/ref discovered by the workflow, not a user-provided base-branch input. Approval is fail-closed: at least one non-symbolic axis must score `>= 50`, no non-symbolic axis may be `0`, and symbolic validation must pass. Reject streaks are counted with `max_reject`; score plateau, decreasing-score, and cascading-failure observations use `history_observe`. Rejection streaks and observed drift can trigger intervention, reliability/modularity campaigns, symbolic campaign verification, and radical planning. When `git_worktree_dir` is set, it must point at a separate linked worktree root, not `.` or the invoking checkout, and it must be clean when first acquired by the workflow run; after the implementor mutates it, validator stages reuse the workflow-owned worktree and inspect those changes. Approved evaluations advance the accepted baseline and rejected/error evaluations reset that reusable worktree to the accepted baseline before the next mutating stage. When it is omitted, `descent` treats the invoking checkout as primary and stops as `needs_human` on rejected/error evaluations rather than running destructive reset/clean commands. Mutating campaigns are followed by a full post-campaign validator fanout, and final scores/reports use that latest evaluation.
+
+Result fields:
+
+| Field | Meaning |
+|---|---|
+| `result` | Human-readable final summary. |
+| `status` | `success`, `failure`, or `needs_human`. |
+| `converged` | Whether the terminator accepted success. |
+| `iterations_completed` | Number of implement/validate iterations completed. |
+| `approved_iterations` / `rejected_iterations` | Reducer counts from the approval gate. |
+| `final_score` / `final_scores` | Weighted final score and per-axis score record. |
+| `history` | Compact iteration records with decisions, scores, and reports. |
+| `ultimates` | Anti-drift moves applied, skipped, or failed. |
+| `review_report` / `final_report` | Latest validator report and final descent summary. |
 
 ### `open-claude-design`
 
@@ -301,6 +337,10 @@ Use the goal workflow to implement specs/2026-03-rate-limit.md, run the focused 
 
 ```text
 Use the ralph workflow to plan a database-layer migration, implement it, review it, and prepare a PR.
+```
+
+```text
+Use the descent workflow to iteratively improve the API refactor with validator scores, cap it at 4 iterations, and account for the previous failed attempt described in the spec.
 ```
 
 ```text
@@ -344,6 +384,7 @@ If the task is only deterministic TypeScript with no LLM/session stage, use a sc
 |-----------|-----|
 | Run, inspect, attach to, pause, interrupt, resume, or check status for an existing workflow | `/workflow ...` or `workflow({ action: ... })` |
 | Implement a small-to-medium scope change with an identifiable work surface, exact outcome, and named validation | `/workflow goal objective="..."` so Atomic keeps the run bounded, captures receipts in a goal ledger, gates completion through reviewers, and stops as `complete`, `blocked`, or `needs_human` |
+| Iteratively optimize a change with explicit feature/reliability/modularity scores and symbolic validation | `/workflow descent objective="..."` so Atomic can run setup with prior-failure checks, implementor iterations, validator fanout, anti-drift ultimates, and terminator decisions |
 | Plan and execute a larger migration, broad refactor, multi-package change, or spec-to-PR effort | `/workflow ralph prompt="..."` so Atomic can plan the approach, delegate implementation through sub-agents, simplify, review, iterate, and prepare a pull-request report |
 | Create or edit reusable automation | a TypeScript workflow definition with `defineWorkflow(...).run(...).compile()` |
 | Track one-off work without saving a workflow file | direct `workflow({ task })`, `workflow({ tasks })`, or `workflow({ chain })` calls |
@@ -781,7 +822,7 @@ Common task/stage options include:
 - `output`, `outputMode`, `reads`, `worktree`, `gitWorktreeDir`, `baseBranch`, `maxOutput`, `artifacts`, `sessionDir`, `cwd`, `agentDir`
 - advanced host-supplied SDK seams: `authStorage`, `resourceLoader`, `sessionManager`, `settingsManager`, `sessionStartEvent`
 
-`gitWorktreeDir` selects a reusable Git worktree root for `ctx.stage`, `ctx.task`, `ctx.chain`, and `ctx.parallel`. If the path is missing, Atomic creates it with `git worktree add --detach <path> <baseBranch>`; if it exists, it must be a same-repository worktree root. The default stage cwd becomes the matching cwd inside the worktree and preserves the invoking repo-relative subdirectory. Explicit `cwd` still wins; relative `cwd` values resolve from the worktree cwd, while absolute `cwd` values are used as provided. `gitWorktreeDir` is mutually exclusive with `worktree: true`: use `gitWorktreeDir` for named/reusable worktrees and `worktree: true` for temporary direct-mode worktrees that are cleaned up after the run.
+`gitWorktreeDir` selects a reusable Git worktree root for `ctx.stage`, `ctx.task`, `ctx.chain`, and `ctx.parallel`. On first acquisition in a workflow run, Atomic creates a missing path with `git worktree add --detach <path> <baseBranch>` or validates that an existing path is a same-repository worktree root, outside the invoking checkout (not the checkout itself or a descendant path), and clean (no staged, tracked, untracked, or ignored files). Later calls in the same run with the same canonical repository/worktree pair reuse that workflow-owned acquisition and do not reject intentional dirty state from earlier stages. The default stage cwd becomes the matching cwd inside the worktree and preserves the invoking repo-relative subdirectory. Explicit `cwd` still wins; relative `cwd` values resolve from the worktree cwd, while absolute `cwd` values are used as provided. `gitWorktreeDir` is mutually exclusive with `worktree: true`: use `gitWorktreeDir` for named/reusable worktrees and `worktree: true` for temporary direct-mode worktrees that are cleaned up after the run.
 
 To bind user inputs to a workflow-wide worktree default, use the builder method:
 
@@ -798,7 +839,7 @@ export default defineWorkflow("safe-implementation")
   .compile();
 ```
 
-For lower-level integrations, `@bastani/workflows` also exports `setupGitWorktree({ gitWorktreeDir, baseBranch, cwd })`, returning `{ worktreeRoot, cwd, repositoryRoot, created }` with the same validation, symlink-preserving path handling, and cwd-preservation behavior used by workflow stages.
+For lower-level integrations, `@bastani/workflows` also exports `setupGitWorktree({ gitWorktreeDir, baseBranch, cwd })`, which requires a non-empty `gitWorktreeDir` and returns `{ worktreeRoot, cwd, repositoryRoot, created }` with the same validation, symlink-preserving path handling, and cwd-preservation behavior used for first acquisition. Direct `setupGitWorktree` calls are not cached and still validate cleanliness every time; workflow-input empty-value primary-checkout mode applies only through the workflow executor.
 
 `fallbackModels` retries transient provider/model failures with the primary `model` first, then each fallback, then the current Atomic-selected model when available. It is for rate limits, quota/auth/provider outages, unavailable models, network timeouts, and 5xx errors — not workflow-code errors, tool failures, validation failures, or cancellations.
 

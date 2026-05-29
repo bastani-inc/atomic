@@ -1096,8 +1096,9 @@ describe("MockExtensionAPI — tool list returns bundled workflow names", () => 
     const names = r.items.map((i) => i.name);
     assert.ok(names.includes("deep-research-codebase"));
     assert.ok(names.includes("ralph"));
+    assert.ok(names.includes("descent"));
     assert.ok(names.includes("open-claude-design"));
-    assert.ok(r.items.length >= 3);
+    assert.ok(r.items.length >= 4);
   });
 });
 
@@ -1254,6 +1255,7 @@ describe("MockExtensionAPI — completions include admin subcommands and workflo
     // Bundled workflow names
     assert.ok(labels.includes("deep-research-codebase"));
     assert.ok(labels.includes("ralph"));
+    assert.ok(labels.includes("descent"));
     assert.ok(labels.includes("open-claude-design"));
   });
 
@@ -1345,6 +1347,7 @@ describe("MockExtensionAPI — tool list/status without name or inputs", () => {
     const result = await runTool(execute, { action: "list" });
     const r = result as { action: "list"; items: { name: string }[] };
     assert.ok(r.items.some((i) => i.name === "deep-research-codebase"));
+    assert.ok(r.items.some((i) => i.name === "descent"));
   });
 
   // Tool execute: { action: "status" } — no name, no inputs

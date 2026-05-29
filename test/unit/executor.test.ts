@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, test } from "bun:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { run, runChain, runParallel, runTask, resolveInputs } from "../../packages/workflows/src/runs/foreground/executor.js";
@@ -41,6 +41,57 @@ function callThroughStack<T>(depth: number, fn: () => Promise<T>): Promise<T> {
   if (depth <= 0) return fn();
   return callThroughStack(depth - 1, fn);
 }
+
+const GIT_LOCAL_ENV_KEYS = [
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_COMMON_DIR",
+  "GIT_DIR",
+  "GIT_INDEX_FILE",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_PREFIX",
+  "GIT_QUARANTINE_PATH",
+  "GIT_WORK_TREE",
+] as const;
+
+function gitCommandEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const key of GIT_LOCAL_ENV_KEYS) delete env[key];
+  return env;
+}
+
+async function runGit(cwd: string, args: readonly string[]): Promise<string> {
+  const proc = Bun.spawn(["git", "-C", cwd, ...args], {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: gitCommandEnv(),
+  });
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  if (exitCode !== 0) {
+    throw new Error(`git ${args.join(" ")} failed (${exitCode}): ${stderr || stdout}`);
+  }
+  return stdout.trim();
+}
+
+async function initializeGitRepository(repo: string): Promise<void> {
+  await runGit(repo, ["init"]);
+  await runGit(repo, ["config", "user.name", "Atomic Test"]);
+  await runGit(repo, ["config", "user.email", "atomic-test@example.invalid"]);
+  writeFileSync(join(repo, "tracked.txt"), "baseline\n", "utf8");
+  await runGit(repo, ["add", "."]);
+  await runGit(repo, ["commit", "--no-gpg-sign", "-m", "baseline"]);
+  await runGit(repo, ["branch", "-M", "main"]);
+}
+
+async function addLinkedWorktree(repo: string, worktree: string): Promise<void> {
+  await runGit(repo, ["worktree", "add", "--detach", worktree, "main"]);
+}
+
+const INVOKING_CHECKOUT_REJECTION = /separate reusable Git worktree root|invoking checkout/;
+const DIRTY_WORKTREE_REJECTION = /not clean|dirty|untracked/i;
 
 let savedGitEnv: Map<string, string | undefined> | undefined;
 
@@ -146,6 +197,318 @@ describe("executor.run", () => {
     assert.equal(wfResult.status, "failed");
     assert.equal(wfResult.stages.length, 0);
     assert.match(wfResult.error ?? "", /completed without creating any workflow stages/);
+  });
+
+  test("input-bound worktree rejects the invoking checkout before creating stages", async () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "atomic-executor-primary-worktree-"));
+    try {
+      const repo = join(tempRoot, "repo");
+      mkdirSync(repo);
+      await initializeGitRepository(repo);
+
+      const def = defineWorkflow("input-worktree-primary-reject-wf")
+        .input("git_worktree_dir", { type: "string", default: "" })
+        .input("base_branch", { type: "string", default: "main" })
+        .worktreeFromInputs({ gitWorktreeDir: "git_worktree_dir", baseBranch: "base_branch" })
+        .run(async (ctx) => {
+          await ctx.task("should-not-run", { prompt: "this stage must not start" });
+          return { ok: true };
+        })
+        .compile();
+
+      const wfResult = await run(
+        def,
+        { git_worktree_dir: ".", base_branch: "main" },
+        {
+          cwd: repo,
+          adapters: { prompt: { prompt: async () => "unexpected" } },
+          store: createStore(),
+        },
+      );
+
+      assert.equal(wfResult.status, "failed");
+      assert.equal(wfResult.stages.length, 0);
+      assert.match(wfResult.error ?? "", INVOKING_CHECKOUT_REJECTION);
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("input-bound worktree rejects missing nested paths before creating directories or stages", async () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "atomic-executor-nested-worktree-"));
+    try {
+      const repo = join(tempRoot, "repo");
+      mkdirSync(repo);
+      await initializeGitRepository(repo);
+
+      const def = defineWorkflow("input-worktree-nested-reject-wf")
+        .input("git_worktree_dir", { type: "string", default: "" })
+        .input("base_branch", { type: "string", default: "main" })
+        .worktreeFromInputs({ gitWorktreeDir: "git_worktree_dir", baseBranch: "base_branch" })
+        .run(async (ctx) => {
+          await ctx.task("should-not-run", { prompt: "this stage must not start" });
+          return { ok: true };
+        })
+        .compile();
+
+      const wfResult = await run(
+        def,
+        { git_worktree_dir: ".descent-wt", base_branch: "main" },
+        {
+          cwd: repo,
+          adapters: { prompt: { prompt: async () => "unexpected" } },
+          store: createStore(),
+        },
+      );
+
+      assert.equal(wfResult.status, "failed");
+      assert.equal(wfResult.stages.length, 0);
+      assert.match(wfResult.error ?? "", INVOKING_CHECKOUT_REJECTION);
+      assert.equal(await runGit(repo, ["status", "--short", "--untracked-files=all"]), "");
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("input-bound worktree rejects dirty existing reusable worktrees before creating stages", async () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "atomic-executor-dirty-worktree-"));
+    try {
+      const repo = join(tempRoot, "repo");
+      const worktree = join(tempRoot, "linked-worktree");
+      mkdirSync(repo);
+      await initializeGitRepository(repo);
+      await addLinkedWorktree(repo, worktree);
+      writeFileSync(join(worktree, "untracked.txt"), "scratch\n", "utf8");
+
+      const def = defineWorkflow("input-worktree-dirty-reject-wf")
+        .input("git_worktree_dir", { type: "string", default: "" })
+        .input("base_branch", { type: "string", default: "main" })
+        .worktreeFromInputs({ gitWorktreeDir: "git_worktree_dir", baseBranch: "base_branch" })
+        .run(async (ctx) => {
+          await ctx.task("should-not-run", { prompt: "this stage must not start" });
+          return { ok: true };
+        })
+        .compile();
+
+      const wfResult = await run(
+        def,
+        { git_worktree_dir: worktree, base_branch: "main" },
+        {
+          cwd: repo,
+          adapters: { prompt: { prompt: async () => "unexpected" } },
+          store: createStore(),
+        },
+      );
+
+      assert.equal(wfResult.status, "failed");
+      assert.equal(wfResult.stages.length, 0);
+      assert.match(wfResult.error ?? "", DIRTY_WORKTREE_REJECTION);
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("input-bound reusable worktree may become dirty after first task and still run a second task", async () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "atomic-executor-reuse-dirty-task-"));
+    try {
+      const repo = join(tempRoot, "repo");
+      const worktree = join(tempRoot, "review-worktree");
+      mkdirSync(repo);
+      await initializeGitRepository(repo);
+      await addLinkedWorktree(repo, worktree);
+
+      const seenCwds: string[] = [];
+      const def = defineWorkflow("input-worktree-reuse-dirty-task-wf")
+        .input("git_worktree_dir", { type: "string", default: "" })
+        .input("base_branch", { type: "string", default: "main" })
+        .worktreeFromInputs({ gitWorktreeDir: "git_worktree_dir", baseBranch: "base_branch" })
+        .run(async (ctx) => {
+          const first = await ctx.task("implement", { prompt: "implement change" });
+          const second = await ctx.task("validate", { prompt: "validate change", previous: first });
+          return { first: first.text, second: second.text, cwd: ctx.cwd };
+        })
+        .compile();
+
+      const wfResult = await run(
+        def,
+        { git_worktree_dir: worktree, base_branch: "main" },
+        {
+          cwd: repo,
+          adapters: {
+            prompt: {
+              prompt: async (_text, meta) => {
+                const cwd = meta?.stageOptions?.cwd;
+                assert.equal(cwd, worktree);
+                seenCwds.push(cwd);
+                if (meta?.stageName === "implement") {
+                  writeFileSync(join(cwd, "generated.txt"), "intentional workflow-owned scratch\n", "utf8");
+                  return "implemented";
+                }
+                assert.equal(readFileSync(join(cwd, "generated.txt"), "utf8"), "intentional workflow-owned scratch\n");
+                return "validated";
+              },
+            },
+          },
+          store: createStore(),
+        },
+      );
+
+      assert.equal(wfResult.status, "completed");
+      assert.equal(wfResult.result?.["first"], "implemented");
+      assert.equal(wfResult.result?.["second"], "validated");
+      assert.equal(wfResult.result?.["cwd"], worktree);
+      assert.deepEqual(seenCwds, [worktree, worktree]);
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("input-bound reusable worktree may become dirty before parallel validators and both validators run", async () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "atomic-executor-reuse-dirty-parallel-"));
+    try {
+      const repo = join(tempRoot, "repo");
+      const worktree = join(tempRoot, "review-worktree");
+      mkdirSync(repo);
+      await initializeGitRepository(repo);
+      await addLinkedWorktree(repo, worktree);
+
+      const validators: string[] = [];
+      const def = defineWorkflow("input-worktree-reuse-dirty-parallel-wf")
+        .input("git_worktree_dir", { type: "string", default: "" })
+        .input("base_branch", { type: "string", default: "main" })
+        .worktreeFromInputs({ gitWorktreeDir: "git_worktree_dir", baseBranch: "base_branch" })
+        .run(async (ctx) => {
+          await ctx.task("implement", { prompt: "implement change" });
+          const results = await ctx.parallel([
+            { name: "validator-a", prompt: "validate a" },
+            { name: "validator-b", prompt: "validate b" },
+          ]);
+          return { validators: results.map((result) => result.text) };
+        })
+        .compile();
+
+      const wfResult = await run(
+        def,
+        { git_worktree_dir: worktree, base_branch: "main" },
+        {
+          cwd: repo,
+          adapters: {
+            prompt: {
+              prompt: async (_text, meta) => {
+                const cwd = meta?.stageOptions?.cwd;
+                assert.equal(cwd, worktree);
+                if (meta?.stageName === "implement") {
+                  writeFileSync(join(cwd, "generated.txt"), "parallel validators should see this\n", "utf8");
+                  return "implemented";
+                }
+                assert.equal(readFileSync(join(cwd, "generated.txt"), "utf8"), "parallel validators should see this\n");
+                validators.push(meta?.stageName ?? "unknown");
+                return `${meta?.stageName ?? "unknown"} ok`;
+              },
+            },
+          },
+          store: createStore(),
+        },
+      );
+
+      assert.equal(wfResult.status, "completed");
+      assert.deepEqual(validators.sort(), ["validator-a", "validator-b"]);
+      assert.deepEqual((wfResult.result?.["validators"] as string[]).sort(), ["validator-a ok", "validator-b ok"]);
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("explicit per-task reusable worktree may become dirty and be reused by a later explicit stage", async () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "atomic-executor-explicit-reuse-dirty-"));
+    try {
+      const repo = join(tempRoot, "repo");
+      const worktree = join(tempRoot, "review-worktree");
+      mkdirSync(repo);
+      await initializeGitRepository(repo);
+      await addLinkedWorktree(repo, worktree);
+
+      const seenStages: string[] = [];
+      const def = defineWorkflow("explicit-worktree-reuse-dirty-wf")
+        .run(async (ctx) => {
+          const task = await ctx.task("task-one", {
+            prompt: "task one",
+            gitWorktreeDir: worktree,
+            baseBranch: "main",
+          });
+          const stage = await ctx.stage("stage-two", {
+            gitWorktreeDir: worktree,
+            baseBranch: "main",
+          }).prompt("stage two");
+          return { task: task.text, stage };
+        })
+        .compile();
+
+      const wfResult = await run(def, {}, {
+        cwd: repo,
+        adapters: {
+          prompt: {
+            prompt: async (_text, meta) => {
+              const cwd = meta?.stageOptions?.cwd;
+              assert.equal(cwd, worktree);
+              seenStages.push(meta?.stageName ?? "unknown");
+              if (meta?.stageName === "task-one") {
+                writeFileSync(join(cwd, "generated.txt"), "explicit workflow-owned scratch\n", "utf8");
+                return "task complete";
+              }
+              assert.equal(readFileSync(join(cwd, "generated.txt"), "utf8"), "explicit workflow-owned scratch\n");
+              return "stage complete";
+            },
+          },
+        },
+        store: createStore(),
+      });
+
+      assert.equal(wfResult.status, "completed");
+      assert.equal(wfResult.result?.["task"], "task complete");
+      assert.equal(wfResult.result?.["stage"], "stage complete");
+      assert.deepEqual(seenStages, ["task-one", "stage-two"]);
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("input-bound worktree base_branch falls back to input default before setup", async () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "atomic-executor-input-worktree-"));
+    try {
+      const repo = join(tempRoot, "repo");
+      const worktree = join(tempRoot, "review-worktree");
+      mkdirSync(repo);
+      await initializeGitRepository(repo);
+
+      const def = defineWorkflow("input-worktree-base-branch-wf")
+        .input("git_worktree_dir", { type: "string", default: "" })
+        .input("base_branch", { type: "string", default: "main" })
+        .worktreeFromInputs({ gitWorktreeDir: "git_worktree_dir", baseBranch: "base_branch" })
+        .run(async (ctx) => {
+          const cwd = ctx.cwd;
+          const result = await ctx.task("confirm-worktree", { prompt: "confirm cwd" });
+          return { cwd, text: result.text };
+        })
+        .compile();
+
+      const wfResult = await run(
+        def,
+        { git_worktree_dir: worktree, base_branch: "main; echo pwn" },
+        {
+          cwd: repo,
+          adapters: { prompt: { prompt: async () => "ok" } },
+          store: createStore(),
+        },
+      );
+
+      assert.equal(wfResult.status, "completed");
+      assert.equal(wfResult.result?.["cwd"], worktree);
+      assert.equal(wfResult.result?.["text"], "ok");
+      assert.equal((await runGit(worktree, ["rev-parse", "--abbrev-ref", "HEAD"])), "HEAD");
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
   });
 
   test("ctx.task creates a tracked stage and returns reusable previous output", async () => {

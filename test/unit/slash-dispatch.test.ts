@@ -428,6 +428,7 @@ describe("getArgumentCompletions includes workflow names", () => {
 
     assert.ok(labels.includes("deep-research-codebase"));
     assert.ok(labels.includes("ralph"));
+    assert.ok(labels.includes("descent"));
     assert.ok(labels.includes("open-claude-design"));
   });
 
@@ -474,6 +475,7 @@ describe("getArgumentCompletions includes workflow names", () => {
     const labels = (completions ?? []).map((c) => c.label);
     assert.ok(labels.includes("list"), "admin subcommands offered");
     assert.ok(labels.includes("deep-research-codebase"), "workflow names offered");
+    assert.ok(labels.includes("descent"), "descent workflow offered");
   });
 });
 

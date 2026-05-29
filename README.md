@@ -132,16 +132,19 @@ Turn research into an implementation-ready plan:
 
 If you are not sure what you want yet, brainstorm with Atomic first: explore trade-offs, compare approaches, then ask it to save the selected direction as a spec. Either way, the output is a repo-native artifact under `specs/` that an engineer can review before implementation starts.
 
-### 3. Implement with `goal` or `ralph`
+### 3. Implement with `goal`, `descent`, or `ralph`
 
 Pass the spec or a direct objective to the workflow that matches the scope:
 
 ```text
 /workflow goal objective="Implement specs/2026-03-rate-limit.md, run the focused rate-limit tests, and finish when burst traffic returns 429 with Retry-After"
+/workflow descent objective="Iteratively improve specs/2026-03-rate-limit.md implementation with feature, reliability, modularity, and symbolic validation" max_iterations=5
 /workflow ralph prompt="Plan, implement, review, and prepare a PR for specs/2026-03-rate-limit.md"
 ```
 
 Use `goal` for small-to-medium scope changes when you can identify the work surface, state the exact outcome you want, and name the validation that proves it is done — for example specific tests, lint/typecheck commands, docs builds, or observable behavior. It keeps the run bounded, captures receipts in a goal ledger, gates completion through reviewers, and stops as `complete`, `blocked`, or `needs_human`.
+
+Use `descent` when the implementation needs an optimization loop with explicit feature/reliability/modularity scores, symbolic validation, anti-drift campaigns, radical-plan triggers, and setup-time checks for prior failed attempts before handing back a final status. For mutating runs, pass `git_worktree_dir` when you want automatic rollback to the latest accepted baseline after a rejected validation; without it, `descent` never destructively resets the primary checkout and stops as `needs_human` on rejected/error evaluations.
 
 Keep using `ralph` for larger migrations, broad refactors, multi-package changes, and spec-to-PR work where you want Atomic to plan the approach, delegate implementation through sub-agents, simplify, review, iterate, and prepare a pull-request report.
 
@@ -234,6 +237,7 @@ Workflows define the outer loop: inputs, steps, branches, parallelism, retries, 
 | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `goal`                   | Focused workflow for small-to-medium changes when you can name the scope, exact desired outcome, and validation in the objective. It runs bounded worker turns, stores receipts in a goal ledger, requires reviewer quorum before completion, and stops as `complete`, `blocked`, or `needs_human`. | `/workflow goal objective="Update the CLI docs for --json, include one example, run the docs build, and finish when it passes"`                                                                |
 | `ralph`                  | Heavier plan → orchestrate → simplify → discover → review loop for larger migrations, broad refactors, multi-package changes, and spec-to-PR work. It writes RFC-style specs, delegates implementation through sub-agents, iterates on reviewer feedback, and prepares a PR report. | `/workflow ralph prompt="Plan, implement, review, and prepare a PR for specs/2026-03-rate-limit.md"`                                                                                          |
+| `descent`                | Agent-descent-style setup → implementor → validator → terminator optimization loop with feature, reliability, modularity, and symbolic validation axes plus anti-drift ultimates and prior-failure checks.                                           | `/workflow descent objective="Iteratively improve the rate-limit implementation until validators converge" max_iterations=5`                                                                  |
 | `deep-research-codebase` | Repo-wide research for broad, cross-cutting questions. It scouts the codebase, runs parallel specialist waves, aggregates findings, and writes durable research artifacts under `research/`. Prefer `/skill:research-codebase` for a focused subsystem or question.                    | `/workflow deep-research-codebase prompt="How do payment retries work end to end?"`                                                                                                           |
 | `open-claude-design`     | End-to-end design generation: discovers your design system, generates from a prompt, refines with feedback, and exports a handoff directory.                                                                                                                                           | `/workflow open-claude-design prompt="Team activity feed" reference=./mocks/feed.png output_type=prototype`                                                                                   |
 | _author your own_        | Anything outside the built-ins: issue-to-PR, review-to-merge, migration, triage, release, compliance, or team-specific review pipelines. Describe the process in natural language and Atomic can scaffold a `defineWorkflow()` file with typed CLI flags.                              | _"Create a reusable workflow that takes an issue, writes a plan, creates a branch, runs implementation and review stages, runs tests and lint, then stops for approval before final output."_ |

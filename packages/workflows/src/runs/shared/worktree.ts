@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { APP_NAME } from "@bastani/atomic";
+import { normalizeGitRefInput } from "./git-ref.js";
 
 export interface WorktreeSetup {
 	cwd: string;
@@ -91,6 +92,20 @@ export interface GitWorktreeSetupResult {
 	created: boolean;
 }
 
+export type GitWorktreeAcquirer = (options: GitWorktreeSetupOptions) => GitWorktreeSetupResult;
+
+interface ResolvedGitWorktreeInvocation {
+	repositoryRoot: string;
+	worktreeRoot: string;
+	relativeCwd: string;
+}
+
+interface AcquiredGitWorktree {
+	worktreeRoot: string;
+	repositoryRoot: string;
+	created: boolean;
+}
+
 interface RepoState {
 	toplevel: string;
 	cwdRelative: string;
@@ -99,6 +114,28 @@ interface RepoState {
 
 const DEFAULT_WORKTREE_SETUP_HOOK_TIMEOUT_MS = 30000;
 const DISABLED_GIT_HOOKS_PATH = process.platform === "win32" ? "NUL" : "/dev/null";
+const REUSABLE_WORKTREE_STATUS_ARGS = [
+	"status",
+	"--porcelain=v1",
+	"--untracked-files=all",
+	"--ignored=matching",
+];
+const GIT_LOCAL_ENV_KEYS = [
+	"GIT_ALTERNATE_OBJECT_DIRECTORIES",
+	"GIT_COMMON_DIR",
+	"GIT_DIR",
+	"GIT_INDEX_FILE",
+	"GIT_OBJECT_DIRECTORY",
+	"GIT_PREFIX",
+	"GIT_QUARANTINE_PATH",
+	"GIT_WORK_TREE",
+] as const;
+
+function gitCommandEnv(): NodeJS.ProcessEnv {
+	const env: NodeJS.ProcessEnv = { ...process.env, GIT_OPTIONAL_LOCKS: "0" };
+	for (const key of GIT_LOCAL_ENV_KEYS) delete env[key];
+	return env;
+}
 
 function runGit(cwd: string, args: string[]): GitResult {
 	const result = spawnSync("git", [
@@ -110,7 +147,7 @@ function runGit(cwd: string, args: string[]): GitResult {
 	], {
 		cwd,
 		encoding: "utf-8",
-		env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+		env: gitCommandEnv(),
 		timeout: 5000,
 	});
 	return {
@@ -193,9 +230,34 @@ function resolveGitWorktreePath(value: string, repoRoot: string): string {
 	return canonicalizePreservingSymlinks(path.isAbsolute(trimmed) ? trimmed : path.resolve(repoRoot, trimmed));
 }
 
+function normalizeComparablePath(value: string): string {
+	const normalized = value.replace(/\\/g, "/");
+	return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
 function comparableRealPath(value: string): string {
-	const realpath = fs.realpathSync.native(value).replace(/\\/g, "/");
-	return process.platform === "win32" ? realpath.toLowerCase() : realpath;
+	return normalizeComparablePath(fs.realpathSync.native(value));
+}
+
+// Like comparableRealPath, but safe for requested paths that may not exist yet.
+function comparableCanonicalPath(value: string): string {
+	const resolved = path.resolve(value);
+	let current = resolved;
+	const missingComponents: string[] = [];
+	while (true) {
+		try {
+			const existing = fs.realpathSync.native(current);
+			const canonical = missingComponents.length === 0
+				? existing
+				: path.join(existing, ...missingComponents.reverse());
+			return normalizeComparablePath(canonical);
+		} catch {
+			const parent = path.dirname(current);
+			if (parent === current) return normalizeComparablePath(resolved);
+			missingComponents.push(path.basename(current));
+			current = parent;
+		}
+	}
 }
 
 function gitPathFromOutput(value: string, cwd: string): string | undefined {
@@ -204,12 +266,18 @@ function gitPathFromOutput(value: string, cwd: string): string | undefined {
 	return path.isAbsolute(trimmed) ? path.resolve(trimmed) : path.resolve(cwd, trimmed);
 }
 
+function errorCode(error: unknown): string | undefined {
+	if (!error || typeof error !== "object" || !("code" in error)) return undefined;
+	const code = (error as { code?: unknown }).code;
+	return typeof code === "string" ? code : undefined;
+}
+
 function pathExistsSync(value: string): boolean {
 	try {
 		fs.statSync(value);
 		return true;
 	} catch (error) {
-		const code = error && typeof error === "object" && "code" in error ? (error as { code?: unknown }).code : undefined;
+		const code = errorCode(error);
 		if (code === "ENOENT" || code === "ENOTDIR") return false;
 		throw error;
 	}
@@ -264,6 +332,66 @@ function workspaceCwdForGitWorktreeRoot(worktreeRoot: string, relativeCwd: strin
 	return relativeCwd === "" ? worktreeRoot : path.join(worktreeRoot, relativeCwd);
 }
 
+function resolveGitWorktreeInvocation(options: GitWorktreeSetupOptions): ResolvedGitWorktreeInvocation {
+	const repositoryRoot = repositoryRootForGitWorktree(options.cwd);
+	const { relativeCwd, logicalRepoRoot } = cwdWithinGitRepository(options.cwd, repositoryRoot);
+	return {
+		repositoryRoot,
+		worktreeRoot: resolveGitWorktreePath(options.gitWorktreeDir, logicalRepoRoot),
+		relativeCwd,
+	};
+}
+
+function gitWorktreeAcquisitionKey(repositoryRoot: string, worktreeRoot: string): string {
+	return `${comparableCanonicalPath(repositoryRoot)}\0${comparableCanonicalPath(worktreeRoot)}`;
+}
+
+function worktreeSetupResultForAcquisition(acquired: AcquiredGitWorktree, relativeCwd: string): GitWorktreeSetupResult {
+	return {
+		worktreeRoot: acquired.worktreeRoot,
+		cwd: workspaceCwdForGitWorktreeRoot(acquired.worktreeRoot, relativeCwd),
+		repositoryRoot: acquired.repositoryRoot,
+		created: acquired.created,
+	};
+}
+
+function isSameOrDescendantPath(candidate: string, parent: string): boolean {
+	const relative = path.relative(comparableCanonicalPath(parent), comparableCanonicalPath(candidate));
+	return relative === "" || (relative.length > 0 && !relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function assertOutsideInvokingCheckout(worktreeRoot: string, repoRoot: string): void {
+	if (!isSameOrDescendantPath(worktreeRoot, repoRoot)) return;
+	throw new Error([
+		"gitWorktreeDir must be a separate reusable Git worktree root outside the invoking checkout.",
+		"Omit gitWorktreeDir to run in primary-checkout fail-closed mode, or provide a sibling/out-of-tree linked worktree path.",
+	].join(" "));
+}
+
+function dirtyStatusSummary(worktreeRoot: string): string {
+	const result = runGit(worktreeRoot, REUSABLE_WORKTREE_STATUS_ARGS);
+	if (result.status !== 0) {
+		throw new Error(`Failed to inspect gitWorktreeDir cleanliness at ${worktreeRoot}: ${gitFailureMessage(result)}`);
+	}
+	return result.stdout
+		.split(/\r?\n/)
+		.map((line) => line.trimEnd())
+		.filter(Boolean)
+		.slice(0, 20)
+		.join("\n");
+}
+
+function assertReusableWorktreeClean(worktreeRoot: string): void {
+	const summary = dirtyStatusSummary(worktreeRoot);
+	if (summary.length === 0) return;
+	throw new Error([
+		`gitWorktreeDir already exists but is not clean: ${worktreeRoot}`,
+		"Reusable worktrees must have no staged, tracked, untracked, or ignored files before Atomic can own reset/clean rollback.",
+		"Clean, stash, or remove those files, or provide a new gitWorktreeDir.",
+		`Dirty status:\n${summary}`,
+	].join("\n"));
+}
+
 function validateExistingGitWorktreeRoot(worktreeRoot: string, repoRoot: string): void {
 	const topLevel = gitTopLevel(worktreeRoot);
 	if (topLevel === undefined) {
@@ -278,17 +406,20 @@ function validateExistingGitWorktreeRoot(worktreeRoot: string, repoRoot: string)
 }
 
 export function setupGitWorktree(options: GitWorktreeSetupOptions): GitWorktreeSetupResult {
-	const repoRoot = repositoryRootForGitWorktree(options.cwd);
-	const { relativeCwd, logicalRepoRoot } = cwdWithinGitRepository(options.cwd, repoRoot);
-	const worktreeRoot = resolveGitWorktreePath(options.gitWorktreeDir, logicalRepoRoot);
+	const {
+		repositoryRoot: repoRoot,
+		relativeCwd,
+		worktreeRoot,
+	} = resolveGitWorktreeInvocation(options);
+	assertOutsideInvokingCheckout(worktreeRoot, repoRoot);
 	if (pathExistsSync(worktreeRoot)) {
 		validateExistingGitWorktreeRoot(worktreeRoot, repoRoot);
-		return {
+		assertReusableWorktreeClean(worktreeRoot);
+		return worktreeSetupResultForAcquisition({
 			worktreeRoot,
-			cwd: workspaceCwdForGitWorktreeRoot(worktreeRoot, relativeCwd),
 			repositoryRoot: repoRoot,
 			created: false,
-		};
+		}, relativeCwd);
 	}
 
 	try {
@@ -297,7 +428,7 @@ export function setupGitWorktree(options: GitWorktreeSetupOptions): GitWorktreeS
 		const message = error instanceof Error ? error.message : String(error);
 		throw new Error(`Failed to create parent directory for requested gitWorktreeDir ${worktreeRoot}: ${message}`);
 	}
-	const baseRef = options.baseBranch?.trim() || "HEAD";
+	const baseRef = normalizeGitRefInput(options.baseBranch, "HEAD");
 	const result = runGit(repoRoot, ["worktree", "add", "--detach", worktreeRoot, baseRef]);
 	if (result.status !== 0) {
 		throw new Error([
@@ -305,11 +436,44 @@ export function setupGitWorktree(options: GitWorktreeSetupOptions): GitWorktreeS
 			`If another process just created this same-repository worktree, rerun the workflow to resume it. If this is an orphaned worktree from an interrupted run, recover or remove it with: ${worktreeRecoveryCommand(repoRoot, worktreeRoot)}`,
 		].join("\n"));
 	}
-	return {
+	return worktreeSetupResultForAcquisition({
 		worktreeRoot,
-		cwd: workspaceCwdForGitWorktreeRoot(worktreeRoot, relativeCwd),
 		repositoryRoot: repoRoot,
 		created: true,
+	}, relativeCwd);
+}
+
+/**
+ * Internal executor helper: acquire reusable git worktrees once per workflow run.
+ *
+ * The first acquisition intentionally delegates to setupGitWorktree() so all
+ * fail-closed direct-call safety checks (primary checkout rejection, same-repo
+ * validation, and existing-worktree cleanliness) remain unchanged. Later
+ * acquisitions in the same workflow run are workflow-owned and only reuse the
+ * cached identity while recomputing cwd for the caller's current repo-relative
+ * invocation directory.
+ */
+export function createRunScopedGitWorktreeAcquirer(): GitWorktreeAcquirer {
+	const acquiredByKey = new Map<string, AcquiredGitWorktree>();
+
+	return (options: GitWorktreeSetupOptions): GitWorktreeSetupResult => {
+		const invocation = resolveGitWorktreeInvocation(options);
+		const requestedKey = gitWorktreeAcquisitionKey(invocation.repositoryRoot, invocation.worktreeRoot);
+		const cached = acquiredByKey.get(requestedKey);
+		if (cached !== undefined) {
+			return worktreeSetupResultForAcquisition(cached, invocation.relativeCwd);
+		}
+
+		const setup = setupGitWorktree(options);
+		const acquired: AcquiredGitWorktree = {
+			worktreeRoot: setup.worktreeRoot,
+			repositoryRoot: setup.repositoryRoot,
+			created: setup.created,
+		};
+		const acquiredKey = gitWorktreeAcquisitionKey(setup.repositoryRoot, setup.worktreeRoot);
+		acquiredByKey.set(acquiredKey, acquired);
+		acquiredByKey.set(requestedKey, acquired);
+		return setup;
 	};
 }
 
@@ -593,8 +757,7 @@ function removeSyntheticPath(worktree: WorktreeInfo, syntheticPath: string): voi
 	try {
 		stat = fs.lstatSync(resolved);
 	} catch (error) {
-		const code = error && typeof error === "object" && "code" in error ? (error as { code?: unknown }).code : undefined;
-		if (code === "ENOENT") return;
+		if (errorCode(error) === "ENOENT") return;
 		throw error;
 	}
 

@@ -387,9 +387,11 @@ describe("runtime-wiring — post-discovery: swapped runtime preserves adapters"
     assert.ok(calls.length > callsAfterInitial);
   });
 
-  test("deep-research-codebase is present in discovered registry (bundled workflows survive swap)", async () => {
+  test("bundled workflows are present in discovered registry (survive swap)", async () => {
     const discoveredResult = await discoverWorkflows({ includeBundled: true });
-    assert.ok(discoveredResult.registry.names().includes("deep-research-codebase"));
+    const names = discoveredResult.registry.names();
+    assert.ok(names.includes("deep-research-codebase"));
+    assert.ok(names.includes("descent"));
   });
 });
 
