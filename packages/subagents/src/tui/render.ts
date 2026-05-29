@@ -1101,7 +1101,15 @@ export function renderWidget(ctx: ExtensionContext, jobs: AsyncJobState[]): void
 	}
 	latestWidgetCtx = ctx;
 	latestWidgetJobs = [...jobs];
-	ctx.ui.setWidget(WIDGET_KEY, buildWidgetComponent(jobs, () => ctx.ui.getToolsExpanded?.() ?? false));
+	// belowEditor: the widget animates a running glyph / elapsed labels on a
+	// timer. pi-tui full-clears the screen+scrollback whenever a changed line
+	// sits above the viewport fold, so an aboveEditor widget flickers once the
+	// bottom region grows tall and pushes it above the fold. Rendering below the
+	// editor keeps the live line within the bottom viewport (flicker-free), and
+	// matches the workflow companion widget's placement (#1109).
+	ctx.ui.setWidget(WIDGET_KEY, buildWidgetComponent(jobs, () => ctx.ui.getToolsExpanded?.() ?? false), {
+		placement: "belowEditor",
+	});
 	// Keep the just-rendered ctx/jobs as the last-rendered state; only the ticker
 	// is conditional on whether anything is still animating.
 	if (hasAnimatedWidgetJobs(jobs)) ensureWidgetAnimation();

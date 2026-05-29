@@ -317,6 +317,26 @@ describe("async widget animation ticker lifecycle", () => {
     await new Promise((resolve) => setTimeout(resolve, RUNNING_ANIMATION_MS * 3 + 40));
     assert.equal(renders(), afterStop, "widget ticker must stop once no job is running");
   });
+
+  test("mounts the async widget belowEditor so its live line stays within the viewport (flicker-free)", () => {
+    const opts: unknown[] = [];
+    const ctx = {
+      hasUI: true,
+      ui: {
+        setWidget: (_key: string, _factory: unknown, o?: unknown) => {
+          opts.push(o);
+        },
+        getToolsExpanded: () => false,
+        requestRender: () => {},
+      },
+    } as unknown as ExtensionContext;
+    renderWidget(ctx, [runningJob()]);
+    assert.deepEqual(
+      opts,
+      [{ placement: "belowEditor" }],
+      "async widget must mount belowEditor (matches the workflow widget; avoids the above-fold flicker)",
+    );
+  });
 });
 
 describe("subagent render stability invariants", () => {

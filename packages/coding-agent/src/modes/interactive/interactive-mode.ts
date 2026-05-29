@@ -2296,8 +2296,16 @@ export class InteractiveMode {
     if (leadingSpacer) {
       container.addChild(new Spacer(1));
     }
+    let firstWidget = true;
     for (const component of widgets.values()) {
+      // Separate stacked widgets (e.g. the async-subagent widget and the
+      // workflow run counter, both belowEditor) with a blank line so each
+      // panel reads as its own block.
+      if (!firstWidget) {
+        container.addChild(new Spacer(1));
+      }
       container.addChild(component);
+      firstWidget = false;
     }
   }
 
