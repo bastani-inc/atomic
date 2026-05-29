@@ -8,6 +8,7 @@ import {
   renameSync,
   rmSync,
 } from "fs";
+import { writeFile } from "fs/promises";
 import { arch, platform } from "os";
 import { join } from "path";
 import { APP_NAME, ENV_OFFLINE, getBinDir, getEnvValue } from "../config.ts";
@@ -151,7 +152,7 @@ async function downloadFile(url: string, dest: string): Promise<void> {
     throw new Error("No response body");
   }
 
-  await Bun.write(dest, response);
+  await writeFile(dest, Buffer.from(await response.arrayBuffer()));
 }
 
 function findBinaryRecursively(
