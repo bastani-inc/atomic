@@ -282,6 +282,14 @@ export function buildGraphOverlayAdapter(
           if (currentHandle?.isHidden() === true) return;
           tui.requestRender?.();
         },
+        // Re-assert overlay keyboard focus on demand. The attached stage chat
+        // calls this when it shows a broker custom UI (e.g. the readiness gate)
+        // so the gate receives input even if focus drifted off the overlay
+        // while the agent's turn was streaming (#1120).
+        requestFocus: () => {
+          if (currentHandle?.isHidden() === true) return;
+          currentHandle?.focus();
+        },
         setMouseScrollTracking,
       } as ConstructorParameters<typeof WorkflowAttachPane>[0] & {
         piTui?: PiCustomOverlayFactoryTui;

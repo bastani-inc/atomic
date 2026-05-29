@@ -109,6 +109,12 @@ export interface StageChatViewOpts {
   onClose: () => void;
   /** Request a host TUI repaint after SDK events mutate local chat state. */
   requestRender?: () => void;
+  /**
+   * Re-assert overlay keyboard focus. Showing a stage custom UI (e.g. the
+   * readiness gate) must make the overlay the focused pi-tui component again,
+   * otherwise key events keep going elsewhere and the UI looks frozen (#1120).
+   */
+  requestFocus?: () => void;
   /** Live pi-tui host objects. When present, stage input uses pi's editor UI. */
   piTui?: TUI;
   piTheme?: unknown;
@@ -190,6 +196,8 @@ export class StageChatView implements Component, Focusable {
   private onDetach: () => void;
   private onClose: () => void;
   private requestRender: (() => void) | undefined;
+  private requestFocus: (() => void) | undefined;
+  private focusHoldTimer: ReturnType<typeof setInterval> | undefined;
   private getViewportRows?: () => number | undefined;
   private piTui?: TUI;
   private piTheme?: unknown;
@@ -228,6 +236,18 @@ export class StageChatView implements Component, Focusable {
     this.onDetach = opts.onDetach;
     this.onClose = opts.onClose;
     this.requestRender = opts.requestRender;
+    this.requestFocus = opts.requestFocus;
+    // Hold overlay keyboard focus against host focus-steals. pi-tui overlays
+    // capture focus on show, but any tui.setFocus() elsewhere (the host editor
+    // during background workflow activity) steals it, leaving the gate/composer
+    // input-dead. Re-claim it on a short interval — only while NOT streaming, so
+    // a mid-turn ask_user_question never refocuses during the agent's
+    // continuation (which would stall the stream).
+    if (opts.requestFocus) {
+      this.focusHoldTimer = setInterval(() => {
+        if (!this._isStreaming()) this.requestFocus?.();
+      }, 150);
+    }
     this.getViewportRows = opts.getViewportRows;
     this.piTui = opts.piTui;
     this.piTheme = opts.piTheme;
@@ -407,6 +427,13 @@ export class StageChatView implements Component, Focusable {
       }
       this.mountingRequestId = null;
       this.mountedCustomUi = mounted;
+      // Re-assert overlay focus so the freshly-shown custom UI actually receives
+      // keyboard input even if focus drifted off the overlay (#1120). Skip while
+      // the agent is still streaming — a mid-turn ask_user_question mounts during
+      // an active stream, and focusing the overlay then stalls the agent's
+      // continuation; the overlay is already focused from attach in that case.
+      // The post-turn readiness gate mounts when not streaming and is refocused.
+      if (!this._isStreaming()) this.requestFocus?.();
       this.requestRender?.();
     } catch (error) {
       if (this.mountingRequestId === request.id) this.mountingRequestId = null;
@@ -1205,6 +1232,10 @@ export class StageChatView implements Component, Focusable {
   }
 
   dispose(): void {
+    if (this.focusHoldTimer !== undefined) {
+      clearInterval(this.focusHoldTimer);
+      this.focusHoldTimer = undefined;
+    }
     this._unsubscribeStore?.();
     this._unsubscribeStore = null;
     this._unsubscribeHandle?.();
@@ -1227,6 +1258,11 @@ export class StageChatView implements Component, Focusable {
     mounted.component.dispose?.();
     this.chatHost.focused = this.focused;
     this.chatHost.scrollToBottom();
+    // Returning to the composer after a custom UI resolves (e.g. the readiness
+    // gate -> "stay") must re-assert overlay focus so the composer accepts
+    // input. Guarded for streaming so an answered mid-turn ask_user_question
+    // does not refocus during the agent's continuation (would stall it).
+    if (!this._isStreaming()) this.requestFocus?.();
     this.requestRender?.();
   }
 

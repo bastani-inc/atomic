@@ -3606,68 +3606,137 @@ describe("executor — stage-control registry integration", () => {
     assert.equal(store.runs()[0]!.stages[0]!.status, "completed");
   });
 
-  test("readiness gate steers the stage on No and advances on Yes", async () => {
+  // A session whose prompt() branches on the text: turns containing "ask the
+  // user" emit an ask_user_question tool call. Every turn ends with `agent_end`
+  // so the executor's per-turn readiness check can observe the turn boundary.
+  const makeSmartSession = (events: string[]) => (): StageSessionRuntime => {
+    const listeners = new Set<(e: { type: string; [k: string]: unknown }) => void>();
+    const emit = (e: { type: string; [k: string]: unknown }): void => {
+      for (const l of [...listeners]) l(e);
+    };
+    return {
+      ...mockSession(),
+      async prompt(text: string) {
+        if (text.includes("ask the user")) {
+          events.push("ask");
+          emit({ type: "tool_execution_start", toolCallId: "c", toolName: "ask_user_question" });
+          emit({ type: "tool_execution_end", toolCallId: "c", toolName: "ask_user_question" });
+        } else {
+          events.push(`turn:${text}`);
+        }
+        emit({ type: "agent_end", messages: [] });
+      },
+      subscribe(listener) {
+        listeners.add(listener as (e: { type: string; [k: string]: unknown }) => void);
+        return () => listeners.delete(listener as (e: { type: string; [k: string]: unknown }) => void);
+      },
+    };
+  };
+
+  test("readiness gate auto-advances a turn with no question and gates a turn that asked", async () => {
     const events: string[] = [];
     const gateStages: string[] = [];
-    const gateAnswers = [false, true]; // No, then Yes
-    let gateIndex = 0;
-    // A smart session that branches on the prompt text: "ask the user" turns
-    // emit an ask_user_question tool call; the readiness steer message drives a
-    // separate continuation turn (it must NOT re-run the original prompt).
-    const smartSession = (): StageSessionRuntime => {
-      const listeners = new Set<(e: { type: string; [k: string]: unknown }) => void>();
-      return {
-        ...mockSession(),
-        async prompt(text: string) {
-          if (text.includes("ask the user")) {
-            events.push("first:ask");
-            const callId = "first-ask";
-            for (const l of listeners) l({ type: "tool_execution_start", toolCallId: callId, toolName: "ask_user_question" });
-            for (const l of listeners) l({ type: "tool_execution_end", toolCallId: callId, toolName: "ask_user_question" });
-            return;
-          }
-          if (text.includes("not ready to move on")) {
-            events.push("first:steer");
-            return;
-          }
-          events.push("second:turn");
-        },
-        subscribe(listener) {
-          listeners.add(listener as (e: { type: string; [k: string]: unknown }) => void);
-          return () => listeners.delete(listener as (e: { type: string; [k: string]: unknown }) => void);
-        },
-      };
-    };
-    const def = defineWorkflow("readiness-gate-sequential-wf")
+    const def = defineWorkflow("readiness-gate-advance-wf")
       .run(async (ctx) => {
         await ctx.stage("first").prompt("ask the user");
-        await ctx.stage("second").prompt("do follow-up work");
+        await ctx.stage("second").prompt("do work");
         return {};
       })
       .compile();
     const store = createStore();
     const result = await run(def, {}, {
-      adapters: {
-        agentSession: {
-          async create() {
-            return smartSession();
-          },
-        },
-      },
+      adapters: { agentSession: { async create() { return makeSmartSession(events)(); } } },
       store,
       stageControlRegistry: createStageControlRegistry(),
       confirmStageReadiness: async ({ stageName }) => {
         gateStages.push(stageName);
-        return gateAnswers[gateIndex++] ?? true;
+        return true; // advance
       },
     });
 
     assert.equal(result.status, "completed");
-    // The gate engaged twice for the first stage: "No" steered the stage to keep
-    // going (a continuation turn, not a re-ask of the original prompt), then
-    // "Yes" advanced to the second stage.
+    // Only "first" asked a question, so only it gates; "second" auto-advances.
+    assert.deepEqual(gateStages, ["first"]);
+    assert.deepEqual(events, ["ask", "turn:do work"]);
+    const stages = store.runs()[0]!.stages;
+    assert.equal(stages.find((s) => s.name === "first")?.status, "completed");
+    assert.equal(stages.find((s) => s.name === "second")?.status, "completed");
+  });
+
+  test("readiness gate returns control to the user on stay and re-checks after their turn", async () => {
+    const events: string[] = [];
+    const gateStages: string[] = [];
+    const registry = createStageControlRegistry();
+    const def = defineWorkflow("readiness-gate-stay-wf")
+      .run(async (ctx) => {
+        await ctx.stage("first").prompt("ask the user");
+        await ctx.stage("second").prompt("second work");
+        return {};
+      })
+      .compile();
+    const store = createStore();
+    const decisions = [false]; // first gate: stay
+    let gi = 0;
+    const result = await run(def, {}, {
+      adapters: { agentSession: { async create() { return makeSmartSession(events)(); } } },
+      store,
+      stageControlRegistry: registry,
+      confirmStageReadiness: async ({ runId, stageId, stageName }) => {
+        gateStages.push(stageName);
+        const advance = decisions[gi++] ?? true;
+        if (!advance) {
+          // Simulate the user typing a follow-up in the composer after the gate
+          // hands control back. setTimeout lets the executor arm its turn-end
+          // waiter first.
+          setTimeout(() => { void registry.get(runId, stageId)?.prompt("follow-up"); }, 0);
+        }
+        return advance;
+      },
+    });
+
+    assert.equal(result.status, "completed");
+    // "first" asked -> gate (stay) -> the user's follow-up turn asked nothing ->
+    // auto-advance. So the gate engages only once for "first".
+    assert.deepEqual(gateStages, ["first"]);
+    assert.deepEqual(events, ["ask", "turn:follow-up", "turn:second work"]);
+    const stages = store.runs()[0]!.stages;
+    assert.equal(stages.find((s) => s.name === "first")?.status, "completed");
+    assert.equal(stages.find((s) => s.name === "second")?.status, "completed");
+  });
+
+  test("readiness gate re-gates when the user's follow-up turn asks again, then advances", async () => {
+    const events: string[] = [];
+    const gateStages: string[] = [];
+    const registry = createStageControlRegistry();
+    const def = defineWorkflow("readiness-gate-regate-wf")
+      .run(async (ctx) => {
+        await ctx.stage("first").prompt("ask the user");
+        await ctx.stage("second").prompt("second work");
+        return {};
+      })
+      .compile();
+    const store = createStore();
+    const decisions = [false, true]; // stay, then advance
+    let gi = 0;
+    const result = await run(def, {}, {
+      adapters: { agentSession: { async create() { return makeSmartSession(events)(); } } },
+      store,
+      stageControlRegistry: registry,
+      confirmStageReadiness: async ({ runId, stageId, stageName }) => {
+        gateStages.push(stageName);
+        const advance = decisions[gi++] ?? true;
+        if (!advance) {
+          setTimeout(() => { void registry.get(runId, stageId)?.prompt("ask the user again"); }, 0);
+        }
+        return advance;
+      },
+    });
+
+    assert.equal(result.status, "completed");
+    // first turn asks -> gate (stay) -> the user's turn asks again -> gate
+    // (advance) -> next stage.
     assert.deepEqual(gateStages, ["first", "first"]);
-    assert.deepEqual(events, ["first:ask", "first:steer", "second:turn"]);
+    assert.deepEqual(events, ["ask", "ask", "turn:second work"]);
     const stages = store.runs()[0]!.stages;
     assert.equal(stages.find((s) => s.name === "first")?.status, "completed");
     assert.equal(stages.find((s) => s.name === "second")?.status, "completed");

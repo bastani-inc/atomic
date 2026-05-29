@@ -336,27 +336,32 @@ function askUserQuestionToolEvent(event: unknown): AskUserQuestionToolEvent | un
 // ---------------------------------------------------------------------------
 // Readiness gate (#1099)
 // ---------------------------------------------------------------------------
-// After a workflow stage's model turn issues an ask_user_question tool call,
-// the workflow confirms readiness before completing/advancing the stage. The
-// gate reuses the structured ask_user_question UI rendered through the stage UI
-// broker, so it appears inline in the attached stage chat (the same surface the
-// tool itself used) instead of a detached workflow prompt node the user never
-// sees. Answering anything other than "Yes" (including "Chat about this", a
-// typed answer, or cancelling) keeps execution in the stage.
+// A stage's agent turn returns control to the user when it ends. If that turn
+// issued no ask_user_question call, the stage completes and the workflow
+// advances automatically. If the turn DID ask the user something, a
+// deterministic readiness gate (the structured ask_user_question UI, rendered
+// inline in the attached stage chat via the broker) is shown when the turn
+// ends. Choosing "I'm ready to move on…" advances; anything else (the
+// keep-exploring option, a typed answer, "Chat about this", or cancelling)
+// returns control to the user, who keeps working in the normal stage composer.
+// The same per-turn check re-applies after each subsequent user-driven turn.
 
-const READINESS_GATE_STEER_MESSAGE =
-  "The user is not ready to move on to the next stage yet and wants to keep working in " +
-  "this stage. Continue the conversation here: address their latest input and any " +
-  "follow-up questions, and help them further. Do not assume this stage is finished.";
+const READINESS_GATE_ADVANCE_LABEL = "I'm ready to move on to the next workflow stage.";
 
 const READINESS_GATE_QUESTION_PARAMS = {
   questions: [
     {
-      question: "Are you ready to move on to the next stage?",
+      question: "Any additional points to explore before moving on?",
       header: "Continue?",
       options: [
-        { label: "Yes", description: "Complete this stage and advance the workflow." },
-        { label: "No", description: "Stay in this stage and keep working or discussing." },
+        {
+          label: READINESS_GATE_ADVANCE_LABEL,
+          description: "Complete this stage and advance the workflow.",
+        },
+        {
+          label: "I have more to explore or ask about.",
+          description: "Stay in this stage and keep working in the chat composer.",
+        },
       ],
     },
   ],
@@ -370,18 +375,19 @@ function readinessGateTool(): ReturnType<typeof createAskUserQuestionToolDefinit
 /**
  * Render the readiness gate inline in the attached stage chat by invoking the
  * ask_user_question tool with a pre-filled body, routing its custom UI through
- * the stage UI broker for (runId, stageId). Returns true only when the user
- * chooses "Yes"; "No", "Chat about this", a typed answer, or cancellation all
- * mean "not ready". If no stage chat host is attached the broker request stays
- * pending (the stage shows awaiting_input) exactly like the tool itself.
+ * the stage UI broker for (runId, stageId). Returns "advance" only when the
+ * user chooses the move-on option; the keep-exploring option, "Chat about
+ * this", a typed answer, or cancellation all mean "stay". If no stage chat host
+ * is attached the broker request stays pending (the stage shows awaiting_input)
+ * exactly like the tool itself.
  */
 async function askReadinessViaStageBroker(
   runId: string,
   stageId: string,
   signal: AbortSignal,
-): Promise<boolean> {
+): Promise<"advance" | "stay"> {
   const execute = readinessGateTool().execute;
-  if (execute === undefined) return true;
+  if (execute === undefined) return "advance";
   const gateContext = {
     hasUI: true,
     ui: {
@@ -405,8 +411,8 @@ async function askReadinessViaStageBroker(
   const details = (result as {
     details?: { answers?: ReadonlyArray<{ answer?: unknown }>; cancelled?: boolean };
   }).details;
-  if (details === undefined || details.cancelled === true) return false;
-  return details.answers?.[0]?.answer === "Yes";
+  if (details === undefined || details.cancelled === true) return "stay";
+  return details.answers?.[0]?.answer === READINESS_GATE_ADVANCE_LABEL ? "advance" : "stay";
 }
 
 // ---------------------------------------------------------------------------
@@ -2376,20 +2382,21 @@ export async function run<TInputs extends Record<string, unknown>>(
       // when a confirmation seam is available, so headless/test runs proceed.
       const readinessGateEnabled =
         opts.confirmStageReadiness !== undefined || opts.usePromptNodesForUi === true;
-      const confirmReadiness = async (): Promise<boolean> => {
+      const confirmReadiness = async (): Promise<"advance" | "stay"> => {
         try {
           if (opts.confirmStageReadiness !== undefined) {
-            return await opts.confirmStageReadiness({
+            const ready = await opts.confirmStageReadiness({
               runId,
               stageId,
               stageName: name,
               signal: ownController.signal,
             });
+            return ready ? "advance" : "stay";
           }
           return await askReadinessViaStageBroker(runId, stageId, ownController.signal);
         } catch {
           // A gate failure must not strand the workflow; proceed on error.
-          return true;
+          return "advance";
         }
       };
 
@@ -2442,24 +2449,48 @@ export async function run<TInputs extends Record<string, unknown>>(
           else ownController.signal.addEventListener("abort", abortSession, { once: true });
           let result = "";
           try {
-            // Run the stage turn, then gate before completing. Once an
-            // ask_user_question call is observed the gate stays armed: on "No"
-            // we steer the stage to keep the conversation going and re-gate
-            // after that follow-up turn, repeating until the user answers "Yes".
-            let gatingActive = false;
-            let continuationMessage: string | undefined;
-            while (true) {
-              askUserQuestionObservedThisTurn = false;
-              result =
-                continuationMessage === undefined
-                  ? await raceAbort(call(), ownController.signal)
-                  : await raceAbort(innerCtx.prompt(continuationMessage), ownController.signal);
-              continuationMessage = undefined;
-              if (ownController.signal.aborted) break;
-              if (askUserQuestionObservedThisTurn) gatingActive = true;
-              if (!readinessGateEnabled || !gatingActive) break;
-              if (await confirmReadiness()) break;
-              continuationMessage = READINESS_GATE_STEER_MESSAGE;
+            // Run the stage's initial agent turn.
+            askUserQuestionObservedThisTurn = false;
+            result = await raceAbort(call(), ownController.signal);
+
+            // Per-turn readiness gate (#1099). When an agent turn ENDS (control
+            // returns to the user): if the turn issued no ask_user_question
+            // call, complete/advance automatically; if it DID, show the gate.
+            // "advance" completes the stage; anything else hands control back to
+            // the user, who keeps working in the normal stage composer — we wait
+            // for their next turn to end (the session's agent_end event) and
+            // re-apply the same check. No canned auto-steer, so the user is
+            // never trapped re-gating and the stage never auto-drives a hidden
+            // turn that could strand the stream.
+            if (!ownController.signal.aborted && readinessGateEnabled) {
+              let resolveNextTurnEnd: (() => void) | null = null;
+              const unsubscribeTurnWatcher = innerCtx.subscribe((event) => {
+                if ((event as { type?: unknown }).type === "agent_end" && resolveNextTurnEnd) {
+                  const resolve = resolveNextTurnEnd;
+                  resolveNextTurnEnd = null;
+                  resolve();
+                }
+              });
+              try {
+                while (askUserQuestionObservedThisTurn) {
+                  if ((await confirmReadiness()) === "advance") break;
+                  if (ownController.signal.aborted) break;
+                  // Stay: return control to the user and await their next
+                  // composer-driven turn end before re-checking.
+                  askUserQuestionObservedThisTurn = false;
+                  await raceAbort(
+                    new Promise<void>((resolve) => {
+                      resolveNextTurnEnd = resolve;
+                    }),
+                    ownController.signal,
+                  );
+                  if (ownController.signal.aborted) break;
+                  result = innerCtx.__getLastAssistantText() ?? result;
+                }
+              } finally {
+                resolveNextTurnEnd = null;
+                unsubscribeTurnWatcher();
+              }
             }
           } finally {
             ownController.signal.removeEventListener("abort", abortSession);

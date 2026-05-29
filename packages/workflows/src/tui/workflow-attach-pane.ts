@@ -101,6 +101,12 @@ export interface WorkflowAttachPaneOpts {
    */
   requestRender?: () => void;
   /**
+   * Host hook to re-assert overlay keyboard focus. Threaded into the attached
+   * stage chat so showing a broker custom UI (e.g. the readiness gate) refocuses
+   * the overlay and the UI is not left input-dead (#1120).
+   */
+  requestFocus?: () => void;
+  /**
    * Host hook for terminal mouse reporting. Graph mode uses wheel input
    * for canvas scrolling; stage-chat mode uses it for transcript history
    * scrolling and drops non-wheel mouse bytes before they reach the editor.
@@ -125,6 +131,7 @@ export class WorkflowAttachPane implements Component {
   private onPromptResolve?: (runId: string, promptId: string, response: unknown) => void;
   private getViewportRows?: () => number | undefined;
   private hostRequestRender?: () => void;
+  private hostRequestFocus?: () => void;
   private setMouseScrollTracking?: (enabled: boolean) => void;
   private piTui?: TUI;
   private piTheme?: unknown;
@@ -152,6 +159,7 @@ export class WorkflowAttachPane implements Component {
     this.onPromptResolve = opts.onPromptResolve;
     this.getViewportRows = opts.getViewportRows;
     this.hostRequestRender = opts.requestRender;
+    this.hostRequestFocus = opts.requestFocus;
     this.setMouseScrollTracking = opts.setMouseScrollTracking;
     this.piTui = opts.piTui;
     this.piTheme = opts.piTheme;
@@ -233,6 +241,7 @@ export class WorkflowAttachPane implements Component {
       onDetach: () => this._detachFromStage(),
       onClose: this.onClose,
       requestRender: this.hostRequestRender,
+      requestFocus: this.hostRequestFocus,
       piTui: this.piTui,
       piTheme: this.piTheme,
       piKeybindings: this.piKeybindings,

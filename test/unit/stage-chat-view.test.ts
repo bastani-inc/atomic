@@ -972,6 +972,42 @@ describe("StageChatView", () => {
     }
   });
 
+  // Regression (#1120): showing a broker custom UI (e.g. the readiness gate)
+  // must re-assert overlay keyboard focus, otherwise the gate renders but is
+  // input-dead when focus drifted off the overlay during the agent's turn.
+  test("requests overlay focus when a custom UI is shown", async () => {
+    const store = createStore();
+    setupRun(store, "run-1", "stage-a");
+    const broker = new StageUiBroker(store);
+    const { handle } = makeHandle();
+    let focusCalls = 0;
+    const view = new StageChatView({
+      store,
+      graphTheme: deriveGraphTheme({}),
+      runId: "run-1",
+      stageId: "stage-a",
+      workflowName: "test-wf",
+      handle,
+      onDetach: () => {},
+      onClose: () => {},
+      requestFocus: () => { focusCalls += 1; },
+      piTui: { requestRender: () => {}, terminal: { rows: 32, columns: 80 } } as unknown as TUI,
+      piTheme: {},
+      piKeybindings: makeFakeKeybindings(),
+      stageUiBroker: broker,
+    });
+
+    const pending = broker.requestCustomUi("run-1", "stage-a", () => ({
+      render: () => ["QUESTION"],
+      invalidate: () => {},
+    }));
+    await flush();
+
+    assert.ok(focusCalls >= 1, "showing a custom UI must re-assert overlay focus");
+    view.dispose();
+    await assert.rejects(pending);
+  });
+
   test("header omits workflow duration/status chrome inside the stage chat", () => {
     const originalNow = Date.now;
     try {
