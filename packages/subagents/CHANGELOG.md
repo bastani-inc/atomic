@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- Hydrate active async subagent runs from durable status files into the below-editor widget so background work visible via `subagent({ action: "status" })` also appears in the TUI after launch/session rebinding ([#1146](https://github.com/flora131/atomic/issues/1146)).
+
 ## [0.8.20] - 2026-05-29
 
 ### Changed
