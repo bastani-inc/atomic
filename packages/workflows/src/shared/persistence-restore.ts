@@ -294,7 +294,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isWorkflowChildReplayStatus(status: unknown): status is WorkflowChildReplaySnapshot["status"] {
-  return status === "completed" || status === "failed" || status === "killed";
+  return status === "completed";
 }
 
 function workflowChildMetadata(payload: Record<string, unknown>): Pick<StageSnapshot, "workflowChild"> {
@@ -322,8 +322,8 @@ function workflowChildMetadata(payload: Record<string, unknown>): Pick<StageSnap
       workflow,
       runId: childRunId,
       status,
-      outputs: { ...outputs },
-      ...(rawOutput !== undefined ? { rawOutput: { ...rawOutput } } : {}),
+      outputs: structuredClone(outputs),
+      ...(rawOutput !== undefined ? { rawOutput: structuredClone(rawOutput) } : {}),
     },
   };
 }

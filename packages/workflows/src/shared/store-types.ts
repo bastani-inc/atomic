@@ -98,7 +98,7 @@ export interface WorkflowChildReplaySnapshot {
   readonly alias: string;
   readonly workflow: string;
   readonly runId: string;
-  readonly status: "completed" | "failed" | "killed";
+  readonly status: "completed";
   readonly outputs: Record<string, unknown>;
   readonly rawOutput?: Record<string, unknown>;
 }

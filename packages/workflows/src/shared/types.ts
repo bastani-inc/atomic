@@ -126,7 +126,7 @@ export interface WorkflowRunChildOptions {
 export interface WorkflowChildResult {
   readonly workflow: string;
   readonly runId: string;
-  readonly status: "completed" | "failed" | "killed";
+  readonly status: "completed";
   readonly outputs: Record<string, unknown>;
   readonly rawOutput: Record<string, unknown> | undefined;
 }

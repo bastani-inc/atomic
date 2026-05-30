@@ -1684,14 +1684,13 @@ function workflowOutputMappings(
 }
 
 function requiredImplicitWorkflowOutputMappings(
-  sourceOutput: Record<string, unknown>,
+  selectedChildKeys: ReadonlySet<string>,
   declarations: Readonly<Record<string, WorkflowOutputSchema>> | undefined,
 ): WorkflowOutputMapping[] {
   if (declarations === undefined) return [];
 
-  const selectedKeys = new Set(Object.keys(sourceOutput));
   return Object.entries(declarations)
-    .filter(([key, schema]) => schema.required === true && !selectedKeys.has(key))
+    .filter(([key, schema]) => schema.required === true && !selectedChildKeys.has(key))
     .map(([key]) => ({ childKey: key, parentKey: key }));
 }
 
@@ -1708,12 +1707,11 @@ function selectWorkflowOutputs(
   const selected: Record<string, unknown> = {};
 
   const requestedMappings = workflowOutputMappings(sourceOutput, requested);
-  const mappings = hasExplicitOutputSelection
-    ? requestedMappings
-    : [
-        ...requestedMappings,
-        ...requiredImplicitWorkflowOutputMappings(sourceOutput, declarations),
-      ];
+  const selectedChildKeys = new Set(requestedMappings.map((mapping) => mapping.childKey));
+  const mappings = [
+    ...requestedMappings,
+    ...requiredImplicitWorkflowOutputMappings(selectedChildKeys, declarations),
+  ];
 
   for (const { childKey, parentKey } of mappings) {
     const schema: WorkflowOutputSchema | undefined = declarations?.[childKey];
@@ -1740,10 +1738,7 @@ function selectWorkflowOutputs(
 }
 
 function cloneWorkflowChildValue<T>(value: T): T {
-  if (typeof structuredClone === "function") {
-    return structuredClone(value);
-  }
-  return JSON.parse(JSON.stringify(value)) as T;
+  return structuredClone(value);
 }
 
 function workflowChildReplaySnapshot(
@@ -1800,7 +1795,7 @@ export async function run<TInputs extends Record<string, unknown>>(
     return importResolver;
   };
 
-  if (Object.keys(erasedDef.imports ?? {}).length > 0) {
+  if (opts.registry === undefined && Object.keys(erasedDef.imports ?? {}).length > 0) {
     const resolver = await loadImportResolver();
     const importDiagnostics = resolver.validateWorkflowImportGraph({
       ...importResolverOptions,
@@ -2047,8 +2042,8 @@ export async function run<TInputs extends Record<string, unknown>>(
     workflow: snapshot.workflow,
     runId: snapshot.runId,
     status: snapshot.status,
-    outputs: { ...snapshot.outputs },
-    rawOutput: snapshot.rawOutput !== undefined ? { ...snapshot.rawOutput } : undefined,
+    outputs: cloneWorkflowChildValue(snapshot.outputs),
+    rawOutput: snapshot.rawOutput !== undefined ? cloneWorkflowChildValue(snapshot.rawOutput) : undefined,
   });
 
   const startWorkflowBoundaryStage = (name: string): WorkflowBoundaryStage => {
@@ -3124,8 +3119,15 @@ export async function run<TInputs extends Record<string, unknown>>(
         });
 
         if (childRun.status !== "completed") {
+          const failedChildStage = childRun.stages.find((stage) => stage.failureKind !== undefined);
           throw new Error(
             `pi-workflows: workflow import "${alias}" (${child.name}) failed with status ${childRun.status}${childRun.error !== undefined ? `: ${childRun.error}` : ""}`,
+            {
+              cause: {
+                ...(failedChildStage?.failureKind !== undefined ? { code: failedChildStage.failureKind } : {}),
+                ...(failedChildStage?.failureMessage !== undefined ? { message: failedChildStage.failureMessage } : {}),
+              },
+            },
           );
         }
 

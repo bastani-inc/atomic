@@ -794,6 +794,8 @@ export default defineWorkflow("research-and-synthesize")
 
 `ctx.workflow(alias)` starts the imported workflow as a nested run and records a parent boundary stage named `import:<alias>` by default. Import sources can be `{ workflow: "registered-name" }` or `{ path: "./module.ts", export?: "namedExport" }`; relative paths resolve from the importing workflow file when discovery has source metadata, otherwise from the invocation cwd. Atomic validates imports during discovery/dispatch and fails fast for unresolved, circular, or invalid imports. Local path imports execute the imported file's top-level code during validation, so only reference trusted workflow modules.
 
+Continuation replay treats the parent import boundary as the durable checkpoint: a previously completed child boundary replays without re-running the child, while a child that failed or was interrupted before completion starts again from the beginning on continuation.
+
 ## Workflow Primitives
 
 Prefer high-level primitives because they create tracked graph nodes, provide consistent handoff semantics, and keep workflow definitions easier to read.

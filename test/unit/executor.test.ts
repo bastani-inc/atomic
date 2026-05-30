@@ -404,6 +404,45 @@ describe("executor.run", () => {
     assert.equal(wfResult.stages[0]?.status, "failed");
   });
 
+  test("ctx.workflow with explicit outputs still enforces missing required child outputs", async () => {
+    const seenPrompts: string[] = [];
+    const child = defineWorkflow("explicit-missing-required-output-child")
+      .output("summary", { type: "text", required: true })
+      .output("optional", { type: "text" })
+      .run(async (ctx) => {
+        await ctx.task("child", { prompt: "child" });
+        return { optional: "value" };
+      })
+      .compile();
+    const parent = defineWorkflow("explicit-missing-required-output-parent")
+      .import("child", { workflow: "explicit-missing-required-output-child" })
+      .run(async (ctx) => {
+        await ctx.workflow("child", { outputs: ["optional"] });
+        await ctx.task("downstream", { prompt: "should-not-run" });
+        return {};
+      })
+      .compile();
+
+    const wfResult = await run(parent, {}, {
+      registry: createRegistry([parent as WorkflowDefinition, child as WorkflowDefinition]),
+      store: createStore(),
+      adapters: {
+        prompt: {
+          prompt: async (text) => {
+            seenPrompts.push(text);
+            return "ok";
+          },
+        },
+      },
+    });
+
+    assert.equal(wfResult.status, "failed");
+    assert.match(wfResult.error ?? "", /missing output "summary"/);
+    assert.deepEqual(seenPrompts, ["child"]);
+    assert.deepEqual(wfResult.stages.map((stage) => stage.name), ["import:child"]);
+    assert.equal(wfResult.stages[0]?.status, "failed");
+  });
+
   test("ctx.workflow validates child inputs before starting a child run", async () => {
     const seenPrompts: string[] = [];
     const st = createStore();
