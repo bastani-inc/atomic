@@ -563,9 +563,13 @@ export class InteractiveMode {
   }
 
   private getCodexFastModeCandidateModels(): Model<Api>[] {
-    return this.session.scopedModels.length > 0
-      ? this.session.scopedModels.map((scoped) => scoped.model)
-      : this.session.modelRegistry.getAvailable();
+    if (this.session.scopedModels.length > 0) {
+      return this.session.scopedModels
+        .map((scoped) => scoped.model)
+        .filter((model) => this.session.modelRegistry.hasConfiguredAuth(model));
+    }
+
+    return this.session.modelRegistry.getAvailable();
   }
 
   private hasCodexFastModeSupportedModels(): boolean {
@@ -636,7 +640,9 @@ export class InteractiveMode {
     );
 
     // Convert extension commands to SlashCommand format
-    const builtinCommandNames = new Set(slashCommands.map((c) => c.name));
+    const builtinCommandNames = new Set(
+      BUILTIN_SLASH_COMMANDS.map((command) => command.name),
+    );
     const extensionCommands: SlashCommand[] = this.session.extensionRunner
       .getRegisteredCommands()
       .filter((cmd) => !builtinCommandNames.has(cmd.name))
