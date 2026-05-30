@@ -183,7 +183,7 @@ let cachedGlobalNpmRoot: string | null | undefined;
 function getGlobalNpmRoot(): string | null {
 	if (cachedGlobalNpmRoot !== undefined) return cachedGlobalNpmRoot;
 	try {
-		cachedGlobalNpmRoot = execSync("npm root -g", { encoding: "utf-8", timeout: 1000 }).trim();
+		cachedGlobalNpmRoot = execSync("npm root -g", { encoding: "utf-8", timeout: 5000 }).trim();
 		return cachedGlobalNpmRoot;
 	} catch {
 		cachedGlobalNpmRoot = null;
