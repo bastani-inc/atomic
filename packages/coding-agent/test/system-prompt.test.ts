@@ -156,6 +156,7 @@ describe("buildSystemPrompt", () => {
 
 			expect(prompt).toContain("- **Workflows**:");
 			expect(prompt).toContain("prefer the `workflow` tool");
+			expect(prompt).toContain("use the `goal` workflow");
 		});
 
 		test("omits workflow guidance when the workflow tool is excluded", () => {

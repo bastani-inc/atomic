@@ -198,6 +198,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
     : `- **Workflows**: When the user asks to run a repeatable, multi-stage process, or references an existing workflow by name, prefer the \`workflow\` tool over performing the stages manually.
   - Use \`action: "list"\` to discover available workflows and \`action: "inputs"\` to see what a workflow expects, then \`action: "run"\` with the workflow name and \`inputs\` to start one.
   - Use the inspection and run-control actions (\`status\`, \`stages\`, \`stage\`, \`transcript\`, \`send\`, \`pause\`, \`resume\`, \`interrupt\`, \`kill\`) to monitor and steer in-flight runs.
+  - If a user asks to create a workflow, ask detailed clarifying questions about what they want to build until you have a shared understanding of its purpose, inputs, stages, handoffs, validation, and success criteria; then use the \`goal\` workflow to implement the user's workflow.
   - The \`workflow\` tool can also run a one-off tracked task, parallel fan-out, or chain without creating a saved workflow file.`;
 
   let prompt = `You are an expert coding assistant operating named Atomic, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.
