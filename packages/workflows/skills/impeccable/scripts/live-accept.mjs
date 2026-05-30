@@ -16,6 +16,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { isGeneratedFile } from './is-generated.mjs';
+import { readBuffer as readManualEditsBuffer, writeBuffer as writeManualEditsBuffer } from './live-manual-edits-buffer.mjs';
 
 const EXTENSIONS = ['.html', '.jsx', '.tsx', '.vue', '.svelte', '.astro'];
 
@@ -38,19 +39,22 @@ Modes:
 Required:
   --id SESSION_ID    Session ID of the variant wrapper
 
+Options:
+  --page-url URL     Current browser page URL; scopes staged copy-edit cleanup
+
 Output (JSON):
   { handled, file, carbonize }`);
     process.exit(0);
   }
 
   const id = argVal(args, '--id');
-  const variantNumRaw = argVal(args, '--variant');
+  const variantNum = argVal(args, '--variant');
   const paramValuesRaw = argVal(args, '--param-values');
+  const pageUrl = argVal(args, '--page-url');
   const isDiscard = args.includes('--discard');
 
   if (!id) { console.error('Missing --id'); process.exit(1); }
-  if (!isDiscard && !variantNumRaw) { console.error('Need --discard or --variant N'); process.exit(1); }
-  const variantNum = isDiscard ? null : parseVariantNumber(variantNumRaw);
+  if (!isDiscard && !variantNum) { console.error('Need --discard or --variant N'); process.exit(1); }
 
   let paramValues = null;
   if (paramValuesRaw) {
@@ -87,14 +91,86 @@ Output (JSON):
     console.log(JSON.stringify({ handled: true, file: relFile, carbonize: false, ...result }));
   } else {
     const result = handleAccept(id, variantNum, lines, targetFile, paramValues);
+    const acceptedOriginalText = result.acceptedOriginalText || '';
+    delete result.acceptedOriginalText;
     // Single-line attention-grabber when cleanup is required. The full
     // five-step checklist lives in reference/live.md (loaded once per
     // session); repeating it per-event would waste tokens.
     if (result.carbonize) {
       result.todo = 'REQUIRED before next poll: carbonize cleanup in ' + relFile + '. See reference/live.md "Required after accept".';
     }
+    // Scrub stash entries whose text appeared inside the just-replaced
+    // original wrap block. The accept embodies those manual edits (wrap was
+    // buffer-aware), so only those scoped ops are redundant.
+    if (result.handled !== false) {
+      try {
+        scrubManualEditsAgainstOriginalBlock(acceptedOriginalText, process.cwd(), pageUrl);
+      } catch {
+        // Non-fatal; the buffer stays as-is and the user can discard later.
+      }
+    }
     console.log(JSON.stringify({ handled: true, file: relFile, ...result }));
   }
+}
+
+/**
+ * After a variant accept rewrites one wrapper, drop only buffer ops whose
+ * text appeared inside that wrapper's original block. The previous file-wide
+ * scrub dropped unrelated staged edits from other components/files whenever
+ * their originalText wasn't present in the just-accepted file.
+ *
+ * Match both originalText and newText because live-wrap rewrites the original
+ * preview block to reflect pending manual edits before variants are generated.
+ */
+function scrubManualEditsAgainstOriginalBlock(originalBlockText, cwd = process.cwd(), pageUrl = null) {
+  const originalBlock = String(originalBlockText || '');
+  if (!originalBlock) return;
+  if (!pageUrl) return;
+  const buffer = readManualEditsBuffer(cwd);
+  if (buffer.entries.length === 0) return;
+  let mutated = false;
+  for (const entry of buffer.entries) {
+    if (entry.pageUrl !== pageUrl) continue;
+    const before = entry.ops.length;
+    entry.ops = entry.ops.filter((op) => {
+      return !manualEditOpAppearsInBlock(op, originalBlock);
+    });
+    if (entry.ops.length !== before) mutated = true;
+  }
+  buffer.entries = buffer.entries.filter((entry) => entry.ops.length > 0);
+  if (mutated) writeManualEditsBuffer(cwd, buffer);
+}
+
+function manualEditOpAppearsInBlock(op, originalBlock) {
+  const candidates = [op?.newText, op?.originalText]
+    .filter((text) => typeof text === 'string' && text.length > 0);
+  return candidates.some((text) => originalBlockHasExactManualText(originalBlock, text));
+}
+
+function originalBlockHasExactManualText(originalBlock, text) {
+  const needle = normalizeManualEditText(text);
+  if (!needle) return false;
+  return manualEditTextSegments(originalBlock).some((segment) => segment === needle);
+}
+
+function manualEditTextSegments(source) {
+  return String(source || '')
+    .replace(/<[^>]*>/g, '\n')
+    .replace(/\{\/\*[\s\S]*?\*\/\}/g, '\n')
+    .replace(/<!--[\s\S]*?-->/g, '\n')
+    .split(/\n+/)
+    .map(normalizeManualEditText)
+    .filter(Boolean);
+}
+
+function normalizeManualEditText(text) {
+  return String(text || '').replace(/\s+/g, ' ').trim();
+}
+
+// Compatibility export for older tests/callers. The unsafe file-wide scrub was
+// removed; callers must pass accepted original-block text for scoped cleanup.
+function scrubManualEditsAgainstFile(_targetFile, cwd = process.cwd(), originalBlockText = '', pageUrl = null) {
+  return scrubManualEditsAgainstOriginalBlock(originalBlockText, cwd, pageUrl);
 }
 
 // ---------------------------------------------------------------------------
@@ -147,6 +223,7 @@ function handleAccept(id, variantNum, lines, targetFile, paramValues) {
   // Extract the chosen variant's inner content
   const variantContent = extractVariant(lines, block, variantNum);
   if (!variantContent) return { handled: false, error: 'Variant ' + variantNum + ' not found' };
+  const originalContent = extractOriginal(lines, block);
 
   // Extract CSS block if present
   const cssContent = extractCss(lines, block, id);
@@ -205,7 +282,7 @@ function handleAccept(id, variantNum, lines, targetFile, paramValues) {
   ];
   fs.writeFileSync(targetFile, newLines.join('\n'), 'utf-8');
 
-  return { carbonize: needsCarbonize };
+  return { carbonize: needsCarbonize, acceptedOriginalText: originalContent.join('\n') };
 }
 
 // ---------------------------------------------------------------------------
@@ -227,7 +304,7 @@ function findMarkerBlock(id, lines) {
     if (lines[i].includes(endPattern)) { end = i; break; }
   }
 
-  return (start !== -1 && end !== -1) ? { start, end } : null;
+  return (start !== -1 && end !== -1) ? { start, end, id } : null;
 }
 
 /**
@@ -254,11 +331,14 @@ function expandReplaceRange(block, lines, isJsx) {
   // Walk back for the wrapper `<div data-impeccable-variants="..."` opener.
   // The attr may sit on a continuation line of a multi-line opening tag, so
   // also walk to the line that actually contains `<div`.
-  for (let i = start - 1; i >= Math.max(0, start - 12); i--) {
-    if (/data-impeccable-variants=/.test(lines[i])) {
+  for (let i = start - 1; i >= 0; i--) {
+    if (isVariantEndMarkerLine(lines[i], block.id)) break;
+    if (hasVariantWrapperAttr(lines[i], block.id)) {
       let opener = i;
-      while (opener > 0 && !/<div\b/.test(lines[opener])) opener--;
-      start = opener;
+      while (opener > 0 && !/<div\b/.test(lines[opener]) && !isVariantEndMarkerLine(lines[opener], block.id)) {
+        opener--;
+      }
+      if (/<div\b/.test(lines[opener])) start = opener;
       break;
     }
   }
@@ -296,6 +376,19 @@ function expandReplaceRange(block, lines, isJsx) {
   return { start, end };
 }
 
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function isVariantEndMarkerLine(line, id) {
+  return new RegExp('impeccable-variants-end\\s+' + escapeRegExp(id) + '(?:\\s|--|\\*/|$)').test(line);
+}
+
+function hasVariantWrapperAttr(line, id) {
+  const escaped = escapeRegExp(id);
+  return new RegExp(`data-impeccable-variants\\s*=\\s*(?:"${escaped}"|'${escaped}'|\\{["']${escaped}["']\\})`).test(line);
+}
+
 /**
  * Join wrapper lines into a single string with `<style>` elements removed so
  * marker matching and div-depth tracking aren't confused by:
@@ -308,92 +401,50 @@ function expandReplaceRange(block, lines, isJsx) {
 function stripStyleAndJoin(lines, block) {
   const out = [];
   let inStyle = false;
-
   for (let i = block.start; i <= block.end; i++) {
-    const { text, stillInStyle } = stripStyleSegmentsFromLine(lines[i], inStyle);
-    inStyle = stillInStyle;
-    if (text !== null) out.push(text);
-  }
+    let line = lines[i];
 
+    if (!inStyle) {
+      // Strip any complete <style> elements on this line (self-closed or
+      // same-line-closed), including their body content.
+      line = line
+        .replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/g, '')
+        .replace(/<style\b[^>]*\/\s*>/g, '');
+
+      // If a <style> opener remains (multi-line body starts here), strip from
+      // the opener to end-of-line and flip into skip mode.
+      const openerIdx = line.search(/<style\b/);
+      if (openerIdx !== -1) {
+        line = line.slice(0, openerIdx);
+        inStyle = true;
+      }
+      out.push(line);
+    } else {
+      // In multi-line style body; drop everything until we see </style>.
+      const closeIdx = line.search(/<\/style\s*>/);
+      if (closeIdx !== -1) {
+        inStyle = false;
+        out.push(line.slice(closeIdx).replace(/<\/style\s*>/, ''));
+      }
+      // else: skip line entirely
+    }
+  }
   return out.join('\n');
 }
 
-function stripStyleSegmentsFromLine(line, startsInStyle) {
-  let remaining = line;
-  let output = '';
-  let inStyle = startsInStyle;
-
-  while (remaining.length > 0) {
-    const lower = remaining.toLowerCase();
-
-    if (inStyle) {
-      const closeIdx = lower.indexOf('</style');
-      if (closeIdx === -1) return { text: output || null, stillInStyle: true };
-      const closeEnd = lower.indexOf('>', closeIdx);
-      if (closeEnd === -1) return { text: output || null, stillInStyle: true };
-      remaining = remaining.slice(closeEnd + 1);
-      inStyle = false;
-      continue;
-    }
-
-    const openIdx = lower.indexOf('<style');
-    if (openIdx === -1) {
-      output += remaining;
-      remaining = '';
-      break;
-    }
-
-    output += remaining.slice(0, openIdx);
-    const openEnd = lower.indexOf('>', openIdx);
-    if (openEnd === -1) break;
-
-    const opener = remaining.slice(openIdx, openEnd + 1);
-    if (/\/\s*>$/.test(opener)) {
-      remaining = remaining.slice(openEnd + 1);
-      continue;
-    }
-
-    const afterOpen = remaining.slice(openEnd + 1);
-    const afterOpenLower = afterOpen.toLowerCase();
-    const sameLineClose = afterOpenLower.indexOf('</style');
-    if (sameLineClose === -1) {
-      inStyle = true;
-      remaining = '';
-      break;
-    }
-
-    const closeEnd = afterOpenLower.indexOf('>', sameLineClose);
-    if (closeEnd === -1) {
-      inStyle = true;
-      remaining = '';
-      break;
-    }
-    remaining = afterOpen.slice(closeEnd + 1);
-  }
-
-  return { text: output, stillInStyle: inStyle };
-}
-
 /**
- * Find the inner content of `<TAG ...attrName="attrValue"...>…</TAG>` inside
- * `text`, handling nested same-tag elements via depth counting. Returns the
- * inner string (may be empty), or null if not found.
+ * Find the inner content of `<TAG ...attrMatch...>…</TAG>` inside `text`,
+ * handling nested same-tag elements via depth counting. `attrMatch` is a
+ * regex source fragment that must appear inside the opener tag.
+ * Returns the inner string (may be empty), or null if not found.
  */
-function extractInnerByAttr(text, attrName, attrValue) {
-  const attrNeedle = attrName + '="' + attrValue + '"';
-  const attrIdx = text.indexOf(attrNeedle);
-  if (attrIdx === -1) return null;
-
-  const openStart = text.lastIndexOf('<', attrIdx);
-  const openEnd = text.indexOf('>', attrIdx);
-  if (openStart === -1 || openEnd === -1 || openStart > attrIdx || openEnd < attrIdx) return null;
-
-  const opener = text.slice(openStart, openEnd + 1);
-  const openMatch = opener.match(/^<([A-Za-z][A-Za-z0-9]*)\b/);
+function extractInnerByAttr(text, attrMatch) {
+  const openerRe = new RegExp('<([A-Za-z][A-Za-z0-9]*)\\b[^>]*' + attrMatch + '[^>]*>');
+  const openMatch = text.match(openerRe);
   if (!openMatch) return null;
 
   const tagName = openMatch[1];
-  const innerStart = openEnd + 1;
+  const innerStart = openMatch.index + openMatch[0].length;
 
   // Match any opener or closer of this tag name after innerStart.
   // (Does not match self-closing <TAG … />, which doesn't contribute to depth.)
@@ -421,7 +472,7 @@ function extractInnerByAttr(text, attrName, attrValue) {
  */
 function extractOriginal(lines, block) {
   const text = stripStyleAndJoin(lines, block);
-  const inner = extractInnerByAttr(text, 'data-impeccable-variant', 'original');
+  const inner = extractInnerByAttr(text, 'data-impeccable-variant="original"');
   if (inner === null) return [];
   return inner.split('\n');
 }
@@ -432,7 +483,7 @@ function extractOriginal(lines, block) {
  */
 function extractVariant(lines, block, variantNum) {
   const text = stripStyleAndJoin(lines, block);
-  const inner = extractInnerByAttr(text, 'data-impeccable-variant', String(variantNum));
+  const inner = extractInnerByAttr(text, 'data-impeccable-variant="' + variantNum + '"');
   if (inner === null) return null;
   const result = inner.split('\n');
   // Collapse a lone empty leading/trailing line (common after string splice).
@@ -629,18 +680,10 @@ function argVal(args, flag) {
   return idx !== -1 && idx + 1 < args.length ? args[idx + 1] : null;
 }
 
-function parseVariantNumber(value) {
-  if (!/^(?:0|[1-9]\d{0,2})$/.test(value ?? '')) {
-    console.error('Invalid --variant value; expected an integer from 0 to 999');
-    process.exit(1);
-  }
-  return Number(value);
-}
-
 // Auto-execute when run directly
 const _running = process.argv[1];
 if (_running?.endsWith('live-accept.mjs') || _running?.endsWith('live-accept.mjs/')) {
   acceptCli();
 }
 
-export { findMarkerBlock, extractOriginal, extractVariant, extractCss, deindentContent, detectCommentSyntax };
+export { findMarkerBlock, extractOriginal, extractVariant, extractCss, deindentContent, detectCommentSyntax, scrubManualEditsAgainstFile, scrubManualEditsAgainstOriginalBlock };

@@ -231,4 +231,4 @@ Test with real users:
 - **Completion rate**: Are users completing? (If low, simplify)
 - **Time to value**: How long until users get first value?
 
-When users hit the aha moment fast and don't drop off, hand off to `/impeccable polish` for the final pass.
+When users hit the aha moment fast and don't drop off, hand off to `$impeccable polish` for the final pass.

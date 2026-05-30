@@ -35,10 +35,10 @@ Understand the current state and goals before touching anything:
    - Loading and transition smoothness
    - Information architecture and flow drift (does this feature reveal complexity the way neighboring features do?)
 
-4. **Pull in any prior critique** (optional signal): If `/impeccable critique` has been run on the same target, its priority issues are a useful prior for what to address first. Resolve the target to a file path or URL, then:
+4. **Pull in any prior critique** (optional signal): If `$impeccable critique` has been run on the same target, its priority issues are a useful prior for what to address first. Resolve the target to a file path or URL, then:
    ```bash
-   slug=$(node .claude/skills/impeccable/scripts/critique-storage.mjs slug "<resolved>")
-   node .claude/skills/impeccable/scripts/critique-storage.mjs latest "$slug"
+   slug=$(node .agents/skills/impeccable/scripts/critique-storage.mjs slug "<resolved>")
+   node .agents/skills/impeccable/scripts/critique-storage.mjs latest "$slug"
    ```
    Exit 0 with body = found; fold the P0/P1 items into your polish list and mention the snapshot path so the user sees what you read. Exit 2 = no snapshot, continue without it. The critique is one input among many. Do your own pass either way.
 
@@ -91,7 +91,6 @@ Visual polish on a misshapen flow is wasted work. Match the *shape* of the exper
 - **Theme consistency**: Works in all theme variants
 - **Color meaning**: Same colors mean same things throughout
 - **Accessible focus**: Focus indicators visible with sufficient contrast
-- **Tinted neutrals**: No pure gray or pure black; add subtle color tint (0.01 chroma)
 - **Gray on color**: Never put gray text on colored backgrounds; use a shade of that color or transparency
 
 ### Interaction States

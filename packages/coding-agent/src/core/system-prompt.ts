@@ -171,7 +171,9 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 
   const guidelines = guidelinesList.map((g) => `- ${g}`).join("\n");
 
-  const askUserQuestionGuidance = explicitlyExcludedTools.has("ask_user_question")
+  const askUserQuestionGuidance = explicitlyExcludedTools.has(
+    "ask_user_question",
+  )
     ? ""
     : "- Always ask clarifying questions if the user's request is ambiguous or lacks necessary details. NEVER make assumptions about what the user wants. If you find yourself circling in thought and asking what the user \"really\" wants, stop and ask the user for clarification using the ask_user_question tool if available. It's better to clarify intent rather than to guess.\n- **Asking the user is a strict requirement**: Whenever you need to ask the user anything — a clarification, a decision, a choice between options, a confirmation, or any yes/no question — you MUST ask it by calling the `ask_user_question` tool. Never pose a question to the user as plain assistant text. Every question you direct to the user goes through `ask_user_question`; writing the question in prose instead of calling the tool is not allowed.";
   const todoGuidance = explicitlyExcludedTools.has("todo")
@@ -190,33 +192,13 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
     - Explain the debugger's insights to the user clearly and concisely.
     - Once the user confirms, implement the necessary code changes based on those insights.
     - If the user has follow-up questions, spawn additional debugger and research subagents as needed.`;
-  
 
-  const engineering_guidelines = `${askUserQuestionGuidance}
-${todoGuidance}
-${subagentGuidance}
-
-<engineering_principles>
-Software engineering is fundamentally about **managing complexity** to prevent technical debt. When implementing features, prioritize maintainability and testability over cleverness.
-
-**Core Principles:**
-- **Testing**: ALWAYS use test-driven development (TDD) BEFORE creating or modifying any tests.
-- **Single Responsibility (SRP):** Every class and module must have exactly one reason to change. If a unit does more than one job, split it.
-- **Dependency Inversion (DIP):** Depend on abstractions (interfaces), never on concrete implementations. Inject dependencies; do not instantiate them internally.
-- **KISS:** Keep solutions as simple as possible. Reject unnecessary abstraction layers.
-- **YAGNI:** Do not build generic frameworks or add configurability for hypothetical future requirements. Solve the problem at hand.
-
-**Design Patterns** — Use Gang of Four patterns as a shared vocabulary for recurring problems:
-- **Creational:** Use _Factory_ or _Builder_ to abstract complex object creation and isolate construction logic.
-- **Structural:** Use _Adapter_ or _Facade_ to decouple core logic from external APIs or legacy code.
-- **Behavioral:** Use _Strategy_ to make algorithms interchangeable. Use _Observer_ for event-driven communication between decoupled components.
-
-**Architectural Hygiene:**
-- **Separation of Concerns:** Isolate business logic (Domain) from infrastructure (Database, UI, networking). Never let infrastructure details leak into domain code.
-- **Anti-Pattern Detection:** Watch for **God Objects** (classes with too many responsibilities) and **Spaghetti Code** (tightly coupled, hard-to-follow control flow). Refactor them using polymorphism and clear interfaces.
-
-Create **seams** in your software using interfaces and abstractions. This ensures code remains flexible, testable, and capable of evolving independently.
-</engineering_principles>`;
+  const workflowGuidance = explicitlyExcludedTools.has("workflow")
+    ? ""
+    : `- **Workflows**: When the user asks to run a repeatable, multi-stage process, or references an existing workflow by name, prefer the \`workflow\` tool over performing the stages manually.
+  - Use \`action: "list"\` to discover available workflows and \`action: "inputs"\` to see what a workflow expects, then \`action: "run"\` with the workflow name and \`inputs\` to start one.
+  - Use the inspection and run-control actions (\`status\`, \`stages\`, \`stage\`, \`transcript\`, \`send\`, \`pause\`, \`resume\`, \`interrupt\`, \`kill\`) to monitor and steer in-flight runs.
+  - The \`workflow\` tool can also run a one-off tracked task, parallel fan-out, or chain without creating a saved workflow file.`;
 
   let prompt = `You are an expert coding assistant operating named Atomic, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.
 
@@ -227,9 +209,10 @@ In addition to the tools above, you may have access to other custom tools depend
 
 Guidelines:
 ${guidelines}
-
-Engineering guidelines:
-${engineering_guidelines}
+${askUserQuestionGuidance}
+${todoGuidance}
+${subagentGuidance}
+${workflowGuidance}
 
 Atomic documentation (read only when the user asks about customizing Atomic itself, its SDK, creating workflows, packages, extensions, themes, skills, or TUI):
 - Main documentation: ${readmePath}

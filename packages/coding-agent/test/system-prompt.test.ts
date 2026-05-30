@@ -144,4 +144,30 @@ describe("buildSystemPrompt", () => {
 			expect(prompt.match(/- Use dynamic_tool for summaries\./g)).toHaveLength(1);
 		});
 	});
+
+	describe("workflow guidance", () => {
+		test("includes workflow guidance by default", () => {
+			const prompt = buildSystemPrompt({
+				selectedTools: [],
+				contextFiles: [],
+				skills: [],
+				cwd: process.cwd(),
+			});
+
+			expect(prompt).toContain("- **Workflows**:");
+			expect(prompt).toContain("prefer the `workflow` tool");
+		});
+
+		test("omits workflow guidance when the workflow tool is excluded", () => {
+			const prompt = buildSystemPrompt({
+				selectedTools: [],
+				excludedTools: ["workflow"],
+				contextFiles: [],
+				skills: [],
+				cwd: process.cwd(),
+			});
+
+			expect(prompt).not.toContain("- **Workflows**:");
+		});
+	});
 });
