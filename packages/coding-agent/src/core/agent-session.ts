@@ -194,9 +194,9 @@ interface DrainedAgentQueues {
 	readonly followUp: AgentMessage[];
 }
 
-interface HeldInterruptQueues {
-	readonly queues: DrainedAgentQueues;
-	cleared: boolean;
+interface InterruptQueueHold {
+	readonly steering: AgentMessage[];
+	readonly followUp: AgentMessage[];
 	restored: boolean;
 }
 
@@ -328,8 +328,12 @@ export class AgentSession {
 	private _steeringMessages: string[] = [];
 	/** Tracks pending follow-up messages for UI display. Removed when delivered. */
 	private _followUpMessages: string[] = [];
-	/** Queue snapshots temporarily held out of pi-agent-core while an interrupt turn runs. */
-	private readonly _interruptHeldQueues = new Set<HeldInterruptQueues>();
+	/** Serializes interrupt custom-message delivery so only one immediate prompt runs at a time. */
+	private _interruptDeliveryQueue: Promise<void> = Promise.resolve();
+	/** Number of interrupt custom messages enqueued or currently delivering. */
+	private _pendingInterruptDeliveries = 0;
+	/** Queues held out of pi-agent-core while an interrupt sequence is active. */
+	private _activeInterruptQueueHold: InterruptQueueHold | undefined = undefined;
 	/** Messages queued to be included with the next user prompt as context ("asides"). */
 	private _pendingNextTurnMessages: CustomMessage[] = [];
 
@@ -1348,11 +1352,14 @@ export class AgentSession {
 		if (images) {
 			content.push(...images);
 		}
-		this.agent.steer({
-			role: "user",
-			content,
-			timestamp: Date.now(),
-		});
+		this._queueAgentMessage(
+			{
+				role: "user",
+				content,
+				timestamp: Date.now(),
+			},
+			"steer",
+		);
 	}
 
 	/**
@@ -1365,11 +1372,14 @@ export class AgentSession {
 		if (images) {
 			content.push(...images);
 		}
-		this.agent.followUp({
-			role: "user",
-			content,
-			timestamp: Date.now(),
-		});
+		this._queueAgentMessage(
+			{
+				role: "user",
+				content,
+				timestamp: Date.now(),
+			},
+			"followUp",
+		);
 	}
 
 	/**
@@ -1415,13 +1425,9 @@ export class AgentSession {
 		if (options?.deliverAs === "nextTurn") {
 			this._pendingNextTurnMessages.push(appMessage);
 		} else if (options?.deliverAs === "interrupt" && options.triggerTurn) {
-			await this._sendInterruptCustomMessage(appMessage);
+			await this._enqueueInterruptCustomMessage(appMessage);
 		} else if (this.isStreaming) {
-			if (options?.deliverAs === "followUp") {
-				this.agent.followUp(appMessage);
-			} else {
-				this.agent.steer(appMessage);
-			}
+			this._queueAgentMessage(appMessage, options?.deliverAs === "followUp" ? "followUp" : "steer");
 		} else if (options?.triggerTurn) {
 			await this.agent.prompt(appMessage);
 		} else {
@@ -1437,42 +1443,80 @@ export class AgentSession {
 		}
 	}
 
-	private async _sendInterruptCustomMessage<T>(message: CustomMessage<T>): Promise<void> {
-		this.abortRetry();
-		const heldQueues = this.isStreaming ? this._holdQueuedAgentMessagesForInterrupt() : undefined;
-		try {
-			if (this.isStreaming) {
-				this.agent.abort();
-				await this.agent.waitForIdle();
-			}
-			await this.agent.prompt(message);
-		} finally {
-			if (heldQueues) {
-				try {
-					this._restoreHeldInterruptQueuesIfStillValid(heldQueues);
-				} finally {
-					this._interruptHeldQueues.delete(heldQueues);
+	private _enqueueInterruptCustomMessage<T>(message: CustomMessage<T>): Promise<void> {
+		this._pendingInterruptDeliveries += 1;
+		// Establish the hold synchronously when the interrupt is enqueued, not when
+		// the serialized delivery callback later starts. Callers commonly fire and
+		// forget sendCustomMessage(), then queue additional steer/follow-up messages
+		// before the promise chain gets a microtask; those messages must be captured
+		// in the active interrupt hold instead of pi-agent-core's live queues.
+		this._ensureActiveInterruptQueueHold();
+		const delivery = this._interruptDeliveryQueue.then(async () => {
+			try {
+				await this._sendInterruptCustomMessageNow(message);
+			} finally {
+				this._pendingInterruptDeliveries -= 1;
+				if (this._pendingInterruptDeliveries === 0) {
+					this._restoreAndClearActiveInterruptQueueHold();
 				}
 			}
-		}
+		});
+		this._interruptDeliveryQueue = delivery.catch(() => undefined);
+		return delivery;
 	}
 
-	private _holdQueuedAgentMessagesForInterrupt(): HeldInterruptQueues {
-		const heldQueues: HeldInterruptQueues = {
-			queues: this._drainQueuedAgentMessages(),
-			cleared: false,
+	private async _sendInterruptCustomMessageNow<T>(message: CustomMessage<T>): Promise<void> {
+		this.abortRetry();
+		this._ensureActiveInterruptQueueHold();
+		if (this.isStreaming) {
+			this.agent.abort();
+			await this.agent.waitForIdle();
+		}
+		await this.agent.prompt(message);
+	}
+
+	private _ensureActiveInterruptQueueHold(): InterruptQueueHold {
+		if (this._activeInterruptQueueHold !== undefined) {
+			return this._activeInterruptQueueHold;
+		}
+		const drained = this._drainQueuedAgentMessages();
+		this._activeInterruptQueueHold = {
+			steering: [...drained.steering],
+			followUp: [...drained.followUp],
 			restored: false,
 		};
-		this._interruptHeldQueues.add(heldQueues);
-		return heldQueues;
+		return this._activeInterruptQueueHold;
 	}
 
-	private _restoreHeldInterruptQueuesIfStillValid(heldQueues: HeldInterruptQueues): void {
-		if (heldQueues.cleared || heldQueues.restored) {
+	private _restoreAndClearActiveInterruptQueueHold(): void {
+		const hold = this._activeInterruptQueueHold;
+		if (hold === undefined || hold.restored) {
 			return;
 		}
-		this._restoreQueuedAgentMessages(heldQueues.queues);
-		heldQueues.restored = true;
+		const currentCoreQueues = this._drainQueuedAgentMessages();
+		this._restoreQueuedAgentMessages({
+			steering: [...hold.steering, ...currentCoreQueues.steering],
+			followUp: [...hold.followUp, ...currentCoreQueues.followUp],
+		});
+		hold.restored = true;
+		this._activeInterruptQueueHold = undefined;
+	}
+
+	private _queueAgentMessage(message: AgentMessage, delivery: "steer" | "followUp"): void {
+		const hold = this._activeInterruptQueueHold;
+		if (hold !== undefined) {
+			if (delivery === "followUp") {
+				hold.followUp.push(message);
+			} else {
+				hold.steering.push(message);
+			}
+			return;
+		}
+		if (delivery === "followUp") {
+			this.agent.followUp(message);
+		} else {
+			this.agent.steer(message);
+		}
 	}
 
 	private _drainQueuedAgentMessages(): DrainedAgentQueues {
@@ -1546,8 +1590,9 @@ export class AgentSession {
 		this._steeringMessages = [];
 		this._followUpMessages = [];
 		this.agent.clearAllQueues();
-		for (const heldQueues of this._interruptHeldQueues) {
-			heldQueues.cleared = true;
+		if (this._activeInterruptQueueHold !== undefined) {
+			this._activeInterruptQueueHold.steering.length = 0;
+			this._activeInterruptQueueHold.followUp.length = 0;
 		}
 		this._emitQueueUpdate();
 		return { steering, followUp };
