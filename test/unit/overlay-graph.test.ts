@@ -62,6 +62,20 @@ function makeInputRequest(overrides: Partial<StageInputRequest> = {}): StageInpu
   };
 }
 
+function makeAwaitingInputStage(
+  id: string,
+  parentIds: string[] = [],
+  overrides: Partial<StageSnapshot> = {},
+): StageSnapshot {
+  return {
+    ...makeStage(id, parentIds),
+    status: "awaiting_input",
+    awaitingInputSince: Date.now(),
+    attachable: true,
+    ...overrides,
+  };
+}
+
 function makeRun(stages: StageSnapshot[]): RunSnapshot {
   return {
     id: "run-1",
@@ -135,6 +149,7 @@ function makeStore(snap: StoreSnapshot): Store {
 
 const defaultTheme = deriveGraphTheme({});
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
+const SGR_MOUSE_WHEEL_DOWN = "\x1b[<65;10;10M";
 
 function visibleText(lines: string[]): string {
   return lines.join("\n").replace(ANSI_RE, "");
@@ -987,13 +1002,9 @@ describe("GraphView keyboard navigation", () => {
   it("keeps graph navigation live while a stage-local pendingPrompt is awaiting input", () => {
     const stages = [
       { ...makeStage("done"), status: "completed" as const },
-      {
-        ...makeStage("input", ["done"]),
-        status: "awaiting_input" as const,
-        awaitingInputSince: Date.now(),
-        attachable: true,
+      makeAwaitingInputStage("input", ["done"], {
         pendingPrompt: makePendingPrompt(),
-      },
+      }),
     ];
     const view = makeView(stages);
 
@@ -1006,13 +1017,9 @@ describe("GraphView keyboard navigation", () => {
   it("keeps graph navigation live while a stage-local inputRequest is awaiting input", () => {
     const stages = [
       { ...makeStage("done"), status: "completed" as const },
-      {
-        ...makeStage("question", ["done"]),
-        status: "awaiting_input" as const,
-        awaitingInputSince: Date.now(),
-        attachable: true,
+      makeAwaitingInputStage("question", ["done"], {
         inputRequest: makeInputRequest(),
-      },
+      }),
     ];
     const view = makeView(stages);
 
@@ -1025,13 +1032,9 @@ describe("GraphView keyboard navigation", () => {
   it("keeps graph shell controls live while a stage-local HIL request is active", () => {
     const stages = [
       { ...makeStage("done"), status: "completed" as const },
-      {
-        ...makeStage("question", ["done"]),
-        status: "awaiting_input" as const,
-        awaitingInputSince: Date.now(),
-        attachable: true,
+      makeAwaitingInputStage("question", ["done"], {
         inputRequest: makeInputRequest(),
-      },
+      }),
     ];
     const snap = makeSnap(stages);
     const store = makeStore(snap);
@@ -1063,12 +1066,9 @@ describe("GraphView keyboard navigation", () => {
 
   it("keeps mouse wheel graph scrolling live while a stage-local HIL request is active", () => {
     const stages = [
-      {
-        ...makeStage("stage-0"),
-        status: "awaiting_input" as const,
-        awaitingInputSince: Date.now(),
+      makeAwaitingInputStage("stage-0", [], {
         inputRequest: makeInputRequest(),
-      },
+      }),
       makeStage("stage-1", ["stage-0"]),
       makeStage("stage-2", ["stage-1"]),
       makeStage("stage-3", ["stage-2"]),
@@ -1086,7 +1086,7 @@ describe("GraphView keyboard navigation", () => {
     });
 
     view.render(96);
-    view.handleInput("\x1b[<65;10;10M");
+    view.handleInput(SGR_MOUSE_WHEEL_DOWN);
     view.render(96);
     assert.ok(view._graphScrollOffset > 0);
     view.dispose();
@@ -1119,7 +1119,7 @@ describe("GraphView keyboard navigation", () => {
     });
 
     view.render(96);
-    view.handleInput("\x1b[<65;10;10M");
+    view.handleInput(SGR_MOUSE_WHEEL_DOWN);
     view.render(96);
     assert.ok(view._graphScrollOffset > 0);
 
@@ -1210,7 +1210,7 @@ describe("GraphView keyboard navigation", () => {
 
     view.render(96);
     assert.equal(view._focusedIndex, 0);
-    view.handleInput("\x1b[<65;10;10M"); // SGR mouse wheel down
+    view.handleInput(SGR_MOUSE_WHEEL_DOWN);
     view.render(96);
     assert.equal(view._focusedIndex, 0);
     assert.ok(view._graphScrollOffset > 0);

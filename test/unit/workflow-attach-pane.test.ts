@@ -30,7 +30,17 @@ import type {
 } from "../../packages/workflows/src/shared/store-types.js";
 import type { AgentSession } from "@bastani/atomic";
 
-function setupRun(store: ReturnType<typeof createStore>, runId: string, stages: Array<{ id: string; name: string; status?: "pending" | "running" | "paused" | "completed" }>) {
+type TestStageSeed = {
+  id: string;
+  name: string;
+  status?: "pending" | "running" | "paused" | "completed";
+};
+
+function setupRun(
+  store: ReturnType<typeof createStore>,
+  runId: string,
+  stages: TestStageSeed[],
+) {
   store.recordRunStart({
     id: runId,
     name: "test-wf",
