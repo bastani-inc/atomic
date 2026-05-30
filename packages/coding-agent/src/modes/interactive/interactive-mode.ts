@@ -95,6 +95,9 @@ import {
   findExactModelReferenceMatch,
   resolveModelScope,
 } from "../../core/model-resolver.ts";
+import {
+  hasSupportedCodexFastModeModel,
+} from "../../core/codex-fast-mode.ts";
 import { configureHttpDispatcher } from "../../core/http-dispatcher.ts";
 import { DefaultPackageManager } from "../../core/package-manager.ts";
 import { BUILT_IN_PROVIDER_DISPLAY_NAMES } from "../../core/provider-display-names.ts";
@@ -152,6 +155,7 @@ import { EarendilAnnouncementComponent } from "./components/earendil-announcemen
 import { ExtensionEditorComponent } from "./components/extension-editor.ts";
 import { ExtensionInputComponent } from "./components/extension-input.ts";
 import { ExtensionSelectorComponent } from "./components/extension-selector.ts";
+import { FastModeSelectorComponent } from "./components/fast-mode-selector.ts";
 import { FooterComponent, UsageMeterComponent } from "./components/footer.ts";
 import {
   formatKeyText,
@@ -558,15 +562,27 @@ export class InteractiveMode {
       }));
   }
 
+  private getCodexFastModeCandidateModels(): Model<Api>[] {
+    return this.session.scopedModels.length > 0
+      ? this.session.scopedModels.map((scoped) => scoped.model)
+      : this.session.modelRegistry.getAvailable();
+  }
+
+  private hasCodexFastModeSupportedModels(): boolean {
+    return hasSupportedCodexFastModeModel(
+      this.getCodexFastModeCandidateModels(),
+    );
+  }
+
   private createBaseAutocompleteProvider(): AutocompleteProvider {
     // Define commands for autocomplete
-    const slashCommands: SlashCommand[] = BUILTIN_SLASH_COMMANDS.map(
-      (command) => ({
-        name: command.name,
-        description: command.description,
-        getArgumentCompletions: command.getArgumentCompletions,
-      }),
-    );
+    const slashCommands: SlashCommand[] = BUILTIN_SLASH_COMMANDS.filter(
+      (command) => command.name !== "fast" || this.hasCodexFastModeSupportedModels(),
+    ).map((command) => ({
+      name: command.name,
+      description: command.description,
+      getArgumentCompletions: command.getArgumentCompletions,
+    }));
 
     const modelCommand = slashCommands.find(
       (command) => command.name === "model",
@@ -2999,6 +3015,11 @@ export class InteractiveMode {
         this.editor.setText("");
         return;
       }
+      if (text === "/fast") {
+        this.editor.setText("");
+        this.showFastModeSelector();
+        return;
+      }
       if (text === "/scoped-models") {
         this.editor.setText("");
         await this.showModelsSelector();
@@ -4432,6 +4453,36 @@ export class InteractiveMode {
     this.ui.requestRender();
   }
 
+  private showFastModeSelector(): void {
+    if (!this.hasCodexFastModeSupportedModels()) {
+      this.showWarning(
+        "Codex fast mode requires an available openai/* or openai-codex/* model.",
+      );
+      return;
+    }
+
+    this.showSelector((done) => {
+      const selector = new FastModeSelectorComponent(
+        this.settingsManager.getCodexFastModeSettings(),
+        {
+          onChange: (settings) => {
+            this.settingsManager.setCodexFastModeSettings(settings);
+            void this.settingsManager.flush();
+            this.showStatus(
+              `Codex fast mode: chat ${settings.chat ? "enabled" : "disabled"}, workflow ${settings.workflow ? "enabled" : "disabled"}`,
+            );
+          },
+          onCancel: async () => {
+            await this.settingsManager.flush();
+            done();
+            this.ui.requestRender();
+          },
+        },
+      );
+      return { component: selector, focus: selector };
+    });
+  }
+
   private showSettingsSelector(): void {
     this.showSelector((done) => {
       const selector = new SettingsSelectorComponent(
@@ -4781,6 +4832,7 @@ export class InteractiveMode {
         this.session.setScopedModels([]);
       }
       await this.updateAvailableProviderCount();
+      this.setupAutocompleteProvider();
       this.ui.requestRender();
     };
 
@@ -5250,6 +5302,7 @@ export class InteractiveMode {
             this.session.modelRegistry.authStorage.logout(providerOption.id);
             this.session.modelRegistry.refresh();
             await this.updateAvailableProviderCount();
+            this.setupAutocompleteProvider();
             const message =
               providerOption.authType === "oauth"
                 ? `Logged out of ${providerOption.name}`
@@ -5315,6 +5368,7 @@ export class InteractiveMode {
     }
 
     await this.updateAvailableProviderCount();
+    this.setupAutocompleteProvider();
     this.footer.invalidate();
     this.updateEditorBorderColor();
     if (selectedModel) {

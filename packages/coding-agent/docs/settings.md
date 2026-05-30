@@ -34,6 +34,24 @@ Edit directly or use `/settings` for common options. Atomic reads legacy `~/.pi/
 }
 ```
 
+### Codex Fast Mode
+
+Use `/fast` in interactive mode to edit these settings. Atomic applies fast mode only to supported `openai/*` and `openai-codex/*` providers, not `github-copilot/*` or other OpenAI-compatible providers.
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `codexFastMode.chat` | boolean | `false` | Use OpenAI priority service tier for supported normal chat requests |
+| `codexFastMode.workflow` | boolean | `false` | Use OpenAI priority service tier for supported workflow-stage requests |
+
+```json
+{
+  "codexFastMode": {
+    "chat": true,
+    "workflow": false
+  }
+}
+```
+
 ### UI & Display
 
 | Setting | Type | Default | Description |

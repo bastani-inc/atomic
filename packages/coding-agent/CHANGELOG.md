@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `/fast` Codex fast mode toggles for chat and workflow-stage sessions, applying OpenAI priority service tier to supported `openai/*` and `openai-codex/*` models only ([#1134](https://github.com/flora131/atomic/issues/1134)).
+
 ## [0.8.21] - 2026-05-30
 
 ### Changed

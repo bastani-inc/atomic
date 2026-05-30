@@ -65,6 +65,11 @@ export interface WarningSettings {
 	anthropicExtraUsage?: boolean; // default: true
 }
 
+export interface CodexFastModeSettings {
+	chat?: boolean; // default: false
+	workflow?: boolean; // default: false
+}
+
 export type TransportSetting = Transport;
 
 /**
@@ -120,6 +125,7 @@ export interface Settings {
 	showHardwareCursor?: boolean; // Show terminal cursor while still positioning it for IME
 	markdown?: MarkdownSettings;
 	warnings?: WarningSettings;
+	codexFastMode?: CodexFastModeSettings; // OpenAI priority service tier toggles for chat/workflow
 	sessionDir?: string; // Custom session storage directory (same format as --session-dir CLI flag)
 	httpIdleTimeoutMs?: number; // HTTP header/body idle timeout in milliseconds; 0 disables it
 }
@@ -1111,6 +1117,24 @@ export class SettingsManager {
 	setWarnings(warnings: WarningSettings): void {
 		this.globalSettings.warnings = { ...warnings };
 		this.markModified("warnings");
+		this.save();
+	}
+
+	getCodexFastModeSettings(): { chat: boolean; workflow: boolean } {
+		return {
+			chat: this.settings.codexFastMode?.chat ?? false,
+			workflow: this.settings.codexFastMode?.workflow ?? false,
+		};
+	}
+
+	setCodexFastModeSettings(settings: { chat: boolean; workflow: boolean }): void {
+		if (!this.globalSettings.codexFastMode) {
+			this.globalSettings.codexFastMode = {};
+		}
+		this.globalSettings.codexFastMode.chat = settings.chat;
+		this.globalSettings.codexFastMode.workflow = settings.workflow;
+		this.markModified("codexFastMode", "chat");
+		this.markModified("codexFastMode", "workflow");
 		this.save();
 	}
 }

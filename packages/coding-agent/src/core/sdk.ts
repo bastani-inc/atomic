@@ -16,6 +16,11 @@ import { resolvePath } from "../utils/paths.ts";
 import { AgentSession } from "./agent-session.ts";
 import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
 import { AuthStorage } from "./auth-storage.ts";
+import {
+  shouldApplyCodexFastMode,
+  withCodexFastModePayload,
+  withCodexFastModeStreamOptions,
+} from "./codex-fast-mode.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import type {
   ExtensionRunner,
@@ -397,32 +402,50 @@ export async function createAgentSession(
       tools: [],
     },
     convertToLlm: convertToLlmWithBlockImages,
-    streamFn: async (model, context, options) => {
+    streamFn: async (model, context, streamOptions) => {
       const auth = await modelRegistry.getApiKeyAndHeaders(model);
       if (!auth.ok) {
         throw new Error(auth.error);
       }
       const providerRetrySettings = settingsManager.getProviderRetrySettings();
-      const attributionHeaders = getAttributionHeaders(model, settingsManager, options?.sessionId);
-      return streamSimple(model, context, {
-        ...options,
-        apiKey: auth.apiKey,
-        timeoutMs: options?.timeoutMs ?? providerRetrySettings.timeoutMs,
-        maxRetries: options?.maxRetries ?? providerRetrySettings.maxRetries,
-        maxRetryDelayMs:
-          options?.maxRetryDelayMs ?? providerRetrySettings.maxRetryDelayMs,
-        headers:
-          attributionHeaders || auth.headers || options?.headers
-            ? { ...attributionHeaders, ...auth.headers, ...options?.headers }
-            : undefined,
-      });
+      const attributionHeaders = getAttributionHeaders(model, settingsManager, streamOptions?.sessionId);
+      const fastModeEnabled = shouldApplyCodexFastMode(
+        model,
+        settingsManager.getCodexFastModeSettings(),
+        options.orchestrationContext,
+      );
+      return streamSimple(
+        model,
+        context,
+        withCodexFastModeStreamOptions(
+          {
+            ...streamOptions,
+            apiKey: auth.apiKey,
+            timeoutMs: streamOptions?.timeoutMs ?? providerRetrySettings.timeoutMs,
+            maxRetries: streamOptions?.maxRetries ?? providerRetrySettings.maxRetries,
+            maxRetryDelayMs:
+              streamOptions?.maxRetryDelayMs ?? providerRetrySettings.maxRetryDelayMs,
+            headers:
+              attributionHeaders || auth.headers || streamOptions?.headers
+                ? { ...attributionHeaders, ...auth.headers, ...streamOptions?.headers }
+                : undefined,
+          },
+          fastModeEnabled,
+        ),
+      );
     },
-    onPayload: async (payload, _model) => {
+    onPayload: async (payload, model) => {
+      const fastModeEnabled = shouldApplyCodexFastMode(
+        model,
+        settingsManager.getCodexFastModeSettings(),
+        options.orchestrationContext,
+      );
+      const guardedPayload = withCodexFastModePayload(payload, fastModeEnabled);
       const runner = extensionRunnerRef.current;
       if (!runner?.hasHandlers("before_provider_request")) {
-        return payload;
+        return guardedPayload;
       }
-      return runner.emitBeforeProviderRequest(payload);
+      return runner.emitBeforeProviderRequest(guardedPayload);
     },
     onResponse: async (response, _model) => {
       const runner = extensionRunnerRef.current;
