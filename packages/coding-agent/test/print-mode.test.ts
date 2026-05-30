@@ -142,6 +142,14 @@ function emitWorkflowCommandError(bindings: ExtensionBindings | undefined, error
 	});
 }
 
+function emitLifecycleExtensionError(bindings: ExtensionBindings | undefined, error: string): void {
+	bindings?.onError?.({
+		extensionPath: "test-extension",
+		event: "session_start",
+		error,
+	});
+}
+
 describe("runPrintMode", () => {
 	it("emits session_shutdown in text mode", async () => {
 		const runtimeHost = createRuntimeHost(createAssistantMessage({ text: "done" }));
@@ -227,6 +235,30 @@ describe("runPrintMode", () => {
 		expect(errorSpy).toHaveBeenCalledWith(`Extension error (command:workflow): ${MISSING_INPUT_ERROR}`);
 		expect(stdoutChunks.join("")).not.toContain("done");
 		expect(session.extensionRunner.emit).toHaveBeenCalledTimes(1);
+		expect(session.extensionRunner.emit).toHaveBeenCalledWith({ type: "session_shutdown", reason: "quit" });
+	});
+
+	it("keeps zero exit code and final output for non-command extension errors", async () => {
+		const runtimeHost = createRuntimeHost(createAssistantMessage({ text: "done" }));
+		const { session } = runtimeHost;
+		let bindings: ExtensionBindings | undefined;
+		session.bindExtensions.mockImplementation(async (nextBindings: ExtensionBindings) => {
+			bindings = nextBindings;
+		});
+		session.prompt.mockImplementation(async () => {
+			emitLifecycleExtensionError(bindings, "transient extension failure");
+		});
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const stdoutChunks = captureStdout();
+
+		const exitCode = await runPrintModeWithFakeHost(runtimeHost, {
+			mode: "text",
+			initialMessage: "hello",
+		});
+
+		expect(exitCode).toBe(0);
+		expect(errorSpy).toHaveBeenCalledWith("Extension error (test-extension): transient extension failure");
+		expect(stdoutChunks.join("")).toBe("done\n");
 		expect(session.extensionRunner.emit).toHaveBeenCalledWith({ type: "session_shutdown", reason: "quit" });
 	});
 

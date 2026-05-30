@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Scoped print-mode non-zero extension-error exits to command-originated failures so non-fatal lifecycle extension errors do not fail otherwise successful headless output ([#1123](https://github.com/flora131/atomic/issues/1123)).
+
 ## [0.8.21] - 2026-05-30
 
 ### Changed

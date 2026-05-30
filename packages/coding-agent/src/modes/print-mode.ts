@@ -100,6 +100,9 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 				await session.prompt(text, promptOptions);
 			}
 		} finally {
+			// Final-output suppression is scoped to the most recent prompt so a
+			// later successful prompt in the same invocation can still print its
+			// result. The non-zero exit code remains sticky across prompts.
 			suppressFinalOutput = activePromptHadCommandError;
 		}
 	};
@@ -131,8 +134,9 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 				},
 			},
 			onError: (err) => {
-				exitCode = 1;
-				activePromptHadCommandError = activePromptHadCommandError || isCommandExtensionError(err);
+				const isCommandError = isCommandExtensionError(err);
+				if (isCommandError) exitCode = 1;
+				activePromptHadCommandError = activePromptHadCommandError || isCommandError;
 				console.error(`Extension error (${err.extensionPath}): ${err.error}`);
 			},
 		});

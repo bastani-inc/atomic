@@ -13,7 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - Suppressed workflow lifecycle steer notices while awaited non-interactive workflow dispatch is already waiting for terminal completion, and made workflow chat-surface custom-message content printable by default for headless list/status/detail/dispatch/killed output ([#1123](https://github.com/flora131/atomic/issues/1123)).
-- Re-enabled deterministic non-interactive workflow execution: headless sessions keep the `workflow` tool, `/workflow <name> key=value` skips interactive pickers, named workflow dispatch waits for the terminal run snapshot, declared human-in-the-loop workflows are rejected, top-level `ctx.ui.*` is unavailable, and non-interactive stage sessions exclude `ask_user_question` ([#1123](https://github.com/flora131/atomic/issues/1123)).
+- Re-enabled deterministic non-interactive workflow execution: headless sessions keep the `workflow` tool, `/workflow <name> key=value` skips interactive pickers, named workflow dispatch waits for the terminal run snapshot, declared human-in-the-loop workflows are rejected, top-level `ctx.ui.*` is unavailable, and non-interactive stage sessions exclude `ask_user_question` without binding broker-backed extension UI ([#1123](https://github.com/flora131/atomic/issues/1123)).
 
 ## [0.8.21] - 2026-05-30
 

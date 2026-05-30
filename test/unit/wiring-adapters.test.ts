@@ -221,10 +221,17 @@ describe("buildRuntimeAdapters — SDK AgentSession adapter", () => {
     assert.deepEqual(calls[0]?.excludedTools, ["workflow"]);
   });
 
-  test("non-interactive stage sessions exclude ask_user_question", async () => {
+  test("non-interactive stage sessions exclude ask_user_question and do not bind UI", async () => {
     const calls: Array<CreateAgentSessionOptions | undefined> = [];
+    let bindCalls = 0;
+    const session = {
+      ...fakeSession(),
+      async bindExtensions(): Promise<void> {
+        bindCalls += 1;
+      },
+    } satisfies StageSessionRuntime & { bindExtensions(): Promise<void> };
     const adapters = buildRuntimeAdapters({}, {
-      createAgentSession: async (options) => { calls.push(options); return { session: fakeSession() }; },
+      createAgentSession: async (options) => { calls.push(options); return { session }; },
     });
 
     await adapters.agentSession!.create(
@@ -233,6 +240,7 @@ describe("buildRuntimeAdapters — SDK AgentSession adapter", () => {
     );
 
     assert.deepEqual(calls[0]?.excludedTools, ["workflow", "ask_user_question"]);
+    assert.equal(bindCalls, 0);
   });
 
   test("agentSession.create forwards stage options unchanged (pi SDK leaves resource isolation to SettingsManager)", async () => {

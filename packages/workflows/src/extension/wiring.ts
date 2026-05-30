@@ -270,6 +270,11 @@ function withWorkflowStageSessionOptions(
   };
 }
 
+function shouldBindStageUiContext(pi: RuntimeWiringSurface, meta: StageExecutionMeta | undefined): boolean {
+  if (meta?.executionMode === "non_interactive") return false;
+  return pi.ui !== undefined || meta !== undefined;
+}
+
 function makeStageExtensionUiContext(
   ui: PiUISurface,
   meta: StageExecutionMeta | undefined,
@@ -364,7 +369,7 @@ export function buildRuntimeAdapters(
         );
         const result = await createSession(sessionOptions);
         const bindable = result.session as BindableStageSession;
-        if ((pi.ui !== undefined || meta !== undefined) && typeof bindable.bindExtensions === "function") {
+        if (shouldBindStageUiContext(pi, meta) && typeof bindable.bindExtensions === "function") {
           await bindable.bindExtensions({
             uiContext: makeStageExtensionUiContext(pi.ui ?? {}, meta, broker),
           });
