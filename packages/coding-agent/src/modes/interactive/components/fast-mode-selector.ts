@@ -14,6 +14,7 @@ export interface FastModeSelectorCallbacks {
 type FastModeRow = keyof FastModeSelectorConfig;
 
 const ROWS: readonly FastModeRow[] = ["chat", "workflow"];
+const DESCRIPTION = "Uses OpenAI priority service tier for supported openai/* and openai-codex/* models.";
 
 export class FastModeSelectorComponent {
 	private selectedRowIndex = 0;
@@ -29,9 +30,7 @@ export class FastModeSelectorComponent {
 
 	render(width: number): string[] {
 		const lines: string[] = [theme.bold(theme.fg("accent", "Codex fast mode")), ""];
-		const description =
-			"Uses OpenAI priority service tier for supported openai/* and openai-codex/* models.";
-		for (const line of wrapTextWithAnsi(description, Math.max(20, width))) {
+		for (const line of wrapTextWithAnsi(DESCRIPTION, Math.max(20, width))) {
 			lines.push(theme.fg("muted", line));
 		}
 		lines.push("");

@@ -393,6 +393,12 @@ export async function createAgentSession(
   };
 
   const extensionRunnerRef: { current?: ExtensionRunner } = {};
+  const isCodexFastModeEnabled = (requestModel: Model<Api>): boolean =>
+    shouldApplyCodexFastMode(
+      requestModel,
+      settingsManager.getCodexFastModeSettings(),
+      options.orchestrationContext,
+    );
 
   agent = new Agent({
     initialState: {
@@ -409,11 +415,7 @@ export async function createAgentSession(
       }
       const providerRetrySettings = settingsManager.getProviderRetrySettings();
       const attributionHeaders = getAttributionHeaders(model, settingsManager, streamOptions?.sessionId);
-      const fastModeEnabled = shouldApplyCodexFastMode(
-        model,
-        settingsManager.getCodexFastModeSettings(),
-        options.orchestrationContext,
-      );
+      const fastModeEnabled = isCodexFastModeEnabled(model);
       return streamSimple(
         model,
         context,
@@ -435,11 +437,7 @@ export async function createAgentSession(
       );
     },
     onPayload: async (payload, model) => {
-      const fastModeEnabled = shouldApplyCodexFastMode(
-        model,
-        settingsManager.getCodexFastModeSettings(),
-        options.orchestrationContext,
-      );
+      const fastModeEnabled = isCodexFastModeEnabled(model);
       const guardedPayload = withCodexFastModePayload(payload, fastModeEnabled);
       const runner = extensionRunnerRef.current;
       if (!runner?.hasHandlers("before_provider_request")) {
