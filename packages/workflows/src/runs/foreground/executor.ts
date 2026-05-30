@@ -1741,17 +1741,42 @@ function cloneWorkflowChildValue<T>(value: T): T {
   return structuredClone(value);
 }
 
+function workflowChildSerializationMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 function workflowChildReplaySnapshot(
   alias: string,
   childResult: WorkflowChildResult,
 ): WorkflowChildReplaySnapshot {
+  const outputs: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(childResult.outputs)) {
+    try {
+      outputs[key] = cloneWorkflowChildValue(value);
+    } catch (err) {
+      throw new Error(
+        `pi-workflows: workflow import "${alias}" (${childResult.workflow}) selected output "${key}" is not serializable for continuation replay: ${workflowChildSerializationMessage(err)}`,
+        { cause: err },
+      );
+    }
+  }
+
+  let rawOutput: Record<string, unknown> | undefined;
+  if (childResult.rawOutput !== undefined) {
+    try {
+      rawOutput = cloneWorkflowChildValue(childResult.rawOutput);
+    } catch {
+      rawOutput = undefined;
+    }
+  }
+
   return {
     alias,
     workflow: childResult.workflow,
     runId: childResult.runId,
     status: childResult.status,
-    outputs: cloneWorkflowChildValue(childResult.outputs),
-    ...(childResult.rawOutput !== undefined ? { rawOutput: cloneWorkflowChildValue(childResult.rawOutput) } : {}),
+    outputs,
+    ...(rawOutput !== undefined ? { rawOutput } : {}),
   };
 }
 

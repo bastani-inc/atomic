@@ -316,14 +316,31 @@ function workflowChildMetadata(payload: Record<string, unknown>): Pick<StageSnap
   ) {
     return {};
   }
+
+  let clonedOutputs: Record<string, unknown>;
+  try {
+    clonedOutputs = structuredClone(outputs);
+  } catch {
+    return {};
+  }
+
+  let clonedRawOutput: Record<string, unknown> | undefined;
+  if (rawOutput !== undefined) {
+    try {
+      clonedRawOutput = structuredClone(rawOutput);
+    } catch {
+      clonedRawOutput = undefined;
+    }
+  }
+
   return {
     workflowChild: {
       alias,
       workflow,
       runId: childRunId,
       status,
-      outputs: structuredClone(outputs),
-      ...(rawOutput !== undefined ? { rawOutput: structuredClone(rawOutput) } : {}),
+      outputs: clonedOutputs,
+      ...(clonedRawOutput !== undefined ? { rawOutput: clonedRawOutput } : {}),
     },
   };
 }

@@ -264,6 +264,74 @@ describe("executor.run", () => {
     assert.equal(st.runs().length, 2);
   });
 
+  test("ctx.workflow completes when unselected child raw output is not cloneable", async () => {
+    const child = defineWorkflow("uncloneable-raw-child")
+      .output("summary", { type: "text", required: true })
+      .run(async (ctx) => {
+        await ctx.stage("child").prompt("child");
+        return { summary: "ok", helper: () => "nope" };
+      })
+      .compile();
+    const parent = defineWorkflow("uncloneable-raw-parent")
+      .import("child", { workflow: "uncloneable-raw-child" })
+      .run(async (ctx) => {
+        const childResult = await ctx.workflow("child", { outputs: ["summary"] });
+        const final = await ctx.stage("final").prompt(`final:${String(childResult.outputs.summary)}`);
+        return { final };
+      })
+      .compile();
+
+    const wfResult = await run(parent, {}, {
+      registry: createRegistry([parent as WorkflowDefinition, child as WorkflowDefinition]),
+      store: createStore(),
+      adapters: { prompt: { prompt: async () => "done" } },
+    });
+
+    assert.equal(wfResult.status, "completed");
+    assert.equal(wfResult.result?.["final"], "done");
+    const boundary = wfResult.stages.find((stage) => stage.name === "import:child")!;
+    assert.equal(boundary.status, "completed");
+    assert.deepEqual(boundary.workflowChild?.outputs, { summary: "ok" });
+    assert.equal(boundary.workflowChild?.rawOutput, undefined);
+  });
+
+  test("ctx.workflow reports an import-specific serialization error for non-cloneable selected output", async () => {
+    const seenPrompts: string[] = [];
+    const child = defineWorkflow("uncloneable-selected-child")
+      .run(async (ctx) => {
+        await ctx.stage("child").prompt("child");
+        return { bad: () => "nope" };
+      })
+      .compile();
+    const parent = defineWorkflow("uncloneable-selected-parent")
+      .import("child", { workflow: "uncloneable-selected-child" })
+      .run(async (ctx) => {
+        await ctx.workflow("child", { outputs: ["bad"] });
+        await ctx.stage("downstream").prompt("should-not-run");
+        return {};
+      })
+      .compile();
+
+    const wfResult = await run(parent, {}, {
+      registry: createRegistry([parent as WorkflowDefinition, child as WorkflowDefinition]),
+      store: createStore(),
+      adapters: {
+        prompt: {
+          prompt: async (text) => {
+            seenPrompts.push(text);
+            return "unexpected";
+          },
+        },
+      },
+    });
+
+    assert.equal(wfResult.status, "failed");
+    assert.match(wfResult.error ?? "", /workflow import "child"/);
+    assert.match(wfResult.error ?? "", /selected output "bad"/);
+    assert.match(wfResult.error ?? "", /serializable/);
+    assert.deepEqual(seenPrompts, ["child"]);
+  });
+
   test("ctx.workflow applies child input defaults before required validation", async () => {
     const seenPrompts: string[] = [];
     const st = createStore();
@@ -913,6 +981,68 @@ describe("executor.run", () => {
     assert.equal(boundary.replayedFromStageId, sourceBoundary.id);
     assert.equal(boundary.workflowChild?.outputs["value"], "child-ok");
     assert.deepEqual(after.parentIds, [boundary.id]);
+    assert.equal(continued.result?.["after"], "after-ok");
+  });
+
+  test("continuation replays workflow boundary when raw output was omitted as non-serializable", async () => {
+    const st = createStore();
+    const child = defineWorkflow("resume-uncloneable-raw-child")
+      .output("value", { type: "text", required: true })
+      .run(async (ctx) => {
+        await ctx.stage("child").prompt("child");
+        return { value: "child-ok", helper: () => "nope" };
+      })
+      .compile();
+    const parent = defineWorkflow("resume-uncloneable-raw-parent")
+      .import("child", { workflow: "resume-uncloneable-raw-child" })
+      .run(async (ctx) => {
+        const childResult = await ctx.workflow("child", { outputs: ["value"] });
+        const after = await ctx.stage("after").prompt(`after:${String(childResult.outputs["value"])}`);
+        return { after };
+      })
+      .compile();
+    const registry = createRegistry([parent, child]);
+
+    const firstRun = await run(parent, {}, {
+      store: st,
+      registry,
+      adapters: {
+        prompt: {
+          prompt: async (text) => {
+            if (text.startsWith("after:")) throw new Error("rate limit exceeded");
+            return "unexpected";
+          },
+        },
+      },
+    });
+
+    assert.equal(firstRun.status, "failed");
+    const source = st.runs().find((candidate) => candidate.id === firstRun.runId)!;
+    const sourceBoundary = source.stages.find((stage) => stage.name === "import:child")!;
+    assert.deepEqual(sourceBoundary.workflowChild?.outputs, { value: "child-ok" });
+    assert.equal(sourceBoundary.workflowChild?.rawOutput, undefined);
+
+    const continuationCalls: string[] = [];
+    const continued = await run(parent, {}, {
+      store: st,
+      registry,
+      continuation: { source, resumeFromStageId: source.failedStageId! },
+      adapters: {
+        prompt: {
+          prompt: async (text) => {
+            continuationCalls.push(text);
+            return "after-ok";
+          },
+        },
+      },
+    });
+
+    assert.equal(continued.status, "completed");
+    assert.deepEqual(continuationCalls, ["after:child-ok"]);
+    const boundary = continued.stages.find((stage) => stage.name === "import:child")!;
+    assert.equal(boundary.replayed, true);
+    assert.deepEqual(boundary.workflowChild?.outputs, { value: "child-ok" });
+    assert.equal(boundary.workflowChild?.rawOutput, undefined);
     assert.equal(continued.result?.["after"], "after-ok");
   });
 
