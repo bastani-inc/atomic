@@ -120,6 +120,43 @@ export default defineWorkflow("review-and-merge")
   .compile();
 ```
 
+### Example 4 — Compose workflows with imports
+
+Use `.import(alias, source)` to declare a child workflow, then execute it with `ctx.workflow(alias)`. The child runs as its own nested workflow run behind a parent boundary stage named `import:<alias>` by default. Inputs are validated against the child workflow before it starts, and selected outputs can be renamed for downstream parent stages.
+
+```typescript
+import { defineWorkflow } from "@bastani/workflows";
+
+export const sharedResearch = defineWorkflow("shared-research")
+  .input("topic", { type: "text", required: true })
+  .output("summary", { type: "text", required: true })
+  .run(async (ctx) => {
+    const report = await ctx.task("research", {
+      prompt: `Research: ${String(ctx.inputs.topic)}`,
+    });
+    return { summary: report.text };
+  })
+  .compile();
+
+export default defineWorkflow("research-and-synthesize")
+  .input("topic", { type: "text", required: true })
+  .import("research", { workflow: "shared-research" })
+  .run(async (ctx) => {
+    const child = await ctx.workflow("research", {
+      inputs: { topic: ctx.inputs.topic },
+      outputs: { summary: "research_summary" },
+    });
+
+    const final = await ctx.task("synthesize", {
+      prompt: `Synthesize this research:\n\n${String(child.outputs.research_summary)}`,
+    });
+    return { final: final.text };
+  })
+  .compile();
+```
+
+Imports can reference a registered workflow ID (`{ workflow: "shared-research" }`) or a local workflow module (`{ path: "./shared-research.ts" }`, optionally `{ path: "./shared.ts", export: "sharedResearch" }`). Local relative paths resolve from the importing workflow file when discovery knows its file path, otherwise from the workflow invocation cwd. Discovery reports unresolved, circular, or invalid imports before runs start.
+
 ### Reusable Git worktrees
 
 Use `gitWorktreeDir` when a workflow should run in a reusable Git worktree instead of the invoking checkout. The executor creates the worktree if it is missing, reuses it when it already exists as a same-repository worktree root, defaults workflow `ctx.cwd` to the matching path inside that worktree for `worktreeFromInputs`, and defaults stage/task `cwd` to that worktree path.

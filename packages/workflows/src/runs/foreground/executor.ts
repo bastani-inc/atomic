@@ -34,6 +34,10 @@ import type {
   WorkflowPersistencePort,
   WorkflowRuntimeConfig,
   WorkflowModelCatalogPort,
+  WorkflowRunChildOptions,
+  WorkflowChildResult,
+  WorkflowOutputSchema,
+  WorkflowOutputType,
 } from "../../shared/types.js";
 import type { InternalStageContext, StageAdapters } from "./stage-runner.js";
 import type {
@@ -45,9 +49,12 @@ import type {
   WorkflowFailureKind,
   PendingPrompt,
   PromptKind,
+  WorkflowChildReplaySnapshot,
 } from "../../shared/store-types.js";
 import type { StageControlHandle, StageControlRegistry, AgentSessionEventListener } from "./stage-control-registry.js";
 import type { Store } from "../../shared/store.js";
+import { createRegistry } from "../../workflows/registry.js";
+import type { WorkflowRegistry } from "../../workflows/registry.js";
 import type { CancellationRegistry } from "../background/cancellation-registry.js";
 import { createStageContext } from "./stage-runner.js";
 import { GraphFrontierTracker } from "../shared/graph-inference.js";
@@ -72,9 +79,11 @@ import {
   appendRunEnd,
 } from "../../shared/persistence-session-entries.js";
 import { validateWorkflowModels } from "../shared/model-fallback.js";
+import { validateInputs, type ValidationError } from "../shared/validate-inputs.js";
 import type { WorkflowFailure } from "../../shared/workflow-failures.js";
 import { classifyWorkflowFailure } from "../../shared/workflow-failures.js";
 import { selectPromptCallsiteFrame } from "../shared/prompt-callsite.js";
+import type { WorkflowSourceReference } from "../../workflows/import-resolver.js";
 
 export interface ResolvedInputs extends Record<string, unknown> {}
 
@@ -132,6 +141,10 @@ export interface RunOpts {
   config?: WorkflowRuntimeConfig;
   /** Optional model catalog used for fallback validation/resolution. */
   models?: WorkflowModelCatalogPort;
+  /** Registry used to resolve declared workflow imports. */
+  registry?: WorkflowRegistry;
+  /** Discovery source metadata used to resolve relative local path imports. */
+  workflowSources?: readonly WorkflowSourceReference[];
   /**
    * Current nesting depth of this workflow run. Starts at 0 for top-level runs.
    * Callers that spawn nested runs must increment this by 1 before passing to
@@ -1088,7 +1101,7 @@ function workflowDetailsFromRun(
   };
 }
 
-const EMPTY_WORKFLOW_GRAPH_ERROR_MESSAGE = "Workflow run completed without creating any workflow stages. Create at least one stage with ctx.stage(), ctx.task(), ctx.chain(), or ctx.parallel().";
+const EMPTY_WORKFLOW_GRAPH_ERROR_MESSAGE = "Workflow run completed without creating any workflow stages. Create at least one stage with ctx.stage(), ctx.task(), ctx.chain(), ctx.parallel(), or ctx.workflow().";
 
 function assertWorkflowCreatedStage(runSnapshot: RunSnapshot): void {
   if (runSnapshot.stages.length > 0) return;
@@ -1419,7 +1432,7 @@ interface ContinuationReplayInput {
   readonly replayKey: string;
   readonly parentIds: readonly string[];
   readonly stageId: string;
-  readonly kind: "stage" | "prompt";
+  readonly kind: "stage" | "prompt" | "workflow";
 }
 
 interface ContinuationReplayIndex {
@@ -1618,6 +1631,133 @@ function nextEventLoopTurn(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+function formatValidationErrors(errors: readonly ValidationError[]): string {
+  return errors.map((error) => `  - ${error.key}: ${error.reason}`).join("\n");
+}
+
+function workflowOutputTypeMatches(type: WorkflowOutputType | undefined, value: unknown): boolean {
+  switch (type) {
+    case undefined:
+    case "unknown":
+      return true;
+    case "text":
+    case "string":
+      return typeof value === "string";
+    case "number":
+      return typeof value === "number" && !Number.isNaN(value);
+    case "boolean":
+      return typeof value === "boolean";
+    case "select":
+      return typeof value === "string";
+    case "object":
+      return value !== null && typeof value === "object" && !Array.isArray(value);
+    case "array":
+      return Array.isArray(value);
+  }
+}
+
+function workflowOutputTypeName(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  if (typeof value === "number" && Number.isNaN(value)) return "NaN";
+  return typeof value;
+}
+
+interface WorkflowOutputMapping {
+  readonly childKey: string;
+  readonly parentKey: string;
+}
+
+function workflowOutputMappings(
+  sourceOutput: Record<string, unknown>,
+  requested: WorkflowRunChildOptions["outputs"],
+): WorkflowOutputMapping[] {
+  if (Array.isArray(requested)) {
+    return requested.map((key) => ({ childKey: key, parentKey: key }));
+  }
+
+  if (requested !== undefined) {
+    return Object.entries(requested).map(([childKey, parentKey]) => ({ childKey, parentKey }));
+  }
+
+  return Object.keys(sourceOutput).map((key) => ({ childKey: key, parentKey: key }));
+}
+
+function requiredImplicitWorkflowOutputMappings(
+  sourceOutput: Record<string, unknown>,
+  declarations: Readonly<Record<string, WorkflowOutputSchema>> | undefined,
+): WorkflowOutputMapping[] {
+  if (declarations === undefined) return [];
+
+  const selectedKeys = new Set(Object.keys(sourceOutput));
+  return Object.entries(declarations)
+    .filter(([key, schema]) => schema.required === true && !selectedKeys.has(key))
+    .map(([key]) => ({ childKey: key, parentKey: key }));
+}
+
+function selectWorkflowOutputs(
+  parent: WorkflowDefinition,
+  alias: string,
+  child: WorkflowDefinition,
+  rawOutput: Record<string, unknown> | undefined,
+  requested: WorkflowRunChildOptions["outputs"],
+): Record<string, unknown> {
+  const sourceOutput = rawOutput ?? {};
+  const declarations = child.outputs;
+  const hasExplicitOutputSelection = requested !== undefined;
+  const selected: Record<string, unknown> = {};
+
+  const requestedMappings = workflowOutputMappings(sourceOutput, requested);
+  const mappings = hasExplicitOutputSelection
+    ? requestedMappings
+    : [
+        ...requestedMappings,
+        ...requiredImplicitWorkflowOutputMappings(sourceOutput, declarations),
+      ];
+
+  for (const { childKey, parentKey } of mappings) {
+    const schema: WorkflowOutputSchema | undefined = declarations?.[childKey];
+    if (hasExplicitOutputSelection && declarations !== undefined && schema === undefined) {
+      throw new Error(
+        `pi-workflows: workflow "${parent.name}" import "${alias}" requested undeclared output "${childKey}" from "${child.name}"`,
+      );
+    }
+    if (!(childKey in sourceOutput)) {
+      throw new Error(
+        `pi-workflows: workflow "${parent.name}" import "${alias}" missing output "${childKey}" from "${child.name}"`,
+      );
+    }
+    const value = sourceOutput[childKey];
+    if (!workflowOutputTypeMatches(schema?.type, value)) {
+      throw new Error(
+        `pi-workflows: workflow "${parent.name}" import "${alias}" output "${childKey}" expected ${schema?.type ?? "unknown"}, got ${workflowOutputTypeName(value)}`,
+      );
+    }
+    selected[parentKey] = value;
+  }
+
+  return selected;
+}
+
+function completedChildStatus(status: RunStatus): WorkflowChildResult["status"] {
+  if (status === "completed" || status === "failed" || status === "killed") return status;
+  return "failed";
+}
+
+function workflowChildReplaySnapshot(
+  alias: string,
+  childResult: WorkflowChildResult,
+): WorkflowChildReplaySnapshot {
+  return {
+    alias,
+    workflow: childResult.workflow,
+    runId: childResult.runId,
+    status: childResult.status,
+    outputs: { ...childResult.outputs },
+    ...(childResult.rawOutput !== undefined ? { rawOutput: { ...childResult.rawOutput } } : {}),
+  };
+}
+
 export async function run<TInputs extends Record<string, unknown>>(
   def: WorkflowDefinition<TInputs>,
   inputs: Record<string, unknown>,
@@ -1640,6 +1780,35 @@ export async function run<TInputs extends Record<string, unknown>>(
       error: `pi-workflows: maxDepth exceeded (max ${max})`,
       stages: [],
     };
+  }
+
+  const erasedDef = def as WorkflowDefinition;
+  const importRegistry = opts.registry ?? createRegistry([erasedDef]);
+  const importResolverOptions = {
+    registry: importRegistry,
+    cwd: opts.cwd ?? process.cwd(),
+    ...(opts.workflowSources !== undefined ? { sources: opts.workflowSources } : {}),
+  };
+  let importResolver: typeof import("../../workflows/import-resolver.js") | undefined;
+  const loadImportResolver = async (): Promise<typeof import("../../workflows/import-resolver.js")> => {
+    importResolver ??= await import("../../workflows/import-resolver.js");
+    return importResolver;
+  };
+
+  if (Object.keys(erasedDef.imports ?? {}).length > 0) {
+    const resolver = await loadImportResolver();
+    const importDiagnostics = resolver.validateWorkflowImportGraph({
+      ...importResolverOptions,
+      roots: [erasedDef],
+    });
+    if (importDiagnostics.length > 0) {
+      return {
+        runId: opts.runId ?? crypto.randomUUID(),
+        status: "failed",
+        error: `pi-workflows: invalid workflow imports for "${def.name}":\n${resolver.formatWorkflowImportDiagnostics(importDiagnostics)}`,
+        stages: [],
+      };
+    }
   }
 
   // 1. Resolve + validate inputs
@@ -1861,6 +2030,141 @@ export async function run<TInputs extends Record<string, unknown>>(
     () => rejectReleaseBarriers(ownController.signal.reason ?? new Error("pi-workflows: run aborted")),
     { once: true },
   );
+
+  interface WorkflowBoundaryStage {
+    readonly id: string;
+    readonly replayedChild?: WorkflowChildResult;
+    complete(summary: string, workflowChild: WorkflowChildReplaySnapshot): void;
+    fail(error: unknown): void;
+  }
+
+  const workflowChildResultFromReplay = (snapshot: WorkflowChildReplaySnapshot): WorkflowChildResult => ({
+    workflow: snapshot.workflow,
+    runId: snapshot.runId,
+    status: snapshot.status,
+    outputs: { ...snapshot.outputs },
+    rawOutput: snapshot.rawOutput !== undefined ? { ...snapshot.rawOutput } : undefined,
+  });
+
+  const startWorkflowBoundaryStage = (name: string): WorkflowBoundaryStage => {
+    const stageId = crypto.randomUUID();
+    const provisionalParentIds = tracker.onSpawn(stageId, name);
+    const replayKey = `workflow:${name}`;
+    const replayDecision = replayIndex.decide({
+      displayName: name,
+      replayKey,
+      parentIds: provisionalParentIds,
+      stageId,
+      kind: "workflow",
+    });
+    const parentIds = replayDecision.parentIds;
+    if (!sameStringSet(parentIds, provisionalParentIds)) {
+      tracker.replaceParents(stageId, parentIds);
+    }
+    const replaySource = replayDecision.source;
+    const replayChildSnapshot = replayDecision.kind === "replay" ? replayDecision.source.workflowChild : undefined;
+    const replayedChild = replayChildSnapshot !== undefined
+      ? workflowChildResultFromReplay(replayChildSnapshot)
+      : undefined;
+    const startedAt = Date.now();
+    const stageSnapshot: StageSnapshot = {
+      id: stageId,
+      name,
+      replayKey,
+      status: replayedChild !== undefined ? "completed" : "running",
+      parentIds: Object.freeze([...parentIds]),
+      startedAt,
+      toolEvents: [],
+      attachable: false,
+      ...(replaySource !== undefined ? {
+        replayedFromStageId: replaySource.id,
+        replayed: replayedChild !== undefined,
+      } : {}),
+      ...(replayedChild !== undefined ? {
+        endedAt: startedAt,
+        durationMs: 0,
+        ...(replayDecision.kind === "replay" && replayDecision.source.result !== undefined ? { result: replayDecision.source.result } : {}),
+        workflowChild: replayChildSnapshot,
+      } : {}),
+    };
+    let finalized = false;
+
+    const appendStageStartOnce = (): void => {
+      if (!opts.persistence) return;
+      appendStageStart(opts.persistence, {
+        runId,
+        stageId,
+        name,
+        parentIds: stageSnapshot.parentIds,
+        ...stageReplayFields(stageSnapshot),
+        ts: startedAt,
+      });
+    };
+
+    const appendStageEndForSnapshot = (): void => {
+      if (!opts.persistence) return;
+      appendStageEnd(opts.persistence, {
+        runId,
+        stageId,
+        status: stageSnapshot.status,
+        durationMs: stageSnapshot.durationMs,
+        ...(stageSnapshot.error !== undefined ? { error: stageSnapshot.error } : {}),
+        ...(stageSnapshot.failureKind !== undefined ? { failureKind: stageSnapshot.failureKind } : {}),
+        ...(stageSnapshot.failureMessage !== undefined ? { failureMessage: stageSnapshot.failureMessage } : {}),
+        ...(stageSnapshot.result !== undefined && stageSnapshot.status === "completed" ? { summary: stageSnapshot.result } : {}),
+        ...stageReplayFields(stageSnapshot),
+        ...(stageSnapshot.workflowChild !== undefined ? { workflowChild: stageSnapshot.workflowChild } : {}),
+      });
+    };
+
+    const finalize = (
+      status: "completed" | "failed",
+      summaryOrError: string,
+      workflowChild?: WorkflowChildReplaySnapshot,
+    ): void => {
+      if (finalized) return;
+      finalized = true;
+      stageSnapshot.status = status;
+      if (status === "completed") {
+        stageSnapshot.result = summaryOrError;
+        if (workflowChild !== undefined) stageSnapshot.workflowChild = workflowChild;
+      } else {
+        const failure = classifyWorkflowFailure(new Error(summaryOrError));
+        stageSnapshot.error = failure.userMessage;
+        stageSnapshot.failureKind = failure.kind;
+        stageSnapshot.failureMessage = failure.message;
+      }
+      stageSnapshot.endedAt = Date.now();
+      stageSnapshot.durationMs = elapsedStageMs(stageSnapshot, stageSnapshot.endedAt);
+      activeStore.recordStageEnd(runId, stageSnapshot);
+      opts.onStageEnd?.(runId, stageSnapshot);
+      appendStageEndForSnapshot();
+      tracker.onSettle(stageId);
+    };
+
+    activeStore.recordStageStart(runId, stageSnapshot);
+    opts.onStageStart?.(runId, stageSnapshot);
+    appendStageStartOnce();
+
+    if (replayedChild !== undefined) {
+      finalized = true;
+      activeStore.recordStageEnd(runId, stageSnapshot);
+      opts.onStageEnd?.(runId, stageSnapshot);
+      appendStageEndForSnapshot();
+      tracker.onSettle(stageId);
+    }
+
+    return {
+      id: stageId,
+      ...(replayedChild !== undefined ? { replayedChild } : {}),
+      complete(summary: string, workflowChild: WorkflowChildReplaySnapshot): void {
+        finalize("completed", summary, workflowChild);
+      },
+      fail(error: unknown): void {
+        finalize("failed", error instanceof Error ? error.message : String(error));
+      },
+    };
+  };
 
   const buildPromptNodeUiAdapter = (): WorkflowUIAdapter => {
     const ask = async (descriptor: PromptDescriptor): Promise<unknown> => {
@@ -2767,6 +3071,77 @@ export async function run<TInputs extends Record<string, unknown>>(
           stage.skip();
         }
       });
+    },
+
+    async workflow(alias: string, options: WorkflowRunChildOptions = {}): Promise<WorkflowChildResult> {
+      const resolver = await loadImportResolver();
+      const resolved = resolver.resolveWorkflowImport(erasedDef, alias, importResolverOptions);
+      if (!resolved.ok) {
+        throw new Error(`pi-workflows: ${resolved.diagnostic.message}`);
+      }
+
+      const child = resolved.resolved.definition;
+      const boundary = startWorkflowBoundaryStage(options.stageName ?? `import:${alias}`);
+      if (boundary.replayedChild !== undefined) {
+        return boundary.replayedChild;
+      }
+
+      try {
+        const childInputs = resolveInputs(child.inputs, options.inputs ?? {});
+        const inputErrors = validateInputs(child.inputs, childInputs);
+        if (inputErrors.length > 0) {
+          throw new Error(
+            `pi-workflows: invalid inputs for workflow import "${alias}" (${child.name}):\n${formatValidationErrors(inputErrors)}`,
+          );
+        }
+
+        const {
+          runId: _parentRunId,
+          continuation: _parentContinuation,
+          deferWorkflowStart: _parentDeferWorkflowStart,
+          ...childBaseOpts
+        } = opts;
+        const childSources = resolved.resolved.filePath === undefined
+          ? opts.workflowSources
+          : [
+              { id: child.normalizedName, filePath: resolved.resolved.filePath },
+              ...(opts.workflowSources ?? []),
+            ];
+        const childRun = await run(child, childInputs, {
+          ...childBaseOpts,
+          cwd: resolveWorkflowCwd(),
+          depth: depth + 1,
+          registry: importRegistry,
+          ...(childSources !== undefined ? { workflowSources: childSources } : {}),
+          signal: ownController.signal,
+          deferWorkflowStart: false,
+        });
+
+        if (childRun.status !== "completed") {
+          throw new Error(
+            `pi-workflows: workflow import "${alias}" (${child.name}) failed with status ${childRun.status}${childRun.error !== undefined ? `: ${childRun.error}` : ""}`,
+          );
+        }
+
+        const outputs = selectWorkflowOutputs(erasedDef, alias, child, childRun.result, options.outputs);
+        const childResult: WorkflowChildResult = {
+          workflow: child.normalizedName,
+          runId: childRun.runId,
+          status: completedChildStatus(childRun.status),
+          outputs,
+          rawOutput: childRun.result,
+        };
+        const workflowChild = workflowChildReplaySnapshot(alias, childResult);
+        const outputKeys = Object.keys(outputs);
+        boundary.complete(
+          `Workflow "${child.name}" completed (runId: ${childRun.runId}; outputs: ${outputKeys.length > 0 ? outputKeys.join(", ") : "(none)"})`,
+          workflowChild,
+        );
+        return childResult;
+      } catch (err) {
+        boundary.fail(err);
+        throw err;
+      }
     },
   };
 

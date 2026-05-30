@@ -9,6 +9,7 @@ import { homedir } from "node:os";
 import { run, runChain, runParallel, runTask, type RunOpts as ExecutorRunOptions } from "../foreground/executor.js";
 import { buildRuntimeAdapters, type RuntimeAdapterBuildOptions, type RuntimeWiringSurface } from "../../extension/wiring.js";
 import { discoverWorkflows } from "../../extension/discovery.js";
+import { formatWorkflowImportDiagnostics, validateWorkflowImportGraph } from "../../workflows/import-resolver.js";
 import { createStore } from "../../shared/store.js";
 import { renderInputsSchema } from "../../shared/render-inputs-schema.js";
 import { validateInputs, type ValidationError } from "./validate-inputs.js";
@@ -226,7 +227,20 @@ async function runNamedWorkflow(
   if (errors.length > 0) {
     throw new Error(formatWorkflowValidationFailure(workflow.name, workflow.inputs, errors));
   }
-  const result = await run(workflow, inputs, runOptions);
+  const importDiagnostics = validateWorkflowImportGraph({
+    registry: discovery.registry,
+    cwd: options.cwd ?? process.cwd(),
+    sources: discovery.sources,
+    roots: [workflow],
+  });
+  if (importDiagnostics.length > 0) {
+    throw new Error(`Invalid workflow imports for "${workflow.name}":\n${formatWorkflowImportDiagnostics(importDiagnostics)}`);
+  }
+  const result = await run(workflow, inputs, {
+    ...runOptions,
+    registry: discovery.registry,
+    workflowSources: discovery.sources,
+  });
   return {
     action: "run",
     mode: "named",

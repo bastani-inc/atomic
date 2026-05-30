@@ -13,6 +13,7 @@ import type { Store } from "../shared/store.js";
 import type { CancellationRegistry } from "../runs/background/cancellation-registry.js";
 import type { JobTracker } from "../runs/background/job-tracker.js";
 import { resolveInputs } from "../runs/foreground/executor.js";
+import { formatWorkflowImportDiagnostics, validateWorkflowImportGraph, type WorkflowSourceReference } from "../workflows/import-resolver.js";
 import { runDetached } from "../runs/background/runner.js";
 import type { WorkflowToolResult, WorkflowInputEntry } from "./render-result.js";
 import type { WorkflowToolArgs } from "./index.js";
@@ -44,6 +45,10 @@ export interface DispatcherOpts {
   config?: WorkflowRuntimeConfig;
   /** Optional model catalog forwarded to workflow runs for fallback resolution. */
   models?: WorkflowModelCatalogPort;
+  /** Invocation cwd used for local path workflow imports. */
+  cwd?: string;
+  /** Discovery source metadata used to resolve relative local path imports. */
+  workflowSources?: readonly WorkflowSourceReference[];
 }
 
 // ---------------------------------------------------------------------------
@@ -146,7 +151,26 @@ export async function dispatch(
         };
       }
 
+      const importDiagnostics = validateWorkflowImportGraph({
+        registry: opts.registry,
+        cwd: opts.cwd ?? process.cwd(),
+        ...(opts.workflowSources !== undefined ? { sources: opts.workflowSources } : {}),
+        roots: [def],
+      });
+      if (importDiagnostics.length > 0) {
+        return {
+          action: "run",
+          name: def.name,
+          runId: "",
+          status: "failed",
+          error: `Invalid workflow imports for "${def.name}":\n${formatWorkflowImportDiagnostics(importDiagnostics)}`,
+          stages: [],
+        };
+      }
+
       const accepted = runDetached(def, inputs, {
+        registry: opts.registry,
+        ...(opts.workflowSources !== undefined ? { workflowSources: opts.workflowSources } : {}),
         adapters: opts.adapters,
         store: opts.store,
         cancellation: opts.cancellation,
@@ -155,6 +179,7 @@ export async function dispatch(
         mcp: opts.mcp,
         config: opts.config,
         models: opts.models,
+        cwd: opts.cwd,
       });
       return {
         action: "run",

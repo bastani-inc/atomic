@@ -149,6 +149,9 @@ function makeMockCtx<TInputs extends Record<string, unknown>>(
         ? results
         : results.filter((result) => result.name === undefined || !omitted.has(result.name));
     },
+    workflow: async (alias: string) => {
+      throw new Error(`ctx.workflow should not be used by builtin workflow ${alias}`);
+    },
     ui,
   };
 

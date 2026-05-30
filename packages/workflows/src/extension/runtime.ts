@@ -42,6 +42,7 @@ import {
 import { validateWorkflowModels } from "../runs/shared/model-fallback.js";
 import { runDetached } from "../runs/background/runner.js";
 import { classifyWorkflowFailure } from "../shared/workflow-failures.js";
+import type { WorkflowSourceReference } from "../workflows/import-resolver.js";
 
 // ---------------------------------------------------------------------------
 // Options
@@ -78,6 +79,10 @@ export interface ExtensionRuntimeOpts {
   config?: WorkflowRuntimeConfig;
   /** Optional model catalog forwarded to workflow runs for fallback resolution. */
   models?: WorkflowModelCatalogPort;
+  /** Discovery source metadata used to resolve relative local path imports. */
+  workflowSources?: readonly WorkflowSourceReference[];
+  /** Invocation cwd used for local path workflow imports. Defaults to process.cwd(). */
+  cwd?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -135,6 +140,8 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
   const config = opts.config;
   const intercom = opts.intercom;
   const models = opts.models;
+  const workflowSources = opts.workflowSources;
+  const runtimeCwd = opts.cwd ?? process.cwd();
 
   function runOptions(args: WorkflowToolArgs): RunOpts {
     const argConcurrency =
@@ -160,6 +167,9 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
       mcp,
       config: effectiveConfig,
       models,
+      registry,
+      ...(workflowSources !== undefined ? { workflowSources } : {}),
+      cwd: runtimeCwd,
     };
   }
 
@@ -456,7 +466,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
     },
 
     dispatch(args: WorkflowToolArgs): Promise<WorkflowToolResult> {
-      return dispatch(args, { registry, adapters, store: activeStore, cancellation, persistence, mcp, config, models });
+      return dispatch(args, { registry, adapters, store: activeStore, cancellation, persistence, mcp, config, models, cwd: runtimeCwd, workflowSources });
     },
 
     runDirect(args: WorkflowToolArgs): Promise<WorkflowDetails> {

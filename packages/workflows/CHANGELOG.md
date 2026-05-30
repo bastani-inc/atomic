@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Added first-class workflow imports for composition: workflows can declare `.import()` dependencies, child workflows can declare `.output()` contracts, discovery validates unresolved/circular/invalid import graphs, and `ctx.workflow()` runs imported workflows as nested runs with input validation, output selection/mapping, and a visible parent boundary stage ([#1071](https://github.com/flora131/atomic/issues/1071)).
+
 ## [0.8.21] - 2026-05-30
 
 ### Changed

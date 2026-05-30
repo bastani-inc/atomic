@@ -239,6 +239,40 @@ describe("restoreOnSessionStart", () => {
     assert.equal(stage.replayed, true);
   });
 
+  test("restores workflow child replay metadata from stage.end", () => {
+    const st = createStore();
+    const entries: SessionEntry[] = [
+      { id: "e1", type: "workflow.run.start", payload: { runId: "r2", name: "wf", inputs: {}, ts: 1 } },
+      { id: "e2", type: "workflow.stage.start", payload: { runId: "r2", stageId: "s-new", name: "import:child", parentIds: [], replayKey: "workflow:import:child", ts: 2 } },
+      {
+        id: "e3",
+        type: "workflow.stage.end",
+        payload: {
+          runId: "r2",
+          stageId: "s-new",
+          status: "completed",
+          summary: "child done",
+          workflowChild: {
+            alias: "child",
+            workflow: "child-wf",
+            runId: "child-run",
+            status: "completed",
+            outputs: { summary: "ok" },
+            rawOutput: { summary: "ok", extra: 1 },
+          },
+        },
+      },
+    ];
+    restoreOnSessionStart(makeSessionManager(entries), { resumeInFlight: "never", persistRuns: true }, st);
+    const stage = st.runs()[0]!.stages[0]!;
+    assert.equal(stage.workflowChild?.alias, "child");
+    assert.equal(stage.workflowChild?.workflow, "child-wf");
+    assert.equal(stage.workflowChild?.runId, "child-run");
+    assert.equal(stage.workflowChild?.status, "completed");
+    assert.deepEqual(stage.workflowChild?.outputs, { summary: "ok" });
+    assert.deepEqual(stage.workflowChild?.rawOutput, { summary: "ok", extra: 1 });
+  });
+
   test("restores malformed and non-terminal stage.end statuses as failed", () => {
     const st = createStore();
     const entries: SessionEntry[] = [
