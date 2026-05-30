@@ -1092,7 +1092,7 @@ describe("GraphView keyboard navigation", () => {
     view.dispose();
   });
 
-  it("lets legacy run-level prompts keep graph detach, switcher, and scroll controls", () => {
+  it("lets legacy run-level prompts keep graph detach and scroll controls", () => {
     const stages = [
       makeStage("stage-0"),
       makeStage("stage-1", ["stage-0"]),
@@ -1123,20 +1123,12 @@ describe("GraphView keyboard navigation", () => {
     view.render(96);
     assert.ok(view._graphScrollOffset > 0);
 
-    view.handleInput("/");
-    assert.equal(view._switcherOpen, true);
-    const switcherText = visibleText(view.render(96));
-    assert.match(switcherText, /STAGES/);
-    assert.doesNotMatch(switcherText, /AWAITING INPUT/);
-    view.handleInput("\x1b");
-    assert.equal(view._switcherOpen, false);
-
     view.handleInput("\x04");
     assert.equal(detached, 1);
     view.dispose();
   });
 
-  it("keeps legacy run-level prompts answerable for text and Enter", () => {
+  it("keeps legacy run-level input prompts answerable with literal slash text", () => {
     const stages = [makeStage("stage-0")];
     const snap = makeRunPromptSnap(
       stages,
@@ -1154,12 +1146,49 @@ describe("GraphView keyboard navigation", () => {
       },
     });
 
-    view.handleInput("o");
-    view.handleInput("k");
+    for (const key of "/tmp/file") view.handleInput(key);
     view.handleInput("\r");
 
+    assert.equal(view._switcherOpen, false);
     assert.deepEqual(resolved, [
-      { runId: "run-1", promptId: "legacy-prompt", response: "ok" },
+      { runId: "run-1", promptId: "legacy-prompt", response: "/tmp/file" },
+    ]);
+    view.dispose();
+  });
+
+  it("keeps legacy run-level editor prompts answerable with literal slash text", () => {
+    const stages = [makeStage("stage-0")];
+    const snap = makeRunPromptSnap(
+      stages,
+      makePendingPrompt({
+        id: "legacy-editor-prompt",
+        kind: "editor",
+        initial: "https://example.test",
+      }),
+    );
+    const store = makeStore(snap);
+    const resolved: Array<{ runId: string; promptId: string; response: unknown }> = [];
+    const view = new GraphView({
+      mode: "overlay",
+      runId: "run-1",
+      store,
+      graphTheme: defaultTheme,
+      onPromptResolve: (runId, promptId, response) => {
+        resolved.push({ runId, promptId, response });
+      },
+    });
+
+    for (const key of "/a/b") view.handleInput(key);
+    view.handleInput("\t");
+    view.handleInput("\r");
+
+    assert.equal(view._switcherOpen, false);
+    assert.deepEqual(resolved, [
+      {
+        runId: "run-1",
+        promptId: "legacy-editor-prompt",
+        response: "https://example.test/a/b",
+      },
     ]);
     view.dispose();
   });

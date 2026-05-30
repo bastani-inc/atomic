@@ -1080,11 +1080,13 @@ export class GraphView implements Component {
     }
     // Stage-local HIL is represented by graph nodes and remains graph-first;
     // only the legacy run-level prompt card sets `promptState`. Keep that
-    // fallback answerable, but let a narrow set of graph-shell controls through
-    // first so the workflow overlay can still be detached, switched, or
-    // scrolled instead of feeling modal while a prompt is visible.
+    // fallback answerable, but let a narrow set of non-text graph controls
+    // through first so the workflow overlay can still be detached or scrolled
+    // instead of feeling modal while a prompt is visible. Printable keys such
+    // as "/" belong to the prompt card while legacy run-level text/editor
+    // prompts own input.
     if (this.promptState) {
-      if (this._isGraphShellInputBeforePrompt(data)) {
+      if (this._isNonTextGraphControlBeforePrompt(data)) {
         return this._handleGraphInput(data);
       }
       return this._handlePromptInput(data);
@@ -1092,10 +1094,9 @@ export class GraphView implements Component {
     return this._handleGraphInput(data);
   }
 
-  private _isGraphShellInputBeforePrompt(data: string): boolean {
+  private _isNonTextGraphControlBeforePrompt(data: string): boolean {
     return (
       this._mouseWheelDeltaRows(data) !== 0 ||
-      matchesKey(data, "/") ||
       matchesKey(data, Key.ctrl("d"))
     );
   }
