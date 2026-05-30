@@ -191,6 +191,7 @@ export class GraphView implements Component {
   private graphScrollOffset = 0;
   private graphScrollColOffset = 0;
   private pendingEnsureFocusedVisible = true;
+  private lastAutoFocusedAwaitingInputKey: string | null = null;
 
   private _intervalId: ReturnType<typeof setInterval> | null = null;
   private _lastGTime: number | null = null;
@@ -278,6 +279,17 @@ export class GraphView implements Component {
       }
     }
 
+    const awaitingTarget = this._awaitingInputFocusTarget();
+    if (awaitingTarget) {
+      if (awaitingTarget.key !== this.lastAutoFocusedAwaitingInputKey) {
+        this.focusedIndex = awaitingTarget.index;
+        focusNeedsReveal = true;
+        this.lastAutoFocusedAwaitingInputKey = awaitingTarget.key;
+      }
+    } else {
+      this.lastAutoFocusedAwaitingInputKey = null;
+    }
+
     if (this.cachedLayout.length === 0) {
       this.focusedIndex = 0;
       this.graphScrollOffset = 0;
@@ -288,6 +300,41 @@ export class GraphView implements Component {
     }
     this.pendingEnsureFocusedVisible = focusNeedsReveal;
     this._syncPromptState(run.pendingPrompt);
+  }
+
+  private _awaitingInputFocusTarget(): { index: number; key: string } | null {
+    let newest: { index: number; key: string; createdAt: number } | null = null;
+    for (let index = 0; index < this.cachedLayout.length; index++) {
+      const stage = this.cachedLayout[index]!.stage;
+      const target = this._awaitingInputKey(stage);
+      if (!target) continue;
+      if (!newest || target.createdAt >= newest.createdAt) {
+        newest = { index, key: target.key, createdAt: target.createdAt };
+      }
+    }
+    return newest ? { index: newest.index, key: newest.key } : null;
+  }
+
+  private _awaitingInputKey(stage: StageSnapshot): { key: string; createdAt: number } | null {
+    if (stage.pendingPrompt) {
+      return {
+        key: `prompt:${stage.id}:${stage.pendingPrompt.id}`,
+        createdAt: stage.pendingPrompt.createdAt,
+      };
+    }
+    if (stage.inputRequest) {
+      return {
+        key: `input-request:${stage.id}:${stage.inputRequest.id}`,
+        createdAt: stage.inputRequest.createdAt,
+      };
+    }
+    if (stage.status === "awaiting_input") {
+      return {
+        key: `awaiting:${stage.id}:${stage.awaitingInputSince ?? "active"}`,
+        createdAt: stage.awaitingInputSince ?? stage.startedAt ?? 0,
+      };
+    }
+    return null;
   }
 
   private _graphStages(run: RunSnapshot): StageSnapshot[] {

@@ -3,7 +3,7 @@
  */
 import { describe, it, mock } from "bun:test";
 import assert from "node:assert/strict";
-import type { Store } from "../../packages/workflows/src/shared/store.js";
+import { createStore, type Store } from "../../packages/workflows/src/shared/store.js";
 import type { StoreSnapshot, RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { computeLayout, NODE_W } from "../../packages/workflows/src/tui/layout.js";
 import { buildConnector, buildMergeConnector } from "../../packages/workflows/src/tui/connectors.js";
@@ -888,6 +888,56 @@ describe("GraphView keyboard navigation", () => {
     assert.match(rendered, /enter to respond/);
     view.handleInput("\r");
     assert.deepEqual(onStageAttach.mock.calls[0], ["run-1", "input"]);
+    view.dispose();
+  });
+
+  it("auto-focuses a newly awaiting stage prompt node so Enter attaches to the HIL UI", () => {
+    const store = createStore();
+    store.recordRunStart({
+      id: "run-1",
+      name: "Test Run",
+      inputs: {},
+      status: "running",
+      stages: [],
+      startedAt: Date.now(),
+    });
+    store.recordStageStart("run-1", {
+      id: "search-candidates",
+      name: "search-candidates",
+      status: "completed",
+      parentIds: [],
+      toolEvents: [],
+    });
+    const onStageAttach = mock(() => {});
+    const view = new GraphView({
+      mode: "overlay",
+      runId: "run-1",
+      store,
+      graphTheme: defaultTheme,
+      getViewportRows: () => 32,
+      onStageAttach,
+    });
+    assert.equal(view._focusedIndex, 0);
+
+    store.recordStageStart("run-1", {
+      id: "editor-stage",
+      name: "editor",
+      status: "running",
+      parentIds: ["search-candidates"],
+      toolEvents: [],
+      attachable: true,
+    });
+    store.recordStagePendingPrompt("run-1", "editor-stage", {
+      id: "prompt-editor-1",
+      kind: "editor",
+      message: "Edit and save to continue.",
+      initial: "approval json",
+      createdAt: Date.now(),
+    });
+
+    assert.equal(view._focusedIndex, 1);
+    view.handleInput("\r");
+    assert.deepEqual(onStageAttach.mock.calls[0], ["run-1", "editor-stage"]);
     view.dispose();
   });
 

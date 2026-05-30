@@ -16,6 +16,7 @@
  */
 
 import type { Store } from "../shared/store.js";
+import type { StoreSnapshot } from "../shared/store-types.js";
 import type { ChatMessageRenderOptions, ReadonlyFooterDataProvider } from "@bastani/atomic";
 import { WorkflowAttachPane } from "./workflow-attach-pane.js";
 import { deriveGraphThemeFromPiTheme } from "./graph-theme.js";
@@ -176,12 +177,31 @@ export function buildGraphOverlayAdapter(
     }
   }
 
+  function snapshotHasAwaitingInput(snapshot: StoreSnapshot): boolean {
+    return snapshot.runs.some(
+      (run) => run.pendingPrompt !== undefined || run.stages.some(
+        (stage) => stage.status === "awaiting_input"
+          || stage.pendingPrompt !== undefined
+          || stage.inputRequest !== undefined,
+      ),
+    );
+  }
+
+  function refocusVisibleOverlayForAwaitingInput(snapshot: StoreSnapshot): void {
+    if (!snapshotHasAwaitingInput(snapshot)) return;
+    if (currentHandle === null) return;
+    if (currentHandle.isHidden()) return;
+    if (currentHandle.isFocused()) return;
+    currentHandle.focus();
+  }
+
   function makeComponent(
     view: WorkflowAttachPane,
     tui: PiCustomOverlayFactoryTui,
   ): PiCustomComponent {
-    const onStoreUpdate = (): void => {
+    const onStoreUpdate = (snapshot: StoreSnapshot): void => {
       view.invalidate();
+      refocusVisibleOverlayForAwaitingInput(snapshot);
       tui.requestRender?.();
     };
     const unsubscribe = store.subscribe(onStoreUpdate);

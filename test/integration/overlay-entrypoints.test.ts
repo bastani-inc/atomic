@@ -38,6 +38,10 @@ import {
   createStore,
   store as singletonStore,
 } from "../../packages/workflows/src/shared/store.js";
+import { runDetached } from "../../packages/workflows/src/runs/background/runner.js";
+import { createCancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.js";
+import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
+import { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
 import factory from "../../packages/workflows/src/extension/index.js";
 import type {
   ExtensionAPI,
@@ -73,6 +77,39 @@ async function waitForRenderCount(
   for (let i = 0; i < polls && count() < target; i++) {
     await delay(pollMs);
   }
+}
+
+async function waitForStagePendingPrompt(
+  store: ReturnType<typeof createStore>,
+  runId: string,
+  expectedKind?: "input" | "confirm" | "select" | "editor",
+  timeoutMs = 1000,
+): Promise<{ stageId: string; promptId: string }> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const run = store.runs().find((candidate) => candidate.id === runId);
+    const stage = run?.stages.find((candidate) => {
+      const prompt = candidate.pendingPrompt;
+      return prompt !== undefined && (expectedKind === undefined || prompt.kind === expectedKind);
+    });
+    if (stage?.pendingPrompt) return { stageId: stage.id, promptId: stage.pendingPrompt.id };
+    await delay(5);
+  }
+  throw new Error(`stage pending prompt did not appear on run ${runId}`);
+}
+
+async function waitForRunEnded(
+  store: ReturnType<typeof createStore>,
+  runId: string,
+  timeoutMs = 1000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const run = store.runs().find((candidate) => candidate.id === runId);
+    if (run?.endedAt !== undefined) return;
+    await delay(5);
+  }
+  throw new Error(`run ${runId} did not end in time`);
 }
 
 /** A controllable in-memory `PiOverlayHandle` used by the mock. */
@@ -477,6 +514,158 @@ describe("buildGraphOverlayAdapter — open with pi.ui.custom", () => {
 
     assert.equal(calls.length, 1, "retarget must not remount");
     assert.equal(focusCalls, 1, "visible retarget must restore keyboard focus (#1120)");
+  });
+
+  test("visible graph overlay refocuses when detached ctx.ui.editor and confirm prompts appear", async () => {
+    const { ui, calls } = buildMockUi({ rows: 32 });
+    const store = createStore();
+    const cancellation = createCancellationRegistry();
+    const jobs = createJobTracker();
+    const adapter = buildGraphOverlayAdapter({ ui }, store);
+    let releaseWorkflow!: () => void;
+    const workflowGate = new Promise<void>((resolve) => {
+      releaseWorkflow = resolve;
+    });
+
+    const def = defineWorkflow("hil-focus-dummy")
+      .run(async (ctx) => {
+        await workflowGate;
+        const edited = await ctx.ui.editor("draft approval json");
+        const approved = await ctx.ui.confirm(`Approve ${edited.length} chars?`);
+        return { edited, approved };
+      })
+      .compile();
+
+    const accepted = runDetached(def, {}, { store, cancellation, jobs });
+    adapter.open(accepted.runId);
+
+    const { handle } = calls[0]!;
+    let focused = true;
+    let focusCalls = 0;
+    handle.isHidden = () => false;
+    handle.isFocused = () => focused;
+    handle.focus = () => {
+      focusCalls += 1;
+      focused = true;
+    };
+
+    // Reproduce the failure shape: the orchestrator panel is visible, but
+    // keyboard focus has drifted away before the HIL prompt node appears.
+    focused = false;
+    releaseWorkflow();
+
+    const editorPrompt = await waitForStagePendingPrompt(store, accepted.runId, "editor");
+    assert.equal(focusCalls, 1, "new editor prompt should reclaim visible graph focus");
+    store.resolveStagePendingPrompt(accepted.runId, editorPrompt.stageId, editorPrompt.promptId, "edited text");
+
+    focused = false;
+    const confirmPrompt = await waitForStagePendingPrompt(store, accepted.runId, "confirm");
+    assert.equal(focusCalls, 2, "new confirm prompt should reclaim visible graph focus");
+    store.resolveStagePendingPrompt(accepted.runId, confirmPrompt.stageId, confirmPrompt.promptId, true);
+
+    await waitForRunEnded(store, accepted.runId);
+    const run = store.runs().find((candidate) => candidate.id === accepted.runId);
+    assert.equal(run?.status, "completed");
+    assert.deepEqual(run?.result, { edited: "edited text", approved: true });
+  });
+
+  test("long detached ctx.ui.confirm text scrolls after attaching from the graph", async () => {
+    const { ui, calls } = buildMockUi({ rows: 14, columns: 90 });
+    const store = createStore();
+    const cancellation = createCancellationRegistry();
+    const jobs = createJobTracker();
+    const adapter = buildGraphOverlayAdapter({ ui }, store);
+    let releaseWorkflow!: () => void;
+    const workflowGate = new Promise<void>((resolve) => {
+      releaseWorkflow = resolve;
+    });
+    const longMessage = [
+      "SECTION 1 top of the long approval prompt.",
+      "SECTION 2 enough words to wrap across several rows in a narrow workflow overlay.",
+      "SECTION 3 more approval details that must remain reachable by scrolling.",
+      "SECTION 4 posting safety notes and validation context for the user.",
+      "SECTION 5 generated reply summary and artifact paths.",
+      "SECTION 6 additional details that would normally appear in a real approval gate.",
+      "SECTION 7 final caveats before the user chooses yes or no.",
+      "SECTION 8 bottom of the long approval prompt.",
+    ].join("\n\n");
+
+    const def = defineWorkflow("hil-long-confirm-dummy")
+      .run(async (ctx) => {
+        await workflowGate;
+        const approved = await ctx.ui.confirm(longMessage);
+        return { approved };
+      })
+      .compile();
+
+    const accepted = runDetached(def, {}, { store, cancellation, jobs });
+    adapter.open(accepted.runId);
+    releaseWorkflow();
+    await waitForStagePendingPrompt(store, accepted.runId, "confirm");
+
+    const component = calls[0]!.component;
+    component.handleInput?.("\r");
+    const top = visibleText(component.render(90));
+    assert.match(top, /SECTION 1/);
+    assert.doesNotMatch(top, /SECTION 8/);
+
+    component.handleInput?.("end");
+    const bottom = visibleText(component.render(90));
+    assert.doesNotMatch(bottom, /SECTION 1/);
+    assert.match(bottom, /SECTION 8|yes|no/);
+
+    component.handleInput?.("y");
+    await waitForRunEnded(store, accepted.runId);
+    const run = store.runs().find((candidate) => candidate.id === accepted.runId);
+    assert.equal(run?.status, "completed");
+    assert.deepEqual(run?.result, { approved: true });
+  });
+
+  test("long detached ctx.ui.editor prefill renders with editor scroll indicators", async () => {
+    const { ui, calls } = buildMockUi({ rows: 16, columns: 100 });
+    const store = createStore();
+    const cancellation = createCancellationRegistry();
+    const jobs = createJobTracker();
+    const adapter = buildGraphOverlayAdapter({ ui }, store);
+    let releaseWorkflow!: () => void;
+    const workflowGate = new Promise<void>((resolve) => {
+      releaseWorkflow = resolve;
+    });
+    const longDocument = Array.from(
+      { length: 40 },
+      (_, index) => `JSON LINE ${index + 1}: approval payload entry with enough text to render in the editor`,
+    ).join("\n");
+
+    const def = defineWorkflow("hil-long-editor-dummy")
+      .run(async (ctx) => {
+        await workflowGate;
+        const edited = await ctx.ui.editor(longDocument);
+        return { editedLength: edited.length };
+      })
+      .compile();
+
+    const accepted = runDetached(def, {}, { store, cancellation, jobs });
+    adapter.open(accepted.runId);
+    releaseWorkflow();
+    const editorPrompt = await waitForStagePendingPrompt(store, accepted.runId, "editor");
+
+    const component = calls[0]!.component;
+    component.handleInput?.("\r");
+    const bottom = visibleText(component.render(100));
+    assert.match(bottom, /JSON LINE 40/);
+    assert.doesNotMatch(bottom, /JSON LINE 1:/);
+    assert.match(bottom, /↑ \d+ more/);
+
+    component.handleInput?.("pageUp");
+    const afterPageUp = visibleText(component.render(100));
+    assert.notEqual(afterPageUp, bottom);
+    assert.match(afterPageUp, /↑ \d+ more|↓ \d+ more/);
+
+    store.resolveStagePendingPrompt(accepted.runId, editorPrompt.stageId, editorPrompt.promptId, "edited");
+    await waitForRunEnded(store, accepted.runId);
+    const run = store.runs().find((candidate) => candidate.id === accepted.runId);
+    assert.equal(run?.status, "completed");
+    assert.deepEqual(run?.result, { editedLength: "edited".length });
   });
 
   test("toggle() on a visible mount calls setHidden(true)+unfocus (no remount)", () => {
