@@ -95,6 +95,38 @@ export type WorkflowInputSchema =
   | SelectInputSchema;
 
 // ---------------------------------------------------------------------------
+// Workflow execution policy + interaction metadata
+// ---------------------------------------------------------------------------
+
+export type WorkflowExecutionMode = "interactive" | "non_interactive";
+
+export interface WorkflowExecutionPolicy {
+  readonly mode: WorkflowExecutionMode;
+  readonly allowHumanInput: boolean;
+  readonly awaitTerminalRun: boolean;
+  readonly allowInputPicker: boolean;
+}
+
+export const INTERACTIVE_WORKFLOW_POLICY: WorkflowExecutionPolicy = Object.freeze({
+  mode: "interactive",
+  allowHumanInput: true,
+  awaitTerminalRun: false,
+  allowInputPicker: true,
+});
+
+export const NON_INTERACTIVE_WORKFLOW_POLICY: WorkflowExecutionPolicy = Object.freeze({
+  mode: "non_interactive",
+  allowHumanInput: false,
+  awaitTerminalRun: true,
+  allowInputPicker: false,
+});
+
+export interface WorkflowInteractionMetadata {
+  readonly humanInput: "none" | "required";
+  readonly reason?: string;
+}
+
+// ---------------------------------------------------------------------------
 // HIL (human-in-the-loop) primitives available inside run functions
 // ---------------------------------------------------------------------------
 
@@ -186,6 +218,8 @@ export interface StageExecutionMeta {
   stageOptions?: StageOptions;
   /** AbortSignal propagated from the executor's own AbortController. */
   signal?: AbortSignal;
+  /** Runtime execution mode for policy-aware child sessions. */
+  executionMode?: WorkflowExecutionMode;
 }
 
 export interface CompleteStageOpts extends WorkflowModelFallbackFields {
@@ -608,5 +642,7 @@ export interface WorkflowDefinition<TInputs extends Record<string, unknown> = Re
   readonly inputs: Readonly<Record<string, WorkflowInputSchema>>;
   /** Optional input-to-runtime defaults declared by the workflow builder. */
   readonly inputBindings?: WorkflowInputBindings;
+  /** Declares whether this workflow requires human input during execution. */
+  readonly interaction?: WorkflowInteractionMetadata;
   readonly run: WorkflowRunFn<TInputs>;
 }

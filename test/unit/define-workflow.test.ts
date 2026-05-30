@@ -64,4 +64,26 @@ describe("defineWorkflow builder", () => {
       baseBranch: "base_branch",
     });
   });
+
+  test("omitted interaction metadata defaults to non-HIL", () => {
+    const def = defineWorkflow("non-hil-default")
+      .run(async () => ({}))
+      .compile();
+
+    assert.deepEqual(def.interaction, { humanInput: "none" });
+    assert.equal(Object.isFrozen(def.interaction), true);
+  });
+
+  test("humanInTheLoop records frozen interaction metadata", () => {
+    const def = defineWorkflow("approval-flow")
+      .humanInTheLoop("Requires ctx.ui.confirm approval")
+      .run(async () => ({}))
+      .compile();
+
+    assert.deepEqual(def.interaction, {
+      humanInput: "required",
+      reason: "Requires ctx.ui.confirm approval",
+    });
+    assert.equal(Object.isFrozen(def.interaction), true);
+  });
 });

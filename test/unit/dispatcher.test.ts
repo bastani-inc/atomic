@@ -5,8 +5,9 @@
  * was removed (workflows are always background-scheduled):
  *
  *   - `dispatch("list")` and `dispatch("inputs")` are unaffected.
- *   - `dispatch("run")` always returns `status: "running"` synchronously
- *     and starts the workflow in the background.
+ *   - `dispatch("run")` returns `status: "running"` synchronously in the
+ *     interactive policy and starts the workflow in the background.
+ *   - non-interactive policy awaits the detached job's terminal snapshot.
  *   - Not-found workflow on `run` still returns a structured failed result
  *     (status "failed", empty runId).
  *   - `DispatcherOpts` no longer accepts `ui` (build the background adapter
@@ -16,6 +17,7 @@
 
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
+import { NON_INTERACTIVE_WORKFLOW_POLICY } from "../../packages/workflows/src/shared/types.js";
 import type { WorkflowDefinition, WorkflowPersistencePort } from "../../packages/workflows/src/shared/types.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
@@ -152,6 +154,86 @@ describe("dispatch run (always background)", () => {
       assert.equal(result.status, "failed");
       assert.equal(result.runId, "");
       assert.match(result.error!, /not found/i);
+    }
+  });
+
+  test("non-interactive policy awaits terminal snapshot", async () => {
+    const deps = freshDeps();
+    let settled = false;
+    const wf = defineWorkflow("headless-bg-wait")
+      .run(async (ctx) => {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        const text = await ctx.stage("done").prompt("finish");
+        settled = true;
+        return { ok: text };
+      })
+      .compile() as WorkflowDefinition;
+    const registry = createRegistry([wf]);
+
+    const seenExecutionModes: Array<string | undefined> = [];
+    const result = await dispatch(
+      { action: "run", workflow: "headless-bg-wait", inputs: {} },
+      {
+        registry,
+        adapters: { prompt: { prompt: async (_text, meta) => { seenExecutionModes.push(meta?.executionMode); return "true"; } } },
+        ...deps,
+        policy: NON_INTERACTIVE_WORKFLOW_POLICY,
+      },
+    );
+
+    assert.equal(settled, true);
+    assert.deepEqual(seenExecutionModes, ["non_interactive"]);
+    assert.equal(result.action, "run");
+    if (result.action === "run") {
+      assert.equal(result.status, "completed");
+      assert.deepEqual(result.result, { ok: "true" });
+      assert.equal(result.stages?.length, 1);
+      assert.ok(result.runId);
+    }
+  });
+
+  test("non-interactive policy rejects declared human-in-the-loop workflows before starting", async () => {
+    const deps = freshDeps();
+    const wf = defineWorkflow("approval-required")
+      .humanInTheLoop("Needs reviewer approval")
+      .run(async () => ({ ok: true }))
+      .compile() as WorkflowDefinition;
+    const registry = createRegistry([wf]);
+
+    const result = await dispatch(
+      { action: "run", workflow: "approval-required", inputs: {} },
+      { registry, ...deps, policy: NON_INTERACTIVE_WORKFLOW_POLICY },
+    );
+
+    assert.equal(result.action, "run");
+    if (result.action === "run") {
+      assert.equal(result.status, "failed");
+      assert.equal(result.runId, "");
+      assert.match(result.error ?? "", /requires human input/i);
+      assert.equal(deps.jobs.runIds().length, 0);
+      assert.equal(deps.store.runs().length, 0);
+    }
+  });
+
+  test("missing required inputs fail before non-interactive dispatch starts a job", async () => {
+    const deps = freshDeps();
+    const wf = defineWorkflow("requires-input")
+      .input("prompt", { type: "text", required: true })
+      .run(async () => ({ ok: true }))
+      .compile() as WorkflowDefinition;
+    const registry = createRegistry([wf]);
+
+    const result = await dispatch(
+      { action: "run", workflow: "requires-input", inputs: {} },
+      { registry, ...deps, policy: NON_INTERACTIVE_WORKFLOW_POLICY },
+    );
+
+    assert.equal(result.action, "run");
+    if (result.action === "run") {
+      assert.equal(result.status, "failed");
+      assert.equal(result.runId, "");
+      assert.match(result.error ?? "", /required input "prompt" not provided/);
+      assert.equal(deps.jobs.runIds().length, 0);
     }
   });
 

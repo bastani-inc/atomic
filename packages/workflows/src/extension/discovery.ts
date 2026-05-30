@@ -177,6 +177,19 @@ function validateDefinitionShape(value: unknown): string | null {
   if (typeof d["run"] !== "function") {
     return "run must be a function";
   }
+  const interaction = d["interaction"];
+  if (interaction !== undefined) {
+    if (interaction === null || typeof interaction !== "object") {
+      return "interaction must be an object when provided";
+    }
+    const metadata = interaction as Record<string, unknown>;
+    if (metadata["humanInput"] !== "none" && metadata["humanInput"] !== "required") {
+      return "interaction.humanInput must be \"none\" or \"required\"";
+    }
+    if (metadata["reason"] !== undefined && typeof metadata["reason"] !== "string") {
+      return "interaction.reason must be a string when provided";
+    }
+  }
   return null;
 }
 

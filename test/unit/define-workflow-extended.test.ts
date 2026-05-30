@@ -49,6 +49,17 @@ describe("defineWorkflow immutable builder semantics", () => {
     assert.equal(d1.run, fn1);
     assert.equal(d2.run, fn2);
   });
+
+  test("humanInTheLoop does not mutate previous builder", () => {
+    const b1 = defineWorkflow("approval");
+    const b2 = b1.humanInTheLoop("needs approval");
+
+    const d1 = b1.run(async () => ({})).compile();
+    const d2 = b2.run(async () => ({})).compile();
+
+    assert.deepEqual(d1.interaction, { humanInput: "none" });
+    assert.deepEqual(d2.interaction, { humanInput: "required", reason: "needs approval" });
+  });
 });
 
 describe("defineWorkflow select input", () => {

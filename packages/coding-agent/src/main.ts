@@ -104,7 +104,23 @@ function isTruthyEnvFlag(value: string | undefined): boolean {
 	return value === "1" || value.toLowerCase() === "true" || value.toLowerCase() === "yes";
 }
 
-type AppMode = "interactive" | "print" | "json" | "rpc";
+export type AppMode = "interactive" | "print" | "json" | "rpc";
+
+const NO_UI_EXCLUDED_TOOLS = ["ask_user_question"] as const;
+
+export function resolveExcludedToolsForAppMode(
+	appMode: AppMode,
+	excludedTools: CreateAgentSessionOptions["excludedTools"],
+): CreateAgentSessionOptions["excludedTools"] {
+	switch (appMode) {
+		case "interactive":
+		case "rpc":
+			return excludedTools;
+		case "print":
+		case "json":
+			return [...new Set([...(excludedTools ?? []), ...NO_UI_EXCLUDED_TOOLS])];
+	}
+}
 
 function resolveAppMode(parsed: Args, stdinIsTTY: boolean): AppMode {
 	if (parsed.mode === "rpc") {
@@ -604,6 +620,7 @@ export async function main(args: string[], options?: MainOptions) {
 			thinkingLevel: sessionOptions.thinkingLevel,
 			scopedModels: sessionOptions.scopedModels,
 			tools: sessionOptions.tools,
+			excludedTools: resolveExcludedToolsForAppMode(appMode, sessionOptions.excludedTools),
 			noTools: sessionOptions.noTools,
 			customTools: sessionOptions.customTools,
 		});

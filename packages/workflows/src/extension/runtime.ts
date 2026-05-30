@@ -12,16 +12,18 @@
 
 import { createRegistry } from "../workflows/registry.js";
 import type { WorkflowRegistry } from "../workflows/registry.js";
-import type {
-  WorkflowDefinition,
-  WorkflowPersistencePort,
-  WorkflowMcpPort,
-  WorkflowRuntimeConfig,
-  WorkflowDetails,
-  WorkflowDirectOptions,
-  WorkflowDirectTaskItem,
-  WorkflowChainStep,
-  WorkflowModelCatalogPort,
+import {
+  INTERACTIVE_WORKFLOW_POLICY,
+  type WorkflowDefinition,
+  type WorkflowPersistencePort,
+  type WorkflowMcpPort,
+  type WorkflowRuntimeConfig,
+  type WorkflowDetails,
+  type WorkflowDirectOptions,
+  type WorkflowDirectTaskItem,
+  type WorkflowChainStep,
+  type WorkflowModelCatalogPort,
+  type WorkflowExecutionPolicy,
 } from "../shared/types.js";
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
 import { resolveInputs, runChain, runParallel, runTask, type RunOpts } from "../runs/foreground/executor.js";
@@ -41,6 +43,7 @@ import {
 } from "../intercom/result-intercom.js";
 import { validateWorkflowModels } from "../runs/shared/model-fallback.js";
 import { runDetached } from "../runs/background/runner.js";
+import type { JobTracker } from "../runs/background/job-tracker.js";
 import { classifyWorkflowFailure } from "../shared/workflow-failures.js";
 
 // ---------------------------------------------------------------------------
@@ -78,6 +81,8 @@ export interface ExtensionRuntimeOpts {
   config?: WorkflowRuntimeConfig;
   /** Optional model catalog forwarded to workflow runs for fallback resolution. */
   models?: WorkflowModelCatalogPort;
+  /** Job tracker forwarded to named detached runs. */
+  jobs?: JobTracker;
 }
 
 // ---------------------------------------------------------------------------
@@ -99,13 +104,17 @@ export interface ExtensionRuntime {
    * Dispatch a `list`, `inputs`, or `run` action.
    * For `status`, `kill`, and `resume` use the runs/background/status module directly.
    */
-  dispatch(args: WorkflowToolArgs): Promise<WorkflowToolResult>;
+  dispatch(args: WorkflowToolArgs, options?: RuntimeDispatchOptions): Promise<WorkflowToolResult>;
 
   /** Execute direct single/parallel/chain workflow tool modes. */
-  runDirect(args: WorkflowToolArgs): Promise<WorkflowDetails>;
+  runDirect(args: WorkflowToolArgs, options?: RuntimeDispatchOptions): Promise<WorkflowDetails>;
 
   /** Start a linked continuation for a failed resumable named workflow run. */
   resumeFailedRun(sourceRunId: string, stageId?: string): ResumeFailedRunResult;
+}
+
+export interface RuntimeDispatchOptions {
+  readonly policy?: WorkflowExecutionPolicy;
 }
 
 // ---------------------------------------------------------------------------
@@ -135,8 +144,9 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
   const config = opts.config;
   const intercom = opts.intercom;
   const models = opts.models;
+  const jobs = opts.jobs;
 
-  function runOptions(args: WorkflowToolArgs): RunOpts {
+  function runOptions(args: WorkflowToolArgs, policy?: WorkflowExecutionPolicy): RunOpts {
     const argConcurrency =
       typeof args.concurrency === "number" && Number.isFinite(args.concurrency)
         ? Math.max(1, Math.floor(args.concurrency))
@@ -160,6 +170,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
       mcp,
       config: effectiveConfig,
       models,
+      ...(policy !== undefined ? { executionMode: policy.mode } : {}),
     };
   }
 
@@ -309,19 +320,25 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
     });
   }
 
-  function runDirectForeground(args: WorkflowToolArgs, runId?: string): Promise<WorkflowDetails> {
-    const baseRunOptions = runOptions(args);
+  function runDirectForeground(
+    args: WorkflowToolArgs,
+    runId?: string,
+    policy?: WorkflowExecutionPolicy,
+  ): Promise<WorkflowDetails> {
+    const directRunOptions = directOptions(args);
+    const baseRunOptions = runOptions(args, policy);
     const effectiveRunOptions = runId === undefined
       ? baseRunOptions
       : { ...baseRunOptions, runId };
+
     if (Array.isArray(args.chain)) {
-      return runChain(args.chain, directOptions(args), effectiveRunOptions);
+      return runChain(args.chain, directRunOptions, effectiveRunOptions);
     }
     if (Array.isArray(args.tasks)) {
-      return runParallel(args.tasks, directOptions(args), effectiveRunOptions);
+      return runParallel(args.tasks, directRunOptions, effectiveRunOptions);
     }
     if (args.task !== undefined && typeof args.task === "object") {
-      return runTask(args.task, directOptions(args), effectiveRunOptions);
+      return runTask(args.task, directRunOptions, effectiveRunOptions);
     }
     throw new Error("WorkflowRuntime.runDirect: no direct execution mode supplied");
   }
@@ -402,7 +419,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
     };
   }
 
-  async function runDirectAsync(args: WorkflowToolArgs): Promise<WorkflowDetails> {
+  async function runDirectAsync(args: WorkflowToolArgs, policy?: WorkflowExecutionPolicy): Promise<WorkflowDetails> {
     const runId = crypto.randomUUID();
     const mode = directMode(args);
     const delivery = effectiveIntercomDelivery(args, mode);
@@ -411,7 +428,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
     try {
       warnings = await validateWorkflowModels({
         requests: directModelRequests(args),
-        catalog: runOptions(args).models,
+        catalog: models,
       });
     } catch (error: unknown) {
       return withIntercomSummary({
@@ -423,10 +440,10 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
         error: classifyWorkflowFailure(error).userMessage,
       }, delivery, parentSession);
     }
-    const background = runDirectForeground(args, runId);
+    const background = runDirectForeground(args, runId, policy);
     void background.then(
       (details) => {
-        emitDirectIntercom(withIntercomSummary(details, delivery, parentSession), delivery, parentSession);
+        emitDirectIntercom(details, delivery, parentSession);
       },
       (error: unknown) => {
         const details: WorkflowDetails = withIntercomSummary({
@@ -455,18 +472,30 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
       return registry;
     },
 
-    dispatch(args: WorkflowToolArgs): Promise<WorkflowToolResult> {
-      return dispatch(args, { registry, adapters, store: activeStore, cancellation, persistence, mcp, config, models });
+    dispatch(args: WorkflowToolArgs, options?: RuntimeDispatchOptions): Promise<WorkflowToolResult> {
+      return dispatch(args, {
+        registry,
+        adapters,
+        store: activeStore,
+        cancellation,
+        jobs,
+        persistence,
+        mcp,
+        config,
+        models,
+        policy: options?.policy,
+      });
     },
 
-    runDirect(args: WorkflowToolArgs): Promise<WorkflowDetails> {
-      if (args.async === true) {
-        return runDirectAsync(args);
+    runDirect(args: WorkflowToolArgs, options?: RuntimeDispatchOptions): Promise<WorkflowDetails> {
+      const policy = options?.policy ?? INTERACTIVE_WORKFLOW_POLICY;
+      if (args.async === true && policy.awaitTerminalRun !== true) {
+        return runDirectAsync(args, policy);
       }
       const mode = directMode(args);
       const delivery = effectiveIntercomDelivery(args, mode);
       const parentSession = intercomParentSession(args);
-      return runDirectForeground(args).then((details) => {
+      return runDirectForeground(args, undefined, policy).then((details) => {
         const summarized = withIntercomSummary(details, delivery, parentSession);
         emitDirectIntercom(summarized, delivery, parentSession);
         return summarized;

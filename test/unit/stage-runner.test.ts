@@ -110,6 +110,7 @@ describe("createStageContext — prompt metadata propagation", () => {
       stageName: "Summarise",
       signal,
       stageOptions: undefined,
+      executionMode: undefined,
     });
   });
 
@@ -131,6 +132,19 @@ describe("createStageContext — prompt metadata propagation", () => {
     const ctx = createStageContext(makeOpts({ adapters: { prompt: promptAdapter } }));
     await ctx.prompt("go");
     assert.equal(received[0]?.signal, undefined);
+  });
+
+  test("prompt adapter receives executionMode from opts", async () => {
+    const received: StageExecutionMeta[] = [];
+    const promptAdapter: PromptAdapter = {
+      async prompt(_text, meta) { received.push(meta!); return "ok"; },
+    };
+    const ctx = createStageContext(makeOpts({
+      adapters: { prompt: promptAdapter },
+      executionMode: "non_interactive",
+    }));
+    await ctx.prompt("go");
+    assert.equal(received[0]?.executionMode, "non_interactive");
   });
 
   test("prompt outputMode=file-only writes full output and returns a saved-file reference", async () => {
@@ -232,6 +246,7 @@ describe("createStageContext — complete metadata propagation", () => {
       stageName: "Draft",
       signal,
       stageOptions: undefined,
+      executionMode: undefined,
     });
   });
 

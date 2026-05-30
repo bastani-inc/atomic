@@ -288,24 +288,28 @@ test("session_start warns when discovered workflows fail validation", async () =
 });
 
 // ---------------------------------------------------------------------------
-// Non-interactive (-p) mode: the `workflow` tool is removed from the model's
-// active tool set in session_start (ctx.hasUI === false). The host awaits
-// session_start during bindExtensions, before the first prompt, so the tool is
-// gone before the model's first turn.
+// Non-interactive (-p) mode: the `workflow` tool remains available so
+// deterministic non-HiL workflows can run through the tool or `/workflow`.
 // ---------------------------------------------------------------------------
 
-test("session_start de-advertises the workflow tool in non-interactive sessions", async () => {
-  const { handlers, setCalls } = captureHandlersWithActiveTools(["read", "bash", "workflow", "todos"]);
+test("session_start removes ask_user_question but keeps workflow in non-interactive sessions", async () => {
+  const { handlers, setCalls } = captureHandlersWithActiveTools([
+    "read",
+    "bash",
+    "workflow",
+    "ask_user_question",
+    "todo",
+  ]);
   const sessionStart = handlers.get("session_start");
   assert.notEqual(sessionStart, undefined);
 
   await sessionStart?.({ reason: "startup" }, { hasUI: false });
 
-  assert.deepEqual(setCalls, [["read", "bash", "todos"]]);
+  assert.deepEqual(setCalls, [["read", "bash", "workflow", "todo"]]);
 });
 
-test("session_start keeps the workflow tool when a UI is available", async () => {
-  const { handlers, setCalls } = captureHandlersWithActiveTools(["read", "workflow"]);
+test("session_start leaves active tools unchanged when a UI is available", async () => {
+  const { handlers, setCalls } = captureHandlersWithActiveTools(["read", "workflow", "ask_user_question"]);
   const sessionStart = handlers.get("session_start");
 
   await sessionStart?.({ reason: "startup" }, { hasUI: true });
@@ -313,8 +317,8 @@ test("session_start keeps the workflow tool when a UI is available", async () =>
   assert.deepEqual(setCalls, []);
 });
 
-test("session_start leaves the active tool set untouched when workflow is already absent", async () => {
-  const { handlers, setCalls } = captureHandlersWithActiveTools(["read", "bash"]);
+test("session_start leaves the active tool set untouched when ask_user_question is already absent", async () => {
+  const { handlers, setCalls } = captureHandlersWithActiveTools(["read", "bash", "workflow"]);
   const sessionStart = handlers.get("session_start");
 
   await sessionStart?.({ reason: "startup" }, { hasUI: false });

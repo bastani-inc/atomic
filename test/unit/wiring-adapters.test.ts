@@ -207,6 +207,34 @@ describe("buildRuntimeAdapters — SDK AgentSession adapter", () => {
     });
   });
 
+  test("interactive stage sessions exclude workflow but keep ask_user_question available", async () => {
+    const calls: Array<CreateAgentSessionOptions | undefined> = [];
+    const adapters = buildRuntimeAdapters({}, {
+      createAgentSession: async (options) => { calls.push(options); return { session: fakeSession() }; },
+    });
+
+    await adapters.agentSession!.create(
+      { cwd: "/tmp/project" },
+      { runId: "run-1", stageId: "stage-1", stageName: "Implement", executionMode: "interactive" },
+    );
+
+    assert.deepEqual(calls[0]?.excludedTools, ["workflow"]);
+  });
+
+  test("non-interactive stage sessions exclude ask_user_question", async () => {
+    const calls: Array<CreateAgentSessionOptions | undefined> = [];
+    const adapters = buildRuntimeAdapters({}, {
+      createAgentSession: async (options) => { calls.push(options); return { session: fakeSession() }; },
+    });
+
+    await adapters.agentSession!.create(
+      { cwd: "/tmp/project" },
+      { runId: "run-1", stageId: "stage-1", stageName: "Implement", executionMode: "non_interactive" },
+    );
+
+    assert.deepEqual(calls[0]?.excludedTools, ["workflow", "ask_user_question"]);
+  });
+
   test("agentSession.create forwards stage options unchanged (pi SDK leaves resource isolation to SettingsManager)", async () => {
     const calls: Array<CreateAgentSessionOptions | undefined> = [];
     const adapters = buildRuntimeAdapters({}, {

@@ -8,7 +8,14 @@
  * cross-ref: v0.x packages/atomic-sdk/src/define-workflow.ts
  */
 
-import type { WorkflowDefinition, WorkflowInputBindings, WorkflowInputSchema, WorkflowRunFn, WorkflowWorktreeInputBinding } from "../shared/types.js";
+import type {
+  WorkflowDefinition,
+  WorkflowInputBindings,
+  WorkflowInputSchema,
+  WorkflowInteractionMetadata,
+  WorkflowRunFn,
+  WorkflowWorktreeInputBinding,
+} from "../shared/types.js";
 import { normalizeWorkflowName } from "./identity.js";
 
 // ---------------------------------------------------------------------------
@@ -20,6 +27,7 @@ interface BuilderState<TInputs extends Record<string, unknown>> {
   readonly description: string;
   readonly inputs: Readonly<Record<string, WorkflowInputSchema>>;
   readonly inputBindings: WorkflowInputBindings;
+  readonly interaction: WorkflowInteractionMetadata;
   readonly runFn: WorkflowRunFn<TInputs> | undefined;
 }
 
@@ -48,6 +56,8 @@ export interface WorkflowBuilder<TInputs extends Record<string, unknown> = Recor
   ): WorkflowBuilder<TInputs & Record<K, unknown>>;
   /** Bind workflow inputs to reusable git worktree runtime defaults. */
   worktreeFromInputs(binding: WorkflowWorktreeInputBinding): WorkflowBuilder<TInputs>;
+  /** Mark this workflow as requiring human interaction when it runs. */
+  humanInTheLoop(reason?: string): WorkflowBuilder<TInputs>;
   /** Seal the run function.  Returns a builder on which .compile() is available. */
   run(fn: WorkflowRunFn<TInputs>): CompletedWorkflowBuilder<TInputs>;
 }
@@ -63,6 +73,7 @@ export interface CompletedWorkflowBuilder<TInputs extends Record<string, unknown
     schema: WorkflowInputSchema,
   ): CompletedWorkflowBuilder<TInputs & Record<K, unknown>>;
   worktreeFromInputs(binding: WorkflowWorktreeInputBinding): CompletedWorkflowBuilder<TInputs>;
+  humanInTheLoop(reason?: string): CompletedWorkflowBuilder<TInputs>;
   run(fn: WorkflowRunFn<TInputs>): CompletedWorkflowBuilder<TInputs>;
   /** Freeze and return the completed WorkflowDefinition. */
   compile(): WorkflowDefinition<TInputs>;
@@ -97,6 +108,16 @@ function makeBuilder<TInputs extends Record<string, unknown>>(
       });
     },
 
+    humanInTheLoop(reason?: string) {
+      return makeBuilder<TInputs>({
+        ...state,
+        interaction: Object.freeze({
+          humanInput: "required" as const,
+          ...(reason !== undefined ? { reason } : {}),
+        }),
+      });
+    },
+
     run(fn: WorkflowRunFn<TInputs>) {
       return makeBuilder<TInputs>({ ...state, runFn: fn });
     },
@@ -113,6 +134,7 @@ function makeBuilder<TInputs extends Record<string, unknown>>(
       // Deep-freeze inputs map first, then the top-level definition.
       const frozenInputs = Object.freeze({ ...state.inputs });
       const inputBindings = Object.freeze({ ...state.inputBindings });
+      const interaction = Object.freeze({ ...state.interaction });
 
       const definition: WorkflowDefinition<TInputs> = {
         __piWorkflow: true,
@@ -121,6 +143,7 @@ function makeBuilder<TInputs extends Record<string, unknown>>(
         description: state.description,
         inputs: frozenInputs,
         ...(Object.keys(inputBindings).length > 0 ? { inputBindings } : {}),
+        interaction,
         run: state.runFn,
       };
 
@@ -160,6 +183,7 @@ export function defineWorkflow(name: string): WorkflowBuilder {
     description: "",
     inputs: {},
     inputBindings: {},
+    interaction: Object.freeze({ humanInput: "none" }),
     runFn: undefined,
   };
 

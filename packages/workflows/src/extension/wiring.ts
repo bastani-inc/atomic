@@ -255,7 +255,14 @@ function withWorkflowStageSessionOptions(
 ): CreateAgentSessionOptions {
   // Workflow stage sessions should never see the workflow tool, even when older
   // meta-less callers cannot receive the richer runtime orchestration context.
-  const excludedTools = Array.from(new Set([...(options.excludedTools ?? []), "workflow"]));
+  // Non-interactive workflow runs also remove ask_user_question so child agents
+  // cannot block unattended automation on a prompt that no user can answer.
+  const policyExcludedTools = meta?.executionMode === "non_interactive"
+    ? ["workflow", "ask_user_question"]
+    : ["workflow"];
+  const excludedTools = Array.from(
+    new Set([...(options.excludedTools ?? []), ...policyExcludedTools]),
+  );
   return {
     ...options,
     excludedTools,
