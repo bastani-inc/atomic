@@ -1712,6 +1712,16 @@ function selectWorkflowOutputs(
     ...requestedMappings,
     ...requiredImplicitWorkflowOutputMappings(selectedChildKeys, declarations),
   ];
+  const selectedParentKeys = new Map<string, string>();
+  for (const { childKey, parentKey } of mappings) {
+    const previousChildKey = selectedParentKeys.get(parentKey);
+    if (previousChildKey !== undefined) {
+      throw new Error(
+        `pi-workflows: workflow "${parent.name}" import "${alias}" maps multiple outputs to parent output "${parentKey}" (${previousChildKey}, ${childKey})`,
+      );
+    }
+    selectedParentKeys.set(parentKey, childKey);
+  }
 
   for (const { childKey, parentKey } of mappings) {
     const schema: WorkflowOutputSchema | undefined = declarations?.[childKey];
@@ -1743,6 +1753,17 @@ function cloneWorkflowChildValue<T>(value: T): T {
 
 function workflowChildSerializationMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+function cloneWorkflowChildReplaySnapshot(snapshot: WorkflowChildReplaySnapshot): WorkflowChildReplaySnapshot {
+  return {
+    alias: snapshot.alias,
+    workflow: snapshot.workflow,
+    runId: snapshot.runId,
+    status: snapshot.status,
+    outputs: cloneWorkflowChildValue(snapshot.outputs),
+    ...(snapshot.rawOutput !== undefined ? { rawOutput: cloneWorkflowChildValue(snapshot.rawOutput) } : {}),
+  };
 }
 
 function workflowChildReplaySnapshot(
@@ -2111,11 +2132,11 @@ export async function run<TInputs extends Record<string, unknown>>(
         replayedFromStageId: replaySource.id,
         replayed: replayedChild !== undefined,
       } : {}),
-      ...(replayedChild !== undefined ? {
+      ...(replayedChild !== undefined && replayChildSnapshot !== undefined ? {
         endedAt: startedAt,
         durationMs: 0,
         ...(replayDecision.kind === "replay" && replayDecision.source.result !== undefined ? { result: replayDecision.source.result } : {}),
-        workflowChild: replayChildSnapshot,
+        workflowChild: cloneWorkflowChildReplaySnapshot(replayChildSnapshot),
       } : {}),
     };
     let finalized = false;
