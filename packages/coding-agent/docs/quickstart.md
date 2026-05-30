@@ -6,8 +6,7 @@ This page gets you from install to a useful first Atomic session.
 
 - **Node.js 24 LTS or newer** — Atomic requires the latest Node LTS runtime. Check with `node --version`.
 - **A package manager** — use npm (included with Node), pnpm, Yarn, or Bun. Use Bun 1.3.14+ for Bun installs or workflow-authoring examples.
-- **Model-provider access** — bring an API key or sign in with `/login` after startup.
-- **A compatible terminal** — for the best TUI experience, use a terminal with Kitty keyboard protocol support. See [Terminal setup](/terminal-setup). On Windows, use Git Bash or WSL.
+- **Model-provider access** — Use `/login` after startup. Supports provider subscriptions and APIs.
 
 ## Install
 
