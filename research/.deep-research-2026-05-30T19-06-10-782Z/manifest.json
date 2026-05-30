@@ -1,0 +1,19 @@
+{
+  "runId": "2026-05-30T19-06-10-782Z",
+  "startedAt": "2026-05-30T19:06:10.782Z",
+  "completedAt": "2026-05-30T19:06:10.926Z",
+  "researchQuestion": "test research question",
+  "finalAsset": "research/2026-05-30-test-research-question-19.md",
+  "artifacts": {
+    "codebase-scout": "research/.deep-research-2026-05-30T19-06-10-782Z/00-codebase-scout.md",
+    "partition": "research/.deep-research-2026-05-30T19-06-10-782Z/01-partition-plan.md",
+    "history-locator": "research/.deep-research-2026-05-30T19-06-10-782Z/01-history-locator.md",
+    "history-analyzer": "research/.deep-research-2026-05-30T19-06-10-782Z/02-history-analyzer.md",
+    "locator-1": "research/.deep-research-2026-05-30T19-06-10-782Z/locator-1.md",
+    "pattern-finder-1": "research/.deep-research-2026-05-30T19-06-10-782Z/pattern-finder-1.md",
+    "analyzer-1": "research/.deep-research-2026-05-30T19-06-10-782Z/analyzer-1.md",
+    "online-1": "research/.deep-research-2026-05-30T19-06-10-782Z/online-1.md",
+    "explorer-1": "research/.deep-research-2026-05-30T19-06-10-782Z/explorer-1.md",
+    "manifest": "research/.deep-research-2026-05-30T19-06-10-782Z/manifest.json"
+  }
+}

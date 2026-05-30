@@ -1,0 +1,24 @@
+{
+  "runId": "2026-05-30T19-08-13-746Z",
+  "startedAt": "2026-05-30T19:08:13.746Z",
+  "completedAt": "2026-05-30T19:08:13.869Z",
+  "researchQuestion": "pre-discovery-research",
+  "finalAsset": "research/2026-05-30-pre-discovery-research-3.md",
+  "artifacts": {
+    "codebase-scout": "research/.deep-research-2026-05-30T19-08-13-746Z/00-codebase-scout.md",
+    "partition": "research/.deep-research-2026-05-30T19-08-13-746Z/01-partition-plan.md",
+    "history-locator": "research/.deep-research-2026-05-30T19-08-13-746Z/01-history-locator.md",
+    "history-analyzer": "research/.deep-research-2026-05-30T19-08-13-746Z/02-history-analyzer.md",
+    "locator-1": "research/.deep-research-2026-05-30T19-08-13-746Z/locator-1.md",
+    "pattern-finder-1": "research/.deep-research-2026-05-30T19-08-13-746Z/pattern-finder-1.md",
+    "locator-2": "research/.deep-research-2026-05-30T19-08-13-746Z/locator-2.md",
+    "pattern-finder-2": "research/.deep-research-2026-05-30T19-08-13-746Z/pattern-finder-2.md",
+    "analyzer-1": "research/.deep-research-2026-05-30T19-08-13-746Z/analyzer-1.md",
+    "online-1": "research/.deep-research-2026-05-30T19-08-13-746Z/online-1.md",
+    "analyzer-2": "research/.deep-research-2026-05-30T19-08-13-746Z/analyzer-2.md",
+    "online-2": "research/.deep-research-2026-05-30T19-08-13-746Z/online-2.md",
+    "explorer-1": "research/.deep-research-2026-05-30T19-08-13-746Z/explorer-1.md",
+    "explorer-2": "research/.deep-research-2026-05-30T19-08-13-746Z/explorer-2.md",
+    "manifest": "research/.deep-research-2026-05-30T19-08-13-746Z/manifest.json"
+  }
+}
