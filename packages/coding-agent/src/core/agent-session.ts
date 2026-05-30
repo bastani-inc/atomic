@@ -195,7 +195,6 @@ interface DrainedAgentQueues {
 }
 
 interface HeldInterruptQueues {
-	readonly id: number;
 	readonly queues: DrainedAgentQueues;
 	cleared: boolean;
 	restored: boolean;
@@ -331,7 +330,6 @@ export class AgentSession {
 	private _followUpMessages: string[] = [];
 	/** Queue snapshots temporarily held out of pi-agent-core while an interrupt turn runs. */
 	private readonly _interruptHeldQueues = new Set<HeldInterruptQueues>();
-	private _nextHeldInterruptQueueId = 1;
 	/** Messages queued to be included with the next user prompt as context ("asides"). */
 	private _pendingNextTurnMessages: CustomMessage[] = [];
 
@@ -1461,12 +1459,10 @@ export class AgentSession {
 
 	private _holdQueuedAgentMessagesForInterrupt(): HeldInterruptQueues {
 		const heldQueues: HeldInterruptQueues = {
-			id: this._nextHeldInterruptQueueId,
 			queues: this._drainQueuedAgentMessages(),
 			cleared: false,
 			restored: false,
 		};
-		this._nextHeldInterruptQueueId += 1;
 		this._interruptHeldQueues.add(heldQueues);
 		return heldQueues;
 	}
