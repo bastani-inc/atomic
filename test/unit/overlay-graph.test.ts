@@ -21,6 +21,7 @@ import { renderNodeCard } from "../../packages/workflows/src/tui/node-card.js";
 import { renderSwitcher } from "../../packages/workflows/src/tui/switcher.js";
 import { BOLD, RESET } from "../../packages/workflows/src/tui/color-utils.js";
 import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.js";
+import { makeFakeKeybindings } from "../support/fake-keybindings.js";
 
 // ---------------------------------------------------------------------------
 // Mock helpers
@@ -952,6 +953,44 @@ describe("GraphView keyboard navigation", () => {
     assert.match(rendered, /enter to respond/);
     view.handleInput("\r");
     assert.deepEqual(onStageAttach.mock.calls[0], ["run-1", "input"]);
+    view.dispose();
+  });
+
+  it("honors remapped select keybindings for run-level prompt cards", () => {
+    const store = createStore();
+    store.recordRunStart(makeRun([makeStage("prompt-owner")]));
+    const prompt = {
+      id: "prompt-select-1",
+      kind: "select" as const,
+      message: "Choose a branch.",
+      choices: ["alpha", "beta", "gamma"],
+      createdAt: Date.now(),
+    };
+    assert.equal(store.recordPendingPrompt("run-1", prompt), true);
+    const resolved: Array<{ runId: string; promptId: string; response: unknown }> = [];
+    const view = new GraphView({
+      mode: "overlay",
+      runId: "run-1",
+      store,
+      graphTheme: defaultTheme,
+      getViewportRows: () => 32,
+      piKeybindings: makeFakeKeybindings({
+        "tui.select.down": ["d"],
+        "tui.select.confirm": ["s"],
+      }),
+      onPromptResolve: (runId, promptId, response) => {
+        resolved.push({ runId, promptId, response });
+        store.resolvePendingPrompt(runId, promptId, response);
+      },
+    });
+
+    assert.equal(view.handleInput("d"), true);
+    assert.deepEqual(resolved, []);
+    assert.equal(store.runs()[0]?.pendingPrompt?.id, prompt.id);
+
+    assert.equal(view.handleInput("s"), true);
+    assert.deepEqual(resolved, [{ runId: "run-1", promptId: prompt.id, response: "beta" }]);
+    assert.equal(store.runs()[0]?.pendingPrompt, undefined);
     view.dispose();
   });
 

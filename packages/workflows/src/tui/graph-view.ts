@@ -50,6 +50,7 @@ import {
   renderPromptCard,
   type PromptCardState,
 } from "./prompt-card.js";
+import { isKeybindingsLike, type KeybindingsLike } from "./keybindings-adapter.js";
 
 export type GraphViewMode = "overlay" | "widget";
 
@@ -115,6 +116,8 @@ export interface GraphViewOpts {
    * `overlay-adapter.ts`).
    */
   requestRender?: () => void;
+  /** Host Pi keybindings manager used by run-level prompt cards. */
+  piKeybindings?: unknown;
 }
 
 const HINT_KEYS: Array<{ key: string; label: string }> = [
@@ -177,6 +180,7 @@ export class GraphView implements Component {
   private initialFocusedStageId?: string;
   private getViewportRows?: () => number | undefined;
   private requestRender?: () => void;
+  private piKeybindings?: unknown;
 
   /** Active HIL prompt state, set when `_rebuildLayout` sees a new prompt id. */
   private promptState: PromptCardState | null = null;
@@ -211,6 +215,7 @@ export class GraphView implements Component {
     this.initialFocusedStageId = opts.initialFocusedStageId;
     this.getViewportRows = opts.getViewportRows;
     this.requestRender = opts.requestRender;
+    this.piKeybindings = opts.piKeybindings;
 
     this._unsubscribe = this.store.subscribe((snap) => {
       this.currentSnapshot = snap;
@@ -1094,6 +1099,10 @@ export class GraphView implements Component {
     return this._handleGraphInput(data);
   }
 
+  private _promptKeybindings(): KeybindingsLike | undefined {
+    return isKeybindingsLike(this.piKeybindings) ? this.piKeybindings : undefined;
+  }
+
   private _isNonTextGraphControlBeforePrompt(data: string): boolean {
     return (
       this._mouseWheelDeltaRows(data) !== 0 ||
@@ -1104,7 +1113,7 @@ export class GraphView implements Component {
   private _handlePromptInput(data: string): boolean {
     const state = this.promptState;
     if (!state) return false;
-    const action = handlePromptCardInput(data, state);
+    const action = handlePromptCardInput(data, state, this._promptKeybindings());
     if (action.kind === "noop") return true;
     const runId = this.runId;
     if (!runId) return true;

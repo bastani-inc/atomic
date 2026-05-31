@@ -66,7 +66,7 @@ import {
 import type { PendingPrompt, StageNotice, StageSnapshot, StageStatus } from "../shared/store-types.js";
 import type { GraphTheme } from "./graph-theme.js";
 import type { StageControlHandle } from "../runs/foreground/stage-control-registry.js";
-import { isKeybindingsLike } from "./keybindings-adapter.js";
+import { isKeybindingsLike, type KeybindingsLike } from "./keybindings-adapter.js";
 import { BOLD, RESET, hexBg, hexToAnsi, lerpColor } from "./color-utils.js";
 import { Key, matchesKey, visibleWidth } from "./text-helpers.js";
 import {
@@ -78,6 +78,7 @@ import {
   createPromptCardState,
   defaultResponseFor,
   handlePromptCardInput,
+  isPromptEscapeInput,
   renderPromptCard,
   type PromptCardState,
 } from "./prompt-card.js";
@@ -104,7 +105,7 @@ export interface StageChatViewOpts {
    */
   handle?: StageControlHandle;
   /** Called when the user presses Ctrl+D outside a paused stage (back to graph). */
-  onDetach: () => void;
+  onDetach: (reason?: StageChatDetachReason, metadata?: StageChatDetachMetadata) => void;
   /** Called when the user presses Escape (close the whole popup). */
   onClose: () => void;
   /** Request a host TUI repaint after SDK events mutate local chat state. */
@@ -148,6 +149,12 @@ export interface StageChatViewOpts {
  * that read `_transcript` (tests, future serialisers) can recover the
  * canonical user-visible string without knowing about the Pi-box payload.
  */
+export type StageChatDetachReason = "user" | "prompt-resolved";
+
+export interface StageChatDetachMetadata {
+  readonly suppressNextGraphSubmit?: boolean;
+}
+
 interface NoticeEntry {
   readonly role: "notice";
   readonly text: string;
@@ -193,7 +200,7 @@ export class StageChatView implements Component, Focusable {
   private stageId: string;
   private workflowName: string;
   private handle: StageControlHandle | undefined;
-  private onDetach: () => void;
+  private onDetach: (reason?: StageChatDetachReason, metadata?: StageChatDetachMetadata) => void;
   private onClose: () => void;
   private requestRender: (() => void) | undefined;
   private requestFocus: (() => void) | undefined;
@@ -210,6 +217,7 @@ export class StageChatView implements Component, Focusable {
   private promptState: PromptCardState | null = null;
   private promptEditor: EditorComponent | null = null;
   private promptEditorPromptId: string | null = null;
+  private promptEditorSubmitFromEnter = false;
   private promptScrollOffset = 0;
   private promptMaxScroll = 0;
   private getChatRenderSettings?: () =>
@@ -534,7 +542,9 @@ export class StageChatView implements Component, Focusable {
       this.requestRender?.();
     };
     editor.onSubmit = (text: string) => {
-      this._resolvePromptResponse(prompt.id, text);
+      this._resolvePromptResponse(prompt.id, text, {
+        suppressNextGraphSubmit: this.promptEditorSubmitFromEnter,
+      });
     };
     this.promptEditor = editor;
     this.promptEditorPromptId = prompt.id;
@@ -548,7 +558,11 @@ export class StageChatView implements Component, Focusable {
     disposable?.dispose?.();
   }
 
-  private _resolvePromptResponse(promptId: string, response: unknown): void {
+  private _resolvePromptResponse(
+    promptId: string,
+    response: unknown,
+    metadata: StageChatDetachMetadata = {},
+  ): void {
     const prompt = this.promptState?.prompt;
     if (!prompt || prompt.id !== promptId) return;
     this.promptState = null;
@@ -559,7 +573,7 @@ export class StageChatView implements Component, Focusable {
     // the least surprising recovery path.
     this.store.resolveStagePendingPrompt(this.runId, this.stageId, prompt.id, response);
     this.requestRender?.();
-    this.onDetach();
+    this.onDetach("prompt-resolved", metadata);
   }
 
   // -------------------------------------------------------------------------
@@ -668,13 +682,12 @@ export class StageChatView implements Component, Focusable {
       editorRows: customUiActive ? customUiLines.length : editorLines.length,
       footerRows: footerLines.length,
     });
-    const visiblePendingLines = pendingLines.slice(0, plan.pendingRows);
-    const visibleWorkingLines = workingLines.slice(0, plan.workingRows);
-    const visibleUsageLines = usageLines.slice(0, plan.usageRows);
-    const visibleEditorLines = customUiActive
-      ? customUiLines.slice(0, plan.editorRows)
-      : editorLines.slice(0, plan.editorRows);
-    const visibleFooterLines = footerLines.slice(0, plan.footerRows);
+    const visiblePendingLines = takeRows(pendingLines, plan.pendingRows);
+    const visibleWorkingLines = takeRows(workingLines, plan.workingRows);
+    const visibleUsageLines = takeRows(usageLines, plan.usageRows);
+    const editorSlotLines = customUiActive ? customUiLines : editorLines;
+    const visibleEditorLines = takeRows(editorSlotLines, plan.editorRows);
+    const visibleFooterLines = takeRows(footerLines, plan.footerRows);
     const bodyBudget = plan.bodyRows;
     if (blocked) this.chatHost.scrollToBottom();
 
@@ -1080,24 +1093,35 @@ export class StageChatView implements Component, Focusable {
     return true;
   }
 
+  private _promptKeybindings(): KeybindingsLike | undefined {
+    return isKeybindingsLike(this.piKeybindings) ? this.piKeybindings : undefined;
+  }
+
   private _handlePromptInput(data: string): void {
     const state = this.promptState;
     if (!state) return;
     if (this.promptEditor && this.promptEditorPromptId === state.prompt.id) {
-      if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"))) {
-        this._resolvePromptResponse(state.prompt.id, defaultResponseFor(state.prompt));
+      if (matchesKey(data, Key.ctrl("c"))) {
+        this._resolvePromptResponse(state.prompt.id, defaultResponseFor(state.prompt), {
+          suppressNextGraphSubmit: false,
+        });
+        return;
+      }
+      if (isPromptEscapeInput(data)) {
+        this.requestRender?.();
         return;
       }
       setEditorFocused(this.promptEditor, this.focused);
-      this.promptEditor.handleInput(data);
+      this.promptEditorSubmitFromEnter = matchesKey(data, Key.enter);
+      try {
+        this.promptEditor.handleInput(data);
+      } finally {
+        this.promptEditorSubmitFromEnter = false;
+      }
       this.requestRender?.();
       return;
     }
-    const action = handlePromptCardInput(
-      data,
-      state,
-      isKeybindingsLike(this.piKeybindings) ? this.piKeybindings : undefined,
-    );
+    const action = handlePromptCardInput(data, state, this._promptKeybindings());
     if (action.kind === "noop") {
       this.requestRender?.();
       return;
@@ -1106,7 +1130,9 @@ export class StageChatView implements Component, Focusable {
     const response = action.kind === "submit"
       ? action.response
       : defaultResponseFor(prompt);
-    this._resolvePromptResponse(prompt.id, response);
+    this._resolvePromptResponse(prompt.id, response, {
+      suppressNextGraphSubmit: action.kind === "submit" && matchesKey(data, Key.enter),
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -1541,6 +1567,10 @@ function editorThemeFromGraphTheme(t: GraphTheme): EditorTheme {
   } as EditorTheme;
 }
 
+function takeRows(lines: readonly string[], rows: number): string[] {
+  return lines.slice(0, rows);
+}
+
 interface PaintOpts {
   bold?: boolean;
   italic?: boolean;
@@ -1558,9 +1588,9 @@ function paint(text: string, fg: string, opts: PaintOpts = {}): string {
 
 function renderHintsForPrompt(kind: PendingPrompt["kind"], theme: GraphTheme): string {
   if (kind === "input" || kind === "editor") {
-    return `${paint("enter", theme.textMuted, { bold: true })} Submit · ${paint("esc/ctrl+c", theme.textMuted, { bold: true })} Skip`;
+    return `${paint("enter", theme.textMuted, { bold: true })} Submit · ${paint("ctrl+c", theme.textMuted, { bold: true })} Skip`;
   }
-  return `${paint("enter", theme.textMuted, { bold: true })} Select · ${paint("esc/ctrl+c", theme.textMuted, { bold: true })} Skip`;
+  return `${paint("enter", theme.textMuted, { bold: true })} Select · ${paint("ctrl+c", theme.textMuted, { bold: true })} Skip`;
 }
 
 /**

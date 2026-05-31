@@ -46,6 +46,8 @@ export const TUI_ACTION = {
   inputSubmit: "tui.input.submit",
   selectUp: "tui.select.up",
   selectDown: "tui.select.down",
+  selectPageUp: "tui.select.pageUp",
+  selectPageDown: "tui.select.pageDown",
   selectConfirm: "tui.select.confirm",
 } as const;
 

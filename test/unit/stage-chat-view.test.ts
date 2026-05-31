@@ -352,6 +352,93 @@ describe("StageChatView", () => {
     view.dispose();
   });
 
+  test("structured select prompt navigation stays pending until Enter", async () => {
+    const store = createStore();
+    setupRun(store, "run-1", "stage-a");
+    const prompt = makePendingPrompt({
+      kind: "select",
+      choices: ["alpha", "beta", "gamma"],
+    });
+    assert.equal(store.recordStagePendingPrompt("run-1", "stage-a", prompt), true);
+    let settled = false;
+    const pending = store.awaitStagePendingPrompt("run-1", "stage-a", prompt.id).then((value) => {
+      settled = true;
+      return value;
+    });
+    const { handle } = makeHandle();
+    let detached = 0;
+    const view = new StageChatView({
+      store,
+      graphTheme: deriveGraphTheme({}),
+      runId: "run-1",
+      stageId: "stage-a",
+      workflowName: "test-wf",
+      handle,
+      onDetach: () => { detached += 1; },
+      onClose: () => {},
+      piKeybindings: makeFakeKeybindings(),
+    });
+
+    assert.equal(view.handleInput("\x1b[B"), true);
+    assert.equal(view.handleInput("\x1b[A"), true);
+    assert.equal(view.handleInput("\x1b[C"), true);
+    await flush();
+    assert.equal(settled, false);
+    assert.equal(detached, 0);
+    assert.equal(store.runs()[0]?.stages[0]?.pendingPrompt?.id, prompt.id);
+
+    view.handleInput("\r");
+    assert.equal(await pending, "beta");
+    assert.equal(detached, 1);
+    assert.equal(store.runs()[0]?.stages[0]?.pendingPrompt, undefined);
+    view.dispose();
+  });
+
+  test("structured editor prompt navigation, scroll, and Escape stay pending", async () => {
+    const store = createStore();
+    setupRun(store, "run-1", "stage-a");
+    const prompt = makePendingPrompt({
+      kind: "editor",
+      initial: "line one\nline two",
+      message: "Edit before continuing.",
+    });
+    assert.equal(store.recordStagePendingPrompt("run-1", "stage-a", prompt), true);
+    let settled = false;
+    const pending = store.awaitStagePendingPrompt("run-1", "stage-a", prompt.id).then((value) => {
+      settled = true;
+      return value;
+    });
+    const { handle } = makeHandle();
+    let detached = 0;
+    const view = new StageChatView({
+      store,
+      graphTheme: deriveGraphTheme({}),
+      runId: "run-1",
+      stageId: "stage-a",
+      workflowName: "test-wf",
+      handle,
+      onDetach: () => { detached += 1; },
+      onClose: () => {},
+      piKeybindings: makeFakeKeybindings(),
+      getViewportRows: () => 12,
+    });
+
+    view.render(80);
+    for (const key of ["\x1b[A", "\x1b[B", "pageUp", "pageDown", "\x1b"]) {
+      assert.equal(view.handleInput(key), true, JSON.stringify(key));
+    }
+    await flush();
+    assert.equal(settled, false);
+    assert.equal(detached, 0);
+    assert.equal(store.runs()[0]?.stages[0]?.pendingPrompt?.id, prompt.id);
+
+    view.handleInput("\t");
+    view.handleInput("\r");
+    assert.equal(await pending, "line one\nline two");
+    assert.equal(detached, 1);
+    view.dispose();
+  });
+
   test("read-only completed prompt node keeps the question and response visible", () => {
     const store = createStore();
     setupRun(store, "run-1", "stage-a");
@@ -529,6 +616,60 @@ describe("StageChatView", () => {
     assert.deepEqual(createdEditor?.receivedInput, ["pageUp", "pageDown"]);
     view.dispose();
     assert.equal(createdEditor?.disposeCalls, 1);
+  });
+
+  test("host prompt editor consumes Escape without resolving", async () => {
+    const store = createStore();
+    setupRun(store, "run-1", "stage-a");
+    const prompt = makePendingPrompt({
+      kind: "editor",
+      initial: "seed",
+      message: "Edit a response before continuing.",
+    });
+    assert.equal(store.recordStagePendingPrompt("run-1", "stage-a", prompt), true);
+    let settled = false;
+    const pending = store.awaitStagePendingPrompt("run-1", "stage-a", prompt.id).then((value) => {
+      settled = true;
+      return value;
+    });
+    const { handle } = makeHandle();
+    let createdEditor: FakePromptEditor | undefined;
+    const view = new StageChatView({
+      store,
+      graphTheme: deriveGraphTheme({}),
+      runId: "run-1",
+      stageId: "stage-a",
+      workflowName: "test-wf",
+      handle,
+      onDetach: () => {},
+      onClose: () => {},
+      piTui: { requestRender: () => {}, terminal: { rows: 12, columns: 80 } } as unknown as TUI,
+      piTheme: {},
+      piKeybindings: makeFakeKeybindings(),
+      piEditorFactory: () => {
+        createdEditor = new FakePromptEditor();
+        return createdEditor;
+      },
+      getViewportRows: () => 12,
+    });
+
+    view.render(80);
+    assert.equal(view.handleInput("\x1b"), true);
+    await flush();
+    assert.equal(settled, false);
+    assert.deepEqual(createdEditor?.receivedInput, []);
+    assert.equal(store.runs()[0]?.stages[0]?.pendingPrompt?.id, prompt.id);
+
+    view.handleInput("pageUp");
+    view.handleInput("pageDown");
+    await flush();
+    assert.equal(settled, false);
+    assert.deepEqual(createdEditor?.receivedInput, ["pageUp", "pageDown"]);
+
+    view.handleInput("\x03");
+    assert.equal(await pending, "seed");
+    assert.equal(store.runs()[0]?.stages[0]?.pendingPrompt, undefined);
+    view.dispose();
   });
 
   test("scrolls long structured stage pending prompts", () => {

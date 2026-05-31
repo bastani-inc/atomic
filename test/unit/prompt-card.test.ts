@@ -73,18 +73,14 @@ describe("handlePromptCardInput — confirm", () => {
     assert.deepEqual(handlePromptCardInput("\r", state), { kind: "submit", response: true });
   });
 
-  test("esc variants and ctrl+c variants cancel", () => {
-    for (const key of [
-      "\x1b",
-      "\x1b[27u",
-      "\x1b[27;1;27~",
-      "\x03",
-      "\x1b[99;5u",
-      "\x1b[99;5:1u",
-      "\x1b[27;5;99~",
-    ]) {
+  test("ctrl+c variants cancel while Escape variants are consumed", () => {
+    for (const key of ["\x03", "\x1b[99;5u", "\x1b[99;5:1u", "\x1b[27;5;99~"]) {
       const state = createPromptCardState(makePrompt({ kind: "confirm" }));
       assert.deepEqual(handlePromptCardInput(key, state), { kind: "cancel" }, `key=${JSON.stringify(key)}`);
+    }
+    for (const key of ["\x1b", "\x1b[27u", "\x1b[27;1;27~"]) {
+      const state = createPromptCardState(makePrompt({ kind: "confirm" }));
+      assert.deepEqual(handlePromptCardInput(key, state), { kind: "noop" }, `key=${JSON.stringify(key)}`);
     }
   });
 });
@@ -92,12 +88,38 @@ describe("handlePromptCardInput — confirm", () => {
 describe("handlePromptCardInput — select", () => {
   test("arrow keys cycle the index without submitting", () => {
     const state = createPromptCardState(makePrompt({ kind: "select", choices: ["a", "b", "c"] }));
-    handlePromptCardInput("\x1b[B", state);
+    assert.deepEqual(handlePromptCardInput("\x1b[B", state), { kind: "noop" });
     assert.equal(state.selectedIndex, 1);
-    handlePromptCardInput("\x1b[B", state);
+    assert.deepEqual(handlePromptCardInput("\x1b[C", state), { kind: "noop" });
     assert.equal(state.selectedIndex, 2);
-    handlePromptCardInput("\x1b[B", state);
+    assert.deepEqual(handlePromptCardInput("\x1b[B", state), { kind: "noop" });
     assert.equal(state.selectedIndex, 0, "wraps at the end");
+    assert.deepEqual(handlePromptCardInput("\x1b[A", state), { kind: "noop" });
+    assert.equal(state.selectedIndex, 2, "wraps before the start");
+    assert.deepEqual(handlePromptCardInput("\x1b[D", state), { kind: "noop" });
+    assert.equal(state.selectedIndex, 1);
+  });
+
+  test("configured select keybindings navigate and submit deterministically", () => {
+    const state = createPromptCardState(makePrompt({ kind: "select", choices: ["a", "b", "c"] }));
+    const remapped = makeFakeKeybindings({
+      "tui.select.down": ["d"],
+      "tui.select.up": ["u"],
+      "tui.select.confirm": ["s"],
+    });
+
+    assert.deepEqual(handlePromptCardInput("d", state, remapped), { kind: "noop" });
+    assert.equal(state.selectedIndex, 1);
+    assert.deepEqual(handlePromptCardInput("u", state, remapped), { kind: "noop" });
+    assert.equal(state.selectedIndex, 0);
+    state.selectedIndex = 2;
+    assert.deepEqual(handlePromptCardInput("s", state, remapped), { kind: "submit", response: "c" });
+  });
+
+  test("bare Escape does not resolve select prompts", () => {
+    const state = createPromptCardState(makePrompt({ kind: "select", choices: ["a", "b"] }));
+    assert.deepEqual(handlePromptCardInput("\x1b", state), { kind: "noop" });
+    assert.equal(state.selectedIndex, 0);
   });
 
   test("enter submits the selected choice", () => {
@@ -183,6 +205,13 @@ describe("handlePromptCardInput — editor", () => {
     assert.equal(state.caret, 3);
     handlePromptCardInput("\x1b[B", state, keybindings);
     assert.equal(state.caret, 7);
+  });
+
+  test("bare Escape does not resolve editor prompts", () => {
+    const state = createPromptCardState(makePrompt({ kind: "editor", initial: "draft" }));
+    assert.deepEqual(handlePromptCardInput("\x1b", state, keybindings), { kind: "noop" });
+    assert.equal(state.rawText, "draft");
+    assert.equal(state.caret, "draft".length);
   });
 });
 

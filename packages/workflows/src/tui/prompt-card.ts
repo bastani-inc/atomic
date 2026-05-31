@@ -16,7 +16,7 @@
  *   │  │ <text input / choice cycler>          │    │
  *   │  ╰───────────────────────────────────────╯    │
  *   │                                               │
- *   │  ↵ submit · esc skip                          │
+ *   │  ↵ submit · ctrl+c skip                       │
  *   ╰───────────────────────────────────────────────╯
  *
  * cross-ref:
@@ -110,15 +110,22 @@ export function handlePromptCardInput(
   state: PromptCardState,
   keybindings?: KeybindingsLike,
 ): PromptCardAction {
-  if (matchesKey(data, Key.ctrl("c")) || matchesKey(data, Key.escape)) {
+  if (matchesKey(data, Key.ctrl("c"))) {
     return { kind: "cancel" };
+  }
+  // The Escape key shares its leading byte with arrow/navigation sequences in
+  // terminal raw mode. Treat Escape as a consumed no-op for prompt cards so a
+  // split prefix can never resolve a prompt to its default response; Ctrl+C is
+  // the explicit skip/default key for this surface.
+  if (isPromptEscapeInput(data)) {
+    return { kind: "noop" };
   }
 
   switch (state.prompt.kind) {
     case "confirm":
       return handleConfirm(data, state);
     case "select":
-      return handleSelect(data, state);
+      return handleSelect(data, state, keybindings);
     case "input":
       return handleInput(data, state, keybindings);
     case "editor":
@@ -126,18 +133,22 @@ export function handlePromptCardInput(
   }
 }
 
+export function isPromptEscapeInput(data: string): boolean {
+  return matchesKey(data, Key.escape);
+}
+
 function handleConfirm(
   data: string,
   state: PromptCardState,
 ): PromptCardAction {
-  if (matchesKey(data, Key.left) || matchesKey(data, Key.right) || matchesKey(data, Key.space) || matchesKey(data, Key.tab)) {
+  if (matchesAnyKey(data, [Key.left, Key.right, Key.space, Key.tab])) {
     state.confirmValue = !state.confirmValue;
     return { kind: "noop" };
   }
-  if (matchesKey(data, "y") || matchesKey(data, Key.shift("y"))) {
+  if (matchesAnyKey(data, ["y", Key.shift("y")])) {
     return { kind: "submit", response: true };
   }
-  if (matchesKey(data, "n") || matchesKey(data, Key.shift("n"))) {
+  if (matchesAnyKey(data, ["n", Key.shift("n")])) {
     return { kind: "submit", response: false };
   }
   if (matchesKey(data, Key.enter)) {
@@ -146,23 +157,29 @@ function handleConfirm(
   return { kind: "noop" };
 }
 
-function handleSelect(data: string, state: PromptCardState): PromptCardAction {
+function handleSelect(
+  data: string,
+  state: PromptCardState,
+  keybindings: KeybindingsLike | undefined,
+): PromptCardAction {
   const choices = state.prompt.choices ?? [];
   if (choices.length === 0) {
-    if (matchesKey(data, Key.enter)) {
+    if (matchesSelectSubmit(data, keybindings)) {
       return { kind: "submit", response: "" };
     }
     return { kind: "noop" };
   }
 
-  let action: PromptCardAction = { kind: "noop" };
-  const list = createPromptSelectList(state);
-  list.onSelect = (item) => {
-    const idx = Number(item.value);
-    action = { kind: "submit", response: choices[idx] ?? choices[0] };
-  };
-  list.handleInput(normalizeSelectKeyData(data));
-  return action;
+  state.selectedIndex = normalizeSelectIndex(state.selectedIndex, choices.length);
+  const movement = selectMovementDelta(data, keybindings, choices.length);
+  if (movement !== 0) {
+    state.selectedIndex = normalizeSelectIndex(state.selectedIndex + movement, choices.length);
+    return { kind: "noop" };
+  }
+  if (matchesSelectSubmit(data, keybindings)) {
+    return { kind: "submit", response: choices[state.selectedIndex] ?? choices[0] };
+  }
+  return { kind: "noop" };
 }
 
 function handleInput(
@@ -249,47 +266,30 @@ function applyTextEdit(
     return { kind: "noop" };
   }
   if (matchesAction(keybindings, data, "tui.editor.deleteWordBackward")) {
-    const start = wordLeft(state.rawText, caret);
-    const result = deleteRange(state.rawText, start, caret, caret);
-    state.rawText = result.text;
-    state.caret = result.caret;
+    applyDeleteRange(state, wordLeft(state.rawText, caret), caret, caret);
     return { kind: "noop" };
   }
   if (matchesAction(keybindings, data, "tui.editor.deleteWordForward")) {
-    const end = wordRight(state.rawText, caret);
-    const result = deleteRange(state.rawText, caret, end, caret);
-    state.rawText = result.text;
-    state.caret = result.caret;
+    applyDeleteRange(state, caret, wordRight(state.rawText, caret), caret);
     return { kind: "noop" };
   }
   if (matchesAction(keybindings, data, "tui.editor.deleteToLineStart")) {
-    const start = lineStart(state.rawText, caret);
-    const result = deleteRange(state.rawText, start, caret, caret);
-    state.rawText = result.text;
-    state.caret = result.caret;
+    applyDeleteRange(state, lineStart(state.rawText, caret), caret, caret);
     return { kind: "noop" };
   }
   if (matchesAction(keybindings, data, "tui.editor.deleteToLineEnd")) {
-    const end = lineEnd(state.rawText, caret);
-    const result = deleteRange(state.rawText, caret, end, caret);
-    state.rawText = result.text;
-    state.caret = result.caret;
+    applyDeleteRange(state, caret, lineEnd(state.rawText, caret), caret);
     return { kind: "noop" };
   }
   if (matchesTextAction(keybindings, data, "tui.editor.deleteCharBackward", Key.backspace)) {
     if (caret > 0) {
-      const prev = previousGraphemeBoundary(state.rawText, caret);
-      const result = deleteRange(state.rawText, prev, caret, caret);
-      state.rawText = result.text;
-      state.caret = result.caret;
+      applyDeleteRange(state, previousGraphemeBoundary(state.rawText, caret), caret, caret);
     }
     return { kind: "noop" };
   }
   if (matchesAction(keybindings, data, "tui.editor.deleteCharForward")) {
     if (caret < state.rawText.length) {
-      const result = deleteRange(state.rawText, caret, nextGraphemeBoundary(state.rawText, caret), caret);
-      state.rawText = result.text;
-      state.caret = result.caret;
+      applyDeleteRange(state, caret, nextGraphemeBoundary(state.rawText, caret), caret);
     }
     return { kind: "noop" };
   }
@@ -370,6 +370,19 @@ function matchesTextAction(
   fallback?: Parameters<typeof matchesKey>[1],
 ): boolean {
   return matchesAction(keybindings, data, action) || (fallback !== undefined && matchesKey(data, fallback));
+}
+
+function matchesAnyKey(
+  data: string,
+  keys: readonly Parameters<typeof matchesKey>[1][],
+): boolean {
+  return keys.some((key) => matchesKey(data, key));
+}
+
+function applyDeleteRange(state: PromptCardState, start: number, end: number, caret: number): void {
+  const result = deleteRange(state.rawText, start, end, caret);
+  state.rawText = result.text;
+  state.caret = result.caret;
 }
 
 function visualColumnAt(text: string, caret: number): number {
@@ -487,13 +500,48 @@ function normalizeSelectIndex(index: number, length: number): number {
   return ((n % length) + length) % length;
 }
 
-function normalizeSelectKeyData(data: string): string {
-  // The historical prompt card accepted left/right as select aliases; feed the
-  // corresponding vertical key into pi-tui's SelectList so it owns the actual
-  // wrap/clamp/selection update behavior.
-  if (matchesKey(data, Key.right)) return "\x1b[B";
-  if (matchesKey(data, Key.left)) return "\x1b[A";
-  return data;
+const SELECT_PAGE_STEP = 5;
+
+function selectMovementDelta(
+  data: string,
+  keybindings: KeybindingsLike | undefined,
+  choiceCount: number,
+): number {
+  if (
+    matchesAction(keybindings, data, TUI_ACTION.selectUp) ||
+    matchesKey(data, Key.up) ||
+    matchesKey(data, Key.left)
+  ) {
+    return -1;
+  }
+  if (
+    matchesAction(keybindings, data, TUI_ACTION.selectDown) ||
+    matchesKey(data, Key.down) ||
+    matchesKey(data, Key.right)
+  ) {
+    return 1;
+  }
+  const pageStep = Math.max(1, Math.min(SELECT_PAGE_STEP, choiceCount));
+  if (
+    matchesAction(keybindings, data, TUI_ACTION.selectPageUp) ||
+    matchesKey(data, "pageUp")
+  ) {
+    return -pageStep;
+  }
+  if (
+    matchesAction(keybindings, data, TUI_ACTION.selectPageDown) ||
+    matchesKey(data, "pageDown")
+  ) {
+    return pageStep;
+  }
+  return 0;
+}
+
+function matchesSelectSubmit(
+  data: string,
+  keybindings: KeybindingsLike | undefined,
+): boolean {
+  return matchesAction(keybindings, data, TUI_ACTION.selectConfirm) || matchesKey(data, Key.enter);
 }
 
 // ---------------------------------------------------------------------------
@@ -833,7 +881,7 @@ function renderHints(kind: PendingPrompt["kind"], theme: GraphTheme): string {
       sep +
       graphKeyHint("tui.input.submit", "Newline/Submit", theme) +
       sep +
-      graphKeyHint("tui.select.cancel", "Skip", theme)
+      graphRawKeyHint("ctrl+c", "Skip", theme)
     );
   }
   if (kind === "confirm") {
@@ -844,7 +892,7 @@ function renderHints(kind: PendingPrompt["kind"], theme: GraphTheme): string {
       sep +
       graphKeyHint("tui.select.confirm", "Submit", theme) +
       sep +
-      graphKeyHint("tui.select.cancel", "Skip", theme)
+      graphRawKeyHint("ctrl+c", "Skip", theme)
     );
   }
   if (kind === "select") {
@@ -853,8 +901,8 @@ function renderHints(kind: PendingPrompt["kind"], theme: GraphTheme): string {
       sep +
       graphKeyHint("tui.select.confirm", "Submit", theme) +
       sep +
-      graphKeyHint("tui.select.cancel", "Skip", theme)
+      graphRawKeyHint("ctrl+c", "Skip", theme)
     );
   }
-  return graphKeyHint("tui.input.submit", "Submit", theme) + sep + graphKeyHint("tui.select.cancel", "Skip", theme);
+  return graphKeyHint("tui.input.submit", "Submit", theme) + sep + graphRawKeyHint("ctrl+c", "Skip", theme);
 }

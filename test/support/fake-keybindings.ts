@@ -57,6 +57,8 @@ const DEFAULTS: Readonly<Record<string, readonly string[]>> = {
   // Select/list actions mirror pi-tui's SelectList bindings.
   "tui.select.up": ["\x1b[A"],
   "tui.select.down": ["\x1b[B"],
+  "tui.select.pageUp": ["\x1b[5~"],
+  "tui.select.pageDown": ["\x1b[6~"],
   "tui.select.confirm": ["\r", "\n"],
 };
 
