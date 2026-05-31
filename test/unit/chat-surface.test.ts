@@ -18,11 +18,60 @@ import {
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import {
   CHAT_SURFACE_CUSTOM_TYPE,
+  emitChatSurface,
   registerChatSurfaceRenderer,
+  renderChatSurfacePlainText,
+  type ChatSurfacePayload,
 } from "../../packages/workflows/src/tui/chat-surface-message.js";
+import type { RunDetail } from "../../packages/workflows/src/runs/background/status.js";
+import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
 const stripAnsi = (s: string) => s.replace(ANSI_RE, "");
+
+function printableRun(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
+  return {
+    id: "run-printable-1234567890",
+    name: "printable-workflow",
+    inputs: { prompt: "ship it" },
+    status: "completed",
+    stages: [
+      {
+        id: "stage-printable",
+        name: "plan",
+        status: "completed",
+        parentIds: [],
+        startedAt: 1_000,
+        endedAt: 2_000,
+        durationMs: 1_000,
+        result: "planned",
+        toolEvents: [],
+      },
+    ],
+    startedAt: 1_000,
+    endedAt: 2_000,
+    durationMs: 1_000,
+    result: { ok: true },
+    ...overrides,
+  };
+}
+
+function printableDetail(overrides: Partial<RunDetail> = {}): RunDetail {
+  const run = printableRun();
+  return {
+    runId: run.id,
+    name: run.name,
+    status: run.status,
+    mode: "single",
+    startedAt: run.startedAt,
+    endedAt: run.endedAt,
+    durationMs: run.durationMs,
+    inputs: run.inputs,
+    stages: run.stages,
+    result: run.result,
+    ...overrides,
+  };
+}
 
 describe("renderFlatBand", () => {
   test("themed: includes label, subtitle, badges on one line", () => {
@@ -217,6 +266,93 @@ describe("renderHintRows", () => {
 
   test("empty rows yields empty string", () => {
     assert.equal(renderHintRows([]), "");
+  });
+});
+
+describe("renderChatSurfacePlainText", () => {
+  test("renders printable content for every chat-surface payload kind", () => {
+    const run = printableRun();
+    const payloads: Array<{ payload: ChatSurfacePayload; patterns: RegExp[] }> = [
+      {
+        payload: {
+          kind: "list",
+          entries: [
+            {
+              name: "alpha-workflow",
+              description: "Alpha workflow description",
+              inputs: [{ name: "prompt", required: true }],
+            },
+          ],
+        },
+        patterns: [/WORKFLOWS/, /alpha-workflow/, /Alpha workflow description/, /prompt/],
+      },
+      {
+        payload: { kind: "status", runs: [run] },
+        patterns: [/BACKGROUND/, /printable-workflow/, /completed/, /run-printable-1234567890/],
+      },
+      {
+        payload: { kind: "detail", detail: printableDetail() },
+        patterns: [/RUN/, /printable-workflow/, /completed/, /prompt="ship it"/, /"ok":true/],
+      },
+      {
+        payload: {
+          kind: "dispatch",
+          workflowName: "dispatch-workflow",
+          runId: "dispatch-run-1234567890",
+          inputs: { prompt: "go", count: 2 },
+        },
+        patterns: [/DISPATCHED/, /dispatch-workflow/, /dispatch-run-1234567890/, /prompt="go"/, /count=2/],
+      },
+      {
+        payload: { kind: "killed", run, previousStatus: "running" },
+        patterns: [/Workflow killed/, /printable-workflow/, /run-printable-1234567890/, /running → killed/],
+      },
+    ];
+
+    for (const { payload, patterns } of payloads) {
+      const rendered = renderChatSurfacePlainText(payload, { width: 100, now: 3_000 });
+      assert.doesNotMatch(rendered, /\x1b\[/, `${payload.kind} fallback should be plain by default`);
+      for (const pattern of patterns) {
+        assert.match(rendered, pattern, `${payload.kind} fallback should match ${pattern}`);
+      }
+    }
+  });
+
+  test("emitChatSurface defaults content to printable text while preserving custom message metadata", () => {
+    const sent: Array<{
+      customType: string;
+      content: string;
+      display: boolean;
+      details: ChatSurfacePayload;
+    }> = [];
+    const payload: ChatSurfacePayload = {
+      kind: "list",
+      entries: [
+        {
+          name: "printable-list-workflow",
+          description: "Shown in print mode",
+          inputs: [{ name: "objective", required: true }],
+        },
+      ],
+    };
+
+    const pi = {
+      sendMessage: (message: (typeof sent)[number]) => { sent.push(message); },
+    } as never;
+
+    emitChatSurface(pi, payload);
+    emitChatSurface(pi, payload, { content: "custom fallback" });
+
+    assert.equal(sent[0]?.customType, CHAT_SURFACE_CUSTOM_TYPE);
+    assert.equal(sent[0]?.display, true);
+    assert.equal(sent[0]?.details, payload);
+    assert.match(sent[0]?.content ?? "", /WORKFLOWS/);
+    assert.match(sent[0]?.content ?? "", /printable-list-workflow/);
+    assert.doesNotMatch(sent[0]?.content ?? "", /^workflows · \d+ registered$/);
+    assert.equal(sent[1]?.content, "custom fallback");
+    assert.equal(sent[1]?.customType, CHAT_SURFACE_CUSTOM_TYPE);
+    assert.equal(sent[1]?.display, true);
+    assert.equal(sent[1]?.details, payload);
   });
 });
 

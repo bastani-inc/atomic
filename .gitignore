@@ -195,6 +195,7 @@ build/
 
 # Local generated review/debug artifacts at the repo root
 /artifacts/
+/research/
 
 # Auto-generated agent CLI configs in workspace packages
 # (the canonical configs live at the repo root)

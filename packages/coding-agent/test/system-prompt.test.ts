@@ -156,6 +156,13 @@ describe("buildSystemPrompt", () => {
 
 			expect(prompt).toContain("- **Workflows**:");
 			expect(prompt).toContain("prefer the `workflow` tool");
+			expect(prompt).toContain("create a workflow");
+			expect(prompt).toContain("clarifying questions");
+			expect(prompt).toContain("implement the workflow directly");
+			expect(prompt).toContain("do not use the `goal` workflow by default");
+			expect(prompt).toContain("Only use the `goal` workflow");
+			expect(prompt).toContain("workflow: \"goal\"");
+			expect(prompt).toContain("sleep/status polling loops");
 		});
 
 		test("omits workflow guidance when the workflow tool is excluded", () => {

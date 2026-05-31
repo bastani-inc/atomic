@@ -5,19 +5,19 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Agent } from "@earendil-works/pi-agent-core";
+import { Agent, type AgentMessage } from "@earendil-works/pi-agent-core";
 import {
 	type AssistantMessage,
 	type AssistantMessageEvent,
 	EventStream,
 	getModel,
-	type ImageContent,
 	type TextContent,
 } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
+import { convertToLlm } from "../src/core/messages.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
@@ -55,6 +55,51 @@ function createAssistantMessage(text: string): AssistantMessage {
 		},
 		stopReason: "stop",
 		timestamp: Date.now(),
+	};
+}
+
+async function waitFor(condition: () => boolean, timeoutMs = 500): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (!condition()) {
+		if (Date.now() > deadline) {
+			throw new Error("Timed out waiting for condition");
+		}
+		await new Promise((resolve) => setTimeout(resolve, 5));
+	}
+}
+
+interface PendingAgentMessageQueueForTest {
+	hasItems(): boolean;
+	drain(): AgentMessage[];
+}
+
+interface AgentQueueAccessForTest {
+	readonly steeringQueue?: PendingAgentMessageQueueForTest;
+	readonly followUpQueue?: PendingAgentMessageQueueForTest;
+}
+
+function textFromAgentMessage(message: AgentMessage): string {
+	if (typeof message.content === "string") {
+		return message.content;
+	}
+	return message.content
+		.filter((part): part is TextContent => typeof part === "object" && part !== null && part.type === "text")
+		.map((part) => part.text)
+		.join("\n");
+}
+
+function drainQueuedTexts(agent: Agent): { steering: string[]; followUp: string[] } {
+	const agentWithQueues = agent as unknown as AgentQueueAccessForTest;
+	const drain = (queue: PendingAgentMessageQueueForTest | undefined): string[] => {
+		const texts: string[] = [];
+		while (queue?.hasItems()) {
+			texts.push(...queue.drain().map(textFromAgentMessage));
+		}
+		return texts;
+	};
+	return {
+		steering: drain(agentWithQueues.steeringQueue),
+		followUp: drain(agentWithQueues.followUpQueue),
 	};
 }
 
@@ -201,16 +246,7 @@ describe("AgentSession concurrent prompt guard", () => {
 				queueMicrotask(() => {
 					const userTexts = context.messages
 						.filter((message) => message.role === "user")
-						.map((message) => {
-							if (typeof message.content === "string") {
-								return message.content;
-							}
-							return message.content
-								.filter((part): part is TextContent | ImageContent => typeof part === "object" && part !== null)
-								.filter((part): part is TextContent => part.type === "text")
-								.map((part) => part.text)
-								.join("\n");
-						});
+						.map(textFromAgentMessage);
 
 					if (userTexts.includes("Steer from extension")) {
 						sawSteeringMessage = true;
@@ -289,6 +325,531 @@ describe("AgentSession concurrent prompt guard", () => {
 		await firstPrompt.catch(() => {});
 
 		expect(sawSteeringMessage).toBe(true);
+	});
+
+	it("should interrupt a streaming turn for triggerTurn custom messages", async () => {
+		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		let abortObserved = false;
+		let interruptTurnStarted = false;
+		let finishInterruptTurn: (() => void) | undefined;
+		const userTurns: string[][] = [];
+
+		const agent = new Agent({
+			convertToLlm,
+			getApiKey: () => "test-key",
+			initialState: {
+				model,
+				systemPrompt: "Test",
+				tools: [],
+			},
+			streamFn: (_model, context, options) => {
+				const stream = new MockAssistantStream();
+				queueMicrotask(() => {
+					const userTexts = context.messages
+						.filter((message) => message.role === "user")
+						.map(textFromAgentMessage);
+					userTurns.push(userTexts);
+
+					const hasInterruptMessage = userTexts.some((text) =>
+						text.includes("The workflow prompt was answered"),
+					);
+					if (hasInterruptMessage) {
+						interruptTurnStarted = true;
+						stream.push({ type: "start", partial: createAssistantMessage("") });
+						finishInterruptTurn = () => {
+							stream.push({ type: "done", reason: "stop", message: createAssistantMessage("Interrupted") });
+						};
+						return;
+					}
+
+					if (userTexts.includes("Queued steer") || userTexts.includes("Queued follow-up")) {
+						stream.push({ type: "start", partial: createAssistantMessage("") });
+						stream.push({ type: "done", reason: "stop", message: createAssistantMessage("Queued") });
+						return;
+					}
+
+					stream.push({ type: "start", partial: createAssistantMessage("") });
+					const checkAbort = () => {
+						if (options?.signal?.aborted) {
+							abortObserved = true;
+							stream.push({ type: "error", reason: "aborted", error: createAssistantMessage("Aborted") });
+						} else {
+							setTimeout(checkAbort, 5);
+						}
+					};
+					checkAbort();
+				});
+				return stream;
+			},
+		});
+
+		const sessionManager = SessionManager.inMemory();
+		const settingsManager = SettingsManager.create(tempDir, tempDir);
+		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
+		const modelRegistry = ModelRegistry.create(authStorage, tempDir);
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+
+		session = new AgentSession({
+			agent,
+			sessionManager,
+			settingsManager,
+			cwd: tempDir,
+			modelRegistry,
+			resourceLoader: createTestResourceLoader(),
+		});
+
+		const abortSpy = vi.spyOn(session.agent, "abort");
+		const clearQueuesSpy = vi.spyOn(session.agent, "clearAllQueues");
+		const firstPrompt = session.prompt("First message");
+		await waitFor(() => session.isStreaming);
+
+		await session.steer("Queued steer");
+		await session.followUp("Queued follow-up");
+		expect(session.pendingMessageCount).toBe(2);
+
+		const interrupt = session.sendCustomMessage(
+			{
+				customType: "test:interrupt",
+				content: "The workflow prompt was answered. Do not ask again.",
+				display: true,
+			},
+			{ triggerTurn: true, deliverAs: "interrupt" },
+		);
+
+		await waitFor(() => interruptTurnStarted && abortObserved);
+		expect(abortSpy).toHaveBeenCalledTimes(1);
+		expect(clearQueuesSpy).not.toHaveBeenCalled();
+		expect(session.pendingMessageCount).toBe(2);
+
+		finishInterruptTurn?.();
+		await interrupt;
+		await firstPrompt.catch(() => {});
+
+		expect(userTurns.some((turn) => turn.includes("Queued steer"))).toBe(false);
+		expect(session.pendingMessageCount).toBe(2);
+		expect(session.agent.hasQueuedMessages()).toBe(true);
+		session.clearQueue();
+	});
+
+
+	it("should deliver concurrent interrupt custom messages serially", async () => {
+		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const startedInterrupts: string[] = [];
+		const finishInterrupts: Array<() => void> = [];
+
+		const agent = new Agent({
+			convertToLlm,
+			getApiKey: () => "test-key",
+			initialState: {
+				model,
+				systemPrompt: "Test",
+				tools: [],
+			},
+			streamFn: (_model, context, options) => {
+				const stream = new MockAssistantStream();
+				queueMicrotask(() => {
+					const userTexts = context.messages
+						.filter((message) => message.role === "user")
+						.map(textFromAgentMessage);
+					const interruptText = userTexts.findLast((text) => text.includes("Interrupt notice"));
+					if (interruptText) {
+						startedInterrupts.push(interruptText);
+						stream.push({ type: "start", partial: createAssistantMessage("") });
+						finishInterrupts.push(() => {
+							stream.push({ type: "done", reason: "stop", message: createAssistantMessage("Interrupted") });
+						});
+						return;
+					}
+
+					stream.push({ type: "start", partial: createAssistantMessage("") });
+					const checkAbort = () => {
+						if (options?.signal?.aborted) {
+							stream.push({ type: "error", reason: "aborted", error: createAssistantMessage("Aborted") });
+						} else {
+							setTimeout(checkAbort, 5);
+						}
+					};
+					checkAbort();
+				});
+				return stream;
+			},
+		});
+
+		const sessionManager = SessionManager.inMemory();
+		const settingsManager = SettingsManager.create(tempDir, tempDir);
+		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
+		const modelRegistry = ModelRegistry.create(authStorage, tempDir);
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+
+		session = new AgentSession({
+			agent,
+			sessionManager,
+			settingsManager,
+			cwd: tempDir,
+			modelRegistry,
+			resourceLoader: createTestResourceLoader(),
+		});
+
+		const firstPrompt = session.prompt("First message");
+		await waitFor(() => session.isStreaming);
+
+		const firstInterrupt = session.sendCustomMessage(
+			{ customType: "test:interrupt", content: "Interrupt notice 1", display: true },
+			{ triggerTurn: true, deliverAs: "interrupt" },
+		);
+		const secondInterrupt = session.sendCustomMessage(
+			{ customType: "test:interrupt", content: "Interrupt notice 2", display: true },
+			{ triggerTurn: true, deliverAs: "interrupt" },
+		);
+
+		await waitFor(() => startedInterrupts.length === 1 && finishInterrupts.length === 1);
+		expect(startedInterrupts[0]).toContain("Interrupt notice 1");
+		expect(startedInterrupts).toHaveLength(1);
+
+		finishInterrupts[0]?.();
+		await waitFor(() => startedInterrupts.length === 2 && finishInterrupts.length === 2);
+		expect(startedInterrupts[1]).toContain("Interrupt notice 2");
+
+		finishInterrupts[1]?.();
+		await Promise.all([firstInterrupt, secondInterrupt]);
+		await firstPrompt.catch(() => {});
+	});
+
+	it("should restore messages queued before and during interrupt in FIFO order", async () => {
+		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		let interruptTurnStarted = false;
+		let finishInterruptTurn: (() => void) | undefined;
+
+		const agent = new Agent({
+			convertToLlm,
+			getApiKey: () => "test-key",
+			initialState: {
+				model,
+				systemPrompt: "Test",
+				tools: [],
+			},
+			streamFn: (_model, context, options) => {
+				const stream = new MockAssistantStream();
+				queueMicrotask(() => {
+					const userTexts = context.messages
+						.filter((message) => message.role === "user")
+						.map(textFromAgentMessage);
+					if (userTexts.some((text) => text.includes("Interrupt notice"))) {
+						interruptTurnStarted = true;
+						stream.push({ type: "start", partial: createAssistantMessage("") });
+						finishInterruptTurn = () => {
+							stream.push({ type: "done", reason: "stop", message: createAssistantMessage("Interrupted") });
+						};
+						return;
+					}
+
+					stream.push({ type: "start", partial: createAssistantMessage("") });
+					const checkAbort = () => {
+						if (options?.signal?.aborted) {
+							stream.push({ type: "error", reason: "aborted", error: createAssistantMessage("Aborted") });
+						} else {
+							setTimeout(checkAbort, 5);
+						}
+					};
+					checkAbort();
+				});
+				return stream;
+			},
+		});
+
+		const sessionManager = SessionManager.inMemory();
+		const settingsManager = SettingsManager.create(tempDir, tempDir);
+		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
+		const modelRegistry = ModelRegistry.create(authStorage, tempDir);
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+
+		session = new AgentSession({
+			agent,
+			sessionManager,
+			settingsManager,
+			cwd: tempDir,
+			modelRegistry,
+			resourceLoader: createTestResourceLoader(),
+		});
+
+		const firstPrompt = session.prompt("First message");
+		await waitFor(() => session.isStreaming);
+		await session.steer("Queued A");
+
+		const interrupt = session.sendCustomMessage(
+			{ customType: "test:interrupt", content: "Interrupt notice", display: true },
+			{ triggerTurn: true, deliverAs: "interrupt" },
+		);
+		await waitFor(() => interruptTurnStarted);
+		await session.steer("Queued B");
+
+		finishInterruptTurn?.();
+		await interrupt;
+		await firstPrompt.catch(() => {});
+
+		expect(session.pendingMessageCount).toBe(2);
+		expect(drainQueuedTexts(session.agent)).toEqual({ steering: ["Queued A", "Queued B"], followUp: [] });
+	});
+
+	it("should hold messages queued immediately after interrupt enqueue before the interrupt turn starts", async () => {
+		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		let interruptTurnStarted = false;
+		let finishInterruptTurn: (() => void) | undefined;
+
+		const agent = new Agent({
+			convertToLlm,
+			getApiKey: () => "test-key",
+			initialState: {
+				model,
+				systemPrompt: "Test",
+				tools: [],
+			},
+			streamFn: (_model, context, options) => {
+				const stream = new MockAssistantStream();
+				queueMicrotask(() => {
+					const userTexts = context.messages
+						.filter((message) => message.role === "user")
+						.map(textFromAgentMessage);
+					if (userTexts.some((text) => text.includes("Interrupt notice"))) {
+						interruptTurnStarted = true;
+						stream.push({ type: "start", partial: createAssistantMessage("") });
+						finishInterruptTurn = () => {
+							stream.push({ type: "done", reason: "stop", message: createAssistantMessage("Interrupted") });
+						};
+						return;
+					}
+
+					stream.push({ type: "start", partial: createAssistantMessage("") });
+					const checkAbort = () => {
+						if (options?.signal?.aborted) {
+							stream.push({ type: "error", reason: "aborted", error: createAssistantMessage("Aborted") });
+						} else {
+							setTimeout(checkAbort, 5);
+						}
+					};
+					checkAbort();
+				});
+				return stream;
+			},
+		});
+
+		const sessionManager = SessionManager.inMemory();
+		const settingsManager = SettingsManager.create(tempDir, tempDir);
+		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
+		const modelRegistry = ModelRegistry.create(authStorage, tempDir);
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+
+		session = new AgentSession({
+			agent,
+			sessionManager,
+			settingsManager,
+			cwd: tempDir,
+			modelRegistry,
+			resourceLoader: createTestResourceLoader(),
+		});
+
+		const firstPrompt = session.prompt("First message");
+		await waitFor(() => session.isStreaming);
+		await session.steer("Queued A");
+
+		const steerSpy = vi.spyOn(session.agent, "steer");
+		const followUpSpy = vi.spyOn(session.agent, "followUp");
+		const interrupt = session.sendCustomMessage(
+			{ customType: "test:interrupt", content: "Interrupt notice", display: true },
+			{ triggerTurn: true, deliverAs: "interrupt" },
+		);
+
+		await session.steer("Queued B");
+		await session.followUp("Queued C");
+		await session.sendCustomMessage(
+			{ customType: "test:queued-custom", content: "Queued custom follow-up", display: true },
+			{ deliverAs: "followUp" },
+		);
+
+		expect(steerSpy).not.toHaveBeenCalled();
+		expect(followUpSpy).not.toHaveBeenCalled();
+		await waitFor(() => interruptTurnStarted);
+
+		finishInterruptTurn?.();
+		await interrupt;
+		await firstPrompt.catch(() => {});
+
+		expect(session.pendingMessageCount).toBe(3);
+		expect(drainQueuedTexts(session.agent)).toEqual({
+			steering: ["Queued A", "Queued B"],
+			followUp: ["Queued C", "Queued custom follow-up"],
+		});
+	});
+
+	it("should restore only messages queued after clearQueue during an interrupt", async () => {
+		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		let interruptTurnStarted = false;
+		let finishInterruptTurn: (() => void) | undefined;
+
+		const agent = new Agent({
+			convertToLlm,
+			getApiKey: () => "test-key",
+			initialState: {
+				model,
+				systemPrompt: "Test",
+				tools: [],
+			},
+			streamFn: (_model, context, options) => {
+				const stream = new MockAssistantStream();
+				queueMicrotask(() => {
+					const userTexts = context.messages
+						.filter((message) => message.role === "user")
+						.map(textFromAgentMessage);
+					if (userTexts.some((text) => text.includes("Interrupt notice"))) {
+						interruptTurnStarted = true;
+						stream.push({ type: "start", partial: createAssistantMessage("") });
+						finishInterruptTurn = () => {
+							stream.push({ type: "done", reason: "stop", message: createAssistantMessage("Interrupted") });
+						};
+						return;
+					}
+
+					stream.push({ type: "start", partial: createAssistantMessage("") });
+					const checkAbort = () => {
+						if (options?.signal?.aborted) {
+							stream.push({ type: "error", reason: "aborted", error: createAssistantMessage("Aborted") });
+						} else {
+							setTimeout(checkAbort, 5);
+						}
+					};
+					checkAbort();
+				});
+				return stream;
+			},
+		});
+
+		const sessionManager = SessionManager.inMemory();
+		const settingsManager = SettingsManager.create(tempDir, tempDir);
+		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
+		const modelRegistry = ModelRegistry.create(authStorage, tempDir);
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+
+		session = new AgentSession({
+			agent,
+			sessionManager,
+			settingsManager,
+			cwd: tempDir,
+			modelRegistry,
+			resourceLoader: createTestResourceLoader(),
+		});
+
+		const firstPrompt = session.prompt("First message");
+		await waitFor(() => session.isStreaming);
+		await session.steer("Queued A");
+
+		const interrupt = session.sendCustomMessage(
+			{ customType: "test:interrupt", content: "Interrupt notice", display: true },
+			{ triggerTurn: true, deliverAs: "interrupt" },
+		);
+		await waitFor(() => interruptTurnStarted);
+
+		expect(session.clearQueue()).toEqual({ steering: ["Queued A"], followUp: [] });
+		await session.steer("Queued C");
+
+		finishInterruptTurn?.();
+		await interrupt;
+		await firstPrompt.catch(() => {});
+
+		expect(session.pendingMessageCount).toBe(1);
+		expect(drainQueuedTexts(session.agent)).toEqual({ steering: ["Queued C"], followUp: [] });
+	});
+
+	it("should clear interrupt-held queues while the interrupt custom-message turn is pending", async () => {
+		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		let abortObserved = false;
+		let interruptTurnStarted = false;
+		let finishInterruptTurn: (() => void) | undefined;
+
+		const agent = new Agent({
+			convertToLlm,
+			getApiKey: () => "test-key",
+			initialState: {
+				model,
+				systemPrompt: "Test",
+				tools: [],
+			},
+			streamFn: (_model, context, options) => {
+				const stream = new MockAssistantStream();
+				queueMicrotask(() => {
+					const userTexts = context.messages
+						.filter((message) => message.role === "user")
+						.map(textFromAgentMessage);
+
+					const hasInterruptMessage = userTexts.some((text) =>
+						text.includes("The workflow prompt was answered"),
+					);
+					if (hasInterruptMessage) {
+						interruptTurnStarted = true;
+						stream.push({ type: "start", partial: createAssistantMessage("") });
+						finishInterruptTurn = () => {
+							stream.push({ type: "done", reason: "stop", message: createAssistantMessage("Interrupted") });
+						};
+						return;
+					}
+
+					stream.push({ type: "start", partial: createAssistantMessage("") });
+					const checkAbort = () => {
+						if (options?.signal?.aborted) {
+							abortObserved = true;
+							stream.push({ type: "error", reason: "aborted", error: createAssistantMessage("Aborted") });
+						} else {
+							setTimeout(checkAbort, 5);
+						}
+					};
+					checkAbort();
+				});
+				return stream;
+			},
+		});
+
+		const sessionManager = SessionManager.inMemory();
+		const settingsManager = SettingsManager.create(tempDir, tempDir);
+		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
+		const modelRegistry = ModelRegistry.create(authStorage, tempDir);
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+
+		session = new AgentSession({
+			agent,
+			sessionManager,
+			settingsManager,
+			cwd: tempDir,
+			modelRegistry,
+			resourceLoader: createTestResourceLoader(),
+		});
+
+		const firstPrompt = session.prompt("First message");
+		await waitFor(() => session.isStreaming);
+
+		await session.steer("Queued steer");
+		await session.followUp("Queued follow-up");
+		expect(session.pendingMessageCount).toBe(2);
+
+		const interrupt = session.sendCustomMessage(
+			{
+				customType: "test:interrupt",
+				content: "The workflow prompt was answered. Do not ask again.",
+				display: true,
+			},
+			{ triggerTurn: true, deliverAs: "interrupt" },
+		);
+
+		await waitFor(() => interruptTurnStarted && abortObserved);
+
+		const cleared = session.clearQueue();
+		expect(cleared).toEqual({ steering: ["Queued steer"], followUp: ["Queued follow-up"] });
+		expect(session.pendingMessageCount).toBe(0);
+
+		finishInterruptTurn?.();
+		await interrupt;
+		await firstPrompt.catch(() => {});
+
+		expect(session.pendingMessageCount).toBe(0);
+		expect(session.agent.hasQueuedMessages()).toBe(false);
 	});
 
 	it("should allow prompt() after previous completes", async () => {

@@ -494,21 +494,28 @@ export class StageChatView implements Component, Focusable {
 
   private _syncPromptState(prompt: PendingPrompt | undefined): boolean {
     if (!prompt) {
-      const changed = this.promptState !== null;
+      const hadLivePrompt =
+        this.promptState !== null ||
+        this.promptEditor !== null ||
+        this.promptEditorPromptId !== null;
+      if (!hadLivePrompt) return false;
       this.promptState = null;
       this._disposePromptEditor();
-      this.promptScrollOffset = 0;
-      this.promptMaxScroll = 0;
-      return changed;
+      this._resetPromptScroll();
+      return true;
     }
     if (!this.promptState || this.promptState.prompt.id !== prompt.id) {
       this.promptState = createPromptCardState(prompt);
       this._resetPromptEditor(prompt);
-      this.promptScrollOffset = 0;
-      this.promptMaxScroll = 0;
+      this._resetPromptScroll();
       return true;
     }
     return false;
+  }
+
+  private _resetPromptScroll(): void {
+    this.promptScrollOffset = 0;
+    this.promptMaxScroll = 0;
   }
 
   private _resetPromptEditor(prompt: PendingPrompt): void {
@@ -546,6 +553,7 @@ export class StageChatView implements Component, Focusable {
     if (!prompt || prompt.id !== promptId) return;
     this.promptState = null;
     this._disposePromptEditor();
+    this._resetPromptScroll();
     // A false return means the prompt was already resolved/removed (for
     // example by run abort). The local UI is already stale, so clearing it is
     // the least surprising recovery path.
@@ -1137,7 +1145,10 @@ export class StageChatView implements Component, Focusable {
       this.requestRender?.();
       return true;
     }
-    this._syncPromptState(this._currentStage()?.pendingPrompt);
+    const stage = this._currentStage();
+    this._syncPromptState(stage?.pendingPrompt);
+    const readOnlyArchive = this._isReadOnlyArchive(stage);
+    const readOnlyPromptArchive = readOnlyArchive && stage?.promptFootprint !== undefined;
     if (matchesKey(data, Key.ctrl("d"))) {
       if (!this.promptState && this.chatHost.hasInputText()) return this.chatHost.handleInput(data);
       if (this._isPaused()) this.onClose();
@@ -1147,6 +1158,9 @@ export class StageChatView implements Component, Focusable {
     if (this.promptState) {
       if (this._handlePromptScrollInput(data, this.promptEditor === null)) return true;
       this._handlePromptInput(data);
+      return true;
+    }
+    if (readOnlyPromptArchive && this._handlePromptScrollInput(data, true)) {
       return true;
     }
     if (this.chatHost.handleScrollInput(data)) {
@@ -1167,7 +1181,6 @@ export class StageChatView implements Component, Focusable {
       this.onClose();
       return true;
     }
-    const readOnlyArchive = this._isReadOnlyArchive();
     if (readOnlyArchive) return true;
     const blocked = this._isBlocked();
     if (matchesKey(data, Key.ctrl("f"))) {

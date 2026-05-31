@@ -15,11 +15,15 @@
 
 import { afterEach, describe, test } from "bun:test";
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   parseWorkflowArgs,
   tokenizeWorkflowArgs,
   makeExecuteWorkflowTool,
-  WORKFLOW_NON_INTERACTIVE_MESSAGE,
+  workflowPolicyFromContext,
+  WORKFLOW_COMMAND_OUTPUT_CUSTOM_TYPE,
 } from "../../packages/workflows/src/extension/index.js";
 import { renderResult } from "../../packages/workflows/src/extension/render-result.js";
 import type { WorkflowToolResult } from "../../packages/workflows/src/extension/render-result.js";
@@ -35,9 +39,11 @@ import { createRegistry } from "../../packages/workflows/src/workflows/registry.
 import { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
 import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
 import { createExtensionRuntime, type ExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
+import type { ChatSurfacePayload } from "../../packages/workflows/src/tui/chat-surface-message.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
 import { WORKFLOW_STAGE_SUBAGENT_GUARD_ENV } from "@bastani/atomic";
 import { WORKFLOW_AUTH_FAILURE_MESSAGE } from "../../packages/workflows/src/shared/workflow-failures.js";
+import { LIFECYCLE_NOTICE_CUSTOM_TYPE } from "../../packages/workflows/src/extension/lifecycle-notifications.js";
 import type {
   PiCustomComponent,
   PiCustomOverlayFactoryTui,
@@ -527,7 +533,7 @@ describe("inputs subcommand", () => {
   });
 
   test("/workflow inputs <known> shows schema", async () => {
-    const { pi, commands } = buildMockPi();
+    const { pi, commands, sent } = buildMockPi();
     await runFactory(pi);
 
     const workflowCmd = commands.find((c) => c.name === "workflow");
@@ -536,6 +542,11 @@ describe("inputs subcommand", () => {
 
     assert.ok(!messages[0].includes("Workflow not found"));
     assert.ok(messages[0].includes("ralph"));
+    assert.equal(
+      sent.some((message) => message.customType === WORKFLOW_COMMAND_OUTPUT_CUSTOM_TYPE),
+      false,
+      "interactive schema output should continue using ctx.ui.notify",
+    );
   });
 });
 
@@ -577,7 +588,7 @@ describe("/workflow <name> prompt=test dispatches run via factory", () => {
 
 describe("/workflow <name> --help prints schema without dispatching", () => {
   test("--help token short-circuits to the schema printer", async () => {
-    const { pi, commands } = buildMockPi();
+    const { pi, commands, sent } = buildMockPi();
     await runFactory(pi);
 
     const workflowCmd = commands.find((c) => c.name === "workflow");
@@ -589,6 +600,11 @@ describe("/workflow <name> --help prints schema without dispatching", () => {
     assert.ok(
       messages.some((m) => /INPUTS FOR DEEP-RESEARCH-CODEBASE|Inputs for "deep-research-codebase":/.test(m)),
       `expected schema header in messages; got: ${JSON.stringify(messages)}`,
+    );
+    assert.equal(
+      sent.some((message) => message.customType === WORKFLOW_COMMAND_OUTPUT_CUSTOM_TYPE),
+      false,
+      "interactive help output should continue using ctx.ui.notify",
     );
     // Should NOT have a run completion/failure line
     assert.equal(
@@ -747,6 +763,31 @@ function recordTerminalRun(
   }
 }
 
+function registerTestStageHandle(
+  runId: string,
+  stageId: string,
+  status: StageControlHandle["status"] = "running",
+): void {
+  const handle: StageControlHandle = {
+    runId,
+    stageId,
+    stageName: "worker",
+    status,
+    sessionId: undefined,
+    sessionFile: undefined,
+    isStreaming: false,
+    messages: [],
+    async ensureAttached(): Promise<void> {},
+    async prompt(): Promise<void> {},
+    async steer(): Promise<void> {},
+    async followUp(): Promise<void> {},
+    async pause(): Promise<void> {},
+    async resume(): Promise<void> {},
+    subscribe: () => () => {},
+  };
+  stageControlRegistry.register(handle);
+}
+
 describe("/workflow interrupt chat command", () => {
   test.each([
     ["completed"],
@@ -825,7 +866,7 @@ describe("/workflow interrupt chat command", () => {
 
     const joined = messages.join("\n");
     assert.match(joined, /old-connect-terminal/);
-    assert.match(joined, /Picker requires a UI surface/);
+    assert.match(joined, /Picker requires an interactive UI surface/);
   });
 
   test("/workflow attach no-custom-UI fallback includes older retained terminal runs", async () => {
@@ -843,7 +884,7 @@ describe("/workflow interrupt chat command", () => {
 
     const joined = messages.join("\n");
     assert.match(joined, /old-attach-terminal/);
-    assert.match(joined, /Picker requires a UI surface/);
+    assert.match(joined, /Picker requires an interactive UI surface/);
   });
 
   test("top-level /workflow kill <id> kills and retains run without requiring confirmation", async () => {
@@ -1120,6 +1161,23 @@ describe("tool run-control actions", () => {
     assertWorkflowToolBlocked(result, wasDispatched);
   });
 
+  test("makeExecuteWorkflowTool passes non-interactive policy to named workflow dispatch", async () => {
+    const wf = defineWorkflow("tool-hil")
+      .humanInTheLoop("needs approval")
+      .run(async () => ({ ok: true }))
+      .compile() as WorkflowDefinition;
+    const runtime = createExtensionRuntime({ registry: createRegistry([wf]) });
+    const handler = makeExecuteWorkflowTool(runtime, () => undefined, () => undefined);
+
+    const result = await handler({ action: "run", workflow: "tool-hil", inputs: {} }, { hasUI: false });
+
+    assert.equal(result.action, "run");
+    const run = result as Extract<WorkflowToolResult, { action: "run" }>;
+    assert.equal(run.status, "failed");
+    assert.equal(run.runId, "");
+    assert.match(run.error ?? "", /requires human input/i);
+  });
+
   test("makeExecuteWorkflowTool blocks workflow tool execution from env workflow-stage guard", async () => {
     const previousGuard = process.env[WORKFLOW_STAGE_SUBAGENT_GUARD_ENV];
     const { handler, wasDispatched } = makeDispatchTrackingWorkflowHandler();
@@ -1134,6 +1192,44 @@ describe("tool run-control actions", () => {
     }
   });
 
+  test("registered workflow tool suppresses lifecycle notices while awaiting a headless run", async () => {
+    const resource = await makeRegisteredWorkflowToolWithResource(
+      "tool-headless-lifecycle.ts",
+      `import { defineWorkflow } from "@bastani/workflows";
+
+export default defineWorkflow("tool-headless-lifecycle")
+  .description("Completes under the registered workflow tool")
+  .run(async (ctx) => {
+    await ctx.stage("terminal-stage").prompt("finish");
+    return { ok: true, source: "tool" };
+  })
+  .compile();
+`,
+    );
+
+    try {
+      const result = await resource.tool.execute(
+        "tool-headless-lifecycle-call",
+        { action: "run", workflow: "tool-headless-lifecycle", inputs: {} },
+        undefined,
+        undefined,
+        { hasUI: false } as never,
+      );
+
+      assert.equal(result.details.action, "run");
+      const run = result.details as Extract<WorkflowToolResult, { action: "run" }>;
+      assert.equal(run.status, "completed");
+      assert.deepEqual(run.result, { ok: true, source: "tool" });
+      assert.equal(
+        resource.sent.some((message) => message.customType === LIFECYCLE_NOTICE_CUSTOM_TYPE),
+        false,
+        "headless tool completion should not emit a lifecycle steer notice before returning",
+      );
+    } finally {
+      await resource.cleanup();
+    }
+  });
+
   async function makeRegisteredWorkflowTool(): Promise<PiToolOpts<WorkflowToolArgs, WorkflowToolResult>> {
     const { pi } = buildMockPi();
     addFactoryStubs(pi);
@@ -1145,6 +1241,50 @@ describe("tool run-control actions", () => {
     factoryModule.default(pi);
     assert.ok(registered, "expected workflow tool registration");
     return registered;
+  }
+
+  async function makeRegisteredWorkflowToolWithResource(
+    fileName: string,
+    source: string,
+  ): Promise<{
+    tool: PiToolOpts<WorkflowToolArgs, WorkflowToolResult>;
+    sent: SentMessage[];
+    cleanup: () => Promise<void>;
+  }> {
+    const dir = await mkdtemp(join(tmpdir(), "atomic-workflow-tool-"));
+    const filePath = join(dir, fileName);
+    await writeFile(filePath, source, "utf8");
+
+    const { pi, sent } = buildMockPi();
+    addFactoryStubs(pi);
+    pi.disableAsyncDiscovery = false;
+    pi.getWorkflowResources = () => [{ path: filePath, enabled: true }];
+
+    const events = new Map<string, Array<Parameters<NonNullable<ExtensionAPI["on"]>>[1]>>();
+    pi.on = (event, handler) => {
+      const handlers = events.get(event) ?? [];
+      handlers.push(handler);
+      events.set(event, handlers);
+    };
+
+    let registered: PiToolOpts<WorkflowToolArgs, WorkflowToolResult> | undefined;
+    pi.registerTool = (opts) => {
+      registered = opts as unknown as PiToolOpts<WorkflowToolArgs, WorkflowToolResult>;
+    };
+
+    const factoryModule = await import("../../packages/workflows/src/extension/index.js");
+    factoryModule.default(pi);
+
+    for (const startHandler of events.get("session_start") ?? []) {
+      await startHandler({}, { hasUI: false, ui: { notify: () => undefined } });
+    }
+
+    assert.ok(registered, "expected workflow tool registration");
+    return {
+      tool: registered,
+      sent,
+      cleanup: () => rm(dir, { recursive: true, force: true }),
+    };
   }
 
   function registerLiveStageHandle(
@@ -2239,12 +2379,11 @@ describe("tool run-control actions", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Non-interactive (-p) mode: /workflow command is disabled (hasUI === false).
-// Mirrors the workflow-tool guard so print/JSON sessions cannot drive workflows
-// that have no UI to answer human-in-the-loop prompts.
+// Non-interactive (-p) mode: /workflow remains available, but UI pickers are
+// skipped and deterministic validation errors are surfaced instead.
 // ---------------------------------------------------------------------------
 
-describe("/workflow command disabled in non-interactive (-p) mode", () => {
+describe("/workflow command in non-interactive (-p) mode", () => {
   async function registerWorkflowCommand(): Promise<{
     handler: NonNullable<PiCommandOptions["handler"]>;
     sent: SentMessage[];
@@ -2256,40 +2395,537 @@ describe("/workflow command disabled in non-interactive (-p) mode", () => {
     return { handler: cmd.options.handler, sent };
   }
 
-  function commandCtx(hasUI: boolean | undefined): { ctx: PiCommandContext; messages: string[] } {
+  type ExtensionEventHandler = Parameters<NonNullable<ExtensionAPI["on"]>>[1];
+  type NotificationType = "info" | "warning" | "error";
+  interface RecordedNotification {
+    message: string;
+    type?: NotificationType;
+  }
+
+  function commandCtx(hasUI: boolean | undefined): {
+    ctx: PiCommandContext;
+    messages: string[];
+    notifications: RecordedNotification[];
+    pickerCalls: string[];
+  } {
     const messages: string[] = [];
+    const notifications: RecordedNotification[] = [];
+    const pickerCalls: string[] = [];
     const ctx: PiCommandContext = {
       ...(hasUI === undefined ? {} : { hasUI }),
       ui: {
-        notify: (msg: string) => {
+        notify: (msg: string, type?: NotificationType) => {
           messages.push(msg);
+          notifications.push({ message: msg, type });
+        },
+        setEditorComponent: () => {
+          pickerCalls.push("inline");
+          throw new Error("inline form unsupported in test");
+        },
+        custom: async (factory) => {
+          pickerCalls.push("overlay");
+          const component = await factory({ requestRender: () => undefined }, {}, {}, () => undefined);
+          component.dispose?.();
+          return undefined;
         },
       },
     };
-    return { ctx, messages };
+    return { ctx, messages, notifications, pickerCalls };
   }
 
-  test("/workflow notifies and short-circuits when no UI is available", async () => {
+  function headlessNoOpCtx(): PiCommandContext {
+    return {
+      hasUI: false,
+      ui: { notify: () => undefined },
+    };
+  }
+
+  function isHeadlessWorkflowCommandError(pattern: RegExp): (error: unknown) => boolean {
+    return (error: unknown): boolean =>
+      error instanceof Error &&
+      error.name === "WorkflowHeadlessCommandError" &&
+      pattern.test(error.message);
+  }
+
+  async function assertRejectsHeadlessCommand(
+    action: () => Promise<void> | void,
+    messagePattern: RegExp,
+  ): Promise<void> {
+    await assert.rejects(
+      async () => {
+        await action();
+      },
+      isHeadlessWorkflowCommandError(messagePattern),
+    );
+  }
+
+  function chatSurfacePayload(message: SentMessage): ChatSurfacePayload | undefined {
+    const details = message.details;
+    if (typeof details !== "object" || details === null || !("kind" in details)) {
+      return undefined;
+    }
+    return details as ChatSurfacePayload;
+  }
+
+  function commandOutputMessages(sent: readonly SentMessage[]): SentMessage[] {
+    return sent.filter(
+      (message) => message.customType === WORKFLOW_COMMAND_OUTPUT_CUSTOM_TYPE,
+    );
+  }
+
+  async function registerWorkflowCommandWithResource(
+    fileName: string,
+    source: string,
+  ): Promise<{
+    handler: NonNullable<PiCommandOptions["handler"]>;
+    sent: SentMessage[];
+    cleanup: () => Promise<void>;
+  }> {
+    const dir = await mkdtemp(join(tmpdir(), "atomic-workflow-slash-"));
+    const filePath = join(dir, fileName);
+    await writeFile(filePath, source, "utf8");
+
+    const { pi, commands, sent } = buildMockPi();
+    addFactoryStubs(pi);
+    pi.disableAsyncDiscovery = false;
+    pi.getWorkflowResources = () => [{ path: filePath, enabled: true }];
+
+    const events = new Map<string, ExtensionEventHandler[]>();
+    pi.on = (event, handler) => {
+      const handlers = events.get(event) ?? [];
+      handlers.push(handler);
+      events.set(event, handlers);
+    };
+
+    const factoryModule = await import("../../packages/workflows/src/extension/index.js");
+    factoryModule.default(pi);
+
+    for (const startHandler of events.get("session_start") ?? []) {
+      await startHandler({}, { ui: { notify: () => undefined } });
+    }
+
+    const cmd = commands.find((c) => c.name === "workflow");
+    assert.ok(cmd, "expected /workflow command registration");
+    return {
+      handler: cmd.options.handler,
+      sent,
+      cleanup: () => rm(dir, { recursive: true, force: true }),
+    };
+  }
+
+  test("workflowPolicyFromContext derives non-interactive policy from hasUI false", () => {
+    assert.equal(workflowPolicyFromContext({ hasUI: false }).mode, "non_interactive");
+    assert.equal(workflowPolicyFromContext({ hasUI: false }).allowInputPicker, false);
+    assert.equal(workflowPolicyFromContext({ hasUI: true }).mode, "interactive");
+    assert.equal(workflowPolicyFromContext({}).mode, "interactive");
+  });
+
+  test("/workflow list proceeds when no UI is available and emits printable content", async () => {
     const { handler, sent } = await registerWorkflowCommand();
     const { ctx, messages } = commandCtx(false);
 
     await handler("list", ctx);
 
-    assert.equal(sent.length, 0);
-    assert.ok(
-      messages.some((m) => m === WORKFLOW_NON_INTERACTIVE_MESSAGE),
-      `expected non-interactive notice, got: ${JSON.stringify(messages)}`,
+    assert.equal(messages.length, 0);
+    assert.ok(sent.length > 0, "expected /workflow list to emit a chat surface");
+    const listMessage = sent.find((message) => chatSurfacePayload(message)?.kind === "list");
+    assert.ok(listMessage, "expected a list chat-surface message");
+    assert.match(listMessage.content ?? "", /WORKFLOWS/);
+    assert.match(listMessage.content ?? "", /deep-research-codebase|ralph|open-claude-design/);
+    assert.doesNotMatch(listMessage.content ?? "", /^workflows · \d+ registered$/);
+  });
+
+  test("/workflow status emits printable list and detail content when no UI is available", async () => {
+    const { handler, sent } = await registerWorkflowCommand();
+    const runId = `headless-printable-status-${Date.now()}`;
+    recordTerminalRun(runId, "completed", { name: "headless-printable-workflow" });
+
+    await handler("status", headlessNoOpCtx());
+    await handler(`status ${runId}`, headlessNoOpCtx());
+
+    const statusMessage = sent.find((message) => chatSurfacePayload(message)?.kind === "status");
+    assert.ok(statusMessage, "expected a status chat-surface message");
+    assert.match(statusMessage.content ?? "", /BACKGROUND/);
+    assert.match(statusMessage.content ?? "", /headless-printable-workflow/);
+    assert.match(statusMessage.content ?? "", /completed/);
+    assert.match(statusMessage.content ?? "", new RegExp(runId));
+    assert.doesNotMatch(statusMessage.content ?? "", /^status · \d+ runs?$/);
+
+    const detailMessage = sent.find((message) => chatSurfacePayload(message)?.kind === "detail");
+    assert.ok(detailMessage, "expected a detail chat-surface message");
+    assert.match(detailMessage.content ?? "", /RUN/);
+    assert.match(detailMessage.content ?? "", /headless-printable-workflow/);
+    assert.match(detailMessage.content ?? "", /completed/);
+    assert.match(detailMessage.content ?? "", new RegExp(runId));
+    assert.doesNotMatch(detailMessage.content ?? "", /^run detail · /);
+  });
+
+  test("/workflow inputs <known> emits displayable command output in headless mode", async () => {
+    const { handler, sent } = await registerWorkflowCommand();
+    const { ctx, messages } = commandCtx(false);
+
+    await handler("inputs ralph", ctx);
+
+    assert.deepEqual(messages, []);
+    assert.equal(store.runs().length, 0, "inputs inspection must not dispatch a run");
+    const outputs = commandOutputMessages(sent);
+    assert.equal(outputs.length, 1);
+    const output = outputs[0]!;
+    assert.equal(output.display, true);
+    assert.equal(typeof output.content, "string");
+    assert.match(output.content ?? "", /INPUTS FOR RALPH|Inputs for "ralph":/);
+    assert.deepEqual(output.details, { command: "inputs", workflowName: "ralph" });
+  });
+
+  test("/workflow <known> --help emits displayable command output and skips dispatch headlessly", async () => {
+    const { handler, sent } = await registerWorkflowCommand();
+    const { ctx, messages } = commandCtx(false);
+
+    await handler("deep-research-codebase --help", ctx);
+
+    assert.deepEqual(messages, []);
+    assert.equal(store.runs().length, 0, "--help must not dispatch a run");
+    assert.equal(
+      sent.some((message) => chatSurfacePayload(message)?.kind === "dispatch"),
+      false,
+      "--help must not emit the run dispatch surface",
+    );
+    const outputs = commandOutputMessages(sent);
+    assert.equal(outputs.length, 1);
+    const output = outputs[0]!;
+    assert.equal(output.display, true);
+    assert.equal(typeof output.content, "string");
+    assert.match(
+      output.content ?? "",
+      /INPUTS FOR DEEP-RESEARCH-CODEBASE|Inputs for "deep-research-codebase":/,
+    );
+    assert.deepEqual(output.details, {
+      command: "help",
+      workflowName: "deep-research-codebase",
+    });
+  });
+
+  test("/workflow rejects missing required input in headless mode without relying on notify", async () => {
+    const { handler } = await registerWorkflowCommand();
+    const { ctx, messages, pickerCalls } = commandCtx(false);
+
+    await assertRejectsHeadlessCommand(
+      () => handler("deep-research-codebase", ctx),
+      /required input "prompt" not provided/,
+    );
+
+    assert.deepEqual(pickerCalls, []);
+    assert.deepEqual(messages, []);
+  });
+
+  test("/workflow rejects unknown workflow in headless mode with a visible command error", async () => {
+    const { handler } = await registerWorkflowCommand();
+
+    await assertRejectsHeadlessCommand(
+      () => handler("ghost-workflow", headlessNoOpCtx()),
+      /Workflow not found: ghost-workflow/,
     );
   });
 
-  test("/workflow proceeds when a UI is available", async () => {
+  test("/workflow status <missing> rejects visibly in headless mode", async () => {
+    const { handler } = await registerWorkflowCommand();
+
+    await assertRejectsHeadlessCommand(
+      () => handler("status definitely-missing", headlessNoOpCtx()),
+      /Run not found: definitely-missing/,
+    );
+  });
+
+  test("/workflow connect <missing> rejects visibly in headless mode", async () => {
+    const { handler } = await registerWorkflowCommand();
+
+    await assertRejectsHeadlessCommand(
+      () => handler("connect definitely-missing", headlessNoOpCtx()),
+      /Run not found: definitely-missing/,
+    );
+  });
+
+  test("/workflow connect without a run id rejects visibly in headless mode", async () => {
+    const { handler } = await registerWorkflowCommand();
+
+    await assertRejectsHeadlessCommand(
+      () => handler("connect", headlessNoOpCtx()),
+      /Pass a runId: \/workflow connect <id>/,
+    );
+  });
+
+  test("/workflow connect <valid> rejects visibly in headless mode", async () => {
+    const { handler } = await registerWorkflowCommand();
+    const runId = `headless-connect-valid-${Date.now()}`;
+    store.recordRunStart(makeInflightRun(runId));
+
+    await assertRejectsHeadlessCommand(
+      () => handler(`connect ${runId}`, headlessNoOpCtx()),
+      /requires an interactive UI surface.*Use \/workflow status/i,
+    );
+  });
+
+  test("/workflow attach <valid> rejects visibly in headless mode", async () => {
+    const { handler } = await registerWorkflowCommand();
+    const runId = `headless-attach-valid-${Date.now()}`;
+    store.recordRunStart(makeInflightRun(runId));
+
+    await assertRejectsHeadlessCommand(
+      () => handler(`attach ${runId}`, headlessNoOpCtx()),
+      /requires an interactive UI surface.*Use \/workflow status/i,
+    );
+  });
+
+  test("/workflow attach <valid> <stage> rejects visibly in headless mode", async () => {
+    const { handler } = await registerWorkflowCommand();
+    const runId = `headless-attach-stage-${Date.now()}`;
+    const stageId = "stage-headless-attach";
+    store.recordRunStart({
+      ...makeInflightRun(runId),
+      stages: [
+        {
+          id: stageId,
+          name: "review",
+          status: "running",
+          parentIds: [],
+          startedAt: Date.now(),
+          toolEvents: [],
+        },
+      ],
+    });
+
+    await assertRejectsHeadlessCommand(
+      () => handler(`attach ${runId} ${stageId}`, headlessNoOpCtx()),
+      /requires an interactive UI surface.*workflow tool.*inspection/i,
+    );
+  });
+
+  test("/workflow kill <missing> rejects visibly in headless mode", async () => {
+    const { handler } = await registerWorkflowCommand();
+
+    await assertRejectsHeadlessCommand(
+      () => handler("kill definitely-missing", headlessNoOpCtx()),
+      /Run not found: definitely-missing/,
+    );
+  });
+
+  test.each([
+    ["reload", "reload", /Reloaded workflow resources\./],
+    ["interrupt", "interrupt", /interrupted and can be resumed/],
+    ["kill", "kill", /killed and retained for inspection/],
+    ["pause", "pause", /Paused 1 stage\(s\)/],
+    ["resume", "resume", /Resumed 1 stage\(s\)/],
+  ])("/workflow %s emits displayable success output in headless mode", async (_label, action, expected) => {
     const { handler, sent } = await registerWorkflowCommand();
-    const { ctx, messages } = commandCtx(true);
+    const runId = `headless-success-${action}-${Date.now()}`;
+    const stageId = `stage-${action}`;
 
-    await handler("list", ctx);
+    if (action !== "reload") {
+      const stageStatus = action === "resume" ? "paused" : "running";
+      store.recordRunStart({
+        ...makeInflightRun(runId),
+        stages: [
+          {
+            id: stageId,
+            name: "worker",
+            status: stageStatus,
+            parentIds: [],
+            startedAt: Date.now(),
+            toolEvents: [],
+          },
+        ],
+      });
+      registerTestStageHandle(runId, stageId, stageStatus);
+    }
 
-    assert.equal(messages.some((m) => m === WORKFLOW_NON_INTERACTIVE_MESSAGE), false);
-    assert.ok(sent.length > 0, "expected /workflow list to emit a chat surface");
+    await handler(action === "reload" ? "reload" : `${action} ${runId}`, headlessNoOpCtx());
+
+    const outputs = commandOutputMessages(sent);
+    assert.ok(outputs.length > 0, `expected /workflow ${action} to emit command output`);
+    const content = outputs.map((message) => message.content ?? "").join("\n");
+    assert.match(content, expected);
+  });
+
+  test("/workflow interrupt --all emits displayable success output in headless mode", async () => {
+    const { handler, sent } = await registerWorkflowCommand();
+    const runId = `headless-interrupt-all-${Date.now()}`;
+    const stageId = "stage-interrupt-all";
+    store.recordRunStart({
+      ...makeInflightRun(runId),
+      stages: [{ id: stageId, name: "worker", status: "running", parentIds: [], startedAt: Date.now(), toolEvents: [] }],
+    });
+    registerTestStageHandle(runId, stageId);
+
+    await handler("interrupt --all", headlessNoOpCtx());
+
+    const content = commandOutputMessages(sent).map((message) => message.content ?? "").join("\n");
+    assert.match(content, /Interrupted 1 run\(s\)\./);
+  });
+
+  test("/workflow kill --all emits displayable success output in headless mode", async () => {
+    const { handler, sent } = await registerWorkflowCommand();
+    store.recordRunStart(makeInflightRun(`headless-kill-all-${Date.now()}`));
+
+    await handler("kill --all", headlessNoOpCtx());
+
+    const content = commandOutputMessages(sent).map((message) => message.content ?? "").join("\n");
+    assert.match(content, /Killed and retained 1 run\(s\) for inspection\./);
+  });
+
+  test("/workflow rejects declared HiL workflows in headless mode with a visible command error", async () => {
+    const resource = await registerWorkflowCommandWithResource(
+      "approval-required.ts",
+      `import { defineWorkflow } from "@bastani/workflows";
+
+export default defineWorkflow("approval-required")
+  .description("Requires an approval prompt")
+  .humanInTheLoop("requires approval")
+  .run(async () => ({ ok: true }))
+  .compile();
+`,
+    );
+
+    try {
+      await assertRejectsHeadlessCommand(
+        () => resource.handler("approval-required", headlessNoOpCtx()),
+        /requires human input/i,
+      );
+    } finally {
+      await resource.cleanup();
+    }
+  });
+
+  test("/workflow rejects failed terminal results in headless mode", async () => {
+    const resource = await registerWorkflowCommandWithResource(
+      "terminal-failure.ts",
+      `import { defineWorkflow } from "@bastani/workflows";
+
+export default defineWorkflow("terminal-failure")
+  .description("Fails after dispatch")
+  .run(async () => {
+    throw new Error("terminal boom");
+  })
+  .compile();
+`,
+    );
+
+    try {
+      await assertRejectsHeadlessCommand(
+        () => resource.handler("terminal-failure", headlessNoOpCtx()),
+        /Workflow "terminal-failure" failed: terminal boom/,
+      );
+    } finally {
+      await resource.cleanup();
+    }
+  });
+
+  test("/workflow emits terminal detail instead of dispatch after headless success", async () => {
+    const resource = await registerWorkflowCommandWithResource(
+      "headless-terminal-success.ts",
+      `import { defineWorkflow } from "@bastani/workflows";
+
+export default defineWorkflow("headless-terminal-success")
+  .description("Completes without user input")
+  .run(async (ctx) => {
+    await ctx.stage("terminal-stage").prompt("finish");
+    return { ok: true, value: "terminal" };
+  })
+  .compile();
+`,
+    );
+
+    try {
+      await resource.handler("headless-terminal-success", headlessNoOpCtx());
+
+      const payloads = resource.sent
+        .map(chatSurfacePayload)
+        .filter((payload): payload is ChatSurfacePayload => payload !== undefined);
+      assert.equal(
+        payloads.some((payload) => payload.kind === "dispatch"),
+        false,
+        "headless success must not emit an interactive dispatch surface",
+      );
+      const detailPayload = payloads.find(
+        (payload): payload is Extract<ChatSurfacePayload, { kind: "detail" }> =>
+          payload.kind === "detail",
+      );
+      assert.ok(detailPayload, "expected a terminal run detail chat surface");
+      assert.equal(detailPayload.detail.status, "completed");
+      assert.deepEqual(detailPayload.detail.result, { ok: true, value: "terminal" });
+      assert.ok(detailPayload.detail.stages.length > 0, "expected completed stage details");
+      assert.equal(
+        detailPayload.detail.stages.some((stage) => stage.status === "completed"),
+        true,
+      );
+      assert.equal(
+        resource.sent.some((message) => message.customType === LIFECYCLE_NOTICE_CUSTOM_TYPE),
+        false,
+        "headless slash completion should not emit a lifecycle steer notice before terminal detail",
+      );
+      const detailMessage = resource.sent.find(
+        (message) => chatSurfacePayload(message)?.kind === "detail",
+      );
+      assert.equal(typeof detailMessage?.content, "string");
+      assert.match(detailMessage?.content ?? "", /headless-terminal-success/);
+      assert.match(detailMessage?.content ?? "", /completed/);
+      assert.match(detailMessage?.content ?? "", /"value":"terminal"/);
+    } finally {
+      await resource.cleanup();
+    }
+  });
+
+  test("/workflow unknown workflow remains notify-and-handled with an interactive UI", async () => {
+    const { handler } = await registerWorkflowCommand();
+    const { ctx, notifications } = commandCtx(true);
+
+    await assert.doesNotReject(async () => {
+      await handler("ghost-workflow", ctx);
+    });
+
+    const error = notifications.find((entry) => entry.type === "error");
+    assert.ok(error, "expected interactive errors to be reported via notify('error')");
+    assert.match(error.message, /Workflow not found: ghost-workflow/);
+  });
+
+  test("/workflow declared HiL workflows still run through the interactive dispatch path", async () => {
+    const resource = await registerWorkflowCommandWithResource(
+      "interactive-approval.ts",
+      `import { defineWorkflow } from "@bastani/workflows";
+
+export default defineWorkflow("interactive-approval")
+  .description("Allowed when UI is available")
+  .humanInTheLoop("interactive approval")
+  .run(async () => ({ ok: true }))
+  .compile();
+`,
+    );
+    const { ctx, notifications } = commandCtx(true);
+
+    try {
+      await assert.doesNotReject(async () => {
+        await resource.handler("interactive-approval", ctx);
+      });
+      assert.equal(
+        notifications.some((entry) => entry.type === "error"),
+        false,
+        "interactive HiL dispatch should not be rejected before execution",
+      );
+      assert.ok(
+        resource.sent.some((message) => (message.details as { kind?: string } | undefined)?.kind === "dispatch"),
+        "expected interactive HiL dispatch to emit the normal dispatch chat surface",
+      );
+    } finally {
+      await resource.cleanup();
+    }
+  });
+
+  test("/workflow still uses picker-capable path when a UI is available", async () => {
+    const { handler } = await registerWorkflowCommand();
+    const { ctx, pickerCalls } = commandCtx(true);
+
+    await handler("deep-research-codebase", ctx);
+
+    assert.ok(pickerCalls.length > 0, "expected interactive picker path to be attempted");
   });
 
   test("/workflow proceeds when hasUI is unset (degraded runtimes)", async () => {
@@ -2298,7 +2934,7 @@ describe("/workflow command disabled in non-interactive (-p) mode", () => {
 
     await handler("list", ctx);
 
-    assert.equal(messages.some((m) => m === WORKFLOW_NON_INTERACTIVE_MESSAGE), false);
+    assert.equal(messages.length, 0);
     assert.ok(sent.length > 0, "expected /workflow list to emit a chat surface");
   });
 });

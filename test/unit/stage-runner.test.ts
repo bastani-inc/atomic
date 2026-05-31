@@ -110,6 +110,7 @@ describe("createStageContext — prompt metadata propagation", () => {
       stageName: "Summarise",
       signal,
       stageOptions: undefined,
+      executionMode: undefined,
     });
   });
 
@@ -131,6 +132,19 @@ describe("createStageContext — prompt metadata propagation", () => {
     const ctx = createStageContext(makeOpts({ adapters: { prompt: promptAdapter } }));
     await ctx.prompt("go");
     assert.equal(received[0]?.signal, undefined);
+  });
+
+  test("prompt adapter receives executionMode from opts", async () => {
+    const received: StageExecutionMeta[] = [];
+    const promptAdapter: PromptAdapter = {
+      async prompt(_text, meta) { received.push(meta!); return "ok"; },
+    };
+    const ctx = createStageContext(makeOpts({
+      adapters: { prompt: promptAdapter },
+      executionMode: "non_interactive",
+    }));
+    await ctx.prompt("go");
+    assert.equal(received[0]?.executionMode, "non_interactive");
   });
 
   test("prompt outputMode=file-only writes full output and returns a saved-file reference", async () => {
@@ -232,6 +246,7 @@ describe("createStageContext — complete metadata propagation", () => {
       stageName: "Draft",
       signal,
       stageOptions: undefined,
+      executionMode: undefined,
     });
   });
 
@@ -432,6 +447,97 @@ describe("createStageContext — model fallback", () => {
     assert.deepEqual(disposed, ["anthropic/primary"]);
     assert.deepEqual(ctx.__modelFallbackMeta().attemptedModels, ["anthropic/primary", "openai/fallback"]);
     assert.deepEqual(ctx.__modelFallbackMeta().modelAttempts?.map((attempt) => attempt.success), [false, true]);
+  });
+
+  test("workflow fast mode keeps raw model metadata with a structured fast flag", async () => {
+    const agentSession: AgentSessionAdapter = {
+      async create() {
+        const { session } = makeMockSession({
+          model: { provider: "openai", id: "gpt-5.1-codex" } as AgentSession["model"],
+          async prompt() {},
+        });
+        return session;
+      },
+    };
+
+    const ctx = createStageContext(makeOpts({
+      adapters: { agentSession },
+      stageOptions: {
+        settingsManager: {
+          getCodexFastModeSettings: () => ({ chat: false, workflow: true }),
+        },
+      } as Parameters<typeof createStageContext>[0]["stageOptions"],
+    })) as InternalStageContext;
+
+    await ctx.prompt("go");
+
+    assert.equal(ctx.__modelFallbackMeta().model, "openai/gpt-5.1-codex");
+    assert.equal(ctx.__modelFallbackMeta().fastMode, true);
+  });
+
+  test("workflow fast mode metadata uses the adapter-created settings manager", async () => {
+    const agentSession: AgentSessionAdapter = {
+      async create() {
+        const { session } = makeMockSession({
+          model: { provider: "openai", id: "gpt-5.1-codex" } as AgentSession["model"],
+          async prompt() {},
+        });
+        return {
+          session,
+          settingsManager: {
+            getCodexFastModeSettings: () => ({ chat: false, workflow: true }),
+          },
+        };
+      },
+    };
+
+    const ctx = createStageContext(makeOpts({ adapters: { agentSession } })) as InternalStageContext;
+
+    await ctx.prompt("go");
+
+    assert.equal(ctx.__modelFallbackMeta().model, "openai/gpt-5.1-codex");
+    assert.equal(ctx.__modelFallbackMeta().fastMode, true);
+  });
+
+  test("workflow fast mode metadata uses the session settings manager when the adapter result omits one", async () => {
+    const agentSession: AgentSessionAdapter = {
+      async create() {
+        const { session } = makeMockSession({
+          model: { provider: "openai", id: "gpt-5.1-codex" } as AgentSession["model"],
+          settingsManager: {
+            getCodexFastModeSettings: () => ({ chat: false, workflow: true }),
+          },
+          async prompt() {},
+        });
+        return session;
+      },
+    };
+
+    const ctx = createStageContext(makeOpts({ adapters: { agentSession } })) as InternalStageContext;
+
+    await ctx.prompt("go");
+
+    assert.equal(ctx.__modelFallbackMeta().model, "openai/gpt-5.1-codex");
+    assert.equal(ctx.__modelFallbackMeta().fastMode, true);
+  });
+
+  test("workflow fast mode metadata does not reload settings when no manager is provided", async () => {
+    const agentSession: AgentSessionAdapter = {
+      async create() {
+        const { session } = makeMockSession({
+          model: { provider: "openai", id: "gpt-5.1-codex" } as AgentSession["model"],
+          async prompt() {},
+        });
+        return session;
+      },
+    };
+
+    const ctx = createStageContext(makeOpts({ adapters: { agentSession } })) as InternalStageContext;
+
+    await ctx.prompt("go");
+
+    assert.equal(ctx.__modelFallbackMeta().model, "openai/gpt-5.1-codex");
+    assert.equal(ctx.__modelFallbackMeta().fastMode, undefined);
   });
 
   test("current model is appended as an implicit final fallback", async () => {

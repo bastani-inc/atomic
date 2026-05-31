@@ -162,6 +162,9 @@ function fakeFooterAgentSession(isStreaming = false): AgentSession {
     modelRegistry: {
       isUsingOAuth: () => false,
     },
+    settingsManager: {
+      getCodexFastModeSettings: () => ({ chat: false, workflow: false }),
+    },
     getContextUsage: () => ({ tokens: 46800, contextWindow: 200000, percent: 23.4 }),
     isStreaming,
   } as unknown as AgentSession;
@@ -188,6 +191,34 @@ function makePendingPrompt(overrides: Partial<PendingPrompt> = {}): PendingPromp
     createdAt: Date.now(),
     ...overrides,
   };
+}
+
+function makeCompletedPromptArchiveView(message: string, response: string): StageChatView {
+  const store = createStore();
+  setupRun(store, "run-1", "stage-a");
+  const prompt = makePendingPrompt({ kind: "input", message });
+  assert.equal(store.recordStagePendingPrompt("run-1", "stage-a", prompt), true);
+  assert.equal(store.resolveStagePendingPrompt("run-1", "stage-a", prompt.id, response), true);
+
+  const resolvedStage = store.runs()[0]!.stages[0]!;
+  store.recordStageEnd("run-1", {
+    ...resolvedStage,
+    status: "completed",
+    endedAt: Date.now(),
+    durationMs: 1,
+  });
+
+  return new StageChatView({
+    store,
+    graphTheme: deriveGraphTheme({}),
+    runId: "run-1",
+    stageId: "stage-a",
+    workflowName: "test-wf",
+    handle: undefined,
+    onDetach: () => {},
+    onClose: () => {},
+    getViewportRows: () => 10,
+  });
 }
 
 class FakePromptEditor implements EditorComponent {
@@ -396,6 +427,68 @@ describe("StageChatView", () => {
     assert.match(visible, /alpha/);
     assert.match(visible, /beta/);
     assert.match(visible, /your response/);
+    view.dispose();
+  });
+
+  test("scrolls completed prompt archives with keyboard after reattach", () => {
+    const view = makeCompletedPromptArchiveView(
+      [
+        "ARCHIVE TOP MARKER: reviewer context begins here.",
+        "Archive section 2 has enough detail to wrap in the narrow completed-stage viewport.",
+        "Archive section 3 adds more review notes that should be clipped before scrolling.",
+        "Archive section 4 keeps the response summary below the initial fold.",
+        "Archive section 5 is still part of the long reattached prompt footprint.",
+        "Archive section 6 pushes the answer to the bottom of the card.",
+      ].join("\n\n"),
+      "ARCHIVE BOTTOM ANSWER",
+    );
+
+    const top = stripAnsi(view.render(64).join("\n"));
+    assert.match(top, /ARCHIVE TOP MARKER/);
+    assert.doesNotMatch(top, /ARCHIVE BOTTOM ANSWER/);
+
+    for (let i = 0; i < 4; i += 1) {
+      assert.equal(view.handleInput("pageDown"), true);
+    }
+    const bottom = stripAnsi(view.render(64).join("\n"));
+    assert.doesNotMatch(bottom, /ARCHIVE TOP MARKER/);
+    assert.match(bottom, /ARCHIVE BOTTOM ANSWER/);
+
+    assert.equal(view.handleInput("home"), true);
+    const restoredTop = stripAnsi(view.render(64).join("\n"));
+    assert.match(restoredTop, /ARCHIVE TOP MARKER/);
+    assert.doesNotMatch(restoredTop, /ARCHIVE BOTTOM ANSWER/);
+
+    assert.equal(view.handleInput("end"), true);
+    const endedBottom = stripAnsi(view.render(64).join("\n"));
+    assert.doesNotMatch(endedBottom, /ARCHIVE TOP MARKER/);
+    assert.match(endedBottom, /ARCHIVE BOTTOM ANSWER/);
+    view.dispose();
+  });
+
+  test("mouse wheel scrolls completed prompt archives after reattach", () => {
+    const view = makeCompletedPromptArchiveView(
+      [
+        "WHEEL TOP MARKER: completed prompt context starts here.",
+        "Wheel archive section 2 wraps across rows in a compact viewport.",
+        "Wheel archive section 3 remains above the answer until scroll input arrives.",
+        "Wheel archive section 4 makes the prompt footprint taller than the body.",
+        "Wheel archive section 5 keeps the stored response below the fold.",
+        "Wheel archive section 6 ends the long prompt context.",
+      ].join("\n\n"),
+      "WHEEL BOTTOM ANSWER",
+    );
+
+    const top = stripAnsi(view.render(64).join("\n"));
+    assert.match(top, /WHEEL TOP MARKER/);
+    assert.doesNotMatch(top, /WHEEL BOTTOM ANSWER/);
+
+    for (let i = 0; i < 8; i += 1) {
+      assert.equal(view.handleInput("\x1b[<65;1;1M"), true);
+    }
+    const bottom = stripAnsi(view.render(64).join("\n"));
+    assert.doesNotMatch(bottom, /WHEEL TOP MARKER/);
+    assert.match(bottom, /WHEEL BOTTOM ANSWER/);
     view.dispose();
   });
 

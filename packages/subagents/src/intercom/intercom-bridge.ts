@@ -197,7 +197,12 @@ function configuredPiIntercomPackageDir(input: ResolveIntercomBridgeInput, agent
 		...(projectConfigDir ? [{ file: path.join(projectConfigDir, "settings.json"), configDir: projectConfigDir, scope: "project" as const }] : []),
 		{ file: path.join(agentDir, "settings.json"), configDir: agentDir, scope: "user" as const },
 	];
-	const globalNpmRoot = input.globalNpmRoot === undefined ? getGlobalNpmRoot() : input.globalNpmRoot;
+	let resolvedGlobalNpmRoot = input.globalNpmRoot;
+	const resolveGlobalNpmRoot = (): string | null => {
+		if (resolvedGlobalNpmRoot !== undefined) return resolvedGlobalNpmRoot;
+		resolvedGlobalNpmRoot = getGlobalNpmRoot();
+		return resolvedGlobalNpmRoot;
+	};
 
 	for (const { file, configDir, scope } of settingsFiles) {
 		const settings = readJsonBestEffort(file);
@@ -211,6 +216,7 @@ function configuredPiIntercomPackageDir(input: ResolveIntercomBridgeInput, agent
 			if (!source?.startsWith("npm:")) continue;
 			const packageName = parseNpmPackageName(source);
 			if (packageName !== PI_INTERCOM_PACKAGE_NAME) continue;
+			const globalNpmRoot = scope === "user" ? resolveGlobalNpmRoot() : null;
 			const candidates = scope === "project"
 				? [path.join(configDir, "npm", "node_modules", packageName)]
 				: [

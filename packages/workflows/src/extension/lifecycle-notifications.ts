@@ -124,6 +124,24 @@ export function withWorkflowLifecycleNotificationsSuppressed<T>(
   }
 }
 
+/**
+ * Async-safe companion to {@link withWorkflowLifecycleNotificationsSuppressed}.
+ * Keeps suppression active until the awaited operation settles, so terminal
+ * store updates produced by background jobs cannot race an awaited headless
+ * workflow dispatch and trigger an extra steer turn before the caller returns.
+ */
+export async function withWorkflowLifecycleNotificationsSuppressedAsync<T>(
+  state: WorkflowLifecycleNotificationState,
+  fn: () => Promise<T>,
+): Promise<T> {
+  state.suppressionDepth += 1;
+  try {
+    return await fn();
+  } finally {
+    state.suppressionDepth -= 1;
+  }
+}
+
 export function installWorkflowLifecycleNotifications(
   options: WorkflowLifecycleNotificationOptions,
 ): () => void {
@@ -141,6 +159,7 @@ export function installWorkflowLifecycleNotifications(
 
   const emit = (details: WorkflowLifecycleNoticeDetails): void => {
     const content = formatWorkflowLifecycleNoticeText(details);
+    const deliveryOptions = { triggerTurn: true, deliverAs: "steer" as const };
     try {
       // Store subscribers are notified in a tight loop. A lifecycle notice
       // failure must never abort sibling subscribers such as status writers.
@@ -152,7 +171,7 @@ export function installWorkflowLifecycleNotifications(
             display: true,
             details,
           },
-          { triggerTurn: true, deliverAs: "steer" },
+          deliveryOptions,
         ),
       ).catch((error: unknown) => warnLifecycleSendFailure(error));
     } catch (error) {
@@ -187,8 +206,10 @@ export function installWorkflowLifecycleNotifications(
     if (state.deliveredInputPrompts.has(key)) return;
 
     state.deliveredInputPrompts.add(key);
-    if (state.suppressionDepth > 0) return;
-    emit(makeStageAwaitingInputNotice(run, stage));
+    // Awaiting-input lifecycle notices include actionable `/workflow connect`
+    // hints. They can become stale if the prompt resolves or the run completes
+    // while the main session is streaming, so track them for dedupe/restore but
+    // do not enqueue a visible main-chat card.
   };
 
   const emitRunAwaitingInputNoticeOnce = (run: RunSnapshot): void => {
@@ -198,8 +219,10 @@ export function installWorkflowLifecycleNotifications(
     if (state.deliveredInputPrompts.has(key)) return;
 
     state.deliveredInputPrompts.add(key);
-    if (state.suppressionDepth > 0) return;
-    emit(makeRunAwaitingInputNotice(run, run.pendingPrompt));
+    // Awaiting-input lifecycle notices include actionable `/workflow connect`
+    // hints. They can become stale if the prompt resolves or the run completes
+    // while the main session is streaming, so track them for dedupe/restore but
+    // do not enqueue a visible main-chat card.
   };
 
   const inspect = (snapshot: StoreSnapshot): void => {

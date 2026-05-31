@@ -37,6 +37,11 @@ export { DynamicBorder } from "./dynamic-border.ts";
 export { ExtensionEditorComponent } from "./extension-editor.ts";
 export { ExtensionInputComponent } from "./extension-input.ts";
 export { ExtensionSelectorComponent } from "./extension-selector.ts";
+export {
+  FastModeSelectorComponent,
+  type FastModeSelectorCallbacks,
+  type FastModeSelectorConfig,
+} from "./fast-mode-selector.ts";
 export { FooterComponent, UsageMeterComponent } from "./footer.ts";
 export { keyHint, keyText, rawKeyHint } from "./keybinding-hints.ts";
 export { LoginDialogComponent } from "./login-dialog.ts";

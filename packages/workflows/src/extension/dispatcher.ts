@@ -9,14 +9,35 @@
 
 import type { WorkflowRegistry } from "../workflows/registry.js";
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
-import type { Store } from "../shared/store.js";
+import { store as defaultStore, type Store } from "../shared/store.js";
 import type { CancellationRegistry } from "../runs/background/cancellation-registry.js";
-import type { JobTracker } from "../runs/background/job-tracker.js";
+import { jobTracker as defaultJobTracker, type JobTracker } from "../runs/background/job-tracker.js";
 import { resolveInputs } from "../runs/foreground/executor.js";
+import { formatWorkflowImportDiagnostics, validateWorkflowImportGraph, type WorkflowSourceReference } from "../workflows/import-resolver.js";
 import { runDetached } from "../runs/background/runner.js";
 import type { WorkflowToolResult, WorkflowInputEntry } from "./render-result.js";
 import type { WorkflowToolArgs } from "./index.js";
-import type { WorkflowPersistencePort, WorkflowMcpPort, WorkflowRuntimeConfig, WorkflowModelCatalogPort } from "../shared/types.js";
+import {
+  INTERACTIVE_WORKFLOW_POLICY,
+  type WorkflowExecutionPolicy,
+  type WorkflowPersistencePort,
+  type WorkflowMcpPort,
+  type WorkflowRuntimeConfig,
+  type WorkflowModelCatalogPort,
+} from "../shared/types.js";
+
+type WorkflowRunResult = Extract<WorkflowToolResult, { action: "run" }>;
+
+function failedRunResult(name: string | undefined, runId: string, error: string): WorkflowRunResult {
+  return {
+    action: "run",
+    name,
+    runId,
+    status: "failed",
+    error,
+    stages: [],
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Options
@@ -44,6 +65,12 @@ export interface DispatcherOpts {
   config?: WorkflowRuntimeConfig;
   /** Optional model catalog forwarded to workflow runs for fallback resolution. */
   models?: WorkflowModelCatalogPort;
+  /** Runtime-derived interaction policy for this dispatch. */
+  policy?: WorkflowExecutionPolicy;
+  /** Invocation cwd used for local path workflow imports. */
+  cwd?: string;
+  /** Discovery source metadata used to resolve relative local path imports. */
+  workflowSources?: readonly WorkflowSourceReference[];
 }
 
 // ---------------------------------------------------------------------------
@@ -129,6 +156,16 @@ export async function dispatch(
         };
       }
 
+      const policy = opts.policy ?? INTERACTIVE_WORKFLOW_POLICY;
+      if (!policy.allowHumanInput && def.interaction?.humanInput === "required") {
+        const reason = def.interaction.reason ? ` Reason: ${def.interaction.reason}` : "";
+        return failedRunResult(
+          def.name,
+          "",
+          `Workflow "${def.name}" requires human input and cannot run in non-interactive mode. Run Atomic interactively or choose a non-HiL workflow.${reason}`,
+        );
+      }
+
       // Pre-validate inputs against the workflow's declared schema. The
       // executor would otherwise throw the same TypeError deep inside the
       // background promise — silently from the caller's perspective. Catch
@@ -136,17 +173,33 @@ export async function dispatch(
       try {
         resolveInputs(def.inputs, inputs);
       } catch (err) {
+        return failedRunResult(
+          def.name,
+          "",
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+
+      const importDiagnostics = validateWorkflowImportGraph({
+        registry: opts.registry,
+        cwd: opts.cwd ?? process.cwd(),
+        ...(opts.workflowSources !== undefined ? { sources: opts.workflowSources } : {}),
+        roots: [def],
+      });
+      if (importDiagnostics.length > 0) {
         return {
           action: "run",
           name: def.name,
           runId: "",
           status: "failed",
-          error: err instanceof Error ? err.message : String(err),
+          error: `Invalid workflow imports for "${def.name}":\n${formatWorkflowImportDiagnostics(importDiagnostics)}`,
           stages: [],
         };
       }
 
       const accepted = runDetached(def, inputs, {
+        registry: opts.registry,
+        ...(opts.workflowSources !== undefined ? { workflowSources: opts.workflowSources } : {}),
         adapters: opts.adapters,
         store: opts.store,
         cancellation: opts.cancellation,
@@ -155,7 +208,39 @@ export async function dispatch(
         mcp: opts.mcp,
         config: opts.config,
         models: opts.models,
+        executionMode: policy.mode,
+        cwd: opts.cwd,
       });
+      if (policy.awaitTerminalRun === true) {
+        const tracker = opts.jobs ?? defaultJobTracker;
+        const job = tracker.get(accepted.runId);
+        if (!job) {
+          return failedRunResult(
+            accepted.name,
+            accepted.runId,
+            `Workflow run ${accepted.runId} was accepted but no live job was registered to await`,
+          );
+        }
+        await job.promise;
+        const activeStore = opts.store ?? defaultStore;
+        const snapshot = activeStore.runs().find((run) => run.id === accepted.runId);
+        if (!snapshot) {
+          return failedRunResult(
+            accepted.name,
+            accepted.runId,
+            `Workflow run ${accepted.runId} ended without a retained snapshot`,
+          );
+        }
+        return {
+          action: "run",
+          name: snapshot.name,
+          runId: snapshot.id,
+          status: snapshot.status,
+          result: snapshot.result,
+          error: snapshot.error,
+          stages: snapshot.stages.map((stage) => structuredClone(stage)),
+        };
+      }
       return {
         action: "run",
         name: accepted.name,

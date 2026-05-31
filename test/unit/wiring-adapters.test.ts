@@ -73,7 +73,9 @@ function makeFakeAtomicSdk(defaultAgentDir: string, builtinPackagePaths: string[
     SettingsManager: {
       create(cwd?: string, agentDir?: string): PiSdkSettingsManager {
         settingsCalls.push({ cwd, agentDir });
-        return { cwd, agentDir } as PiSdkSettingsManager;
+        return {
+          getCodexFastModeSettings: () => ({ chat: false, workflow: false }),
+        };
       },
     },
     DefaultResourceLoader: FakeResourceLoader,
@@ -181,9 +183,22 @@ describe("buildRuntimeAdapters — SDK AgentSession adapter", () => {
     const adapters = buildRuntimeAdapters({}, {
       createAgentSession: async (options) => { calls.push(options); return { session: fakeSession() }; },
     });
-    const session = await adapters.agentSession!.create({ cwd: "/tmp/project" });
-    assert.equal(session.sessionId, "session-1");
+    const result = await adapters.agentSession!.create({ cwd: "/tmp/project" });
+    assert.equal("session" in result ? result.session.sessionId : result.sessionId, "session-1");
     assert.equal(calls[0]?.cwd, "/tmp/project");
+  });
+
+  test("agentSession.create returns the SDK-prepared settings manager for workflow metadata", async () => {
+    const settingsManager = {
+      getCodexFastModeSettings: () => ({ chat: false, workflow: true }),
+    };
+    const adapters = buildRuntimeAdapters({}, {
+      createAgentSession: async () => ({ session: fakeSession(), settingsManager }),
+    });
+
+    const result = await adapters.agentSession!.create({ cwd: "/tmp/project" });
+
+    assert.equal("session" in result ? result.settingsManager : undefined, settingsManager);
   });
 
   test("agentSession.create marks workflow stages with orchestration constraints and excludes workflow tool", async () => {
@@ -205,6 +220,42 @@ describe("buildRuntimeAdapters — SDK AgentSession adapter", () => {
       workflowStageName: "Implement",
       constraints: { disableWorkflowTool: true, maxSubagentDepth: 1 },
     });
+  });
+
+  test("interactive stage sessions exclude workflow but keep ask_user_question available", async () => {
+    const calls: Array<CreateAgentSessionOptions | undefined> = [];
+    const adapters = buildRuntimeAdapters({}, {
+      createAgentSession: async (options) => { calls.push(options); return { session: fakeSession() }; },
+    });
+
+    await adapters.agentSession!.create(
+      { cwd: "/tmp/project" },
+      { runId: "run-1", stageId: "stage-1", stageName: "Implement", executionMode: "interactive" },
+    );
+
+    assert.deepEqual(calls[0]?.excludedTools, ["workflow"]);
+  });
+
+  test("non-interactive stage sessions exclude ask_user_question and do not bind UI", async () => {
+    const calls: Array<CreateAgentSessionOptions | undefined> = [];
+    let bindCalls = 0;
+    const session = {
+      ...fakeSession(),
+      async bindExtensions(): Promise<void> {
+        bindCalls += 1;
+      },
+    } satisfies StageSessionRuntime & { bindExtensions(): Promise<void> };
+    const adapters = buildRuntimeAdapters({}, {
+      createAgentSession: async (options) => { calls.push(options); return { session }; },
+    });
+
+    await adapters.agentSession!.create(
+      { cwd: "/tmp/project" },
+      { runId: "run-1", stageId: "stage-1", stageName: "Implement", executionMode: "non_interactive" },
+    );
+
+    assert.deepEqual(calls[0]?.excludedTools, ["workflow", "ask_user_question"]);
+    assert.equal(bindCalls, 0);
   });
 
   test("agentSession.create forwards stage options unchanged (pi SDK leaves resource isolation to SettingsManager)", async () => {

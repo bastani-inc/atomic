@@ -9,7 +9,7 @@ import { renderInputsSchema } from "../shared/render-inputs-schema.js";
 import { WorkflowParametersSchema } from "./workflow-schema.js";
 import { renderRunBanner, renderRunSummary } from "./renderers.js";
 import type { RunEndPayload, RunStartPayload } from "./renderers.js";
-import type { StageSnapshot, StageStatus, ToolEvent } from "../shared/store-types.js";
+import type { RunStatus, StageSnapshot, StageStatus, ToolEvent } from "../shared/store-types.js";
 import { store } from "../shared/store.js";
 import { stageUiBroker } from "../shared/stage-ui-broker.js";
 import {
@@ -29,6 +29,7 @@ import {
   interruptRun,
   interruptAllRuns,
   inspectRun,
+  type RunDetail,
 } from "../runs/background/status.js";
 import { cancellationRegistry } from "../runs/background/cancellation-registry.js";
 import { stageControlRegistry } from "../runs/foreground/stage-control-registry.js";
@@ -45,6 +46,7 @@ import type { OverlayPiSurface } from "../tui/overlay-adapter.js";
 import type { GraphOverlayPort } from "../tui/overlay-adapter.js";
 import { renderSessionList } from "../tui/session-list.js";
 import { selectRunsForPicker } from "../tui/session-picker.js";
+import { renderRunDetail } from "../tui/run-detail.js";
 
 import { openSessionPicker, openKillConfirm } from "../tui/session-overlays.js";
 import {
@@ -77,8 +79,15 @@ import {
   resetWorkflowLifecycleNotificationState,
   seedWorkflowLifecycleNotificationState,
   withWorkflowLifecycleNotificationsSuppressed,
+  withWorkflowLifecycleNotificationsSuppressedAsync,
 } from "./lifecycle-notifications.js";
 import type { WorkflowLifecycleNotificationConfig } from "./lifecycle-notifications.js";
+import {
+  createWorkflowHilAnswerNotificationState,
+  installWorkflowHilAnswerNotifications,
+  registerHilAnswerNoticeRenderer,
+  resetWorkflowHilAnswerNotificationState,
+} from "./hil-answer-notifications.js";
 import type { ConfigLoadResult } from "./config-loader.js";
 import type {
   WorkflowPersistencePort,
@@ -91,7 +100,9 @@ import type {
   WorkflowModelCatalogPort,
   WorkflowModelInfo,
   StageOptions,
+  WorkflowExecutionPolicy,
 } from "../shared/types.js";
+import { INTERACTIVE_WORKFLOW_POLICY, NON_INTERACTIVE_WORKFLOW_POLICY } from "../shared/types.js";
 import { buildRuntimeAdapters } from "./wiring.js";
 import type { PiUISurface } from "./wiring.js";
 import { createStatusWriter } from "./status-writer.js";
@@ -316,7 +327,7 @@ export interface ExtensionAPI {
     },
     options?: {
       triggerTurn?: boolean;
-      deliverAs?: "steer" | "followUp" | "nextTurn";
+      deliverAs?: "steer" | "followUp" | "nextTurn" | "interrupt";
     },
   ) => void | Promise<void>;
   registerFlag?: (name: string, opts: PiFlagNamedOpts) => void;
@@ -339,9 +350,8 @@ export interface ExtensionAPI {
    */
   getActiveTools?: () => string[];
   /**
-   * Replace the model's active tool set by name. Used to drop the `workflow`
-   * tool in non-interactive sessions. Present on pi's ExtensionAPI; absent on
-   * older runtimes.
+   * Replace the model's active tool set by name. Present on pi's ExtensionAPI;
+   * absent on older runtimes.
    */
   setActiveTools?: (toolNames: string[]) => void;
   /**
@@ -1012,39 +1022,152 @@ function isWorkflowStageToolContext(ctx: PiExecuteContext): boolean {
   return hasWorkflowStageSubagentGuardEnv() || ctx.orchestrationContext?.kind === "workflow-stage";
 }
 
-/** Tool name registered for workflow execution; shared by the de-advertise guard. */
-const WORKFLOW_TOOL_NAME = "workflow";
-
 /**
- * User-facing message shown when the `/workflow` command is invoked in a
- * non-interactive (`-p` / `--print` / `--mode json`) session. Such sessions
- * bind a no-op UI surface (`ctx.hasUI === false`) and cannot drive workflow
- * pickers, the graph overlay, or human-in-the-loop prompts.
- *
- * The `workflow` tool is removed from the model's tool set in these sessions
- * (see `deAdvertiseWorkflowToolWhenHeadless`). The slash command has no
- * advertise layer and is still reachable via `atomic -p "/workflow …"` (print
- * mode dispatches leading-slash commands through `session.prompt`), so it is
- * refused here instead.
+ * Legacy message retained for consumers that imported the old refusal string.
+ * Non-interactive sessions now keep the workflow tool and `/workflow` command
+ * available; policy gates only interactive pickers and human-input workflows.
  */
 export const WORKFLOW_NON_INTERACTIVE_MESSAGE =
-  "Workflows are disabled in non-interactive (-p) mode; run Atomic interactively to use workflows.";
+  "Workflows are policy-gated in non-interactive (-p) mode; deterministic non-HiL workflows can run headlessly.";
 
-/**
- * Remove the `workflow` tool from the model's active tool set in non-interactive
- * (`-p` / `--mode json`) sessions, which bind a no-op UI (`ctx.hasUI === false`)
- * and cannot drive workflow prompts or the graph overlay. Invoked from
- * `session_start`, which the host awaits before the first prompt, so the tool is
- * gone before the model's first turn. Interactive and RPC modes bind a real UI
- * context (`hasUI: true`) and keep the tool. No-ops on hosts that predate the
- * `getActiveTools`/`setActiveTools` extension API.
- */
-function deAdvertiseWorkflowToolWhenHeadless(pi: ExtensionAPI, hasUI: boolean | undefined): void {
+export function workflowPolicyFromContext(ctx?: { readonly hasUI?: boolean }): WorkflowExecutionPolicy {
+  if (ctx?.hasUI === false) {
+    return NON_INTERACTIVE_WORKFLOW_POLICY;
+  }
+  return INTERACTIVE_WORKFLOW_POLICY;
+}
+
+function isRunStatus(value: string): value is RunStatus {
+  switch (value) {
+    case "pending":
+    case "running":
+    case "paused":
+    case "completed":
+    case "failed":
+    case "killed":
+      return true;
+    default:
+      return false;
+  }
+}
+
+function fallbackRunDetailFromResult(
+  workflowName: string,
+  inputs: Readonly<Record<string, unknown>>,
+  result: Extract<WorkflowToolResult, { action: "run"; runId: string }>,
+): RunDetail {
+  const now = Date.now();
+  const stages = result.stages?.map((stage) => structuredClone(stage)) ?? [];
+  // This path is a degraded last-resort view used only when the retained run
+  // snapshot has disappeared before output rendering. Timestamps are synthetic,
+  // so prefer a conservative failed status over fabricating success if the tool
+  // result status is not one of the known run states.
+  return {
+    runId: result.runId,
+    name: result.name ?? workflowName,
+    status: isRunStatus(result.status) ? result.status : "failed",
+    mode: stages.length > 1 ? "chain" : "single",
+    startedAt: now,
+    endedAt: now,
+    durationMs: 0,
+    inputs,
+    stages,
+    result: result.result,
+    error: result.error,
+  };
+}
+
+function emitTerminalRunDetailSurface(
+  pi: ExtensionAPI,
+  workflowName: string,
+  inputs: Readonly<Record<string, unknown>>,
+  result: Extract<WorkflowToolResult, { action: "run"; runId: string }>,
+): void {
+  const inspected = inspectRun(result.runId);
+  const detail = inspected.ok
+    ? inspected.detail
+    : fallbackRunDetailFromResult(workflowName, inputs, result);
+  emitChatSurface(
+    pi,
+    { kind: "detail", detail },
+    { content: renderRunDetail(detail, { width: 100 }) },
+  );
+}
+
+export const WORKFLOW_COMMAND_OUTPUT_CUSTOM_TYPE = "workflows:command-output";
+
+interface WorkflowCommandOutputDetails {
+  readonly command: string;
+  readonly workflowName?: string;
+}
+
+function emitWorkflowCommandOutput(
+  pi: ExtensionAPI,
+  content: string,
+  details: WorkflowCommandOutputDetails,
+): void {
+  if (typeof pi.sendMessage !== "function") return;
+  void pi.sendMessage<WorkflowCommandOutputDetails>({
+    customType: WORKFLOW_COMMAND_OUTPUT_CUSTOM_TYPE,
+    content,
+    display: true,
+    details,
+  });
+}
+
+interface WorkflowCommandReporter {
+  info(message: string): void;
+  error(message: string): void;
+}
+
+function formatAvailableWorkflowNames(names: readonly string[]): string {
+  return names.length > 0 ? names.join(", ") : "(none)";
+}
+
+const ASK_USER_QUESTION_TOOL_NAME = "ask_user_question";
+
+function deAdvertiseAskUserQuestionWhenHeadless(
+  pi: ExtensionAPI,
+  hasUI: boolean | undefined,
+): void {
   if (hasUI !== false) return;
   if (typeof pi.getActiveTools !== "function" || typeof pi.setActiveTools !== "function") return;
-  const active = pi.getActiveTools();
-  if (!active.includes(WORKFLOW_TOOL_NAME)) return;
-  pi.setActiveTools(active.filter((name) => name !== WORKFLOW_TOOL_NAME));
+
+  const activeTools = pi.getActiveTools();
+  if (!activeTools.includes(ASK_USER_QUESTION_TOOL_NAME)) return;
+
+  pi.setActiveTools(activeTools.filter((toolName) => toolName !== ASK_USER_QUESTION_TOOL_NAME));
+}
+
+class WorkflowHeadlessCommandError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "WorkflowHeadlessCommandError";
+  }
+}
+
+function createWorkflowCommandReporter(
+  ctx: PiCommandContext,
+  policy: WorkflowExecutionPolicy = workflowPolicyFromContext(ctx),
+  pi?: ExtensionAPI,
+): WorkflowCommandReporter {
+  return {
+    info(message: string): void {
+      if (policy.mode === "non_interactive") {
+        if (pi) {
+          emitWorkflowCommandOutput(pi, message, { command: "message" });
+        }
+        return;
+      }
+      ctx.ui.notify(message, "info");
+    },
+    error(message: string): void {
+      if (policy.mode === "non_interactive") {
+        throw new WorkflowHeadlessCommandError(message);
+      }
+      ctx.ui.notify(message, "error");
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1078,6 +1201,7 @@ export function makeExecuteWorkflowTool(
     }
     const activeRuntime =
       typeof runtime === "function" ? runtime(ctx) : runtime;
+    const policy = workflowPolicyFromContext(ctx);
 
     switch (action) {
       case "get":
@@ -1096,12 +1220,13 @@ export function makeExecuteWorkflowTool(
           }
           const details = await activeRuntime.runDirect(
             withForkParentSession(args, ctx),
+            { policy },
           );
           return workflowRunResultFromDetails(details);
         }
         // Delegate to registry-backed dispatcher.
         // Real errors propagate — no broad catch.
-        return activeRuntime.dispatch(args);
+        return activeRuntime.dispatch(args, { policy });
 
       case "status": {
         // Detail mode — single-run lookup via id.
@@ -1356,6 +1481,15 @@ export function makeExecuteWorkflowTool(
           if (!hasPayloadProperty(args)) {
             return workflowSendResult(target.runId, stage.stageId, "answer", "noop", "Send requires text, response, or message.");
           }
+          if (stageUiBroker.wasStagePromptResolved(target.runId, stage.stageId, promptId)) {
+            return workflowSendResult(
+              target.runId,
+              stage.stageId,
+              "answer",
+              "ok",
+              `Input request ${promptId} was already answered.`,
+            );
+          }
           const ok = store.resolveStagePendingPrompt(target.runId, stage.stageId, promptId, promptPayloadFromArgs(args));
           return workflowSendResult(
             target.runId,
@@ -1583,7 +1717,7 @@ export function makeExecuteWorkflowTool(
           run?.status === "paused" ||
           (run?.stages.some((s) => s.status === "paused") ?? false);
         if (!isPaused && run?.status === "failed" && run.endedAt !== undefined && run.resumable !== false) {
-          const continuation = activeRuntime.resumeFailedRun(target.runId, stage.stageId);
+          const continuation = activeRuntime.resumeFailedRun(target.runId, stage.stageId, { policy });
           return {
             action: "resume",
             runId: continuation.ok ? continuation.runId : target.runId,
@@ -1637,6 +1771,26 @@ export function makeExecuteWorkflowTool(
  * See `installInputInterceptor()` for the dispatch path and rationale.
  */
 type WorkflowCommandHandler = PiCommandOptions["handler"];
+
+interface ParsedWorkflowSlashCommand {
+  name: string;
+  args: string;
+}
+
+function parseWorkflowSlashCommand(text: string): ParsedWorkflowSlashCommand | undefined {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("/")) return undefined;
+
+  // First token (after `/`) is the command name. Whitespace splits
+  // command from args; quote handling lives inside the command
+  // handler itself (`tokenizeWorkflowArgs`).
+  const firstSpace = trimmed.indexOf(" ");
+  const name =
+    firstSpace === -1 ? trimmed.slice(1) : trimmed.slice(1, firstSpace);
+  const args = firstSpace === -1 ? "" : trimmed.slice(firstSpace + 1);
+
+  return { name, args };
+}
 
 /**
  * Register a slash command with the host AND remember the handler so
@@ -1707,26 +1861,24 @@ function installInputInterceptor(
   pi.on("input", async (event, ctx) => {
     const text = (event as { text?: unknown } | undefined)?.text;
     if (typeof text !== "string") return undefined;
-    const trimmed = text.trim();
-    if (!trimmed.startsWith("/")) return undefined;
+    const parsedCommand = parseWorkflowSlashCommand(text);
+    if (!parsedCommand) return undefined;
 
-    // First token (after `/`) is the command name. Whitespace splits
-    // command from args; quote handling lives inside the command
-    // handler itself (`tokenizeWorkflowArgs`).
-    const firstSpace = trimmed.indexOf(" ");
-    const name =
-      firstSpace === -1 ? trimmed.slice(1) : trimmed.slice(1, firstSpace);
+    const { name, args } = parsedCommand;
     const handler = commands.get(name);
     if (!handler) return undefined; // not ours — let host run its normal flow.
-
-    const args = firstSpace === -1 ? "" : trimmed.slice(firstSpace + 1);
     const commandCtx = ctx as PiCommandContext;
     try {
       await handler(args, commandCtx);
     } catch (err) {
-      // Match the host command runner: swallow handler exceptions so a
-      // throw never bubbles out and crashes the editor submit pipeline.
-      // Surface the failure via `ctx.ui.notify` so the user sees it.
+      if (commandCtx.hasUI === false) {
+        throw err;
+      }
+      // Match the host command runner for interactive contexts: swallow
+      // handler exceptions so a throw never bubbles out and crashes the
+      // editor submit pipeline. Surface the failure via `ctx.ui.notify` so
+      // the user sees it. Headless contexts rethrow above because notify is
+      // a no-op in print mode and would otherwise hide command failures.
       const message = err instanceof Error ? err.message : String(err);
       commandCtx.ui.notify(`/${name} failed: ${message}`, "error");
     }
@@ -2101,16 +2253,29 @@ function factory(pi: ExtensionAPI): void {
   );
   let lifecycleNotificationsUnsubscribe: (() => void) | null = null;
   let lifecycleNotificationsActive = false;
+  let hilAnswerNotificationsUnsubscribe: (() => void) | null = null;
+  let hilAnswerNotificationsActive = false;
   const lifecycleNotificationState = createWorkflowLifecycleNotificationState();
+  const hilAnswerNotificationState = createWorkflowHilAnswerNotificationState();
   const lifecycleNotificationConfigRef: { current: WorkflowLifecycleNotificationConfig } = {
     current: WORKFLOW_CONFIG_DEFAULTS.workflowNotifications,
   };
+  const registerMessageRenderer: ExtensionAPI["registerMessageRenderer"] | undefined =
+    typeof pi.registerMessageRenderer === "function"
+      ? (event, renderer) => pi.registerMessageRenderer!(event, renderer)
+      : undefined;
   registerLifecycleNoticeRenderer({
     rendererHost: pi,
-    registerMessageRenderer: pi.registerMessageRenderer
-      ? (event, renderer) => pi.registerMessageRenderer?.(event, renderer)
-      : undefined,
+    registerMessageRenderer,
   });
+  registerHilAnswerNoticeRenderer({
+    rendererHost: pi,
+    registerMessageRenderer,
+  });
+  const sendWorkflowNotificationMessage: ExtensionAPI["sendMessage"] | undefined =
+    typeof pi.sendMessage === "function"
+      ? (message, options) => pi.sendMessage!(message, options)
+      : undefined;
   const reinstallLifecycleNotifications = (): void => {
     lifecycleNotificationsUnsubscribe?.();
     lifecycleNotificationsUnsubscribe = null;
@@ -2120,11 +2285,33 @@ function factory(pi: ExtensionAPI): void {
       config: lifecycleNotificationConfigRef.current,
       state: lifecycleNotificationState,
       seedExisting: true,
-      sendMessage: pi.sendMessage
-        ? (message, options) => pi.sendMessage?.(message, options)
-        : undefined,
+      sendMessage: sendWorkflowNotificationMessage,
     });
   };
+  const reinstallHilAnswerNotifications = (): void => {
+    hilAnswerNotificationsUnsubscribe?.();
+    hilAnswerNotificationsUnsubscribe = null;
+    if (!hilAnswerNotificationsActive) return;
+    hilAnswerNotificationsUnsubscribe = installWorkflowHilAnswerNotifications({
+      store,
+      stageUiBroker,
+      state: hilAnswerNotificationState,
+      sendMessage: sendWorkflowNotificationMessage,
+    });
+  };
+
+  async function runWithLifecycleSuppressedForPolicy<T>(
+    policy: WorkflowExecutionPolicy,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    if (policy.mode !== "non_interactive" || policy.awaitTerminalRun !== true) {
+      return fn();
+    }
+    return withWorkflowLifecycleNotificationsSuppressedAsync(
+      lifecycleNotificationState,
+      fn,
+    );
+  }
   let intercomParentSession: string | null = null;
   const intercomPort = {
     emit:
@@ -2135,9 +2322,12 @@ function factory(pi: ExtensionAPI): void {
     parentSession: () => intercomParentSession ?? undefined,
   };
 
+  const startupDiscovery = discoverStartupWorkflowsSync();
   const runtimeRef: { current: ExtensionRuntime } = {
     current: createExtensionRuntime({
-      registry: discoverStartupWorkflowsSync().registry,
+      registry: startupDiscovery.registry,
+      workflowSources: startupDiscovery.sources,
+      cwd: process.cwd(),
       adapters,
       cancellation: cancellationRegistry,
       persistence: persistenceRef.current,
@@ -2154,14 +2344,14 @@ function factory(pi: ExtensionAPI): void {
     get registry() {
       return runtimeRef.current.registry;
     },
-    dispatch(args) {
-      return runtimeRef.current.dispatch(args);
+    dispatch(args, options) {
+      return runtimeRef.current.dispatch(args, options);
     },
-    runDirect(args) {
-      return runtimeRef.current.runDirect(args);
+    runDirect(args, options) {
+      return runtimeRef.current.runDirect(args, options);
     },
-    resumeFailedRun(sourceRunId, stageId) {
-      return runtimeRef.current.resumeFailedRun(sourceRunId, stageId);
+    resumeFailedRun(sourceRunId, stageId, options) {
+      return runtimeRef.current.resumeFailedRun(sourceRunId, stageId, options);
     },
   };
 
@@ -2203,6 +2393,8 @@ function factory(pi: ExtensionAPI): void {
     if (models === undefined) return runtimeProxy;
     return createExtensionRuntime({
       registry: runtimeRef.current.registry,
+      workflowSources: discoveryRef.current?.sources ?? startupDiscovery.sources,
+      cwd: process.cwd(),
       adapters,
       cancellation: cancellationRegistry,
       persistence: persistenceRef.current,
@@ -2289,6 +2481,8 @@ function factory(pi: ExtensionAPI): void {
     );
     runtimeRef.current = createExtensionRuntime({
       registry: result.registry,
+      workflowSources: result.sources,
+      cwd: process.cwd(),
       adapters,
       cancellation: cancellationRegistry,
       persistence: persistenceRef.current,
@@ -2330,8 +2524,14 @@ function factory(pi: ExtensionAPI): void {
       renderShell: "self",
       execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
         // Overlay is opt-in via F2 / ctrl+h; do not auto-open from a
-        // tool-call dispatch path.
-        const details = await executeWorkflowTool(params, ctx);
+        // tool-call dispatch path. Awaited non-interactive runs suppress
+        // lifecycle steer notices until the terminal tool result is ready.
+        const policy = workflowPolicyFromContext(ctx);
+        const details = (params.action ?? "run") === "run"
+          ? await runWithLifecycleSuppressedForPolicy(policy, () =>
+              executeWorkflowTool(params, ctx),
+            )
+          : await executeWorkflowTool(params, ctx);
         return {
           content: [{ type: "text", text: renderWorkflowToolContent(details, params) }],
           details,
@@ -2376,18 +2576,41 @@ function factory(pi: ExtensionAPI): void {
     action: "connect" | "interrupt" | "kill" | "attach" | "pause" | "resume",
     rest: string[],
     ctx: PiCommandContext,
+    reporter: WorkflowCommandReporter = createWorkflowCommandReporter(ctx),
   ): Promise<boolean> {
-    const print = (msg: string): void => ctx.ui.notify(msg, "info");
+    const policy = workflowPolicyFromContext(ctx);
+    const print = (msg: string): void => reporter.info(msg);
+    const fail = (msg: string): void => reporter.error(msg);
+    const canOpenPicker = (ui: PiCommandContext["ui"] | undefined): boolean =>
+      policy.allowInputPicker && typeof ui?.custom === "function";
+    const confirmationPrompt = policy.allowHumanInput && typeof ctx.ui?.confirm === "function"
+      ? ctx.ui.confirm.bind(ctx.ui)
+      : undefined;
     const theme = deriveGraphTheme({});
+    const failHeadlessAttachCommand = (
+      targetAction: "connect" | "attach",
+      runId: string,
+      stageId?: string,
+    ): boolean => {
+      if (policy.allowInputPicker) return false;
+      const displayTarget = stageId
+        ? `${runId.slice(0, 8)} stage ${stageId.slice(0, 8)}`
+        : runId.slice(0, 8);
+      fail(
+        `/workflow ${targetAction} requires an interactive UI surface and cannot attach in non-interactive mode. ` +
+          `Target: ${displayTarget}. Use /workflow status ${runId.slice(0, 8)} or the workflow tool's status/stages/transcript actions for non-interactive inspection.`,
+      );
+      return true;
+    };
 
     if (action === "connect") {
       const target = rest.find((t) => !t.startsWith("--"));
       if (!target) {
         // Picker mode — mount the overlay and route the resolved action.
         const ui = ctx.ui;
-        if (!ui || typeof ui.custom !== "function") {
-          print(
-            `${renderSessionList(store.runs(), { theme, includeAll: true })}\n\nPicker requires a UI surface. Pass a runId: /workflow connect <id>`,
+        if (!canOpenPicker(ui)) {
+          fail(
+            `${renderSessionList(store.runs(), { theme, includeAll: true })}\n\nPicker requires an interactive UI surface. Pass a runId: /workflow connect <id>`,
           );
           return true;
         }
@@ -2400,7 +2623,7 @@ function factory(pi: ExtensionAPI): void {
         if (result.kind === "kill") {
           const run = store.runs().find((r) => r.id === result.runId);
           if (!run) {
-            print(`Run not found: ${result.runId}`);
+            fail(`Run not found: ${result.runId}`);
             return true;
           }
           if (run.endedAt !== undefined) {
@@ -2424,34 +2647,37 @@ function factory(pi: ExtensionAPI): void {
               run,
               previousStatus: killed.previousStatus,
             });
+            print(`Run ${killed.runId.slice(0, 8)} killed and retained for inspection.`);
+          } else if (killed.reason === "already_ended") {
+            print(formatAlreadyEndedRetainedMessage(killed.runId));
+          } else {
+            fail(`Run not found: ${result.runId.slice(0, 8)}.`);
           }
-          print(
-            killed.ok
-              ? `Run ${killed.runId.slice(0, 8)} killed and retained for inspection.`
-              : killed.reason === "already_ended"
-                ? formatAlreadyEndedRetainedMessage(killed.runId)
-                : `Run not found: ${result.runId.slice(0, 8)}.`,
-          );
           return true;
         }
         return true;
       }
       const resolved = resolveRunIdPrefix(target);
       if (resolved.kind === "not_found") {
-        print(
+        fail(
           `Run not found: ${target}\n\n${renderSessionList(store.runs(), { theme, includeAll: true })}`,
         );
         return true;
       }
       if (resolved.kind === "ambiguous") {
-        print(
+        fail(
           `Ambiguous run prefix "${target}" matches: ${resolved.matches
             .map((id) => id.slice(0, 12))
             .join(", ")}`,
         );
         return true;
       }
-      overlay.open(resolved.runId, overlaySurfaceFromContext(ctx));
+      if (failHeadlessAttachCommand("connect", resolved.runId)) {
+        return true;
+      }
+      if (policy.allowInputPicker) {
+        overlay.open(resolved.runId, overlaySurfaceFromContext(ctx));
+      }
       print(
         `Attached to ${resolved.runId.slice(0, 8)}. h/ctrl+d hide · q kill · esc close.`,
       );
@@ -2465,18 +2691,18 @@ function factory(pi: ExtensionAPI): void {
       if (!target && !wantsAll) {
         target = store.activeRunId() ?? undefined;
         if (!target) {
-          print("No in-flight runs to interrupt.");
+          fail("No in-flight runs to interrupt.");
           return true;
         }
       }
       if (wantsAll) {
         const inFlight = store.runs().filter((r) => r.endedAt === undefined);
         if (inFlight.length === 0) {
-          print("No in-flight runs to interrupt.");
+          fail("No in-flight runs to interrupt.");
           return true;
         }
-        if (!yes && ctx.ui && typeof ctx.ui.confirm === "function") {
-          const ok = await ctx.ui.confirm(
+        if (!yes && confirmationPrompt) {
+          const ok = await confirmationPrompt(
             `Interrupt all ${inFlight.length} in-flight workflow runs?`,
             `Pauses: ${inFlight.map((r) => `${r.name} (${r.id.slice(0, 8)})`).join(", ")}`,
           );
@@ -2487,20 +2713,20 @@ function factory(pi: ExtensionAPI): void {
         }
         const results = interruptAllRuns();
         const interrupted = results.filter((r) => r.ok).length;
-        print(
-          interrupted > 0
-            ? `Interrupted ${interrupted} run(s).`
-            : "No in-flight runs to interrupt.",
-        );
+        if (interrupted > 0) {
+          print(`Interrupted ${interrupted} run(s).`);
+        } else {
+          fail("No in-flight runs to interrupt.");
+        }
         return true;
       }
       const resolved = resolveRunIdPrefix(target!);
       if (resolved.kind === "not_found") {
-        print(`Run not found: ${target}`);
+        fail(`Run not found: ${target}`);
         return true;
       }
       if (resolved.kind === "ambiguous") {
-        print(
+        fail(
           `Ambiguous run prefix "${target}" matches multiple runs: ${resolved.matches
             .map((id) => id.slice(0, 12))
             .join(", ")}`,
@@ -2508,8 +2734,8 @@ function factory(pi: ExtensionAPI): void {
         return true;
       }
       const run = store.runs().find((r) => r.id === resolved.runId);
-      if (!yes && run && run.endedAt === undefined && typeof ctx.ui.confirm === "function") {
-        const confirmed = await ctx.ui.confirm(
+      if (!yes && run && run.endedAt === undefined && confirmationPrompt) {
+        const confirmed = await confirmationPrompt(
           `Interrupt workflow run ${run.name} (${run.id.slice(0, 8)})?`,
           "Pauses live work so it can be resumed later.",
         );
@@ -2526,7 +2752,7 @@ function factory(pi: ExtensionAPI): void {
           `Run ${result.runId.slice(0, 8)} interrupted and can be resumed.`,
         );
       } else {
-        print(
+        fail(
           result.reason === "not_found"
             ? `Run not found: ${target}`
             : result.reason === "already_ended"
@@ -2546,18 +2772,18 @@ function factory(pi: ExtensionAPI): void {
       if (!target && !wantsAll) {
         target = store.activeRunId() ?? undefined;
         if (!target) {
-          print("No in-flight runs to kill.");
+          fail("No in-flight runs to kill.");
           return true;
         }
       }
       if (wantsAll) {
         const inFlight = store.runs().filter((r) => r.endedAt === undefined);
         if (inFlight.length === 0) {
-          print("No in-flight runs to kill.");
+          fail("No in-flight runs to kill.");
           return true;
         }
-        if (!yes && ctx.ui && typeof ctx.ui.confirm === "function") {
-          const ok = await ctx.ui.confirm(
+        if (!yes && confirmationPrompt) {
+          const ok = await confirmationPrompt(
             `Kill ${inFlight.length} in-flight workflow runs? Killed runs are retained for inspection.`,
             `Aborts: ${inFlight.map((r) => `${r.name} (${r.id.slice(0, 8)})`).join(", ")}`,
           );
@@ -2571,20 +2797,20 @@ function factory(pi: ExtensionAPI): void {
           persistence: persistenceRef.current,
         });
         const killed = results.filter((r) => r.ok).length;
-        print(
-          killed > 0
-            ? `Killed and retained ${killed} run(s) for inspection.`
-            : "No in-flight runs to kill.",
-        );
+        if (killed > 0) {
+          print(`Killed and retained ${killed} run(s) for inspection.`);
+        } else {
+          fail("No in-flight runs to kill.");
+        }
         return true;
       }
       const resolved = resolveRunIdPrefix(target!);
       if (resolved.kind === "not_found") {
-        print(`Run not found: ${target}`);
+        fail(`Run not found: ${target}`);
         return true;
       }
       if (resolved.kind === "ambiguous") {
-        print(
+        fail(
           `Ambiguous run prefix "${target}" matches multiple runs: ${resolved.matches
             .map((id) => id.slice(0, 12))
             .join(", ")}`,
@@ -2596,7 +2822,7 @@ function factory(pi: ExtensionAPI): void {
         print(formatAlreadyEndedRetainedMessage(resolved.runId));
         return true;
       }
-      if (!yes && run && ctx.ui) {
+      if (!yes && run && confirmationPrompt) {
         const confirmed = await openKillConfirm(ctx.ui, run, theme);
         if (!confirmed) {
           print(
@@ -2620,12 +2846,10 @@ function factory(pi: ExtensionAPI): void {
         print(
           `Run ${result.runId.slice(0, 8)} killed and retained for inspection (was ${result.previousStatus}).`,
         );
+      } else if (result.reason === "already_ended") {
+        print(formatAlreadyEndedRetainedMessage(result.runId));
       } else {
-        print(
-          result.reason === "already_ended"
-            ? formatAlreadyEndedRetainedMessage(result.runId)
-            : `Run not found: ${target}`,
-        );
+        fail(`Run not found: ${target}`);
       }
       return true;
     }
@@ -2636,9 +2860,9 @@ function factory(pi: ExtensionAPI): void {
       let runId: string;
       if (!target) {
         const ui = ctx.ui;
-        if (!ui || typeof ui.custom !== "function") {
-          print(
-            `${renderSessionList(store.runs(), { theme, includeAll: true })}\n\nPicker requires a UI surface. Pass a runId: /workflow attach <id> [stageId]`,
+        if (!canOpenPicker(ui)) {
+          fail(
+            `${renderSessionList(store.runs(), { theme, includeAll: true })}\n\nPicker requires an interactive UI surface. Pass a runId: /workflow attach <id> [stageId]`,
           );
           return true;
         }
@@ -2652,6 +2876,7 @@ function factory(pi: ExtensionAPI): void {
               "kill",
               [picked.runId, "-y"],
               ctx,
+              reporter,
             );
           }
           return true;
@@ -2660,11 +2885,11 @@ function factory(pi: ExtensionAPI): void {
       } else {
         const resolved = resolveRunIdPrefix(target);
         if (resolved.kind === "not_found") {
-          print(`Run not found: ${target}`);
+          fail(`Run not found: ${target}`);
           return true;
         }
         if (resolved.kind === "ambiguous") {
-          print(
+          fail(
             `Ambiguous run prefix "${target}" matches: ${resolved.matches.map((id) => id.slice(0, 12)).join(", ")}`,
           );
           return true;
@@ -2679,12 +2904,17 @@ function factory(pi: ExtensionAPI): void {
           exact ?? run.stages.find((s) => s.id.startsWith(stageTarget));
         const byName = prefix ?? run.stages.find((s) => s.name === stageTarget);
         if (!byName) {
-          print(`Stage not found in run ${runId.slice(0, 8)}: ${stageTarget}`);
+          fail(`Stage not found in run ${runId.slice(0, 8)}: ${stageTarget}`);
           return true;
         }
         stageId = byName.id;
       }
-      overlay.open(runId, overlaySurfaceFromContext(ctx), stageId);
+      if (failHeadlessAttachCommand("attach", runId, stageId)) {
+        return true;
+      }
+      if (policy.allowInputPicker) {
+        overlay.open(runId, overlaySurfaceFromContext(ctx), stageId);
+      }
       const attachedStage = stageId ? run?.stages.find((s) => s.id === stageId) : undefined;
       print(
         stageId
@@ -2702,14 +2932,14 @@ function factory(pi: ExtensionAPI): void {
       let runId: string;
       if (!target) {
         const ui = ctx.ui;
-        if (!ui || typeof ui.custom !== "function") {
+        if (!canOpenPicker(ui)) {
           const active = store.runs().filter((r) => r.endedAt === undefined);
           if (active.length === 0) {
-            print("No active runs to pause.");
+            fail("No active runs to pause.");
             return true;
           }
-          print(
-            `Picker requires a UI surface. Active runs:\n${active.map((r) => `  ${r.id.slice(0, 8)}  ${r.name}`).join("\n")}\n\nUsage: /workflow pause <runId> [stageId]`,
+          fail(
+            `Picker requires an interactive UI surface. Active runs:\n${active.map((r) => `  ${r.id.slice(0, 8)}  ${r.name}`).join("\n")}\n\nUsage: /workflow pause <runId> [stageId]`,
           );
           return true;
         }
@@ -2719,11 +2949,11 @@ function factory(pi: ExtensionAPI): void {
       } else {
         const resolved = resolveRunIdPrefix(target);
         if (resolved.kind === "not_found") {
-          print(`Run not found: ${target}`);
+          fail(`Run not found: ${target}`);
           return true;
         }
         if (resolved.kind === "ambiguous") {
-          print(
+          fail(
             `Ambiguous run prefix "${target}" matches: ${resolved.matches.map((id) => id.slice(0, 12)).join(", ")}`,
           );
           return true;
@@ -2740,7 +2970,7 @@ function factory(pi: ExtensionAPI): void {
             s.name === stageTarget,
         );
         if (!stage) {
-          print(`Stage not found in run ${runId.slice(0, 8)}: ${stageTarget}`);
+          fail(`Stage not found in run ${runId.slice(0, 8)}: ${stageTarget}`);
           return true;
         }
         stageId = stage.id;
@@ -2755,7 +2985,7 @@ function factory(pi: ExtensionAPI): void {
               : result.reason === "no_active_stages"
                 ? `No pausable stages on run ${runId.slice(0, 8)}.`
                 : `Stage not found: ${stageTarget ?? "(unknown)"}`;
-        print(why);
+        fail(why);
         return true;
       }
       // Open the orchestrator overlay (graph for run-level pause, stage
@@ -2763,7 +2993,7 @@ function factory(pi: ExtensionAPI): void {
       // the full-screen overlay hides Pi's "Working… (esc to interrupt)"
       // spinner, which otherwise stays visible because the host session
       // is still streaming whatever was happening before the pause hit.
-      if (typeof ctx.ui?.custom === "function") {
+      if (policy.allowInputPicker) {
         overlay.open(runId, overlaySurfaceFromContext(ctx), stageId);
       }
       print(
@@ -2781,8 +3011,8 @@ function factory(pi: ExtensionAPI): void {
       let runId: string;
       if (!target) {
         const ui = ctx.ui;
-        if (!ui || typeof ui.custom !== "function") {
-          print(`Usage: /workflow resume <runId> [stageId] [message…]`);
+        if (!canOpenPicker(ui)) {
+          fail(`Usage: /workflow resume <runId> [stageId] [message…]`);
           return true;
         }
         const picked = await openSessionPicker(ui, store, theme, "resume");
@@ -2791,11 +3021,11 @@ function factory(pi: ExtensionAPI): void {
       } else {
         const resolved = resolveRunIdPrefix(target);
         if (resolved.kind === "not_found") {
-          print(`Run not found: ${target}`);
+          fail(`Run not found: ${target}`);
           return true;
         }
         if (resolved.kind === "ambiguous") {
-          print(
+          fail(
             `Ambiguous run prefix "${target}" matches: ${resolved.matches.map((id) => id.slice(0, 12)).join(", ")}`,
           );
           return true;
@@ -2806,7 +3036,7 @@ function factory(pi: ExtensionAPI): void {
       const run = store.runs().find((r) => r.id === runId);
       const resolvedStage = resolveStageTarget(runId, stageTarget);
       if (!resolvedStage.ok) {
-        print(resolvedStage.message);
+        fail(resolvedStage.message);
         return true;
       }
       stageId = resolvedStage.stageId;
@@ -2814,18 +3044,24 @@ function factory(pi: ExtensionAPI): void {
         run?.status === "paused" ||
         (run?.stages.some((s) => s.status === "paused") ?? false);
       if (!isPaused && run?.status === "failed" && run.endedAt !== undefined && run.resumable !== false) {
-        const continuation = runtimeForContext(ctx).resumeFailedRun(runId, stageId);
-        print(continuation.message);
+        const continuation = runtimeForContext(ctx).resumeFailedRun(runId, stageId, { policy });
+        if (continuation.ok) {
+          print(continuation.message);
+        } else {
+          fail(continuation.message);
+        }
         return true;
       }
       const result = resumeRun(runId, { stageId, message });
       if (!result.ok) {
-        print(`Run not found: ${runId.slice(0, 8)}`);
+        fail(`Run not found: ${runId.slice(0, 8)}`);
         return true;
       }
       if (!isPaused) {
-        // Non-paused fallback: reopen the orchestrator overlay as before.
-        overlay.open(result.runId, overlaySurfaceFromContext(ctx));
+        // Non-paused fallback: reopen the orchestrator overlay as before when interactive.
+        if (policy.allowInputPicker) {
+          overlay.open(result.runId, overlaySurfaceFromContext(ctx));
+        }
         print(
           result.message ?? `Snapshot available: run ${result.runId} (${result.snapshot.name}) \u2014 status: ${result.snapshot.status}, stages: ${result.snapshot.stages.length}`,
         );
@@ -2834,14 +3070,14 @@ function factory(pi: ExtensionAPI): void {
       // Paused live resume: when no message was provided and the picker
       // is available, open the attached chat so the user can talk to
       // the freshly-resumed stage.
-      if (!message && stageId && ctx.ui?.custom) {
+      if (!message && stageId && policy.allowInputPicker) {
         overlay.open(runId, overlaySurfaceFromContext(ctx), stageId);
       }
-      print(
-        result.resumed.length === 0
-          ? `No paused stages on run ${runId.slice(0, 8)}.`
-          : `Resumed ${result.resumed.length} stage(s) on run ${runId.slice(0, 8)}${message ? ` with message: "${message}"` : ""}.`,
-      );
+      if (result.resumed.length === 0) {
+        fail(`No paused stages on run ${runId.slice(0, 8)}.`);
+      } else {
+        print(`Resumed ${result.resumed.length} stage(s) on run ${runId.slice(0, 8)}${message ? ` with message: "${message}"` : ""}.`);
+      }
       return true;
     }
 
@@ -2855,14 +3091,46 @@ function factory(pi: ExtensionAPI): void {
       description:
         "Run or inspect pi workflows. Usage: /workflow <name> [key=value…] | /workflow [list|status|connect|attach|interrupt|kill|pause|resume|inputs|reload] [args]",
       handler: async (args: string, ctx: PiCommandContext) => {
-        // Print/JSON (`-p`) sessions cannot drive workflow pickers, the graph
-        // overlay, or human-in-the-loop prompts. Refuse before parsing so the
-        // command surface matches the disabled `workflow` tool.
-        if (ctx.hasUI === false) {
-          ctx.ui.notify(WORKFLOW_NON_INTERACTIVE_MESSAGE, "warning");
-          return;
-        }
-        const print = (msg: string): void => ctx.ui.notify(msg, "info");
+        const policy = workflowPolicyFromContext(ctx);
+        const reporter = createWorkflowCommandReporter(ctx, policy, pi);
+        const print = (msg: string): void => reporter.info(msg);
+        const fail = (msg: string): void => reporter.error(msg);
+        const withImplicitYesFlag = (tokens: string[]): string[] =>
+          tokens.some((t) => t === "--yes" || t === "-y") ? tokens : [...tokens, "-y"];
+        const showWorkflowInputs = async (
+          workflowName: string,
+          command: WorkflowCommandOutputDetails["command"] = "inputs",
+        ): Promise<void> => {
+          const result = await runtimeForContext(ctx).dispatch({
+            workflow: workflowName,
+            inputs: {},
+            action: "inputs",
+          }, { policy });
+          if (result.action === "inputs" && "inputs" in result) {
+            const r = result as Extract<
+              WorkflowToolResult,
+              { action: "inputs" }
+            >;
+            if (r.error) {
+              const available = runtimeProxy.registry.names();
+              fail(
+                `${r.error}\nAvailable: ${formatAvailableWorkflowNames(available)}`,
+              );
+            } else {
+              const schemaText = renderInputsSchema(workflowName, r.inputs, {
+                theme: deriveGraphTheme({}),
+              });
+              if (policy.mode === "non_interactive") {
+                emitWorkflowCommandOutput(pi, schemaText, {
+                  command,
+                  workflowName,
+                });
+              } else {
+                print(schemaText);
+              }
+            }
+          }
+        };
         // Quote-aware split so `prompt="map the codebase"` stays a single
         // token. Plain `.split(/\s+/)` would mangle quoted multi-word values
         // into `prompt="map`, `the`, `codebase"` — the dispatch confirm then
@@ -2876,15 +3144,15 @@ function factory(pi: ExtensionAPI): void {
         // pause   — pause a run or specific stage.
         // -----------------------------------------------------------------------
         if (subcommand === "connect") {
-          await handleRunControlCommand("connect", parts.slice(1), ctx);
+          await handleRunControlCommand("connect", parts.slice(1), ctx, reporter);
           return;
         }
         if (subcommand === "attach") {
-          await handleRunControlCommand("attach", parts.slice(1), ctx);
+          await handleRunControlCommand("attach", parts.slice(1), ctx, reporter);
           return;
         }
         if (subcommand === "pause") {
-          await handleRunControlCommand("pause", parts.slice(1), ctx);
+          await handleRunControlCommand("pause", parts.slice(1), ctx, reporter);
           return;
         }
 
@@ -2915,11 +3183,11 @@ function factory(pi: ExtensionAPI): void {
           if (target && !target.startsWith("--")) {
             const resolved = resolveRunIdPrefix(target);
             if (resolved.kind === "not_found") {
-              print(`Run not found: ${target}`);
+              fail(`Run not found: ${target}`);
               return;
             }
             if (resolved.kind === "ambiguous") {
-              print(
+              fail(
                 `Ambiguous run prefix "${target}" matches: ${resolved.matches
                   .map((id) => id.slice(0, 12))
                   .join(", ")}`,
@@ -2928,7 +3196,7 @@ function factory(pi: ExtensionAPI): void {
             }
             const inspected = inspectRun(resolved.runId);
             if (!inspected.ok) {
-              print(`Run not found: ${target}`);
+              fail(`Run not found: ${target}`);
               return;
             }
             emitChatSurface(pi, { kind: "detail", detail: inspected.detail });
@@ -2954,14 +3222,14 @@ function factory(pi: ExtensionAPI): void {
         if (subcommand === "reload") {
           const activeRuns = inFlightRunCount();
           if (activeRuns > 0) {
-            print(reloadBlockedMessage(activeRuns));
+            fail(reloadBlockedMessage(activeRuns));
             return;
           }
           try {
             await reloadWorkflowResources();
             print("Reloaded workflow resources.");
           } catch (error) {
-            print(reloadFailureMessage(error));
+            fail(reloadFailureMessage(error));
           }
           return;
         }
@@ -2975,11 +3243,11 @@ function factory(pi: ExtensionAPI): void {
           // command should pause immediately, even when a confirm surface is
           // unavailable or would steal focus from the running workflow.
           const interruptArgs = parts.slice(1);
-          const hasYes = interruptArgs.some((t) => t === "--yes" || t === "-y");
           await handleRunControlCommand(
             "interrupt",
-            hasYes ? interruptArgs : [...interruptArgs, "-y"],
+            withImplicitYesFlag(interruptArgs),
             ctx,
+            reporter,
           );
           return;
         }
@@ -2989,11 +3257,11 @@ function factory(pi: ExtensionAPI): void {
         // -----------------------------------------------------------------------
         if (subcommand === "kill") {
           const killArgs = parts.slice(1);
-          const hasYes = killArgs.some((t) => t === "--yes" || t === "-y");
           await handleRunControlCommand(
             "kill",
-            hasYes ? killArgs : [...killArgs, "-y"],
+            withImplicitYesFlag(killArgs),
             ctx,
+            reporter,
           );
           return;
         }
@@ -3003,7 +3271,7 @@ function factory(pi: ExtensionAPI): void {
         // behaviour); paused runs resume live work through the registry.
         // -----------------------------------------------------------------------
         if (subcommand === "resume") {
-          await handleRunControlCommand("resume", parts.slice(1), ctx);
+          await handleRunControlCommand("resume", parts.slice(1), ctx, reporter);
           return;
         }
 
@@ -3013,32 +3281,10 @@ function factory(pi: ExtensionAPI): void {
         if (subcommand === "inputs") {
           const workflowName = parts[1] ?? "";
           if (!workflowName) {
-            print("Usage: /workflow inputs <name>");
+            fail("Usage: /workflow inputs <name>");
             return;
           }
-          const result = await runtimeForContext(ctx).dispatch({
-            workflow: workflowName,
-            inputs: {},
-            action: "inputs",
-          });
-          if (result.action === "inputs" && "inputs" in result) {
-            const r = result as Extract<
-              WorkflowToolResult,
-              { action: "inputs" }
-            >;
-            if (r.error) {
-              const available = runtimeProxy.registry.names();
-              print(
-                `${r.error}\nAvailable: ${available.length > 0 ? available.join(", ") : "(none)"}`,
-              );
-            } else {
-              print(
-                renderInputsSchema(workflowName, r.inputs, {
-                  theme: deriveGraphTheme({}),
-                }),
-              );
-            }
-          }
+          await showWorkflowInputs(workflowName);
           return;
         }
 
@@ -3051,29 +3297,7 @@ function factory(pi: ExtensionAPI): void {
         const inputTokens = parts.slice(1);
 
         if (inputTokens.includes("--help")) {
-          const helpResult = await runtimeForContext(ctx).dispatch({
-            workflow: workflowName,
-            inputs: {},
-            action: "inputs",
-          });
-          if (helpResult.action === "inputs" && "inputs" in helpResult) {
-            const r = helpResult as Extract<
-              WorkflowToolResult,
-              { action: "inputs" }
-            >;
-            if (r.error) {
-              const available = runtimeProxy.registry.names();
-              print(
-                `${r.error}\nAvailable: ${available.length > 0 ? available.join(", ") : "(none)"}`,
-              );
-            } else {
-              print(
-                renderInputsSchema(workflowName, r.inputs, {
-                  theme: deriveGraphTheme({}),
-                }),
-              );
-            }
-          }
+          await showWorkflowInputs(workflowName, "help");
           return;
         }
 
@@ -3107,6 +3331,7 @@ function factory(pi: ExtensionAPI): void {
         // back to the supported overlay picker rather than surfacing the host
         // exception as a workflow command error.
         const canOpenPicker =
+          policy.allowInputPicker &&
           !wantsPickerSkip &&
           (typeof ctx.ui?.setEditorComponent === "function" ||
             typeof ctx.ui?.custom === "function");
@@ -3115,7 +3340,7 @@ function factory(pi: ExtensionAPI): void {
             workflow: workflowName,
             inputs: {},
             action: "inputs",
-          });
+          }, { policy });
           const schema =
             schemaResult.action === "inputs" && "inputs" in schemaResult
               ? (schemaResult as Extract<
@@ -3165,26 +3390,38 @@ function factory(pi: ExtensionAPI): void {
           }
         }
 
-        const result = await runtimeForContext(ctx).dispatch({
-          workflow: workflowName,
-          inputs: mergedInputs,
-          action: "run",
-        });
+        const result = await runWithLifecycleSuppressedForPolicy(policy, () =>
+          runtimeForContext(ctx).dispatch({
+            workflow: workflowName,
+            inputs: mergedInputs,
+            action: "run",
+          }, { policy }),
+        );
         if (result.action === "run" && "runId" in result) {
           const r = result as Extract<
             WorkflowToolResult,
             { action: "run"; runId: string }
           >;
           if (r.status === "failed" && r.runId === "") {
-            const available = runtimeProxy.registry.names();
-            print(
-              `Workflow not found: ${workflowName}\nAvailable: ${available.length > 0 ? available.join(", ") : "(none)"}`,
-            );
+            if (r.error?.toLowerCase().includes("not found")) {
+              const available = runtimeProxy.registry.names();
+              fail(
+                `Workflow not found: ${workflowName}\nAvailable: ${formatAvailableWorkflowNames(available)}`,
+              );
+            } else {
+              fail(
+                `Workflow "${workflowName}" failed: ${r.error ?? "unknown error"}`,
+              );
+            }
           } else if (r.status === "failed") {
-            print(
+            fail(
               `Workflow "${workflowName}" failed: ${r.error ?? "unknown error"}`,
             );
           } else {
+            if (policy.mode === "non_interactive") {
+              emitTerminalRunDetailSurface(pi, workflowName, mergedInputs, r);
+              return;
+            }
             // Always-background — the run is alive, the chat is free.
             // Route via emitChatSurface so the band+card chrome receives the
             // real chat content width via pi-tui's Component contract
@@ -3488,11 +3725,12 @@ function factory(pi: ExtensionAPI): void {
     });
 
     pi.on("session_start", async (_event, ctx) => {
-      // Non-interactive (`-p` / `--mode json`) sessions cannot drive workflow
-      // prompts or the graph overlay; drop the `workflow` tool from the model's
-      // tool set before the first turn. The host awaits this handler during
-      // bindExtensions, ahead of the initial prompt.
-      deAdvertiseWorkflowToolWhenHeadless(pi, ctx?.hasUI);
+      // Non-interactive (`-p` / `--mode json`) sessions keep the workflow tool
+      // available for deterministic, non-HiL automation. Policy gates later
+      // disable pickers and reject workflows declared human-in-the-loop.
+      // Defense-in-depth for older/nonstandard hosts: remove only the
+      // unavailable human-input tool from the active tool set.
+      deAdvertiseAskUserQuestionWhenHeadless(pi, ctx?.hasUI);
 
       // Workflow lifecycle is scoped to the originating chat session.
       // A new session inherits a clean store; any leftover live runs from a
@@ -3506,6 +3744,7 @@ function factory(pi: ExtensionAPI): void {
       });
       store.clear();
       resetWorkflowLifecycleNotificationState(lifecycleNotificationState);
+      resetWorkflowHilAnswerNotificationState(hilAnswerNotificationState);
       stageControlRegistry.clear();
 
       // pi-intercom session naming lives here so we don't trip the
@@ -3517,7 +3756,9 @@ function factory(pi: ExtensionAPI): void {
       // tunables must be resolved first.
       await discoveryPromise;
       lifecycleNotificationsActive = true;
+      hilAnswerNotificationsActive = true;
       reinstallLifecycleNotifications();
+      reinstallHilAnswerNotifications();
       if (ctx?.ui) {
         const diagnostics = formatStartupDiagnostics(configLoadRef.current, discoveryRef.current);
         if (diagnostics !== null) {
@@ -3573,8 +3814,11 @@ function factory(pi: ExtensionAPI): void {
       storeWidgetUnsubscribe?.();
       storeWidgetUnsubscribe = null;
       lifecycleNotificationsActive = false;
+      hilAnswerNotificationsActive = false;
       lifecycleNotificationsUnsubscribe?.();
       lifecycleNotificationsUnsubscribe = null;
+      hilAnswerNotificationsUnsubscribe?.();
+      hilAnswerNotificationsUnsubscribe = null;
     });
   }
 

@@ -40,7 +40,9 @@ Workflow lifecycle notices are enabled by default. They send steer prompts into 
 }
 ```
 
-Set `enabled` to `false` to disable all notices, or narrow `notifyOn` to a non-empty list of selected events. Emitted notices use steer delivery and wake an idle model so the lifecycle update enters the model context when it happens.
+Set `enabled` to `false` to disable all lifecycle notices, or narrow `notifyOn` to a non-empty list of selected events. Completion and failure lifecycle notices use steer delivery and wake an idle model so the lifecycle update enters the model context when it happens. Awaiting-input states are tracked for dedupe/restore, but workflows do not enqueue main-chat `/workflow connect` cards for them; prompt state remains visible through workflow status/connect surfaces, avoiding stale actionable cards if a prompt resolves while the main chat is streaming.
+
+When a stage human-in-the-loop prompt is answered, workflows also emits a separate `workflows:hil-answer-notice` custom message with interrupt delivery. If the main agent is still streaming, Atomic stops the stale turn and immediately tells the agent that the prompt has already been answered and not to ask the same question again. This notice carries workflow/run/stage/prompt metadata only; raw HiL answers stay on the workflow response path.
 
 ---
 
@@ -103,6 +105,7 @@ import { defineWorkflow } from "@bastani/workflows";
 export default defineWorkflow("review-and-merge")
   .description("Plan a change, ask for human approval, then execute.")
   .input("task", { type: "text", required: true, description: "What to implement." })
+  .humanInTheLoop("Requires approval through ctx.ui.confirm")
   .run(async (ctx) => {
     const plan = await ctx.task("planner", {
       prompt: `Create a concise implementation plan for: ${String(ctx.inputs.task)}`,
@@ -119,6 +122,52 @@ export default defineWorkflow("review-and-merge")
   })
   .compile();
 ```
+
+### Example 4 — Compose workflows with imports
+
+Use `.import(alias, source)` to declare a child workflow, then execute it with `ctx.workflow(alias)`. The child runs as its own nested workflow run behind a parent boundary stage named `import:<alias>` by default. Inputs are validated against the child workflow before it starts, and selected outputs can be renamed for downstream parent stages.
+
+```typescript
+import { defineWorkflow } from "@bastani/workflows";
+
+export const sharedResearch = defineWorkflow("shared-research")
+  .input("topic", { type: "text", required: true })
+  .output("summary", { type: "text", required: true })
+  .run(async (ctx) => {
+    const report = await ctx.task("research", {
+      prompt: `Research: ${String(ctx.inputs.topic)}`,
+    });
+    return { summary: report.text };
+  })
+  .compile();
+
+export default defineWorkflow("research-and-synthesize")
+  .input("topic", { type: "text", required: true })
+  .import("research", { workflow: "shared-research" })
+  .run(async (ctx) => {
+    const child = await ctx.workflow("research", {
+      inputs: { topic: ctx.inputs.topic },
+      outputs: { summary: "research_summary" },
+    });
+
+    const final = await ctx.task("synthesize", {
+      prompt: `Synthesize this research:\n\n${String(child.outputs.research_summary)}`,
+    });
+    return { final: final.text };
+  })
+  .compile();
+```
+
+Imports can reference a registered workflow ID (`{ workflow: "shared-research" }`) or a local workflow module (`{ path: "./shared-research.ts" }`, optionally `{ path: "./shared.ts", export: "sharedResearch" }`):
+
+```typescript
+export default defineWorkflow("research-and-synthesize")
+  .import("research", { path: "./shared.ts", export: "sharedResearch" })
+  .run(async (ctx) => ctx.workflow("research", { inputs: { topic: "workflow imports" } }))
+  .compile();
+```
+
+Local relative paths resolve from the importing workflow file when discovery knows its file path, otherwise from the workflow invocation cwd. Discovery reports unresolved, circular, or invalid imports before runs start. Local path imports execute the imported module's top-level TypeScript during validation/discovery (through the same loader used for workflow discovery), so only import trusted workflow files and expect missing or pathological modules to fail before the first dispatch.
 
 ### Reusable Git worktrees
 
@@ -270,7 +319,9 @@ registry.get("alpha"); // compiled workflow definition | undefined
 
 Input overrides are bare `key=value` tokens (no leading `--`). Values are JSON-parsed when possible, so numbers, booleans, and quoted strings work as expected (e.g. `count=3`, `flag=true`, `prompt="multi word value"`). A whole-object override can be passed as a single JSON token (e.g. `{"prompt":"...","count":3}`).
 
-Workflows always run as **background tasks** — the chat editor stays free while a run executes. Press **F2** (or `/workflow connect <run-id>`) to attach to the live graph viewer; HIL prompts (`ctx.ui.input/confirm/select/editor`) appear as awaiting-input graph nodes. Press Enter on the node to answer locally, never as a modal dialog over the chat.
+Workflows always run as **background tasks** in interactive sessions — the chat editor stays free while a run executes. Press **F2** (or `/workflow connect <run-id>`) to attach to the live graph viewer; HIL prompts (`ctx.ui.input/confirm/select/editor`) appear as awaiting-input graph nodes. Press Enter on the node to answer locally, never as a modal dialog over the chat.
+
+Workflows that require a human decision should declare it with `.humanInTheLoop(reason?)`. Headless/non-interactive sessions reject those workflows before execution, because no prompt node, picker, or `ask_user_question` UI can be answered by a user.
 
 Prompt answer replay is live-memory only. `StageSnapshot.promptAnswerState` reports whether continuation can replay a prompt answer (`available`), must ask again because the private ledger entry is gone (`unavailable`), or must ask again because multiple matching prompt nodes are ambiguous (`ambiguous`). Raw answers stay in a private `PromptAnswerRecord` ledger, are never serialized to snapshots or persistence, and remain resident in memory until the answer is cleared, the run is removed, or the store is cleared. Replay keys include prompt kind, message text, select choices, input/editor initial value, and hashed author callsite, so changing any of those inputs may intentionally re-ask on continuation. Empty `ctx.ui.select(..., [])` calls throw before creating a prompt node.
 
@@ -317,7 +368,7 @@ Press **F2** while a workflow is running to open the DAG overlay for the active 
 
 `@bastani/workflows` follows pi's package/extension model: pi loads `src/extension/index.ts` from the package `pi.extensions` manifest, then the extension registers the `workflow` tool, `/workflow` slash command, renderers, widget, and lifecycle hooks in-process.
 
-For interactive use, run workflows through `/workflow <name> [key=value ...]` or let the LLM call the `workflow` tool. Both the `/workflow` command and the `workflow` tool are disabled in non-interactive (`-p` / `--print` / `--mode json`) sessions, which bind a no-op UI surface and therefore cannot drive workflow pickers, the graph overlay, or human-in-the-loop prompts. For library or scripted use, call the explicit programmatic runner instead:
+For interactive use, run workflows through `/workflow <name> [key=value ...]` or let the LLM call the `workflow` tool. In non-interactive (`-p` / `--print` / `--mode json`) sessions, `/workflow <name> key=value` and LLM calls to the `workflow` tool remain available for deterministic non-HIL workflows. The input picker and graph picker are disabled, declared `.humanInTheLoop()` workflows are rejected, top-level `ctx.ui.*` is unavailable, and stage child sessions exclude `ask_user_question`. Named workflow dispatch waits for the terminal run snapshot before returning. For library or scripted use, you can also call the explicit programmatic runner:
 
 ```ts
 import { runWorkflow, type WorkflowOptions } from "@bastani/workflows";

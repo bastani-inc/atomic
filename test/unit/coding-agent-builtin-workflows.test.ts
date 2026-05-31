@@ -157,7 +157,7 @@ describe("coding-agent builtin resources", () => {
     }
 
     assert.ok(labels.includes("package-command"), `expected package workflow completion in ${labels.join(", ")}`);
-  }, 20_000);
+  }, fullBuiltinPackageLoadTimeoutMs);
 
   test("loads builtin pi package resources", async () => {
     const cwd = tempDir("atomic-builtin-packages-cwd-");

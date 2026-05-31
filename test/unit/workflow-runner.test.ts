@@ -1,6 +1,6 @@
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CreateAgentSessionOptions } from "@bastani/atomic";
@@ -240,5 +240,39 @@ describe("programmatic workflow runner", () => {
       runWorkflow({ mode: "workflow", workflow: "missing-workflow" }, { stubAgent: true }),
       /Workflow not found: "missing-workflow"/,
     );
+  });
+
+  test("fails fast for invalid named workflow import graphs", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "workflow-runner-import-fail-"));
+    try {
+      const workflowDir = join(dir, ".atomic", "workflows");
+      mkdirSync(workflowDir, { recursive: true });
+      writeFileSync(
+        join(workflowDir, "parent.ts"),
+        [
+          `import { defineWorkflow } from "@bastani/workflows";`,
+          `export default defineWorkflow("runner-import-parent")`,
+          `  .import("missing", { workflow: "runner-missing-child" })`,
+          `  .run(async (ctx) => {`,
+          `    await ctx.task("should-not-run", { prompt: "no" });`,
+          `    return {};`,
+          `  })`,
+          `  .compile();`,
+        ].join("\n"),
+        "utf8",
+      );
+      const prompts: string[] = [];
+
+      await assert.rejects(
+        runWorkflow(
+          { mode: "workflow", workflow: "runner-import-parent" },
+          { cwd: dir, adapterOptions: { createAgentSession: makeSessionFactory(prompts) } },
+        ),
+        /Invalid workflow imports[\s\S]*IMPORT_UNRESOLVED[\s\S]*runner-missing-child/,
+      );
+      assert.deepEqual(prompts, []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

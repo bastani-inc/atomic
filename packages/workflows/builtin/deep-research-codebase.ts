@@ -8,6 +8,7 @@
  * ctx.parallel(), and ctx.chain().
  */
 
+import { readFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, extname, isAbsolute, join, relative } from "node:path";
 import { defineWorkflow } from "../src/index.js";
@@ -24,6 +25,7 @@ const LOC_PER_PARTITION = 10_000;
 const DEFAULT_RESEARCH_DOC_DIR = "research";
 const DEEP_RESEARCH_RUN_DIR_PREFIX = ".deep-research-";
 const MAX_RESEARCH_DOC_SLUG_LENGTH = 80;
+const GIT_LS_FILES_TIMEOUT_MS = 2_000;
 
 type PromptSection = readonly [tag: string, content: string];
 
@@ -74,6 +76,14 @@ function positiveInteger(value: number | undefined, fallback: number): number {
     : fallback;
 }
 
+function countNewlineBytes(bytes: Uint8Array): number {
+  let total = 0;
+  for (let i = 0; i < bytes.length; i += 1) {
+    if (bytes[i] === 10) total += 1;
+  }
+  return total;
+}
+
 function countCodebaseLines(cwd = process.cwd()): number {
   try {
     const gitFiles = Bun.spawnSync({
@@ -81,36 +91,26 @@ function countCodebaseLines(cwd = process.cwd()): number {
       stdout: "pipe",
       stderr: "pipe",
       cwd,
+      timeout: GIT_LS_FILES_TIMEOUT_MS,
     });
     const files =
       gitFiles.success && gitFiles.stdout
         ? gitFiles.stdout
             .toString()
             .split("\n")
+            .map((line) => line.replace(/\r$/, ""))
             .filter((line) => line.length > 0)
         : [];
 
     if (files.length === 0) return 0;
 
     let total = 0;
-    const batchSize = 200;
-    for (let i = 0; i < files.length; i += batchSize) {
-      const batch = files.slice(i, i + batchSize);
-      const wc = Bun.spawnSync({
-        cmd: ["wc", "-l", "--", ...batch],
-        stdout: "pipe",
-        stderr: "pipe",
-        cwd,
-      });
-      if (!wc.stdout) continue;
-
-      for (const line of wc.stdout.toString().split("\n")) {
-        const match = line.match(/^\s*(\d+)\s+(.+)$/);
-        const countText = match?.[1];
-        const path = match?.[2]?.trim();
-        if (countText === undefined || path === undefined || path === "total")
-          continue;
-        total += Number.parseInt(countText, 10);
+    for (const file of files) {
+      try {
+        total += countNewlineBytes(readFileSync(join(cwd, file)));
+      } catch {
+        // The line count is only a partition-sizing heuristic. Ignore files
+        // that disappear, are unreadable, or are not regular files.
       }
     }
     return total;

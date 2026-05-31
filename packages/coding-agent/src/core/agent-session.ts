@@ -61,6 +61,7 @@ import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.ts";
 import {
 	type ContextUsage,
+	type CustomMessageDelivery,
 	type ExtensionCommandContextActions,
 	type ExtensionErrorListener,
 	ExtensionRunner,
@@ -177,6 +178,35 @@ export type AgentSessionEvent =
 
 /** Listener function for agent session events */
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
+
+interface PendingAgentMessageQueue {
+	hasItems(): boolean;
+	drain(): AgentMessage[];
+}
+
+interface AgentQueueAccess {
+	readonly steeringQueue?: PendingAgentMessageQueue;
+	readonly followUpQueue?: PendingAgentMessageQueue;
+}
+
+interface DrainedAgentQueues {
+	readonly steering: AgentMessage[];
+	readonly followUp: AgentMessage[];
+}
+
+interface InterruptQueueHold {
+	readonly steering: AgentMessage[];
+	readonly followUp: AgentMessage[];
+}
+
+function drainAgentMessageQueue(queue: PendingAgentMessageQueue | undefined): AgentMessage[] {
+	if (!queue) return [];
+	const drained: AgentMessage[] = [];
+	while (queue.hasItems()) {
+		drained.push(...queue.drain());
+	}
+	return drained;
+}
 
 // ============================================================================
 // Types
@@ -297,6 +327,12 @@ export class AgentSession {
 	private _steeringMessages: string[] = [];
 	/** Tracks pending follow-up messages for UI display. Removed when delivered. */
 	private _followUpMessages: string[] = [];
+	/** Serializes interrupt custom-message delivery so only one immediate prompt runs at a time. */
+	private _interruptDeliveryQueue: Promise<void> = Promise.resolve();
+	/** Number of interrupt custom messages enqueued or currently delivering. */
+	private _pendingInterruptDeliveries = 0;
+	/** Queues held out of pi-agent-core while an interrupt sequence is active. */
+	private _activeInterruptQueueHold: InterruptQueueHold | undefined = undefined;
 	/** Messages queued to be included with the next user prompt as context ("asides"). */
 	private _pendingNextTurnMessages: CustomMessage[] = [];
 
@@ -378,6 +414,11 @@ export class AgentSession {
 			activeToolNames: this._initialActiveToolNames,
 			includeAllExtensionTools: true,
 		});
+	}
+
+	/** Orchestration context for this session, when owned by a workflow/subagent runtime. */
+	get orchestrationContext(): OrchestrationContext | undefined {
+		return this._orchestrationContext;
 	}
 
 	/** Model registry for API key resolution and model discovery */
@@ -1315,11 +1356,14 @@ export class AgentSession {
 		if (images) {
 			content.push(...images);
 		}
-		this.agent.steer({
-			role: "user",
-			content,
-			timestamp: Date.now(),
-		});
+		this._queueAgentMessage(
+			{
+				role: "user",
+				content,
+				timestamp: Date.now(),
+			},
+			"steer",
+		);
 	}
 
 	/**
@@ -1332,11 +1376,14 @@ export class AgentSession {
 		if (images) {
 			content.push(...images);
 		}
-		this.agent.followUp({
-			role: "user",
-			content,
-			timestamp: Date.now(),
-		});
+		this._queueAgentMessage(
+			{
+				role: "user",
+				content,
+				timestamp: Date.now(),
+			},
+			"followUp",
+		);
 	}
 
 	/**
@@ -1357,18 +1404,19 @@ export class AgentSession {
 	/**
 	 * Send a custom message to the session. Creates a CustomMessageEntry.
 	 *
-	 * Handles three cases:
-	 * - Streaming: queues message, processed when loop pulls from queue
+	 * Handles four cases:
+	 * - Streaming + interrupt trigger: aborts the active run and starts an immediate custom-message turn
+	 * - Streaming otherwise: queues message, processed when loop pulls from queue
 	 * - Not streaming + triggerTurn: appends to state/session, starts new turn
 	 * - Not streaming + no trigger: appends to state/session, no turn
 	 *
 	 * @param message Custom message with customType, content, display, details
 	 * @param options.triggerTurn If true and not streaming, triggers a new LLM turn
-	 * @param options.deliverAs Delivery mode: "steer", "followUp", or "nextTurn"
+	 * @param options.deliverAs Delivery mode: "steer", "followUp", "nextTurn", or "interrupt"
 	 */
 	async sendCustomMessage<T = unknown>(
 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
-		options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" },
+		options?: { triggerTurn?: boolean; deliverAs?: CustomMessageDelivery },
 	): Promise<void> {
 		const appMessage = {
 			role: "custom" as const,
@@ -1380,12 +1428,10 @@ export class AgentSession {
 		} satisfies CustomMessage<T>;
 		if (options?.deliverAs === "nextTurn") {
 			this._pendingNextTurnMessages.push(appMessage);
+		} else if (options?.deliverAs === "interrupt" && options.triggerTurn) {
+			await this._enqueueInterruptCustomMessage(appMessage);
 		} else if (this.isStreaming) {
-			if (options?.deliverAs === "followUp") {
-				this.agent.followUp(appMessage);
-			} else {
-				this.agent.steer(appMessage);
-			}
+			this._queueAgentMessage(appMessage, options?.deliverAs === "followUp" ? "followUp" : "steer");
 		} else if (options?.triggerTurn) {
 			await this.agent.prompt(appMessage);
 		} else {
@@ -1398,6 +1444,100 @@ export class AgentSession {
 			);
 			this._emit({ type: "message_start", message: appMessage });
 			this._emit({ type: "message_end", message: appMessage });
+		}
+	}
+
+	private _enqueueInterruptCustomMessage<T>(message: CustomMessage<T>): Promise<void> {
+		this._pendingInterruptDeliveries += 1;
+		// Establish the hold synchronously when the interrupt is enqueued, not when
+		// the serialized delivery callback later starts. Callers commonly fire and
+		// forget sendCustomMessage(), then queue additional steer/follow-up messages
+		// before the promise chain gets a microtask; those messages must be captured
+		// in the active interrupt hold instead of pi-agent-core's live queues.
+		this._ensureActiveInterruptQueueHold();
+		const delivery = this._interruptDeliveryQueue.then(async () => {
+			try {
+				await this._sendInterruptCustomMessageNow(message);
+			} finally {
+				this._pendingInterruptDeliveries -= 1;
+				if (this._pendingInterruptDeliveries === 0) {
+					this._restoreAndClearActiveInterruptQueueHold();
+				}
+			}
+		});
+		this._interruptDeliveryQueue = delivery.catch(() => undefined);
+		return delivery;
+	}
+
+	private async _sendInterruptCustomMessageNow<T>(message: CustomMessage<T>): Promise<void> {
+		this.abortRetry();
+		this._ensureActiveInterruptQueueHold();
+		if (this.isStreaming) {
+			this.agent.abort();
+			await this.agent.waitForIdle();
+		}
+		await this.agent.prompt(message);
+	}
+
+	private _ensureActiveInterruptQueueHold(): InterruptQueueHold {
+		if (this._activeInterruptQueueHold !== undefined) {
+			return this._activeInterruptQueueHold;
+		}
+		const drained = this._drainQueuedAgentMessages();
+		this._activeInterruptQueueHold = {
+			steering: [...drained.steering],
+			followUp: [...drained.followUp],
+		};
+		return this._activeInterruptQueueHold;
+	}
+
+	private _restoreAndClearActiveInterruptQueueHold(): void {
+		const hold = this._activeInterruptQueueHold;
+		if (hold === undefined) {
+			return;
+		}
+		const currentCoreQueues = this._drainQueuedAgentMessages();
+		this._restoreQueuedAgentMessages({
+			steering: [...hold.steering, ...currentCoreQueues.steering],
+			followUp: [...hold.followUp, ...currentCoreQueues.followUp],
+		});
+		this._activeInterruptQueueHold = undefined;
+	}
+
+	private _queueAgentMessage(message: AgentMessage, delivery: "steer" | "followUp"): void {
+		const hold = this._activeInterruptQueueHold;
+		if (hold !== undefined) {
+			if (delivery === "followUp") {
+				hold.followUp.push(message);
+			} else {
+				hold.steering.push(message);
+			}
+			return;
+		}
+		if (delivery === "followUp") {
+			this.agent.followUp(message);
+		} else {
+			this.agent.steer(message);
+		}
+	}
+
+	private _drainQueuedAgentMessages(): DrainedAgentQueues {
+		// pi-agent-core exposes public clear methods but no public drain/restore pair.
+		// Interrupts need to prevent the aborting run from consuming queued steer/follow-up
+		// messages while still preserving those queues for a later turn.
+		const agentWithQueues = this.agent as unknown as AgentQueueAccess;
+		return {
+			steering: drainAgentMessageQueue(agentWithQueues.steeringQueue),
+			followUp: drainAgentMessageQueue(agentWithQueues.followUpQueue),
+		};
+	}
+
+	private _restoreQueuedAgentMessages(queues: DrainedAgentQueues): void {
+		for (const message of queues.steering) {
+			this.agent.steer(message);
+		}
+		for (const message of queues.followUp) {
+			this.agent.followUp(message);
 		}
 	}
 
@@ -1452,6 +1592,10 @@ export class AgentSession {
 		this._steeringMessages = [];
 		this._followUpMessages = [];
 		this.agent.clearAllQueues();
+		if (this._activeInterruptQueueHold !== undefined) {
+			this._activeInterruptQueueHold.steering.length = 0;
+			this._activeInterruptQueueHold.followUp.length = 0;
+		}
 		this._emitQueueUpdate();
 		return { steering, followUp };
 	}
