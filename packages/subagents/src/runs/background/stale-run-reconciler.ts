@@ -79,6 +79,7 @@ interface ResultChildOutcome {
 	error?: string;
 	sessionFile?: string;
 	model?: string;
+	fastMode?: boolean;
 	attemptedModels?: string[];
 	modelAttempts?: NonNullable<AsyncStatus["steps"]>[number]["modelAttempts"];
 }
@@ -123,6 +124,7 @@ function terminalStatusFromResult(status: AsyncStatus, resultPath: string, now: 
 			error: state === "failed" ? step.error ?? child?.error : step.error,
 			sessionFile: step.sessionFile ?? child?.sessionFile,
 			model: step.model ?? child?.model,
+			fastMode: step.fastMode ?? child?.fastMode,
 			attemptedModels: step.attemptedModels ?? child?.attemptedModels,
 			modelAttempts: step.modelAttempts ?? child?.modelAttempts,
 		};
@@ -205,6 +207,7 @@ function buildFailedRepair(status: AsyncStatus, asyncDir: string, now: number, r
 				error: step.status === "complete" || step.status === "completed" ? undefined : step.error ?? message,
 				success: step.status === "complete" || step.status === "completed",
 				model: step.model,
+				fastMode: step.fastMode,
 				attemptedModels: step.attemptedModels,
 				modelAttempts: step.modelAttempts,
 				sessionFile: step.sessionFile,

@@ -4,6 +4,8 @@ export interface RunnerSubagentStep {
 	cwd?: string;
 	model?: string;
 	thinking?: string;
+	fastMode?: boolean;
+	modelFastModes?: Record<string, boolean>;
 	modelCandidates?: string[];
 	tools?: string[];
 	extensions?: string[];
@@ -75,6 +77,7 @@ export interface ParallelTaskResult {
 	exitCode: number | null;
 	error?: string;
 	model?: string;
+	fastMode?: boolean;
 	attemptedModels?: string[];
 	outputTargetPath?: string;
 	outputTargetExists?: boolean;

@@ -213,7 +213,7 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 			].filter((line): line is string => Boolean(line));
 			for (const [index, step] of (status.steps ?? []).entries()) {
 				const stepActivityText = step.status === "running" ? formatActivityLabel(step.lastActivityAt, step.activityState) : undefined;
-				const modelThinking = formatModelThinking(step.model, step.thinking);
+				const modelThinking = formatModelThinking(step.model, step.thinking, step.fastMode);
 				const modelText = modelThinking ? ` (${modelThinking})` : "";
 				const errorText = step.error ? `, error: ${step.error}` : "";
 				lines.push(`${stepLineLabel(status, index)}: ${step.agent} ${step.status}${modelText}${stepActivityText ? `, ${stepActivityText}` : ""}${errorText}`);

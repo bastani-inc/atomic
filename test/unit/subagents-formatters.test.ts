@@ -1,6 +1,27 @@
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
-import { formatDuration } from "../../packages/subagents/src/shared/formatters.js";
+import { formatDuration, formatModelThinking } from "../../packages/subagents/src/shared/formatters.js";
+
+describe("subagent formatModelThinking", () => {
+	test("appends fast after model and inferred thinking suffix", () => {
+		assert.equal(
+			formatModelThinking("openai/gpt-5.1-codex:medium", undefined, true),
+			"gpt-5.1-codex · thinking medium · fast",
+		);
+	});
+
+	test("omits fast when fast mode metadata is missing or disabled", () => {
+		assert.equal(formatModelThinking("openai/gpt-5.1-codex:medium"), "gpt-5.1-codex · thinking medium");
+		assert.equal(formatModelThinking("openai/gpt-5.1-codex:medium", undefined, false), "gpt-5.1-codex · thinking medium");
+	});
+
+	test("appends fast after explicit thinking metadata", () => {
+		assert.equal(
+			formatModelThinking("openai/gpt-5.1-codex", "high", true),
+			"gpt-5.1-codex · thinking high · fast",
+		);
+	});
+});
 
 describe("subagent formatDuration", () => {
 	test("uses whole seconds without fractional or millisecond labels", () => {

@@ -108,6 +108,7 @@ interface StepResult {
 	sessionFile?: string;
 	intercomTarget?: string;
 	model?: string;
+	fastMode?: boolean;
 	attemptedModels?: string[];
 	modelAttempts?: ModelAttempt[];
 	artifactPaths?: ArtifactPaths;
@@ -164,6 +165,14 @@ function resetStepLiveDetail(step: RunnerStatusStep): void {
 	step.currentPath = undefined;
 	step.recentTools = [];
 	step.recentOutput = [];
+}
+
+function fastModeForStepAttempt(step: SubagentStep, model: string | undefined): boolean | undefined {
+	if (model && step.modelFastModes && Object.prototype.hasOwnProperty.call(step.modelFastModes, model)) {
+		return step.modelFastModes[model];
+	}
+	if (model === undefined || model === step.model) return step.fastMode;
+	return undefined;
 }
 
 interface ChildEventContext {
@@ -565,7 +574,7 @@ interface SingleStepContext {
 	childIntercomTarget?: string;
 	orchestratorIntercomTarget?: string;
 	nestedRoute?: NestedRouteInfo;
-	onAttemptStart?: (attempt: { model?: string; thinking?: string }) => void;
+	onAttemptStart?: (attempt: { model?: string; thinking?: string; fastMode?: boolean }) => void;
 	onChildEvent?: (event: ChildEvent) => void;
 	workflowStageSubagentGuard?: boolean;
 }
@@ -580,6 +589,7 @@ async function runSingleStep(
 	exitCode: number | null;
 	error?: string;
 	model?: string;
+	fastMode?: boolean;
 	attemptedModels?: string[];
 	modelAttempts?: ModelAttempt[];
 	artifactPaths?: ArtifactPaths;
@@ -613,12 +623,14 @@ async function runSingleStep(
 	const attemptNotes: string[] = [];
 	const eventsPath = path.join(path.dirname(ctx.outputFile), "events.jsonl");
 	let finalResult: RunPiStreamingResult | undefined;
+	let finalFastMode: boolean | undefined;
 	let finalOutputSnapshot: SingleOutputSnapshot | undefined;
 	let completionGuardTriggeredFinal = false;
 
 	for (let index = 0; index < candidates.length; index++) {
 		const candidate = candidates[index];
-		ctx.onAttemptStart?.({ model: candidate, thinking: resolveEffectiveThinking(candidate, step.thinking) });
+		const attemptFastMode = fastModeForStepAttempt(step, candidate);
+		ctx.onAttemptStart?.({ model: candidate, thinking: resolveEffectiveThinking(candidate, step.thinking), fastMode: attemptFastMode ? true : undefined });
 		const outputSnapshot = captureSingleOutputSnapshot(step.outputPath);
 		const { args, env, tempDir } = buildPiArgs({
 			baseArgs: ["--mode", "json", "-p"],
@@ -698,6 +710,7 @@ async function runSingleStep(
 		modelAttempts.push(attempt);
 		if (candidate) attemptedModels.push(candidate);
 		completionGuardTriggeredFinal = completionGuardTriggered;
+		finalFastMode = attemptFastMode;
 		finalOutputSnapshot = outputSnapshot;
 		finalResult = { ...run, exitCode: effectiveExitCode, model: candidate ?? run.model, error };
 		if (attempt.success || completionGuardTriggered) break;
@@ -739,6 +752,7 @@ async function runSingleStep(
 					task,
 					exitCode: finalResult?.exitCode,
 					model: finalResult?.model,
+					...(finalFastMode ? { fastMode: true } : {}),
 					attemptedModels: attemptedModels.length > 0 ? attemptedModels : undefined,
 					modelAttempts,
 					skills: step.skills,
@@ -757,6 +771,7 @@ async function runSingleStep(
 		sessionFile: step.sessionFile,
 		intercomTarget: ctx.childIntercomTarget,
 		model: finalResult?.model,
+		...(finalFastMode ? { fastMode: true } : {}),
 		attemptedModels: attemptedModels.length > 0 ? attemptedModels : undefined,
 		modelAttempts,
 		artifactPaths,
@@ -944,6 +959,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			skills: step.skills,
 			model: step.model,
 			thinking: step.thinking,
+			...(step.fastMode ? { fastMode: true } : {}),
 			attemptedModels: step.modelCandidates && step.modelCandidates.length > 0 ? step.modelCandidates : step.model ? [step.model] : undefined,
 			recentTools: [],
 			recentOutput: [],
@@ -1065,11 +1081,12 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		appendControlEvent(event);
 		return true;
 	};
-	const updateStepModel = (flatIndex: number, model: string | undefined, thinking: string | undefined, now = Date.now()): void => {
+	const updateStepModel = (flatIndex: number, model: string | undefined, thinking: string | undefined, fastMode: boolean | undefined, now = Date.now()): void => {
 		const step = statusPayload.steps[flatIndex];
 		if (!step) return;
 		step.model = model;
 		step.thinking = thinking;
+		step.fastMode = fastMode ? true : undefined;
 		statusPayload.lastUpdate = now;
 		writeStatusPayload();
 	};
@@ -1399,7 +1416,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 							registerInterrupt: (interrupt) => {
 								activeChildInterrupt = interrupt;
 							},
-							onAttemptStart: (attempt) => updateStepModel(fi, attempt.model, attempt.thinking),
+							onAttemptStart: (attempt) => updateStepModel(fi, attempt.model, attempt.thinking, attempt.fastMode),
 							onChildEvent: (event) => updateStepFromChildEvent(fi, event),
 							workflowStageSubagentGuard: config.workflowStageSubagentGuard,
 						});
@@ -1416,6 +1433,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 						statusPayload.steps[fi].exitCode = singleResult.exitCode;
 						statusPayload.steps[fi].model = singleResult.model;
 						statusPayload.steps[fi].thinking = resolveEffectiveThinking(singleResult.model, statusPayload.steps[fi].thinking);
+						statusPayload.steps[fi].fastMode = singleResult.fastMode ? true : undefined;
 						statusPayload.steps[fi].attemptedModels = singleResult.attemptedModels;
 						statusPayload.steps[fi].modelAttempts = singleResult.modelAttempts;
 						statusPayload.steps[fi].error = singleResult.error;
@@ -1476,6 +1494,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 						sessionFile: pr.sessionFile,
 						intercomTarget: pr.intercomTarget,
 						model: pr.model,
+						fastMode: pr.fastMode,
 						attemptedModels: pr.attemptedModels,
 						modelAttempts: pr.modelAttempts,
 						artifactPaths: pr.artifactPaths,
@@ -1484,13 +1503,14 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 
 				previousOutput = aggregateParallelOutputs(
 					parallelResults.map((r) => ({
-					agent: r.agent,
-					output: r.output,
-					exitCode: r.exitCode,
-					error: r.error,
-					model: r.model,
-					attemptedModels: r.attemptedModels,
-				})),
+						agent: r.agent,
+						output: r.output,
+						exitCode: r.exitCode,
+						error: r.error,
+						model: r.model,
+						fastMode: r.fastMode,
+						attemptedModels: r.attemptedModels,
+					})),
 				);
 				previousOutput = appendParallelWorktreeSummary(previousOutput, worktreeSetup, asyncDir, stepIndex, group);
 
@@ -1546,7 +1566,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				registerInterrupt: (interrupt) => {
 					activeChildInterrupt = interrupt;
 				},
-				onAttemptStart: (attempt) => updateStepModel(flatIndex, attempt.model, attempt.thinking),
+				onAttemptStart: (attempt) => updateStepModel(flatIndex, attempt.model, attempt.thinking, attempt.fastMode),
 				onChildEvent: (event) => updateStepFromChildEvent(flatIndex, event),
 				workflowStageSubagentGuard: config.workflowStageSubagentGuard,
 			});
@@ -1563,6 +1583,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				sessionFile: singleResult.sessionFile,
 				intercomTarget: singleResult.intercomTarget,
 				model: singleResult.model,
+				fastMode: singleResult.fastMode,
 				attemptedModels: singleResult.attemptedModels,
 				modelAttempts: singleResult.modelAttempts,
 				artifactPaths: singleResult.artifactPaths,
@@ -1596,6 +1617,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			statusPayload.steps[flatIndex].exitCode = singleResult.exitCode;
 			statusPayload.steps[flatIndex].model = singleResult.model;
 			statusPayload.steps[flatIndex].thinking = resolveEffectiveThinking(singleResult.model, statusPayload.steps[flatIndex].thinking);
+			statusPayload.steps[flatIndex].fastMode = singleResult.fastMode ? true : undefined;
 			statusPayload.steps[flatIndex].attemptedModels = singleResult.attemptedModels;
 			statusPayload.steps[flatIndex].modelAttempts = singleResult.modelAttempts;
 			statusPayload.steps[flatIndex].error = singleResult.error;
@@ -1753,6 +1775,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				sessionFile: r.sessionFile,
 				intercomTarget: r.intercomTarget,
 				model: r.model,
+				fastMode: r.fastMode,
 				attemptedModels: r.attemptedModels,
 				modelAttempts: r.modelAttempts,
 				artifactPaths: r.artifactPaths,

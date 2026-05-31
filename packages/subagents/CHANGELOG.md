@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
+- Show Codex fast-mode launch metadata in foreground subagent result badges, async subagent widgets, and async status output when eligible OpenAI/OpenAI Codex child runs start with `/fast` enabled ([#1153](https://github.com/flora131/atomic/issues/1153)).
 - Hydrate active async subagent runs from durable status files into the below-editor widget so background work visible via `subagent({ action: "status" })` also appears in the TUI after launch/session rebinding ([#1146](https://github.com/flora131/atomic/issues/1146)).
 
 ## [0.8.20] - 2026-05-29

@@ -16,7 +16,7 @@ export function formatTokens(n: number): string {
 	return n < 1000 ? String(n) : n < 10000 ? `${(n / 1000).toFixed(1)}k` : `${Math.round(n / 1000)}k`;
 }
 
-export function formatModelThinking(model?: string, thinking?: string): string {
+export function formatModelThinking(model?: string, thinking?: string, fastMode?: boolean): string {
 	const parsed = model ? splitKnownThinkingSuffix(model) : undefined;
 	let displayModel = parsed?.baseModel ?? model;
 	const explicitThinking = THINKING_LEVELS.find((level) => level === thinking?.trim());
@@ -25,7 +25,9 @@ export function formatModelThinking(model?: string, thinking?: string): string {
 		const slashIdx = displayModel.lastIndexOf("/");
 		if (slashIdx !== -1) displayModel = displayModel.slice(slashIdx + 1);
 	}
-	return [displayModel, displayThinking ? `thinking ${displayThinking}` : undefined].filter(Boolean).join(" · ");
+	const parts = [displayModel, displayThinking ? `thinking ${displayThinking}` : undefined].filter(Boolean);
+	if (fastMode && parts.length > 0) parts.push("fast");
+	return parts.join(" · ");
 }
 
 /**

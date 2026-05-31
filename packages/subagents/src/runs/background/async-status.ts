@@ -28,6 +28,7 @@ interface AsyncRunStepSummary {
 	skills?: string[];
 	model?: string;
 	thinking?: string;
+	fastMode?: boolean;
 	attemptedModels?: string[];
 	error?: string;
 	children?: NestedRunSummary[];
@@ -155,6 +156,7 @@ function statusToSummary(asyncDir: string, status: AsyncStatus & { cwd?: string 
 			...(step.skills ? { skills: step.skills } : {}),
 			...(step.model ? { model: step.model } : {}),
 			...(step.thinking ? { thinking: step.thinking } : {}),
+			...(step.fastMode !== undefined ? { fastMode: step.fastMode } : {}),
 			...(step.attemptedModels ? { attemptedModels: step.attemptedModels } : {}),
 			...(step.error ? { error: step.error } : {}),
 			...(step.children?.length ? { children: step.children } : {}),
@@ -262,7 +264,7 @@ function formatStepLine(step: AsyncRunStepSummary): string {
 	const parts = [`${step.index + 1}. ${step.agent}`, step.status];
 	const activity = formatActivityFacts(step);
 	if (activity) parts.push(activity);
-	const modelThinking = formatModelThinking(step.model, step.thinking);
+	const modelThinking = formatModelThinking(step.model, step.thinking, step.fastMode);
 	if (modelThinking) parts.push(modelThinking);
 	if (step.durationMs !== undefined) parts.push(formatDuration(step.durationMs));
 	if (step.tokens) parts.push(`${formatTokens(step.tokens.total)} tok`);

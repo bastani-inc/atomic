@@ -63,6 +63,7 @@ import {
 	shouldEscalateMutatingFailures,
 	summarizeRecentMutatingFailures,
 } from "../shared/long-running-guard.ts";
+import { resolveSubagentModelFastMode } from "../../shared/fast-mode.ts";
 
 const artifactOutputByResult = new WeakMap<SingleResult, string>();
 
@@ -136,6 +137,8 @@ async function runSingleAttempt(
 	},
 ): Promise<SingleResult> {
 	const modelArg = applyThinkingSuffix(model, agent.thinking);
+	const runCwd = options.cwd ?? runtimeCwd;
+	const fastMode = resolveSubagentModelFastMode({ model: modelArg, cwd: runCwd });
 	const { args, env: sharedEnv, tempDir } = buildPiArgs({
 		baseArgs: ["--mode", "json", "-p"],
 		task,
@@ -151,7 +154,7 @@ async function runSingleAttempt(
 		extensions: agent.extensions,
 		systemPrompt: shared.systemPrompt,
 		mcpDirectTools: agent.mcpDirectTools,
-		cwd: options.cwd ?? runtimeCwd,
+		cwd: runCwd,
 		promptFileStem: agent.name,
 		intercomSessionName: options.intercomSessionName,
 		orchestratorIntercomTarget: options.orchestratorIntercomTarget,
@@ -171,6 +174,7 @@ async function runSingleAttempt(
 		messages: [],
 		usage: emptyUsage(),
 		model: modelArg,
+		...(fastMode ? { fastMode } : {}),
 		artifactPaths: shared.artifactPaths,
 		skills: shared.resolvedSkillNames,
 		skillsWarning: shared.skillsWarning,
@@ -215,7 +219,7 @@ async function runSingleAttempt(
 	const exitCode = await new Promise<number>((resolve) => {
 		const spawnSpec = getPiSpawnCommand(args);
 		const proc = spawn(spawnSpec.command, spawnSpec.args, {
-			cwd: options.cwd ?? runtimeCwd,
+			cwd: runCwd,
 			env: spawnEnv,
 			stdio: ["ignore", "pipe", "pipe"],
 			windowsHide: true,
@@ -892,6 +896,7 @@ export async function runSync(
 				exitCode: result.exitCode,
 				usage: result.usage,
 				model: result.model,
+				fastMode: result.fastMode,
 				attemptedModels: result.attemptedModels,
 				modelAttempts: result.modelAttempts,
 				durationMs: result.progressSummary?.durationMs,

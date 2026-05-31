@@ -211,6 +211,7 @@ export interface SingleResult {
 	messages?: Message[];
 	usage: Usage;
 	model?: string;
+	fastMode?: boolean;
 	attemptedModels?: string[];
 	modelAttempts?: ModelAttempt[];
 	controlEvents?: ControlEvent[];
@@ -416,6 +417,7 @@ export interface AsyncStatus {
 		skills?: string[];
 		model?: string;
 		thinking?: string;
+		fastMode?: boolean;
 		attemptedModels?: string[];
 		modelAttempts?: ModelAttempt[];
 		error?: string;
