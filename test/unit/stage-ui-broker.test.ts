@@ -266,10 +266,30 @@ describe("StageUiBroker", () => {
       assert.equal(typeof resolved[0]?.answeredAt, "number");
       unsubscribe();
 
-      // Resolution clears both the broker adapter and the snapshot descriptor.
+      // Resolution clears both the broker adapter and the snapshot descriptor,
+      // while retaining the resolved prompt id so a raced duplicate headless
+      // answer can be reported as already handled instead of as a missing
+      // store pending prompt.
       assert.equal(broker.peekStagePrompt("run-1", "stage-1"), undefined);
+      assert.equal(broker.wasStagePromptResolved("run-1", "stage-1", "prompt-1"), true);
+      assert.equal(broker.wasStagePromptResolved("run-1", "stage-1", "other-prompt"), false);
       assert.equal(store.runs()[0]?.stages[0]?.status, "running");
       assert.equal(store.runs()[0]?.stages[0]?.inputRequest, undefined);
+    });
+
+    test("a new prompt clears the previously resolved prompt id", async () => {
+      const { broker } = setupStage();
+      broker.provideStagePrompt("run-1", "stage-1", buildStagePromptAdapter("old", "ask_user_question", COLOR_ARGS, 1)!);
+      const oldPending = broker.requestCustomUi("run-1", "stage-1", () => ({
+        render: () => [],
+        invalidate: () => {},
+      }));
+      assert.equal(broker.answerStagePrompt("run-1", "stage-1", { text: "Red" }), true);
+      await oldPending;
+      assert.equal(broker.wasStagePromptResolved("run-1", "stage-1", "old"), true);
+
+      broker.provideStagePrompt("run-1", "stage-1", buildStagePromptAdapter("new", "ask_user_question", COLOR_ARGS, 1)!);
+      assert.equal(broker.wasStagePromptResolved("run-1", "stage-1", "old"), false);
     });
 
     test("adapter provided after the request still answers and back-fills the descriptor", async () => {

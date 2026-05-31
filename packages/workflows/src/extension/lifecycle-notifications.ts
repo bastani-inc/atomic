@@ -141,6 +141,13 @@ export function installWorkflowLifecycleNotifications(
 
   const emit = (details: WorkflowLifecycleNoticeDetails): void => {
     const content = formatWorkflowLifecycleNoticeText(details);
+    const deliveryOptions = details.kind === "awaiting_input"
+      // Awaiting-input notices are informational UI hints. Do not enqueue a
+      // steer turn for them: a workflow can resolve the prompt and complete
+      // before the queued turn renders, leaving a stale red/actionable
+      // `/workflow connect` notification after completion.
+      ? { triggerTurn: false, deliverAs: "steer" as const }
+      : { triggerTurn: true, deliverAs: "steer" as const };
     try {
       // Store subscribers are notified in a tight loop. A lifecycle notice
       // failure must never abort sibling subscribers such as status writers.
@@ -152,7 +159,7 @@ export function installWorkflowLifecycleNotifications(
             display: true,
             details,
           },
-          { triggerTurn: true, deliverAs: "steer" },
+          deliveryOptions,
         ),
       ).catch((error: unknown) => warnLifecycleSendFailure(error));
     } catch (error) {

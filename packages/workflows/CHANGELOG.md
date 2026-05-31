@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - Interrupt the main agent immediately when a workflow stage HiL prompt is answered, using a metadata-only `workflows:hil-answer-notice` so the agent stops stale streaming and does not ask the same question again ([#1137](https://github.com/flora131/atomic/issues/1137)).
+- Hardened workflow awaiting-input lifecycle notices and readiness-gate answers: awaiting-input notices no longer enqueue a main-chat steer turn that can render as a stale actionable `/workflow connect` prompt after completion, and duplicate/raced `workflow send` answers for a just-resolved brokered input request now report the request as already answered instead of falling through to `No matching pending prompt` ([#1137](https://github.com/flora131/atomic/issues/1137)).
 
 ## [0.8.21] - 2026-05-30
 

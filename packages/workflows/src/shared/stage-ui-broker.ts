@@ -48,6 +48,7 @@ export class StageUiBroker {
   // custom-UI prompt can be answered programmatically (e.g. via `workflow
   // send`) without a TUI host rendering the interactive component.
   private readonly adapters = new Map<string, StagePromptAdapter>();
+  private readonly resolvedPromptIds = new Map<string, string>();
   private readonly resolvedListeners = new Set<StagePromptResolvedListener>();
 
   constructor(store: Store = defaultStore) {
@@ -62,7 +63,11 @@ export class StageUiBroker {
    * after the matching `requestCustomUi`; the (runId, stageId) key joins them.
    */
   provideStagePrompt(runId: string, stageId: string, adapter: StagePromptAdapter): void {
-    this.adapters.set(key(runId, stageId), adapter);
+    const hostKey = key(runId, stageId);
+    this.adapters.set(hostKey, adapter);
+    if (this.resolvedPromptIds.get(hostKey) !== adapter.prompt.id) {
+      this.resolvedPromptIds.delete(hostKey);
+    }
     this.store.recordStageInputRequest(runId, stageId, adapter.prompt);
   }
 
@@ -97,6 +102,10 @@ export class StageUiBroker {
     if (!adapter || !request) return false;
     this.resolve(request, adapter.buildResult(answer));
     return true;
+  }
+
+  wasStagePromptResolved(runId: string, stageId: string, promptId: string): boolean {
+    return this.resolvedPromptIds.get(key(runId, stageId)) === promptId;
   }
 
   onStagePromptResolved(listener: StagePromptResolvedListener): () => void {
@@ -212,6 +221,7 @@ export class StageUiBroker {
     const prompt = this.adapters.get(hostKey)?.prompt;
     this.pending.delete(hostKey);
     this.adapters.delete(hostKey);
+    if (prompt !== undefined) this.resolvedPromptIds.set(hostKey, prompt.id);
     this.store.clearStageInputRequest(request.runId, request.stageId);
     this.store.recordStageAwaitingInput(request.runId, request.stageId, false);
     this.hideHost(this.hosts.get(hostKey), request, undefined);
@@ -231,6 +241,7 @@ export class StageUiBroker {
     if (this.pending.get(hostKey)?.id !== request.id) return;
     this.pending.delete(hostKey);
     this.adapters.delete(hostKey);
+    this.resolvedPromptIds.delete(hostKey);
     this.store.clearStageInputRequest(request.runId, request.stageId);
     this.store.recordStageAwaitingInput(request.runId, request.stageId, false);
     this.hideHost(this.hosts.get(hostKey), request, reason);

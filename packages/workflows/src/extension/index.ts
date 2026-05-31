@@ -1362,6 +1362,15 @@ export function makeExecuteWorkflowTool(
           if (!hasPayloadProperty(args)) {
             return workflowSendResult(target.runId, stage.stageId, "answer", "noop", "Send requires text, response, or message.");
           }
+          if (stageUiBroker.wasStagePromptResolved(target.runId, stage.stageId, promptId)) {
+            return workflowSendResult(
+              target.runId,
+              stage.stageId,
+              "answer",
+              "ok",
+              `Input request ${promptId} was already answered.`,
+            );
+          }
           const ok = store.resolveStagePendingPrompt(target.runId, stage.stageId, promptId, promptPayloadFromArgs(args));
           return workflowSendResult(
             target.runId,
