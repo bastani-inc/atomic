@@ -1,6 +1,6 @@
 import { test, describe } from "bun:test";
 import assert from "node:assert/strict";
-import { StageUiBroker, type StageCustomUiRequest } from "../../packages/workflows/src/shared/stage-ui-broker.js";
+import { StageUiBroker, type StageCustomUiRequest, type StagePromptResolvedEvent } from "../../packages/workflows/src/shared/stage-ui-broker.js";
 import { buildStagePromptAdapter } from "../../packages/workflows/src/shared/stage-prompt.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 
@@ -229,9 +229,13 @@ describe("StageUiBroker", () => {
   });
 
   describe("headless answering", () => {
-    test("answerStagePrompt resolves the pending request and surfaces the descriptor", async () => {
+    test("answerStagePrompt resolves the pending request, surfaces the descriptor, and notifies listeners", async () => {
       const { broker, store } = setupStage();
       const adapter = buildStagePromptAdapter("prompt-1", "ask_user_question", COLOR_ARGS, 1)!;
+      const resolved: StagePromptResolvedEvent[] = [];
+      const unsubscribe = broker.onStagePromptResolved((event) => {
+        resolved.push(event);
+      });
       // Adapter is provided before the request (mirrors the executor watcher
       // firing on tool_execution_start ahead of ctx.ui.custom()).
       broker.provideStagePrompt("run-1", "stage-1", adapter);
@@ -254,10 +258,61 @@ describe("StageUiBroker", () => {
       assert.equal(result.answers[0]!.kind, "option");
       assert.equal(result.answers[0]!.answer, "Blue");
 
-      // Resolution clears both the broker adapter and the snapshot descriptor.
+      assert.equal(resolved.length, 1);
+      assert.equal(resolved[0]?.runId, "run-1");
+      assert.equal(resolved[0]?.stageId, "stage-1");
+      assert.equal(resolved[0]?.prompt.id, "prompt-1");
+      assert.equal(resolved[0]?.prompt.kind, "ask_user_question");
+      assert.equal(typeof resolved[0]?.answeredAt, "number");
+      unsubscribe();
+
+      // Resolution clears both the broker adapter and the snapshot descriptor,
+      // while retaining the resolved prompt id so a raced duplicate headless
+      // answer can be reported as already handled instead of as a missing
+      // store pending prompt.
       assert.equal(broker.peekStagePrompt("run-1", "stage-1"), undefined);
+      assert.equal(broker.wasStagePromptResolved("run-1", "stage-1", "prompt-1"), true);
+      assert.equal(broker.wasStagePromptResolved("run-1", "stage-1", "other-prompt"), false);
       assert.equal(store.runs()[0]?.stages[0]?.status, "running");
       assert.equal(store.runs()[0]?.stages[0]?.inputRequest, undefined);
+    });
+
+    test("a new prompt clears the previously resolved prompt id", async () => {
+      const { broker } = setupStage();
+      broker.provideStagePrompt("run-1", "stage-1", buildStagePromptAdapter("old", "ask_user_question", COLOR_ARGS, 1)!);
+      const oldPending = broker.requestCustomUi("run-1", "stage-1", () => ({
+        render: () => [],
+        invalidate: () => {},
+      }));
+      assert.equal(broker.answerStagePrompt("run-1", "stage-1", { text: "Red" }), true);
+      await oldPending;
+      assert.equal(broker.wasStagePromptResolved("run-1", "stage-1", "old"), true);
+
+      broker.provideStagePrompt("run-1", "stage-1", buildStagePromptAdapter("new", "ask_user_question", COLOR_ARGS, 1)!);
+      assert.equal(broker.wasStagePromptResolved("run-1", "stage-1", "old"), false);
+    });
+
+    test("a repeated prompt id clears the prior resolved marker for a fresh gate", async () => {
+      const { broker } = setupStage();
+      broker.provideStagePrompt("run-1", "stage-1", buildStagePromptAdapter("same", "ask_user_question", COLOR_ARGS, 1)!);
+      const firstPending = broker.requestCustomUi("run-1", "stage-1", () => ({
+        render: () => [],
+        invalidate: () => {},
+      }));
+      assert.equal(broker.answerStagePrompt("run-1", "stage-1", { text: "Red" }), true);
+      await firstPending;
+      assert.equal(broker.wasStagePromptResolved("run-1", "stage-1", "same"), true);
+
+      broker.provideStagePrompt("run-1", "stage-1", buildStagePromptAdapter("same", "ask_user_question", COLOR_ARGS, 1)!);
+      assert.equal(broker.wasStagePromptResolved("run-1", "stage-1", "same"), false);
+
+      const secondPending = broker.requestCustomUi("run-1", "stage-1", () => ({
+        render: () => [],
+        invalidate: () => {},
+      }));
+      assert.equal(broker.answerStagePrompt("run-1", "stage-1", { text: "Blue" }), true);
+      const result = (await secondPending) as BuiltResult;
+      assert.equal(result.answers[0]!.answer, "Blue");
     });
 
     test("adapter provided after the request still answers and back-fills the descriptor", async () => {
@@ -309,6 +364,45 @@ describe("StageUiBroker", () => {
       });
       assert.equal(await pending, "manual");
       unregister();
+    });
+
+    test("rejecting or aborting a brokered prompt does not notify resolved listeners", async () => {
+      const { broker } = setupStage();
+      const controller = new AbortController();
+      const resolved: StagePromptResolvedEvent[] = [];
+      const unsubscribe = broker.onStagePromptResolved((event) => {
+        resolved.push(event);
+      });
+
+      broker.provideStagePrompt("run-1", "stage-1", buildStagePromptAdapter("p", "ask_user_question", COLOR_ARGS, 1)!);
+      const pending = broker.requestCustomUi("run-1", "stage-1", () => ({
+        render: () => [],
+        invalidate: () => {},
+      }), undefined, controller.signal);
+      controller.abort(new Error("cancelled"));
+
+      await assert.rejects(pending, /cancelled/);
+      assert.deepEqual(resolved, []);
+      unsubscribe();
+    });
+
+    test("resolved listener unsubscribe prevents later notifications", async () => {
+      const { broker } = setupStage();
+      let calls = 0;
+      const unsubscribe = broker.onStagePromptResolved(() => {
+        calls += 1;
+      });
+      unsubscribe();
+
+      broker.provideStagePrompt("run-1", "stage-1", buildStagePromptAdapter("p", "ask_user_question", COLOR_ARGS, 1)!);
+      const pending = broker.requestCustomUi("run-1", "stage-1", () => ({
+        render: () => [],
+        invalidate: () => {},
+      }));
+
+      assert.equal(broker.answerStagePrompt("run-1", "stage-1", { text: "Red" }), true);
+      await pending;
+      assert.equal(calls, 0);
     });
   });
 

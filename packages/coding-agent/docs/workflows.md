@@ -87,6 +87,8 @@ Atomic will:
 - pick `ctx.task` / `ctx.chain` / `ctx.parallel` / `ctx.ui` per the [primitives](#workflow-primitives) and [task options](#task-and-stage-options) reference, and
 - reload discovery so you can run it immediately.
 
+Atomic does not use the long-running `/goal` workflow by default for first-time workflow creation. If you explicitly choose `/goal` for reviewer-gated implementation, keep the objective tightly scoped with concrete done criteria and validation steps, and monitor the run with workflow status/connect controls rather than manual sleep-and-poll loops.
+
 The same plain-chat approach works for editing or hardening an existing workflow — ask Atomic to add a stage, switch a model, save artifacts, or wire in a human approval gate.
 
 Then list and run it like any other workflow:
@@ -735,6 +737,8 @@ Builder basics:
 - `.description(text)` sets the listing text.
 - `.input(key, schema)` declares typed user inputs.
 - `.worktreeFromInputs({ gitWorktreeDir, baseBranch })` optionally maps input names to workflow-wide reusable Git worktree defaults.
+- `.import(alias, source)` declares a reusable child workflow by registered workflow id or local module path.
+- `.output(key, schema)` declares typed outputs that parent workflows can select from imports.
 - `.run(async (ctx) => { ... })` defines the workflow body.
 - `.compile()` returns the workflow definition for discovery.
 
@@ -752,6 +756,49 @@ Supported input schema types are:
 - `select`: required `choices: string[]`, optional `default: string`
 
 All schemas support `description` and `required`. Prefer explicit descriptions because `/workflow inputs <name>`, `/workflow <name> --help`, and the input picker show them to the user. Runtime validation rejects unknown keys, missing required values, type mismatches, and select values outside `choices`; it does not coerce strings like `"3"` to numbers.
+
+### Workflow Imports
+
+Use workflow imports when one workflow should call another reusable workflow and consume its outputs as a tracked boundary stage.
+
+```ts
+// .atomic/workflows/shared-research.ts
+import { defineWorkflow } from "@bastani/workflows";
+
+export const sharedResearch = defineWorkflow("shared-research")
+  .input("topic", { type: "text", required: true })
+  .output("summary", { type: "text", required: true })
+  .run(async (ctx) => {
+    const result = await ctx.task("research", { prompt: `Research ${String(ctx.inputs.topic)}` });
+    return { summary: result.text };
+  })
+  .compile();
+
+// .atomic/workflows/research-and-synthesize.ts
+export default defineWorkflow("research-and-synthesize")
+  .input("topic", { type: "text", required: true })
+  .import("research", { workflow: "shared-research" })
+  // Local module imports are also supported:
+  // .import("research", { path: "./shared-research.ts", export: "sharedResearch" })
+  .run(async (ctx) => {
+    const child = await ctx.workflow("research", {
+      inputs: { topic: ctx.inputs.topic },
+      outputs: { summary: "research_summary" },
+    });
+
+    const final = await ctx.task("synthesize", {
+      prompt: `Synthesize:\n\n${String(child.outputs.research_summary)}`,
+    });
+    return { final: final.text };
+  })
+  .compile();
+```
+
+`ctx.workflow(alias)` starts the imported workflow as a nested run and records a parent boundary stage named `import:<alias>` by default. Import sources can be `{ workflow: "registered-name" }` or `{ path: "./module.ts", export?: "namedExport" }`; relative paths resolve from the importing workflow file when discovery has source metadata, otherwise from the invocation cwd. Atomic validates imports during discovery/dispatch and fails fast for unresolved, circular, or invalid imports. Local path imports execute the imported file's top-level code during validation, so only reference trusted workflow modules.
+
+The graph node for a completed import boundary shows the child workflow name, child run id prefix, and selected output count, rather than a blank zero-duration stage. Use `stageName` when the parent needs a more specific label, but keep it concise so the child summary remains readable in the graph.
+
+Continuation replay treats the parent import boundary as the durable checkpoint: a previously completed child boundary replays with the original selected output mapping and without re-running the child, while a child that failed or was interrupted before completion starts again from the beginning on continuation.
 
 ## Workflow Primitives
 

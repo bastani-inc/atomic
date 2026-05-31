@@ -76,6 +76,27 @@ async function waitForStagePendingPrompt(
 }
 
 describe("runDetached — HIL never reaches pi.ui adapter", () => {
+  test("non-interactive execution uses unavailable ctx.ui instead of prompt nodes", async () => {
+    const store = createStore();
+    const cancellation = createCancellationRegistry();
+    const jobs = createJobTracker();
+
+    const def = defineWorkflow("hil-headless-bg")
+      .run(async (ctx) => {
+        await ctx.ui.confirm("ok?");
+        return { unreached: true };
+      })
+      .compile();
+
+    const accepted = runDetached(def, {}, { store, cancellation, jobs, executionMode: "non_interactive" });
+    await waitForRunEnded(store, accepted.runId);
+    const run = store.runs().find((r) => r.id === accepted.runId);
+
+    assert.equal(run?.status, "failed");
+    assert.match(run?.error ?? "", /ctx\.ui\.confirm is unavailable/);
+    assert.equal(run?.stages.length, 0);
+  });
+
   test("ctx.ui.editor records an attachable prompt node; pi.ui.editor spy not called", async () => {
     const store = createStore();
     const cancellation = createCancellationRegistry();

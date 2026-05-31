@@ -272,6 +272,32 @@ describe("appendStageEnd", () => {
     assert.equal(p["replayed"], true);
   });
 
+  test("includes optional workflow child replay metadata when provided", () => {
+    const api = makeMockApi();
+    appendStageEnd(api, {
+      runId: "r2",
+      stageId: "s-new",
+      status: "completed",
+      workflowChild: {
+        alias: "child",
+        workflow: "child-wf",
+        runId: "child-run",
+        status: "completed",
+        outputs: { summary: "ok" },
+        rawOutput: { summary: "ok", extra: 1 },
+      },
+    });
+    const p = api._entries[0]!.payload;
+    assert.deepEqual(p["workflowChild"], {
+      alias: "child",
+      workflow: "child-wf",
+      runId: "child-run",
+      status: "completed",
+      outputs: { summary: "ok" },
+      rawOutput: { summary: "ok", extra: 1 },
+    });
+  });
+
   test("emitMessage=true calls appendCustomMessageEntry when summary provided", () => {
     const api = makeMockApi();
     appendStageEnd(

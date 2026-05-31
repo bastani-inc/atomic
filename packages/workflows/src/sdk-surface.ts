@@ -10,6 +10,7 @@ export { defineWorkflow } from "./workflows/define-workflow.js";
 export { createRegistry } from "./workflows/registry.js";
 export { normalizeWorkflowName, workflowNamesEqual } from "./workflows/identity.js";
 export type * from "./shared/types.js";
+export { INTERACTIVE_WORKFLOW_POLICY, NON_INTERACTIVE_WORKFLOW_POLICY } from "./shared/types.js";
 export type { WorkflowBuilder, CompletedWorkflowBuilder } from "./workflows/define-workflow.js";
 export type { WorkflowRegistry } from "./workflows/registry.js";
 

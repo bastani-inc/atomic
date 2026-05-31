@@ -229,4 +229,45 @@ describe('installInputInterceptor — pi.on("input") wiring', () => {
     assert.ok(errorEntry, "error must be surfaced via ctx.ui.notify");
     assert.match(errorEntry!.msg, /\/workflow failed: boom in \/workflow/);
   });
+
+  test("headless handler exception propagates instead of being hidden by no-op notify", async () => {
+    const notifications: Array<{ msg: string; type?: string }> = [];
+    const ctx: PiCommandContext = {
+      hasUI: false,
+      ui: {
+        notify: (msg, type) => {
+          notifications.push({ msg, type });
+        },
+      },
+    };
+
+    const events = new Map<string, EventHandler[]>();
+    const throwingPi: ExtensionAPI = {
+      registerTool: () => undefined,
+      registerCommand: (name, options) => {
+        options.handler = async () => {
+          throw new Error(`boom in /${name}`);
+        };
+      },
+      registerMessageRenderer: () => undefined,
+      registerFlag: () => undefined,
+      registerShortcut: () => undefined,
+      on: (event, h) => {
+        const arr = events.get(event) ?? [];
+        arr.push(h as EventHandler);
+        events.set(event, arr);
+      },
+      disableAsyncDiscovery: true,
+    };
+    factory(throwingPi);
+    const throwingHandler = (events.get("input") ?? [])[0]!;
+
+    await assert.rejects(
+      async () => {
+        await throwingHandler({ text: "/workflow list", source: "print" }, ctx);
+      },
+      /boom in \/workflow/,
+    );
+    assert.deepEqual(notifications, []);
+  });
 });

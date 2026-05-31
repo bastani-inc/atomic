@@ -7,7 +7,7 @@
  */
 
 import type { Store } from "./store.js";
-import type { RunSnapshot, StageSnapshot, StageStatus } from "./store-types.js";
+import type { RunSnapshot, StageSnapshot, StageStatus, WorkflowChildReplaySnapshot } from "./store-types.js";
 import { isWorkflowFailureKind } from "./workflow-failures.js";
 
 // ---------------------------------------------------------------------------
@@ -262,7 +262,7 @@ function _buildStageSnapshots(
         if (typeof failureKind === "string" && isWorkflowFailureKind(failureKind)) snap.failureKind = failureKind;
         if (typeof failureMessage === "string") snap.failureMessage = failureMessage;
         if (typeof skippedReason === "string") snap.skippedReason = skippedReason;
-        Object.assign(snap, replayMetadata(entry.payload));
+        Object.assign(snap, replayMetadata(entry.payload), workflowChildMetadata(entry.payload));
       }
     }
   }
@@ -286,6 +286,62 @@ function replayMetadata(payload: Record<string, unknown>): Pick<StageSnapshot, "
     ...(typeof replayKey === "string" ? { replayKey } : {}),
     ...(typeof replayedFromStageId === "string" ? { replayedFromStageId } : {}),
     ...(typeof replayed === "boolean" ? { replayed } : {}),
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isWorkflowChildReplayStatus(status: unknown): status is WorkflowChildReplaySnapshot["status"] {
+  return status === "completed";
+}
+
+function workflowChildMetadata(payload: Record<string, unknown>): Pick<StageSnapshot, "workflowChild"> {
+  const workflowChild = payload["workflowChild"];
+  if (!isRecord(workflowChild)) return {};
+  const alias = workflowChild["alias"];
+  const workflow = workflowChild["workflow"];
+  const childRunId = workflowChild["runId"];
+  const status = workflowChild["status"];
+  const outputs = workflowChild["outputs"];
+  const rawOutput = workflowChild["rawOutput"];
+  if (
+    typeof alias !== "string" ||
+    typeof workflow !== "string" ||
+    typeof childRunId !== "string" ||
+    !isWorkflowChildReplayStatus(status) ||
+    !isRecord(outputs) ||
+    (rawOutput !== undefined && !isRecord(rawOutput))
+  ) {
+    return {};
+  }
+
+  let clonedOutputs: Record<string, unknown>;
+  try {
+    clonedOutputs = structuredClone(outputs);
+  } catch {
+    return {};
+  }
+
+  let clonedRawOutput: Record<string, unknown> | undefined;
+  if (rawOutput !== undefined) {
+    try {
+      clonedRawOutput = structuredClone(rawOutput);
+    } catch {
+      clonedRawOutput = undefined;
+    }
+  }
+
+  return {
+    workflowChild: {
+      alias,
+      workflow,
+      runId: childRunId,
+      status,
+      outputs: clonedOutputs,
+      ...(clonedRawOutput !== undefined ? { rawOutput: clonedRawOutput } : {}),
+    },
   };
 }
 

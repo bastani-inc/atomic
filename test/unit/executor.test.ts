@@ -7,7 +7,9 @@ import { run, runChain, runParallel, runTask, resolveInputs } from "../../packag
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { WORKFLOW_AUTH_FAILURE_MESSAGE } from "../../packages/workflows/src/shared/workflow-failures.js";
 import { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
+import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import type { AgentSession, CreateAgentSessionOptions } from "@bastani/atomic";
+import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
 import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 
 async function waitForExecutorStagePendingPrompt(
@@ -209,6 +211,413 @@ describe("executor.run", () => {
     assert.match(seenPrompts[1]!, /Context:/);
     assert.match(seenPrompts[1]!, /--- first ---\nfirst output/);
     assert.match(seenPrompts[1]!, /--- notes ---\nmanual notes/);
+  });
+
+  test("ctx.workflow executes an imported child with input and output mapping", async () => {
+    const seenPrompts: string[] = [];
+    const st = createStore();
+    const child = defineWorkflow("research-child")
+      .input("topic", { type: "text", required: true })
+      .output("summary", { type: "text", required: true })
+      .run(async (ctx) => {
+        const result = await ctx.task("child-research", { prompt: `child:${String(ctx.inputs.topic)}` });
+        return { summary: result.text, extra: "ignored" };
+      })
+      .compile();
+    const parent = defineWorkflow("research-parent")
+      .input("topic", { type: "text", required: true })
+      .import("research", { workflow: "research-child" })
+      .run(async (ctx) => {
+        const childResult = await ctx.workflow("research", {
+          inputs: { topic: ctx.inputs.topic },
+          outputs: { summary: "research_summary" },
+        });
+        const final = await ctx.task("final", {
+          prompt: `final:${String(childResult.outputs.research_summary)}`,
+        });
+        return { final: final.text, childRunId: childResult.runId };
+      })
+      .compile();
+    const registry = createRegistry([parent as WorkflowDefinition, child as WorkflowDefinition]);
+
+    const wfResult = await run(parent, { topic: "auth" }, {
+      registry,
+      store: st,
+      adapters: {
+        prompt: {
+          prompt: async (text) => {
+            seenPrompts.push(text);
+            return text === "child:auth" ? "child-output" : "final-output";
+          },
+        },
+      },
+    });
+
+    assert.equal(wfResult.status, "completed");
+    assert.deepEqual(seenPrompts, ["child:auth", "final:child-output"]);
+    assert.equal(wfResult.result?.["final"], "final-output");
+    assert.deepEqual(wfResult.stages.map((stage) => stage.name), ["import:research", "final"]);
+    const boundary = wfResult.stages[0]!;
+    const final = wfResult.stages[1]!;
+    assert.equal(boundary.status, "completed");
+    assert.deepEqual(final.parentIds, [boundary.id]);
+    assert.equal(st.runs().length, 2);
+  });
+
+  test("ctx.workflow completes when unselected child raw output is not cloneable", async () => {
+    const child = defineWorkflow("uncloneable-raw-child")
+      .output("summary", { type: "text", required: true })
+      .run(async (ctx) => {
+        await ctx.stage("child").prompt("child");
+        return { summary: "ok", helper: () => "nope" };
+      })
+      .compile();
+    const parent = defineWorkflow("uncloneable-raw-parent")
+      .import("child", { workflow: "uncloneable-raw-child" })
+      .run(async (ctx) => {
+        const childResult = await ctx.workflow("child", { outputs: ["summary"] });
+        const final = await ctx.stage("final").prompt(`final:${String(childResult.outputs.summary)}`);
+        return { final };
+      })
+      .compile();
+
+    const wfResult = await run(parent, {}, {
+      registry: createRegistry([parent as WorkflowDefinition, child as WorkflowDefinition]),
+      store: createStore(),
+      adapters: { prompt: { prompt: async () => "done" } },
+    });
+
+    assert.equal(wfResult.status, "completed");
+    assert.equal(wfResult.result?.["final"], "done");
+    const boundary = wfResult.stages.find((stage) => stage.name === "import:child")!;
+    assert.equal(boundary.status, "completed");
+    assert.deepEqual(boundary.workflowChild?.outputs, { summary: "ok" });
+    assert.equal(boundary.workflowChild?.rawOutput, undefined);
+  });
+
+  test("ctx.workflow reports an import-specific serialization error for non-cloneable selected output", async () => {
+    const seenPrompts: string[] = [];
+    const child = defineWorkflow("uncloneable-selected-child")
+      .run(async (ctx) => {
+        await ctx.stage("child").prompt("child");
+        return { bad: () => "nope" };
+      })
+      .compile();
+    const parent = defineWorkflow("uncloneable-selected-parent")
+      .import("child", { workflow: "uncloneable-selected-child" })
+      .run(async (ctx) => {
+        await ctx.workflow("child", { outputs: ["bad"] });
+        await ctx.stage("downstream").prompt("should-not-run");
+        return {};
+      })
+      .compile();
+
+    const wfResult = await run(parent, {}, {
+      registry: createRegistry([parent as WorkflowDefinition, child as WorkflowDefinition]),
+      store: createStore(),
+      adapters: {
+        prompt: {
+          prompt: async (text) => {
+            seenPrompts.push(text);
+            return "unexpected";
+          },
+        },
+      },
+    });
+
+    assert.equal(wfResult.status, "failed");
+    assert.match(wfResult.error ?? "", /workflow import "child"/);
+    assert.match(wfResult.error ?? "", /selected output "bad"/);
+    assert.match(wfResult.error ?? "", /serializable/);
+    assert.deepEqual(seenPrompts, ["child"]);
+  });
+
+  test("ctx.workflow applies child input defaults before required validation", async () => {
+    const seenPrompts: string[] = [];
+    const st = createStore();
+    const child = defineWorkflow("default-input-child")
+      .input("topic", { type: "text", required: true, default: "fallback-topic" })
+      .run(async (ctx) => {
+        const result = await ctx.task("child-default", { prompt: `topic:${String(ctx.inputs.topic)}` });
+        return { summary: result.text };
+      })
+      .compile();
+    const parent = defineWorkflow("default-input-parent")
+      .import("child", { workflow: "default-input-child" })
+      .run(async (ctx) => {
+        const childResult = await ctx.workflow("child");
+        return { summary: childResult.outputs.summary };
+      })
+      .compile();
+
+    const wfResult = await run(parent, {}, {
+      registry: createRegistry([parent as WorkflowDefinition, child as WorkflowDefinition]),
+      store: st,
+      adapters: {
+        prompt: {
+          prompt: async (text) => {
+            seenPrompts.push(text);
+            return "child-result";
+          },
+        },
+      },
+    });
+
+    assert.equal(wfResult.status, "completed");
+    assert.deepEqual(seenPrompts, ["topic:fallback-topic"]);
+    assert.equal(wfResult.result?.["summary"], "child-result");
+    assert.equal(st.runs().length, 2);
+  });
+
+  test("ctx.workflow with omitted outputs returns declared and undeclared keys", async () => {
+    const child = defineWorkflow("implicit-output-child")
+      .output("summary", { type: "text", required: true })
+      .run(async (ctx) => {
+        const result = await ctx.task("child", { prompt: "child" });
+        return { summary: result.text, debug_trace: "trace" };
+      })
+      .compile();
+    const parent = defineWorkflow("implicit-output-parent")
+      .import("child", { workflow: "implicit-output-child" })
+      .run(async (ctx) => {
+        const childResult = await ctx.workflow("child");
+        return { childOutputs: childResult.outputs, rawOutput: childResult.rawOutput };
+      })
+      .compile();
+
+    const wfResult = await run(parent, {}, {
+      registry: createRegistry([parent as WorkflowDefinition, child as WorkflowDefinition]),
+      store: createStore(),
+      adapters: { prompt: { prompt: async () => "summary-value" } },
+    });
+
+    assert.equal(wfResult.status, "completed");
+    assert.deepEqual(wfResult.result?.["childOutputs"], { summary: "summary-value", debug_trace: "trace" });
+    assert.deepEqual(wfResult.result?.["rawOutput"], { summary: "summary-value", debug_trace: "trace" });
+  });
+
+  test("ctx.workflow with explicit outputs rejects undeclared child output", async () => {
+    const seenPrompts: string[] = [];
+    const child = defineWorkflow("explicit-output-child")
+      .output("summary", { type: "text" })
+      .run(async (ctx) => {
+        await ctx.task("child", { prompt: "child" });
+        return { summary: "declared", extra: "extra" };
+      })
+      .compile();
+    const parent = defineWorkflow("explicit-output-parent")
+      .import("child", { workflow: "explicit-output-child" })
+      .run(async (ctx) => {
+        await ctx.workflow("child", { outputs: ["extra"] });
+        await ctx.task("downstream", { prompt: "should-not-run" });
+        return {};
+      })
+      .compile();
+
+    const wfResult = await run(parent, {}, {
+      registry: createRegistry([parent as WorkflowDefinition, child as WorkflowDefinition]),
+      store: createStore(),
+      adapters: {
+        prompt: {
+          prompt: async (text) => {
+            seenPrompts.push(text);
+            return "ok";
+          },
+        },
+      },
+    });
+
+    assert.equal(wfResult.status, "failed");
+    assert.match(wfResult.error ?? "", /requested undeclared output "extra"/);
+    assert.deepEqual(seenPrompts, ["child"]);
+    assert.deepEqual(wfResult.stages.map((stage) => stage.name), ["import:child"]);
+    assert.equal(wfResult.stages[0]?.status, "failed");
+  });
+
+  test("ctx.workflow with omitted outputs fails when declared required output is missing", async () => {
+    const seenPrompts: string[] = [];
+    const child = defineWorkflow("implicit-missing-output-child")
+      .output("summary", { type: "text", required: true })
+      .run(async (ctx) => {
+        await ctx.task("child", { prompt: "child" });
+        return { extra: "value" };
+      })
+      .compile();
+    const parent = defineWorkflow("implicit-missing-output-parent")
+      .import("child", { workflow: "implicit-missing-output-child" })
+      .run(async (ctx) => {
+        await ctx.workflow("child");
+        await ctx.task("downstream", { prompt: "should-not-run" });
+        return {};
+      })
+      .compile();
+
+    const wfResult = await run(parent, {}, {
+      registry: createRegistry([parent as WorkflowDefinition, child as WorkflowDefinition]),
+      store: createStore(),
+      adapters: {
+        prompt: {
+          prompt: async (text) => {
+            seenPrompts.push(text);
+            return "ok";
+          },
+        },
+      },
+    });
+
+    assert.equal(wfResult.status, "failed");
+    assert.match(wfResult.error ?? "", /missing output "summary"/);
+    assert.deepEqual(seenPrompts, ["child"]);
+    assert.deepEqual(wfResult.stages.map((stage) => stage.name), ["import:child"]);
+    assert.equal(wfResult.stages[0]?.status, "failed");
+  });
+
+  test("ctx.workflow with explicit outputs still enforces missing required child outputs", async () => {
+    const seenPrompts: string[] = [];
+    const child = defineWorkflow("explicit-missing-required-output-child")
+      .output("summary", { type: "text", required: true })
+      .output("optional", { type: "text" })
+      .run(async (ctx) => {
+        await ctx.task("child", { prompt: "child" });
+        return { optional: "value" };
+      })
+      .compile();
+    const parent = defineWorkflow("explicit-missing-required-output-parent")
+      .import("child", { workflow: "explicit-missing-required-output-child" })
+      .run(async (ctx) => {
+        await ctx.workflow("child", { outputs: ["optional"] });
+        await ctx.task("downstream", { prompt: "should-not-run" });
+        return {};
+      })
+      .compile();
+
+    const wfResult = await run(parent, {}, {
+      registry: createRegistry([parent as WorkflowDefinition, child as WorkflowDefinition]),
+      store: createStore(),
+      adapters: {
+        prompt: {
+          prompt: async (text) => {
+            seenPrompts.push(text);
+            return "ok";
+          },
+        },
+      },
+    });
+
+    assert.equal(wfResult.status, "failed");
+    assert.match(wfResult.error ?? "", /missing output "summary"/);
+    assert.deepEqual(seenPrompts, ["child"]);
+    assert.deepEqual(wfResult.stages.map((stage) => stage.name), ["import:child"]);
+    assert.equal(wfResult.stages[0]?.status, "failed");
+  });
+
+  test("ctx.workflow rejects explicit output mappings that collide with required outputs", async () => {
+    const seenPrompts: string[] = [];
+    const child = defineWorkflow("colliding-required-output-child")
+      .output("summary", { type: "text", required: true })
+      .output("other", { type: "text" })
+      .run(async (ctx) => {
+        await ctx.task("child", { prompt: "child" });
+        return { summary: "required-value", other: "renamed-value" };
+      })
+      .compile();
+    const parent = defineWorkflow("colliding-required-output-parent")
+      .import("child", { workflow: "colliding-required-output-child" })
+      .run(async (ctx) => {
+        await ctx.workflow("child", { outputs: { other: "summary" } });
+        await ctx.task("downstream", { prompt: "should-not-run" });
+        return {};
+      })
+      .compile();
+
+    const wfResult = await run(parent, {}, {
+      registry: createRegistry([parent as WorkflowDefinition, child as WorkflowDefinition]),
+      store: createStore(),
+      adapters: {
+        prompt: {
+          prompt: async (text) => {
+            seenPrompts.push(text);
+            return "ok";
+          },
+        },
+      },
+    });
+
+    assert.equal(wfResult.status, "failed");
+    assert.match(wfResult.error ?? "", /maps multiple outputs to parent output "summary"/);
+    assert.deepEqual(seenPrompts, ["child"]);
+    assert.deepEqual(wfResult.stages.map((stage) => stage.name), ["import:child"]);
+    assert.equal(wfResult.stages[0]?.status, "failed");
+  });
+
+  test("ctx.workflow validates child inputs before starting a child run", async () => {
+    const seenPrompts: string[] = [];
+    const st = createStore();
+    const child = defineWorkflow("input-child")
+      .input("topic", { type: "text", required: true })
+      .run(async (ctx) => {
+        await ctx.task("child", { prompt: String(ctx.inputs.topic) });
+        return {};
+      })
+      .compile();
+    const parent = defineWorkflow("input-parent")
+      .import("child", { workflow: "input-child" })
+      .run(async (ctx) => {
+        await ctx.workflow("child", { inputs: { topic: 123 } });
+        return {};
+      })
+      .compile();
+
+    const wfResult = await run(parent, {}, {
+      registry: createRegistry([parent as WorkflowDefinition, child as WorkflowDefinition]),
+      store: st,
+      adapters: { prompt: { prompt: async (text) => { seenPrompts.push(text); return "ok"; } } },
+    });
+
+    assert.equal(wfResult.status, "failed");
+    assert.match(wfResult.error ?? "", /invalid inputs/);
+    assert.deepEqual(seenPrompts, []);
+    assert.equal(st.runs().length, 1);
+    assert.equal(wfResult.stages[0]?.name, "import:child");
+    assert.equal(wfResult.stages[0]?.status, "failed");
+  });
+
+  test("ctx.workflow fails on missing requested child output before downstream stages", async () => {
+    const seenPrompts: string[] = [];
+    const child = defineWorkflow("output-child")
+      .output("summary", { type: "text", required: true })
+      .run(async (ctx) => {
+        await ctx.task("child", { prompt: "child" });
+        return { other: "value" };
+      })
+      .compile();
+    const parent = defineWorkflow("output-parent")
+      .import("child", { workflow: "output-child" })
+      .run(async (ctx) => {
+        await ctx.workflow("child", { outputs: ["summary"] });
+        await ctx.task("downstream", { prompt: "should-not-run" });
+        return {};
+      })
+      .compile();
+
+    const wfResult = await run(parent, {}, {
+      registry: createRegistry([parent as WorkflowDefinition, child as WorkflowDefinition]),
+      store: createStore(),
+      adapters: {
+        prompt: {
+          prompt: async (text) => {
+            seenPrompts.push(text);
+            return "child-result";
+          },
+        },
+      },
+    });
+
+    assert.equal(wfResult.status, "failed");
+    assert.match(wfResult.error ?? "", /missing output "summary"/);
+    assert.deepEqual(seenPrompts, ["child"]);
+    assert.deepEqual(wfResult.stages.map((stage) => stage.name), ["import:child"]);
+    assert.equal(wfResult.stages[0]?.status, "failed");
   });
 
   test("ctx.chain follows direct workflow previous defaults", async () => {
@@ -546,6 +955,351 @@ describe("executor.run", () => {
     assert.equal(continuedRun.resumedFromRunId, source.id);
     assert.equal(continuedRun.resumeFromStageId, failedStageId);
     assert.equal(source.status, "failed", "source failed run remains terminal/immutable");
+  });
+
+  test("continuation replays completed ctx.workflow boundary without rerunning child", async () => {
+    const st = createStore();
+    const child = defineWorkflow("resume-import-child")
+      .run(async (ctx) => {
+        const value = await ctx.stage("child").prompt("child");
+        return { value };
+      })
+      .compile();
+    const parent = defineWorkflow("resume-import-parent")
+      .import("child", { workflow: "resume-import-child" })
+      .run(async (ctx) => {
+        const childResult = await ctx.workflow("child");
+        const after = await ctx.stage("after").prompt(`after:${String(childResult.outputs["value"])}`);
+        return { after };
+      })
+      .compile();
+    const registry = createRegistry([parent, child]);
+
+    const firstRunCalls: string[] = [];
+    const firstRun = await run(parent, {}, {
+      store: st,
+      registry,
+      adapters: {
+        prompt: {
+          prompt: async (text) => {
+            firstRunCalls.push(text);
+            if (text.startsWith("after:")) throw new Error("rate limit exceeded");
+            return "child-ok";
+          },
+        },
+      },
+    });
+
+    assert.equal(firstRun.status, "failed");
+    assert.deepEqual(firstRunCalls, ["child", "after:child-ok"]);
+    const source = st.runs().find((candidate) => candidate.id === firstRun.runId)!;
+    const failedStageId = source.failedStageId!;
+    const sourceBoundary = source.stages.find((stage) => stage.name === "import:child")!;
+    assert.equal(sourceBoundary.workflowChild?.outputs["value"], "child-ok");
+
+    const continuationCalls: string[] = [];
+    const continued = await run(parent, {}, {
+      store: st,
+      registry,
+      continuation: { source, resumeFromStageId: failedStageId },
+      adapters: {
+        prompt: {
+          prompt: async (text) => {
+            continuationCalls.push(text);
+            return "after-ok";
+          },
+        },
+      },
+    });
+
+    assert.equal(continued.status, "completed");
+    assert.deepEqual(continuationCalls, ["after:child-ok"]);
+    const boundary = continued.stages.find((stage) => stage.name === "import:child")!;
+    const after = continued.stages.find((stage) => stage.name === "after")!;
+    assert.equal(boundary.replayed, true);
+    assert.equal(boundary.replayedFromStageId, sourceBoundary.id);
+    assert.equal(boundary.workflowChild?.outputs["value"], "child-ok");
+    assert.deepEqual(after.parentIds, [boundary.id]);
+    assert.equal(continued.result?.["after"], "after-ok");
+  });
+
+  test("continuation deep-clones replayed ctx.workflow metadata", async () => {
+    const st = createStore();
+    const child = defineWorkflow("resume-import-clone-child")
+      .run(async (ctx) => {
+        await ctx.stage("child").prompt("child");
+        return { value: { nested: "child-ok" } };
+      })
+      .compile();
+    const parent = defineWorkflow("resume-import-clone-parent")
+      .import("child", { workflow: "resume-import-clone-child" })
+      .run(async (ctx) => {
+        const childResult = await ctx.workflow("child");
+        const value = childResult.outputs["value"] as { nested: string };
+        const after = await ctx.stage("after").prompt(`after:${value.nested}`);
+        return { after };
+      })
+      .compile();
+    const registry = createRegistry([parent, child]);
+
+    const firstRun = await run(parent, {}, {
+      store: st,
+      registry,
+      adapters: {
+        prompt: {
+          prompt: async (text) => {
+            if (text.startsWith("after:")) throw new Error("rate limit exceeded");
+            return "child-ok";
+          },
+        },
+      },
+    });
+
+    assert.equal(firstRun.status, "failed");
+    const source = st.runs().find((candidate) => candidate.id === firstRun.runId)!;
+    const sourceBoundary = source.stages.find((stage) => stage.name === "import:child")!;
+
+    const continued = await run(parent, {}, {
+      store: st,
+      registry,
+      continuation: { source, resumeFromStageId: source.failedStageId! },
+      adapters: { prompt: { prompt: async () => "after-ok" } },
+    });
+
+    assert.equal(continued.status, "completed");
+    const boundary = continued.stages.find((stage) => stage.name === "import:child")!;
+    assert.equal(boundary.replayed, true);
+    assert.notEqual(boundary.workflowChild, sourceBoundary.workflowChild);
+    assert.notEqual(boundary.workflowChild?.outputs, sourceBoundary.workflowChild?.outputs);
+    const replayedValue = boundary.workflowChild?.outputs["value"] as { nested: string };
+    const sourceValue = sourceBoundary.workflowChild?.outputs["value"] as { nested: string };
+    assert.notEqual(replayedValue, sourceValue);
+    replayedValue.nested = "mutated";
+    assert.equal(sourceValue.nested, "child-ok");
+  });
+
+  test("continuation replays workflow boundary when raw output was omitted as non-serializable", async () => {
+    const st = createStore();
+    const child = defineWorkflow("resume-uncloneable-raw-child")
+      .output("value", { type: "text", required: true })
+      .run(async (ctx) => {
+        await ctx.stage("child").prompt("child");
+        return { value: "child-ok", helper: () => "nope" };
+      })
+      .compile();
+    const parent = defineWorkflow("resume-uncloneable-raw-parent")
+      .import("child", { workflow: "resume-uncloneable-raw-child" })
+      .run(async (ctx) => {
+        const childResult = await ctx.workflow("child", { outputs: ["value"] });
+        const after = await ctx.stage("after").prompt(`after:${String(childResult.outputs["value"])}`);
+        return { after };
+      })
+      .compile();
+    const registry = createRegistry([parent, child]);
+
+    const firstRun = await run(parent, {}, {
+      store: st,
+      registry,
+      adapters: {
+        prompt: {
+          prompt: async (text) => {
+            if (text.startsWith("after:")) throw new Error("rate limit exceeded");
+            return "unexpected";
+          },
+        },
+      },
+    });
+
+    assert.equal(firstRun.status, "failed");
+    const source = st.runs().find((candidate) => candidate.id === firstRun.runId)!;
+    const sourceBoundary = source.stages.find((stage) => stage.name === "import:child")!;
+    assert.deepEqual(sourceBoundary.workflowChild?.outputs, { value: "child-ok" });
+    assert.equal(sourceBoundary.workflowChild?.rawOutput, undefined);
+
+    const continuationCalls: string[] = [];
+    const continued = await run(parent, {}, {
+      store: st,
+      registry,
+      continuation: { source, resumeFromStageId: source.failedStageId! },
+      adapters: {
+        prompt: {
+          prompt: async (text) => {
+            continuationCalls.push(text);
+            return "after-ok";
+          },
+        },
+      },
+    });
+
+    assert.equal(continued.status, "completed");
+    assert.deepEqual(continuationCalls, ["after:child-ok"]);
+    const boundary = continued.stages.find((stage) => stage.name === "import:child")!;
+    assert.equal(boundary.replayed, true);
+    assert.deepEqual(boundary.workflowChild?.outputs, { value: "child-ok" });
+    assert.equal(boundary.workflowChild?.rawOutput, undefined);
+    assert.equal(continued.result?.["after"], "after-ok");
+  });
+
+  test("validates workflow imports when caller supplies a registry", async () => {
+    const parent = defineWorkflow("registry-validation-parent")
+      .import("ghost", { workflow: "registry-validation-missing" })
+      .run(async (ctx) => {
+        await ctx.stage("should-not-start").prompt("should not start");
+        return {};
+      })
+      .compile();
+    const registry = createRegistry([parent]);
+    const promptCalls: string[] = [];
+
+    const result = await run(parent, {}, {
+      registry,
+      adapters: {
+        prompt: {
+          prompt: async (text) => {
+            promptCalls.push(text);
+            return "unexpected";
+          },
+        },
+      },
+    });
+
+    assert.equal(result.status, "failed");
+    assert.match(result.error ?? "", /IMPORT_UNRESOLVED/);
+    assert.match(result.error ?? "", /registry-validation-missing/);
+    assert.deepEqual(result.stages, []);
+    assert.deepEqual(promptCalls, []);
+  });
+
+  test("continuation replays repeated concurrent ctx.workflow boundaries for the same alias", async () => {
+    const st = createStore();
+    const child = defineWorkflow("resume-import-repeated-child")
+      .run(async (ctx) => {
+        const value = await ctx.stage("child").prompt("child");
+        return { value };
+      })
+      .compile();
+    const parent = defineWorkflow("resume-import-repeated-parent")
+      .import("child", { workflow: "resume-import-repeated-child" })
+      .run(async (ctx) => {
+        const [first, second] = await Promise.all([
+          ctx.workflow("child"),
+          ctx.workflow("child"),
+        ]);
+        const after = await ctx.stage("after").prompt(`after:${String(first.outputs["value"])}:${String(second.outputs["value"])}`);
+        return { after };
+      })
+      .compile();
+    const registry = createRegistry([parent, child]);
+
+    const firstRunCalls: string[] = [];
+    const firstRun = await run(parent, {}, {
+      store: st,
+      registry,
+      adapters: {
+        prompt: {
+          prompt: async (text) => {
+            firstRunCalls.push(text);
+            if (text.startsWith("after:")) throw new Error("rate limit exceeded");
+            return `child-${firstRunCalls.length}`;
+          },
+        },
+      },
+    });
+
+    assert.equal(firstRun.status, "failed");
+    assert.deepEqual(firstRunCalls, ["child", "child", "after:child-1:child-2"]);
+    const source = st.runs().find((candidate) => candidate.id === firstRun.runId)!;
+    const failedStageId = source.failedStageId!;
+    const sourceBoundaries = source.stages.filter((stage) => stage.name === "import:child");
+    assert.equal(sourceBoundaries.length, 2);
+    assert.equal(new Set(sourceBoundaries.map((stage) => stage.replayKey)).size, 2);
+
+    const continuationCalls: string[] = [];
+    const continued = await run(parent, {}, {
+      store: st,
+      registry,
+      continuation: { source, resumeFromStageId: failedStageId },
+      adapters: {
+        prompt: {
+          prompt: async (text) => {
+            continuationCalls.push(text);
+            return "after-ok";
+          },
+        },
+      },
+    });
+
+    assert.equal(continued.status, "completed");
+    assert.deepEqual(continuationCalls, ["after:child-1:child-2"]);
+    const replayedBoundaries = continued.stages.filter((stage) => stage.name === "import:child");
+    assert.equal(replayedBoundaries.length, 2);
+    assert.equal(new Set(replayedBoundaries.map((stage) => stage.replayKey)).size, 2);
+    assert.deepEqual(replayedBoundaries.map((stage) => stage.replayed), [true, true]);
+    assert.deepEqual(
+      replayedBoundaries.map((stage) => stage.workflowChild?.outputs["value"]),
+      ["child-1", "child-2"],
+    );
+    assert.equal(continued.result?.["after"], "after-ok");
+  });
+
+  test("continuation maps legacy ctx.workflow boundary and reruns child when replay metadata is absent", async () => {
+    const st = createStore();
+    const child = defineWorkflow("resume-import-legacy-child")
+      .run(async (ctx) => {
+        const value = await ctx.stage("child").prompt("child");
+        return { value };
+      })
+      .compile();
+    const parent = defineWorkflow("resume-import-legacy-parent")
+      .import("child", { workflow: "resume-import-legacy-child" })
+      .run(async (ctx) => {
+        const childResult = await ctx.workflow("child");
+        const after = await ctx.stage("after").prompt(`after:${String(childResult.outputs["value"])}`);
+        return { after };
+      })
+      .compile();
+    const registry = createRegistry([parent, child]);
+
+    const firstRun = await run(parent, {}, {
+      store: st,
+      registry,
+      adapters: {
+        prompt: {
+          prompt: async (text) => {
+            if (text.startsWith("after:")) throw new Error("rate limit exceeded");
+            return "child-first";
+          },
+        },
+      },
+    });
+
+    assert.equal(firstRun.status, "failed");
+    const source = st.runs().find((candidate) => candidate.id === firstRun.runId)!;
+    const sourceBoundary = source.stages.find((stage) => stage.name === "import:child")!;
+    delete sourceBoundary.workflowChild;
+
+    const continuationCalls: string[] = [];
+    const continued = await run(parent, {}, {
+      store: st,
+      registry,
+      continuation: { source, resumeFromStageId: source.failedStageId! },
+      adapters: {
+        prompt: {
+          prompt: async (text) => {
+            continuationCalls.push(text);
+            return text === "child" ? "child-rerun" : "after-ok";
+          },
+        },
+      },
+    });
+
+    assert.equal(continued.status, "completed");
+    assert.deepEqual(continuationCalls, ["child", "after:child-rerun"]);
+    const boundary = continued.stages.find((stage) => stage.name === "import:child")!;
+    const after = continued.stages.find((stage) => stage.name === "after")!;
+    assert.equal(boundary.replayed, false);
+    assert.equal(boundary.replayedFromStageId, sourceBoundary.id);
+    assert.deepEqual(after.parentIds, [boundary.id]);
   });
 
   test("auth stage failures surface workflow login guidance and preserve details", async () => {
@@ -1561,6 +2315,239 @@ describe("executor.run", () => {
     assert.equal(result.status, "failed");
     assert.deepEqual(result.stages[0]?.attemptedModels, ["anthropic/primary", "openai/fallback"]);
     assert.deepEqual(result.stages[0]?.modelAttempts?.map((attempt) => attempt.success), [false, false]);
+  });
+
+  test("explicit model stage publishes running fast-mode metadata before prompt resolves", async () => {
+    const promptGate = deferred<string | void>();
+    const st = createStore();
+    const def = defineWorkflow("explicit-model-running-fast-metadata")
+      .run(async (ctx) => {
+        await ctx.stage("scout", { model: "openai/gpt-5.1-codex" }).prompt("inspect");
+        return { ok: true };
+      })
+      .compile();
+
+    const runPromise = run(def, {}, {
+      adapters: {
+        agentSession: {
+          async create() {
+            return {
+              session: {
+                ...mockSession(),
+                model: { provider: "openai", id: "gpt-5.1-codex" } as AgentSession["model"],
+                async prompt() {
+                  await promptGate.promise;
+                },
+              },
+              settingsManager: {
+                getCodexFastModeSettings: () => ({ chat: false, workflow: true }),
+              },
+            };
+          },
+        },
+      },
+      store: st,
+    });
+
+    try {
+      const deadline = Date.now() + 1000;
+      let runningStage: StageSnapshot | undefined;
+      while (Date.now() < deadline) {
+        runningStage = st.runs()
+          .flatMap((runSnapshot) => runSnapshot.stages)
+          .find((stage) => stage.name === "scout" && stage.status === "running");
+        if (runningStage !== undefined) break;
+        await sleep(5);
+      }
+
+      assert.equal(runningStage?.model, "openai/gpt-5.1-codex");
+      assert.equal(runningStage?.fastMode, true);
+    } finally {
+      promptGate.resolve();
+      await runPromise;
+    }
+  });
+
+  test("bare explicit model stage publishes running fast-mode metadata after catalog resolution", async () => {
+    const promptGate = deferred<string | void>();
+    const st = createStore();
+    const def = defineWorkflow("bare-explicit-model-running-fast-metadata")
+      .run(async (ctx) => {
+        await ctx.stage("scout", { model: "gpt-5.1-codex" }).prompt("inspect");
+        return { ok: true };
+      })
+      .compile();
+
+    const runPromise = run(def, {}, {
+      models: {
+        listModels: async () => [
+          { provider: "openai", id: "gpt-5.1-codex", fullId: "openai/gpt-5.1-codex" },
+        ],
+      },
+      adapters: {
+        agentSession: {
+          async create(options) {
+            assert.equal((options as { readonly model?: string }).model, "openai/gpt-5.1-codex");
+            return {
+              session: {
+                ...mockSession(),
+                model: { provider: "openai", id: "gpt-5.1-codex" } as AgentSession["model"],
+                async prompt() {
+                  await promptGate.promise;
+                },
+              },
+              settingsManager: {
+                getCodexFastModeSettings: () => ({ chat: false, workflow: true }),
+              },
+            };
+          },
+        },
+      },
+      store: st,
+    });
+
+    try {
+      const deadline = Date.now() + 1000;
+      let runningStage: StageSnapshot | undefined;
+      while (Date.now() < deadline) {
+        runningStage = st.runs()
+          .flatMap((runSnapshot) => runSnapshot.stages)
+          .find((stage) => stage.name === "scout" && stage.status === "running");
+        if (runningStage !== undefined) break;
+        await sleep(5);
+      }
+
+      assert.equal(runningStage?.model, "openai/gpt-5.1-codex");
+      assert.equal(runningStage?.fastMode, true);
+    } finally {
+      promptGate.resolve();
+      await runPromise;
+    }
+  });
+
+  test("prompt adapter stages do not eagerly create SDK sessions for fast metadata", async () => {
+    const st = createStore();
+    const def = defineWorkflow("prompt-adapter-no-eager-session")
+      .run(async (ctx) => {
+        const text = await ctx.stage("scout").prompt("inspect");
+        return { text };
+      })
+      .compile();
+
+    const result = await run(def, {}, {
+      adapters: {
+        prompt: {
+          prompt: async () => "adapter ok",
+        },
+        agentSession: {
+          async create() {
+            throw new Error("agent session should not be created");
+          },
+        },
+      },
+      store: st,
+    });
+
+    assert.equal(result.status, "completed");
+    assert.equal(result.stages[0]?.result, "adapter ok");
+  });
+
+  test("workflow fallback refreshes running fast metadata when switching to an eligible model", async () => {
+    const fallbackGate = deferred<string | void>();
+    const st = createStore();
+    const def = defineWorkflow("fallback-running-fast-metadata")
+      .run(async (ctx) => {
+        await ctx.stage("scout", { model: "anthropic/primary", fallbackModels: ["openai/fallback"] }).prompt("inspect");
+        return { ok: true };
+      })
+      .compile();
+
+    const runPromise = run(def, {}, {
+      adapters: {
+        agentSession: {
+          async create(options) {
+            const model = (options as { readonly model?: string }).model;
+            return {
+              session: {
+                ...mockSession(),
+                model: model === "openai/fallback"
+                  ? { provider: "openai", id: "fallback" } as AgentSession["model"]
+                  : { provider: "anthropic", id: "primary" } as AgentSession["model"],
+                async prompt() {
+                  if (model === "openai/fallback") {
+                    await fallbackGate.promise;
+                    return;
+                  }
+                  throw new Error("anthropic/primary timed out");
+                },
+              },
+              settingsManager: {
+                getCodexFastModeSettings: () => ({ chat: false, workflow: true }),
+              },
+            };
+          },
+        },
+      },
+      store: st,
+    });
+
+    try {
+      const deadline = Date.now() + 1000;
+      let runningStage: StageSnapshot | undefined;
+      while (Date.now() < deadline) {
+        runningStage = st.runs()
+          .flatMap((runSnapshot) => runSnapshot.stages)
+          .find((stage) => stage.name === "scout" && stage.status === "running" && stage.model === "openai/fallback");
+        if (runningStage?.fastMode === true) break;
+        await sleep(5);
+      }
+
+      assert.equal(runningStage?.model, "openai/fallback");
+      assert.equal(runningStage?.fastMode, true);
+    } finally {
+      fallbackGate.resolve();
+      await runPromise;
+    }
+  });
+
+  test("workflow fallback clears fast metadata when final model is not eligible", async () => {
+    const st = createStore();
+    const def = defineWorkflow("fallback-clears-fast-metadata")
+      .run(async (ctx) => {
+        await ctx.stage("scout", { model: "openai/gpt-5.1-codex", fallbackModels: ["anthropic/claude-sonnet-4"] }).prompt("inspect");
+        return { ok: true };
+      })
+      .compile();
+
+    const result = await run(def, {}, {
+      adapters: {
+        agentSession: {
+          async create(options) {
+            const model = (options as { readonly model?: string }).model;
+            return {
+              session: {
+                ...mockSession(),
+                model: model === "anthropic/claude-sonnet-4"
+                  ? { provider: "anthropic", id: "claude-sonnet-4" } as AgentSession["model"]
+                  : { provider: "openai", id: "gpt-5.1-codex" } as AgentSession["model"],
+                async prompt() {
+                  if (model === "anthropic/claude-sonnet-4") return;
+                  throw new Error("openai/gpt-5.1-codex timed out");
+                },
+              },
+              settingsManager: {
+                getCodexFastModeSettings: () => ({ chat: false, workflow: true }),
+              },
+            };
+          },
+        },
+      },
+      store: st,
+    });
+
+    assert.equal(result.status, "completed");
+    assert.equal(result.stages[0]?.model, "anthropic/claude-sonnet-4");
+    assert.equal(result.stages[0]?.fastMode, undefined);
   });
 
   test("invalid dynamic stage model fails before SDK session creation", async () => {

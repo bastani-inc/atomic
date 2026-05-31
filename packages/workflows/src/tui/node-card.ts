@@ -120,8 +120,27 @@ function durationText(stage: StageSnapshot): string {
 
 function metaText(stage: StageSnapshot): string {
   const deps = stage.parentIds.length;
-  if (deps === 0) return "root";
-  return deps === 1 ? "1 dep" : `${deps} deps`;
+  const dependencyText = deps === 0 ? "root" : deps === 1 ? "1 dep" : `${deps} deps`;
+  return stage.fastMode === true ? `${dependencyText} · fast` : dependencyText;
+}
+
+function shortRunId(runId: string): string {
+  return runId.length <= 8 ? runId : runId.slice(0, 8);
+}
+
+function workflowChildSummaryText(stage: StageSnapshot): string {
+  const child = stage.workflowChild;
+  if (child === undefined) return durationText(stage);
+  return `↳ ${child.workflow}`;
+}
+
+function workflowChildMetaText(stage: StageSnapshot): string {
+  const child = stage.workflowChild;
+  if (child === undefined) return metaText(stage);
+
+  const outputCount = Object.keys(child.outputs).length;
+  const outputs = outputCount === 1 ? "1 out" : `${outputCount} outs`;
+  return `run ${shortRunId(child.runId)} · ${outputs}`;
 }
 
 function statusLabel(status: StageStatus): string {
@@ -248,13 +267,15 @@ export function renderNodeCard(stage: StageSnapshot, opts: NodeCardOpts): string
   const top = `${bg}${bc}╭${topMiddle}╮${RESET}`;
   const bottom = `${bg}${bc}╰${"─".repeat(innerWidth)}╯${RESET}`;
 
-  // Interior — compact status + duration. Each `│` border is followed
-  // by a `bg`-primed centred run so the inner cells stay on the card
-  // stratum without leaving the cards visually hollow.
+  // Interior — compact status + duration. Imported workflow boundary
+  // stages otherwise look like empty completed nodes, so use the first
+  // body row for the child workflow identity and the final row for a
+  // terse child-run summary. This keeps the graph dense while making
+  // the boundary explain what actually ran.
   const bodyText =
     stage.status === "blocked"
       ? blockedBadgeText(stage, opts.stages, innerWidth)
-      : durationText(stage);
+      : workflowChildSummaryText(stage);
   const bodyHex = durationColor(stage.status, theme);
   const statusText = `${statusIcon(stage.status)} ${statusLabel(stage.status)}`;
   const statusLine =
@@ -271,7 +292,7 @@ export function renderNodeCard(stage: StageSnapshot, opts: NodeCardOpts): string
     `${bg}${bc}│${RESET}`;
   const metaLine =
     `${bg}${bc}│${RESET}` +
-    centreColored(metaText(stage), innerWidth, theme.dim, bg) +
+    centreColored(workflowChildMetaText(stage), innerWidth, theme.dim, bg) +
     `${bg}${bc}│${RESET}`;
 
   const interior: string[] =

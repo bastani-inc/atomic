@@ -94,6 +94,15 @@ export interface StageNotice {
   readonly meta?: string;
 }
 
+export interface WorkflowChildReplaySnapshot {
+  readonly alias: string;
+  readonly workflow: string;
+  readonly runId: string;
+  readonly status: "completed";
+  readonly outputs: Record<string, unknown>;
+  readonly rawOutput?: Record<string, unknown>;
+}
+
 export interface StageSnapshot {
   readonly id: string;
   readonly name: string;
@@ -125,6 +134,8 @@ export interface StageSnapshot {
   replayedFromStageId?: string;
   /** True when provider work was skipped by continuation replay. */
   replayed?: boolean;
+  /** Snapshot-safe child workflow result metadata for continuation replay of import boundaries. */
+  workflowChild?: WorkflowChildReplaySnapshot;
   readonly toolEvents: ToolEvent[];
   /** True while an in-stage ask_user_question tool is waiting on the user. */
   awaitingInputSince?: number;
@@ -155,8 +166,10 @@ export interface StageSnapshot {
    */
   sessionId?: string;
   sessionFile?: string;
-  /** Effective model selected for this stage after fallback resolution. */
+  /** Effective model id selected for this stage after fallback resolution. */
   model?: string;
+  /** True when Codex fast mode applied to this workflow stage. */
+  fastMode?: boolean;
   /** Ordered model ids attempted by fallback orchestration. */
   attemptedModels?: readonly string[];
   /** Per-model fallback attempt outcomes. */

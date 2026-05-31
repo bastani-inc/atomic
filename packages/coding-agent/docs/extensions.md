@@ -1299,7 +1299,8 @@ pi.sendMessage({
   - `"steer"` (default) - Queues the message while streaming. Delivered after the current assistant turn finishes executing its tool calls, before the next LLM call.
   - `"followUp"` - Waits for agent to finish. Delivered only when agent has no more tool calls.
   - `"nextTurn"` - Queued for next user prompt. Does not interrupt or trigger anything.
-- `triggerTurn: true` - If agent is idle, trigger an LLM response immediately. Only applies to `"steer"` and `"followUp"` modes (ignored for `"nextTurn"`).
+  - `"interrupt"` - With `triggerTurn: true`, aborts an active streaming turn and immediately starts a new turn with the custom message. When idle, behaves like a triggered custom message.
+- `triggerTurn: true` - If agent is idle, trigger an LLM response immediately. Required for `"interrupt"`; ignored for `"nextTurn"`.
 
 ### pi.sendUserMessage(content, options?)
 

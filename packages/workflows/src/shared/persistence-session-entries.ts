@@ -55,6 +55,15 @@ export interface StageProgressPayload {
   readonly payload: unknown;
 }
 
+export interface WorkflowChildReplayPayload {
+  readonly alias: string;
+  readonly workflow: string;
+  readonly runId: string;
+  readonly status: "completed";
+  readonly outputs: Record<string, unknown>;
+  readonly rawOutput?: Record<string, unknown>;
+}
+
 export interface StageEndPayload {
   readonly runId: string;
   readonly stageId: string;
@@ -68,6 +77,7 @@ export interface StageEndPayload {
   readonly replayKey?: string;
   readonly replayedFromStageId?: string;
   readonly replayed?: boolean;
+  readonly workflowChild?: WorkflowChildReplayPayload;
 }
 
 export interface RunEndPayload {
@@ -153,6 +163,7 @@ export function appendStageEnd(
     ...(payload.replayKey !== undefined ? { replayKey: payload.replayKey } : {}),
     ...(payload.replayedFromStageId !== undefined ? { replayedFromStageId: payload.replayedFromStageId } : {}),
     ...(payload.replayed !== undefined ? { replayed: payload.replayed } : {}),
+    ...(payload.workflowChild !== undefined ? { workflowChild: payload.workflowChild } : {}),
   });
   if (opts?.emitMessage === true && payload.summary && typeof api.appendCustomMessageEntry === "function") {
     api.appendCustomMessageEntry(

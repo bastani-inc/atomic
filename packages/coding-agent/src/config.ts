@@ -487,7 +487,57 @@ export const ENV_SHARE_VIEWER_URL = `${ENV_PREFIX}_SHARE_VIEWER_URL`;
 export const ENV_CLEAR_ON_SHRINK = `${ENV_PREFIX}_CLEAR_ON_SHRINK`;
 export const ENV_HARDWARE_CURSOR = `${ENV_PREFIX}_HARDWARE_CURSOR`;
 export const ENV_TIMING = `${ENV_PREFIX}_TIMING`;
+export const ENV_CODEX_FAST_MODE = `${ENV_PREFIX}_CODEX_FAST_MODE`;
 export const WORKFLOW_STAGE_SUBAGENT_GUARD_ENV = `${ENV_PREFIX}_WORKFLOW_STAGE_SUBAGENT_GUARD`;
+
+export interface CodexFastModeEnvironmentSettings {
+	chat?: boolean;
+	workflow?: boolean;
+}
+
+function parseCodexFastModeEnvBoolean(value: string | undefined): boolean | undefined {
+	switch (value?.trim().toLowerCase()) {
+		case "1":
+		case "true":
+		case "enabled":
+		case "on":
+			return true;
+		case "0":
+		case "false":
+		case "disabled":
+		case "off":
+			return false;
+		default:
+			return undefined;
+	}
+}
+
+export function serializeCodexFastModeEnvironmentSettings(settings: Required<CodexFastModeEnvironmentSettings>): string {
+	return `chat=${settings.chat ? "1" : "0"};workflow=${settings.workflow ? "1" : "0"}`;
+}
+
+export function parseCodexFastModeEnvironmentSettings(value: string | undefined): CodexFastModeEnvironmentSettings | undefined {
+	if (!value) return undefined;
+	const settings: CodexFastModeEnvironmentSettings = {};
+	for (const part of value.split(/[;,]/)) {
+		const separatorIndex = part.indexOf("=");
+		if (separatorIndex === -1) continue;
+		const key = part.slice(0, separatorIndex).trim();
+		const parsedValue = parseCodexFastModeEnvBoolean(part.slice(separatorIndex + 1));
+		if (parsedValue === undefined) continue;
+		if (key === "chat") settings.chat = parsedValue;
+		if (key === "workflow") settings.workflow = parsedValue;
+	}
+	return settings.chat !== undefined || settings.workflow !== undefined ? settings : undefined;
+}
+
+export function getCodexFastModeEnvironmentSettings(): CodexFastModeEnvironmentSettings | undefined {
+	return parseCodexFastModeEnvironmentSettings(getEnvValue(ENV_CODEX_FAST_MODE));
+}
+
+export function setCodexFastModeEnvironmentSettings(settings: Required<CodexFastModeEnvironmentSettings>): void {
+	setEnvValue(ENV_CODEX_FAST_MODE, serializeCodexFastModeEnvironmentSettings(settings));
+}
 
 export function getEnvNames(name: string): string[] {
 	if (ENV_PREFIX === LEGACY_ENV_PREFIX || !name.startsWith(`${ENV_PREFIX}_`)) return [name];

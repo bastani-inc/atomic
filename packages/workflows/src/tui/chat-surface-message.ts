@@ -147,16 +147,100 @@ export function registerChatSurfaceRenderer(
  * is invoked by pi on every chat re-render with the real chat content
  * width — there's no need for the caller to thread `process.stdout.columns`.
  */
+export interface RenderChatSurfacePlainTextOptions {
+  readonly width?: number;
+  readonly now?: number;
+  readonly theme?: GraphTheme;
+}
+
+/**
+ * Render the full printable fallback stored in pi's custom-message `content`.
+ * The interactive TUI still uses `details` + the registered renderer; this
+ * string is for print mode, transcripts, and any host that cannot mount the
+ * custom component.
+ */
+export function renderChatSurfacePlainText(
+  payload: ChatSurfacePayload,
+  options: RenderChatSurfacePlainTextOptions = {},
+): string {
+  const themed = options.theme === undefined ? {} : { theme: options.theme };
+  const width = options.width;
+  const now = options.now ?? Date.now();
+
+  switch (payload.kind) {
+    case "dispatch": {
+      const rendered = renderDispatchConfirm({
+        workflowName: payload.workflowName,
+        runId: payload.runId,
+        inputs: payload.inputs,
+        width,
+        ...themed,
+      });
+      return [
+        rendered,
+        `run id: ${payload.runId}`,
+        `inputs: ${formatPlainRecord(payload.inputs)}`,
+      ].join("\n");
+    }
+    case "status": {
+      const rendered = renderStatusList(payload.runs, { width, now, ...themed });
+      if (payload.runs.length === 0) return rendered;
+      return [
+        rendered,
+        "",
+        ...payload.runs.map(
+          (run) => `run id: ${run.id} · workflow: ${run.name} · status: ${run.status}`,
+        ),
+      ].join("\n");
+    }
+    case "list": {
+      const rendered = renderWorkflowList(payload.entries, { width, ...themed });
+      if (payload.entries.length === 0) return rendered;
+      return [
+        rendered,
+        "",
+        ...payload.entries.map(formatWorkflowEntryPlain),
+      ].join("\n");
+    }
+    case "detail": {
+      const rendered = renderRunDetail(payload.detail, { width, now, ...themed });
+      const lines = [
+        rendered,
+        `run id: ${payload.detail.runId}`,
+        `inputs: ${formatPlainRecord(payload.detail.inputs)}`,
+      ];
+      if (payload.detail.result !== undefined) {
+        lines.push(`result: ${formatPlainValue(payload.detail.result)}`);
+      }
+      if (payload.detail.error !== undefined) {
+        lines.push(`error: ${payload.detail.error}`);
+      }
+      return lines.join("\n");
+    }
+    case "killed":
+      if (options.theme !== undefined) {
+        return renderWorkflowKilledNotice({
+          width: width ?? 80,
+          theme: options.theme,
+          run: payload.run,
+          previousStatus: payload.previousStatus,
+        }).join("\n");
+      }
+      return renderKilledPlainText(payload);
+  }
+}
+
 export function emitChatSurface(
   pi: ExtensionAPI,
   payload: ChatSurfacePayload,
+  options: { readonly content?: string } = {},
 ): void {
   const send = pi.sendMessage;
   if (typeof send !== "function") return;
-  // `content` is unused by our renderer but pi's message store may surface
-  // it in non-display contexts (e.g. transcript export); pick a short
-  // descriptor per kind so it remains greppable.
-  const content = describePayload(payload);
+  // The renderer consumes `details`, but print/json/transcript surfaces read
+  // the stored `content`. Default to a complete printable rendering so
+  // headless `/workflow list|status|status <id>` is useful without a TUI.
+  const content = options.content ?? renderChatSurfacePlainText(payload);
   (send as unknown as (msg: {
     customType: string;
     content: string;
@@ -174,14 +258,45 @@ export function emitChatSurface(
 // Internals
 // ---------------------------------------------------------------------------
 
-function describePayload(payload: ChatSurfacePayload): string {
-  switch (payload.kind) {
-    case "dispatch": return `dispatched ${payload.workflowName} · ${payload.runId.slice(0, 8)}`;
-    case "status":   return `status · ${payload.runs.length} run${payload.runs.length === 1 ? "" : "s"}`;
-    case "list":     return `workflows · ${payload.entries.length} registered`;
-    case "detail":   return `run detail · ${payload.detail.runId.slice(0, 8)}`;
-    case "killed":   return `workflow killed · ${payload.run.id.slice(0, 8)}`;
-  }
+function formatWorkflowEntryPlain(entry: WorkflowListEntry): string {
+  const required = entry.inputs
+    .filter((input) => input.required === true)
+    .map((input) => input.name);
+  const optional = entry.inputs
+    .filter((input) => input.required !== true)
+    .map((input) => input.name);
+  const inputs = [
+    required.length > 0 ? `required inputs: ${required.join(", ")}` : undefined,
+    optional.length > 0 ? `optional inputs: ${optional.join(", ")}` : undefined,
+  ].filter((part): part is string => part !== undefined);
+  const inputSummary = inputs.length > 0 ? inputs.join(" · ") : "inputs: (none)";
+  return `workflow: ${entry.name} · description: ${entry.description} · ${inputSummary}`;
+}
+
+function renderKilledPlainText(payload: KilledPayload): string {
+  const run = payload.run;
+  const stageCount = run.stages.length;
+  const runningStages = run.stages.filter((stage) => stage.status === "running").length;
+  return [
+    "Workflow killed",
+    `workflow: ${run.name}`,
+    `run id: ${run.id}`,
+    `status: ${payload.previousStatus} → killed`,
+    `active stages: ${runningStages}/${stageCount}`,
+    `inspect: /workflow status ${run.id}`,
+  ].join("\n");
+}
+
+function formatPlainRecord(record: Readonly<Record<string, unknown>>): string {
+  const entries = Object.entries(record);
+  if (entries.length === 0) return "(none)";
+  return entries.map(([key, value]) => `${key}=${formatPlainValue(value)}`).join(", ");
+}
+
+function formatPlainValue(value: unknown): string {
+  if (typeof value === "string") return JSON.stringify(value);
+  const json = JSON.stringify(value);
+  return json === undefined ? String(value) : json;
 }
 
 function makeComponent(
