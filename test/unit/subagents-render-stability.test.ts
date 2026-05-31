@@ -408,6 +408,19 @@ describe("async widget animation ticker lifecycle", () => {
     assert.doesNotMatch(updated, /worker/, "existing mounted component must not be stuck on constructor-captured jobs");
   });
 
+  test("visible async widget remounts when the UI context changes", () => {
+    const first = mockLifecycleWidgetCtx();
+    const second = mockLifecycleWidgetCtx();
+
+    renderWidget(first.ctx, [runningJob()]);
+    renderWidget(second.ctx, [runningJob()]);
+
+    assert.equal(first.widgetCalls.length, 1, "initial context should mount the widget once");
+    assert.equal(second.widgetCalls.length, 1, "fresh UI context should also receive a mounted widget");
+    assert.equal(first.renders(), 0, "context switch should not request an in-place render on the stale context");
+    assert.equal(second.renders(), 0, "context switch should mount rather than request render before mounting");
+  });
+
   test("empty async widget updates unmount once and ignore repeated hidden updates", () => {
     const { ctx, widgetCalls } = mockLifecycleWidgetCtx();
 

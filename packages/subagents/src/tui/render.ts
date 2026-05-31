@@ -973,6 +973,7 @@ interface RenderRequestingContext {
 let latestWidgetCtx: ExtensionContext | undefined;
 let latestWidgetJobs: AsyncJobState[] = [];
 let widgetTimer: ReturnType<typeof setInterval> | undefined;
+let mountedWidgetCtx: ExtensionContext | undefined;
 let widgetMounted = false;
 
 function getLatestWidgetJobs(): AsyncJobState[] {
@@ -986,6 +987,7 @@ function getLatestWidgetExpanded(): boolean {
 function clearLatestWidgetState(): void {
 	latestWidgetCtx = undefined;
 	latestWidgetJobs = [];
+	mountedWidgetCtx = undefined;
 	widgetMounted = false;
 }
 
@@ -1124,6 +1126,7 @@ export function renderWidget(ctx: ExtensionContext, jobs: AsyncJobState[]): void
 		latestWidgetCtx = undefined;
 		latestWidgetJobs = [];
 		if (ctx.hasUI && widgetMounted) ctx.ui.setWidget(WIDGET_KEY, undefined);
+		mountedWidgetCtx = undefined;
 		widgetMounted = false;
 		return;
 	}
@@ -1133,7 +1136,7 @@ export function renderWidget(ctx: ExtensionContext, jobs: AsyncJobState[]): void
 	}
 	latestWidgetCtx = ctx;
 	latestWidgetJobs = [...jobs];
-	if (!widgetMounted) {
+	if (!widgetMounted || mountedWidgetCtx !== ctx) {
 		// belowEditor: the widget animates a running glyph / elapsed labels on a
 		// timer. pi-tui full-clears the screen+scrollback whenever a changed line
 		// sits above the viewport fold, so an aboveEditor widget flickers once the
@@ -1143,6 +1146,7 @@ export function renderWidget(ctx: ExtensionContext, jobs: AsyncJobState[]): void
 		ctx.ui.setWidget(WIDGET_KEY, buildWidgetComponent(getLatestWidgetJobs, getLatestWidgetExpanded), {
 			placement: "belowEditor",
 		});
+		mountedWidgetCtx = ctx;
 		widgetMounted = true;
 	} else {
 		// The mounted widget reads latestWidgetJobs via getLatestWidgetJobs(), so a
