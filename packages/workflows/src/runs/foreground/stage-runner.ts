@@ -10,7 +10,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import {
-  shouldApplyCodexFastMode,
+  shouldApplyCodexFastModeForScope,
   SessionManager,
   type AgentSession,
   type CreateAgentSessionOptions,
@@ -559,16 +559,7 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
     const model = session?.model;
     const settingsManager = sessionSettingsManager ?? stageOptions?.settingsManager;
     if (model === undefined || settingsManager === undefined) return undefined;
-    return shouldApplyCodexFastMode(model, settingsManager.getCodexFastModeSettings(), {
-      kind: "workflow-stage",
-      workflowRunId: runId,
-      workflowStageId: stageId,
-      workflowStageName: stageName,
-      constraints: {
-        disableWorkflowTool: true,
-        maxSubagentDepth: 0,
-      },
-    });
+    return shouldApplyCodexFastModeForScope(model, settingsManager.getCodexFastModeSettings(), "workflow");
   }
 
   function normalizeSessionCreateResult(created: StageSessionRuntime | StageSessionCreateResult): StageSessionCreateResult {

@@ -640,7 +640,10 @@ export class InteractiveMode {
       }),
     );
 
-    // Convert extension commands to SlashCommand format
+    // Convert extension commands to SlashCommand format. Built-in command names
+    // stay reserved even when a built-in is contextually hidden (for example,
+    // /fast without a supported OpenAI model) so extension visibility cannot
+    // change as auth/model state changes.
     const extensionCommands: SlashCommand[] = this.session.extensionRunner
       .getRegisteredCommands()
       .filter((cmd) => !BUILTIN_SLASH_COMMAND_NAMES.has(cmd.name))
@@ -4471,7 +4474,6 @@ export class InteractiveMode {
         {
           onChange: (settings) => {
             this.settingsManager.setCodexFastModeSettings(settings);
-            void this.settingsManager.flush();
             this.showStatus(
               `Codex fast mode: chat ${settings.chat ? "enabled" : "disabled"}, workflow ${settings.workflow ? "enabled" : "disabled"}`,
             );

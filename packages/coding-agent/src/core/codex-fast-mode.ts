@@ -34,11 +34,26 @@ export function getCodexFastModeScope(context: OrchestrationContext | undefined)
 	return isWorkflowStageOrchestrationContext(context) ? "workflow" : "chat";
 }
 
+export function isCodexFastModeEnabledForScope(
+	settings: CodexFastModeResolvedSettings,
+	scope: CodexFastModeScope,
+): boolean {
+	return settings[scope];
+}
+
 export function isCodexFastModeEnabledForSession(
 	settings: CodexFastModeResolvedSettings,
 	context: OrchestrationContext | undefined,
 ): boolean {
-	return settings[getCodexFastModeScope(context)];
+	return isCodexFastModeEnabledForScope(settings, getCodexFastModeScope(context));
+}
+
+export function shouldApplyCodexFastModeForScope(
+	model: Pick<Model<Api>, "provider">,
+	settings: CodexFastModeResolvedSettings,
+	scope: CodexFastModeScope,
+): boolean {
+	return isCodexFastModeSupportedModel(model) && isCodexFastModeEnabledForScope(settings, scope);
 }
 
 export function shouldApplyCodexFastMode(
@@ -46,7 +61,7 @@ export function shouldApplyCodexFastMode(
 	settings: CodexFastModeResolvedSettings,
 	context: OrchestrationContext | undefined,
 ): boolean {
-	return isCodexFastModeSupportedModel(model) && isCodexFastModeEnabledForSession(settings, context);
+	return shouldApplyCodexFastModeForScope(model, settings, getCodexFastModeScope(context));
 }
 
 export function withCodexFastModeStreamOptions(
@@ -67,8 +82,8 @@ function isObjectPayload(payload: unknown): payload is Record<string, unknown> {
 	return typeof payload === "object" && payload !== null && !Array.isArray(payload);
 }
 
-export function withCodexFastModePayload(payload: unknown, enabled = false): unknown {
-	if (!enabled || !isObjectPayload(payload) || "service_tier" in payload) {
+export function withCodexFastModePayload(payload: unknown, enabled: boolean): unknown {
+	if (!enabled || !isObjectPayload(payload) || payload.service_tier !== undefined) {
 		return payload;
 	}
 

@@ -4,8 +4,10 @@ import {
 	CODEX_FAST_MODE_SERVICE_TIER,
 	getCodexFastModeScope,
 	hasSupportedCodexFastModeModel,
+	isCodexFastModeEnabledForScope,
 	isCodexFastModeEnabledForSession,
 	isCodexFastModeSupportedProvider,
+	shouldApplyCodexFastModeForScope,
 	withCodexFastModePayload,
 	withCodexFastModeStreamOptions,
 } from "../src/core/codex-fast-mode.ts";
@@ -43,9 +45,13 @@ describe("codex fast mode helpers", () => {
 	it("selects chat versus workflow scope from orchestration context", () => {
 		expect(getCodexFastModeScope(undefined)).toBe("chat");
 		expect(getCodexFastModeScope(workflowContext)).toBe("workflow");
+		expect(isCodexFastModeEnabledForScope({ chat: true, workflow: false }, "chat")).toBe(true);
+		expect(isCodexFastModeEnabledForScope({ chat: true, workflow: false }, "workflow")).toBe(false);
 		expect(isCodexFastModeEnabledForSession({ chat: true, workflow: false }, undefined)).toBe(true);
 		expect(isCodexFastModeEnabledForSession({ chat: true, workflow: false }, workflowContext)).toBe(false);
 		expect(isCodexFastModeEnabledForSession({ chat: false, workflow: true }, workflowContext)).toBe(true);
+		expect(shouldApplyCodexFastModeForScope(model("openai"), { chat: false, workflow: true }, "workflow")).toBe(true);
+		expect(shouldApplyCodexFastModeForScope(model("github-copilot"), { chat: false, workflow: true }, "workflow")).toBe(false);
 	});
 
 	it("adds serviceTier to stream options only when enabled", () => {
@@ -60,12 +66,14 @@ describe("codex fast mode helpers", () => {
 	it("adds service_tier to object payloads without overwriting existing values", () => {
 		expect(withCodexFastModePayload("not-object", true)).toBe("not-object");
 		expect(withCodexFastModePayload(["array"], true)).toEqual(["array"]);
-		expect(withCodexFastModePayload({ model: "gpt" })).toEqual({ model: "gpt" });
 		expect(withCodexFastModePayload({ model: "gpt" }, false)).toEqual({ model: "gpt" });
 		expect(withCodexFastModePayload({ model: "gpt" }, true)).toEqual({
 			model: "gpt",
 			service_tier: CODEX_FAST_MODE_SERVICE_TIER,
 		});
 		expect(withCodexFastModePayload({ service_tier: "default" }, true)).toEqual({ service_tier: "default" });
+		expect(withCodexFastModePayload({ service_tier: undefined }, true)).toEqual({
+			service_tier: CODEX_FAST_MODE_SERVICE_TIER,
+		});
 	});
 });

@@ -9,7 +9,7 @@
 ### Fixed
 
 - Fixed `/fast` persistence so existing project-level fast-mode overrides are updated alongside global settings instead of masking the newly selected chat or workflow fast-mode state ([#1134](https://github.com/flora131/atomic/issues/1134)).
-- Made the Codex fast-mode payload helper safe-by-default when called without an explicit enabled flag ([#1134](https://github.com/flora131/atomic/issues/1134)).
+- Made Codex fast-mode request helpers require an explicit enabled flag and treat `service_tier: undefined` as unset when preparing OpenAI payloads ([#1134](https://github.com/flora131/atomic/issues/1134)).
 
 ## [0.8.21] - 2026-05-30
 

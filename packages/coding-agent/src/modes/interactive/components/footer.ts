@@ -218,8 +218,8 @@ export class FooterComponent implements Component {
     const pwd = replaceHome(this.session.sessionManager.getCwd());
 
     const modelName = state.model?.id || "no-model";
-    const fastModeSettings = this.session.settingsManager?.getCodexFastModeSettings?.();
-    const fastModeEnabled = state.model && fastModeSettings
+    const fastModeSettings = this.session.settingsManager.getCodexFastModeSettings();
+    const fastModeEnabled = state.model
       ? shouldApplyCodexFastMode(
           state.model,
           fastModeSettings,

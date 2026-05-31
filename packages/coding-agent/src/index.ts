@@ -76,9 +76,11 @@ export {
 	formatCodexFastModeModelLabel,
 	getCodexFastModeScope,
 	hasSupportedCodexFastModeModel,
+	isCodexFastModeEnabledForScope,
 	isCodexFastModeSupportedModel,
 	isCodexFastModeSupportedProvider,
 	shouldApplyCodexFastMode,
+	shouldApplyCodexFastModeForScope,
 	type CodexFastModeResolvedSettings,
 	type CodexFastModeScope,
 } from "./core/codex-fast-mode.ts";
