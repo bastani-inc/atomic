@@ -26,6 +26,10 @@ Use `/logout` to clear credentials. Tokens are stored in `~/.atomic/agent/auth.j
 - Requires ChatGPT Plus or Pro subscription
 - Officially endorsed by OpenAI: [Codex for OSS](https://developers.openai.com/community/codex-for-oss)
 
+### Codex Fast Mode
+
+Run `/fast` in interactive mode to enable OpenAI priority service tier separately for normal chat and workflow-stage sessions. The command is shown only when the current model scope includes a supported `openai/*` or `openai-codex/*` model. When enabled for the active supported model, the UI appends `fast` after the model name in the chat footer and workflow stage model labels. Fast mode intentionally does not apply to `github-copilot/*`, Azure OpenAI, OpenRouter, or custom OpenAI-compatible providers.
+
 ### Claude Pro/Max
 
 Anthropic subscription auth is active for Claude Pro/Max accounts. Third-party harness usage draws from [extra usage](https://claude.ai/settings/usage) and is billed per token, not against Claude plan limits.

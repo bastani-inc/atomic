@@ -54,6 +54,7 @@ import {
   CHANGELOG_URL,
   ENV_OFFLINE,
   getEnvValue,
+  setCodexFastModeEnvironmentSettings,
   getAgentDir,
   getAuthPath,
   getDebugLogPath,
@@ -95,6 +96,11 @@ import {
   findExactModelReferenceMatch,
   resolveModelScope,
 } from "../../core/model-resolver.ts";
+import {
+  formatCodexFastModeModelLabel,
+  hasSupportedCodexFastModeModel,
+  shouldApplyCodexFastMode,
+} from "../../core/codex-fast-mode.ts";
 import { configureHttpDispatcher } from "../../core/http-dispatcher.ts";
 import { DefaultPackageManager } from "../../core/package-manager.ts";
 import { BUILT_IN_PROVIDER_DISPLAY_NAMES } from "../../core/provider-display-names.ts";
@@ -152,6 +158,7 @@ import { EarendilAnnouncementComponent } from "./components/earendil-announcemen
 import { ExtensionEditorComponent } from "./components/extension-editor.ts";
 import { ExtensionInputComponent } from "./components/extension-input.ts";
 import { ExtensionSelectorComponent } from "./components/extension-selector.ts";
+import { FastModeSelectorComponent } from "./components/fast-mode-selector.ts";
 import { FooterComponent, UsageMeterComponent } from "./components/footer.ts";
 import {
   formatKeyText,
@@ -252,6 +259,10 @@ function isDeadTerminalError(error: unknown): boolean {
 
 const ANTHROPIC_SUBSCRIPTION_AUTH_WARNING =
   "Anthropic subscription auth is active. Third-party harness usage draws from extra usage and is billed per token, not your Claude plan limits. Manage extra usage at https://claude.ai/settings/usage.";
+
+const BUILTIN_SLASH_COMMAND_NAMES = new Set(
+  BUILTIN_SLASH_COMMANDS.map((command) => command.name),
+);
 
 function isAnthropicSubscriptionAuthKey(apiKey: string | undefined): boolean {
   return typeof apiKey === "string" && apiKey.startsWith("sk-ant-oat");
@@ -542,12 +553,9 @@ export class InteractiveMode {
   private getBuiltInCommandConflictDiagnostics(
     extensionRunner: ExtensionRunner,
   ): ResourceDiagnostic[] {
-    const builtinNames = new Set(
-      BUILTIN_SLASH_COMMANDS.map((command) => command.name),
-    );
     return extensionRunner
       .getRegisteredCommands()
-      .filter((command) => builtinNames.has(command.name))
+      .filter((command) => BUILTIN_SLASH_COMMAND_NAMES.has(command.name))
       .map((command) => ({
         type: "warning" as const,
         message:
@@ -558,15 +566,31 @@ export class InteractiveMode {
       }));
   }
 
+  private getCodexFastModeCandidateModels(): Model<Api>[] {
+    if (this.session.scopedModels.length > 0) {
+      return this.session.scopedModels
+        .map((scoped) => scoped.model)
+        .filter((model) => this.session.modelRegistry.hasConfiguredAuth(model));
+    }
+
+    return this.session.modelRegistry.getAvailable();
+  }
+
+  private hasCodexFastModeSupportedModels(): boolean {
+    return hasSupportedCodexFastModeModel(
+      this.getCodexFastModeCandidateModels(),
+    );
+  }
+
   private createBaseAutocompleteProvider(): AutocompleteProvider {
     // Define commands for autocomplete
-    const slashCommands: SlashCommand[] = BUILTIN_SLASH_COMMANDS.map(
-      (command) => ({
-        name: command.name,
-        description: command.description,
-        getArgumentCompletions: command.getArgumentCompletions,
-      }),
-    );
+    const slashCommands: SlashCommand[] = BUILTIN_SLASH_COMMANDS.filter(
+      (command) => command.name !== "fast" || this.hasCodexFastModeSupportedModels(),
+    ).map((command) => ({
+      name: command.name,
+      description: command.description,
+      getArgumentCompletions: command.getArgumentCompletions,
+    }));
 
     const modelCommand = slashCommands.find(
       (command) => command.name === "model",
@@ -619,11 +643,13 @@ export class InteractiveMode {
       }),
     );
 
-    // Convert extension commands to SlashCommand format
-    const builtinCommandNames = new Set(slashCommands.map((c) => c.name));
+    // Convert extension commands to SlashCommand format. Built-in command names
+    // stay reserved even when a built-in is contextually hidden (for example,
+    // /fast without a supported OpenAI model) so extension visibility cannot
+    // change as auth/model state changes.
     const extensionCommands: SlashCommand[] = this.session.extensionRunner
       .getRegisteredCommands()
-      .filter((cmd) => !builtinCommandNames.has(cmd.name))
+      .filter((cmd) => !BUILTIN_SLASH_COMMAND_NAMES.has(cmd.name))
       .map((cmd) => ({
         name: cmd.invocationName,
         description: this.prefixAutocompleteDescription(
@@ -1065,6 +1091,26 @@ export class InteractiveMode {
     return this.formatDisplayPath(absolutePath);
   }
 
+  private getStartupModelLabel(): string {
+    const model = this.session.state.model;
+    let modelLabel = model?.id ?? "no-model";
+
+    if (model?.reasoning) {
+      modelLabel = `${modelLabel} ${this.session.thinkingLevel || "off"}`;
+    }
+
+    if (!model) {
+      return modelLabel;
+    }
+
+    const fastModeEnabled = shouldApplyCodexFastMode(
+      model,
+      this.session.settingsManager.getCodexFastModeSettings(),
+      this.session.orchestrationContext,
+    );
+    return formatCodexFastModeModelLabel(modelLabel, fastModeEnabled);
+  }
+
   private getStartupIdentityText(): string {
     const appLabel = APP_NAME.length > 0
       ? `${APP_NAME[0]!.toUpperCase()}${APP_NAME.slice(1)}`
@@ -1072,8 +1118,7 @@ export class InteractiveMode {
     const title = `${theme.bold(theme.fg("text", appLabel))} ${theme.fg("muted", `v${this.version}`)}`;
     const model = this.session.state.model;
     const provider = model ? theme.fg("dim", `(${model.provider})`) : theme.fg("dim", "(no-provider)");
-    const thinking = model?.reasoning ? ` ${this.session.thinkingLevel || "off"}` : "";
-    const modelLine = `${provider} ${theme.fg("muted", `${model?.id ?? "no-model"}${thinking}`)}`;
+    const modelLine = `${provider} ${theme.fg("muted", this.getStartupModelLabel())}`;
     const cwd = theme.fg("muted", this.formatDisplayPath(this.sessionManager.getCwd()));
     const metaLines = [title, modelLine, cwd];
     const markLines = this.getAtomicAnsiMarkLines();
@@ -2999,6 +3044,11 @@ export class InteractiveMode {
         this.editor.setText("");
         return;
       }
+      if (text === "/fast") {
+        this.editor.setText("");
+        this.showFastModeSelector();
+        return;
+      }
       if (text === "/scoped-models") {
         this.editor.setText("");
         await this.showModelsSelector();
@@ -4432,6 +4482,43 @@ export class InteractiveMode {
     this.ui.requestRender();
   }
 
+  private showFastModeSelector(): void {
+    if (!this.hasCodexFastModeSupportedModels()) {
+      this.showWarning(
+        "Codex fast mode requires an available openai/* or openai-codex/* model.",
+      );
+      return;
+    }
+
+    this.showSelector((done) => {
+      let pendingStatusMessage: string | undefined;
+      const selector = new FastModeSelectorComponent(
+        this.settingsManager.getCodexFastModeSettings(),
+        {
+          onChange: (settings, changedRow) => {
+            this.settingsManager.setCodexFastModeSettings({ [changedRow]: settings[changedRow] });
+            const effectiveSettings = this.settingsManager.getCodexFastModeSettings();
+            setCodexFastModeEnvironmentSettings(effectiveSettings);
+            this.footer.invalidate();
+            this.refreshBuiltInHeader();
+            const changedLabel = changedRow === "chat" ? "Chat" : "Workflow";
+            const changedState = effectiveSettings[changedRow] ? "on" : "off";
+            pendingStatusMessage = `${changedLabel} fast mode ${changedState}`;
+          },
+          onCancel: async () => {
+            await this.settingsManager.flush();
+            done();
+            if (pendingStatusMessage) {
+              this.showStatus(pendingStatusMessage);
+            }
+            this.ui.requestRender();
+          },
+        },
+      );
+      return { component: selector, focus: selector };
+    });
+  }
+
   private showSettingsSelector(): void {
     this.showSelector((done) => {
       const selector = new SettingsSelectorComponent(
@@ -4781,6 +4868,7 @@ export class InteractiveMode {
         this.session.setScopedModels([]);
       }
       await this.updateAvailableProviderCount();
+      this.setupAutocompleteProvider();
       this.ui.requestRender();
     };
 
@@ -5250,6 +5338,7 @@ export class InteractiveMode {
             this.session.modelRegistry.authStorage.logout(providerOption.id);
             this.session.modelRegistry.refresh();
             await this.updateAvailableProviderCount();
+            this.setupAutocompleteProvider();
             const message =
               providerOption.authType === "oauth"
                 ? `Logged out of ${providerOption.name}`
@@ -5315,6 +5404,7 @@ export class InteractiveMode {
     }
 
     await this.updateAvailableProviderCount();
+    this.setupAutocompleteProvider();
     this.footer.invalidate();
     this.updateEditorBorderColor();
     if (selectedModel) {

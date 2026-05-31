@@ -162,6 +162,9 @@ function fakeFooterAgentSession(isStreaming = false): AgentSession {
     modelRegistry: {
       isUsingOAuth: () => false,
     },
+    settingsManager: {
+      getCodexFastModeSettings: () => ({ chat: false, workflow: false }),
+    },
     getContextUsage: () => ({ tokens: 46800, contextWindow: 200000, percent: 23.4 }),
     isStreaming,
   } as unknown as AgentSession;

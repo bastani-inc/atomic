@@ -21,6 +21,7 @@ import { createRegistry } from "../../packages/workflows/src/workflows/registry.
 import { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { renderResult } from "../../packages/workflows/src/extension/render-result.js";
+import { NON_INTERACTIVE_WORKFLOW_POLICY } from "../../packages/workflows/src/shared/types.js";
 import type { WorkflowDefinition, WorkflowPersistencePort } from "../../packages/workflows/src/shared/types.js";
 import type { CreateAgentSessionOptions } from "@bastani/atomic";
 import type { StageAdapters, StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
@@ -214,6 +215,96 @@ describe("runtime.runDirect — workflow intercom", () => {
     assert.equal(result.status, "failed");
     assert.match(result.error ?? "", /missing\/model \(not available\)/);
     assert.equal(activeStore.runs().length, 0);
+  });
+
+  test("non-interactive async direct single task awaits a terminal completed result", async () => {
+    const activeStore = createStore();
+    const seenModes: Array<string | undefined> = [];
+    const runtime = createExtensionRuntime({
+      store: activeStore,
+      adapters: {
+        prompt: {
+          async prompt(text, meta) {
+            seenModes.push(meta?.executionMode);
+            return `done:${text}`;
+          },
+        },
+      },
+    });
+
+    const result = await runtime.runDirect(
+      {
+        async: true,
+        task: { name: "solo", task: "inspect solo" },
+      },
+      { policy: NON_INTERACTIVE_WORKFLOW_POLICY },
+    );
+
+    assert.equal(result.status, "completed");
+    assert.equal(result.mode, "single");
+    assert.equal(result.progress?.completed, 1);
+    assert.equal(result.progress?.total, 1);
+    assert.equal(result.results?.[0]?.stageName, "solo");
+    assert.deepEqual(seenModes, ["non_interactive"]);
+    assert.ok(result.runId !== undefined);
+    assert.equal(activeStore.runs().find((run) => run.id === result.runId)?.status, "completed");
+  });
+
+  test("non-interactive async direct single task returns failed instead of accepted", async () => {
+    const runtime = createExtensionRuntime({
+      adapters: {
+        prompt: {
+          async prompt() {
+            throw new Error("intentional direct failure");
+          },
+        },
+      },
+    });
+
+    const result = await runtime.runDirect(
+      {
+        async: true,
+        task: { name: "solo", task: "inspect solo" },
+      },
+      { policy: NON_INTERACTIVE_WORKFLOW_POLICY },
+    );
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.mode, "single");
+    assert.match(result.error ?? "", /intentional direct failure/);
+  });
+
+  test("non-interactive async direct parallel waits for every task", async () => {
+    const prompts: string[] = [];
+    const runtime = createExtensionRuntime({
+      adapters: {
+        prompt: {
+          async prompt(text) {
+            prompts.push(text);
+            await new Promise((resolve) => setTimeout(resolve, text.includes("alpha") ? 20 : 5));
+            return `done:${text}`;
+          },
+        },
+      },
+    });
+
+    const result = await runtime.runDirect(
+      {
+        async: true,
+        tasks: [
+          { name: "alpha", task: "inspect alpha" },
+          { name: "beta", task: "inspect beta" },
+        ],
+      },
+      { policy: NON_INTERACTIVE_WORKFLOW_POLICY },
+    );
+
+    assert.equal(result.status, "completed");
+    assert.equal(result.mode, "parallel");
+    assert.equal(result.progress?.completed, 2);
+    assert.equal(result.progress?.total, 2);
+    assert.deepEqual(result.results?.map((item) => item.stageName), ["alpha", "beta"]);
+    assert.deepEqual(new Set(prompts), new Set(["inspect alpha", "inspect beta"]));
   });
 
   test("foreground direct single forwards top-level createAgentSession options", async () => {

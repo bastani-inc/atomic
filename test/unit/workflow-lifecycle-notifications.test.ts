@@ -11,6 +11,7 @@ import {
   resetWorkflowLifecycleNotificationState,
   seedWorkflowLifecycleNotificationState,
   withWorkflowLifecycleNotificationsSuppressed,
+  withWorkflowLifecycleNotificationsSuppressedAsync,
   type WorkflowLifecycleNoticeDetails,
 } from "../../packages/workflows/src/extension/lifecycle-notifications.js";
 import { restoreOnSessionStart, type SessionEntry } from "../../packages/workflows/src/shared/persistence-restore.js";
@@ -377,6 +378,46 @@ describe("installWorkflowLifecycleNotifications", () => {
     store.recordRunEnd("run-live", "failed", undefined, "live failure");
 
     assert.deepEqual(sent.map((message) => message.details?.runId), ["run-live"]);
+  });
+
+  test("async suppression stays active until the awaited operation settles", async () => {
+    const store = createStore();
+    const state = createWorkflowLifecycleNotificationState();
+    const sent: SentMessage[] = [];
+    installWorkflowLifecycleNotifications({
+      store,
+      config,
+      state,
+      sendMessage(message) { sent.push(message as SentMessage); },
+    });
+
+    startRun(store, "run-async-suppressed", "async suppressed");
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const suppressed = withWorkflowLifecycleNotificationsSuppressedAsync(
+      state,
+      async () => {
+        await gate;
+        return "done";
+      },
+    );
+
+    assert.equal(state.suppressionDepth, 1);
+    assert.equal(store.recordRunEnd("run-async-suppressed", "completed", {}), true);
+    assert.equal(sent.length, 0);
+
+    release();
+    assert.equal(await suppressed, "done");
+    assert.equal(state.suppressionDepth, 0);
+
+    store.recordNotice({ id: "after-async-suppression", level: "info", message: "tick", createdAt: 13 });
+    assert.equal(sent.length, 0, "suppressed terminal notice should remain marked delivered");
+
+    startRun(store, "run-after-async-suppression", "after async suppression");
+    store.recordRunEnd("run-after-async-suppression", "completed", {});
+    assert.deepEqual(sent.map((message) => message.details?.runId), ["run-after-async-suppression"]);
   });
 
   test("escapes workflow names and structured response ids in notice text", () => {

@@ -20,17 +20,19 @@
  *   const result = await discoverWorkflows({ cwd: process.cwd(), homeDir: os.homedir() });
  */
 
-import { existsSync } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
-import { createRequire } from "node:module";
 import { join, resolve, extname, isAbsolute } from "node:path";
-import { CONFIG_DIR_NAMES, getProjectConfigPaths, isBunBinary } from "@bastani/atomic";
-import { createJiti } from "jiti/static";
+import { CONFIG_DIR_NAMES, getProjectConfigPaths } from "@bastani/atomic";
 import type { WorkflowDefinition } from "../shared/types.js";
-import * as workflowsSdkSurface from "../sdk-surface.js";
+import { validateWorkflowImportGraph } from "../workflows/import-resolver.js";
 import { createRegistry } from "../workflows/registry.js";
 import type { WorkflowRegistry } from "../workflows/registry.js";
 import * as bundledManifest from "../../builtin/index.js";
+import {
+  collectWorkflowModuleCandidates,
+  loadWorkflowModule,
+  validateWorkflowDefinitionShape as validateDefinitionShape,
+} from "./workflow-module-loader.js";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -78,8 +80,9 @@ export type DiagnosticLevel = "error" | "warn";
 
 /**
  * A diagnostic emitted during discovery.
- * Errors indicate a definition was rejected; warnings indicate a recoverable
- * condition (e.g. a duplicate that was skipped).
+ * Errors indicate a definition was rejected or a registered workflow has an
+ * invalid import graph; warnings indicate a recoverable condition (e.g. a
+ * duplicate that was skipped).
  *
  * Codes:
  *   INVALID_DEFINITION — failed structural validation
@@ -87,6 +90,9 @@ export type DiagnosticLevel = "error" | "warn";
  *   IMPORT_FAILED      — dynamic import of a workflow file threw
  *   PATH_NOT_FOUND     — a config-specified path does not exist
  *   CONFIG_INVALID     — DiscoveryConfig has an invalid structure
+ *   IMPORT_UNRESOLVED  — declared workflow import could not be resolved
+ *   IMPORT_CIRCULAR    — declared workflow imports contain a cycle
+ *   IMPORT_INVALID     — declared import or imported workflow is invalid
  */
 export interface DiscoveryDiagnostic {
   readonly level: DiagnosticLevel;
@@ -95,7 +101,10 @@ export interface DiscoveryDiagnostic {
     | "DUPLICATE_NAME"
     | "IMPORT_FAILED"
     | "PATH_NOT_FOUND"
-    | "CONFIG_INVALID";
+    | "CONFIG_INVALID"
+    | "IMPORT_UNRESOLVED"
+    | "IMPORT_CIRCULAR"
+    | "IMPORT_INVALID";
   readonly message: string;
   /** Export key, workflow name, or file path associated with this diagnostic. */
   readonly source?: string;
@@ -148,37 +157,13 @@ export interface DiscoveryResult {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Validate a candidate value as a WorkflowDefinition by shape only.
- *
- * Discovery intentionally does not invoke workflow run functions: user-authored
- * run bodies may perform filesystem, network, or other side effects before the
- * first ctx.stage()/ctx.task()/ctx.chain()/ctx.parallel() call. Runtime empty
- * graph validation remains the authoritative guard that a workflow creates at
- * least one stage when it is actually invoked.
- *
- * Returns null when valid, or a human-readable rejection reason string.
- */
-function validateDefinitionShape(value: unknown): string | null {
-  if (value === null || typeof value !== "object") {
-    return "export is not an object";
-  }
-  const d = value as Record<string, unknown>;
-
-  if (d["__piWorkflow"] !== true) {
-    return "missing or incorrect __piWorkflow sentinel (expected true)";
-  }
-  if (typeof d["name"] !== "string" || (d["name"] as string).trim().length === 0) {
-    return "name must be a non-empty string";
-  }
-  if (typeof d["normalizedName"] !== "string" || (d["normalizedName"] as string).trim().length === 0) {
-    return "normalizedName must be a non-empty string";
-  }
-  if (typeof d["run"] !== "function") {
-    return "run must be a function";
-  }
-  return null;
-}
+type WorkflowModuleCandidateRecord = {
+  readonly value: unknown;
+  readonly exportKey: string;
+  readonly kind: DiscoveryKind;
+  readonly filePath?: string;
+  readonly configuredName?: string;
+};
 
 /**
  * Validate DiscoveryConfig shape.
@@ -211,7 +196,7 @@ function validateConfig(config: unknown): string | null {
 
 /** Merge a batch of candidates into registry state, first-seen wins. */
 async function applyBatch(
-  candidates: Array<{ value: unknown; exportKey: string; kind: DiscoveryKind; filePath?: string; configuredName?: string }>,
+  candidates: WorkflowModuleCandidateRecord[],
   registry: WorkflowRegistry,
   sources: DiscoverySource[],
   diagnostics: DiscoveryDiagnostic[],
@@ -255,7 +240,7 @@ async function applyBatch(
 
 /** Merge bundled startup candidates with shape-only validation to keep startup seeding synchronous. */
 function applyBatchShapeOnly(
-  candidates: Array<{ value: unknown; exportKey: string; kind: DiscoveryKind; filePath?: string; configuredName?: string }>,
+  candidates: WorkflowModuleCandidateRecord[],
   registry: WorkflowRegistry,
   sources: DiscoverySource[],
   diagnostics: DiscoveryDiagnostic[],
@@ -312,98 +297,11 @@ async function scanWorkflowDir(dir: string): Promise<string[] | null> {
   }
 }
 
-/** Dynamically import a file and extract all WorkflowDefinition candidates.
- *
- * Strategy: try the default export first, then every named export.
- * Both are collected — a file may export multiple workflow definitions.
- * jiti loads package-authored .ts/.js/.mjs/.cjs files with the same
- * @bastani/workflows authoring import that project/user workflow files use.
- */
-type RunWorkflowFunction = typeof import("../runs/shared/workflow-runner.js").runWorkflow;
-
-const runWorkflow: RunWorkflowFunction = async (...args) => {
-  const { runWorkflow: actualRunWorkflow } = await import("../runs/shared/workflow-runner.js");
-  return actualRunWorkflow(...args);
-};
-
-const require = createRequire(import.meta.url);
-const WORKFLOWS_MODULE_SPECIFIER = "@bastani/workflows";
-// Keep this in sync with index.ts through sdk-surface.ts. runWorkflow stays as
-// a lazy wrapper because the public re-export comes from workflow-runner.ts,
-// which imports this discovery module and would otherwise reintroduce a cycle.
-const WORKFLOWS_SDK_MODULE: Record<string, unknown> = {
-  ...workflowsSdkSurface,
-  runWorkflow,
-};
-const WORKFLOWS_VIRTUAL_MODULES: Record<string, unknown> = {
-  [WORKFLOWS_MODULE_SPECIFIER]: WORKFLOWS_SDK_MODULE,
-};
-
-function resolveWorkflowsSdkAlias(): string {
-  // Resolve the package self-reference through package.json exports instead of
-  // pinning discovery.ts to the current src/extension -> src/index.ts layout.
-  const sdkEntry = require.resolve(WORKFLOWS_MODULE_SPECIFIER);
-  if (!existsSync(sdkEntry)) {
-    throw new Error(
-      `Unable to resolve ${WORKFLOWS_MODULE_SPECIFIER} SDK entry at ${sdkEntry}. ` +
-        "Check the package exports map for the workflows SDK entry.",
-    );
-  }
-  return sdkEntry;
-}
-
-const workflowModuleLoader = createJiti(import.meta.url, {
-  moduleCache: false,
-  // Keep workflow-file import semantics deterministic: jiti owns .ts/.js/.mjs/.cjs
-  // resolution instead of handing some imports back to native import().
-  tryNative: false,
-  ...(isBunBinary
-    ? { virtualModules: WORKFLOWS_VIRTUAL_MODULES }
-    : { alias: { [WORKFLOWS_MODULE_SPECIFIER]: resolveWorkflowsSdkAlias() } }),
-});
-
-function materializeModuleObject(mod: object): Record<string, unknown> {
-  const materialized: Record<string, unknown> = {};
-
-  // jiti's callable API can return an interop namespace proxy. Its own property
-  // descriptors contain the authored export values, but property access may apply
-  // default-export conveniences (and even expose a throwing inherited `then`
-  // getter for `export default null`). Copy own descriptors into a plain object
-  // so candidate collection sees the exact authored exports.
-  for (const key of Object.getOwnPropertyNames(mod)) {
-    const descriptor = Object.getOwnPropertyDescriptor(mod, key);
-    if (descriptor === undefined) continue;
-
-    const value = "value" in descriptor ? descriptor.value : descriptor.get?.call(mod);
-    Object.defineProperty(materialized, key, {
-      value,
-      enumerable: descriptor.enumerable,
-      configurable: true,
-      writable: true,
-    });
-  }
-
-  return materialized;
-}
-
-function normalizeWorkflowModule(mod: unknown): Record<string, unknown> {
-  if (mod !== null && typeof mod === "object") {
-    return materializeModuleObject(mod);
-  }
-  // CJS/default interop can return the exported value directly; wrap it so the
-  // candidate collector can handle it the same way as an ESM default export.
-  return { default: mod };
-}
-
-function loadWorkflowModule(filePath: string): Record<string, unknown> {
-  return normalizeWorkflowModule(workflowModuleLoader(filePath));
-}
-
 async function importWorkflowFile(
   filePath: string,
   kind: DiscoveryKind,
   diagnostics: DiscoveryDiagnostic[],
-): Promise<Array<{ value: unknown; exportKey: string; kind: DiscoveryKind; filePath: string }>> {
+): Promise<WorkflowModuleCandidateRecord[]> {
   let mod: Record<string, unknown>;
   try {
     mod = loadWorkflowModule(filePath);
@@ -417,22 +315,11 @@ async function importWorkflowFile(
     return [];
   }
 
-  const candidates: Array<{ value: unknown; exportKey: string; kind: DiscoveryKind; filePath: string }> = [];
-
-  // Default export first (RFC §5.12: check mod.default before named exports)
-  if ("default" in mod && mod["default"] !== undefined) {
-    candidates.push({ value: mod["default"], exportKey: "default", kind, filePath });
-  }
-
-  // Then all named exports (a file may export multiple workflow definitions)
-  for (const [key, val] of Object.entries(mod)) {
-    if (key === "default") continue;
-    if (val !== undefined) {
-      candidates.push({ value: val, exportKey: key, kind, filePath });
-    }
-  }
-
-  return candidates;
+  return collectWorkflowModuleCandidates(mod).map((candidate) => ({
+    ...candidate,
+    kind,
+    filePath,
+  }));
 }
 
 /** Load workflows from a scanned directory. */
@@ -440,11 +327,11 @@ async function loadFromDir(
   dir: string,
   kind: DiscoveryKind,
   diagnostics: DiscoveryDiagnostic[],
-): Promise<Array<{ value: unknown; exportKey: string; kind: DiscoveryKind; filePath: string }>> {
+): Promise<WorkflowModuleCandidateRecord[]> {
   const files = await scanWorkflowDir(dir);
   if (files === null) return [];
 
-  const all: Array<{ value: unknown; exportKey: string; kind: DiscoveryKind; filePath: string }> = [];
+  const all: WorkflowModuleCandidateRecord[] = [];
   for (const filePath of files) {
     const candidates = await importWorkflowFile(filePath, kind, diagnostics);
     all.push(...candidates);
@@ -458,8 +345,8 @@ async function loadFromPaths(
   kind: DiscoveryKind,
   baseCwd: string,
   diagnostics: DiscoveryDiagnostic[],
-): Promise<Array<{ value: unknown; exportKey: string; kind: DiscoveryKind; filePath: string; configuredName?: string }>> {
-  const all: Array<{ value: unknown; exportKey: string; kind: DiscoveryKind; filePath: string; configuredName?: string }> = [];
+): Promise<WorkflowModuleCandidateRecord[]> {
+  const all: WorkflowModuleCandidateRecord[] = [];
 
   // Normalise to [ { rawPath, configuredName? } ] regardless of input shape
   const entries: Array<{ rawPath: string; configuredName?: string }> = Array.isArray(pathsOrMap)
@@ -606,6 +493,10 @@ export async function discoverWorkflows(
     }
   }
 
+  for (const diagnostic of validateWorkflowImportGraph({ registry, cwd, sources })) {
+    diagnostics.push(diagnostic);
+  }
+
   return { registry, sources, errors: diagnostics };
 }
 
@@ -626,10 +517,10 @@ async function defaultHomeDir(): Promise<string> {
  * Duplicate policy: first-seen wins (insertion order of the manifest export).
  */
 export function discoverStartupWorkflowsSync(): DiscoveryResult {
-  return discoverBundledManifest();
+  return discoverBundledManifest({ validateImports: true });
 }
 
-function discoverBundledManifest(): DiscoveryResult {
+function discoverBundledManifest(options: { validateImports?: boolean } = {}): DiscoveryResult {
   const manifest = bundledManifest as Record<string, unknown>;
   const diagnostics: DiscoveryDiagnostic[] = [];
   const sources: DiscoverySource[] = [];
@@ -642,6 +533,11 @@ function discoverBundledManifest(): DiscoveryResult {
   }));
 
   registry = applyBatchShapeOnly(candidates, registry, sources, diagnostics);
+  if (options.validateImports === true) {
+    for (const diagnostic of validateWorkflowImportGraph({ registry, sources })) {
+      diagnostics.push(diagnostic);
+    }
+  }
 
   return { registry, sources, errors: diagnostics };
 }

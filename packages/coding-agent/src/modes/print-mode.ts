@@ -8,6 +8,8 @@
 
 import type { AssistantMessage, ImageContent } from "@earendil-works/pi-ai";
 import type { AgentSessionRuntime } from "../core/agent-session-runtime.ts";
+import type { ExtensionError } from "../core/extensions/index.ts";
+import type { CustomMessage } from "../core/messages.ts";
 import { flushRawStdout, writeRawStdout } from "../core/output-guard.ts";
 import { killTrackedDetachedChildren } from "../utils/shell.ts";
 
@@ -25,6 +27,26 @@ export interface PrintModeOptions {
 	initialImages?: ImageContent[];
 }
 
+function isCommandExtensionError(error: ExtensionError): boolean {
+	return error.event === "command" || error.extensionPath.startsWith("command:");
+}
+
+function displayableCustomText(message: CustomMessage): string | undefined {
+	if (message.display !== true) return undefined;
+	if (typeof message.content === "string") return message.content;
+
+	let text = "";
+	let hasTextPart = false;
+	for (const part of message.content) {
+		if (part.type === "text") {
+			hasTextPart = true;
+			text += part.text;
+		}
+	}
+
+	return hasTextPart ? text : undefined;
+}
+
 /**
  * Run in print (single-shot) mode.
  * Sends prompts to the agent and outputs the result.
@@ -32,6 +54,8 @@ export interface PrintModeOptions {
 export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: PrintModeOptions): Promise<number> {
 	const { mode, messages = [], initialMessage, initialImages } = options;
 	let exitCode = 0;
+	let suppressFinalOutput = false;
+	let activePromptHadCommandError = false;
 	let session = runtimeHost.session;
 	let unsubscribe: (() => void) | undefined;
 	let disposed = false;
@@ -64,9 +88,24 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 
 	registerSignalHandlers();
 
-	runtimeHost.setRebindSession(async () => {
-		await rebindSession();
-	});
+	const promptWithScopedCommandSuppression = async (
+		text: string,
+		promptOptions?: { images?: ImageContent[] },
+	): Promise<void> => {
+		activePromptHadCommandError = false;
+		try {
+			if (promptOptions === undefined) {
+				await session.prompt(text);
+			} else {
+				await session.prompt(text, promptOptions);
+			}
+		} finally {
+			// Final-output suppression is scoped to the most recent prompt so a
+			// later successful prompt in the same invocation can still print its
+			// result. The non-zero exit code remains sticky across prompts.
+			suppressFinalOutput = activePromptHadCommandError;
+		}
+	};
 
 	const rebindSession = async (): Promise<void> => {
 		session = runtimeHost.session;
@@ -95,6 +134,9 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 				},
 			},
 			onError: (err) => {
+				const isCommandError = isCommandExtensionError(err);
+				if (isCommandError) exitCode = 1;
+				activePromptHadCommandError = activePromptHadCommandError || isCommandError;
 				console.error(`Extension error (${err.extensionPath}): ${err.error}`);
 			},
 		});
@@ -107,6 +149,10 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 		});
 	};
 
+	runtimeHost.setRebindSession(async () => {
+		await rebindSession();
+	});
+
 	try {
 		if (mode === "json") {
 			const header = session.sessionManager.getHeader();
@@ -118,14 +164,14 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 		await rebindSession();
 
 		if (initialMessage) {
-			await session.prompt(initialMessage, { images: initialImages });
+			await promptWithScopedCommandSuppression(initialMessage, { images: initialImages });
 		}
 
 		for (const message of messages) {
-			await session.prompt(message);
+			await promptWithScopedCommandSuppression(message);
 		}
 
-		if (mode === "text") {
+		if (mode === "text" && !suppressFinalOutput) {
 			const state = session.state;
 			const lastMessage = state.messages[state.messages.length - 1];
 
@@ -140,6 +186,11 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 							writeRawStdout(`${content.text}\n`);
 						}
 					}
+				}
+			} else if (lastMessage?.role === "custom") {
+				const text = displayableCustomText(lastMessage as CustomMessage);
+				if (text !== undefined) {
+					writeRawStdout(`${text}\n`);
 				}
 			}
 		}

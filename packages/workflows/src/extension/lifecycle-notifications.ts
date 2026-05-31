@@ -124,6 +124,24 @@ export function withWorkflowLifecycleNotificationsSuppressed<T>(
   }
 }
 
+/**
+ * Async-safe companion to {@link withWorkflowLifecycleNotificationsSuppressed}.
+ * Keeps suppression active until the awaited operation settles, so terminal
+ * store updates produced by background jobs cannot race an awaited headless
+ * workflow dispatch and trigger an extra steer turn before the caller returns.
+ */
+export async function withWorkflowLifecycleNotificationsSuppressedAsync<T>(
+  state: WorkflowLifecycleNotificationState,
+  fn: () => Promise<T>,
+): Promise<T> {
+  state.suppressionDepth += 1;
+  try {
+    return await fn();
+  } finally {
+    state.suppressionDepth -= 1;
+  }
+}
+
 export function installWorkflowLifecycleNotifications(
   options: WorkflowLifecycleNotificationOptions,
 ): () => void {

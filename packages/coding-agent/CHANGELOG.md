@@ -4,7 +4,23 @@
 
 ### Added
 
+- Added `/fast` Codex fast mode toggles for chat and workflow-stage sessions, applying OpenAI priority service tier to supported `openai/*` and `openai-codex/*` models only; active supported models now show a visible `fast` indicator after the model name ([#1134](https://github.com/flora131/atomic/issues/1134)).
 - Added extension custom-message `deliverAs: "interrupt"` delivery so first-party extensions can abort a stale streaming turn and start an immediate custom-message turn ([#1137](https://github.com/flora131/atomic/issues/1137)).
+
+### Changed
+
+- Refined the `/fast` selector into a conventional toggle UI with on/off states, clearer scope descriptions, and space/enter toggle support ([#1134](https://github.com/flora131/atomic/issues/1134)).
+- Compressed the `/fast` selector copy, row layout, and per-change status message so the summary, toggles, scopes, and keyboard hints stay readable without duplicate off/standard-tier messaging ([#1134](https://github.com/flora131/atomic/issues/1134)).
+- Clarified workflow-creation guidance so Atomic asks clarifying questions and writes first-time workflows directly, reserving `/goal` for explicitly chosen long-running reviewer-gated implementation.
+
+### Fixed
+
+- Preserved custom registered provider streamers when Codex fast mode is enabled for native OpenAI response APIs ([#1134](https://github.com/flora131/atomic/issues/1134)).
+- Fixed `/fast` changes so the banner/footer and current session update immediately, and inherited chat fast-mode state now reaches subagent child sessions without waiting for a restart ([#1134](https://github.com/flora131/atomic/issues/1134)).
+- Fixed `/fast` persistence so existing project-level fast-mode overrides are updated alongside global settings for the changed scope without clobbering untouched global chat or workflow fast-mode preferences ([#1134](https://github.com/flora131/atomic/issues/1134)).
+- Made Codex fast-mode request helpers require an explicit enabled flag and treat `service_tier: undefined` as unset when preparing OpenAI payloads ([#1134](https://github.com/flora131/atomic/issues/1134)).
+- Fixed attached workflow-stage chat footers to resolve the `fast` model indicator against workflow fast-mode settings instead of chat settings ([#1134](https://github.com/flora131/atomic/issues/1134)).
+- Scoped print-mode non-zero extension-error exits to command-originated failures so non-fatal lifecycle extension errors do not fail otherwise successful headless output ([#1123](https://github.com/flora131/atomic/issues/1123)).
 
 ## [0.8.21] - 2026-05-30
 

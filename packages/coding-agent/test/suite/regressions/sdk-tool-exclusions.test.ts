@@ -10,6 +10,7 @@ import {
 } from "../../../src/core/agent-session-services.ts";
 import { DefaultResourceLoader } from "../../../src/core/resource-loader.ts";
 import { createAgentSession } from "../../../src/core/sdk.ts";
+import { resolveExcludedToolsForAppMode } from "../../../src/main.ts";
 import { SessionManager } from "../../../src/core/session-manager.ts";
 import { SettingsManager } from "../../../src/core/settings-manager.ts";
 
@@ -195,6 +196,37 @@ describe("SDK tool exclusions", () => {
 		expect(session.systemPrompt).not.toContain("dynamic_tool");
 
 		session.dispose();
+	});
+
+	it("main CLI print/json exclusion removes ask_user_question while keeping workflow", async () => {
+		const session = await createSession({
+			extensionToolName: "workflow",
+			excludedTools: resolveExcludedToolsForAppMode("print", undefined),
+		});
+
+		await session.bindExtensions({});
+
+		const allToolNames = session.getAllTools().map((tool) => tool.name);
+		const activeToolNames = session.getActiveToolNames();
+
+		expect(allToolNames).not.toContain("ask_user_question");
+		expect(activeToolNames).not.toContain("ask_user_question");
+		expect(activeToolNames).toContain("workflow");
+		expect(session.getToolDefinition("workflow")).toBeDefined();
+		expect(session.systemPrompt).not.toContain("ask_user_question");
+
+		session.dispose();
+	});
+
+	it("main CLI app-mode exclusion adds ask_user_question only for print/json", () => {
+		expect(resolveExcludedToolsForAppMode("print", undefined)).toEqual(["ask_user_question"]);
+		expect(resolveExcludedToolsForAppMode("json", ["custom_tool"])).toEqual([
+			"custom_tool",
+			"ask_user_question",
+		]);
+		expect(resolveExcludedToolsForAppMode("rpc", ["workflow"])).toEqual(["workflow"]);
+		expect(resolveExcludedToolsForAppMode("interactive", ["workflow"])).toEqual(["workflow"]);
+		expect(resolveExcludedToolsForAppMode("interactive", undefined)).toBeUndefined();
 	});
 
 	it("forwards excludedTools through service-based session creation", async () => {

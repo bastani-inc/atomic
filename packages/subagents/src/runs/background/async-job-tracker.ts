@@ -14,6 +14,7 @@ import {
 	SUBAGENT_CONTROL_INTERCOM_EVENT,
 } from "../../shared/types.ts";
 import { readStatus } from "../../shared/utils.ts";
+import { listAsyncRuns, type AsyncRunSummary } from "./async-status.ts";
 import { normalizeParallelGroups } from "./parallel-groups.ts";
 import { reconcileAsyncRun, reconcileNestedAsyncDescendants } from "./stale-run-reconciler.ts";
 import { hasLiveNestedDescendants, updateAsyncJobNestedProjection } from "../shared/nested-events.ts";
@@ -26,18 +27,82 @@ interface AsyncJobTrackerOptions {
 	now?: () => number;
 }
 
+interface RenderRequestingContext extends ExtensionContext {
+	ui: ExtensionContext["ui"] & { requestRender?: () => void };
+}
+
+const ACTIVE_HYDRATION_STATES: Array<AsyncRunSummary["state"]> = ["queued", "running"];
+
+function cwdMatches(summaryCwd: string | undefined, currentCwd: string | undefined): boolean {
+	return Boolean(summaryCwd && currentCwd && path.resolve(summaryCwd) === path.resolve(currentCwd));
+}
+
+function shouldHydrateRunForCurrentUi(summary: AsyncRunSummary, currentSessionId: string | null, currentCwd: string | undefined): boolean {
+	if (summary.sessionId && currentSessionId) return summary.sessionId === currentSessionId;
+	return cwdMatches(summary.cwd, currentCwd);
+}
+
+function asyncRunSummaryToJobState(summary: AsyncRunSummary, existing?: AsyncJobState): AsyncJobState {
+	const chainStepCount = summary.chainStepCount ?? summary.steps.length;
+	const groups = normalizeParallelGroups(summary.parallelGroups, summary.steps.length, chainStepCount);
+	const activeGroup = summary.currentStep !== undefined
+		? groups.find((group) => summary.currentStep! >= group.start && summary.currentStep! < group.start + group.count)
+		: undefined;
+	const steps = activeGroup
+		? summary.steps.slice(activeGroup.start, activeGroup.start + activeGroup.count).map((step, index) => ({ ...step, index: activeGroup.start + index }))
+		: summary.steps.map((step, index) => ({ ...step, index: step.index ?? index }));
+	const agents = steps.map((step) => step.agent);
+	const stepsTotal = steps.length > 0 ? steps.length : existing?.stepsTotal ?? (agents.length > 0 ? agents.length : undefined);
+	const completedSteps = summary.state === "complete"
+		? steps.length
+		: steps.filter((step) => step.status === "complete" || step.status === "completed").length;
+	return {
+		...existing,
+		asyncId: summary.id,
+		asyncDir: summary.asyncDir,
+		status: summary.state,
+		sessionId: summary.sessionId ?? existing?.sessionId,
+		activityState: summary.activityState,
+		lastActivityAt: summary.lastActivityAt,
+		currentTool: summary.currentTool,
+		currentToolStartedAt: summary.currentToolStartedAt,
+		currentPath: summary.currentPath,
+		turnCount: summary.turnCount,
+		toolCount: summary.toolCount,
+		mode: summary.mode,
+		agents: agents.length > 0 ? agents : existing?.agents,
+		currentStep: summary.currentStep,
+		chainStepCount: summary.chainStepCount ?? existing?.chainStepCount,
+		parallelGroups: groups,
+		steps: steps.length > 0 ? steps : existing?.steps,
+		stepsTotal,
+		runningSteps: steps.filter((step) => step.status === "running").length,
+		completedSteps,
+		hasParallelGroups: groups.length > 0,
+		activeParallelGroup: Boolean(activeGroup),
+		startedAt: summary.startedAt,
+		updatedAt: summary.lastUpdate ?? summary.startedAt,
+		sessionDir: summary.sessionDir ?? existing?.sessionDir,
+		outputFile: summary.outputFile ?? existing?.outputFile,
+		totalTokens: summary.totalTokens,
+		sessionFile: summary.sessionFile ?? existing?.sessionFile,
+		nestedChildren: summary.nestedChildren,
+	};
+}
+
 export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: SubagentState, asyncDirRoot: string, options: AsyncJobTrackerOptions = {}): {
 	ensurePoller: () => void;
 	handleStarted: (data: unknown) => void;
 	handleComplete: (data: unknown) => void;
 	resetJobs: (ctx?: ExtensionContext) => void;
+	hydrateActiveJobs: (ctx?: ExtensionContext) => void;
 } {
 	const completionRetentionMs = options.completionRetentionMs ?? 10000;
 	const pollIntervalMs = options.pollIntervalMs ?? POLL_INTERVAL_MS;
 	const resultsDir = options.resultsDir ?? RESULTS_DIR;
 	const rerenderWidget = (ctx: ExtensionContext, jobs = Array.from(state.asyncJobs.values())) => {
 		renderWidget(ctx, jobs);
-		ctx.ui.requestRender?.();
+		(ctx as RenderRequestingContext).ui.requestRender?.();
 	};
 	const cancelCleanup = (asyncId: string) => {
 		const existingTimer = state.cleanupTimers.get(asyncId);
@@ -233,12 +298,47 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 		state.poller.unref?.();
 	};
 
+	const hydrateActiveJobs = (ctx?: ExtensionContext) => {
+		if (ctx?.hasUI) state.lastUiContext = ctx;
+		const renderCtx = state.lastUiContext?.hasUI ? state.lastUiContext : undefined;
+		const currentCwd = (ctx?.cwd ?? state.lastUiContext?.cwd ?? state.baseCwd) || undefined;
+		let summaries: AsyncRunSummary[];
+		try {
+			summaries = listAsyncRuns(asyncDirRoot, {
+				states: ACTIVE_HYDRATION_STATES,
+				resultsDir,
+				kill: options.kill,
+				now: options.now,
+			});
+		} catch (error) {
+			console.error(`Failed to hydrate active async jobs from '${asyncDirRoot}':`, error);
+			if (renderCtx) rerenderWidget(renderCtx);
+			return;
+		}
+
+		for (const summary of summaries) {
+			if (!shouldHydrateRunForCurrentUi(summary, state.currentSessionId, currentCwd)) continue;
+			cancelCleanup(summary.id);
+			state.asyncJobs.set(summary.id, asyncRunSummaryToJobState(summary, state.asyncJobs.get(summary.id)));
+		}
+
+		if (state.asyncJobs.size > 0) ensurePoller();
+		if (renderCtx) rerenderWidget(renderCtx);
+	};
+
 	const handleStarted = (data: unknown) => {
 		const info = data as AsyncStartedEvent;
 		if (!info.id) return;
 		const now = Date.now();
 		const asyncDir = info.asyncDir ?? path.join(asyncDirRoot, info.id);
-		const rawAgents = info.agents?.length ? info.agents : info.chain && info.chain.length > 0 ? info.chain : info.agent ? [info.agent] : undefined;
+		let rawAgents: string[] | undefined;
+		if (info.agents?.length) {
+			rawAgents = info.agents;
+		} else if (info.chain && info.chain.length > 0) {
+			rawAgents = info.chain;
+		} else if (info.agent) {
+			rawAgents = [info.agent];
+		}
 		const validParallelGroups = normalizeParallelGroups(info.parallelGroups, Number.MAX_SAFE_INTEGER, info.chainStepCount ?? Number.MAX_SAFE_INTEGER);
 		const firstGroup = validParallelGroups.find((group) => group.start === 0);
 		const firstGroupCount = firstGroup?.count;
@@ -306,5 +406,5 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 		}
 	};
 
-	return { ensurePoller, handleStarted, handleComplete, resetJobs };
+	return { ensurePoller, handleStarted, handleComplete, resetJobs, hydrateActiveJobs };
 }

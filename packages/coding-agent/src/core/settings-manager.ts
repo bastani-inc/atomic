@@ -6,6 +6,7 @@ import {
 	CONFIG_DIR_NAME,
 	ENV_CLEAR_ON_SHRINK,
 	ENV_HARDWARE_CURSOR,
+	getCodexFastModeEnvironmentSettings,
 	getAgentConfigPaths,
 	getAgentDir,
 	getEnvValue,
@@ -65,6 +66,11 @@ export interface WarningSettings {
 	anthropicExtraUsage?: boolean; // default: true
 }
 
+export interface CodexFastModeSettings {
+	chat?: boolean; // default: false
+	workflow?: boolean; // default: false
+}
+
 export type TransportSetting = Transport;
 
 /**
@@ -120,6 +126,7 @@ export interface Settings {
 	showHardwareCursor?: boolean; // Show terminal cursor while still positioning it for IME
 	markdown?: MarkdownSettings;
 	warnings?: WarningSettings;
+	codexFastMode?: CodexFastModeSettings; // OpenAI priority service tier toggles for chat/workflow
 	sessionDir?: string; // Custom session storage directory (same format as --session-dir CLI flag)
 	httpIdleTimeoutMs?: number; // HTTP header/body idle timeout in milliseconds; 0 disables it
 }
@@ -276,6 +283,7 @@ export class SettingsManager {
 	private globalSettings: Settings;
 	private projectSettings: Settings;
 	private settings: Settings;
+	private runtimeSettingsOverrides: Settings;
 	private modifiedFields = new Set<keyof Settings>(); // Track global fields modified during session
 	private modifiedNestedFields = new Map<keyof Settings, Set<string>>(); // Track global nested field modifications
 	private modifiedProjectFields = new Set<keyof Settings>(); // Track project fields modified during session
@@ -299,7 +307,20 @@ export class SettingsManager {
 		this.globalSettingsLoadError = globalLoadError;
 		this.projectSettingsLoadError = projectLoadError;
 		this.errors = [...initialErrors];
-		this.settings = deepMergeSettings(this.globalSettings, this.projectSettings);
+		this.runtimeSettingsOverrides = SettingsManager.getRuntimeSettingsOverrides();
+		this.settings = this.mergeEffectiveSettings();
+	}
+
+	private static getRuntimeSettingsOverrides(): Settings {
+		const codexFastMode = getCodexFastModeEnvironmentSettings();
+		return codexFastMode ? { codexFastMode } : {};
+	}
+
+	private mergeEffectiveSettings(): Settings {
+		return deepMergeSettings(
+			deepMergeSettings(this.globalSettings, this.projectSettings),
+			this.runtimeSettingsOverrides,
+		);
 	}
 
 	/** Create a SettingsManager that loads from files */
@@ -461,7 +482,8 @@ export class SettingsManager {
 			this.recordError("project", projectLoad.error);
 		}
 
-		this.settings = deepMergeSettings(this.globalSettings, this.projectSettings);
+		this.runtimeSettingsOverrides = SettingsManager.getRuntimeSettingsOverrides();
+		this.settings = this.mergeEffectiveSettings();
 	}
 
 	/** Apply additional overrides on top of current settings */
@@ -558,7 +580,7 @@ export class SettingsManager {
 	}
 
 	private save(): void {
-		this.settings = deepMergeSettings(this.globalSettings, this.projectSettings);
+		this.settings = this.mergeEffectiveSettings();
 
 		if (this.globalSettingsLoadError) {
 			return;
@@ -575,7 +597,7 @@ export class SettingsManager {
 
 	private saveProjectSettings(settings: Settings): void {
 		this.projectSettings = structuredClone(settings);
-		this.settings = deepMergeSettings(this.globalSettings, this.projectSettings);
+		this.settings = this.mergeEffectiveSettings();
 
 		if (this.projectSettingsLoadError) {
 			return;
@@ -1111,6 +1133,61 @@ export class SettingsManager {
 	setWarnings(warnings: WarningSettings): void {
 		this.globalSettings.warnings = { ...warnings };
 		this.markModified("warnings");
+		this.save();
+	}
+
+	getCodexFastModeSettings(): { chat: boolean; workflow: boolean } {
+		return {
+			chat: this.settings.codexFastMode?.chat ?? false,
+			workflow: this.settings.codexFastMode?.workflow ?? false,
+		};
+	}
+
+	setCodexFastModeSettings(settings: Partial<{ chat: boolean; workflow: boolean }>): void {
+		if (settings.chat === undefined && settings.workflow === undefined) {
+			return;
+		}
+		if (!this.globalSettings.codexFastMode) {
+			this.globalSettings.codexFastMode = {};
+		}
+		if (settings.chat !== undefined) {
+			this.globalSettings.codexFastMode.chat = settings.chat;
+			this.markModified("codexFastMode", "chat");
+		}
+		if (settings.workflow !== undefined) {
+			this.globalSettings.codexFastMode.workflow = settings.workflow;
+			this.markModified("codexFastMode", "workflow");
+		}
+
+		const projectCodexFastMode = this.projectSettings.codexFastMode;
+		const projectOverridesChat = projectCodexFastMode?.chat !== undefined;
+		const projectOverridesWorkflow = projectCodexFastMode?.workflow !== undefined;
+		let projectModified = false;
+		if ((settings.chat !== undefined && projectOverridesChat) || (settings.workflow !== undefined && projectOverridesWorkflow)) {
+			this.projectSettings.codexFastMode = { ...(projectCodexFastMode ?? {}) };
+			if (settings.chat !== undefined && projectOverridesChat) {
+				this.projectSettings.codexFastMode.chat = settings.chat;
+				this.markProjectModified("codexFastMode", "chat");
+				projectModified = true;
+			}
+			if (settings.workflow !== undefined && projectOverridesWorkflow) {
+				this.projectSettings.codexFastMode.workflow = settings.workflow;
+				this.markProjectModified("codexFastMode", "workflow");
+				projectModified = true;
+			}
+			if (projectModified) {
+				this.saveProjectSettings(this.projectSettings);
+			}
+		}
+
+		if (this.runtimeSettingsOverrides.codexFastMode) {
+			this.runtimeSettingsOverrides.codexFastMode = {
+				...this.runtimeSettingsOverrides.codexFastMode,
+				...(settings.chat !== undefined ? { chat: settings.chat } : {}),
+				...(settings.workflow !== undefined ? { workflow: settings.workflow } : {}),
+			};
+		}
+
 		this.save();
 	}
 }

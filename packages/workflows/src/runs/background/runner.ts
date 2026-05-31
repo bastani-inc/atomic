@@ -14,7 +14,7 @@
  * cross-ref: spec detached-runner
  */
 
-import type { WorkflowDefinition } from "../../shared/types.js";
+import type { WorkflowDefinition, WorkflowExecutionMode } from "../../shared/types.js";
 import type { RunOpts, RunResult } from "../foreground/executor.js";
 import type { CancellationRegistry } from "./cancellation-registry.js";
 import type { JobTracker } from "./job-tracker.js";
@@ -52,6 +52,8 @@ export interface DetachedRunOpts
    * Override JobTracker (default: singleton jobTracker).
    */
   jobs?: JobTracker;
+  /** Runtime execution mode for UI/prompt policy. Defaults to interactive. */
+  executionMode?: WorkflowExecutionMode;
 }
 
 // ---------------------------------------------------------------------------
@@ -122,7 +124,7 @@ export function runDetached<TInputs extends Record<string, unknown>>(
     signal: controller.signal,
     cancellation: registry,
     store,
-    usePromptNodesForUi: true,
+    usePromptNodesForUi: opts.executionMode !== "non_interactive",
     deferWorkflowStart: true,
   };
 
