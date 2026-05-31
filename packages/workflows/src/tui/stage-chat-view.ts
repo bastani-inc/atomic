@@ -66,7 +66,7 @@ import {
 import type { PendingPrompt, StageNotice, StageSnapshot, StageStatus } from "../shared/store-types.js";
 import type { GraphTheme } from "./graph-theme.js";
 import type { StageControlHandle } from "../runs/foreground/stage-control-registry.js";
-import { isKeybindingsLike } from "./keybindings-adapter.js";
+import { isKeybindingsLike, type KeybindingsLike } from "./keybindings-adapter.js";
 import { BOLD, RESET, hexBg, hexToAnsi, lerpColor } from "./color-utils.js";
 import { Key, matchesKey, visibleWidth } from "./text-helpers.js";
 import {
@@ -1085,6 +1085,10 @@ export class StageChatView implements Component, Focusable {
     return true;
   }
 
+  private _promptKeybindings(): KeybindingsLike | undefined {
+    return isKeybindingsLike(this.piKeybindings) ? this.piKeybindings : undefined;
+  }
+
   private _handlePromptInput(data: string): void {
     const state = this.promptState;
     if (!state) return;
@@ -1109,11 +1113,7 @@ export class StageChatView implements Component, Focusable {
       this.requestRender?.();
       return;
     }
-    const action = handlePromptCardInput(
-      data,
-      state,
-      isKeybindingsLike(this.piKeybindings) ? this.piKeybindings : undefined,
-    );
+    const action = handlePromptCardInput(data, state, this._promptKeybindings());
     if (action.kind === "noop") {
       this.requestRender?.();
       return;

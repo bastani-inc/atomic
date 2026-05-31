@@ -138,6 +138,16 @@ function setupTwoPromptAttachPane(
   return { store, pane, pending, secondPrompt };
 }
 
+function assertNextGraphEnterAttaches(
+  pane: WorkflowAttachPane,
+  expectedStageId: string,
+  message: string,
+): void {
+  pane.handleInput(Key.enter);
+  assert.equal(pane._mode, "stage-chat", message);
+  assert.equal(pane._lastAttachedStageId, expectedStageId);
+}
+
 describe("WorkflowAttachPane", () => {
   test("starts in graph mode", () => {
     const store = createStore();
@@ -363,9 +373,11 @@ describe("WorkflowAttachPane", () => {
     assert.equal(pane._mode, "graph");
     assert.equal(store.runs()[0]?.stages[1]?.pendingPrompt?.id, secondPrompt.id);
 
-    pane.handleInput(Key.enter);
-    assert.equal(pane._mode, "stage-chat", "first graph-mode Enter after Ctrl+C attaches");
-    assert.equal(pane._lastAttachedStageId, "stage-b");
+    assertNextGraphEnterAttaches(
+      pane,
+      "stage-b",
+      "first graph-mode Enter after Ctrl+C attaches",
+    );
     pane.dispose();
   });
 
@@ -381,9 +393,11 @@ describe("WorkflowAttachPane", () => {
       assert.equal(pane._mode, "graph");
       assert.equal(store.runs()[0]?.stages[1]?.pendingPrompt?.id, secondPrompt.id);
 
-      pane.handleInput(Key.enter);
-      assert.equal(pane._mode, "stage-chat", `first graph-mode Enter after ${key} attaches`);
-      assert.equal(pane._lastAttachedStageId, "stage-b");
+      assertNextGraphEnterAttaches(
+        pane,
+        "stage-b",
+        `first graph-mode Enter after ${key} attaches`,
+      );
       pane.dispose();
     });
   }
@@ -411,9 +425,11 @@ describe("WorkflowAttachPane", () => {
     assert.equal(pane._mode, "graph");
     assert.equal(store.runs()[0]?.stages[1]?.pendingPrompt?.id, secondPrompt.id);
 
-    pane.handleInput(Key.enter);
-    assert.equal(pane._mode, "stage-chat", "first graph-mode Enter after remapped select attaches");
-    assert.equal(pane._lastAttachedStageId, "stage-b");
+    assertNextGraphEnterAttaches(
+      pane,
+      "stage-b",
+      "first graph-mode Enter after remapped select attaches",
+    );
     pane.dispose();
   });
 
