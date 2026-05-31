@@ -825,6 +825,18 @@ export class ModelRegistry {
 	}
 
 	/**
+	 * Check whether extensions have registered custom streamSimple dispatch for an API.
+	 */
+	hasRegisteredStreamSimpleForApi(api: Api): boolean {
+		for (const config of this.registeredProviders.values()) {
+			if (config.api === api && config.streamSimple) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
 	 * Unregister a previously registered provider.
 	 *
 	 * Removes the provider from the registry and reloads models from disk so that

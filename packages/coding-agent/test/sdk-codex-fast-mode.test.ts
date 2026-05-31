@@ -164,6 +164,56 @@ describe("createAgentSession codex fast mode", () => {
 		expect(captured.payload).toMatchObject({ service_tier: CODEX_FAST_MODE_SERVICE_TIER });
 	});
 
+	it("preserves custom provider streaming for native OpenAI APIs when fast mode is enabled", async () => {
+		const model = createModel("openai", "openai-responses");
+		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
+		authStorage.setRuntimeApiKey("openai", "test-api-key");
+		const modelRegistry = ModelRegistry.create(authStorage, join(agentDir, "models.json"));
+		const settingsManager = SettingsManager.inMemory({ codexFastMode: { chat: true, workflow: false } });
+		const sessionManager = SessionManager.inMemory(cwd);
+		let capturedOptions: SimpleStreamOptions | undefined;
+		const nativeFetch = vi.fn(async (): Promise<Response> => {
+			throw new Error("native OpenAI streaming should not be called for registered providers");
+		});
+		vi.stubGlobal("fetch", nativeFetch);
+
+		modelRegistry.registerProvider("openai", {
+			api: "openai-responses",
+			streamSimple: (_model, _context, streamOptions) => {
+				capturedOptions = streamOptions;
+				return createDoneStream(model);
+			},
+		});
+		registeredProviders.push({ registry: modelRegistry, provider: "openai" });
+
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir,
+			model,
+			authStorage,
+			modelRegistry,
+			settingsManager,
+			sessionManager,
+		});
+
+		try {
+			const stream = await session.agent.streamFn(model, { messages: [] }, { sessionId: session.sessionId });
+			const result = await stream.result();
+
+			expect(result.stopReason).toBe("stop");
+			expect(nativeFetch).not.toHaveBeenCalled();
+			expect((capturedOptions as SimpleStreamOptions & { serviceTier?: string })?.serviceTier).toBe(
+				CODEX_FAST_MODE_SERVICE_TIER,
+			);
+		} finally {
+			session.dispose();
+			modelRegistry.unregisterProvider("openai");
+			registeredProviders = registeredProviders.filter(
+				(entry) => entry.registry !== modelRegistry || entry.provider !== "openai",
+			);
+		}
+	});
+
 	it("applies inherited chat fast mode environment to child sessions", async () => {
 		const previous = process.env[ENV_CODEX_FAST_MODE];
 		process.env[ENV_CODEX_FAST_MODE] = "chat=1;workflow=0";

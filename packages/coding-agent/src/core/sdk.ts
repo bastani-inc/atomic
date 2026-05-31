@@ -9,6 +9,7 @@ import {
   type Api,
   type Message,
   type Model,
+  streamSimple,
 } from "@earendil-works/pi-ai";
 import { APP_NAME, getAgentDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
@@ -416,25 +417,25 @@ export async function createAgentSession(
       const providerRetrySettings = settingsManager.getProviderRetrySettings();
       const attributionHeaders = getAttributionHeaders(model, settingsManager, streamOptions?.sessionId);
       const fastModeEnabled = isCodexFastModeEnabled(model);
-      return streamWithCodexFastMode(
-        model,
-        context,
-        withCodexFastModeStreamOptions(
-          {
-            ...streamOptions,
-            apiKey: auth.apiKey,
-            timeoutMs: streamOptions?.timeoutMs ?? providerRetrySettings.timeoutMs,
-            maxRetries: streamOptions?.maxRetries ?? providerRetrySettings.maxRetries,
-            maxRetryDelayMs:
-              streamOptions?.maxRetryDelayMs ?? providerRetrySettings.maxRetryDelayMs,
-            headers:
-              attributionHeaders || auth.headers || streamOptions?.headers
-                ? { ...attributionHeaders, ...auth.headers, ...streamOptions?.headers }
-                : undefined,
-          },
-          fastModeEnabled,
-        ),
+      const codexFastModeStreamOptions = withCodexFastModeStreamOptions(
+        {
+          ...streamOptions,
+          apiKey: auth.apiKey,
+          timeoutMs: streamOptions?.timeoutMs ?? providerRetrySettings.timeoutMs,
+          maxRetries: streamOptions?.maxRetries ?? providerRetrySettings.maxRetries,
+          maxRetryDelayMs:
+            streamOptions?.maxRetryDelayMs ?? providerRetrySettings.maxRetryDelayMs,
+          headers:
+            attributionHeaders || auth.headers || streamOptions?.headers
+              ? { ...attributionHeaders, ...auth.headers, ...streamOptions?.headers }
+              : undefined,
+        },
+        fastModeEnabled,
       );
+      if (modelRegistry.hasRegisteredStreamSimpleForApi(model.api)) {
+        return streamSimple(model, context, codexFastModeStreamOptions);
+      }
+      return streamWithCodexFastMode(model, context, codexFastModeStreamOptions);
     },
     onPayload: async (payload, model) => {
       const fastModeEnabled = isCodexFastModeEnabled(model);
