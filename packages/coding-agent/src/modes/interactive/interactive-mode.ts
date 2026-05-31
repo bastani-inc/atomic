@@ -4472,8 +4472,8 @@ export class InteractiveMode {
       const selector = new FastModeSelectorComponent(
         this.settingsManager.getCodexFastModeSettings(),
         {
-          onChange: (settings) => {
-            this.settingsManager.setCodexFastModeSettings(settings);
+          onChange: (settings, changedRow) => {
+            this.settingsManager.setCodexFastModeSettings({ [changedRow]: settings[changedRow] });
             this.showStatus(
               `Codex fast mode: chat ${settings.chat ? "enabled" : "disabled"}, workflow ${settings.workflow ? "enabled" : "disabled"}`,
             );

@@ -77,6 +77,7 @@ export {
 	getCodexFastModeScope,
 	hasSupportedCodexFastModeModel,
 	isCodexFastModeEnabledForScope,
+	isCodexFastModeCandidateModelId,
 	isCodexFastModeSupportedModel,
 	isCodexFastModeSupportedProvider,
 	shouldApplyCodexFastMode,

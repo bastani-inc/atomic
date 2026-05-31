@@ -6,6 +6,7 @@ import {
 	hasSupportedCodexFastModeModel,
 	isCodexFastModeEnabledForScope,
 	isCodexFastModeEnabledForSession,
+	isCodexFastModeCandidateModelId,
 	isCodexFastModeSupportedProvider,
 	shouldApplyCodexFastModeForScope,
 	withCodexFastModePayload,
@@ -40,6 +41,14 @@ describe("codex fast mode helpers", () => {
 		expect(hasSupportedCodexFastModeModel([model("github-copilot")])).toBe(false);
 		expect(hasSupportedCodexFastModeModel([model("github-copilot"), model("openai")])).toBe(true);
 		expect(hasSupportedCodexFastModeModel([model("openai-codex")])).toBe(true);
+	});
+
+	it("detects candidate model ids with the shared provider policy", () => {
+		expect(isCodexFastModeCandidateModelId("openai/gpt-5.1-codex")).toBe(true);
+		expect(isCodexFastModeCandidateModelId("openai-codex/gpt-5.1-codex")).toBe(true);
+		expect(isCodexFastModeCandidateModelId("anthropic/claude-sonnet-4")).toBe(false);
+		expect(isCodexFastModeCandidateModelId("gpt-5.1-codex")).toBe(false);
+		expect(isCodexFastModeCandidateModelId(undefined)).toBe(false);
 	});
 
 	it("selects chat versus workflow scope from orchestration context", () => {

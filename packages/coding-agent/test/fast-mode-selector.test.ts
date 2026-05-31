@@ -51,16 +51,16 @@ describe("FastModeSelectorComponent", () => {
 
 		selector.handleInput("\x1b[D");
 		expect(selector.getSettings()).toEqual({ chat: true, workflow: false });
-		expect(onChange).toHaveBeenLastCalledWith({ chat: true, workflow: false });
+		expect(onChange).toHaveBeenLastCalledWith({ chat: true, workflow: false }, "chat");
 
 		selector.handleInput("\t");
 		selector.handleInput("\x1b[D");
 		expect(selector.getSettings()).toEqual({ chat: true, workflow: true });
-		expect(onChange).toHaveBeenLastCalledWith({ chat: true, workflow: true });
+		expect(onChange).toHaveBeenLastCalledWith({ chat: true, workflow: true }, "workflow");
 
 		selector.handleInput("\x1b[C");
 		expect(selector.getSettings()).toEqual({ chat: true, workflow: false });
-		expect(onChange).toHaveBeenLastCalledWith({ chat: true, workflow: false });
+		expect(onChange).toHaveBeenLastCalledWith({ chat: true, workflow: false }, "workflow");
 	});
 
 	it("cancels on escape", () => {

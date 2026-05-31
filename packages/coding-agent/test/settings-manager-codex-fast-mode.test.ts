@@ -77,4 +77,26 @@ describe("SettingsManager codexFastMode", () => {
 		expect(savedGlobal.codexFastMode).toEqual({ chat: false, workflow: true });
 		expect(savedProject.codexFastMode).toEqual({ workflow: true });
 	});
+
+	it("does not clobber untouched global fast mode fields with project overrides", async () => {
+		writeFileSync(
+			join(agentDir, "settings.json"),
+			JSON.stringify({ codexFastMode: { chat: false, workflow: true } }, null, 2),
+		);
+		mkdirSync(join(cwd, ".atomic"), { recursive: true });
+		writeFileSync(
+			join(cwd, ".atomic", "settings.json"),
+			JSON.stringify({ codexFastMode: { workflow: false } }, null, 2),
+		);
+		const manager = SettingsManager.create(cwd, agentDir);
+
+		manager.setCodexFastModeSettings({ chat: true });
+		await manager.flush();
+
+		expect(manager.getCodexFastModeSettings()).toEqual({ chat: true, workflow: false });
+		const savedGlobal = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8"));
+		const savedProject = JSON.parse(readFileSync(join(cwd, ".atomic", "settings.json"), "utf-8"));
+		expect(savedGlobal.codexFastMode).toEqual({ chat: true, workflow: true });
+		expect(savedProject.codexFastMode).toEqual({ workflow: false });
+	});
 });

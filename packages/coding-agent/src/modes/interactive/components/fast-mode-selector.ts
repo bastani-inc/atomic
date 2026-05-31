@@ -7,11 +7,11 @@ export interface FastModeSelectorConfig {
 }
 
 export interface FastModeSelectorCallbacks {
-	onChange: (settings: FastModeSelectorConfig) => void;
+	onChange: (settings: FastModeSelectorConfig, changedRow: FastModeRow) => void;
 	onCancel: () => void | Promise<void>;
 }
 
-type FastModeRow = keyof FastModeSelectorConfig;
+export type FastModeRow = keyof FastModeSelectorConfig;
 
 const ROWS: readonly FastModeRow[] = ["chat", "workflow"];
 const DESCRIPTION = "Uses OpenAI priority service tier for supported openai/* and openai-codex/* models.";
@@ -82,7 +82,7 @@ export class FastModeSelectorComponent {
 			return;
 		}
 		this.state = { ...this.state, [row]: enabled };
-		this.callbacks.onChange({ ...this.state });
+		this.callbacks.onChange({ ...this.state }, row);
 	}
 
 	private renderRow(row: FastModeRow, width: number): string {

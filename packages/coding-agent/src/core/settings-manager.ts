@@ -1127,29 +1127,41 @@ export class SettingsManager {
 		};
 	}
 
-	setCodexFastModeSettings(settings: { chat: boolean; workflow: boolean }): void {
+	setCodexFastModeSettings(settings: Partial<{ chat: boolean; workflow: boolean }>): void {
+		if (settings.chat === undefined && settings.workflow === undefined) {
+			return;
+		}
 		if (!this.globalSettings.codexFastMode) {
 			this.globalSettings.codexFastMode = {};
 		}
-		this.globalSettings.codexFastMode.chat = settings.chat;
-		this.globalSettings.codexFastMode.workflow = settings.workflow;
-		this.markModified("codexFastMode", "chat");
-		this.markModified("codexFastMode", "workflow");
+		if (settings.chat !== undefined) {
+			this.globalSettings.codexFastMode.chat = settings.chat;
+			this.markModified("codexFastMode", "chat");
+		}
+		if (settings.workflow !== undefined) {
+			this.globalSettings.codexFastMode.workflow = settings.workflow;
+			this.markModified("codexFastMode", "workflow");
+		}
 
 		const projectCodexFastMode = this.projectSettings.codexFastMode;
 		const projectOverridesChat = projectCodexFastMode?.chat !== undefined;
 		const projectOverridesWorkflow = projectCodexFastMode?.workflow !== undefined;
-		if (projectOverridesChat || projectOverridesWorkflow) {
+		let projectModified = false;
+		if ((settings.chat !== undefined && projectOverridesChat) || (settings.workflow !== undefined && projectOverridesWorkflow)) {
 			this.projectSettings.codexFastMode = { ...(projectCodexFastMode ?? {}) };
-			if (projectOverridesChat) {
+			if (settings.chat !== undefined && projectOverridesChat) {
 				this.projectSettings.codexFastMode.chat = settings.chat;
 				this.markProjectModified("codexFastMode", "chat");
+				projectModified = true;
 			}
-			if (projectOverridesWorkflow) {
+			if (settings.workflow !== undefined && projectOverridesWorkflow) {
 				this.projectSettings.codexFastMode.workflow = settings.workflow;
 				this.markProjectModified("codexFastMode", "workflow");
+				projectModified = true;
 			}
-			this.saveProjectSettings(this.projectSettings);
+			if (projectModified) {
+				this.saveProjectSettings(this.projectSettings);
+			}
 		}
 
 		this.save();

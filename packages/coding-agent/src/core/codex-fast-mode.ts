@@ -18,6 +18,11 @@ export function isCodexFastModeSupportedProvider(provider: string): boolean {
 	return provider === "openai" || provider === "openai-codex";
 }
 
+export function isCodexFastModeCandidateModelId(modelId: string | undefined): boolean {
+	const provider = modelId?.split("/", 1)[0];
+	return provider !== undefined && isCodexFastModeSupportedProvider(provider);
+}
+
 export function isCodexFastModeSupportedModel(model: Pick<Model<Api>, "provider">): boolean {
 	return isCodexFastModeSupportedProvider(model.provider);
 }

@@ -5,7 +5,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
-import { CONFIG_DIR_NAME, createAskUserQuestionToolDefinition } from "@bastani/atomic";
+import { CONFIG_DIR_NAME, createAskUserQuestionToolDefinition, isCodexFastModeCandidateModelId } from "@bastani/atomic";
 import { stageUiBroker } from "../../shared/stage-ui-broker.js";
 import { buildStagePromptAdapter } from "../../shared/stage-prompt.js";
 import type {
@@ -2495,11 +2495,9 @@ export async function run<TInputs extends Record<string, unknown>>(
         }
         stageSnapshot.status = "running";
         stageSnapshot.startedAt = Date.now();
-        const isFastModeCandidateId = (modelId: string | undefined): boolean =>
-          modelId !== undefined && (modelId.startsWith("openai/") || modelId.startsWith("openai-codex/"));
         const hasExplicitFastModeCandidate = async (): Promise<boolean> => {
-          const rawCandidate = isFastModeCandidateId(workflowModelId(options?.model))
-            || (Array.isArray(options?.fallbackModels) && options.fallbackModels.some((candidate) => isFastModeCandidateId(workflowModelId(candidate))));
+          const rawCandidate = isCodexFastModeCandidateModelId(workflowModelId(options?.model))
+            || (Array.isArray(options?.fallbackModels) && options.fallbackModels.some((candidate) => isCodexFastModeCandidateModelId(workflowModelId(candidate))));
           if (rawCandidate) return true;
           try {
             const candidates = await buildModelCandidatesFromCatalog({
@@ -2507,7 +2505,7 @@ export async function run<TInputs extends Record<string, unknown>>(
               fallbackModels: options?.fallbackModels,
               catalog: opts.models,
             });
-            return candidates.some((candidate) => isFastModeCandidateId(candidate.id));
+            return candidates.some((candidate) => isCodexFastModeCandidateModelId(candidate.id));
           } catch {
             return false;
           }
