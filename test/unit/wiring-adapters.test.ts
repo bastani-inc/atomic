@@ -73,7 +73,9 @@ function makeFakeAtomicSdk(defaultAgentDir: string, builtinPackagePaths: string[
     SettingsManager: {
       create(cwd?: string, agentDir?: string): PiSdkSettingsManager {
         settingsCalls.push({ cwd, agentDir });
-        return { cwd, agentDir } as PiSdkSettingsManager;
+        return {
+          getCodexFastModeSettings: () => ({ chat: false, workflow: false }),
+        };
       },
     },
     DefaultResourceLoader: FakeResourceLoader,
@@ -181,9 +183,22 @@ describe("buildRuntimeAdapters — SDK AgentSession adapter", () => {
     const adapters = buildRuntimeAdapters({}, {
       createAgentSession: async (options) => { calls.push(options); return { session: fakeSession() }; },
     });
-    const session = await adapters.agentSession!.create({ cwd: "/tmp/project" });
-    assert.equal(session.sessionId, "session-1");
+    const result = await adapters.agentSession!.create({ cwd: "/tmp/project" });
+    assert.equal("session" in result ? result.session.sessionId : result.sessionId, "session-1");
     assert.equal(calls[0]?.cwd, "/tmp/project");
+  });
+
+  test("agentSession.create returns the SDK-prepared settings manager for workflow metadata", async () => {
+    const settingsManager = {
+      getCodexFastModeSettings: () => ({ chat: false, workflow: true }),
+    };
+    const adapters = buildRuntimeAdapters({}, {
+      createAgentSession: async () => ({ session: fakeSession(), settingsManager }),
+    });
+
+    const result = await adapters.agentSession!.create({ cwd: "/tmp/project" });
+
+    assert.equal("session" in result ? result.settingsManager : undefined, settingsManager);
   });
 
   test("agentSession.create marks workflow stages with orchestration constraints and excludes workflow tool", async () => {

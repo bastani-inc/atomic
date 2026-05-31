@@ -9,7 +9,13 @@
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
-import { SessionManager, type AgentSession, type CreateAgentSessionOptions, type PromptOptions } from "@bastani/atomic";
+import {
+  shouldApplyCodexFastModeForScope,
+  SessionManager,
+  type AgentSession,
+  type CreateAgentSessionOptions,
+  type PromptOptions,
+} from "@bastani/atomic";
 import type {
   CompleteStageOpts,
   StageContext,
@@ -47,6 +53,8 @@ export interface StageSessionRuntime {
   readonly isStreaming: AgentSession["isStreaming"];
   /** Number of SDK-level queued steering/follow-up messages, when supported. */
   readonly pendingMessageCount?: number;
+  /** Settings manager supplied by the Atomic SDK when the adapter did not pre-create one. */
+  readonly settingsManager?: WorkflowFastModeSettingsManager;
   navigateTree: AgentSession["navigateTree"];
   compact: AgentSession["compact"];
   abortCompaction(): void;
@@ -57,12 +65,27 @@ export interface StageSessionRuntime {
 
 export type StageSessionCreateOptions = CreateAgentSessionOptions & Pick<StageOptions, "mcp" | "fallbackModels">;
 
+type WorkflowFastModeSettings = {
+  readonly chat: boolean;
+  readonly workflow: boolean;
+};
+
+type WorkflowFastModeSettingsManager = {
+  getCodexFastModeSettings(): WorkflowFastModeSettings;
+};
+
+export interface StageSessionCreateResult {
+  readonly session: StageSessionRuntime;
+  readonly settingsManager?: WorkflowFastModeSettingsManager;
+}
+
 export interface AgentSessionAdapter {
-  create(options: StageSessionCreateOptions, meta?: StageExecutionMeta): Promise<StageSessionRuntime>;
+  create(options: StageSessionCreateOptions, meta?: StageExecutionMeta): Promise<StageSessionRuntime | StageSessionCreateResult>;
 }
 
 export interface StageModelFallbackMeta {
   readonly model?: string;
+  readonly fastMode?: boolean;
   readonly attemptedModels?: readonly string[];
   readonly modelAttempts?: readonly WorkflowModelAttempt[];
   readonly warnings?: readonly string[];
@@ -94,6 +117,8 @@ export interface StageRunnerOpts {
   signal?: AbortSignal;
   /** Optional model catalog used for fallback validation/resolution. */
   models?: WorkflowModelCatalogPort;
+  /** Internal: notifies the executor when an in-flight fallback changes model/fast metadata. */
+  onModelFallbackMetaChange?: (meta: StageModelFallbackMeta) => void;
 }
 
 export interface InternalStageContext extends StageContext {
@@ -532,19 +557,52 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
     return { ...(stageOptions ?? {}), model: candidate.value, fallbackModels: undefined };
   }
 
-  function attachSession(created: StageSessionRuntime): StageSessionRuntime {
-    session = created;
+  let sessionSettingsManager: WorkflowFastModeSettingsManager | undefined;
+
+  function isWorkflowFastModeEnabled(): boolean | undefined {
+    const model = session?.model;
+    const settingsManager = sessionSettingsManager ?? stageOptions?.settingsManager;
+    if (model === undefined || settingsManager === undefined) return undefined;
+    return shouldApplyCodexFastModeForScope(model, settingsManager.getCodexFastModeSettings(), "workflow");
+  }
+
+  function currentModelFallbackMeta(): StageModelFallbackMeta {
+    const attemptedModels = modelAttempts.map((attempt) => attempt.model);
+    const model = selectedModel ?? workflowModelId(session?.model);
+    const fastMode = isWorkflowFastModeEnabled();
+    return {
+      ...(model !== undefined ? { model } : {}),
+      ...(fastMode !== undefined ? { fastMode } : {}),
+      ...(attemptedModels.length > 0 ? { attemptedModels } : {}),
+      ...(modelAttempts.length > 0 ? { modelAttempts: [...modelAttempts] } : {}),
+      ...(modelWarnings.length > 0 ? { warnings: [...modelWarnings] } : {}),
+    };
+  }
+
+  function notifyModelFallbackMetaChange(): void {
+    opts.onModelFallbackMetaChange?.(currentModelFallbackMeta());
+  }
+
+  function normalizeSessionCreateResult(created: StageSessionRuntime | StageSessionCreateResult): StageSessionCreateResult {
+    if ("session" in created) return created;
+    return { session: created };
+  }
+
+  function attachSession(created: StageSessionRuntime | StageSessionCreateResult): StageSessionRuntime {
+    const result = normalizeSessionCreateResult(created);
+    session = result.session;
+    sessionSettingsManager = result.settingsManager ?? result.session.settingsManager;
     if (pendingThinkingLevel !== undefined) {
-      created.setThinkingLevel(pendingThinkingLevel);
+      result.session.setThinkingLevel(pendingThinkingLevel);
     }
     for (const listener of pendingListeners) {
-      listenerUnsubscribes.set(listener, created.subscribe(listener));
+      listenerUnsubscribes.set(listener, result.session.subscribe(listener));
     }
     // Track terminating tool calls for this session so the stage result text is
     // derived deterministically from a tool that actually ended the turn.
     unsubscribeTerminateWatcher?.();
-    unsubscribeTerminateWatcher = created.subscribe((event) => recordTerminatingToolCall(event));
-    return created;
+    unsubscribeTerminateWatcher = result.session.subscribe((event) => recordTerminatingToolCall(event));
+    return result.session;
   }
 
   async function createSession(
@@ -580,6 +638,7 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
     const current = session;
     session = undefined;
     sessionPromise = undefined;
+    sessionSettingsManager = undefined;
     for (const unsubscribe of listenerUnsubscribes.values()) unsubscribe();
     listenerUnsubscribes.clear();
     unsubscribeTerminateWatcher?.();
@@ -651,6 +710,7 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
         : await createSession(candidate, consumer);
       activeCandidateIndex = index;
       selectedModel = candidate.id;
+      notifyModelFallbackMetaChange();
       try {
         await promptWithPauseResume(activeSession, text, sdkOptions);
         modelAttempts.push({ model: candidate.id, success: true });
@@ -835,14 +895,7 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
     },
 
     __modelFallbackMeta() {
-      const attemptedModels = modelAttempts.map((attempt) => attempt.model);
-      const model = selectedModel ?? workflowModelId(session?.model);
-      return {
-        ...(model !== undefined ? { model } : {}),
-        ...(attemptedModels.length > 0 ? { attemptedModels } : {}),
-        ...(modelAttempts.length > 0 ? { modelAttempts: [...modelAttempts] } : {}),
-        ...(modelWarnings.length > 0 ? { warnings: [...modelWarnings] } : {}),
-      };
+      return currentModelFallbackMeta();
     },
 
     async __requestPause() {

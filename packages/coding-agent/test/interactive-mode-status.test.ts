@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
 import * as path from "node:path";
+import { type Api, type Model } from "@earendil-works/pi-ai";
 import { type AutocompleteProvider, CombinedAutocompleteProvider, Container } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, test, vi } from "vitest";
 import type { AutocompleteProviderFactory } from "../src/core/extensions/types.ts";
@@ -236,6 +237,126 @@ describe("InteractiveMode.setupAutocompleteProvider", () => {
 		expect(provider).toBe(customEditor.setAutocompleteProvider.mock.calls[0]?.[0]);
 		expect(provider.shouldTriggerFileCompletion?.(["foo"], 0, 3)).toBe(true);
 		expect(calls).toEqual(["shouldTrigger:wrap2", "shouldTrigger:wrap1"]);
+	});
+});
+
+describe("InteractiveMode /fast autocomplete", () => {
+	function createModel(provider: string, id = `${provider}-model`): Model<Api> {
+		return {
+			id,
+			name: id,
+			api: "openai-completions",
+			provider,
+			baseUrl: `https://${provider}.example/v1`,
+			reasoning: false,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 128000,
+			maxTokens: 4096,
+		};
+	}
+
+	type ExtensionCommandFixture = {
+		name: string;
+		invocationName?: string;
+		description?: string;
+	};
+
+	function createProvider(
+		models: Model<Api>[],
+		scopedModels: Model<Api>[] = [],
+		options: {
+			hasConfiguredAuth?: (model: Model<Api>) => boolean;
+			extensionCommands?: ExtensionCommandFixture[];
+		} = {},
+	): AutocompleteProvider {
+		const fakeThis: any = {
+			session: {
+				scopedModels: scopedModels.map((model) => ({ model })),
+				modelRegistry: {
+					getAvailable: vi.fn(() => models),
+					hasConfiguredAuth: vi.fn(options.hasConfiguredAuth ?? (() => true)),
+				},
+				promptTemplates: [],
+				extensionRunner: {
+					getRegisteredCommands: () =>
+						(options.extensionCommands ?? []).map((command) => ({
+							name: command.name,
+							invocationName: command.invocationName ?? command.name,
+							description: command.description,
+							sourceInfo: {
+								path: `/tmp/extensions/${command.name}.ts`,
+								source: "test",
+								scope: "project" as const,
+								origin: "top-level" as const,
+								baseDir: "/tmp/extensions",
+							},
+							handler: vi.fn(),
+						})),
+				},
+				resourceLoader: { getSkills: () => ({ skills: [] }) },
+			},
+			settingsManager: { getEnableSkillCommands: () => true },
+			sessionManager: { getCwd: () => process.cwd() },
+			fdPath: undefined,
+			skillCommands: new Map(),
+		};
+		Object.setPrototypeOf(fakeThis, (InteractiveMode as any).prototype);
+		return (InteractiveMode as any).prototype.createBaseAutocompleteProvider.call(fakeThis) as AutocompleteProvider;
+	}
+
+	async function slashLabels(provider: AutocompleteProvider, prefix = "/fa"): Promise<string[]> {
+		const suggestions = await provider.getSuggestions([prefix], 0, prefix.length, {
+			signal: new AbortController().signal,
+		});
+		return suggestions?.items.map((item) => item.value) ?? [];
+	}
+
+	test("shows /fast when an OpenAI model is available", async () => {
+		const labels = await slashLabels(createProvider([createModel("openai")]));
+
+		expect(labels).toContain("fast");
+	});
+
+	test("shows /fast when an OpenAI Codex scoped model is available", async () => {
+		const labels = await slashLabels(
+			createProvider([createModel("github-copilot")], [createModel("openai-codex")]),
+		);
+
+		expect(labels).toContain("fast");
+	});
+
+	test("hides /fast when only GitHub Copilot models are available", async () => {
+		const labels = await slashLabels(createProvider([createModel("github-copilot")]));
+
+		expect(labels).not.toContain("fast");
+	});
+
+	test("hides /fast for unauthenticated scoped OpenAI models without falling back", async () => {
+		for (const scopedProvider of ["openai", "openai-codex"]) {
+			const scopedModel = createModel(scopedProvider, `${scopedProvider}-unauthenticated`);
+			const labels = await slashLabels(
+				createProvider([createModel("openai", "available-openai")], [scopedModel], {
+					hasConfiguredAuth: (model) => model !== scopedModel,
+				}),
+			);
+
+			expect(labels).not.toContain("fast");
+		}
+	});
+
+	test("hides extension /fast when the built-in command is hidden", async () => {
+		const labels = await slashLabels(
+			createProvider([createModel("github-copilot")], [], {
+				extensionCommands: [
+					{ name: "fast", description: "Extension fast command" },
+					{ name: "faster", description: "Non-conflicting extension command" },
+				],
+			}),
+		);
+
+		expect(labels).not.toContain("fast");
+		expect(labels).toContain("faster");
 	});
 });
 

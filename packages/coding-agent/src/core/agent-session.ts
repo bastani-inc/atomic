@@ -380,6 +380,11 @@ export class AgentSession {
 		});
 	}
 
+	/** Orchestration context for this session, when owned by a workflow/subagent runtime. */
+	get orchestrationContext(): OrchestrationContext | undefined {
+		return this._orchestrationContext;
+	}
+
 	/** Model registry for API key resolution and model discovery */
 	get modelRegistry(): ModelRegistry {
 		return this._modelRegistry;

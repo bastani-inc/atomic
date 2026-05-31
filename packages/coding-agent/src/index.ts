@@ -16,6 +16,7 @@ export {
 	getProjectConfigPaths,
 	getEnvNames,
 	getEnvValue,
+	ENV_CODEX_FAST_MODE,
 	WORKFLOW_STAGE_SUBAGENT_GUARD_ENV,
 	isBunBinary,
 	getUserConfigDirs,
@@ -71,6 +72,20 @@ export {
 	serializeConversation,
 	shouldCompact,
 } from "./core/compaction/index.ts";
+export {
+	CODEX_FAST_MODE_SERVICE_TIER,
+	formatCodexFastModeModelLabel,
+	getCodexFastModeScope,
+	hasSupportedCodexFastModeModel,
+	isCodexFastModeEnabledForScope,
+	isCodexFastModeCandidateModelId,
+	isCodexFastModeSupportedModel,
+	isCodexFastModeSupportedProvider,
+	shouldApplyCodexFastMode,
+	shouldApplyCodexFastModeForScope,
+	type CodexFastModeResolvedSettings,
+	type CodexFastModeScope,
+} from "./core/codex-fast-mode.ts";
 export { createEventBus, type EventBus, type EventBusController } from "./core/event-bus.ts";
 // Extension system
 export type {

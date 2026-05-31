@@ -280,6 +280,7 @@ export interface WorkflowTaskResult extends WorkflowTaskContext {
   readonly sessionFile?: string;
   readonly artifacts?: WorkflowArtifact[];
   readonly model?: string;
+  readonly fastMode?: boolean;
   readonly attemptedModels?: readonly string[];
   readonly modelAttempts?: readonly WorkflowModelAttempt[];
   readonly warnings?: readonly string[];

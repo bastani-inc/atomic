@@ -14,6 +14,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Fixed completed imported workflow boundary stages rendering as empty graph nodes by showing the child workflow name, child run id prefix, and selected output count in the node card.
 - Fixed the bundled deep-research workflow line-count heuristic hanging Windows CI by replacing its POSIX `wc` subprocess with portable in-process line counting.
+- Kept workflow stage model metadata as the raw model id while surfacing Codex fast mode as a separate visible `fast` marker on workflow node cards, including stages that use the default Atomic SDK adapter settings manager.
+- Show workflow Codex fast-mode metadata on running workflow nodes as soon as the stage session starts, including explicit-model stages, catalog-resolved bare model aliases, and custom resource-loader stages whose settings manager is created by the Atomic SDK.
+- Kept workflow Codex fast-mode markers synchronized across fallback attempts: running nodes now update when fallback switches to a fast-eligible model, completed nodes clear stale `fast` markers when fallback finishes on a non-eligible model, and prompt-adapter stages no longer create SDK sessions only to compute fast metadata.
 
 ## [0.8.21] - 2026-05-30
 

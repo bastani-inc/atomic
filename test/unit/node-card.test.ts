@@ -44,6 +44,7 @@ function makeStage(opts: Partial<StageSnapshot> = {}): StageSnapshot {
     blockedByStageId: opts.blockedByStageId,
     model: opts.model,
     workflowChild: opts.workflowChild,
+    fastMode: opts.fastMode,
   };
 }
 
@@ -322,6 +323,17 @@ describe("renderNodeCard — metadata line", () => {
     assert.match(rendered, /✓ complete/);
     assert.match(rendered, /run run_1234 · 1 out/);
     assert.doesNotMatch(stripAnsi(lines[1]!), /0ms|—/);
+  });
+
+  test("stages show a visible fast marker without mutating model metadata", () => {
+    const lines = renderNodeCard(
+      makeStage({ status: "completed", model: "openai/gpt-5.1-codex", fastMode: true }),
+      { theme },
+    );
+    const rendered = stripAnsi(lines.join("\n"));
+
+    assert.doesNotMatch(rendered, /openai\/gpt-5\.1-codex fast/);
+    assert.match(stripAnsi(lines[3]!), /root · fast/);
   });
 });
 
