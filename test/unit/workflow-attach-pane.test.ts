@@ -110,6 +110,34 @@ function makeHandle(runId: string, stageId: string): StageControlHandle {
   };
 }
 
+function setupTwoPromptAttachPane(
+  firstPrompt: PendingPrompt,
+  opts: { piKeybindings?: unknown } = {},
+) {
+  const store = createStore();
+  setupRun(store, "run-1", [
+    { id: "stage-a", name: "A" },
+    { id: "stage-b", name: "B" },
+  ]);
+  const registry = createStageControlRegistry();
+  registry.register(makeHandle("run-1", "stage-a"));
+  registry.register(makeHandle("run-1", "stage-b"));
+  const secondPrompt = makePendingPrompt({ id: "prompt-b", createdAt: 2 });
+  assert.equal(store.recordStagePendingPrompt("run-1", "stage-a", firstPrompt), true);
+  assert.equal(store.recordStagePendingPrompt("run-1", "stage-b", secondPrompt), true);
+  const pending = store.awaitStagePendingPrompt("run-1", "stage-a", firstPrompt.id);
+  const pane = new WorkflowAttachPane({
+    store,
+    graphTheme: deriveGraphTheme({}),
+    runId: "run-1",
+    stageControlRegistry: registry,
+    onClose: () => {},
+    initialAttachStageId: "stage-a",
+    piKeybindings: opts.piKeybindings,
+  });
+  return { store, pane, pending, secondPrompt };
+}
+
 describe("WorkflowAttachPane", () => {
   test("starts in graph mode", () => {
     const store = createStore();
@@ -125,7 +153,7 @@ describe("WorkflowAttachPane", () => {
     pane.dispose();
   });
 
-  test("passes piKeybindings into graph-mode run prompt cards", () => {
+  test("forwards piKeybindings to GraphView run-level prompt cards", () => {
     const store = createStore();
     setupRun(store, "run-1", [{ id: "stage-a", name: "A" }]);
     const prompt = makePendingPrompt({
@@ -302,27 +330,8 @@ describe("WorkflowAttachPane", () => {
   });
 
   test("repeated Enter after a prompt answer does not attach the next prompt", async () => {
-    const store = createStore();
-    setupRun(store, "run-1", [
-      { id: "stage-a", name: "A" },
-      { id: "stage-b", name: "B" },
-    ]);
-    const registry = createStageControlRegistry();
-    registry.register(makeHandle("run-1", "stage-a"));
-    registry.register(makeHandle("run-1", "stage-b"));
     const firstPrompt = makePendingPrompt({ id: "prompt-a", createdAt: 1 });
-    const secondPrompt = makePendingPrompt({ id: "prompt-b", createdAt: 2 });
-    assert.equal(store.recordStagePendingPrompt("run-1", "stage-a", firstPrompt), true);
-    assert.equal(store.recordStagePendingPrompt("run-1", "stage-b", secondPrompt), true);
-    const pending = store.awaitStagePendingPrompt("run-1", "stage-a", firstPrompt.id);
-    const pane = new WorkflowAttachPane({
-      store,
-      graphTheme: deriveGraphTheme({}),
-      runId: "run-1",
-      stageControlRegistry: registry,
-      onClose: () => {},
-      initialAttachStageId: "stage-a",
-    });
+    const { store, pane, pending, secondPrompt } = setupTwoPromptAttachPane(firstPrompt);
 
     assert.equal(pane._mode, "stage-chat");
     for (const ch of "answer") pane.handleInput(ch);
@@ -339,6 +348,71 @@ describe("WorkflowAttachPane", () => {
 
     pane.handleInput(Key.enter);
     assert.equal(pane._mode, "stage-chat", "a subsequent Enter still attaches normally");
+    assert.equal(pane._lastAttachedStageId, "stage-b");
+    pane.dispose();
+  });
+
+  test("Ctrl+C prompt skip does not consume the next graph Enter", async () => {
+    const firstPrompt = makePendingPrompt({ id: "prompt-a", initial: "default", createdAt: 1 });
+    const { store, pane, pending, secondPrompt } = setupTwoPromptAttachPane(firstPrompt);
+
+    assert.equal(pane._mode, "stage-chat");
+    pane.handleInput(Key.ctrl("c"));
+
+    assert.equal(await pending, "default");
+    assert.equal(pane._mode, "graph");
+    assert.equal(store.runs()[0]?.stages[1]?.pendingPrompt?.id, secondPrompt.id);
+
+    pane.handleInput(Key.enter);
+    assert.equal(pane._mode, "stage-chat", "first graph-mode Enter after Ctrl+C attaches");
+    assert.equal(pane._lastAttachedStageId, "stage-b");
+    pane.dispose();
+  });
+
+  for (const [key, expected] of [["y", true], ["n", false]] as const) {
+    test(`confirm ${key} prompt answer does not consume the next graph Enter`, async () => {
+      const firstPrompt = makePendingPrompt({ id: "prompt-a", kind: "confirm", createdAt: 1 });
+      const { store, pane, pending, secondPrompt } = setupTwoPromptAttachPane(firstPrompt);
+
+      assert.equal(pane._mode, "stage-chat");
+      pane.handleInput(key);
+
+      assert.equal(await pending, expected);
+      assert.equal(pane._mode, "graph");
+      assert.equal(store.runs()[0]?.stages[1]?.pendingPrompt?.id, secondPrompt.id);
+
+      pane.handleInput(Key.enter);
+      assert.equal(pane._mode, "stage-chat", `first graph-mode Enter after ${key} attaches`);
+      assert.equal(pane._lastAttachedStageId, "stage-b");
+      pane.dispose();
+    });
+  }
+
+  test("remapped select-confirm does not consume the next graph Enter", async () => {
+    const firstPrompt = makePendingPrompt({
+      id: "prompt-a",
+      kind: "select",
+      choices: ["alpha", "beta"],
+      createdAt: 1,
+    });
+    const { store, pane, pending, secondPrompt } = setupTwoPromptAttachPane(firstPrompt, {
+      piKeybindings: makeFakeKeybindings({
+        "tui.select.down": ["d"],
+        "tui.select.confirm": ["s"],
+      }),
+    });
+
+    assert.equal(pane._mode, "stage-chat");
+    pane.handleInput("d");
+    assert.equal(pane._mode, "stage-chat");
+    pane.handleInput("s");
+
+    assert.equal(await pending, "beta");
+    assert.equal(pane._mode, "graph");
+    assert.equal(store.runs()[0]?.stages[1]?.pendingPrompt?.id, secondPrompt.id);
+
+    pane.handleInput(Key.enter);
+    assert.equal(pane._mode, "stage-chat", "first graph-mode Enter after remapped select attaches");
     assert.equal(pane._lastAttachedStageId, "stage-b");
     pane.dispose();
   });

@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- Fixed workflow HIL select/editor prompts so navigation, scroll input, ambiguous Escape-prefix input, and graph-mode custom select keybindings cannot advance prompts before an explicit configured confirm/Enter submit or Ctrl+C skip; also consumes the first repeated graph-mode Enter after answering a prompt to avoid attaching the next prompt accidentally ([#1148](https://github.com/flora131/atomic/issues/1148)).
+- Fixed workflow HIL select/editor prompts so navigation, scroll input, and ambiguous Escape-prefix input cannot advance prompts before an explicit configured confirm/Enter submit or Ctrl+C skip. Graph-mode prompt cards now honor custom select keybindings, and only consume the first repeated Enter after Enter-submitted prompts to avoid attaching the next prompt accidentally ([#1148](https://github.com/flora131/atomic/issues/1148)).
 
 ## [0.8.21] - 2026-05-30
 

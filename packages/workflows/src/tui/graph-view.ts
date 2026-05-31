@@ -50,7 +50,7 @@ import {
   renderPromptCard,
   type PromptCardState,
 } from "./prompt-card.js";
-import { isKeybindingsLike } from "./keybindings-adapter.js";
+import { isKeybindingsLike, type KeybindingsLike } from "./keybindings-adapter.js";
 
 export type GraphViewMode = "overlay" | "widget";
 
@@ -1094,14 +1094,14 @@ export class GraphView implements Component {
     return this._handleGraphInput(data);
   }
 
+  private _promptKeybindings(): KeybindingsLike | undefined {
+    return isKeybindingsLike(this.piKeybindings) ? this.piKeybindings : undefined;
+  }
+
   private _handlePromptInput(data: string): boolean {
     const state = this.promptState;
     if (!state) return false;
-    const action = handlePromptCardInput(
-      data,
-      state,
-      isKeybindingsLike(this.piKeybindings) ? this.piKeybindings : undefined,
-    );
+    const action = handlePromptCardInput(data, state, this._promptKeybindings());
     if (action.kind === "noop") return true;
     const runId = this.runId;
     if (!runId) return true;

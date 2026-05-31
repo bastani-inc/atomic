@@ -105,7 +105,7 @@ export interface StageChatViewOpts {
    */
   handle?: StageControlHandle;
   /** Called when the user presses Ctrl+D outside a paused stage (back to graph). */
-  onDetach: (reason?: StageChatDetachReason) => void;
+  onDetach: (reason?: StageChatDetachReason, metadata?: StageChatDetachMetadata) => void;
   /** Called when the user presses Escape (close the whole popup). */
   onClose: () => void;
   /** Request a host TUI repaint after SDK events mutate local chat state. */
@@ -150,6 +150,10 @@ export interface StageChatViewOpts {
  * canonical user-visible string without knowing about the Pi-box payload.
  */
 export type StageChatDetachReason = "user" | "prompt-resolved";
+
+export interface StageChatDetachMetadata {
+  readonly suppressNextGraphSubmit?: boolean;
+}
 
 interface NoticeEntry {
   readonly role: "notice";
@@ -196,7 +200,7 @@ export class StageChatView implements Component, Focusable {
   private stageId: string;
   private workflowName: string;
   private handle: StageControlHandle | undefined;
-  private onDetach: (reason?: StageChatDetachReason) => void;
+  private onDetach: (reason?: StageChatDetachReason, metadata?: StageChatDetachMetadata) => void;
   private onClose: () => void;
   private requestRender: (() => void) | undefined;
   private requestFocus: (() => void) | undefined;
@@ -213,6 +217,7 @@ export class StageChatView implements Component, Focusable {
   private promptState: PromptCardState | null = null;
   private promptEditor: EditorComponent | null = null;
   private promptEditorPromptId: string | null = null;
+  private promptEditorSubmitFromEnter = false;
   private promptScrollOffset = 0;
   private promptMaxScroll = 0;
   private getChatRenderSettings?: () =>
@@ -530,7 +535,9 @@ export class StageChatView implements Component, Focusable {
       this.requestRender?.();
     };
     editor.onSubmit = (text: string) => {
-      this._resolvePromptResponse(prompt.id, text);
+      this._resolvePromptResponse(prompt.id, text, {
+        suppressNextGraphSubmit: this.promptEditorSubmitFromEnter,
+      });
     };
     this.promptEditor = editor;
     this.promptEditorPromptId = prompt.id;
@@ -544,7 +551,11 @@ export class StageChatView implements Component, Focusable {
     disposable?.dispose?.();
   }
 
-  private _resolvePromptResponse(promptId: string, response: unknown): void {
+  private _resolvePromptResponse(
+    promptId: string,
+    response: unknown,
+    metadata: StageChatDetachMetadata = {},
+  ): void {
     const prompt = this.promptState?.prompt;
     if (!prompt || prompt.id !== promptId) return;
     this.promptState = null;
@@ -554,7 +565,7 @@ export class StageChatView implements Component, Focusable {
     // the least surprising recovery path.
     this.store.resolveStagePendingPrompt(this.runId, this.stageId, prompt.id, response);
     this.requestRender?.();
-    this.onDetach("prompt-resolved");
+    this.onDetach("prompt-resolved", metadata);
   }
 
   // -------------------------------------------------------------------------
@@ -1079,7 +1090,9 @@ export class StageChatView implements Component, Focusable {
     if (!state) return;
     if (this.promptEditor && this.promptEditorPromptId === state.prompt.id) {
       if (matchesKey(data, Key.ctrl("c"))) {
-        this._resolvePromptResponse(state.prompt.id, defaultResponseFor(state.prompt));
+        this._resolvePromptResponse(state.prompt.id, defaultResponseFor(state.prompt), {
+          suppressNextGraphSubmit: false,
+        });
         return;
       }
       if (isPromptEscapeInput(data)) {
@@ -1087,7 +1100,12 @@ export class StageChatView implements Component, Focusable {
         return;
       }
       setEditorFocused(this.promptEditor, this.focused);
-      this.promptEditor.handleInput(data);
+      this.promptEditorSubmitFromEnter = matchesKey(data, Key.enter);
+      try {
+        this.promptEditor.handleInput(data);
+      } finally {
+        this.promptEditorSubmitFromEnter = false;
+      }
       this.requestRender?.();
       return;
     }
@@ -1104,7 +1122,9 @@ export class StageChatView implements Component, Focusable {
     const response = action.kind === "submit"
       ? action.response
       : defaultResponseFor(prompt);
-    this._resolvePromptResponse(prompt.id, response);
+    this._resolvePromptResponse(prompt.id, response, {
+      suppressNextGraphSubmit: action.kind === "submit" && matchesKey(data, Key.enter),
+    });
   }
 
   // -------------------------------------------------------------------------

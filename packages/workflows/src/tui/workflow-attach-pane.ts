@@ -25,7 +25,11 @@ import type { ChatMessageRenderOptions, ReadonlyFooterDataProvider } from "@bast
 import type { Store } from "../shared/store.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { GraphView } from "./graph-view.js";
-import { StageChatView, type StageChatDetachReason } from "./stage-chat-view.js";
+import {
+  StageChatView,
+  type StageChatDetachMetadata,
+  type StageChatDetachReason,
+} from "./stage-chat-view.js";
 import { Key, matchesKey } from "./text-helpers.js";
 import type {
   StageControlHandle,
@@ -243,7 +247,7 @@ export class WorkflowAttachPane implements Component {
       stageId,
       workflowName: this._workflowName(runId),
       handle,
-      onDetach: (reason) => this._detachFromStage(reason),
+      onDetach: (reason, metadata) => this._detachFromStage(reason, metadata),
       onClose: this.onClose,
       requestRender: this.hostRequestRender,
       requestFocus: this.hostRequestFocus,
@@ -262,7 +266,10 @@ export class WorkflowAttachPane implements Component {
     this._syncMouseScrollTracking();
   }
 
-  private _detachFromStage(reason: StageChatDetachReason = "user"): void {
+  private _detachFromStage(
+    reason: StageChatDetachReason = "user",
+    metadata: StageChatDetachMetadata = {},
+  ): void {
     if (this.chatView && this.runId && this.lastAttachedStageId) {
       this.store.recordStageAttached(this.runId, this.lastAttachedStageId, false);
     }
@@ -274,7 +281,8 @@ export class WorkflowAttachPane implements Component {
     this.graphView.dispose();
     this.graphView = this._buildGraphView(this.lastAttachedStageId ?? undefined);
     this.mode = "graph";
-    this.suppressNextGraphSubmit = reason === "prompt-resolved";
+    this.suppressNextGraphSubmit =
+      reason === "prompt-resolved" && metadata.suppressNextGraphSubmit === true;
     this._setBaseStatus();
     this._syncMouseScrollTracking();
   }
