@@ -120,8 +120,8 @@ function durationText(stage: StageSnapshot): string {
 
 function metaText(stage: StageSnapshot): string {
   const deps = stage.parentIds.length;
-  if (deps === 0) return "root";
-  return deps === 1 ? "1 dep" : `${deps} deps`;
+  const dependencyText = deps === 0 ? "root" : deps === 1 ? "1 dep" : `${deps} deps`;
+  return stage.fastMode === true ? `${dependencyText} · fast` : dependencyText;
 }
 
 function statusLabel(status: StageStatus): string {

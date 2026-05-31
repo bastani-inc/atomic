@@ -5,7 +5,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
-import { CONFIG_DIR_NAME, createAskUserQuestionToolDefinition } from "@bastani/atomic";
+import { CONFIG_DIR_NAME, createAskUserQuestionToolDefinition, isCodexFastModeCandidateModelId } from "@bastani/atomic";
 import { stageUiBroker } from "../../shared/stage-ui-broker.js";
 import { buildStagePromptAdapter } from "../../shared/stage-prompt.js";
 import type {
@@ -71,7 +71,7 @@ import {
   appendStageEnd,
   appendRunEnd,
 } from "../../shared/persistence-session-entries.js";
-import { validateWorkflowModels } from "../shared/model-fallback.js";
+import { buildModelCandidatesFromCatalog, validateWorkflowModels, workflowModelId } from "../shared/model-fallback.js";
 import type { WorkflowFailure } from "../../shared/workflow-failures.js";
 import { classifyWorkflowFailure } from "../../shared/workflow-failures.js";
 import { selectPromptCallsiteFrame } from "../shared/prompt-callsite.js";
@@ -2175,6 +2175,7 @@ export async function run<TInputs extends Record<string, unknown>>(
           __pendingMessageCount: () => 0,
           __modelFallbackMeta: () => ({
             ...(replaySource.model !== undefined ? { model: replaySource.model } : {}),
+            ...(replaySource.fastMode === true ? { fastMode: replaySource.fastMode } : {}),
             ...(replaySource.attemptedModels !== undefined ? { attemptedModels: replaySource.attemptedModels } : {}),
             ...(replaySource.modelAttempts !== undefined ? { modelAttempts: replaySource.modelAttempts } : {}),
           }),
@@ -2188,6 +2189,16 @@ export async function run<TInputs extends Record<string, unknown>>(
       // d. Create inner AgentSession-like StageContext (raw, without lifecycle wrapping).
       //    Must come before the registry registration because the handle
       //    delegates to it for every operation.
+      const applyModelFallbackMeta = (meta: ReturnType<InternalStageContext["__modelFallbackMeta"]>): void => {
+        if (meta.model !== undefined) stageSnapshot.model = meta.model;
+        if (meta.fastMode !== undefined) {
+          if (meta.fastMode) stageSnapshot.fastMode = true;
+          else delete stageSnapshot.fastMode;
+        }
+        if (meta.attemptedModels !== undefined) stageSnapshot.attemptedModels = meta.attemptedModels;
+        if (meta.modelAttempts !== undefined) stageSnapshot.modelAttempts = meta.modelAttempts;
+      };
+
       const innerCtx: InternalStageContext = createStageContext({
         stageId,
         stageName: name,
@@ -2196,6 +2207,12 @@ export async function run<TInputs extends Record<string, unknown>>(
         signal: ownController.signal,
         stageOptions: options,
         models: opts.models,
+        onModelFallbackMetaChange(meta) {
+          applyModelFallbackMeta(meta);
+          if (stageSnapshot.status === "running") {
+            activeStore.recordStageStart(runId, stageSnapshot);
+          }
+        },
       });
       const activeAskUserQuestionCalls = new Set<string>();
       let activeAskUserQuestionAnonymousCalls = 0;
@@ -2352,10 +2369,7 @@ export async function run<TInputs extends Record<string, unknown>>(
         stageSnapshot.endedAt = Date.now();
         stageSnapshot.durationMs = elapsedStageMs(stageSnapshot, stageSnapshot.endedAt);
 
-        const finalModelMeta = innerCtx.__modelFallbackMeta();
-        if (finalModelMeta.model !== undefined) stageSnapshot.model = finalModelMeta.model;
-        if (finalModelMeta.attemptedModels !== undefined) stageSnapshot.attemptedModels = finalModelMeta.attemptedModels;
-        if (finalModelMeta.modelAttempts !== undefined) stageSnapshot.modelAttempts = finalModelMeta.modelAttempts;
+        applyModelFallbackMeta(innerCtx.__modelFallbackMeta());
 
         activeStore.recordStageEnd(runId, stageSnapshot);
         opts.onStageEnd?.(runId, stageSnapshot);
@@ -2453,7 +2467,7 @@ export async function run<TInputs extends Record<string, unknown>>(
         }
       };
 
-      const runTrackedStageCall = async (call: () => Promise<string>): Promise<string> => {
+      const runTrackedStageCall = async (call: () => Promise<string>, eagerSession = false): Promise<string> => {
         await waitForStageRelease();
         if (stageFinalized) {
           throw parallelFailFastError();
@@ -2481,6 +2495,33 @@ export async function run<TInputs extends Record<string, unknown>>(
         }
         stageSnapshot.status = "running";
         stageSnapshot.startedAt = Date.now();
+        const hasExplicitFastModeCandidate = async (): Promise<boolean> => {
+          const rawCandidate = isCodexFastModeCandidateModelId(workflowModelId(options?.model))
+            || (Array.isArray(options?.fallbackModels) && options.fallbackModels.some((candidate) => isCodexFastModeCandidateModelId(workflowModelId(candidate))));
+          if (rawCandidate) return true;
+          try {
+            const candidates = await buildModelCandidatesFromCatalog({
+              primaryModel: options?.model,
+              fallbackModels: options?.fallbackModels,
+              catalog: opts.models,
+            });
+            return candidates.some((candidate) => isCodexFastModeCandidateModelId(candidate.id));
+          } catch {
+            return false;
+          }
+        };
+        const hasNoExplicitModelConfig = options?.model === undefined && options?.fallbackModels === undefined;
+        const promptAdapterHandlesInitialPrompt = adapters.prompt !== undefined;
+        if (eagerSession && !promptAdapterHandlesInitialPrompt && (hasNoExplicitModelConfig || await hasExplicitFastModeCandidate())) {
+          try {
+            await innerCtx.__ensureSession();
+          } catch (err) {
+            if (!(err instanceof Error && err.message.includes("prompt adapter not configured"))) {
+              throw err;
+            }
+          }
+        }
+        applyModelFallbackMeta(innerCtx.__modelFallbackMeta());
         activeStore.recordStageStart(runId, stageSnapshot);
 
         // Persistence: append stage.start entry
@@ -2556,10 +2597,7 @@ export async function run<TInputs extends Record<string, unknown>>(
             if (meta.sessionId !== undefined || meta.sessionFile !== undefined) {
               activeStore.recordStageSession(runId, stageId, meta);
             }
-            const modelMeta = innerCtx.__modelFallbackMeta();
-            if (modelMeta.model !== undefined) stageSnapshot.model = modelMeta.model;
-            if (modelMeta.attemptedModels !== undefined) stageSnapshot.attemptedModels = modelMeta.attemptedModels;
-            if (modelMeta.modelAttempts !== undefined) stageSnapshot.modelAttempts = modelMeta.modelAttempts;
+            applyModelFallbackMeta(innerCtx.__modelFallbackMeta());
           }
           if (stageFailFastScope?.failed === true && stageFailFastScope.activeStages.has(stageId)) {
             markSkippedForParallelFailFast();
@@ -2626,7 +2664,7 @@ export async function run<TInputs extends Record<string, unknown>>(
 
       const stageContext: StageContext & Pick<InternalStageContext, "__modelFallbackMeta"> = {
         name: innerCtx.name,
-        prompt: (text, promptOptions) => runTrackedStageCall(() => innerCtx.prompt(text, promptOptions)),
+        prompt: (text, promptOptions) => runTrackedStageCall(() => innerCtx.prompt(text, promptOptions), true),
         complete: (text, completeOptions) => runTrackedStageCall(() => innerCtx.complete(text, completeOptions)),
         steer: (text) => innerCtx.steer(text),
         followUp: (text) => innerCtx.followUp(text),
@@ -2706,6 +2744,7 @@ export async function run<TInputs extends Record<string, unknown>>(
           ...(sessionId !== undefined ? { sessionId } : {}),
           ...(stage.sessionFile !== undefined ? { sessionFile: stage.sessionFile } : {}),
           ...(stageMeta.model !== undefined ? { model: stageMeta.model } : {}),
+          ...(stageMeta.fastMode === true ? { fastMode: stageMeta.fastMode } : {}),
           ...(stageMeta.attemptedModels !== undefined ? { attemptedModels: stageMeta.attemptedModels } : {}),
           ...(stageMeta.modelAttempts !== undefined ? { modelAttempts: stageMeta.modelAttempts } : {}),
           ...(stageMeta.warnings !== undefined ? { warnings: stageMeta.warnings } : {}),

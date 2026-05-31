@@ -23,7 +23,7 @@
 
 import { basename } from "node:path";
 import type { ChatMessageRenderOptions, CreateAgentSessionOptions } from "@bastani/atomic";
-import type { StageAdapters, StageSessionRuntime } from "../runs/foreground/stage-runner.js";
+import type { StageAdapters, StageSessionCreateResult, StageSessionRuntime } from "../runs/foreground/stage-runner.js";
 import type { StageExecutionMeta, StageOptions } from "../shared/types.js";
 import { stageUiBroker, type StageUiBroker } from "../shared/stage-ui-broker.js";
 
@@ -56,12 +56,12 @@ export interface RuntimeWiringSurface {
   exec?: (command: string, args: string[], opts?: PiExecOpts) => Promise<PiExecResult>;
   ui?: PiUISurface;
   /** Test seam: inject a stub session factory instead of importing the SDK. */
-  createAgentSession?: (options?: CreateAgentSessionOptions) => Promise<{ session: StageSessionRuntime }>;
+  createAgentSession?: (options?: CreateAgentSessionOptions) => Promise<StageSessionCreateResult>;
 }
 
 export interface RuntimeAdapterBuildOptions {
   /** Test seam for SDK session creation. */
-  createAgentSession?: (options?: CreateAgentSessionOptions) => Promise<{ session: StageSessionRuntime }>;
+  createAgentSession?: (options?: CreateAgentSessionOptions) => Promise<StageSessionCreateResult>;
   /** Broker that routes stage-local custom UI into attached workflow nodes. */
   stageUiBroker?: StageUiBroker;
 }
@@ -90,7 +90,9 @@ function isTestContext(): boolean {
  * cross-ref: node_modules/@bastani/atomic/docs/sdk.md
  *            node_modules/@bastani/atomic/dist/core/sdk.d.ts
  */
-export interface PiSdkSettingsManager {}
+export interface PiSdkSettingsManager {
+  getCodexFastModeSettings(): { readonly chat: boolean; readonly workflow: boolean };
+}
 export interface PiSdkResourceLoader {
   reload(): Promise<void>;
 }
@@ -176,17 +178,24 @@ function stageBuiltinPackagePaths(paths: readonly string[]): string[] {
 
 async function createPiSdkAgentSession(
   options?: CreateAgentSessionOptions,
-): Promise<{ session: StageSessionRuntime }> {
+): Promise<StageSessionCreateResult> {
   const sdk = await import("@bastani/atomic") as PiCodingAgentSdk;
   const sessionOptions = await prepareAtomicStageSessionOptions(options, sdk);
   const result = await sdk.createAgentSession(sessionOptions);
   // `CreateAgentSessionResult` is `{ session, extensionsResult, modelFallbackMessage? }`;
   // workflow stages only consume `.session` (structurally an `AgentSession`,
   // which is a superset of our `StageSessionRuntime` projection).
-  return { session: result.session };
+  const resultSettingsManager = result.session.settingsManager;
+  const settingsManager = sessionOptions?.settingsManager ?? resultSettingsManager;
+  return {
+    session: result.session,
+    ...(settingsManager?.getCodexFastModeSettings !== undefined
+      ? { settingsManager }
+      : {}),
+  };
 }
 
-async function createTestAgentSession(_options?: CreateAgentSessionOptions): Promise<{ session: StageSessionRuntime }> {
+async function createTestAgentSession(_options?: CreateAgentSessionOptions): Promise<StageSessionCreateResult> {
   let lastAssistantText: string | undefined;
   const session: StageSessionRuntime = {
     async prompt(text: string): Promise<string> {
@@ -343,7 +352,7 @@ export function buildRuntimeAdapters(
   const broker = options.stageUiBroker ?? stageUiBroker;
   const adapters: StageAdapters = {
     agentSession: {
-      async create(stageOptions: CreateAgentSessionOptions & Pick<StageOptions, "mcp" | "fallbackModels">, meta?: StageExecutionMeta): Promise<StageSessionRuntime> {
+      async create(stageOptions: CreateAgentSessionOptions & Pick<StageOptions, "mcp" | "fallbackModels">, meta?: StageExecutionMeta): Promise<StageSessionRuntime | StageSessionCreateResult> {
         // Atomic's SDK handles extension / skills / prompt-template /
         // slash-command discovery via the SettingsManager / ResourceLoader.
         // The production default deliberately uses normal DefaultResourceLoader
@@ -362,7 +371,7 @@ export function buildRuntimeAdapters(
             uiContext: makeStageExtensionUiContext(pi.ui ?? {}, meta, broker),
           });
         }
-        return result.session;
+        return result;
       },
     },
   };
