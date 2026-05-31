@@ -23,7 +23,7 @@ import { discoverAgents } from "../agents/agents.ts";
 import { cleanupAllArtifactDirs, cleanupOldArtifacts, getArtifactsDir } from "../shared/artifacts.ts";
 import { resolveCurrentSessionId } from "../shared/session-identity.ts";
 import { cleanupOldChainDirs } from "../shared/settings.ts";
-import { renderWidget, renderSubagentResult, stopResultAnimations, stopWidgetAnimation, syncResultAnimation } from "../tui/render.ts";
+import { renderSubagentResult, stopResultAnimations, stopWidgetAnimation, syncResultAnimation } from "../tui/render.ts";
 import { SubagentParams } from "./schemas.ts";
 import { createSubagentExecutor, type SubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
 import { createAsyncJobTracker } from "../runs/background/async-job-tracker.ts";
@@ -281,7 +281,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	};
 	globalStore[runtimeCleanupStoreKey] = runtimeCleanup;
 
-	const { ensurePoller, handleStarted, handleComplete, resetJobs } = createAsyncJobTracker(pi, state, ASYNC_DIR);
+	const { ensurePoller, handleStarted, handleComplete, resetJobs, hydrateActiveJobs } = createAsyncJobTracker(pi, state, ASYNC_DIR);
 	const executor = createSubagentExecutor({
 		pi,
 		state,
@@ -337,7 +337,10 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	});
 
 	const executeSubagentCollapsed = (id: string, params: SubagentParamsLike, signal: AbortSignal, onUpdate: ((result: AgentToolResult<Details>) => void) | undefined, ctx: ExtensionContext) => {
-		if (ctx.hasUI) ctx.ui.setToolsExpanded(false);
+		if (ctx.hasUI) {
+			state.lastUiContext = ctx;
+			ctx.ui.setToolsExpanded(false);
+		}
 		return executor.execute(id, params, signal, onUpdate, ctx);
 	};
 
@@ -513,11 +516,8 @@ DIAGNOSTICS:
 		if (event.toolName !== "subagent") return;
 		if (!ctx.hasUI) return;
 		state.lastUiContext = ctx;
-		if (state.asyncJobs.size > 0) {
-			renderWidget(ctx, Array.from(state.asyncJobs.values()));
-			ctx.ui.requestRender?.();
-			ensurePoller();
-		}
+		hydrateActiveJobs(ctx);
+		if (state.asyncJobs.size > 0) ensurePoller();
 	});
 
 	const cleanupSessionArtifacts = (ctx: ExtensionContext) => {
@@ -538,6 +538,7 @@ DIAGNOSTICS:
 		cleanupSessionArtifacts(ctx);
 		clearPendingForegroundControlNotices(state);
 		resetJobs(ctx);
+		hydrateActiveJobs(ctx);
 		restoreSlashFinalSnapshots(ctx.sessionManager.getEntries());
 		primeExistingResults();
 	};
