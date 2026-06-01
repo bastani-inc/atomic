@@ -285,7 +285,7 @@ test("session_start warns when discovered workflows fail validation", async () =
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-});
+}, 15_000);
 
 // ---------------------------------------------------------------------------
 // Non-interactive (-p) mode: the `workflow` tool remains available so

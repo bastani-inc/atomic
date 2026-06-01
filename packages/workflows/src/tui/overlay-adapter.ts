@@ -115,6 +115,8 @@ export interface BuildGraphOverlayAdapterOpts {
    * inspection.
    */
   onKillRun?: (runId: string) => void;
+  /** Optional clock injection for deterministic attach-pane transition tests. */
+  now?: () => number;
 }
 
 export function buildGraphOverlayAdapter(
@@ -308,6 +310,7 @@ export function buildGraphOverlayAdapter(
           currentHandle?.focus();
         },
         setMouseScrollTracking,
+        now: buildOpts.now,
       } as ConstructorParameters<typeof WorkflowAttachPane>[0] & {
         piTui?: PiCustomOverlayFactoryTui;
         piTheme?: PiTheme;

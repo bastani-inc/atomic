@@ -795,17 +795,17 @@ describe("MockExtensionAPI — message renderer registration", () => {
     assert.ok(out.includes("2"));
   });
 
-  test("workflow.run.end renderer ok status shows success emoji", () => {
+  test("workflow.run.end renderer ok status shows success marker", () => {
     const renderer = getRenderer(mock.renderers, "workflow.run.end")!;
     const out = expectStringRendererOutput(renderer({ runId: "r1", status: "ok" }));
-    assert.ok(out.includes("✅"));
+    assert.ok(out.includes("✓"));
     assert.ok(out.includes("r1"));
   });
 
-  test("workflow.run.end renderer error status shows failure emoji", () => {
+  test("workflow.run.end renderer error status shows failure marker", () => {
     const renderer = getRenderer(mock.renderers, "workflow.run.end")!;
     const out = expectStringRendererOutput(renderer({ runId: "r1", status: "error" }));
-    assert.ok(out.includes("❌"));
+    assert.ok(out.includes("✗"));
   });
 
   test("skips renderer registration when registerMessageRenderer absent", () => {

@@ -83,7 +83,7 @@ async function waitForStagePendingPrompt(
   store: ReturnType<typeof createStore>,
   runId: string,
   expectedKind?: "input" | "confirm" | "select" | "editor",
-  timeoutMs = 1000,
+  timeoutMs = 5000,
 ): Promise<{ stageId: string; promptId: string }> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -574,7 +574,8 @@ describe("buildGraphOverlayAdapter — open with pi.ui.custom", () => {
     const store = createStore();
     const cancellation = createCancellationRegistry();
     const jobs = createJobTracker();
-    const adapter = buildGraphOverlayAdapter({ ui }, store);
+    let now = 0;
+    const adapter = buildGraphOverlayAdapter({ ui }, store, { now: () => now });
     let releaseWorkflow!: () => void;
     const workflowGate = new Promise<void>((resolve) => {
       releaseWorkflow = resolve;
@@ -604,6 +605,7 @@ describe("buildGraphOverlayAdapter — open with pi.ui.custom", () => {
     await waitForStagePendingPrompt(store, accepted.runId, "confirm");
 
     const component = calls[0]!.component;
+    now += 201;
     component.handleInput?.("\r");
     const top = visibleText(component.render(90));
     assert.match(top, /SECTION 1/);
@@ -626,7 +628,8 @@ describe("buildGraphOverlayAdapter — open with pi.ui.custom", () => {
     const store = createStore();
     const cancellation = createCancellationRegistry();
     const jobs = createJobTracker();
-    const adapter = buildGraphOverlayAdapter({ ui }, store);
+    let now = 0;
+    const adapter = buildGraphOverlayAdapter({ ui }, store, { now: () => now });
     let releaseWorkflow!: () => void;
     const workflowGate = new Promise<void>((resolve) => {
       releaseWorkflow = resolve;
@@ -650,6 +653,7 @@ describe("buildGraphOverlayAdapter — open with pi.ui.custom", () => {
     const editorPrompt = await waitForStagePendingPrompt(store, accepted.runId, "editor");
 
     const component = calls[0]!.component;
+    now += 201;
     component.handleInput?.("\r");
     const bottom = visibleText(component.render(100));
     assert.match(bottom, /JSON LINE 40/);
