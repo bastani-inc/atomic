@@ -126,8 +126,9 @@ export function createCustomMessage(
 	display: boolean,
 	details: unknown | undefined,
 	timestamp: string,
+	excludeFromContext?: boolean,
 ): CustomMessage {
-	return {
+	const message: CustomMessage & { excludeFromContext?: boolean } = {
 		role: "custom",
 		customType,
 		content,
@@ -135,6 +136,8 @@ export function createCustomMessage(
 		details,
 		timestamp: new Date(timestamp).getTime(),
 	};
+	if (excludeFromContext === true) message.excludeFromContext = true;
+	return message;
 }
 
 /**
@@ -160,6 +163,7 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
 						timestamp: m.timestamp,
 					};
 				case "custom": {
+					if ((m as CustomMessage & { excludeFromContext?: boolean }).excludeFromContext === true) return undefined;
 					const content = typeof m.content === "string" ? [{ type: "text" as const, text: m.content }] : m.content;
 					return {
 						role: "user",

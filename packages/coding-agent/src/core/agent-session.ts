@@ -339,6 +339,10 @@ interface ToolDefinitionEntry {
 /** Standard thinking levels */
 const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high"];
 
+function customMessageExcludesContext(message: CustomMessage): boolean {
+	return (message as CustomMessage & { excludeFromContext?: boolean }).excludeFromContext === true;
+}
+
 // ============================================================================
 // AgentSession Class
 // ============================================================================
@@ -657,6 +661,7 @@ export class AgentSession {
 					event.message.content,
 					event.message.display,
 					event.message.details,
+					customMessageExcludesContext(event.message),
 				);
 			} else if (
 				event.message.role === "user" ||
@@ -1464,8 +1469,9 @@ export class AgentSession {
 	/**
 	 * Send a custom message to the session. Creates a CustomMessageEntry.
 	 *
-	 * Handles four cases:
+	 * Handles five cases:
 	 * - Streaming + interrupt trigger: aborts the active run and starts an immediate custom-message turn
+	 * - Streaming + explicit display-only context exclusion: appends to state/session, no turn and no queue
 	 * - Streaming otherwise: queues message, processed when loop pulls from queue
 	 * - Not streaming + triggerTurn: appends to state/session, starts new turn
 	 * - Not streaming + no trigger: appends to state/session, no turn
@@ -1485,26 +1491,34 @@ export class AgentSession {
 			display: message.display,
 			details: message.details,
 			timestamp: Date.now(),
+			...(options?.excludeFromContext === true ? { excludeFromContext: true } : {}),
 		} satisfies CustomMessage<T>;
 		if (options?.deliverAs === "nextTurn") {
 			this._pendingNextTurnMessages.push(appMessage);
 		} else if (options?.deliverAs === "interrupt" && options.triggerTurn) {
 			await this._enqueueInterruptCustomMessage(appMessage, options);
+		} else if (this.isStreaming && options?.excludeFromContext === true && options.triggerTurn !== true && options.deliverAs === undefined) {
+			this._appendCustomMessage(appMessage);
 		} else if (this.isStreaming) {
 			this._queueAgentMessage(appMessage, options?.deliverAs === "followUp" ? "followUp" : "steer");
 		} else if (options?.triggerTurn) {
 			await this.agent.prompt(appMessage);
 		} else {
-			this.agent.state.messages.push(appMessage);
-			this.sessionManager.appendCustomMessageEntry(
-				message.customType,
-				message.content,
-				message.display,
-				message.details,
-			);
-			this._emit({ type: "message_start", message: appMessage });
-			this._emit({ type: "message_end", message: appMessage });
+			this._appendCustomMessage(appMessage);
 		}
+	}
+
+	private _appendCustomMessage<T>(message: CustomMessage<T>): void {
+		this.agent.state.messages.push(message);
+		this.sessionManager.appendCustomMessageEntry(
+			message.customType,
+			message.content,
+			message.display,
+			message.details,
+			customMessageExcludesContext(message),
+		);
+		this._emit({ type: "message_start", message });
+		this._emit({ type: "message_end", message });
 	}
 
 	private _enqueueInterruptCustomMessage<T>(message: CustomMessage<T>, options?: SendMessageOptions): Promise<void> {

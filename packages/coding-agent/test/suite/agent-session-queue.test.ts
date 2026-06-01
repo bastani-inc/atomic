@@ -3,6 +3,7 @@ import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@bastani/atomic";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
+import { convertToLlm } from "../../src/core/messages.ts";
 import { createHarness, getAssistantTexts, getMessageText, getUserTexts, type Harness } from "./harness.ts";
 
 async function createWaitingHarness(
@@ -289,6 +290,48 @@ describe("AgentSession queue characterization", () => {
 		expect(
 			harness.session.messages.some((message) => message.role === "custom" && message.customType === "queue-test"),
 		).toBe(true);
+	});
+
+	it("keeps excluded custom messages display-only while streaming", async () => {
+		const waiting = await createWaitingHarness();
+		const { harness, waitForToolStart, promptPromise, releaseToolExecution } = waiting;
+		harnesses.push(harness);
+		let sawCustomMessage = false;
+
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
+			(context) => {
+				sawCustomMessage = context.messages.some(
+					(message) =>
+						message.role === "user" &&
+						typeof message.content !== "string" &&
+						message.content.some((part) => part.type === "text" && part.text === "display only custom"),
+				);
+				return fauxAssistantMessage("done");
+			},
+		]);
+
+		await waitForToolStart;
+		await harness.session.sendCustomMessage(
+			{ customType: "queue-test", content: "display only custom", display: true, details: { value: 1 } },
+			{ triggerTurn: false, excludeFromContext: true },
+		);
+		releaseToolExecution();
+		await promptPromise;
+
+		expect(sawCustomMessage).toBe(false);
+		const customMessage = harness.session.messages.find(
+			(message) => message.role === "custom" && message.customType === "queue-test",
+		);
+		expect((customMessage as { excludeFromContext?: boolean } | undefined)?.excludeFromContext).toBe(true);
+		expect(
+			convertToLlm(harness.session.messages).some(
+				(message) =>
+					message.role === "user" &&
+					typeof message.content !== "string" &&
+					message.content.some((part) => part.type === "text" && part.text === "display only custom"),
+			),
+		).toBe(false);
 	});
 
 	it("queues custom messages with deliverAs followUp while streaming", async () => {

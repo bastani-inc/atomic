@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   HIL_ANSWER_NOTICE_CUSTOM_TYPE,
   installWorkflowHilAnswerNotifications,
+  registerHilAnswerNoticeRenderer,
   type WorkflowHilAnswerNoticeDetails,
 } from "../../packages/workflows/src/extension/hil-answer-notifications.js";
 import { StageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
@@ -17,9 +18,19 @@ interface SentMessage {
   readonly details?: WorkflowHilAnswerNoticeDetails;
 }
 
+interface CardComponent {
+  render(width: number): string[];
+}
+
+interface RegisteredRenderer {
+  readonly event: string;
+  readonly renderer: (payload: unknown) => unknown;
+}
+
 type SendOptions = {
   readonly triggerTurn?: boolean;
   readonly deliverAs?: "steer" | "followUp" | "nextTurn" | "interrupt";
+  readonly excludeFromContext?: boolean;
   readonly interruptAbortMessage?: string;
 };
 
@@ -72,7 +83,7 @@ function setup() {
 }
 
 describe("installWorkflowHilAnswerNotifications", () => {
-  test("emits one interrupt notice when a simple stage prompt is answered", () => {
+  test("emits one display-only notice when a simple stage prompt is answered", () => {
     const { store, sent, options, unsubscribe } = setup();
 
     assert.equal(store.recordStagePendingPrompt("run-1", "stage-1", pendingPrompt()), true);
@@ -81,11 +92,7 @@ describe("installWorkflowHilAnswerNotifications", () => {
     store.clearStagePromptAnswer("run-1", "stage-1");
 
     assert.equal(sent.length, 1);
-    assert.equal(options[0]?.triggerTurn, true);
-    assert.equal(options[0]?.deliverAs, "interrupt");
-    assert.match(options[0]?.interruptAbortMessage ?? "", /main-chat question was dismissed/);
-    assert.match(options[0]?.interruptAbortMessage ?? "", /User responded with: swordfish/);
-    assert.doesNotMatch(options[0]?.interruptAbortMessage ?? "", /^Operation aborted$/);
+    assert.deepEqual(options[0], { triggerTurn: false, excludeFromContext: true });
     assert.equal(sent[0]?.customType, HIL_ANSWER_NOTICE_CUSTOM_TYPE);
     assert.equal(sent[0]?.display, true);
     assert.equal(sent[0]?.details?.kind, "hil_answered");
@@ -104,6 +111,8 @@ describe("installWorkflowHilAnswerNotifications", () => {
     assert.match(sent[0]?.content ?? "", /received the user's response/);
     assert.match(sent[0]?.content ?? "", /User responded with: swordfish/);
     assert.match(sent[0]?.content ?? "", /Do not ask the same question again/);
+    assert.match(sent[0]?.content ?? "", /No main-chat action is needed/);
+    assert.match(sent[0]?.content ?? "", /do not answer any other workflow human-in-the-loop prompt unless the user explicitly provides that answer/);
     unsubscribe();
   });
 
@@ -134,7 +143,7 @@ describe("installWorkflowHilAnswerNotifications", () => {
     unsubscribe();
   });
 
-  test("emits an interrupt notice when a brokered structured prompt is answered", async () => {
+  test("emits a display-only notice when a brokered structured prompt is answered", async () => {
     const { broker, sent, options, unsubscribe } = setup();
     const adapter = buildStagePromptAdapter("ask-1", "ask_user_question", COLOR_ARGS, 1)!;
     broker.provideStagePrompt("run-1", "stage-1", adapter);
@@ -148,9 +157,7 @@ describe("installWorkflowHilAnswerNotifications", () => {
     await pending;
 
     assert.equal(sent.length, 1);
-    assert.equal(options[0]?.triggerTurn, true);
-    assert.equal(options[0]?.deliverAs, "interrupt");
-    assert.match(options[0]?.interruptAbortMessage ?? "", /User responded with: What color\? → Blue/);
+    assert.deepEqual(options[0], { triggerTurn: false, excludeFromContext: true });
     assert.equal(sent[0]?.customType, HIL_ANSWER_NOTICE_CUSTOM_TYPE);
     assert.equal(sent[0]?.details?.promptId, "ask-1");
     assert.equal(sent[0]?.details?.promptKind, "ask_user_question");
@@ -159,7 +166,7 @@ describe("installWorkflowHilAnswerNotifications", () => {
     assert.equal(sent[0]?.details?.answerSummary, "What color? → Blue");
     assert.equal(sent[0]?.details?.promptMessage, "What color?");
     assert.match(sent[0]?.content ?? "", /User responded with: What color\? → Blue/);
-    assert.match(sent[0]?.content ?? "", /stage has already received the user's response/);
+    assert.match(sent[0]?.content ?? "", /No main-chat action is needed/);
     unsubscribe();
   });
 
@@ -178,5 +185,56 @@ describe("installWorkflowHilAnswerNotifications", () => {
 
     assert.deepEqual(sent, []);
     unsubscribe();
+  });
+
+  test("registers HiL answer renderer once per host and returns a notice card", () => {
+    const host = {};
+    const registered: RegisteredRenderer[] = [];
+    registerHilAnswerNoticeRenderer({
+      rendererHost: host,
+      registerMessageRenderer(event, renderer) {
+        registered.push({ event, renderer: renderer as (payload: unknown) => unknown });
+      },
+    });
+    registerHilAnswerNoticeRenderer({
+      rendererHost: host,
+      registerMessageRenderer(event, renderer) {
+        registered.push({ event, renderer: renderer as (payload: unknown) => unknown });
+      },
+    });
+
+    assert.equal(registered.length, 1);
+    assert.equal(registered[0]?.event, HIL_ANSWER_NOTICE_CUSTOM_TYPE);
+    const rendered = registered[0]?.renderer({
+      details: {
+        kind: "hil_answered",
+        scope: "stage",
+        runId: "run-card",
+        workflowName: "release",
+        stageId: "stage-1",
+        stageName: "review",
+        promptId: "prompt-1",
+        promptKind: "input",
+        promptMessage: "Secret passphrase?",
+        answeredAt: 1,
+        answerAvailable: true,
+        answerIncluded: true,
+        answerSummary: "swordfish",
+      } satisfies WorkflowHilAnswerNoticeDetails,
+    });
+
+    assert.equal(typeof rendered, "object");
+    assert.notEqual(rendered, null);
+    const lines = (rendered as CardComponent).render(80);
+    const text = lines.join("\n");
+    assert.match(text, /╭ HIL ANSWERED/);
+    assert.match(text, /✓ Workflow "release" received the user's response/);
+    assert.match(text, /stage\s+review/);
+    assert.match(text, /answer\s+swordfish/);
+    for (const width of [80, 40, 24]) {
+      for (const line of (rendered as CardComponent).render(width)) {
+        assert.ok(line.length === 0 || line.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "").length <= width);
+      }
+    }
   });
 });

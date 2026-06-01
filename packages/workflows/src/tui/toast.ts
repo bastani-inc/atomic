@@ -3,8 +3,8 @@
  *
  * Visual: solid status-coloured pill (`success`/`warning`/`info`/`error`)
  * with `backgroundElement` foreground and bold weight — same vocabulary as
- * the header pill (DESIGN.md §5 Mode Pills). Icon glyphs from the canonical
- * Unicode set (`✓ ✗ ⚠ ℹ`).
+ * the header pill (DESIGN.md §5 Mode Pills). Icon glyphs use the same
+ * cross-platform text symbols as the rest of the workflow UI (`✓ ✗ ⚠ ℹ`).
  */
 import type { GraphTheme } from "./graph-theme.js";
 import { hexBg, hexToAnsi, RESET, BOLD } from "./color-utils.js";

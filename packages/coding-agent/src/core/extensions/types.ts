@@ -87,6 +87,8 @@ export type CustomMessageDelivery = "steer" | "followUp" | "nextTurn" | "interru
 export interface SendMessageOptions {
 	triggerTurn?: boolean;
 	deliverAs?: CustomMessageDelivery;
+	/** Render/persist the custom message without including it in LLM context. */
+	excludeFromContext?: boolean;
 	/**
 	 * Optional replacement text for generic abort tool/assistant results when
 	 * `deliverAs: "interrupt"` aborts an active turn. Use this when the abort is

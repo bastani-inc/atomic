@@ -41,6 +41,8 @@ export function statusIcon(status: StageStatus | RunStatus): string {
   switch (status) {
     case "pending":
       return "○";
+    case "awaiting_input":
+      return "？";
     case "blocked":
       return "↑";
     case "skipped":

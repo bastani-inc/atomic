@@ -1,7 +1,7 @@
 import type {
   ExtensionAPI,
   PiMessageRenderComponent,
-  PiMessageRendererResult,
+  PiMessageRenderer,
 } from "./index.js";
 import type { Store } from "../shared/store.js";
 import type {
@@ -14,7 +14,8 @@ import type {
   StoreSnapshot,
 } from "../shared/store-types.js";
 import type { StageUiBroker } from "../shared/stage-ui-broker.js";
-import { wrapPlainText } from "../tui/text-helpers.js";
+import { deriveGraphThemeFromPiTheme, type GraphTheme } from "../tui/graph-theme.js";
+import { renderWorkflowNoticeCard } from "../tui/workflow-notice-card.js";
 
 export const HIL_ANSWER_NOTICE_CUSTOM_TYPE = "workflows:hil-answer-notice";
 const HIL_ANSWER_SNIPPET_LIMIT = 1000;
@@ -50,7 +51,7 @@ export interface WorkflowHilAnswerNotificationOptions {
   readonly state?: WorkflowHilAnswerNotificationState;
 }
 
-type RawRenderer = (payload: unknown) => PiMessageRendererResult;
+type RawRenderer = PiMessageRenderer;
 
 const rendererRegisteredHosts = new WeakSet<object>();
 
@@ -125,10 +126,10 @@ export function registerHilAnswerNoticeRenderer(
   const host = options.rendererHost ?? register;
   if (rendererRegisteredHosts.has(host)) return;
 
-  const renderer: RawRenderer = (raw) => {
+  const renderer: RawRenderer = (raw, _options, piTheme) => {
     const details = readHilAnswerNoticeDetails(raw);
     if (details === undefined) return undefined;
-    return makeNoticeComponent(details);
+    return makeNoticeComponent(details, themeFromRenderer(piTheme));
   };
 
   register(HIL_ANSWER_NOTICE_CUSTOM_TYPE, renderer);
@@ -143,8 +144,8 @@ export function formatWorkflowHilAnswerNoticeText(details: WorkflowHilAnswerNoti
   const subject = `Workflow "${workflowName}" received the user's response for its pending human-in-the-loop prompt`;
   const location = `(run ${details.runId}, stage ${stage}${prompt})`;
   const instruction =
-    "Do not ask the same question again. Continue the workflow; the stage has already received the user's response.";
-  return `✅ ${subject} ${location}.${question} User responded with: ${details.answerSummary}. ${instruction}`;
+    "Do not ask the same question again. No main-chat action is needed; do not answer any other workflow human-in-the-loop prompt unless the user explicitly provides that answer.";
+  return `✓ ${subject} ${location}.${question} User responded with: ${details.answerSummary}. ${instruction}`;
 }
 
 export function formatWorkflowHilAnswerInterruptAbortText(details: WorkflowHilAnswerNoticeDetails): string {
@@ -169,9 +170,8 @@ function sendHilAnswerNotice(
           details,
         },
         {
-          triggerTurn: true,
-          deliverAs: "interrupt",
-          interruptAbortMessage: formatWorkflowHilAnswerInterruptAbortText(details),
+          triggerTurn: false,
+          excludeFromContext: true,
         },
       ),
     ).catch((error: unknown) => warnHilAnswerSendFailure(error));
@@ -327,14 +327,37 @@ function escapeQuotedText(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
-function makeNoticeComponent(details: WorkflowHilAnswerNoticeDetails): PiMessageRenderComponent {
+function makeNoticeComponent(
+  details: WorkflowHilAnswerNoticeDetails,
+  theme: GraphTheme | undefined,
+): PiMessageRenderComponent {
   const text = formatWorkflowHilAnswerNoticeText(details);
   return {
     render(width: number): string[] {
-      return wrapPlainText(text, width);
+      return renderWorkflowNoticeCard({
+        title: "HIL ANSWERED",
+        glyph: "✓",
+        headline: `Workflow "${details.workflowName}" received the user's response`,
+        tone: "success",
+        fields: [
+          { label: "workflow", value: details.workflowName },
+          { label: "run", value: details.runId },
+          { label: "stage", value: details.stageName ?? details.stageId },
+          { label: "prompt", value: details.promptMessage, tone: "muted" },
+          { label: "answer", value: details.answerSummary },
+        ],
+        footer: "No main-chat action is needed; do not answer other workflow prompts unless the user explicitly provides that answer.",
+        fallbackText: text,
+        width,
+        ...(theme ? { theme } : {}),
+      });
     },
     invalidate() {
       /* stored HiL-answer notices are immutable */
     },
   };
+}
+
+function themeFromRenderer(piTheme: unknown): GraphTheme | undefined {
+  return piTheme === undefined ? undefined : deriveGraphThemeFromPiTheme(piTheme);
 }

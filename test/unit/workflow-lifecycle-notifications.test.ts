@@ -631,9 +631,13 @@ describe("installWorkflowLifecycleNotifications", () => {
 
     assert.equal(typeof rendered, "object");
     assert.notEqual(rendered, null);
-    assert.deepEqual((rendered as CardComponent).render(80), [
-      '✅ Workflow "cards" completed (run run-card). Inspect: /workflow status run-card',
-    ]);
+    const lines = (rendered as CardComponent).render(80);
+    const text = lines.join("\n");
+    assert.match(text, /╭ WORKFLOW COMPLETE/);
+    assert.match(text, /✓ Workflow "cards" completed/);
+    assert.match(text, /workflow\s+cards/);
+    assert.match(text, /run\s+run-card/);
+    assert.match(text, /▸ \/workflow status run-card/);
   });
 
   test("wraps long lifecycle notices to the render width so no rendered line overflows the terminal (#1109 width-overflow crash)", () => {

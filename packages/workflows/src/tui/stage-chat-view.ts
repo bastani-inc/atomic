@@ -10,7 +10,7 @@
  *  - input reuses the host's custom editor factory when one is installed,
  *    otherwise `CustomEditor`; tests/headless fall back to the historical
  *    one-line editor
- *  - workflow notices remain lightweight workflow-specific rows because they
+ *  - workflow notices render as compact workflow-specific cards because they
  *    are not coding-agent chat messages
  *
  * Behaviour:
@@ -68,6 +68,7 @@ import type { GraphTheme } from "./graph-theme.js";
 import type { StageControlHandle } from "../runs/foreground/stage-control-registry.js";
 import { isKeybindingsLike, type KeybindingsLike } from "./keybindings-adapter.js";
 import { BOLD, RESET, hexBg, hexToAnsi, lerpColor } from "./color-utils.js";
+import { renderWorkflowNoticeCard, type WorkflowNoticeTone } from "./workflow-notice-card.js";
 import { Key, matchesKey, visibleWidth } from "./text-helpers.js";
 import {
   fitStageChatFrame,
@@ -1049,17 +1050,20 @@ export class StageChatView implements Component, Focusable {
   }
 
   private _noticeRow(entry: NoticeEntry): Component {
-    const t = this.theme;
-    const fromPart = entry.from ? paint(` (was ${entry.from})`, t.dim) : "";
-    const metaPart = entry.meta ? "  " + paint(entry.meta, t.dim) : "";
-    const line =
-      paint("~ ", t.borderDim) +
-      paint(entry.kind, t.mauve, { bold: true }) +
-      paint(" → ", t.borderDim) +
-      paint(entry.value, t.text) +
-      fromPart +
-      metaPart;
-    return new Text(line, 2, 0);
+    const theme = this.theme;
+    return {
+      render(width: number): string[] {
+        return renderWorkflowNoticeCard({
+          ...stageNoticeCard(entry),
+          fallbackText: entry.text,
+          width,
+          theme,
+        });
+      },
+      invalidate() {
+        /* notice entries are immutable */
+      },
+    };
   }
 
   // -------------------------------------------------------------------------
@@ -1598,6 +1602,78 @@ function extractToolResultText(result: unknown): string {
 function noticeSummary(n: StageNotice): string {
   const base = `~ ${n.kind} → ${n.to}`;
   return n.from ? `${base} (was ${n.from})` : base;
+}
+
+function stageNoticeCard(entry: NoticeEntry): {
+  title: string;
+  glyph: string;
+  headline: string;
+  tone: WorkflowNoticeTone;
+  fields: Array<{ label: string; value: string | undefined; tone?: WorkflowNoticeTone | "text" | "muted" }>;
+} {
+  switch (entry.kind) {
+    case "abort":
+      return {
+        title: "STAGE ABORTED",
+        glyph: "✗",
+        headline: "Stage received an abort notice",
+        tone: "error",
+        fields: stageNoticeFields(entry, "error"),
+      };
+    case "compaction":
+      return {
+        title: "STAGE COMPACTION",
+        glyph: "✓",
+        headline: "Stage context was compacted",
+        tone: "success",
+        fields: stageNoticeFields(entry, "muted"),
+      };
+    case "model":
+      return {
+        title: "STAGE MODEL",
+        glyph: "→",
+        headline: "Stage model changed",
+        tone: "info",
+        fields: stageNoticeFields(entry),
+      };
+    case "thinking":
+      return {
+        title: "STAGE THINKING",
+        glyph: "→",
+        headline: "Stage thinking level changed",
+        tone: "mauve",
+        fields: stageNoticeFields(entry),
+      };
+    case "tree":
+      return {
+        title: "STAGE TREE",
+        glyph: "◆",
+        headline: "Stage branch tree changed",
+        tone: "info",
+        fields: stageNoticeFields(entry, "muted"),
+      };
+    case "mcp":
+    default:
+      return {
+        title: "STAGE NOTICE",
+        glyph: "◆",
+        headline: "Workflow stage notice",
+        tone: "info",
+        fields: stageNoticeFields(entry, "muted"),
+      };
+  }
+}
+
+function stageNoticeFields(
+  entry: NoticeEntry,
+  valueTone: WorkflowNoticeTone | "text" | "muted" = "text",
+): Array<{ label: string; value: string | undefined; tone?: WorkflowNoticeTone | "text" | "muted" }> {
+  return [
+    { label: "kind", value: entry.kind, tone: "muted" },
+    { label: "value", value: entry.value, tone: valueTone },
+    { label: "from", value: entry.from, tone: "muted" },
+    { label: "meta", value: entry.meta, tone: "muted" },
+  ];
 }
 
 function shortenId(id: string): string {

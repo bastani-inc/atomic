@@ -22,6 +22,8 @@ import {
   nextWidgetRefreshDelayMs,
   RECENT_ENDED_WINDOW_MS,
 } from "../../packages/workflows/src/tui/widget.js";
+import { hexToAnsi } from "../../packages/workflows/src/tui/color-utils.js";
+import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.js";
 import type {
   StoreSnapshot,
@@ -172,8 +174,8 @@ describe("renderWidgetLines — standard form", () => {
     const header = lines[0]!;
     assert.ok(header.includes("● 1 running"), "run remains active");
     assert.ok(
-      header.includes("↵ 1 needs attention (attach to workflow with `/workflow connect`)"),
-      "awaiting-input badge is labeled with attach action",
+      header.includes("？ ↵ 1 needs attention (attach to workflow with `/workflow connect`)"),
+      "awaiting-input badge is labeled with status and attach action",
     );
   });
 
@@ -310,5 +312,23 @@ describe("buildThemedWidgetLines — themed path", () => {
     assert.ok(lines.length >= 4, "themed render returns panel + entry lines");
     const joined = lines.join("");
     assert.ok(joined.includes("\x1b["), "themed lines include ANSI escapes");
+  });
+
+  test("awaiting-input title badge uses info blue and question mark", () => {
+    const awaiting = makeRun("r1xxxxxx", "wf-await", "running", [
+      makeStage("s1", "ask", "awaiting_input"),
+    ]);
+    const lines = buildThemedWidgetLines(makeSnap([awaiting]), NULL_PI_THEME, 160);
+    const joined = lines.join("\n");
+    const infoBlue = hexToAnsi(deriveGraphTheme({}).info);
+
+    assert.ok(
+      joined.includes(`${infoBlue}？ ↵ 1 needs attention`),
+      "awaiting-input badge should be styled with the graph info blue",
+    );
+    assert.ok(
+      stripAnsi(joined).includes("？ ↵ 1 needs attention (attach to workflow with `/workflow connect`)"),
+      "awaiting-input badge should keep the status/question mark and attach copy",
+    );
   });
 });

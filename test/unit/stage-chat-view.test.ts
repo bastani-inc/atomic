@@ -280,6 +280,45 @@ function assistantTextMessage(text: string): AgentSession["messages"][number] {
 }
 
 describe("StageChatView", () => {
+  test("renders workflow stage notices as cards", () => {
+    const store = createStore();
+    setupRun(store, "run-1", "stage-a");
+    assert.equal(
+      store.recordStageNotice("run-1", "stage-a", {
+        id: "notice-1",
+        ts: 1,
+        kind: "model",
+        from: "gpt-5.5",
+        to: "gpt-5.5-codex",
+        meta: "fallback",
+      }),
+      true,
+    );
+    const { handle } = makeHandle();
+    const view = new StageChatView({
+      store,
+      graphTheme: deriveGraphTheme({}),
+      runId: "run-1",
+      stageId: "stage-a",
+      workflowName: "test-wf",
+      handle,
+      onDetach: () => {},
+      onClose: () => {},
+    });
+
+    const rendered = view.render(90);
+    const visible = stripAnsi(rendered.join("\n"));
+    assert.match(visible, /╭ STAGE MODEL/);
+    assert.match(visible, /→ Stage model changed/);
+    assert.match(visible, /value\s+gpt-5\.5-codex/);
+    assert.match(visible, /from\s+gpt-5\.5/);
+    assert.match(visible, /meta\s+fallback/);
+    assert.doesNotMatch(visible, /~ model →/);
+    for (const line of rendered) {
+      assert.ok(stripAnsi(line).length <= 90, `line exceeds width: ${JSON.stringify(stripAnsi(line))}`);
+    }
+  });
+
   test("renders and resolves a structured stage pending prompt locally", async () => {
     const store = createStore();
     setupRun(store, "run-1", "stage-a");

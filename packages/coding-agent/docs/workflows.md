@@ -650,7 +650,7 @@ When a workflow needs human input, answer in the graph viewer or attached stage 
 
 Agents can answer pending prompts programmatically with `workflow({ action: "send", delivery: "answer", ... })`; use `promptId` when it is present in the stage details, and provide answer content with `response`, `text`, or `message`.
 
-If the user answers a human-in-the-loop prompt in the workflow UI or stage UI broker, the stage receives the answer directly and the active main chat receives an interrupt-delivered notice (`triggerTurn: true`, `deliverAs: "interrupt"`) containing a concise answer summary. That notice tells the main model not to ask the same question again. Prompt answers sent by the main-chat `workflow` tool are suppressed from this interrupt notice because the tool result already informs the current turn.
+If the user answers a human-in-the-loop prompt in the workflow UI or stage UI broker, the stage receives the answer directly and the active main chat receives a display-only notice (`triggerTurn: false`, `excludeFromContext: true`) containing a concise answer summary. The notice is rendered for the user and persisted for audit, but it does not wake the model, enter LLM context, or authorize answering any other workflow prompt. Prompt answers sent by the main-chat `workflow` tool are suppressed from this notice because the tool result already informs the current turn.
 
 ## Direct One-Off Runs
 

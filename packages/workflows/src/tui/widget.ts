@@ -33,6 +33,7 @@ import type { FlatBandBadge } from "./chat-surface.js";
 import { deriveGraphTheme } from "./graph-theme.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { hexToAnsi, RESET, BOLD } from "./color-utils.js";
+import { statusIcon } from "./status-helpers.js";
 
 // ---------------------------------------------------------------------------
 // Tunables
@@ -223,10 +224,10 @@ function countBadges(counts: RunCounts, theme: GraphTheme): FlatBandBadge[] {
     badges.push({ text: `❚❚ ${counts.paused} paused`, fg: theme.warning });
   }
   // Awaiting input is shown in Sky per DESIGN.md status semantics: a live
-  // human-in-the-loop request that requires attention. Spell it out in the
-  // widget title instead of relying on the ↵ glyph alone.
+  // human-in-the-loop request that requires attention. Mirror the graph node's
+  // question-mark status glyph, then keep ↵ as the attach/respond action hint.
   if (counts.awaiting > 0) {
-    badges.push({ text: `↵ ${counts.awaiting} needs attention (attach to workflow with \`/workflow connect\`)`, fg: theme.info });
+    badges.push({ text: `${statusIcon("awaiting_input")} ↵ ${counts.awaiting} needs attention (attach to workflow with \`/workflow connect\`)`, fg: theme.info });
   }
   if (counts.done > 0) {
     badges.push({ text: `✓ ${counts.done} complete`, fg: theme.success });
@@ -235,6 +236,20 @@ function countBadges(counts: RunCounts, theme: GraphTheme): FlatBandBadge[] {
     badges.push({ text: `✗ ${counts.failed} failed`, fg: theme.error });
   }
   return badges;
+}
+
+function formatTitleBadges(
+  badges: readonly FlatBandBadge[],
+  theme: GraphTheme,
+  themed: boolean,
+): string {
+  if (badges.length === 0) return "";
+  if (!themed) return badges.map((b) => b.text).join("  ");
+
+  const fallbackFg = hexToAnsi(theme.border);
+  return badges
+    .map((b) => `${b.fg ? hexToAnsi(b.fg) : fallbackFg}${b.text}${RESET}${fallbackFg}`)
+    .join("  ");
 }
 
 // ---------------------------------------------------------------------------
@@ -340,7 +355,8 @@ export function buildThemedWidgetLines(
   const total = counts.active + counts.paused + counts.done + counts.failed;
   const subtitle = `${total} run${total === 1 ? "" : "s"}`;
 
-  const badges = countBadges(visibleCounts, graphTheme).map((b) => b.text).join("  ");
+  const badgeList = countBadges(visibleCounts, graphTheme);
+  const badges = formatTitleBadges(badgeList, graphTheme, themed);
   const title = `BACKGROUND  ${subtitle}${badges ? `  ${badges}` : ""}`;
   const body: string[] = [];
 

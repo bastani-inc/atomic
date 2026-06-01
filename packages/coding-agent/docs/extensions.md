@@ -1301,6 +1301,7 @@ pi.sendMessage({
   - `"nextTurn"` - Queued for next user prompt. Does not interrupt or trigger anything.
   - `"interrupt"` - With `triggerTurn: true`, aborts an active streaming turn and immediately starts a new turn with the custom message. When idle, behaves like a triggered custom message.
 - `triggerTurn: true` - If agent is idle, trigger an LLM response immediately. Required for `"interrupt"`; ignored for `"nextTurn"`.
+- `excludeFromContext: true` - Render and persist the custom message without adding it to LLM context. With no `deliverAs`, this remains display-only even while the agent is streaming.
 - `interruptAbortMessage` - Optional text used to replace generic abort results (for example `Operation aborted`) when `deliverAs: "interrupt"` aborts an active turn.
 
 ### pi.sendUserMessage(content, options?)

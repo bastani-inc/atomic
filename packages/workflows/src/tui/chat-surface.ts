@@ -118,7 +118,10 @@ export function renderRoundedBoxLines(opts: RenderRoundedBoxOpts & { width: numb
     ? ` ${truncateToWidth(opts.title, titleBudget, ELLIPSIS)} `
     : "";
   const topFill = Math.max(0, inner - visibleWidth(titleText));
-  const top = `${border}╭${titleText}${"─".repeat(topFill)}╮${reset}`;
+  // `titleText` may contain its own ANSI runs (for status-coloured badges).
+  // Re-prime the border colour after it so RESETs inside the title do not
+  // leave the trailing rule/corner on the terminal default colour.
+  const top = `${border}╭${titleText}${border}${"─".repeat(topFill)}╮${reset}`;
 
   const body = opts.bodyLines.length > 0 ? opts.bodyLines : [""];
   const rows = body.map((line) => {
@@ -504,6 +507,7 @@ function stageGlyph(status: StageStatus): string {
     case "completed": return "✓";
     case "running":   return "●";
     case "failed":    return "✗";
+    case "awaiting_input": return "？";
     case "skipped":   return "⊘";
     case "pending":
     default:          return "○";
@@ -515,6 +519,7 @@ function stageColor(status: StageStatus, theme: GraphTheme): string {
     case "completed": return hexToAnsi(theme.success);
     case "running":   return hexToAnsi(theme.warning);
     case "failed":    return hexToAnsi(theme.error);
+    case "awaiting_input": return hexToAnsi(theme.info);
     case "skipped":   return hexToAnsi(theme.dim);
     case "pending":
     default:          return hexToAnsi(theme.dim);

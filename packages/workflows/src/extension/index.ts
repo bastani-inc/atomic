@@ -149,7 +149,16 @@ export interface PiMessageRenderComponent {
   invalidate?: () => void;
 }
 
+export interface PiMessageRenderOptions {
+  expanded: boolean;
+}
+
 export type PiMessageRendererResult = string | PiMessageRenderComponent | undefined;
+export type PiMessageRenderer = (
+  payload: unknown,
+  options?: PiMessageRenderOptions,
+  theme?: unknown,
+) => PiMessageRendererResult;
 
 function textRenderComponent(text: string): PiRenderComponent {
   return dynamicTextRenderComponent(() => text);
@@ -316,7 +325,7 @@ export interface ExtensionAPI {
   registerCommand?: (name: string, options: PiCommandOptions) => void;
   registerMessageRenderer?: (
     event: string,
-    renderer: (payload: unknown) => PiMessageRendererResult,
+    renderer: PiMessageRenderer,
   ) => void;
   /**
    * Inject a custom message into chat history. Used by inline workflow surfaces
@@ -333,6 +342,7 @@ export interface ExtensionAPI {
     options?: {
       triggerTurn?: boolean;
       deliverAs?: "steer" | "followUp" | "nextTurn" | "interrupt";
+      excludeFromContext?: boolean;
       interruptAbortMessage?: string;
     },
   ) => void | Promise<void>;

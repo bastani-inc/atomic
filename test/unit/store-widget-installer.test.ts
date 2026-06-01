@@ -250,7 +250,7 @@ describe("installStoreWidget", () => {
 
     assert.equal(widgetCalls.length, callsAfterMount, "awaiting input must not remount the widget");
     assert.ok(renderRequests.count > beforeRequests, "expected in-place repaint for awaiting input");
-    assert.match(component.render(120).join("\n"), /● 1 running\s+↵ 1 needs attention/);
+    assert.match(component.render(120).join("\n"), /● 1 running\s+？ ↵ 1 needs attention/);
   });
 
   test("repaints the mounted widget in place when a run fails", async () => {

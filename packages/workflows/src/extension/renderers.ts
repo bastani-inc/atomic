@@ -82,6 +82,6 @@ export function renderStageResult(payload: StageEndPayload): string {
 
 /** Render workflow.run.end entry. */
 export function renderRunSummary(payload: RunEndPayload): string {
-  const icon = payload.status === "ok" ? "✅" : "❌";
+  const icon = payload.status === "ok" ? "✓" : "✗";
   return `${icon} workflow [${payload.runId}] ${payload.status}`;
 }
