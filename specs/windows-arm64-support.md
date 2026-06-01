@@ -1,19 +1,20 @@
 # Windows ARM64 Support Technical Design Document
 
-| Document Metadata      | Details                                                                        |
-| ---------------------- | ------------------------------------------------------------------------------ |
-| Author(s)              | flora131                                                                       |
-| Status                 | Draft (WIP)                                                                    |
-| Team / Owner           | Atomic CLI                                                                     |
-| Created / Last Updated | 2026-03-23                                                                     |
+| Document Metadata      | Details     |
+| ---------------------- | ----------- |
+| Author(s)              | flora131    |
+| Status                 | Draft (WIP) |
+| Team / Owner           | Atomic CLI  |
+| Created / Last Updated | 2026-03-23  |
 
 ## 1. Executive Summary
 
-Windows ARM64 users cannot install or run Atomic CLI due to two issues: (1) `install.ps1` detects ARM64 and requests `atomic-windows-arm64.exe`, which is never built or published -- resulting in a 404 ([#388](https://github.com/flora131/atomic/issues/388)); (2) even if a native ARM64 binary were built, it would crash because `bun:ffi`/TinyCC has no Windows ARM64 backend, breaking OpenTUI's native renderer ([#389](https://github.com/flora131/atomic/issues/389)).
+Windows ARM64 users cannot install or run Atomic CLI due to two issues: (1) `install.ps1` detects ARM64 and requests `atomic-windows-arm64.exe`, which is never built or published -- resulting in a 404 ([#388](https://github.com/bastani/atomic/issues/388)); (2) even if a native ARM64 binary were built, it would crash because `bun:ffi`/TinyCC has no Windows ARM64 backend, breaking OpenTUI's native renderer ([#389](https://github.com/bastani/atomic/issues/389)).
 
 The solution is to ship **two** Windows binaries: a **standard x64** build (with AVX) for the majority of native x64 users, and an **x64-baseline** build (without AVX) for ARM64 users running via Windows 11's Prism x64 emulation. The standard x64 build uses AVX/AVX2 instructions that Prism cannot emulate, but the **`bun-windows-x64-baseline`** compile target (with Bun >= v1.3.11) is guaranteed AVX-free by Bun's static verifier ([PR #27801](https://github.com/oven-sh/bun/pull/27801)). A build-time discriminator flag (`__ATOMIC_BASELINE__`) ensures the baseline binary self-updates to itself, not the standard binary.
 
 **MVP scope (this PR):** 5 files:
+
 1. `install.ps1` — ARM64-to-x64-baseline remapping (fixes #388)
 2. `publish.yml` — two Windows build targets (standard + baseline) + baseline in release files (fixes #389)
 3. `install.sh` — pass version/prerelease args on Windows delegation (pre-existing bug fix)
@@ -28,12 +29,12 @@ The solution is to ship **two** Windows binaries: a **standard x64** build (with
 
 The Atomic CLI build pipeline produces binaries for 5 platform-architecture combinations via `.github/workflows/publish.yml`:
 
-| Platform | Binary | Build Location |
-|----------|--------|----------------|
-| Linux x64 | `atomic-linux-x64` | Ubuntu (cross-compile) |
-| Linux arm64 | `atomic-linux-arm64` | Ubuntu (cross-compile) |
-| macOS x64 | `atomic-darwin-x64` | Ubuntu (cross-compile) |
-| macOS arm64 | `atomic-darwin-arm64` | Ubuntu (cross-compile) |
+| Platform    | Binary                   | Build Location            |
+| ----------- | ------------------------ | ------------------------- |
+| Linux x64   | `atomic-linux-x64`       | Ubuntu (cross-compile)    |
+| Linux arm64 | `atomic-linux-arm64`     | Ubuntu (cross-compile)    |
+| macOS x64   | `atomic-darwin-x64`      | Ubuntu (cross-compile)    |
+| macOS arm64 | `atomic-darwin-arm64`    | Ubuntu (cross-compile)    |
 | Windows x64 | `atomic-windows-x64.exe` | `windows-latest` (native) |
 
 **No Windows ARM64 binary is built, uploaded, or released.**
@@ -177,20 +178,20 @@ flowchart TB
 
 ### 4.3 Key Components (MVP)
 
-| Component | Change | Justification |
-|-----------|--------|---------------|
-| `install.ps1` | Remap ARM64 to `windows-x64-baseline.exe` with informational message | Fixes #388: ARM64 users download the AVX-free baseline binary |
-| `.github/workflows/publish.yml` | Build two Windows binaries: standard x64 + x64-baseline; add baseline to release files | Preserves AVX for native x64 users; provides AVX-free binary for ARM64 Prism users |
-| `src/scripts/build-binary.ts` | Auto-derive `__ATOMIC_BASELINE__` from `--target` containing `"baseline"`; inject via `define` | Build-time discriminator: baseline binary knows it's baseline for self-update |
-| `src/services/system/download.ts` | `getBinaryFilename()` checks `__ATOMIC_BASELINE__` to select correct artifact | Self-update correctness: baseline updates to baseline, standard to standard |
-| `install.sh` | Pass version/prerelease args to `install.ps1` on Windows delegation | Fixes pre-existing edge case where `install.sh` on MSYS/Cygwin loses version info |
+| Component                         | Change                                                                                         | Justification                                                                      |
+| --------------------------------- | ---------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `install.ps1`                     | Remap ARM64 to `windows-x64-baseline.exe` with informational message                           | Fixes #388: ARM64 users download the AVX-free baseline binary                      |
+| `.github/workflows/publish.yml`   | Build two Windows binaries: standard x64 + x64-baseline; add baseline to release files         | Preserves AVX for native x64 users; provides AVX-free binary for ARM64 Prism users |
+| `src/scripts/build-binary.ts`     | Auto-derive `__ATOMIC_BASELINE__` from `--target` containing `"baseline"`; inject via `define` | Build-time discriminator: baseline binary knows it's baseline for self-update      |
+| `src/services/system/download.ts` | `getBinaryFilename()` checks `__ATOMIC_BASELINE__` to select correct artifact                  | Self-update correctness: baseline updates to baseline, standard to standard        |
+| `install.sh`                      | Pass version/prerelease args to `install.ps1` on Windows delegation                            | Fixes pre-existing edge case where `install.sh` on MSYS/Cygwin loses version info  |
 
 ### 4.4 Deferred Components (Follow-Up PR)
 
-| Component | Change | Justification |
-|-----------|--------|---------------|
-| `src/scripts/build-binary.ts` | Add `inferTargetArch()` + ARM64 Windows guard | Defensive: local ARM64 Windows builds auto-remap to x64-baseline instead of crashing |
-| `src/scripts/prepare-opentui-bindings.ts` | Remove `win32-arm64` from `DEFAULT_PLATFORMS` | CI optimization: avoids downloading an unusable binding; trivial to re-add later |
+| Component                                 | Change                                        | Justification                                                                        |
+| ----------------------------------------- | --------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `src/scripts/build-binary.ts`             | Add `inferTargetArch()` + ARM64 Windows guard | Defensive: local ARM64 Windows builds auto-remap to x64-baseline instead of crashing |
+| `src/scripts/prepare-opentui-bindings.ts` | Remove `win32-arm64` from `DEFAULT_PLATFORMS` | CI optimization: avoids downloading an unusable binding; trivial to re-add later     |
 
 ## 5. Detailed Design (MVP)
 
@@ -199,6 +200,7 @@ flowchart TB
 **File:** `install.ps1:198-208`
 
 **Current code:**
+
 ```powershell
 $Arch = $env:PROCESSOR_ARCHITECTURE
 switch ($Arch) {
@@ -212,6 +214,7 @@ switch ($Arch) {
 ```
 
 **Proposed change:**
+
 ```powershell
 $Arch = $env:PROCESSOR_ARCHITECTURE
 switch ($Arch) {
@@ -229,6 +232,7 @@ switch ($Arch) {
 ```
 
 **Rationale:**
+
 - ARM64 maps to `windows-x64-baseline.exe` — the AVX-free binary safe for Prism emulation
 - Native x64 users (`AMD64`) continue to get `windows-x64.exe` — the standard AVX-optimized binary
 - An informational message tells the user what's happening and why, including that Windows 11 is required
@@ -254,12 +258,14 @@ switch ($Arch) {
 **Change 2: Two Windows build lines** (in the `build` job, after the macOS arm64 line):
 
 Current code (on this branch):
+
 ```yaml
 # Windows x64 (baseline -- AVX-free for ARM64 Prism compatibility)
 bun run src/scripts/build-binary.ts --minify --target=bun-windows-x64-baseline --outfile dist/atomic-windows-x64.exe
 ```
 
 Proposed change:
+
 ```yaml
 # Windows x64 (standard -- with AVX for native x64 users)
 bun run src/scripts/build-binary.ts --minify --target=bun-windows-x64 --outfile dist/atomic-windows-x64.exe
@@ -272,18 +278,19 @@ bun run src/scripts/build-binary.ts --minify --target=bun-windows-x64-baseline -
 
 ```yaml
 files: |
-  dist/atomic-linux-x64
-  dist/atomic-linux-arm64
-  dist/atomic-darwin-x64
-  dist/atomic-darwin-arm64
-  dist/atomic-windows-x64.exe
-  dist/atomic-windows-x64-baseline.exe
-  dist/atomic-config.tar.gz
-  dist/atomic-config.zip
-  dist/checksums.txt
+    dist/atomic-linux-x64
+    dist/atomic-linux-arm64
+    dist/atomic-darwin-x64
+    dist/atomic-darwin-arm64
+    dist/atomic-windows-x64.exe
+    dist/atomic-windows-x64-baseline.exe
+    dist/atomic-config.tar.gz
+    dist/atomic-config.zip
+    dist/checksums.txt
 ```
 
 **Rationale:**
+
 - Native x64 users keep the AVX-optimized standard binary — no performance regression for the majority
 - ARM64 Prism users get the AVX-free baseline binary — guaranteed safe by Bun's static verifier ([PR #27801](https://github.com/oven-sh/bun/pull/27801))
 - Checksums auto-include both binaries via `sha256sum *` — no manual checksum logic changes needed
@@ -296,6 +303,7 @@ files: |
 **File:** `install.sh:140-144`
 
 **Current code:**
+
 ```bash
 mingw*|msys*|cygwin*)
     info "Windows detected -- delegating to install.ps1"
@@ -305,6 +313,7 @@ mingw*|msys*|cygwin*)
 ```
 
 **Proposed change:**
+
 ```bash
 mingw*|msys*|cygwin*)
     info "Windows detected -- delegating to install.ps1"
@@ -346,38 +355,41 @@ define: {
 **File:** `src/services/system/download.ts:307-340`
 
 **Current code:**
+
 ```typescript
 export function getBinaryFilename(): string {
-  const platform = process.platform;
-  const arch = process.arch;
+    const platform = process.platform;
+    const arch = process.arch;
 
-  // ... platform and arch switch statements ...
+    // ... platform and arch switch statements ...
 
-  const ext = platform === "win32" ? ".exe" : "";
-  return `atomic-${os}-${archStr}${ext}`;
+    const ext = platform === "win32" ? ".exe" : "";
+    return `atomic-${os}-${archStr}${ext}`;
 }
 ```
 
 **Proposed change:**
+
 ```typescript
 declare const __ATOMIC_BASELINE__: boolean | undefined;
 
 export function getBinaryFilename(): string {
-  const platform = process.platform;
-  const arch = process.arch;
+    const platform = process.platform;
+    const arch = process.arch;
 
-  // ... platform and arch switch statements (unchanged) ...
+    // ... platform and arch switch statements (unchanged) ...
 
-  const ext = platform === "win32" ? ".exe" : "";
-  const baselineSuffix =
-    typeof __ATOMIC_BASELINE__ !== "undefined" && __ATOMIC_BASELINE__
-      ? "-baseline"
-      : "";
-  return `atomic-${os}-${archStr}${baselineSuffix}${ext}`;
+    const ext = platform === "win32" ? ".exe" : "";
+    const baselineSuffix =
+        typeof __ATOMIC_BASELINE__ !== "undefined" && __ATOMIC_BASELINE__
+            ? "-baseline"
+            : "";
+    return `atomic-${os}-${archStr}${baselineSuffix}${ext}`;
 }
 ```
 
 **How it works:**
+
 - **Standard build:** `__ATOMIC_BASELINE__` is never defined → `typeof` returns `"undefined"` → `baselineSuffix = ""` → returns `atomic-windows-x64.exe`
 - **Baseline build:** `__ATOMIC_BASELINE__` is replaced with `true` at bundle time → `typeof` returns `"boolean"` → `baselineSuffix = "-baseline"` → returns `atomic-windows-x64-baseline.exe`
 
@@ -414,12 +426,12 @@ The following changes are defensive hardening for local ARM64 Windows developmen
 
 ```typescript
 function inferTargetArch(target: string | undefined): NodeJS.Architecture {
-  if (target) {
-    const t = target.toLowerCase();
-    if (t.includes("arm64")) return "arm64";
-    if (t.includes("x64")) return "x64";
-  }
-  return process.arch;
+    if (target) {
+        const t = target.toLowerCase();
+        if (t.includes("arm64")) return "arm64";
+        if (t.includes("x64")) return "x64";
+    }
+    return process.arch;
 }
 ```
 
@@ -431,20 +443,24 @@ The ARM64 guard must run **before** any target inference to avoid temporal coupl
 const options = parseBuildOptions(Bun.argv.slice(2));
 
 // ARM64 Windows guard: remap before any inference
-if (!options.target && process.platform === "win32" && process.arch === "arm64") {
-  console.warn(
-    "Warning: Windows ARM64 host detected. bun:ffi is unavailable on ARM64. " +
-    "Auto-remapping to --target=bun-windows-x64-baseline (runs via Prism emulation)."
-  );
-  options.target = "bun-windows-x64-baseline";
+if (
+    !options.target &&
+    process.platform === "win32" &&
+    process.arch === "arm64"
+) {
+    console.warn(
+        "Warning: Windows ARM64 host detected. bun:ffi is unavailable on ARM64. " +
+            "Auto-remapping to --target=bun-windows-x64-baseline (runs via Prism emulation).",
+    );
+    options.target = "bun-windows-x64-baseline";
 }
 if (options.target && /windows.*arm64|arm64.*windows/i.test(options.target)) {
-  console.error(
-    `Error: --target=${options.target} is not supported. ` +
-    `bun:ffi/TinyCC has no Windows ARM64 backend, so the resulting binary would crash.\n` +
-    `Use --target=bun-windows-x64-baseline instead (runs via Prism emulation on ARM64 Windows).`
-  );
-  process.exit(1);
+    console.error(
+        `Error: --target=${options.target} is not supported. ` +
+            `bun:ffi/TinyCC has no Windows ARM64 backend, so the resulting binary would crash.\n` +
+            `Use --target=bun-windows-x64-baseline instead (runs via Prism emulation on ARM64 Windows).`,
+    );
+    process.exit(1);
 }
 
 const compileTargetOs = inferTargetOs(options.target);
@@ -452,6 +468,7 @@ const compileTargetArch = inferTargetArch(options.target);
 ```
 
 **Design notes:**
+
 - The guard runs **before** `inferTargetOs()` / `inferTargetArch()` so all derived values see the final effective target — no temporal coupling.
 - `inferTargetArch()` returns `NodeJS.Architecture` (not `string`) for type safety, consistent with `inferTargetOs()` returning `NodeJS.Platform`.
 - When `--target=bun-windows-x64-baseline` is injected, Bun's `CompileTarget.defineValues()` sets `process.platform = "win32"` and `process.arch = "x64"` at bundle time, so the OpenTUI dynamic import resolves to `@opentui/core-win32-x64` — the correct, working binding.
@@ -461,23 +478,25 @@ const compileTargetArch = inferTargetArch(options.target);
 **File:** `src/scripts/prepare-opentui-bindings.ts:7-13`
 
 **Current code:**
+
 ```typescript
 const DEFAULT_PLATFORMS = [
-  "darwin-x64",
-  "darwin-arm64",
-  "linux-arm64",
-  "win32-x64",
-  "win32-arm64",
+    "darwin-x64",
+    "darwin-arm64",
+    "linux-arm64",
+    "win32-x64",
+    "win32-arm64",
 ] as const;
 ```
 
 **Proposed change:**
+
 ```typescript
 const DEFAULT_PLATFORMS = [
-  "darwin-x64",
-  "darwin-arm64",
-  "linux-arm64",
-  "win32-x64",
+    "darwin-x64",
+    "darwin-arm64",
+    "linux-arm64",
+    "win32-x64",
 ] as const;
 ```
 
@@ -485,14 +504,14 @@ const DEFAULT_PLATFORMS = [
 
 ## 7. Alternatives Considered
 
-| Option | Pros | Cons | Reason for Rejection |
-|--------|------|------|---------------------|
-| **A: Build native ARM64 binary** | Native performance, no emulation | Crashes immediately -- `bun:ffi`/TinyCC has no ARM64 backend ([Bun #28055](https://github.com/oven-sh/bun/issues/28055)) | Fundamentally broken; TinyCC limitation is upstream and unfixable by Atomic |
-| **B: Publish x64 binary as `windows-arm64.exe`** | No installer changes needed; ARM64 users get "their" binary | Misleading naming; two identical binaries in release; larger release size; confusing checksum entries | Deceptive; creates maintenance burden of keeping two names in sync |
-| **C: Use standard x64 build (without baseline)** | No CI changes; simplest path | Standard x64 uses AVX/AVX2 that Prism cannot emulate -- crashes on ARM64 ([Bun #21869](https://github.com/oven-sh/bun/issues/21869)) | Broken on ARM64. This was the gap in the original spec. |
-| **D: Ship single x64-baseline** | AVX-free; single binary; simple | Native x64 users lose AVX optimizations; Bun-internal SIMD paths (`highway.zig` string parsing, HTTP) run slower | Penalizes the x64 majority for ARM64 minority; AVX matters for Bun internals even in a TUI |
-| **E: Error on ARM64 with "unsupported"** | Simple to implement | Blocks all ARM64 Windows users; hostile UX | Unnecessarily restrictive when x64-baseline emulation works |
-| **F: Ship two Windows binaries (Selected)** | Native x64 users keep AVX; ARM64 users get AVX-free baseline; self-update stays on correct track via `__ATOMIC_BASELINE__` | One additional build step (~30s); one extra release artifact (~80MB); requires build-time discriminator for self-update | **Selected:** Preserves AVX for the majority while unblocking ARM64. Build-time flag solves self-update cleanly. Minimal CI cost. |
+| Option                                           | Pros                                                                                                                       | Cons                                                                                                                                 | Reason for Rejection                                                                                                              |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| **A: Build native ARM64 binary**                 | Native performance, no emulation                                                                                           | Crashes immediately -- `bun:ffi`/TinyCC has no ARM64 backend ([Bun #28055](https://github.com/oven-sh/bun/issues/28055))             | Fundamentally broken; TinyCC limitation is upstream and unfixable by Atomic                                                       |
+| **B: Publish x64 binary as `windows-arm64.exe`** | No installer changes needed; ARM64 users get "their" binary                                                                | Misleading naming; two identical binaries in release; larger release size; confusing checksum entries                                | Deceptive; creates maintenance burden of keeping two names in sync                                                                |
+| **C: Use standard x64 build (without baseline)** | No CI changes; simplest path                                                                                               | Standard x64 uses AVX/AVX2 that Prism cannot emulate -- crashes on ARM64 ([Bun #21869](https://github.com/oven-sh/bun/issues/21869)) | Broken on ARM64. This was the gap in the original spec.                                                                           |
+| **D: Ship single x64-baseline**                  | AVX-free; single binary; simple                                                                                            | Native x64 users lose AVX optimizations; Bun-internal SIMD paths (`highway.zig` string parsing, HTTP) run slower                     | Penalizes the x64 majority for ARM64 minority; AVX matters for Bun internals even in a TUI                                        |
+| **E: Error on ARM64 with "unsupported"**         | Simple to implement                                                                                                        | Blocks all ARM64 Windows users; hostile UX                                                                                           | Unnecessarily restrictive when x64-baseline emulation works                                                                       |
+| **F: Ship two Windows binaries (Selected)**      | Native x64 users keep AVX; ARM64 users get AVX-free baseline; self-update stays on correct track via `__ATOMIC_BASELINE__` | One additional build step (~30s); one extra release artifact (~80MB); requires build-time discriminator for self-update              | **Selected:** Preserves AVX for the majority while unblocking ARM64. Build-time flag solves self-update cleanly. Minimal CI cost. |
 
 ## 8. Cross-Cutting Concerns
 
@@ -521,6 +540,7 @@ const DEFAULT_PLATFORMS = [
 This approach requires **Bun >= v1.3.11** for the CI build environment. Without this version (or later), baseline builds may still contain AVX instructions (the leak through `highway.zig` that caused crashes in v1.2.19). Setting Bun to `latest` in `publish.yml` ensures we always have the static AVX verifier while also benefiting from ongoing Bun improvements.
 
 Key Bun PRs that enable this approach:
+
 - [PR #27121](https://github.com/oven-sh/bun/pull/27121) (merged Feb 21, 2026) -- CI verification for baseline CPU instructions on Windows
 - [PR #27801](https://github.com/oven-sh/bun/pull/27801) (merged Mar 11, 2026) -- **Static baseline CPU instruction verifier** that fails the build if AVX/AVX2 instructions are found
 
@@ -535,6 +555,7 @@ Key Bun PRs that enable this approach:
 ### 9.2 Rollback Plan
 
 All changes are backwards-compatible. If issues arise:
+
 - Revert the `publish.yml` changes to remove the baseline build step and release asset (native x64 users unaffected)
 - Revert the `install.ps1` ARM64 case to restore the previous behavior (404 on ARM64 -- same as current broken state)
 - Revert `build-binary.ts` and `download.ts` changes (no effect on standard builds since `__ATOMIC_BASELINE__` is only injected for baseline targets)
@@ -544,6 +565,7 @@ No data migration is needed. The standard `atomic-windows-x64.exe` asset name is
 ### 9.3 Test Plan
 
 **Integration Tests (MVP):**
+
 - [ ] `publish.yml` change: CI build job succeeds with both `--target=bun-windows-x64` and `--target=bun-windows-x64-baseline`
 - [ ] Both `atomic-windows-x64.exe` and `atomic-windows-x64-baseline.exe` appear in the release assets
 - [ ] `checksums.txt` contains entries for both Windows binaries
@@ -555,6 +577,7 @@ No data migration is needed. The standard `atomic-windows-x64.exe` asset name is
 - [ ] `download.ts`: standard binary's `getBinaryFilename()` returns `"atomic-windows-x64.exe"`
 
 **E2E Tests (ARM64 Windows):**
+
 - [ ] Run `install.ps1` on ARM64 Windows -> downloads `atomic-windows-x64-baseline.exe` successfully
 - [ ] Verify checksum passes on ARM64 Windows install
 - [ ] Run installed `atomic` binary on ARM64 Windows -> TUI renders correctly via Prism emulation
@@ -563,10 +586,12 @@ No data migration is needed. The standard `atomic-windows-x64.exe` asset name is
 - [ ] Run `install.sh` from Git Bash on ARM64 Windows -> delegates to `install.ps1` with correct behavior and version args
 
 **E2E Tests (Native x64 Windows):**
+
 - [ ] Run `install.ps1` on native x64 Windows -> downloads `atomic-windows-x64.exe` (standard, with AVX)
 - [ ] Self-update (`atomic update`) downloads `atomic-windows-x64.exe` (not baseline)
 
 **Unit Tests (deferred — follow-up PR):**
+
 - [ ] `inferTargetArch()` returns `"x64"` for `--target=bun-windows-x64`
 - [ ] `inferTargetArch()` returns `"x64"` for `--target=bun-windows-x64-baseline`
 - [ ] `inferTargetArch()` returns `"arm64"` for `--target=bun-linux-arm64`
@@ -594,56 +619,56 @@ No data migration is needed. The standard `atomic-windows-x64.exe` asset name is
 
 ## Appendix A: Research References
 
-| Document | Path | Relevance |
-|----------|------|-----------|
-| Windows ARM64 Support Research | `research/docs/2026-03-20-388-389-windows-arm64-support.md` | Primary research; documents all findings for #388 and #389, including Bun v1.3.10/v1.3.11 impact and baseline viability |
-| Dual-Binary Windows Approach | `research/docs/2026-03-23-dual-binary-windows-approach.md` | Detailed mechanics of shipping two Windows binaries with `__ATOMIC_BASELINE__` build-time discriminator |
-| Binary Distribution & Installers | `research/docs/2026-01-21-binary-distribution-installers.md` | Original installer design; first raised ARM64 as open question |
-| Cross-Platform Support | `research/docs/2026-01-20-cross-platform-support.md` | Platform detection patterns in `src/utils/detect.ts` |
-| OpenTUI Distribution CI Fix | `research/docs/2026-02-12-opentui-distribution-ci-fix.md` | OpenTUI `optionalDependencies` pattern; `prepare-opentui-bindings` script |
-| OpenTUI Library Research | `research/docs/2026-01-31-opentui-library-research.md` | OpenTUI FFI architecture; `bun:ffi` + Zig native layer |
-| Install/Postinstall Analysis | `research/docs/2026-02-25-install-postinstall-analysis.md` | Multi-stage installation infrastructure |
-| Bun Migration & Startup Optimization | `research/docs/2026-03-03-bun-migration-startup-optimization.md` | Bun build optimization context |
+| Document                             | Path                                                             | Relevance                                                                                                               |
+| ------------------------------------ | ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| Windows ARM64 Support Research       | `research/docs/2026-03-20-388-389-windows-arm64-support.md`      | Primary research; documents all findings for #388 and #389, including Bun v1.3.10/v1.3.11 impact and baseline viability |
+| Dual-Binary Windows Approach         | `research/docs/2026-03-23-dual-binary-windows-approach.md`       | Detailed mechanics of shipping two Windows binaries with `__ATOMIC_BASELINE__` build-time discriminator                 |
+| Binary Distribution & Installers     | `research/docs/2026-01-21-binary-distribution-installers.md`     | Original installer design; first raised ARM64 as open question                                                          |
+| Cross-Platform Support               | `research/docs/2026-01-20-cross-platform-support.md`             | Platform detection patterns in `src/utils/detect.ts`                                                                    |
+| OpenTUI Distribution CI Fix          | `research/docs/2026-02-12-opentui-distribution-ci-fix.md`        | OpenTUI `optionalDependencies` pattern; `prepare-opentui-bindings` script                                               |
+| OpenTUI Library Research             | `research/docs/2026-01-31-opentui-library-research.md`           | OpenTUI FFI architecture; `bun:ffi` + Zig native layer                                                                  |
+| Install/Postinstall Analysis         | `research/docs/2026-02-25-install-postinstall-analysis.md`       | Multi-stage installation infrastructure                                                                                 |
+| Bun Migration & Startup Optimization | `research/docs/2026-03-03-bun-migration-startup-optimization.md` | Bun build optimization context                                                                                          |
 
 ## Appendix B: Files to Modify
 
 ### MVP (This PR)
 
-| File | Change Type | Description |
-|------|-------------|-------------|
-| `install.ps1` | Edit | Remap ARM64 to `windows-x64-baseline.exe` with informational message |
-| `.github/workflows/publish.yml` | Edit | Two Windows build lines (standard + baseline); add baseline to release files |
-| `src/scripts/build-binary.ts` | Edit | Auto-derive `__ATOMIC_BASELINE__` from target string; inject via `define` block |
-| `src/services/system/download.ts` | Edit | `getBinaryFilename()` checks `__ATOMIC_BASELINE__` for correct self-update artifact |
-| `install.sh` | Edit | Pass version/prerelease args on Windows delegation |
+| File                              | Change Type | Description                                                                         |
+| --------------------------------- | ----------- | ----------------------------------------------------------------------------------- |
+| `install.ps1`                     | Edit        | Remap ARM64 to `windows-x64-baseline.exe` with informational message                |
+| `.github/workflows/publish.yml`   | Edit        | Two Windows build lines (standard + baseline); add baseline to release files        |
+| `src/scripts/build-binary.ts`     | Edit        | Auto-derive `__ATOMIC_BASELINE__` from target string; inject via `define` block     |
+| `src/services/system/download.ts` | Edit        | `getBinaryFilename()` checks `__ATOMIC_BASELINE__` for correct self-update artifact |
+| `install.sh`                      | Edit        | Pass version/prerelease args on Windows delegation                                  |
 
 ### Deferred (Follow-Up PR)
 
-| File | Change Type | Description |
-|------|-------------|-------------|
-| `src/scripts/build-binary.ts` | Edit | Add `inferTargetArch()` + ARM64 Windows guard (error on explicit, remap on implicit to x64-baseline) |
-| `src/scripts/prepare-opentui-bindings.ts` | Edit | Remove `win32-arm64` from `DEFAULT_PLATFORMS` |
+| File                                      | Change Type | Description                                                                                          |
+| ----------------------------------------- | ----------- | ---------------------------------------------------------------------------------------------------- |
+| `src/scripts/build-binary.ts`             | Edit        | Add `inferTargetArch()` + ARM64 Windows guard (error on explicit, remap on implicit to x64-baseline) |
+| `src/scripts/prepare-opentui-bindings.ts` | Edit        | Remove `win32-arm64` from `DEFAULT_PLATFORMS`                                                        |
 
 ## Appendix C: Platform Coverage Matrix (Post-Change)
 
-| Platform | Installer Behavior | CI Build Target | Release Artifact | Self-Update Target | Works? |
-|----------|-------------------|-----------------|------------------|--------------------|--------|
-| Linux x64 | `linux-x64` | `bun-linux-x64` | `atomic-linux-x64` | `atomic-linux-x64` | Yes |
-| Linux arm64 | `linux-arm64` | `bun-linux-arm64` | `atomic-linux-arm64` | `atomic-linux-arm64` | Yes |
-| macOS x64 | `darwin-x64` | `bun-darwin-x64` | `atomic-darwin-x64` | `atomic-darwin-x64` | Yes |
-| macOS arm64 | `darwin-arm64` (Rosetta remaps x64->arm64) | `bun-darwin-arm64` | `atomic-darwin-arm64` | `atomic-darwin-arm64` | Yes |
-| Windows x64 | `windows-x64.exe` | `bun-windows-x64` | `atomic-windows-x64.exe` | `atomic-windows-x64.exe` | Yes |
-| Windows arm64 | **`windows-x64-baseline.exe` (remapped)** | `bun-windows-x64-baseline` | `atomic-windows-x64-baseline.exe` | **`atomic-windows-x64-baseline.exe`** | **Yes (via Prism)** |
+| Platform      | Installer Behavior                         | CI Build Target            | Release Artifact                  | Self-Update Target                    | Works?              |
+| ------------- | ------------------------------------------ | -------------------------- | --------------------------------- | ------------------------------------- | ------------------- |
+| Linux x64     | `linux-x64`                                | `bun-linux-x64`            | `atomic-linux-x64`                | `atomic-linux-x64`                    | Yes                 |
+| Linux arm64   | `linux-arm64`                              | `bun-linux-arm64`          | `atomic-linux-arm64`              | `atomic-linux-arm64`                  | Yes                 |
+| macOS x64     | `darwin-x64`                               | `bun-darwin-x64`           | `atomic-darwin-x64`               | `atomic-darwin-x64`                   | Yes                 |
+| macOS arm64   | `darwin-arm64` (Rosetta remaps x64->arm64) | `bun-darwin-arm64`         | `atomic-darwin-arm64`             | `atomic-darwin-arm64`                 | Yes                 |
+| Windows x64   | `windows-x64.exe`                          | `bun-windows-x64`          | `atomic-windows-x64.exe`          | `atomic-windows-x64.exe`              | Yes                 |
+| Windows arm64 | **`windows-x64-baseline.exe` (remapped)**  | `bun-windows-x64-baseline` | `atomic-windows-x64-baseline.exe` | **`atomic-windows-x64-baseline.exe`** | **Yes (via Prism)** |
 
 ## Appendix D: External References
 
-| Reference | Link | Relevance |
-|-----------|------|-----------|
-| Bun #28055 | [Support bun:ffi on Windows ARM64](https://github.com/oven-sh/bun/issues/28055) | Blocks native ARM64 path; Open, no milestone |
-| Bun #21869 | [x64 Bun crashes under Prism (AVX)](https://github.com/oven-sh/bun/issues/21869) | Documents why standard x64 builds fail under Prism |
-| Bun PR #27801 | [Static baseline CPU instruction verifier](https://github.com/oven-sh/bun/pull/27801) | **Critical fix** -- guarantees baseline builds are AVX-free |
-| Bun PR #27121 | [CI baseline verification for Windows](https://github.com/oven-sh/bun/pull/27121) | CI-level AVX detection for baseline builds |
-| Bun v1.3.11 Blog | [Bun v1.3.11](https://bun.sh/blog/bun-v1.3.11) | Release containing the static AVX verifier |
+| Reference        | Link                                                                                  | Relevance                                                   |
+| ---------------- | ------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| Bun #28055       | [Support bun:ffi on Windows ARM64](https://github.com/oven-sh/bun/issues/28055)       | Blocks native ARM64 path; Open, no milestone                |
+| Bun #21869       | [x64 Bun crashes under Prism (AVX)](https://github.com/oven-sh/bun/issues/21869)      | Documents why standard x64 builds fail under Prism          |
+| Bun PR #27801    | [Static baseline CPU instruction verifier](https://github.com/oven-sh/bun/pull/27801) | **Critical fix** -- guarantees baseline builds are AVX-free |
+| Bun PR #27121    | [CI baseline verification for Windows](https://github.com/oven-sh/bun/pull/27121)     | CI-level AVX detection for baseline builds                  |
+| Bun v1.3.11 Blog | [Bun v1.3.11](https://bun.sh/blog/bun-v1.3.11)                                        | Release containing the static AVX verifier                  |
 
 ## Appendix E: Future -- Native ARM64 Support
 

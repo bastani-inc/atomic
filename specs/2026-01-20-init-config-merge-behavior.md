@@ -1,11 +1,11 @@
 # Init Command Config Merge Behavior Technical Design Document
 
-| Document Metadata      | Details         |
-| ---------------------- | --------------- |
-| Author(s)              | lavaman131      |
-| Status                 | Draft (WIP)     |
-| Team / Owner           | flora131/atomic |
-| Created / Last Updated | 2026-01-20      |
+| Document Metadata      | Details        |
+| ---------------------- | -------------- |
+| Author(s)              | lavaman131     |
+| Status                 | Draft (WIP)    |
+| Team / Owner           | bastani/atomic |
+| Created / Last Updated | 2026-01-20     |
 
 ## 1. Executive Summary
 
@@ -38,7 +38,7 @@ The init command (`src/commands/init.ts:52-201`) follows a **destructive overwri
 ```typescript
 // src/commands/init.ts:154-157
 if (folderExists) {
-  await rm(targetFolder, { recursive: true, force: true });
+    await rm(targetFolder, { recursive: true, force: true });
 }
 ```
 
@@ -47,12 +47,12 @@ if (folderExists) {
 ```typescript
 // src/commands/init.ts:165-173
 for (const file of agent.additional_files) {
-  const srcFile = join(configRoot, file);
-  const destFile = join(targetDir, file);
+    const srcFile = join(configRoot, file);
+    const destFile = join(targetDir, file);
 
-  if (await pathExists(srcFile)) {
-    await copyFile(srcFile, destFile); // Always overwrites
-  }
+    if (await pathExists(srcFile)) {
+        await copyFile(srcFile, destFile); // Always overwrites
+    }
 }
 ```
 
@@ -199,14 +199,14 @@ This approach was chosen because:
 
 ### 4.3 Key Components
 
-| Component              | Responsibility                  | Change Required                                                                     |
-| ---------------------- | ------------------------------- | ----------------------------------------------------------------------------------- |
-| `src/config.ts`        | Agent configuration definitions | Add `preserve_files` and `merge_files` arrays to `AgentConfig` interface            |
-| `src/commands/init.ts` | Interactive setup flow          | Add preserving folder copy, .mcp.json merge logic, add `--force` support            |
-| `src/utils/merge.ts`   | JSON merge utilities            | **New file** - implement deep merge for `.mcp.json` MCP server configurations       |
-| `src/index.ts`         | Entry point, argument parsing   | Add `--force` flag to argument parser                                               |
-| `tests/init.test.ts`   | Init command tests              | Add tests for preservation, folder preservation, and merge behavior                 |
-| `tests/merge.test.ts`  | Merge utility tests             | **New file** - Add tests for `.mcp.json` merge logic                                |
+| Component              | Responsibility                  | Change Required                                                               |
+| ---------------------- | ------------------------------- | ----------------------------------------------------------------------------- |
+| `src/config.ts`        | Agent configuration definitions | Add `preserve_files` and `merge_files` arrays to `AgentConfig` interface      |
+| `src/commands/init.ts` | Interactive setup flow          | Add preserving folder copy, .mcp.json merge logic, add `--force` support      |
+| `src/utils/merge.ts`   | JSON merge utilities            | **New file** - implement deep merge for `.mcp.json` MCP server configurations |
+| `src/index.ts`         | Entry point, argument parsing   | Add `--force` flag to argument parser                                         |
+| `tests/init.test.ts`   | Init command tests              | Add tests for preservation, folder preservation, and merge behavior           |
+| `tests/merge.test.ts`  | Merge utility tests             | **New file** - Add tests for `.mcp.json` merge logic                          |
 
 ## 5. Detailed Design
 
@@ -226,14 +226,14 @@ atomic --agent <name> -f        # Auto-init if needed, overwrites ALL (NEW)
 
 **Behavior Matrix:**
 
-| Command                            | CLAUDE.md/AGENTS.md exists | Result                       |
-| ---------------------------------- | -------------------------- | ---------------------------- |
-| `atomic init`                      | No                         | Copy from template           |
-| `atomic init`                      | Yes                        | **Skip** (preserve existing) |
-| `atomic init -f` / `--force`       | Yes                        | Overwrite with template      |
-| `atomic --agent claude-code`       | No                         | Copy from template           |
-| `atomic --agent claude-code`       | Yes                        | **Skip** (preserve existing) |
-| `atomic --agent claude-code -f`    | Yes                        | Overwrite with template      |
+| Command                         | CLAUDE.md/AGENTS.md exists | Result                       |
+| ------------------------------- | -------------------------- | ---------------------------- |
+| `atomic init`                   | No                         | Copy from template           |
+| `atomic init`                   | Yes                        | **Skip** (preserve existing) |
+| `atomic init -f` / `--force`    | Yes                        | Overwrite with template      |
+| `atomic --agent claude-code`    | No                         | Copy from template           |
+| `atomic --agent claude-code`    | Yes                        | **Skip** (preserve existing) |
+| `atomic --agent claude-code -f` | Yes                        | Overwrite with template      |
 
 ### 5.2 Interface Changes
 
@@ -241,15 +241,15 @@ atomic --agent <name> -f        # Auto-init if needed, overwrites ALL (NEW)
 
 ```typescript
 export interface AgentConfig {
-  name: string;
-  cmd: string;
-  additional_flags: string[];
-  folder: string;
-  install_url: string;
-  exclude: string[];
-  additional_files: string[];
-  preserve_files: string[]; // NEW: Files to skip if they exist (e.g., CLAUDE.md, AGENTS.md)
-  merge_files: string[];    // NEW: Files to merge instead of overwrite (e.g., .mcp.json)
+    name: string;
+    cmd: string;
+    additional_flags: string[];
+    folder: string;
+    install_url: string;
+    exclude: string[];
+    additional_files: string[];
+    preserve_files: string[]; // NEW: Files to skip if they exist (e.g., CLAUDE.md, AGENTS.md)
+    merge_files: string[]; // NEW: Files to merge instead of overwrite (e.g., .mcp.json)
 }
 ```
 
@@ -257,10 +257,10 @@ export interface AgentConfig {
 
 ```typescript
 interface InitOptions {
-  showBanner?: boolean;
-  preSelectedAgent?: AgentKey;
-  configNotFoundMessage?: string;
-  force?: boolean; // NEW: Force overwrite of preserved files
+    showBanner?: boolean;
+    preSelectedAgent?: AgentKey;
+    configNotFoundMessage?: string;
+    force?: boolean; // NEW: Force overwrite of preserved files
 }
 ```
 
@@ -270,45 +270,45 @@ interface InitOptions {
 
 ```typescript
 export const AGENT_CONFIG: Record<AgentKey, AgentConfig> = {
-  "claude-code": {
-    name: "Claude Code",
-    cmd: "claude",
-    additional_flags: [],
-    folder: ".claude",
-    install_url: "https://docs.anthropic.com/en/docs/claude-code",
-    exclude: [".DS_Store"],
-    additional_files: ["CLAUDE.md", ".mcp.json"],
-    preserve_files: ["CLAUDE.md"], // NEW: Skip if exists
-    merge_files: [".mcp.json"],    // NEW: Merge instead of overwrite
-  },
-  opencode: {
-    name: "OpenCode",
-    cmd: "opencode",
-    additional_flags: [],
-    folder: ".opencode",
-    install_url: "https://opencode.ai",
-    exclude: [
-      "node_modules",
-      ".gitignore",
-      "bun.lock",
-      "package.json",
-      ".DS_Store",
-    ],
-    additional_files: ["AGENTS.md"],
-    preserve_files: ["AGENTS.md"], // NEW: Skip if exists
-    merge_files: [],               // NEW: No merge files for opencode
-  },
-  "copilot-cli": {
-    name: "GitHub Copilot CLI",
-    cmd: "gh",
-    additional_flags: ["copilot"],
-    folder: ".github",
-    install_url: "https://docs.github.com/en/copilot",
-    exclude: ["workflows", "dependabot.yml", ".DS_Store"],
-    additional_files: ["AGENTS.md"],
-    preserve_files: ["AGENTS.md"], // NEW: Skip if exists
-    merge_files: [],               // NEW: No merge files for copilot-cli
-  },
+    "claude-code": {
+        name: "Claude Code",
+        cmd: "claude",
+        additional_flags: [],
+        folder: ".claude",
+        install_url: "https://docs.anthropic.com/en/docs/claude-code",
+        exclude: [".DS_Store"],
+        additional_files: ["CLAUDE.md", ".mcp.json"],
+        preserve_files: ["CLAUDE.md"], // NEW: Skip if exists
+        merge_files: [".mcp.json"], // NEW: Merge instead of overwrite
+    },
+    opencode: {
+        name: "OpenCode",
+        cmd: "opencode",
+        additional_flags: [],
+        folder: ".opencode",
+        install_url: "https://opencode.ai",
+        exclude: [
+            "node_modules",
+            ".gitignore",
+            "bun.lock",
+            "package.json",
+            ".DS_Store",
+        ],
+        additional_files: ["AGENTS.md"],
+        preserve_files: ["AGENTS.md"], // NEW: Skip if exists
+        merge_files: [], // NEW: No merge files for opencode
+    },
+    "copilot-cli": {
+        name: "GitHub Copilot CLI",
+        cmd: "gh",
+        additional_flags: ["copilot"],
+        folder: ".github",
+        install_url: "https://docs.github.com/en/copilot",
+        exclude: ["workflows", "dependabot.yml", ".DS_Store"],
+        additional_files: ["AGENTS.md"],
+        preserve_files: ["AGENTS.md"], // NEW: Skip if exists
+        merge_files: [], // NEW: No merge files for copilot-cli
+    },
 };
 ```
 
@@ -327,39 +327,39 @@ Replace the current folder deletion + copy with a preserving copy:
 
 // NEW: Preserving folder copy - only copy files that don't exist at destination
 async function copyDirPreserving(
-  src: string,
-  dest: string,
-  options: { exclude?: string[]; force?: boolean }
+    src: string,
+    dest: string,
+    options: { exclude?: string[]; force?: boolean },
 ): Promise<void> {
-  await mkdir(dest, { recursive: true });
+    await mkdir(dest, { recursive: true });
 
-  const entries = await readdir(src, { withFileTypes: true });
+    const entries = await readdir(src, { withFileTypes: true });
 
-  for (const entry of entries) {
-    const srcPath = join(src, entry.name);
-    const destPath = join(dest, entry.name);
+    for (const entry of entries) {
+        const srcPath = join(src, entry.name);
+        const destPath = join(dest, entry.name);
 
-    // Skip excluded files/directories
-    if (options.exclude?.includes(entry.name)) continue;
+        // Skip excluded files/directories
+        if (options.exclude?.includes(entry.name)) continue;
 
-    if (entry.isDirectory()) {
-      await copyDirPreserving(srcPath, destPath, options);
-    } else {
-      const destExists = await pathExists(destPath);
+        if (entry.isDirectory()) {
+            await copyDirPreserving(srcPath, destPath, options);
+        } else {
+            const destExists = await pathExists(destPath);
 
-      // Only copy if destination doesn't exist OR force flag is set
-      if (!destExists || options.force) {
-        await copyFile(srcPath, destPath);
-      }
-      // Otherwise skip - preserve user's existing file
+            // Only copy if destination doesn't exist OR force flag is set
+            if (!destExists || options.force) {
+                await copyFile(srcPath, destPath);
+            }
+            // Otherwise skip - preserve user's existing file
+        }
     }
-  }
 }
 
 // Usage in init command
 await copyDirPreserving(srcFolder, targetFolder, {
-  exclude: agent.exclude,
-  force: options.force,
+    exclude: agent.exclude,
+    force: options.force,
 });
 ```
 
@@ -368,35 +368,35 @@ await copyDirPreserving(srcFolder, targetFolder, {
 ```typescript
 // Copy additional files with preservation and merge logic
 for (const file of agent.additional_files) {
-  const srcFile = join(configRoot, file);
-  const destFile = join(targetDir, file);
+    const srcFile = join(configRoot, file);
+    const destFile = join(targetDir, file);
 
-  if (!(await pathExists(srcFile))) continue;
+    if (!(await pathExists(srcFile))) continue;
 
-  const destExists = await pathExists(destFile);
-  const shouldPreserve = agent.preserve_files?.includes(file);
-  const shouldMerge = agent.merge_files?.includes(file);
+    const destExists = await pathExists(destFile);
+    const shouldPreserve = agent.preserve_files?.includes(file);
+    const shouldMerge = agent.merge_files?.includes(file);
 
-  // Force flag bypasses all preservation/merge logic
-  if (options.force) {
+    // Force flag bypasses all preservation/merge logic
+    if (options.force) {
+        await copyFile(srcFile, destFile);
+        continue;
+    }
+
+    // Handle merge files (e.g., .mcp.json)
+    if (shouldMerge && destExists) {
+        await mergeJsonFile(srcFile, destFile);
+        continue;
+    }
+
+    // Handle preserve files (e.g., CLAUDE.md, AGENTS.md)
+    if (shouldPreserve && destExists) {
+        // Skip - preserve user's customization (no log message)
+        continue;
+    }
+
+    // Default: copy the file
     await copyFile(srcFile, destFile);
-    continue;
-  }
-
-  // Handle merge files (e.g., .mcp.json)
-  if (shouldMerge && destExists) {
-    await mergeJsonFile(srcFile, destFile);
-    continue;
-  }
-
-  // Handle preserve files (e.g., CLAUDE.md, AGENTS.md)
-  if (shouldPreserve && destExists) {
-    // Skip - preserve user's customization (no log message)
-    continue;
-  }
-
-  // Default: copy the file
-  await copyFile(srcFile, destFile);
 }
 ```
 
@@ -406,8 +406,8 @@ for (const file of agent.additional_files) {
 import { readFile, writeFile } from "fs/promises";
 
 interface McpConfig {
-  mcpServers?: Record<string, unknown>;
-  [key: string]: unknown;
+    mcpServers?: Record<string, unknown>;
+    [key: string]: unknown;
 }
 
 /**
@@ -417,29 +417,29 @@ interface McpConfig {
  * - Preserves other top-level keys from destination
  */
 export async function mergeJsonFile(
-  srcPath: string,
-  destPath: string
+    srcPath: string,
+    destPath: string,
 ): Promise<void> {
-  const srcContent = await readFile(srcPath, "utf-8");
-  const destContent = await readFile(destPath, "utf-8");
+    const srcContent = await readFile(srcPath, "utf-8");
+    const destContent = await readFile(destPath, "utf-8");
 
-  const srcConfig: McpConfig = JSON.parse(srcContent);
-  const destConfig: McpConfig = JSON.parse(destContent);
+    const srcConfig: McpConfig = JSON.parse(srcContent);
+    const destConfig: McpConfig = JSON.parse(destContent);
 
-  // Deep merge mcpServers - source values override destination for same keys
-  const mergedServers = {
-    ...destConfig.mcpServers,
-    ...srcConfig.mcpServers,
-  };
+    // Deep merge mcpServers - source values override destination for same keys
+    const mergedServers = {
+        ...destConfig.mcpServers,
+        ...srcConfig.mcpServers,
+    };
 
-  // Merge top-level config - preserve destination's other keys
-  const mergedConfig: McpConfig = {
-    ...destConfig,
-    ...srcConfig,
-    mcpServers: mergedServers,
-  };
+    // Merge top-level config - preserve destination's other keys
+    const mergedConfig: McpConfig = {
+        ...destConfig,
+        ...srcConfig,
+        mcpServers: mergedServers,
+    };
 
-  await writeFile(destPath, JSON.stringify(mergedConfig, null, 2) + "\n");
+    await writeFile(destPath, JSON.stringify(mergedConfig, null, 2) + "\n");
 }
 ```
 
@@ -449,16 +449,16 @@ export async function mergeJsonFile(
 
 ```typescript
 const { values, positionals } = parseArgs({
-  args: Bun.argv.slice(2),
-  options: {
-    version: { type: "boolean", short: "v" },
-    help: { type: "boolean", short: "h" },
-    agent: { type: "string", short: "a" },
-    "no-banner": { type: "boolean" },
-    force: { type: "boolean", short: "f" }, // NEW
-  },
-  strict: false,
-  allowPositionals: true,
+    args: Bun.argv.slice(2),
+    options: {
+        version: { type: "boolean", short: "v" },
+        help: { type: "boolean", short: "h" },
+        agent: { type: "string", short: "a" },
+        "no-banner": { type: "boolean" },
+        force: { type: "boolean", short: "f" }, // NEW
+    },
+    strict: false,
+    allowPositionals: true,
 });
 ```
 
@@ -467,17 +467,17 @@ const { values, positionals } = parseArgs({
 ```typescript
 // In init command routing
 await initCommand({
-  showBanner: !values["no-banner"],
-  preSelectedAgent: values.agent as AgentKey | undefined,
-  force: values.force, // NEW
+    showBanner: !values["no-banner"],
+    preSelectedAgent: values.agent as AgentKey | undefined,
+    force: values.force, // NEW
 });
 
 // In run-agent auto-init
 await initCommand({
-  preSelectedAgent: agentKey as AgentKey,
-  showBanner: false,
-  configNotFoundMessage: `${agent.folder} not found. Setting up ${agent.name}...`,
-  force: values.force, // NEW
+    preSelectedAgent: agentKey as AgentKey,
+    showBanner: false,
+    configNotFoundMessage: `${agent.folder} not found. Setting up ${agent.name}...`,
+    force: values.force, // NEW
 });
 ```
 
@@ -522,14 +522,14 @@ Options:
 
 **This is a breaking change.** The init command behavior changes significantly:
 
-| Scenario                              | Before                 | After                                   |
-| ------------------------------------- | ---------------------- | --------------------------------------- |
-| Fresh install                         | Copies all files       | Same - copies all files                 |
-| Re-init without customization         | Overwrites all         | Same - overwrites all                   |
-| Re-init with `CLAUDE.md` changes      | Overwrites (data loss) | **Preserves** (no data loss)            |
-| Re-init with `.mcp.json` changes      | Overwrites (data loss) | **Merges** (preserves user's servers)   |
-| Re-init with custom files in `.claude/` | Overwrites (data loss) | **Preserves** (keeps custom files)      |
-| Re-init with `-f`/`--force`           | N/A (flag didn't exist)| Overwrites all (explicit override)      |
+| Scenario                                | Before                  | After                                 |
+| --------------------------------------- | ----------------------- | ------------------------------------- |
+| Fresh install                           | Copies all files        | Same - copies all files               |
+| Re-init without customization           | Overwrites all          | Same - overwrites all                 |
+| Re-init with `CLAUDE.md` changes        | Overwrites (data loss)  | **Preserves** (no data loss)          |
+| Re-init with `.mcp.json` changes        | Overwrites (data loss)  | **Merges** (preserves user's servers) |
+| Re-init with custom files in `.claude/` | Overwrites (data loss)  | **Preserves** (keeps custom files)    |
+| Re-init with `-f`/`--force`             | N/A (flag didn't exist) | Overwrites all (explicit override)    |
 
 **No Migration Path:** This is an intentional breaking change. Users who relied on full-overwrite behavior must now use `-f`/`--force` explicitly.
 
@@ -554,141 +554,155 @@ This is a **breaking change**. Rollout is immediate upon release:
 // tests/init.test.ts
 
 test("preserves CLAUDE.md when it exists (claude-code)", async () => {
-  // Setup: Create target dir with existing CLAUDE.md
-  const targetDir = await createTempDir();
-  const claudeMdPath = join(targetDir, "CLAUDE.md");
-  await writeFile(claudeMdPath, "# My Custom Instructions");
+    // Setup: Create target dir with existing CLAUDE.md
+    const targetDir = await createTempDir();
+    const claudeMdPath = join(targetDir, "CLAUDE.md");
+    await writeFile(claudeMdPath, "# My Custom Instructions");
 
-  // Act: Run init with claude-code
-  await initCommand({
-    preSelectedAgent: "claude-code",
-    showBanner: false,
-  });
+    // Act: Run init with claude-code
+    await initCommand({
+        preSelectedAgent: "claude-code",
+        showBanner: false,
+    });
 
-  // Assert: CLAUDE.md preserved
-  const content = await Bun.file(claudeMdPath).text();
-  expect(content).toBe("# My Custom Instructions");
+    // Assert: CLAUDE.md preserved
+    const content = await Bun.file(claudeMdPath).text();
+    expect(content).toBe("# My Custom Instructions");
 });
 
 test("preserves AGENTS.md when it exists (opencode)", async () => {
-  const targetDir = await createTempDir();
-  const agentsMdPath = join(targetDir, "AGENTS.md");
-  await writeFile(agentsMdPath, "# Custom OpenCode Instructions");
+    const targetDir = await createTempDir();
+    const agentsMdPath = join(targetDir, "AGENTS.md");
+    await writeFile(agentsMdPath, "# Custom OpenCode Instructions");
 
-  await initCommand({
-    preSelectedAgent: "opencode",
-    showBanner: false,
-  });
+    await initCommand({
+        preSelectedAgent: "opencode",
+        showBanner: false,
+    });
 
-  const content = await Bun.file(agentsMdPath).text();
-  expect(content).toBe("# Custom OpenCode Instructions");
+    const content = await Bun.file(agentsMdPath).text();
+    expect(content).toBe("# Custom OpenCode Instructions");
 });
 
 test("overwrites CLAUDE.md with --force flag", async () => {
-  const targetDir = await createTempDir();
-  const claudeMdPath = join(targetDir, "CLAUDE.md");
-  await writeFile(claudeMdPath, "# My Custom Instructions");
+    const targetDir = await createTempDir();
+    const claudeMdPath = join(targetDir, "CLAUDE.md");
+    await writeFile(claudeMdPath, "# My Custom Instructions");
 
-  await initCommand({
-    preSelectedAgent: "claude-code",
-    showBanner: false,
-    force: true,
-  });
+    await initCommand({
+        preSelectedAgent: "claude-code",
+        showBanner: false,
+        force: true,
+    });
 
-  const content = await Bun.file(claudeMdPath).text();
-  expect(content).not.toBe("# My Custom Instructions");
+    const content = await Bun.file(claudeMdPath).text();
+    expect(content).not.toBe("# My Custom Instructions");
 });
 
 test("merges .mcp.json preserving user's MCP servers", async () => {
-  const targetDir = await createTempDir();
-  const mcpJsonPath = join(targetDir, ".mcp.json");
+    const targetDir = await createTempDir();
+    const mcpJsonPath = join(targetDir, ".mcp.json");
 
-  // User has custom MCP server
-  await writeFile(mcpJsonPath, JSON.stringify({
-    mcpServers: {
-      "my-custom-server": { command: "custom-cmd" }
-    }
-  }, null, 2));
+    // User has custom MCP server
+    await writeFile(
+        mcpJsonPath,
+        JSON.stringify(
+            {
+                mcpServers: {
+                    "my-custom-server": { command: "custom-cmd" },
+                },
+            },
+            null,
+            2,
+        ),
+    );
 
-  await initCommand({
-    preSelectedAgent: "claude-code",
-    showBanner: false,
-  });
+    await initCommand({
+        preSelectedAgent: "claude-code",
+        showBanner: false,
+    });
 
-  // Both user's server and CLI servers should exist
-  const content = JSON.parse(await Bun.file(mcpJsonPath).text());
-  expect(content.mcpServers["my-custom-server"]).toBeDefined();
-  // CLI-managed servers also present (from template)
+    // Both user's server and CLI servers should exist
+    const content = JSON.parse(await Bun.file(mcpJsonPath).text());
+    expect(content.mcpServers["my-custom-server"]).toBeDefined();
+    // CLI-managed servers also present (from template)
 });
 
 test("overwrites .mcp.json with --force flag (no merge)", async () => {
-  const targetDir = await createTempDir();
-  const mcpJsonPath = join(targetDir, ".mcp.json");
+    const targetDir = await createTempDir();
+    const mcpJsonPath = join(targetDir, ".mcp.json");
 
-  await writeFile(mcpJsonPath, JSON.stringify({
-    mcpServers: { "my-custom-server": { command: "custom-cmd" } }
-  }, null, 2));
+    await writeFile(
+        mcpJsonPath,
+        JSON.stringify(
+            {
+                mcpServers: { "my-custom-server": { command: "custom-cmd" } },
+            },
+            null,
+            2,
+        ),
+    );
 
-  await initCommand({
-    preSelectedAgent: "claude-code",
-    showBanner: false,
-    force: true,
-  });
+    await initCommand({
+        preSelectedAgent: "claude-code",
+        showBanner: false,
+        force: true,
+    });
 
-  const content = JSON.parse(await Bun.file(mcpJsonPath).text());
-  expect(content.mcpServers["my-custom-server"]).toBeUndefined();
+    const content = JSON.parse(await Bun.file(mcpJsonPath).text());
+    expect(content.mcpServers["my-custom-server"]).toBeUndefined();
 });
 
 test("copies CLAUDE.md when it does not exist", async () => {
-  const targetDir = await createTempDir();
-  // No pre-existing CLAUDE.md
+    const targetDir = await createTempDir();
+    // No pre-existing CLAUDE.md
 
-  await initCommand({
-    preSelectedAgent: "claude-code",
-    showBanner: false,
-  });
+    await initCommand({
+        preSelectedAgent: "claude-code",
+        showBanner: false,
+    });
 
-  expect(await pathExists(join(targetDir, "CLAUDE.md"))).toBe(true);
+    expect(await pathExists(join(targetDir, "CLAUDE.md"))).toBe(true);
 });
 
 test("preserves custom files in .claude folder", async () => {
-  const targetDir = await createTempDir();
-  const claudeDir = join(targetDir, ".claude");
-  await mkdir(claudeDir, { recursive: true });
+    const targetDir = await createTempDir();
+    const claudeDir = join(targetDir, ".claude");
+    await mkdir(claudeDir, { recursive: true });
 
-  // User has custom command file
-  const customCmd = join(claudeDir, "commands", "my-custom-command.md");
-  await mkdir(join(claudeDir, "commands"), { recursive: true });
-  await writeFile(customCmd, "# My Custom Command");
+    // User has custom command file
+    const customCmd = join(claudeDir, "commands", "my-custom-command.md");
+    await mkdir(join(claudeDir, "commands"), { recursive: true });
+    await writeFile(customCmd, "# My Custom Command");
 
-  await initCommand({
-    preSelectedAgent: "claude-code",
-    showBanner: false,
-  });
+    await initCommand({
+        preSelectedAgent: "claude-code",
+        showBanner: false,
+    });
 
-  // Custom command should still exist
-  const content = await Bun.file(customCmd).text();
-  expect(content).toBe("# My Custom Command");
+    // Custom command should still exist
+    const content = await Bun.file(customCmd).text();
+    expect(content).toBe("# My Custom Command");
 });
 
 test("overwrites custom files in .claude folder with --force", async () => {
-  const targetDir = await createTempDir();
-  const claudeDir = join(targetDir, ".claude");
-  await mkdir(claudeDir, { recursive: true });
+    const targetDir = await createTempDir();
+    const claudeDir = join(targetDir, ".claude");
+    await mkdir(claudeDir, { recursive: true });
 
-  // User has file that also exists in template
-  const existingFile = join(claudeDir, "settings.json");
-  await writeFile(existingFile, '{"custom": true}');
+    // User has file that also exists in template
+    const existingFile = join(claudeDir, "settings.json");
+    await writeFile(existingFile, '{"custom": true}');
 
-  await initCommand({
-    preSelectedAgent: "claude-code",
-    showBanner: false,
-    force: true,
-  });
+    await initCommand({
+        preSelectedAgent: "claude-code",
+        showBanner: false,
+        force: true,
+    });
 
-  // File should be overwritten with template version
-  const content = await Bun.file(existingFile).text();
-  expect(content).not.toContain('"custom": true');
+    // File should be overwritten with template version
+    const content = await Bun.file(existingFile).text();
+    expect(content).not.toContain('"custom": true');
 });
 ```
 
@@ -698,36 +712,36 @@ test("overwrites custom files in .claude folder with --force", async () => {
 // tests/config.test.ts
 
 test("all agents have preserve_files array", () => {
-  const keys = getAgentKeys();
-  for (const key of keys) {
-    const config = getAgentConfig(key);
-    expect(Array.isArray(config.preserve_files)).toBe(true);
-  }
+    const keys = getAgentKeys();
+    for (const key of keys) {
+        const config = getAgentConfig(key);
+        expect(Array.isArray(config.preserve_files)).toBe(true);
+    }
 });
 
 test("all agents have merge_files array", () => {
-  const keys = getAgentKeys();
-  for (const key of keys) {
-    const config = getAgentConfig(key);
-    expect(Array.isArray(config.merge_files)).toBe(true);
-  }
+    const keys = getAgentKeys();
+    for (const key of keys) {
+        const config = getAgentConfig(key);
+        expect(Array.isArray(config.merge_files)).toBe(true);
+    }
 });
 
 test("claude-code preserves CLAUDE.md and merges .mcp.json", () => {
-  const config = getAgentConfig("claude-code");
-  expect(config.preserve_files).toContain("CLAUDE.md");
-  expect(config.preserve_files).not.toContain(".mcp.json");
-  expect(config.merge_files).toContain(".mcp.json");
+    const config = getAgentConfig("claude-code");
+    expect(config.preserve_files).toContain("CLAUDE.md");
+    expect(config.preserve_files).not.toContain(".mcp.json");
+    expect(config.merge_files).toContain(".mcp.json");
 });
 
 test("opencode preserves AGENTS.md", () => {
-  const config = getAgentConfig("opencode");
-  expect(config.preserve_files).toContain("AGENTS.md");
+    const config = getAgentConfig("opencode");
+    expect(config.preserve_files).toContain("AGENTS.md");
 });
 
 test("copilot-cli preserves AGENTS.md", () => {
-  const config = getAgentConfig("copilot-cli");
-  expect(config.preserve_files).toContain("AGENTS.md");
+    const config = getAgentConfig("copilot-cli");
+    expect(config.preserve_files).toContain("AGENTS.md");
 });
 ```
 
@@ -737,47 +751,59 @@ test("copilot-cli preserves AGENTS.md", () => {
 // tests/merge.test.ts
 
 test("mergeJsonFile preserves destination MCP servers", async () => {
-  const srcPath = await createTempFile(JSON.stringify({
-    mcpServers: { "cli-server": { command: "cli-cmd" } }
-  }));
-  const destPath = await createTempFile(JSON.stringify({
-    mcpServers: { "user-server": { command: "user-cmd" } }
-  }));
+    const srcPath = await createTempFile(
+        JSON.stringify({
+            mcpServers: { "cli-server": { command: "cli-cmd" } },
+        }),
+    );
+    const destPath = await createTempFile(
+        JSON.stringify({
+            mcpServers: { "user-server": { command: "user-cmd" } },
+        }),
+    );
 
-  await mergeJsonFile(srcPath, destPath);
+    await mergeJsonFile(srcPath, destPath);
 
-  const result = JSON.parse(await Bun.file(destPath).text());
-  expect(result.mcpServers["user-server"]).toBeDefined();
-  expect(result.mcpServers["cli-server"]).toBeDefined();
+    const result = JSON.parse(await Bun.file(destPath).text());
+    expect(result.mcpServers["user-server"]).toBeDefined();
+    expect(result.mcpServers["cli-server"]).toBeDefined();
 });
 
 test("mergeJsonFile source overrides destination for same keys", async () => {
-  const srcPath = await createTempFile(JSON.stringify({
-    mcpServers: { "shared-server": { command: "new-cmd" } }
-  }));
-  const destPath = await createTempFile(JSON.stringify({
-    mcpServers: { "shared-server": { command: "old-cmd" } }
-  }));
+    const srcPath = await createTempFile(
+        JSON.stringify({
+            mcpServers: { "shared-server": { command: "new-cmd" } },
+        }),
+    );
+    const destPath = await createTempFile(
+        JSON.stringify({
+            mcpServers: { "shared-server": { command: "old-cmd" } },
+        }),
+    );
 
-  await mergeJsonFile(srcPath, destPath);
+    await mergeJsonFile(srcPath, destPath);
 
-  const result = JSON.parse(await Bun.file(destPath).text());
-  expect(result.mcpServers["shared-server"].command).toBe("new-cmd");
+    const result = JSON.parse(await Bun.file(destPath).text());
+    expect(result.mcpServers["shared-server"].command).toBe("new-cmd");
 });
 
 test("mergeJsonFile preserves destination top-level keys", async () => {
-  const srcPath = await createTempFile(JSON.stringify({
-    mcpServers: {}
-  }));
-  const destPath = await createTempFile(JSON.stringify({
-    mcpServers: {},
-    customKey: "user-value"
-  }));
+    const srcPath = await createTempFile(
+        JSON.stringify({
+            mcpServers: {},
+        }),
+    );
+    const destPath = await createTempFile(
+        JSON.stringify({
+            mcpServers: {},
+            customKey: "user-value",
+        }),
+    );
 
-  await mergeJsonFile(srcPath, destPath);
+    await mergeJsonFile(srcPath, destPath);
 
-  const result = JSON.parse(await Bun.file(destPath).text());
-  expect(result.customKey).toBe("user-value");
+    const result = JSON.parse(await Bun.file(destPath).text());
+    expect(result.customKey).toBe("user-value");
 });
 ```
 
@@ -789,50 +815,51 @@ test("mergeJsonFile preserves destination top-level keys", async () => {
 // tests/routing.test.ts
 
 test("parses --force flag", () => {
-  const { values } = parseArgs({
-    args: ["init", "--force"],
-    options: {
-      force: { type: "boolean", short: "f" },
-    },
-    strict: false,
-    allowPositionals: true,
-  });
+    const { values } = parseArgs({
+        args: ["init", "--force"],
+        options: {
+            force: { type: "boolean", short: "f" },
+        },
+        strict: false,
+        allowPositionals: true,
+    });
 
-  expect(values.force).toBe(true);
+    expect(values.force).toBe(true);
 });
 
 test("parses -f short flag", () => {
-  const { values } = parseArgs({
-    args: ["init", "-f"],
-    options: {
-      force: { type: "boolean", short: "f" },
-    },
-    strict: false,
-    allowPositionals: true,
-  });
+    const { values } = parseArgs({
+        args: ["init", "-f"],
+        options: {
+            force: { type: "boolean", short: "f" },
+        },
+        strict: false,
+        allowPositionals: true,
+    });
 
-  expect(values.force).toBe(true);
+    expect(values.force).toBe(true);
 });
 
 test("parses combined flags: -a claude-code -f", () => {
-  const { values } = parseArgs({
-    args: ["-a", "claude-code", "-f"],
-    options: {
-      agent: { type: "string", short: "a" },
-      force: { type: "boolean", short: "f" },
-    },
-    strict: false,
-    allowPositionals: true,
-  });
+    const { values } = parseArgs({
+        args: ["-a", "claude-code", "-f"],
+        options: {
+            agent: { type: "string", short: "a" },
+            force: { type: "boolean", short: "f" },
+        },
+        strict: false,
+        allowPositionals: true,
+    });
 
-  expect(values.agent).toBe("claude-code");
-  expect(values.force).toBe(true);
+    expect(values.agent).toBe("claude-code");
+    expect(values.force).toBe(true);
 });
 ```
 
 #### End-to-End Tests
 
 **File Preservation:**
+
 - [ ] `atomic init` with existing `CLAUDE.md` preserves content
 - [ ] `atomic init -f` with existing `CLAUDE.md` overwrites content
 - [ ] `atomic init --force` with existing `CLAUDE.md` overwrites content
@@ -841,12 +868,14 @@ test("parses combined flags: -a claude-code -f", () => {
 - [ ] `atomic -a claude-code -f` auto-init overwrites `CLAUDE.md`
 
 **MCP JSON Merge:**
+
 - [ ] `atomic init` with existing `.mcp.json` merges user's MCP servers
 - [ ] `atomic init` merges CLI servers into existing `.mcp.json`
 - [ ] `atomic init -f` overwrites `.mcp.json` completely (no merge)
 - [ ] Same-key MCP servers are updated with CLI values during merge
 
 **Folder Content Preservation:**
+
 - [ ] `atomic init` preserves custom files in `.claude/commands/`
 - [ ] `atomic init` preserves custom files in `.claude/agents/`
 - [ ] `atomic init` preserves custom files in `.claude/skills/`
@@ -854,6 +883,7 @@ test("parses combined flags: -a claude-code -f", () => {
 - [ ] Files that exist in both source and destination are skipped (not overwritten)
 
 **Silent Operation:**
+
 - [ ] No log messages when files are preserved or merged (silent operation)
 
 ## 9. Resolved Questions
@@ -872,16 +902,16 @@ All open questions have been resolved:
 
 ## 10. Implementation File Changes
 
-| File                    | Change Type | Description                                                                         |
-| ----------------------- | ----------- | ----------------------------------------------------------------------------------- |
-| `src/config.ts`         | Modify      | Add `preserve_files` and `merge_files` to `AgentConfig` interface and definitions   |
-| `src/commands/init.ts`  | Modify      | Add preserving folder copy, merge logic, extend `InitOptions` with `force`          |
-| `src/utils/merge.ts`    | **New**     | Implement `mergeJsonFile()` for `.mcp.json` merge logic                             |
-| `src/index.ts`          | Modify      | Add `-f`/`--force` flag to argument parser, pass to init commands                   |
-| `tests/init.test.ts`    | Modify      | Add tests for preservation, folder preservation, and merge behavior                 |
-| `tests/config.test.ts`  | Modify      | Add tests for `preserve_files` and `merge_files` configuration                      |
-| `tests/merge.test.ts`   | **New**     | Add tests for `.mcp.json` merge logic                                               |
-| `tests/routing.test.ts` | Modify      | Add tests for `-f`/`--force` flag parsing                                           |
+| File                    | Change Type | Description                                                                       |
+| ----------------------- | ----------- | --------------------------------------------------------------------------------- |
+| `src/config.ts`         | Modify      | Add `preserve_files` and `merge_files` to `AgentConfig` interface and definitions |
+| `src/commands/init.ts`  | Modify      | Add preserving folder copy, merge logic, extend `InitOptions` with `force`        |
+| `src/utils/merge.ts`    | **New**     | Implement `mergeJsonFile()` for `.mcp.json` merge logic                           |
+| `src/index.ts`          | Modify      | Add `-f`/`--force` flag to argument parser, pass to init commands                 |
+| `tests/init.test.ts`    | Modify      | Add tests for preservation, folder preservation, and merge behavior               |
+| `tests/config.test.ts`  | Modify      | Add tests for `preserve_files` and `merge_files` configuration                    |
+| `tests/merge.test.ts`   | **New**     | Add tests for `.mcp.json` merge logic                                             |
+| `tests/routing.test.ts` | Modify      | Add tests for `-f`/`--force` flag parsing                                         |
 
 ## 11. Code References
 

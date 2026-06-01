@@ -1,17 +1,18 @@
 # Ralph Setup Refactor - Eliminate Redundant Argument Parsing
 
-| Document Metadata      | Details         |
-| ---------------------- | --------------- |
-| Author(s)              | lavaman131      |
-| Status                 | Draft (WIP)     |
-| Team / Owner           | flora131/atomic |
-| Created / Last Updated | 2026-01-25      |
+| Document Metadata      | Details        |
+| ---------------------- | -------------- |
+| Author(s)              | lavaman131     |
+| Status                 | Draft (WIP)    |
+| Team / Owner           | bastani/atomic |
+| Created / Last Updated | 2026-01-25     |
 
 ## 1. Executive Summary
 
 This RFC proposes refactoring the `ralph setup` command to eliminate ~75 lines of redundant argument parsing code. Currently, Commander.js parses options in `src/cli.ts`, then the action handler reconstructs an args array, which `ralphSetup()` manually re-parses in `src/commands/ralph.ts`. The proposed solution passes parsed options directly via a typed interface, removing the double-parsing pattern and reducing code complexity.
 
 **Key changes:**
+
 - Create `RalphSetupOptions` interface for typed option passing
 - Refactor `ralphSetup()` to accept options object instead of args array
 - Remove ~75 lines of manual argument parsing from `ralph.ts`
@@ -39,9 +40,11 @@ User Input → Commander.js parses options → Action handler reconstructs args[
 | Manual re-parsing  | `src/commands/ralph.ts:452-534` | 75+ lines of redundant option parsing           |
 
 **Citation from audit (research/docs/2026-01-25-commander-cli-audit.md):**
+
 > **Issue**: `ralph setup` argument reconstruction and re-parsing
 >
 > **Current flow**:
+>
 > 1. Commander.js parses `--max-iterations`, `--completion-promise`, `--feature-list`, `[prompt...]`
 > 2. Action handler reconstructs these into an args array
 > 3. `ralphSetup(args)` manually re-parses the same arguments
@@ -125,14 +128,14 @@ flowchart TB
 // src/commands/ralph.ts (new interface)
 
 export interface RalphSetupOptions {
-  /** User-provided prompt parts, joined with spaces */
-  prompt: string[];
-  /** Maximum iterations before auto-stop (0 = unlimited) */
-  maxIterations?: number;
-  /** Promise phrase to signal completion */
-  completionPromise?: string;
-  /** Path to feature list JSON file */
-  featureList?: string;
+    /** User-provided prompt parts, joined with spaces */
+    prompt: string[];
+    /** Maximum iterations before auto-stop (0 = unlimited) */
+    maxIterations?: number;
+    /** Promise phrase to signal completion */
+    completionPromise?: string;
+    /** Path to feature list JSON file */
+    featureList?: string;
 }
 ```
 
@@ -142,21 +145,27 @@ export interface RalphSetupOptions {
 
 ```typescript
 export async function ralphSetup(args: string[]): Promise<number> {
-  const promptParts: string[] = [];
-  let maxIterations = 0;
-  let completionPromise = "null";
-  let featureListPath = "research/feature-list.json";
+    const promptParts: string[] = [];
+    let maxIterations = 0;
+    let completionPromise = "null";
+    let featureListPath = "research/feature-list.json";
 
-  // 75+ lines of manual argument parsing...
-  let i = 0;
-  while (i < args.length) {
-    const arg = args[i]!;
-    if (arg === "--max-iterations") { /* ... */ }
-    else if (arg === "--completion-promise") { /* ... */ }
-    else if (arg === "--feature-list") { /* ... */ }
-    else { promptParts.push(arg); i++; }
-  }
-  // ...
+    // 75+ lines of manual argument parsing...
+    let i = 0;
+    while (i < args.length) {
+        const arg = args[i]!;
+        if (arg === "--max-iterations") {
+            /* ... */
+        } else if (arg === "--completion-promise") {
+            /* ... */
+        } else if (arg === "--feature-list") {
+            /* ... */
+        } else {
+            promptParts.push(arg);
+            i++;
+        }
+    }
+    // ...
 }
 ```
 
@@ -164,33 +173,35 @@ export async function ralphSetup(args: string[]): Promise<number> {
 
 ```typescript
 export async function ralphSetup(options: RalphSetupOptions): Promise<number> {
-  const {
-    prompt,
-    maxIterations = 0,
-    completionPromise,
-    featureList = "research/feature-list.json",
-  } = options;
+    const {
+        prompt,
+        maxIterations = 0,
+        completionPromise,
+        featureList = "research/feature-list.json",
+    } = options;
 
-  // Join prompt parts
-  const userPrompt = prompt.join(" ");
+    // Join prompt parts
+    const userPrompt = prompt.join(" ");
 
-  // Use user prompt if provided, otherwise use default
-  let fullPrompt: string;
-  if (userPrompt) {
-    fullPrompt = userPrompt;
-  } else {
-    fullPrompt = DEFAULT_PROMPT;
+    // Use user prompt if provided, otherwise use default
+    let fullPrompt: string;
+    if (userPrompt) {
+        fullPrompt = userPrompt;
+    } else {
+        fullPrompt = DEFAULT_PROMPT;
 
-    // Verify feature list exists when using default prompt
-    const featureListExists = await fileExists(featureList);
-    if (!featureListExists) {
-      console.error(`❌ Error: Feature list not found at: ${featureList}`);
-      // ... existing error message ...
-      return 1;
+        // Verify feature list exists when using default prompt
+        const featureListExists = await fileExists(featureList);
+        if (!featureListExists) {
+            console.error(
+                `❌ Error: Feature list not found at: ${featureList}`,
+            );
+            // ... existing error message ...
+            return 1;
+        }
     }
-  }
 
-  // ... rest of implementation unchanged ...
+    // ... rest of implementation unchanged ...
 }
 ```
 
@@ -256,8 +267,8 @@ The current `ralphSetup()` contains a `-h`/`--help` handler (lines 463-465):
 
 ```typescript
 if (arg === "-h" || arg === "--help") {
-  console.log(SETUP_HELP_TEXT);
-  return 0;
+    console.log(SETUP_HELP_TEXT);
+    return 0;
 }
 ```
 
@@ -271,9 +282,9 @@ The current implementation uses the string `"null"` as a sentinel value:
 let completionPromise = "null";
 // ...
 if (completionPromise && completionPromise !== "null") {
-  completionPromiseYaml = `"${completionPromise}"`;
+    completionPromiseYaml = `"${completionPromise}"`;
 } else {
-  completionPromiseYaml = "null";
+    completionPromiseYaml = "null";
 }
 ```
 
@@ -284,8 +295,8 @@ const completionPromise = options.completionPromise; // undefined if not provide
 
 // For YAML output:
 const completionPromiseYaml = completionPromise
-  ? `"${completionPromise}"`
-  : "null";
+    ? `"${completionPromise}"`
+    : "null";
 ```
 
 ### 5.6 Files to Modify
@@ -339,14 +350,14 @@ This is a single-PR refactor with no phased rollout needed.
 Update existing tests in `tests/cli-commander.test.ts`:
 
 ```typescript
-describe('ralph setup command', () => {
-  test('calls ralphSetup with parsed options', () => {
-    // Verify options object is passed correctly
-  });
+describe("ralph setup command", () => {
+    test("calls ralphSetup with parsed options", () => {
+        // Verify options object is passed correctly
+    });
 
-  test('handles missing optional arguments', () => {
-    // Verify defaults are applied
-  });
+    test("handles missing optional arguments", () => {
+        // Verify defaults are applied
+    });
 });
 ```
 
@@ -364,10 +375,10 @@ describe('ralph setup command', () => {
 ## 9. Open Questions / Unresolved Issues
 
 1. **`ralphCommand()` function (lines 677-698):** The audit notes this function isn't used by the Commander.js CLI. Should it be removed?
-   - **Recommendation:** Investigate if it's used elsewhere; if not, delete it
+    - **Recommendation:** Investigate if it's used elsewhere; if not, delete it
 
 2. **`SETUP_HELP_TEXT` constant:** Should we keep custom help text or rely on Commander.js auto-generated help?
-   - **Recommendation:** Use `.addHelpText('after', examples)` for examples, remove `SETUP_HELP_TEXT`
+    - **Recommendation:** Use `.addHelpText('after', examples)` for examples, remove `SETUP_HELP_TEXT`
 
 ## 10. Implementation Checklist
 

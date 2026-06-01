@@ -5,7 +5,17 @@ git_commit: 5b33b79c1b8a4a2131b4640b077b16dd3a9bf352
 branch: lavaman131/feature/tui
 repository: atomic
 topic: "Ralph Loop enhancements - task management, prompt refinement, and loop safety (Issue #163)"
-tags: [research, codebase, ralph-loop, todowrite, prompt-engineer, feature-list, workflow, task-management]
+tags:
+    [
+        research,
+        codebase,
+        ralph-loop,
+        todowrite,
+        prompt-engineer,
+        feature-list,
+        workflow,
+        task-management,
+    ]
 status: complete
 last_updated: 2026-02-09
 last_updated_by: Claude Opus 4.6
@@ -16,6 +26,7 @@ last_updated_by: Claude Opus 4.6
 ## Research Question
 
 Document the current Ralph Loop implementation and all related components to understand what changes are needed for GitHub issue #163's three enhancements:
+
 1. Replace `feature-list.json` task tracking with TodoWrite-style task lists and simplify the `/ralph` API
 2. Integrate `prompt-engineer` skill for yolo mode prompt refinement
 3. Add completion promise and termination conditions to prompts
@@ -30,15 +41,15 @@ The Ralph Loop is a graph-based autonomous workflow engine that iterates over fe
 
 #### Core Files
 
-| File | Purpose |
-|------|---------|
-| [`src/workflows/ralph/workflow.ts:185`](https://github.com/flora131/atomic/blob/5b33b79/src/workflows/ralph/workflow.ts#L185) | `createRalphWorkflow()` factory - builds the compiled graph |
-| [`src/workflows/ralph/executor.ts:80`](https://github.com/flora131/atomic/blob/5b33b79/src/workflows/ralph/executor.ts#L80) | `RalphExecutor` class - manages interrupt handling |
-| [`src/workflows/ralph/session.ts:107`](https://github.com/flora131/atomic/blob/5b33b79/src/workflows/ralph/session.ts#L107) | `RalphSession` interface and persistence functions |
-| [`src/graph/nodes/ralph-nodes.ts:300`](https://github.com/flora131/atomic/blob/5b33b79/src/graph/nodes/ralph-nodes.ts#L300) | `RalphWorkflowState` and all graph node implementations |
-| [`src/commands/ralph.ts:322`](https://github.com/flora131/atomic/blob/5b33b79/src/commands/ralph.ts#L322) | `ralphSetup()` CLI entry point |
-| [`src/config/ralph.ts:17`](https://github.com/flora131/atomic/blob/5b33b79/src/config/ralph.ts#L17) | `RalphConfig` type and defaults |
-| [`src/ui/commands/workflow-commands.ts:780`](https://github.com/flora131/atomic/blob/5b33b79/src/ui/commands/workflow-commands.ts#L780) | `createRalphCommand()` - UI slash command handler |
+| File                                                                                                                                   | Purpose                                                     |
+| -------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| [`src/workflows/ralph/workflow.ts:185`](https://github.com/bastani/atomic/blob/5b33b79/src/workflows/ralph/workflow.ts#L185)           | `createRalphWorkflow()` factory - builds the compiled graph |
+| [`src/workflows/ralph/executor.ts:80`](https://github.com/bastani/atomic/blob/5b33b79/src/workflows/ralph/executor.ts#L80)             | `RalphExecutor` class - manages interrupt handling          |
+| [`src/workflows/ralph/session.ts:107`](https://github.com/bastani/atomic/blob/5b33b79/src/workflows/ralph/session.ts#L107)             | `RalphSession` interface and persistence functions          |
+| [`src/graph/nodes/ralph-nodes.ts:300`](https://github.com/bastani/atomic/blob/5b33b79/src/graph/nodes/ralph-nodes.ts#L300)             | `RalphWorkflowState` and all graph node implementations     |
+| [`src/commands/ralph.ts:322`](https://github.com/bastani/atomic/blob/5b33b79/src/commands/ralph.ts#L322)                               | `ralphSetup()` CLI entry point                              |
+| [`src/config/ralph.ts:17`](https://github.com/bastani/atomic/blob/5b33b79/src/config/ralph.ts#L17)                                     | `RalphConfig` type and defaults                             |
+| [`src/ui/commands/workflow-commands.ts:780`](https://github.com/bastani/atomic/blob/5b33b79/src/ui/commands/workflow-commands.ts#L780) | `createRalphCommand()` - UI slash command handler           |
 
 #### Graph Structure
 
@@ -58,6 +69,7 @@ Loop exit condition at `workflow.ts:223`: `(state) => !state.shouldContinue`
 #### Session Directory Structure
 
 Each run creates `.ralph/sessions/{UUID}/` with:
+
 - `session.json` - serialized `RalphSession`
 - `progress.txt` - append-only human-readable log
 - `research/feature-list.json` - session-local feature list copy
@@ -78,12 +90,12 @@ The `research/feature-list.json` on disk is a **flat JSON array**:
 
 ```json
 [
-  {
-    "category": "functional",
-    "description": "Feature description",
-    "steps": ["Step 1", "Step 2"],
-    "passes": false
-  }
+    {
+        "category": "functional",
+        "description": "Feature description",
+        "steps": ["Step 1", "Step 2"],
+        "passes": false
+    }
 ]
 ```
 
@@ -93,12 +105,12 @@ The `FeatureListJson` interface at `ralph-nodes.ts:1306-1313` expects a **wrappe
 
 ```typescript
 interface FeatureListJson {
-  features: Array<{
-    category: string;
-    description: string;
-    steps: string[];
-    passes: boolean;
-  }>;
+    features: Array<{
+        category: string;
+        description: string;
+        steps: string[];
+        passes: boolean;
+    }>;
 }
 ```
 
@@ -107,6 +119,7 @@ interface FeatureListJson {
 #### Internal Representation
 
 Features are converted to `RalphFeature` objects (`session.ts:43-70`):
+
 - Auto-generated IDs: `feat-001`, `feat-002`, etc.
 - `name`: first 60 chars of `description`
 - `status`: `"pending"` | `"in_progress"` | `"passing"` | `"failing"`
@@ -117,6 +130,7 @@ Features are converted to `RalphFeature` objects (`session.ts:43-70`):
 `pending` -> `in_progress` -> `passing` | `failing`
 
 Managed by:
+
 - `implementFeatureNode` (`ralph-nodes.ts:1022-1031`): marks `in_progress`
 - `processFeatureImplementationResult()` (`ralph-nodes.ts:1129-1213`): marks `passing`/`failing`
 - `checkCompletionNode` (`ralph-nodes.ts:188-258`): evaluates `features.every(f => f.status === "passing")`
@@ -131,6 +145,7 @@ Entries appended by `appendProgress()` (`session.ts:526-538`) in format: `[ISO-T
 #### SDK Tool
 
 `createTodoWriteTool()` at `src/sdk/tools/todo-write.ts:67` creates a tool definition with:
+
 - Input: `{ todos: TodoItem[] }` where `TodoItem` has `id?`, `content`, `status`, `activeForm`, `blockedBy?`
 - Handler: full replacement of the todo list per invocation (not incremental)
 - Registered only for Copilot agents (`src/commands/chat.ts:170-172`); Claude SDK has built-in TodoWrite
@@ -160,6 +175,7 @@ Pinned builtin at `src/ui/commands/skill-commands.ts:1112-1286`. Command: `/prom
 #### Workflow
 
 7-step prompt refinement process:
+
 1. Understand requirements
 2. Identify applicable techniques (CoT, multishot, chaining, etc.)
 3. Load reference files from `.github/skills/prompt-engineer/references/`
@@ -171,6 +187,7 @@ Pinned builtin at `src/ui/commands/skill-commands.ts:1112-1286`. Command: `/prom
 #### Reference Materials
 
 Three reference files (identical across 4 agent config dirs):
+
 - `references/core_prompting.md` (119 lines): clarity, system prompts, XML tags
 - `references/advanced_patterns.md` (250 lines): CoT, multishot, chaining, long context, extended thinking
 - `references/quality_improvement.md` (178 lines): hallucination reduction, consistency, jailbreak mitigation
@@ -202,6 +219,7 @@ None. The `prompt-engineer` skill is not referenced anywhere in the Ralph workfl
 #### Graph Execution Layer
 
 The actual yolo completion detection uses a hardcoded approach:
+
 - `YOLO_COMPLETION_INSTRUCTION` at `ralph-nodes.ts:677-688`: `<EXTREMELY_IMPORTANT>` block telling agent to output `COMPLETE`
 - `checkYoloCompletion()` at `ralph-nodes.ts:696-698`: regex `/\bCOMPLETE\b/` on agent output
 - `processYoloResult()` at `ralph-nodes.ts:1225-1297`: calls `checkYoloCompletion()`, sets `yoloComplete`
@@ -220,13 +238,13 @@ Alias: `/loop`
 
 #### Argument Parsing (`parseRalphArgs()` at `workflow-commands.ts:97-189`)
 
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--yolo` | boolean | `false` | Freestyle mode (no feature list) |
-| `--resume <uuid>` | string | `null` | Resume previous session |
-| `--max-iterations <n>` | number | `100` | Max iterations |
-| `--feature-list <path>` | string | `research/feature-list.json` | Feature list path |
-| (remaining text) | string | `null` | User prompt |
+| Flag                    | Type    | Default                      | Description                      |
+| ----------------------- | ------- | ---------------------------- | -------------------------------- |
+| `--yolo`                | boolean | `false`                      | Freestyle mode (no feature list) |
+| `--resume <uuid>`       | string  | `null`                       | Resume previous session          |
+| `--max-iterations <n>`  | number  | `100`                        | Max iterations                   |
+| `--feature-list <path>` | string  | `research/feature-list.json` | Feature list path                |
+| (remaining text)        | string  | `null`                       | User prompt                      |
 
 #### Default Discrepancy for max-iterations
 
@@ -245,6 +263,7 @@ Alias: `/loop`
 ### 7. create-feature-list Skill
 
 Defined in triplicate:
+
 - `.claude/commands/create-feature-list.md`
 - `.github/skills/create-feature-list/SKILL.md`
 - `.opencode/command/create-feature-list.md`
@@ -260,6 +279,7 @@ Defined in triplicate (same directories as create-feature-list).
 **Function**: Reads `research/feature-list.json`, picks highest-priority non-passing feature, implements it, sets `passes: true`, writes to `progress.txt`, commits.
 
 Key behaviors:
+
 - Only works on ONE feature per invocation, then STOPS
 - Error handling: delegates to debugger agent, adds bug-fix feature at highest priority
 - Context window: stops if >60% full
@@ -268,18 +288,21 @@ Key behaviors:
 ### 9. Ralph Agent Definition
 
 `.opencode/agents/ralph.md`:
+
 - `mode: primary`
 - `model: anthropic/claude-opus-4-5`
 - `tools: write, edit, bash, todowrite, lsp, skill` (all true)
 - `question: false` (autonomous, no user interaction)
 
 `.opencode/ralph-loop.local.md`:
+
 - Frontmatter: `active: true`, `iteration: 1`, `max_iterations: 0`, `completion_promise: null`
 - Body: detailed agent prompt with initialization steps, workflow examples, design principles, important behavioral constraints
 
 ## Code References
 
 ### Ralph Workflow Core
+
 - `src/workflows/ralph/workflow.ts:185-247` - `createRalphWorkflow()` factory
 - `src/workflows/ralph/executor.ts:80-289` - `RalphExecutor` class
 - `src/workflows/ralph/session.ts:107-166` - `RalphSession` interface
@@ -287,6 +310,7 @@ Key behaviors:
 - `src/workflows/ralph/session.ts:526-538` - `appendProgress()`
 
 ### Graph Nodes
+
 - `src/graph/nodes/ralph-nodes.ts:300-406` - `RalphWorkflowState` interface
 - `src/graph/nodes/ralph-nodes.ts:507-555` - `createRalphWorkflowState()` factory
 - `src/graph/nodes/ralph-nodes.ts:677-688` - `YOLO_COMPLETION_INSTRUCTION`
@@ -300,6 +324,7 @@ Key behaviors:
 - `src/graph/nodes/ralph-nodes.ts:1463-1583` - `initRalphSessionNode()`
 
 ### CLI and Config
+
 - `src/cli.ts:237-286` - Ralph CLI command registration
 - `src/commands/ralph.ts:45-89` - `RalphSetupOptions` interface
 - `src/commands/ralph.ts:193-311` - `executeGraphWorkflow()`
@@ -308,6 +333,7 @@ Key behaviors:
 - `src/config/ralph.ts:104-107` - `RALPH_CONFIG`
 
 ### UI Commands
+
 - `src/ui/commands/workflow-commands.ts:47-58` - `RalphCommandArgs` interface
 - `src/ui/commands/workflow-commands.ts:61` - `DEFAULT_MAX_ITERATIONS = 100`
 - `src/ui/commands/workflow-commands.ts:97-189` - `parseRalphArgs()`
@@ -316,6 +342,7 @@ Key behaviors:
 - `src/ui/components/workflow-status-bar.tsx:171-252` - `WorkflowStatusBar` component
 
 ### TodoWrite System
+
 - `src/sdk/tools/todo-write.ts:53-59` - `TodoItem` interface
 - `src/sdk/tools/todo-write.ts:67` - `createTodoWriteTool()` factory
 - `src/commands/chat.ts:170-172` - Registration for Copilot
@@ -328,6 +355,7 @@ Key behaviors:
 - `src/ui/tools/registry.ts:554-573` - `todoWriteToolRenderer`
 
 ### Prompt-Engineer Skill
+
 - `src/ui/commands/skill-commands.ts:1112-1286` - Builtin skill definition
 - `src/ui/commands/skill-commands.ts:1731-1734` - `PINNED_BUILTIN_SKILLS`
 - `.claude/skills/prompt-engineer/SKILL.md` - Disk-based definition
@@ -336,12 +364,14 @@ Key behaviors:
 - `.claude/skills/prompt-engineer/references/quality_improvement.md` - Quality controls
 
 ### Feature List Skills
+
 - `.claude/commands/create-feature-list.md` - Claude create-feature-list
 - `.claude/commands/implement-feature.md` - Claude implement-feature
 - `research/feature-list.json` - Current feature list (18 features, flat array)
 - `research/progress.txt` - Current progress file (empty)
 
 ### Agent Definitions
+
 - `.opencode/agents/ralph.md` - Ralph agent (todowrite: true, skill: true)
 - `.opencode/ralph-loop.local.md` - Ralph loop local configuration
 
@@ -360,6 +390,7 @@ These systems do not interact. The Ralph agent has `todowrite: true` in its agen
 ### Completion Detection
 
 Yolo mode termination relies on a hardcoded `COMPLETE` keyword:
+
 - `YOLO_COMPLETION_INSTRUCTION` appends instructions to output `COMPLETE`
 - `checkYoloCompletion()` matches `/\bCOMPLETE\b/`
 - The `completionPromise` config field exists in types (`RalphConfig.completionPromise`, CLI `--completion-promise`) but is not wired into the graph nodes
@@ -367,6 +398,7 @@ Yolo mode termination relies on a hardcoded `COMPLETE` keyword:
 ### Max Iterations Enforcement
 
 Two independent mechanisms:
+
 1. **Graph builder level** (`graph/builder.ts:536`): Loop check `currentIteration < maxIterations`. With default `0`, this becomes `n < 0` which is always false, meaning the builder-level check could exit after iteration 1.
 2. **Application level** (`ralph-nodes.ts:122`): `state.maxIterations > 0 && state.iteration >= state.maxIterations`. With `0`, the `0 > 0` check is false, meaning unlimited.
 
@@ -375,6 +407,7 @@ The UI default is `100` (`DEFAULT_MAX_ITERATIONS` at `workflow-commands.ts:61`) 
 ### Skill Registration Architecture
 
 Three-tier priority system:
+
 1. **Pinned builtins** (`prompt-engineer`, `testing-anti-patterns`) - embedded in TypeScript, cannot be overridden
 2. **Disk-based skills** - discovered from `.claude/skills/`, `.opencode/skills/`, `.github/skills/`, `.atomic/skills/` with priority: project(4) > atomic(3) > user(2) > builtin(1)
 3. **Legacy `SKILL_DEFINITIONS`** - metadata-only fallback entries

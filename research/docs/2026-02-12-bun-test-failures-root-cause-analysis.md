@@ -5,7 +5,17 @@ git_commit: f9603b88b96c47859073b0647d2c6b7d95057f8d
 branch: lavaman131/hotfix/opentui-distribution
 repository: atomic
 topic: "Root cause analysis of 104 bun test failures across 6 error categories"
-tags: [research, testing, bun-errors, theme, agents, claude-sdk, tool-renderers, ui]
+tags:
+    [
+        research,
+        testing,
+        bun-errors,
+        theme,
+        agents,
+        claude-sdk,
+        tool-renderers,
+        ui,
+    ]
 status: complete
 last_updated: 2026-02-12
 last_updated_by: Copilot CLI
@@ -27,13 +37,14 @@ Research how to resolve the 104 failing `bun test` errors documented in `bun_err
 
 **Root Cause**: The `AgentDefinition` interface defines an optional `model?: AgentModel` field, but **none of the builtin agent definitions include a `model` property**. Tests expect `agent.model` to be `"opus"` but it's `undefined`.
 
-**Source**: [`src/ui/commands/agent-commands.ts`](https://github.com/flora131/atomic/blob/f9603b88b96c47859073b0647d2c6b7d95057f8d/src/ui/commands/agent-commands.ts)
+**Source**: [`src/ui/commands/agent-commands.ts`](https://github.com/bastani/atomic/blob/f9603b88b96c47859073b0647d2c6b7d95057f8d/src/ui/commands/agent-commands.ts)
 
 - **Interface**: Lines 175-225 — `AgentDefinition` has `model?: AgentModel` (line ~205)
 - **Agent Definitions**: The `BUILTIN_AGENTS` array contains agents like `debugger` (line ~1085), `codebase-analyzer`, `codebase-locator`, `codebase-pattern-finder`, `codebase-online-researcher`, `codebase-research-analyzer`, `codebase-research-locator` — **none include `model: "opus"`**
 - **`getBuiltinAgent()`**: Lines 1158-1163 — correctly finds agents by name, but since `model` is absent from definitions, `agent.model` is `undefined`
 
 **Affected Tests**:
+
 - `tests/e2e/subagent-debugger.test.ts` — 14 tests checking `agent.model === "opus"`
 - `tests/e2e/subagent-codebase-analyzer.test.ts` — 6 tests checking `agent.model === "opus"`
 - `tests/ui/commands/agent-commands.test.ts` — ~10 tests across all agent types
@@ -46,20 +57,21 @@ Research how to resolve the 104 failing `bun test` errors documented in `bun_err
 
 **Root Cause**: `createAgentCommand().execute()` calls `context.spawnSubagent()` (fire-and-forget via `void`) and returns `{ success: true }` immediately. It **never calls `context.sendMessage()` or `context.sendSilentMessage()`**. The mock context's `sentMessages` array only tracks those two methods, so it remains empty.
 
-**Source**: [`src/ui/commands/agent-commands.ts`](https://github.com/flora131/atomic/blob/f9603b88b96c47859073b0647d2c6b7d95057f8d/src/ui/commands/agent-commands.ts)
+**Source**: [`src/ui/commands/agent-commands.ts`](https://github.com/bastani/atomic/blob/f9603b88b96c47859073b0647d2c6b7d95057f8d/src/ui/commands/agent-commands.ts)
 
 - **`createAgentCommand()`**: Lines 1495-1532
-  ```typescript
-  execute: (args, context) => {
-    void context.spawnSubagent({...}).then(...).catch(...);
-    return { success: true };  // Returns immediately
-  }
-  ```
+    ```typescript
+    execute: (args, context) => {
+      void context.spawnSubagent({...}).then(...).catch(...);
+      return { success: true };  // Returns immediately
+    }
+    ```
 - **Mock Context**: `tests/e2e/subagent-debugger.test.ts` lines 121-191
-  - `sentMessages` tracks `sendMessage()` / `sendSilentMessage()` calls
-  - `spawnSubagent()` resolves successfully but doesn't add to `sentMessages`
+    - `sentMessages` tracks `sendMessage()` / `sendSilentMessage()` calls
+    - `spawnSubagent()` resolves successfully but doesn't add to `sentMessages`
 
 **Affected Tests**:
+
 - `tests/e2e/subagent-debugger.test.ts` — tests asserting `context.sentMessages.length > 0` or `context.sentMessages[0].toContain(...)`
 - `tests/e2e/subagent-codebase-analyzer.test.ts` — same pattern
 
@@ -71,32 +83,33 @@ Research how to resolve the 104 failing `bun test` errors documented in `bun_err
 
 **Root Cause**: The source theme uses **Catppuccin palette** colors, but tests expect **Tailwind CSS palette** colors. The theme was changed but tests were not updated.
 
-**Source**: [`src/ui/theme.tsx`](https://github.com/flora131/atomic/blob/f9603b88b96c47859073b0647d2c6b7d95057f8d/src/ui/theme.tsx)
+**Source**: [`src/ui/theme.tsx`](https://github.com/bastani/atomic/blob/f9603b88b96c47859073b0647d2c6b7d95057f8d/src/ui/theme.tsx)
 
-| Property | Source (Catppuccin) | Test Expected (Tailwind) |
-|----------|-------------------|------------------------|
-| **Dark Theme** | | |
-| `background` | `#1e1e2e` (Mocha Base) | `black` |
-| `foreground` | `#cdd6f4` (Mocha Text) | `#ecf2f8` |
-| `error` | `#f38ba8` (Mocha Red) | `#fb7185` (Rose 400) |
-| `success` | `#a6e3a1` (Mocha Green) | `#4ade80` (Green 400) |
-| `warning` | `#f9e2af` (Mocha Yellow) | `#fbbf24` (Amber 400) |
-| `userMessage` | `#89b4fa` (Mocha Blue) | `#60a5fa` (Blue 400) |
-| `assistantMessage` | `#94e2d5` (Mocha Teal) | `#2dd4bf` |
-| `systemMessage` | `#cba6f7` (Mocha Mauve) | `#a78bfa` (Violet 400) |
-| `userBubbleBg` | `#313244` (Mocha Surface0) | `#3f3f46` |
-| **Light Theme** | | |
-| `background` | `#eff1f5` (Latte Base) | `white` |
-| `foreground` | `#4c4f69` (Latte Text) | `#0f172a` |
-| `error` | `#d20f39` (Latte Red) | `#e11d48` (Rose 600) |
-| `success` | `#40a02b` (Latte Green) | `#16a34a` (Green 600) |
-| `warning` | `#df8e1d` (Latte Yellow) | `#d97706` (Amber 600) |
-| `userMessage` | `#1e66f5` (Latte Blue) | `#2563eb` (Blue 600) |
-| `assistantMessage` | `#179299` (Latte Teal) | `#0d9488` |
-| `systemMessage` | `#8839ef` (Latte Mauve) | `#7c3aed` (Violet 600) |
-| `userBubbleBg` | `#e6e9ef` (Latte Mantle) | `#e2e8f0` |
+| Property           | Source (Catppuccin)        | Test Expected (Tailwind) |
+| ------------------ | -------------------------- | ------------------------ |
+| **Dark Theme**     |                            |                          |
+| `background`       | `#1e1e2e` (Mocha Base)     | `black`                  |
+| `foreground`       | `#cdd6f4` (Mocha Text)     | `#ecf2f8`                |
+| `error`            | `#f38ba8` (Mocha Red)      | `#fb7185` (Rose 400)     |
+| `success`          | `#a6e3a1` (Mocha Green)    | `#4ade80` (Green 400)    |
+| `warning`          | `#f9e2af` (Mocha Yellow)   | `#fbbf24` (Amber 400)    |
+| `userMessage`      | `#89b4fa` (Mocha Blue)     | `#60a5fa` (Blue 400)     |
+| `assistantMessage` | `#94e2d5` (Mocha Teal)     | `#2dd4bf`                |
+| `systemMessage`    | `#cba6f7` (Mocha Mauve)    | `#a78bfa` (Violet 400)   |
+| `userBubbleBg`     | `#313244` (Mocha Surface0) | `#3f3f46`                |
+| **Light Theme**    |                            |                          |
+| `background`       | `#eff1f5` (Latte Base)     | `white`                  |
+| `foreground`       | `#4c4f69` (Latte Text)     | `#0f172a`                |
+| `error`            | `#d20f39` (Latte Red)      | `#e11d48` (Rose 600)     |
+| `success`          | `#40a02b` (Latte Green)    | `#16a34a` (Green 600)    |
+| `warning`          | `#df8e1d` (Latte Yellow)   | `#d97706` (Amber 600)    |
+| `userMessage`      | `#1e66f5` (Latte Blue)     | `#2563eb` (Blue 600)     |
+| `assistantMessage` | `#179299` (Latte Teal)     | `#0d9488`                |
+| `systemMessage`    | `#8839ef` (Latte Mauve)    | `#7c3aed` (Violet 600)   |
+| `userBubbleBg`     | `#e6e9ef` (Latte Mantle)   | `#e2e8f0`                |
 
 **Affected Tests**:
+
 - `tests/ui/theme.test.ts` — lines 59-155 (dark/light theme color assertions, getMessageColor)
 - `tests/ui/components/tool-result.test.tsx` — lines 61-67 (error color assertions)
 
@@ -108,19 +121,20 @@ Research how to resolve the 104 failing `bun test` errors documented in `bun_err
 
 **Root Cause**: Tool renderers use **ASCII/Unicode symbols** in source, but tests expect **emoji icons**. The source was changed but tests were not updated.
 
-**Source**: [`src/ui/tools/registry.ts`](https://github.com/flora131/atomic/blob/f9603b88b96c47859073b0647d2c6b7d95057f8d/src/ui/tools/registry.ts)
+**Source**: [`src/ui/tools/registry.ts`](https://github.com/bastani/atomic/blob/f9603b88b96c47859073b0647d2c6b7d95057f8d/src/ui/tools/registry.ts)
 
-| Tool | Source Icon (Actual) | Test Expected Icon |
-|------|---------------------|-------------------|
-| Read | `≡` (line 64) | `📄` |
-| Edit | `△` (line 133) | `△` ✅ Match |
-| Bash | `$` (line 187) | `💻` |
-| Write | `►` (line 258) | `📝` |
-| Glob | `◆` (line 314) | `🔍` |
-| Grep | `★` (line 402) | `🔎` |
-| Default | `▶` (line 465) | `🔧` |
+| Tool    | Source Icon (Actual) | Test Expected Icon |
+| ------- | -------------------- | ------------------ |
+| Read    | `≡` (line 64)        | `📄`               |
+| Edit    | `△` (line 133)       | `△` ✅ Match       |
+| Bash    | `$` (line 187)       | `💻`               |
+| Write   | `►` (line 258)       | `📝`               |
+| Glob    | `◆` (line 314)       | `🔍`               |
+| Grep    | `★` (line 402)       | `🔎`               |
+| Default | `▶` (line 465)       | `🔧`               |
 
 **Affected Tests**:
+
 - `tests/ui/tools/registry.test.ts` — lines 34, 134, 187, 249, 291, 331
 - `tests/ui/components/tool-result.test.tsx` — lines 306, 314, 322, 330, 338, 346
 
@@ -132,7 +146,7 @@ Research how to resolve the 104 failing `bun test` errors documented in `bun_err
 
 **Root Cause**: `createSession()` **no longer calls `query()`** internally. A previous refactoring removed the initial empty-prompt query to fix a leaked subprocess issue. The comment in source explains: _"Don't create an initial query here — send()/stream() each create their own query with the actual user message. Previously an empty-prompt query was spawned here, which leaked a Claude Code subprocess that was never consumed."_
 
-**Source**: [`src/sdk/claude-client.ts`](https://github.com/flora131/atomic/blob/f9603b88b96c47859073b0647d2c6b7d95057f8d/src/sdk/claude-client.ts)
+**Source**: [`src/sdk/claude-client.ts`](https://github.com/bastani/atomic/blob/f9603b88b96c47859073b0647d2c6b7d95057f8d/src/sdk/claude-client.ts)
 
 - **`createSession()`**: Lines 752-768 — calls `this.wrapQuery(null, sessionId, config)` without invoking `query()`
 - **`query()` only called by**: `send()` (line 392), `stream()` (line 454), `summarize()` (line 599), `resumeSession()` (line 805)
@@ -141,6 +155,7 @@ Research how to resolve the 104 failing `bun test` errors documented in `bun_err
 - **HITL mock**: `tests/sdk/ask-user-question-hitl.test.ts` — captures `canUseToolCallback` during `query()` setup, but since `query()` isn't called during `createSession()`, callback remains `null`
 
 **Affected Tests**:
+
 - `tests/sdk/claude-client.test.ts` — 3 tests expecting `mockQuery.toHaveBeenCalled()` after `createSession()`
 - `tests/sdk/ask-user-question-hitl.test.ts` — 3 tests expecting `canUseToolCallback` not null after `createSession()`
 
@@ -154,16 +169,19 @@ Research how to resolve the 104 failing `bun test` errors documented in `bun_err
 
 **Root Cause**: `truncateText()` uses `"..."` (three periods) instead of `"…"` (single ellipsis character), and uses `maxLength - 3` for the slice which breaks at small limits.
 
-**Source**: [`src/ui/utils/format.ts`](https://github.com/flora131/atomic/blob/f9603b88b96c47859073b0647d2c6b7d95057f8d/src/ui/utils/format.ts) lines 144-147
+**Source**: [`src/ui/utils/format.ts`](https://github.com/bastani/atomic/blob/f9603b88b96c47859073b0647d2c6b7d95057f8d/src/ui/utils/format.ts) lines 144-147
+
 ```typescript
 export function truncateText(text: string, maxLength: number = 40): string {
-  if (text.length <= maxLength) return text;
-  return `${text.slice(0, maxLength - 3)}...`;
+    if (text.length <= maxLength) return text;
+    return `${text.slice(0, maxLength - 3)}...`;
 }
 ```
+
 - Export alias at line 57: `export const truncate = truncateText;`
 
 **Test**: `src/ui/__tests__/task-list-indicator.test.ts` lines 89-101
+
 - Expects `truncate("Hello, World!", 5)` → `"Hell…"` (gets `"He..."`)
 - Expects `truncate("ab", 1)` → `"…"` (gets `"..."` with negative slice)
 
@@ -173,13 +191,15 @@ export function truncateText(text: string, maxLength: number = 40): string {
 
 **Root Cause**: `formatDuration()` uses `Math.floor()` for seconds, discarding sub-second precision.
 
-**Source**: [`src/ui/utils/format.ts`](https://github.com/flora131/atomic/blob/f9603b88b96c47859073b0647d2c6b7d95057f8d/src/ui/utils/format.ts) line ~68
+**Source**: [`src/ui/utils/format.ts`](https://github.com/bastani/atomic/blob/f9603b88b96c47859073b0647d2c6b7d95057f8d/src/ui/utils/format.ts) line ~68
+
 ```typescript
-const seconds = Math.floor(ms / 1000);  // 1500 → 1, not 1.5
+const seconds = Math.floor(ms / 1000); // 1500 → 1, not 1.5
 return { text: `${seconds}s`, ms };
 ```
 
 **Test**: `tests/ui/components/timestamp-display.test.tsx` lines 74-87
+
 - Expects `buildDisplayParts(ts, 1500)` to include `"1.5s"` — actually returns `"1s"`
 - Expects `buildDisplayParts(ts, 1000)` edge case handling
 
@@ -190,10 +210,12 @@ return { text: `${seconds}s`, ms };
 **Root Cause**: Tests expect a "commit" command with alias "ci" to be registered, but no such command exists in the codebase.
 
 **Source**:
-- [`src/ui/commands/builtin-commands.ts`](https://github.com/flora131/atomic/blob/f9603b88b96c47859073b0647d2c6b7d95057f8d/src/ui/commands/builtin-commands.ts) lines 551-560 — registered commands: help, theme, clear, compact, exit, model, mcp, context
-- [`src/ui/commands/skill-commands.ts`](https://github.com/flora131/atomic/blob/f9603b88b96c47859073b0647d2c6b7d95057f8d/src/ui/commands/skill-commands.ts) lines 1113-1135 — skills: research-codebase, create-spec, explain-code
+
+- [`src/ui/commands/builtin-commands.ts`](https://github.com/bastani/atomic/blob/f9603b88b96c47859073b0647d2c6b7d95057f8d/src/ui/commands/builtin-commands.ts) lines 551-560 — registered commands: help, theme, clear, compact, exit, model, mcp, context
+- [`src/ui/commands/skill-commands.ts`](https://github.com/bastani/atomic/blob/f9603b88b96c47859073b0647d2c6b7d95057f8d/src/ui/commands/skill-commands.ts) lines 1113-1135 — skills: research-codebase, create-spec, explain-code
 
 **Test**: `tests/ui/commands/index.test.ts` line 79
+
 - Expects `globalRegistry.has("ci")` to be `true`
 - Expects `globalRegistry.has("commit")` to be `true`
 

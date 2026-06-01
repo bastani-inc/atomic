@@ -1,15 +1,15 @@
 # Background Agents SDK Pipeline Fix (Issue #258) Technical Design Document / RFC
 
-| Document Metadata      | Details                      |
-| ---------------------- | ---------------------------- |
-| Author(s)              | lavaman131                   |
-| Status                 | Draft (WIP)                  |
-| Team / Owner           | Atomic CLI TUI               |
-| Created / Last Updated | 2026-02-23                   |
+| Document Metadata      | Details        |
+| ---------------------- | -------------- |
+| Author(s)              | lavaman131     |
+| Status                 | Draft (WIP)    |
+| Team / Owner           | Atomic CLI TUI |
+| Created / Last Updated | 2026-02-23     |
 
 ## 1. Executive Summary
 
-Issue [#258](https://github.com/flora131/atomic/issues/258) reports that background agents fail to render UI for OpenCode and Copilot SDKs (no UI at all), and that Claude Agent SDK's background agent UI has incorrect chatbox/tree layout. Root cause analysis ([Research: `research/docs/2026-02-23-258-background-agents-sdk-event-pipeline.md`]) reveals a 6-stage pipeline architecture where each SDK must emit the right events in the right order for background agents to appear. **Copilot has two issues:** (1) its built-in `task` tool uses `mode: "background"` but the UI integration only checks `run_in_background` — the background flag is missed; and (2) if `tool.execution_start` doesn't fire for the `task` tool, the `subagent.start` handler's correlation guard at `src/ui/index.ts:1071` blocks the event entirely. **OpenCode** should work architecturally but needs runtime verification. **Claude's layout** works end-to-end but may need visual adjustments. This RFC proposes: adding `mode === "background"` detection, relaxing the correlation guard for session-owned events, enriching Copilot/OpenCode event data, and adding debug logging for runtime verification.
+Issue [#258](https://github.com/bastani/atomic/issues/258) reports that background agents fail to render UI for OpenCode and Copilot SDKs (no UI at all), and that Claude Agent SDK's background agent UI has incorrect chatbox/tree layout. Root cause analysis ([Research: `research/docs/2026-02-23-258-background-agents-sdk-event-pipeline.md`]) reveals a 6-stage pipeline architecture where each SDK must emit the right events in the right order for background agents to appear. **Copilot has two issues:** (1) its built-in `task` tool uses `mode: "background"` but the UI integration only checks `run_in_background` — the background flag is missed; and (2) if `tool.execution_start` doesn't fire for the `task` tool, the `subagent.start` handler's correlation guard at `src/ui/index.ts:1071` blocks the event entirely. **OpenCode** should work architecturally but needs runtime verification. **Claude's layout** works end-to-end but may need visual adjustments. This RFC proposes: adding `mode === "background"` detection, relaxing the correlation guard for session-owned events, enriching Copilot/OpenCode event data, and adding debug logging for runtime verification.
 
 ## 2. Context and Motivation
 
@@ -25,6 +25,7 @@ synthetic parallel-agents stream events → AgentPart message parts → Parallel
 [Research: `research/docs/2026-02-23-258-background-agents-sdk-event-pipeline.md`, Section "Shared UI Architecture"]
 
 The UI integration layer at `src/ui/index.ts` uses a **two-path agent creation model**:
+
 - **Path A (Eager):** When `tool.start` fires with `toolName === "Task"`, a `ParallelAgent` is created immediately and queued in `pendingTaskEntries` (lines 641-683).
 - **Path B (Correlation):** When `subagent.start` fires, the handler correlates with pending entries or SDK correlation IDs (lines 1028-1164).
 
@@ -43,6 +44,7 @@ Additionally, Copilot's `subagent.started` event data doesn't include `toolCallI
 [Research: `research/docs/2026-02-23-258-background-agents-sdk-event-pipeline.md`, Section 4 "Copilot SDK — Root Cause"]
 
 **OpenCode — No UI renders (reported):**
+
 - OpenCode's code architecture is identical to Claude's in the UI layer.
 - `subagent.start` events from `part.type === "agent"` lack `toolUseID`/`toolCallId` (only `subagentId` and `subagentType` at `opencode.ts:713-715`), so `sdkCorrelationId` resolves to `undefined`.
 - The handler falls through to FIFO queue matching at line 1058-1065, which depends on `pendingTaskEntries` being populated from a prior `tool.start` with `toolName === "Task"` or `"task"`.
@@ -51,6 +53,7 @@ Additionally, Copilot's `subagent.started` event data doesn't include `toolCallI
 [Research: `research/docs/2026-02-23-258-background-agents-sdk-event-pipeline.md`, Section 3 "OpenCode SDK"]
 
 **Claude — Layout issues:**
+
 - `ParallelAgentsTree` renders inside `MessageBubbleParts` within the scrollbox (`chat.tsx:5807-5992`).
 - `BackgroundAgentFooter` renders outside the scrollbox as a sibling at line 5996.
 - Input area is inside the scrollbox (lines 5876+).
@@ -124,13 +127,13 @@ flowchart TB
 
 ### 4.3 Key Components
 
-| Component | Change | Justification |
-|-----------|--------|---------------|
-| `src/ui/index.ts:1066-1071` | Relax correlation guard for session-owned events | Root cause of Copilot blockage; allows fresh agent creation path at lines 1135-1150 to execute |
-| `src/sdk/clients/copilot.ts:627-632` | Enrich `subagent.started` event data with `toolCallId` | Enables future SDK correlation; provides `toolCallId` for agent tracking |
-| `src/sdk/clients/opencode.ts:710-716` | Add `toolCallId` to `agent` part events | Matches `subtask` part handling; enables SDK correlation |
-| `src/ui/chat.tsx:5779-5998` | Adjust layout positioning if needed | Address Claude layout issues per issue screenshots |
-| Test files | Add subagent event pipeline tests for Copilot and OpenCode | Prevent regression; verify all SDKs create agents |
+| Component                             | Change                                                     | Justification                                                                                  |
+| ------------------------------------- | ---------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `src/ui/index.ts:1066-1071`           | Relax correlation guard for session-owned events           | Root cause of Copilot blockage; allows fresh agent creation path at lines 1135-1150 to execute |
+| `src/sdk/clients/copilot.ts:627-632`  | Enrich `subagent.started` event data with `toolCallId`     | Enables future SDK correlation; provides `toolCallId` for agent tracking                       |
+| `src/sdk/clients/opencode.ts:710-716` | Add `toolCallId` to `agent` part events                    | Matches `subtask` part handling; enables SDK correlation                                       |
+| `src/ui/chat.tsx:5779-5998`           | Adjust layout positioning if needed                        | Address Claude layout issues per issue screenshots                                             |
+| Test files                            | Add subagent event pipeline tests for Copilot and OpenCode | Prevent regression; verify all SDKs create agents                                              |
 
 ## 5. Detailed Design
 
@@ -142,24 +145,29 @@ flowchart TB
 Copilot's `task` tool uses `mode: "background"` while Claude/OpenCode use `run_in_background: true`. The UI integration must check both.
 
 **Change at line 644:**
+
 ```typescript
 // BEFORE:
 const isBackground = input.run_in_background === true;
 
 // AFTER:
-const isBackground = input.run_in_background === true || input.mode === "background";
+const isBackground =
+    input.run_in_background === true || input.mode === "background";
 ```
 
 **Change at line 704:**
+
 ```typescript
 // BEFORE:
 const isBackground = input.run_in_background === true;
 
 // AFTER:
-const isBackground = input.run_in_background === true || input.mode === "background";
+const isBackground =
+    input.run_in_background === true || input.mode === "background";
 ```
 
 **Change at line 1092:**
+
 ```typescript
 // BEFORE:
 ?? (fallbackInput?.run_in_background === true);
@@ -177,8 +185,10 @@ const isBackground = input.run_in_background === true || input.mode === "backgro
 **Lines:** 1066-1071
 
 **Current code:**
+
 ```typescript
-const hasSdkCorrelationMatch = sdkRunId !== undefined && sdkRunId === activeRunId;
+const hasSdkCorrelationMatch =
+    sdkRunId !== undefined && sdkRunId === activeRunId;
 const sessionOwned = eventBelongsToOwnedSession(event.sessionId);
 if (!sessionOwned && !pendingTaskEntry && !hasSdkCorrelationMatch) return;
 // Fail closed for uncorrelated events to prevent cross-run leakage,
@@ -189,8 +199,10 @@ if (!pendingTaskEntry && !hasSdkCorrelationMatch) return;
 **Problem:** Line 1071 blocks ALL events without `pendingTaskEntry` or `sdkCorrelationMatch`, regardless of session ownership. For Copilot (no Task tool) and some OpenCode flows (agent parts without correlation IDs), this blocks legitimate `subagent.start` events.
 
 **Proposed change:**
+
 ```typescript
-const hasSdkCorrelationMatch = sdkRunId !== undefined && sdkRunId === activeRunId;
+const hasSdkCorrelationMatch =
+    sdkRunId !== undefined && sdkRunId === activeRunId;
 const sessionOwned = eventBelongsToOwnedSession(event.sessionId);
 if (!sessionOwned && !pendingTaskEntry && !hasSdkCorrelationMatch) return;
 // Fail closed for uncorrelated events to prevent cross-run leakage,
@@ -208,6 +220,7 @@ if (!pendingTaskEntry && !hasSdkCorrelationMatch && !sessionOwned) return;
 **Lines:** 627-632
 
 **Current code:**
+
 ```typescript
 case "subagent.started":
   eventData = {
@@ -218,6 +231,7 @@ case "subagent.started":
 ```
 
 **Proposed change:**
+
 ```typescript
 case "subagent.started":
   eventData = {
@@ -237,6 +251,7 @@ case "subagent.started":
 **Lines:** 710-716
 
 **Current code:**
+
 ```typescript
 } else if (part?.type === "agent") {
   this.emitEvent("subagent.start", partSessionId, {
@@ -246,6 +261,7 @@ case "subagent.started":
 ```
 
 **Proposed change:**
+
 ```typescript
 } else if (part?.type === "agent") {
   this.emitEvent("subagent.start", partSessionId, {
@@ -263,6 +279,7 @@ case "subagent.started":
 **Lines:** 5779-5998
 
 **Current layout hierarchy:**
+
 ```
 Root Box (column, 100% height)
 ├── AtomicHeader (flexShrink=0)
@@ -277,6 +294,7 @@ Root Box (column, 100% height)
 ```
 
 **Assessment:** The current layout places the tree INSIDE message parts (within the scrollbox) and the footer OUTSIDE. This means:
+
 - The tree scrolls with messages ✅ (correct — tree is contextual to the message)
 - The footer stays pinned at the bottom ✅ (correct — persistent status indicator)
 - The input area is inside the scrollbox ✅ (correct — allows scroll to input)
@@ -292,6 +310,7 @@ Root Box (column, 100% height)
 **File:** `src/sdk/clients/opencode.ts`
 
 Add temporary debug logging at key event emission points to verify at runtime:
+
 - Whether `tool.start` fires with `toolName: "Task"` or `"task"` for sub-agent dispatch
 - Whether `subagent.start` fires from `agent`/`subtask` part types
 - What fields are present in the event data
@@ -301,27 +320,30 @@ This logging should be gated behind a debug flag or `NODE_ENV !== "production"` 
 ### 5.8 Test Coverage Additions
 
 **File:** `src/sdk/clients/copilot.test.ts` — Add tests for:
+
 - `subagent.started` → `subagent.start` event mapping with enriched data
 - `subagent.completed` → `subagent.complete` event mapping
 - `subagent.failed` → `subagent.complete` event mapping with `success: false`
 
 **File:** `src/sdk/clients/opencode.events.test.ts` — Add tests for:
+
 - `part.type === "agent"` → `subagent.start` with `toolCallId`
 - `part.type === "step-finish"` → `subagent.complete`
 
 **File:** `src/ui/index.ts` or new test file — Add integration tests for:
+
 - `subagent.start` handler creating agents without prior Task tool entry (session-owned path)
 - `subagent.start` handler creating agents via FIFO queue (existing path verification)
 - Correlation guard allowing session-owned events through
 
 ## 6. Alternatives Considered
 
-| Option | Pros | Cons | Decision |
-|--------|------|------|----------|
-| A: Add a synthetic Task tool to Copilot SDK | Matches existing pipeline exactly | Adds complexity to Copilot client; SDK doesn't support it natively | Rejected — fighting the SDK's design |
-| B: Relax guard to allow session-owned events (Selected) | Minimal change (~3 lines); works for all SDKs; preserves cross-run safety via session ownership | Slightly less strict than correlation-based gating | **Selected** — session ownership is already a trusted boundary |
-| C: Create separate agent creation paths per SDK | Most explicit; no shared code risk | Duplicates logic; maintenance burden; violates unified event model | Rejected — against architecture principles |
-| D: Populate `sdkCorrelationToRunMap` during `subagent.start` | Enables correlation-based matching | Map is designed for tool → agent correlation; self-correlation is circular | Rejected — misuses the correlation model |
+| Option                                                       | Pros                                                                                            | Cons                                                                       | Decision                                                       |
+| ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| A: Add a synthetic Task tool to Copilot SDK                  | Matches existing pipeline exactly                                                               | Adds complexity to Copilot client; SDK doesn't support it natively         | Rejected — fighting the SDK's design                           |
+| B: Relax guard to allow session-owned events (Selected)      | Minimal change (~3 lines); works for all SDKs; preserves cross-run safety via session ownership | Slightly less strict than correlation-based gating                         | **Selected** — session ownership is already a trusted boundary |
+| C: Create separate agent creation paths per SDK              | Most explicit; no shared code risk                                                              | Duplicates logic; maintenance burden; violates unified event model         | Rejected — against architecture principles                     |
+| D: Populate `sdkCorrelationToRunMap` during `subagent.start` | Enables correlation-based matching                                                              | Map is designed for tool → agent correlation; self-correlation is circular | Rejected — misuses the correlation model                       |
 
 ## 7. Cross-Cutting Concerns
 
@@ -359,19 +381,19 @@ This logging should be gated behind a debug flag or `NODE_ENV !== "production"` 
 ### 8.3 Test Plan
 
 - **Unit Tests:**
-  - Copilot event mapping tests (`copilot.test.ts`) — verify `subagent.started` emits enriched `subagent.start` events.
-  - OpenCode event mapping tests (`opencode.events.test.ts`) — verify `agent` part emits `subagent.start` with `toolCallId`.
-  - Guard logic tests — verify session-owned events pass through without `pendingTaskEntry`.
+    - Copilot event mapping tests (`copilot.test.ts`) — verify `subagent.started` emits enriched `subagent.start` events.
+    - OpenCode event mapping tests (`opencode.events.test.ts`) — verify `agent` part emits `subagent.start` with `toolCallId`.
+    - Guard logic tests — verify session-owned events pass through without `pendingTaskEntry`.
 
 - **Integration Tests:**
-  - End-to-end agent creation from `subagent.start` without prior Task tool (Copilot flow).
-  - End-to-end agent creation from `tool.start(Task)` + `subagent.start` (Claude/OpenCode flow).
-  - Background agent footer appears when agents are active.
-  - Ctrl+F termination works for agents created via session-owned path.
+    - End-to-end agent creation from `subagent.start` without prior Task tool (Copilot flow).
+    - End-to-end agent creation from `tool.start(Task)` + `subagent.start` (Claude/OpenCode flow).
+    - Background agent footer appears when agents are active.
+    - Ctrl+F termination works for agents created via session-owned path.
 
 - **End-to-End Tests:**
-  - Provider matrix: Claude ✅, OpenCode ⚠️ (verify events fire), Copilot ✅ (primary fix).
-  - Visual verification: Run TUI with each SDK and verify tree/footer rendering.
+    - Provider matrix: Claude ✅, OpenCode ⚠️ (verify events fire), Copilot ✅ (primary fix).
+    - Visual verification: Run TUI with each SDK and verify tree/footer rendering.
 
 ## 9. Open Questions / Unresolved Issues
 

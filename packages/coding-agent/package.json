@@ -6,12 +6,12 @@
   "atomicConfig": {
     "name": "atomic",
     "configDir": ".atomic",
-    "changelogUrl": "https://github.com/flora131/atomic/blob/main/packages/coding-agent/CHANGELOG.md"
+    "changelogUrl": "https://github.com/bastani/atomic/blob/main/packages/coding-agent/CHANGELOG.md"
   },
   "piConfig": {
     "name": "atomic",
     "configDir": ".atomic",
-    "changelogUrl": "https://github.com/flora131/atomic/blob/main/packages/coding-agent/CHANGELOG.md"
+    "changelogUrl": "https://github.com/bastani/atomic/blob/main/packages/coding-agent/CHANGELOG.md"
   },
   "bin": {
     "atomic": "dist/cli.js"
@@ -108,7 +108,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/flora131/atomic.git",
+    "url": "git+https://github.com/bastani/atomic.git",
     "directory": "packages/coding-agent"
   },
   "engines": {

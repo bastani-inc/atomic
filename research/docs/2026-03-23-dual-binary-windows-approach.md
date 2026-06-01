@@ -5,7 +5,17 @@ git_commit: 017ba430cfe2a0801dc478d6895a505bf2850159
 branch: flora131/feature/windows-arm64
 repository: atomic
 topic: "Dual-binary Windows approach: standard x64 (AVX) + x64-baseline (no AVX) for ARM64 Prism"
-tags: [research, codebase, windows, arm64, build, dual-binary, self-update, strategy-pattern]
+tags:
+    [
+        research,
+        codebase,
+        windows,
+        arm64,
+        build,
+        dual-binary,
+        self-update,
+        strategy-pattern,
+    ]
 status: complete
 last_updated: 2026-03-23
 last_updated_by: Claude Code
@@ -36,40 +46,45 @@ The core challenge is the **self-update loop**: under Prism emulation, `process.
 **Current state (already modified on this branch):** The original `build-windows` job has been **removed**. All binaries (including Windows) are now cross-compiled from the single `build` job running on `ubuntu-latest`.
 
 **Build step (line 71-72):**
+
 ```yaml
 # Windows x64 (baseline -- AVX-free for ARM64 Prism compatibility)
 bun run src/scripts/build-binary.ts --minify --target=bun-windows-x64-baseline --outfile dist/atomic-windows-x64.exe
 ```
 
 **Artifact flow:**
+
 1. `build` job (lines 30-103): builds all 5 binaries + config archives into `dist/`
 2. `actions/upload-artifact@v7` (lines 99-103): uploads entire `dist/` as artifact named `binaries`
 3. `release` job (lines 105-169): depends on `[build]`, downloads `binaries` artifact to `dist/`, creates checksums, publishes to GitHub Release
 
 **Release file list (lines 161-169):**
+
 ```yaml
 files: |
-  dist/atomic-linux-x64
-  dist/atomic-linux-arm64
-  dist/atomic-darwin-x64
-  dist/atomic-darwin-arm64
-  dist/atomic-windows-x64.exe
-  dist/atomic-config.tar.gz
-  dist/atomic-config.zip
-  dist/checksums.txt
+    dist/atomic-linux-x64
+    dist/atomic-linux-arm64
+    dist/atomic-darwin-x64
+    dist/atomic-darwin-arm64
+    dist/atomic-windows-x64.exe
+    dist/atomic-config.tar.gz
+    dist/atomic-config.zip
+    dist/checksums.txt
 ```
 
 **Checksum generation (lines 138-140):**
+
 ```yaml
 - name: Create checksums
   run: |
-    cd dist
-    sha256sum * > checksums.txt
+      cd dist
+      sha256sum * > checksums.txt
 ```
 
 This uses `sha256sum *` which automatically includes **all files in `dist/`**. Adding a new `atomic-windows-x64-baseline.exe` to `dist/` means it will automatically get a checksum entry. No manual checksum logic changes needed.
 
 **For dual-binary approach, changes needed:**
+
 1. Add standard x64 build line: `--target=bun-windows-x64 --outfile dist/atomic-windows-x64.exe`
 2. Change baseline build output to: `--outfile dist/atomic-windows-x64-baseline.exe`
 3. Add `dist/atomic-windows-x64-baseline.exe` to the release files list
@@ -79,6 +94,7 @@ This uses `sha256sum *` which automatically includes **all files in `dist/`**. A
 **File:** `src/scripts/build-binary.ts`
 
 **CLI argument parsing (lines 22-43):** `parseBuildOptions()` extracts three flags:
+
 - `--outfile` (required): output file path
 - `--target` (optional): Bun compile target string (e.g., `bun-windows-x64-baseline`)
 - `--minify` (optional): boolean
@@ -90,19 +106,22 @@ This uses `sha256sum *` which automatically includes **all files in `dist/`**. A
 **No architecture inference exists.** No `inferTargetArch()` function.
 
 **`Bun.build()` call (lines 80-92):**
+
 ```typescript
 const result = await Bun.build({
-  entrypoints: ["src/cli.ts", parserWorker],
-  minify: options.minify,
-  compile: {
-    outfile: options.outfile,
-    autoloadDotenv: false,
-    autoloadBunfig: false,
-    ...(options.target ? { target: options.target as never } : {}),
-  },
-  define: {
-    OTUI_TREE_SITTER_WORKER_PATH: JSON.stringify(`${getBunfsRoot(compileTargetOs)}${workerRelativePath}`),
-  },
+    entrypoints: ["src/cli.ts", parserWorker],
+    minify: options.minify,
+    compile: {
+        outfile: options.outfile,
+        autoloadDotenv: false,
+        autoloadBunfig: false,
+        ...(options.target ? { target: options.target as never } : {}),
+    },
+    define: {
+        OTUI_TREE_SITTER_WORKER_PATH: JSON.stringify(
+            `${getBunfsRoot(compileTargetOs)}${workerRelativePath}`,
+        ),
+    },
 });
 ```
 
@@ -128,37 +147,51 @@ This is the **Strategy discriminator** -- it's derived automatically from the ex
 **File:** `src/services/system/download.ts`
 
 **`getBinaryFilename()` (lines 307-340):**
+
 ```typescript
 export function getBinaryFilename(): string {
-  const platform = process.platform;
-  const arch = process.arch;
+    const platform = process.platform;
+    const arch = process.arch;
 
-  let os: string;
-  switch (platform) {
-    case "linux": os = "linux"; break;
-    case "darwin": os = "darwin"; break;
-    case "win32": os = "windows"; break;
-    default: throw new Error(`Unsupported platform: ${platform}`);
-  }
+    let os: string;
+    switch (platform) {
+        case "linux":
+            os = "linux";
+            break;
+        case "darwin":
+            os = "darwin";
+            break;
+        case "win32":
+            os = "windows";
+            break;
+        default:
+            throw new Error(`Unsupported platform: ${platform}`);
+    }
 
-  let archStr: string;
-  switch (arch) {
-    case "x64": archStr = "x64"; break;
-    case "arm64": archStr = "arm64"; break;
-    default: throw new Error(`Unsupported architecture: ${arch}`);
-  }
+    let archStr: string;
+    switch (arch) {
+        case "x64":
+            archStr = "x64";
+            break;
+        case "arm64":
+            archStr = "arm64";
+            break;
+        default:
+            throw new Error(`Unsupported architecture: ${arch}`);
+    }
 
-  const ext = platform === "win32" ? ".exe" : "";
-  return `atomic-${os}-${archStr}${ext}`;
+    const ext = platform === "win32" ? ".exe" : "";
+    return `atomic-${os}-${archStr}${ext}`;
 }
 ```
 
 **The self-update problem:** Under Prism, `process.arch === "x64"`. This function returns `atomic-windows-x64.exe` -- the **standard** AVX binary. If the user is on ARM64 running via Prism, this would download the standard binary which crashes under Prism due to AVX instructions.
 
 **Call chain for self-update:**
+
 1. `src/commands/cli/update.ts:242` calls `getBinaryFilename()`
 2. Result is passed to `getDownloadUrl(version, binaryFilename)` (line 362-366)
-3. URL is `https://github.com/flora131/atomic/releases/download/v{version}/{filename}`
+3. URL is `https://github.com/bastani/atomic/releases/download/v{version}/{filename}`
 4. Binary is downloaded, checksum-verified, and replaces the current executable
 
 **For dual-binary approach, `getBinaryFilename()` needs baseline awareness:**
@@ -167,10 +200,11 @@ export function getBinaryFilename(): string {
 declare const __ATOMIC_BASELINE__: boolean | undefined;
 
 export function getBinaryFilename(): string {
-  // ... existing platform/arch logic ...
-  const isBaseline = typeof __ATOMIC_BASELINE__ !== "undefined" && __ATOMIC_BASELINE__;
-  const baselineSuffix = isBaseline ? "-baseline" : "";
-  return `atomic-${os}-${archStr}${baselineSuffix}${ext}`;
+    // ... existing platform/arch logic ...
+    const isBaseline =
+        typeof __ATOMIC_BASELINE__ !== "undefined" && __ATOMIC_BASELINE__;
+    const baselineSuffix = isBaseline ? "-baseline" : "";
+    return `atomic-${os}-${archStr}${baselineSuffix}${ext}`;
 }
 ```
 
@@ -187,6 +221,7 @@ In the **baseline** build: `__ATOMIC_BASELINE__` is replaced with `true` at bund
 **File:** `install.ps1`
 
 **Architecture detection (lines 235-247) -- already modified on this branch:**
+
 ```powershell
 $Arch = $env:PROCESSOR_ARCHITECTURE
 switch ($Arch) {
@@ -213,6 +248,7 @@ switch ($Arch) {
 ```
 
 **Download URL construction (line 292):**
+
 ```powershell
 $DownloadUrl = "${BaseUrl}/${BinaryName}-${Target}"
 ```
@@ -220,6 +256,7 @@ $DownloadUrl = "${BaseUrl}/${BinaryName}-${Target}"
 This uses `$Target` directly, so changing `$Target` to `"windows-x64-baseline.exe"` produces `https://github.com/.../atomic-windows-x64-baseline.exe`. No other URL logic changes needed.
 
 **Checksum verification (lines 329-342):** Uses `$Target` in the grep:
+
 ```powershell
 $ExpectedLine = Get-Content $TempChecksums | Where-Object { $_ -match $Target }
 ```
@@ -227,6 +264,7 @@ $ExpectedLine = Get-Content $TempChecksums | Where-Object { $_ -match $Target }
 Since `$Target` is `"windows-x64-baseline.exe"`, this will match the correct checksum line. No changes needed.
 
 **Temp file naming (line 300):**
+
 ```powershell
 $TempBinary = "${TempDir}\${BinaryName}-${Target}"
 ```
@@ -238,6 +276,7 @@ Also uses `$Target` -- correctly produces `atomic-windows-x64-baseline.exe`. No 
 **File:** `install.sh`
 
 **Windows delegation (lines 363-379) -- already modified on this branch:**
+
 ```bash
 case "$(uname -s | tr '[:upper:]' '[:lower:]')" in
     mingw*|msys*|cygwin*)
@@ -259,6 +298,7 @@ esac
 **No additional changes needed.** The Windows delegation already passes version/prerelease args to `install.ps1`. The ARM64 detection and baseline remapping happen inside `install.ps1`, not in `install.sh`.
 
 **Rosetta 2 precedent (lines 155-160):**
+
 ```bash
 if [[ "$os" == "darwin" && "$arch" == "x64" ]]; then
     if [[ $(sysctl -n sysctl.proc_translated 2>/dev/null) == "1" ]]; then
@@ -372,7 +412,7 @@ release job:
 
 ## Historical Context (from research/)
 
-- `research/docs/2026-03-20-388-389-windows-arm64-support.md` -- Primary ARM64 research. Section 4, Approach A notes the single-binary tradeoff: *"Using `bun-windows-x64-baseline` instead of `bun-windows-x64` means native x64 Windows users also lose AVX optimizations."* Open Question #9 explicitly raises the two-binary option.
+- `research/docs/2026-03-20-388-389-windows-arm64-support.md` -- Primary ARM64 research. Section 4, Approach A notes the single-binary tradeoff: _"Using `bun-windows-x64-baseline` instead of `bun-windows-x64` means native x64 Windows users also lose AVX optimizations."_ Open Question #9 explicitly raises the two-binary option.
 - `specs/windows-arm64-support.md` -- Current spec (Draft/WIP). Section 7, Option F ("Ship two Windows binaries") was rejected as over-engineering. This research provides the implementation details to reconsider that decision.
 
 ## Related Research

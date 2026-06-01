@@ -6,7 +6,7 @@
 | Status                 | Draft (WIP)                                              |
 | Team / Owner           | Atomic CLI                                               |
 | Created / Last Updated | 2026-02-09                                               |
-| Issue                  | https://github.com/flora131/atomic/issues/165            |
+| Issue                  | https://github.com/bastani/atomic/issues/165             |
 | Research               | `research/docs/2026-02-09-165-custom-tools-directory.md` |
 
 ## 1. Executive Summary
@@ -114,15 +114,15 @@ The design follows the **Filesystem Discovery + Dynamic Import** pattern already
 
 ### 4.3 Key Components
 
-| Component                    | Responsibility                                                     | Location                        | Justification                                     |
-| ---------------------------- | ------------------------------------------------------------------ | ------------------------------- | ------------------------------------------------- |
-| `tool()` helper              | Type-safe tool authoring with Zod schemas                          | `src/sdk/tools/plugin.ts`       | Internal module; avoids npm publish requirement   |
-| `discoverToolFiles()`        | Scan `.atomic/tools/` directories                                  | `src/sdk/tools/discovery.ts`    | Mirrors `discoverWorkflowFiles()` pattern         |
-| `loadToolsFromDisk()`        | Dynamic import + priority resolution                               | `src/sdk/tools/discovery.ts`    | Mirrors `loadWorkflowsFromDisk()` pattern         |
-| `registerCustomTools()`      | Bridge: discovered tools → `client.registerTool()`                 | `src/sdk/tools/discovery.ts`    | Orchestrates the full pipeline                    |
-| `getDiscoveredCustomTools()` | Expose loaded tool names for `/context`                            | `src/sdk/tools/discovery.ts`    | Matches `getDiscoveredSkillDirectories()` pattern |
-| `truncateToolOutput()`       | Enforce 2000-line / 50KB output limit on tool results              | `src/sdk/tools/truncate.ts`     | Matches OpenCode's `Truncate.output()` pattern    |
-| `zodToJsonSchema()`          | Convert Zod schemas to JSON Schema for `ToolDefinition.inputSchema`| `src/sdk/tools/schema-utils.ts` | Bridges user Zod schemas to unified interface     |
+| Component                    | Responsibility                                                      | Location                        | Justification                                     |
+| ---------------------------- | ------------------------------------------------------------------- | ------------------------------- | ------------------------------------------------- |
+| `tool()` helper              | Type-safe tool authoring with Zod schemas                           | `src/sdk/tools/plugin.ts`       | Internal module; avoids npm publish requirement   |
+| `discoverToolFiles()`        | Scan `.atomic/tools/` directories                                   | `src/sdk/tools/discovery.ts`    | Mirrors `discoverWorkflowFiles()` pattern         |
+| `loadToolsFromDisk()`        | Dynamic import + priority resolution                                | `src/sdk/tools/discovery.ts`    | Mirrors `loadWorkflowsFromDisk()` pattern         |
+| `registerCustomTools()`      | Bridge: discovered tools → `client.registerTool()`                  | `src/sdk/tools/discovery.ts`    | Orchestrates the full pipeline                    |
+| `getDiscoveredCustomTools()` | Expose loaded tool names for `/context`                             | `src/sdk/tools/discovery.ts`    | Matches `getDiscoveredSkillDirectories()` pattern |
+| `truncateToolOutput()`       | Enforce 2000-line / 50KB output limit on tool results               | `src/sdk/tools/truncate.ts`     | Matches OpenCode's `Truncate.output()` pattern    |
+| `zodToJsonSchema()`          | Convert Zod schemas to JSON Schema for `ToolDefinition.inputSchema` | `src/sdk/tools/schema-utils.ts` | Bridges user Zod schemas to unified interface     |
 
 ## 5. Detailed Design
 
@@ -141,28 +141,28 @@ import { z } from "zod";
  * This is the same ToolContext exported from src/sdk/types.ts.
  */
 export interface ToolContext {
-  /** Active session ID */
-  sessionID: string;
-  /** Current message ID within the session */
-  messageID: string;
-  /** Agent type executing the tool (e.g., "claude", "copilot", "opencode") */
-  agent: string;
-  /** Current working directory — prefer over process.cwd() for resolving relative paths */
-  directory: string;
-  /** Abort signal for cancellation — tools should check this for long-running operations */
-  abort: AbortSignal;
+    /** Active session ID */
+    sessionID: string;
+    /** Current message ID within the session */
+    messageID: string;
+    /** Agent type executing the tool (e.g., "claude", "copilot", "opencode") */
+    agent: string;
+    /** Current working directory — prefer over process.cwd() for resolving relative paths */
+    directory: string;
+    /** Abort signal for cancellation — tools should check this for long-running operations */
+    abort: AbortSignal;
 }
 
 /**
  * Input shape for the tool() helper.
  */
 export interface ToolInput<Args extends z.ZodRawShape> {
-  description: string;
-  args: Args;
-  execute: (
-    args: z.infer<z.ZodObject<Args>>,
-    context: ToolContext
-  ) => Promise<string> | string;
+    description: string;
+    args: Args;
+    execute: (
+        args: z.infer<z.ZodObject<Args>>,
+        context: ToolContext,
+    ) => Promise<string> | string;
 }
 
 /**
@@ -171,9 +171,9 @@ export interface ToolInput<Args extends z.ZodRawShape> {
  * Mirrors OpenCode's tool() from @opencode-ai/plugin.
  */
 export function tool<Args extends z.ZodRawShape>(
-  input: ToolInput<Args>
+    input: ToolInput<Args>,
 ): ToolInput<Args> {
-  return input;
+    return input;
 }
 
 // Re-export zod as tool.schema for convenience (matches OpenCode's tool.schema)
@@ -188,17 +188,17 @@ tool.schema = z;
 import { tool } from "@atomic/plugin";
 
 export default tool({
-  description: "Run the project linter on a file and return results",
-  args: {
-    filePath: tool.schema.string().describe("Path to the file to lint"),
-  },
-  async execute(args, context) {
-    const proc = Bun.spawn(["bun", "lint", args.filePath], {
-      cwd: context.directory,
-    });
-    const output = await new Response(proc.stdout).text();
-    return output;
-  },
+    description: "Run the project linter on a file and return results",
+    args: {
+        filePath: tool.schema.string().describe("Path to the file to lint"),
+    },
+    async execute(args, context) {
+        const proc = Bun.spawn(["bun", "lint", args.filePath], {
+            cwd: context.directory,
+        });
+        const output = await new Response(proc.stdout).text();
+        return output;
+    },
 });
 ```
 
@@ -224,16 +224,16 @@ import { resolve, dirname } from "path";
  * file is located on disk.
  */
 export function registerAtomicPluginAlias(): void {
-  const pluginPath = resolve(dirname(import.meta.path), "plugin.ts");
+    const pluginPath = resolve(dirname(import.meta.path), "plugin.ts");
 
-  Bun.plugin({
-    name: "atomic-plugin-resolver",
-    setup(build) {
-      build.onResolve({ filter: /^@atomic\/plugin$/ }, () => ({
-        path: pluginPath,
-      }));
-    },
-  });
+    Bun.plugin({
+        name: "atomic-plugin-resolver",
+        setup(build) {
+            build.onResolve({ filter: /^@atomic\/plugin$/ }, () => ({
+                path: pluginPath,
+            }));
+        },
+    });
 }
 ```
 
@@ -259,18 +259,18 @@ import { homedir } from "os";
 export type ToolSource = "local" | "global";
 
 export interface DiscoveredToolFile {
-  path: string;
-  filename: string;
-  source: ToolSource;
+    path: string;
+    filename: string;
+    source: ToolSource;
 }
 
 const HOME = homedir();
 
 export const TOOL_SEARCH_PATHS = [
-  // Project-local (highest priority)
-  ".atomic/tools",
-  // Global user tools
-  join(HOME, ".atomic", "tools"),
+    // Project-local (highest priority)
+    ".atomic/tools",
+    // Global user tools
+    join(HOME, ".atomic", "tools"),
 ] as const;
 ```
 
@@ -278,33 +278,35 @@ export const TOOL_SEARCH_PATHS = [
 
 ```typescript
 export function discoverToolFiles(): DiscoveredToolFile[] {
-  const discovered: DiscoveredToolFile[] = [];
-  const cwd = process.cwd();
+    const discovered: DiscoveredToolFile[] = [];
+    const cwd = process.cwd();
 
-  for (let i = 0; i < TOOL_SEARCH_PATHS.length; i++) {
-    const rawPath = TOOL_SEARCH_PATHS[i]!;
-    const searchPath = rawPath.startsWith("/") ? rawPath : join(cwd, rawPath);
-    const source: ToolSource = i === 0 ? "local" : "global";
+    for (let i = 0; i < TOOL_SEARCH_PATHS.length; i++) {
+        const rawPath = TOOL_SEARCH_PATHS[i]!;
+        const searchPath = rawPath.startsWith("/")
+            ? rawPath
+            : join(cwd, rawPath);
+        const source: ToolSource = i === 0 ? "local" : "global";
 
-    if (!existsSync(searchPath)) continue;
+        if (!existsSync(searchPath)) continue;
 
-    try {
-      const files = readdirSync(searchPath);
-      for (const file of files) {
-        if (file.endsWith(".ts") || file.endsWith(".js")) {
-          discovered.push({
-            path: join(searchPath, file),
-            filename: file.replace(/\.(ts|js)$/, ""),
-            source,
-          });
+        try {
+            const files = readdirSync(searchPath);
+            for (const file of files) {
+                if (file.endsWith(".ts") || file.endsWith(".js")) {
+                    discovered.push({
+                        path: join(searchPath, file),
+                        filename: file.replace(/\.(ts|js)$/, ""),
+                        source,
+                    });
+                }
+            }
+        } catch {
+            // Skip inaccessible directories
         }
-      }
-    } catch {
-      // Skip inaccessible directories
     }
-  }
 
-  return discovered;
+    return discovered;
 }
 ```
 
@@ -324,39 +326,44 @@ import type { ToolDefinition } from "../types.ts";
 import { zodToJsonSchema } from "./schema-utils.ts"; // Zod → JSON Schema converter
 
 export interface LoadedCustomTool {
-  definition: ToolDefinition;
-  source: ToolSource;
-  filePath: string;
+    definition: ToolDefinition;
+    source: ToolSource;
+    filePath: string;
 }
 
 export async function loadToolsFromDisk(): Promise<LoadedCustomTool[]> {
-  const discovered = discoverToolFiles();
-  const loaded: LoadedCustomTool[] = [];
-  const loadedNames = new Set<string>();
+    const discovered = discoverToolFiles();
+    const loaded: LoadedCustomTool[] = [];
+    const loadedNames = new Set<string>();
 
-  for (const { path, filename, source } of discovered) {
-    try {
-      const module = await import(path);
+    for (const { path, filename, source } of discovered) {
+        try {
+            const module = await import(path);
 
-      for (const [exportName, exportValue] of Object.entries(module)) {
-        if (!isToolExport(exportValue)) continue;
+            for (const [exportName, exportValue] of Object.entries(module)) {
+                if (!isToolExport(exportValue)) continue;
 
-        const toolName =
-          exportName === "default" ? filename : `${filename}_${exportName}`;
+                const toolName =
+                    exportName === "default"
+                        ? filename
+                        : `${filename}_${exportName}`;
 
-        // Local takes priority over global (first-found-wins)
-        if (loadedNames.has(toolName)) continue;
-        loadedNames.add(toolName);
+                // Local takes priority over global (first-found-wins)
+                if (loadedNames.has(toolName)) continue;
+                loadedNames.add(toolName);
 
-        const definition = convertToToolDefinition(toolName, exportValue);
-        loaded.push({ definition, source, filePath: path });
-      }
-    } catch (err) {
-      console.warn(`Failed to load tool from ${path}: ${err}`);
+                const definition = convertToToolDefinition(
+                    toolName,
+                    exportValue,
+                );
+                loaded.push({ definition, source, filePath: path });
+            }
+        } catch (err) {
+            console.warn(`Failed to load tool from ${path}: ${err}`);
+        }
     }
-  }
 
-  return loaded;
+    return loaded;
 }
 ```
 
@@ -366,26 +373,27 @@ export async function loadToolsFromDisk(): Promise<LoadedCustomTool[]> {
 
 ```typescript
 function convertToToolDefinition(
-  name: string,
-  toolInput: ToolInput<z.ZodRawShape>
+    name: string,
+    toolInput: ToolInput<z.ZodRawShape>,
 ): ToolDefinition {
-  const zodSchema = z.object(toolInput.args);
-  const jsonSchema = zodToJsonSchema(zodSchema);
+    const zodSchema = z.object(toolInput.args);
+    const jsonSchema = zodToJsonSchema(zodSchema);
 
-  return {
-    name,
-    description: toolInput.description,
-    inputSchema: jsonSchema,
-    handler: async (
-      input: Record<string, unknown>,
-      context: ToolContext
-    ): Promise<ToolHandlerResult> => {
-      const parsed = zodSchema.parse(input);
-      const result = await toolInput.execute(parsed, context);
-      const output = typeof result === "string" ? result : JSON.stringify(result);
-      return truncateToolOutput(output);
-    },
-  };
+    return {
+        name,
+        description: toolInput.description,
+        inputSchema: jsonSchema,
+        handler: async (
+            input: Record<string, unknown>,
+            context: ToolContext,
+        ): Promise<ToolHandlerResult> => {
+            const parsed = zodSchema.parse(input);
+            const result = await toolInput.execute(parsed, context);
+            const output =
+                typeof result === "string" ? result : JSON.stringify(result);
+            return truncateToolOutput(output);
+        },
+    };
 }
 ```
 
@@ -395,9 +403,9 @@ function convertToToolDefinition(
 
 ```json
 {
-  "dependencies": {
-    "zod": "^4.3.6"
-  }
+    "dependencies": {
+        "zod": "^4.3.6"
+    }
 }
 ```
 
@@ -411,10 +419,13 @@ Zod 4.x includes a built-in `z.toJSONSchema()` method. Use this directly rather 
 import { z } from "zod";
 
 /** JSON Schema representation of a Zod schema */
-export type JsonSchema = Record<string, string | boolean | number | JsonSchema | JsonSchema[]>;
+export type JsonSchema = Record<
+    string,
+    string | boolean | number | JsonSchema | JsonSchema[]
+>;
 
 export function zodToJsonSchema(schema: z.ZodType): JsonSchema {
-  return z.toJSONSchema(schema) as JsonSchema;
+    return z.toJSONSchema(schema) as JsonSchema;
 }
 ```
 
@@ -429,25 +440,25 @@ let discoveredCustomTools: LoadedCustomTool[] = [];
 let pluginAliasRegistered = false;
 
 export async function registerCustomTools(
-  client: CodingAgentClient
+    client: CodingAgentClient,
 ): Promise<number> {
-  // Register the @atomic/plugin alias once (idempotent)
-  if (!pluginAliasRegistered) {
-    registerAtomicPluginAlias();
-    pluginAliasRegistered = true;
-  }
+    // Register the @atomic/plugin alias once (idempotent)
+    if (!pluginAliasRegistered) {
+        registerAtomicPluginAlias();
+        pluginAliasRegistered = true;
+    }
 
-  discoveredCustomTools = await loadToolsFromDisk();
+    discoveredCustomTools = await loadToolsFromDisk();
 
-  for (const { definition } of discoveredCustomTools) {
-    client.registerTool(definition);
-  }
+    for (const { definition } of discoveredCustomTools) {
+        client.registerTool(definition);
+    }
 
-  return discoveredCustomTools.length;
+    return discoveredCustomTools.length;
 }
 
 export function getDiscoveredCustomTools(): LoadedCustomTool[] {
-  return discoveredCustomTools;
+    return discoveredCustomTools;
 }
 ```
 
@@ -461,13 +472,13 @@ const client = createClientForAgentType(agentType);
 
 // Register TodoWrite tool for agents that don't have it built-in
 if (agentType === "copilot") {
-  client.registerTool(createTodoWriteTool());
+    client.registerTool(createTodoWriteTool());
 }
 
 // Discover and register custom tools from .atomic/tools/
 const customToolCount = await registerCustomTools(client);
 if (customToolCount > 0) {
-  console.log(`Loaded ${customToolCount} custom tool(s)`);
+    console.log(`Loaded ${customToolCount} custom tool(s)`);
 }
 
 await client.start();
@@ -546,7 +557,7 @@ Custom Tools:
 The current `ToolDefinition.handler` signature (`src/sdk/types.ts:483`) is:
 
 ```typescript
-handler: (input: unknown) => unknown | Promise<unknown>;  // current — overly loose
+handler: (input: unknown) => unknown | Promise<unknown>; // current — overly loose
 ```
 
 This spec introduces a **breaking change** to add a `ToolContext` second parameter:
@@ -554,29 +565,29 @@ This spec introduces a **breaking change** to add a `ToolContext` second paramet
 ```typescript
 // src/sdk/types.ts (updated)
 export interface ToolContext {
-  /** Active session ID */
-  sessionID: string;
-  /** Current message ID within the session */
-  messageID: string;
-  /** Agent type executing the tool (e.g., "claude", "copilot", "opencode") */
-  agent: string;
-  /** Current working directory — prefer over process.cwd() for resolving relative paths */
-  directory: string;
-  /** Abort signal for cancellation — tools should check this for long-running operations */
-  abort: AbortSignal;
+    /** Active session ID */
+    sessionID: string;
+    /** Current message ID within the session */
+    messageID: string;
+    /** Agent type executing the tool (e.g., "claude", "copilot", "opencode") */
+    agent: string;
+    /** Current working directory — prefer over process.cwd() for resolving relative paths */
+    directory: string;
+    /** Abort signal for cancellation — tools should check this for long-running operations */
+    abort: AbortSignal;
 }
 
 /** Serializable result returned by a tool handler */
 export type ToolHandlerResult = string | Record<string, unknown>;
 
 export interface ToolDefinition {
-  name: string;
-  description: string;
-  inputSchema: Record<string, unknown>;
-  handler: (
-    input: Record<string, unknown>,
-    context: ToolContext
-  ) => ToolHandlerResult | Promise<ToolHandlerResult>;
+    name: string;
+    description: string;
+    inputSchema: Record<string, unknown>;
+    handler: (
+        input: Record<string, unknown>,
+        context: ToolContext,
+    ) => ToolHandlerResult | Promise<ToolHandlerResult>;
 }
 ```
 
@@ -585,43 +596,55 @@ export interface ToolDefinition {
 **Blast radius** — Only 4 call sites need updating:
 
 1. **`src/sdk/claude-client.ts:764-766`** — Claude's `registerTool()` wrapper must construct and pass a `ToolContext`. The Claude SDK's internal handler receives untyped args from the MCP protocol; cast to `Record<string, unknown>` at the boundary. `sessionID` and `messageID` are obtained from the session state available in the handler closure:
-   ```typescript
-   handler: async (args: Record<string, unknown>, _extra: Record<string, unknown>) => {
-     const context: ToolContext = {
-       sessionID: this.currentSession?.id ?? "",
-       messageID: this.currentMessageId ?? "",
-       agent: "claude",
-       directory: this.clientOptions.directory ?? process.cwd(),
-       abort: this.currentAbortController?.signal ?? new AbortController().signal,
-     };
-     const result = await tool.handler(args, context);
-     // ...
-   }
-   ```
+
+    ```typescript
+    handler: async (
+        args: Record<string, unknown>,
+        _extra: Record<string, unknown>,
+    ) => {
+        const context: ToolContext = {
+            sessionID: this.currentSession?.id ?? "",
+            messageID: this.currentMessageId ?? "",
+            agent: "claude",
+            directory: this.clientOptions.directory ?? process.cwd(),
+            abort:
+                this.currentAbortController?.signal ??
+                new AbortController().signal,
+        };
+        const result = await tool.handler(args, context);
+        // ...
+    };
+    ```
 
 2. **`src/sdk/copilot-client.ts:533`** — Copilot's `convertTool()` must pass context. Session state is accessed via the client instance:
-   ```typescript
-   handler: async (args: Record<string, unknown>) => {
-     const context: ToolContext = {
-       sessionID: this.currentSession?.id ?? "",
-       messageID: this.currentMessageId ?? "",
-       agent: "copilot",
-       directory: this.clientOptions.directory ?? process.cwd(),
-       abort: this.currentAbortController?.signal ?? new AbortController().signal,
-     };
-     return tool.handler(args, context);
-   }
-   ```
+
+    ```typescript
+    handler: async (args: Record<string, unknown>) => {
+        const context: ToolContext = {
+            sessionID: this.currentSession?.id ?? "",
+            messageID: this.currentMessageId ?? "",
+            agent: "copilot",
+            directory: this.clientOptions.directory ?? process.cwd(),
+            abort:
+                this.currentAbortController?.signal ??
+                new AbortController().signal,
+        };
+        return tool.handler(args, context);
+    };
+    ```
 
 3. **`src/sdk/opencode-client.ts:1090`** — OpenCode's `registerTool()` updated in §5.12 below. Note: for the MCP bridge approach, `ToolContext` fields are serialized into the MCP server script's environment, with `sessionID` and `messageID` passed as tool invocation metadata.
 
 4. **`src/sdk/tools/todo-write.ts:76`** — Update the `createTodoWriteTool()` handler signature:
-   ```typescript
-   handler: (input: Record<string, unknown>, _context: ToolContext): ToolHandlerResult => {
-     const todos = input.todos as TodoItem[];
-     // existing logic unchanged
-   }
-   ```
+    ```typescript
+    handler: (
+        input: Record<string, unknown>,
+        _context: ToolContext,
+    ): ToolHandlerResult => {
+        const todos = input.todos as TodoItem[];
+        // existing logic unchanged
+    };
+    ```
 
 ### 5.12 OpenCode Tool Injection via MCP
 
@@ -633,132 +656,132 @@ export interface ToolDefinition {
 
 1. **Generate a temporary MCP server script** that serves all registered tools over stdio. The script is a minimal Bun program that reads JSON-RPC requests from stdin and dispatches to tool handlers:
 
-   ```typescript
-   // src/sdk/tools/opencode-mcp-bridge.ts
-   import type { ToolDefinition, ToolContext } from "../types.ts";
+    ```typescript
+    // src/sdk/tools/opencode-mcp-bridge.ts
+    import type { ToolDefinition, ToolContext } from "../types.ts";
 
-   /**
-    * Create a temporary .ts file that serves registered tools as an MCP stdio server.
-    * Returns the path to the generated script.
-    */
-   export async function createToolMcpServerScript(
-     tools: ToolDefinition[]
-   ): Promise<string> {
-     const tmpDir = join(homedir(), ".atomic", ".tmp");
-     mkdirSync(tmpDir, { recursive: true });
+    /**
+     * Create a temporary .ts file that serves registered tools as an MCP stdio server.
+     * Returns the path to the generated script.
+     */
+    export async function createToolMcpServerScript(
+        tools: ToolDefinition[],
+    ): Promise<string> {
+        const tmpDir = join(homedir(), ".atomic", ".tmp");
+        mkdirSync(tmpDir, { recursive: true });
 
-     const scriptPath = join(tmpDir, `custom-tools-mcp-${Date.now()}.ts`);
-     const toolDefs = tools.map(t => ({
-       name: t.name,
-       description: t.description,
-       inputSchema: t.inputSchema,
-     }));
+        const scriptPath = join(tmpDir, `custom-tools-mcp-${Date.now()}.ts`);
+        const toolDefs = tools.map((t) => ({
+            name: t.name,
+            description: t.description,
+            inputSchema: t.inputSchema,
+        }));
 
-     // Generate a self-contained MCP server script
-     const script = generateMcpServerScript(toolDefs);
-     writeFileSync(scriptPath, script);
-     return scriptPath;
-   }
-   ```
+        // Generate a self-contained MCP server script
+        const script = generateMcpServerScript(toolDefs);
+        writeFileSync(scriptPath, script);
+        return scriptPath;
+    }
+    ```
 
 2. **Update `OpenCodeClient.registerTool()`** to store tools and mark registration as pending:
 
-   ```typescript
-   registerTool(tool: ToolDefinition): void {
-     this.registeredTools.set(tool.name, tool);
-   }
-   ```
+    ```typescript
+    registerTool(tool: ToolDefinition): void {
+      this.registeredTools.set(tool.name, tool);
+    }
+    ```
 
 3. **Update `OpenCodeClient.createSession()`** to register the MCP bridge before session creation:
 
-   ```typescript
-   async createSession(config: SessionConfig = {}): Promise<Session> {
-     // Register custom tools as an MCP server
-     if (this.registeredTools.size > 0) {
-       await this.registerToolsMcpServer();
-     }
+    ```typescript
+    async createSession(config: SessionConfig = {}): Promise<Session> {
+      // Register custom tools as an MCP server
+      if (this.registeredTools.size > 0) {
+        await this.registerToolsMcpServer();
+      }
 
-     // Register MCP servers from config
-     if (config.mcpServers && config.mcpServers.length > 0) {
-       await this.registerMcpServers(config.mcpServers);
-     }
+      // Register MCP servers from config
+      if (config.mcpServers && config.mcpServers.length > 0) {
+        await this.registerMcpServers(config.mcpServers);
+      }
 
-     // ... existing session creation
-   }
+      // ... existing session creation
+    }
 
-   private async registerToolsMcpServer(): Promise<void> {
-     if (!this.sdkClient) return;
+    private async registerToolsMcpServer(): Promise<void> {
+      if (!this.sdkClient) return;
 
-     const tools = Array.from(this.registeredTools.values());
-     const scriptPath = await createToolMcpServerScript(tools);
+      const tools = Array.from(this.registeredTools.values());
+      const scriptPath = await createToolMcpServerScript(tools);
 
-     await this.sdkClient.mcp.add({
-       directory: this.clientOptions.directory,
-       name: "atomic-custom-tools",
-       config: {
-         type: "local" as const,
-         command: ["bun", "run", scriptPath],
-         enabled: true,
-       },
-     });
-   }
-   ```
+      await this.sdkClient.mcp.add({
+        directory: this.clientOptions.directory,
+        name: "atomic-custom-tools",
+        config: {
+          type: "local" as const,
+          command: ["bun", "run", scriptPath],
+          enabled: true,
+        },
+      });
+    }
+    ```
 
 4. **Same approach for `resumeSession()`** — call `registerToolsMcpServer()` before resuming.
 
 5. **Process-exit cleanup** — Remove generated MCP bridge scripts when the Atomic process exits. The codebase already uses a `cleanupHandlers` array pattern (`src/ui/index.ts:742-755`) that runs on `SIGINT`/`SIGTERM` and normal exit. `createToolMcpServerScript()` returns the path, which is tracked for deletion:
 
-   ```typescript
-   // src/sdk/tools/opencode-mcp-bridge.ts
-   const generatedScripts: string[] = [];
+    ```typescript
+    // src/sdk/tools/opencode-mcp-bridge.ts
+    const generatedScripts: string[] = [];
 
-   export async function createToolMcpServerScript(
-     tools: ToolDefinition[]
-   ): Promise<string> {
-     const tmpDir = join(homedir(), ".atomic", ".tmp");
-     mkdirSync(tmpDir, { recursive: true });
+    export async function createToolMcpServerScript(
+        tools: ToolDefinition[],
+    ): Promise<string> {
+        const tmpDir = join(homedir(), ".atomic", ".tmp");
+        mkdirSync(tmpDir, { recursive: true });
 
-     const scriptPath = join(tmpDir, `custom-tools-mcp-${Date.now()}.ts`);
-     // ... generate and write script ...
+        const scriptPath = join(tmpDir, `custom-tools-mcp-${Date.now()}.ts`);
+        // ... generate and write script ...
 
-     generatedScripts.push(scriptPath);
-     return scriptPath;
-   }
+        generatedScripts.push(scriptPath);
+        return scriptPath;
+    }
 
-   /**
-    * Remove all generated MCP bridge scripts.
-    * Called during process cleanup (SIGINT/SIGTERM/normal exit).
-    */
-   export function cleanupMcpBridgeScripts(): void {
-     for (const scriptPath of generatedScripts) {
-       try {
-         unlinkSync(scriptPath);
-       } catch {
-         // File may already be deleted or inaccessible
-       }
-     }
-     generatedScripts.length = 0;
+    /**
+     * Remove all generated MCP bridge scripts.
+     * Called during process cleanup (SIGINT/SIGTERM/normal exit).
+     */
+    export function cleanupMcpBridgeScripts(): void {
+        for (const scriptPath of generatedScripts) {
+            try {
+                unlinkSync(scriptPath);
+            } catch {
+                // File may already be deleted or inaccessible
+            }
+        }
+        generatedScripts.length = 0;
 
-     // Remove the .tmp directory if empty
-     const tmpDir = join(homedir(), ".atomic", ".tmp");
-     try {
-       rmdirSync(tmpDir);
-     } catch {
-       // Directory not empty or doesn't exist — ignore
-     }
-   }
-   ```
+        // Remove the .tmp directory if empty
+        const tmpDir = join(homedir(), ".atomic", ".tmp");
+        try {
+            rmdirSync(tmpDir);
+        } catch {
+            // Directory not empty or doesn't exist — ignore
+        }
+    }
+    ```
 
-   The cleanup function is wired into the UI's existing cleanup flow at `src/ui/index.ts`:
+    The cleanup function is wired into the UI's existing cleanup flow at `src/ui/index.ts`:
 
-   ```typescript
-   // src/ui/index.ts — inside startChatUI(), after tool registration
-   state.cleanupHandlers.push(() => {
-     cleanupMcpBridgeScripts();
-   });
-   ```
+    ```typescript
+    // src/ui/index.ts — inside startChatUI(), after tool registration
+    state.cleanupHandlers.push(() => {
+        cleanupMcpBridgeScripts();
+    });
+    ```
 
-   This ensures scripts are removed on `SIGINT` (Ctrl+C), `SIGTERM`, and normal session exit, matching the existing signal handler pattern at `src/ui/index.ts:738-739`.
+    This ensures scripts are removed on `SIGINT` (Ctrl+C), `SIGTERM`, and normal session exit, matching the existing signal handler pattern at `src/ui/index.ts:738-739`.
 
 **Alternative considered**: Writing tool files to `.opencode/tools/` for native discovery. Rejected because it modifies the user's config directory as a side effect and creates cleanup concerns.
 
@@ -781,32 +804,35 @@ const MAX_OUTPUT_BYTES = 50_000; // 50KB
  * When truncation occurs, a notice is appended indicating how much was removed.
  */
 export function truncateToolOutput(output: string): string {
-  const lines = output.split("\n");
+    const lines = output.split("\n");
 
-  // Truncate by line count
-  if (lines.length > MAX_OUTPUT_LINES) {
-    const truncated = lines.slice(0, MAX_OUTPUT_LINES).join("\n");
-    return `${truncated}\n\n[truncated: ${lines.length - MAX_OUTPUT_LINES} lines omitted]`;
-  }
-
-  // Truncate by byte size
-  const byteLength = new TextEncoder().encode(output).length;
-  if (byteLength > MAX_OUTPUT_BYTES) {
-    // Binary search for the cut point that fits within the byte limit
-    let lo = 0;
-    let hi = output.length;
-    while (lo < hi) {
-      const mid = (lo + hi + 1) >>> 1;
-      if (new TextEncoder().encode(output.slice(0, mid)).length <= MAX_OUTPUT_BYTES) {
-        lo = mid;
-      } else {
-        hi = mid - 1;
-      }
+    // Truncate by line count
+    if (lines.length > MAX_OUTPUT_LINES) {
+        const truncated = lines.slice(0, MAX_OUTPUT_LINES).join("\n");
+        return `${truncated}\n\n[truncated: ${lines.length - MAX_OUTPUT_LINES} lines omitted]`;
     }
-    return `${output.slice(0, lo)}\n\n[truncated: output exceeded ${MAX_OUTPUT_BYTES} bytes]`;
-  }
 
-  return output;
+    // Truncate by byte size
+    const byteLength = new TextEncoder().encode(output).length;
+    if (byteLength > MAX_OUTPUT_BYTES) {
+        // Binary search for the cut point that fits within the byte limit
+        let lo = 0;
+        let hi = output.length;
+        while (lo < hi) {
+            const mid = (lo + hi + 1) >>> 1;
+            if (
+                new TextEncoder().encode(output.slice(0, mid)).length <=
+                MAX_OUTPUT_BYTES
+            ) {
+                lo = mid;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        return `${output.slice(0, lo)}\n\n[truncated: output exceeded ${MAX_OUTPUT_BYTES} bytes]`;
+    }
+
+    return output;
 }
 ```
 
@@ -838,6 +864,7 @@ export function truncateToolOutput(output: string): string {
 ### 7.3 Observability
 
 Custom tool executions flow through the existing telemetry pipeline:
+
 - `tool.start` / `tool.complete` events (ref: research §11)
 - Telemetry tracks `sdk.tool.started`, `sdk.tool.completed`, `sdk.tool.failed` events (`src/telemetry/sdk-integration.ts`)
 - Tool names in telemetry events identify custom tools by their registered name
@@ -893,15 +920,15 @@ This feature includes a breaking change to `ToolDefinition.handler` (§5.11). Al
 
 All design questions have been resolved:
 
-| Question | Decision | Section |
-|---|---|---|
-| `@atomic/plugin` import resolution for global tools | Use `Bun.plugin()` with `onResolve` hook — works for both local and global tools uniformly. OpenCode's `installDependencies` pattern documented as context; can coexist if `@atomic/plugin` is published to npm later | §5.2 |
-| OpenCode tool passthrough | Included in this spec — wrap custom tools in a stdio MCP server and register via `sdkClient.mcp.add()` | §5.12 |
-| `ToolContext` expansion | Clean breaking change — update `ToolDefinition.handler` to `(input, context: ToolContext)` across all 4 call sites. `ToolContext` includes `sessionID`, `messageID`, `agent`, `directory`, `abort` (modeled after OpenCode's ToolContext) | §5.1, §5.11 |
-| Zod dependency version | Add `"zod": "^4.3.6"` as direct dependency — matches the version already resolved in the lockfile | §5.5 |
-| Re-discovery on session resume | Re-discover from disk on every session start/resume — prevents stale tool definitions | §5.8 |
-| Named export naming convention | Use `_` (single underscore) separator: `<filename>_<exportName>` — matches OpenCode convention and existing codebase patterns | §5.4 |
-| MCP bridge script cleanup | Remove on process exit via `cleanupMcpBridgeScripts()` wired into `state.cleanupHandlers` — covers SIGINT, SIGTERM, and normal exit | §5.12 |
-| Compiled binary `import.meta.path` | Verified via build test: compile binary, run with test tool, assert `@atomic/plugin` resolves | §8.2 |
-| Tool directory naming | Only `tools/` is accepted (not `tool/`) — consistent with Atomic's plural naming convention (`workflows/`, `skills/`) | §5.3 |
-| Output truncation | Truncate at 2000 lines / 50KB (matching OpenCode's `Truncate.output`). Full output persistence to disk is a future enhancement | §5.13 |
+| Question                                            | Decision                                                                                                                                                                                                                                  | Section     |
+| --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- |
+| `@atomic/plugin` import resolution for global tools | Use `Bun.plugin()` with `onResolve` hook — works for both local and global tools uniformly. OpenCode's `installDependencies` pattern documented as context; can coexist if `@atomic/plugin` is published to npm later                     | §5.2        |
+| OpenCode tool passthrough                           | Included in this spec — wrap custom tools in a stdio MCP server and register via `sdkClient.mcp.add()`                                                                                                                                    | §5.12       |
+| `ToolContext` expansion                             | Clean breaking change — update `ToolDefinition.handler` to `(input, context: ToolContext)` across all 4 call sites. `ToolContext` includes `sessionID`, `messageID`, `agent`, `directory`, `abort` (modeled after OpenCode's ToolContext) | §5.1, §5.11 |
+| Zod dependency version                              | Add `"zod": "^4.3.6"` as direct dependency — matches the version already resolved in the lockfile                                                                                                                                         | §5.5        |
+| Re-discovery on session resume                      | Re-discover from disk on every session start/resume — prevents stale tool definitions                                                                                                                                                     | §5.8        |
+| Named export naming convention                      | Use `_` (single underscore) separator: `<filename>_<exportName>` — matches OpenCode convention and existing codebase patterns                                                                                                             | §5.4        |
+| MCP bridge script cleanup                           | Remove on process exit via `cleanupMcpBridgeScripts()` wired into `state.cleanupHandlers` — covers SIGINT, SIGTERM, and normal exit                                                                                                       | §5.12       |
+| Compiled binary `import.meta.path`                  | Verified via build test: compile binary, run with test tool, assert `@atomic/plugin` resolves                                                                                                                                             | §8.2        |
+| Tool directory naming                               | Only `tools/` is accepted (not `tool/`) — consistent with Atomic's plural naming convention (`workflows/`, `skills/`)                                                                                                                     | §5.3        |
+| Output truncation                                   | Truncate at 2000 lines / 50KB (matching OpenCode's `Truncate.output`). Full output persistence to disk is a future enhancement                                                                                                            | §5.13       |

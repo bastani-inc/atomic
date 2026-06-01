@@ -5,7 +5,20 @@ git_commit: f4c3330950f6747dc6ccc64e942743f1a0bfefa2
 branch: lavaman131/hotfix/sub-agent-display
 repository: atomic
 topic: "Chat system design & UI research: drawing from OpenCode TUI and OpenTUI rendering architecture"
-tags: [research, codebase, tui, chat-ui, opencode, opentui, sub-agents, streaming, content-ordering, hitl, frontend-design]
+tags:
+    [
+        research,
+        codebase,
+        tui,
+        chat-ui,
+        opencode,
+        opentui,
+        sub-agents,
+        streaming,
+        content-ordering,
+        hitl,
+        frontend-design,
+    ]
 status: complete
 last_updated: 2026-02-16
 last_updated_by: GitHub Copilot CLI
@@ -16,6 +29,7 @@ last_updated_by: GitHub Copilot CLI
 ## Research Question
 
 Deep-dive into `docs/opencode` and `docs/opentui` to draw inspiration about how to properly implement the chat system design + UI, specifically addressing:
+
 1. Custom UI rendering components failing to have correct states for the sub-agent tree
 2. Components like ask_question and sub-agent tree not correctly placed in stream order
 3. Preserving the chatbox top-to-bottom streaming and bottom-pinning behavior
@@ -26,15 +40,15 @@ This research synthesizes findings from 7 parallel sub-agent investigations cove
 
 **Key findings:**
 
-| Aspect | OpenCode (Reference) | Atomic (Current) |
-|---|---|---|
-| Message model | `Part[]` array sorted by monotonic ID | `content: string` + offset-based `buildContentSegments()` |
-| Content ordering | Part IDs encode creation timestamp → lexicographic = chronological | Character offset capture at `msg.content.length` → fragile arithmetic |
-| Sub-agent tree | Inline as task tool's child session tool parts | `AgentPart` segment inserted by offset, but multiple finalization paths mark completed prematurely |
-| HITL (ask_question) | Overlay on ToolPart via `tool.callID` linkage, rendered inline | Fixed-position dialog inside ScrollBox, not at chronological position |
-| Background agents | Tool mode drives status assignment | `background` status defined in types but never assigned at runtime |
-| Text interleaving | New TextPart created after each tool boundary | Text after tool appears in segments area, but meta-components stay pinned below |
-| ScrollBox | `stickyScroll: true, stickyStart: "bottom"` (OpenTUI) | Same ScrollBox configuration (no change needed) |
+| Aspect              | OpenCode (Reference)                                               | Atomic (Current)                                                                                   |
+| ------------------- | ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------- |
+| Message model       | `Part[]` array sorted by monotonic ID                              | `content: string` + offset-based `buildContentSegments()`                                          |
+| Content ordering    | Part IDs encode creation timestamp → lexicographic = chronological | Character offset capture at `msg.content.length` → fragile arithmetic                              |
+| Sub-agent tree      | Inline as task tool's child session tool parts                     | `AgentPart` segment inserted by offset, but multiple finalization paths mark completed prematurely |
+| HITL (ask_question) | Overlay on ToolPart via `tool.callID` linkage, rendered inline     | Fixed-position dialog inside ScrollBox, not at chronological position                              |
+| Background agents   | Tool mode drives status assignment                                 | `background` status defined in types but never assigned at runtime                                 |
+| Text interleaving   | New TextPart created after each tool boundary                      | Text after tool appears in segments area, but meta-components stay pinned below                    |
+| ScrollBox           | `stickyScroll: true, stickyStart: "bottom"` (OpenTUI)              | Same ScrollBox configuration (no change needed)                                                    |
 
 ## Detailed Findings
 
@@ -56,6 +70,7 @@ OpenCode represents messages using an ordered array of typed `Part` objects. Eac
 #### 1.2 ID-Based Chronological Ordering
 
 Part IDs encode creation timestamps for automatic chronological sorting:
+
 - **Generation** (`docs/opencode/packages/opencode/src/id/id.ts:55-74`): `Identifier.ascending("part")` produces `prt_<12-hex-chars><14-random-base62>`
 - First 6 bytes encode: `(timestamp_ms * 0x1000 + counter)` in big-endian
 - **Result**: Lexicographic sorting of IDs = chronological ordering
@@ -106,10 +121,10 @@ Questions are **NOT separate parts**. They are session-scoped requests linked to
 - **Options**: `stickyScroll: boolean`, `stickyStart: "bottom" | "top" | "left" | "right"`
 - **State tracking** (lines 87-95): `_stickyScrollBottom`, `_hasManualScroll`, `_isApplyingStickyScroll`
 - **Auto-scroll flow**:
-  1. Content height increases → `onSizeChange` → `recalculateBarProps()` (lines 633-678)
-  2. If `stickyScroll && !_hasManualScroll`: snap to `maxScrollTop` (lines 647-661)
-  3. User scrolls up → `_hasManualScroll = true` → pauses auto-scroll
-  4. User scrolls back to bottom → `updateStickyState()` clears manual flag → resumes
+    1. Content height increases → `onSizeChange` → `recalculateBarProps()` (lines 633-678)
+    2. If `stickyScroll && !_hasManualScroll`: snap to `maxScrollTop` (lines 647-661)
+    3. User scrolls up → `_hasManualScroll = true` → pauses auto-scroll
+    4. User scrolls back to bottom → `updateStickyState()` clears manual flag → resumes
 
 #### 2.3 Layout Engine
 
@@ -131,6 +146,7 @@ Questions are **NOT separate parts**. They are session-scoped requests linked to
 #### 3.1 Offset-Based Content Segments
 
 The `buildContentSegments()` function (`src/ui/chat.tsx:1287-1483`) constructs segments by:
+
 1. Capturing `contentOffsetAtStart = msg.content.length` when tools start
 2. Sorting tool calls by offset
 3. Slicing text at offset positions to create interleaved text/tool segments
@@ -139,6 +155,7 @@ The `buildContentSegments()` function (`src/ui/chat.tsx:1287-1483`) constructs s
 #### 3.2 Sub-Agent Tree Issues
 
 **Premature completion** — Multiple finalization paths mark agents "completed" while background tasks may still run:
+
 - `tool.complete` handler (`src/ui/index.ts:649-664`): Unconditionally sets running/pending → completed
 - Stream finalization effect (`src/ui/chat.tsx:2672-2680`): Maps all running → completed
 - Normal completion path (`src/ui/chat.tsx:3335-3341`): Same finalization
@@ -168,14 +185,14 @@ The `UserQuestionDialog` is rendered as a **fixed-position overlay** inside the 
 
 #### 4.1 Message Model Comparison
 
-| Feature | OpenCode | Atomic |
-|---|---|---|
-| Content storage | `Part[]` array (typed objects) | `content: string` (raw text) |
-| Tool tracking | ToolPart within parts array | `toolCalls: MessageToolCall[]` (separate array) |
-| Agent tracking | Task tool child session sync | `parallelAgents: ParallelAgent[]` (separate array) |
-| HITL tracking | QuestionRequest linked to ToolPart via callID | `UserQuestionDialog` as fixed-position overlay |
-| Ordering | Part ID lexicographic sort | Character offset arithmetic |
-| Interleaving | Natural — new TextPart after each tool | Computed — `buildContentSegments()` splices text |
+| Feature         | OpenCode                                      | Atomic                                             |
+| --------------- | --------------------------------------------- | -------------------------------------------------- |
+| Content storage | `Part[]` array (typed objects)                | `content: string` (raw text)                       |
+| Tool tracking   | ToolPart within parts array                   | `toolCalls: MessageToolCall[]` (separate array)    |
+| Agent tracking  | Task tool child session sync                  | `parallelAgents: ParallelAgent[]` (separate array) |
+| HITL tracking   | QuestionRequest linked to ToolPart via callID | `UserQuestionDialog` as fixed-position overlay     |
+| Ordering        | Part ID lexicographic sort                    | Character offset arithmetic                        |
+| Interleaving    | Natural — new TextPart after each tool        | Computed — `buildContentSegments()` splices text   |
 
 #### 4.2 Why OpenCode's Approach Solves Atomic's Issues
 
@@ -198,6 +215,7 @@ A comprehensive design reference has been generated at `research/docs/2026-02-16
 7. **Migration Strategy** (§9): 5-phase incremental migration plan with risk mitigations
 
 Key design decisions in the reference:
+
 - Parts replace segments — ordered `Part[]` with timestamp-encoded IDs replaces `buildContentSegments()`
 - HITL is a tool overlay — questions render inline after their ToolPart, not as fixed-position dialogs
 - Background agents have distinct lifecycle — `shouldFinalizeOnToolComplete()` guard at every finalization path
@@ -209,32 +227,35 @@ Key design decisions in the reference:
 ## Code References
 
 ### OpenCode TUI
-- [`docs/opencode/packages/sdk/js/src/v2/gen/types.gen.ts:263-522`](https://github.com/flora131/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opencode/packages/sdk/js/src/v2/gen/types.gen.ts#L263-L522) — Part type definitions
-- [`docs/opencode/packages/opencode/src/id/id.ts:55-74`](https://github.com/flora131/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opencode/packages/opencode/src/id/id.ts#L55-L74) — Timestamp-encoded ID generation
-- [`docs/opencode/packages/opencode/src/session/message-v2.ts:771`](https://github.com/flora131/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opencode/packages/opencode/src/session/message-v2.ts#L771) — Parts ordered by ID
-- [`docs/opencode/packages/opencode/src/session/processor.ts:45-349`](https://github.com/flora131/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opencode/packages/opencode/src/session/processor.ts#L45-L349) — Stream processing pipeline
-- [`docs/opencode/packages/opencode/src/cli/cmd/tui/context/sync.tsx:281-318`](https://github.com/flora131/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opencode/packages/opencode/src/cli/cmd/tui/context/sync.tsx#L281-L318) — Binary search insertion in store
-- [`docs/opencode/packages/ui/src/components/message-part.tsx:484-497`](https://github.com/flora131/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opencode/packages/ui/src/components/message-part.tsx#L484-L497) — Part registry + dynamic dispatch
-- [`docs/opencode/packages/ui/src/components/message-part.tsx:535-667`](https://github.com/flora131/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opencode/packages/ui/src/components/message-part.tsx#L535-L667) — ToolPartDisplay with inline HITL
-- [`docs/opencode/packages/ui/src/components/message-part.tsx:874-1077`](https://github.com/flora131/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opencode/packages/ui/src/components/message-part.tsx#L874-L1077) — Task tool sub-agent rendering
-- [`docs/opencode/packages/ui/src/components/session-turn.tsx:186-289`](https://github.com/flora131/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opencode/packages/ui/src/components/session-turn.tsx#L186-L289) — SessionTurn message hierarchy
+
+- [`docs/opencode/packages/sdk/js/src/v2/gen/types.gen.ts:263-522`](https://github.com/bastani/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opencode/packages/sdk/js/src/v2/gen/types.gen.ts#L263-L522) — Part type definitions
+- [`docs/opencode/packages/opencode/src/id/id.ts:55-74`](https://github.com/bastani/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opencode/packages/opencode/src/id/id.ts#L55-L74) — Timestamp-encoded ID generation
+- [`docs/opencode/packages/opencode/src/session/message-v2.ts:771`](https://github.com/bastani/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opencode/packages/opencode/src/session/message-v2.ts#L771) — Parts ordered by ID
+- [`docs/opencode/packages/opencode/src/session/processor.ts:45-349`](https://github.com/bastani/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opencode/packages/opencode/src/session/processor.ts#L45-L349) — Stream processing pipeline
+- [`docs/opencode/packages/opencode/src/cli/cmd/tui/context/sync.tsx:281-318`](https://github.com/bastani/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opencode/packages/opencode/src/cli/cmd/tui/context/sync.tsx#L281-L318) — Binary search insertion in store
+- [`docs/opencode/packages/ui/src/components/message-part.tsx:484-497`](https://github.com/bastani/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opencode/packages/ui/src/components/message-part.tsx#L484-L497) — Part registry + dynamic dispatch
+- [`docs/opencode/packages/ui/src/components/message-part.tsx:535-667`](https://github.com/bastani/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opencode/packages/ui/src/components/message-part.tsx#L535-L667) — ToolPartDisplay with inline HITL
+- [`docs/opencode/packages/ui/src/components/message-part.tsx:874-1077`](https://github.com/bastani/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opencode/packages/ui/src/components/message-part.tsx#L874-L1077) — Task tool sub-agent rendering
+- [`docs/opencode/packages/ui/src/components/session-turn.tsx:186-289`](https://github.com/bastani/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opencode/packages/ui/src/components/session-turn.tsx#L186-L289) — SessionTurn message hierarchy
 
 ### OpenTUI
-- [`docs/opentui/packages/core/src/renderables/ScrollBox.ts:44-58`](https://github.com/flora131/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opentui/packages/core/src/renderables/ScrollBox.ts#L44-L58) — ScrollBoxOptions
-- [`docs/opentui/packages/core/src/renderables/ScrollBox.ts:87-95`](https://github.com/flora131/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opentui/packages/core/src/renderables/ScrollBox.ts#L87-L95) — Sticky scroll state variables
-- [`docs/opentui/packages/core/src/renderables/ScrollBox.ts:161-227`](https://github.com/flora131/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opentui/packages/core/src/renderables/ScrollBox.ts#L161-L227) — Sticky scroll state machine
-- [`docs/opentui/packages/core/src/renderables/ScrollBox.ts:633-678`](https://github.com/flora131/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opentui/packages/core/src/renderables/ScrollBox.ts#L633-L678) — recalculateBarProps (auto-scroll on content grow)
-- [`docs/opentui/packages/core/src/renderables/Box.ts`](https://github.com/flora131/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opentui/packages/core/src/renderables/Box.ts) — BoxRenderable container
-- [`docs/opentui/packages/react/src/host-config.ts`](https://github.com/flora131/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opentui/packages/react/src/host-config.ts) — React reconciler host config
+
+- [`docs/opentui/packages/core/src/renderables/ScrollBox.ts:44-58`](https://github.com/bastani/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opentui/packages/core/src/renderables/ScrollBox.ts#L44-L58) — ScrollBoxOptions
+- [`docs/opentui/packages/core/src/renderables/ScrollBox.ts:87-95`](https://github.com/bastani/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opentui/packages/core/src/renderables/ScrollBox.ts#L87-L95) — Sticky scroll state variables
+- [`docs/opentui/packages/core/src/renderables/ScrollBox.ts:161-227`](https://github.com/bastani/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opentui/packages/core/src/renderables/ScrollBox.ts#L161-L227) — Sticky scroll state machine
+- [`docs/opentui/packages/core/src/renderables/ScrollBox.ts:633-678`](https://github.com/bastani/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opentui/packages/core/src/renderables/ScrollBox.ts#L633-L678) — recalculateBarProps (auto-scroll on content grow)
+- [`docs/opentui/packages/core/src/renderables/Box.ts`](https://github.com/bastani/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opentui/packages/core/src/renderables/Box.ts) — BoxRenderable container
+- [`docs/opentui/packages/react/src/host-config.ts`](https://github.com/bastani/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opentui/packages/react/src/host-config.ts) — React reconciler host config
 
 ### Atomic CLI (Current)
-- [`src/ui/chat.tsx:1287-1483`](https://github.com/flora131/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/src/ui/chat.tsx#L1287-L1483) — buildContentSegments()
-- [`src/ui/chat.tsx:1502-1757`](https://github.com/flora131/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/src/ui/chat.tsx#L1502-L1757) — MessageBubble rendering
-- [`src/ui/chat.tsx:2607-2631`](https://github.com/flora131/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/src/ui/chat.tsx#L2607-L2631) — Parallel agent bridge to streaming message
-- [`src/ui/chat.tsx:5358-5364`](https://github.com/flora131/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/src/ui/chat.tsx#L5358-L5364) — Fixed-position HITL dialog
-- [`src/ui/index.ts:649-664`](https://github.com/flora131/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/src/ui/index.ts#L649-L664) — tool.complete premature agent finalization
-- [`src/ui/components/parallel-agents-tree.tsx:26`](https://github.com/flora131/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/src/ui/components/parallel-agents-tree.tsx#L26) — AgentStatus type with background
-- [`src/ui/components/parallel-agents-tree.tsx:158-166`](https://github.com/flora131/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/src/ui/components/parallel-agents-tree.tsx#L158-L166) — Status color mapping
+
+- [`src/ui/chat.tsx:1287-1483`](https://github.com/bastani/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/src/ui/chat.tsx#L1287-L1483) — buildContentSegments()
+- [`src/ui/chat.tsx:1502-1757`](https://github.com/bastani/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/src/ui/chat.tsx#L1502-L1757) — MessageBubble rendering
+- [`src/ui/chat.tsx:2607-2631`](https://github.com/bastani/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/src/ui/chat.tsx#L2607-L2631) — Parallel agent bridge to streaming message
+- [`src/ui/chat.tsx:5358-5364`](https://github.com/bastani/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/src/ui/chat.tsx#L5358-L5364) — Fixed-position HITL dialog
+- [`src/ui/index.ts:649-664`](https://github.com/bastani/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/src/ui/index.ts#L649-L664) — tool.complete premature agent finalization
+- [`src/ui/components/parallel-agents-tree.tsx:26`](https://github.com/bastani/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/src/ui/components/parallel-agents-tree.tsx#L26) — AgentStatus type with background
+- [`src/ui/components/parallel-agents-tree.tsx:158-166`](https://github.com/bastani/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/src/ui/components/parallel-agents-tree.tsx#L158-L166) — Status color mapping
 
 ## Architecture Documentation
 
@@ -250,6 +271,7 @@ SDK Events → handleChunk/handleToolStart/handleToolComplete
 ```
 
 **Issues with current architecture:**
+
 - Text segments and meta-components (agents tree, task list, HITL dialog) live in separate rendering channels
 - Meta-components are always rendered after all segments, regardless of chronological position
 - Multiple finalization paths can mark agents completed while still running
@@ -266,6 +288,7 @@ SDK Events → Session.updatePart() → Database upsert → Bus event → SSE tr
 ```
 
 **Why this solves the issues:**
+
 - All content types are parts in a single sorted array — no separate channels
 - Part IDs encode creation time — ordering is automatic and deterministic
 - Tool state is a discriminated union with explicit transitions — no ambiguous finalization

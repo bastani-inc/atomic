@@ -1,15 +1,15 @@
 # Workflow HiL Answer Immediate Interrupt Technical Design Document / RFC
 
-| Document Metadata      | Details                         |
-| ---------------------- | ------------------------------- |
-| Author(s)              | Alex Lavaee                     |
-| Status                 | In Review (RFC)                 |
-| Team / Owner           | Atomic CLI / Workflows          |
-| Created / Last Updated | 2026-05-30                      |
+| Document Metadata      | Details                |
+| ---------------------- | ---------------------- |
+| Author(s)              | Alex Lavaee            |
+| Status                 | In Review (RFC)        |
+| Team / Owner           | Atomic CLI / Workflows |
+| Created / Last Updated | 2026-05-30             |
 
 ## 1. Executive Summary
 
-GitHub issue [flora131/atomic#1137](https://github.com/flora131/atomic/issues/1137) requests that when a workflow human-in-the-loop (HiL) prompt is answered, the main agent is notified immediately with an interrupt-style custom message instead of a queued steer message. The notice must tell the agent that the pending HiL request has already been answered, must prevent the agent from re-asking the same question, and must not wait until the next tool-call boundary.
+GitHub issue [bastani/atomic#1137](https://github.com/bastani/atomic/issues/1137) requests that when a workflow human-in-the-loop (HiL) prompt is answered, the main agent is notified immediately with an interrupt-style custom message instead of a queued steer message. The notice must tell the agent that the pending HiL request has already been answered, must prevent the agent from re-asking the same question, and must not wait until the next tool-call boundary.
 
 Current branch `fix/1137-workflow-hil-answer-interrupt` already implements the core issue behavior:
 
@@ -84,19 +84,19 @@ Iteration 3 must make interrupt delivery single-flight and make interrupt queue 
 
 - Emit an immediate interrupt-delivered custom message whenever a workflow stage HiL prompt is successfully answered.
 - The interrupt message must tell the agent:
-  - the pending HiL request has already been answered;
-  - the same question should not be asked again;
-  - workflow/run/stage/prompt metadata when available.
+    - the pending HiL request has already been answered;
+    - the same question should not be asked again;
+    - workflow/run/stage/prompt metadata when available.
 - Preserve existing steer-based behavior for workflow completed, failed, and awaiting-input lifecycle notices.
 - Cover both HiL implementations:
-  - simple `PendingPrompt` prompts resolved through `Store.resolveStagePendingPrompt()`;
-  - brokered `StageInputRequest` prompts resolved through `StageUiBroker`.
+    - simple `PendingPrompt` prompts resolved through `Store.resolveStagePendingPrompt()`;
+    - brokered `StageInputRequest` prompts resolved through `StageUiBroker`.
 - Keep raw HiL answers out of the interrupt payload.
 - Serialize interrupt custom-message delivery so two interrupt notices cannot race into `agent.prompt()`.
 - Preserve FIFO order for queued steering and follow-up messages across an interrupt sequence:
-  - messages queued before an interrupt must remain before messages queued during the interrupt;
-  - no non-interrupt queued message should be consumed by the interrupt turn ahead of older held messages;
-  - `clearQueue()` during an interrupt must clear visible queues, core queues, and interrupt-deferred queues.
+    - messages queued before an interrupt must remain before messages queued during the interrupt;
+    - no non-interrupt queued message should be consumed by the interrupt turn ahead of older held messages;
+    - `clearQueue()` during an interrupt must clear visible queues, core queues, and interrupt-deferred queues.
 - Ensure messages queued after a `clearQueue()` during an active interrupt are still preserved and restored normally.
 - Add/update tests for concurrent interrupt notices, queue ordering across interrupt restore, clear-during-interrupt behavior, workflow HiL answer notices, brokered HiL answer notices, and lifecycle steer regressions.
 - Use Bun-only validation commands.
@@ -182,26 +182,26 @@ Use an observer plus serialized priority-delivery pattern:
 - A workflow notification layer observes successful prompt answers and emits one deduplicated `workflows:hil-answer-notice`.
 - Atomic’s extension `sendMessage` API exposes `deliverAs: "interrupt"` for urgent custom messages.
 - `AgentSession` owns interrupt mechanics:
-  - serialize interrupt deliveries;
-  - abort stale streams;
-  - wait for idle;
-  - start immediate custom-message turns;
-  - defer non-interrupt queued messages while an interrupt sequence is active.
+    - serialize interrupt deliveries;
+    - abort stale streams;
+    - wait for idle;
+    - start immediate custom-message turns;
+    - defer non-interrupt queued messages while an interrupt sequence is active.
 - Queue preservation uses session-owned in-memory state instead of hidden local variables so `clearQueue()` and queue UI state stay authoritative.
 
 ### 4.3 Key Components
 
-| Component | Responsibility | Technology Stack | Justification |
-| --------- | -------------- | ---------------- | ------------- |
-| `AgentSession.sendCustomMessage()` | Route extension custom messages by delivery mode, including `"interrupt"` | TypeScript, pi-agent-core wrapper | Central session layer that can abort streams and prompt immediately. |
-| Interrupt delivery promise queue | Serialize interrupt custom messages so only one `agent.prompt()` runs at a time | TypeScript `Promise<void>` chain | Fixes concurrent interrupt race against `pi-agent-core` active-run guard. |
-| Active interrupt queue hold | Defer pre-existing and during-interrupt steer/follow-up messages until all pending interrupts finish | TypeScript private state | Preserves queue order and prevents interrupt turns from consuming newer queued messages first. |
-| `AgentSession.clearQueue()` | Clear visible UI queues, `pi-agent-core` queues, and active interrupt-held queues | TypeScript | User intent to clear queues must remain authoritative during interrupts. |
-| `CustomMessageDelivery` type | Public delivery union: `"steer" \| "followUp" \| "nextTurn" \| "interrupt"` | TypeScript interfaces | Keeps extension API explicit and type-safe. |
-| `hil-answer-notifications.ts` | Detect successful HiL answers and emit interrupt notices | `packages/workflows` TypeScript | Avoids duplicating notification logic across UI surfaces. |
-| `StageUiBroker.onStagePromptResolved()` | Notify only successful brokered prompt answers | TypeScript listener set | Store diffs alone cannot distinguish broker resolve from reject/abort cleanup. |
-| `workflows:hil-answer-notice` renderer | Display metadata-only answer notice in chat transcript | Existing custom message renderer API | Makes interrupt events visible/debuggable without exposing raw answers. |
-| Bun tests | Lock interrupt, queue ordering, workflow notification, and lifecycle regression behavior | Bun + Vitest where package-local tests already use Vitest | Required by repo guidance and issue acceptance criteria. |
+| Component                               | Responsibility                                                                                       | Technology Stack                                          | Justification                                                                                  |
+| --------------------------------------- | ---------------------------------------------------------------------------------------------------- | --------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `AgentSession.sendCustomMessage()`      | Route extension custom messages by delivery mode, including `"interrupt"`                            | TypeScript, pi-agent-core wrapper                         | Central session layer that can abort streams and prompt immediately.                           |
+| Interrupt delivery promise queue        | Serialize interrupt custom messages so only one `agent.prompt()` runs at a time                      | TypeScript `Promise<void>` chain                          | Fixes concurrent interrupt race against `pi-agent-core` active-run guard.                      |
+| Active interrupt queue hold             | Defer pre-existing and during-interrupt steer/follow-up messages until all pending interrupts finish | TypeScript private state                                  | Preserves queue order and prevents interrupt turns from consuming newer queued messages first. |
+| `AgentSession.clearQueue()`             | Clear visible UI queues, `pi-agent-core` queues, and active interrupt-held queues                    | TypeScript                                                | User intent to clear queues must remain authoritative during interrupts.                       |
+| `CustomMessageDelivery` type            | Public delivery union: `"steer" \| "followUp" \| "nextTurn" \| "interrupt"`                          | TypeScript interfaces                                     | Keeps extension API explicit and type-safe.                                                    |
+| `hil-answer-notifications.ts`           | Detect successful HiL answers and emit interrupt notices                                             | `packages/workflows` TypeScript                           | Avoids duplicating notification logic across UI surfaces.                                      |
+| `StageUiBroker.onStagePromptResolved()` | Notify only successful brokered prompt answers                                                       | TypeScript listener set                                   | Store diffs alone cannot distinguish broker resolve from reject/abort cleanup.                 |
+| `workflows:hil-answer-notice` renderer  | Display metadata-only answer notice in chat transcript                                               | Existing custom message renderer API                      | Makes interrupt events visible/debuggable without exposing raw answers.                        |
+| Bun tests                               | Lock interrupt, queue ordering, workflow notification, and lifecycle regression behavior             | Bun + Vitest where package-local tests already use Vitest | Required by repo guidance and issue acceptance criteria.                                       |
 
 ## 5. Detailed Design
 
@@ -211,10 +211,10 @@ The extension custom-message delivery API remains additive and source-compatible
 
 ```ts
 export type CustomMessageDelivery =
-  | "steer"
-  | "followUp"
-  | "nextTurn"
-  | "interrupt";
+    | "steer"
+    | "followUp"
+    | "nextTurn"
+    | "interrupt";
 ```
 
 Concrete references:
@@ -227,12 +227,12 @@ Concrete references:
 `deliverAs: "interrupt"` contract:
 
 - With `triggerTurn: true`:
-  1. enqueue the interrupt delivery behind any in-flight interrupt delivery;
-  2. ensure non-interrupt queued messages are deferred into session-owned interrupt queue state;
-  3. abort an active stale run, if any;
-  4. wait for idle;
-  5. call `agent.prompt(customMessage)` only while no other interrupt delivery is active;
-  6. after the last pending interrupt delivery finishes, restore deferred non-interrupt queues in FIFO order.
+    1. enqueue the interrupt delivery behind any in-flight interrupt delivery;
+    2. ensure non-interrupt queued messages are deferred into session-owned interrupt queue state;
+    3. abort an active stale run, if any;
+    4. wait for idle;
+    5. call `agent.prompt(customMessage)` only while no other interrupt delivery is active;
+    6. after the last pending interrupt delivery finishes, restore deferred non-interrupt queues in FIFO order.
 - With `triggerTurn: true` while idle: start a custom-message turn immediately, still respecting serialized interrupt delivery and queue deferral.
 - Without `triggerTurn: true`: do not interrupt; retain existing non-trigger custom-message behavior.
 
@@ -240,17 +240,23 @@ Workflow notice details remain metadata-only:
 
 ```ts
 interface WorkflowHilAnswerNoticeDetails {
-  readonly kind: "hil_answered";
-  readonly scope: "stage";
-  readonly runId: string;
-  readonly workflowName: string;
-  readonly stageId: string;
-  readonly stageName?: string;
-  readonly promptId?: string;
-  readonly promptKind?: "input" | "confirm" | "select" | "editor" | "ask_user_question" | "readiness_gate";
-  readonly answeredAt: number;
-  readonly answerAvailable: true;
-  readonly answerIncluded: false;
+    readonly kind: "hil_answered";
+    readonly scope: "stage";
+    readonly runId: string;
+    readonly workflowName: string;
+    readonly stageId: string;
+    readonly stageName?: string;
+    readonly promptId?: string;
+    readonly promptKind?:
+        | "input"
+        | "confirm"
+        | "select"
+        | "editor"
+        | "ask_user_question"
+        | "readiness_gate";
+    readonly answeredAt: number;
+    readonly answerAvailable: true;
+    readonly answerIncluded: false;
 }
 ```
 
@@ -269,9 +275,9 @@ Replace the current local `HeldInterruptQueues` model with mutable, session-owne
 
 ```ts
 interface InterruptQueueHold {
-  readonly steering: AgentMessage[];
-  readonly followUp: AgentMessage[];
-  restored: boolean;
+    readonly steering: AgentMessage[];
+    readonly followUp: AgentMessage[];
+    restored: boolean;
 }
 ```
 
@@ -296,22 +302,22 @@ Simple prompt observer:
 1. Seed `previousSnapshot = store.snapshot()`.
 2. Subscribe to `store.subscribe()`.
 3. For each previous stage with `pendingPrompt`:
-   - find the matching current stage;
-   - require current `pendingPrompt === undefined`;
-   - require current `promptAnswerState === "available"`;
-   - emit one `hil_answered` notice.
+    - find the matching current stage;
+    - require current `pendingPrompt === undefined`;
+    - require current `promptAnswerState === "available"`;
+    - emit one `hil_answered` notice.
 4. Dedupe by `runId + stageId + promptKind + promptId`.
 5. Send:
 
 ```ts
 sendMessage(
-  {
-    customType: "workflows:hil-answer-notice",
-    content,
-    display: true,
-    details,
-  },
-  { triggerTurn: true, deliverAs: "interrupt" },
+    {
+        customType: "workflows:hil-answer-notice",
+        content,
+        display: true,
+        details,
+    },
+    { triggerTurn: true, deliverAs: "interrupt" },
 );
 ```
 
@@ -491,16 +497,16 @@ Required invariants:
 
 ## 6. Alternatives Considered
 
-| Option | Pros | Cons | Reason for Rejection |
-| ------ | ---- | ---- | -------------------- |
-| Reuse steer delivery for HiL answers | Minimal code; consistent with lifecycle notices | Waits for next tool-call/agent-loop boundary; stale stream can continue | Rejected because issue #1137 explicitly requires immediate interruption. |
-| Emit answer notices only from `/workflow send` | Simple call-site implementation | Misses stage chat, custom UI answers, and future direct store/broker resolution paths | Rejected because the behavior should apply whenever a HiL prompt is answered. |
-| Include raw HiL answer in interrupt payload | Agent immediately sees the answer content | Leaks potentially sensitive answers into main chat/model context | Rejected for this iteration; metadata-only notice is safer. |
-| Keep current local `HeldInterruptQueues` drain/restore | Smallest change from current branch | Races concurrent interrupts and restores older held messages behind newer queued messages | Rejected due reviewer P2 findings. |
-| Serialize interrupts but keep during-interrupt messages in `pi-agent-core` | Fixes active-run guard race | Still allows newer queued messages to be consumed before older held messages | Rejected because it does not solve queue ordering. |
-| Clear all queues automatically on interrupt | Avoids restore complexity | Drops user-authored queued messages without explicit user intent | Rejected as data loss. |
-| Add prepend support or native interrupt to `@earendil-works/pi-agent-core` | Cleaner primitive in the lower-level agent | External dependency coordination and larger scope | Deferred; wrapper-level `AgentSession` implementation is sufficient for issue #1137. |
-| Restore held queues between serialized interrupt notices | Simpler lifecycle per notice | Restored user queues can be consumed before later interrupt notices, reducing interrupt priority | Rejected; restore only after the interrupt batch drains. |
+| Option                                                                     | Pros                                            | Cons                                                                                             | Reason for Rejection                                                                 |
+| -------------------------------------------------------------------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------ |
+| Reuse steer delivery for HiL answers                                       | Minimal code; consistent with lifecycle notices | Waits for next tool-call/agent-loop boundary; stale stream can continue                          | Rejected because issue #1137 explicitly requires immediate interruption.             |
+| Emit answer notices only from `/workflow send`                             | Simple call-site implementation                 | Misses stage chat, custom UI answers, and future direct store/broker resolution paths            | Rejected because the behavior should apply whenever a HiL prompt is answered.        |
+| Include raw HiL answer in interrupt payload                                | Agent immediately sees the answer content       | Leaks potentially sensitive answers into main chat/model context                                 | Rejected for this iteration; metadata-only notice is safer.                          |
+| Keep current local `HeldInterruptQueues` drain/restore                     | Smallest change from current branch             | Races concurrent interrupts and restores older held messages behind newer queued messages        | Rejected due reviewer P2 findings.                                                   |
+| Serialize interrupts but keep during-interrupt messages in `pi-agent-core` | Fixes active-run guard race                     | Still allows newer queued messages to be consumed before older held messages                     | Rejected because it does not solve queue ordering.                                   |
+| Clear all queues automatically on interrupt                                | Avoids restore complexity                       | Drops user-authored queued messages without explicit user intent                                 | Rejected as data loss.                                                               |
+| Add prepend support or native interrupt to `@earendil-works/pi-agent-core` | Cleaner primitive in the lower-level agent      | External dependency coordination and larger scope                                                | Deferred; wrapper-level `AgentSession` implementation is sufficient for issue #1137. |
+| Restore held queues between serialized interrupt notices                   | Simpler lifecycle per notice                    | Restored user queues can be consumed before later interrupt notices, reducing interrupt priority | Rejected; restore only after the interrupt batch drains.                             |
 
 ## 7. Cross-Cutting Concerns
 
@@ -519,9 +525,9 @@ Required invariants:
 - `hil-answer-notifications.ts` logs send failures only when `ATOMIC_WORKFLOW_DEBUG=1`, matching existing lifecycle-notification style.
 - Queue visibility remains through existing `queue_update` events from `AgentSession._emitQueueUpdate()`.
 - New tests should observe:
-  - both concurrent interrupt notices reach the model;
-  - no “Agent is already processing...” failure is emitted for serialized interrupt notices;
-  - queue UI arrays and `pi-agent-core` delivery order match after interrupt restoration.
+    - both concurrent interrupt notices reach the model;
+    - no “Agent is already processing...” failure is emitted for serialized interrupt notices;
+    - queue UI arrays and `pi-agent-core` delivery order match after interrupt restoration.
 
 ### 7.3 Scalability and Capacity Planning
 
@@ -539,11 +545,11 @@ Required invariants:
 - Continue implementation in the requested reusable worktree/branch: `../atomic-issue-1137` on `fix/1137-workflow-hil-answer-interrupt`.
 - Do not publish, release, or create a tag.
 - Keep changelog entries under:
-  - `packages/workflows/CHANGELOG.md`;
-  - `packages/coding-agent/CHANGELOG.md` if coding-agent behavior is user-visible enough to warrant a note.
+    - `packages/workflows/CHANGELOG.md`;
+    - `packages/coding-agent/CHANGELOG.md` if coding-agent behavior is user-visible enough to warrant a note.
 - Keep documentation updates in:
-  - `packages/workflows/README.md`;
-  - `packages/coding-agent/docs/extensions.md` if the interrupt delivery contract is clarified.
+    - `packages/workflows/README.md`;
+    - `packages/coding-agent/docs/extensions.md` if the interrupt delivery contract is clarified.
 - Commit and push the branch; create or update a PR if appropriate after validation.
 
 ### 8.2 Data Migration Plan
@@ -566,32 +572,32 @@ Existing workflow snapshots, session entries, and prompt-answer ledgers remain c
 Required tests:
 
 1. `test/unit/workflow-hil-answer-notifications.test.ts`
-   - simple `PendingPrompt` answer emits one `workflows:hil-answer-notice`;
-   - brokered `StageInputRequest` answer emits one notice;
-   - delivery options are `{ triggerTurn: true, deliverAs: "interrupt" }`;
-   - raw answer is absent from content/details;
-   - duplicate store updates do not duplicate notices.
+    - simple `PendingPrompt` answer emits one `workflows:hil-answer-notice`;
+    - brokered `StageInputRequest` answer emits one notice;
+    - delivery options are `{ triggerTurn: true, deliverAs: "interrupt" }`;
+    - raw answer is absent from content/details;
+    - duplicate store updates do not duplicate notices.
 
 2. `test/unit/stage-ui-broker.test.ts`
-   - `answerStagePrompt()` notifies resolved listeners once;
-   - abort/reject does not notify resolved listeners;
-   - listener unsubscribe works.
+    - `answerStagePrompt()` notifies resolved listeners once;
+    - abort/reject does not notify resolved listeners;
+    - listener unsubscribe works.
 
 3. `test/unit/workflow-lifecycle-notifications.test.ts`
-   - completed/failed/awaiting-input lifecycle notices remain steer-delivered.
+    - completed/failed/awaiting-input lifecycle notices remain steer-delivered.
 
 4. `packages/coding-agent/test/agent-session-concurrent.test.ts`
-   - interrupt custom messages abort a streaming turn and start a custom-message turn immediately;
-   - interrupt delivery does not call `agent.clearAllQueues()` by itself;
-   - pre-existing queued messages remain preserved when the user does not clear them;
-   - `clearQueue()` while an interrupt is active clears held queues and prevents stale restoration;
-   - **new:** two interrupt custom messages sent during the same active stream are delivered serially and both reach the model;
-   - **new:** queued message `A` before interrupt and queued message `B` during interrupt are delivered as `A, B`, not `B, A`;
-   - **new:** if `clearQueue()` runs during interrupt and then message `C` is queued before interrupt completion, only `C` is restored.
+    - interrupt custom messages abort a streaming turn and start a custom-message turn immediately;
+    - interrupt delivery does not call `agent.clearAllQueues()` by itself;
+    - pre-existing queued messages remain preserved when the user does not clear them;
+    - `clearQueue()` while an interrupt is active clears held queues and prevents stale restoration;
+    - **new:** two interrupt custom messages sent during the same active stream are delivered serially and both reach the model;
+    - **new:** queued message `A` before interrupt and queued message `B` during interrupt are delivered as `A, B`, not `B, A`;
+    - **new:** if `clearQueue()` runs during interrupt and then message `C` is queued before interrupt completion, only `C` is restored.
 
 5. `packages/coding-agent/test/suite/agent-session-queue.test.ts`
-   - existing steering/follow-up order tests remain green;
-   - add a focused interrupt ordering regression here if the suite harness is better suited than `agent-session-concurrent.test.ts`.
+    - existing steering/follow-up order tests remain green;
+    - add a focused interrupt ordering regression here if the suite harness is better suited than `agent-session-concurrent.test.ts`.
 
 Recommended validation commands, Bun-only:
 

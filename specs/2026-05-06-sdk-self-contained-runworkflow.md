@@ -1,11 +1,11 @@
 # Self-Contained `runWorkflow()` — SDK Reuses Atomic's Per-Platform Binaries via `optionalDependencies`
 
-| Document Metadata      | Details         |
-| ---------------------- | --------------- |
-| Author(s)              | Alex Lavaee     |
+| Document Metadata      | Details                                                |
+| ---------------------- | ------------------------------------------------------ |
+| Author(s)              | Alex Lavaee                                            |
 | Status                 | Superseded by §11 — implementation diverges from §1–§9 |
-| Team / Owner           | flora131/atomic |
-| Created / Last Updated | 2026-05-06      |
+| Team / Owner           | bastani/atomic                                         |
+| Created / Last Updated | 2026-05-06                                             |
 
 > **Note (2026-05-06 evening):** Sections 1–9 below describe the original
 > "reuse atomic's per-platform binaries" approach. During implementation
@@ -48,6 +48,7 @@ Two places duplicate the dispatcher today:
 - `packages/atomic-sdk/src/cli.ts:32` registers the **same** commands for SDK-only consumers.
 
 The SDK's `lib/self-exec.ts:100` (`resolveSdkCliPath()`) decides which dispatcher to spawn:
+
 - Override → verbatim.
 - Compiled-binary runtime → `process.execPath`.
 - Else → `import.meta.resolve("@bastani/atomic-sdk/cli")`.
@@ -111,11 +112,11 @@ That's the entire encapsulation — override or per-platform `optionalDependency
 ### 3.2 Non-Goals (Out of Scope)
 
 - **Backwards compatibility with the previous SDK shape.** No alias, no deprecation, no transitional re-export.
-  - `resolveSdkCliPath()` is removed, not soft-deprecated.
-  - The `process.execPath` fallback in `executor.ts:584` and `tmux.ts:219` is removed, not gated behind an env-var or feature flag.
-  - `packages/atomic-sdk/src/cli.ts` is deleted; `package.json#exports."./cli"` is dropped — no compat re-export to a shim, no "still works if you import it" branch.
-  - `isCompiledBinaryRuntime()`'s "compiled binary → `process.execPath`" branch is deleted (the function itself stays for `runtime-assets.ts`'s bunfs-detection use, which is unrelated).
-  - SDK consumers on the previous version stay on it or upgrade everything at once. Pre-1.0 minor bump is the version envelope.
+    - `resolveSdkCliPath()` is removed, not soft-deprecated.
+    - The `process.execPath` fallback in `executor.ts:584` and `tmux.ts:219` is removed, not gated behind an env-var or feature flag.
+    - `packages/atomic-sdk/src/cli.ts` is deleted; `package.json#exports."./cli"` is dropped — no compat re-export to a shim, no "still works if you import it" branch.
+    - `isCompiledBinaryRuntime()`'s "compiled binary → `process.execPath`" branch is deleted (the function itself stays for `runtime-assets.ts`'s bunfs-detection use, which is unrelated).
+    - SDK consumers on the previous version stay on it or upgrade everything at once. Pre-1.0 minor bump is the version envelope.
 - **Publishing a separate `@bastani/atomic-sdk-{platform}-{arch}` family.** Avoided by construction.
 - **Inline JS-dispatcher materialization**, env-var atomic-host markers, host-bun probing as an end-user fallback. All obviated by the optional-binary approach.
 - **Removing `pathToAtomicExecutable`.** Stays as the documented escape hatch.
@@ -190,17 +191,17 @@ flowchart TB
 // packages/atomic-sdk/src/lib/self-exec.ts (rewrite)
 
 export interface ResolveDispatcherOptions {
-  override?: string;
-  /** Test seam for `require.resolve`. */
-  resolver?: (specifier: string) => string;
-  platform?: NodeJS.Platform;
-  arch?: string;
+    override?: string;
+    /** Test seam for `require.resolve`. */
+    resolver?: (specifier: string) => string;
+    platform?: NodeJS.Platform;
+    arch?: string;
 }
 
 export type Dispatcher =
-  | { kind: "override-binary";    binary: string }
-  | { kind: "atomic-binary";      binary: string }
-  | { kind: "workspace-dev";      runtime: string; cliPath: string };
+    | { kind: "override-binary"; binary: string }
+    | { kind: "atomic-binary"; binary: string }
+    | { kind: "workspace-dev"; runtime: string; cliPath: string };
 
 export function resolveDispatcher(opts?: ResolveDispatcherOptions): Dispatcher;
 // throws NoDispatcherError if none of the three fit
@@ -210,43 +211,50 @@ export function resolveDispatcher(opts?: ResolveDispatcherOptions): Dispatcher;
 
 ```ts
 function resolveDispatcher(opts) {
-  const override = opts?.override;
-  if (override && override.length > 0) {
-    return { kind: "override-binary", binary: override };
-  }
+    const override = opts?.override;
+    if (override && override.length > 0) {
+        return { kind: "override-binary", binary: override };
+    }
 
-  const platform = opts?.platform ?? process.platform;
-  const arch = opts?.arch ?? process.arch;
-  const ext = platform === "win32" ? ".exe" : "";
+    const platform = opts?.platform ?? process.platform;
+    const arch = opts?.arch ?? process.arch;
+    const ext = platform === "win32" ? ".exe" : "";
 
-  const pkgCandidates = platform === "linux"
-    ? [`@bastani/atomic-linux-${arch}-musl`,
-       `@bastani/atomic-linux-${arch}`]
-    : [`@bastani/atomic-${platform}-${arch}`];
+    const pkgCandidates =
+        platform === "linux"
+            ? [
+                  `@bastani/atomic-linux-${arch}-musl`,
+                  `@bastani/atomic-linux-${arch}`,
+              ]
+            : [`@bastani/atomic-${platform}-${arch}`];
 
-  const require_ = opts?.resolver
-    ? { resolve: opts.resolver }
-    : createRequire(import.meta.url);
+    const require_ = opts?.resolver
+        ? { resolve: opts.resolver }
+        : createRequire(import.meta.url);
 
-  for (const pkg of pkgCandidates) {
+    for (const pkg of pkgCandidates) {
+        try {
+            const binary = require_.resolve(`${pkg}/bin/atomic${ext}`);
+            return { kind: "atomic-binary", binary };
+        } catch {
+            /* try next */
+        }
+    }
+
+    // Workspace dev fallback: resolve the atomic package's TS source and spawn
+    // via host bun. Reachable only in monorepo dev or `bun link` workflows
+    // where no @bastani/atomic-{platform}-{arch} optional dep is installed.
+    // Production installs always have the binary.
     try {
-      const binary = require_.resolve(`${pkg}/bin/atomic${ext}`);
-      return { kind: "atomic-binary", binary };
-    } catch { /* try next */ }
-  }
+        const cliPath = fileURLToPath(import.meta.resolve("@bastani/atomic"));
+        return { kind: "workspace-dev", runtime: process.execPath, cliPath };
+    } catch {
+        /* no workspace either */
+    }
 
-  // Workspace dev fallback: resolve the atomic package's TS source and spawn
-  // via host bun. Reachable only in monorepo dev or `bun link` workflows
-  // where no @bastani/atomic-{platform}-{arch} optional dep is installed.
-  // Production installs always have the binary.
-  try {
-    const cliPath = fileURLToPath(import.meta.resolve("@bastani/atomic"));
-    return { kind: "workspace-dev", runtime: process.execPath, cliPath };
-  } catch { /* no workspace either */ }
-
-  throw new NoDispatcherError({
-    searchedFor: [...pkgCandidates, "@bastani/atomic (workspace)"],
-  });
+    throw new NoDispatcherError({
+        searchedFor: [...pkgCandidates, "@bastani/atomic (workspace)"],
+    });
 }
 ```
 
@@ -254,18 +262,18 @@ function resolveDispatcher(opts) {
 
 ```json
 {
-  "name": "@bastani/atomic-sdk",
-  "version": "X.Y.Z",
-  "optionalDependencies": {
-    "@bastani/atomic-linux-x64":          "X.Y.Z",
-    "@bastani/atomic-linux-x64-musl":     "X.Y.Z",
-    "@bastani/atomic-linux-arm64":        "X.Y.Z",
-    "@bastani/atomic-linux-arm64-musl":   "X.Y.Z",
-    "@bastani/atomic-darwin-x64":         "X.Y.Z",
-    "@bastani/atomic-darwin-arm64":       "X.Y.Z",
-    "@bastani/atomic-win32-x64":          "X.Y.Z",
-    "@bastani/atomic-win32-arm64":        "X.Y.Z"
-  }
+    "name": "@bastani/atomic-sdk",
+    "version": "X.Y.Z",
+    "optionalDependencies": {
+        "@bastani/atomic-linux-x64": "X.Y.Z",
+        "@bastani/atomic-linux-x64-musl": "X.Y.Z",
+        "@bastani/atomic-linux-arm64": "X.Y.Z",
+        "@bastani/atomic-linux-arm64-musl": "X.Y.Z",
+        "@bastani/atomic-darwin-x64": "X.Y.Z",
+        "@bastani/atomic-darwin-arm64": "X.Y.Z",
+        "@bastani/atomic-win32-x64": "X.Y.Z",
+        "@bastani/atomic-win32-arm64": "X.Y.Z"
+    }
 }
 ```
 
@@ -279,14 +287,17 @@ The `./cli` entrypoint is **removed** from `exports` (not aliased to anything), 
 
 ```ts
 // packages/atomic/src/lib/run-workflow-with-self.ts
-import { runWorkflow, type RunWorkflowOptions } from "@bastani/atomic-sdk/workflows";
+import {
+    runWorkflow,
+    type RunWorkflowOptions,
+} from "@bastani/atomic-sdk/workflows";
 
 export function runWorkflowWithSelf(
-  opts: Omit<RunWorkflowOptions, "pathToAtomicExecutable">,
+    opts: Omit<RunWorkflowOptions, "pathToAtomicExecutable">,
 ) {
-  // The compiled atomic binary IS the dispatcher; reuse it instead of
-  // letting the SDK resolve a sibling @bastani/atomic-{platform}-{arch}.
-  return runWorkflow({ ...opts, pathToAtomicExecutable: process.execPath });
+    // The compiled atomic binary IS the dispatcher; reuse it instead of
+    // letting the SDK resolve a sibling @bastani/atomic-{platform}-{arch}.
+    return runWorkflow({ ...opts, pathToAtomicExecutable: process.execPath });
 }
 ```
 
@@ -325,19 +336,19 @@ A thin adapter inside `buildSelfExecCommand` (or inline at the call site) handle
 // packages/atomic-sdk/src/errors.ts (additions)
 
 export class NoDispatcherError extends Error {
-  readonly name = "NoDispatcherError";
-  readonly searchedFor: ReadonlyArray<string>;
-  constructor(opts: { searchedFor: ReadonlyArray<string> }) {
-    super(
-      `runWorkflow() could not locate the atomic CLI binary.\n` +
-      `Searched: ${opts.searchedFor.join(", ")}.\n` +
-      `Reinstall @bastani/atomic-sdk so the matching ` +
-      `@bastani/atomic-${process.platform}-${process.arch} optional ` +
-      `dependency is present, or pass \`pathToAtomicExecutable\` to ` +
-      `runWorkflow() pointing at an atomic binary.`,
-    );
-    this.searchedFor = opts.searchedFor;
-  }
+    readonly name = "NoDispatcherError";
+    readonly searchedFor: ReadonlyArray<string>;
+    constructor(opts: { searchedFor: ReadonlyArray<string> }) {
+        super(
+            `runWorkflow() could not locate the atomic CLI binary.\n` +
+                `Searched: ${opts.searchedFor.join(", ")}.\n` +
+                `Reinstall @bastani/atomic-sdk so the matching ` +
+                `@bastani/atomic-${process.platform}-${process.arch} optional ` +
+                `dependency is present, or pass \`pathToAtomicExecutable\` to ` +
+                `runWorkflow() pointing at an atomic binary.`,
+        );
+        this.searchedFor = opts.searchedFor;
+    }
 }
 ```
 
@@ -346,10 +357,10 @@ export class NoDispatcherError extends Error {
 ### 5.8 Test Plan
 
 - `self-exec.test.ts` — rewrite against `resolveDispatcher`:
-  - Override (absolute path, bare command name, empty string).
-  - `atomic-binary` resolution on every `{platform, arch}`. Synthetic `resolver` mock returns a path for the matching package; throws otherwise. Linux probes musl-first.
-  - `workspace-dev` fallback when no binary package matches but `import.meta.resolve("@bastani/atomic")` succeeds.
-  - `NoDispatcherError` when nothing matches; `searchedFor` array populated.
+    - Override (absolute path, bare command name, empty string).
+    - `atomic-binary` resolution on every `{platform, arch}`. Synthetic `resolver` mock returns a path for the matching package; throws otherwise. Linux probes musl-first.
+    - `workspace-dev` fallback when no binary package matches but `import.meta.resolve("@bastani/atomic")` succeeds.
+    - `NoDispatcherError` when nothing matches; `searchedFor` array populated.
 - `executor.test.ts` (extend) — integration: with the resolver mocked to throw, `runWorkflow` rejects **before** any tmux command runs.
 - `orchestrator-entry.test.ts` (existing, kept) — still validates atomic's compiled binary handles `_orchestrator-entry` end-to-end.
 - **`tests/fixtures/sdk-compiled-consumer/` (new, Phase 3)** — see §8.2.
@@ -384,9 +395,9 @@ export class NoDispatcherError extends Error {
 - **Dev / monorepo mode**: `workspace-dev` branch resolves atomic's TS source via workspace linking (`@bastani/atomic` is a workspace package). Spawns `bun packages/atomic/src/cli.ts _orchestrator-entry ...`. Works without any binary build.
 - **Third-party SDK consumers running under bun (not compiled)**: optional binary auto-installed; SDK spawns it.
 - **Third-party SDK consumers compiled with `bun build --compile`**: their dev machine had `node_modules/@bastani/atomic-{platform}-{arch}/bin/atomic` installed. The compiled binary's `require.resolve` walks the host filesystem at runtime to find the same package — so the consumer's distribution must include the atomic binary alongside their own. Two patterns:
-  1. **Co-distribute**: include the matching `@bastani/atomic-{platform}-{arch}` directory next to the consumer's binary. Documented in the SDK README. Same constraint Claude Agent SDK consumers face.
-  2. **Postinstall download**: a release script that fetches the atomic binary from GitHub Releases and bundles it.
-  Phase 3's fixture validates pattern (1) explicitly.
+    1. **Co-distribute**: include the matching `@bastani/atomic-{platform}-{arch}` directory next to the consumer's binary. Documented in the SDK README. Same constraint Claude Agent SDK consumers face.
+    2. **Postinstall download**: a release script that fetches the atomic binary from GitHub Releases and bundles it.
+       Phase 3's fixture validates pattern (1) explicitly.
 - **Per-platform package count**: 8 atomic binaries + 1 atomic wrapper + 1 SDK wrapper = **10 packages per release** (vs 16 if the SDK shipped its own binaries — Option C). Adding musl variants is the net delta vs the package-split spec's current 6.
 
 ## 8. Migration, Rollout, and Testing
@@ -396,39 +407,40 @@ export class NoDispatcherError extends Error {
 **Sequencing note:** the phases below are implementation order, not "ramp the new path while leaving the old path live." Each phase ends with the old code physically removed, not deprecated. There is no compat dual-path inside the SDK at any point.
 
 - **Phase 1 — Resolver rewrite + atomic CLI integration. Old path deleted at the end of this phase.**
-  - Add `resolveDispatcher()` and `errors.ts → NoDispatcherError`.
-  - Migrate `executor.ts` and `tmux.ts` to consume the resolver. **Delete** the `pathToAtomicExecutable ? cliPath : process.execPath` ternaries at the same time — no fallback retained.
-  - Add `runWorkflowWithSelf()` in atomic; migrate atomic's `runWorkflow` callers in lockstep.
-  - **Delete** `lib/self-exec.ts → resolveSdkCliPath` and rewrite its tests against `resolveDispatcher`. The PR that adds `resolveDispatcher` is the same PR that removes `resolveSdkCliPath` — they do not coexist on `main`.
-  - Verify atomic's compiled binary still self-execs via the override path (the only way it should now).
-  - Verify dev mode works via `workspace-dev` fallback.
+    - Add `resolveDispatcher()` and `errors.ts → NoDispatcherError`.
+    - Migrate `executor.ts` and `tmux.ts` to consume the resolver. **Delete** the `pathToAtomicExecutable ? cliPath : process.execPath` ternaries at the same time — no fallback retained.
+    - Add `runWorkflowWithSelf()` in atomic; migrate atomic's `runWorkflow` callers in lockstep.
+    - **Delete** `lib/self-exec.ts → resolveSdkCliPath` and rewrite its tests against `resolveDispatcher`. The PR that adds `resolveDispatcher` is the same PR that removes `resolveSdkCliPath` — they do not coexist on `main`.
+    - Verify atomic's compiled binary still self-execs via the override path (the only way it should now).
+    - Verify dev mode works via `workspace-dev` fallback.
 
 - **Phase 2 — SDK `optionalDependencies` + delete duplicate dispatcher.**
-  - Add `optionalDependencies` block to `packages/atomic-sdk/package.json`. Lockstep version with atomic.
-  - **Delete** `packages/atomic-sdk/src/cli.ts` and remove `"./cli"` from `exports` in the same PR. No alias, no re-export, no compat shim. Any external import of `@bastani/atomic-sdk/cli` will fail at resolve time post-merge — that's the intended surface.
-  - Add musl variants to atomic's binary publish matrix in the package-split spec's CI workflow. Two new build targets: `bun-linux-x64-musl`, `bun-linux-arm64-musl`.
-  - Dry-run via a `0.7.0-rc.0` prerelease.
+    - Add `optionalDependencies` block to `packages/atomic-sdk/package.json`. Lockstep version with atomic.
+    - **Delete** `packages/atomic-sdk/src/cli.ts` and remove `"./cli"` from `exports` in the same PR. No alias, no re-export, no compat shim. Any external import of `@bastani/atomic-sdk/cli` will fail at resolve time post-merge — that's the intended surface.
+    - Add musl variants to atomic's binary publish matrix in the package-split spec's CI workflow. Two new build targets: `bun-linux-x64-musl`, `bun-linux-arm64-musl`.
+    - Dry-run via a `0.7.0-rc.0` prerelease.
 
 - **Phase 3 — Third-party-compiled validation via real fixture.**
-  - Create `tests/fixtures/sdk-compiled-consumer/` — a minimal SDK consumer (`my-app.ts`) that imports `runWorkflow` from `@bastani/atomic-sdk/workflows`, registers a trivial workflow, exposes a `greet` Commander subcommand. Pinned to the prerelease SDK version.
-  - Build script: `bun build --compile --outfile dist/my-app src/cli.ts`. Produces a self-contained binary.
-  - **Smoke matrix per target** (Linux x64/arm64 ± musl, Darwin x64/arm64, Win32 x64/arm64):
-    1. `bun install` the fixture (pulls SDK + matching atomic binary via `optionalDependencies`).
-    2. Compile the fixture.
-    3. Copy the matching `node_modules/@bastani/atomic-{platform}-{arch}` directory next to the compiled fixture binary (the co-distribute pattern).
-    4. Run the fixture binary in a clean PWD. Assert `runWorkflow` succeeds, the orchestrator pane comes up, and the workflow runs to completion.
-    5. Repeat with `pathToAtomicExecutable` set to a known-good atomic binary path; assert `dispatcher.kind === "override-binary"`.
-    6. Force-remove the colocated atomic binary; assert `runWorkflow` rejects with `NoDispatcherError` carrying the expected `searchedFor` array. Tmux session must NOT be created.
-  - **`require.resolve` empirical verification**: this matrix directly answers the open question about how `createRequire(import.meta.url).resolve("@bastani/atomic-{platform}-{arch}/bin/atomic")` behaves inside a `/$bunfs/...`-rooted compiled binary. Pattern (1) above proves it walks to the host filesystem; if a target fails this assertion, we either ship a `BUN_BUNFS_DOWNLINK`-style workaround or document the requirement to colocate via a different mechanism.
+    - Create `tests/fixtures/sdk-compiled-consumer/` — a minimal SDK consumer (`my-app.ts`) that imports `runWorkflow` from `@bastani/atomic-sdk/workflows`, registers a trivial workflow, exposes a `greet` Commander subcommand. Pinned to the prerelease SDK version.
+    - Build script: `bun build --compile --outfile dist/my-app src/cli.ts`. Produces a self-contained binary.
+    - **Smoke matrix per target** (Linux x64/arm64 ± musl, Darwin x64/arm64, Win32 x64/arm64):
+        1. `bun install` the fixture (pulls SDK + matching atomic binary via `optionalDependencies`).
+        2. Compile the fixture.
+        3. Copy the matching `node_modules/@bastani/atomic-{platform}-{arch}` directory next to the compiled fixture binary (the co-distribute pattern).
+        4. Run the fixture binary in a clean PWD. Assert `runWorkflow` succeeds, the orchestrator pane comes up, and the workflow runs to completion.
+        5. Repeat with `pathToAtomicExecutable` set to a known-good atomic binary path; assert `dispatcher.kind === "override-binary"`.
+        6. Force-remove the colocated atomic binary; assert `runWorkflow` rejects with `NoDispatcherError` carrying the expected `searchedFor` array. Tmux session must NOT be created.
+    - **`require.resolve` empirical verification**: this matrix directly answers the open question about how `createRequire(import.meta.url).resolve("@bastani/atomic-{platform}-{arch}/bin/atomic")` behaves inside a `/$bunfs/...`-rooted compiled binary. Pattern (1) above proves it walks to the host filesystem; if a target fails this assertion, we either ship a `BUN_BUNFS_DOWNLINK`-style workaround or document the requirement to colocate via a different mechanism.
 
 - **Phase 4 — Documentation + cleanup.**
-  - SDK README "Distribution" section: how to co-distribute the atomic binary with a `bun build --compile`d third-party CLI.
-  - `examples/commander-embed/README.md`: same note.
-  - Delete dead code from `packages/atomic-sdk/src/cli.ts` (already done in Phase 2; this is a cleanup-of-cleanup pass for any references in tests).
+    - SDK README "Distribution" section: how to co-distribute the atomic binary with a `bun build --compile`d third-party CLI.
+    - `examples/commander-embed/README.md`: same note.
+    - Delete dead code from `packages/atomic-sdk/src/cli.ts` (already done in Phase 2; this is a cleanup-of-cleanup pass for any references in tests).
 
 ### 8.2 Cross-Platform CI Test Matrix
 
 Phase 3's fixture is the new test harness. It runs:
+
 - **Pre-publish** (every PR touching `packages/atomic-sdk/**` or `packages/atomic/**`) against `npm pack` tarballs.
 - **Post-publish** against the actually-published prerelease.
 - **Nightly** to catch Bun runtime drift.
@@ -450,7 +462,7 @@ If a single per-platform atomic binary proves broken on a target (e.g., a musl v
 - [x] **Telemetry on resolver-kind** — **resolved: emit `dispatcher.kind`** with three values (`override-binary`, `atomic-binary`, `workspace-dev`).
 - [x] **`require.resolve` in compiled third-party binaries** — **resolved: empirically verified by the Phase 3 fixture matrix.** Assertion (3) of Phase 3 directly tests it on every supported target. Failure on any target gates the release.
 - [ ] **Code signing for atomic's binaries** — inherited from package-split spec; not relitigated here.
-- [ ] **Should `@bastani/atomic` (the wrapper) and `@bastani/atomic-sdk` declare the same `optionalDependencies` independently, or should `@bastani/atomic-sdk` *depend on* `@bastani/atomic` (the wrapper) and inherit them transitively?** Independent declarations keep the install graph simple (the SDK doesn't pull the user-facing `bin: { atomic }` shim into a library consumer's tree). Transitive inheritance dedupes the version-pin list. **Recommendation: independent declarations** — the wrapper's `bin` shim and postinstall would be unwanted on SDK-only consumers.
+- [ ] **Should `@bastani/atomic` (the wrapper) and `@bastani/atomic-sdk` declare the same `optionalDependencies` independently, or should `@bastani/atomic-sdk` _depend on_ `@bastani/atomic` (the wrapper) and inherit them transitively?** Independent declarations keep the install graph simple (the SDK doesn't pull the user-facing `bin: { atomic }` shim into a library consumer's tree). Transitive inheritance dedupes the version-pin list. **Recommendation: independent declarations** — the wrapper's `bin` shim and postinstall would be unwanted on SDK-only consumers.
 
 ## 11. Implementation Notes (corrects §4–§5)
 
@@ -468,18 +480,21 @@ The shipped resolver has only two branches:
 
 ```ts
 type Dispatcher =
-  | { kind: "override-binary"; binary: string }
-  | { kind: "host-bun";        runtime: string; cliPath: string };
+    | { kind: "override-binary"; binary: string }
+    | { kind: "host-bun"; runtime: string; cliPath: string };
 
 function resolveDispatcher(opts) {
-  if (opts?.override) return { kind: "override-binary", binary: opts.override };
+    if (opts?.override)
+        return { kind: "override-binary", binary: opts.override };
 
-  const url = import.meta.resolve("@bastani/atomic-sdk/cli");
-  const cliPath = fileURLToPath(url);
-  if (!isCompiledBinaryRuntime(cliPath)) {
-    return { kind: "host-bun", runtime: process.execPath, cliPath };
-  }
-  throw new NoDispatcherError({ searchedFor: ["@bastani/atomic-sdk/cli (host-bun)"] });
+    const url = import.meta.resolve("@bastani/atomic-sdk/cli");
+    const cliPath = fileURLToPath(url);
+    if (!isCompiledBinaryRuntime(cliPath)) {
+        return { kind: "host-bun", runtime: process.execPath, cliPath };
+    }
+    throw new NoDispatcherError({
+        searchedFor: ["@bastani/atomic-sdk/cli (host-bun)"],
+    });
 }
 ```
 
@@ -516,7 +531,7 @@ compiled CLI's entry point:
 
 ```ts
 import { handleSelfDispatch } from "@bastani/atomic-sdk/dispatcher";
-await handleSelfDispatch();   // intercepts argv[2] === "_orchestrator-entry"
+await handleSelfDispatch(); // intercepts argv[2] === "_orchestrator-entry"
 
 import { Command } from "commander";
 import { runWorkflow } from "@bastani/atomic-sdk/workflows";
@@ -550,11 +565,11 @@ shipping additional binaries.
 
 `tests/fixtures/sdk-compiled-consumer/` exercises both branches:
 
-| Step | Mode | Asserts |
-|---|---|---|
-| 2 | host-bun (`bun src/cli.ts greet`) | `kind=host-bun` resolution, `workflow:launched` |
-| 4 | compiled (`dist/my-app greet`) | `kind=override-binary` (via auto-defaulted `process.execPath`), `workflow:launched` |
-| 5 | compiled, `ATOMIC_DISABLE_DEFAULT_EXEC=1` | `NoDispatcherError` before tmux side-effect |
+| Step | Mode                                      | Asserts                                                                             |
+| ---- | ----------------------------------------- | ----------------------------------------------------------------------------------- |
+| 2    | host-bun (`bun src/cli.ts greet`)         | `kind=host-bun` resolution, `workflow:launched`                                     |
+| 4    | compiled (`dist/my-app greet`)            | `kind=override-binary` (via auto-defaulted `process.execPath`), `workflow:launched` |
+| 5    | compiled, `ATOMIC_DISABLE_DEFAULT_EXEC=1` | `NoDispatcherError` before tmux side-effect                                         |
 
 `.github/workflows/sdk-fixture-smoke.yml` runs the full six-step matrix
 on every PR touching `packages/atomic-sdk/**`, `packages/atomic/**`, or
@@ -581,7 +596,7 @@ import workflow from "./workflow.ts";
 
 const program = new Command("my-app");
 program.command("greet").action(async () => {
-  await runWorkflow({ workflow, inputs: {} });
+    await runWorkflow({ workflow, inputs: {} });
 });
 await program.parseAsync();
 ```
@@ -593,8 +608,8 @@ the option when the caller leaves it unset:
 
 ```ts
 const pathToAtomicExecutable =
-  options.pathToAtomicExecutable
-  ?? (isCompiledBinaryRuntime(import.meta.dir) ? process.execPath : undefined);
+    options.pathToAtomicExecutable ??
+    (isCompiledBinaryRuntime(import.meta.dir) ? process.execPath : undefined);
 ```
 
 `import.meta.dir` of `run.ts` is bunfs-rooted in any compiled host

@@ -117,46 +117,46 @@ Add a `workflows` property at the top level using the MCP-style shape:
 
 ```jsonc
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "Atomic Settings",
-  "type": "object",
-  "properties": {
-    /* … existing version / scm / providers … */
-    "workflows": {
-      "type": "object",
-      "description": "Custom user workflows. Each entry declares an executable command; atomic invokes it once at startup with `_emit-workflow-meta` to discover the compiled WorkflowDefinitions, then invokes it with `_atomic-run` to dispatch. Both behaviors are auto-handled by @bastani/atomic-sdk's argv interceptor — no third-party boilerplate.",
-      "additionalProperties": { "$ref": "#/$defs/customWorkflow" },
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Atomic Settings",
+    "type": "object",
+    "properties": {
+        /* … existing version / scm / providers … */
+        "workflows": {
+            "type": "object",
+            "description": "Custom user workflows. Each entry declares an executable command; atomic invokes it once at startup with `_emit-workflow-meta` to discover the compiled WorkflowDefinitions, then invokes it with `_atomic-run` to dispatch. Both behaviors are auto-handled by @bastani/atomic-sdk's argv interceptor — no third-party boilerplate.",
+            "additionalProperties": { "$ref": "#/$defs/customWorkflow" },
+        },
     },
-  },
-  "$defs": {
-    "customWorkflow": {
-      "type": "object",
-      "required": ["command", "agents"],
-      "properties": {
-        "command": {
-          "type": "string",
-          "description": "Executable to spawn (e.g., 'bunx', 'node', '/abs/path/to/binary').",
+    "$defs": {
+        "customWorkflow": {
+            "type": "object",
+            "required": ["command", "agents"],
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "Executable to spawn (e.g., 'bunx', 'node', '/abs/path/to/binary').",
+                },
+                "args": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "default": [],
+                    "description": "Static arguments passed before atomic's hidden `_emit-workflow-meta` / `_atomic-run` argv.",
+                },
+                "agents": {
+                    "type": "array",
+                    "minItems": 1,
+                    "uniqueItems": true,
+                    "items": {
+                        "type": "string",
+                        "enum": ["claude", "opencode", "copilot"],
+                    },
+                    "description": "Required. Agents this workflow supports. Atomic registers one entry per agent listed; the third-party command's WorkflowDefinitions must cover them.",
+                },
+            },
+            "additionalProperties": false,
         },
-        "args": {
-          "type": "array",
-          "items": { "type": "string" },
-          "default": [],
-          "description": "Static arguments passed before atomic's hidden `_emit-workflow-meta` / `_atomic-run` argv.",
-        },
-        "agents": {
-          "type": "array",
-          "minItems": 1,
-          "uniqueItems": true,
-          "items": {
-            "type": "string",
-            "enum": ["claude", "opencode", "copilot"],
-          },
-          "description": "Required. Agents this workflow supports. Atomic registers one entry per agent listed; the third-party command's WorkflowDefinitions must cover them.",
-        },
-      },
-      "additionalProperties": false,
     },
-  },
 }
 ```
 
@@ -164,21 +164,21 @@ Add a `workflows` property at the top level using the MCP-style shape:
 
 ```jsonc
 {
-  "$schema": "https://raw.githubusercontent.com/flora131/atomic/main/assets/settings.schema.json",
-  "version": 1,
-  "scm": "github",
-  "workflows": {
-    "deep-spec": {
-      "command": "bunx",
-      "args": ["@me/atomic-deep-spec"],
-      "agents": ["claude", "copilot"],
+    "$schema": "https://raw.githubusercontent.com/bastani/atomic/main/assets/settings.schema.json",
+    "version": 1,
+    "scm": "github",
+    "workflows": {
+        "deep-spec": {
+            "command": "bunx",
+            "args": ["@me/atomic-deep-spec"],
+            "agents": ["claude", "copilot"],
+        },
+        "release-notes": {
+            "command": "node",
+            "args": ["/abs/path/release-notes.mjs"],
+            "agents": ["claude"],
+        },
     },
-    "release-notes": {
-      "command": "node",
-      "args": ["/abs/path/release-notes.mjs"],
-      "agents": ["claude"],
-    },
-  },
 }
 ```
 
@@ -192,16 +192,16 @@ Add to `AtomicConfig`:
 
 ```ts
 export interface CustomWorkflowEntry {
-  command: string;
-  args?: string[];
-  agents: AgentKey[]; // required, non-empty subset of AgentKey
+    command: string;
+    args?: string[];
+    agents: AgentKey[]; // required, non-empty subset of AgentKey
 }
 
 export interface AtomicConfig {
-  version?: number;
-  scm?: ScmProvider;
-  providers?: Partial<Record<AgentKey, ProviderOverrides>>;
-  workflows?: Record<string, CustomWorkflowEntry>;
+    version?: number;
+    scm?: ScmProvider;
+    providers?: Partial<Record<AgentKey, ProviderOverrides>>;
+    workflows?: Record<string, CustomWorkflowEntry>;
 }
 ```
 
@@ -216,16 +216,16 @@ Two small additions to `packages/atomic-sdk/src/registry.ts`:
 
 ```ts
 type RegistrableWorkflow =
-  | (WorkflowDefinition & { kind?: "builtin" })
-  | ExternalWorkflow;
+    | (WorkflowDefinition & { kind?: "builtin" })
+    | ExternalWorkflow;
 
 interface ExternalWorkflow {
-  kind: "external";
-  name: string;
-  agent: AgentType;
-  description?: string;
-  inputs: WorkflowInput[];
-  source: { command: string; args: string[] }; // ← from settings.json
+    kind: "external";
+    name: string;
+    agent: AgentType;
+    description?: string;
+    inputs: WorkflowInput[];
+    source: { command: string; args: string[] }; // ← from settings.json
 }
 ```
 
@@ -243,9 +243,9 @@ Both new subcommands are intended **only** for atomic-internal use; they must no
 
 1. **`_` prefix** — already a convention for SDK-internal subcommands (`_orchestrator-entry`, `_cc-debounce`); not surfaced in Commander help, not advertised in docs.
 2. **Per-spawn nonce in env + argv** — atomic generates a fresh 16-byte random token at startup and:
-   - exports it as `ATOMIC_DISPATCH_TOKEN=<hex>` in the child's env, AND
-   - passes it as `--dispatch-token=<hex>` in the child's argv.
-     The SDK auto-dispatch handler refuses to act unless **both** the env token and argv token are present, equal, and at least 32 hex chars. Any mismatch → fall through to the third-party command's normal main() (which will treat the unknown argv however it normally does — typically a help dump or error).
+    - exports it as `ATOMIC_DISPATCH_TOKEN=<hex>` in the child's env, AND
+    - passes it as `--dispatch-token=<hex>` in the child's argv.
+      The SDK auto-dispatch handler refuses to act unless **both** the env token and argv token are present, equal, and at least 32 hex chars. Any mismatch → fall through to the third-party command's normal main() (which will treat the unknown argv however it normally does — typically a help dump or error).
 3. **`ATOMIC_HOST=1` env marker** — additional cross-check; absent this marker, the SDK assumes it's not running under atomic and ignores the dispatch argv entirely.
 
 A user typing `bunx my-workflow _emit-workflow-meta` directly will hit none of the env vars and the SDK will silently no-op (the command falls through to its own main()).
@@ -274,79 +274,85 @@ Both interceptors are pure SDK additions; third-party code that just does `defin
 
 ```ts
 import type {
-  AtomicConfig,
-  CustomWorkflowEntry,
+    AtomicConfig,
+    CustomWorkflowEntry,
 } from "@bastani/atomic-sdk/services/config/atomic-config";
 import type { ExternalWorkflow, AgentType } from "@bastani/atomic-sdk";
 
 interface LoadedWorkflow {
-  alias: string;
-  origin: "local" | "global";
-  workflow: ExternalWorkflow;
+    alias: string;
+    origin: "local" | "global";
+    workflow: ExternalWorkflow;
 }
 
 export async function loadCustomWorkflows(
-  workflows: Record<string, CustomWorkflowEntry> | undefined,
-  origin: "local" | "global",
+    workflows: Record<string, CustomWorkflowEntry> | undefined,
+    origin: "local" | "global",
 ): Promise<LoadedWorkflow[]> {
-  if (!workflows) return [];
-  const out: LoadedWorkflow[] = [];
-  for (const [alias, entry] of Object.entries(workflows)) {
-    const meta = await emitMeta(entry); // spawn + parse `_emit-workflow-meta`
-    if (!meta) {
-      warn(`[atomic/workflows] "${alias}": failed to emit metadata; skipping.`);
-      continue;
+    if (!workflows) return [];
+    const out: LoadedWorkflow[] = [];
+    for (const [alias, entry] of Object.entries(workflows)) {
+        const meta = await emitMeta(entry); // spawn + parse `_emit-workflow-meta`
+        if (!meta) {
+            warn(
+                `[atomic/workflows] "${alias}": failed to emit metadata; skipping.`,
+            );
+            continue;
+        }
+        for (const declaredAgent of entry.agents) {
+            const def = meta.find((m) => m.agent === declaredAgent);
+            if (!def) {
+                warn(
+                    `[atomic/workflows] "${alias}/${declaredAgent}": no matching workflow exposed by command; skipping.`,
+                );
+                continue;
+            }
+            out.push({
+                alias,
+                origin,
+                workflow: {
+                    kind: "external",
+                    name: def.name,
+                    agent: declaredAgent,
+                    description: def.description,
+                    inputs: def.inputs,
+                    source: { command: entry.command, args: entry.args ?? [] },
+                },
+            });
+        }
     }
-    for (const declaredAgent of entry.agents) {
-      const def = meta.find((m) => m.agent === declaredAgent);
-      if (!def) {
-        warn(
-          `[atomic/workflows] "${alias}/${declaredAgent}": no matching workflow exposed by command; skipping.`,
-        );
-        continue;
-      }
-      out.push({
-        alias,
-        origin,
-        workflow: {
-          kind: "external",
-          name: def.name,
-          agent: declaredAgent,
-          description: def.description,
-          inputs: def.inputs,
-          source: { command: entry.command, args: entry.args ?? [] },
-        },
-      });
-    }
-  }
-  return out;
+    return out;
 }
 
 async function emitMeta(entry: CustomWorkflowEntry): Promise<MetaArray | null> {
-  const token = randomBytes(16).toString("hex");
-  const child = Bun.spawn(
-    [
-      entry.command,
-      ...(entry.args ?? []),
-      "_emit-workflow-meta",
-      `--dispatch-token=${token}`,
-    ],
-    {
-      stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, ATOMIC_HOST: "1", ATOMIC_DISPATCH_TOKEN: token },
-    },
-  );
-  const stdout = await new Response(child.stdout).text();
-  if ((await child.exited) !== 0) return null;
-  const line = stdout
-    .split("\n")
-    .find((l) => l.startsWith("ATOMIC_WORKFLOW_META: "));
-  if (!line) return null;
-  try {
-    return JSON.parse(line.slice("ATOMIC_WORKFLOW_META: ".length));
-  } catch {
-    return null;
-  }
+    const token = randomBytes(16).toString("hex");
+    const child = Bun.spawn(
+        [
+            entry.command,
+            ...(entry.args ?? []),
+            "_emit-workflow-meta",
+            `--dispatch-token=${token}`,
+        ],
+        {
+            stdio: ["ignore", "pipe", "pipe"],
+            env: {
+                ...process.env,
+                ATOMIC_HOST: "1",
+                ATOMIC_DISPATCH_TOKEN: token,
+            },
+        },
+    );
+    const stdout = await new Response(child.stdout).text();
+    if ((await child.exited) !== 0) return null;
+    const line = stdout
+        .split("\n")
+        .find((l) => l.startsWith("ATOMIC_WORKFLOW_META: "));
+    if (!line) return null;
+    try {
+        return JSON.parse(line.slice("ATOMIC_WORKFLOW_META: ".length));
+    } catch {
+        return null;
+    }
 }
 ```
 
@@ -362,7 +368,7 @@ const localLoaded = await loadCustomWorkflows(local?.workflows, "local");
 // Precedence: local > global > builtin. Use `.upsert()` so duplicates replace.
 let merged = builtin;
 for (const { workflow } of [...globalLoaded, ...localLoaded])
-  merged = merged.upsert(workflow);
+    merged = merged.upsert(workflow);
 ```
 
 `buildWorkflowCommand(merged)` consumes the merged registry. `buildInputUnion(listWorkflows(merged))` automatically computes the union of `--<input>` flags across builtins + custom because `ExternalWorkflow` carries an `inputs` array in the same shape `WorkflowDefinition` exposes.
@@ -375,39 +381,39 @@ for (const { workflow } of [...globalLoaded, ...localLoaded])
 
 ```ts
 async function dispatch(
-  workflow: RegistrableWorkflow,
-  cliInputs: Record<string, string>,
-  detach: boolean,
+    workflow: RegistrableWorkflow,
+    cliInputs: Record<string, string>,
+    detach: boolean,
 ): Promise<void> {
-  if (workflow.kind === "external")
-    return dispatchExternal(workflow, cliInputs, detach);
-  return runWorkflow({ workflow, inputs: cliInputs, detach });
+    if (workflow.kind === "external")
+        return dispatchExternal(workflow, cliInputs, detach);
+    return runWorkflow({ workflow, inputs: cliInputs, detach });
 }
 
 async function dispatchExternal(
-  w: ExternalWorkflow,
-  cliInputs: Record<string, string>,
-  detach: boolean,
+    w: ExternalWorkflow,
+    cliInputs: Record<string, string>,
+    detach: boolean,
 ): Promise<void> {
-  const token = randomBytes(16).toString("hex");
-  const argv = [
-    ...w.source.args,
-    "_atomic-run",
-    `--dispatch-token=${token}`,
-    "--name",
-    w.name,
-    "--agent",
-    w.agent,
-    ...(detach ? ["--detach"] : []),
-    ...Object.entries(cliInputs).flatMap(([k, v]) => [`--${k}`, v]),
-  ];
-  const child = Bun.spawn([w.source.command, ...argv], {
-    cwd: process.cwd(),
-    stdio: ["inherit", "inherit", "inherit"],
-    env: { ...process.env, ATOMIC_HOST: "1", ATOMIC_DISPATCH_TOKEN: token },
-  });
-  const code = await child.exited;
-  if (code !== 0) process.exit(code);
+    const token = randomBytes(16).toString("hex");
+    const argv = [
+        ...w.source.args,
+        "_atomic-run",
+        `--dispatch-token=${token}`,
+        "--name",
+        w.name,
+        "--agent",
+        w.agent,
+        ...(detach ? ["--detach"] : []),
+        ...Object.entries(cliInputs).flatMap(([k, v]) => [`--${k}`, v]),
+    ];
+    const child = Bun.spawn([w.source.command, ...argv], {
+        cwd: process.cwd(),
+        stdio: ["inherit", "inherit", "inherit"],
+        env: { ...process.env, ATOMIC_HOST: "1", ATOMIC_DISPATCH_TOKEN: token },
+    });
+    const code = await child.exited;
+    if (code !== 0) process.exit(code);
 }
 ```
 
@@ -460,18 +466,18 @@ A workflow that failed to load (per §5.8) is **not removed** from the picker �
 
 ```yaml
 picker-row-broken:
-  backgroundColor: "{colors.mantle}"
-  textColor: "{colors.overlay1}" # dim alias
-  glyphColor: "{colors.red}"
-  captionColor: "{colors.red}"
-  padding: "0 2ch 0 1ch"
+    backgroundColor: "{colors.mantle}"
+    textColor: "{colors.overlay1}" # dim alias
+    glyphColor: "{colors.red}"
+    captionColor: "{colors.red}"
+    padding: "0 2ch 0 1ch"
 
 picker-row-broken-focused:
-  backgroundColor: "{colors.surface1}" # the previously-reserved disabled-hover stratum
-  textColor: "{colors.text}" # alias lifted to text, NOT bold
-  glyphColor: "{colors.red}"
-  captionColor: "{colors.red}"
-  padding: "0 2ch 0 1ch"
+    backgroundColor: "{colors.surface1}" # the previously-reserved disabled-hover stratum
+    textColor: "{colors.text}" # alias lifted to text, NOT bold
+    glyphColor: "{colors.red}"
+    captionColor: "{colors.red}"
+    padding: "0 2ch 0 1ch"
 ```
 
 **Interaction rules:**
@@ -479,11 +485,11 @@ picker-row-broken-focused:
 - `↑` / `↓` move the cursor through **all** rows including broken ones — the user can land on a broken row to read its details. (Skipping broken rows hides information; surfacing it with a muted treatment is more honest.)
 - Pressing `↵` (Enter) on a broken row is a **no-op for dispatch**. The statusline briefly displays `cannot run: <alias> failed to load — see preview` in `red` for ~2s, then restores the default hint row. No tmux session is created.
 - The right preview pane (which today renders the workflow description and input schema) instead renders the **error preview**:
-  - Title: alias in `text` bold (panel `title` prop, same as healthy preview).
-  - Status line: `✗ Failed to load` in `red` bold.
-  - Reason: the cached startup error message (from §5.8) in `text`.
-  - Source: `source · <path-to-settings.json>` in `subtext0`.
-  - Remediation: `fix · <hint>` in `subtext0`.
+    - Title: alias in `text` bold (panel `title` prop, same as healthy preview).
+    - Status line: `✗ Failed to load` in `red` bold.
+    - Reason: the cached startup error message (from §5.8) in `text`.
+    - Source: `source · <path-to-settings.json>` in `subtext0`.
+    - Remediation: `fix · <hint>` in `subtext0`.
 - The filter (`/`) treats broken rows like any other — they match by alias/agent the same way healthy rows do.
 - Mode pill stays `PICK` (never changes color based on the selection); the row carries the state, not the chrome.
 
@@ -627,24 +633,24 @@ The atomic CLI flow:
 ### 8.3 Test Plan
 
 - **Unit Tests:**
-  - `pickWorkflows()` accepts well-formed entries, drops malformed ones with the exact diagnostic message specified in §5.8.
-  - Schema validation: `command` required, `args` array-of-strings, `agents` enum subset, unknown property rejected.
-  - `mergeConfigs()` for the new `workflows` field: local-overrides-global keyed on alias; non-overlapping aliases unioned.
-  - `Registry.upsert()` replaces matching `(agent, name)` while `Registry.register()` keeps its strict semantics.
-  - SDK auto-dispatch: `_emit-workflow-meta` and `_atomic-run` are no-ops without a matching `ATOMIC_DISPATCH_TOKEN` env / argv pair; correct token triggers them.
+    - `pickWorkflows()` accepts well-formed entries, drops malformed ones with the exact diagnostic message specified in §5.8.
+    - Schema validation: `command` required, `args` array-of-strings, `agents` enum subset, unknown property rejected.
+    - `mergeConfigs()` for the new `workflows` field: local-overrides-global keyed on alias; non-overlapping aliases unioned.
+    - `Registry.upsert()` replaces matching `(agent, name)` while `Registry.register()` keeps its strict semantics.
+    - SDK auto-dispatch: `_emit-workflow-meta` and `_atomic-run` are no-ops without a matching `ATOMIC_DISPATCH_TOKEN` env / argv pair; correct token triggers them.
 - **Integration Tests:**
-  - End-to-end registry merge: settings.json → `loadCustomWorkflows` (mocked spawn) → `createBuiltinRegistry().upsert(...)` → `listWorkflows()` returns the expected union and ordering.
-  - `dispatchExternal()` spawns the configured command with the expected argv including a fresh dispatch token.
-  - Picker UI renders external entries; selecting one with declared inputs prompts for them and forwards them in the spawn argv.
-  - Fail-fast paths: simulate (a) command not on PATH, (b) timeout, (c) non-zero exit, (d) malformed JSON, (e) missing agent in metadata. Each produces the exact stderr line in §5.8 and atomic continues to start.
+    - End-to-end registry merge: settings.json → `loadCustomWorkflows` (mocked spawn) → `createBuiltinRegistry().upsert(...)` → `listWorkflows()` returns the expected union and ordering.
+    - `dispatchExternal()` spawns the configured command with the expected argv including a fresh dispatch token.
+    - Picker UI renders external entries; selecting one with declared inputs prompts for them and forwards them in the spawn argv.
+    - Fail-fast paths: simulate (a) command not on PATH, (b) timeout, (c) non-zero exit, (d) malformed JSON, (e) missing agent in metadata. Each produces the exact stderr line in §5.8 and atomic continues to start.
 - **End-to-End Tests:**
-  - Fixture: a tiny "echo" workflow under `packages/atomic/test/fixtures/external-echo/` that uses `@bastani/atomic-sdk` and `defineWorkflow().compile()`. `atomic workflow list` shows it; `atomic workflow -n echo -a claude --topic foo` dispatches it; assert on captured stdout/exit code.
-  - Token isolation: invoking the fixture's binary directly with `_emit-workflow-meta` without env tokens must fall through to the user's main (no JSON emitted on stdout).
-  - Config-merge fixture: global registers `echo`, local overrides `echo`; verify local definition wins.
-  - Builtin override fixture: settings declares `ralph` pointing at the test fixture; verify the fixture replaces the builtin and the override-log line is emitted.
-  - **Broken-workflow CLI:** settings registers a workflow whose `command` resolves to a non-existent binary; assert `atomic workflow -n <name> -a <agent>` exits with code 2 and stderr matches the §5.7.3 block.
-  - **Broken-workflow picker:** load a broken entry; assert (a) the row renders with `picker-row-broken` tokens and `✗` prefix, (b) ↑/↓ lands the cursor on it, (c) the preview pane renders the cached error reason, (d) pressing Enter flashes the statusline message in `red` and does NOT create a tmux session, (e) Enter on a sibling healthy row dispatches normally.
-  - **Snapshot:** capture an OpenTUI test snapshot of the picker with one healthy + one broken row + one healthy-selected row to lock the three visual states.
+    - Fixture: a tiny "echo" workflow under `packages/atomic/test/fixtures/external-echo/` that uses `@bastani/atomic-sdk` and `defineWorkflow().compile()`. `atomic workflow list` shows it; `atomic workflow -n echo -a claude --topic foo` dispatches it; assert on captured stdout/exit code.
+    - Token isolation: invoking the fixture's binary directly with `_emit-workflow-meta` without env tokens must fall through to the user's main (no JSON emitted on stdout).
+    - Config-merge fixture: global registers `echo`, local overrides `echo`; verify local definition wins.
+    - Builtin override fixture: settings declares `ralph` pointing at the test fixture; verify the fixture replaces the builtin and the override-log line is emitted.
+    - **Broken-workflow CLI:** settings registers a workflow whose `command` resolves to a non-existent binary; assert `atomic workflow -n <name> -a <agent>` exits with code 2 and stderr matches the §5.7.3 block.
+    - **Broken-workflow picker:** load a broken entry; assert (a) the row renders with `picker-row-broken` tokens and `✗` prefix, (b) ↑/↓ lands the cursor on it, (c) the preview pane renders the cached error reason, (d) pressing Enter flashes the statusline message in `red` and does NOT create a tmux session, (e) Enter on a sibling healthy row dispatches normally.
+    - **Snapshot:** capture an OpenTUI test snapshot of the picker with one healthy + one broken row + one healthy-selected row to lock the three visual states.
 
 ## 9. Open Questions / Unresolved Issues
 

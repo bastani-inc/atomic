@@ -1,23 +1,24 @@
 # Binary Distribution and Installer Scripts Technical Design Document
 
-| Document Metadata      | Details         |
-| ---------------------- | --------------- |
-| Author(s)              | lavaman131      |
-| Status                 | Draft (WIP)     |
-| Team / Owner           | flora131/atomic |
-| Created / Last Updated | 2026-01-21      |
+| Document Metadata      | Details        |
+| ---------------------- | -------------- |
+| Author(s)              | lavaman131     |
+| Status                 | Draft (WIP)    |
+| Team / Owner           | bastani/atomic |
+| Created / Last Updated | 2026-01-21     |
 
 ## 1. Executive Summary
 
 This RFC proposes adding shell-based installer scripts (`install.sh` and `install.ps1`) to enable one-line installation of Atomic CLI via `curl | bash` and PowerShell's `irm | iex`. The existing `publish.yml` workflow compiles binaries for five platform/architecture combinations; this spec adds Windows ARM64 support for a total of six targets. The installer scripts will detect the user's platform, download the appropriate binary from GitHub Releases, verify SHA256 checksums, install to `~/.local/bin`, and auto-configure PATH in shell configuration files.
 
 **Installation Commands (Post-Implementation):**
+
 ```bash
 # Linux/macOS
-curl -fsSL https://raw.githubusercontent.com/flora131/atomic/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/bastani/atomic/main/install.sh | bash
 
 # Windows PowerShell
-irm https://raw.githubusercontent.com/flora131/atomic/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/bastani/atomic/main/install.ps1 | iex
 ```
 
 **Research Reference:** [research/docs/2026-01-21-binary-distribution-installers.md](../research/docs/2026-01-21-binary-distribution-installers.md)
@@ -29,6 +30,7 @@ irm https://raw.githubusercontent.com/flora131/atomic/main/install.ps1 | iex
 The Atomic CLI has a robust binary distribution setup via GitHub Actions:
 
 **Binary Compilation** (`.github/workflows/publish.yml:34-51`, to be updated):
+
 ```bash
 # Current: 5 platform/architecture combinations
 # Proposed: 6 platform/architecture combinations (adding Windows ARM64)
@@ -41,6 +43,7 @@ bun build src/index.ts --compile --minify --target=bun-windows-arm64 --outfile d
 ```
 
 **Current Installation Methods** (from `README.md:19-48`):
+
 1. npm/bun global install: `bun add -g @bastani/atomic`
 2. npx/bunx one-time execution: `bunx @bastani/atomic`
 3. Development: Clone repo + `bun install && bun link`
@@ -199,6 +202,7 @@ flowchart TB
 **Platform-Specific Installer Scripts**
 
 The implementation follows the standard pattern used by Bun, Deno, and Starship:
+
 - Shell script (`install.sh`) for Unix-like systems with automatic Windows delegation
 - PowerShell script (`install.ps1`) for native Windows installation
 - Both scripts share the same configuration (install directory, binary naming, checksum verification)
@@ -230,13 +234,13 @@ The implementation follows the standard pattern used by Bun, Deno, and Starship:
 
 ```
 # Latest release
-https://github.com/flora131/atomic/releases/latest/download/atomic-{target}
+https://github.com/bastani/atomic/releases/latest/download/atomic-{target}
 
 # Specific version
-https://github.com/flora131/atomic/releases/download/v{version}/atomic-{target}
+https://github.com/bastani/atomic/releases/download/v{version}/atomic-{target}
 
 # Checksums file
-https://github.com/flora131/atomic/releases/download/v{version}/checksums.txt
+https://github.com/bastani/atomic/releases/download/v{version}/checksums.txt
 ```
 
 ## 5. Detailed Design
@@ -257,6 +261,7 @@ https://github.com/flora131/atomic/releases/download/v{version}/checksums.txt
 | `main()`                | Orchestrates the installation flow                            |
 
 **Error Handling:**
+
 ```bash
 set -euo pipefail  # Exit on error, undefined vars, pipe failures
 ```
@@ -268,6 +273,7 @@ set -euo pipefail  # Exit on error, undefined vars, pipe failures
 **Location:** Repository root (`/install.ps1`)
 
 **Parameters:**
+
 ```powershell
 param(
     [String]$Version = "latest",
@@ -277,12 +283,14 @@ param(
 ```
 
 **Key Features:**
+
 - Architecture detection (x64 and ARM64 supported)
 - Download with curl.exe fallback to `Invoke-WebRequest`
 - Registry-based PATH modification (user-level, no admin required)
 - `WM_SETTINGCHANGE` broadcast for immediate PATH visibility
 
 **Architecture Detection (PowerShell):**
+
 ```powershell
 # Detect Windows architecture
 $Arch = $env:PROCESSOR_ARCHITECTURE
@@ -304,6 +312,7 @@ switch ($Arch) {
 | fish  | `~/.config/fish/config.fish`                     | `fish_add_path $HOME/.local/bin`       |
 
 **Detection Priority:**
+
 1. Check `$SHELL` environment variable
 2. Use `basename` to determine shell type
 3. Fall back to `~/.profile` for unknown shells
@@ -311,6 +320,7 @@ switch ($Arch) {
 ### 5.4 Checksum Verification
 
 **Unix (supports both Linux and macOS):**
+
 ```bash
 if command -v sha256sum >/dev/null; then
     # Linux: use sha256sum
@@ -322,6 +332,7 @@ fi
 ```
 
 **Windows (PowerShell):**
+
 ```powershell
 $ActualHash = (Get-FileHash -Path $BinaryPath -Algorithm SHA256).Hash.ToLower()
 ```
@@ -329,41 +340,48 @@ $ActualHash = (Get-FileHash -Path $BinaryPath -Algorithm SHA256).Hash.ToLower()
 ### 5.5 Version Parameter Support
 
 **Unix:**
+
 ```bash
 # Usage examples
-curl -fsSL https://raw.githubusercontent.com/flora131/atomic/main/install.sh | bash
-curl -fsSL https://raw.githubusercontent.com/flora131/atomic/main/install.sh | bash -s -- v1.0.0
-curl -fsSL https://raw.githubusercontent.com/flora131/atomic/main/install.sh | bash -s -- -b /usr/local/bin
+curl -fsSL https://raw.githubusercontent.com/bastani/atomic/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/bastani/atomic/main/install.sh | bash -s -- v1.0.0
+curl -fsSL https://raw.githubusercontent.com/bastani/atomic/main/install.sh | bash -s -- -b /usr/local/bin
 ```
 
 **Windows:**
+
 ```powershell
 # Usage examples
-irm https://raw.githubusercontent.com/flora131/atomic/main/install.ps1 | iex
-iex "& { $(irm https://raw.githubusercontent.com/flora131/atomic/main/install.ps1) } -Version v1.0.0"
+irm https://raw.githubusercontent.com/bastani/atomic/main/install.ps1 | iex
+iex "& { $(irm https://raw.githubusercontent.com/bastani/atomic/main/install.ps1) } -Version v1.0.0"
 ```
 
 ### 5.6 README.md Updates
 
 **New Quick Start Section:**
-```markdown
+
+````markdown
 ## Quick Start
 
 ### One-Line Install (Recommended)
 
 **Linux/macOS:**
+
 ```bash
-curl -fsSL https://raw.githubusercontent.com/flora131/atomic/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/bastani/atomic/main/install.sh | bash
 ```
+````
 
 **Windows (PowerShell):**
+
 ```powershell
-irm https://raw.githubusercontent.com/flora131/atomic/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/bastani/atomic/main/install.ps1 | iex
 ```
 
 ### Alternative Methods
 
 **npm/bun (requires Node.js/Bun):**
+
 ```bash
 npm install -g @bastani/atomic
 # or
@@ -391,6 +409,7 @@ bun add -g @bastani/atomic
 - **No telemetry:** Installation does not send any analytics data
 
 **Security Note:** While `curl | bash` has theoretical risks, the combination of:
+
 1. HTTPS transport security
 2. SHA256 checksum verification
 3. Open-source script in main repo
@@ -464,14 +483,14 @@ bun add -g @bastani/atomic
 ## 9. Open Questions / Unresolved Issues
 
 - [ ] **Homebrew/Scoop packages:** Should we add package manager distribution alongside curl|bash?
-  - Current: Manual installation only
-  - Impact: More familiar workflow for some users
-  - Recommendation: Defer to future version, can be community-contributed
+    - Current: Manual installation only
+    - Impact: More familiar workflow for some users
+    - Recommendation: Defer to future version, can be community-contributed
 
 - [ ] **Uninstall script:** Should we provide an `uninstall.sh` / `uninstall.ps1`?
-  - Current: Manual removal required
-  - Impact: Minor inconvenience for users who want to remove
-  - Recommendation: Defer, simple manual removal is sufficient
+    - Current: Manual removal required
+    - Impact: Minor inconvenience for users who want to remove
+    - Recommendation: Defer, simple manual removal is sufficient
 
 ## 10. Implementation File Changes
 
@@ -487,36 +506,36 @@ bun add -g @bastani/atomic
 ### Phase 1: Core Implementation
 
 - [ ] Update `.github/workflows/publish.yml` to add Windows ARM64 binary:
-  - [ ] Add `bun build` command for `bun-windows-arm64` target
-  - [ ] Output to `dist/atomic-windows-arm64.exe`
+    - [ ] Add `bun build` command for `bun-windows-arm64` target
+    - [ ] Output to `dist/atomic-windows-arm64.exe`
 
 - [ ] Create `install.sh` in repository root with:
-  - [ ] Platform detection (Linux x64/arm64, macOS x64/arm64)
-  - [ ] Rosetta 2 detection for macOS
-  - [ ] Windows delegation to PowerShell
-  - [ ] Version parameter support
-  - [ ] Checksum verification
-  - [ ] Installation to `~/.local/bin`
-  - [ ] Shell config detection (bash, zsh, fish)
-  - [ ] PATH auto-modification
-  - [ ] Colored output and error handling
+    - [ ] Platform detection (Linux x64/arm64, macOS x64/arm64)
+    - [ ] Rosetta 2 detection for macOS
+    - [ ] Windows delegation to PowerShell
+    - [ ] Version parameter support
+    - [ ] Checksum verification
+    - [ ] Installation to `~/.local/bin`
+    - [ ] Shell config detection (bash, zsh, fish)
+    - [ ] PATH auto-modification
+    - [ ] Colored output and error handling
 
 - [ ] Create `install.ps1` in repository root with:
-  - [ ] Architecture detection (x64 and ARM64)
-  - [ ] Version parameter support
-  - [ ] Checksum verification
-  - [ ] Installation to `%USERPROFILE%\.local\bin`
-  - [ ] Registry-based PATH modification
-  - [ ] WM_SETTINGCHANGE broadcast
-  - [ ] Colored output and error handling
+    - [ ] Architecture detection (x64 and ARM64)
+    - [ ] Version parameter support
+    - [ ] Checksum verification
+    - [ ] Installation to `%USERPROFILE%\.local\bin`
+    - [ ] Registry-based PATH modification
+    - [ ] WM_SETTINGCHANGE broadcast
+    - [ ] Colored output and error handling
 
 ### Phase 2: Documentation
 
 - [ ] Update `README.md` Quick Start section with:
-  - [ ] One-line install commands for Linux/macOS
-  - [ ] One-line install command for Windows
-  - [ ] Specific version installation examples
-  - [ ] Custom install directory examples
+    - [ ] One-line install commands for Linux/macOS
+    - [ ] One-line install command for Windows
+    - [ ] Specific version installation examples
+    - [ ] Custom install directory examples
 
 ### Phase 3: Testing
 
@@ -535,6 +554,7 @@ bun add -g @bastani/atomic
 ## 12. Code References
 
 ### Existing Implementation (to be modified)
+
 - `.github/workflows/publish.yml:34-51` - Binary compilation targets (add Windows ARM64)
 - `.github/workflows/publish.yml:79-82` - Checksum generation (`sha256sum * > checksums.txt`)
 - `.github/workflows/publish.yml:83-97` - GitHub Release upload with `softprops/action-gh-release@v2`
@@ -543,6 +563,7 @@ bun add -g @bastani/atomic
 - `src/version.ts:1-2` - Version export
 
 ### Documentation
+
 - `README.md:19-48` - Current installation instructions
 - `README.md:52-58` - Prerequisites section
 

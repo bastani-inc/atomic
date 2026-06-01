@@ -3,7 +3,7 @@ date: 2026-01-18 19:25:48 PST
 researcher: Claude Opus 4.5
 git_commit: f95c1a67afc46895c97f7b98b1590411e1ee8e9a
 branch: lavaman131/feature/atomic-cli
-repository: flora131/atomic
+repository: bastani/atomic
 topic: "Atomic CLI Implementation - figlet, @clack/prompts, ANSI colors, agent configuration"
 tags: [research, cli, figlet, clack, ansi, bun, typescript]
 status: complete
@@ -36,6 +36,7 @@ This research covers all technical aspects needed to implement the Atomic CLI:
 Source: [bombshell-dev/clack](https://github.com/bombshell-dev/clack) via DeepWiki
 
 #### Installation
+
 ```bash
 bun add @clack/prompts
 ```
@@ -43,73 +44,91 @@ bun add @clack/prompts
 #### Key APIs
 
 **Select Prompt (for agent selection)**
+
 ```typescript
-import { select, isCancel, cancel } from '@clack/prompts';
+import { select, isCancel, cancel } from "@clack/prompts";
 
 const agent = await select({
-  message: 'Select a coding agent to configure:',
-  options: [
-    { value: 'claude-code', label: 'Claude Code', hint: 'Anthropic AI assistant' },
-    { value: 'opencode', label: 'opencode', hint: 'Open source alternative' },
-    { value: 'copilot-cli', label: 'GitHub Copilot CLI', hint: 'GitHub AI assistant' },
-  ],
+    message: "Select a coding agent to configure:",
+    options: [
+        {
+            value: "claude-code",
+            label: "Claude Code",
+            hint: "Anthropic AI assistant",
+        },
+        {
+            value: "opencode",
+            label: "opencode",
+            hint: "Open source alternative",
+        },
+        {
+            value: "copilot-cli",
+            label: "GitHub Copilot CLI",
+            hint: "GitHub AI assistant",
+        },
+    ],
 });
 
 if (isCancel(agent)) {
-  cancel('Operation cancelled.');
-  process.exit(0);
+    cancel("Operation cancelled.");
+    process.exit(0);
 }
 ```
 
 **Confirm Prompt (for Y/n confirmations)**
+
 ```typescript
-import { confirm } from '@clack/prompts';
+import { confirm } from "@clack/prompts";
 
 const shouldContinue = await confirm({
-  message: `Install config files to ${process.cwd()}?`,
-  initialValue: true, // Defaults to 'Yes'
+    message: `Install config files to ${process.cwd()}?`,
+    initialValue: true, // Defaults to 'Yes'
 });
 
 // With custom labels
 const overwrite = await confirm({
-  message: 'Folder already exists. Overwrite?',
-  active: 'Yes, overwrite',
-  inactive: 'No, cancel',
+    message: "Folder already exists. Overwrite?",
+    active: "Yes, overwrite",
+    inactive: "No, cancel",
 });
 ```
 
 **Intro/Outro Messages**
+
 ```typescript
-import { intro, outro, note } from '@clack/prompts';
+import { intro, outro, note } from "@clack/prompts";
 
-intro('create-atomic-app');  // Banner at start
-outro("You're all set!");    // Message at end
+intro("create-atomic-app"); // Banner at start
+outro("You're all set!"); // Message at end
 
-note('Config files installed successfully', 'SUCCESS');
+note("Config files installed successfully", "SUCCESS");
 ```
 
 **Cancellation Handling**
+
 ```typescript
-import { isCancel, cancel } from '@clack/prompts';
+import { isCancel, cancel } from "@clack/prompts";
 
 if (isCancel(value)) {
-  cancel('Operation cancelled.');
-  process.exit(0);
+    cancel("Operation cancelled.");
+    process.exit(0);
 }
 ```
 
 **Spinner for Progress**
+
 ```typescript
-import { spinner } from '@clack/prompts';
+import { spinner } from "@clack/prompts";
 
 const s = spinner();
-s.start('Copying configuration files');
+s.start("Copying configuration files");
 // ... do work
-s.stop('Configuration complete');
+s.stop("Configuration complete");
 ```
 
 **Text Styling**
 `@clack/prompts` uses `picocolors` internally for styling:
+
 - `color.cyan()`, `color.red()`, `color.green()`, `color.yellow()`
 - `color.dim()`, `color.bold()`, `color.inverse()`
 
@@ -120,48 +139,53 @@ s.stop('Configuration complete');
 Source: [patorjk/figlet.js](https://github.com/patorjk/figlet.js) via DeepWiki
 
 #### Installation
+
 ```bash
 bun add figlet
 bun add -d @types/figlet
 ```
 
 #### Synchronous API (Preferred for CLI)
-```typescript
-import figlet from 'figlet';
 
-const asciiArt = figlet.textSync('ATOMIC');
+```typescript
+import figlet from "figlet";
+
+const asciiArt = figlet.textSync("ATOMIC");
 console.log(asciiArt);
 
 // With options
-const styled = figlet.textSync('ATOMIC', {
-  font: 'Standard',
-  horizontalLayout: 'default',
-  verticalLayout: 'default',
-  width: 80,
-  whitespaceBreak: true,
+const styled = figlet.textSync("ATOMIC", {
+    font: "Standard",
+    horizontalLayout: "default",
+    verticalLayout: "default",
+    width: 80,
+    whitespaceBreak: true,
 });
 ```
 
 #### Asynchronous API
+
 ```typescript
-figlet.text('ATOMIC', { font: 'Ghost' }, (err, data) => {
-  if (err) {
-    console.error('Figlet error:', err);
-    return;
-  }
-  console.log(data);
+figlet.text("ATOMIC", { font: "Ghost" }, (err, data) => {
+    if (err) {
+        console.error("Figlet error:", err);
+        return;
+    }
+    console.log(data);
 });
 ```
 
 #### Available Fonts
+
 ```typescript
 const fonts = figlet.fontsSync();
 // Returns array: ['1Row', '3-D', 'ANSI Shadow', 'Banner', 'Big', 'Standard', ...]
 ```
 
 #### Setting Defaults
+
 ```typescript
-figlet.defaults({ font: 'Standard', horizontalLayout: 'full' });
+figlet.defaults({ font: "Standard", horizontalLayout: "full" });
 ```
 
 **Note**: The existing `atomic-logo.txt` already contains pre-generated ASCII art using box-drawing characters. It can be read directly instead of generating with figlet.
@@ -173,10 +197,13 @@ figlet.defaults({ font: 'Standard', horizontalLayout: 'full' });
 Source: Multiple libraries via web research
 
 #### The Challenge
+
 The `atomic-spirit.html` file contains ~5600 lines of HTML with inline styles:
+
 ```html
 <span style="color: rgb(255, 128, 0)">X</span>
 ```
+
 This needs to be converted to ANSI escape codes for terminal output.
 
 #### Conversion Pipeline
@@ -184,66 +211,73 @@ This needs to be converted to ANSI escape codes for terminal output.
 **Step 1: Parse HTML**
 
 Option A - `node-html-parser` (Fast, lightweight):
+
 ```typescript
-import { parse } from 'node-html-parser';
+import { parse } from "node-html-parser";
 
 const root = parse(htmlContent);
-const spans = root.querySelectorAll('span');
+const spans = root.querySelectorAll("span");
 
 for (const span of spans) {
-  const style = span.getAttribute('style');
-  const text = span.text;
+    const style = span.getAttribute("style");
+    const text = span.text;
 }
 ```
 
 Option B - `cheerio` (jQuery-like API):
+
 ```typescript
-import * as cheerio from 'cheerio';
+import * as cheerio from "cheerio";
 
 const $ = cheerio.load(htmlContent);
-$('span').each((i, el) => {
-  const style = $(el).attr('style');
-  const text = $(el).text();
+$("span").each((i, el) => {
+    const style = $(el).attr("style");
+    const text = $(el).text();
 });
 ```
 
 **Step 2: Extract RGB Values**
+
 ```typescript
 function parseRgb(styleAttr: string): [number, number, number] | null {
-  const match = styleAttr?.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
-  if (!match) return null;
-  return [parseInt(match[1]), parseInt(match[2]), parseInt(match[3])];
+    const match = styleAttr?.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+    if (!match) return null;
+    return [parseInt(match[1]), parseInt(match[2]), parseInt(match[3])];
 }
 ```
 
 **Step 3: Convert to ANSI**
 
 Option A - Using `chalk` (most popular):
+
 ```typescript
-import chalk from 'chalk';
+import chalk from "chalk";
 
 const [r, g, b] = parseRgb(style);
 const colored = chalk.rgb(r, g, b)(text);
 ```
 
 Option B - Using `ansi-styles` (lower level):
+
 ```typescript
-import styles from 'ansi-styles';
+import styles from "ansi-styles";
 
 const [r, g, b] = parseRgb(style);
 const colored = `${styles.color.ansi16m(r, g, b)}${text}${styles.color.close}`;
 ```
 
 Option C - Direct ANSI escape codes (no dependencies):
+
 ```typescript
 function rgbToAnsi(r: number, g: number, b: number, text: string): string {
-  return `\x1b[38;2;${r};${g};${b}m${text}\x1b[0m`;
+    return `\x1b[38;2;${r};${g};${b}m${text}\x1b[0m`;
 }
 ```
 
 #### ANSI Escape Code Formats
 
 **24-bit True Color (RGB)**
+
 ```
 Foreground: \x1b[38;2;{r};{g};{b}m
 Background: \x1b[48;2;{r};{g};{b}m
@@ -251,37 +285,43 @@ Reset: \x1b[0m
 ```
 
 **256-Color Mode**
+
 ```
 Foreground: \x1b[38;5;{ID}m
 Background: \x1b[48;5;{ID}m
 ```
 
 RGB to 256-color conversion formula:
+
 ```typescript
 function rgbTo256(r: number, g: number, b: number): number {
-  // Grayscale handling
-  if (r === g && g === b) {
-    if (r < 8) return 16;
-    if (r > 248) return 231;
-    return Math.round(((r - 8) / 247) * 24) + 232;
-  }
-  // Color cube
-  return 16 + 36 * Math.round(r / 255 * 5)
-            + 6 * Math.round(g / 255 * 5)
-            + Math.round(b / 255 * 5);
+    // Grayscale handling
+    if (r === g && g === b) {
+        if (r < 8) return 16;
+        if (r > 248) return 231;
+        return Math.round(((r - 8) / 247) * 24) + 232;
+    }
+    // Color cube
+    return (
+        16 +
+        36 * Math.round((r / 255) * 5) +
+        6 * Math.round((g / 255) * 5) +
+        Math.round((b / 255) * 5)
+    );
 }
 ```
 
 #### Terminal Color Support Detection
+
 ```typescript
-import supportsColor from 'supports-color';
+import supportsColor from "supports-color";
 
 if (supportsColor.stdout.has16m) {
-  // Use 24-bit true color
+    // Use 24-bit true color
 } else if (supportsColor.stdout.has256) {
-  // Use 256 colors
+    // Use 256 colors
 } else if (supportsColor.stdout) {
-  // Use basic 16 colors
+    // Use basic 16 colors
 }
 
 // Environment variables
@@ -290,36 +330,37 @@ if (supportsColor.stdout.has16m) {
 ```
 
 #### Complete Conversion Function
+
 ```typescript
-import { parse } from 'node-html-parser';
-import chalk from 'chalk';
+import { parse } from "node-html-parser";
+import chalk from "chalk";
 
 function htmlToAnsi(html: string): string {
-  const root = parse(html);
-  const container = root.querySelector('.ascii-container');
-  if (!container) return '';
+    const root = parse(html);
+    const container = root.querySelector(".ascii-container");
+    if (!container) return "";
 
-  let result = '';
+    let result = "";
 
-  for (const child of container.childNodes) {
-    if (child.nodeType === 3) {
-      // Text node
-      result += child.text;
-    } else if (child.rawTagName === 'span') {
-      const style = child.getAttribute('style') || '';
-      const text = child.text;
-      const rgb = parseRgb(style);
+    for (const child of container.childNodes) {
+        if (child.nodeType === 3) {
+            // Text node
+            result += child.text;
+        } else if (child.rawTagName === "span") {
+            const style = child.getAttribute("style") || "";
+            const text = child.text;
+            const rgb = parseRgb(style);
 
-      if (rgb && text.trim()) {
-        const [r, g, b] = rgb;
-        result += chalk.rgb(r, g, b)(text);
-      } else {
-        result += text;
-      }
+            if (rgb && text.trim()) {
+                const [r, g, b] = rgb;
+                result += chalk.rgb(r, g, b)(text);
+            } else {
+                result += text;
+            }
+        }
     }
-  }
 
-  return result;
+    return result;
 }
 ```
 
@@ -332,6 +373,7 @@ Source: [oven-sh/bun](https://github.com/oven-sh/bun) via DeepWiki
 #### Argument Parsing
 
 **Raw Arguments**
+
 ```typescript
 // bun run cli.ts init --flag value
 console.log(Bun.argv);
@@ -339,18 +381,19 @@ console.log(Bun.argv);
 ```
 
 **Structured Parsing with `util.parseArgs`**
+
 ```typescript
-import { parseArgs } from 'util';
+import { parseArgs } from "util";
 
 const { values, positionals } = parseArgs({
-  args: Bun.argv.slice(2), // Skip bun and script path
-  options: {
-    agent: { type: 'string', short: 'a' },
-    version: { type: 'boolean', short: 'v' },
-    help: { type: 'boolean', short: 'h' },
-  },
-  strict: false,
-  allowPositionals: true,
+    args: Bun.argv.slice(2), // Skip bun and script path
+    options: {
+        agent: { type: "string", short: "a" },
+        version: { type: "boolean", short: "v" },
+        help: { type: "boolean", short: "h" },
+    },
+    strict: false,
+    allowPositionals: true,
 });
 
 // bun run cli.ts init
@@ -364,44 +407,49 @@ const { values, positionals } = parseArgs({
 ```
 
 #### Command Detection with `Bun.which()`
+
 ```typescript
 function isCommandInstalled(cmd: string): boolean {
-  return Bun.which(cmd) !== null;
+    return Bun.which(cmd) !== null;
 }
 
 // Check if claude is installed
-if (!Bun.which('claude')) {
-  console.log('Claude Code not found. Install at: https://docs.anthropic.com/en/docs/claude-code/setup');
+if (!Bun.which("claude")) {
+    console.log(
+        "Claude Code not found. Install at: https://docs.anthropic.com/en/docs/claude-code/setup",
+    );
 }
 ```
 
 #### Version Check with Spawn
+
 ```typescript
 function getCommandVersion(cmd: string): string | null {
-  const cmdPath = Bun.which(cmd);
-  if (!cmdPath) return null;
+    const cmdPath = Bun.which(cmd);
+    if (!cmdPath) return null;
 
-  const result = Bun.spawnSync({
-    cmd: [cmdPath, '--version'],
-    stdout: 'pipe',
-    stderr: 'pipe',
-  });
+    const result = Bun.spawnSync({
+        cmd: [cmdPath, "--version"],
+        stdout: "pipe",
+        stderr: "pipe",
+    });
 
-  if (result.success) {
-    return result.stdout.toString().trim();
-  }
-  return null;
+    if (result.success) {
+        return result.stdout.toString().trim();
+    }
+    return null;
 }
 ```
 
 #### Spawning Agent Processes
+
 ```typescript
 // Spawn agent with flags
-const proc = Bun.spawn(['claude', 'dangerously-skip-permissions'], {
-  stdin: 'inherit',
-  stdout: 'inherit',
-  stderr: 'inherit',
-  cwd: process.cwd(),
+const proc = Bun.spawn(["claude", "dangerously-skip-permissions"], {
+    stdin: "inherit",
+    stdout: "inherit",
+    stderr: "inherit",
+    cwd: process.cwd(),
 });
 
 await proc.exited;
@@ -410,69 +458,84 @@ await proc.exited;
 #### File Operations
 
 **Reading Files**
+
 ```typescript
-const content = await Bun.file('atomic-logo.txt').text();
+const content = await Bun.file("atomic-logo.txt").text();
 ```
 
 **Writing Files**
+
 ```typescript
-await Bun.write('./config.json', JSON.stringify(config, null, 2));
+await Bun.write("./config.json", JSON.stringify(config, null, 2));
 ```
 
 **Checking File Existence**
+
 ```typescript
-const exists = await Bun.file('path/to/file').exists();
+const exists = await Bun.file("path/to/file").exists();
 ```
 
 **Copying Files (BunFile to BunFile)**
+
 ```typescript
 async function copyFile(src: string, dest: string): Promise<void> {
-  const srcFile = Bun.file(src);
-  await Bun.write(dest, srcFile);
+    const srcFile = Bun.file(src);
+    await Bun.write(dest, srcFile);
 }
 ```
 
 **Copying Directories**
+
 ```typescript
-import { readdir, mkdir } from 'fs/promises';
-import { join } from 'path';
+import { readdir, mkdir } from "fs/promises";
+import { join } from "path";
 
-async function copyDir(src: string, dest: string, exclude: string[] = []): Promise<void> {
-  await mkdir(dest, { recursive: true });
+async function copyDir(
+    src: string,
+    dest: string,
+    exclude: string[] = [],
+): Promise<void> {
+    await mkdir(dest, { recursive: true });
 
-  const entries = await readdir(src, { withFileTypes: true });
+    const entries = await readdir(src, { withFileTypes: true });
 
-  for (const entry of entries) {
-    const srcPath = join(src, entry.name);
-    const destPath = join(dest, entry.name);
+    for (const entry of entries) {
+        const srcPath = join(src, entry.name);
+        const destPath = join(dest, entry.name);
 
-    // Check exclusions
-    const relativePath = srcPath.replace(rootPath, '');
-    if (exclude.some(ex => relativePath.startsWith(ex) || entry.name === ex)) {
-      continue;
+        // Check exclusions
+        const relativePath = srcPath.replace(rootPath, "");
+        if (
+            exclude.some(
+                (ex) => relativePath.startsWith(ex) || entry.name === ex,
+            )
+        ) {
+            continue;
+        }
+
+        if (entry.isDirectory()) {
+            await copyDir(srcPath, destPath, exclude);
+        } else {
+            await Bun.write(destPath, Bun.file(srcPath));
+        }
     }
-
-    if (entry.isDirectory()) {
-      await copyDir(srcPath, destPath, exclude);
-    } else {
-      await Bun.write(destPath, Bun.file(srcPath));
-    }
-  }
 }
 ```
 
 #### Package.json bin Entry
+
 ```json
 {
-  "name": "atomic",
-  "version": "1.0.0",
-  "bin": {
-    "atomic": "./dist/cli.js"
-  }
+    "name": "atomic",
+    "version": "1.0.0",
+    "bin": {
+        "atomic": "./dist/cli.js"
+    }
 }
 ```
 
 With shebang in `cli.ts`:
+
 ```typescript
 #!/usr/bin/env bun
 // CLI code here
@@ -483,47 +546,55 @@ With shebang in `cli.ts`:
 ### 5. Agent Configuration Structure
 
 #### AGENT_CONFIG Definition
+
 ```typescript
 interface AgentConfig {
-  name: string;           // Display name
-  cmd: string;            // Command to run
-  additional_flags: string[];  // Flags for spawning
-  folder: string;         // Config folder relative to repo root
-  install_url: string;    // Installation instructions URL
-  exclude: string[];      // Paths to exclude when copying
+    name: string; // Display name
+    cmd: string; // Command to run
+    additional_flags: string[]; // Flags for spawning
+    folder: string; // Config folder relative to repo root
+    install_url: string; // Installation instructions URL
+    exclude: string[]; // Paths to exclude when copying
 }
 
 const AGENT_CONFIG: Record<string, AgentConfig> = {
-  'copilot-cli': {
-    name: 'GitHub Copilot CLI',
-    cmd: 'copilot',
-    additional_flags: ['--allow-all-tools', '--allow-all-paths'],
-    folder: '.github',
-    install_url: 'https://github.com/github/copilot-cli?tab=readme-ov-file#installation',
-    exclude: ['.github/workflows', '.github/dependabot.yml'],
-  },
-  'claude-code': {
-    name: 'Claude Code',
-    cmd: 'claude',
-    additional_flags: ['dangerously-skip-permissions'],
-    folder: '.claude',
-    install_url: 'https://docs.anthropic.com/en/docs/claude-code/setup',
-    exclude: [],
-  },
-  'opencode': {
-    name: 'opencode',
-    cmd: 'opencode',
-    additional_flags: [],
-    folder: '.opencode',
-    install_url: 'https://opencode.ai',
-    exclude: ['.opencode/node_modules', '.opencode/.gitignore', '.opencode/bun.lock', '.opencode/package.json'],
-  },
+    "copilot-cli": {
+        name: "GitHub Copilot CLI",
+        cmd: "copilot",
+        additional_flags: ["--allow-all-tools", "--allow-all-paths"],
+        folder: ".github",
+        install_url:
+            "https://github.com/github/copilot-cli?tab=readme-ov-file#installation",
+        exclude: [".github/workflows", ".github/dependabot.yml"],
+    },
+    "claude-code": {
+        name: "Claude Code",
+        cmd: "claude",
+        additional_flags: ["dangerously-skip-permissions"],
+        folder: ".claude",
+        install_url: "https://docs.anthropic.com/en/docs/claude-code/setup",
+        exclude: [],
+    },
+    opencode: {
+        name: "opencode",
+        cmd: "opencode",
+        additional_flags: [],
+        folder: ".opencode",
+        install_url: "https://opencode.ai",
+        exclude: [
+            ".opencode/node_modules",
+            ".opencode/.gitignore",
+            ".opencode/bun.lock",
+            ".opencode/package.json",
+        ],
+    },
 };
 ```
 
 #### Existing Folder Structures
 
 **Claude (`.claude/`)**
+
 ```
 .claude/
 ├── agents/           (7 markdown files)
@@ -535,6 +606,7 @@ const AGENT_CONFIG: Record<string, AgentConfig> = {
 ```
 
 **OpenCode (`.opencode/`)**
+
 ```
 .opencode/
 ├── agent/            (7 markdown files, singular naming)
@@ -549,6 +621,7 @@ const AGENT_CONFIG: Record<string, AgentConfig> = {
 ```
 
 **GitHub (`.github/`)**
+
 ```
 .github/
 ├── agents/           (7 markdown files)
@@ -562,10 +635,10 @@ const AGENT_CONFIG: Record<string, AgentConfig> = {
 
 #### Additional Files to Copy
 
-| Agent | Additional File |
-|-------|-----------------|
+| Agent         | Additional File            |
+| ------------- | -------------------------- |
 | `claude-code` | `CLAUDE.md` from repo root |
-| `opencode` | `AGENTS.md` from repo root |
+| `opencode`    | `AGENTS.md` from repo root |
 | `copilot-cli` | `AGENTS.md` from repo root |
 
 Note: `AGENTS.md` is a symlink to `CLAUDE.md` in the repo.
@@ -575,6 +648,7 @@ Note: `AGENTS.md` is a symlink to `CLAUDE.md` in the repo.
 ### 6. CLI User Experience Flow
 
 #### Command Structure
+
 ```
 atomic                     # Same as `atomic init`
 atomic init                # Interactive setup with banner
@@ -584,6 +658,7 @@ atomic --help              # Show help
 ```
 
 #### Init Flow
+
 ```
 1. Display ASCII banner (logo + spirit side by side)
 2. Show intro message
@@ -595,6 +670,7 @@ atomic --help              # Show help
 ```
 
 #### Agent Run Flow (`atomic --agent <name>`)
+
 ```
 1. Validate agent name exists in config
 2. Check if config folder exists in current dir
@@ -609,31 +685,32 @@ atomic --help              # Show help
 ### 7. Banner Display Implementation
 
 #### Side-by-Side Layout
+
 ```typescript
 function displayBanner(): void {
-  // Load both assets
-  const logo = Bun.file('assets/atomic-logo.txt').text();
-  const spiritHtml = Bun.file('assets/atomic-spirit.html').text();
-  const spirit = htmlToAnsi(spiritHtml);
+    // Load both assets
+    const logo = Bun.file("assets/atomic-logo.txt").text();
+    const spiritHtml = Bun.file("assets/atomic-spirit.html").text();
+    const spirit = htmlToAnsi(spiritHtml);
 
-  // Split into lines
-  const logoLines = logo.split('\n');
-  const spiritLines = spirit.split('\n');
+    // Split into lines
+    const logoLines = logo.split("\n");
+    const spiritLines = spirit.split("\n");
 
-  // Get max width of logo
-  const logoWidth = Math.max(...logoLines.map(l => stripAnsi(l).length));
+    // Get max width of logo
+    const logoWidth = Math.max(...logoLines.map((l) => stripAnsi(l).length));
 
-  // Combine side by side
-  const maxLines = Math.max(logoLines.length, spiritLines.length);
-  const combined: string[] = [];
+    // Combine side by side
+    const maxLines = Math.max(logoLines.length, spiritLines.length);
+    const combined: string[] = [];
 
-  for (let i = 0; i < maxLines; i++) {
-    const logoLine = (logoLines[i] || '').padEnd(logoWidth + 2);
-    const spiritLine = spiritLines[i] || '';
-    combined.push(logoLine + spiritLine);
-  }
+    for (let i = 0; i < maxLines; i++) {
+        const logoLine = (logoLines[i] || "").padEnd(logoWidth + 2);
+        const spiritLine = spiritLines[i] || "";
+        combined.push(logoLine + spiritLine);
+    }
 
-  console.log(combined.join('\n'));
+    console.log(combined.join("\n"));
 }
 ```
 
@@ -641,22 +718,23 @@ function displayBanner(): void {
 
 ## Code References
 
-| File | Description |
-|------|-------------|
-| `src/index.ts:1` | Current entry point (placeholder) |
-| `src/assets/atomic-logo.txt` | ASCII logo (6 lines, 742 bytes) |
+| File                            | Description                                 |
+| ------------------------------- | ------------------------------------------- |
+| `src/index.ts:1`                | Current entry point (placeholder)           |
+| `src/assets/atomic-logo.txt`    | ASCII logo (6 lines, 742 bytes)             |
 | `src/assets/atomic-spirit.html` | Colored ASCII art (5653 lines, ~300KB HTML) |
-| `.claude/` | Claude Code config folder |
-| `.opencode/` | OpenCode config folder |
-| `.github/` | GitHub Copilot CLI config folder |
-| `CLAUDE.md` | Documentation for Claude agent |
-| `AGENTS.md` | Symlink to CLAUDE.md |
+| `.claude/`                      | Claude Code config folder                   |
+| `.opencode/`                    | OpenCode config folder                      |
+| `.github/`                      | GitHub Copilot CLI config folder            |
+| `CLAUDE.md`                     | Documentation for Claude agent              |
+| `AGENTS.md`                     | Symlink to CLAUDE.md                        |
 
 ---
 
 ## Architecture Documentation
 
 ### Proposed File Structure
+
 ```
 src/
 ├── index.ts              # Entry point, CLI argument routing
@@ -675,28 +753,31 @@ src/
 ```
 
 ### Dependencies to Add
+
 ```json
 {
-  "dependencies": {
-    "@clack/prompts": "^0.7.0",
-    "figlet": "^1.7.0",
-    "chalk": "^5.3.0"
-  },
-  "devDependencies": {
-    "@types/figlet": "^1.5.8"
-  }
+    "dependencies": {
+        "@clack/prompts": "^0.7.0",
+        "figlet": "^1.7.0",
+        "chalk": "^5.3.0"
+    },
+    "devDependencies": {
+        "@types/figlet": "^1.5.8"
+    }
 }
 ```
 
 Alternative (lighter weight):
+
 ```json
 {
-  "dependencies": {
-    "@clack/prompts": "^0.7.0",
-    "node-html-parser": "^6.1.0"
-  }
+    "dependencies": {
+        "@clack/prompts": "^0.7.0",
+        "node-html-parser": "^6.1.0"
+    }
 }
 ```
+
 Using direct ANSI escape codes instead of chalk.
 
 ---
@@ -716,18 +797,18 @@ This CLI is being built as part of the atomic project to simplify onboarding for
 ## Open Questions
 
 1. **Spirit image size**: The atomic-spirit.html is ~300KB and generates ~5600 lines of colored ASCII. This may be too large for a terminal banner. Consider:
-   - Using a smaller/cropped version
-   - Pre-processing to reduce redundancy
-   - Making the spirit display optional
+    - Using a smaller/cropped version
+    - Pre-processing to reduce redundancy
+    - Making the spirit display optional
 
 2. **Color fallback**: What should happen on terminals without true color support?
-   - Degrade gracefully to 256 colors
-   - Fall back to uncolored output
-   - Detect and warn user
+    - Degrade gracefully to 256 colors
+    - Fall back to uncolored output
+    - Detect and warn user
 
 3. **Windows compatibility**: Shell scripts in `.github/scripts/` have both `.sh` and `.ps1` versions. The CLI should handle cross-platform execution.
 
 4. **Version management**: Where should the version number be defined for `atomic --version`? Options:
-   - `package.json` version field
-   - Build-time constant injection
-   - Separate version file
+    - `package.json` version field
+    - Build-time constant injection
+    - Separate version file

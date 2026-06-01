@@ -5,7 +5,21 @@ git_commit: 991f96c07c87a448301979f4b3e6174c68fa7973
 branch: lavaman131/hotfix/sub-agents-ui
 repository: atomic
 topic: "Ralph DAG-Based Orchestration: Implementation Research for blockedBy Enforcement and Parallel Worker Dispatch"
-tags: [research, codebase, ralph, dag, orchestration, blockedBy, parallel-workers, topological-sort, task-management, workflow, concurrency, worker-agent]
+tags:
+    [
+        research,
+        codebase,
+        ralph,
+        dag,
+        orchestration,
+        blockedBy,
+        parallel-workers,
+        topological-sort,
+        task-management,
+        workflow,
+        concurrency,
+        worker-agent,
+    ]
 status: complete
 last_updated: 2026-02-15
 last_updated_by: GitHub Copilot
@@ -31,24 +45,25 @@ The ralph worker loop exists in two places (fresh start and resume), both follow
 
 #### 1.1 Fresh-Start Worker Loop
 
-**File**: [`src/ui/commands/workflow-commands.ts:796-809`](https://github.com/flora131/atomic/blob/991f96c/src/ui/commands/workflow-commands.ts#L796-L809)
+**File**: [`src/ui/commands/workflow-commands.ts:796-809`](https://github.com/bastani/atomic/blob/991f96c/src/ui/commands/workflow-commands.ts#L796-L809)
 
 ```typescript
 // Worker loop: spawn worker sub-agent per iteration until all tasks are done
 const maxIterations = tasks.length * 2; // safety limit
 for (let i = 0; i < maxIterations; i++) {
-  // Read current task state from disk
-  const currentTasks = await readTasksFromDisk(sessionDir);
-  const pending = currentTasks.filter(t => t.status !== "completed");
-  if (pending.length === 0) break;
+    // Read current task state from disk
+    const currentTasks = await readTasksFromDisk(sessionDir);
+    const pending = currentTasks.filter((t) => t.status !== "completed");
+    if (pending.length === 0) break;
 
-  const message = buildTaskListPreamble(currentTasks);
-  const result = await context.spawnSubagent({ name: "worker", message });
-  if (!result.success) break;
+    const message = buildTaskListPreamble(currentTasks);
+    const result = await context.spawnSubagent({ name: "worker", message });
+    if (!result.success) break;
 }
 ```
 
 **Key observations**:
+
 1. **No `blockedBy` check**: Only filters by `status !== "completed"` (line 801). Tasks with unsatisfied dependencies are included in `pending`.
 2. **Serial execution**: `context.spawnSubagent()` blocks until the worker stream completes, so only one worker runs at a time.
 3. **Worker self-selection**: The full task list (including blocked tasks) is sent to the worker via `buildTaskListPreamble()`. The worker picks "highest priority" without dependency checking.
@@ -56,16 +71,16 @@ for (let i = 0; i < maxIterations; i++) {
 
 #### 1.2 Resume Worker Loop
 
-**File**: [`src/ui/commands/workflow-commands.ts:748-757`](https://github.com/flora131/atomic/blob/991f96c/src/ui/commands/workflow-commands.ts#L748-L757)
+**File**: [`src/ui/commands/workflow-commands.ts:748-757`](https://github.com/bastani/atomic/blob/991f96c/src/ui/commands/workflow-commands.ts#L748-L757)
 
 Identical structure with one difference: optional `additionalPrompt` appended if user provided extra instructions with `--resume`.
 
 #### 1.3 Full Ralph Command Flow
 
 1. User invokes `/ralph "<prompt>"`
-2. Session UUID generated, directory created at `~/.atomic/workflows/sessions/{uuid}/` via `initWorkflowSession()` ([`src/workflows/session.ts:51-77`](https://github.com/flora131/atomic/blob/991f96c/src/workflows/session.ts#L51-L77))
+2. Session UUID generated, directory created at `~/.atomic/workflows/sessions/{uuid}/` via `initWorkflowSession()` ([`src/workflows/session.ts:51-77`](https://github.com/bastani/atomic/blob/991f96c/src/workflows/session.ts#L51-L77))
 3. Task decomposition: `buildSpecToTasksPrompt(parsed.prompt)` → `context.streamAndWait(..., { hideContent: true })` → LLM generates JSON task array with `blockedBy` fields
-4. Tasks parsed via `parseTasks()` ([`workflow-commands.ts:650-667`](https://github.com/flora131/atomic/blob/991f96c/src/ui/commands/workflow-commands.ts#L650-L667)) — attempts direct JSON parse with regex fallback
+4. Tasks parsed via `parseTasks()` ([`workflow-commands.ts:650-667`](https://github.com/bastani/atomic/blob/991f96c/src/ui/commands/workflow-commands.ts#L650-L667)) — attempts direct JSON parse with regex fallback
 5. Tasks normalized via `normalizeTodoItems()` and written to `tasks.json` via `saveTasksToActiveSession()`
 6. Task panel activated: `context.setRalphSessionDir(sessionDir)` + `context.setRalphSessionId(sessionId)`
 7. Serial worker loop iterates until all tasks complete or max iterations reached
@@ -78,17 +93,19 @@ This is the **fundamental architectural barrier** to parallel worker dispatch.
 
 #### 2.1 Single-Slot Resolver
 
-**File**: [`src/ui/chat.tsx:1765`](https://github.com/flora131/atomic/blob/991f96c/src/ui/chat.tsx#L1765)
+**File**: [`src/ui/chat.tsx:1765`](https://github.com/bastani/atomic/blob/991f96c/src/ui/chat.tsx#L1765)
 
 ```typescript
-const streamCompletionResolverRef = useRef<((result: StreamResult) => void) | null>(null);
+const streamCompletionResolverRef = useRef<
+    ((result: StreamResult) => void) | null
+>(null);
 ```
 
 The ref holds exactly ONE resolver function. Only one `spawnSubagent()` call can be in-flight at a time.
 
 #### 2.2 spawnSubagent Implementation
 
-**File**: [`src/ui/chat.tsx:3254-3269`](https://github.com/flora131/atomic/blob/991f96c/src/ui/chat.tsx#L3254-L3269)
+**File**: [`src/ui/chat.tsx:3254-3269`](https://github.com/bastani/atomic/blob/991f96c/src/ui/chat.tsx#L3254-L3269)
 
 ```typescript
 spawnSubagent: async (options) => {
@@ -110,32 +127,35 @@ spawnSubagent: async (options) => {
 
 #### 2.3 Stream Completion Resolution
 
-**File**: [`src/ui/chat.tsx:3224-3236`](https://github.com/flora131/atomic/blob/991f96c/src/ui/chat.tsx#L3224-L3236)
+**File**: [`src/ui/chat.tsx:3224-3236`](https://github.com/bastani/atomic/blob/991f96c/src/ui/chat.tsx#L3224-L3236)
 
 ```typescript
 const resolver = streamCompletionResolverRef.current;
 if (resolver) {
-  streamCompletionResolverRef.current = null;
-  resolver({ content: lastStreamingContentRef.current, wasInterrupted: false });
-  return;
+    streamCompletionResolverRef.current = null;
+    resolver({
+        content: lastStreamingContentRef.current,
+        wasInterrupted: false,
+    });
+    return;
 }
 ```
 
 #### 2.4 CommandContext Interface
 
-**File**: [`src/ui/commands/registry.ts:65-139`](https://github.com/flora131/atomic/blob/991f96c/src/ui/commands/registry.ts#L65-L139)
+**File**: [`src/ui/commands/registry.ts:65-139`](https://github.com/bastani/atomic/blob/991f96c/src/ui/commands/registry.ts#L65-L139)
 
 Key methods: `addMessage`, `sendMessage`, `sendSilentMessage`, `spawnSubagent`, `streamAndWait`, `clearContext`, `setTodoItems`, `setRalphSessionDir`, `setRalphSessionId`, `updateWorkflowState`.
 
 #### 2.5 SpawnSubagentResult Interface
 
-**File**: [`src/ui/commands/registry.ts:52-59`](https://github.com/flora131/atomic/blob/991f96c/src/ui/commands/registry.ts#L52-L59)
+**File**: [`src/ui/commands/registry.ts:52-59`](https://github.com/bastani/atomic/blob/991f96c/src/ui/commands/registry.ts#L52-L59)
 
 ```typescript
 export interface SpawnSubagentResult {
-  success: boolean;
-  output: string;
-  error?: string;
+    success: boolean;
+    output: string;
+    error?: string;
 }
 ```
 
@@ -147,7 +167,7 @@ The codebase has production-ready parallel execution infrastructure that ralph d
 
 #### 3.1 SubagentGraphBridge.spawnParallel()
 
-**File**: [`src/graph/subagent-bridge.ts:184-208`](https://github.com/flora131/atomic/blob/991f96c/src/graph/subagent-bridge.ts#L184-L208)
+**File**: [`src/graph/subagent-bridge.ts:184-208`](https://github.com/bastani/atomic/blob/991f96c/src/graph/subagent-bridge.ts#L184-L208)
 
 ```typescript
 async spawnParallel(agents: SubagentSpawnOptions[]): Promise<SubagentResult[]> {
@@ -170,6 +190,7 @@ async spawnParallel(agents: SubagentSpawnOptions[]): Promise<SubagentResult[]> {
 ```
 
 **Key properties**:
+
 - Uses `Promise.allSettled()` — one agent's failure doesn't cancel others
 - Each sub-agent gets its own independent SDK session via `this.spawn()` → `this.createSession()`
 - Output truncated to 4000 chars (`MAX_SUMMARY_LENGTH`)
@@ -177,35 +198,35 @@ async spawnParallel(agents: SubagentSpawnOptions[]): Promise<SubagentResult[]> {
 
 #### 3.2 SubagentGraphBridge.spawn() — Single Agent
 
-**File**: [`src/graph/subagent-bridge.ts:106-178`](https://github.com/flora131/atomic/blob/991f96c/src/graph/subagent-bridge.ts#L106-L178)
+**File**: [`src/graph/subagent-bridge.ts:106-178`](https://github.com/bastani/atomic/blob/991f96c/src/graph/subagent-bridge.ts#L106-L178)
 
 Creates an independent SDK session, streams the agent's response, accumulates output, records tool uses and duration, persists results, and destroys the session in a `finally` block.
 
 #### 3.3 SubagentSpawnOptions Interface
 
-**File**: [`src/graph/subagent-bridge.ts:28-41`](https://github.com/flora131/atomic/blob/991f96c/src/graph/subagent-bridge.ts#L28-L41)
+**File**: [`src/graph/subagent-bridge.ts:28-41`](https://github.com/bastani/atomic/blob/991f96c/src/graph/subagent-bridge.ts#L28-L41)
 
 ```typescript
 interface SubagentSpawnOptions {
-  agentId: string;
-  agentName: string;
-  task: string;
-  systemPrompt?: string;
-  model?: string;
-  tools?: string[];
+    agentId: string;
+    agentName: string;
+    task: string;
+    systemPrompt?: string;
+    model?: string;
+    tools?: string[];
 }
 ```
 
 #### 3.4 Graph Node Parallel Primitives
 
-**File**: [`src/graph/nodes.ts`](https://github.com/flora131/atomic/blob/991f96c/src/graph/nodes.ts)
+**File**: [`src/graph/nodes.ts`](https://github.com/bastani/atomic/blob/991f96c/src/graph/nodes.ts)
 
 - `parallelNode()` (line 988): Creates fan-out/fan-in structure in graph, but branches execute sequentially through the BFS queue
 - `parallelSubagentNode()` (line 1802): **True parallel execution** — calls `bridge.spawnParallel()` with `Promise.allSettled()`. Takes a `merge` function to aggregate results into state update.
 
 #### 3.5 Global Bridge Registration
 
-**File**: [`src/graph/subagent-bridge.ts:217-221`](https://github.com/flora131/atomic/blob/991f96c/src/graph/subagent-bridge.ts#L217-L221)
+**File**: [`src/graph/subagent-bridge.ts:217-221`](https://github.com/bastani/atomic/blob/991f96c/src/graph/subagent-bridge.ts#L217-L221)
 
 ```typescript
 export function setSubagentBridge(bridge: SubagentGraphBridge): void { ... }
@@ -220,17 +241,17 @@ The bridge is initialized with a `CreateSessionFn` factory provided by SDK clien
 
 The `blockedBy` field flows through the entire system but is only used for display:
 
-| Layer | File | Line(s) | Usage |
-|-------|------|---------|-------|
-| **Schema** | [`src/sdk/tools/todo-write.ts`](https://github.com/flora131/atomic/blob/991f96c/src/sdk/tools/todo-write.ts#L40-L44) | 40-44 | `blockedBy` field in TodoWrite JSON schema |
-| **Type** | [`src/sdk/tools/todo-write.ts`](https://github.com/flora131/atomic/blob/991f96c/src/sdk/tools/todo-write.ts#L58) | 58 | `blockedBy?: string[]` on `TodoItem` |
-| **Normalization** | [`src/ui/utils/task-status.ts`](https://github.com/flora131/atomic/blob/991f96c/src/ui/utils/task-status.ts#L69-L80) | 69-80 | `normalizeBlockedBy()` filters/stringifies array |
-| **Prompt** | [`src/graph/nodes/ralph.ts`](https://github.com/flora131/atomic/blob/991f96c/src/graph/nodes/ralph.ts#L39-L51) | 39-51 | LLM instructed to generate `blockedBy` arrays |
-| **Topological sort** | [`src/ui/components/task-order.ts`](https://github.com/flora131/atomic/blob/991f96c/src/ui/components/task-order.ts#L19-L122) | 19-122 | `sortTasksTopologically()` using Kahn's algorithm |
-| **UI rendering** | [`src/ui/components/task-list-indicator.tsx`](https://github.com/flora131/atomic/blob/991f96c/src/ui/components/task-list-indicator.tsx#L117-L119) | 117-119 | Renders `› blocked by #1, #2` annotations |
-| **Worker prompt** | [`.claude/agents/worker.md`](https://github.com/flora131/atomic/blob/991f96c/.claude/agents/worker.md#L84-L96) | 84-96 | Bug handling instructs writing `blockedBy` on affected tasks |
-| **State snapshots** | [`src/ui/utils/ralph-task-state.ts`](https://github.com/flora131/atomic/blob/991f96c/src/ui/utils/ralph-task-state.ts#L34-L38) | 34-38 | `snapshotTaskItems()` preserves `blockedBy` |
-| **Worker loop** | [`workflow-commands.ts`](https://github.com/flora131/atomic/blob/991f96c/src/ui/commands/workflow-commands.ts#L801) | 801 | **NOT USED** — only checks `status !== "completed"` |
+| Layer                | File                                                                                                                                              | Line(s) | Usage                                                        |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ------- | ------------------------------------------------------------ |
+| **Schema**           | [`src/sdk/tools/todo-write.ts`](https://github.com/bastani/atomic/blob/991f96c/src/sdk/tools/todo-write.ts#L40-L44)                               | 40-44   | `blockedBy` field in TodoWrite JSON schema                   |
+| **Type**             | [`src/sdk/tools/todo-write.ts`](https://github.com/bastani/atomic/blob/991f96c/src/sdk/tools/todo-write.ts#L58)                                   | 58      | `blockedBy?: string[]` on `TodoItem`                         |
+| **Normalization**    | [`src/ui/utils/task-status.ts`](https://github.com/bastani/atomic/blob/991f96c/src/ui/utils/task-status.ts#L69-L80)                               | 69-80   | `normalizeBlockedBy()` filters/stringifies array             |
+| **Prompt**           | [`src/graph/nodes/ralph.ts`](https://github.com/bastani/atomic/blob/991f96c/src/graph/nodes/ralph.ts#L39-L51)                                     | 39-51   | LLM instructed to generate `blockedBy` arrays                |
+| **Topological sort** | [`src/ui/components/task-order.ts`](https://github.com/bastani/atomic/blob/991f96c/src/ui/components/task-order.ts#L19-L122)                      | 19-122  | `sortTasksTopologically()` using Kahn's algorithm            |
+| **UI rendering**     | [`src/ui/components/task-list-indicator.tsx`](https://github.com/bastani/atomic/blob/991f96c/src/ui/components/task-list-indicator.tsx#L117-L119) | 117-119 | Renders `› blocked by #1, #2` annotations                    |
+| **Worker prompt**    | [`.claude/agents/worker.md`](https://github.com/bastani/atomic/blob/991f96c/.claude/agents/worker.md#L84-L96)                                     | 84-96   | Bug handling instructs writing `blockedBy` on affected tasks |
+| **State snapshots**  | [`src/ui/utils/ralph-task-state.ts`](https://github.com/bastani/atomic/blob/991f96c/src/ui/utils/ralph-task-state.ts#L34-L38)                     | 34-38   | `snapshotTaskItems()` preserves `blockedBy`                  |
+| **Worker loop**      | [`workflow-commands.ts`](https://github.com/bastani/atomic/blob/991f96c/src/ui/commands/workflow-commands.ts#L801)                                | 801     | **NOT USED** — only checks `status !== "completed"`          |
 
 ---
 
@@ -238,7 +259,7 @@ The `blockedBy` field flows through the entire system but is only used for displ
 
 #### 5.1 Kahn's Algorithm Implementation
 
-**File**: [`src/ui/components/task-order.ts:19-122`](https://github.com/flora131/atomic/blob/991f96c/src/ui/components/task-order.ts#L19-L122)
+**File**: [`src/ui/components/task-order.ts:19-122`](https://github.com/bastani/atomic/blob/991f96c/src/ui/components/task-order.ts#L19-L122)
 
 The algorithm follows these steps:
 
@@ -253,17 +274,19 @@ The algorithm follows these steps:
 #### 5.2 Adapting for "Ready Set" Computation
 
 The topological sort can be adapted for execution scheduling by extracting the "ready set" — tasks that are:
+
 - Status is `"pending"` (not `"completed"` or `"in_progress"`)
 - All tasks in `blockedBy` have `status === "completed"`
 
 **Pseudocode**:
+
 ```typescript
 function getReadyTasks(tasks: TaskItem[]): TaskItem[] {
-  // Reuse same normalization/validation from sortTasksTopologically
-  // but filter to only tasks where:
-  //   1. status === "pending"
-  //   2. all blockedBy items have status === "completed"
-  // Returns subset of dispatchable tasks
+    // Reuse same normalization/validation from sortTasksTopologically
+    // but filter to only tasks where:
+    //   1. status === "pending"
+    //   2. all blockedBy items have status === "completed"
+    // Returns subset of dispatchable tasks
 }
 ```
 
@@ -275,7 +298,7 @@ If the ready set is empty but uncompleted tasks remain, the system is deadlocked
 
 #### 5.4 Test Coverage
 
-**File**: [`src/ui/components/task-order.test.ts`](https://github.com/flora131/atomic/blob/991f96c/src/ui/components/task-order.test.ts)
+**File**: [`src/ui/components/task-order.test.ts`](https://github.com/bastani/atomic/blob/991f96c/src/ui/components/task-order.test.ts)
 
 Tests cover: linear chains, fan-out dependencies, cycles, missing IDs, duplicate IDs, empty input, single tasks, and unknown blockers.
 
@@ -287,7 +310,7 @@ This pipeline is how task state changes propagate to the UI and is **already com
 
 #### 6.1 TodoWrite Tool Definition
 
-**File**: [`src/sdk/tools/todo-write.ts:67-92`](https://github.com/flora131/atomic/blob/991f96c/src/sdk/tools/todo-write.ts#L67-L92)
+**File**: [`src/sdk/tools/todo-write.ts:67-92`](https://github.com/bastani/atomic/blob/991f96c/src/sdk/tools/todo-write.ts#L67-L92)
 
 The handler stores todos in memory, returns `{ oldTodos, newTodos, summary }`. The TUI intercepts the tool input before the handler runs to persist to disk.
 
@@ -295,41 +318,44 @@ The handler stores todos in memory, returns `{ oldTodos, newTodos, summary }`. T
 
 Two interception points in the streaming pipeline:
 
-**handleToolExecute** — [`src/ui/chat.tsx:2026-2046`](https://github.com/flora131/atomic/blob/991f96c/src/ui/chat.tsx#L2026-L2046)
+**handleToolExecute** — [`src/ui/chat.tsx:2026-2046`](https://github.com/bastani/atomic/blob/991f96c/src/ui/chat.tsx#L2026-L2046)
 
 When a tool call is detected as "TodoWrite", the TUI extracts todos from the input and:
+
 1. Updates in-memory `todoItemsRef` for the summary panel
 2. If ralph is active (`ralphSessionIdRef.current` is set), persists to `tasks.json`:
 
 ```typescript
 if (ralphSessionIdRef.current) {
-  void saveTasksToActiveSession(todos, ralphSessionIdRef.current);
+    void saveTasksToActiveSession(todos, ralphSessionIdRef.current);
 }
 ```
 
-**handleToolComplete** — [`src/ui/chat.tsx:2141-2152`](https://github.com/flora131/atomic/blob/991f96c/src/ui/chat.tsx#L2141-L2152)
+**handleToolComplete** — [`src/ui/chat.tsx:2141-2152`](https://github.com/bastani/atomic/blob/991f96c/src/ui/chat.tsx#L2141-L2152)
 
 Same logic for late/deferred tool inputs.
 
 #### 6.3 File Watcher Mechanism
 
-**File**: [`src/ui/commands/workflow-commands.ts:818-837`](https://github.com/flora131/atomic/blob/991f96c/src/ui/commands/workflow-commands.ts#L818-L837)
+**File**: [`src/ui/commands/workflow-commands.ts:818-837`](https://github.com/bastani/atomic/blob/991f96c/src/ui/commands/workflow-commands.ts#L818-L837)
 
 ```typescript
 export function watchTasksJson(
-  sessionDir: string,
-  onUpdate: (items: NormalizedTodoItem[]) => void,
+    sessionDir: string,
+    onUpdate: (items: NormalizedTodoItem[]) => void,
 ): () => void {
-  const tasksPath = join(sessionDir, "tasks.json");
-  const watcher = watch(sessionDir, async (eventType, filename) => {
-    if (filename !== "tasks.json") return;
-    try {
-      const content = await readFile(tasksPath, "utf-8");
-      const tasks = normalizeTodoItems(JSON.parse(content));
-      onUpdate(tasks);
-    } catch { /* ignore mid-write/missing file */ }
-  });
-  return () => watcher.close();
+    const tasksPath = join(sessionDir, "tasks.json");
+    const watcher = watch(sessionDir, async (eventType, filename) => {
+        if (filename !== "tasks.json") return;
+        try {
+            const content = await readFile(tasksPath, "utf-8");
+            const tasks = normalizeTodoItems(JSON.parse(content));
+            onUpdate(tasks);
+        } catch {
+            /* ignore mid-write/missing file */
+        }
+    });
+    return () => watcher.close();
 }
 ```
 
@@ -337,17 +363,19 @@ Watches the **directory** (not the file) so it catches file creation even if `ta
 
 #### 6.4 TaskListPanel Consumption
 
-**File**: [`src/ui/components/task-list-panel.tsx:48-64`](https://github.com/flora131/atomic/blob/991f96c/src/ui/components/task-list-panel.tsx#L48-L64)
+**File**: [`src/ui/components/task-list-panel.tsx:48-64`](https://github.com/bastani/atomic/blob/991f96c/src/ui/components/task-list-panel.tsx#L48-L64)
 
 Two-phase loading:
+
 1. **Sync initial load**: `readFileSync(tasksPath)` on mount (prevents flash)
 2. **Async live updates**: `watchTasksJson(sessionDir, (items) => setTasks(sortTasksTopologically(items)))` for reactive re-renders
 
 #### 6.5 TaskListIndicator Rendering
 
-**File**: [`src/ui/components/task-list-indicator.tsx:85-134`](https://github.com/flora131/atomic/blob/991f96c/src/ui/components/task-list-indicator.tsx#L85-L134)
+**File**: [`src/ui/components/task-list-indicator.tsx:85-134`](https://github.com/bastani/atomic/blob/991f96c/src/ui/components/task-list-indicator.tsx#L85-L134)
 
 Renders each task with:
+
 - Status icons: `○` pending, `●` in_progress (blinking blue), `●` completed (green), `✕` error (red)
 - Content text truncated to `MAX_CONTENT_LENGTH`
 - `blockedBy` annotation: `› blocked by #1, #2` in muted color (lines 117-119)
@@ -368,7 +396,7 @@ Worker calls TodoWrite → SDK event → chat.tsx handleToolExecute (line 2026) 
 
 #### 7.1 Worker Agent Definition
 
-**Files**: [`.claude/agents/worker.md`](https://github.com/flora131/atomic/blob/991f96c/.claude/agents/worker.md), [`.github/agents/worker.md`](https://github.com/flora131/atomic/blob/991f96c/.github/agents/worker.md), [`.opencode/agents/worker.md`](https://github.com/flora131/atomic/blob/991f96c/.opencode/agents/worker.md)
+**Files**: [`.claude/agents/worker.md`](https://github.com/bastani/atomic/blob/991f96c/.claude/agents/worker.md), [`.github/agents/worker.md`](https://github.com/bastani/atomic/blob/991f96c/.github/agents/worker.md), [`.opencode/agents/worker.md`](https://github.com/bastani/atomic/blob/991f96c/.opencode/agents/worker.md)
 
 All three versions are nearly identical. Key instructions:
 
@@ -394,7 +422,7 @@ When `context.spawnSubagent({ name: "worker" })` is called, it sends: `"Use the 
 
 ### 8. Ralph State Management in chat.tsx
 
-**File**: [`src/ui/chat.tsx:1773-1776`](https://github.com/flora131/atomic/blob/991f96c/src/ui/chat.tsx#L1773-L1776)
+**File**: [`src/ui/chat.tsx:1773-1776`](https://github.com/bastani/atomic/blob/991f96c/src/ui/chat.tsx#L1773-L1776)
 
 ```typescript
 const [ralphSessionDir, setRalphSessionDir] = useState<string | null>(null);
@@ -405,8 +433,8 @@ const ralphSessionIdRef = useRef<string | null>(null);
 
 Both `useState` (for rendering) and `useRef` (for callback closures) track the active ralph session. The refs are updated via `context.setRalphSessionDir()` / `context.setRalphSessionId()` which are exposed on CommandContext:
 
-- **setRalphSessionDir** ([`chat.tsx:3301-3303`](https://github.com/flora131/atomic/blob/991f96c/src/ui/chat.tsx#L3301-L3303)): Sets both state and ref
-- **setRalphSessionId** ([`chat.tsx:3305-3307`](https://github.com/flora131/atomic/blob/991f96c/src/ui/chat.tsx#L3305-L3307)): Sets both state and ref
+- **setRalphSessionDir** ([`chat.tsx:3301-3303`](https://github.com/bastani/atomic/blob/991f96c/src/ui/chat.tsx#L3301-L3303)): Sets both state and ref
+- **setRalphSessionId** ([`chat.tsx:3305-3307`](https://github.com/bastani/atomic/blob/991f96c/src/ui/chat.tsx#L3305-L3307)): Sets both state and ref
 
 The `ralphSessionIdRef.current` is checked during TodoWrite interception to determine whether to persist to `tasks.json`.
 
@@ -416,20 +444,33 @@ The `ralphSessionIdRef.current` is checked during TodoWrite interception to dete
 
 #### 9.1 saveTasksToActiveSession()
 
-**File**: [`src/ui/commands/workflow-commands.ts:141-163`](https://github.com/flora131/atomic/blob/991f96c/src/ui/commands/workflow-commands.ts#L141-L163)
+**File**: [`src/ui/commands/workflow-commands.ts:141-163`](https://github.com/bastani/atomic/blob/991f96c/src/ui/commands/workflow-commands.ts#L141-L163)
 
 ```typescript
 export async function saveTasksToActiveSession(
-  tasks: Array<{ id?: string; content: string; status: string; activeForm: string; blockedBy?: string[] }>,
-  sessionId?: string,
+    tasks: Array<{
+        id?: string;
+        content: string;
+        status: string;
+        activeForm: string;
+        blockedBy?: string[];
+    }>,
+    sessionId?: string,
 ): Promise<void> {
-  // ... resolve sessionDir ...
-  const tasksPath = join(sessionDir, "tasks.json");
-  try {
-    await Bun.write(tasksPath, JSON.stringify(tasks.map((task) => normalizeTodoItem(task)), null, 2));
-  } catch (error) {
-    console.error("[ralph] Failed to write tasks.json:", error);
-  }
+    // ... resolve sessionDir ...
+    const tasksPath = join(sessionDir, "tasks.json");
+    try {
+        await Bun.write(
+            tasksPath,
+            JSON.stringify(
+                tasks.map((task) => normalizeTodoItem(task)),
+                null,
+                2,
+            ),
+        );
+    } catch (error) {
+        console.error("[ralph] Failed to write tasks.json:", error);
+    }
 }
 ```
 
@@ -438,19 +479,21 @@ export async function saveTasksToActiveSession(
 #### 9.2 Bun.write() Atomicity Analysis
 
 Based on Bun source code analysis:
+
 - **General `Bun.write()`: NOT atomic** — uses direct write + truncate, not write-to-temp-then-rename
 - **POSIX `write()` guarantees**: Only atomic for writes ≤ `PIPE_BUF` (4KB-64KB). `tasks.json` can exceed this.
 - **Race condition risk**: Multiple concurrent TodoWrite calls could create corrupted/mixed file content
 - **No file locking API** exposed to JavaScript in Bun
 
 **References**:
+
 - [Bun File I/O Docs](https://bun.sh/docs/api/file-io)
 - [Bun Issue #12917: Parallel install race conditions](https://github.com/oven-sh/bun/issues/12917)
 - [Bun Issue #24822: Feature request for native locks](https://github.com/oven-sh/bun/issues/24822)
 
 #### 9.3 Session Directory Structure
 
-**File**: [`src/workflows/session.ts:32-49`](https://github.com/flora131/atomic/blob/991f96c/src/workflows/session.ts#L32-L49)
+**File**: [`src/workflows/session.ts:32-49`](https://github.com/bastani/atomic/blob/991f96c/src/workflows/session.ts#L32-L49)
 
 ```
 ~/.atomic/workflows/sessions/{sessionId}/
@@ -496,12 +539,15 @@ The orchestrator (ralph command handler) acts as the sole writer to `tasks.json`
 If workers must write `tasks.json` directly, use `proper-lockfile` (pure JS, Bun-compatible, ~2.5M weekly npm downloads):
 
 ```javascript
-import lockfile from 'proper-lockfile';
-const release = await lockfile.lock('tasks.json', { stale: 10000, retries: { retries: 10 } });
+import lockfile from "proper-lockfile";
+const release = await lockfile.lock("tasks.json", {
+    stale: 10000,
+    retries: { retries: 10 },
+});
 try {
-  // read-modify-write tasks.json
+    // read-modify-write tasks.json
 } finally {
-  await release();
+    await release();
 }
 ```
 
@@ -512,20 +558,20 @@ try {
 Use write-to-temp-then-rename for crash-safe writes:
 
 ```typescript
-import { randomBytes } from 'crypto';
-const tmp = `${tasksPath}.tmp.${randomBytes(6).toString('hex')}`;
+import { randomBytes } from "crypto";
+const tmp = `${tasksPath}.tmp.${randomBytes(6).toString("hex")}`;
 await Bun.write(tmp, JSON.stringify(tasks, null, 2));
 await fs.promises.rename(tmp, tasksPath); // Atomic on POSIX
 ```
 
 #### 10.4 DAG Scheduling Libraries
 
-| Library | DAG Support | Parallel Execution | Bun Ready |
-|---------|-------------|-------------------|-----------|
-| [`@microsoft/p-graph`](https://github.com/microsoft/p-graph) | ✅ Native | ✅ Configurable concurrency | ✅ |
-| [`async.auto()`](https://github.com/caolan/async) | ✅ Native | ✅ Configurable concurrency | ✅ |
-| [`graph-run`](https://github.com/isaacs/graph-run) | ✅ Native | ✅ Maximal parallelism | ✅ |
-| [`dependency-graph`](https://github.com/jriecken/dependency-graph) | ✅ Data only | ❌ No execution engine | ✅ |
+| Library                                                            | DAG Support  | Parallel Execution          | Bun Ready |
+| ------------------------------------------------------------------ | ------------ | --------------------------- | --------- |
+| [`@microsoft/p-graph`](https://github.com/microsoft/p-graph)       | ✅ Native    | ✅ Configurable concurrency | ✅        |
+| [`async.auto()`](https://github.com/caolan/async)                  | ✅ Native    | ✅ Configurable concurrency | ✅        |
+| [`graph-run`](https://github.com/isaacs/graph-run)                 | ✅ Native    | ✅ Maximal parallelism      | ✅        |
+| [`dependency-graph`](https://github.com/jriecken/dependency-graph) | ✅ Data only | ❌ No execution engine      | ✅        |
 
 ---
 
@@ -533,28 +579,28 @@ await fs.promises.rename(tmp, tasksPath); // Atomic on POSIX
 
 #### 11.1 RalphTaskStateItem Interface
 
-**File**: [`src/ui/utils/ralph-task-state.ts:5-12`](https://github.com/flora131/atomic/blob/991f96c/src/ui/utils/ralph-task-state.ts#L5-L12)
+**File**: [`src/ui/utils/ralph-task-state.ts:5-12`](https://github.com/bastani/atomic/blob/991f96c/src/ui/utils/ralph-task-state.ts#L5-L12)
 
 ```typescript
 export type RalphTaskStatus = "pending" | "in_progress" | "completed" | "error";
 
 export interface RalphTaskStateItem {
-  id?: string;
-  content: string;
-  status: RalphTaskStatus;
-  blockedBy?: string[];
+    id?: string;
+    content: string;
+    status: RalphTaskStatus;
+    blockedBy?: string[];
 }
 ```
 
 #### 11.2 normalizeInterruptedTasks()
 
-**File**: [`src/ui/utils/ralph-task-state.ts:17-25`](https://github.com/flora131/atomic/blob/991f96c/src/ui/utils/ralph-task-state.ts#L17-L25)
+**File**: [`src/ui/utils/ralph-task-state.ts:17-25`](https://github.com/bastani/atomic/blob/991f96c/src/ui/utils/ralph-task-state.ts#L17-L25)
 
 Resets `in_progress` → `pending` when a workflow is interrupted. Used on resume to ensure crashed workers don't leave tasks stuck.
 
 #### 11.3 snapshotTaskItems()
 
-**File**: [`src/ui/utils/ralph-task-state.ts:30-40`](https://github.com/flora131/atomic/blob/991f96c/src/ui/utils/ralph-task-state.ts#L30-L40)
+**File**: [`src/ui/utils/ralph-task-state.ts:30-40`](https://github.com/bastani/atomic/blob/991f96c/src/ui/utils/ralph-task-state.ts#L30-L40)
 
 Creates clean snapshots for message persistence, explicitly mapping only `id`, `content`, `status`, `blockedBy` fields.
 
@@ -562,18 +608,18 @@ Creates clean snapshots for message persistence, explicitly mapping only `id`, `
 
 ### 12. Task Status Normalization Pipeline
 
-**File**: [`src/ui/utils/task-status.ts`](https://github.com/flora131/atomic/blob/991f96c/src/ui/utils/task-status.ts)
+**File**: [`src/ui/utils/task-status.ts`](https://github.com/bastani/atomic/blob/991f96c/src/ui/utils/task-status.ts)
 
 The normalization pipeline handles arbitrary/malformed task data:
 
-| Function | Line(s) | Purpose |
-|----------|---------|---------|
-| `normalizeId()` | 61-67 | Converts to string, returns `undefined` if empty |
-| `normalizeBlockedBy()` | 69-80 | Validates array, filters null/empty, stringifies items |
-| `normalizeTaskStatus()` | 90-97 | Maps aliases (`todo`→`pending`, `done`→`completed`, etc.) |
-| `normalizeTaskItem()` | 99-107 | Combines all normalizers for base task |
-| `normalizeTodoItem()` | 109-117 | Extends base with `activeForm` field |
-| `normalizeTodoItems()` | 127-133 | Maps normalizer over array |
+| Function                | Line(s) | Purpose                                                   |
+| ----------------------- | ------- | --------------------------------------------------------- |
+| `normalizeId()`         | 61-67   | Converts to string, returns `undefined` if empty          |
+| `normalizeBlockedBy()`  | 69-80   | Validates array, filters null/empty, stringifies items    |
+| `normalizeTaskStatus()` | 90-97   | Maps aliases (`todo`→`pending`, `done`→`completed`, etc.) |
+| `normalizeTaskItem()`   | 99-107  | Combines all normalizers for base task                    |
+| `normalizeTodoItem()`   | 109-117 | Extends base with `activeForm` field                      |
+| `normalizeTodoItems()`  | 127-133 | Maps normalizer over array                                |
 
 Status alias map (lines 17-35) supports: `pending`/`todo`/`open`/`not_started` → `"pending"`, `in_progress`/`inprogress`/`doing`/`running`/`active` → `"in_progress"`, `completed`/`complete`/`done`/`success`/`succeeded` → `"completed"`, `error`/`failed`/`failure` → `"error"`.
 
@@ -581,63 +627,63 @@ Status alias map (lines 17-35) supports: `pending`/`todo`/`open`/`not_started` �
 
 ## Architecture Gaps Summary
 
-| Gap | Current State | Location |
-|-----|--------------|----------|
-| **Dependency enforcement** | `blockedBy` exists but worker loop only checks `status !== "completed"` | `workflow-commands.ts:801` |
-| **Parallel dispatch** | Serial `for` loop with single `streamCompletionResolverRef` | `chat.tsx:1765, 3254-3269` |
-| **Worker task selection** | Worker picks "highest priority" without checking blockers | `.claude/agents/worker.md:9` |
-| **File concurrency** | No locking; `Bun.write()` full overwrite | `workflow-commands.ts:159` |
-| **Deadlock detection** | Not implemented | N/A |
-| **Worker path** | References `~/.atomic/workflows/{session_id}` (missing `sessions/`) | `.claude/agents/worker.md:13` |
+| Gap                        | Current State                                                           | Location                      |
+| -------------------------- | ----------------------------------------------------------------------- | ----------------------------- |
+| **Dependency enforcement** | `blockedBy` exists but worker loop only checks `status !== "completed"` | `workflow-commands.ts:801`    |
+| **Parallel dispatch**      | Serial `for` loop with single `streamCompletionResolverRef`             | `chat.tsx:1765, 3254-3269`    |
+| **Worker task selection**  | Worker picks "highest priority" without checking blockers               | `.claude/agents/worker.md:9`  |
+| **File concurrency**       | No locking; `Bun.write()` full overwrite                                | `workflow-commands.ts:159`    |
+| **Deadlock detection**     | Not implemented                                                         | N/A                           |
+| **Worker path**            | References `~/.atomic/workflows/{session_id}` (missing `sessions/`)     | `.claude/agents/worker.md:13` |
 
 ---
 
 ## Code References
 
-| Component | File:Line | Description |
-|-----------|-----------|-------------|
-| Worker loop (fresh) | [`workflow-commands.ts:796-809`](https://github.com/flora131/atomic/blob/991f96c/src/ui/commands/workflow-commands.ts#L796-L809) | Serial `for` loop spawning one worker at a time |
-| Worker loop (resume) | [`workflow-commands.ts:748-757`](https://github.com/flora131/atomic/blob/991f96c/src/ui/commands/workflow-commands.ts#L748-L757) | Same pattern for resume path |
-| `spawnSubagent` impl | [`chat.tsx:3254-3269`](https://github.com/flora131/atomic/blob/991f96c/src/ui/chat.tsx#L3254-L3269) | Single-slot resolver blocking |
-| `streamCompletionResolverRef` | [`chat.tsx:1765`](https://github.com/flora131/atomic/blob/991f96c/src/ui/chat.tsx#L1765) | `useRef` single resolver — prevents parallelism |
-| `saveTasksToActiveSession` | [`workflow-commands.ts:141-163`](https://github.com/flora131/atomic/blob/991f96c/src/ui/commands/workflow-commands.ts#L141-L163) | Writes tasks to `tasks.json` via `Bun.write()` |
-| `readTasksFromDisk` | [`workflow-commands.ts:166-176`](https://github.com/flora131/atomic/blob/991f96c/src/ui/commands/workflow-commands.ts#L166-L176) | Reads/normalizes tasks from disk |
-| `watchTasksJson` | [`workflow-commands.ts:818-837`](https://github.com/flora131/atomic/blob/991f96c/src/ui/commands/workflow-commands.ts#L818-L837) | File watcher for live UI updates |
-| `buildSpecToTasksPrompt` | [`ralph.ts:19-58`](https://github.com/flora131/atomic/blob/991f96c/src/graph/nodes/ralph.ts#L19-L58) | Prompt instructing LLM to generate `blockedBy` |
-| `buildTaskListPreamble` | [`ralph.ts:66-81`](https://github.com/flora131/atomic/blob/991f96c/src/graph/nodes/ralph.ts#L66-L81) | Serializes full task list for worker context |
-| `sortTasksTopologically` | [`task-order.ts:19-122`](https://github.com/flora131/atomic/blob/991f96c/src/ui/components/task-order.ts#L19-L122) | Kahn's algorithm (display only, reusable for scheduling) |
-| `normalizeBlockedBy` | [`task-status.ts:69-80`](https://github.com/flora131/atomic/blob/991f96c/src/ui/utils/task-status.ts#L69-L80) | Normalizes `blockedBy` arrays |
-| `TaskListPanel` | [`task-list-panel.tsx:39-94`](https://github.com/flora131/atomic/blob/991f96c/src/ui/components/task-list-panel.tsx#L39-L94) | Persistent file-driven task list UI |
-| `TaskListIndicator` | [`task-list-indicator.tsx:85-134`](https://github.com/flora131/atomic/blob/991f96c/src/ui/components/task-list-indicator.tsx#L85-L134) | Renders tasks with blocked-by annotations |
-| `SubagentGraphBridge.spawn` | [`subagent-bridge.ts:106-178`](https://github.com/flora131/atomic/blob/991f96c/src/graph/subagent-bridge.ts#L106-L178) | Single sub-agent session lifecycle |
-| `SubagentGraphBridge.spawnParallel` | [`subagent-bridge.ts:184-208`](https://github.com/flora131/atomic/blob/991f96c/src/graph/subagent-bridge.ts#L184-L208) | Parallel execution via `Promise.allSettled()` |
-| `parallelSubagentNode` | [`nodes.ts:1802-1838`](https://github.com/flora131/atomic/blob/991f96c/src/graph/nodes.ts#L1802-L1838) | Graph node for concurrent sub-agent spawning |
-| Worker agent def (Claude) | [`.claude/agents/worker.md`](https://github.com/flora131/atomic/blob/991f96c/.claude/agents/worker.md) | Worker prompt — no `blockedBy` check for task selection |
-| Worker agent def (Copilot) | [`.github/agents/worker.md`](https://github.com/flora131/atomic/blob/991f96c/.github/agents/worker.md) | Worker prompt (Copilot version) |
-| Worker agent def (OpenCode) | [`.opencode/agents/worker.md`](https://github.com/flora131/atomic/blob/991f96c/.opencode/agents/worker.md) | Worker prompt (OpenCode version) |
-| TodoWrite tool | [`todo-write.ts:53-92`](https://github.com/flora131/atomic/blob/991f96c/src/sdk/tools/todo-write.ts#L53-L92) | TodoItem interface and handler |
-| TodoWrite interception | [`chat.tsx:2026-2046`](https://github.com/flora131/atomic/blob/991f96c/src/ui/chat.tsx#L2026-L2046) | Persists to `tasks.json` when ralph is active |
-| Ralph session state | [`chat.tsx:1773-1776`](https://github.com/flora131/atomic/blob/991f96c/src/ui/chat.tsx#L1773-L1776) | `ralphSessionDir`/`ralphSessionId` React state |
-| Session directory | [`session.ts:32-49`](https://github.com/flora131/atomic/blob/991f96c/src/workflows/session.ts#L32-L49) | `~/.atomic/workflows/sessions/{sessionId}/` |
-| Ralph task state helpers | [`ralph-task-state.ts:5-40`](https://github.com/flora131/atomic/blob/991f96c/src/ui/utils/ralph-task-state.ts#L5-L40) | State types, interrupt normalization, snapshots |
-| Task status normalization | [`task-status.ts:1-133`](https://github.com/flora131/atomic/blob/991f96c/src/ui/utils/task-status.ts#L1-L133) | Full normalization pipeline |
-| `parseTasks` | [`workflow-commands.ts:650-667`](https://github.com/flora131/atomic/blob/991f96c/src/ui/commands/workflow-commands.ts#L650-L667) | JSON extraction from LLM output |
-| `parseRalphArgs` | [`workflow-commands.ts:50-69`](https://github.com/flora131/atomic/blob/991f96c/src/ui/commands/workflow-commands.ts#L50-L69) | Command argument parsing |
-| Workflow definition | [`workflow-commands.ts:540-573`](https://github.com/flora131/atomic/blob/991f96c/src/ui/commands/workflow-commands.ts#L540-L573) | Ralph workflow metadata registration |
-| `ParallelAgentsTree` | [`src/ui/components/parallel-agents-tree.tsx`](https://github.com/flora131/atomic/blob/991f96c/src/ui/components/parallel-agents-tree.tsx) | UI component for visualizing parallel agent execution |
+| Component                           | File:Line                                                                                                                                 | Description                                              |
+| ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| Worker loop (fresh)                 | [`workflow-commands.ts:796-809`](https://github.com/bastani/atomic/blob/991f96c/src/ui/commands/workflow-commands.ts#L796-L809)           | Serial `for` loop spawning one worker at a time          |
+| Worker loop (resume)                | [`workflow-commands.ts:748-757`](https://github.com/bastani/atomic/blob/991f96c/src/ui/commands/workflow-commands.ts#L748-L757)           | Same pattern for resume path                             |
+| `spawnSubagent` impl                | [`chat.tsx:3254-3269`](https://github.com/bastani/atomic/blob/991f96c/src/ui/chat.tsx#L3254-L3269)                                        | Single-slot resolver blocking                            |
+| `streamCompletionResolverRef`       | [`chat.tsx:1765`](https://github.com/bastani/atomic/blob/991f96c/src/ui/chat.tsx#L1765)                                                   | `useRef` single resolver — prevents parallelism          |
+| `saveTasksToActiveSession`          | [`workflow-commands.ts:141-163`](https://github.com/bastani/atomic/blob/991f96c/src/ui/commands/workflow-commands.ts#L141-L163)           | Writes tasks to `tasks.json` via `Bun.write()`           |
+| `readTasksFromDisk`                 | [`workflow-commands.ts:166-176`](https://github.com/bastani/atomic/blob/991f96c/src/ui/commands/workflow-commands.ts#L166-L176)           | Reads/normalizes tasks from disk                         |
+| `watchTasksJson`                    | [`workflow-commands.ts:818-837`](https://github.com/bastani/atomic/blob/991f96c/src/ui/commands/workflow-commands.ts#L818-L837)           | File watcher for live UI updates                         |
+| `buildSpecToTasksPrompt`            | [`ralph.ts:19-58`](https://github.com/bastani/atomic/blob/991f96c/src/graph/nodes/ralph.ts#L19-L58)                                       | Prompt instructing LLM to generate `blockedBy`           |
+| `buildTaskListPreamble`             | [`ralph.ts:66-81`](https://github.com/bastani/atomic/blob/991f96c/src/graph/nodes/ralph.ts#L66-L81)                                       | Serializes full task list for worker context             |
+| `sortTasksTopologically`            | [`task-order.ts:19-122`](https://github.com/bastani/atomic/blob/991f96c/src/ui/components/task-order.ts#L19-L122)                         | Kahn's algorithm (display only, reusable for scheduling) |
+| `normalizeBlockedBy`                | [`task-status.ts:69-80`](https://github.com/bastani/atomic/blob/991f96c/src/ui/utils/task-status.ts#L69-L80)                              | Normalizes `blockedBy` arrays                            |
+| `TaskListPanel`                     | [`task-list-panel.tsx:39-94`](https://github.com/bastani/atomic/blob/991f96c/src/ui/components/task-list-panel.tsx#L39-L94)               | Persistent file-driven task list UI                      |
+| `TaskListIndicator`                 | [`task-list-indicator.tsx:85-134`](https://github.com/bastani/atomic/blob/991f96c/src/ui/components/task-list-indicator.tsx#L85-L134)     | Renders tasks with blocked-by annotations                |
+| `SubagentGraphBridge.spawn`         | [`subagent-bridge.ts:106-178`](https://github.com/bastani/atomic/blob/991f96c/src/graph/subagent-bridge.ts#L106-L178)                     | Single sub-agent session lifecycle                       |
+| `SubagentGraphBridge.spawnParallel` | [`subagent-bridge.ts:184-208`](https://github.com/bastani/atomic/blob/991f96c/src/graph/subagent-bridge.ts#L184-L208)                     | Parallel execution via `Promise.allSettled()`            |
+| `parallelSubagentNode`              | [`nodes.ts:1802-1838`](https://github.com/bastani/atomic/blob/991f96c/src/graph/nodes.ts#L1802-L1838)                                     | Graph node for concurrent sub-agent spawning             |
+| Worker agent def (Claude)           | [`.claude/agents/worker.md`](https://github.com/bastani/atomic/blob/991f96c/.claude/agents/worker.md)                                     | Worker prompt — no `blockedBy` check for task selection  |
+| Worker agent def (Copilot)          | [`.github/agents/worker.md`](https://github.com/bastani/atomic/blob/991f96c/.github/agents/worker.md)                                     | Worker prompt (Copilot version)                          |
+| Worker agent def (OpenCode)         | [`.opencode/agents/worker.md`](https://github.com/bastani/atomic/blob/991f96c/.opencode/agents/worker.md)                                 | Worker prompt (OpenCode version)                         |
+| TodoWrite tool                      | [`todo-write.ts:53-92`](https://github.com/bastani/atomic/blob/991f96c/src/sdk/tools/todo-write.ts#L53-L92)                               | TodoItem interface and handler                           |
+| TodoWrite interception              | [`chat.tsx:2026-2046`](https://github.com/bastani/atomic/blob/991f96c/src/ui/chat.tsx#L2026-L2046)                                        | Persists to `tasks.json` when ralph is active            |
+| Ralph session state                 | [`chat.tsx:1773-1776`](https://github.com/bastani/atomic/blob/991f96c/src/ui/chat.tsx#L1773-L1776)                                        | `ralphSessionDir`/`ralphSessionId` React state           |
+| Session directory                   | [`session.ts:32-49`](https://github.com/bastani/atomic/blob/991f96c/src/workflows/session.ts#L32-L49)                                     | `~/.atomic/workflows/sessions/{sessionId}/`              |
+| Ralph task state helpers            | [`ralph-task-state.ts:5-40`](https://github.com/bastani/atomic/blob/991f96c/src/ui/utils/ralph-task-state.ts#L5-L40)                      | State types, interrupt normalization, snapshots          |
+| Task status normalization           | [`task-status.ts:1-133`](https://github.com/bastani/atomic/blob/991f96c/src/ui/utils/task-status.ts#L1-L133)                              | Full normalization pipeline                              |
+| `parseTasks`                        | [`workflow-commands.ts:650-667`](https://github.com/bastani/atomic/blob/991f96c/src/ui/commands/workflow-commands.ts#L650-L667)           | JSON extraction from LLM output                          |
+| `parseRalphArgs`                    | [`workflow-commands.ts:50-69`](https://github.com/bastani/atomic/blob/991f96c/src/ui/commands/workflow-commands.ts#L50-L69)               | Command argument parsing                                 |
+| Workflow definition                 | [`workflow-commands.ts:540-573`](https://github.com/bastani/atomic/blob/991f96c/src/ui/commands/workflow-commands.ts#L540-L573)           | Ralph workflow metadata registration                     |
+| `ParallelAgentsTree`                | [`src/ui/components/parallel-agents-tree.tsx`](https://github.com/bastani/atomic/blob/991f96c/src/ui/components/parallel-agents-tree.tsx) | UI component for visualizing parallel agent execution    |
 
 ## Historical Context (from research/)
 
-- [`research/docs/2026-02-09-163-ralph-loop-enhancements.md`](https://github.com/flora131/atomic/blob/991f96c/research/docs/2026-02-09-163-ralph-loop-enhancements.md) — Original ralph loop enhancement research (Issue #163)
-- [`research/docs/2026-02-13-ralph-task-list-ui.md`](https://github.com/flora131/atomic/blob/991f96c/research/docs/2026-02-13-ralph-task-list-ui.md) — Persistent task list UI implementation research
-- [`research/docs/2026-02-15-ralph-dag-orchestration-blockedby.md`](https://github.com/flora131/atomic/blob/991f96c/research/docs/2026-02-15-ralph-dag-orchestration-blockedby.md) — Prior research on DAG orchestration (same topic, earlier iteration)
-- [`research/docs/qa-ralph-task-list-ui.md`](https://github.com/flora131/atomic/blob/991f96c/research/docs/qa-ralph-task-list-ui.md) — QA findings for task list UI
-- [`specs/2026-02-09-ralph-loop-enhancements.md`](https://github.com/flora131/atomic/blob/991f96c/specs/2026-02-09-ralph-loop-enhancements.md) — Detailed design spec including dependency resolution (Section 5.1.3) and dynamic DAG mutations (Section 5.1.4)
-- [`specs/2026-02-14-ralph-task-list-ui.md`](https://github.com/flora131/atomic/blob/991f96c/specs/2026-02-14-ralph-task-list-ui.md) — Task list UI spec with file-driven reactive pattern
+- [`research/docs/2026-02-09-163-ralph-loop-enhancements.md`](https://github.com/bastani/atomic/blob/991f96c/research/docs/2026-02-09-163-ralph-loop-enhancements.md) — Original ralph loop enhancement research (Issue #163)
+- [`research/docs/2026-02-13-ralph-task-list-ui.md`](https://github.com/bastani/atomic/blob/991f96c/research/docs/2026-02-13-ralph-task-list-ui.md) — Persistent task list UI implementation research
+- [`research/docs/2026-02-15-ralph-dag-orchestration-blockedby.md`](https://github.com/bastani/atomic/blob/991f96c/research/docs/2026-02-15-ralph-dag-orchestration-blockedby.md) — Prior research on DAG orchestration (same topic, earlier iteration)
+- [`research/docs/qa-ralph-task-list-ui.md`](https://github.com/bastani/atomic/blob/991f96c/research/docs/qa-ralph-task-list-ui.md) — QA findings for task list UI
+- [`specs/2026-02-09-ralph-loop-enhancements.md`](https://github.com/bastani/atomic/blob/991f96c/specs/2026-02-09-ralph-loop-enhancements.md) — Detailed design spec including dependency resolution (Section 5.1.3) and dynamic DAG mutations (Section 5.1.4)
+- [`specs/2026-02-14-ralph-task-list-ui.md`](https://github.com/bastani/atomic/blob/991f96c/specs/2026-02-14-ralph-task-list-ui.md) — Task list UI spec with file-driven reactive pattern
 
 ## Related Research
 
-- [`specs/2026-01-25-ralph-setup-refactor.md`](https://github.com/flora131/atomic/blob/991f96c/specs/2026-01-25-ralph-setup-refactor.md) — Ralph setup refactor spec
+- [`specs/2026-01-25-ralph-setup-refactor.md`](https://github.com/bastani/atomic/blob/991f96c/specs/2026-01-25-ralph-setup-refactor.md) — Ralph setup refactor spec
 
 ## Open Questions
 

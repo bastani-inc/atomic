@@ -1,15 +1,15 @@
 # Atomic Codex Fast Mode Technical Design Document / RFC
 
-| Document Metadata      | Details                                      |
-| ---------------------- | -------------------------------------------- |
-| Author(s)              | Alex Lavaee                                  |
-| Status                 | Draft (WIP)                                  |
-| Team / Owner           | Atomic Coding Agent Core / Workflow Runtime  |
-| Created / Last Updated | 2026-05-30 / 2026-05-30                      |
+| Document Metadata      | Details                                     |
+| ---------------------- | ------------------------------------------- |
+| Author(s)              | Alex Lavaee                                 |
+| Status                 | Draft (WIP)                                 |
+| Team / Owner           | Atomic Coding Agent Core / Workflow Runtime |
+| Created / Last Updated | 2026-05-30 / 2026-05-30                     |
 
 ## 1. Executive Summary
 
-GitHub issue [flora131/atomic#1134](https://github.com/flora131/atomic/issues/1134) requests a user-facing Codex fast mode in Atomic. Users should be able to run `/fast` in the TUI, toggle fast mode separately for normal chat sessions and workflow stage sessions, and have Atomic invoke supported OpenAI inference providers with the correct priority-service setting. The command must only be visible when the current session has supported OpenAI-backed models available: `openai/*` or `openai-codex/*`, explicitly excluding GitHub Copilot/OpenAI models such as `github-copilot/*`.
+GitHub issue [bastani/atomic#1134](https://github.com/bastani/atomic/issues/1134) requests a user-facing Codex fast mode in Atomic. Users should be able to run `/fast` in the TUI, toggle fast mode separately for normal chat sessions and workflow stage sessions, and have Atomic invoke supported OpenAI inference providers with the correct priority-service setting. The command must only be visible when the current session has supported OpenAI-backed models available: `openai/*` or `openai-codex/*`, explicitly excluding GitHub Copilot/OpenAI models such as `github-copilot/*`.
 
 This RFC proposes implementing Codex fast mode as a first-party coding-agent core feature, not as an external extension. The implementation will add:
 
@@ -75,19 +75,19 @@ Users currently have to wire Codex fast mode themselves, typically by installing
 
 1. Add a user-facing `/fast` slash command in interactive mode.
 2. Show `/fast` in autocomplete only when the current session’s selectable or available model set includes at least one supported provider:
-   - supported: `openai/*`, `openai-codex/*`
-   - unsupported: `github-copilot/*`, Azure, OpenRouter, OpenCode, and all other providers
+    - supported: `openai/*`, `openai-codex/*`
+    - unsupported: `github-copilot/*`, Azure, OpenRouter, OpenCode, and all other providers
 3. When `/fast` runs, replace the editor with a focused two-row configuration UI:
-   - `chat: enabled/disabled`
-   - `workflow: enabled/disabled`
+    - `chat: enabled/disabled`
+    - `workflow: enabled/disabled`
 4. Let users move between `chat` and `workflow` rows with Tab and Shift+Tab.
 5. Let users change enabled/disabled values with left/right arrow keys.
 6. Persist fast-mode state in Atomic settings, defaulting both rows to disabled.
 7. Apply chat fast mode to normal, non-workflow `AgentSession` provider requests.
 8. Apply workflow fast mode to child workflow-stage sessions identified by `orchestrationContext.kind === "workflow-stage"`.
 9. Invoke supported OpenAI providers with priority service tier:
-   - add `serviceTier: "priority"` to stream options when supported by the provider layer
-   - ensure the provider payload includes `service_tier: "priority"` unless already set
+    - add `serviceTier: "priority"` to stream options when supported by the provider layer
+    - ensure the provider payload includes `service_tier: "priority"` unless already set
 10. Leave all existing non-fast behavior unchanged when fast mode is disabled.
 11. Add tests or regression coverage for settings, command visibility, UI state changes, provider eligibility, payload mutation, and workflow-stage selection.
 12. Update user docs under `packages/coding-agent/docs`.
@@ -114,12 +114,12 @@ At a high level:
 1. Add `codexFastMode?: { chat?: boolean; workflow?: boolean }` to `Settings`.
 2. Add `getCodexFastModeSettings()` and `setCodexFastModeSettings()` to `SettingsManager`.
 3. Add a helper module, for example `packages/coding-agent/src/core/codex-fast-mode.ts`, containing:
-   - `isCodexFastModeSupportedModel(model)`
-   - `hasSupportedCodexFastModeModel(models)`
-   - `isWorkflowStageSession(orchestrationContext)`
-   - `isCodexFastModeEnabledForSession(settings, orchestrationContext)`
-   - `withCodexFastModeStreamOptions(...)`
-   - `withCodexFastModePayload(...)`
+    - `isCodexFastModeSupportedModel(model)`
+    - `hasSupportedCodexFastModeModel(models)`
+    - `isWorkflowStageSession(orchestrationContext)`
+    - `isCodexFastModeEnabledForSession(settings, orchestrationContext)`
+    - `withCodexFastModeStreamOptions(...)`
+    - `withCodexFastModePayload(...)`
 4. Extend `interactive-mode.ts` so `/fast` is included in autocomplete only when supported models are available.
 5. Add `FastModeSelectorComponent` under `packages/coding-agent/src/modes/interactive/components/`.
 6. Wire `/fast` submission to `showFastModeSelector()`.
@@ -182,17 +182,17 @@ This avoids making fast mode an extension while still reusing the same provider-
 
 ### 4.3 Key Components
 
-| Component | Responsibility | Technology Stack | Justification |
-| --------- | -------------- | ---------------- | ------------- |
-| `packages/coding-agent/src/core/codex-fast-mode.ts` | Central predicate and mutation helpers for supported providers, chat/workflow scope, stream options, and payloads. | TypeScript ESM | Keeps provider policy testable and prevents duplicated `openai` / `openai-codex` checks. |
-| `SettingsManager` in `packages/coding-agent/src/core/settings-manager.ts` | Persist `codexFastMode.chat` and `codexFastMode.workflow` with defaults false. | TypeScript, JSON settings | Existing settings layer already handles global/project merge and async writes. |
-| `BUILTIN_SLASH_COMMANDS` in `packages/coding-agent/src/core/slash-commands.ts` | Add metadata for `/fast`. | TypeScript | Built-in command list drives interactive autocomplete and conflict diagnostics. |
-| `InteractiveMode` in `packages/coding-agent/src/modes/interactive/interactive-mode.ts` | Conditionally expose `/fast`, handle `/fast`, and mount the fast-mode selector. | TypeScript, `@earendil-works/pi-tui` | Current built-in slash-command submit and autocomplete logic live here. |
-| `FastModeSelectorComponent` | Two-row command UI with Tab row navigation and arrow-key value changes. | `@earendil-works/pi-tui` components and theme helpers | Satisfies the issue’s explicit TUI behavior while matching Atomic’s selector style. |
-| `createAgentSession()` stream function in `packages/coding-agent/src/core/sdk.ts` | Add `serviceTier: "priority"` and ensure `service_tier` payload for eligible requests. | TypeScript, `@earendil-works/pi-ai` `streamSimple` | All chat and workflow stage LLM requests pass through this SDK stream path. |
-| `packages/workflows/src/extension/wiring.ts` | Existing workflow-stage `orchestrationContext` source. | TypeScript | No workflow code change should be needed beyond tests, because stage sessions already identify themselves. |
-| Docs in `packages/coding-agent/docs` | Explain `/fast`, supported providers, settings keys, and when to use it. | Markdown | Required by issue acceptance criteria. |
-| Tests under `packages/coding-agent/test` | Validate settings, predicates, command visibility, UI, and provider request mutation. | Bun commands running existing test stack | Prevents regressions in the configuration path. |
+| Component                                                                              | Responsibility                                                                                                     | Technology Stack                                      | Justification                                                                                              |
+| -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `packages/coding-agent/src/core/codex-fast-mode.ts`                                    | Central predicate and mutation helpers for supported providers, chat/workflow scope, stream options, and payloads. | TypeScript ESM                                        | Keeps provider policy testable and prevents duplicated `openai` / `openai-codex` checks.                   |
+| `SettingsManager` in `packages/coding-agent/src/core/settings-manager.ts`              | Persist `codexFastMode.chat` and `codexFastMode.workflow` with defaults false.                                     | TypeScript, JSON settings                             | Existing settings layer already handles global/project merge and async writes.                             |
+| `BUILTIN_SLASH_COMMANDS` in `packages/coding-agent/src/core/slash-commands.ts`         | Add metadata for `/fast`.                                                                                          | TypeScript                                            | Built-in command list drives interactive autocomplete and conflict diagnostics.                            |
+| `InteractiveMode` in `packages/coding-agent/src/modes/interactive/interactive-mode.ts` | Conditionally expose `/fast`, handle `/fast`, and mount the fast-mode selector.                                    | TypeScript, `@earendil-works/pi-tui`                  | Current built-in slash-command submit and autocomplete logic live here.                                    |
+| `FastModeSelectorComponent`                                                            | Two-row command UI with Tab row navigation and arrow-key value changes.                                            | `@earendil-works/pi-tui` components and theme helpers | Satisfies the issue’s explicit TUI behavior while matching Atomic’s selector style.                        |
+| `createAgentSession()` stream function in `packages/coding-agent/src/core/sdk.ts`      | Add `serviceTier: "priority"` and ensure `service_tier` payload for eligible requests.                             | TypeScript, `@earendil-works/pi-ai` `streamSimple`    | All chat and workflow stage LLM requests pass through this SDK stream path.                                |
+| `packages/workflows/src/extension/wiring.ts`                                           | Existing workflow-stage `orchestrationContext` source.                                                             | TypeScript                                            | No workflow code change should be needed beyond tests, because stage sessions already identify themselves. |
+| Docs in `packages/coding-agent/docs`                                                   | Explain `/fast`, supported providers, settings keys, and when to use it.                                           | Markdown                                              | Required by issue acceptance criteria.                                                                     |
+| Tests under `packages/coding-agent/test`                                               | Validate settings, predicates, command visibility, UI, and provider request mutation.                              | Bun commands running existing test stack              | Prevents regressions in the configuration path.                                                            |
 
 ## 5. Detailed Design
 
@@ -202,12 +202,12 @@ Add settings types in `packages/coding-agent/src/core/settings-manager.ts`:
 
 ```ts
 export interface CodexFastModeSettings {
-  chat?: boolean;
-  workflow?: boolean;
+    chat?: boolean;
+    workflow?: boolean;
 }
 
 export interface Settings {
-  codexFastMode?: CodexFastModeSettings;
+    codexFastMode?: CodexFastModeSettings;
 }
 ```
 
@@ -228,21 +228,25 @@ Add a helper API in `packages/coding-agent/src/core/codex-fast-mode.ts`:
 export function isCodexFastModeSupportedProvider(provider: string): boolean;
 // true only for "openai" and "openai-codex"
 
-export function isCodexFastModeSupportedModel(model: Pick<Model<Api>, "provider">): boolean;
+export function isCodexFastModeSupportedModel(
+    model: Pick<Model<Api>, "provider">,
+): boolean;
 
-export function hasSupportedCodexFastModeModel(models: readonly Pick<Model<Api>, "provider">[]): boolean;
+export function hasSupportedCodexFastModeModel(
+    models: readonly Pick<Model<Api>, "provider">[],
+): boolean;
 
 export function isWorkflowStageOrchestrationContext(
-  context: OrchestrationContext | undefined,
+    context: OrchestrationContext | undefined,
 ): boolean;
 
 export function getCodexFastModeScope(
-  context: OrchestrationContext | undefined,
+    context: OrchestrationContext | undefined,
 ): "chat" | "workflow";
 
 export function isCodexFastModeEnabled(
-  settings: { chat: boolean; workflow: boolean },
-  context: OrchestrationContext | undefined,
+    settings: { chat: boolean; workflow: boolean },
+    context: OrchestrationContext | undefined,
 ): boolean;
 
 export function withCodexFastModePayload(payload: unknown): unknown;
@@ -254,11 +258,11 @@ In `sdk.ts`, compute fast mode once per stream call:
 
 ```ts
 const fastModeEnabled =
-  isCodexFastModeSupportedModel(model) &&
-  isCodexFastModeEnabled(
-    settingsManager.getCodexFastModeSettings(),
-    options.orchestrationContext,
-  );
+    isCodexFastModeSupportedModel(model) &&
+    isCodexFastModeEnabled(
+        settingsManager.getCodexFastModeSettings(),
+        options.orchestrationContext,
+    );
 ```
 
 When enabled:
@@ -281,18 +285,18 @@ Persist fast mode in settings:
 
 ```json
 {
-  "codexFastMode": {
-    "chat": true,
-    "workflow": false
-  }
+    "codexFastMode": {
+        "chat": true,
+        "workflow": false
+    }
 }
 ```
 
 Semantics:
 
-| Field | Type | Default | Meaning |
-| ----- | ---- | ------- | ------- |
-| `codexFastMode.chat` | boolean | `false` | Apply priority service tier to supported OpenAI provider requests from normal chat sessions. |
+| Field                    | Type    | Default | Meaning                                                                                         |
+| ------------------------ | ------- | ------- | ----------------------------------------------------------------------------------------------- |
+| `codexFastMode.chat`     | boolean | `false` | Apply priority service tier to supported OpenAI provider requests from normal chat sessions.    |
 | `codexFastMode.workflow` | boolean | `false` | Apply priority service tier to supported OpenAI provider requests from workflow stage sessions. |
 
 Merge behavior follows existing settings behavior:
@@ -349,14 +353,14 @@ For each stream call in `sdk.ts`:
 
 1. Determine if the model provider is supported.
 2. Determine scope from `orchestrationContext`:
-   - `"workflow"` when `kind === "workflow-stage"`
-   - `"chat"` otherwise
+    - `"workflow"` when `kind === "workflow-stage"`
+    - `"chat"` otherwise
 3. Check the corresponding settings boolean.
 4. If false, preserve existing stream options and payload behavior.
 5. If true:
-   - pass a provider options object that includes `serviceTier: "priority"` where possible
-   - ensure object payloads contain `service_tier: "priority"` if absent
-   - do not overwrite an existing `service_tier` field set earlier by provider options or another source
+    - pass a provider options object that includes `serviceTier: "priority"` where possible
+    - ensure object payloads contain `service_tier: "priority"` if absent
+    - do not overwrite an existing `service_tier` field set earlier by provider options or another source
 
 This should work for:
 
@@ -372,13 +376,13 @@ It intentionally excludes:
 
 ## 6. Alternatives Considered
 
-| Option | Pros | Cons | Reason for Rejection |
-| ------ | ---- | ---- | -------------------- |
-| Ship or vendor the external `pi-codex-fast` extension | Proven reference; small implementation; already uses `before_provider_request`. | Command would be extension-owned, named `/codex-fast`, not `/fast`; no built-in conditional visibility; no chat/workflow split; relies on private `SettingsManager` internals in the reference implementation. | Does not meet issue #1134 UI and command requirements. |
-| Implement only a payload rewrite in `before_provider_request` style | Minimal code; works for serialized request body; easy to test. | May bypass provider-level `serviceTier` option handling and usage/cost accounting in `openai-responses` and `openai-codex-responses`; scatters first-party behavior through extension-like hooks. | Use payload mutation as a safety layer, but primary core wiring should set stream options where supported. |
-| Add one global `fastMode: boolean` setting | Simpler UI and data model. | Does not satisfy the required two rows for `chat` and `workflow`; users may want fast workflows but normal chat, or vice versa. | Rejected because the issue explicitly requires separate chat/workflow configuration. |
-| Always show `/fast` and show an error for unsupported providers | Simple command list; less async autocomplete work. | Violates “ONLY exists when the user has a supported fast mode model”; creates confusing UI for GitHub Copilot-only users. | Rejected because conditional visibility is an acceptance requirement. |
-| Add `--fast` CLI flag instead of slash command | Useful for automation; mirrors the reference extension. | Issue asks for a user-facing slash command and TUI selector; CLI semantics for chat/workflow split are ambiguous. | Defer CLI support to a future issue if requested. |
+| Option                                                              | Pros                                                                            | Cons                                                                                                                                                                                                           | Reason for Rejection                                                                                       |
+| ------------------------------------------------------------------- | ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| Ship or vendor the external `pi-codex-fast` extension               | Proven reference; small implementation; already uses `before_provider_request`. | Command would be extension-owned, named `/codex-fast`, not `/fast`; no built-in conditional visibility; no chat/workflow split; relies on private `SettingsManager` internals in the reference implementation. | Does not meet issue #1134 UI and command requirements.                                                     |
+| Implement only a payload rewrite in `before_provider_request` style | Minimal code; works for serialized request body; easy to test.                  | May bypass provider-level `serviceTier` option handling and usage/cost accounting in `openai-responses` and `openai-codex-responses`; scatters first-party behavior through extension-like hooks.              | Use payload mutation as a safety layer, but primary core wiring should set stream options where supported. |
+| Add one global `fastMode: boolean` setting                          | Simpler UI and data model.                                                      | Does not satisfy the required two rows for `chat` and `workflow`; users may want fast workflows but normal chat, or vice versa.                                                                                | Rejected because the issue explicitly requires separate chat/workflow configuration.                       |
+| Always show `/fast` and show an error for unsupported providers     | Simple command list; less async autocomplete work.                              | Violates “ONLY exists when the user has a supported fast mode model”; creates confusing UI for GitHub Copilot-only users.                                                                                      | Rejected because conditional visibility is an acceptance requirement.                                      |
+| Add `--fast` CLI flag instead of slash command                      | Useful for automation; mirrors the reference extension.                         | Issue asks for a user-facing slash command and TUI selector; CLI semantics for chat/workflow split are ambiguous.                                                                                              | Defer CLI support to a future issue if requested.                                                          |
 
 ## 7. Cross-Cutting Concerns
 
@@ -437,10 +441,10 @@ Existing users have no `codexFastMode` setting, so both toggles default to disab
 
 ```json
 {
-  "codexFastMode": {
-    "chat": false,
-    "workflow": false
-  }
+    "codexFastMode": {
+        "chat": false,
+        "workflow": false
+    }
 }
 ```
 
@@ -448,9 +452,9 @@ If a user manually adds only one nested value, missing values default to false:
 
 ```json
 {
-  "codexFastMode": {
-    "workflow": true
-  }
+    "codexFastMode": {
+        "workflow": true
+    }
 }
 ```
 
@@ -461,37 +465,37 @@ This means workflow fast mode is enabled and chat fast mode remains disabled.
 Add or update tests in these areas:
 
 1. **Helper tests**
-   - `isCodexFastModeSupportedProvider("openai") === true`
-   - `isCodexFastModeSupportedProvider("openai-codex") === true`
-   - `isCodexFastModeSupportedProvider("github-copilot") === false`
-   - payload helper adds `service_tier: "priority"` only to object payloads without an existing `service_tier`
+    - `isCodexFastModeSupportedProvider("openai") === true`
+    - `isCodexFastModeSupportedProvider("openai-codex") === true`
+    - `isCodexFastModeSupportedProvider("github-copilot") === false`
+    - payload helper adds `service_tier: "priority"` only to object payloads without an existing `service_tier`
 
 2. **Settings tests**
-   - `SettingsManager.inMemory()` defaults both fast-mode values to false
-   - setter persists both booleans
-   - project settings override global settings for nested values if applicable
+    - `SettingsManager.inMemory()` defaults both fast-mode values to false
+    - setter persists both booleans
+    - project settings override global settings for nested values if applicable
 
 3. **Interactive command visibility tests**
-   - `/fast` appears in autocomplete when available models include `openai/*`
-   - `/fast` appears when available models include `openai-codex/*`
-   - `/fast` does not appear with only `github-copilot/*`
-   - `/fast` does not appear when no supported models have configured auth
+    - `/fast` appears in autocomplete when available models include `openai/*`
+    - `/fast` appears when available models include `openai-codex/*`
+    - `/fast` does not appear with only `github-copilot/*`
+    - `/fast` does not appear when no supported models have configured auth
 
 4. **TUI component tests**
-   - initial render shows exactly `chat` and `workflow` rows
-   - Tab moves between rows
-   - left/right changes enabled/disabled
-   - callbacks receive updated settings
+    - initial render shows exactly `chat` and `workflow` rows
+    - Tab moves between rows
+    - left/right changes enabled/disabled
+    - callbacks receive updated settings
 
 5. **SDK/provider request tests**
-   - chat scope enabled adds `service_tier: "priority"` for `openai`
-   - workflow scope disabled does not add `service_tier`
-   - workflow scope enabled with `orchestrationContext.kind === "workflow-stage"` adds `service_tier`
-   - `github-copilot` never receives `service_tier`
-   - existing `service_tier` is not overwritten
+    - chat scope enabled adds `service_tier: "priority"` for `openai`
+    - workflow scope disabled does not add `service_tier`
+    - workflow scope enabled with `orchestrationContext.kind === "workflow-stage"` adds `service_tier`
+    - `github-copilot` never receives `service_tier`
+    - existing `service_tier` is not overwritten
 
 6. **Workflow integration tests**
-   - A workflow stage session created through `packages/workflows/src/extension/wiring.ts` carries `orchestrationContext.kind === "workflow-stage"` and uses the workflow setting rather than the chat setting.
+    - A workflow stage session created through `packages/workflows/src/extension/wiring.ts` carries `orchestrationContext.kind === "workflow-stage"` and uses the workflow setting rather than the chat setting.
 
 Recommended validation commands, using Bun only:
 

@@ -21,12 +21,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/flora131/atomic.git",
+    "url": "git+https://github.com/bastani/atomic.git",
     "directory": "packages/workflows"
   },
-  "homepage": "https://github.com/flora131/atomic/tree/main/packages/workflows#readme",
+  "homepage": "https://github.com/bastani/atomic/tree/main/packages/workflows#readme",
   "bugs": {
-    "url": "https://github.com/flora131/atomic/issues"
+    "url": "https://github.com/bastani/atomic/issues"
   },
   "keywords": [
     "pi-package",

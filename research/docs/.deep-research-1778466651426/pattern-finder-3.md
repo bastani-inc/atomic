@@ -31,6 +31,7 @@ export function createProgram() {
 ```
 
 **Variations:**
+
 - `packages/atomic/src/cli.ts:73-132` — `chat` subcommand with passthrough options
 - `packages/atomic/src/cli.ts:149-281` — `workflow` command mounting with agent filtering
 - `packages/atomic/src/cli.ts:287-301` — `config` command with nested `set` subcommand
@@ -47,32 +48,33 @@ const AGENT_KEYS = ["claude", "opencode", "copilot"] as const;
 export type AgentKey = (typeof AGENT_KEYS)[number];
 
 export const AGENT_CONFIG: Record<AgentKey, AgentConfig> = {
-  claude: {
-    name: "Claude Code",
-    cmd: "claude",
-    chat_flags: [
-      "--allow-dangerously-skip-permissions",
-      "--dangerously-skip-permissions",
-    ],
-    env_vars: {},
-    folder: ".claude",
-    install_url: "https://code.claude.com/docs/en/setup",
-    exclude: [],
-    onboarding_files: [
-      {
-        kind: "claude",
-        source: ".mcp.json",
-        destination: ".mcp.json",
-        merge: true,
-      },
-      // ...
-    ],
-  },
-  // opencode, copilot follow same pattern
-}
+    claude: {
+        name: "Claude Code",
+        cmd: "claude",
+        chat_flags: [
+            "--allow-dangerously-skip-permissions",
+            "--dangerously-skip-permissions",
+        ],
+        env_vars: {},
+        folder: ".claude",
+        install_url: "https://code.claude.com/docs/en/setup",
+        exclude: [],
+        onboarding_files: [
+            {
+                kind: "claude",
+                source: ".mcp.json",
+                destination: ".mcp.json",
+                merge: true,
+            },
+            // ...
+        ],
+    },
+    // opencode, copilot follow same pattern
+};
 ```
 
 **Usage sites:**
+
 - `packages/atomic/src/cli.ts:29,70` — imported as `AGENT_CONFIG, isValidAgent`
 - `packages/atomic/src/commands/cli/chat/index.ts:16` — agent display names and chat flags
 - `packages/atomic/src/services/system/agents.ts:5,28-30` — agent folder sync destinations
@@ -86,44 +88,53 @@ export const AGENT_CONFIG: Record<AgentKey, AgentConfig> = {
 
 ```typescript
 export async function loadCustomWorkflows(
-  workflows: Record<string, CustomWorkflowEntry> | undefined,
-  origin: "local" | "global",
-  settingsPath: string,
+    workflows: Record<string, CustomWorkflowEntry> | undefined,
+    origin: "local" | "global",
+    settingsPath: string,
 ): Promise<LoadCustomWorkflowsResult> {
-  if (!workflows) return { loaded: [], broken: [] };
-  const results = await Promise.all(
-    Object.entries(workflows).map(([alias, entry]) =>
-      loadOne(alias, entry, origin, settingsPath),
-    ),
-  );
-  return {
-    loaded: results.flatMap((r) => r.loaded),
-    broken: results.flatMap((r) => r.broken),
-  };
+    if (!workflows) return { loaded: [], broken: [] };
+    const results = await Promise.all(
+        Object.entries(workflows).map(([alias, entry]) =>
+            loadOne(alias, entry, origin, settingsPath),
+        ),
+    );
+    return {
+        loaded: results.flatMap((r) => r.loaded),
+        broken: results.flatMap((r) => r.broken),
+    };
 }
 
 async function loadOne(
-  alias: string,
-  entry: CustomWorkflowEntry,
-  origin: "local" | "global",
-  settingsPath: string,
+    alias: string,
+    entry: CustomWorkflowEntry,
+    origin: "local" | "global",
+    settingsPath: string,
 ): Promise<LoadCustomWorkflowsResult> {
-  const timeoutMs = resolveTimeoutMs(); // reads ATOMIC_WORKFLOWS_META_TIMEOUT_MS
-  const args = entry.args ?? [];
-  
-  const token = randomBytes(16).toString("hex");
-  const argv = [entry.command, ...args, "_emit-workflow-meta", `--dispatch-token=${token}`];
-  
-  let child: ReturnType<typeof Bun.spawn>;
-  try {
-    child = Bun.spawn(argv, {
-      stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, ATOMIC_HOST: "1", ATOMIC_DISPATCH_TOKEN: token },
-    });
-  } catch (err) {
-    // fail(...) appends BrokenWorkflow record
-  }
-  // ... timeout race, stream collection, JSON parse
+    const timeoutMs = resolveTimeoutMs(); // reads ATOMIC_WORKFLOWS_META_TIMEOUT_MS
+    const args = entry.args ?? [];
+
+    const token = randomBytes(16).toString("hex");
+    const argv = [
+        entry.command,
+        ...args,
+        "_emit-workflow-meta",
+        `--dispatch-token=${token}`,
+    ];
+
+    let child: ReturnType<typeof Bun.spawn>;
+    try {
+        child = Bun.spawn(argv, {
+            stdio: ["ignore", "pipe", "pipe"],
+            env: {
+                ...process.env,
+                ATOMIC_HOST: "1",
+                ATOMIC_DISPATCH_TOKEN: token,
+            },
+        });
+    } catch (err) {
+        // fail(...) appends BrokenWorkflow record
+    }
+    // ... timeout race, stream collection, JSON parse
 }
 ```
 
@@ -143,20 +154,21 @@ import ralphOpencode from "@bastani/atomic-sdk/workflows/builtin/ralph/opencode"
 // ... deep-research-codebase, open-claude-design
 
 export function createBuiltinRegistry() {
-  return createRegistry()
-    .register(ralphClaude)
-    .register(ralphCopilot)
-    .register(ralphOpencode)
-    .register(drcClaude)
-    .register(drcCopilot)
-    .register(drcOpencode)
-    .register(ocdClaude)
-    .register(ocdCopilot)
-    .register(ocdOpencode);
+    return createRegistry()
+        .register(ralphClaude)
+        .register(ralphCopilot)
+        .register(ralphOpencode)
+        .register(drcClaude)
+        .register(drcCopilot)
+        .register(drcOpencode)
+        .register(ocdClaude)
+        .register(ocdCopilot)
+        .register(ocdOpencode);
 }
 ```
 
 **Runtime registration:**
+
 - `packages/atomic/src/commands/cli/workflow.ts:52-66` — module-level mutable state: `activeRegistry`, `activeBroken`, getters
 - `packages/atomic/src/cli.ts:549-563` — `bootstrapCustomWorkflowsAndRebuild()` merges custom workflows and calls `rebuildWorkflowCommand(registry, brokenIndex, brokenList)`
 
@@ -169,41 +181,44 @@ export function createBuiltinRegistry() {
 
 ```typescript
 export async function buildAgentArgs(
-  agentType: AgentType,
-  passthroughArgs: string[] = [],
-  projectRoot: string = process.cwd(),
+    agentType: AgentType,
+    passthroughArgs: string[] = [],
+    projectRoot: string = process.cwd(),
 ): Promise<string[]> {
-  const config = AGENT_CONFIG[agentType];
-  const overrides = await getProviderOverrides(agentType, projectRoot);
-  const flags = overrides.chatFlags ?? [...config.chat_flags];
-  
-  // Copilot: SCM disable flags via --disable-mcp-server
-  const scmFlags =
-    agentType === "copilot" ? await getCopilotScmDisableFlags(projectRoot) : [];
-  
-  // Claude only: custom instructions file
-  const instructionsFlags: string[] = [];
-  if (agentType === "claude") {
-    const path = resolveAdditionalInstructionsPath(projectRoot);
-    if (path) instructionsFlags.push("--append-system-prompt-file", path);
-  }
-  
-  return [...flags, ...scmFlags, ...instructionsFlags, ...passthroughArgs];
+    const config = AGENT_CONFIG[agentType];
+    const overrides = await getProviderOverrides(agentType, projectRoot);
+    const flags = overrides.chatFlags ?? [...config.chat_flags];
+
+    // Copilot: SCM disable flags via --disable-mcp-server
+    const scmFlags =
+        agentType === "copilot"
+            ? await getCopilotScmDisableFlags(projectRoot)
+            : [];
+
+    // Claude only: custom instructions file
+    const instructionsFlags: string[] = [];
+    if (agentType === "claude") {
+        const path = resolveAdditionalInstructionsPath(projectRoot);
+        if (path) instructionsFlags.push("--append-system-prompt-file", path);
+    }
+
+    return [...flags, ...scmFlags, ...instructionsFlags, ...passthroughArgs];
 }
 
 export function resolveChatCommand(
-  agentType: AgentType,
-  resolveCommandPath: CommandPathResolver = getCommandPath,
+    agentType: AgentType,
+    resolveCommandPath: CommandPathResolver = getCommandPath,
 ): string | undefined {
-  if (agentType === "copilot") {
-    // Special case: resolve copilot CLI path
-    return resolveCopilotCliPath(resolveCommandPath);
-  }
-  // ...
+    if (agentType === "copilot") {
+        // Special case: resolve copilot CLI path
+        return resolveCopilotCliPath(resolveCommandPath);
+    }
+    // ...
 }
 ```
 
 **Call sites:**
+
 - `packages/atomic/src/commands/cli/chat/index.ts:16,29` — imports AGENT_CONFIG, getProviderOverrides, getCopilotScmDisableFlags, ensureProjectSetup
 - `packages/atomic/src/commands/cli/chat/index.ts:150-160+` — spawns agent in tmux with `createSession`, `spawnMuxAttach`, `spawnAttachedFooter`
 
@@ -216,38 +231,43 @@ export function resolveChatCommand(
 
 ```typescript
 const AGENT_DIR_PAIRS: AgentSyncPair[] = [
-  { kind: "claude", dest: ".claude/agents" },
-  { kind: "opencode", dest: ".opencode/agents" },
-  { kind: "github", dest: ".copilot/agents" },
+    { kind: "claude", dest: ".claude/agents" },
+    { kind: "opencode", dest: ".opencode/agents" },
+    { kind: "github", dest: ".copilot/agents" },
 ];
 
 export async function installGlobalAgents(): Promise<void> {
-  const home = homeRoot(); // reads ATOMIC_SETTINGS_HOME
-  const warnings: string[] = [];
-  
-  for (const { kind, dest } of AGENT_DIR_PAIRS) {
-    const src = join(await getEmbeddedAsset(kind), "agents");
-    const target = join(home, dest);
-    
-    if (!(await pathExists(src))) {
-      warnings.push(`bundled agents missing at ${src} — skipping ${target}`);
-      continue;
+    const home = homeRoot(); // reads ATOMIC_SETTINGS_HOME
+    const warnings: string[] = [];
+
+    for (const { kind, dest } of AGENT_DIR_PAIRS) {
+        const src = join(await getEmbeddedAsset(kind), "agents");
+        const target = join(home, dest);
+
+        if (!(await pathExists(src))) {
+            warnings.push(
+                `bundled agents missing at ${src} — skipping ${target}`,
+            );
+            continue;
+        }
+
+        await copyDir(src, target, {
+            ignoreFilter: createCommonIgnoreFilter(),
+        });
     }
-    
-    await copyDir(src, target, { ignoreFilter: createCommonIgnoreFilter() });
-  }
-  
-  // Copilot lsp.json rename
-  const lspSrc = join(await getEmbeddedAsset("github"), "lsp.json");
-  const lspDest = join(home, ".copilot", "lsp-config.json");
-  if (await pathExists(lspSrc)) {
-    await ensureDir(dirname(lspDest));
-    await copyFile(lspSrc, lspDest);
-  }
+
+    // Copilot lsp.json rename
+    const lspSrc = join(await getEmbeddedAsset("github"), "lsp.json");
+    const lspDest = join(home, ".copilot", "lsp-config.json");
+    if (await pathExists(lspSrc)) {
+        await ensureDir(dirname(lspDest));
+        await copyFile(lspSrc, lspDest);
+    }
 }
 ```
 
 **Integration:**
+
 - Called by `packages/atomic/src/services/system/auto-sync.ts` (on first launch post-install/upgrade)
 - Triggered during `atomic chat` preflight via `ensureAtomicGlobalAgentConfigs()` in `packages/atomic/src/commands/cli/chat/index.ts:29`
 
@@ -261,7 +281,8 @@ export async function installGlobalAgents(): Promise<void> {
 ```typescript
 export function getInstallPaths(): InstallPaths {
     if (isWindows()) {
-        const localAppData = process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local");
+        const localAppData =
+            process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local");
         const binDir = join(localAppData, "atomic", "bin");
         return {
             binDir,
@@ -277,8 +298,14 @@ export function getInstallPaths(): InstallPaths {
     };
 }
 
-export function copyBinary(paths: InstallPaths, sourcePath: string = process.execPath): void {
-    if (resolve(sourcePath).toLowerCase() === resolve(paths.binPath).toLowerCase()) {
+export function copyBinary(
+    paths: InstallPaths,
+    sourcePath: string = process.execPath,
+): void {
+    if (
+        resolve(sourcePath).toLowerCase() ===
+        resolve(paths.binPath).toLowerCase()
+    ) {
         return; // Already at install location
     }
     // Atomic-move pattern: copy to temp, chmod, rename (cross-filesystem portable)
@@ -287,6 +314,7 @@ export function copyBinary(paths: InstallPaths, sourcePath: string = process.exe
 ```
 
 **Subcommands:**
+
 - `packages/atomic/src/cli.ts:472-482` — `install` command (entry point from bootstrap scripts)
 - `packages/atomic/src/cli.ts:484-492` — `uninstall` command with `--purge` option
 - `packages/atomic/src/cli.ts:494-506` — `update` command with `--check` and `--version` pinning
@@ -300,39 +328,37 @@ export function copyBinary(paths: InstallPaths, sourcePath: string = process.exe
 
 ```typescript
 function parseVersionFromBranch(branch: string): string {
-  const match = branch.match(/^(?:release|prerelease)\/v(.+)$/);
-  if (!match) {
-    console.error(
-      `Error: branch "${branch}" does not match release/v<version> or prerelease/v<version>`
-    );
-    process.exit(1);
-  }
-  return match[1] as string;
+    const match = branch.match(/^(?:release|prerelease)\/v(.+)$/);
+    if (!match) {
+        console.error(
+            `Error: branch "${branch}" does not match release/v<version> or prerelease/v<version>`,
+        );
+        process.exit(1);
+    }
+    return match[1] as string;
 }
 
 function validateVersion(version: string): void {
-  // Accept semver with optional prerelease suffix: 0.4.46, 0.4.46-0, 1.0.0-1
-  if (!/^\d+\.\d+\.\d+(-[\w.]+)?$/.test(version)) {
-    console.error(
-      `Error: "${version}" is not a valid semver version`
-    );
-    process.exit(1);
-  }
+    // Accept semver with optional prerelease suffix: 0.4.46, 0.4.46-0, 1.0.0-1
+    if (!/^\d+\.\d+\.\d+(-[\w.]+)?$/.test(version)) {
+        console.error(`Error: "${version}" is not a valid semver version`);
+        process.exit(1);
+    }
 }
 
 async function getVersion(): Promise<string> {
-  const arg = positional[0];
-  if (!arg) {
-    console.error(
-      "Usage: bun run src/scripts/bump-version.ts <version|--from-branch>"
-    );
-    process.exit(1);
-  }
-  if (arg === "--from-branch") {
-    const branch = (await $`git rev-parse --abbrev-ref HEAD`.text()).trim();
-    return parseVersionFromBranch(branch);
-  }
-  return arg.replace(/^v/, "");
+    const arg = positional[0];
+    if (!arg) {
+        console.error(
+            "Usage: bun run src/scripts/bump-version.ts <version|--from-branch>",
+        );
+        process.exit(1);
+    }
+    if (arg === "--from-branch") {
+        const branch = (await $`git rev-parse --abbrev-ref HEAD`.text()).trim();
+        return parseVersionFromBranch(branch);
+    }
+    return arg.replace(/^v/, "");
 }
 ```
 
@@ -346,7 +372,7 @@ async function getVersion(): Promise<string> {
 **What:** Fetches GitHub Releases metadata, downloads assets with progress, verifies sha256.
 
 ```typescript
-const DEFAULT_GITHUB_API_BASE = "https://api.github.com/repos/flora131/atomic";
+const DEFAULT_GITHUB_API_BASE = "https://api.github.com/repos/bastani/atomic";
 
 function buildApiHeaders(): Record<string, string> {
     const headers: Record<string, string> = {
@@ -360,8 +386,13 @@ function buildApiHeaders(): Record<string, string> {
 
 async function githubGet(url: string): Promise<ReleaseInfo> {
     const res = await fetch(url, { headers: buildApiHeaders() });
-    if (res.status === 403 && res.headers.get("X-RateLimit-Remaining") === "0") {
-        throw new Error("Set GITHUB_TOKEN to lift the 60 req/h anonymous limit");
+    if (
+        res.status === 403 &&
+        res.headers.get("X-RateLimit-Remaining") === "0"
+    ) {
+        throw new Error(
+            "Set GITHUB_TOKEN to lift the 60 req/h anonymous limit",
+        );
     }
     if (!res.ok) {
         throw new Error(`GitHub API error ${res.status}: ${url}`);
@@ -395,25 +426,28 @@ export async function downloadAssetFromUrl(
 ```typescript
 export const WORKFLOW_OFFLOAD_SCHEDULED = "workflow.offload.scheduled" as const;
 export const WORKFLOW_OFFLOAD_COMPLETED = "workflow.offload.completed" as const;
-export const WORKFLOW_OFFLOAD_RESUME_ATTEMPTED = "workflow.offload.resume.attempted" as const;
-export const WORKFLOW_OFFLOAD_RESUME_SUCCEEDED = "workflow.offload.resume.succeeded" as const;
-export const WORKFLOW_OFFLOAD_RESUME_FAILED = "workflow.offload.resume.failed" as const;
+export const WORKFLOW_OFFLOAD_RESUME_ATTEMPTED =
+    "workflow.offload.resume.attempted" as const;
+export const WORKFLOW_OFFLOAD_RESUME_SUCCEEDED =
+    "workflow.offload.resume.succeeded" as const;
+export const WORKFLOW_OFFLOAD_RESUME_FAILED =
+    "workflow.offload.resume.failed" as const;
 
 export interface WorkflowOffloadScheduledPayload {
-  runId: string;
-  count: number;
+    runId: string;
+    count: number;
 }
 
 export interface WorkflowOffloadCompletedPayload {
-  runId: string;
-  name: string;
-  agent: AgentKind;
+    runId: string;
+    name: string;
+    agent: AgentKind;
 }
 
 export interface WorkflowOffloadResumeAttemptedPayload {
-  runId: string;
-  name: string;
-  agent: AgentKind;
+    runId: string;
+    name: string;
+    agent: AgentKind;
 }
 ```
 
@@ -428,29 +462,29 @@ export interface WorkflowOffloadResumeAttemptedPayload {
 
 ```typescript
 export const ATOMIC_BLOCK_LOGO = [
-  "█▀▀█ ▀▀█▀▀ █▀▀█ █▀▄▀█ ▀█▀ █▀▀",
-  "█▄▄█   █   █  █ █ ▀ █  █  █  ",
-  "▀  ▀   ▀   ▀▀▀▀ ▀   ▀ ▀▀▀ ▀▀▀",
+    "█▀▀█ ▀▀█▀▀ █▀▀█ █▀▄▀█ ▀█▀ █▀▀",
+    "█▄▄█   █   █  █ █ ▀ █  █  █  ",
+    "▀  ▀   ▀   ▀▀▀▀ ▀   ▀ ▀▀▀ ▀▀▀",
 ];
 
 export function displayBlockBanner(): void {
-  const isDark = !(process.env.COLORFGBG ?? "").startsWith("0;");
-  const truecolor = supportsTrueColor();
-  const color256 = supports256Color();
-  const hasColor = supportsColor();
-  
-  console.log();
-  for (const line of ATOMIC_BLOCK_LOGO) {
-    if (truecolor) {
-      const gradient = isDark ? GRADIENT_DARK : GRADIENT_LIGHT;
-      console.log(`  ${colorizeLineTrueColor(line, gradient)}`);
-    } else if (color256 && hasColor) {
-      console.log(`  ${colorizeLine256(line, GRADIENT_256)}`);
-    } else {
-      console.log(`  ${line}`);
+    const isDark = !(process.env.COLORFGBG ?? "").startsWith("0;");
+    const truecolor = supportsTrueColor();
+    const color256 = supports256Color();
+    const hasColor = supportsColor();
+
+    console.log();
+    for (const line of ATOMIC_BLOCK_LOGO) {
+        if (truecolor) {
+            const gradient = isDark ? GRADIENT_DARK : GRADIENT_LIGHT;
+            console.log(`  ${colorizeLineTrueColor(line, gradient)}`);
+        } else if (color256 && hasColor) {
+            console.log(`  ${colorizeLine256(line, GRADIENT_256)}`);
+        } else {
+            console.log(`  ${line}`);
+        }
     }
-  }
-  console.log();
+    console.log();
 }
 ```
 
@@ -465,31 +499,31 @@ export function displayBlockBanner(): void {
 
 ```javascript
 const platformMap = {
-  darwin: "darwin",
-  linux: "linux",
-  win32: "windows",
+    darwin: "darwin",
+    linux: "linux",
+    win32: "windows",
 };
 
 const archMap = {
-  x64: "x64",
-  arm64: "arm64",
+    x64: "x64",
+    arm64: "arm64",
 };
 
 function libcSuffix() {
-  if (platform !== "linux") return "";
-  const muslLinker =
-    "/lib/ld-musl-" + (arch === "arm64" ? "aarch64" : "x86_64") + ".so.1";
-  try {
-    if (fs.existsSync(muslLinker)) return "-musl";
-  } catch (_) {}
-  return "";
+    if (platform !== "linux") return "";
+    const muslLinker =
+        "/lib/ld-musl-" + (arch === "arm64" ? "aarch64" : "x86_64") + ".so.1";
+    try {
+        if (fs.existsSync(muslLinker)) return "-musl";
+    } catch (_) {}
+    return "";
 }
 
 const packageName = "@bastani/atomic-" + platform + "-" + arch + libcSuffix();
 const binaryName = "atomic" + (platform === "windows" ? ".exe" : "");
 
 const result = childProcess.spawnSync(binary, process.argv.slice(2), {
-  stdio: "inherit",
+    stdio: "inherit",
 });
 
 process.exit(result.status != null ? result.status : 1);
@@ -507,36 +541,53 @@ process.exit(result.status != null ? result.status : 1);
 ```typescript
 program
     .command("_orchestrator-entry", { hidden: true })
-    .description("Internal: load a workflow definition and run the orchestrator panel")
+    .description(
+        "Internal: load a workflow definition and run the orchestrator panel",
+    )
     .argument("<workflowName>", "Workflow name (matches builtin registry)")
     .argument("<agent>", "claude | copilot | opencode")
-    .argument("[inputsB64]", "Base64-encoded JSON record of structured inputs", "")
-    .argument("[workflowSource]", "Workflow source path (dynamic-import fallback for non-builtin workflows in dev)", "")
-    .action(async (
-        workflowName: string,
-        agent: string,
-        inputsB64: string,
-        workflowSource: string,
-    ) => {
-        const { isCompiledBinaryRuntime } = await import(
-            "@bastani/atomic-sdk/lib/runtime-env"
-        );
-        
-        if (isCompiledBinaryRuntime(workflowSource)) {
-            // Compiled binary: resolve by name+agent in builtin registry
-            const { createBuiltinRegistry } = await import(
-                "./commands/builtin-registry.ts"
-            );
-            const resolved = createBuiltinRegistry().resolve(workflowName, agent);
-            // ...
-        } else {
-            // Dev: dynamic-import workflow file
-            const { runOrchestratorEntry } = await import(
-                "@bastani/atomic-sdk/runtime/orchestrator-entry"
-            );
-            await runOrchestratorEntry(workflowSource, workflowName, agent, inputsB64);
-        }
-    });
+    .argument(
+        "[inputsB64]",
+        "Base64-encoded JSON record of structured inputs",
+        "",
+    )
+    .argument(
+        "[workflowSource]",
+        "Workflow source path (dynamic-import fallback for non-builtin workflows in dev)",
+        "",
+    )
+    .action(
+        async (
+            workflowName: string,
+            agent: string,
+            inputsB64: string,
+            workflowSource: string,
+        ) => {
+            const { isCompiledBinaryRuntime } =
+                await import("@bastani/atomic-sdk/lib/runtime-env");
+
+            if (isCompiledBinaryRuntime(workflowSource)) {
+                // Compiled binary: resolve by name+agent in builtin registry
+                const { createBuiltinRegistry } =
+                    await import("./commands/builtin-registry.ts");
+                const resolved = createBuiltinRegistry().resolve(
+                    workflowName,
+                    agent,
+                );
+                // ...
+            } else {
+                // Dev: dynamic-import workflow file
+                const { runOrchestratorEntry } =
+                    await import("@bastani/atomic-sdk/runtime/orchestrator-entry");
+                await runOrchestratorEntry(
+                    workflowSource,
+                    workflowName,
+                    agent,
+                    inputsB64,
+                );
+            }
+        },
+    );
 ```
 
 ---
@@ -549,39 +600,54 @@ program
 ```typescript
 program
     .command("_claude-stop-hook", { hidden: true })
-    .description("Internal: Claude Code Stop hook handler — writes a marker file for idle detection")
+    .description(
+        "Internal: Claude Code Stop hook handler — writes a marker file for idle detection",
+    )
     .action(async () => {
-        const { claudeStopHookCommand } = await import("@bastani/atomic-sdk/providers/claude-stop-hook");
+        const { claudeStopHookCommand } =
+            await import("@bastani/atomic-sdk/providers/claude-stop-hook");
         const exitCode = await claudeStopHookCommand();
         process.exit(exitCode);
     });
 
 program
     .command("_claude-session-start-hook", { hidden: true })
-    .description("Internal: Claude Code SessionStart hook handler — writes a ready-marker file")
+    .description(
+        "Internal: Claude Code SessionStart hook handler — writes a ready-marker file",
+    )
     .action(async () => {
-        const { claudeSessionStartHookCommand } = await import("./commands/cli/claude-session-start-hook.ts");
+        const { claudeSessionStartHookCommand } =
+            await import("./commands/cli/claude-session-start-hook.ts");
         const exitCode = await claudeSessionStartHookCommand();
         process.exit(exitCode);
     });
 
 program
     .command("_claude-ask-hook", { hidden: true })
-    .description("Internal: Claude Code AskUserQuestion hook handler — writes/removes HIL marker")
+    .description(
+        "Internal: Claude Code AskUserQuestion hook handler — writes/removes HIL marker",
+    )
     .argument("<mode>", "enter (PreToolUse) or exit (PostToolUseFailure)")
     .action(async (mode: string) => {
         // ... mode validation
-        const { claudeAskHookCommand } = await import("./commands/cli/claude-ask-hook.ts");
+        const { claudeAskHookCommand } =
+            await import("./commands/cli/claude-ask-hook.ts");
         const exitCode = await claudeAskHookCommand(mode);
         process.exit(exitCode);
     });
 
 program
     .command("_claude-inflight-hook", { hidden: true })
-    .description("Internal: Claude Code Subagent/TeammateIdle lifecycle hook handler")
-    .argument("<mode>", "start (SubagentStart), stop (SubagentStop), or wait (TeammateIdle)")
+    .description(
+        "Internal: Claude Code Subagent/TeammateIdle lifecycle hook handler",
+    )
+    .argument(
+        "<mode>",
+        "start (SubagentStart), stop (SubagentStop), or wait (TeammateIdle)",
+    )
     .action(async (mode: string) => {
-        const { claudeInflightHookCommand } = await import("@bastani/atomic-sdk/providers/claude-inflight-hook");
+        const { claudeInflightHookCommand } =
+            await import("@bastani/atomic-sdk/providers/claude-inflight-hook");
         const exitCode = await claudeInflightHookCommand(mode);
         process.exit(exitCode);
     });
@@ -609,4 +675,3 @@ Partition 3 reveals the complete CLI surface architecture:
 14. **Claude hooks** (cli.ts:399-464) — Stop, SessionStart, Ask, Inflight lifecycle markers
 
 All patterns are tightly coupled to three agent identifiers (`claude`, `opencode`, `copilot`) and three SDK packages (`@bastani/atomic-sdk`, `@commander-js/extra-typings`, `@clack/prompts`). The rewrite onto `pi-coding-agent` will require abstracting agent type, decoupling SDK dependencies, and replacing tmux integration with pi's native runtime model.
-

@@ -1,11 +1,11 @@
 # Copilot Agent Detection Refactoring Technical Design Document
 
-| Document Metadata      | Details                                                                |
-| ---------------------- | ---------------------------------------------------------------------- |
-| Author(s)              | flora131                                                               |
-| Status                 | Draft (WIP)                                                            |
-| Team / Owner           | flora131/atomic                                                        |
-| Created / Last Updated | 2026-01-24                                                             |
+| Document Metadata      | Details        |
+| ---------------------- | -------------- |
+| Author(s)              | flora131       |
+| Status                 | Draft (WIP)    |
+| Team / Owner           | bastani/atomic |
+| Created / Last Updated | 2026-01-24     |
 
 ## 1. Executive Summary
 
@@ -41,12 +41,14 @@ The Copilot telemetry system uses a **Mediator Pattern** with temp file communic
 ```
 
 **Architecture:**
+
 - `.github/hooks/hooks.json:13-19` - Configures `userPromptSubmitted` hook
 - `.github/hooks/prompt-hook.sh` - Extracts slash commands from each prompt
 - `.github/hooks/stop-hook.sh:217-244` - Reads temp file and writes telemetry
 - `bin/telemetry-helper.sh:119-163` - `extract_commands()` function for regex matching
 
 **Limitations:**
+
 - **Wrong detection target:** Detects slash commands (e.g., `/commit`), not custom agent invocations
 - **Hardcoded agent type:** Always records `"copilot"` with no granularity on which `.github/agents/*.md` agent was used
 - **Per-prompt latency:** Hook runs on every prompt submission, adding overhead
@@ -60,6 +62,7 @@ The Copilot telemetry system uses a **Mediator Pattern** with temp file communic
 - **Maintenance Burden:** Two hooks + temp file is more complex than necessary
 
 **Critical Insight from Research:** GitHub Copilot stores complete session events in `~/.copilot/session-state/<session-id>/events.jsonl`. Agent invocations can be detected by:
+
 1. Parsing `<agent_instructions>` in `transformedContent` (dropdown/CLI invocations)
 2. Extracting `agent_type` from `task` tool calls (natural language invocations)
 
@@ -161,6 +164,7 @@ flowchart TB
 **Strategy Pattern:** The `detect_copilot_agents()` function encapsulates the agent detection algorithm, making it interchangeable if detection logic needs to change. Each agent type (Claude, OpenCode, Copilot) has its own detection strategy without affecting others.
 
 **Hook Isolation by Directory:**
+
 ```
 Copilot:   .github/hooks/stop-hook.sh    ← Configured in .github/hooks/hooks.json
 Claude:    .claude/hooks/telemetry-stop.sh ← Configured in .claude/settings.json
@@ -169,18 +173,18 @@ OpenCode:  .opencode/plugin/telemetry.ts  ← Plugin event system
 
 ### 4.3 Key Components
 
-| Component | Responsibility | Technology | Justification |
-|-----------|---------------|------------|---------------|
-| `detect_copilot_agents()` | Parse events.jsonl for agent invocations | Bash + jq | Consistent with existing shell-based hooks |
-| `AGENT_INSTRUCTION_HEADERS` | Map instruction header text to agent names | Bash associative array | Static lookup for maintainability |
-| `stop-hook.sh` (modified) | Call detection function at session end | Bash | Existing hook, minimal changes |
+| Component                   | Responsibility                             | Technology             | Justification                              |
+| --------------------------- | ------------------------------------------ | ---------------------- | ------------------------------------------ |
+| `detect_copilot_agents()`   | Parse events.jsonl for agent invocations   | Bash + jq              | Consistent with existing shell-based hooks |
+| `AGENT_INSTRUCTION_HEADERS` | Map instruction header text to agent names | Bash associative array | Static lookup for maintainability          |
+| `stop-hook.sh` (modified)   | Call detection function at session end     | Bash                   | Existing hook, minimal changes             |
 
 ## 5. Detailed Design
 
 ### 5.1 Files to Delete
 
-| File | Reason |
-|------|--------|
+| File                           | Reason                                              |
+| ------------------------------ | --------------------------------------------------- |
 | `.github/hooks/prompt-hook.sh` | No longer needed—slash command accumulation removed |
 
 ### 5.2 Files to Modify
@@ -228,6 +232,7 @@ OpenCode:  .opencode/plugin/telemetry.ts  ← Plugin event system
 **Replace telemetry section (lines 210-244):**
 
 **Before:**
+
 ```bash
 # ============================================================================
 # TELEMETRY TRACKING
@@ -267,6 +272,7 @@ fi
 ```
 
 **After:**
+
 ```bash
 # ============================================================================
 # TELEMETRY TRACKING
@@ -419,18 +425,18 @@ detect_copilot_agents() {
 
 The mapping between agent files and detection patterns is critical. Based on analysis of `.github/agents/*.md` files:
 
-| Agent File | Detection Pattern | Pattern Source |
-|------------|-------------------|----------------|
-| `explain-code.md` | `"Analyze and Explain Code Functionality"` | H1 header (line 14) |
-| `commit.md` | `"Smart Git Commit"` | H1 header (line 9) |
-| `create-gh-pr.md` | `"Create Pull Request Command"` | H1 header (line 9) |
-| `research-codebase.md` | `"Research Codebase"` | H1 header (line 9) |
-| `cancel-ralph.md` | `"Cancel Ralph"` | H1 header |
-| `ralph-help.md` | `"Ralph Wiggum Help"` | H1 header |
-| `ralph-loop.md` | `"Ralph Loop Command"` | H1 header |
-| `create-spec.md` | `"You are tasked with creating a spec"` | First content line |
-| `create-feature-list.md` | `"You are tasked with creating a detailed"` | First content line |
-| `implement-feature.md` | `"You are tasked with implementing a SINGLE feature"` | First content line |
+| Agent File               | Detection Pattern                                     | Pattern Source      |
+| ------------------------ | ----------------------------------------------------- | ------------------- |
+| `explain-code.md`        | `"Analyze and Explain Code Functionality"`            | H1 header (line 14) |
+| `commit.md`              | `"Smart Git Commit"`                                  | H1 header (line 9)  |
+| `create-gh-pr.md`        | `"Create Pull Request Command"`                       | H1 header (line 9)  |
+| `research-codebase.md`   | `"Research Codebase"`                                 | H1 header (line 9)  |
+| `cancel-ralph.md`        | `"Cancel Ralph"`                                      | H1 header           |
+| `ralph-help.md`          | `"Ralph Wiggum Help"`                                 | H1 header           |
+| `ralph-loop.md`          | `"Ralph Loop Command"`                                | H1 header           |
+| `create-spec.md`         | `"You are tasked with creating a spec"`               | First content line  |
+| `create-feature-list.md` | `"You are tasked with creating a detailed"`           | First content line  |
+| `implement-feature.md`   | `"You are tasked with implementing a SINGLE feature"` | First content line  |
 
 **Note:** Some agents (codebase-analyzer, codebase-locator, etc.) have no distinctive headers. These are sub-agents typically invoked by other agents, so they may appear in Method 2 (task tool calls) but not Method 1 (instruction headers).
 
@@ -471,45 +477,46 @@ The existing `AgentSessionEvent` schema is preserved:
 
 ```typescript
 interface AgentSessionEvent {
-  anonymousId: string;
-  eventId: string;
-  sessionId: string;
-  eventType: "agent_session";
-  timestamp: string;
-  agentType: "copilot" | "claude" | "opencode";
-  commands: string[];     // Now contains agent names, not slash commands
-  commandCount: number;   // Count of agent invocations
-  platform: string;
-  atomicVersion: string;
-  source: "session_hook";
+    anonymousId: string;
+    eventId: string;
+    sessionId: string;
+    eventType: "agent_session";
+    timestamp: string;
+    agentType: "copilot" | "claude" | "opencode";
+    commands: string[]; // Now contains agent names, not slash commands
+    commandCount: number; // Count of agent invocations
+    platform: string;
+    atomicVersion: string;
+    source: "session_hook";
 }
 ```
 
 **Example output after refactoring:**
+
 ```json
 {
-  "anonymousId": "abc123",
-  "eventId": "def456",
-  "sessionId": "def456",
-  "eventType": "agent_session",
-  "timestamp": "2026-01-24T10:30:00Z",
-  "agentType": "copilot",
-  "commands": ["explain-code", "commit", "explain-code"],
-  "commandCount": 3,
-  "platform": "darwin",
-  "atomicVersion": "0.5.0",
-  "source": "session_hook"
+    "anonymousId": "abc123",
+    "eventId": "def456",
+    "sessionId": "def456",
+    "eventType": "agent_session",
+    "timestamp": "2026-01-24T10:30:00Z",
+    "agentType": "copilot",
+    "commands": ["explain-code", "commit", "explain-code"],
+    "commandCount": 3,
+    "platform": "darwin",
+    "atomicVersion": "0.5.0",
+    "source": "session_hook"
 }
 ```
 
 ## 6. Alternatives Considered
 
-| Option | Pros | Cons | Reason for Rejection |
-|--------|------|------|---------------------|
-| **A: Keep userPromptSubmitted hook** | No changes needed | Detects wrong thing (slash commands), adds latency | Current approach is fundamentally flawed for Copilot |
-| **B: Real-time file watching** | Immediate detection | Complex, race conditions, resource overhead | Over-engineered for telemetry use case |
-| **C: Parse events.jsonl at session end (Selected)** | Simple, accurate, no latency per-prompt | Reads file at end only | **Selected:** Matches our telemetry cadence |
-| **D: Dynamic header extraction from agent files** | Auto-updates with agent changes | More complex, may have parsing edge cases | Maintenance overhead not justified; static map is simpler |
+| Option                                              | Pros                                    | Cons                                               | Reason for Rejection                                      |
+| --------------------------------------------------- | --------------------------------------- | -------------------------------------------------- | --------------------------------------------------------- |
+| **A: Keep userPromptSubmitted hook**                | No changes needed                       | Detects wrong thing (slash commands), adds latency | Current approach is fundamentally flawed for Copilot      |
+| **B: Real-time file watching**                      | Immediate detection                     | Complex, race conditions, resource overhead        | Over-engineered for telemetry use case                    |
+| **C: Parse events.jsonl at session end (Selected)** | Simple, accurate, no latency per-prompt | Reads file at end only                             | **Selected:** Matches our telemetry cadence               |
+| **D: Dynamic header extraction from agent files**   | Auto-updates with agent changes         | More complex, may have parsing edge cases          | Maintenance overhead not justified; static map is simpler |
 
 ## 7. Cross-Cutting Concerns
 
@@ -555,6 +562,7 @@ No data migration needed. The change affects how new events are generated, not h
 ### 8.3 Test Plan
 
 **Unit Tests:**
+
 - [ ] `detect_copilot_agents()` returns empty when no session directory exists
 - [ ] `detect_copilot_agents()` returns empty when events.jsonl is missing
 - [ ] `detect_copilot_agents()` extracts agent from `<agent_instructions>` correctly
@@ -563,10 +571,12 @@ No data migration needed. The change affects how new events are generated, not h
 - [ ] `detect_copilot_agents()` preserves duplicates for frequency tracking
 
 **Integration Tests:**
+
 - [ ] End-to-end test with mock events.jsonl file
 - [ ] Verify hooks.json loads correctly after removing userPromptSubmitted
 
 **Manual Tests:**
+
 - [ ] Invoke agent via dropdown → verify detection
 - [ ] Invoke agent via `copilot --agent=explain-code --prompt "..."` → verify detection
 - [ ] Invoke agent via natural language "use explain-code to..." → verify detection
@@ -596,17 +606,17 @@ No data migration needed. The change affects how new events are generated, not h
 
 ## Appendix A: Complete File Deletion List
 
-| File | Lines of Code | Action |
-|------|---------------|--------|
-| `.github/hooks/prompt-hook.sh` | 57 | DELETE |
+| File                           | Lines of Code | Action |
+| ------------------------------ | ------------- | ------ |
+| `.github/hooks/prompt-hook.sh` | 57            | DELETE |
 
 ## Appendix B: Complete File Modification Summary
 
-| File | Lines Changed | Nature of Change |
-|------|---------------|------------------|
-| `.github/hooks/hooks.json` | -7 | Remove userPromptSubmitted block |
-| `.github/hooks/stop-hook.sh` | -15, +8 | Replace temp file logic with detect function |
-| `bin/telemetry-helper.sh` | +75 | Add detect_copilot_agents() function |
+| File                         | Lines Changed | Nature of Change                             |
+| ---------------------------- | ------------- | -------------------------------------------- |
+| `.github/hooks/hooks.json`   | -7            | Remove userPromptSubmitted block             |
+| `.github/hooks/stop-hook.sh` | -15, +8       | Replace temp file logic with detect function |
+| `bin/telemetry-helper.sh`    | +75           | Add detect_copilot_agents() function         |
 
 ## Appendix C: Files Unchanged (Verification Checklist)
 

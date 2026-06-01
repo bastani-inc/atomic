@@ -1,10 +1,13 @@
 # Partition 11 of 12 — Findings
 
 ## Scope
+
 `install.cmd/` (1 files, 168 LOC)
 
 ## Files in Scope
+
 <!-- Source: codebase-locator sub-agent -->
+
 # Partition 11: Binary Distribution Installer (install.cmd)
 
 ## Implementation
@@ -13,7 +16,7 @@
 
 ## Configuration
 
-- `install.cmd` — Hardcoded GitHub release base URL (`flora131/atomic`), download directory (`%USERPROFILE%\.atomic\downloads`), manifest.json parsing strategy, platform detection (AMD64 vs ARM64), and version validation regex.
+- `install.cmd` — Hardcoded GitHub release base URL (`bastani/atomic`), download directory (`%USERPROFILE%\.atomic\downloads`), manifest.json parsing strategy, platform detection (AMD64 vs ARM64), and version validation regex.
 
 ## Notable Clusters
 
@@ -24,7 +27,9 @@
 The `install.cmd` script is a lightweight bootstrap for Windows that decouples pre-flight validation and binary download from the main CLI installation logic. It delegates actual installation (PATH updates, shell completions, tmux detection) to the binary's `install` subcommand. The script validates Windows architecture (rejects 32-bit), uses PowerShell for manifest/version parsing to work around cmd.exe regex limitations, performs SHA256 verification via CertUtil, and cleans up temporary files. This design is specific to the Atomic CLI binary distribution strategy and will require adaptation or replacement in a pi-coding-agent fork.
 
 ## How It Works
+
 <!-- Source: codebase-analyzer sub-agent -->
+
 ## Analysis: Binary Distribution Installers (install.cmd + peers)
 
 ### Files Analysed
@@ -44,26 +49,26 @@ The `install.cmd` script is a lightweight bootstrap for Windows that decouples p
 - **Role:** Windows cmd.exe bootstrap that downloads a verified Atomic binary from GitHub Releases and delegates to its `install` subcommand.
 
 - **Key symbols:**
-  - `TARGET` (`install.cmd:16`) — positional arg (`latest`, `stable`, or `x.y.z[-pre]`), defaults to `latest`
-  - `RELEASES_BASE` (`install.cmd:51`) — hardcoded `https://github.com/flora131/atomic/releases`
-  - `DOWNLOAD_DIR` (`install.cmd:52`) — hardcoded `%USERPROFILE%\.atomic\downloads`
-  - `PLATFORM` (`install.cmd:54-58`) — set to `windows-arm64` or `windows-x64` based on `%PROCESSOR_ARCHITECTURE%`
-  - `:download_file` subroutine (`install.cmd:144-147`) — thin `curl -fsSL --retry 3` wrapper
-  - `:verify_checksum` subroutine (`install.cmd:149-168`) — invokes `certutil -hashfile <path> SHA256`, strips spaces, does case-insensitive comparison against `%EXPECTED%`
+    - `TARGET` (`install.cmd:16`) — positional arg (`latest`, `stable`, or `x.y.z[-pre]`), defaults to `latest`
+    - `RELEASES_BASE` (`install.cmd:51`) — hardcoded `https://github.com/bastani/atomic/releases`
+    - `DOWNLOAD_DIR` (`install.cmd:52`) — hardcoded `%USERPROFILE%\.atomic\downloads`
+    - `PLATFORM` (`install.cmd:54-58`) — set to `windows-arm64` or `windows-x64` based on `%PROCESSOR_ARCHITECTURE%`
+    - `:download_file` subroutine (`install.cmd:144-147`) — thin `curl -fsSL --retry 3` wrapper
+    - `:verify_checksum` subroutine (`install.cmd:149-168`) — invokes `certutil -hashfile <path> SHA256`, strips spaces, does case-insensitive comparison against `%EXPECTED%`
 
 - **Control flow:**
-  1. `install.cmd:16-31` — Validate `TARGET` via a PowerShell regex (`^(?:stable|latest|[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?)$`) because cmd.exe's `findstr` has no end-of-input anchor and falsely rejects prerelease versions due to a trailing CRLF.
-  2. `install.cmd:41-48` — Reject 32-bit Windows via `%PROCESSOR_ARCHITECTURE%` and `%PROCESSOR_ARCHITEW6432%`.
-  3. `install.cmd:62-66` — Verify `curl` is available; print hint to use `install.ps1` if absent.
-  4. `install.cmd:69-75` — Resolve `manifest.json` URL: `latest`/`stable` → `releases/latest/download/manifest.json`; pinned version → `releases/download/v<VER>/manifest.json`.
-  5. `install.cmd:77-98` — Download manifest via `:download_file`; parse `VERSION` and `EXPECTED_CHECKSUM` via a single PowerShell invocation (`ConvertFrom-Json`) that emits `<version>|<checksum>` on stdout, split by `for /f … delims=|`.
-  6. `install.cmd:101-116` — Construct `BINARY_URL` and `BINARY_PATH`; download and verify checksum via `:verify_checksum`.
-  7. `install.cmd:119-133` — Run `"!BINARY_PATH!" install`; wait 1 second for handles to release; delete temp binary; propagate exit code.
+    1. `install.cmd:16-31` — Validate `TARGET` via a PowerShell regex (`^(?:stable|latest|[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?)$`) because cmd.exe's `findstr` has no end-of-input anchor and falsely rejects prerelease versions due to a trailing CRLF.
+    2. `install.cmd:41-48` — Reject 32-bit Windows via `%PROCESSOR_ARCHITECTURE%` and `%PROCESSOR_ARCHITEW6432%`.
+    3. `install.cmd:62-66` — Verify `curl` is available; print hint to use `install.ps1` if absent.
+    4. `install.cmd:69-75` — Resolve `manifest.json` URL: `latest`/`stable` → `releases/latest/download/manifest.json`; pinned version → `releases/download/v<VER>/manifest.json`.
+    5. `install.cmd:77-98` — Download manifest via `:download_file`; parse `VERSION` and `EXPECTED_CHECKSUM` via a single PowerShell invocation (`ConvertFrom-Json`) that emits `<version>|<checksum>` on stdout, split by `for /f … delims=|`.
+    6. `install.cmd:101-116` — Construct `BINARY_URL` and `BINARY_PATH`; download and verify checksum via `:verify_checksum`.
+    7. `install.cmd:119-133` — Run `"!BINARY_PATH!" install`; wait 1 second for handles to release; delete temp binary; propagate exit code.
 
 - **Data flow:**
-  - Input: optional `%~1` version string from CLI.
-  - Intermediate state: `%USERPROFILE%\.atomic\downloads\manifest.json` (downloaded, read, immediately deleted at `install.cmd:98`), then `atomic-<version>-<platform>.exe` (downloaded, checksum-verified, executed, then deleted at `install.cmd:125`).
-  - Output: delegates all PATH/completions/settings work to the binary itself; exits 0 on success, 1 on any failure.
+    - Input: optional `%~1` version string from CLI.
+    - Intermediate state: `%USERPROFILE%\.atomic\downloads\manifest.json` (downloaded, read, immediately deleted at `install.cmd:98`), then `atomic-<version>-<platform>.exe` (downloaded, checksum-verified, executed, then deleted at `install.cmd:125`).
+    - Output: delegates all PATH/completions/settings work to the binary itself; exits 0 on success, 1 on any failure.
 
 - **Dependencies:** `curl` (Windows 10+ built-in), `certutil` (Windows built-in), `powershell.exe` (Windows built-in). No external package manager required.
 
@@ -74,20 +79,20 @@ The `install.cmd` script is a lightweight bootstrap for Windows that decouples p
 - **Role:** Windows PowerShell bootstrap that mirrors `install.cmd`'s flow with native PowerShell idioms (no `curl`/`certutil` dependency).
 
 - **Key symbols:**
-  - `$Target` param (`install.ps1:16-19`) — validated via `[ValidatePattern('^(stable|latest|\d+\.\d+\.\d+(-[^\s]+)?)$')]`
-  - `$RELEASES_BASE` (`install.ps1:30`) — same hardcoded `https://github.com/flora131/atomic/releases`
-  - `$DOWNLOAD_DIR` (`install.ps1:31`) — `$env:USERPROFILE\.atomic\downloads`
-  - `$platform` (`install.ps1:34-38`) — `windows-arm64` or `windows-x64`
+    - `$Target` param (`install.ps1:16-19`) — validated via `[ValidatePattern('^(stable|latest|\d+\.\d+\.\d+(-[^\s]+)?)$')]`
+    - `$RELEASES_BASE` (`install.ps1:30`) — same hardcoded `https://github.com/bastani/atomic/releases`
+    - `$DOWNLOAD_DIR` (`install.ps1:31`) — `$env:USERPROFILE\.atomic\downloads`
+    - `$platform` (`install.ps1:34-38`) — `windows-arm64` or `windows-x64`
 
 - **Control flow:**
-  1. `install.ps1:25-28` — 64-bit check via `[Environment]::Is64BitProcess`.
-  2. `install.ps1:47-51` — Resolve manifest URL by same `latest`/`stable`/pinned logic.
-  3. `install.ps1:53-59` — `Invoke-RestMethod` to fetch and auto-parse manifest JSON into `$manifest`.
-  4. `install.ps1:61-66` — Extract `$version` and `$checksum` from `$manifest.platforms.$platform.checksum`.
-  5. `install.ps1:71` — Pin binary URL to `releases/download/v$version/…` (not `latest/download`) for reliability mid-release.
-  6. `install.ps1:77-98` — Retry loop (3 attempts, `[Math]::Min(5, attempt*2)` second back-off) via `Invoke-WebRequest`; 5.1-compatible (no `-MaximumRetryCount`).
-  7. `install.ps1:100-105` — SHA-256 verify via `Get-FileHash`.
-  8. `install.ps1:113-124` — Run `& $binaryPath install`; `finally` block deletes temp with `Start-Sleep -Seconds 1` before unlink.
+    1. `install.ps1:25-28` — 64-bit check via `[Environment]::Is64BitProcess`.
+    2. `install.ps1:47-51` — Resolve manifest URL by same `latest`/`stable`/pinned logic.
+    3. `install.ps1:53-59` — `Invoke-RestMethod` to fetch and auto-parse manifest JSON into `$manifest`.
+    4. `install.ps1:61-66` — Extract `$version` and `$checksum` from `$manifest.platforms.$platform.checksum`.
+    5. `install.ps1:71` — Pin binary URL to `releases/download/v$version/…` (not `latest/download`) for reliability mid-release.
+    6. `install.ps1:77-98` — Retry loop (3 attempts, `[Math]::Min(5, attempt*2)` second back-off) via `Invoke-WebRequest`; 5.1-compatible (no `-MaximumRetryCount`).
+    7. `install.ps1:100-105` — SHA-256 verify via `Get-FileHash`.
+    8. `install.ps1:113-124` — Run `& $binaryPath install`; `finally` block deletes temp with `Start-Sleep -Seconds 1` before unlink.
 
 - **Dependencies:** `powershell.exe` / `pwsh.exe` only; `Invoke-RestMethod`, `Invoke-WebRequest`, `Get-FileHash` are all PowerShell builtins.
 
@@ -98,21 +103,21 @@ The `install.cmd` script is a lightweight bootstrap for Windows that decouples p
 - **Role:** macOS/Linux bash bootstrap analogous to `install.cmd`/`install.ps1`.
 
 - **Key symbols:**
-  - `download_file()` (`install.sh:37-52`) — wraps `curl -fsSL --retry 3` or `wget -q`
-  - `get_checksum_from_manifest()` (`install.sh:55-63`) — pure-bash JSON extraction using `BASH_REMATCH` regex (no `jq` required)
-  - `get_version_from_manifest()` (`install.sh:65-73`) — same pattern
-  - `libc` detection (`install.sh:104-111`) — detects musl Linux via `ldd --version`, `/lib/ld-musl-x86_64.so.1`, or `/lib/ld-musl-aarch64.so.1`; appends `-musl` to platform string
+    - `download_file()` (`install.sh:37-52`) — wraps `curl -fsSL --retry 3` or `wget -q`
+    - `get_checksum_from_manifest()` (`install.sh:55-63`) — pure-bash JSON extraction using `BASH_REMATCH` regex (no `jq` required)
+    - `get_version_from_manifest()` (`install.sh:65-73`) — same pattern
+    - `libc` detection (`install.sh:104-111`) — detects musl Linux via `ldd --version`, `/lib/ld-musl-x86_64.so.1`, or `/lib/ld-musl-aarch64.so.1`; appends `-musl` to platform string
 
 - **Control flow:**
-  1. `install.sh:19` — Validate `TARGET` regex in bash.
-  2. `install.sh:76-98` — Detect OS/arch; Rosetta 2 detection at `install.sh:94-98`.
-  3. `install.sh:104-111` — musl detection for Alpine Linux hosts.
-  4. `install.sh:117-121` — Manifest URL resolution.
-  5. `install.sh:123-137` — Download manifest (piped to stdout, not disk), parse `version` and `checksum`.
-  6. `install.sh:143-147` — Download binary to `$DOWNLOAD_DIR/atomic-$version-$platform`.
-  7. `install.sh:150-160` — SHA-256 verify via `shasum -a 256` (macOS) or `sha256sum` (Linux).
-  8. `install.sh:162` — `chmod +x`.
-  9. `install.sh:166` — Run `"$binary_path" install`; `install.sh:169` deletes temp.
+    1. `install.sh:19` — Validate `TARGET` regex in bash.
+    2. `install.sh:76-98` — Detect OS/arch; Rosetta 2 detection at `install.sh:94-98`.
+    3. `install.sh:104-111` — musl detection for Alpine Linux hosts.
+    4. `install.sh:117-121` — Manifest URL resolution.
+    5. `install.sh:123-137` — Download manifest (piped to stdout, not disk), parse `version` and `checksum`.
+    6. `install.sh:143-147` — Download binary to `$DOWNLOAD_DIR/atomic-$version-$platform`.
+    7. `install.sh:150-160` — SHA-256 verify via `shasum -a 256` (macOS) or `sha256sum` (Linux).
+    8. `install.sh:162` — `chmod +x`.
+    9. `install.sh:166` — Run `"$binary_path" install`; `install.sh:169` deletes temp.
 
 - **Dependencies:** `curl` or `wget` (either sufficient), `bash`, no external tools for manifest parsing.
 
@@ -123,44 +128,44 @@ The `install.cmd` script is a lightweight bootstrap for Windows that decouples p
 - **Role:** The `atomic install` and `atomic uninstall` subcommand implementations — receives control from bootstrap scripts, performs binary self-copy, PATH wiring, tmux/psmux detection, and shell completions setup.
 
 - **Key symbols:**
-  - `RC_MARKER` (`install.ts:40`) — `"# Atomic CLI completions (cached)"` — sentinel inserted in rc files
-  - `PATH_RC_MARKER` (`install.ts:41`) — `"# Atomic CLI PATH"` — sentinel for PATH rc snippets
-  - `getInstallPaths()` (`install.ts:58`) — returns `InstallPaths` with `binDir`, `binPath`, `completionsDir`; Windows uses `%LOCALAPPDATA%\atomic\bin`, Unix uses `~/.local/bin`
-  - `copyBinary()` (`install.ts:96`) — atomic move: `copyFileSync → chmodSync → renameSync` via a `.tmp.<pid>.<ts>` intermediate; Windows archives running `.exe` to `.exe.old.<ts>` first
-  - `cleanupOldArtifacts()` (`install.ts:160`) — reaps `atomic.exe.old.<digits>` and `atomic.exe.tmp.<pid>.<ts>` files older than 1 hour from `binDir`
-  - `pathContains()` (`install.ts:204`) — checks if `dir` is already on `PATH`, case-insensitive on Windows
-  - `persistPathEntry()` (`install.ts:223`) — routes to `persistWindowsPath()` (registry via PowerShell `[Environment]::SetEnvironmentVariable`) or `persistUnixPath()` (appends to rc files)
-  - `appendPathRcSnippet()` (`install.ts:343`) — writes POSIX `case ":$PATH:" in … esac` guard or fish `fish_add_path`
-  - `detectMuxBinary()` (`install.ts:411`) — searches PATH then `wellKnownMuxInstallDirs()` for `tmux` (Unix) or `psmux`/`pmux` (Windows)
-  - `wellKnownMuxInstallDirs()` (`install.ts:435`) — enumerates Homebrew, Scoop, WinGet, Chocolatey, and manual install locations
-  - `installCompletions()` (`install.ts:472`) — writes completion script from `COMPLETION_SCRIPTS[shell]` to `~/.atomic/completions/atomic.<ext>`, then sources it from rc file
-  - `ensureCompletionsSourcedFromRc()` (`install.ts:509`) — strips legacy `eval "$(atomic completions …)"` snippet before writing new cached-source snippet
-  - `stripRcSnippet()` (`install.ts:555`) — marker-aware line filter that removes up to 6-line blocks written by previous installs
-  - `uninstallCommand()` (`install.ts:695`) — dispatches on `detectInstallMethod()` result; only handles `binary` method directly, prints hints for `bun`/`npm`/`pnpm`/`yarn`
-  - `installCommand()` (`install.ts:751`) — orchestrates: `copyBinary` → `persistPathEntry` → `detectMuxBinary`/`persistPathEntry` for mux → `installCompletions` → `cleanupOldArtifacts` (via `queueMicrotask`)
+    - `RC_MARKER` (`install.ts:40`) — `"# Atomic CLI completions (cached)"` — sentinel inserted in rc files
+    - `PATH_RC_MARKER` (`install.ts:41`) — `"# Atomic CLI PATH"` — sentinel for PATH rc snippets
+    - `getInstallPaths()` (`install.ts:58`) — returns `InstallPaths` with `binDir`, `binPath`, `completionsDir`; Windows uses `%LOCALAPPDATA%\atomic\bin`, Unix uses `~/.local/bin`
+    - `copyBinary()` (`install.ts:96`) — atomic move: `copyFileSync → chmodSync → renameSync` via a `.tmp.<pid>.<ts>` intermediate; Windows archives running `.exe` to `.exe.old.<ts>` first
+    - `cleanupOldArtifacts()` (`install.ts:160`) — reaps `atomic.exe.old.<digits>` and `atomic.exe.tmp.<pid>.<ts>` files older than 1 hour from `binDir`
+    - `pathContains()` (`install.ts:204`) — checks if `dir` is already on `PATH`, case-insensitive on Windows
+    - `persistPathEntry()` (`install.ts:223`) — routes to `persistWindowsPath()` (registry via PowerShell `[Environment]::SetEnvironmentVariable`) or `persistUnixPath()` (appends to rc files)
+    - `appendPathRcSnippet()` (`install.ts:343`) — writes POSIX `case ":$PATH:" in … esac` guard or fish `fish_add_path`
+    - `detectMuxBinary()` (`install.ts:411`) — searches PATH then `wellKnownMuxInstallDirs()` for `tmux` (Unix) or `psmux`/`pmux` (Windows)
+    - `wellKnownMuxInstallDirs()` (`install.ts:435`) — enumerates Homebrew, Scoop, WinGet, Chocolatey, and manual install locations
+    - `installCompletions()` (`install.ts:472`) — writes completion script from `COMPLETION_SCRIPTS[shell]` to `~/.atomic/completions/atomic.<ext>`, then sources it from rc file
+    - `ensureCompletionsSourcedFromRc()` (`install.ts:509`) — strips legacy `eval "$(atomic completions …)"` snippet before writing new cached-source snippet
+    - `stripRcSnippet()` (`install.ts:555`) — marker-aware line filter that removes up to 6-line blocks written by previous installs
+    - `uninstallCommand()` (`install.ts:695`) — dispatches on `detectInstallMethod()` result; only handles `binary` method directly, prints hints for `bun`/`npm`/`pnpm`/`yarn`
+    - `installCommand()` (`install.ts:751`) — orchestrates: `copyBinary` → `persistPathEntry` → `detectMuxBinary`/`persistPathEntry` for mux → `installCompletions` → `cleanupOldArtifacts` (via `queueMicrotask`)
 
 - **Control flow (installCommand):**
-  1. `install.ts:752` — `getInstallPaths()` to resolve target dirs
-  2. `install.ts:756` — `copyBinary(paths)` — self-copy from `process.execPath`
-  3. `install.ts:764` — `persistPathEntry(paths.binDir)` — idempotent PATH update
-  4. `install.ts:776` — `detectMuxBinary()` — tmux/psmux detection and optional PATH persistence
-  5. `install.ts:798` — `installCompletions(paths)` — write completion cache + rc source line
-  6. `install.ts:814` — `queueMicrotask(() => cleanupOldArtifacts(paths.binDir))` — non-blocking reaper
+    1. `install.ts:752` — `getInstallPaths()` to resolve target dirs
+    2. `install.ts:756` — `copyBinary(paths)` — self-copy from `process.execPath`
+    3. `install.ts:764` — `persistPathEntry(paths.binDir)` — idempotent PATH update
+    4. `install.ts:776` — `detectMuxBinary()` — tmux/psmux detection and optional PATH persistence
+    5. `install.ts:798` — `installCompletions(paths)` — write completion cache + rc source line
+    6. `install.ts:814` — `queueMicrotask(() => cleanupOldArtifacts(paths.binDir))` — non-blocking reaper
 
 - **tmux dependency (load-bearing for current Atomic, removable for pi-rewrite):**
-  - `install.ts:403-462` — `detectMuxBinary()` and `wellKnownMuxInstallDirs()` explicitly detect and configure tmux (Unix) and psmux/pmux (Windows) as required mux binaries. The `installCommand` at `install.ts:776-795` will warn if no mux binary is found. These functions reference tmux/psmux as named binary strings and their platform-specific install directories. In a pi-coding-agent rewrite, this entire block is removable.
+    - `install.ts:403-462` — `detectMuxBinary()` and `wellKnownMuxInstallDirs()` explicitly detect and configure tmux (Unix) and psmux/pmux (Windows) as required mux binaries. The `installCommand` at `install.ts:776-795` will warn if no mux binary is found. These functions reference tmux/psmux as named binary strings and their platform-specific install directories. In a pi-coding-agent rewrite, this entire block is removable.
 
 - **Data flow:**
-  - Input: `process.execPath` (source binary path), `process.env` (PATH, LOCALAPPDATA, etc.), filesystem state of rc files
-  - State written: binary copied to `binDir/atomic[.exe]`, PATH entries appended to registry (Windows) or rc files (Unix), completion scripts written to `~/.atomic/completions/`, rc files modified with source lines
-  - Output: exit code 0/1, stdout progress messages
+    - Input: `process.execPath` (source binary path), `process.env` (PATH, LOCALAPPDATA, etc.), filesystem state of rc files
+    - State written: binary copied to `binDir/atomic[.exe]`, PATH entries appended to registry (Windows) or rc files (Unix), completion scripts written to `~/.atomic/completions/`, rc files modified with source lines
+    - Output: exit code 0/1, stdout progress messages
 
 - **Dependencies:**
-  - `node:fs`, `node:os`, `node:path` (standard)
-  - `./install-method.ts` — install method detection
-  - `../../completions/index.ts` — shell completion script strings
-  - `Bun.spawnSync` — PowerShell invocation on Windows, package manager probing
-  - `Bun.which` — mux binary PATH search
+    - `node:fs`, `node:os`, `node:path` (standard)
+    - `./install-method.ts` — install method detection
+    - `../../completions/index.ts` — shell completion script strings
+    - `Bun.spawnSync` — PowerShell invocation on Windows, package manager probing
+    - `Bun.which` — mux binary PATH search
 
 ---
 
@@ -169,12 +174,12 @@ The `install.cmd` script is a lightweight bootstrap for Windows that decouples p
 - **Role:** Detects how the currently-running `atomic` binary was installed (binary installer, bun/npm/pnpm/yarn global, or source checkout) by inspecting `process.execPath`.
 
 - **Key symbols:**
-  - `InstallMethod` type (`install-method.ts:4`) — union: `"binary" | "bun" | "npm" | "pnpm" | "yarn" | "source" | "unknown"`
-  - `detectInstallMethod()` (`install-method.ts:45`) — memoized detection via `computeInstallMethod()`
-  - `computeInstallMethod()` (`install-method.ts:54`) — three checks: (1) exec path matches canonical `~/.local/bin` or `%LOCALAPPDATA%\atomic\bin` → `"binary"`; (2) path contains `node_modules/@bastani/atomic` → package manager (path heuristics then `<pm> ls -g` probe); (3) exec ends with `/bun` or `/bun.exe` → `"source"`
-  - `PKG_PATH_RE` (`install-method.ts:22`) — `/\/node_modules\/@bastani\/atomic(?:-[a-z0-9-]+)?\//`
-  - `_resetInstallMethodCache()` (`install-method.ts:104`) — test seam to clear memoized result
-  - `PM_PROBE_CMD` (`install-method.ts:24-29`) — maps `bun`/`pnpm`/`yarn`/`npm` to `ls -g` commands for confirming @bastani/atomic presence
+    - `InstallMethod` type (`install-method.ts:4`) — union: `"binary" | "bun" | "npm" | "pnpm" | "yarn" | "source" | "unknown"`
+    - `detectInstallMethod()` (`install-method.ts:45`) — memoized detection via `computeInstallMethod()`
+    - `computeInstallMethod()` (`install-method.ts:54`) — three checks: (1) exec path matches canonical `~/.local/bin` or `%LOCALAPPDATA%\atomic\bin` → `"binary"`; (2) path contains `node_modules/@bastani/atomic` → package manager (path heuristics then `<pm> ls -g` probe); (3) exec ends with `/bun` or `/bun.exe` → `"source"`
+    - `PKG_PATH_RE` (`install-method.ts:22`) — `/\/node_modules\/@bastani\/atomic(?:-[a-z0-9-]+)?\//`
+    - `_resetInstallMethodCache()` (`install-method.ts:104`) — test seam to clear memoized result
+    - `PM_PROBE_CMD` (`install-method.ts:24-29`) — maps `bun`/`pnpm`/`yarn`/`npm` to `ls -g` commands for confirming @bastani/atomic presence
 
 - **Data flow:** Input is `process.execPath` (or injected `opts.execPath`). Output is a single `InstallMethod` string, memoized in module-level `cached` variable (`install-method.ts:31`).
 
@@ -182,7 +187,7 @@ The `install.cmd` script is a lightweight bootstrap for Windows that decouples p
 
 ### Cross-Cutting Synthesis
 
-The binary distribution installer is a two-phase pipeline split across two layers. The outer layer (`install.cmd`, `install.ps1`, `install.sh`) is a minimal OS-native bootstrap whose sole job is: validate target version, detect architecture, download `manifest.json` from `https://github.com/flora131/atomic/releases`, parse the platform-specific SHA-256 checksum, download the versioned binary, verify it, and hand off via `<binary> install`. All three scripts use a `$RELEASES_BASE/download/v$version/<asset>` pin strategy (never `latest/download` for the binary itself) to avoid race conditions during release. The inner layer (`install.ts` `installCommand`) performs the durable work: atomic-move self-copy, PATH persistence (registry on Windows, rc-file appends on Unix), tmux/psmux binary detection with `wellKnownMuxInstallDirs`, shell completion cache writes, and a non-blocking reaper for install artifacts. `install-method.ts` provides a memoized detection of how the binary was installed, which gates `uninstallCommand` behaviour. The tmux/psmux detection block in `install.ts:403-462` is the primary agent-specific dependency in this layer; all other logic is agent-agnostic PATH and completions management directly replaceable for a pi-coding-agent fork.
+The binary distribution installer is a two-phase pipeline split across two layers. The outer layer (`install.cmd`, `install.ps1`, `install.sh`) is a minimal OS-native bootstrap whose sole job is: validate target version, detect architecture, download `manifest.json` from `https://github.com/bastani/atomic/releases`, parse the platform-specific SHA-256 checksum, download the versioned binary, verify it, and hand off via `<binary> install`. All three scripts use a `$RELEASES_BASE/download/v$version/<asset>` pin strategy (never `latest/download` for the binary itself) to avoid race conditions during release. The inner layer (`install.ts` `installCommand`) performs the durable work: atomic-move self-copy, PATH persistence (registry on Windows, rc-file appends on Unix), tmux/psmux binary detection with `wellKnownMuxInstallDirs`, shell completion cache writes, and a non-blocking reaper for install artifacts. `install-method.ts` provides a memoized detection of how the binary was installed, which gates `uninstallCommand` behaviour. The tmux/psmux detection block in `install.ts:403-462` is the primary agent-specific dependency in this layer; all other logic is agent-agnostic PATH and completions management directly replaceable for a pi-coding-agent fork.
 
 ---
 
@@ -191,11 +196,13 @@ The binary distribution installer is a two-phase pipeline split across two layer
 - `packages/atomic/src/completions/index.ts` — exports `Shell` type and four completion script strings (`bash`, `zsh`, `fish`, `powershell`) consumed by `installCommand` to write shell completion caches; the per-shell scripts in `packages/atomic/src/completions/` carry the actual completion logic.
 - `packages/atomic/src/commands/cli/install.test.ts` — test suite for `installCommand`/`uninstallCommand`; relevant for understanding which code paths are tested and what must be adapted in a rewrite.
 - `packages/atomic/src/services/system/install-method.ts` — a second `install-method.ts` at a different path; may be an alternate or service-layer variant of the detection logic.
-- `install.ps1` — the PowerShell peer of `install.cmd`; shares identical flow and hardcoded `flora131/atomic` release URL; must be rebranded for pi-coding-agent.
+- `install.ps1` — the PowerShell peer of `install.cmd`; shares identical flow and hardcoded `bastani/atomic` release URL; must be rebranded for pi-coding-agent.
 - `install.sh` — the macOS/Linux peer; includes musl and Rosetta 2 detection not present in the Windows scripts.
 
 ## Patterns
+
 <!-- Source: codebase-pattern-finder sub-agent -->
+
 # Pattern Finder 11: Install Layer Architecture
 
 **Scope**: `install.cmd/` (includes install.cmd, install.ps1, install.sh, and related TS code)
@@ -209,6 +216,7 @@ The install layer represents a three-stage bootstrap + self-setup pipeline: shel
 ## Patterns
 
 #### Pattern 1: Multi-Stage Bootstrap with Manifest-Driven Verification
+
 **Where:** `install.cmd:68-98`, `install.ps1:44-105`, `install.sh:116-160`
 **What:** Scripts fetch a manifest.json from GitHub Releases, parse it for the target platform's checksum and version, download the pinned binary, verify SHA256, then hand off to the binary's embedded `install` subcommand.
 
@@ -228,11 +236,13 @@ call :verify_checksum "!BINARY_PATH!" "!EXPECTED_CHECKSUM!"
 ```
 
 **Atomic-Specific Hardcodes:**
-- Line 51: `set "RELEASES_BASE=https://github.com/flora131/atomic/releases"`
-- Line 11: Usage example hardcodes `flora131/atomic/main/install.cmd`
+
+- Line 51: `set "RELEASES_BASE=https://github.com/bastani/atomic/releases"`
+- Line 11: Usage example hardcodes `bastani/atomic/main/install.cmd`
 - All three scripts only reference `atomic` (not configurable agent name)
 
 **Seams for pi-coding-agent:**
+
 - `RELEASES_BASE` should become a configurable template variable
 - Binary/package name `atomic` should be replaceable at generation time
 - GitHub org `flora131` is hardcoded; should be parameterized
@@ -240,6 +250,7 @@ call :verify_checksum "!BINARY_PATH!" "!EXPECTED_CHECKSUM!"
 ---
 
 #### Pattern 2: Platform Detection and Manifest Lookup
+
 **Where:** `install.cmd:40-58`, `install.sh:76-113`
 **What:** Detect OS and CPU architecture, map to platform string (windows-x64, windows-arm64, linux-x64, linux-arm64, darwin-x64, darwin-arm64, linux-x64-musl), then query manifest for that platform's binary and checksum.
 
@@ -257,6 +268,7 @@ for /f ... powershell ... "$m = Get-Content ... | ConvertFrom-Json; $c = $m.plat
 ```
 
 **Bash variant** (install.sh lines 76-113):
+
 ```bash
 case "$(uname -s)" in
     Darwin) os="darwin" ;;
@@ -288,12 +300,19 @@ platform="${os}-${arch}${libc}"
 ---
 
 #### Pattern 3: Binary Placement via Atomic Move (Copy → Chmod → Rename)
+
 **Where:** `packages/atomic/src/commands/cli/install.ts:96-132`
 **What:** Copy source binary to a temp `.tmp.<pid>.<ts>` file next to the target, chmod on Unix, then rename atomically. On Windows, archive the running binary first (can't delete in-use exe). Crash-safe: mid-install crashes leave orphan temps that are reaped later.
 
 ```typescript
-export function copyBinary(paths: InstallPaths, sourcePath: string = process.execPath): void {
-    if (resolve(sourcePath).toLowerCase() === resolve(paths.binPath).toLowerCase()) {
+export function copyBinary(
+    paths: InstallPaths,
+    sourcePath: string = process.execPath,
+): void {
+    if (
+        resolve(sourcePath).toLowerCase() ===
+        resolve(paths.binPath).toLowerCase()
+    ) {
         return; // Already running from install location
     }
 
@@ -315,7 +334,11 @@ export function copyBinary(paths: InstallPaths, sourcePath: string = process.exe
         }
         renameSync(tempPath, paths.binPath);
     } catch (err) {
-        try { unlinkSync(tempPath); } catch { /* ignore */ }
+        try {
+            unlinkSync(tempPath);
+        } catch {
+            /* ignore */
+        }
         throw err;
     }
 }
@@ -326,6 +349,7 @@ export function copyBinary(paths: InstallPaths, sourcePath: string = process.exe
 ---
 
 #### Pattern 4: Persistent PATH Writes (Platform-Specific)
+
 **Where:** `packages/atomic/src/commands/cli/install.ts:223-268`
 **What:** On Windows, use PowerShell to write HKCU\Environment\Path and broadcast WM_SETTINGCHANGE. On Unix, append idempotent snippets to shell rc files (.bashrc, .zshrc, .profile, fish config.fish).
 
@@ -333,14 +357,21 @@ export function copyBinary(paths: InstallPaths, sourcePath: string = process.exe
 function persistWindowsPath(dir: string): boolean {
     const readScript = `[Environment]::GetEnvironmentVariable('Path', 'User')`;
     const current = runPowerShell(readScript);
-    if (current === null) throw new Error("Could not read user PATH from registry");
+    if (current === null)
+        throw new Error("Could not read user PATH from registry");
 
     if (pathContains(current, dir, ";")) return false;
 
-    const newValue = current && !current.endsWith(";") ? `${current};${dir}` : `${current}${dir}`;
+    const newValue =
+        current && !current.endsWith(";")
+            ? `${current};${dir}`
+            : `${current}${dir}`;
     const writeScript = `[Environment]::SetEnvironmentVariable('Path', $env:_ATOMIC_NEW_PATH, 'User')`;
     const result = runPowerShell(writeScript, { _ATOMIC_NEW_PATH: newValue });
-    if (result === null) throw new Error(`Could not write user PATH to registry (tried to add ${dir})`);
+    if (result === null)
+        throw new Error(
+            `Could not write user PATH to registry (tried to add ${dir})`,
+        );
 
     process.env.PATH = `${process.env.PATH ?? ""};${dir}`;
     return true;
@@ -362,8 +393,13 @@ function persistUnixPath(dir: string): boolean {
 ```
 
 **Shell RC Snippets** (install.ts:343-353):
+
 ```typescript
-export function appendPathRcSnippet(rcPath: string, shell: Shell | "sh", dir: string): void {
+export function appendPathRcSnippet(
+    rcPath: string,
+    shell: Shell | "sh",
+    dir: string,
+): void {
     const snippet =
         shell === "fish"
             ? `\n${PATH_RC_MARKER}\nfish_add_path "${dir}"\n`
@@ -377,6 +413,7 @@ export function appendPathRcSnippet(rcPath: string, shell: Shell | "sh", dir: st
 ---
 
 #### Pattern 5: Mux/Psmux Binary Detection and PATH Addition
+
 **Where:** `packages/atomic/src/commands/cli/install.ts:403-462`
 **What:** Search for tmux (Unix) or psmux/pmux (Windows) on PATH, then in well-known install directories. If found but not on PATH, persist its directory to PATH.
 
@@ -387,7 +424,8 @@ function detectMuxBinary(): MuxDetection {
 
     for (const name of candidates) {
         const found = Bun.which(name, { PATH: process.env.PATH ?? "" });
-        if (found) return { binary: name, directory: dirname(found), onPath: true };
+        if (found)
+            return { binary: name, directory: dirname(found), onPath: true };
     }
 
     const searchDirs = wellKnownMuxInstallDirs();
@@ -414,11 +452,11 @@ export function wellKnownMuxInstallDirs(): string[] {
         ];
     }
     return [
-        "/opt/homebrew/bin",  // macOS Apple Silicon
-        "/usr/local/bin",     // macOS Intel + Linux
-        "/usr/bin",           // Linux distro
-        "/snap/bin",          // Linux snap
-        "/opt/local/bin",     // MacPorts
+        "/opt/homebrew/bin", // macOS Apple Silicon
+        "/usr/local/bin", // macOS Intel + Linux
+        "/usr/bin", // Linux distro
+        "/snap/bin", // Linux snap
+        "/opt/local/bin", // MacPorts
     ];
 }
 ```
@@ -426,6 +464,7 @@ export function wellKnownMuxInstallDirs(): string[] {
 **Atomic-Specific Coupling**: The hardcoded mux binaries (tmux/psmux/pmux) are tightly bound to Atomic's tmux integration. Removing this requires deciding the pi-coding-agent's multiplexer strategy (if any).
 
 **In install.ts main flow** (lines 776-796):
+
 ```typescript
 const mux = detectMuxBinary();
 if (mux.binary === null) {
@@ -440,6 +479,7 @@ if (mux.binary === null) {
 ---
 
 #### Pattern 6: Shell Completion Installation
+
 **Where:** `packages/atomic/src/commands/cli/install.ts:472-534`
 **What:** Write cached completion scripts to `~/.atomic/completions/atomic.<shell>` and source them from appropriate rc files. Also handle cleanup of legacy eval-based completions.
 
@@ -452,14 +492,23 @@ function installCompletions(paths: InstallPaths): CompletionInstall | null {
         mkdirSync(paths.completionsDir, { recursive: true });
     }
 
-    const ext: Record<Shell, string> = { bash: "bash", zsh: "zsh", fish: "fish", powershell: "ps1" };
+    const ext: Record<Shell, string> = {
+        bash: "bash",
+        zsh: "zsh",
+        fish: "fish",
+        powershell: "ps1",
+    };
     const cachePath = join(paths.completionsDir, `atomic.${ext[shell]}`);
     writeFileSync(cachePath, COMPLETION_SCRIPTS[shell], "utf8");
 
     if (shell === "fish") {
         const fishDir = join(homedir(), ".config", "fish", "completions");
         mkdirSync(fishDir, { recursive: true });
-        writeFileSync(join(fishDir, "atomic.fish"), COMPLETION_SCRIPTS.fish, "utf8");
+        writeFileSync(
+            join(fishDir, "atomic.fish"),
+            COMPLETION_SCRIPTS.fish,
+            "utf8",
+        );
         return { cachePath, rcPaths: [], shell };
     }
 
@@ -470,26 +519,36 @@ function installCompletions(paths: InstallPaths): CompletionInstall | null {
     return { cachePath, rcPaths, shell };
 }
 
-export function ensureCompletionsSourcedFromRc(rcPath: string, shell: Shell, cachePath: string): void {
+export function ensureCompletionsSourcedFromRc(
+    rcPath: string,
+    shell: Shell,
+    cachePath: string,
+): void {
     const content = readFileSync(rcPath, "utf8");
 
     // Strip legacy eval-based snippet
-    const legacyPattern = shell === "powershell"
-        ? /atomic completions powershell \| Invoke-Expression/
-        : /eval "\$\(atomic completions [a-z]+\)"/;
+    const legacyPattern =
+        shell === "powershell"
+            ? /atomic completions powershell \| Invoke-Expression/
+            : /eval "\$\(atomic completions [a-z]+\)"/;
     if (legacyPattern.test(content)) {
         const cleaned = content
             .split("\n")
-            .filter((line) => !legacyPattern.test(line) && line !== "# Atomic CLI completions")
+            .filter(
+                (line) =>
+                    !legacyPattern.test(line) &&
+                    line !== "# Atomic CLI completions",
+            )
             .join("\n");
         writeFileSync(rcPath, cleaned);
     }
 
     if (readFileSync(rcPath, "utf8").includes(RC_MARKER)) return;
 
-    const snippet = shell === "powershell"
-        ? `\n${RC_MARKER}\nif (Test-Path "${cachePath}") { . "${cachePath}" }\n`
-        : `\n${RC_MARKER}\n[ -f "${cachePath}" ] && source "${cachePath}"\n`;
+    const snippet =
+        shell === "powershell"
+            ? `\n${RC_MARKER}\nif (Test-Path "${cachePath}") { . "${cachePath}" }\n`
+            : `\n${RC_MARKER}\n[ -f "${cachePath}" ] && source "${cachePath}"\n`;
     appendFileSync(rcPath, snippet);
 }
 ```
@@ -499,6 +558,7 @@ export function ensureCompletionsSourcedFromRc(rcPath: string, shell: Shell, cac
 ---
 
 #### Pattern 7: Install Method Detection (Package Manager vs Binary vs Source)
+
 **Where:** `packages/atomic/src/commands/cli/install-method.ts:22-92`
 **What:** Detect whether the running binary came from a binary install (~/.local/bin/atomic), a package manager (node_modules/@bastani/atomic), or a source checkout (bun link).
 
@@ -506,10 +566,10 @@ export function ensureCompletionsSourcedFromRc(rcPath: string, shell: Shell, cac
 const PKG_PATH_RE = /\/node_modules\/@bastani\/atomic(?:-[a-z0-9-]+)?\//;
 
 const PM_PROBE_CMD: Record<"bun" | "pnpm" | "yarn" | "npm", string[]> = {
-    bun:  ["bun",  "pm",     "ls", "-g"],
-    pnpm: ["pnpm", "list",   "-g", "--depth=0"],
+    bun: ["bun", "pm", "ls", "-g"],
+    pnpm: ["pnpm", "list", "-g", "--depth=0"],
     yarn: ["yarn", "global", "list"],
-    npm:  ["npm",  "list",   "-g", "--depth=0"],
+    npm: ["npm", "list", "-g", "--depth=0"],
 };
 
 function computeInstallMethod(opts: DetectOptions): InstallMethod {
@@ -517,9 +577,15 @@ function computeInstallMethod(opts: DetectOptions): InstallMethod {
     const currentPlatform = opts.platform ?? osPlatform();
 
     // 1. Binary install
-    const binDir = currentPlatform === "win32"
-        ? join(process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local"), "atomic", "bin")
-        : join(homedir(), ".local", "bin");
+    const binDir =
+        currentPlatform === "win32"
+            ? join(
+                  process.env.LOCALAPPDATA ??
+                      join(homedir(), "AppData", "Local"),
+                  "atomic",
+                  "bin",
+              )
+            : join(homedir(), ".local", "bin");
     const norm = normalize(binDir);
     if (exec === norm || exec.startsWith(`${norm}/`)) return "binary";
 
@@ -532,7 +598,8 @@ function computeInstallMethod(opts: DetectOptions): InstallMethod {
         const probe = opts.probe ?? defaultProbe;
         for (const pm of ["bun", "pnpm", "yarn", "npm"] as const) {
             const r = probe(PM_PROBE_CMD[pm]);
-            if (r.exitCode === 0 && r.stdout.includes("@bastani/atomic")) return pm;
+            if (r.exitCode === 0 && r.stdout.includes("@bastani/atomic"))
+                return pm;
         }
         return "npm";
     }
@@ -545,6 +612,7 @@ function computeInstallMethod(opts: DetectOptions): InstallMethod {
 ```
 
 **Atomic + Package-Manager Hardcodes:**
+
 - Line 22: `@bastani/atomic` (package name scope)
 - Per-platform packages: `@bastani/atomic-windows-*` (install.ts:718), `@bastani/atomic-linux-*`, etc.
 - Uninstall hints (install.ts:613-618) hardcode full package names for bun/npm/pnpm/yarn
@@ -552,6 +620,7 @@ function computeInstallMethod(opts: DetectOptions): InstallMethod {
 ---
 
 #### Pattern 8: Artifact Reaper (Cleanup of Old Binaries and Temp Files)
+
 **Where:** `packages/atomic/src/commands/cli/install.ts:150-200`
 **What:** Clean up leftover `.old.<timestamp>` files (Windows running-exe archives) and `.tmp.<pid>.<timestamp>` temps older than 1 hour. Runs as fire-and-forget microtask at end of successful install.
 
@@ -560,7 +629,10 @@ const ONE_HOUR_MS = 60 * 60 * 1000;
 const OLD_BINARY_PATTERN = /^atomic(?:\.exe)?\.old\.\d+$/;
 const TMP_INSTALL_PATTERN = /^atomic(?:\.exe)?\.tmp\.\d+\.\d+$/;
 
-export function cleanupOldArtifacts(binDir: string, now: number = Date.now()): CleanupResult {
+export function cleanupOldArtifacts(
+    binDir: string,
+    now: number = Date.now(),
+): CleanupResult {
     let entries: string[];
     try {
         entries = readdirSync(binDir);
@@ -575,7 +647,9 @@ export function cleanupOldArtifacts(binDir: string, now: number = Date.now()): C
             try {
                 unlinkSync(entryPath);
                 oldBinariesRemoved++;
-            } catch { /* still locked or gone — ignore */ }
+            } catch {
+                /* still locked or gone — ignore */
+            }
             continue;
         }
 
@@ -586,7 +660,9 @@ export function cleanupOldArtifacts(binDir: string, now: number = Date.now()): C
                     unlinkSync(entryPath);
                     tempFilesRemoved++;
                 }
-            } catch { /* ignore */ }
+            } catch {
+                /* ignore */
+            }
             continue;
         }
     }
@@ -602,13 +678,15 @@ export function cleanupOldArtifacts(binDir: string, now: number = Date.now()): C
 ## Seams & Coupling Summary
 
 ### Tightly Coupled (Must Change for pi-coding-agent)
-1. **GitHub Release URL Base**: `https://github.com/flora131/atomic/releases` (install.cmd:51, install.ps1:30, install.sh:24)
+
+1. **GitHub Release URL Base**: `https://github.com/bastani/atomic/releases` (install.cmd:51, install.ps1:30, install.sh:24)
 2. **Package Scope**: `@bastani/atomic` (install-method.ts:22, install.ts:614-617)
 3. **Binary Name**: `atomic` (hardcoded in paths, regex patterns, completion scripts)
 4. **Tmux/Psmux Detection**: Tied to Atomic's multiplexer strategy
-5. **GitHub Org/Repo**: `flora131/atomic` (hardcoded in usage examples)
+5. **GitHub Org/Repo**: `bastani/atomic` (hardcoded in usage examples)
 
 ### Loosely Coupled (Reusable or Parameterizable)
+
 1. **Platform Detection**: Fully generic (OS/arch mapping, musl detection)
 2. **Atomic Move Pattern**: Portable crash-safe installation (copy → chmod → rename)
 3. **PATH Manipulation**: Generic (registry on Windows, rc-file appending on Unix)
@@ -616,6 +694,7 @@ export function cleanupOldArtifacts(binDir: string, now: number = Date.now()): C
 5. **Artifact Reaper**: Generic pattern (only binary name changes)
 
 ### Agent-Agnostic Utilities
+
 - `runPowerShell()`: Spawns PowerShell with environment; fully reusable
 - `Bun.which()`: Binary resolution; fully reusable
 - `pathContains()`: Case-insensitive path lookup; fully reusable
@@ -631,6 +710,7 @@ export function cleanupOldArtifacts(binDir: string, now: number = Date.now()): C
 - `/home/alilavaee/Documents/projects/atomic-pi-rewrite/packages/atomic/src/commands/cli/install-method.ts`
 
 ## Out-of-Partition References
+
 Look for the **Out-of-Partition References** subsection inside the
 "How It Works" section above — that is where the analyzer flagged files
 outside this partition that other partitions should examine.

@@ -81,7 +81,7 @@
     "links": [
       {
         "label": "GitHub",
-        "href": "https://github.com/flora131/atomic"
+        "href": "https://github.com/bastani/atomic"
       }
     ],
     "primary": {
@@ -92,7 +92,7 @@
   },
   "footer": {
     "socials": {
-      "github": "https://github.com/flora131/atomic"
+      "github": "https://github.com/bastani/atomic"
     }
   },
   "redirects": [

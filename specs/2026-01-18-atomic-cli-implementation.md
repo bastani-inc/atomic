@@ -1,11 +1,11 @@
 # Atomic CLI Technical Design Document
 
-| Document Metadata      | Details                                                |
-| ---------------------- | ------------------------------------------------------ |
-| Author(s)              | lavaman131                                             |
-| Status                 | Draft (WIP)                                            |
-| Team / Owner           | flora131/atomic                                        |
-| Created / Last Updated | 2026-01-18                                             |
+| Document Metadata      | Details        |
+| ---------------------- | -------------- |
+| Author(s)              | lavaman131     |
+| Status                 | Draft (WIP)    |
+| Team / Owner           | bastani/atomic |
+| Created / Last Updated | 2026-01-18     |
 
 ## 1. Executive Summary
 
@@ -18,6 +18,7 @@ This spec defines the implementation of a CLI tool that copies AI coding agent c
 ### 2.1 Current State
 
 The Atomic repository contains mature configurations for three AI coding assistants:
+
 - **Claude Code** (`.claude/`) - 7 agents, 7 commands, 2 skills, settings.json
 - **OpenCode** (`.opencode/`) - 7 agents, 10 commands, 2 skills, opencode.json
 - **GitHub Copilot CLI** (`.github/`) - 7 agents, 10 prompts, scripts, hooks
@@ -25,6 +26,7 @@ The Atomic repository contains mature configurations for three AI coding assista
 Currently, users must manually copy these configuration folders into their projects. There is no automated tooling.
 
 **Limitations:**
+
 - Manual copy is error-prone (users may copy unnecessary files like `workflows/` or `node_modules/`)
 - No guidance on which agent to choose
 - No validation that the target agent is installed
@@ -137,22 +139,23 @@ flowchart TB
 
 ### 4.3 Key Components
 
-| Component        | Responsibility                           | Technology Stack       | Justification                                    |
-| ---------------- | ---------------------------------------- | ---------------------- | ------------------------------------------------ |
-| `index.ts`       | Entry point, argument routing            | Bun, util.parseArgs    | Built-in Bun APIs, no external dependencies      |
-| `config.ts`      | Agent configuration definitions          | TypeScript             | Centralized config for easy extension            |
-| `init.ts`        | Interactive setup flow                   | @clack/prompts         | Beautiful CLI prompts, handles cancellation      |
-| `run-agent.ts`   | Agent spawning logic                     | Bun.spawn              | Native process spawning with inherit stdio       |
-| `banner.ts`      | ASCII banner display                     | Direct ANSI            | Uses pre-computed constants, no runtime parsing  |
-| `generated/`     | Pre-computed ANSI constants              | Committed constants    | One-time conversion, zero runtime overhead       |
-| `copy.ts`        | Platform-aware directory copying         | Bun.file, fs/promises  | Filters scripts by OS, excludes unwanted files   |
-| `detect.ts`      | Command and platform detection           | Bun.which, process     | Built-in APIs for command check and OS detection |
+| Component      | Responsibility                   | Technology Stack      | Justification                                    |
+| -------------- | -------------------------------- | --------------------- | ------------------------------------------------ |
+| `index.ts`     | Entry point, argument routing    | Bun, util.parseArgs   | Built-in Bun APIs, no external dependencies      |
+| `config.ts`    | Agent configuration definitions  | TypeScript            | Centralized config for easy extension            |
+| `init.ts`      | Interactive setup flow           | @clack/prompts        | Beautiful CLI prompts, handles cancellation      |
+| `run-agent.ts` | Agent spawning logic             | Bun.spawn             | Native process spawning with inherit stdio       |
+| `banner.ts`    | ASCII banner display             | Direct ANSI           | Uses pre-computed constants, no runtime parsing  |
+| `generated/`   | Pre-computed ANSI constants      | Committed constants   | One-time conversion, zero runtime overhead       |
+| `copy.ts`      | Platform-aware directory copying | Bun.file, fs/promises | Filters scripts by OS, excludes unwanted files   |
+| `detect.ts`    | Command and platform detection   | Bun.which, process    | Built-in APIs for command check and OS detection |
 
 ## 5. Detailed Design
 
 ### 5.1 CLI Interface
 
 **Command Structure:**
+
 ```
 atomic                     # Same as `atomic init`
 atomic init                # Interactive setup with banner
@@ -169,43 +172,50 @@ atomic --help, -h          # Show help
 // src/config.ts
 
 interface AgentConfig {
-  name: string;              // Display name for prompts
-  cmd: string;               // Command to run (e.g., "claude")
-  additional_flags: string[];// Flags for spawning
-  folder: string;            // Config folder relative to repo root
-  install_url: string;       // Installation instructions URL
-  exclude: string[];         // Paths to exclude when copying
-  additional_files: string[];// Extra root files to copy
+    name: string; // Display name for prompts
+    cmd: string; // Command to run (e.g., "claude")
+    additional_flags: string[]; // Flags for spawning
+    folder: string; // Config folder relative to repo root
+    install_url: string; // Installation instructions URL
+    exclude: string[]; // Paths to exclude when copying
+    additional_files: string[]; // Extra root files to copy
 }
 
 const AGENT_CONFIG: Record<string, AgentConfig> = {
-  'claude-code': {
-    name: 'Claude Code',
-    cmd: 'claude',
-    additional_flags: ['dangerously-skip-permissions'],
-    folder: '.claude',
-    install_url: 'https://docs.anthropic.com/en/docs/claude-code/setup',
-    exclude: ['.DS_Store'],
-    additional_files: ['CLAUDE.md'],
-  },
-  'opencode': {
-    name: 'opencode',
-    cmd: 'opencode',
-    additional_flags: [],
-    folder: '.opencode',
-    install_url: 'https://opencode.ai',
-    exclude: ['node_modules', '.gitignore', 'bun.lock', 'package.json', '.DS_Store'],
-    additional_files: ['AGENTS.md'],
-  },
-  'copilot-cli': {
-    name: 'GitHub Copilot CLI',
-    cmd: 'copilot',
-    additional_flags: ['--allow-all-tools', '--allow-all-paths'],
-    folder: '.github',
-    install_url: 'https://github.com/github/copilot-cli?tab=readme-ov-file#installation',
-    exclude: ['workflows', 'dependabot.yml', '.DS_Store'],
-    additional_files: ['AGENTS.md'],
-  },
+    "claude-code": {
+        name: "Claude Code",
+        cmd: "claude",
+        additional_flags: ["dangerously-skip-permissions"],
+        folder: ".claude",
+        install_url: "https://docs.anthropic.com/en/docs/claude-code/setup",
+        exclude: [".DS_Store"],
+        additional_files: ["CLAUDE.md"],
+    },
+    opencode: {
+        name: "opencode",
+        cmd: "opencode",
+        additional_flags: [],
+        folder: ".opencode",
+        install_url: "https://opencode.ai",
+        exclude: [
+            "node_modules",
+            ".gitignore",
+            "bun.lock",
+            "package.json",
+            ".DS_Store",
+        ],
+        additional_files: ["AGENTS.md"],
+    },
+    "copilot-cli": {
+        name: "GitHub Copilot CLI",
+        cmd: "copilot",
+        additional_flags: ["--allow-all-tools", "--allow-all-paths"],
+        folder: ".github",
+        install_url:
+            "https://github.com/github/copilot-cli?tab=readme-ov-file#installation",
+        exclude: ["workflows", "dependabot.yml", ".DS_Store"],
+        additional_files: ["AGENTS.md"],
+    },
 };
 ```
 
@@ -232,6 +242,7 @@ export const SPIRIT = "\x1b[38;2;255;100;50m...\x1b[0m"; // actual ANSI string
 ```
 
 **Benefits:**
+
 - **Zero dependencies**: No `node-html-parser` or any parsing library needed
 - **Instant startup**: No file I/O, no parsing - just string constants
 - **Committed to repo**: One-time conversion, results checked in
@@ -243,53 +254,57 @@ export const SPIRIT = "\x1b[38;2;255;100;50m...\x1b[0m"; // actual ANSI string
 ```typescript
 // src/utils/copy.ts
 
-import { readdir, mkdir } from 'fs/promises';
-import { join, relative } from 'path';
-import { getOppositeScriptExtension } from './detect';
+import { readdir, mkdir } from "fs/promises";
+import { join, relative } from "path";
+import { getOppositeScriptExtension } from "./detect";
 
 export async function copyDir(
-  src: string,
-  dest: string,
-  exclude: string[] = [],
-  rootSrc?: string
+    src: string,
+    dest: string,
+    exclude: string[] = [],
+    rootSrc?: string,
 ): Promise<void> {
-  const root = rootSrc || src;
-  await mkdir(dest, { recursive: true });
+    const root = rootSrc || src;
+    await mkdir(dest, { recursive: true });
 
-  const entries = await readdir(src, { withFileTypes: true });
+    const entries = await readdir(src, { withFileTypes: true });
 
-  // Get the script extension to skip (opposite of current platform)
-  const skipExtension = getOppositeScriptExtension();
+    // Get the script extension to skip (opposite of current platform)
+    const skipExtension = getOppositeScriptExtension();
 
-  for (const entry of entries) {
-    const srcPath = join(src, entry.name);
-    const destPath = join(dest, entry.name);
-    const relativePath = relative(root, srcPath);
+    for (const entry of entries) {
+        const srcPath = join(src, entry.name);
+        const destPath = join(dest, entry.name);
+        const relativePath = relative(root, srcPath);
 
-    // Check exclusions (by name or relative path)
-    const isExcluded = exclude.some(ex =>
-      entry.name === ex || relativePath === ex || relativePath.startsWith(ex + '/')
-    );
+        // Check exclusions (by name or relative path)
+        const isExcluded = exclude.some(
+            (ex) =>
+                entry.name === ex ||
+                relativePath === ex ||
+                relativePath.startsWith(ex + "/"),
+        );
 
-    if (isExcluded) continue;
+        if (isExcluded) continue;
 
-    // Skip scripts for the opposite platform
-    if (entry.name.endsWith(skipExtension)) continue;
+        // Skip scripts for the opposite platform
+        if (entry.name.endsWith(skipExtension)) continue;
 
-    if (entry.isDirectory()) {
-      await copyDir(srcPath, destPath, exclude, root);
-    } else {
-      await Bun.write(destPath, Bun.file(srcPath));
+        if (entry.isDirectory()) {
+            await copyDir(srcPath, destPath, exclude, root);
+        } else {
+            await Bun.write(destPath, Bun.file(srcPath));
+        }
     }
-  }
 }
 
 export async function copyFile(src: string, dest: string): Promise<void> {
-  await Bun.write(dest, Bun.file(src));
+    await Bun.write(dest, Bun.file(src));
 }
 ```
 
 **Platform-aware behavior:**
+
 - On Windows: copies `.ps1` scripts, skips `.sh` scripts
 - On macOS/Linux: copies `.sh` scripts, skips `.ps1` scripts
 
@@ -300,93 +315,102 @@ export async function copyFile(src: string, dest: string): Promise<void> {
 ```typescript
 // src/commands/init.ts
 
-import { intro, outro, select, confirm, spinner, isCancel, cancel, note } from '@clack/prompts';
-import { AGENT_CONFIG } from '../config';
-import { displayBanner } from '../utils/banner';
-import { copyDir, copyFile } from '../utils/copy';
-import { isWindows, isWslInstalled, WSL_INSTALL_URL } from '../utils/detect';
-import { join } from 'path';
+import {
+    intro,
+    outro,
+    select,
+    confirm,
+    spinner,
+    isCancel,
+    cancel,
+    note,
+} from "@clack/prompts";
+import { AGENT_CONFIG } from "../config";
+import { displayBanner } from "../utils/banner";
+import { copyDir, copyFile } from "../utils/copy";
+import { isWindows, isWslInstalled, WSL_INSTALL_URL } from "../utils/detect";
+import { join } from "path";
 
 export async function initCommand(repoRoot: string): Promise<void> {
-  // 1. Display banner (synchronous - uses pre-computed constants)
-  displayBanner();
+    // 1. Display banner (synchronous - uses pre-computed constants)
+    displayBanner();
 
-  // 2. Show intro
-  intro('atomic-cli');
+    // 2. Show intro
+    intro("atomic-cli");
 
-  // 3. Agent selection
-  const agent = await select({
-    message: 'Select a coding agent to configure:',
-    options: Object.entries(AGENT_CONFIG).map(([key, config]) => ({
-      value: key,
-      label: config.name,
-      hint: config.install_url.replace('https://', ''),
-    })),
-  });
-
-  if (isCancel(agent)) {
-    cancel('Operation cancelled.');
-    process.exit(0);
-  }
-
-  const config = AGENT_CONFIG[agent as string]!;
-  const targetDir = process.cwd();
-
-  // 4. Confirm directory
-  const shouldContinue = await confirm({
-    message: `Install ${config.name} config to ${targetDir}?`,
-    initialValue: true,
-  });
-
-  if (isCancel(shouldContinue) || !shouldContinue) {
-    cancel('Operation cancelled.');
-    process.exit(0);
-  }
-
-  // 5. Check for existing folder
-  const destFolder = join(targetDir, config.folder);
-  if (await Bun.file(destFolder).exists()) {
-    const overwrite = await confirm({
-      message: `${config.folder} already exists. Overwrite?`,
-      active: 'Yes, overwrite',
-      inactive: 'No, cancel',
+    // 3. Agent selection
+    const agent = await select({
+        message: "Select a coding agent to configure:",
+        options: Object.entries(AGENT_CONFIG).map(([key, config]) => ({
+            value: key,
+            label: config.name,
+            hint: config.install_url.replace("https://", ""),
+        })),
     });
 
-    if (isCancel(overwrite) || !overwrite) {
-      cancel('Operation cancelled.');
-      process.exit(0);
+    if (isCancel(agent)) {
+        cancel("Operation cancelled.");
+        process.exit(0);
     }
-  }
 
-  // 6. Copy files with spinner
-  const s = spinner();
-  s.start('Copying configuration files');
+    const config = AGENT_CONFIG[agent as string]!;
+    const targetDir = process.cwd();
 
-  const srcFolder = join(repoRoot, config.folder);
-  await copyDir(srcFolder, destFolder, config.exclude);
+    // 4. Confirm directory
+    const shouldContinue = await confirm({
+        message: `Install ${config.name} config to ${targetDir}?`,
+        initialValue: true,
+    });
 
-  // Copy additional files
-  for (const file of config.additional_files) {
-    const srcFile = join(repoRoot, file);
-    const destFile = join(targetDir, file);
-    if (await Bun.file(srcFile).exists()) {
-      await copyFile(srcFile, destFile);
+    if (isCancel(shouldContinue) || !shouldContinue) {
+        cancel("Operation cancelled.");
+        process.exit(0);
     }
-  }
 
-  s.stop('Configuration complete');
+    // 5. Check for existing folder
+    const destFolder = join(targetDir, config.folder);
+    if (await Bun.file(destFolder).exists()) {
+        const overwrite = await confirm({
+            message: `${config.folder} already exists. Overwrite?`,
+            active: "Yes, overwrite",
+            inactive: "No, cancel",
+        });
 
-  // 7. Check WSL on Windows
-  if (isWindows() && !isWslInstalled()) {
-    note(
-      `WSL is not installed. Some scripts may require WSL to run.\nInstall WSL: ${WSL_INSTALL_URL}`,
-      'WARNING'
-    );
-  }
+        if (isCancel(overwrite) || !overwrite) {
+            cancel("Operation cancelled.");
+            process.exit(0);
+        }
+    }
 
-  // 8. Show success
-  note(`Files copied to ${config.folder}/`, 'SUCCESS');
-  outro("You're all set! Run your agent to get started.");
+    // 6. Copy files with spinner
+    const s = spinner();
+    s.start("Copying configuration files");
+
+    const srcFolder = join(repoRoot, config.folder);
+    await copyDir(srcFolder, destFolder, config.exclude);
+
+    // Copy additional files
+    for (const file of config.additional_files) {
+        const srcFile = join(repoRoot, file);
+        const destFile = join(targetDir, file);
+        if (await Bun.file(srcFile).exists()) {
+            await copyFile(srcFile, destFile);
+        }
+    }
+
+    s.stop("Configuration complete");
+
+    // 7. Check WSL on Windows
+    if (isWindows() && !isWslInstalled()) {
+        note(
+            `WSL is not installed. Some scripts may require WSL to run.\nInstall WSL: ${WSL_INSTALL_URL}`,
+            "WARNING",
+        );
+    }
+
+    // 8. Show success
+    note(`Files copied to ${config.folder}/`, "SUCCESS");
+    outro("You're all set! Run your agent to get started.");
 }
 ```
 
@@ -398,71 +422,74 @@ export async function initCommand(repoRoot: string): Promise<void> {
 // src/utils/detect.ts
 
 export function isCommandInstalled(cmd: string): boolean {
-  return Bun.which(cmd) !== null;
+    return Bun.which(cmd) !== null;
 }
 
 export function getCommandVersion(cmd: string): string | null {
-  const cmdPath = Bun.which(cmd);
-  if (!cmdPath) return null;
+    const cmdPath = Bun.which(cmd);
+    if (!cmdPath) return null;
 
-  const result = Bun.spawnSync({
-    cmd: [cmdPath, '--version'],
-    stdout: 'pipe',
-    stderr: 'pipe',
-  });
+    const result = Bun.spawnSync({
+        cmd: [cmdPath, "--version"],
+        stdout: "pipe",
+        stderr: "pipe",
+    });
 
-  return result.success ? result.stdout.toString().trim() : null;
+    return result.success ? result.stdout.toString().trim() : null;
 }
 
 export function isWindows(): boolean {
-  return process.platform === 'win32';
+    return process.platform === "win32";
 }
 
-export function getScriptExtension(): '.ps1' | '.sh' {
-  return isWindows() ? '.ps1' : '.sh';
+export function getScriptExtension(): ".ps1" | ".sh" {
+    return isWindows() ? ".ps1" : ".sh";
 }
 
-export function getOppositeScriptExtension(): '.ps1' | '.sh' {
-  return isWindows() ? '.sh' : '.ps1';
+export function getOppositeScriptExtension(): ".ps1" | ".sh" {
+    return isWindows() ? ".sh" : ".ps1";
 }
 
 export function isWslInstalled(): boolean {
-  if (!isWindows()) return true; // Not applicable on non-Windows
-  return Bun.which('wsl') !== null;
+    if (!isWindows()) return true; // Not applicable on non-Windows
+    return Bun.which("wsl") !== null;
 }
 
-export const WSL_INSTALL_URL = 'https://learn.microsoft.com/en-us/windows/wsl/install';
+export const WSL_INSTALL_URL =
+    "https://learn.microsoft.com/en-us/windows/wsl/install";
 
 // src/commands/run-agent.ts
 
-import { AGENT_CONFIG } from '../config';
-import { isCommandInstalled } from '../utils/detect';
+import { AGENT_CONFIG } from "../config";
+import { isCommandInstalled } from "../utils/detect";
 
 export async function runAgentCommand(agentKey: string): Promise<void> {
-  const config = AGENT_CONFIG[agentKey];
+    const config = AGENT_CONFIG[agentKey];
 
-  if (!config) {
-    console.error(`Unknown agent: ${agentKey}`);
-    console.error(`Available agents: ${Object.keys(AGENT_CONFIG).join(', ')}`);
-    process.exit(1);
-  }
+    if (!config) {
+        console.error(`Unknown agent: ${agentKey}`);
+        console.error(
+            `Available agents: ${Object.keys(AGENT_CONFIG).join(", ")}`,
+        );
+        process.exit(1);
+    }
 
-  // Check if command is installed
-  if (!isCommandInstalled(config.cmd)) {
-    console.error(`${config.name} is not installed.`);
-    console.error(`Install at: ${config.install_url}`);
-    process.exit(1);
-  }
+    // Check if command is installed
+    if (!isCommandInstalled(config.cmd)) {
+        console.error(`${config.name} is not installed.`);
+        console.error(`Install at: ${config.install_url}`);
+        process.exit(1);
+    }
 
-  // Spawn agent
-  const proc = Bun.spawn([config.cmd, ...config.additional_flags], {
-    stdin: 'inherit',
-    stdout: 'inherit',
-    stderr: 'inherit',
-    cwd: process.cwd(),
-  });
+    // Spawn agent
+    const proc = Bun.spawn([config.cmd, ...config.additional_flags], {
+        stdin: "inherit",
+        stdout: "inherit",
+        stderr: "inherit",
+        cwd: process.cwd(),
+    });
 
-  await proc.exited;
+    await proc.exited;
 }
 ```
 
@@ -546,31 +573,31 @@ main().catch((err) => {
 ```typescript
 // src/utils/banner.ts
 
-import { LOGO, SPIRIT } from '../generated/banner-assets';
+import { LOGO, SPIRIT } from "../generated/banner-assets";
 
 // Strip ANSI codes to calculate visible width
 function stripAnsi(str: string): string {
-  return str.replace(/\x1b\[[0-9;]*m/g, '');
+    return str.replace(/\x1b\[[0-9;]*m/g, "");
 }
 
 export function displayBanner(): void {
-  const logoLines = LOGO.split('\n');
-  const spiritLines = SPIRIT.split('\n');
+    const logoLines = LOGO.split("\n");
+    const spiritLines = SPIRIT.split("\n");
 
-  // Get max width of logo for alignment
-  const logoWidth = Math.max(...logoLines.map(l => stripAnsi(l).length));
+    // Get max width of logo for alignment
+    const logoWidth = Math.max(...logoLines.map((l) => stripAnsi(l).length));
 
-  // Combine side by side
-  const maxLines = Math.max(logoLines.length, spiritLines.length);
-  const combined: string[] = [];
+    // Combine side by side
+    const maxLines = Math.max(logoLines.length, spiritLines.length);
+    const combined: string[] = [];
 
-  for (let i = 0; i < maxLines; i++) {
-    const logoLine = (logoLines[i] || '').padEnd(logoWidth + 4);
-    const spiritLine = spiritLines[i] || '';
-    combined.push(logoLine + spiritLine);
-  }
+    for (let i = 0; i < maxLines; i++) {
+        const logoLine = (logoLines[i] || "").padEnd(logoWidth + 4);
+        const spiritLine = spiritLines[i] || "";
+        combined.push(logoLine + spiritLine);
+    }
 
-  console.log(combined.join('\n'));
+    console.log(combined.join("\n"));
 }
 ```
 
@@ -580,13 +607,13 @@ export function displayBanner(): void {
 
 ## 6. Alternatives Considered
 
-| Option                              | Pros                                | Cons                                        | Reason for Rejection                                        |
-| ----------------------------------- | ----------------------------------- | ------------------------------------------- | ----------------------------------------------------------- |
-| **A: figlet for logo generation**   | Dynamic text generation             | Adds dependency, existing logo is better    | Logo already exists as pre-generated ASCII art              |
-| **B: chalk for ANSI colors**        | Popular, well-maintained            | Adds dependency for simple use case         | Direct ANSI escapes work fine, fewer dependencies           |
-| **C: inquirer.js for prompts**      | More features, widely used          | Larger bundle, older API style              | @clack/prompts has better UX and modern API                 |
-| **D: Commander.js for CLI parsing** | Mature, extensive features          | Overkill for simple CLI                     | util.parseArgs is built-in and sufficient                   |
-| **E: Symlink configs instead of copy** | Saves disk space, always up-to-date | Breaks when user moves, requires repo clone | Copy is simpler and works standalone                        |
+| Option                                 | Pros                                | Cons                                        | Reason for Rejection                              |
+| -------------------------------------- | ----------------------------------- | ------------------------------------------- | ------------------------------------------------- |
+| **A: figlet for logo generation**      | Dynamic text generation             | Adds dependency, existing logo is better    | Logo already exists as pre-generated ASCII art    |
+| **B: chalk for ANSI colors**           | Popular, well-maintained            | Adds dependency for simple use case         | Direct ANSI escapes work fine, fewer dependencies |
+| **C: inquirer.js for prompts**         | More features, widely used          | Larger bundle, older API style              | @clack/prompts has better UX and modern API       |
+| **D: Commander.js for CLI parsing**    | Mature, extensive features          | Overkill for simple CLI                     | util.parseArgs is built-in and sufficient         |
+| **E: Symlink configs instead of copy** | Saves disk space, always up-to-date | Breaks when user moves, requires repo clone | Copy is simpler and works standalone              |
 
 ## 7. Cross-Cutting Concerns
 
@@ -616,7 +643,7 @@ export function displayBanner(): void {
 1. **Phase 1**: Local development with `bun run src/index.ts`
 2. **Phase 2**: Build executable with `bun build src/index.ts --compile --outfile atomic`
 3. **Phase 3**: Add to package.json bin field for global installation
-4. **Phase 4 (Future)**: Publish to npm as `@flora131/atomic`
+4. **Phase 4 (Future)**: Publish to npm as `@bastani/atomic`
 
 ### 8.2 Test Plan
 
@@ -624,51 +651,51 @@ export function displayBanner(): void {
 
 ```typescript
 // tests/html-to-ansi.test.ts
-import { test, expect } from 'bun:test';
-import { htmlToAnsi } from '../src/utils/html-to-ansi';
+import { test, expect } from "bun:test";
+import { htmlToAnsi } from "../src/utils/html-to-ansi";
 
-test('converts rgb span to ANSI', () => {
-  const html = '<span style="color: rgb(255, 0, 0)">X</span>';
-  const result = htmlToAnsi(html);
-  expect(result).toContain('\x1b[38;2;255;0;0m');
-  expect(result).toContain('X');
+test("converts rgb span to ANSI", () => {
+    const html = '<span style="color: rgb(255, 0, 0)">X</span>';
+    const result = htmlToAnsi(html);
+    expect(result).toContain("\x1b[38;2;255;0;0m");
+    expect(result).toContain("X");
 });
 
-test('handles text nodes', () => {
-  const html = '<div>plain text</div>';
-  const result = htmlToAnsi(html);
-  expect(result).toContain('plain text');
+test("handles text nodes", () => {
+    const html = "<div>plain text</div>";
+    const result = htmlToAnsi(html);
+    expect(result).toContain("plain text");
 });
 ```
 
 ```typescript
 // tests/config.test.ts
-import { test, expect } from 'bun:test';
-import { AGENT_CONFIG } from '../src/config';
+import { test, expect } from "bun:test";
+import { AGENT_CONFIG } from "../src/config";
 
-test('all agents have required fields', () => {
-  for (const [key, config] of Object.entries(AGENT_CONFIG)) {
-    expect(config.name).toBeDefined();
-    expect(config.cmd).toBeDefined();
-    expect(config.folder).toBeDefined();
-    expect(config.install_url).toMatch(/^https?:\/\//);
-    expect(Array.isArray(config.exclude)).toBe(true);
-    expect(Array.isArray(config.additional_files)).toBe(true);
-  }
+test("all agents have required fields", () => {
+    for (const [key, config] of Object.entries(AGENT_CONFIG)) {
+        expect(config.name).toBeDefined();
+        expect(config.cmd).toBeDefined();
+        expect(config.folder).toBeDefined();
+        expect(config.install_url).toMatch(/^https?:\/\//);
+        expect(Array.isArray(config.exclude)).toBe(true);
+        expect(Array.isArray(config.additional_files)).toBe(true);
+    }
 });
 ```
 
 ```typescript
 // tests/detect.test.ts
-import { test, expect } from 'bun:test';
-import { isCommandInstalled } from '../src/utils/detect';
+import { test, expect } from "bun:test";
+import { isCommandInstalled } from "../src/utils/detect";
 
-test('detects bun as installed', () => {
-  expect(isCommandInstalled('bun')).toBe(true);
+test("detects bun as installed", () => {
+    expect(isCommandInstalled("bun")).toBe(true);
 });
 
-test('detects nonexistent command', () => {
-  expect(isCommandInstalled('nonexistent-command-xyz')).toBe(false);
+test("detects nonexistent command", () => {
+    expect(isCommandInstalled("nonexistent-command-xyz")).toBe(false);
 });
 ```
 
@@ -676,36 +703,37 @@ test('detects nonexistent command', () => {
 
 ```typescript
 // tests/copy.test.ts
-import { test, expect, beforeEach, afterEach } from 'bun:test';
-import { copyDir } from '../src/utils/copy';
-import { mkdtemp, rm } from 'fs/promises';
-import { join } from 'path';
-import { tmpdir } from 'os';
+import { test, expect, beforeEach, afterEach } from "bun:test";
+import { copyDir } from "../src/utils/copy";
+import { mkdtemp, rm } from "fs/promises";
+import { join } from "path";
+import { tmpdir } from "os";
 
 let tempDir: string;
 
 beforeEach(async () => {
-  tempDir = await mkdtemp(join(tmpdir(), 'atomic-test-'));
+    tempDir = await mkdtemp(join(tmpdir(), "atomic-test-"));
 });
 
 afterEach(async () => {
-  await rm(tempDir, { recursive: true, force: true });
+    await rm(tempDir, { recursive: true, force: true });
 });
 
-test('copies directory with exclusions', async () => {
-  const src = '/path/to/test/fixtures';
-  const dest = join(tempDir, 'output');
+test("copies directory with exclusions", async () => {
+    const src = "/path/to/test/fixtures";
+    const dest = join(tempDir, "output");
 
-  await copyDir(src, dest, ['node_modules', '.DS_Store']);
+    await copyDir(src, dest, ["node_modules", ".DS_Store"]);
 
-  // Verify excluded files are not copied
-  expect(await Bun.file(join(dest, 'node_modules')).exists()).toBe(false);
+    // Verify excluded files are not copied
+    expect(await Bun.file(join(dest, "node_modules")).exists()).toBe(false);
 });
 ```
 
 #### End-to-End Tests
 
 Manual testing checklist:
+
 - [ ] `bun run src/index.ts` displays banner and prompts
 - [ ] Agent selection works with arrow keys
 - [ ] Cancellation (Ctrl+C) exits gracefully
@@ -718,30 +746,30 @@ Manual testing checklist:
 ## 9. Open Questions / Unresolved Issues
 
 1. **Spirit image size**: The `atomic-spirit.html` is ~300KB and generates ~5600 lines. Options:
-   - [ ] Use a smaller/cropped version of the spirit image
-   - [ ] Make spirit display optional via `--no-banner` flag
-   - [ ] Pre-process to reduce redundancy
+    - [ ] Use a smaller/cropped version of the spirit image
+    - [ ] Make spirit display optional via `--no-banner` flag
+    - [ ] Pre-process to reduce redundancy
 
-   **Recommendation**: Start with the full image, add `--no-banner` flag if users complain
+    **Recommendation**: Start with the full image, add `--no-banner` flag if users complain
 
 2. **Color fallback**: What should happen on terminals without true color support?
-   - [ ] Degrade to 256 colors using `rgbTo256()` conversion
-   - [ ] Fall back to uncolored output
-   - [ ] Detect via `COLORTERM`/`TERM` environment variables
+    - [ ] Degrade to 256 colors using `rgbTo256()` conversion
+    - [ ] Fall back to uncolored output
+    - [ ] Detect via `COLORTERM`/`TERM` environment variables
 
-   **Recommendation**: Detect true color support, fall back to uncolored logo only
+    **Recommendation**: Detect true color support, fall back to uncolored logo only
 
 3. **Version management**: Where should version be defined?
-   - [x] Use `package.json` version field (standard approach)
-   - [ ] Build-time constant injection
+    - [x] Use `package.json` version field (standard approach)
+    - [ ] Build-time constant injection
 
-   **Recommendation**: Read from `package.json` at runtime
+    **Recommendation**: Read from `package.json` at runtime
 
 4. **Windows compatibility**: Shell scripts in `.github/scripts/` have both `.sh` and `.ps1` versions. Should the CLI handle this?
-   - [ ] Copy both versions always
-   - [x] Detect platform and copy appropriate scripts
+    - [ ] Copy both versions always
+    - [x] Detect platform and copy appropriate scripts
 
-   **Resolution**: CLI detects platform via `process.platform` and copies only the relevant scripts (`.ps1` on Windows, `.sh` on macOS/Linux). Additionally, on Windows, the CLI checks for WSL installation via `Bun.which('wsl')` and displays a warning with install link if WSL is not found.
+    **Resolution**: CLI detects platform via `process.platform` and copies only the relevant scripts (`.ps1` on Windows, `.sh` on macOS/Linux). Additionally, on Windows, the CLI checks for WSL installation via `Bun.which('wsl')` and displays a warning with install link if WSL is not found.
 
 ## 10. Implementation File Structure
 
@@ -769,19 +797,19 @@ tests/
 
 ```json
 {
-  "name": "atomic",
-  "version": "1.0.0",
-  "type": "module",
-  "bin": {
-    "atomic": "./src/index.ts"
-  },
-  "dependencies": {
-    "@clack/prompts": "^0.7.0"
-  },
-  "devDependencies": {
-    "@types/bun": "latest",
-    "typescript": "^5"
-  }
+    "name": "atomic",
+    "version": "1.0.0",
+    "type": "module",
+    "bin": {
+        "atomic": "./src/index.ts"
+    },
+    "dependencies": {
+        "@clack/prompts": "^0.7.0"
+    },
+    "devDependencies": {
+        "@types/bun": "latest",
+        "typescript": "^5"
+    }
 }
 ```
 

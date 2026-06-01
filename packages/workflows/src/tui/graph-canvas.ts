@@ -9,7 +9,7 @@
  * keeps the buffer cheap for wide-but-mostly-empty graph canvases.
  *
  * cross-ref:
- *   - github.com/flora131/atomic packages/atomic-sdk/src/components/connectors.ts
+ *   - github.com/bastani/atomic packages/atomic-sdk/src/components/connectors.ts
  *   - src/tui/graph-view.ts  _renderGraph
  */
 

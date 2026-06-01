@@ -1,12 +1,12 @@
 # Phase 6: Telemetry Upload Backend Integration - Technical Design Document
 
-| Document Metadata      | Details                                                |
-| ---------------------- | ------------------------------------------------------ |
-| Author(s)              | flora131                                               |
-| Status                 | Draft (WIP)                                            |
-| Team / Owner           | flora131/atomic                                        |
-| Created / Last Updated | 2026-01-22                                             |
-| Parent Spec            | [specs/2026-01-21-anonymous-telemetry-implementation.md](./2026-01-21-anonymous-telemetry-implementation.md) |
+| Document Metadata      | Details                                                                                                                                     |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Author(s)              | flora131                                                                                                                                    |
+| Status                 | Draft (WIP)                                                                                                                                 |
+| Team / Owner           | bastani/atomic                                                                                                                              |
+| Created / Last Updated | 2026-01-22                                                                                                                                  |
+| Parent Spec            | [specs/2026-01-21-anonymous-telemetry-implementation.md](./2026-01-21-anonymous-telemetry-implementation.md)                                |
 | Research Reference     | [research/docs/2026-01-22-azure-app-insights-backend-integration.md](../research/docs/2026-01-22-azure-app-insights-backend-integration.md) |
 
 ## 1. Executive Summary
@@ -16,6 +16,7 @@ This document specifies Phase 6 of the Anonymous Telemetry Implementation: **Bac
 The implementation follows a **spawned-process-on-exit** pattern (used by Homebrew and Salesforce CLI) where a detached background process handles uploads with zero latency impact on CLI commands. Events are sent as custom events to Azure App Insights using the OpenTelemetry Logs API with the `microsoft.custom_event.name` attribute for proper routing to the `customEvents` table.
 
 **Key Decisions**:
+
 - Direct export to Azure App Insights (no intermediate OTEL Collector) for MVP simplicity
 - **Hardcoded connection string** committed to public repository (safe - Azure App Insights connection strings are write-only, following industry standard practice like Google Analytics)
 
@@ -24,6 +25,7 @@ The implementation follows a **spawned-process-on-exit** pattern (used by Homebr
 ### 2.1 Current State
 
 **Completed (Phases 1-4):**
+
 - Anonymous UUID v4 generation with monthly rotation (`src/utils/telemetry/telemetry.ts`)
 - CLI command tracking for `init`, `update`, `uninstall` (`src/utils/telemetry/telemetry-cli.ts`)
 - Slash command extraction from CLI args (`trackCliInvocation()`)
@@ -33,10 +35,12 @@ The implementation follows a **spawned-process-on-exit** pattern (used by Homebr
 - Multiple opt-out mechanisms (env vars, config file)
 
 **Partially Complete (Phase 5):**
+
 - Consent prompt implemented in `src/utils/telemetry/telemetry-consent.ts`
 - `atomic config set telemetry <true|false>` command works
 
 **Missing (Phase 6):**
+
 - `--upload-telemetry` hidden CLI flag not implemented in `src/index.ts`
 - No `telemetry-upload.ts` module exists
 - No OpenTelemetry packages installed
@@ -173,13 +177,13 @@ Following the industry-standard pattern used by Homebrew and Salesforce CLI:
 
 ### 4.3 Key Components
 
-| Component | Responsibility | Technology | Justification |
-|-----------|----------------|------------|---------------|
-| `telemetry-upload.ts` | Read JSONL, emit OpenTelemetry logs, flush | TypeScript | Integrates with existing telemetry module |
-| `@azure/monitor-opentelemetry` | Azure Monitor exporter for OTEL | npm v1.15.0 | Official Microsoft SDK, handles retries |
-| `@opentelemetry/api-logs` | Logs API for custom events | npm | Required for `logger.emit()` API |
-| `--upload-telemetry` flag | CLI entry point for upload | Built-in parseArgs | Hidden flag, not shown in help |
-| `beforeExit` handler | Trigger spawned upload | Node.js process event | Zero latency pattern |
+| Component                      | Responsibility                             | Technology            | Justification                             |
+| ------------------------------ | ------------------------------------------ | --------------------- | ----------------------------------------- |
+| `telemetry-upload.ts`          | Read JSONL, emit OpenTelemetry logs, flush | TypeScript            | Integrates with existing telemetry module |
+| `@azure/monitor-opentelemetry` | Azure Monitor exporter for OTEL            | npm v1.15.0           | Official Microsoft SDK, handles retries   |
+| `@opentelemetry/api-logs`      | Logs API for custom events                 | npm                   | Required for `logger.emit()` API          |
+| `--upload-telemetry` flag      | CLI entry point for upload                 | Built-in parseArgs    | Hidden flag, not shown in help            |
+| `beforeExit` handler           | Trigger spawned upload                     | Node.js process event | Zero latency pattern                      |
 
 ## 5. Detailed Design
 
@@ -189,15 +193,16 @@ Add to `package.json`:
 
 ```json
 {
-  "dependencies": {
-    "@azure/monitor-opentelemetry": "^1.15.0",
-    "@opentelemetry/api": "^1.9.0",
-    "@opentelemetry/api-logs": "^0.52.0"
-  }
+    "dependencies": {
+        "@azure/monitor-opentelemetry": "^1.15.0",
+        "@opentelemetry/api": "^1.9.0",
+        "@opentelemetry/api-logs": "^0.52.0"
+    }
 }
 ```
 
 **Installation:**
+
 ```bash
 bun add @azure/monitor-opentelemetry @opentelemetry/api @opentelemetry/api-logs
 ```
@@ -212,16 +217,19 @@ The Azure Application Insights connection string is **hardcoded in the source co
 
 ```typescript
 // src/utils/telemetry/telemetry-upload.ts
-const APPLICATIONINSIGHTS_CONNECTION_STRING = "InstrumentationKey=xxx;IngestionEndpoint=https://xxx.applicationinsights.azure.com/";
+const APPLICATIONINSIGHTS_CONNECTION_STRING =
+    "InstrumentationKey=xxx;IngestionEndpoint=https://xxx.applicationinsights.azure.com/";
 ```
 
 **Why This Is Safe:**
+
 - Azure App Insights connection strings are **write-only** (ingestion only, no read access)
 - This is industry-standard practice: Google Analytics, Segment, Mixpanel, etc. all use public client keys
 - Connection string only allows sending telemetry data, not querying or viewing it
 - Access to view data requires Azure Portal authentication with separate credentials
 
 **Works Across All Installation Types:**
+
 - ✅ Binary download (curl | bash) - connection string compiled into binary
 - ✅ npm/bun install - connection string bundled in package
 - ✅ Source install - connection string in source code
@@ -237,20 +245,20 @@ Add `--upload-telemetry` to parseArgs options (lines 169-184):
 
 ```typescript
 const { values, positionals } = parseArgs({
-  args: rawArgs,
-  options: {
-    agent: { type: "string", short: "a" },
-    force: { type: "boolean", short: "f" },
-    yes: { type: "boolean", short: "y" },
-    version: { type: "boolean", short: "v" },
-    help: { type: "boolean", short: "h" },
-    "no-banner": { type: "boolean" },
-    "keep-config": { type: "boolean" },
-    "dry-run": { type: "boolean" },
-    "upload-telemetry": { type: "boolean" },  // NEW: Hidden flag for telemetry upload
-  },
-  strict: false,
-  allowPositionals: true,
+    args: rawArgs,
+    options: {
+        agent: { type: "string", short: "a" },
+        force: { type: "boolean", short: "f" },
+        yes: { type: "boolean", short: "y" },
+        version: { type: "boolean", short: "v" },
+        help: { type: "boolean", short: "h" },
+        "no-banner": { type: "boolean" },
+        "keep-config": { type: "boolean" },
+        "dry-run": { type: "boolean" },
+        "upload-telemetry": { type: "boolean" }, // NEW: Hidden flag for telemetry upload
+    },
+    strict: false,
+    allowPositionals: true,
 });
 ```
 
@@ -259,9 +267,10 @@ Handle before version check (after line 185):
 ```typescript
 // Handle --upload-telemetry (hidden, internal use only)
 if (values["upload-telemetry"]) {
-  const { handleTelemetryUpload } = await import("./utils/telemetry/telemetry-upload");
-  await handleTelemetryUpload();
-  return;
+    const { handleTelemetryUpload } =
+        await import("./utils/telemetry/telemetry-upload");
+    await handleTelemetryUpload();
+    return;
 }
 ```
 
@@ -277,21 +286,21 @@ if (values["upload-telemetry"]) {
 // Reference: research/docs/2026-01-22-azure-app-insights-backend-integration.md#recommended-configuration-best-practices
 
 const TELEMETRY_CONFIG = {
-  retry: {
-    maxAttempts: 3,           // Initial + 2 retries (Segment standard)
-    initialInterval: 1000,    // 1 second
-    maxInterval: 30000,       // 30 seconds
-    multiplier: 2.0,          // Exponential backoff
-    maxElapsedTime: 300000,   // 5 minutes total (OpenTelemetry standard)
-  },
-  timeout: 5000,              // 5 second request timeout
-  batch: {
-    maxEvents: 100,           // Segment standard
-    maxPayloadSize: 512000,   // 500 KB
-  },
-  storage: {
-    maxEventAge: 2592000000,  // 30 days in milliseconds
-  },
+    retry: {
+        maxAttempts: 3, // Initial + 2 retries (Segment standard)
+        initialInterval: 1000, // 1 second
+        maxInterval: 30000, // 30 seconds
+        multiplier: 2.0, // Exponential backoff
+        maxElapsedTime: 300000, // 5 minutes total (OpenTelemetry standard)
+    },
+    timeout: 5000, // 5 second request timeout
+    batch: {
+        maxEvents: 100, // Segment standard
+        maxPayloadSize: 512000, // 500 KB
+    },
+    storage: {
+        maxEventAge: 2592000000, // 30 days in milliseconds
+    },
 };
 ```
 
@@ -299,10 +308,10 @@ const TELEMETRY_CONFIG = {
 
 ```typescript
 interface UploadResult {
-  success: boolean;
-  eventsUploaded: number;
-  eventsSkipped: number;  // Stale events older than 30 days
-  error?: string;
+    success: boolean;
+    eventsUploaded: number;
+    eventsSkipped: number; // Stale events older than 30 days
+    error?: string;
 }
 ```
 
@@ -346,25 +355,30 @@ Send events via OpenTelemetry Logs API:
 
 ```typescript
 for (const event of events) {
-  logger.emit({
-    body: event.eventType,
-    severityNumber: SeverityNumber.INFO,
-    attributes: {
-      "microsoft.custom_event.name": event.eventType,  // Routes to customEvents table
-      "anonymous_id": event.anonymousId,
-      "event_id": event.eventId,
-      "timestamp": event.timestamp,
-      "command": (event as AtomicCommandEvent).command ?? null,
-      "commands": (event as CliCommandEvent | AgentSessionEvent).commands?.join(",") ?? null,
-      "command_count": (event as CliCommandEvent | AgentSessionEvent).commandCount ?? null,
-      "agent_type": event.agentType ?? null,
-      "platform": event.platform,
-      "version": event.atomicVersion,
-      "source": event.source,
-      "success": (event as AtomicCommandEvent).success ?? null,
-      "session_id": (event as AgentSessionEvent).sessionId ?? null,
-    },
-  });
+    logger.emit({
+        body: event.eventType,
+        severityNumber: SeverityNumber.INFO,
+        attributes: {
+            "microsoft.custom_event.name": event.eventType, // Routes to customEvents table
+            anonymous_id: event.anonymousId,
+            event_id: event.eventId,
+            timestamp: event.timestamp,
+            command: (event as AtomicCommandEvent).command ?? null,
+            commands:
+                (event as CliCommandEvent | AgentSessionEvent).commands?.join(
+                    ",",
+                ) ?? null,
+            command_count:
+                (event as CliCommandEvent | AgentSessionEvent).commandCount ??
+                null,
+            agent_type: event.agentType ?? null,
+            platform: event.platform,
+            version: event.atomicVersion,
+            source: event.source,
+            success: (event as AtomicCommandEvent).success ?? null,
+            session_id: (event as AgentSessionEvent).sessionId ?? null,
+        },
+    });
 }
 ```
 
@@ -378,22 +392,26 @@ for (const event of events) {
 import { spawn } from "child_process";
 
 function spawnTelemetryUpload(): void {
-  // Prevent recursive spawns
-  if (process.env.ATOMIC_TELEMETRY_UPLOAD === "1") return;
+    // Prevent recursive spawns
+    if (process.env.ATOMIC_TELEMETRY_UPLOAD === "1") return;
 
-  // Check if telemetry is enabled (sync check to avoid blocking)
-  // Import dynamically to avoid circular dependencies
-  const { isTelemetryEnabledSync } = require("./utils/telemetry");
-  if (!isTelemetryEnabledSync()) return;
+    // Check if telemetry is enabled (sync check to avoid blocking)
+    // Import dynamically to avoid circular dependencies
+    const { isTelemetryEnabledSync } = require("./utils/telemetry");
+    if (!isTelemetryEnabledSync()) return;
 
-  // Spawn detached process that outlives parent
-  const child = spawn(process.execPath, [process.argv[1], "--upload-telemetry"], {
-    detached: true,
-    stdio: "ignore",
-    env: { ...process.env, ATOMIC_TELEMETRY_UPLOAD: "1" },
-  });
+    // Spawn detached process that outlives parent
+    const child = spawn(
+        process.execPath,
+        [process.argv[1], "--upload-telemetry"],
+        {
+            detached: true,
+            stdio: "ignore",
+            env: { ...process.env, ATOMIC_TELEMETRY_UPLOAD: "1" },
+        },
+    );
 
-  child.unref();
+    child.unref();
 }
 ```
 
@@ -411,25 +429,29 @@ spawnTelemetryUpload();
 ### 5.6 OpenTelemetry SDK Initialization
 
 ```typescript
-import { useAzureMonitor, shutdownAzureMonitor } from "@azure/monitor-opentelemetry";
+import {
+    useAzureMonitor,
+    shutdownAzureMonitor,
+} from "@azure/monitor-opentelemetry";
 import { logs, SeverityNumber } from "@opentelemetry/api-logs";
 
 // Hardcoded connection string (safe to commit - write-only, no read access)
-const APPLICATIONINSIGHTS_CONNECTION_STRING = "InstrumentationKey=xxx;IngestionEndpoint=https://xxx.applicationinsights.azure.com/";
+const APPLICATIONINSIGHTS_CONNECTION_STRING =
+    "InstrumentationKey=xxx;IngestionEndpoint=https://xxx.applicationinsights.azure.com/";
 
 function initializeOpenTelemetry(): void {
-  useAzureMonitor({
-    azureMonitorExporterOptions: {
-      connectionString: APPLICATIONINSIGHTS_CONNECTION_STRING,
-    },
-    enableLiveMetrics: false,  // Disable for CLI apps (designed for servers)
-  });
+    useAzureMonitor({
+        azureMonitorExporterOptions: {
+            connectionString: APPLICATIONINSIGHTS_CONNECTION_STRING,
+        },
+        enableLiveMetrics: false, // Disable for CLI apps (designed for servers)
+    });
 }
 
 async function flushAndShutdown(): Promise<void> {
-  // CRITICAL: Must call shutdownAzureMonitor() for CLI apps
-  // This flushes all pending telemetry before process exits
-  await shutdownAzureMonitor();
+    // CRITICAL: Must call shutdownAzureMonitor() for CLI apps
+    // This flushes all pending telemetry before process exits
+    await shutdownAzureMonitor();
 }
 ```
 
@@ -439,13 +461,13 @@ async function flushAndShutdown(): Promise<void> {
 
 **Principle:** Fail silently to avoid disrupting user experience.
 
-| Error Type | Handling | Recovery |
-|------------|----------|----------|
-| JSONL file not found | Return early (nothing to upload) | N/A |
-| JSONL parse error | Skip invalid lines, continue with valid | Partial upload |
-| Network timeout (5s) | SDK handles retry with exponential backoff | Auto-retry up to 3 times |
-| SDK initialization failure | Catch, log error, return | Events remain in JSONL |
-| Flush timeout | After 5 minutes, give up | Events remain in JSONL |
+| Error Type                 | Handling                                   | Recovery                 |
+| -------------------------- | ------------------------------------------ | ------------------------ |
+| JSONL file not found       | Return early (nothing to upload)           | N/A                      |
+| JSONL parse error          | Skip invalid lines, continue with valid    | Partial upload           |
+| Network timeout (5s)       | SDK handles retry with exponential backoff | Auto-retry up to 3 times |
+| SDK initialization failure | Catch, log error, return                   | Events remain in JSONL   |
+| Flush timeout              | After 5 minutes, give up                   | Events remain in JSONL   |
 
 ### 5.8 Data Flow Sequence
 
@@ -470,14 +492,14 @@ async function flushAndShutdown(): Promise<void> {
 
 ## 6. Alternatives Considered
 
-| Option | Pros | Cons | Reason for Rejection |
-|--------|------|------|---------------------|
-| **OTEL Collector Middleman** | Vendor-agnostic, can fan out to multiple backends | Requires deploying/maintaining infrastructure | Overkill for MVP; can migrate later if needed |
-| **Direct HTTP POST (no SDK)** | No dependencies, full control | Must implement retry logic, batching, error handling manually | Reinventing the wheel; SDK handles this |
-| **Persistent Queue (disk-based)** | Events never lost across restarts | Complex implementation, more disk I/O | Fire-and-forget pattern sufficient for CLI analytics |
-| **Synchronous Upload** | Simpler code flow | Blocks CLI, poor UX, fails if offline | Unacceptable latency impact |
-| **Azure App Insights SDK (Classic)** | Well-documented | Deprecated in favor of OpenTelemetry | Microsoft recommends OTEL migration |
-| **Direct to App Insights (Selected)** | Simplest setup, no infrastructure, uses official SDK | Single backend only | **Selected:** Best balance for MVP |
+| Option                                | Pros                                                 | Cons                                                          | Reason for Rejection                                 |
+| ------------------------------------- | ---------------------------------------------------- | ------------------------------------------------------------- | ---------------------------------------------------- |
+| **OTEL Collector Middleman**          | Vendor-agnostic, can fan out to multiple backends    | Requires deploying/maintaining infrastructure                 | Overkill for MVP; can migrate later if needed        |
+| **Direct HTTP POST (no SDK)**         | No dependencies, full control                        | Must implement retry logic, batching, error handling manually | Reinventing the wheel; SDK handles this              |
+| **Persistent Queue (disk-based)**     | Events never lost across restarts                    | Complex implementation, more disk I/O                         | Fire-and-forget pattern sufficient for CLI analytics |
+| **Synchronous Upload**                | Simpler code flow                                    | Blocks CLI, poor UX, fails if offline                         | Unacceptable latency impact                          |
+| **Azure App Insights SDK (Classic)**  | Well-documented                                      | Deprecated in favor of OpenTelemetry                          | Microsoft recommends OTEL migration                  |
+| **Direct to App Insights (Selected)** | Simplest setup, no infrastructure, uses official SDK | Single backend only                                           | **Selected:** Best balance for MVP                   |
 
 **Reference:** [Research Section: Architecture Options](../research/docs/2026-01-22-azure-app-insights-backend-integration.md#architecture-options)
 
@@ -493,12 +515,14 @@ async function flushAndShutdown(): Promise<void> {
 ### 7.2 Observability Strategy
 
 **Metrics to Track (in Azure App Insights):**
+
 - `atomic_command` events by command type, agent type, success status
 - `cli_command` events by slash command name, agent type
 - `agent_session` events by agent type, command count
 - Daily/weekly unique anonymous IDs (user count estimate)
 
 **Dashboards (Future Work):**
+
 - KQL queries against `customEvents` table
 - Feature adoption trends over time
 - Platform distribution (darwin/linux/win32)
@@ -506,6 +530,7 @@ async function flushAndShutdown(): Promise<void> {
 ### 7.3 Scalability and Capacity Planning
 
 **Estimated Volume:**
+
 - ~1,000 users × 10 events/day = 10,000 events/day
 - Event size: ~200 bytes JSON
 - Daily data: ~2 MB/day uncompressed
@@ -515,13 +540,13 @@ async function flushAndShutdown(): Promise<void> {
 
 ### 7.4 Failure Modes
 
-| Failure | Behavior | Recovery |
-|---------|----------|----------|
-| Network failure | SDK retries 3x with exponential backoff | Events remain local after max retries |
-| Partial upload | Events uploaded so far are sent | Remaining events stay in JSONL |
-| Corrupt JSONL line | Skip invalid line, continue | Partial data loss (acceptable) |
-| Process killed during upload | Events not deleted (no JSONL clear) | Full retry on next upload |
-| SDK crash | Catch error, log, exit | Events remain local |
+| Failure                      | Behavior                                | Recovery                              |
+| ---------------------------- | --------------------------------------- | ------------------------------------- |
+| Network failure              | SDK retries 3x with exponential backoff | Events remain local after max retries |
+| Partial upload               | Events uploaded so far are sent         | Remaining events stay in JSONL        |
+| Corrupt JSONL line           | Skip invalid line, continue             | Partial data loss (acceptable)        |
+| Process killed during upload | Events not deleted (no JSONL clear)     | Full retry on next upload             |
+| SDK crash                    | Catch error, log, exit                  | Events remain local                   |
 
 ## 8. Migration, Rollout, and Testing
 
@@ -571,34 +596,34 @@ Not applicable - this is new functionality. No existing telemetry data in produc
 ## 9. Open Questions / Unresolved Issues
 
 - [x] **Architecture Choice:** Direct to App Insights vs OTEL Collector?
-  - **RESOLVED:** Direct to App Insights for MVP simplicity. Can migrate to OTEL Collector later if needed for multi-backend support.
+    - **RESOLVED:** Direct to App Insights for MVP simplicity. Can migrate to OTEL Collector later if needed for multi-backend support.
 
 - [x] **Connection String Distribution:** How do OSS users get the connection string?
-  - **RESOLVED:** Single hardcoded connection string committed to public repository. Azure App Insights connection strings are write-only (ingestion only), making this safe to publish. All users (binary, npm, source) send telemetry to the same Atomic App Insights resource, subject to user consent. This is industry-standard practice (same as Google Analytics, Segment, etc.).
+    - **RESOLVED:** Single hardcoded connection string committed to public repository. Azure App Insights connection strings are write-only (ingestion only), making this safe to publish. All users (binary, npm, source) send telemetry to the same Atomic App Insights resource, subject to user consent. This is industry-standard practice (same as Google Analytics, Segment, etc.).
 
 - [ ] **Batch Size Validation:** Should we validate payload size before sending or let SDK handle?
-  - **Recommendation:** Let SDK handle; it has built-in chunking. Add size check only if issues observed.
+    - **Recommendation:** Let SDK handle; it has built-in chunking. Add size check only if issues observed.
 
 - [ ] **Rate Limiting:** Should we implement client-side rate limiting to avoid App Insights throttling?
-  - **Recommendation:** No for MVP. ~10K events/day is well under App Insights limits (50K events/min).
+    - **Recommendation:** No for MVP. ~10K events/day is well under App Insights limits (50K events/min).
 
 - [ ] **Telemetry for Telemetry:** Should we track upload success/failure metrics?
-  - **Recommendation:** No for MVP. Keep upload code minimal; add observability later if debugging needed.
+    - **Recommendation:** No for MVP. Keep upload code minimal; add observability later if debugging needed.
 
 ## 10. Implementation Checklist
 
 ### Phase 6a: Upload Module
 
 - [ ] Add dependencies to `package.json`:
-  - `@azure/monitor-opentelemetry` v1.15.0
-  - `@opentelemetry/api` v1.9.0
-  - `@opentelemetry/api-logs` v0.52.0
+    - `@azure/monitor-opentelemetry` v1.15.0
+    - `@opentelemetry/api` v1.9.0
+    - `@opentelemetry/api-logs` v0.52.0
 - [ ] Create `src/utils/telemetry/telemetry-upload.ts`:
-  - [ ] `TELEMETRY_CONFIG` constants
-  - [ ] `readEventsFromJSONL()` function
-  - [ ] `filterStaleEvents()` function
-  - [ ] `emitEventsToAppInsights()` function
-  - [ ] `handleTelemetryUpload()` function
+    - [ ] `TELEMETRY_CONFIG` constants
+    - [ ] `readEventsFromJSONL()` function
+    - [ ] `filterStaleEvents()` function
+    - [ ] `emitEventsToAppInsights()` function
+    - [ ] `handleTelemetryUpload()` function
 - [ ] Export `handleTelemetryUpload` from `src/utils/telemetry/index.ts`
 - [ ] Write unit tests in `telemetry-upload.test.ts`
 
@@ -641,15 +666,15 @@ Not applicable - this is new functionality. No existing telemetry data in produc
 
 ## 11. Code References
 
-| File | Lines | Description |
-|------|-------|-------------|
-| `specs/2026-01-21-anonymous-telemetry-implementation.md` | 416-471 | Parent spec Section 5.5 (Batch Upload Implementation) |
-| `research/docs/2026-01-22-azure-app-insights-backend-integration.md` | 1-521 | Azure App Insights research |
-| `src/index.ts` | 169-184 | Current parseArgs options (add upload-telemetry here) |
-| `src/index.ts` | 186-196 | Version/help handlers (add upload handler before) |
-| `src/utils/telemetry/telemetry.ts` | 227-251 | `isTelemetryEnabledSync()` function |
-| `src/utils/telemetry/telemetry-cli.ts` | 31-33 | `getEventsFilePath()` function |
-| `src/utils/telemetry/telemetry-cli.ts` | 105-122 | `appendEvent()` function (JSONL format reference) |
-| `src/utils/telemetry/types.ts` | 1-122 | Event type definitions |
-| `bin/telemetry-helper.sh` | 251-255 | `spawn_upload_process()` (shell reference) |
-| `package.json` | 48-51 | Current dependencies |
+| File                                                                 | Lines   | Description                                           |
+| -------------------------------------------------------------------- | ------- | ----------------------------------------------------- |
+| `specs/2026-01-21-anonymous-telemetry-implementation.md`             | 416-471 | Parent spec Section 5.5 (Batch Upload Implementation) |
+| `research/docs/2026-01-22-azure-app-insights-backend-integration.md` | 1-521   | Azure App Insights research                           |
+| `src/index.ts`                                                       | 169-184 | Current parseArgs options (add upload-telemetry here) |
+| `src/index.ts`                                                       | 186-196 | Version/help handlers (add upload handler before)     |
+| `src/utils/telemetry/telemetry.ts`                                   | 227-251 | `isTelemetryEnabledSync()` function                   |
+| `src/utils/telemetry/telemetry-cli.ts`                               | 31-33   | `getEventsFilePath()` function                        |
+| `src/utils/telemetry/telemetry-cli.ts`                               | 105-122 | `appendEvent()` function (JSONL format reference)     |
+| `src/utils/telemetry/types.ts`                                       | 1-122   | Event type definitions                                |
+| `bin/telemetry-helper.sh`                                            | 251-255 | `spawn_upload_process()` (shell reference)            |
+| `package.json`                                                       | 48-51   | Current dependencies                                  |

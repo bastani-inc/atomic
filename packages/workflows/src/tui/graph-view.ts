@@ -13,7 +13,7 @@
  *  - No decorative progress bar. Counts live in the header pills.
  *
  * cross-ref:
- *   - github.com/flora131/atomic packages/atomic-sdk/src/components/session-graph-panel.tsx
+ *   - github.com/bastani/atomic packages/atomic-sdk/src/components/session-graph-panel.tsx
  *   - DESIGN.md §4 (Elevation), §5 (Components)
  */
 import type { Component } from "@earendil-works/pi-tui";

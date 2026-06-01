@@ -1,17 +1,18 @@
 # Commander.js Migration Technical Design Document
 
-| Document Metadata      | Details         |
-| ---------------------- | --------------- |
-| Author(s)              | lavaman131      |
-| Status                 | Draft (WIP)     |
-| Team / Owner           | flora131/atomic |
-| Created / Last Updated | 2026-01-25      |
+| Document Metadata      | Details        |
+| ---------------------- | -------------- |
+| Author(s)              | lavaman131     |
+| Status                 | Draft (WIP)    |
+| Team / Owner           | bastani/atomic |
+| Created / Last Updated | 2026-01-25     |
 
 ## 1. Executive Summary
 
 This RFC proposes migrating the Atomic CLI from Node.js `parseArgs` with custom argument handling to **Commander.js** with TypeScript type inference via `@commander-js/extra-typings`. The current implementation uses ~300 lines of custom routing logic (`src/index.ts:130-349`) and ~270 lines of argument parsing utilities (`src/utils/arg-parser.ts`) to handle priority-based routing, subcommands, and `--` separator passthrough.
 
 **Key changes:**
+
 - Replace legacy `-a/--agent` flag pattern with explicit `run` command (e.g., `atomic run claude`)
 - Make `ralph` a top-level command only (remove `atomic -a claude ralph` pattern)
 - Eliminate ~50% of CLI logic through declarative Commander.js API
@@ -36,6 +37,7 @@ Raw Args → isInitWithSeparator? → Error (fail fast)
 ```
 
 **Architecture:**
+
 - **Entry Point:** `src/index.ts:130-349` - Main CLI routing with switch statement
 - **Arg Parser Utilities:** `src/utils/arg-parser.ts` - 6 custom functions for argument handling
 - **Commands:** 5 commands (init, config, update, uninstall, ralph) + special "agent run mode"
@@ -53,6 +55,7 @@ Raw Args → isInitWithSeparator? → Error (fail fast)
 | `detectMissingSeparatorArgs()` | `src/utils/arg-parser.ts:199-266` | Warns about missing `--`                       |
 
 **Limitations:**
+
 1. **Complex routing logic** - Priority-based routing with special cases for ralph command adds cognitive overhead
 2. **Custom separator handling** - Manual `--` separator parsing duplicates Commander.js built-in functionality
 3. **Type safety gaps** - `parseArgs` returns `Record<string, string | boolean | undefined>`, requiring manual type assertions
@@ -180,6 +183,7 @@ bun add commander @commander-js/extra-typings
 ```
 
 **Package Versions:**
+
 - `commander`: ^12.x (latest stable)
 - `@commander-js/extra-typings`: ^12.x (matches commander version)
 
@@ -190,33 +194,33 @@ bun add commander @commander-js/extra-typings
 ```typescript
 // src/types/cli.ts
 
-import type { AgentKey } from '../config';
+import type { AgentKey } from "../config";
 
 /** Global CLI options available on all commands */
 export interface GlobalOptions {
-  agent?: string;
-  force?: boolean;
-  yes?: boolean;
-  banner: boolean; // from --no-banner negatable
-  uploadTelemetry?: boolean;
+    agent?: string;
+    force?: boolean;
+    yes?: boolean;
+    banner: boolean; // from --no-banner negatable
+    uploadTelemetry?: boolean;
 }
 
 /** Init command specific options (inherits global) */
 export interface InitOptions extends GlobalOptions {
-  // No additional options
+    // No additional options
 }
 
 /** Uninstall command specific options */
 export interface UninstallOptions {
-  dryRun?: boolean;
-  keepConfig?: boolean;
+    dryRun?: boolean;
+    keepConfig?: boolean;
 }
 
 /** Ralph setup subcommand options */
 export interface RalphSetupOptions {
-  maxIterations?: number;
-  completionPromise?: string;
-  featureList: string; // default: 'research/feature-list.json'
+    maxIterations?: number;
+    completionPromise?: string;
+    featureList: string; // default: 'research/feature-list.json'
 }
 ```
 
@@ -258,21 +262,24 @@ program
 ```typescript
 // src/cli.ts (continued)
 
-import { initCommand } from './commands/init';
+import { initCommand } from "./commands/init";
 
 program
-  .command('init', { isDefault: true })
-  .description('Interactive setup with agent selection')
-  .option('-a, --agent <name>', `pre-select agent: ${Object.keys(AGENT_CONFIG).join(', ')}`)
-  .action(async (options, command) => {
-    const globalOpts = command.optsWithGlobals();
-    await initCommand({
-      showBanner: globalOpts.banner !== false,
-      preSelectedAgent: options.agent as AgentKey | undefined,
-      force: globalOpts.force,
-      yes: globalOpts.yes,
+    .command("init", { isDefault: true })
+    .description("Interactive setup with agent selection")
+    .option(
+        "-a, --agent <name>",
+        `pre-select agent: ${Object.keys(AGENT_CONFIG).join(", ")}`,
+    )
+    .action(async (options, command) => {
+        const globalOpts = command.optsWithGlobals();
+        await initCommand({
+            showBanner: globalOpts.banner !== false,
+            preSelectedAgent: options.agent as AgentKey | undefined,
+            force: globalOpts.force,
+            yes: globalOpts.yes,
+        });
     });
-  });
 ```
 
 **Note:** The `{ isDefault: true }` option makes `init` run when no command is specified, so `atomic` equals `atomic init`. The `-a/--agent` option is now local to `init` for pre-selecting an agent during setup.
@@ -284,20 +291,20 @@ program
 ```typescript
 // src/cli.ts (continued)
 
-import { configCommand } from './commands/config';
+import { configCommand } from "./commands/config";
 
 const config = program
-  .command('config')
-  .description('Manage configuration (e.g., telemetry settings)');
+    .command("config")
+    .description("Manage configuration (e.g., telemetry settings)");
 
 config
-  .command('set')
-  .description('Set a configuration value')
-  .argument('<key>', 'configuration key (e.g., telemetry)')
-  .argument('<value>', 'value to set (e.g., true, false)')
-  .action((key, value) => {
-    configCommand('set', key, value);
-  });
+    .command("set")
+    .description("Set a configuration value")
+    .argument("<key>", "configuration key (e.g., telemetry)")
+    .argument("<value>", "value to set (e.g., true, false)")
+    .action((key, value) => {
+        configCommand("set", key, value);
+    });
 ```
 
 **Research Reference:** Section 3 "Subcommand Pattern for `config`"
@@ -307,29 +314,29 @@ config
 ```typescript
 // src/cli.ts (continued)
 
-import { updateCommand } from './commands/update';
-import { uninstallCommand } from './commands/uninstall';
+import { updateCommand } from "./commands/update";
+import { uninstallCommand } from "./commands/uninstall";
 
 program
-  .command('update')
-  .description('Self-update to latest version (binary installs only)')
-  .action(async () => {
-    await updateCommand();
-  });
-
-program
-  .command('uninstall')
-  .description('Remove atomic installation (binary installs only)')
-  .option('--dry-run', 'preview what would be removed without removing')
-  .option('--keep-config', 'keep configuration data, only remove binary')
-  .action(async (options, command) => {
-    const globalOpts = command.optsWithGlobals();
-    await uninstallCommand({
-      dryRun: options.dryRun,
-      yes: globalOpts.yes,
-      keepConfig: options.keepConfig,
+    .command("update")
+    .description("Self-update to latest version (binary installs only)")
+    .action(async () => {
+        await updateCommand();
     });
-  });
+
+program
+    .command("uninstall")
+    .description("Remove atomic installation (binary installs only)")
+    .option("--dry-run", "preview what would be removed without removing")
+    .option("--keep-config", "keep configuration data, only remove binary")
+    .action(async (options, command) => {
+        const globalOpts = command.optsWithGlobals();
+        await uninstallCommand({
+            dryRun: options.dryRun,
+            yes: globalOpts.yes,
+            keepConfig: options.keepConfig,
+        });
+    });
 ```
 
 ### 5.7 Ralph Command with Subcommands
@@ -339,63 +346,79 @@ Ralph requires specifying which agent to use via `-a/--agent` (currently only su
 ```typescript
 // src/cli.ts (continued)
 
-import { ralphSetup, ralphStop } from './commands/ralph';
+import { ralphSetup, ralphStop } from "./commands/ralph";
 
 function parseIterations(value: string): number {
-  const parsed = parseInt(value, 10);
-  if (isNaN(parsed) || parsed < 0) {
-    throw new Error('Must be a non-negative integer');
-  }
-  return parsed;
+    const parsed = parseInt(value, 10);
+    if (isNaN(parsed) || parsed < 0) {
+        throw new Error("Must be a non-negative integer");
+    }
+    return parsed;
 }
 
 const ralph = program
-  .command('ralph')
-  .description('Self-referential development loop for coding agents');
+    .command("ralph")
+    .description("Self-referential development loop for coding agents");
 
 ralph
-  .command('setup')
-  .description('Initialize and start a Ralph loop')
-  .requiredOption('-a, --agent <name>', 'agent to use (currently: claude)')
-  .argument('[prompt...]', 'initial prompt to start the loop')
-  .option('--max-iterations <n>', 'maximum iterations before auto-stop', parseIterations)
-  .option('--completion-promise <text>', 'promise phrase (use quotes for multi-word)')
-  .option('--feature-list <path>', 'path to feature list JSON', 'research/feature-list.json')
-  .action(async (prompt, options) => {
-    // Validate agent (currently only claude supported)
-    if (options.agent !== 'claude') {
-      console.error(`${COLORS.red}Error: Ralph currently only supports 'claude' agent${COLORS.reset}`);
-      process.exit(1);
-    }
+    .command("setup")
+    .description("Initialize and start a Ralph loop")
+    .requiredOption("-a, --agent <name>", "agent to use (currently: claude)")
+    .argument("[prompt...]", "initial prompt to start the loop")
+    .option(
+        "--max-iterations <n>",
+        "maximum iterations before auto-stop",
+        parseIterations,
+    )
+    .option(
+        "--completion-promise <text>",
+        "promise phrase (use quotes for multi-word)",
+    )
+    .option(
+        "--feature-list <path>",
+        "path to feature list JSON",
+        "research/feature-list.json",
+    )
+    .action(async (prompt, options) => {
+        // Validate agent (currently only claude supported)
+        if (options.agent !== "claude") {
+            console.error(
+                `${COLORS.red}Error: Ralph currently only supports 'claude' agent${COLORS.reset}`,
+            );
+            process.exit(1);
+        }
 
-    const args: string[] = [];
-    if (options.maxIterations !== undefined) {
-      args.push('--max-iterations', String(options.maxIterations));
-    }
-    if (options.completionPromise) {
-      args.push('--completion-promise', options.completionPromise);
-    }
-    if (options.featureList !== 'research/feature-list.json') {
-      args.push('--feature-list', options.featureList);
-    }
-    args.push(...prompt);
-    await ralphSetup(args);
-  });
+        const args: string[] = [];
+        if (options.maxIterations !== undefined) {
+            args.push("--max-iterations", String(options.maxIterations));
+        }
+        if (options.completionPromise) {
+            args.push("--completion-promise", options.completionPromise);
+        }
+        if (options.featureList !== "research/feature-list.json") {
+            args.push("--feature-list", options.featureList);
+        }
+        args.push(...prompt);
+        await ralphSetup(args);
+    });
 
 ralph
-  .command('stop')
-  .description('Stop hook handler (called automatically by hooks)')
-  .requiredOption('-a, --agent <name>', 'agent to use (currently: claude)')
-  .action(async (options) => {
-    if (options.agent !== 'claude') {
-      console.error(`${COLORS.red}Error: Ralph currently only supports 'claude' agent${COLORS.reset}`);
-      process.exit(1);
-    }
-    await ralphStop();
-  });
+    .command("stop")
+    .description("Stop hook handler (called automatically by hooks)")
+    .requiredOption("-a, --agent <name>", "agent to use (currently: claude)")
+    .action(async (options) => {
+        if (options.agent !== "claude") {
+            console.error(
+                `${COLORS.red}Error: Ralph currently only supports 'claude' agent${COLORS.reset}`,
+            );
+            process.exit(1);
+        }
+        await ralphStop();
+    });
 ```
 
 **Usage:**
+
 ```bash
 atomic ralph setup -a claude "implement feature X"
 atomic ralph stop --agent claude
@@ -413,36 +436,42 @@ The `run` command is the new explicit way to run an agent. This replaces the leg
 ```typescript
 // src/cli.ts (continued)
 
-import { runAgentCommand } from './commands/run-agent';
+import { runAgentCommand } from "./commands/run-agent";
 
 program
-  .command('run')
-  .description('Run a configured agent')
-  .argument('<agent>', `agent to run: ${Object.keys(AGENT_CONFIG).join(', ')}`)
-  .argument('[args...]', 'arguments to pass to the agent')
-  .passThroughOptions()
-  .allowUnknownOption()
-  .action(async (agent, args, options, command) => {
-    const globalOpts = command.optsWithGlobals();
+    .command("run")
+    .description("Run a configured agent")
+    .argument(
+        "<agent>",
+        `agent to run: ${Object.keys(AGENT_CONFIG).join(", ")}`,
+    )
+    .argument("[args...]", "arguments to pass to the agent")
+    .passThroughOptions()
+    .allowUnknownOption()
+    .action(async (agent, args, options, command) => {
+        const globalOpts = command.optsWithGlobals();
 
-    // Validate agent name
-    if (!isValidAgent(agent)) {
-      const validAgents = Object.keys(AGENT_CONFIG).join(', ');
-      console.error(`${COLORS.red}Error: Unknown agent '${agent}'${COLORS.reset}`);
-      console.error(`Valid agents: ${validAgents}`);
-      process.exit(1);
-    }
+        // Validate agent name
+        if (!isValidAgent(agent)) {
+            const validAgents = Object.keys(AGENT_CONFIG).join(", ");
+            console.error(
+                `${COLORS.red}Error: Unknown agent '${agent}'${COLORS.reset}`,
+            );
+            console.error(`Valid agents: ${validAgents}`);
+            process.exit(1);
+        }
 
-    // Run agent with passthrough arguments
-    const exitCode = await runAgentCommand(agent, args, {
-      force: globalOpts.force,
-      yes: globalOpts.yes,
+        // Run agent with passthrough arguments
+        const exitCode = await runAgentCommand(agent, args, {
+            force: globalOpts.force,
+            yes: globalOpts.yes,
+        });
+        process.exit(exitCode);
     });
-    process.exit(exitCode);
-  });
 ```
 
 **Benefits of `run` command over `--agent` flag:**
+
 1. **Explicit semantics** - Clear that you're running an agent, not configuring
 2. **Simpler parsing** - No special-case routing for flags vs commands
 3. **Better help output** - Shows as a proper command in `--help`
@@ -455,41 +484,47 @@ program
 ```typescript
 // src/cli.ts (continued)
 
-import { spawn } from 'child_process';
-import { cleanupWindowsLeftoverFiles } from './utils/cleanup';
-import { isTelemetryEnabledSync } from './utils/telemetry';
+import { spawn } from "child_process";
+import { cleanupWindowsLeftoverFiles } from "./utils/cleanup";
+import { isTelemetryEnabledSync } from "./utils/telemetry";
 
 function spawnTelemetryUpload(): void {
-  if (process.env.ATOMIC_TELEMETRY_UPLOAD === '1') return;
-  if (!isTelemetryEnabledSync()) return;
+    if (process.env.ATOMIC_TELEMETRY_UPLOAD === "1") return;
+    if (!isTelemetryEnabledSync()) return;
 
-  try {
-    const scriptPath = process.argv[1] ?? 'atomic';
-    const child = spawn(process.execPath, [scriptPath, '--upload-telemetry'], {
-      detached: true,
-      stdio: 'ignore',
-      env: { ...process.env, ATOMIC_TELEMETRY_UPLOAD: '1' },
-    });
-    if (child.unref) child.unref();
-  } catch {
-    // Fail silently
-  }
+    try {
+        const scriptPath = process.argv[1] ?? "atomic";
+        const child = spawn(
+            process.execPath,
+            [scriptPath, "--upload-telemetry"],
+            {
+                detached: true,
+                stdio: "ignore",
+                env: { ...process.env, ATOMIC_TELEMETRY_UPLOAD: "1" },
+            },
+        );
+        if (child.unref) child.unref();
+    } catch {
+        // Fail silently
+    }
 }
 
 async function main(): Promise<void> {
-  await cleanupWindowsLeftoverFiles();
+    await cleanupWindowsLeftoverFiles();
 
-  try {
-    await program.parseAsync();
-  } catch (error) {
-    if (error instanceof Error) {
-      console.error(`${COLORS.red}Error: ${error.message}${COLORS.reset}`);
+    try {
+        await program.parseAsync();
+    } catch (error) {
+        if (error instanceof Error) {
+            console.error(
+                `${COLORS.red}Error: ${error.message}${COLORS.reset}`,
+            );
+        }
+        spawnTelemetryUpload();
+        process.exit(1);
     }
-    spawnTelemetryUpload();
-    process.exit(1);
-  }
 
-  spawnTelemetryUpload();
+    spawnTelemetryUpload();
 }
 
 main();
@@ -533,17 +568,21 @@ atomic run claude -- "fix the authentication bug"
 #### Implementation
 
 The `.passThroughOptions()` and `.allowUnknownOption()` on the `run` command ensure that:
+
 1. Arguments after `--` are never interpreted by Commander.js
 2. Unknown flags before `--` trigger an error (invalid atomic option)
 
 ```typescript
 program
-  .command('run')
-  .argument('<agent>', 'agent to run')
-  .argument('[args...]', 'arguments to pass to the agent (use -- before flags)')
-  .passThroughOptions()
-  .allowUnknownOption()
-  // ...
+    .command("run")
+    .argument("<agent>", "agent to run")
+    .argument(
+        "[args...]",
+        "arguments to pass to the agent (use -- before flags)",
+    )
+    .passThroughOptions()
+    .allowUnknownOption();
+// ...
 ```
 
 **Note:** The complex missing-separator detection logic from `src/utils/arg-parser.ts` is no longer needed because Commander.js handles this natively.
@@ -563,6 +602,7 @@ After migration, the following files need changes:
 ### 5.12 Help Output Comparison
 
 **Current (manual):**
+
 ```
 atomic - Configuration management for coding agents
 
@@ -573,6 +613,7 @@ USAGE:
 ```
 
 **Proposed (Commander.js auto-generated):**
+
 ```
 Usage: atomic [options] [command]
 
@@ -666,21 +707,21 @@ This migration introduces breaking changes to simplify the CLI interface. The fo
 
 ```typescript
 // tests/cli-commander.test.ts
-import { describe, test, expect } from 'bun:test';
-import { program } from '../src/cli';
+import { describe, test, expect } from "bun:test";
+import { program } from "../src/cli";
 
-describe('Commander.js CLI', () => {
-  test('parses init command with agent option', () => {
-    // Mock parseAsync and verify options
-  });
+describe("Commander.js CLI", () => {
+    test("parses init command with agent option", () => {
+        // Mock parseAsync and verify options
+    });
 
-  test('parses agent run mode with passthrough args', () => {
-    // Verify args after -- are captured
-  });
+    test("parses agent run mode with passthrough args", () => {
+        // Verify args after -- are captured
+    });
 
-  test('validates agent name', () => {
-    // Verify unknown agent shows error
-  });
+    test("validates agent name", () => {
+        // Verify unknown agent shows error
+    });
 });
 ```
 
@@ -719,30 +760,30 @@ If issues arise, revert to previous `src/index.ts` implementation. The old code 
 The following questions from the research document have been resolved:
 
 1. **Ralph Command Access Path:**
-   - **Decision:** Ralph is a top-level command only (`atomic ralph setup`)
-   - **Rationale:** No backward compatibility needed; cleaner to have ralph as its own command
+    - **Decision:** Ralph is a top-level command only (`atomic ralph setup`)
+    - **Rationale:** No backward compatibility needed; cleaner to have ralph as its own command
 
 2. **Agent Run Mode Syntax:**
-   - **Decision:** Use explicit `run` command (`atomic run claude`)
-   - **Rationale:** Follows established CLI patterns (`npm run`, `docker run`), clearer semantics
+    - **Decision:** Use explicit `run` command (`atomic run claude`)
+    - **Rationale:** Follows established CLI patterns (`npm run`, `docker run`), clearer semantics
 
 3. **Separator Handling:**
-   - **Decision:** `--` separator is optional with `run` command
-   - **Rationale:** Variadic arguments capture everything after agent name naturally
+    - **Decision:** `--` separator is optional with `run` command
+    - **Rationale:** Variadic arguments capture everything after agent name naturally
 
 4. **Error Messages:**
-   - **Decision:** Preserve user-friendly error messages via `.configureOutput()`
-   - **Rationale:** Good UX should be maintained regardless of implementation
+    - **Decision:** Preserve user-friendly error messages via `.configureOutput()`
+    - **Rationale:** Good UX should be maintained regardless of implementation
 
 ## 10. Open Questions / Unresolved Issues
 
 1. **Help Text Customization:** Should we add examples section to auto-generated help?
-   - **Options:** Use `.addHelpText('after', '...')` for examples
-   - **Recommendation:** Add examples for `run` command showing common patterns
+    - **Options:** Use `.addHelpText('after', '...')` for examples
+    - **Recommendation:** Add examples for `run` command showing common patterns
 
 2. **Init Agent Option:** Should `-a/--agent` on init remain, or should users always go through interactive selection?
-   - **Current decision:** Keep `-a` on init for scripting/automation use cases
-   - **Alternative:** Remove and require interactive selection always
+    - **Current decision:** Keep `-a` on init for scripting/automation use cases
+    - **Alternative:** Remove and require interactive selection always
 
 ## 11. Implementation Checklist
 
@@ -779,24 +820,24 @@ The following questions from the research document have been resolved:
 The Ralph plugin uses the old `atomic -a claude ralph` syntax in its command and hook files:
 
 - [ ] Update `plugins/ralph/commands/ralph-loop.md`:
-  - Change `atomic -a claude ralph setup $ARGUMENTS` → `atomic ralph setup -a claude $ARGUMENTS`
-  - Update `allowed-tools` from `Bash(atomic -a claude ralph*)` → `Bash(atomic ralph*)`
+    - Change `atomic -a claude ralph setup $ARGUMENTS` → `atomic ralph setup -a claude $ARGUMENTS`
+    - Update `allowed-tools` from `Bash(atomic -a claude ralph*)` → `Bash(atomic ralph*)`
 - [ ] Update `plugins/ralph/hooks/hooks.json`:
-  - Change `atomic -a claude ralph stop` → `atomic ralph stop -a claude`
+    - Change `atomic -a claude ralph stop` → `atomic ralph stop -a claude`
 
 ### Phase 6: Update README
 
 The README needs updates to reflect the new CLI syntax:
 
 - [ ] Update "Quick Start" section:
-  - Change `atomic -a claude` → `atomic run claude`
-  - Change `atomic -a claude -- /commit` → `atomic run claude /commit`
+    - Change `atomic -a claude` → `atomic run claude`
+    - Change `atomic -a claude -- /commit` → `atomic run claude /commit`
 - [ ] Update "Running Agents" section:
-  - Document new `run` command syntax
-  - Explain `--` separator for passing flags to agent
+    - Document new `run` command syntax
+    - Explain `--` separator for passing flags to agent
 - [ ] Update "Ralph Loop" section:
-  - Change `atomic -a claude ralph setup` → `atomic ralph setup -a claude`
-  - Change `atomic -a claude ralph stop` → `atomic ralph stop -a claude`
+    - Change `atomic -a claude ralph setup` → `atomic ralph setup -a claude`
+    - Change `atomic -a claude ralph stop` → `atomic ralph stop -a claude`
 - [ ] Update any command examples throughout the document
 - [ ] Add migration note for users upgrading from previous versions
 
@@ -847,11 +888,13 @@ README.md                  # Updated: all CLI examples use new syntax
 ```
 
 **Lines of Code Impact:**
+
 - **Removed:** ~270 lines (arg-parser.ts) + ~200 lines (index.ts routing logic)
 - **Added:** ~120 lines (cli.ts) + ~30 lines (types/cli.ts)
 - **Net reduction:** ~320 lines (~50% reduction in CLI logic)
 
 **Complexity Reduction:**
+
 - No more priority-based routing with special cases
 - No more manual `--` separator detection
 - No more special ralph routing via agent flag

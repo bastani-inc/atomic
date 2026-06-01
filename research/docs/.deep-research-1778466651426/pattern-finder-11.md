@@ -11,6 +11,7 @@ The install layer represents a three-stage bootstrap + self-setup pipeline: shel
 ## Patterns
 
 #### Pattern 1: Multi-Stage Bootstrap with Manifest-Driven Verification
+
 **Where:** `install.cmd:68-98`, `install.ps1:44-105`, `install.sh:116-160`
 **What:** Scripts fetch a manifest.json from GitHub Releases, parse it for the target platform's checksum and version, download the pinned binary, verify SHA256, then hand off to the binary's embedded `install` subcommand.
 
@@ -30,11 +31,13 @@ call :verify_checksum "!BINARY_PATH!" "!EXPECTED_CHECKSUM!"
 ```
 
 **Atomic-Specific Hardcodes:**
-- Line 51: `set "RELEASES_BASE=https://github.com/flora131/atomic/releases"`
-- Line 11: Usage example hardcodes `flora131/atomic/main/install.cmd`
+
+- Line 51: `set "RELEASES_BASE=https://github.com/bastani/atomic/releases"`
+- Line 11: Usage example hardcodes `bastani/atomic/main/install.cmd`
 - All three scripts only reference `atomic` (not configurable agent name)
 
 **Seams for pi-coding-agent:**
+
 - `RELEASES_BASE` should become a configurable template variable
 - Binary/package name `atomic` should be replaceable at generation time
 - GitHub org `flora131` is hardcoded; should be parameterized
@@ -42,6 +45,7 @@ call :verify_checksum "!BINARY_PATH!" "!EXPECTED_CHECKSUM!"
 ---
 
 #### Pattern 2: Platform Detection and Manifest Lookup
+
 **Where:** `install.cmd:40-58`, `install.sh:76-113`
 **What:** Detect OS and CPU architecture, map to platform string (windows-x64, windows-arm64, linux-x64, linux-arm64, darwin-x64, darwin-arm64, linux-x64-musl), then query manifest for that platform's binary and checksum.
 
@@ -59,6 +63,7 @@ for /f ... powershell ... "$m = Get-Content ... | ConvertFrom-Json; $c = $m.plat
 ```
 
 **Bash variant** (install.sh lines 76-113):
+
 ```bash
 case "$(uname -s)" in
     Darwin) os="darwin" ;;
@@ -90,12 +95,19 @@ platform="${os}-${arch}${libc}"
 ---
 
 #### Pattern 3: Binary Placement via Atomic Move (Copy → Chmod → Rename)
+
 **Where:** `packages/atomic/src/commands/cli/install.ts:96-132`
 **What:** Copy source binary to a temp `.tmp.<pid>.<ts>` file next to the target, chmod on Unix, then rename atomically. On Windows, archive the running binary first (can't delete in-use exe). Crash-safe: mid-install crashes leave orphan temps that are reaped later.
 
 ```typescript
-export function copyBinary(paths: InstallPaths, sourcePath: string = process.execPath): void {
-    if (resolve(sourcePath).toLowerCase() === resolve(paths.binPath).toLowerCase()) {
+export function copyBinary(
+    paths: InstallPaths,
+    sourcePath: string = process.execPath,
+): void {
+    if (
+        resolve(sourcePath).toLowerCase() ===
+        resolve(paths.binPath).toLowerCase()
+    ) {
         return; // Already running from install location
     }
 
@@ -117,7 +129,11 @@ export function copyBinary(paths: InstallPaths, sourcePath: string = process.exe
         }
         renameSync(tempPath, paths.binPath);
     } catch (err) {
-        try { unlinkSync(tempPath); } catch { /* ignore */ }
+        try {
+            unlinkSync(tempPath);
+        } catch {
+            /* ignore */
+        }
         throw err;
     }
 }
@@ -128,6 +144,7 @@ export function copyBinary(paths: InstallPaths, sourcePath: string = process.exe
 ---
 
 #### Pattern 4: Persistent PATH Writes (Platform-Specific)
+
 **Where:** `packages/atomic/src/commands/cli/install.ts:223-268`
 **What:** On Windows, use PowerShell to write HKCU\Environment\Path and broadcast WM_SETTINGCHANGE. On Unix, append idempotent snippets to shell rc files (.bashrc, .zshrc, .profile, fish config.fish).
 
@@ -135,14 +152,21 @@ export function copyBinary(paths: InstallPaths, sourcePath: string = process.exe
 function persistWindowsPath(dir: string): boolean {
     const readScript = `[Environment]::GetEnvironmentVariable('Path', 'User')`;
     const current = runPowerShell(readScript);
-    if (current === null) throw new Error("Could not read user PATH from registry");
+    if (current === null)
+        throw new Error("Could not read user PATH from registry");
 
     if (pathContains(current, dir, ";")) return false;
 
-    const newValue = current && !current.endsWith(";") ? `${current};${dir}` : `${current}${dir}`;
+    const newValue =
+        current && !current.endsWith(";")
+            ? `${current};${dir}`
+            : `${current}${dir}`;
     const writeScript = `[Environment]::SetEnvironmentVariable('Path', $env:_ATOMIC_NEW_PATH, 'User')`;
     const result = runPowerShell(writeScript, { _ATOMIC_NEW_PATH: newValue });
-    if (result === null) throw new Error(`Could not write user PATH to registry (tried to add ${dir})`);
+    if (result === null)
+        throw new Error(
+            `Could not write user PATH to registry (tried to add ${dir})`,
+        );
 
     process.env.PATH = `${process.env.PATH ?? ""};${dir}`;
     return true;
@@ -164,8 +188,13 @@ function persistUnixPath(dir: string): boolean {
 ```
 
 **Shell RC Snippets** (install.ts:343-353):
+
 ```typescript
-export function appendPathRcSnippet(rcPath: string, shell: Shell | "sh", dir: string): void {
+export function appendPathRcSnippet(
+    rcPath: string,
+    shell: Shell | "sh",
+    dir: string,
+): void {
     const snippet =
         shell === "fish"
             ? `\n${PATH_RC_MARKER}\nfish_add_path "${dir}"\n`
@@ -179,6 +208,7 @@ export function appendPathRcSnippet(rcPath: string, shell: Shell | "sh", dir: st
 ---
 
 #### Pattern 5: Mux/Psmux Binary Detection and PATH Addition
+
 **Where:** `packages/atomic/src/commands/cli/install.ts:403-462`
 **What:** Search for tmux (Unix) or psmux/pmux (Windows) on PATH, then in well-known install directories. If found but not on PATH, persist its directory to PATH.
 
@@ -189,7 +219,8 @@ function detectMuxBinary(): MuxDetection {
 
     for (const name of candidates) {
         const found = Bun.which(name, { PATH: process.env.PATH ?? "" });
-        if (found) return { binary: name, directory: dirname(found), onPath: true };
+        if (found)
+            return { binary: name, directory: dirname(found), onPath: true };
     }
 
     const searchDirs = wellKnownMuxInstallDirs();
@@ -216,11 +247,11 @@ export function wellKnownMuxInstallDirs(): string[] {
         ];
     }
     return [
-        "/opt/homebrew/bin",  // macOS Apple Silicon
-        "/usr/local/bin",     // macOS Intel + Linux
-        "/usr/bin",           // Linux distro
-        "/snap/bin",          // Linux snap
-        "/opt/local/bin",     // MacPorts
+        "/opt/homebrew/bin", // macOS Apple Silicon
+        "/usr/local/bin", // macOS Intel + Linux
+        "/usr/bin", // Linux distro
+        "/snap/bin", // Linux snap
+        "/opt/local/bin", // MacPorts
     ];
 }
 ```
@@ -228,6 +259,7 @@ export function wellKnownMuxInstallDirs(): string[] {
 **Atomic-Specific Coupling**: The hardcoded mux binaries (tmux/psmux/pmux) are tightly bound to Atomic's tmux integration. Removing this requires deciding the pi-coding-agent's multiplexer strategy (if any).
 
 **In install.ts main flow** (lines 776-796):
+
 ```typescript
 const mux = detectMuxBinary();
 if (mux.binary === null) {
@@ -242,6 +274,7 @@ if (mux.binary === null) {
 ---
 
 #### Pattern 6: Shell Completion Installation
+
 **Where:** `packages/atomic/src/commands/cli/install.ts:472-534`
 **What:** Write cached completion scripts to `~/.atomic/completions/atomic.<shell>` and source them from appropriate rc files. Also handle cleanup of legacy eval-based completions.
 
@@ -254,14 +287,23 @@ function installCompletions(paths: InstallPaths): CompletionInstall | null {
         mkdirSync(paths.completionsDir, { recursive: true });
     }
 
-    const ext: Record<Shell, string> = { bash: "bash", zsh: "zsh", fish: "fish", powershell: "ps1" };
+    const ext: Record<Shell, string> = {
+        bash: "bash",
+        zsh: "zsh",
+        fish: "fish",
+        powershell: "ps1",
+    };
     const cachePath = join(paths.completionsDir, `atomic.${ext[shell]}`);
     writeFileSync(cachePath, COMPLETION_SCRIPTS[shell], "utf8");
 
     if (shell === "fish") {
         const fishDir = join(homedir(), ".config", "fish", "completions");
         mkdirSync(fishDir, { recursive: true });
-        writeFileSync(join(fishDir, "atomic.fish"), COMPLETION_SCRIPTS.fish, "utf8");
+        writeFileSync(
+            join(fishDir, "atomic.fish"),
+            COMPLETION_SCRIPTS.fish,
+            "utf8",
+        );
         return { cachePath, rcPaths: [], shell };
     }
 
@@ -272,26 +314,36 @@ function installCompletions(paths: InstallPaths): CompletionInstall | null {
     return { cachePath, rcPaths, shell };
 }
 
-export function ensureCompletionsSourcedFromRc(rcPath: string, shell: Shell, cachePath: string): void {
+export function ensureCompletionsSourcedFromRc(
+    rcPath: string,
+    shell: Shell,
+    cachePath: string,
+): void {
     const content = readFileSync(rcPath, "utf8");
 
     // Strip legacy eval-based snippet
-    const legacyPattern = shell === "powershell"
-        ? /atomic completions powershell \| Invoke-Expression/
-        : /eval "\$\(atomic completions [a-z]+\)"/;
+    const legacyPattern =
+        shell === "powershell"
+            ? /atomic completions powershell \| Invoke-Expression/
+            : /eval "\$\(atomic completions [a-z]+\)"/;
     if (legacyPattern.test(content)) {
         const cleaned = content
             .split("\n")
-            .filter((line) => !legacyPattern.test(line) && line !== "# Atomic CLI completions")
+            .filter(
+                (line) =>
+                    !legacyPattern.test(line) &&
+                    line !== "# Atomic CLI completions",
+            )
             .join("\n");
         writeFileSync(rcPath, cleaned);
     }
 
     if (readFileSync(rcPath, "utf8").includes(RC_MARKER)) return;
 
-    const snippet = shell === "powershell"
-        ? `\n${RC_MARKER}\nif (Test-Path "${cachePath}") { . "${cachePath}" }\n`
-        : `\n${RC_MARKER}\n[ -f "${cachePath}" ] && source "${cachePath}"\n`;
+    const snippet =
+        shell === "powershell"
+            ? `\n${RC_MARKER}\nif (Test-Path "${cachePath}") { . "${cachePath}" }\n`
+            : `\n${RC_MARKER}\n[ -f "${cachePath}" ] && source "${cachePath}"\n`;
     appendFileSync(rcPath, snippet);
 }
 ```
@@ -301,6 +353,7 @@ export function ensureCompletionsSourcedFromRc(rcPath: string, shell: Shell, cac
 ---
 
 #### Pattern 7: Install Method Detection (Package Manager vs Binary vs Source)
+
 **Where:** `packages/atomic/src/commands/cli/install-method.ts:22-92`
 **What:** Detect whether the running binary came from a binary install (~/.local/bin/atomic), a package manager (node_modules/@bastani/atomic), or a source checkout (bun link).
 
@@ -308,10 +361,10 @@ export function ensureCompletionsSourcedFromRc(rcPath: string, shell: Shell, cac
 const PKG_PATH_RE = /\/node_modules\/@bastani\/atomic(?:-[a-z0-9-]+)?\//;
 
 const PM_PROBE_CMD: Record<"bun" | "pnpm" | "yarn" | "npm", string[]> = {
-    bun:  ["bun",  "pm",     "ls", "-g"],
-    pnpm: ["pnpm", "list",   "-g", "--depth=0"],
+    bun: ["bun", "pm", "ls", "-g"],
+    pnpm: ["pnpm", "list", "-g", "--depth=0"],
     yarn: ["yarn", "global", "list"],
-    npm:  ["npm",  "list",   "-g", "--depth=0"],
+    npm: ["npm", "list", "-g", "--depth=0"],
 };
 
 function computeInstallMethod(opts: DetectOptions): InstallMethod {
@@ -319,9 +372,15 @@ function computeInstallMethod(opts: DetectOptions): InstallMethod {
     const currentPlatform = opts.platform ?? osPlatform();
 
     // 1. Binary install
-    const binDir = currentPlatform === "win32"
-        ? join(process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local"), "atomic", "bin")
-        : join(homedir(), ".local", "bin");
+    const binDir =
+        currentPlatform === "win32"
+            ? join(
+                  process.env.LOCALAPPDATA ??
+                      join(homedir(), "AppData", "Local"),
+                  "atomic",
+                  "bin",
+              )
+            : join(homedir(), ".local", "bin");
     const norm = normalize(binDir);
     if (exec === norm || exec.startsWith(`${norm}/`)) return "binary";
 
@@ -334,7 +393,8 @@ function computeInstallMethod(opts: DetectOptions): InstallMethod {
         const probe = opts.probe ?? defaultProbe;
         for (const pm of ["bun", "pnpm", "yarn", "npm"] as const) {
             const r = probe(PM_PROBE_CMD[pm]);
-            if (r.exitCode === 0 && r.stdout.includes("@bastani/atomic")) return pm;
+            if (r.exitCode === 0 && r.stdout.includes("@bastani/atomic"))
+                return pm;
         }
         return "npm";
     }
@@ -347,6 +407,7 @@ function computeInstallMethod(opts: DetectOptions): InstallMethod {
 ```
 
 **Atomic + Package-Manager Hardcodes:**
+
 - Line 22: `@bastani/atomic` (package name scope)
 - Per-platform packages: `@bastani/atomic-windows-*` (install.ts:718), `@bastani/atomic-linux-*`, etc.
 - Uninstall hints (install.ts:613-618) hardcode full package names for bun/npm/pnpm/yarn
@@ -354,6 +415,7 @@ function computeInstallMethod(opts: DetectOptions): InstallMethod {
 ---
 
 #### Pattern 8: Artifact Reaper (Cleanup of Old Binaries and Temp Files)
+
 **Where:** `packages/atomic/src/commands/cli/install.ts:150-200`
 **What:** Clean up leftover `.old.<timestamp>` files (Windows running-exe archives) and `.tmp.<pid>.<timestamp>` temps older than 1 hour. Runs as fire-and-forget microtask at end of successful install.
 
@@ -362,7 +424,10 @@ const ONE_HOUR_MS = 60 * 60 * 1000;
 const OLD_BINARY_PATTERN = /^atomic(?:\.exe)?\.old\.\d+$/;
 const TMP_INSTALL_PATTERN = /^atomic(?:\.exe)?\.tmp\.\d+\.\d+$/;
 
-export function cleanupOldArtifacts(binDir: string, now: number = Date.now()): CleanupResult {
+export function cleanupOldArtifacts(
+    binDir: string,
+    now: number = Date.now(),
+): CleanupResult {
     let entries: string[];
     try {
         entries = readdirSync(binDir);
@@ -377,7 +442,9 @@ export function cleanupOldArtifacts(binDir: string, now: number = Date.now()): C
             try {
                 unlinkSync(entryPath);
                 oldBinariesRemoved++;
-            } catch { /* still locked or gone — ignore */ }
+            } catch {
+                /* still locked or gone — ignore */
+            }
             continue;
         }
 
@@ -388,7 +455,9 @@ export function cleanupOldArtifacts(binDir: string, now: number = Date.now()): C
                     unlinkSync(entryPath);
                     tempFilesRemoved++;
                 }
-            } catch { /* ignore */ }
+            } catch {
+                /* ignore */
+            }
             continue;
         }
     }
@@ -404,13 +473,15 @@ export function cleanupOldArtifacts(binDir: string, now: number = Date.now()): C
 ## Seams & Coupling Summary
 
 ### Tightly Coupled (Must Change for pi-coding-agent)
-1. **GitHub Release URL Base**: `https://github.com/flora131/atomic/releases` (install.cmd:51, install.ps1:30, install.sh:24)
+
+1. **GitHub Release URL Base**: `https://github.com/bastani/atomic/releases` (install.cmd:51, install.ps1:30, install.sh:24)
 2. **Package Scope**: `@bastani/atomic` (install-method.ts:22, install.ts:614-617)
 3. **Binary Name**: `atomic` (hardcoded in paths, regex patterns, completion scripts)
 4. **Tmux/Psmux Detection**: Tied to Atomic's multiplexer strategy
-5. **GitHub Org/Repo**: `flora131/atomic` (hardcoded in usage examples)
+5. **GitHub Org/Repo**: `bastani/atomic` (hardcoded in usage examples)
 
 ### Loosely Coupled (Reusable or Parameterizable)
+
 1. **Platform Detection**: Fully generic (OS/arch mapping, musl detection)
 2. **Atomic Move Pattern**: Portable crash-safe installation (copy → chmod → rename)
 3. **PATH Manipulation**: Generic (registry on Windows, rc-file appending on Unix)
@@ -418,6 +489,7 @@ export function cleanupOldArtifacts(binDir: string, now: number = Date.now()): C
 5. **Artifact Reaper**: Generic pattern (only binary name changes)
 
 ### Agent-Agnostic Utilities
+
 - `runPowerShell()`: Spawns PowerShell with environment; fully reusable
 - `Bun.which()`: Binary resolution; fully reusable
 - `pathContains()`: Case-insensitive path lookup; fully reusable
@@ -431,4 +503,3 @@ export function cleanupOldArtifacts(binDir: string, now: number = Date.now()): C
 - `/home/alilavaee/Documents/projects/atomic-pi-rewrite/install.sh`
 - `/home/alilavaee/Documents/projects/atomic-pi-rewrite/packages/atomic/src/commands/cli/install.ts`
 - `/home/alilavaee/Documents/projects/atomic-pi-rewrite/packages/atomic/src/commands/cli/install-method.ts`
-

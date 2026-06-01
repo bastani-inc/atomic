@@ -1,11 +1,11 @@
 # Atomic CLI Cross-Platform Support Technical Design Document
 
-| Document Metadata      | Details         |
-| ---------------------- | --------------- |
-| Author(s)              | Alex Lavaee     |
-| Status                 | Draft (WIP)     |
-| Team / Owner           | flora131/atomic |
-| Created / Last Updated | 2026-01-20      |
+| Document Metadata      | Details        |
+| ---------------------- | -------------- |
+| Author(s)              | Alex Lavaee    |
+| Status                 | Draft (WIP)    |
+| Team / Owner           | bastani/atomic |
+| Created / Last Updated | 2026-01-20     |
 
 ## 1. Executive Summary
 
@@ -79,17 +79,17 @@ const proc = Bun.spawn(cmd, {...});
 ```typescript
 // User says "Yes" to overwrite config folder
 if (folderExists && !shouldForce) {
-  const update = await confirm({
-    message: `${agent.folder} already exists. Overwrite config files?`,  // Misleading
-    // ...
-  });
-  shouldForce = true;  // This bypasses preserve_files check later
+    const update = await confirm({
+        message: `${agent.folder} already exists. Overwrite config files?`, // Misleading
+        // ...
+    });
+    shouldForce = true; // This bypasses preserve_files check later
 }
 
 // Later, at line 228-230:
 if (shouldForce) {
-  await copyFile(srcFile, destFile);  // Bypasses preservation!
-  continue;
+    await copyFile(srcFile, destFile); // Bypasses preservation!
+    continue;
 }
 ```
 
@@ -135,13 +135,13 @@ flowchart TB
 
     subgraph Changes["Proposed Changes"]
         direction TB
-        
+
         subgraph Fix1["Fix 1: Command Resolution"]
             WhichCheck["Bun.which(cmd)"]:::current
             ResolvedPath["Use resolved path<br>in Bun.spawn()"]:::fixed
             WhichCheck -->|"Returns full path"| ResolvedPath
         end
-        
+
         subgraph Fix2["Fix 2: Preserve Logic"]
             UserConfirm["User confirms<br>'Overwrite config?'"]:::current
             ForceFlag["shouldForce = true"]:::current
@@ -149,7 +149,7 @@ flowchart TB
             UserConfirm --> ForceFlag
             ForceFlag --> PreserveCheck
         end
-        
+
         subgraph Fix3["Fix 3: Path Separator"]
             RelativePath["path.relative()"]:::current
             Normalize["Normalize to<br>forward slashes"]:::fixed
@@ -201,12 +201,12 @@ We are adopting a **Defense in Depth** pattern where:
 /**
  * Get the full path to a command
  * Returns null if command is not installed
- * 
+ *
  * On Windows, this resolves to the full path including extension
  * (e.g., "C:\Users\...\opencode.cmd")
  */
 export function getCommandPath(cmd: string): string | null {
-  return Bun.which(cmd);
+    return Bun.which(cmd);
 }
 ```
 
@@ -241,27 +241,27 @@ import { getCommandPath } from "../utils/detect";
 // Get the resolved command path (handles Windows .cmd/.exe wrappers)
 const cmdPath = getCommandPath(agent.cmd);
 if (!cmdPath) {
-  console.error(`Error: ${agent.name} is not installed.`);
-  console.error(`Install it from: ${agent.install_url}`);
-  return 1;
+    console.error(`Error: ${agent.name} is not installed.`);
+    console.error(`Install it from: ${agent.install_url}`);
+    return 1;
 }
 
 // Build the command with resolved path, flags, and user-provided arguments
 const flags = agent.additional_flags.map((flag) =>
-  flag === "." ? process.cwd() : flag
+    flag === "." ? process.cwd() : flag,
 );
-const cmd = [cmdPath, ...flags, ...agentArgs];  // Uses resolved path
+const cmd = [cmdPath, ...flags, ...agentArgs]; // Uses resolved path
 
 if (isDebug) {
-  console.error(`[atomic:debug] Resolved command path: ${cmdPath}`);
-  console.error(`[atomic:debug] Spawning command: ${cmd.join(" ")}`);
+    console.error(`[atomic:debug] Resolved command path: ${cmdPath}`);
+    console.error(`[atomic:debug] Spawning command: ${cmd.join(" ")}`);
 }
 
 const proc = Bun.spawn(cmd, {
-  stdin: "inherit",
-  stdout: "inherit", 
-  stderr: "inherit",
-  cwd: process.cwd(),
+    stdin: "inherit",
+    stdout: "inherit",
+    stderr: "inherit",
+    cwd: process.cwd(),
 });
 ```
 
@@ -302,34 +302,34 @@ The fix separates these concerns:
 ```typescript
 // Copy additional files with preservation and merge logic
 for (const file of agent.additional_files) {
-  const srcFile = join(configRoot, file);
-  const destFile = join(targetDir, file);
+    const srcFile = join(configRoot, file);
+    const destFile = join(targetDir, file);
 
-  if (!(await pathExists(srcFile))) continue;
+    if (!(await pathExists(srcFile))) continue;
 
-  const destExists = await pathExists(destFile);
-  const shouldPreserve = agent.preserve_files.includes(file);
-  const shouldMerge = agent.merge_files.includes(file);
+    const destExists = await pathExists(destFile);
+    const shouldPreserve = agent.preserve_files.includes(file);
+    const shouldMerge = agent.merge_files.includes(file);
 
-  // Force flag (or user-confirmed overwrite) bypasses all preservation/merge logic
-  if (shouldForce) {
+    // Force flag (or user-confirmed overwrite) bypasses all preservation/merge logic
+    if (shouldForce) {
+        await copyFile(srcFile, destFile);
+        continue;
+    }
+
+    // Handle merge files (e.g., .mcp.json)
+    if (shouldMerge && destExists) {
+        await mergeJsonFile(srcFile, destFile);
+        continue;
+    }
+
+    // Handle preserve files (e.g., CLAUDE.md, AGENTS.md)
+    if (shouldPreserve && destExists) {
+        continue;
+    }
+
+    // Default: copy the file
     await copyFile(srcFile, destFile);
-    continue;
-  }
-
-  // Handle merge files (e.g., .mcp.json)
-  if (shouldMerge && destExists) {
-    await mergeJsonFile(srcFile, destFile);
-    continue;
-  }
-
-  // Handle preserve files (e.g., CLAUDE.md, AGENTS.md)
-  if (shouldPreserve && destExists) {
-    continue;
-  }
-
-  // Default: copy the file
-  await copyFile(srcFile, destFile);
 }
 ```
 
@@ -337,43 +337,43 @@ for (const file of agent.additional_files) {
 
 ```typescript
 // Copy additional files with preservation and merge logic
-// 
+//
 // --force behavior:
 //   - DOES overwrite: config folder files, non-preserved additional files
 //   - Does NOT overwrite: preserve_files (CLAUDE.md, AGENTS.md)
 //
 for (const file of agent.additional_files) {
-  const srcFile = join(configRoot, file);
-  const destFile = join(targetDir, file);
+    const srcFile = join(configRoot, file);
+    const destFile = join(targetDir, file);
 
-  if (!(await pathExists(srcFile))) continue;
+    if (!(await pathExists(srcFile))) continue;
 
-  const destExists = await pathExists(destFile);
-  const shouldPreserve = agent.preserve_files.includes(file);
-  const shouldMerge = agent.merge_files.includes(file);
+    const destExists = await pathExists(destFile);
+    const shouldPreserve = agent.preserve_files.includes(file);
+    const shouldMerge = agent.merge_files.includes(file);
 
-  // CRITICAL: preserve_files (CLAUDE.md, AGENTS.md) are NEVER overwritten
-  // This is intentional - even --force doesn't override these files
-  // Rationale: These contain user customizations that should never be lost
-  if (shouldPreserve && destExists) {
-    if (isDebug) {
-      console.error(`[atomic:debug] Preserving user file: ${file}`);
+    // CRITICAL: preserve_files (CLAUDE.md, AGENTS.md) are NEVER overwritten
+    // This is intentional - even --force doesn't override these files
+    // Rationale: These contain user customizations that should never be lost
+    if (shouldPreserve && destExists) {
+        if (isDebug) {
+            console.error(`[atomic:debug] Preserving user file: ${file}`);
+        }
+        continue;
     }
-    continue;
-  }
 
-  // Handle merge files (e.g., .mcp.json)
-  // Merge happens regardless of force - we want to add new entries while keeping existing
-  if (shouldMerge && destExists) {
-    await mergeJsonFile(srcFile, destFile);
-    continue;
-  }
+    // Handle merge files (e.g., .mcp.json)
+    // Merge happens regardless of force - we want to add new entries while keeping existing
+    if (shouldMerge && destExists) {
+        await mergeJsonFile(srcFile, destFile);
+        continue;
+    }
 
-  // For non-preserved, non-merged files: --force DOES overwrite these
-  if (!destExists || shouldForce) {
-    await copyFile(srcFile, destFile);
-  }
-  // Otherwise skip - preserve user's existing file
+    // For non-preserved, non-merged files: --force DOES overwrite these
+    if (!destExists || shouldForce) {
+        await copyFile(srcFile, destFile);
+    }
+    // Otherwise skip - preserve user's existing file
 }
 ```
 
@@ -385,10 +385,10 @@ for (const file of agent.additional_files) {
 
 ```typescript
 const update = await confirm({
-  message: `${agent.folder} already exists. Overwrite config files?`,
-  initialValue: true,
-  active: "Yes, overwrite",
-  inactive: "No, cancel",
+    message: `${agent.folder} already exists. Overwrite config files?`,
+    initialValue: true,
+    active: "Yes, overwrite",
+    inactive: "No, cancel",
 });
 ```
 
@@ -396,10 +396,10 @@ const update = await confirm({
 
 ```typescript
 const update = await confirm({
-  message: `${agent.folder} already exists. Update config files? (Your CLAUDE.md/AGENTS.md will be preserved)`,
-  initialValue: true,
-  active: "Yes, update",
-  inactive: "No, cancel",
+    message: `${agent.folder} already exists. Update config files? (Your CLAUDE.md/AGENTS.md will be preserved)`,
+    initialValue: true,
+    active: "Yes, update",
+    inactive: "No, cancel",
 });
 ```
 
@@ -417,7 +417,7 @@ const update = await confirm({
  * This ensures exclusion patterns work on both Windows (backslash) and Unix (forward slash)
  */
 function normalizePath(p: string): string {
-  return p.replace(/\\/g, "/");
+    return p.replace(/\\/g, "/");
 }
 ```
 
@@ -429,21 +429,21 @@ function normalizePath(p: string): string {
 
 ```typescript
 function shouldExclude(
-  relativePath: string,
-  name: string,
-  exclude: string[]
+    relativePath: string,
+    name: string,
+    exclude: string[],
 ): boolean {
-  if (exclude.includes(name)) {
-    return true;
-  }
-
-  for (const ex of exclude) {
-    if (relativePath === ex || relativePath.startsWith(`${ex}/`)) {
-      return true;
+    if (exclude.includes(name)) {
+        return true;
     }
-  }
 
-  return false;
+    for (const ex of exclude) {
+        if (relativePath === ex || relativePath.startsWith(`${ex}/`)) {
+            return true;
+        }
+    }
+
+    return false;
 }
 ```
 
@@ -451,28 +451,31 @@ function shouldExclude(
 
 ```typescript
 function shouldExclude(
-  relativePath: string,
-  name: string,
-  exclude: string[]
+    relativePath: string,
+    name: string,
+    exclude: string[],
 ): boolean {
-  // Check if the name matches any exclusion
-  if (exclude.includes(name)) {
-    return true;
-  }
-
-  // Normalize path separators for cross-platform comparison
-  // On Windows, path.relative() returns backslash-separated paths
-  const normalizedPath = normalizePath(relativePath);
-
-  // Check if the normalized relative path starts with any exclusion
-  for (const ex of exclude) {
-    const normalizedEx = normalizePath(ex);
-    if (normalizedPath === normalizedEx || normalizedPath.startsWith(`${normalizedEx}/`)) {
-      return true;
+    // Check if the name matches any exclusion
+    if (exclude.includes(name)) {
+        return true;
     }
-  }
 
-  return false;
+    // Normalize path separators for cross-platform comparison
+    // On Windows, path.relative() returns backslash-separated paths
+    const normalizedPath = normalizePath(relativePath);
+
+    // Check if the normalized relative path starts with any exclusion
+    for (const ex of exclude) {
+        const normalizedEx = normalizePath(ex);
+        if (
+            normalizedPath === normalizedEx ||
+            normalizedPath.startsWith(`${normalizedEx}/`)
+        ) {
+            return true;
+        }
+    }
+
+    return false;
 }
 ```
 
@@ -551,22 +554,22 @@ import { test, expect, describe } from "bun:test";
 import { getCommandPath, isCommandInstalled } from "../src/utils/detect";
 
 describe("getCommandPath", () => {
-  test("returns path for installed command", () => {
-    const path = getCommandPath("bun");
-    expect(path).not.toBeNull();
-    expect(path).toContain("bun");
-  });
+    test("returns path for installed command", () => {
+        const path = getCommandPath("bun");
+        expect(path).not.toBeNull();
+        expect(path).toContain("bun");
+    });
 
-  test("returns null for non-existent command", () => {
-    const path = getCommandPath("nonexistent-command-xyz-12345");
-    expect(path).toBeNull();
-  });
+    test("returns null for non-existent command", () => {
+        const path = getCommandPath("nonexistent-command-xyz-12345");
+        expect(path).toBeNull();
+    });
 
-  test("is consistent with isCommandInstalled", () => {
-    const installed = isCommandInstalled("bun");
-    const path = getCommandPath("bun");
-    expect(installed).toBe(path !== null);
-  });
+    test("is consistent with isCommandInstalled", () => {
+        const installed = isCommandInstalled("bun");
+        const path = getCommandPath("bun");
+        expect(installed).toBe(path !== null);
+    });
 });
 ```
 
@@ -577,25 +580,25 @@ import { test, expect, describe } from "bun:test";
 
 // Test normalizePath (need to export or test via shouldExclude)
 describe("path exclusion matching", () => {
-  test("matches with forward slash paths (Unix)", () => {
-    // Simulate Unix path.relative() output
-    const relativePath = "subdir/file.txt";
-    const exclude = ["subdir"];
-    // Should match
-  });
+    test("matches with forward slash paths (Unix)", () => {
+        // Simulate Unix path.relative() output
+        const relativePath = "subdir/file.txt";
+        const exclude = ["subdir"];
+        // Should match
+    });
 
-  test("matches with backslash paths (Windows)", () => {
-    // Simulate Windows path.relative() output
-    const relativePath = "subdir\\file.txt";
-    const exclude = ["subdir"];
-    // Should match after normalization
-  });
+    test("matches with backslash paths (Windows)", () => {
+        // Simulate Windows path.relative() output
+        const relativePath = "subdir\\file.txt";
+        const exclude = ["subdir"];
+        // Should match after normalization
+    });
 
-  test("exact path match works cross-platform", () => {
-    const relativePath = "node_modules";
-    const exclude = ["node_modules"];
-    // Should match
-  });
+    test("exact path match works cross-platform", () => {
+        const relativePath = "node_modules";
+        const exclude = ["node_modules"];
+        // Should match
+    });
 });
 ```
 
@@ -608,52 +611,55 @@ import { join } from "path";
 import { tmpdir } from "os";
 
 describe("file preservation with --force flag", () => {
-  let tempDir: string;
+    let tempDir: string;
 
-  beforeEach(async () => {
-    tempDir = await mkdtemp(join(tmpdir(), "atomic-test-"));
-  });
+    beforeEach(async () => {
+        tempDir = await mkdtemp(join(tmpdir(), "atomic-test-"));
+    });
 
-  afterEach(async () => {
-    await rm(tempDir, { recursive: true, force: true });
-  });
+    afterEach(async () => {
+        await rm(tempDir, { recursive: true, force: true });
+    });
 
-  test("CLAUDE.md is NOT overwritten even with --force flag", async () => {
-    // Setup: Create existing CLAUDE.md with custom content
-    const existingContent = "# My Custom Content\nDo not overwrite!";
-    await writeFile(join(tempDir, "CLAUDE.md"), existingContent);
-    
-    // TODO: Call init logic with force=true
-    
-    // Verify: Custom content should be preserved (--force does NOT affect preserve_files)
-    const content = await readFile(join(tempDir, "CLAUDE.md"), "utf-8");
-    expect(content).toBe(existingContent);
-  });
+    test("CLAUDE.md is NOT overwritten even with --force flag", async () => {
+        // Setup: Create existing CLAUDE.md with custom content
+        const existingContent = "# My Custom Content\nDo not overwrite!";
+        await writeFile(join(tempDir, "CLAUDE.md"), existingContent);
 
-  test("AGENTS.md is NOT overwritten even with --force flag", async () => {
-    // Setup: Create existing AGENTS.md with custom content
-    const existingContent = "# My Custom Agents\nDo not overwrite!";
-    await writeFile(join(tempDir, "AGENTS.md"), existingContent);
-    
-    // TODO: Call init logic with force=true for opencode agent
-    
-    // Verify: Custom content should be preserved
-    const content = await readFile(join(tempDir, "AGENTS.md"), "utf-8");
-    expect(content).toBe(existingContent);
-  });
+        // TODO: Call init logic with force=true
 
-  test("config folder files ARE overwritten with --force flag", async () => {
-    // Setup: Create existing settings.json with old content
-    await mkdir(join(tempDir, ".claude"), { recursive: true });
-    const oldContent = '{"old": true}';
-    await writeFile(join(tempDir, ".claude", "settings.json"), oldContent);
-    
-    // TODO: Call init logic with force=true
-    
-    // Verify: settings.json SHOULD be overwritten (--force affects non-preserve files)
-    const content = await readFile(join(tempDir, ".claude", "settings.json"), "utf-8");
-    expect(content).not.toBe(oldContent);
-  });
+        // Verify: Custom content should be preserved (--force does NOT affect preserve_files)
+        const content = await readFile(join(tempDir, "CLAUDE.md"), "utf-8");
+        expect(content).toBe(existingContent);
+    });
+
+    test("AGENTS.md is NOT overwritten even with --force flag", async () => {
+        // Setup: Create existing AGENTS.md with custom content
+        const existingContent = "# My Custom Agents\nDo not overwrite!";
+        await writeFile(join(tempDir, "AGENTS.md"), existingContent);
+
+        // TODO: Call init logic with force=true for opencode agent
+
+        // Verify: Custom content should be preserved
+        const content = await readFile(join(tempDir, "AGENTS.md"), "utf-8");
+        expect(content).toBe(existingContent);
+    });
+
+    test("config folder files ARE overwritten with --force flag", async () => {
+        // Setup: Create existing settings.json with old content
+        await mkdir(join(tempDir, ".claude"), { recursive: true });
+        const oldContent = '{"old": true}';
+        await writeFile(join(tempDir, ".claude", "settings.json"), oldContent);
+
+        // TODO: Call init logic with force=true
+
+        // Verify: settings.json SHOULD be overwritten (--force affects non-preserve files)
+        const content = await readFile(
+            join(tempDir, ".claude", "settings.json"),
+            "utf-8",
+        );
+        expect(content).not.toBe(oldContent);
+    });
 });
 ```
 
@@ -667,14 +673,15 @@ describe("file preservation with --force flag", () => {
 - [ ] `atomic -a opencode -- run --command commit` passes arguments correctly
 - [ ] Re-running `atomic init` with existing config preserves `CLAUDE.md`/`AGENTS.md`
 - [ ] Using `--force` or `-f` flag:
-  - [ ] DOES overwrite `.claude/` or `.opencode/` config folder contents
-  - [ ] Does NOT overwrite `CLAUDE.md` (preserve_files)
-  - [ ] Does NOT overwrite `AGENTS.md` (preserve_files)
+    - [ ] DOES overwrite `.claude/` or `.opencode/` config folder contents
+    - [ ] Does NOT overwrite `CLAUDE.md` (preserve_files)
+    - [ ] Does NOT overwrite `AGENTS.md` (preserve_files)
 - [ ] Files in `exclude` list are properly excluded on Windows
 
 #### End-to-End Tests
 
 **Scenario 1: Fresh Install on Windows**
+
 ```powershell
 # Clean directory
 mkdir test-project && cd test-project
@@ -685,6 +692,7 @@ atomic init
 ```
 
 **Scenario 2: Re-Install with Customized Files**
+
 ```powershell
 # In existing project with customized AGENTS.md
 echo "Custom content" >> AGENTS.md
@@ -695,6 +703,7 @@ atomic init
 ```
 
 **Scenario 3: Force Flag Behavior**
+
 ```powershell
 # In existing project with customized AGENTS.md
 echo "My custom instructions" > AGENTS.md
@@ -712,6 +721,7 @@ cat .opencode/settings.local.json  # Should be overwritten with new content
 ```
 
 **Scenario 4: Agent Command with Arguments**
+
 ```powershell
 atomic -a opencode -- run --command commit
 # Verify OpenCode launches with correct arguments
@@ -719,22 +729,22 @@ atomic -a opencode -- run --command commit
 
 ## 9. Open Questions / Unresolved Issues
 
-- [x] **Q1: Should `--force` override `preserve_files`?** *(RESOLVED)*
-  - **Decision**: No - `--force` overwrites everything EXCEPT `preserve_files` (CLAUDE.md, AGENTS.md)
-  - **Rationale**: These files contain user customizations that should never be lost without explicit action
-  - **Future**: If users need to force-overwrite preserved files, add a `--force-all` flag
+- [x] **Q1: Should `--force` override `preserve_files`?** _(RESOLVED)_
+    - **Decision**: No - `--force` overwrites everything EXCEPT `preserve_files` (CLAUDE.md, AGENTS.md)
+    - **Rationale**: These files contain user customizations that should never be lost without explicit action
+    - **Future**: If users need to force-overwrite preserved files, add a `--force-all` flag
 
 - [ ] **Q2: Should we add a `--no-preserve` flag?**
-  - Would allow users to explicitly request overwriting `preserve_files`
-  - **Recommendation**: Not needed initially; can add based on user feedback
+    - Would allow users to explicitly request overwriting `preserve_files`
+    - **Recommendation**: Not needed initially; can add based on user feedback
 
 - [ ] **Q3: Should the @clack/prompts stdin issue be worked around?**
-  - Issue #408: stdin raw mode not restored after `spinner.stop()` on Windows 11
-  - **Recommendation**: Monitor upstream; implement workaround only if users report issues
+    - Issue #408: stdin raw mode not restored after `spinner.stop()` on Windows 11
+    - **Recommendation**: Monitor upstream; implement workaround only if users report issues
 
 - [ ] **Q4: Should we log which files were preserved/skipped?**
-  - Would improve transparency for users
-  - **Recommendation**: Add to normal (non-debug) output after copy completes
+    - Would improve transparency for users
+    - **Recommendation**: Add to normal (non-debug) output after copy completes
 
 ## 10. Implementation Checklist
 

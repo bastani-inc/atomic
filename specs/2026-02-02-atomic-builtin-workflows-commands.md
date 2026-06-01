@@ -1,11 +1,11 @@
 # Atomic Built-in Workflows and Commands Technical Design Document
 
-| Document Metadata      | Details         |
-| ---------------------- | --------------- |
-| Author(s)              | Developer       |
-| Status                 | Draft (WIP)     |
-| Team / Owner           | flora131/atomic |
-| Created / Last Updated | 2026-02-02      |
+| Document Metadata      | Details        |
+| ---------------------- | -------------- |
+| Author(s)              | Developer      |
+| Status                 | Draft (WIP)    |
+| Team / Owner           | bastani/atomic |
+| Created / Last Updated | 2026-02-02     |
 
 ## 1. Executive Summary
 
@@ -134,23 +134,23 @@ The Atomic CLI uses **built-in commands exclusively**. All skills, commands, and
 
 1. **Built-in commands** - `/help`, `/clear` (UI controls only)
 2. **Built-in skills** (from README.md):
-   - `/research-codebase` - Analyze codebase and document findings
-   - `/create-spec` - Generate technical specification from research
-   - `/create-feature-list` - Break spec into implementable tasks
-   - `/implement-feature` - Implement next feature from list
-   - `/commit` - Create conventional commit
-   - `/create-gh-pr` - Push and create pull request
-   - `/explain-code` - Explain code section in detail
+    - `/research-codebase` - Analyze codebase and document findings
+    - `/create-spec` - Generate technical specification from research
+    - `/create-feature-list` - Break spec into implementable tasks
+    - `/implement-feature` - Implement next feature from list
+    - `/commit` - Create conventional commit
+    - `/create-gh-pr` - Push and create pull request
+    - `/explain-code` - Explain code section in detail
 3. **Built-in workflows**:
-   - `/ralph` - Autonomous implementation workflow (graph-based, SDK-native)
+    - `/ralph` - Autonomous implementation workflow (graph-based, SDK-native)
 4. **Built-in sub-agents** (invocable via slash commands):
-   - `/codebase-analyzer` - Analyze implementation details
-   - `/codebase-locator` - Locate files and components
-   - `/codebase-pattern-finder` - Find similar implementations
-   - `/codebase-online-researcher` - Research using web sources
-   - `/codebase-research-analyzer` - Deep dive on research topics
-   - `/codebase-research-locator` - Discover research documents
-   - `/debugger` - Debug errors and test failures
+    - `/codebase-analyzer` - Analyze implementation details
+    - `/codebase-locator` - Locate files and components
+    - `/codebase-pattern-finder` - Find similar implementations
+    - `/codebase-online-researcher` - Research using web sources
+    - `/codebase-research-analyzer` - Deep dive on research topics
+    - `/codebase-research-locator` - Discover research documents
+    - `/debugger` - Debug errors and test failures
 5. **Custom workflows** - Loaded from `.atomic/workflows/` (local) and `~/.atomic/workflows/` (global)
 
 **Removed Commands:**
@@ -314,9 +314,9 @@ We adopt a **Registry + Factory + Graph** pattern:
 ```typescript
 // src/ui/commands/skill-commands.ts:126-133
 const SKILL_SEARCH_PATHS = [
-  ".claude/commands", // Claude Code commands
-  ".opencode/command", // OpenCode commands
-  ".github/commands", // GitHub Copilot commands
+    ".claude/commands", // Claude Code commands
+    ".opencode/command", // OpenCode commands
+    ".github/commands", // GitHub Copilot commands
 ];
 ```
 
@@ -326,35 +326,35 @@ const SKILL_SEARCH_PATHS = [
 // src/ui/commands/skill-commands.ts (new structure)
 
 export interface BuiltinSkill {
-  name: string;
-  description: string;
-  aliases?: string[];
-  prompt: string; // Embedded prompt content
-  hidden?: boolean;
+    name: string;
+    description: string;
+    aliases?: string[];
+    prompt: string; // Embedded prompt content
+    hidden?: boolean;
 }
 
 export const BUILTIN_SKILLS: BuiltinSkill[] = [
-  {
-    name: "commit",
-    description:
-      "Create well-formatted commits with conventional commit format",
-    aliases: ["ci"],
-    prompt: `Create a well-formatted commit: $ARGUMENTS
+    {
+        name: "commit",
+        description:
+            "Create well-formatted commits with conventional commit format",
+        aliases: ["ci"],
+        prompt: `Create a well-formatted commit: $ARGUMENTS
 
 Follow these steps:
 1. Run \`git status\` to see changes
 2. Run \`git diff --staged\` to see staged changes
 3. Analyze changes and create commit message
 ...`,
-  },
-  {
-    name: "research-codebase",
-    description: "Document codebase as-is with research directory",
-    aliases: ["research"],
-    prompt: `Research and document the codebase: $ARGUMENTS
+    },
+    {
+        name: "research-codebase",
+        description: "Document codebase as-is with research directory",
+        aliases: ["research"],
+        prompt: `Research and document the codebase: $ARGUMENTS
 ...`,
-  },
-  // ... additional built-in skills
+    },
+    // ... additional built-in skills
 ];
 ```
 
@@ -371,27 +371,27 @@ Follow these steps:
 // src/ui/commands/skill-commands.ts
 
 export function registerBuiltinSkills(): void {
-  for (const skill of BUILTIN_SKILLS) {
-    const command: CommandDefinition = {
-      name: skill.name,
-      description: skill.description,
-      category: "skill",
-      aliases: skill.aliases,
-      hidden: skill.hidden,
-      execute: (args, context) => {
-        const expandedPrompt = skill.prompt.replace(
-          /\$ARGUMENTS/g,
-          args || "[no arguments provided]",
-        );
-        context.sendMessage(expandedPrompt);
-        return { success: true };
-      },
-    };
+    for (const skill of BUILTIN_SKILLS) {
+        const command: CommandDefinition = {
+            name: skill.name,
+            description: skill.description,
+            category: "skill",
+            aliases: skill.aliases,
+            hidden: skill.hidden,
+            execute: (args, context) => {
+                const expandedPrompt = skill.prompt.replace(
+                    /\$ARGUMENTS/g,
+                    args || "[no arguments provided]",
+                );
+                context.sendMessage(expandedPrompt);
+                return { success: true };
+            },
+        };
 
-    if (!globalRegistry.has(command.name)) {
-      globalRegistry.register(command);
+        if (!globalRegistry.has(command.name)) {
+            globalRegistry.register(command);
+        }
     }
-  }
 }
 ```
 
@@ -404,9 +404,9 @@ The production Atomic CLI does **not** load custom skills from disk. All skills 
 
 // Skills are registered at build time, not loaded from disk
 export function registerBuiltinSkills(): void {
-  for (const skill of BUILTIN_SKILLS) {
-    globalRegistry.register(createSkillCommand(skill));
-  }
+    for (const skill of BUILTIN_SKILLS) {
+        globalRegistry.register(createSkillCommand(skill));
+    }
 }
 
 // No CUSTOM_SKILL_SEARCH_PATHS - per-agent directories are development-only
@@ -434,21 +434,21 @@ Sub-agents are discovered from the following directories (in priority order):
 // src/ui/commands/agent-commands.ts
 
 export const AGENT_DISCOVERY_PATHS = [
-  // Project-local agents (per SDK)
-  ".claude/agents",
-  ".opencode/agents",
-  ".github/agents",
-  // Unified Atomic agents
-  ".atomic/agents",
+    // Project-local agents (per SDK)
+    ".claude/agents",
+    ".opencode/agents",
+    ".github/agents",
+    // Unified Atomic agents
+    ".atomic/agents",
 ];
 
 export const GLOBAL_AGENT_PATHS = [
-  // User-global agents (per SDK)
-  "~/.claude/agents",
-  "~/.opencode/agents",
-  "~/.copilot/agents",
-  // Unified Atomic agents
-  "~/.atomic/agents",
+    // User-global agents (per SDK)
+    "~/.claude/agents",
+    "~/.opencode/agents",
+    "~/.copilot/agents",
+    // Unified Atomic agents
+    "~/.atomic/agents",
 ];
 ```
 
@@ -460,21 +460,21 @@ Agents use a unified markdown format with YAML frontmatter:
 // src/ui/commands/agent-commands.ts
 
 export interface AgentDefinition {
-  name: string; // Unique identifier, becomes slash command
-  description: string; // When to use this agent
-  tools?: string[]; // Allowed tools (inherits all if omitted)
-  model?: string; // Model override (sonnet, opus, haiku)
-  prompt: string; // System prompt content
-  source: "builtin" | "project" | "user" | "atomic";
+    name: string; // Unique identifier, becomes slash command
+    description: string; // When to use this agent
+    tools?: string[]; // Allowed tools (inherits all if omitted)
+    model?: string; // Model override (sonnet, opus, haiku)
+    prompt: string; // System prompt content
+    source: "builtin" | "project" | "user" | "atomic";
 }
 
 // Frontmatter schema (normalized across SDKs)
 interface AgentFrontmatter {
-  name: string; // Claude: name, OpenCode: filename, Copilot: name
-  description: string; // All SDKs
-  tools?: string[] | Record<string, boolean>; // Claude: array, OpenCode: object
-  model?: string; // Claude: sonnet|opus|haiku, OpenCode: provider/model
-  mode?: string; // OpenCode only: "subagent" | "primary"
+    name: string; // Claude: name, OpenCode: filename, Copilot: name
+    description: string; // All SDKs
+    tools?: string[] | Record<string, boolean>; // Claude: array, OpenCode: object
+    model?: string; // Claude: sonnet|opus|haiku, OpenCode: provider/model
+    mode?: string; // OpenCode only: "subagent" | "primary"
 }
 ```
 
@@ -486,87 +486,87 @@ The following agents are embedded in Atomic CLI:
 // src/ui/commands/agent-commands.ts
 
 export const BUILTIN_AGENTS: AgentDefinition[] = [
-  {
-    name: "codebase-analyzer",
-    description:
-      "Analyzes codebase implementation details. Call when you need to find detailed information about specific components.",
-    tools: ["Glob", "Grep", "NotebookRead", "Read", "LS", "Bash"],
-    model: "opus",
-    prompt: `You are a specialist at understanding HOW code works...`,
-    source: "builtin",
-  },
-  {
-    name: "codebase-locator",
-    description:
-      "Locates files, directories, and components relevant to a feature or task. A 'Super Grep/Glob/LS tool'.",
-    tools: ["Glob", "Grep", "NotebookRead", "Read", "LS", "Bash"],
-    model: "haiku",
-    prompt: `You are an expert at finding things in codebases...`,
-    source: "builtin",
-  },
-  {
-    name: "codebase-pattern-finder",
-    description:
-      "Finds similar implementations, usage examples, or existing patterns that can be modeled after.",
-    tools: ["Glob", "Grep", "NotebookRead", "Read", "LS", "Bash"],
-    model: "sonnet",
-    prompt: `You find concrete code examples based on patterns...`,
-    source: "builtin",
-  },
-  {
-    name: "codebase-online-researcher",
-    description:
-      "Researches questions using web sources for modern, online-only information.",
-    tools: [
-      "Glob",
-      "Grep",
-      "Read",
-      "LS",
-      "WebFetch",
-      "WebSearch",
-      "mcp__deepwiki__ask_question",
-    ],
-    model: "sonnet",
-    prompt: `You research questions using web sources...`,
-    source: "builtin",
-  },
-  {
-    name: "codebase-research-analyzer",
-    description: "Deep dive on research topics in the research/ directory.",
-    tools: ["Read", "Grep", "Glob", "LS", "Bash"],
-    model: "sonnet",
-    prompt: `You analyze research documents...`,
-    source: "builtin",
-  },
-  {
-    name: "codebase-research-locator",
-    description:
-      "Discovers relevant documents in research/ directory for metadata storage.",
-    tools: ["Read", "Grep", "Glob", "LS", "Bash"],
-    model: "haiku",
-    prompt: `You find research documents...`,
-    source: "builtin",
-  },
-  {
-    name: "debugger",
-    description:
-      "Debugging specialist for errors, test failures, and unexpected behavior.",
-    tools: [
-      "Bash",
-      "Task",
-      "AskUserQuestion",
-      "Edit",
-      "Glob",
-      "Grep",
-      "Read",
-      "Write",
-      "WebFetch",
-      "WebSearch",
-    ],
-    model: "sonnet",
-    prompt: `You are a debugging specialist...`,
-    source: "builtin",
-  },
+    {
+        name: "codebase-analyzer",
+        description:
+            "Analyzes codebase implementation details. Call when you need to find detailed information about specific components.",
+        tools: ["Glob", "Grep", "NotebookRead", "Read", "LS", "Bash"],
+        model: "opus",
+        prompt: `You are a specialist at understanding HOW code works...`,
+        source: "builtin",
+    },
+    {
+        name: "codebase-locator",
+        description:
+            "Locates files, directories, and components relevant to a feature or task. A 'Super Grep/Glob/LS tool'.",
+        tools: ["Glob", "Grep", "NotebookRead", "Read", "LS", "Bash"],
+        model: "haiku",
+        prompt: `You are an expert at finding things in codebases...`,
+        source: "builtin",
+    },
+    {
+        name: "codebase-pattern-finder",
+        description:
+            "Finds similar implementations, usage examples, or existing patterns that can be modeled after.",
+        tools: ["Glob", "Grep", "NotebookRead", "Read", "LS", "Bash"],
+        model: "sonnet",
+        prompt: `You find concrete code examples based on patterns...`,
+        source: "builtin",
+    },
+    {
+        name: "codebase-online-researcher",
+        description:
+            "Researches questions using web sources for modern, online-only information.",
+        tools: [
+            "Glob",
+            "Grep",
+            "Read",
+            "LS",
+            "WebFetch",
+            "WebSearch",
+            "mcp__deepwiki__ask_question",
+        ],
+        model: "sonnet",
+        prompt: `You research questions using web sources...`,
+        source: "builtin",
+    },
+    {
+        name: "codebase-research-analyzer",
+        description: "Deep dive on research topics in the research/ directory.",
+        tools: ["Read", "Grep", "Glob", "LS", "Bash"],
+        model: "sonnet",
+        prompt: `You analyze research documents...`,
+        source: "builtin",
+    },
+    {
+        name: "codebase-research-locator",
+        description:
+            "Discovers relevant documents in research/ directory for metadata storage.",
+        tools: ["Read", "Grep", "Glob", "LS", "Bash"],
+        model: "haiku",
+        prompt: `You find research documents...`,
+        source: "builtin",
+    },
+    {
+        name: "debugger",
+        description:
+            "Debugging specialist for errors, test failures, and unexpected behavior.",
+        tools: [
+            "Bash",
+            "Task",
+            "AskUserQuestion",
+            "Edit",
+            "Glob",
+            "Grep",
+            "Read",
+            "Write",
+            "WebFetch",
+            "WebSearch",
+        ],
+        model: "sonnet",
+        prompt: `You are a debugging specialist...`,
+        source: "builtin",
+    },
 ];
 ```
 
@@ -578,33 +578,33 @@ Agents are registered as slash commands, allowing direct invocation:
 // src/ui/commands/agent-commands.ts
 
 export function registerAgentCommands(): void {
-  // Load all agents (builtin + discovered)
-  const agents = [...BUILTIN_AGENTS, ...(await discoverAgents())];
+    // Load all agents (builtin + discovered)
+    const agents = [...BUILTIN_AGENTS, ...(await discoverAgents())];
 
-  for (const agent of agents) {
-    const command: CommandDefinition = {
-      name: agent.name,
-      description: agent.description,
-      category: "agent",
-      hidden: false,
-      execute: async (args, context) => {
-        // Spawn subagent with the given prompt
-        const result = await context.spawnSubagent({
-          name: agent.name,
-          prompt: args || "[no arguments provided]",
-          systemPrompt: agent.prompt,
-          tools: agent.tools,
-          model: agent.model,
-          permissionMode: "bypassPermissions", // Auto-approve all tools
-        });
-        return { success: true, message: result };
-      },
-    };
+    for (const agent of agents) {
+        const command: CommandDefinition = {
+            name: agent.name,
+            description: agent.description,
+            category: "agent",
+            hidden: false,
+            execute: async (args, context) => {
+                // Spawn subagent with the given prompt
+                const result = await context.spawnSubagent({
+                    name: agent.name,
+                    prompt: args || "[no arguments provided]",
+                    systemPrompt: agent.prompt,
+                    tools: agent.tools,
+                    model: agent.model,
+                    permissionMode: "bypassPermissions", // Auto-approve all tools
+                });
+                return { success: true, message: result };
+            },
+        };
 
-    if (!globalRegistry.has(command.name)) {
-      globalRegistry.register(command);
+        if (!globalRegistry.has(command.name)) {
+            globalRegistry.register(command);
+        }
     }
-  }
 }
 ```
 
@@ -633,12 +633,12 @@ All SDKs are configured to bypass tool approval:
 // src/sdk/claude-client.ts
 
 const session = await createSession({
-  prompt: taskPrompt,
-  options: {
-    permissionMode: "bypassPermissions",
-    allowDangerouslySkipPermissions: true,
-    // AskUserQuestion is the ONLY tool that pauses
-  },
+    prompt: taskPrompt,
+    options: {
+        permissionMode: "bypassPermissions",
+        allowDangerouslySkipPermissions: true,
+        // AskUserQuestion is the ONLY tool that pauses
+    },
 });
 ```
 
@@ -648,11 +648,11 @@ const session = await createSession({
 // src/sdk/opencode-client.ts
 
 const session = await opencode.createSession({
-  agent: agentConfig,
-  permission: {
-    default: "allow", // Auto-approve all tools
-    // No 'ask' rules - everything allowed
-  },
+    agent: agentConfig,
+    permission: {
+        default: "allow", // Auto-approve all tools
+        // No 'ask' rules - everything allowed
+    },
 });
 ```
 
@@ -676,27 +676,27 @@ const session = await client.createSession({
 // src/graph/nodes.ts
 
 export function askUserNode<TState extends WorkflowState>(
-  name: string,
-  options: AskUserOptions,
+    name: string,
+    options: AskUserOptions,
 ): NodeDefinition<TState> {
-  return {
-    id: name,
-    type: "ask_user",
-    execute: async (state, context) => {
-      // This is the ONLY tool that pauses execution
-      context.emit("human_input_required", {
-        requestId: crypto.randomUUID(),
-        question: options.question,
-        options: options.options,
-      });
+    return {
+        id: name,
+        type: "ask_user",
+        execute: async (state, context) => {
+            // This is the ONLY tool that pauses execution
+            context.emit("human_input_required", {
+                requestId: crypto.randomUUID(),
+                question: options.question,
+                options: options.options,
+            });
 
-      return {
-        ...state,
-        __waitingForInput: true,
-        __waitNodeId: name,
-      };
-    },
-  };
+            return {
+                ...state,
+                __waitingForInput: true,
+                __waitNodeId: name,
+            };
+        },
+    };
 }
 ```
 
@@ -714,7 +714,7 @@ export function askUserNode<TState extends WorkflowState>(
 
 ```typescript
 export function isGraphEngineEnabled(): boolean {
-  return process.env[RALPH_ENV_VARS.ATOMIC_USE_GRAPH_ENGINE] === "true";
+    return process.env[RALPH_ENV_VARS.ATOMIC_USE_GRAPH_ENGINE] === "true";
 }
 ```
 
@@ -727,9 +727,9 @@ export function isGraphEngineEnabled(): boolean {
 // Graph engine is now the only execution mode
 
 export const RALPH_CONFIG = {
-  maxIterations: 100,
-  checkpointing: true,
-  // No autoApproveSpec - spec approval is manual before workflow starts
+    maxIterations: 100,
+    checkpointing: true,
+    // No autoApproveSpec - spec approval is manual before workflow starts
 };
 ```
 
@@ -746,12 +746,12 @@ export const RALPH_CONFIG = {
 
 ```typescript
 const BUILTIN_WORKFLOW_DEFINITIONS: WorkflowMetadata[] = [
-  {
-    name: "ralph",
-    description: "Start the Ralph autonomous implementation workflow",
-    // No aliases - just /ralph
-    createWorkflow: (config) => createRalphWorkflow(config),
-  },
+    {
+        name: "ralph",
+        description: "Start the Ralph autonomous implementation workflow",
+        // No aliases - just /ralph
+        createWorkflow: (config) => createRalphWorkflow(config),
+    },
 ];
 ```
 
@@ -769,39 +769,39 @@ The `clearContextNode` is placed at the beginning of loops (not the end) so the 
 // src/workflows/ralph.ts
 
 export function createRalphWorkflow(
-  config: RalphWorkflowConfig = {},
+    config: RalphWorkflowConfig = {},
 ): CompiledGraph<RalphWorkflowState> {
-  const sessionId = generateSessionId();
+    const sessionId = generateSessionId();
 
-  // IMPORTANT: No wait nodes for approval - spec is approved before workflow starts
-  // The workflow assumes feature-list.json and spec already exist and are approved
+    // IMPORTANT: No wait nodes for approval - spec is approved before workflow starts
+    // The workflow assumes feature-list.json and spec already exist and are approved
 
-  return graph<RalphWorkflowState>()
-    .start(
-      // Verify prerequisites exist (spec, feature-list)
-      agentNode("verify-prerequisites", {
-        prompt: VERIFY_PREREQUISITES_PROMPT,
-        sessionId,
-      }),
-    )
-    .loop(
-      // Clear context at the start of each loop iteration to prevent context window overflow
-      clearContextNode("clear-before-feature"),
-      agentNode("implement-feature", {
-        prompt: IMPLEMENT_FEATURE_PROMPT,
-        sessionId,
-      }),
-      {
-        until: (state) => state.allFeaturesPassing,
-        maxIterations: config.maxIterations ?? 100,
-      },
-    )
-    .then(agentNode("create-pr", { prompt: CREATE_PR_PROMPT, sessionId }))
-    .end()
-    .compile({
-      checkpointing: config.checkpointing ?? true,
-      checkpointDir: config.checkpointDir ?? "research/checkpoints",
-    });
+    return graph<RalphWorkflowState>()
+        .start(
+            // Verify prerequisites exist (spec, feature-list)
+            agentNode("verify-prerequisites", {
+                prompt: VERIFY_PREREQUISITES_PROMPT,
+                sessionId,
+            }),
+        )
+        .loop(
+            // Clear context at the start of each loop iteration to prevent context window overflow
+            clearContextNode("clear-before-feature"),
+            agentNode("implement-feature", {
+                prompt: IMPLEMENT_FEATURE_PROMPT,
+                sessionId,
+            }),
+            {
+                until: (state) => state.allFeaturesPassing,
+                maxIterations: config.maxIterations ?? 100,
+            },
+        )
+        .then(agentNode("create-pr", { prompt: CREATE_PR_PROMPT, sessionId }))
+        .end()
+        .compile({
+            checkpointing: config.checkpointing ?? true,
+            checkpointDir: config.checkpointDir ?? "research/checkpoints",
+        });
 }
 ```
 
@@ -878,41 +878,41 @@ Both actions:
 // src/workflows/ralph-session.ts
 
 export interface RalphSession {
-  // Identity
-  sessionId: string; // Unique session identifier
-  sessionDir: string; // Path to .ralph/sessions/{sessionId}/
+    // Identity
+    sessionId: string; // Unique session identifier
+    sessionDir: string; // Path to .ralph/sessions/{sessionId}/
 
-  // Timestamps
-  createdAt: string; // ISO timestamp
-  lastUpdated: string; // ISO timestamp
+    // Timestamps
+    createdAt: string; // ISO timestamp
+    lastUpdated: string; // ISO timestamp
 
-  // Configuration
-  yolo: boolean; // true = no feature-list, false = uses feature-list
-  maxIterations: number; // Configured max iterations
-  sourceFeatureListPath?: string; // Original feature-list.json path (if not yolo)
+    // Configuration
+    yolo: boolean; // true = no feature-list, false = uses feature-list
+    maxIterations: number; // Configured max iterations
+    sourceFeatureListPath?: string; // Original feature-list.json path (if not yolo)
 
-  // Feature tracking (session-scoped copy)
-  features: RalphFeature[]; // Features for this session
-  currentFeatureIndex: number; // Current feature being implemented
-  completedFeatures: string[]; // Feature IDs completed
+    // Feature tracking (session-scoped copy)
+    features: RalphFeature[]; // Features for this session
+    currentFeatureIndex: number; // Current feature being implemented
+    completedFeatures: string[]; // Feature IDs completed
 
-  // Progress
-  iteration: number; // Current loop iteration
-  status: "running" | "paused" | "completed" | "failed";
+    // Progress
+    iteration: number; // Current loop iteration
+    status: "running" | "paused" | "completed" | "failed";
 
-  // Output
-  prUrl?: string; // Created PR URL (if any)
-  prBranch?: string; // Branch name for PR
+    // Output
+    prUrl?: string; // Created PR URL (if any)
+    prBranch?: string; // Branch name for PR
 }
 
 export interface RalphFeature {
-  id: string;
-  name: string;
-  description: string;
-  acceptanceCriteria?: string[];
-  status: "pending" | "in_progress" | "passing" | "failing";
-  implementedAt?: string; // ISO timestamp when completed
-  error?: string; // Error message if failing
+    id: string;
+    name: string;
+    description: string;
+    acceptanceCriteria?: string[];
+    status: "pending" | "in_progress" | "passing" | "failing";
+    implementedAt?: string; // ISO timestamp when completed
+    error?: string; // Error message if failing
 }
 ```
 
@@ -935,10 +935,10 @@ export interface RalphFeature {
 
 import { NodeDefinition, WorkflowState } from "../types";
 import {
-  readFeatureList,
-  updateFeatureList,
-  createSession,
-  loadSession,
+    readFeatureList,
+    updateFeatureList,
+    createSession,
+    loadSession,
 } from "../utils/ralph-session";
 
 /**
@@ -948,108 +948,110 @@ import {
  * - Session ID is always a random UUID (prevents naming conflicts)
  */
 export function initRalphSessionNode<TState extends RalphWorkflowState>(
-  name: string,
-  options: {
-    featureListPath?: string; // Default: 'research/feature-list.json'
-    yolo?: boolean; // true = no feature-list (default: false)
-    resumeSessionId?: string; // Optional: UUID of session to resume
-  } = {},
+    name: string,
+    options: {
+        featureListPath?: string; // Default: 'research/feature-list.json'
+        yolo?: boolean; // true = no feature-list (default: false)
+        resumeSessionId?: string; // Optional: UUID of session to resume
+    } = {},
 ): NodeDefinition<TState> {
-  return {
-    id: name,
-    type: "ralph_init",
-    execute: async (state, context) => {
-      // Always use UUID - either resume existing or generate new
-      const sessionId = options.resumeSessionId || crypto.randomUUID();
-      const sessionDir = `.ralph/sessions/${sessionId}`;
+    return {
+        id: name,
+        type: "ralph_init",
+        execute: async (state, context) => {
+            // Always use UUID - either resume existing or generate new
+            const sessionId = options.resumeSessionId || crypto.randomUUID();
+            const sessionDir = `.ralph/sessions/${sessionId}`;
 
-      console.log(`Started Ralph session: ${sessionId}`);
+            console.log(`Started Ralph session: ${sessionId}`);
 
-      // Check if session already exists (resume case)
-      const existingSession = await loadSessionIfExists(sessionDir);
-      if (existingSession) {
-        console.log(`Resuming existing session: ${sessionId}`);
-        return {
-          ...state,
-          ralphSessionId: sessionId,
-          ralphSessionDir: sessionDir,
-          yolo: existingSession.yolo,
-          features: existingSession.features,
-          currentFeatureIndex: existingSession.currentFeatureIndex,
-          iteration: existingSession.iteration,
-        };
-      }
+            // Check if session already exists (resume case)
+            const existingSession = await loadSessionIfExists(sessionDir);
+            if (existingSession) {
+                console.log(`Resuming existing session: ${sessionId}`);
+                return {
+                    ...state,
+                    ralphSessionId: sessionId,
+                    ralphSessionDir: sessionDir,
+                    yolo: existingSession.yolo,
+                    features: existingSession.features,
+                    currentFeatureIndex: existingSession.currentFeatureIndex,
+                    iteration: existingSession.iteration,
+                };
+            }
 
-      // Create new session directory structure
-      await context.mkdir(sessionDir);
-      await context.mkdir(`${sessionDir}/checkpoints`);
-      await context.mkdir(`${sessionDir}/research`);
-      await context.mkdir(`${sessionDir}/logs`);
+            // Create new session directory structure
+            await context.mkdir(sessionDir);
+            await context.mkdir(`${sessionDir}/checkpoints`);
+            await context.mkdir(`${sessionDir}/research`);
+            await context.mkdir(`${sessionDir}/logs`);
 
-      const yolo = options.yolo ?? false;
-      const sourceFeatureListPath =
-        options.featureListPath || "research/feature-list.json";
+            const yolo = options.yolo ?? false;
+            const sourceFeatureListPath =
+                options.featureListPath || "research/feature-list.json";
 
-      // Create session
-      const session: RalphSession = {
-        sessionId,
-        sessionDir,
-        createdAt: new Date().toISOString(),
-        lastUpdated: new Date().toISOString(),
-        yolo,
-        maxIterations: state.config?.maxIterations ?? 100,
-        features: [],
-        currentFeatureIndex: 0,
-        completedFeatures: [],
-        iteration: 0,
-        status: "running",
-      };
+            // Create session
+            const session: RalphSession = {
+                sessionId,
+                sessionDir,
+                createdAt: new Date().toISOString(),
+                lastUpdated: new Date().toISOString(),
+                yolo,
+                maxIterations: state.config?.maxIterations ?? 100,
+                features: [],
+                currentFeatureIndex: 0,
+                completedFeatures: [],
+                iteration: 0,
+                status: "running",
+            };
 
-      // If NOT yolo, copy features into session
-      if (!yolo) {
-        session.sourceFeatureListPath = sourceFeatureListPath;
-        const featureList = await readFeatureList(sourceFeatureListPath);
+            // If NOT yolo, copy features into session
+            if (!yolo) {
+                session.sourceFeatureListPath = sourceFeatureListPath;
+                const featureList = await readFeatureList(
+                    sourceFeatureListPath,
+                );
 
-        // Copy features into session (session owns its own copy)
-        session.features = featureList.features.map((f) => ({
-          ...f,
-          status: "pending" as const,
-        }));
+                // Copy features into session (session owns its own copy)
+                session.features = featureList.features.map((f) => ({
+                    ...f,
+                    status: "pending" as const,
+                }));
 
-        // Save session's copy of feature-list
-        await context.writeFile(
-          `${sessionDir}/feature-list.json`,
-          JSON.stringify({ features: session.features }, null, 2),
-        );
-      }
+                // Save session's copy of feature-list
+                await context.writeFile(
+                    `${sessionDir}/feature-list.json`,
+                    JSON.stringify({ features: session.features }, null, 2),
+                );
+            }
 
-      // Initialize progress.txt
-      await context.writeFile(
-        `${sessionDir}/progress.txt`,
-        `# Ralph Session: ${sessionId}\n` +
-          `Created: ${session.createdAt}\n` +
-          `Mode: ${yolo ? "yolo (freestyle)" : "feature-list"}\n` +
-          `Features: ${session.features.length}\n\n` +
-          `## Progress\n`,
-      );
+            // Initialize progress.txt
+            await context.writeFile(
+                `${sessionDir}/progress.txt`,
+                `# Ralph Session: ${sessionId}\n` +
+                    `Created: ${session.createdAt}\n` +
+                    `Mode: ${yolo ? "yolo (freestyle)" : "feature-list"}\n` +
+                    `Features: ${session.features.length}\n\n` +
+                    `## Progress\n`,
+            );
 
-      // Save session state
-      await context.writeFile(
-        `${sessionDir}/session.json`,
-        JSON.stringify(session, null, 2),
-      );
+            // Save session state
+            await context.writeFile(
+                `${sessionDir}/session.json`,
+                JSON.stringify(session, null, 2),
+            );
 
-      return {
-        ...state,
-        ralphSessionId: sessionId,
-        ralphSessionDir: sessionDir,
-        yolo,
-        features: session.features,
-        currentFeatureIndex: 0,
-        iteration: 0,
-      };
-    },
-  };
+            return {
+                ...state,
+                ralphSessionId: sessionId,
+                ralphSessionDir: sessionDir,
+                yolo,
+                features: session.features,
+                currentFeatureIndex: 0,
+                iteration: 0,
+            };
+        },
+    };
 }
 
 /**
@@ -1058,145 +1060,150 @@ export function initRalphSessionNode<TState extends RalphWorkflowState>(
  * All artifacts are saved to the session directory.
  */
 export function implementFeatureNode<TState extends RalphWorkflowState>(
-  name: string,
-  options: {
-    prompt?: string; // Used in yolo mode
-  } = {},
+    name: string,
+    options: {
+        prompt?: string; // Used in yolo mode
+    } = {},
 ): NodeDefinition<TState> {
-  return {
-    id: name,
-    type: "ralph_implement",
-    execute: async (state, context) => {
-      const sessionDir = state.ralphSessionDir;
-      const session = await loadSession(`${sessionDir}/session.json`);
+    return {
+        id: name,
+        type: "ralph_implement",
+        execute: async (state, context) => {
+            const sessionDir = state.ralphSessionDir;
+            const session = await loadSession(`${sessionDir}/session.json`);
 
-      if (!session.yolo) {
-        // Feature-list mode: Get next feature to implement
-        const nextFeature = session.features.find(
-          (f) => f.status === "pending",
-        );
+            if (!session.yolo) {
+                // Feature-list mode: Get next feature to implement
+                const nextFeature = session.features.find(
+                    (f) => f.status === "pending",
+                );
 
-        if (!nextFeature) {
-          // All features complete
-          return {
-            ...state,
-            allFeaturesPassing: true,
-          };
-        }
+                if (!nextFeature) {
+                    // All features complete
+                    return {
+                        ...state,
+                        allFeaturesPassing: true,
+                    };
+                }
 
-        // Mark as in_progress
-        nextFeature.status = "in_progress";
-        await saveSession(sessionDir, session);
+                // Mark as in_progress
+                nextFeature.status = "in_progress";
+                await saveSession(sessionDir, session);
 
-        // Log the agent call
-        await appendLog(sessionDir, "agent-calls", {
-          timestamp: new Date().toISOString(),
-          feature: nextFeature.id,
-          action: "implement",
-        });
+                // Log the agent call
+                await appendLog(sessionDir, "agent-calls", {
+                    timestamp: new Date().toISOString(),
+                    feature: nextFeature.id,
+                    action: "implement",
+                });
 
-        // Execute agent to implement feature
-        const result = await context.runAgent({
-          prompt: IMPLEMENT_FEATURE_PROMPT.replace(
-            "$FEATURE",
-            JSON.stringify(nextFeature),
-          ),
-          permissionMode: "bypassPermissions",
-        });
+                // Execute agent to implement feature
+                const result = await context.runAgent({
+                    prompt: IMPLEMENT_FEATURE_PROMPT.replace(
+                        "$FEATURE",
+                        JSON.stringify(nextFeature),
+                    ),
+                    permissionMode: "bypassPermissions",
+                });
 
-        // Check if feature is now passing (tests pass, etc.)
-        const isPassing = await checkFeaturePassing(nextFeature, context);
-        nextFeature.status = isPassing ? "passing" : "failing";
-        nextFeature.implementedAt = new Date().toISOString();
+                // Check if feature is now passing (tests pass, etc.)
+                const isPassing = await checkFeaturePassing(
+                    nextFeature,
+                    context,
+                );
+                nextFeature.status = isPassing ? "passing" : "failing";
+                nextFeature.implementedAt = new Date().toISOString();
 
-        if (isPassing) {
-          session.completedFeatures.push(nextFeature.id);
-        } else {
-          nextFeature.error = result.error || "Feature tests not passing";
-        }
+                if (isPassing) {
+                    session.completedFeatures.push(nextFeature.id);
+                } else {
+                    nextFeature.error =
+                        result.error || "Feature tests not passing";
+                }
 
-        session.iteration++;
-        session.lastUpdated = new Date().toISOString();
-        await saveSession(sessionDir, session);
+                session.iteration++;
+                session.lastUpdated = new Date().toISOString();
+                await saveSession(sessionDir, session);
 
-        // Update session's feature-list.json
-        await context.writeFile(
-          `${sessionDir}/feature-list.json`,
-          JSON.stringify({ features: session.features }, null, 2),
-        );
+                // Update session's feature-list.json
+                await context.writeFile(
+                    `${sessionDir}/feature-list.json`,
+                    JSON.stringify({ features: session.features }, null, 2),
+                );
 
-        // Update progress.txt
-        await appendProgress(sessionDir, nextFeature, isPassing);
+                // Update progress.txt
+                await appendProgress(sessionDir, nextFeature, isPassing);
 
-        return {
-          ...state,
-          currentFeature: nextFeature,
-          iteration: session.iteration,
-          allFeaturesPassing: session.features.every(
-            (f) => f.status === "passing",
-          ),
-        };
-      } else {
-        // Yolo mode - use provided prompt (required for yolo)
-        const userPrompt = options.prompt || state.userPrompt;
+                return {
+                    ...state,
+                    currentFeature: nextFeature,
+                    iteration: session.iteration,
+                    allFeaturesPassing: session.features.every(
+                        (f) => f.status === "passing",
+                    ),
+                };
+            } else {
+                // Yolo mode - use provided prompt (required for yolo)
+                const userPrompt = options.prompt || state.userPrompt;
 
-        if (!userPrompt) {
-          throw new Error(
-            'Yolo mode requires a prompt. Use: /ralph --yolo "your task"',
-          );
-        }
+                if (!userPrompt) {
+                    throw new Error(
+                        'Yolo mode requires a prompt. Use: /ralph --yolo "your task"',
+                    );
+                }
 
-        // Append completion promise instruction to the prompt
-        // This allows the agent to signal when the task is complete
-        const COMPLETION_INSTRUCTION = `
+                // Append completion promise instruction to the prompt
+                // This allows the agent to signal when the task is complete
+                const COMPLETION_INSTRUCTION = `
 
 <EXTREMELY_IMPORTANT>When you believe you have successfully completed the user request output: COMPLETE.</EXTREMELY_IMPORTANT>`;
 
-        const promptWithCompletion = userPrompt + COMPLETION_INSTRUCTION;
+                const promptWithCompletion =
+                    userPrompt + COMPLETION_INSTRUCTION;
 
-        // Log the agent call
-        await appendLog(sessionDir, "agent-calls", {
-          timestamp: new Date().toISOString(),
-          action: "yolo",
-          prompt: userPrompt, // Log original prompt without instruction
-        });
+                // Log the agent call
+                await appendLog(sessionDir, "agent-calls", {
+                    timestamp: new Date().toISOString(),
+                    action: "yolo",
+                    prompt: userPrompt, // Log original prompt without instruction
+                });
 
-        // Execute the task
-        const result = await context.runAgent({
-          prompt: promptWithCompletion,
-          permissionMode: "bypassPermissions",
-        });
+                // Execute the task
+                const result = await context.runAgent({
+                    prompt: promptWithCompletion,
+                    permissionMode: "bypassPermissions",
+                });
 
-        // Check if agent signaled completion
-        const isComplete =
-          result.output?.includes("COMPLETE") ||
-          result.text?.includes("COMPLETE");
+                // Check if agent signaled completion
+                const isComplete =
+                    result.output?.includes("COMPLETE") ||
+                    result.text?.includes("COMPLETE");
 
-        session.iteration++;
-        session.lastUpdated = new Date().toISOString();
+                session.iteration++;
+                session.lastUpdated = new Date().toISOString();
 
-        if (isComplete) {
-          session.status = "completed";
-        }
+                if (isComplete) {
+                    session.status = "completed";
+                }
 
-        await saveSession(sessionDir, session);
+                await saveSession(sessionDir, session);
 
-        // Update progress.txt
-        const statusEmoji = isComplete ? "✓ COMPLETE" : "→";
-        await context.appendFile(
-          `${sessionDir}/progress.txt`,
-          `\n[${new Date().toISOString()}] ${statusEmoji} Iteration ${session.iteration}: ${userPrompt.slice(0, 50)}...\n`,
-        );
+                // Update progress.txt
+                const statusEmoji = isComplete ? "✓ COMPLETE" : "→";
+                await context.appendFile(
+                    `${sessionDir}/progress.txt`,
+                    `\n[${new Date().toISOString()}] ${statusEmoji} Iteration ${session.iteration}: ${userPrompt.slice(0, 50)}...\n`,
+                );
 
-        return {
-          ...state,
-          iteration: session.iteration,
-          lastResult: result,
-          yoloComplete: isComplete, // Signal completion for loop exit
-        };
-      }
-    },
-  };
+                return {
+                    ...state,
+                    iteration: session.iteration,
+                    lastResult: result,
+                    yoloComplete: isComplete, // Signal completion for loop exit
+                };
+            }
+        },
+    };
 }
 
 /**
@@ -1207,57 +1214,65 @@ export function implementFeatureNode<TState extends RalphWorkflowState>(
  * - Both modes: max iterations reached (if maxIterations > 0)
  */
 export function checkCompletionNode<TState extends RalphWorkflowState>(
-  name: string,
+    name: string,
 ): NodeDefinition<TState> {
-  return {
-    id: name,
-    type: "ralph_check",
-    execute: async (state, context) => {
-      const sessionDir = state.ralphSessionDir;
-      const session = await loadSession(`${sessionDir}/session.json`);
+    return {
+        id: name,
+        type: "ralph_check",
+        execute: async (state, context) => {
+            const sessionDir = state.ralphSessionDir;
+            const session = await loadSession(`${sessionDir}/session.json`);
 
-      // Check max iterations (0 = infinite)
-      const maxReached =
-        session.maxIterations > 0 && session.iteration >= session.maxIterations;
+            // Check max iterations (0 = infinite)
+            const maxReached =
+                session.maxIterations > 0 &&
+                session.iteration >= session.maxIterations;
 
-      if (session.yolo) {
-        // Yolo mode: check for completion promise or max iterations
-        const isComplete = state.yoloComplete || session.status === "completed";
+            if (session.yolo) {
+                // Yolo mode: check for completion promise or max iterations
+                const isComplete =
+                    state.yoloComplete || session.status === "completed";
 
-        if (isComplete) {
-          console.log("Task completed! Agent signaled COMPLETE.");
-        } else if (maxReached) {
-          console.log(`Max iterations (${session.maxIterations}) reached.`);
-        }
+                if (isComplete) {
+                    console.log("Task completed! Agent signaled COMPLETE.");
+                } else if (maxReached) {
+                    console.log(
+                        `Max iterations (${session.maxIterations}) reached.`,
+                    );
+                }
 
-        return {
-          ...state,
-          yoloComplete: isComplete,
-          maxIterationsReached: maxReached,
-          shouldContinue: !isComplete && !maxReached,
-        };
-      }
+                return {
+                    ...state,
+                    yoloComplete: isComplete,
+                    maxIterationsReached: maxReached,
+                    shouldContinue: !isComplete && !maxReached,
+                };
+            }
 
-      // Feature-list mode: check if all features pass
-      const allPassing = session.features.every((f) => f.status === "passing");
+            // Feature-list mode: check if all features pass
+            const allPassing = session.features.every(
+                (f) => f.status === "passing",
+            );
 
-      // Update session status
-      if (allPassing) {
-        session.status = "completed";
-        await saveSession(sessionDir, session);
-        console.log("All features passing!");
-      } else if (maxReached) {
-        console.log(`Max iterations (${session.maxIterations}) reached.`);
-      }
+            // Update session status
+            if (allPassing) {
+                session.status = "completed";
+                await saveSession(sessionDir, session);
+                console.log("All features passing!");
+            } else if (maxReached) {
+                console.log(
+                    `Max iterations (${session.maxIterations}) reached.`,
+                );
+            }
 
-      return {
-        ...state,
-        allFeaturesPassing: allPassing,
-        maxIterationsReached: maxReached,
-        shouldContinue: !allPassing && !maxReached,
-      };
-    },
-  };
+            return {
+                ...state,
+                allFeaturesPassing: allPassing,
+                maxIterationsReached: maxReached,
+                shouldContinue: !allPassing && !maxReached,
+            };
+        },
+    };
 }
 
 /**
@@ -1265,49 +1280,49 @@ export function checkCompletionNode<TState extends RalphWorkflowState>(
  * PR metadata is saved to the session directory.
  */
 export function createPRNode<TState extends RalphWorkflowState>(
-  name: string,
-  options: {
-    baseBranch?: string;
-    titleTemplate?: string;
-  } = {},
+    name: string,
+    options: {
+        baseBranch?: string;
+        titleTemplate?: string;
+    } = {},
 ): NodeDefinition<TState> {
-  return {
-    id: name,
-    type: "ralph_pr",
-    execute: async (state, context) => {
-      const sessionDir = state.ralphSessionDir;
-      const session = await loadSession(`${sessionDir}/session.json`);
+    return {
+        id: name,
+        type: "ralph_pr",
+        execute: async (state, context) => {
+            const sessionDir = state.ralphSessionDir;
+            const session = await loadSession(`${sessionDir}/session.json`);
 
-      const result = await context.runAgent({
-        prompt: CREATE_PR_PROMPT.replace(
-          "$COMPLETED_FEATURES",
-          JSON.stringify(session.completedFeatures),
-        ).replace("$SESSION_ID", session.sessionId),
-        permissionMode: "bypassPermissions",
-      });
+            const result = await context.runAgent({
+                prompt: CREATE_PR_PROMPT.replace(
+                    "$COMPLETED_FEATURES",
+                    JSON.stringify(session.completedFeatures),
+                ).replace("$SESSION_ID", session.sessionId),
+                permissionMode: "bypassPermissions",
+            });
 
-      session.prUrl = result.prUrl;
-      session.prBranch = result.branch;
-      session.status = "completed";
-      session.lastUpdated = new Date().toISOString();
-      await saveSession(sessionDir, session);
+            session.prUrl = result.prUrl;
+            session.prBranch = result.branch;
+            session.status = "completed";
+            session.lastUpdated = new Date().toISOString();
+            await saveSession(sessionDir, session);
 
-      // Final progress update
-      await context.appendFile(
-        `${sessionDir}/progress.txt`,
-        `\n## Completed\n` +
-          `PR: ${result.prUrl}\n` +
-          `Branch: ${result.branch}\n` +
-          `Completed at: ${session.lastUpdated}\n`,
-      );
+            // Final progress update
+            await context.appendFile(
+                `${sessionDir}/progress.txt`,
+                `\n## Completed\n` +
+                    `PR: ${result.prUrl}\n` +
+                    `Branch: ${result.branch}\n` +
+                    `Completed at: ${session.lastUpdated}\n`,
+            );
 
-      return {
-        ...state,
-        prUrl: result.prUrl,
-        prBranch: result.branch,
-      };
-    },
-  };
+            return {
+                ...state,
+                prUrl: result.prUrl,
+                prBranch: result.branch,
+            };
+        },
+    };
 }
 ```
 
@@ -1318,93 +1333,96 @@ export function createPRNode<TState extends RalphWorkflowState>(
 
 import { graph } from "../graph/builder";
 import {
-  initRalphSessionNode,
-  implementFeatureNode,
-  checkCompletionNode,
-  createPRNode,
+    initRalphSessionNode,
+    implementFeatureNode,
+    checkCompletionNode,
+    createPRNode,
 } from "../graph/nodes/ralph-nodes";
 import { clearContextNode } from "../graph/nodes";
 
 export function createRalphWorkflow(config: RalphWorkflowConfig = {}) {
-  return graph<RalphWorkflowState>()
-    .start(
-      initRalphSessionNode("init-session", {
-        resumeSessionId: config.resumeSessionId, // Optional: UUID to resume
-        yolo: config.yolo ?? false, // Default: uses feature-list
-        featureListPath: config.featureListPath,
-      }),
-    )
-    .loop(
-      clearContextNode("clear-before-feature"),
-      implementFeatureNode("implement-feature"),
-      checkCompletionNode("check-completion"),
-      {
-        until: (state) => !state.shouldContinue,
-        maxIterations: config.maxIterations ?? 100,
-      },
-    )
-    .then(
-      createPRNode("create-pr", {
-        baseBranch: config.baseBranch,
-      }),
-    )
-    .end()
-    .compile({
-      checkpointing: config.checkpointing ?? true,
-      // Checkpoints saved to session directory (set dynamically in initRalphSessionNode)
-      checkpointDir: (state) => `${state.ralphSessionDir}/checkpoints`,
-    });
+    return graph<RalphWorkflowState>()
+        .start(
+            initRalphSessionNode("init-session", {
+                resumeSessionId: config.resumeSessionId, // Optional: UUID to resume
+                yolo: config.yolo ?? false, // Default: uses feature-list
+                featureListPath: config.featureListPath,
+            }),
+        )
+        .loop(
+            clearContextNode("clear-before-feature"),
+            implementFeatureNode("implement-feature"),
+            checkCompletionNode("check-completion"),
+            {
+                until: (state) => !state.shouldContinue,
+                maxIterations: config.maxIterations ?? 100,
+            },
+        )
+        .then(
+            createPRNode("create-pr", {
+                baseBranch: config.baseBranch,
+            }),
+        )
+        .end()
+        .compile({
+            checkpointing: config.checkpointing ?? true,
+            // Checkpoints saved to session directory (set dynamically in initRalphSessionNode)
+            checkpointDir: (state) => `${state.ralphSessionDir}/checkpoints`,
+        });
 }
 
 // Helper: Session management utilities
 export async function loadSessionIfExists(
-  sessionDir: string,
+    sessionDir: string,
 ): Promise<RalphSession | null> {
-  try {
-    const content = await fs.readFile(`${sessionDir}/session.json`, "utf-8");
-    return JSON.parse(content);
-  } catch {
-    return null;
-  }
+    try {
+        const content = await fs.readFile(
+            `${sessionDir}/session.json`,
+            "utf-8",
+        );
+        return JSON.parse(content);
+    } catch {
+        return null;
+    }
 }
 
 export async function loadSession(sessionPath: string): Promise<RalphSession> {
-  const content = await fs.readFile(sessionPath, "utf-8");
-  return JSON.parse(content);
+    const content = await fs.readFile(sessionPath, "utf-8");
+    return JSON.parse(content);
 }
 
 export async function saveSession(
-  sessionDir: string,
-  session: RalphSession,
+    sessionDir: string,
+    session: RalphSession,
 ): Promise<void> {
-  session.lastUpdated = new Date().toISOString();
-  await fs.writeFile(
-    `${sessionDir}/session.json`,
-    JSON.stringify(session, null, 2),
-  );
+    session.lastUpdated = new Date().toISOString();
+    await fs.writeFile(
+        `${sessionDir}/session.json`,
+        JSON.stringify(session, null, 2),
+    );
 }
 
 export async function appendLog(
-  sessionDir: string,
-  logName: string,
-  entry: Record<string, unknown>,
+    sessionDir: string,
+    logName: string,
+    entry: Record<string, unknown>,
 ): Promise<void> {
-  await fs.appendFile(
-    `${sessionDir}/logs/${logName}.jsonl`,
-    JSON.stringify(entry) + "\n",
-  );
+    await fs.appendFile(
+        `${sessionDir}/logs/${logName}.jsonl`,
+        JSON.stringify(entry) + "\n",
+    );
 }
 
 export async function appendProgress(
-  sessionDir: string,
-  feature: RalphFeature,
-  passed: boolean,
+    sessionDir: string,
+    feature: RalphFeature,
+    passed: boolean,
 ): Promise<void> {
-  const status = passed ? "✓" : "✗";
-  await fs.appendFile(
-    `${sessionDir}/progress.txt`,
-    `[${new Date().toISOString()}] ${status} ${feature.name}\n`,
-  );
+    const status = passed ? "✓" : "✗";
+    await fs.appendFile(
+        `${sessionDir}/progress.txt`,
+        `[${new Date().toISOString()}] ${status} ${feature.name}\n`,
+    );
 }
 ```
 
@@ -1416,67 +1434,69 @@ Ralph execution can be stopped gracefully with a single keypress. The workflow e
 // src/workflows/ralph-executor.ts
 
 export class RalphExecutor {
-  private abortController: AbortController;
-  private sessionDir: string | null = null;
+    private abortController: AbortController;
+    private sessionDir: string | null = null;
 
-  constructor() {
-    this.abortController = new AbortController();
-    this.setupInterruptHandlers();
-  }
+    constructor() {
+        this.abortController = new AbortController();
+        this.setupInterruptHandlers();
+    }
 
-  private setupInterruptHandlers(): void {
-    // Ctrl+C handler
-    process.on("SIGINT", () => this.handleInterrupt());
+    private setupInterruptHandlers(): void {
+        // Ctrl+C handler
+        process.on("SIGINT", () => this.handleInterrupt());
 
-    // Esc key handler (for TUI)
-    if (process.stdin.isTTY) {
-      process.stdin.setRawMode(true);
-      process.stdin.on("data", (data) => {
-        if (data[0] === 0x1b) {
-          // Esc key
-          this.handleInterrupt();
+        // Esc key handler (for TUI)
+        if (process.stdin.isTTY) {
+            process.stdin.setRawMode(true);
+            process.stdin.on("data", (data) => {
+                if (data[0] === 0x1b) {
+                    // Esc key
+                    this.handleInterrupt();
+                }
+            });
         }
-      });
-    }
-  }
-
-  private async handleInterrupt(): Promise<void> {
-    console.log("\nStopping Ralph execution...");
-
-    // Signal abort to current agent call
-    this.abortController.abort();
-
-    // Save session state as paused
-    if (this.sessionDir) {
-      const session = await loadSession(`${this.sessionDir}/session.json`);
-      session.status = "paused";
-      session.lastUpdated = new Date().toISOString();
-      await saveSession(this.sessionDir, session);
-
-      // Save checkpoint
-      await this.saveCheckpoint();
-
-      console.log(`Paused Ralph session: ${session.sessionId}`);
-      console.log(`Resume with: /ralph --resume ${session.sessionId}`);
     }
 
-    process.exit(0);
-  }
+    private async handleInterrupt(): Promise<void> {
+        console.log("\nStopping Ralph execution...");
 
-  async run(
-    workflow: CompiledGraph,
-    config: RalphWorkflowConfig,
-  ): Promise<void> {
-    const result = await workflow.run({
-      config,
-      signal: this.abortController.signal,
-    });
+        // Signal abort to current agent call
+        this.abortController.abort();
 
-    // Store session dir for interrupt handling
-    this.sessionDir = result.ralphSessionDir;
+        // Save session state as paused
+        if (this.sessionDir) {
+            const session = await loadSession(
+                `${this.sessionDir}/session.json`,
+            );
+            session.status = "paused";
+            session.lastUpdated = new Date().toISOString();
+            await saveSession(this.sessionDir, session);
 
-    // ... execution loop
-  }
+            // Save checkpoint
+            await this.saveCheckpoint();
+
+            console.log(`Paused Ralph session: ${session.sessionId}`);
+            console.log(`Resume with: /ralph --resume ${session.sessionId}`);
+        }
+
+        process.exit(0);
+    }
+
+    async run(
+        workflow: CompiledGraph,
+        config: RalphWorkflowConfig,
+    ): Promise<void> {
+        const result = await workflow.run({
+            config,
+            signal: this.abortController.signal,
+        });
+
+        // Store session dir for interrupt handling
+        this.sessionDir = result.ralphSessionDir;
+
+        // ... execution loop
+    }
 }
 ```
 
@@ -1601,17 +1621,17 @@ export const description = "A custom workflow for XYZ";
 export const aliases = ["mw", "custom"];
 
 interface MyWorkflowState extends WorkflowState {
-  customField: string;
+    customField: string;
 }
 
 export default function createWorkflow(
-  config?: Record<string, unknown>,
+    config?: Record<string, unknown>,
 ): CompiledGraph<MyWorkflowState> {
-  return graph<MyWorkflowState>()
-    .start(agentNode("step-1", { prompt: "Do step 1" }))
-    .then(agentNode("step-2", { prompt: "Do step 2" }))
-    .end()
-    .compile();
+    return graph<MyWorkflowState>()
+        .start(agentNode("step-1", { prompt: "Do step 1" }))
+        .then(agentNode("step-2", { prompt: "Do step 2" }))
+        .end()
+        .compile();
 }
 ```
 
@@ -1621,38 +1641,38 @@ export default function createWorkflow(
 
 ```typescript
 export async function loadWorkflowsFromDisk(): Promise<void> {
-  const discovered = await discoverWorkflowFiles();
-  const loadedWorkflows = new Map<string, WorkflowMetadata>();
+    const discovered = await discoverWorkflowFiles();
+    const loadedWorkflows = new Map<string, WorkflowMetadata>();
 
-  for (const { path, source } of discovered) {
-    try {
-      const module = await import(path);
+    for (const { path, source } of discovered) {
+        try {
+            const module = await import(path);
 
-      const metadata: WorkflowMetadata = {
-        name: module.name || basename(path, ".ts"),
-        description: module.description || "",
-        aliases: module.aliases || [],
-        createWorkflow: module.default,
-        defaultConfig: module.defaultConfig || {},
-        source: source === "local" ? "local" : "global",
-      };
+            const metadata: WorkflowMetadata = {
+                name: module.name || basename(path, ".ts"),
+                description: module.description || "",
+                aliases: module.aliases || [],
+                createWorkflow: module.default,
+                defaultConfig: module.defaultConfig || {},
+                source: source === "local" ? "local" : "global",
+            };
 
-      // Local workflows override global with same name
-      if (!loadedWorkflows.has(metadata.name) || source === "local") {
-        loadedWorkflows.set(metadata.name, metadata);
-      }
-    } catch (err) {
-      console.warn(`Failed to load workflow from ${path}:`, err);
+            // Local workflows override global with same name
+            if (!loadedWorkflows.has(metadata.name) || source === "local") {
+                loadedWorkflows.set(metadata.name, metadata);
+            }
+        } catch (err) {
+            console.warn(`Failed to load workflow from ${path}:`, err);
+        }
     }
-  }
 
-  // Register discovered workflows
-  for (const metadata of loadedWorkflows.values()) {
-    const command = createWorkflowCommand(metadata);
-    if (!globalRegistry.has(command.name)) {
-      globalRegistry.register(command);
+    // Register discovered workflows
+    for (const metadata of loadedWorkflows.values()) {
+        const command = createWorkflowCommand(metadata);
+        if (!globalRegistry.has(command.name)) {
+            globalRegistry.register(command);
+        }
     }
-  }
 }
 ```
 
@@ -1664,18 +1684,18 @@ export async function loadWorkflowsFromDisk(): Promise<void> {
 
 ```typescript
 export function subgraphNode<TState>(
-  name: string,
-  subgraph: CompiledGraph<TState>,
-  options?: SubgraphNodeOptions,
+    name: string,
+    subgraph: CompiledGraph<TState>,
+    options?: SubgraphNodeOptions,
 ): GraphNode<TState> {
-  return {
-    name,
-    type: "subgraph",
-    execute: async (state, context) => {
-      const result = await subgraph.run(state, context);
-      return result;
-    },
-  };
+    return {
+        name,
+        type: "subgraph",
+        execute: async (state, context) => {
+            const result = await subgraph.run(state, context);
+            return result;
+        },
+    };
 }
 ```
 
@@ -1689,11 +1709,11 @@ Enable workflows to reference other workflows by name:
 const workflowRegistry = new Map<string, WorkflowMetadata>();
 
 export function resolveWorkflowRef(
-  name: string,
+    name: string,
 ): CompiledGraph<WorkflowState> | null {
-  const metadata = workflowRegistry.get(name);
-  if (!metadata) return null;
-  return metadata.createWorkflow(metadata.defaultConfig);
+    const metadata = workflowRegistry.get(name);
+    if (!metadata) return null;
+    return metadata.createWorkflow(metadata.defaultConfig);
 }
 
 // Usage in custom workflow:
@@ -1701,13 +1721,13 @@ export function resolveWorkflowRef(
 import { resolveWorkflowRef, subgraphNode } from "@atomic/workflows";
 
 export default function createWorkflow() {
-  const childWorkflow = resolveWorkflowRef("child-workflow");
+    const childWorkflow = resolveWorkflowRef("child-workflow");
 
-  return graph()
-    .start(agentNode("setup", { prompt: "Setup" }))
-    .then(subgraphNode("run-child", childWorkflow!))
-    .then(agentNode("cleanup", { prompt: "Cleanup" }))
-    .compile();
+    return graph()
+        .start(agentNode("setup", { prompt: "Setup" }))
+        .then(subgraphNode("run-child", childWorkflow!))
+        .then(agentNode("cleanup", { prompt: "Cleanup" }))
+        .compile();
 }
 ```
 
@@ -1719,22 +1739,22 @@ export default function createWorkflow() {
 const resolutionStack = new Set<string>();
 
 export function resolveWorkflowRef(
-  name: string,
+    name: string,
 ): CompiledGraph<WorkflowState> | null {
-  if (resolutionStack.has(name)) {
-    throw new Error(
-      `Circular workflow dependency detected: ${[...resolutionStack, name].join(" -> ")}`,
-    );
-  }
+    if (resolutionStack.has(name)) {
+        throw new Error(
+            `Circular workflow dependency detected: ${[...resolutionStack, name].join(" -> ")}`,
+        );
+    }
 
-  resolutionStack.add(name);
-  try {
-    const metadata = workflowRegistry.get(name);
-    if (!metadata) return null;
-    return metadata.createWorkflow(metadata.defaultConfig);
-  } finally {
-    resolutionStack.delete(name);
-  }
+    resolutionStack.add(name);
+    try {
+        const metadata = workflowRegistry.get(name);
+        if (!metadata) return null;
+        return metadata.createWorkflow(metadata.defaultConfig);
+    } finally {
+        resolutionStack.delete(name);
+    }
 }
 ```
 
@@ -1762,28 +1782,28 @@ export function resolveWorkflowRef(
 // src/graph/nodes.ts
 
 export function askUserNode<TState extends WorkflowState>(
-  name: string,
-  options: AskUserOptions,
+    name: string,
+    options: AskUserOptions,
 ): NodeDefinition<TState> {
-  return {
-    id: name,
-    type: "ask_user",
-    execute: async (state, context) => {
-      // This is the ONLY pause point in autonomous execution
-      context.emit("human_input_required", {
-        requestId: crypto.randomUUID(),
-        question: options.question,
-        header: options.header,
-        options: options.options,
-      });
+    return {
+        id: name,
+        type: "ask_user",
+        execute: async (state, context) => {
+            // This is the ONLY pause point in autonomous execution
+            context.emit("human_input_required", {
+                requestId: crypto.randomUUID(),
+                question: options.question,
+                header: options.header,
+                options: options.options,
+            });
 
-      return {
-        ...state,
-        __waitingForInput: true,
-        __waitNodeId: name,
-      };
-    },
-  };
+            return {
+                ...state,
+                __waitingForInput: true,
+                __waitNodeId: name,
+            };
+        },
+    };
 }
 ```
 
@@ -1793,25 +1813,25 @@ export function askUserNode<TState extends WorkflowState>(
 // src/ui/chat.tsx
 
 const handleAskUserQuestion = useCallback(
-  (data: AskUserQuestionEventData) => {
-    // Show question dialog - this is the ONLY HITL pause point
-    setActiveQuestion({
-      requestId: data.requestId,
-      question: data.question,
-      options: data.options,
-      respond: (answer) => {
-        // Resume workflow/agent with user's answer
-        if (workflowState?.workflowActive) {
-          workflowExecutor.resumeWith(data.requestId, answer);
-        } else {
-          // For agent questions outside workflows
-          session.respond(data.requestId, answer);
-        }
-        setActiveQuestion(null);
-      },
-    });
-  },
-  [workflowState, workflowExecutor, session],
+    (data: AskUserQuestionEventData) => {
+        // Show question dialog - this is the ONLY HITL pause point
+        setActiveQuestion({
+            requestId: data.requestId,
+            question: data.question,
+            options: data.options,
+            respond: (answer) => {
+                // Resume workflow/agent with user's answer
+                if (workflowState?.workflowActive) {
+                    workflowExecutor.resumeWith(data.requestId, answer);
+                } else {
+                    // For agent questions outside workflows
+                    session.respond(data.requestId, answer);
+                }
+                setActiveQuestion(null);
+            },
+        });
+    },
+    [workflowState, workflowExecutor, session],
 );
 ```
 
@@ -1823,30 +1843,30 @@ const handleAskUserQuestion = useCallback(
 // src/ui/commands/registry.ts
 
 export interface CommandDefinition {
-  name: string; // Primary command name (without slash)
-  description: string; // Human-readable description
-  category: CommandCategory; // "builtin" | "workflow" | "skill" | "custom"
-  aliases?: string[]; // Alternative names
-  hidden?: boolean; // Hide from autocomplete
-  execute: (
-    args: string,
-    context: CommandContext,
-  ) => CommandResult | Promise<CommandResult>;
+    name: string; // Primary command name (without slash)
+    description: string; // Human-readable description
+    category: CommandCategory; // "builtin" | "workflow" | "skill" | "custom"
+    aliases?: string[]; // Alternative names
+    hidden?: boolean; // Hide from autocomplete
+    execute: (
+        args: string,
+        context: CommandContext,
+    ) => CommandResult | Promise<CommandResult>;
 }
 
 export interface CommandContext {
-  session: Session | null;
-  state: CommandContextState;
-  addMessage: (role: string, content: string) => void;
-  setStreaming: (streaming: boolean) => void;
-  sendMessage: (content: string) => void;
+    session: Session | null;
+    state: CommandContextState;
+    addMessage: (role: string, content: string) => void;
+    setStreaming: (streaming: boolean) => void;
+    sendMessage: (content: string) => void;
 }
 
 export interface CommandResult {
-  success: boolean;
-  message?: string;
-  clearMessages?: boolean;
-  stateUpdate?: Partial<CommandContextState>;
+    success: boolean;
+    message?: string;
+    clearMessages?: boolean;
+    stateUpdate?: Partial<CommandContextState>;
 }
 ```
 
@@ -1856,14 +1876,14 @@ export interface CommandResult {
 // src/ui/commands/workflow-commands.ts
 
 export interface WorkflowMetadata {
-  name: string;
-  description: string;
-  aliases?: string[];
-  createWorkflow: (
-    config?: Record<string, unknown>,
-  ) => CompiledGraph<WorkflowState>;
-  defaultConfig?: Record<string, unknown>;
-  source?: "builtin" | "global" | "local";
+    name: string;
+    description: string;
+    aliases?: string[];
+    createWorkflow: (
+        config?: Record<string, unknown>,
+    ) => CompiledGraph<WorkflowState>;
+    defaultConfig?: Record<string, unknown>;
+    source?: "builtin" | "global" | "local";
 }
 ```
 
@@ -1873,11 +1893,11 @@ export interface WorkflowMetadata {
 // src/ui/commands/skill-commands.ts
 
 export interface BuiltinSkill {
-  name: string;
-  description: string;
-  aliases?: string[];
-  prompt: string;
-  hidden?: boolean;
+    name: string;
+    description: string;
+    aliases?: string[];
+    prompt: string;
+    hidden?: boolean;
 }
 ```
 
@@ -1889,31 +1909,31 @@ export interface BuiltinSkill {
 // src/graph/annotation.ts (RalphStateAnnotation)
 
 export interface RalphWorkflowState extends BaseState {
-  executionId: string; // Unique execution identifier
-  lastUpdated: string; // ISO timestamp
-  outputs: Record<string, unknown>; // Node outputs
+    executionId: string; // Unique execution identifier
+    lastUpdated: string; // ISO timestamp
+    outputs: Record<string, unknown>; // Node outputs
 
-  // Research phase
-  researchDoc: string; // Generated research document
+    // Research phase
+    researchDoc: string; // Generated research document
 
-  // Spec phase
-  specDoc: string; // Generated specification
-  specApproved: boolean; // User approval status
+    // Spec phase
+    specDoc: string; // Generated specification
+    specApproved: boolean; // User approval status
 
-  // Feature implementation
-  featureList: Feature[]; // Parsed features from spec
-  currentFeature: Feature | null; // Currently implementing
-  allFeaturesPassing: boolean; // All features complete
+    // Feature implementation
+    featureList: Feature[]; // Parsed features from spec
+    currentFeature: Feature | null; // Currently implementing
+    allFeaturesPassing: boolean; // All features complete
 
-  // Context management
-  contextWindowUsage: ContextWindowUsage | null;
+    // Context management
+    contextWindowUsage: ContextWindowUsage | null;
 
-  // Iteration tracking
-  iteration: number; // Current loop iteration
+    // Iteration tracking
+    iteration: number; // Current loop iteration
 
-  // Output
-  prUrl: string | null; // Created PR URL
-  debugReports: DebugReport[]; // Debug output
+    // Output
+    prUrl: string | null; // Created PR URL
+    debugReports: DebugReport[]; // Debug output
 }
 ```
 
@@ -1973,24 +1993,24 @@ export interface RalphWorkflowState extends BaseState {
 ### 8.3 Test Plan
 
 - **Unit Tests**:
-  - [ ] Command registration and lookup
-  - [ ] Skill prompt expansion with `$ARGUMENTS`
-  - [ ] Workflow loading from multiple search paths
-  - [ ] Subgraph node execution
-  - [ ] Circular dependency detection
-  - [ ] Sub-agent discovery from `.claude/`, `.opencode/`, `.github/` directories
-  - [ ] Agent frontmatter parsing (all SDK formats)
-  - [ ] Session directory creation (`.ralph/sessions/{id}/`)
-  - [ ] Session state serialization/deserialization
+    - [ ] Command registration and lookup
+    - [ ] Skill prompt expansion with `$ARGUMENTS`
+    - [ ] Workflow loading from multiple search paths
+    - [ ] Subgraph node execution
+    - [ ] Circular dependency detection
+    - [ ] Sub-agent discovery from `.claude/`, `.opencode/`, `.github/` directories
+    - [ ] Agent frontmatter parsing (all SDK formats)
+    - [ ] Session directory creation (`.ralph/sessions/{id}/`)
+    - [ ] Session state serialization/deserialization
 
 - **Integration Tests**:
-  - [ ] Full workflow execution with mock SDK
-  - [ ] AskUserQuestion node pauses and resumes correctly
-  - [ ] Checkpoint save/restore to session directory
-  - [ ] Context window management
-  - [ ] Permission bypass configuration per SDK
-  - [ ] Concurrent Ralph sessions with independent artifacts
-  - [ ] Session resume with `--session <id>`
+    - [ ] Full workflow execution with mock SDK
+    - [ ] AskUserQuestion node pauses and resumes correctly
+    - [ ] Checkpoint save/restore to session directory
+    - [ ] Context window management
+    - [ ] Permission bypass configuration per SDK
+    - [ ] Concurrent Ralph sessions with independent artifacts
+    - [ ] Session resume with `--session <id>`
 
 - **End-to-End Tests**:
 
@@ -2020,54 +2040,54 @@ The test should be in a temp folder to build the snake game in rust
 - [ ] **Q1**: Should we support JSON/YAML workflow definitions for non-TypeScript users?
 - [ ] **Q2**: How should workflow versioning work for `~/.atomic/workflows/` global workflows?
 - [x] **Q3**: Should custom skills support frontmatter fields like `allowed-tools` that currently exist in per-agent files?
-  - **Resolved**: No custom skills at runtime. All skills are built-in. Sub-agents from discovered directories support tool restrictions.
+    - **Resolved**: No custom skills at runtime. All skills are built-in. Sub-agents from discovered directories support tool restrictions.
 - [x] **Q4**: How do we handle skill/workflow name conflicts between local and global definitions?
-  - **Resolved**: All skills are built-in (no custom skills). For custom workflows, local project (`.atomic/workflows/`) overrides global user (`~/.atomic/workflows/`). Built-in workflows cannot be overridden.
+    - **Resolved**: All skills are built-in (no custom skills). For custom workflows, local project (`.atomic/workflows/`) overrides global user (`~/.atomic/workflows/`). Built-in workflows cannot be overridden.
 - [x] **Q5**: How do we handle tool approval flow?
-  - **Resolved**: No tool approval flow. All tools auto-execute via SDK permission bypass. Only `AskUserQuestion` pauses for human input.
+    - **Resolved**: No tool approval flow. All tools auto-execute via SDK permission bypass. Only `AskUserQuestion` pauses for human input.
 - [x] **Q6**: What commands do we need for Ralph?
-  - **Resolved**: Only `/ralph` command. Removed `/atomic`, `/ralph:ralph-loop`, `/ralph:cancel-ralph`, `/ralph:ralph-help` (hook-based). Ralph is now SDK-native with graph execution.
+    - **Resolved**: Only `/ralph` command. Removed `/atomic`, `/ralph:ralph-loop`, `/ralph:cancel-ralph`, `/ralph:ralph-help` (hook-based). Ralph is now SDK-native with graph execution.
 - [x] **Q7**: How do concurrent Ralph sessions work?
-  - **Resolved**: Each session has its own `.ralph/sessions/{uuid}/` directory containing all artifacts. Session IDs are always random UUIDs to prevent naming conflicts. Paused sessions can be resumed with `--resume <uuid>`. Each session gets an independent copy of the feature-list.
+    - **Resolved**: Each session has its own `.ralph/sessions/{uuid}/` directory containing all artifacts. Session IDs are always random UUIDs to prevent naming conflicts. Paused sessions can be resumed with `--resume <uuid>`. Each session gets an independent copy of the feature-list.
 - [x] **Q8**: How do users stop Ralph execution?
-  - **Resolved**: Single Ctrl+C or Esc stops execution gracefully, saves checkpoint, marks session as `'paused'`, and displays the UUID for resumption.
+    - **Resolved**: Single Ctrl+C or Esc stops execution gracefully, saves checkpoint, marks session as `'paused'`, and displays the UUID for resumption.
 
 ## 10. Implementation Order
 
 Based on dependencies and risk, the recommended implementation order:
 
 1. **Phase 1: Built-in Skills** (Low risk, high value)
-   - Embed all skill prompts in `skill-commands.ts`
-   - Remove disk-based skill loading from production code
-   - Per-agent directories (`.claude/`, `.opencode/`, `.github/`) remain in repo for development only
+    - Embed all skill prompts in `skill-commands.ts`
+    - Remove disk-based skill loading from production code
+    - Per-agent directories (`.claude/`, `.opencode/`, `.github/`) remain in repo for development only
 
 2. **Phase 2: Built-in Sub-Agents** (Medium risk, high value)
-   - Implement agent discovery from `.claude/agents/`, `.opencode/agents/`, `.github/agents/`
-   - Register sub-agents as slash commands
-   - Normalize frontmatter parsing across SDK formats
+    - Implement agent discovery from `.claude/agents/`, `.opencode/agents/`, `.github/agents/`
+    - Register sub-agents as slash commands
+    - Normalize frontmatter parsing across SDK formats
 
 3. **Phase 3: No Tool Approval** (Medium risk, high value)
-   - Configure permission bypass for each SDK:
-     - Claude: `permissionMode: 'bypassPermissions'`
-     - OpenCode: `permission: { default: 'allow' }`
-     - Copilot: No `PermissionHandler` (default allow-all)
-   - Verify AskUserQuestion still works as HITL exception
+    - Configure permission bypass for each SDK:
+        - Claude: `permissionMode: 'bypassPermissions'`
+        - OpenCode: `permission: { default: 'allow' }`
+        - Copilot: No `PermissionHandler` (default allow-all)
+    - Verify AskUserQuestion still works as HITL exception
 
 4. **Phase 4: Built-in Ralph Workflow** (Medium risk, high value)
-   - Remove `isGraphEngineEnabled()` feature flag
-   - Implement custom Ralph nodes (`initRalphSessionNode`, `implementFeatureNode`, etc.)
-   - Add session-scoped state for concurrent execution
-   - Support `--yolo` flag for freestyle mode (no feature-list)
+    - Remove `isGraphEngineEnabled()` feature flag
+    - Implement custom Ralph nodes (`initRalphSessionNode`, `implementFeatureNode`, etc.)
+    - Add session-scoped state for concurrent execution
+    - Support `--yolo` flag for freestyle mode (no feature-list)
 
 5. **Phase 5: Custom Workflows** (Low risk, medium value)
-   - Add `.atomic/workflows/` search paths
-   - Implement dynamic workflow loading
-   - Add workflow registration to command system
+    - Add `.atomic/workflows/` search paths
+    - Implement dynamic workflow loading
+    - Add workflow registration to command system
 
 6. **Phase 6: Recursive Workflows** (Medium risk, low value)
-   - Implement `resolveWorkflowRef()` for subgraph composition
-   - Add circular dependency detection
-   - Document workflow composition patterns
+    - Implement `resolveWorkflowRef()` for subgraph composition
+    - Add circular dependency detection
+    - Document workflow composition patterns
 
 ## 11. File References
 

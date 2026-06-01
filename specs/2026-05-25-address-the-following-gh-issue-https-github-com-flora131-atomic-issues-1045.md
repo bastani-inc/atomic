@@ -1,15 +1,15 @@
 # Atomic Issue #1045 Technical Design Document / RFC
 
-| Document Metadata      | Details                                                                 |
-| ---------------------- | ----------------------------------------------------------------------- |
-| Author(s)              | Norin Lavaee                                                            |
-| Status                 | Draft (WIP)                                                             |
-| Team / Owner           | Atomic MCP + Workflows maintainers                                      |
-| Created / Last Updated | 2026-05-25                                                              |
+| Document Metadata      | Details                            |
+| ---------------------- | ---------------------------------- |
+| Author(s)              | Norin Lavaee                       |
+| Status                 | Draft (WIP)                        |
+| Team / Owner           | Atomic MCP + Workflows maintainers |
+| Created / Last Updated | 2026-05-25                         |
 
 ## 1. Executive Summary
 
-GitHub issue [#1045](https://github.com/flora131/atomic/issues/1045) reports that the workflow graph/orchestrator panel displays repeated `MCP OAuth initialization failed` messages when a configured MCP server requires OAuth and the user is not authenticated. This failure is non-blocking: workflows and subagent orchestration can continue, but the panel makes it look like the workflow itself failed.
+GitHub issue [#1045](https://github.com/bastani/atomic/issues/1045) reports that the workflow graph/orchestrator panel displays repeated `MCP OAuth initialization failed` messages when a configured MCP server requires OAuth and the user is not authenticated. This failure is non-blocking: workflows and subagent orchestration can continue, but the panel makes it look like the workflow itself failed.
 
 Repository inspection shows the root noise source is the MCP extension startup path in `packages/mcp/index.ts:107-109`, which catches OAuth callback-server initialization failures and writes the exact user-visible string to `console.error`. Workflow stages create child `AgentSession`s through `packages/workflows/src/extension/wiring.ts:178-183`; those stage sessions keep bundled MCP enabled while excluding only workflows (`packages/workflows/src/extension/wiring.ts:169-175`). Therefore each workflow/stage session can repeat MCP startup and emit the same stderr line.
 
@@ -25,33 +25,33 @@ The proposed first-iteration fix is to make MCP OAuth callback initialization la
 
 ### 2.1 Current State
 
-Issue evidence from `gh issue view 1045 --repo flora131/atomic`:
+Issue evidence from `gh issue view 1045 --repo bastani/atomic`:
 
 - Problem: the graph orchestrator panel surfaces repeated inline `MCP OAuth initialization failed` entries.
 - Expected behavior:
-  - MCP servers should remain lazy-loaded like the main chat MCP extension.
-  - Suppress this specific non-blocking OAuth initialization failure.
-  - Preserve actual blocking MCP errors.
-  - Keep observability in debug logs or lower-noise diagnostics.
+    - MCP servers should remain lazy-loaded like the main chat MCP extension.
+    - Suppress this specific non-blocking OAuth initialization failure.
+    - Preserve actual blocking MCP errors.
+    - Keep observability in debug logs or lower-noise diagnostics.
 
 Relevant current architecture:
 
 - MCP extension entrypoint: `packages/mcp/index.ts`.
-  - On every `session_start`, it calls `initializeOAuth()` and catches failures with `console.error("MCP OAuth initialization failed")` (`packages/mcp/index.ts:107-109`).
-  - It then starts `initializeMcp(pi, ctx)` asynchronously (`packages/mcp/index.ts:111-135`).
+    - On every `session_start`, it calls `initializeOAuth()` and catches failures with `console.error("MCP OAuth initialization failed")` (`packages/mcp/index.ts:107-109`).
+    - It then starts `initializeMcp(pi, ctx)` asynchronously (`packages/mcp/index.ts:111-135`).
 - MCP server lifecycle is documented as lazy by default in `packages/mcp/README.md`: servers connect on first tool call, with metadata cache support.
 - OAuth auth flow already starts callback handling on demand:
-  - `startAuth()` calls `ensureCallbackServer({ strictPort: Boolean(config.clientId) })` before browser auth (`packages/mcp/mcp-auth-flow.ts:101`).
-  - `authenticate()` wraps `startAuth()` (`packages/mcp/mcp-auth-flow.ts:163`).
+    - `startAuth()` calls `ensureCallbackServer({ strictPort: Boolean(config.clientId) })` before browser auth (`packages/mcp/mcp-auth-flow.ts:101`).
+    - `authenticate()` wraps `startAuth()` (`packages/mcp/mcp-auth-flow.ts:163`).
 - Workflow stages create separate Atomic SDK sessions:
-  - `createPiSdkAgentSession()` imports `@bastani/atomic` and calls `createAgentSession()` (`packages/workflows/src/extension/wiring.ts:178-183`).
-  - Workflow child sessions exclude only the workflows package, leaving MCP, subagents, web-access, and intercom enabled (`packages/workflows/src/extension/wiring.ts:169-175`).
-  - Stage extension UI is bound to the workflow/stage broker (`packages/workflows/src/extension/wiring.ts:331-334`).
+    - `createPiSdkAgentSession()` imports `@bastani/atomic` and calls `createAgentSession()` (`packages/workflows/src/extension/wiring.ts:178-183`).
+    - Workflow child sessions exclude only the workflows package, leaving MCP, subagents, web-access, and intercom enabled (`packages/workflows/src/extension/wiring.ts:169-175`).
+    - Stage extension UI is bound to the workflow/stage broker (`packages/workflows/src/extension/wiring.ts:331-334`).
 - Workflow graph and stage UI surfaces:
-  - Graph overlay: `packages/workflows/src/tui/graph-view.ts`.
-  - Stage chat pane: `packages/workflows/src/tui/stage-chat-view.ts`.
-  - Stage/run error rendering: `packages/workflows/src/tui/run-detail.ts:184-260`.
-  - Stage error classification: `packages/workflows/src/shared/workflow-failures.ts`.
+    - Graph overlay: `packages/workflows/src/tui/graph-view.ts`.
+    - Stage chat pane: `packages/workflows/src/tui/stage-chat-view.ts`.
+    - Stage/run error rendering: `packages/workflows/src/tui/run-detail.ts:184-260`.
+    - Stage error classification: `packages/workflows/src/shared/workflow-failures.ts`.
 
 Test and prior-art evidence:
 
@@ -80,17 +80,17 @@ This violates the issue’s success criteria:
 
 1. Suppress the exact non-blocking `MCP OAuth initialization failed` line from workflow graph/orchestrator user-visible surfaces.
 2. Preserve actual blocking MCP errors:
-   - explicit `/mcp` initialization failures,
-   - explicit `/mcp-auth` failures,
-   - `mcp({ connect })` failures,
-   - direct/proxy MCP tool auth-required results,
-   - eager/keep-alive server connection failures.
+    - explicit `/mcp` initialization failures,
+    - explicit `/mcp-auth` failures,
+    - `mcp({ connect })` failures,
+    - direct/proxy MCP tool auth-required results,
+    - eager/keep-alive server connection failures.
 3. Preserve observability by logging OAuth callback startup failures at debug level with the underlying error message.
 4. Keep MCP server initialization lazy in workflow child sessions, matching `packages/mcp/README.md`.
 5. Add regression coverage for:
-   - no console/error output on non-blocking OAuth startup failure,
-   - explicit auth still surfaces failures,
-   - workflow visible errors strip only the exact benign line.
+    - no console/error output on non-blocking OAuth startup failure,
+    - explicit auth still surfaces failures,
+    - workflow visible errors strip only the exact benign line.
 6. Avoid changes to public workflow authoring APIs or MCP config schema.
 
 ### 3.2 Non-Goals (Out of Scope)
@@ -153,15 +153,15 @@ This keeps responsibilities separated: MCP owns MCP lifecycle/logging; workflows
 
 ### 4.3 Key Components
 
-| Component | Responsibility | Technology Stack | Justification |
-| --------- | -------------- | ---------------- | ------------- |
-| `packages/mcp/index.ts` | MCP extension lifecycle; remove/silence non-blocking OAuth startup console error | TypeScript extension API | Current source of exact noisy string at `session_start` |
-| `packages/mcp/mcp-auth-flow.ts` | Start OAuth callback server only during explicit auth flows | TypeScript, MCP SDK OAuth | `startAuth()` already calls `ensureCallbackServer`, so eager startup is not required for explicit auth |
-| `packages/mcp/logger.ts` | Preserve low-noise diagnostics | TypeScript logger with debug/info/warn/error levels | Existing logger supports debug logging and avoids user-visible panel output by default |
-| `packages/workflows/src/shared/workflow-failures.ts` | Sanitize workflow-visible error summaries defensively | TypeScript pure classification helpers | Existing central point for stage/run error user messages |
-| `packages/workflows/src/tui/run-detail.ts` | Renders run/stage errors in graph detail panels | TypeScript TUI renderer | Should receive sanitized `stage.error`; no direct MCP-specific rendering logic needed |
-| `packages/workflows/src/extension/wiring.ts` | Creates stage child sessions | TypeScript Atomic SDK integration | Confirms child stages load MCP; should not need MCP-specific suppression if MCP source is fixed |
-| `test/unit/mcp-init-statusbar.test.ts` and new MCP/workflow tests | Regression coverage | `bun:test`, `node:assert/strict` | Existing test style and relevant MCP/workflow surface area |
+| Component                                                         | Responsibility                                                                   | Technology Stack                                    | Justification                                                                                          |
+| ----------------------------------------------------------------- | -------------------------------------------------------------------------------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `packages/mcp/index.ts`                                           | MCP extension lifecycle; remove/silence non-blocking OAuth startup console error | TypeScript extension API                            | Current source of exact noisy string at `session_start`                                                |
+| `packages/mcp/mcp-auth-flow.ts`                                   | Start OAuth callback server only during explicit auth flows                      | TypeScript, MCP SDK OAuth                           | `startAuth()` already calls `ensureCallbackServer`, so eager startup is not required for explicit auth |
+| `packages/mcp/logger.ts`                                          | Preserve low-noise diagnostics                                                   | TypeScript logger with debug/info/warn/error levels | Existing logger supports debug logging and avoids user-visible panel output by default                 |
+| `packages/workflows/src/shared/workflow-failures.ts`              | Sanitize workflow-visible error summaries defensively                            | TypeScript pure classification helpers              | Existing central point for stage/run error user messages                                               |
+| `packages/workflows/src/tui/run-detail.ts`                        | Renders run/stage errors in graph detail panels                                  | TypeScript TUI renderer                             | Should receive sanitized `stage.error`; no direct MCP-specific rendering logic needed                  |
+| `packages/workflows/src/extension/wiring.ts`                      | Creates stage child sessions                                                     | TypeScript Atomic SDK integration                   | Confirms child stages load MCP; should not need MCP-specific suppression if MCP source is fixed        |
+| `test/unit/mcp-init-statusbar.test.ts` and new MCP/workflow tests | Regression coverage                                                              | `bun:test`, `node:assert/strict`                    | Existing test style and relevant MCP/workflow surface area                                             |
 
 ## 5. Detailed Design
 
@@ -173,13 +173,14 @@ Internal helper additions:
 
 ```ts
 // packages/mcp/oauth-startup-diagnostics.ts
-export const NON_BLOCKING_MCP_OAUTH_INIT_MESSAGE = "MCP OAuth initialization failed";
+export const NON_BLOCKING_MCP_OAUTH_INIT_MESSAGE =
+    "MCP OAuth initialization failed";
 
 export function isNonBlockingMcpOAuthInitMessage(message: string): boolean;
 
 export function formatMcpOAuthInitDebugMessage(error: unknown): {
-  readonly message: string;
-  readonly errorMessage?: string;
+    readonly message: string;
+    readonly errorMessage?: string;
 };
 ```
 
@@ -188,9 +189,9 @@ MCP lifecycle change:
 ```ts
 // packages/mcp/index.ts
 pi.on("session_start", async (_event, ctx) => {
-  // Existing shutdown behavior stays.
-  // Do not eagerly call initializeOAuth() as a required startup step.
-  // initializeMcp(pi, ctx) remains async and lazy-server-aware.
+    // Existing shutdown behavior stays.
+    // Do not eagerly call initializeOAuth() as a required startup step.
+    // initializeMcp(pi, ctx) remains async and lazy-server-aware.
 });
 ```
 
@@ -209,8 +210,8 @@ Defensive workflow sanitizer:
 ```ts
 // packages/workflows/src/shared/workflow-failures.ts
 export function sanitizeWorkflowVisibleError(message: string): string {
-  // Remove only a leading exact non-blocking MCP OAuth line.
-  // Preserve all other MCP/auth/provider errors.
+    // Remove only a leading exact non-blocking MCP OAuth line.
+    // Preserve all other MCP/auth/provider errors.
 }
 ```
 
@@ -252,9 +253,9 @@ When `classifyWorkflowFailure(error)` builds `userMessage`:
 
 1. Convert structured/raw error to a string as today.
 2. If the string starts with exactly:
-   - `MCP OAuth initialization failed\n`, or
-   - `MCP OAuth initialization failed\r\n`,
-   remove that first line.
+    - `MCP OAuth initialization failed\n`, or
+    - `MCP OAuth initialization failed\r\n`,
+      remove that first line.
 3. Trim only the removed prefix boundary.
 4. If the remaining message is empty, return a neutral non-error diagnostic only for debug contexts; do not create a stage failure from this line alone.
 5. Preserve the original value in `failureMessage` when different from `error`.
@@ -263,12 +264,12 @@ This ensures actual messages like `MCP initialization failed: <real error>`, `OA
 
 ## 6. Alternatives Considered
 
-| Option | Pros | Cons | Reason for Rejection |
-| ------ | ---- | ---- | -------------------- |
-| A. Filter `MCP OAuth initialization failed` only in `GraphView` / `StageChatView` renderers | Very localized to the reported panel; low implementation cost | Leaves noisy stderr in logs, subagent outputs, persisted session entries, and other workflow renderers; treats symptom not source | Rejected because issue appears from session startup noise before rendering, and the same line appeared in background subagent output |
-| B. Remove bundled MCP from workflow stage sessions | Eliminates MCP startup noise in orchestrator stages | Breaks documented workflows/MCP integration; stage options include MCP scoping; users expect stages to inherit MCP tools | Rejected as too broad and functionally regressive |
-| C. Keep eager OAuth startup but change `console.error` to `logger.debug` | Minimal change; suppresses visible stderr while preserving diagnostics | Still starts callback server for every child session, causing avoidable port binding work and repeated hidden failures | Acceptable fallback if lazy removal is risky, but not the preferred design |
-| D. Make OAuth callback setup lazy and add exact-message defensive sanitizer | Fixes source, preserves explicit auth errors, reduces child-session startup work, protects graph panel from mixed legacy stderr | Requires touching MCP lifecycle and workflow failure classification | Recommended |
+| Option                                                                                      | Pros                                                                                                                            | Cons                                                                                                                              | Reason for Rejection                                                                                                                 |
+| ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| A. Filter `MCP OAuth initialization failed` only in `GraphView` / `StageChatView` renderers | Very localized to the reported panel; low implementation cost                                                                   | Leaves noisy stderr in logs, subagent outputs, persisted session entries, and other workflow renderers; treats symptom not source | Rejected because issue appears from session startup noise before rendering, and the same line appeared in background subagent output |
+| B. Remove bundled MCP from workflow stage sessions                                          | Eliminates MCP startup noise in orchestrator stages                                                                             | Breaks documented workflows/MCP integration; stage options include MCP scoping; users expect stages to inherit MCP tools          | Rejected as too broad and functionally regressive                                                                                    |
+| C. Keep eager OAuth startup but change `console.error` to `logger.debug`                    | Minimal change; suppresses visible stderr while preserving diagnostics                                                          | Still starts callback server for every child session, causing avoidable port binding work and repeated hidden failures            | Acceptable fallback if lazy removal is risky, but not the preferred design                                                           |
+| D. Make OAuth callback setup lazy and add exact-message defensive sanitizer                 | Fixes source, preserves explicit auth errors, reduces child-session startup work, protects graph panel from mixed legacy stderr | Requires touching MCP lifecycle and workflow failure classification                                                               | Recommended                                                                                                                          |
 
 ## 7. Cross-Cutting Concerns
 
@@ -283,10 +284,10 @@ This ensures actual messages like `MCP initialization failed: <real error>`, `OA
 
 - Non-blocking OAuth callback startup failures move to debug diagnostics through `packages/mcp/logger.ts`.
 - Explicit user actions still surface visible messages:
-  - `/mcp-auth <server>` failures,
-  - MCP panel auth failures,
-  - `mcp({ connect })` auth-required results,
-  - direct/proxy tool `auth_required` details.
+    - `/mcp-auth <server>` failures,
+    - MCP panel auth failures,
+    - `mcp({ connect })` auth-required results,
+    - direct/proxy tool `auth_required` details.
 - Tests should assert that the exact non-blocking startup line is not emitted to console during session startup.
 - Optionally include this in `/mcp` diagnostics later, but that is out of scope for iteration 1.
 
@@ -303,8 +304,8 @@ This ensures actual messages like `MCP initialization failed: <real error>`, `OA
 
 1. Implement behind normal code paths; no feature flag required.
 2. Add changelog entries under:
-   - `packages/mcp/CHANGELOG.md` → `## [Unreleased] / ### Fixed`.
-   - `packages/workflows/CHANGELOG.md` if defensive sanitizer lands there.
+    - `packages/mcp/CHANGELOG.md` → `## [Unreleased] / ### Fixed`.
+    - `packages/workflows/CHANGELOG.md` if defensive sanitizer lands there.
 3. Release as a patch-level bug fix.
 4. No user migration required.
 
@@ -319,24 +320,24 @@ Existing persisted sessions that already contain the noisy line may still show i
 Focused tests with Bun:
 
 1. MCP lifecycle suppression:
-   - New unit test around MCP adapter startup with mocked failing `initializeOAuth()` or extracted helper.
-   - Assert `console.error` is not called with `MCP OAuth initialization failed`.
-   - Assert debug logger receives safe diagnostic context if debug logging is enabled/test-injected.
+    - New unit test around MCP adapter startup with mocked failing `initializeOAuth()` or extracted helper.
+    - Assert `console.error` is not called with `MCP OAuth initialization failed`.
+    - Assert debug logger receives safe diagnostic context if debug logging is enabled/test-injected.
 2. Explicit auth remains visible:
-   - Test `authenticate()` / `/mcp-auth` path still surfaces callback-server failures when explicitly invoked.
+    - Test `authenticate()` / `/mcp-auth` path still surfaces callback-server failures when explicitly invoked.
 3. Workflow error sanitizer:
-   - Add tests in `test/unit/workflow-failures.test.ts`.
-   - Input: `MCP OAuth initialization failed\nNo API key found for openai.`
-   - Expected visible message: `No API key found for openai.`
-   - Input: `MCP initialization failed: connection refused`
-   - Expected: unchanged.
-   - Input: `OAuth authentication failed for "github": ...`
-   - Expected: unchanged.
+    - Add tests in `test/unit/workflow-failures.test.ts`.
+    - Input: `MCP OAuth initialization failed\nNo API key found for openai.`
+    - Expected visible message: `No API key found for openai.`
+    - Input: `MCP initialization failed: connection refused`
+    - Expected: unchanged.
+    - Input: `OAuth authentication failed for "github": ...`
+    - Expected: unchanged.
 4. Graph/stage rendering:
-   - Extend `test/unit/stage-chat-view.test.ts` or `test/unit/overlay-graph.test.ts` to ensure sanitized `StageSnapshot.error` does not render the suppressed line.
+    - Extend `test/unit/stage-chat-view.test.ts` or `test/unit/overlay-graph.test.ts` to ensure sanitized `StageSnapshot.error` does not render the suppressed line.
 5. Regression command:
-   - `bun test test/unit/mcp-init-statusbar.test.ts test/unit/workflow-failures.test.ts test/unit/stage-chat-view.test.ts`
-   - Run broader checks before merge: `bun run typecheck` and relevant unit suite.
+    - `bun test test/unit/mcp-init-statusbar.test.ts test/unit/workflow-failures.test.ts test/unit/stage-chat-view.test.ts`
+    - Run broader checks before merge: `bun run typecheck` and relevant unit suite.
 
 ## 9. Open Questions / Unresolved Issues
 

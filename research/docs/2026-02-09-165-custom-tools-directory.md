@@ -5,7 +5,18 @@ git_commit: 3000880d86fb81de4b475404cf1f0503aa1474f9
 branch: lavaman131/feature/tui
 repository: atomic
 topic: "Custom tools directory for user-defined TypeScript tools (issue #165)"
-tags: [research, codebase, tools, sdk, custom-tools, tool-registration, opencode, claude-agent-sdk, copilot-sdk]
+tags:
+    [
+        research,
+        codebase,
+        tools,
+        sdk,
+        custom-tools,
+        tool-registration,
+        opencode,
+        claude-agent-sdk,
+        copilot-sdk,
+    ]
 status: complete
 last_updated: 2026-02-09
 last_updated_by: Claude Opus 4.6
@@ -17,7 +28,7 @@ last_updated_by: Claude Opus 4.6
 
 How should the custom tools directory feature (issue #165) be implemented in Atomic CLI, leveraging existing SDK tool registration patterns from OpenCode SDK, Claude Agent SDK, and Copilot SDK?
 
-Issue: https://github.com/flora131/atomic/issues/165
+Issue: https://github.com/bastani/atomic/issues/165
 
 ## Summary
 
@@ -32,10 +43,10 @@ The codebase defines a unified `ToolDefinition` interface that all SDK clients a
 ```typescript
 // src/sdk/types.ts:471-484
 export interface ToolDefinition {
-  name: string;
-  description: string;
-  inputSchema: Record<string, unknown>;  // JSON Schema
-  handler: (input: unknown) => unknown | Promise<unknown>;
+    name: string;
+    description: string;
+    inputSchema: Record<string, unknown>; // JSON Schema
+    handler: (input: unknown) => unknown | Promise<unknown>;
 }
 ```
 
@@ -61,10 +72,10 @@ Copilot's `registerTool()` is simpler:
 - Tools are stored in `private registeredTools: ToolDefinition[]` (line 155)
 - Registration just pushes to the array (line 728)
 - Tools are converted to `SdkTool` format via `convertTool()` (line 527-534) which maps:
-  - `name` → `name`
-  - `description` → `description`
-  - `inputSchema` → `parameters` (direct JSON Schema passthrough)
-  - `handler` → wrapped async handler
+    - `name` → `name`
+    - `description` → `description`
+    - `inputSchema` → `parameters` (direct JSON Schema passthrough)
+    - `handler` → wrapped async handler
 - Converted tools are passed in `SdkSessionConfig.tools` during `createSession()` (line 636) and `resumeSession()` (line 695)
 
 #### 2c. OpenCode SDK (`src/sdk/opencode-client.ts:1070-1074`)
@@ -81,6 +92,7 @@ OpenCode's `registerTool()` stores tools but does not currently pass them to the
 The `src/sdk/tools/` directory currently contains one file:
 
 **`src/sdk/tools/todo-write.ts`** — A TodoWrite tool that:
+
 - Defines a `ToolDefinition` via factory function `createTodoWriteTool()` (line 67)
 - Uses JSON Schema for `inputSchema` (lines 14-51)
 - Implements a `handler` function that stores and summarizes todo items (lines 76-89)
@@ -112,21 +124,22 @@ The skill loading system (`src/ui/commands/skill-commands.ts:1663-1906`) provide
 const HOME = homedir();
 
 export const SKILL_DISCOVERY_PATHS = [
-  join(".claude", "skills"),
-  join(".opencode", "skills"),
-  join(".github", "skills"),
-  join(".atomic", "skills"),
+    join(".claude", "skills"),
+    join(".opencode", "skills"),
+    join(".github", "skills"),
+    join(".atomic", "skills"),
 ] as const;
 
 export const GLOBAL_SKILL_PATHS = [
-  join(HOME, ".claude", "skills"),
-  join(HOME, ".opencode", "skills"),
-  join(HOME, ".copilot", "skills"),
-  join(HOME, ".atomic", "skills"),
+    join(HOME, ".claude", "skills"),
+    join(HOME, ".opencode", "skills"),
+    join(HOME, ".copilot", "skills"),
+    join(HOME, ".atomic", "skills"),
 ] as const;
 ```
 
 **Analogous tool paths** (from issue #165):
+
 - `~/.atomic/tools/` — Global custom tools
 - `.atomic/tools/` — Project-local custom tools
 
@@ -151,6 +164,7 @@ Calls discovery → builds priority-resolved map → registers with `globalRegis
 #### 6a. Settings Loading (`src/utils/settings.ts`)
 
 Settings are resolved with local-over-global priority:
+
 1. `.atomic/settings.json` (project-local, higher priority)
 2. `~/.atomic/settings.json` (global, lower priority)
 
@@ -159,6 +173,7 @@ Uses `existsSync()` + `readFileSync()` + `JSON.parse()` with silent failure (lin
 #### 6b. MCP Config Discovery (`src/utils/mcp-config.ts`)
 
 The `discoverMcpConfigs()` function (lines 130-157) demonstrates a comprehensive multi-format, multi-location discovery pattern:
+
 - Scans user-level and project-level config directories
 - Supports multiple config formats (Claude `.mcp.json`, Copilot `mcp-config.json`, OpenCode `opencode.json`)
 - Deduplicates by name with last-wins semantics
@@ -181,6 +196,7 @@ Workflow discovery is the closest existing analog to what custom tool discovery 
 This is directly applicable to custom tool discovery: scan `.atomic/tools/` for `.ts` files → `import()` each → extract `ToolDefinition` from module exports.
 
 **Note on home directory resolution inconsistency**: Three different approaches coexist:
+
 - `os.homedir()` — used by `settings.ts`, `skill-commands.ts`, `copilot-client.ts`
 - `process.env.HOME ?? process.env.USERPROFILE ?? ""` — used by `mcp-config.ts`
 - `process.env.HOME || ""` — used by `workflow-commands.ts`
@@ -202,15 +218,15 @@ Custom tool discovery would need to be inserted into this sequence — likely af
 
 ### 9. Issue #165 Acceptance Criteria Mapping
 
-| Acceptance Criteria | Existing Pattern | Key Files |
-|---|---|---|
-| Discover tools from `~/.atomic/tools/` and `.atomic/tools/` | `discoverSkillFiles()` pattern | `src/ui/commands/skill-commands.ts:1722-1765` |
-| Parse TypeScript tool modules with `tool()` helper | `parseSkillFile()` + Bun dynamic `import()` | `src/ui/commands/skill-commands.ts:1767-1805` |
-| Register tools so they are available to the LLM | `CodingAgentClient.registerTool()` on all 3 clients | `src/sdk/types.ts:524`, each `*-client.ts` |
-| Support Zod-based argument schemas | Claude SDK uses Zod internally, Copilot/OpenCode use JSON Schema | `src/sdk/claude-client.ts:756-798` |
-| Pass session context to tool execute functions | `ToolDefinition.handler` receives `input: unknown` | `src/sdk/types.ts:483` |
-| Project-local tools override global tools with same name | `shouldSkillOverride()` priority system | `src/ui/commands/skill-commands.ts:1705-1720` |
-| Display custom tools in `/context` output | `getRegisteredToolNames()` + `TOOL_RENDERERS` | `src/ui/tools/registry.ts:619-626` |
+| Acceptance Criteria                                         | Existing Pattern                                                 | Key Files                                     |
+| ----------------------------------------------------------- | ---------------------------------------------------------------- | --------------------------------------------- |
+| Discover tools from `~/.atomic/tools/` and `.atomic/tools/` | `discoverSkillFiles()` pattern                                   | `src/ui/commands/skill-commands.ts:1722-1765` |
+| Parse TypeScript tool modules with `tool()` helper          | `parseSkillFile()` + Bun dynamic `import()`                      | `src/ui/commands/skill-commands.ts:1767-1805` |
+| Register tools so they are available to the LLM             | `CodingAgentClient.registerTool()` on all 3 clients              | `src/sdk/types.ts:524`, each `*-client.ts`    |
+| Support Zod-based argument schemas                          | Claude SDK uses Zod internally, Copilot/OpenCode use JSON Schema | `src/sdk/claude-client.ts:756-798`            |
+| Pass session context to tool execute functions              | `ToolDefinition.handler` receives `input: unknown`               | `src/sdk/types.ts:483`                        |
+| Project-local tools override global tools with same name    | `shouldSkillOverride()` priority system                          | `src/ui/commands/skill-commands.ts:1705-1720` |
+| Display custom tools in `/context` output                   | `getRegisteredToolNames()` + `TOOL_RENDERERS`                    | `src/ui/tools/registry.ts:619-626`            |
 
 ### 8. OpenCode Custom Tools Reference (External)
 
@@ -224,11 +240,14 @@ The `tool()` helper is exported from `@opencode-ai/plugin`. It is an **identity 
 ```typescript
 // packages/plugin/src/tool.ts
 export function tool<Args extends z.ZodRawShape>(input: {
-  description: string
-  args: Args
-  execute(args: z.infer<z.ZodObject<Args>>, context: ToolContext): Promise<string>
+    description: string;
+    args: Args;
+    execute(
+        args: z.infer<z.ZodObject<Args>>,
+        context: ToolContext,
+    ): Promise<string>;
 }) {
-  return input
+    return input;
 }
 ```
 
@@ -241,33 +260,44 @@ The `ToolContext` passed to execute functions includes:
 
 ```typescript
 export type ToolContext = {
-  sessionID: string
-  messageID: string
-  agent: string
-  directory: string    // Current project directory
-  worktree: string     // Project worktree root
-  abort: AbortSignal
-  metadata(input: { title?: string; metadata?: { [key: string]: any } }): void
-  ask(input: AskInput): Promise<void>  // Request user permission
-}
+    sessionID: string;
+    messageID: string;
+    agent: string;
+    directory: string; // Current project directory
+    worktree: string; // Project worktree root
+    abort: AbortSignal;
+    metadata(input: {
+        title?: string;
+        metadata?: { [key: string]: any };
+    }): void;
+    ask(input: AskInput): Promise<void>; // Request user permission
+};
 ```
 
 #### 8c. Filesystem Discovery (`ToolRegistry.state`)
 
 ```typescript
 // packages/opencode/src/tool/registry.ts
-const glob = new Bun.Glob("{tool,tools}/*.{js,ts}")
+const glob = new Bun.Glob("{tool,tools}/*.{js,ts}");
 
 for (const dir of await Config.directories()) {
-  for await (const match of glob.scan({
-    cwd: dir, absolute: true, followSymlinks: true, dot: true,
-  })) {
-    const namespace = path.basename(match, path.extname(match))
-    const mod = await import(match)
-    for (const [id, def] of Object.entries<ToolDefinition>(mod)) {
-      custom.push(fromPlugin(id === "default" ? namespace : `${namespace}_${id}`, def))
+    for await (const match of glob.scan({
+        cwd: dir,
+        absolute: true,
+        followSymlinks: true,
+        dot: true,
+    })) {
+        const namespace = path.basename(match, path.extname(match));
+        const mod = await import(match);
+        for (const [id, def] of Object.entries<ToolDefinition>(mod)) {
+            custom.push(
+                fromPlugin(
+                    id === "default" ? namespace : `${namespace}_${id}`,
+                    def,
+                ),
+            );
+        }
     }
-  }
 }
 ```
 
@@ -319,11 +349,14 @@ async execute(args, context) {
 ```typescript
 // @anthropic-ai/claude-agent-sdk
 function tool<Schema extends ZodRawShape>(
-  name: string,
-  description: string,
-  inputSchema: Schema,           // Zod schema, NOT JSON Schema
-  handler: (args: z.infer<ZodObject<Schema>>, extra: unknown) => Promise<CallToolResult>
-): SdkMcpToolDefinition<Schema>
+    name: string,
+    description: string,
+    inputSchema: Schema, // Zod schema, NOT JSON Schema
+    handler: (
+        args: z.infer<ZodObject<Schema>>,
+        extra: unknown,
+    ) => Promise<CallToolResult>,
+): SdkMcpToolDefinition<Schema>;
 ```
 
 - Uses **Zod schemas** (peer dependency `zod ^4.0.0`)
@@ -334,10 +367,10 @@ function tool<Schema extends ZodRawShape>(
 
 ```typescript
 function createSdkMcpServer(options: {
-  name: string;
-  version?: string;
-  tools?: Array<SdkMcpToolDefinition<any>>;
-}): McpSdkServerConfigWithInstance  // { type: 'sdk', name: string, instance: McpServer }
+    name: string;
+    version?: string;
+    tools?: Array<SdkMcpToolDefinition<any>>;
+}): McpSdkServerConfigWithInstance; // { type: 'sdk', name: string, instance: McpServer }
 ```
 
 #### 9c. Wiring Into Sessions
@@ -347,9 +380,13 @@ Tools injected via `options.mcpServers: Record<string, McpServerConfig>` which a
 #### 9d. Permission Control (`canUseTool`)
 
 ```typescript
-type CanUseTool = (toolName: string, input: ToolInput, options: { signal: AbortSignal }) => Promise<
-  | { behavior: 'allow'; updatedInput: ToolInput }
-  | { behavior: 'deny'; message: string; interrupt?: boolean }
+type CanUseTool = (
+    toolName: string,
+    input: ToolInput,
+    options: { signal: AbortSignal },
+) => Promise<
+    | { behavior: "allow"; updatedInput: ToolInput }
+    | { behavior: "deny"; message: string; interrupt?: boolean }
 >;
 ```
 
@@ -368,15 +405,15 @@ The Atomic codebase bridges `ToolDefinition` (JSON Schema) to the SDK's Zod-base
 ```typescript
 // @github/copilot-sdk
 export interface Tool<TArgs = unknown> {
-  name: string;
-  description?: string;
-  parameters?: ZodSchema<TArgs> | Record<string, unknown>;  // Zod OR JSON Schema
-  handler: ToolHandler<TArgs>;
+    name: string;
+    description?: string;
+    parameters?: ZodSchema<TArgs> | Record<string, unknown>; // Zod OR JSON Schema
+    handler: ToolHandler<TArgs>;
 }
 
 export type ToolHandler<TArgs = unknown> = (
-  args: TArgs,
-  invocation: ToolInvocation  // { sessionId, toolCallId, toolName, arguments }
+    args: TArgs,
+    invocation: ToolInvocation, // { sessionId, toolCallId, toolName, arguments }
 ) => Promise<unknown> | unknown;
 ```
 
@@ -387,21 +424,27 @@ export type ToolHandler<TArgs = unknown> = (
 
 ```typescript
 export function defineTool<T = unknown>(
-  name: string,
-  config: { description?: string; parameters?: ZodSchema<T> | Record<string, unknown>; handler: ToolHandler<T>; }
-): Tool<T>
+    name: string,
+    config: {
+        description?: string;
+        parameters?: ZodSchema<T> | Record<string, unknown>;
+        handler: ToolHandler<T>;
+    },
+): Tool<T>;
 ```
 
 #### 10c. `ToolResult` Type
 
 ```typescript
-export type ToolResult = string | {
-  textResultForLlm: string;
-  resultType: "success" | "failure";
-  error?: string;               // Internal error details, NOT sent to LLM
-  binaryResultsForLlm?: ToolBinaryResult[];
-  toolTelemetry?: Record<string, unknown>;
-};
+export type ToolResult =
+    | string
+    | {
+          textResultForLlm: string;
+          resultType: "success" | "failure";
+          error?: string; // Internal error details, NOT sent to LLM
+          binaryResultsForLlm?: ToolBinaryResult[];
+          toolTelemetry?: Record<string, unknown>;
+      };
 ```
 
 #### 10d. `SessionConfig` — `tools` vs `availableTools`
@@ -428,13 +471,13 @@ The complete lifecycle from tool registration to UI rendering:
 
 **Tool event type mapping per SDK:**
 
-| SDK | Native Event | Unified Event |
-|---|---|---|
-| Claude | `PreToolUse` hook | `tool.start` |
-| Claude | `PostToolUse` hook | `tool.complete` |
-| Copilot | `tool.execution_start` | `tool.start` |
-| Copilot | `tool.execution_complete` | `tool.complete` |
-| OpenCode | SSE `message.part.updated` (status=pending/running) | `tool.start` |
+| SDK      | Native Event                                        | Unified Event   |
+| -------- | --------------------------------------------------- | --------------- |
+| Claude   | `PreToolUse` hook                                   | `tool.start`    |
+| Claude   | `PostToolUse` hook                                  | `tool.complete` |
+| Copilot  | `tool.execution_start`                              | `tool.start`    |
+| Copilot  | `tool.execution_complete`                           | `tool.complete` |
+| OpenCode | SSE `message.part.updated` (status=pending/running) | `tool.start`    |
 | OpenCode | SSE `message.part.updated` (status=completed/error) | `tool.complete` |
 
 ## Code References
@@ -544,8 +587,8 @@ CodingAgentClient (src/sdk/types.ts:494-545)
 2. **Dynamic import mechanism**: Bun's dynamic `import()` can load `.ts` files directly. Should tools be imported eagerly at session start (like OpenCode) or lazily on first invocation (like the skill progressive disclosure model)?
 
 3. **OpenCode tool passthrough**: `OpenCodeClient.registerTool()` currently stores tools but doesn't inject them into sessions. For custom tools to work with OpenCode, either:
-   - Register them as MCP servers via `client.mcp.add()`, or
-   - The OpenCode server itself would need to discover tools from `.atomic/tools/`
+    - Register them as MCP servers via `client.mcp.add()`, or
+    - The OpenCode server itself would need to discover tools from `.atomic/tools/`
 
 4. **Tool context**: Issue #165 proposes passing session context (agent, sessionID, directory, worktree) to tool execute functions. The current `ToolDefinition.handler` signature is `(input: unknown) => unknown | Promise<unknown>` with no context parameter. Should the interface be extended?
 

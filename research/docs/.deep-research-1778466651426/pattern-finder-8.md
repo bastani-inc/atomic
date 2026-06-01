@@ -1,6 +1,7 @@
 # Pattern Findings: `.devcontainer/` Configuration & Installation Scripts
 
 ## Overview
+
 The `.devcontainer/` partition contains agent-specific devcontainer configurations, GHCR feature definitions, and shared installation scripts. The current implementation supports three agents (Claude Code, Copilot CLI, OpenCode) with duplicated install scripts and agent-specific dependencies. For pi-coding-agent migration, these are direct removal/rewrite targets.
 
 ---
@@ -8,89 +9,95 @@ The `.devcontainer/` partition contains agent-specific devcontainer configuratio
 ## Patterns Found
 
 #### Pattern: Multi-Agent Devcontainer Feature Configuration (Agent-Specific)
+
 **Where:** `.devcontainer/features/claude/devcontainer-feature.json:1-24`
 **What:** Feature metadata manifest defining dependencies, installation order, and version constraints for a single agent-specific devcontainer feature.
+
 ```json
 {
-  "id": "claude",
-  "version": "1.0.15",
-  "name": "Atomic + Claude Code",
-  "description": "Installs Atomic CLI with Claude Code agent, skills, and shared tooling (playwright, liteparse)",
-  "documentationURL": "https://github.com/flora131/atomic",
-  "options": {
-    "version": {
-      "type": "string",
-      "proposals": ["latest", "prerelease"],
-      "default": "latest",
-      "description": "Select version of Atomic CLI, if not latest."
-    }
-  },
-  "dependsOn": {
-    "ghcr.io/devcontainers-extra/features/tmux-apt-get:1": {},
-    "ghcr.io/devcontainers-extra/features/bun:1": {},
-    "ghcr.io/anthropics/devcontainer-features/claude-code:1": {}
-  },
-  "installsAfter": [
-    "ghcr.io/devcontainers/features/common-utils",
-    "ghcr.io/devcontainers/features/github-cli:1"
-  ]
+    "id": "claude",
+    "version": "1.0.15",
+    "name": "Atomic + Claude Code",
+    "description": "Installs Atomic CLI with Claude Code agent, skills, and shared tooling (playwright, liteparse)",
+    "documentationURL": "https://github.com/bastani/atomic",
+    "options": {
+        "version": {
+            "type": "string",
+            "proposals": ["latest", "prerelease"],
+            "default": "latest",
+            "description": "Select version of Atomic CLI, if not latest."
+        }
+    },
+    "dependsOn": {
+        "ghcr.io/devcontainers-extra/features/tmux-apt-get:1": {},
+        "ghcr.io/devcontainers-extra/features/bun:1": {},
+        "ghcr.io/anthropics/devcontainer-features/claude-code:1": {}
+    },
+    "installsAfter": [
+        "ghcr.io/devcontainers/features/common-utils",
+        "ghcr.io/devcontainers/features/github-cli:1"
+    ]
 }
 ```
 
 **Variations / call-sites:**
+
 - `.devcontainer/features/copilot/devcontainer-feature.json:1-24` (substitutes `ghcr.io/devcontainers/features/copilot-cli:1` for Claude Code)
 - `.devcontainer/features/opencode/devcontainer-feature.json:1-24` (substitutes `ghcr.io/devcontainers-extra/features/opencode:1`)
 
 ---
 
 #### Pattern: Root Devcontainer with Multi-Feature Composition
+
 **Where:** `.devcontainer/devcontainer.json:1-41`
 **What:** Main devcontainer config that composes all three agent features plus base platform features, centralizing credential env vars and VS Code extensions.
+
 ```json
 {
-  "name": "Atomic CLI",
-  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
-  "features": {
-    "ghcr.io/devcontainers/features/common-utils": {},
-    "ghcr.io/devcontainers/features/github-cli:1": {},
-    "ghcr.io/devcontainers/features/docker-in-docker:2": {},
-    "./features/claude": {},
-    "./features/copilot": {},
-    "./features/opencode": {}
-  },
-  "remoteEnv": {
-    "GH_TOKEN": "${localEnv:GH_TOKEN}",
-    "COPILOT_GITHUB_TOKEN": "${localEnv:COPILOT_GITHUB_TOKEN}",
-    "ANTHROPIC_API_KEY": "${localEnv:ANTHROPIC_API_KEY}"
-  },
-  "postCreateCommand": "bun install",
-  "mounts": [
-    {
-      "source": "${localEnv:HOME}${localEnv:USERPROFILE}/.ssh",
-      "target": "/home/vscode/.ssh",
-      "type": "bind"
+    "name": "Atomic CLI",
+    "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+    "features": {
+        "ghcr.io/devcontainers/features/common-utils": {},
+        "ghcr.io/devcontainers/features/github-cli:1": {},
+        "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+        "./features/claude": {},
+        "./features/copilot": {},
+        "./features/opencode": {}
     },
-    {
-      "source": "${localEnv:HOME}${localEnv:USERPROFILE}/.gitconfig",
-      "target": "/home/vscode/.gitconfig",
-      "type": "bind"
+    "remoteEnv": {
+        "GH_TOKEN": "${localEnv:GH_TOKEN}",
+        "COPILOT_GITHUB_TOKEN": "${localEnv:COPILOT_GITHUB_TOKEN}",
+        "ANTHROPIC_API_KEY": "${localEnv:ANTHROPIC_API_KEY}"
+    },
+    "postCreateCommand": "bun install",
+    "mounts": [
+        {
+            "source": "${localEnv:HOME}${localEnv:USERPROFILE}/.ssh",
+            "target": "/home/vscode/.ssh",
+            "type": "bind"
+        },
+        {
+            "source": "${localEnv:HOME}${localEnv:USERPROFILE}/.gitconfig",
+            "target": "/home/vscode/.gitconfig",
+            "type": "bind"
+        }
+    ],
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "oven.bun-vscode",
+                "oxc.oxc-vscode",
+                "shd101wyy.markdown-preview-enhanced",
+                "Anthropic.claude-code",
+                "sst-dev.opencode"
+            ]
+        }
     }
-  ],
-  "customizations": {
-    "vscode": {
-      "extensions": [
-        "oven.bun-vscode",
-        "oxc.oxc-vscode",
-        "shd101wyy.markdown-preview-enhanced",
-        "Anthropic.claude-code",
-        "sst-dev.opencode"
-      ]
-    }
-  }
 }
 ```
 
 **Variations / call-sites:**
+
 - `.devcontainer/claude/devcontainer.json:1-36` (single agent; includes only `"Anthropic.claude-code"` extension)
 - `.devcontainer/copilot/devcontainer.json:1-35` (single agent; omits agent extension)
 - `.devcontainer/opencode/devcontainer.json:1-35` (single agent; includes only `"sst-dev.opencode"` extension)
@@ -98,8 +105,10 @@ The `.devcontainer/` partition contains agent-specific devcontainer configuratio
 ---
 
 #### Pattern: Duplicated NPM Version Resolution Switch
+
 **Where:** `.devcontainer/features/claude/install.sh:19-43`
 **What:** Bash case statement resolving VERSION environment variable to npm dist-tag (latest/prerelease) or explicit semver, with validation and v-prefix stripping.
+
 ```bash
 # ─── Resolve npm dist-tag / version ─────────────────────────────────────────
 # Option -> npm package spec:
@@ -129,6 +138,7 @@ esac
 ```
 
 **Variations / call-sites:**
+
 - `.devcontainer/features/copilot/install.sh:19-43` (identical copy)
 - `.devcontainer/features/opencode/install.sh:19-43` (identical copy)
 - **Note at line 7-9**: Explicit warning that script is duplicated across all three features and must be kept in sync.
@@ -136,8 +146,10 @@ esac
 ---
 
 #### Pattern: Remote User Resolution with Fallback
+
 **Where:** `.devcontainer/features/claude/install.sh:47-56`
 **What:** Resolves devcontainer-exposed `_REMOTE_USER` and `_REMOTE_USER_HOME` variables with graceful fallback to defaults and validates home directory existence.
+
 ```bash
 # ─── Resolve remote user ────────────────────────────────────────────────────
 # Devcontainer CLI exposes _REMOTE_USER and _REMOTE_USER_HOME at feature-install
@@ -152,14 +164,17 @@ fi
 ```
 
 **Variations / call-sites:**
+
 - `.devcontainer/features/copilot/install.sh:47-56` (identical copy)
 - `.devcontainer/features/opencode/install.sh:47-56` (identical copy)
 
 ---
 
 #### Pattern: Bun Global Install with Login Shell Execution
+
 **Where:** `.devcontainer/features/claude/install.sh:58-66`
 **What:** Invokes `bun add -g` as the remote user via login shell to ensure bun's PATH setup is sourced and package lands in user's `~/.bun/bin`, with dependency validation.
+
 ```bash
 # ─── Install atomic via bun (global) ────────────────────────────────────────
 # bun is provided by the dependent ghcr.io/devcontainers-extra/features/bun:1
@@ -173,14 +188,17 @@ su - "${REMOTE_USER}" -c "bun add -g '${ATOMIC_SPEC}'"
 ```
 
 **Variations / call-sites:**
+
 - `.devcontainer/features/copilot/install.sh:58-66` (identical copy)
 - `.devcontainer/features/opencode/install.sh:58-66` (identical copy)
 
 ---
 
 #### Pattern: Multi-Shell PATH Configuration (Shell-Specific RC Files)
+
 **Where:** `.devcontainer/features/claude/install.sh:68-127`
 **What:** Writes `~/.bun/bin` to PATH across five shell entry points (login, bash, zsh, fish) with idempotent grep checks and shell-specific syntax.
+
 ```bash
 # ─── Ensure ~/.bun/bin is on PATH for ALL shell types ──────────────────────
 # The bun feature may configure PATH in the user's rc files, but devcontainer
@@ -245,14 +263,17 @@ fi
 ```
 
 **Variations / call-sites:**
+
 - `.devcontainer/features/copilot/install.sh:68-127` (identical copy)
 - `.devcontainer/features/opencode/install.sh:68-127` (identical copy)
 
 ---
 
 #### Pattern: Locale Configuration with Package Manager Branching
+
 **Where:** `.devcontainer/features/claude/install.sh:131-209`
 **What:** Ensures UTF-8 locale for proper Unicode/ASCII art rendering with conditional branches for apt-get (Debian/Ubuntu) and apk (Alpine), plus multi-shell locale env var setup.
+
 ```bash
 # ─── Ensure UTF-8 locale for proper Unicode/ASCII art rendering ───────────
 # Agent CLIs (e.g. Copilot) emit Unicode box-drawing / figlet characters.
@@ -336,14 +357,17 @@ fi
 ```
 
 **Variations / call-sites:**
+
 - `.devcontainer/features/copilot/install.sh:131-209` (identical copy)
 - `.devcontainer/features/opencode/install.sh:131-209` (identical copy)
 
 ---
 
 #### Pattern: Global CLI Tool Installation with Error Tolerance
+
 **Where:** `.devcontainer/features/claude/install.sh:211-217`
 **What:** Installs additional global CLI tools (@playwright/cli, @llamaindex/liteparse) via bun with `--trust` flag and non-fatal error handling.
+
 ```bash
 # ─── Install global CLI tools via bun ──────────────────────────────────────
 # Use bun (already installed) with --trust to allow postinstall lifecycle
@@ -355,14 +379,17 @@ su - "${REMOTE_USER}" -c "bun install -g --trust @playwright/cli@latest @llamain
 ```
 
 **Variations / call-sites:**
+
 - `.devcontainer/features/copilot/install.sh:211-217` (identical copy)
 - `.devcontainer/features/opencode/install.sh:211-217` (identical copy)
 
 ---
 
 #### Pattern: Agent-Specific Environment Variables
+
 **Where:** `.devcontainer/claude/devcontainer.json:10-12`
 **What:** Credential environment variables mapped from local environment, with agent-specific keys (ANTHROPIC_API_KEY for Claude Code).
+
 ```json
 "remoteEnv": {
   "GH_TOKEN": "${localEnv:GH_TOKEN}",
@@ -371,6 +398,7 @@ su - "${REMOTE_USER}" -c "bun install -g --trust @playwright/cli@latest @llamain
 ```
 
 **Variations / call-sites:**
+
 - `.devcontainer/copilot/devcontainer.json:10-12` (includes `COPILOT_GITHUB_TOKEN` instead of ANTHROPIC_API_KEY)
 - `.devcontainer/opencode/devcontainer.json:10-11` (only GH_TOKEN)
 - `.devcontainer/devcontainer.json:12-15` (combines all three agent tokens)
@@ -380,6 +408,7 @@ su - "${REMOTE_USER}" -c "bun install -g --trust @playwright/cli@latest @llamain
 ## Summary
 
 The `.devcontainer/` partition exhibits a **template-with-substitution pattern** where three near-identical feature configurations (claude, copilot, opencode) differ primarily in:
+
 - Agent-specific GHCR feature dependencies (line 16-18 in devcontainer-feature.json)
 - Corresponding agent CLI installation packages (claude-code vs. copilot-cli vs. opencode)
 - Credential environment variables (ANTHROPIC_API_KEY vs. COPILOT_GITHUB_TOKEN vs. GH_TOKEN)
@@ -388,8 +417,8 @@ The `.devcontainer/` partition exhibits a **template-with-substitution pattern**
 The install scripts are **explicitly duplicated** (as noted in lines 7-9 of each install.sh) across all three features with a requirement to keep them in sync. For pi-coding-agent migration, this duplication pattern will need to be consolidated into a single pi-specific feature with parameterization or a shared base script with agent-specific overrides.
 
 Key removal/rewrite targets for the pi-coding-agent migration:
+
 1. `.devcontainer/features/{claude,copilot,opencode}/devcontainer-feature.json` → Single `.devcontainer/features/pi/devcontainer-feature.json`
 2. `.devcontainer/features/{claude,copilot,opencode}/install.sh` → Single `.devcontainer/features/pi/install.sh` (extract agent-specific vars to parameters)
 3. `.devcontainer/{claude,copilot,opencode}/devcontainer.json` → `.devcontainer/pi/devcontainer.json` (or remove if unneeded)
 4. Feature references in `.devcontainer/devcontainer.json:8-10` → `.devcontainer/features/pi` only
-

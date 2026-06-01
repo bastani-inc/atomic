@@ -1,11 +1,11 @@
 # Atomic Package Split — CLI Binary Wrapper + Standalone SDK
 
-| Document Metadata      | Details                                                |
-| ---------------------- | ------------------------------------------------------ |
-| Author(s)              | Norin Lavaee                                           |
-| Status                 | Draft (WIP)                                            |
-| Team / Owner           | flora131/atomic                                        |
-| Created / Last Updated | 2026-05-03                                             |
+| Document Metadata      | Details        |
+| ---------------------- | -------------- |
+| Author(s)              | Norin Lavaee   |
+| Status                 | Draft (WIP)    |
+| Team / Owner           | bastani/atomic |
+| Created / Last Updated | 2026-05-03     |
 
 ## 1. Executive Summary
 
@@ -24,16 +24,19 @@ This is a **breaking change** for SDK consumers, who must migrate from `@bastani
 ### 2.1 Current State
 
 **Distribution today** (`package.json`, lines 25-45):
+
 - `bin: { atomic: "src/cli.ts" }` — bin entry is raw TypeScript, executed by Bun via the `"bun"` export condition.
 - `exports."."."bun" = "./src/sdk/index.ts"` — SDK consumers also resolve to TS source.
 - Build is `bunx tsc --project tsconfig.build.json` — emits **types only** to `dist/`. No JS bundling occurs.
 - All runtime deps (zod, OpenCode SDK, Claude Agent SDK, Copilot SDK, OpenTUI, React peer dep) are declared in `dependencies`/`peerDependencies` and resolved at consumer-runtime.
 
 **Install today** (`install.sh`, `install.ps1`):
+
 - Bootstrap installer downloads bun (if missing), then runs `bun install -g @bastani/atomic@latest`.
 - No native binaries are built or shipped today. The earlier binary-distribution effort ([`specs/2026-01-21-binary-distribution-installers.md`](2026-01-21-binary-distribution-installers.md), [`specs/2026-03-29-windows-arm64-ci-pipeline-corrections.md`](2026-03-29-windows-arm64-ci-pipeline-corrections.md)) was rolled back — the current `.github/workflows/publish.yml` has a single `publish` job that calls `npm publish --provenance` plus a `release` job that bundles configs, with no `bun build --compile` steps.
 
 **Two known triggers for the Windows MAX_PATH bug** (`grep -rn "z\.toJSONSchema"`):
+
 - `src/sdk/workflows/builtin/ralph/helpers/prompts.ts:162`
 - `examples/structured-output-demo/helpers/schema.ts:49`
 
@@ -127,8 +130,8 @@ The SDK is a separate package with no relationship to the CLI's runtime layout.
 
 | Component                                | Responsibility                                                                              | Technology / Mechanism                                                                                |
 | ---------------------------------------- | ------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `@bastani/atomic` (wrapper)              | Receive the global install, resolve the matching binary package, exec the binary           | Node shim (`bin/atomic`), `optionalDependencies`, `postinstall.mjs` for friendly missing-binary error |
-| `@bastani/atomic-{platform}-{arch}`      | Hold one platform-specific compiled binary                                                  | `bun build --compile --target=...`; each pkg has `os: ["..."], cpu: ["..."]` filters                 |
+| `@bastani/atomic` (wrapper)              | Receive the global install, resolve the matching binary package, exec the binary            | Node shim (`bin/atomic`), `optionalDependencies`, `postinstall.mjs` for friendly missing-binary error |
+| `@bastani/atomic-{platform}-{arch}`      | Hold one platform-specific compiled binary                                                  | `bun build --compile --target=...`; each pkg has `os: ["..."], cpu: ["..."]` filters                  |
 | `@bastani/atomic-sdk`                    | Library-facing exports: `defineWorkflow`, schemas, components                               | `bun tsc` to JS + `.d.ts`, exports field rewritten to point at `dist/`                                |
 | `packages/atomic/script/build.ts`        | Build matrix: invoke `bun build --compile` per target, write outfiles into per-platform pkg | Node/bun script; mirrors `sst/opencode`'s `packages/opencode/script/build.ts`                         |
 | `packages/atomic/script/publish.ts`      | Synthesize wrapper `package.json`, publish wrapper + each per-platform pkg + SDK pkg        | Node/bun script; mirrors `packages/opencode/script/publish.ts`                                        |
@@ -175,6 +178,7 @@ atomic/                                # repo root, workspace root
 ```
 
 **Key points:**
+
 - `packages/atomic/package.json` is `private: true` — it is a workspace dev shell. It is **never published** under that name. The publish script writes a fresh `package.json` for the wrapper at publish time (just like OpenCode's approach).
 - `packages/atomic-sdk/package.json` has `name: "@bastani/atomic-sdk"`, runtime `dependencies`, and a publish-time exports rewrite from `./src/*.ts` → `./dist/*.js` + `./dist/*.d.ts`.
 - Per-platform binary packages **are not committed to source**; they are synthesized inside `packages/atomic/dist/` during the build step and published from there.
@@ -194,12 +198,12 @@ packages/atomic/dist/linux-x64/
 
 ```json
 {
-  "name": "@bastani/atomic-linux-x64",
-  "version": "X.Y.Z",
-  "os": ["linux"],
-  "cpu": ["x64"],
-  "files": ["bin"],
-  "license": "MIT"
+    "name": "@bastani/atomic-linux-x64",
+    "version": "X.Y.Z",
+    "os": ["linux"],
+    "cpu": ["x64"],
+    "files": ["bin"],
+    "license": "MIT"
 }
 ```
 
@@ -213,34 +217,35 @@ Following OpenCode's pattern (`packages/opencode/script/publish.ts:36-52`), the 
 // script/publish.ts (sketch — final form will be a typed bun script)
 const version = process.env.VERSION;
 const TARGETS = [
-  { name: "linux-x64",          os: "linux",  cpu: "x64",   ext: ""    },
-  { name: "linux-arm64",        os: "linux",  cpu: "arm64", ext: ""    },
-  { name: "linux-x64-musl",     os: "linux",  cpu: "x64",   ext: ""    },
-  { name: "linux-arm64-musl",   os: "linux",  cpu: "arm64", ext: ""    },
-  { name: "darwin-x64",         os: "darwin", cpu: "x64",   ext: ""    },
-  { name: "darwin-arm64",       os: "darwin", cpu: "arm64", ext: ""    },
-  { name: "windows-x64",        os: "win32",  cpu: "x64",   ext: ".exe"},
-  { name: "windows-arm64",      os: "win32",  cpu: "arm64", ext: ".exe"},
-  // baseline variants — see §5.6
+    { name: "linux-x64", os: "linux", cpu: "x64", ext: "" },
+    { name: "linux-arm64", os: "linux", cpu: "arm64", ext: "" },
+    { name: "linux-x64-musl", os: "linux", cpu: "x64", ext: "" },
+    { name: "linux-arm64-musl", os: "linux", cpu: "arm64", ext: "" },
+    { name: "darwin-x64", os: "darwin", cpu: "x64", ext: "" },
+    { name: "darwin-arm64", os: "darwin", cpu: "arm64", ext: "" },
+    { name: "windows-x64", os: "win32", cpu: "x64", ext: ".exe" },
+    { name: "windows-arm64", os: "win32", cpu: "arm64", ext: ".exe" },
+    // baseline variants — see §5.6
 ];
 
 const wrapperPkg = {
-  name: "@bastani/atomic",
-  version,
-  description: "Configuration management CLI for coding agents",
-  bin: { atomic: "./bin/atomic" },
-  files: ["bin", "postinstall.mjs", "LICENSE"],
-  scripts: { postinstall: "node ./postinstall.mjs" },
-  optionalDependencies: Object.fromEntries(
-    TARGETS.map(t => [`@bastani/atomic-${t.name}`, version])
-  ),
-  // intentionally NO `dependencies` field
-  engines: { node: ">=20" },
-  license: "MIT",
+    name: "@bastani/atomic",
+    version,
+    description: "Configuration management CLI for coding agents",
+    bin: { atomic: "./bin/atomic" },
+    files: ["bin", "postinstall.mjs", "LICENSE"],
+    scripts: { postinstall: "node ./postinstall.mjs" },
+    optionalDependencies: Object.fromEntries(
+        TARGETS.map((t) => [`@bastani/atomic-${t.name}`, version]),
+    ),
+    // intentionally NO `dependencies` field
+    engines: { node: ">=20" },
+    license: "MIT",
 };
 ```
 
 The wrapper tarball ships only:
+
 - `bin/atomic` (the Node shim, ~150 LOC)
 - `postinstall.mjs` (friendly error if no binary package matched, e.g. unsupported platform)
 - `package.json` (the synthesized one above)
@@ -259,44 +264,51 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import process from "node:process";
 
-const platform = process.platform;          // "linux" | "darwin" | "win32"
-const arch     = process.arch;              // "x64" | "arm64"
+const platform = process.platform; // "linux" | "darwin" | "win32"
+const arch = process.arch; // "x64" | "arm64"
 
 // Map process.platform to package suffix
 const PLATFORM_MAP = { linux: "linux", darwin: "darwin", win32: "windows" };
 const platformSuffix = PLATFORM_MAP[platform];
 if (!platformSuffix) {
-  console.error(`atomic: unsupported platform "${platform}"`);
-  process.exit(1);
+    console.error(`atomic: unsupported platform "${platform}"`);
+    process.exit(1);
 }
 
 // Resolve the per-platform package's bin via Node's resolver.
 const here = dirname(fileURLToPath(import.meta.url));
 const require_ = createRequire(import.meta.url);
 const candidates = [
-  `@bastani/atomic-${platformSuffix}-${arch}`,
-  // baseline fallback for x64-on-ARM64 Prism: see §5.6
+    `@bastani/atomic-${platformSuffix}-${arch}`,
+    // baseline fallback for x64-on-ARM64 Prism: see §5.6
 ];
 
 let binPath;
 for (const pkg of candidates) {
-  try {
-    const pkgJsonPath = require_.resolve(`${pkg}/package.json`);
-    const ext = platform === "win32" ? ".exe" : "";
-    binPath = join(dirname(pkgJsonPath), "bin", `atomic${ext}`);
-    break;
-  } catch { /* try next */ }
+    try {
+        const pkgJsonPath = require_.resolve(`${pkg}/package.json`);
+        const ext = platform === "win32" ? ".exe" : "";
+        binPath = join(dirname(pkgJsonPath), "bin", `atomic${ext}`);
+        break;
+    } catch {
+        /* try next */
+    }
 }
 if (!binPath) {
-  console.error(
-    `atomic: no matching binary package installed for ${platform}-${arch}.\n` +
-    `Run \`npm install -g @bastani/atomic\` (or \`bun install -g @bastani/atomic\`) again.`
-  );
-  process.exit(1);
+    console.error(
+        `atomic: no matching binary package installed for ${platform}-${arch}.\n` +
+            `Run \`npm install -g @bastani/atomic\` (or \`bun install -g @bastani/atomic\`) again.`,
+    );
+    process.exit(1);
 }
 
-const { status, error } = spawnSync(binPath, process.argv.slice(2), { stdio: "inherit" });
-if (error) { console.error(error); process.exit(1); }
+const { status, error } = spawnSync(binPath, process.argv.slice(2), {
+    stdio: "inherit",
+});
+if (error) {
+    console.error(error);
+    process.exit(1);
+}
 process.exit(status ?? 1);
 ```
 
@@ -310,39 +322,91 @@ import { mkdir, writeFile, copyFile, chmod } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 
 const TARGETS = [
-  { name: "linux-x64",          bunTarget: "bun-linux-x64",            os: "linux",  cpu: "x64"   },
-  { name: "linux-arm64",        bunTarget: "bun-linux-arm64",          os: "linux",  cpu: "arm64" },
-  { name: "linux-x64-musl",     bunTarget: "bun-linux-x64-musl",       os: "linux",  cpu: "x64"   },
-  { name: "linux-arm64-musl",   bunTarget: "bun-linux-arm64-musl",     os: "linux",  cpu: "arm64" },
-  { name: "darwin-x64",         bunTarget: "bun-darwin-x64",           os: "darwin", cpu: "x64"   },
-  { name: "darwin-arm64",       bunTarget: "bun-darwin-arm64",         os: "darwin", cpu: "arm64" },
-  { name: "windows-x64",        bunTarget: "bun-windows-x64",          os: "win32",  cpu: "x64",   ext: ".exe" },
-  { name: "windows-arm64",      bunTarget: "bun-windows-x64-baseline", os: "win32",  cpu: "arm64", ext: ".exe" }, // see §5.6
+    { name: "linux-x64", bunTarget: "bun-linux-x64", os: "linux", cpu: "x64" },
+    {
+        name: "linux-arm64",
+        bunTarget: "bun-linux-arm64",
+        os: "linux",
+        cpu: "arm64",
+    },
+    {
+        name: "linux-x64-musl",
+        bunTarget: "bun-linux-x64-musl",
+        os: "linux",
+        cpu: "x64",
+    },
+    {
+        name: "linux-arm64-musl",
+        bunTarget: "bun-linux-arm64-musl",
+        os: "linux",
+        cpu: "arm64",
+    },
+    {
+        name: "darwin-x64",
+        bunTarget: "bun-darwin-x64",
+        os: "darwin",
+        cpu: "x64",
+    },
+    {
+        name: "darwin-arm64",
+        bunTarget: "bun-darwin-arm64",
+        os: "darwin",
+        cpu: "arm64",
+    },
+    {
+        name: "windows-x64",
+        bunTarget: "bun-windows-x64",
+        os: "win32",
+        cpu: "x64",
+        ext: ".exe",
+    },
+    {
+        name: "windows-arm64",
+        bunTarget: "bun-windows-x64-baseline",
+        os: "win32",
+        cpu: "arm64",
+        ext: ".exe",
+    }, // see §5.6
 ];
 
 const version = process.env.VERSION!;
 for (const t of TARGETS) {
-  const outdir = `dist/${t.name}`;
-  await mkdir(`${outdir}/bin`, { recursive: true });
+    const outdir = `dist/${t.name}`;
+    await mkdir(`${outdir}/bin`, { recursive: true });
 
-  // bun build --compile inlines the entire dep graph (SDK + zod + ...)
-  const r = spawnSync("bun", [
-    "build", "--compile", "--minify",
-    "--target", t.bunTarget,
-    "--outfile", `${outdir}/bin/atomic${t.ext ?? ""}`,
-    "src/cli.ts",
-  ], { stdio: "inherit" });
-  if (r.status !== 0) process.exit(r.status ?? 1);
+    // bun build --compile inlines the entire dep graph (SDK + zod + ...)
+    const r = spawnSync(
+        "bun",
+        [
+            "build",
+            "--compile",
+            "--minify",
+            "--target",
+            t.bunTarget,
+            "--outfile",
+            `${outdir}/bin/atomic${t.ext ?? ""}`,
+            "src/cli.ts",
+        ],
+        { stdio: "inherit" },
+    );
+    if (r.status !== 0) process.exit(r.status ?? 1);
 
-  // synthesize per-platform package.json
-  await writeFile(`${outdir}/package.json`, JSON.stringify({
-    name: `@bastani/atomic-${t.name}`,
-    version,
-    os: [t.os],
-    cpu: [t.cpu],
-    files: ["bin"],
-    license: "MIT",
-  }, null, 2));
+    // synthesize per-platform package.json
+    await writeFile(
+        `${outdir}/package.json`,
+        JSON.stringify(
+            {
+                name: `@bastani/atomic-${t.name}`,
+                version,
+                os: [t.os],
+                cpu: [t.cpu],
+                files: ["bin"],
+                license: "MIT",
+            },
+            null,
+            2,
+        ),
+    );
 }
 ```
 
@@ -353,6 +417,7 @@ Cross-compilation works for all five Linux/macOS targets from a single `ubuntu-l
 Per [`research/docs/2026-03-23-dual-binary-windows-approach.md`](../research/docs/2026-03-23-dual-binary-windows-approach.md), Windows ARM64 has no native `bun:ffi`/TinyCC backend, so OpenTUI's native renderer crashes on a true Windows-arm64 binary. The accepted solution is to ship an **x64-baseline** binary (no AVX) for Windows ARM64 users, who run it under Windows 11's Prism x64 emulation.
 
 Concretely:
+
 - The `windows-arm64` per-platform package contains a binary built with `--target=bun-windows-x64-baseline`. Inside the binary, `process.arch` reads as `"x64"` under Prism, but the package's `cpu: ["arm64"]` ensures only ARM64 hosts install it.
 - A separate `windows-x64` per-platform package contains a `--target=bun-windows-x64` binary (with AVX) for native x64 users.
 
@@ -364,28 +429,28 @@ The shim's resolution order (§5.4) needs no special Prism logic because `option
 
 ```json
 {
-  "name": "@bastani/atomic-sdk",
-  "version": "X.Y.Z",
-  "type": "module",
-  "license": "MIT",
-  "exports": {
-    ".":                       "./src/index.ts",
-    "./workflows":             "./src/workflows/index.ts",
-    "./workflows/components":  "./src/components/workflow-picker-panel.tsx"
-  },
-  "files": ["dist"],
-  "dependencies": {
-    "zod": "^4.4.2",
-    "@anthropic-ai/claude-agent-sdk": "...",
-    "@github/copilot-sdk": "...",
-    "@opencode-ai/sdk": "...",
-    "@opentui/core": "...",
-    "@opentui/react": "...",
-    "@clack/prompts": "..."
-  },
-  "peerDependencies": {
-    "react": "^19.2.5"
-  }
+    "name": "@bastani/atomic-sdk",
+    "version": "X.Y.Z",
+    "type": "module",
+    "license": "MIT",
+    "exports": {
+        ".": "./src/index.ts",
+        "./workflows": "./src/workflows/index.ts",
+        "./workflows/components": "./src/components/workflow-picker-panel.tsx"
+    },
+    "files": ["dist"],
+    "dependencies": {
+        "zod": "^4.4.2",
+        "@anthropic-ai/claude-agent-sdk": "...",
+        "@github/copilot-sdk": "...",
+        "@opencode-ai/sdk": "...",
+        "@opentui/core": "...",
+        "@opentui/react": "...",
+        "@clack/prompts": "..."
+    },
+    "peerDependencies": {
+        "react": "^19.2.5"
+    }
 }
 ```
 
@@ -405,6 +470,7 @@ The shim's resolution order (§5.4) needs no special Prism logic because `option
 ### 5.8 Repo-Internal Migration of Imports
 
 Every current `import "..." from "../../sdk/..."` (and friends) becomes `import "..." from "@bastani/atomic-sdk/..."` once the source moves. Within the workspace:
+
 - `packages/atomic/src/cli.ts` imports the SDK via the workspace package name `@bastani/atomic-sdk` (resolved by bun workspace linking).
 - `examples/` becomes a workspace package (or stays loose) that depends on `@bastani/atomic-sdk` via `workspace:*`.
 - `tests/` — open question §9: do they live at root or move under `packages/*`?
@@ -414,6 +480,7 @@ A best-effort `bunx jscodeshift` (or hand-rolled bun script) rewrite will handle
 ### 5.9 Versioning
 
 All three package families version in **lockstep** (same as OpenCode):
+
 - `@bastani/atomic@X.Y.Z`
 - `@bastani/atomic-sdk@X.Y.Z`
 - `@bastani/atomic-{platform}-{arch}@X.Y.Z`
@@ -424,13 +491,13 @@ The wrapper's `optionalDependencies` pin exact `X.Y.Z` of each per-platform pkg.
 
 ## 6. Alternatives Considered
 
-| Option                                                            | Pros                                                                                   | Cons                                                                                              | Reason for Rejection                                                                                          |
-| ----------------------------------------------------------------- | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| **A: Single package + bundle CLI + zod**                          | One package, no workspace, one publish flow                                            | Doesn't fix MAX_PATH — global install still pulls runtime `dependencies` (zod et al)              | Doesn't actually solve the problem. Rejected.                                                                 |
-| **B: Single package + zod as `peerDependency`**                   | One package; CLI binary can be self-contained                                          | Library consumers must install peer manually; peer-on-global-install behavior is unreliable; partial fix | Brittle. SDK consumers face a worse install UX. Rejected.                                                  |
-| **C: Single package + `/sdk` subpath + bundle deps into sdk dist** | One package, simple consumer story                                                     | Bundling zod into SDK dist creates two zod copies in consumer projects → instanceof / `z.infer` mismatches; tree-shaking lost | Breaks SDK use-cases where consumers pass their own `z.object()` into atomic's workflow definers. Rejected. |
-| **D: Document the problem; tell Windows users to set long paths** | Zero engineering work                                                                  | Requires registry edit + admin + reboot; SmartScreen/installer-tool variability                   | Unacceptable UX for a CLI that targets Windows as a first-class platform.                                     |
-| **E: Two-package split (OpenCode model)** ✅ **(Selected)**       | Eliminates MAX_PATH by construction; mirrors a battle-tested reference implementation; clean SDK consumer story; preserves zod identity for library users | Workspace conversion; CI matrix; ~12 published packages per release; one-time breaking migration for SDK consumers | The structural cost is real, but every alternative either fails to fix the problem or imposes worse UX. |
+| Option                                                             | Pros                                                                                                                                                      | Cons                                                                                                                          | Reason for Rejection                                                                                        |
+| ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| **A: Single package + bundle CLI + zod**                           | One package, no workspace, one publish flow                                                                                                               | Doesn't fix MAX_PATH — global install still pulls runtime `dependencies` (zod et al)                                          | Doesn't actually solve the problem. Rejected.                                                               |
+| **B: Single package + zod as `peerDependency`**                    | One package; CLI binary can be self-contained                                                                                                             | Library consumers must install peer manually; peer-on-global-install behavior is unreliable; partial fix                      | Brittle. SDK consumers face a worse install UX. Rejected.                                                   |
+| **C: Single package + `/sdk` subpath + bundle deps into sdk dist** | One package, simple consumer story                                                                                                                        | Bundling zod into SDK dist creates two zod copies in consumer projects → instanceof / `z.infer` mismatches; tree-shaking lost | Breaks SDK use-cases where consumers pass their own `z.object()` into atomic's workflow definers. Rejected. |
+| **D: Document the problem; tell Windows users to set long paths**  | Zero engineering work                                                                                                                                     | Requires registry edit + admin + reboot; SmartScreen/installer-tool variability                                               | Unacceptable UX for a CLI that targets Windows as a first-class platform.                                   |
+| **E: Two-package split (OpenCode model)** ✅ **(Selected)**        | Eliminates MAX_PATH by construction; mirrors a battle-tested reference implementation; clean SDK consumer story; preserves zod identity for library users | Workspace conversion; CI matrix; ~12 published packages per release; one-time breaking migration for SDK consumers            | The structural cost is real, but every alternative either fails to fix the problem or imposes worse UX.     |
 
 ## 7. Cross-Cutting Concerns
 
@@ -454,27 +521,27 @@ No new observability surfaces. Existing telemetry in atomic continues working �
 ### 8.1 Phased Rollout
 
 - **Phase 1 — Workspace conversion (no behavior change)**
-  - Convert root to a Bun workspace.
-  - Move `src/sdk/*` → `packages/atomic-sdk/src/`.
-  - Move `src/cli.ts` and CLI-specific source → `packages/atomic/src/`.
-  - Adjust all internal imports to use `@bastani/atomic-sdk` workspace name.
-  - Confirm `bun typecheck`, `bun test`, `bun run dev` all still pass.
-  - Single internal commit; not yet published.
+    - Convert root to a Bun workspace.
+    - Move `src/sdk/*` → `packages/atomic-sdk/src/`.
+    - Move `src/cli.ts` and CLI-specific source → `packages/atomic/src/`.
+    - Adjust all internal imports to use `@bastani/atomic-sdk` workspace name.
+    - Confirm `bun typecheck`, `bun test`, `bun run dev` all still pass.
+    - Single internal commit; not yet published.
 
 - **Phase 2 — Build/publish scripts and CI matrix**
-  - Add `packages/atomic/script/build.ts`, `script/publish.ts`, `bin/atomic`, `script/postinstall.mjs`.
-  - Add `packages/atomic-sdk/script/build.ts`, `script/publish.ts`.
-  - Rewrite `.github/workflows/publish.yml` to invoke the matrix build then publish all packages.
-  - Dry-run by publishing a `0.7.0-rc.0` prerelease to npm to verify the per-platform install works on every target OS.
+    - Add `packages/atomic/script/build.ts`, `script/publish.ts`, `bin/atomic`, `script/postinstall.mjs`.
+    - Add `packages/atomic-sdk/script/build.ts`, `script/publish.ts`.
+    - Rewrite `.github/workflows/publish.yml` to invoke the matrix build then publish all packages.
+    - Dry-run by publishing a `0.7.0-rc.0` prerelease to npm to verify the per-platform install works on every target OS.
 
 - **Phase 3 — README + migration documentation**
-  - README "Installation" section updated.
-  - **New "Migration from 0.6.x" section** at the top with the deprecation notice for SDK consumers.
-  - CHANGELOG entry highlighting the breaking change.
+    - README "Installation" section updated.
+    - **New "Migration from 0.6.x" section** at the top with the deprecation notice for SDK consumers.
+    - CHANGELOG entry highlighting the breaking change.
 
 - **Phase 4 — Cut release**
-  - Release as the next minor (likely `0.7.0`) — open question §9 on whether this warrants `1.0`.
-  - Smoke-test from a deeply-nested directory on Windows to confirm MAX_PATH is solved end-to-end.
+    - Release as the next minor (likely `0.7.0`) — open question §9 on whether this warrants `1.0`.
+    - Smoke-test from a deeply-nested directory on Windows to confirm MAX_PATH is solved end-to-end.
 
 ### 8.2 Test Plan
 
@@ -488,14 +555,14 @@ The release pipeline today never exercises a real install on Windows, which is p
 
 **Matrix dimensions:**
 
-| Job ID                  | OS runner                    | Architecture | Test scope                                                |
-| ----------------------- | ---------------------------- | ------------ | --------------------------------------------------------- |
-| `smoke-linux-x64`       | `ubuntu-latest`              | x64          | native                                                    |
-| `smoke-linux-arm64`     | `ubuntu-24.04-arm` *         | arm64        | native (GitHub-hosted ARM Linux runner)                   |
-| `smoke-darwin-x64`      | `macos-13`                   | x64          | native (Intel Mac runners deprecate over time — see §9)   |
-| `smoke-darwin-arm64`    | `macos-14` or later          | arm64        | native (Apple Silicon)                                    |
-| `smoke-windows-x64`     | `windows-latest`             | x64          | native + the deep-cwd MAX_PATH regression test            |
-| `smoke-windows-arm64`   | `windows-11-arm` *           | arm64        | exercises the x64-baseline binary under Prism (§5.6)      |
+| Job ID                | OS runner             | Architecture | Test scope                                              |
+| --------------------- | --------------------- | ------------ | ------------------------------------------------------- |
+| `smoke-linux-x64`     | `ubuntu-latest`       | x64          | native                                                  |
+| `smoke-linux-arm64`   | `ubuntu-24.04-arm` \* | arm64        | native (GitHub-hosted ARM Linux runner)                 |
+| `smoke-darwin-x64`    | `macos-13`            | x64          | native (Intel Mac runners deprecate over time — see §9) |
+| `smoke-darwin-arm64`  | `macos-14` or later   | arm64        | native (Apple Silicon)                                  |
+| `smoke-windows-x64`   | `windows-latest`      | x64          | native + the deep-cwd MAX_PATH regression test          |
+| `smoke-windows-arm64` | `windows-11-arm` \*   | arm64        | exercises the x64-baseline binary under Prism (§5.6)    |
 
 \* GitHub-hosted ARM runners are GA as of 2025; if the project's plan tier doesn't expose them, fall back to QEMU emulation on `ubuntu-latest` (slow but functional) or self-hosted ARM runners. Open question §9 picks the strategy.
 
@@ -522,36 +589,36 @@ The release pipeline today never exercises a real install on Windows, which is p
   if: runner.os == 'Windows'
   shell: pwsh
   run: |
-    # Reproduce the original failure mode: run from a deeply-nested cwd to
-    # confirm the binary distribution is immune to MAX_PATH entirely.
-    $deep = Join-Path $env:TEMP ('a' * 200)
-    New-Item -ItemType Directory -Force -Path $deep | Out-Null
-    Set-Location $deep
-    atomic --version
-    atomic workflow list
+      # Reproduce the original failure mode: run from a deeply-nested cwd to
+      # confirm the binary distribution is immune to MAX_PATH entirely.
+      $deep = Join-Path $env:TEMP ('a' * 200)
+      New-Item -ItemType Directory -Force -Path $deep | Out-Null
+      Set-Location $deep
+      atomic --version
+      atomic workflow list
 
 - name: SDK consumer smoke test
   working-directory: tests/fixtures/sdk-consumer
   run: |
-    bun add @bastani/atomic-sdk@${{ env.RC_VERSION }}
-    bun run smoke.ts   # constructs a zod schema, passes to defineWorkflow,
-                       # asserts the returned schema is the same zod identity
+      bun add @bastani/atomic-sdk@${{ env.RC_VERSION }}
+      bun run smoke.ts   # constructs a zod schema, passes to defineWorkflow,
+                         # asserts the returned schema is the same zod identity
 ```
 
 **Trigger conditions:**
 
-- **Pre-publish (every PR touching `packages/atomic/**` or `packages/atomic-sdk/**`):** run the matrix against tarballs produced by `npm pack` from the matrix build job (no real publish). Catches packaging regressions before they hit npm.
+- **Pre-publish (every PR touching `packages/atomic/**`or`packages/atomic-sdk/**`):** run the matrix against tarballs produced by `npm pack` from the matrix build job (no real publish). Catches packaging regressions before they hit npm.
 - **Post-publish (after `npm publish` on release):** run the matrix against the actually-published version. If any target fails, unpublish that single per-platform package within the 72-hour window (§8.3 Rollback) and ship a follow-up patch. The wrapper survives because `optionalDependencies` failures are non-fatal.
 - **Nightly:** run the matrix against the latest published version to catch environmental drift (Bun runtime updates, OS image updates, etc.).
 
 **Failure-mode tests** (negative coverage, single job each, not part of the per-target matrix):
 
-| Test                          | Description                                                                                                                          | Expected outcome                                  |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------- |
-| Unsupported platform          | On a FreeBSD or alpine-musl runner without a matching `optionalDependency`, run `bun install -g @bastani/atomic` then `atomic`.      | Postinstall + shim print a clear error, exit 1.   |
-| Tampered binary               | Replace the binary in the per-platform package's `bin/` with garbage; run `atomic`.                                                  | Process fails with a non-zero exit; no silent succeed. |
-| Missing per-platform package  | Force `--no-optional` install of the wrapper; run `atomic`.                                                                          | Shim prints reinstall instruction, exit 1.        |
-| Long-cwd Windows regression   | Already covered above; explicitly track as a named, never-skipped test.                                                              | `atomic --version` succeeds with a 200+ char cwd. |
+| Test                         | Description                                                                                                                     | Expected outcome                                       |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| Unsupported platform         | On a FreeBSD or alpine-musl runner without a matching `optionalDependency`, run `bun install -g @bastani/atomic` then `atomic`. | Postinstall + shim print a clear error, exit 1.        |
+| Tampered binary              | Replace the binary in the per-platform package's `bin/` with garbage; run `atomic`.                                             | Process fails with a non-zero exit; no silent succeed. |
+| Missing per-platform package | Force `--no-optional` install of the wrapper; run `atomic`.                                                                     | Shim prints reinstall instruction, exit 1.             |
+| Long-cwd Windows regression  | Already covered above; explicitly track as a named, never-skipped test.                                                         | `atomic --version` succeeds with a 200+ char cwd.      |
 
 **Cost / runtime envelope.** Six matrix jobs, each ~2–3 minutes of install + smoke. Total ~15–20 minutes added to the publish pipeline (parallel). Acceptable given the historical cost of the regression we're preventing.
 

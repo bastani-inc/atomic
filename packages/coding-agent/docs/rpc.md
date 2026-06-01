@@ -2,7 +2,7 @@
 
 RPC mode enables headless operation of the coding agent via a JSON protocol over stdin/stdout. This is useful for embedding the agent in other applications, IDEs, or custom UIs.
 
-**Note for Node.js/TypeScript users**: If you're building a Node.js application, consider using `AgentSession` directly from `@bastani/atomic` instead of spawning a subprocess. See [`src/core/agent-session.ts`](https://github.com/flora131/atomic/blob/main/packages/coding-agent/src/core/agent-session.ts) for the API. For a subprocess-based TypeScript client, see [`src/modes/rpc/rpc-client.ts`](https://github.com/flora131/atomic/blob/main/packages/coding-agent/src/modes/rpc/rpc-client.ts).
+**Note for Node.js/TypeScript users**: If you're building a Node.js application, consider using `AgentSession` directly from `@bastani/atomic` instead of spawning a subprocess. See [`src/core/agent-session.ts`](https://github.com/bastani/atomic/blob/main/packages/coding-agent/src/core/agent-session.ts) for the API. For a subprocess-based TypeScript client, see [`src/modes/rpc/rpc-client.ts`](https://github.com/bastani/atomic/blob/main/packages/coding-agent/src/modes/rpc/rpc-client.ts).
 
 ## Starting RPC Mode
 
@@ -1202,8 +1202,8 @@ Parse errors:
 Source files:
 - [`packages/ai/src/types.ts`](https://github.com/earendil-works/pi-mono/blob/main/packages/ai/src/types.ts) - `Model`, `UserMessage`, `AssistantMessage`, `ToolResultMessage`
 - [`packages/agent/src/types.ts`](https://github.com/earendil-works/pi-mono/blob/main/packages/agent/src/types.ts) - `AgentMessage`, `AgentEvent`
-- [`src/core/messages.ts`](https://github.com/flora131/atomic/blob/main/packages/coding-agent/src/core/messages.ts) - `BashExecutionMessage`
-- [`src/modes/rpc/rpc-types.ts`](https://github.com/flora131/atomic/blob/main/packages/coding-agent/src/modes/rpc/rpc-types.ts) - RPC command/response types, extension UI request/response types
+- [`src/core/messages.ts`](https://github.com/bastani/atomic/blob/main/packages/coding-agent/src/core/messages.ts) - `BashExecutionMessage`
+- [`src/modes/rpc/rpc-types.ts`](https://github.com/bastani/atomic/blob/main/packages/coding-agent/src/modes/rpc/rpc-types.ts) - RPC command/response types, extension UI request/response types
 
 ### Model
 
@@ -1350,9 +1350,9 @@ for event in read_events():
 
 ## Example: Interactive Client (Node.js)
 
-See [`test/rpc-example.ts`](https://github.com/flora131/atomic/blob/main/packages/coding-agent/test/rpc-example.ts) for a complete interactive example, or [`src/modes/rpc/rpc-client.ts`](https://github.com/flora131/atomic/blob/main/packages/coding-agent/src/modes/rpc/rpc-client.ts) for a typed client implementation.
+See [`test/rpc-example.ts`](https://github.com/bastani/atomic/blob/main/packages/coding-agent/test/rpc-example.ts) for a complete interactive example, or [`src/modes/rpc/rpc-client.ts`](https://github.com/bastani/atomic/blob/main/packages/coding-agent/src/modes/rpc/rpc-client.ts) for a typed client implementation.
 
-For a complete example of handling the extension UI protocol, see [`examples/rpc-extension-ui.ts`](https://github.com/flora131/atomic/blob/main/packages/coding-agent/examples/rpc-extension-ui.ts) which pairs with the [`examples/extensions/rpc-demo.ts`](https://github.com/flora131/atomic/blob/main/packages/coding-agent/examples/extensions/rpc-demo.ts) extension.
+For a complete example of handling the extension UI protocol, see [`examples/rpc-extension-ui.ts`](https://github.com/bastani/atomic/blob/main/packages/coding-agent/examples/rpc-extension-ui.ts) which pairs with the [`examples/extensions/rpc-demo.ts`](https://github.com/bastani/atomic/blob/main/packages/coding-agent/examples/extensions/rpc-demo.ts) extension.
 
 ```javascript
 const { spawn } = require("child_process");

@@ -40,12 +40,12 @@ The issue is:
 - Banner and description text should appear first
 - ".claude not found" message should appear underneath the Atomic description text
 - Banner should NOT show if:
-  - Terminal dimensions are less than 79 cols x 27 rows
-  - User runs `atomic -a [agent_name]` when the agent is already setup
+    - Terminal dimensions are less than 79 cols x 27 rows
+    - User runs `atomic -a [agent_name]` when the agent is already setup
 
 ## Summary
 
-The current implementation has a display ordering issue in `runAgentCommand()` function at [src/commands/run-agent.ts:43-50](https://github.com/flora131/atomic/blob/3792ff38ae13803ded8ddad72cbe0b23e0477e78/src/commands/run-agent.ts#L43-L50).
+The current implementation has a display ordering issue in `runAgentCommand()` function at [src/commands/run-agent.ts:43-50](https://github.com/bastani/atomic/blob/3792ff38ae13803ded8ddad72cbe0b23e0477e78/src/commands/run-agent.ts#L43-L50).
 
 **Current Flow:**
 
@@ -68,7 +68,7 @@ The current implementation has a display ordering issue in `runAgentCommand()` f
 
 ### 1. Entry Flow for `atomic init -a [agent_name]`
 
-**Entry Point:** [src/index.ts:83-93](https://github.com/flora131/atomic/blob/3792ff38ae13803ded8ddad72cbe0b23e0477e78/src/index.ts#L83-L93)
+**Entry Point:** [src/index.ts:83-93](https://github.com/bastani/atomic/blob/3792ff38ae13803ded8ddad72cbe0b23e0477e78/src/index.ts#L83-L93)
 
 When user runs `atomic init -a claude-code`:
 
@@ -86,7 +86,7 @@ This correctly passes `showBanner: true` (unless `--no-banner` is specified).
 
 ### 2. Entry Flow for `atomic -a [agent_name]` (without `init`)
 
-**Entry Point:** [src/index.ts:95-101](https://github.com/flora131/atomic/blob/3792ff38ae13803ded8ddad72cbe0b23e0477e78/src/index.ts#L95-L101)
+**Entry Point:** [src/index.ts:95-101](https://github.com/bastani/atomic/blob/3792ff38ae13803ded8ddad72cbe0b23e0477e78/src/index.ts#L95-L101)
 
 When user runs `atomic -a claude-code` (no `init` positional):
 
@@ -105,18 +105,18 @@ This calls `runAgentCommand()`, which handles the auto-init logic.
 
 ### 3. The Problem: `runAgentCommand()` Display Order
 
-**Location:** [src/commands/run-agent.ts:42-50](https://github.com/flora131/atomic/blob/3792ff38ae13803ded8ddad72cbe0b23e0477e78/src/commands/run-agent.ts#L42-L50)
+**Location:** [src/commands/run-agent.ts:42-50](https://github.com/bastani/atomic/blob/3792ff38ae13803ded8ddad72cbe0b23e0477e78/src/commands/run-agent.ts#L42-L50)
 
 ```typescript
 // Check if config folder exists
 const configFolder = join(process.cwd(), agent.folder);
 if (!(await pathExists(configFolder))) {
-  // Config not found - run init with pre-selected agent
-  log.info(`${agent.folder} not found. Running setup...`); // ← Problem: Logs FIRST
-  await initCommand({
-    preSelectedAgent: agentKey as AgentKey,
-    showBanner: false, // ← Problem: Banner suppressed
-  });
+    // Config not found - run init with pre-selected agent
+    log.info(`${agent.folder} not found. Running setup...`); // ← Problem: Logs FIRST
+    await initCommand({
+        preSelectedAgent: agentKey as AgentKey,
+        showBanner: false, // ← Problem: Banner suppressed
+    });
 }
 ```
 
@@ -128,7 +128,7 @@ if (!(await pathExists(configFolder))) {
 
 ### 4. The `initCommand()` Display Sequence
 
-**Location:** [src/commands/init.ts:51-76](https://github.com/flora131/atomic/blob/3792ff38ae13803ded8ddad72cbe0b23e0477e78/src/commands/init.ts#L51-L76)
+**Location:** [src/commands/init.ts:51-76](https://github.com/bastani/atomic/blob/3792ff38ae13803ded8ddad72cbe0b23e0477e78/src/commands/init.ts#L51-L76)
 
 ```typescript
 export async function initCommand(options: InitOptions = {}): Promise<void> {
@@ -172,25 +172,25 @@ When `showBanner: true`:
 
 ### 5. Banner Display Logic
 
-**Location:** [src/utils/banner/banner.ts:31-43](https://github.com/flora131/atomic/blob/3792ff38ae13803ded8ddad72cbe0b23e0477e78/src/utils/banner/banner.ts#L31-L43)
+**Location:** [src/utils/banner/banner.ts:31-43](https://github.com/bastani/atomic/blob/3792ff38ae13803ded8ddad72cbe0b23e0477e78/src/utils/banner/banner.ts#L31-L43)
 
 ```typescript
 export function displayBanner(): void {
-  const { cols, rows } = getTerminalSize();
+    const { cols, rows } = getTerminalSize();
 
-  if (cols < LOGO_MIN_COLS || rows < LOGO_MIN_ROWS) {
-    return; // Don't show if terminal too small
-  }
+    if (cols < LOGO_MIN_COLS || rows < LOGO_MIN_ROWS) {
+        return; // Don't show if terminal too small
+    }
 
-  if (supportsTrueColor()) {
-    console.log(LOGO_TRUE_COLOR);
-  } else if (supports256Color()) {
-    console.log(LOGO);
-  }
+    if (supportsTrueColor()) {
+        console.log(LOGO_TRUE_COLOR);
+    } else if (supports256Color()) {
+        console.log(LOGO);
+    }
 }
 ```
 
-**Constants:** [src/utils/banner/constants.ts:46-50](https://github.com/flora131/atomic/blob/3792ff38ae13803ded8ddad72cbe0b23e0477e78/src/utils/banner/constants.ts#L46-L50)
+**Constants:** [src/utils/banner/constants.ts:46-50](https://github.com/bastani/atomic/blob/3792ff38ae13803ded8ddad72cbe0b23e0477e78/src/utils/banner/constants.ts#L46-L50)
 
 ```typescript
 /** Minimum terminal columns to display the logo */
@@ -293,22 +293,22 @@ Modify `runAgentCommand()` to display banner/intro before the ".claude not found
 ```typescript
 // In src/commands/run-agent.ts
 if (!(await pathExists(configFolder))) {
-  // Show banner and intro FIRST
-  displayBanner();
-  console.log();
-  intro("Atomic: Automated Procedures and Memory for AI Coding Agents");
-  log.message(
-    "Enable multi-hour autonomous coding sessions with the Ralph Wiggum\nMethod using research, plan, implement methodology.",
-  );
+    // Show banner and intro FIRST
+    displayBanner();
+    console.log();
+    intro("Atomic: Automated Procedures and Memory for AI Coding Agents");
+    log.message(
+        "Enable multi-hour autonomous coding sessions with the Ralph Wiggum\nMethod using research, plan, implement methodology.",
+    );
 
-  // THEN show the "not found" message
-  log.info(`${agent.folder} not found. Running setup...`);
+    // THEN show the "not found" message
+    log.info(`${agent.folder} not found. Running setup...`);
 
-  // Call init without banner (already displayed)
-  await initCommand({
-    preSelectedAgent: agentKey as AgentKey,
-    showBanner: false, // Already displayed above
-  });
+    // Call init without banner (already displayed)
+    await initCommand({
+        preSelectedAgent: agentKey as AgentKey,
+        showBanner: false, // Already displayed above
+    });
 }
 ```
 
@@ -321,9 +321,9 @@ Add a new option to `initCommand()` to display a custom message after intro:
 
 ```typescript
 interface InitOptions {
-  showBanner?: boolean;
-  preSelectedAgent?: AgentKey;
-  configNotFoundMessage?: string; // NEW: Optional message to show after intro
+    showBanner?: boolean;
+    preSelectedAgent?: AgentKey;
+    configNotFoundMessage?: string; // NEW: Optional message to show after intro
 }
 ```
 
@@ -331,11 +331,11 @@ Then in `runAgentCommand()`:
 
 ```typescript
 if (!(await pathExists(configFolder))) {
-  await initCommand({
-    preSelectedAgent: agentKey as AgentKey,
-    showBanner: true, // Let init handle banner
-    configNotFoundMessage: `${agent.folder} not found. Running setup...`,
-  });
+    await initCommand({
+        preSelectedAgent: agentKey as AgentKey,
+        showBanner: true, // Let init handle banner
+        configNotFoundMessage: `${agent.folder} not found. Running setup...`,
+    });
 }
 ```
 
@@ -344,7 +344,7 @@ And in `initCommand()`:
 ```typescript
 // After intro and description...
 if (options.configNotFoundMessage) {
-  log.info(options.configNotFoundMessage);
+    log.info(options.configNotFoundMessage);
 }
 ```
 
@@ -358,10 +358,10 @@ Keep `showBanner: true` and remove the `log.info()` call from `runAgentCommand()
 ```typescript
 // In src/commands/run-agent.ts
 if (!(await pathExists(configFolder))) {
-  await initCommand({
-    preSelectedAgent: agentKey as AgentKey,
-    showBanner: true, // Changed from false
-  });
+    await initCommand({
+        preSelectedAgent: agentKey as AgentKey,
+        showBanner: true, // Changed from false
+    });
 }
 ```
 
@@ -370,14 +370,14 @@ Then modify `initCommand()` to show "not found" message when `preSelectedAgent` 
 ```typescript
 // In initCommand(), after intro and description:
 if (options.preSelectedAgent) {
-  // Show folder not found message only when auto-init is triggered
-  const agent = AGENT_CONFIG[options.preSelectedAgent];
-  const configFolder = join(process.cwd(), agent.folder);
-  if (!(await pathExists(configFolder))) {
-    log.info(`${agent.folder} not found. Running setup...`);
-  }
-  agentKey = options.preSelectedAgent;
-  log.info(`Configuring ${agent.name}...`);
+    // Show folder not found message only when auto-init is triggered
+    const agent = AGENT_CONFIG[options.preSelectedAgent];
+    const configFolder = join(process.cwd(), agent.folder);
+    if (!(await pathExists(configFolder))) {
+        log.info(`${agent.folder} not found. Running setup...`);
+    }
+    agentKey = options.preSelectedAgent;
+    log.info(`Configuring ${agent.name}...`);
 }
 ```
 
@@ -398,14 +398,14 @@ Related research:
 ## Open Questions
 
 1. **Should `atomic init -a [agent_name]` show ".claude not found" when already initialized?**
-   - Current behavior: Shows "Configuring Claude Code..." but not "not found"
-   - Proposed: Only show "not found" message when config doesn't exist
+    - Current behavior: Shows "Configuring Claude Code..." but not "not found"
+    - Proposed: Only show "not found" message when config doesn't exist
 
 2. **Message wording consistency:**
-   - Current: ".claude not found. Running setup..."
-   - Alternative: ".claude config not found. Running setup..."
-   - Should it match the intro style more closely?
+    - Current: ".claude not found. Running setup..."
+    - Alternative: ".claude config not found. Running setup..."
+    - Should it match the intro style more closely?
 
 3. **Should there be a visual separator between intro and "not found" message?**
-   - Current: No separator
-   - Could add a blank line or different log type for visual distinction
+    - Current: No separator
+    - Could add a blank line or different log type for visual distinction

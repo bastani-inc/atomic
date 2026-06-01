@@ -1,13 +1,13 @@
 # MCP Support and Discovery for Config Files
 
-| Document Metadata      | Details                                               |
-| ---------------------- | ----------------------------------------------------- |
-| Author(s)              | Developer                                             |
-| Status                 | Draft (WIP)                                           |
-| Team / Owner           | Atomic TUI                                            |
-| Created / Last Updated | 2026-02-08                                            |
-| Issue                  | [#164](https://github.com/flora131/atomic/issues/164) |
-| Branch                 | lavaman131/feature/tui                                |
+| Document Metadata      | Details                                              |
+| ---------------------- | ---------------------------------------------------- |
+| Author(s)              | Developer                                            |
+| Status                 | Draft (WIP)                                          |
+| Team / Owner           | Atomic TUI                                           |
+| Created / Last Updated | 2026-02-08                                           |
+| Issue                  | [#164](https://github.com/bastani/atomic/issues/164) |
+| Branch                 | lavaman131/feature/tui                               |
 
 ## 1. Executive Summary
 
@@ -21,19 +21,23 @@ This spec adds multi-format MCP config discovery, a `/mcp` slash command, and an
 ### 2.1 Current State
 
 **Config loading is hardcoded to Claude format only:**
+
 - `src/commands/chat.ts:177-194` reads `.mcp.json` from `process.cwd()` and maps entries to `McpServerConfig[]` — but only the Claude format (`mcpServers` key, `type`/`command`/`args`/`env`/`url` fields).
 - Copilot's `mcp-config.json` (repo-level `.copilot/mcp-config.json` or user-level `~/.copilot/mcp-config.json`) is never read.
 - OpenCode's `opencode.json` or `.opencode/opencode.json` (uses `mcp` key, `local`/`remote` types, `command: string[]`, `environment` instead of `env`) is never read.
 
 **No `/mcp` command exists:**
+
 - The 6 built-in commands are: `/help`, `/theme`, `/clear`, `/compact`, `/exit`, `/model` (`src/ui/commands/builtin-commands.ts:438-445`).
 - No way for users to view discovered MCP servers, their connection status, or toggle them on/off.
 
 **`McpServerConfig` is missing fields needed for cross-SDK normalization:**
+
 - Current interface at `src/sdk/types.ts:26-39` lacks `headers` (needed for auth tokens in SSE/HTTP), `cwd` (Copilot's working directory), `timeout` (Copilot/OpenCode), and `enabled` (OpenCode toggle).
 - The `chatCommand` inline parser at `src/commands/chat.ts:183-191` already silently drops `headers` from `.mcp.json` entries.
 
 **SDK clients already consume `McpServerConfig[]` correctly:**
+
 - Claude client (`src/sdk/claude-client.ts:270-289`) branches on `server.url` vs `server.command` and maps to the SDK's `McpStdioServerConfig`/`McpHttpServerConfig`/`McpSSEServerConfig`.
 - Copilot client (`src/sdk/copilot-client.ts:641-661`) maps `McpServerConfig[]` to `Record<string, MCPServerConfig>`.
 - OpenCode client handles MCP server-side via `.opencode/opencode.json` — no client-side passthrough needed.
@@ -122,30 +126,31 @@ Add missing fields identified in [research](../research/docs/2026-02-08-164-mcp-
 
 ```typescript
 export interface McpServerConfig {
-  /** Unique identifier for the MCP server */
-  name: string;
-  /** Transport type: stdio for local processes, http/sse for remote servers */
-  type?: "stdio" | "http" | "sse";
-  /** Command to launch the MCP server (required for stdio transport) */
-  command?: string;
-  /** Arguments to pass to the MCP server command */
-  args?: string[];
-  /** Environment variables for the MCP server process */
-  env?: Record<string, string>;
-  /** URL for HTTP/SSE transport */
-  url?: string;
-  /** HTTP headers for authenticated remote servers (SSE/HTTP only) */
-  headers?: Record<string, string>;
-  /** Working directory for stdio server process */
-  cwd?: string;
-  /** Connection timeout in milliseconds */
-  timeout?: number;
-  /** Whether the server is enabled (default: true) */
-  enabled?: boolean;
+    /** Unique identifier for the MCP server */
+    name: string;
+    /** Transport type: stdio for local processes, http/sse for remote servers */
+    type?: "stdio" | "http" | "sse";
+    /** Command to launch the MCP server (required for stdio transport) */
+    command?: string;
+    /** Arguments to pass to the MCP server command */
+    args?: string[];
+    /** Environment variables for the MCP server process */
+    env?: Record<string, string>;
+    /** URL for HTTP/SSE transport */
+    url?: string;
+    /** HTTP headers for authenticated remote servers (SSE/HTTP only) */
+    headers?: Record<string, string>;
+    /** Working directory for stdio server process */
+    cwd?: string;
+    /** Connection timeout in milliseconds */
+    timeout?: number;
+    /** Whether the server is enabled (default: true) */
+    enabled?: boolean;
 }
 ```
 
 **Impact on SDK clients:**
+
 - Claude client (`src/sdk/claude-client.ts:270-289`): Pass `headers` for SSE/HTTP servers. Already branches on transport type correctly.
 - Copilot client (`src/sdk/copilot-client.ts:641-661`): Pass `headers`, `cwd`, `timeout` fields. Copilot SDK supports all of these.
 - OpenCode client: No changes needed — MCP is server-side.
@@ -172,23 +177,24 @@ Reads `.mcp.json` format. Key path: `mcpServers` (object of named server configs
  * Format: { "mcpServers": { "<name>": { type?, command?, args?, env?, url?, headers? } } }
  */
 export function parseClaudeMcpConfig(filePath: string): McpServerConfig[] {
-  try {
-    const raw = readFileSync(filePath, "utf-8");
-    const parsed = Bun.JSONC.parse(raw);
-    if (!parsed.mcpServers || typeof parsed.mcpServers !== "object") return [];
-    return Object.entries(parsed.mcpServers).map(([name, cfg]) => ({
-      name,
-      type: cfg.type as McpServerConfig["type"],
-      command: cfg.command as string | undefined,
-      args: cfg.args as string[] | undefined,
-      env: cfg.env as Record<string, string> | undefined,
-      url: cfg.url as string | undefined,
-      headers: cfg.headers as Record<string, string> | undefined,
-      enabled: true,
-    }));
-  } catch {
-    return [];
-  }
+    try {
+        const raw = readFileSync(filePath, "utf-8");
+        const parsed = Bun.JSONC.parse(raw);
+        if (!parsed.mcpServers || typeof parsed.mcpServers !== "object")
+            return [];
+        return Object.entries(parsed.mcpServers).map(([name, cfg]) => ({
+            name,
+            type: cfg.type as McpServerConfig["type"],
+            command: cfg.command as string | undefined,
+            args: cfg.args as string[] | undefined,
+            env: cfg.env as Record<string, string> | undefined,
+            url: cfg.url as string | undefined,
+            headers: cfg.headers as Record<string, string> | undefined,
+            enabled: true,
+        }));
+    } catch {
+        return [];
+    }
 }
 ```
 
@@ -205,28 +211,32 @@ Reads `mcp-config.json` format. Key path: `mcpServers`. Copilot uses `"local"` t
  * Maps "local" type to "stdio".
  */
 export function parseCopilotMcpConfig(filePath: string): McpServerConfig[] {
-  try {
-    const raw = readFileSync(filePath, "utf-8");
-    const parsed = Bun.JSONC.parse(raw);
-    if (!parsed.mcpServers || typeof parsed.mcpServers !== "object") return [];
-    return Object.entries(parsed.mcpServers).map(([name, cfg]) => {
-      const type = cfg.type === "local" ? "stdio" : (cfg.type as McpServerConfig["type"]);
-      return {
-        name,
-        type,
-        command: cfg.command as string | undefined,
-        args: cfg.args as string[] | undefined,
-        env: cfg.env as Record<string, string> | undefined,
-        url: cfg.url as string | undefined,
-        headers: cfg.headers as Record<string, string> | undefined,
-        cwd: cfg.cwd as string | undefined,
-        timeout: cfg.timeout as number | undefined,
-        enabled: true,
-      };
-    });
-  } catch {
-    return [];
-  }
+    try {
+        const raw = readFileSync(filePath, "utf-8");
+        const parsed = Bun.JSONC.parse(raw);
+        if (!parsed.mcpServers || typeof parsed.mcpServers !== "object")
+            return [];
+        return Object.entries(parsed.mcpServers).map(([name, cfg]) => {
+            const type =
+                cfg.type === "local"
+                    ? "stdio"
+                    : (cfg.type as McpServerConfig["type"]);
+            return {
+                name,
+                type,
+                command: cfg.command as string | undefined,
+                args: cfg.args as string[] | undefined,
+                env: cfg.env as Record<string, string> | undefined,
+                url: cfg.url as string | undefined,
+                headers: cfg.headers as Record<string, string> | undefined,
+                cwd: cfg.cwd as string | undefined,
+                timeout: cfg.timeout as number | undefined,
+                enabled: true,
+            };
+        });
+    } catch {
+        return [];
+    }
 }
 ```
 
@@ -246,43 +256,48 @@ Reads `opencode.json` / `opencode.jsonc` format. Key path: `mcp`. Has significan
  * Maps "environment" to "env".
  */
 export function parseOpenCodeMcpConfig(filePath: string): McpServerConfig[] {
-  try {
-    const raw = readFileSync(filePath, "utf-8");
-    const parsed = Bun.JSONC.parse(raw);
-    if (!parsed.mcp || typeof parsed.mcp !== "object") return [];
-    return Object.entries(parsed.mcp).map(([name, cfg]) => {
-      const type = cfg.type === "local" ? "stdio"
-        : cfg.type === "remote" ? "http"
-        : (cfg.type as McpServerConfig["type"]);
+    try {
+        const raw = readFileSync(filePath, "utf-8");
+        const parsed = Bun.JSONC.parse(raw);
+        if (!parsed.mcp || typeof parsed.mcp !== "object") return [];
+        return Object.entries(parsed.mcp).map(([name, cfg]) => {
+            const type =
+                cfg.type === "local"
+                    ? "stdio"
+                    : cfg.type === "remote"
+                      ? "http"
+                      : (cfg.type as McpServerConfig["type"]);
 
-      // OpenCode schema enforces command: string[] (Zod: z.string().array()).
-      // Defensively handle string input: split on whitespace to normalize.
-      let command: string | undefined;
-      let args: string[] | undefined;
-      if (Array.isArray(cfg.command)) {
-        command = cfg.command[0];
-        args = cfg.command.slice(1);
-      } else if (typeof cfg.command === "string") {
-        const parts = cfg.command.trim().split(/\s+/);
-        command = parts[0];
-        args = parts.slice(1);
-      }
+            // OpenCode schema enforces command: string[] (Zod: z.string().array()).
+            // Defensively handle string input: split on whitespace to normalize.
+            let command: string | undefined;
+            let args: string[] | undefined;
+            if (Array.isArray(cfg.command)) {
+                command = cfg.command[0];
+                args = cfg.command.slice(1);
+            } else if (typeof cfg.command === "string") {
+                const parts = cfg.command.trim().split(/\s+/);
+                command = parts[0];
+                args = parts.slice(1);
+            }
 
-      return {
-        name,
-        type,
-        command,
-        args,
-        env: (cfg.environment ?? cfg.env) as Record<string, string> | undefined,
-        url: cfg.url as string | undefined,
-        headers: cfg.headers as Record<string, string> | undefined,
-        timeout: cfg.timeout as number | undefined,
-        enabled: cfg.enabled !== false, // default true
-      };
-    });
-  } catch {
-    return [];
-  }
+            return {
+                name,
+                type,
+                command,
+                args,
+                env: (cfg.environment ?? cfg.env) as
+                    | Record<string, string>
+                    | undefined,
+                url: cfg.url as string | undefined,
+                headers: cfg.headers as Record<string, string> | undefined,
+                timeout: cfg.timeout as number | undefined,
+                enabled: cfg.enabled !== false, // default true
+            };
+        });
+    } catch {
+        return [];
+    }
 }
 ```
 
@@ -305,32 +320,52 @@ Scans all known config locations and merges results, deduplicating by server nam
  * @returns Deduplicated array of McpServerConfig
  */
 export function discoverMcpConfigs(cwd?: string): McpServerConfig[] {
-  const projectRoot = cwd ?? process.cwd();
-  const homeDir = process.env.HOME ?? process.env.USERPROFILE ?? "";
+    const projectRoot = cwd ?? process.cwd();
+    const homeDir = process.env.HOME ?? process.env.USERPROFILE ?? "";
 
-  const sources: McpServerConfig[] = [];
+    const sources: McpServerConfig[] = [];
 
-  // User-level configs (lowest priority)
-  sources.push(...parseClaudeMcpConfig(join(homeDir, ".claude", ".mcp.json")));
-  sources.push(...parseCopilotMcpConfig(join(homeDir, ".copilot", "mcp-config.json")));
-  sources.push(...parseCopilotMcpConfig(join(homeDir, ".github", "mcp-config.json")));
+    // User-level configs (lowest priority)
+    sources.push(
+        ...parseClaudeMcpConfig(join(homeDir, ".claude", ".mcp.json")),
+    );
+    sources.push(
+        ...parseCopilotMcpConfig(join(homeDir, ".copilot", "mcp-config.json")),
+    );
+    sources.push(
+        ...parseCopilotMcpConfig(join(homeDir, ".github", "mcp-config.json")),
+    );
 
-  // Project-level configs (higher priority — override user-level)
-  sources.push(...parseClaudeMcpConfig(join(projectRoot, ".mcp.json")));
-  sources.push(...parseCopilotMcpConfig(join(projectRoot, ".copilot", "mcp-config.json")));
-  sources.push(...parseCopilotMcpConfig(join(projectRoot, ".github", "mcp-config.json")));
-  sources.push(...parseOpenCodeMcpConfig(join(projectRoot, "opencode.json")));
-  sources.push(...parseOpenCodeMcpConfig(join(projectRoot, "opencode.jsonc")));
-  sources.push(...parseOpenCodeMcpConfig(join(projectRoot, ".opencode", "opencode.json")));
+    // Project-level configs (higher priority — override user-level)
+    sources.push(...parseClaudeMcpConfig(join(projectRoot, ".mcp.json")));
+    sources.push(
+        ...parseCopilotMcpConfig(
+            join(projectRoot, ".copilot", "mcp-config.json"),
+        ),
+    );
+    sources.push(
+        ...parseCopilotMcpConfig(
+            join(projectRoot, ".github", "mcp-config.json"),
+        ),
+    );
+    sources.push(...parseOpenCodeMcpConfig(join(projectRoot, "opencode.json")));
+    sources.push(
+        ...parseOpenCodeMcpConfig(join(projectRoot, "opencode.jsonc")),
+    );
+    sources.push(
+        ...parseOpenCodeMcpConfig(
+            join(projectRoot, ".opencode", "opencode.json"),
+        ),
+    );
 
-  // Deduplicate by name (last wins)
-  const byName = new Map<string, McpServerConfig>();
-  for (const server of sources) {
-    byName.set(server.name, server);
-  }
+    // Deduplicate by name (last wins)
+    const byName = new Map<string, McpServerConfig>();
+    for (const server of sources) {
+        byName.set(server.name, server);
+    }
 
-  // Filter out disabled servers
-  return Array.from(byName.values()).filter(s => s.enabled !== false);
+    // Filter out disabled servers
+    return Array.from(byName.values()).filter((s) => s.enabled !== false);
 }
 ```
 
@@ -341,28 +376,32 @@ Per [research](../research/docs/2026-02-08-164-mcp-support-discovery.md#files-to
 Replace the inline `.mcp.json` parsing with a call to `discoverMcpConfigs()`:
 
 **Before** (current code at `src/commands/chat.ts:177-194`):
+
 ```typescript
 // Read MCP server config from .mcp.json
 let mcpServers: McpServerConfig[] | undefined;
 try {
-  const raw = readFileSync(join(process.cwd(), ".mcp.json"), "utf-8");
-  const parsed = JSON.parse(raw) as { mcpServers?: Record<string, Record<string, unknown>> };
-  if (parsed.mcpServers) {
-    mcpServers = Object.entries(parsed.mcpServers).map(([name, cfg]) => ({
-      name,
-      type: cfg.type as McpServerConfig["type"],
-      command: cfg.command as string | undefined,
-      args: cfg.args as string[] | undefined,
-      env: cfg.env as Record<string, string> | undefined,
-      url: cfg.url as string | undefined,
-    }));
-  }
+    const raw = readFileSync(join(process.cwd(), ".mcp.json"), "utf-8");
+    const parsed = JSON.parse(raw) as {
+        mcpServers?: Record<string, Record<string, unknown>>;
+    };
+    if (parsed.mcpServers) {
+        mcpServers = Object.entries(parsed.mcpServers).map(([name, cfg]) => ({
+            name,
+            type: cfg.type as McpServerConfig["type"],
+            command: cfg.command as string | undefined,
+            args: cfg.args as string[] | undefined,
+            env: cfg.env as Record<string, string> | undefined,
+            url: cfg.url as string | undefined,
+        }));
+    }
 } catch {
-  // No .mcp.json or invalid -- continue without MCP
+    // No .mcp.json or invalid -- continue without MCP
 }
 ```
 
 **After**:
+
 ```typescript
 import { discoverMcpConfigs } from "../utils/mcp-config.ts";
 
@@ -386,64 +425,76 @@ Add a new builtin command that displays discovered MCP servers and supports togg
  *   disable <n>  - Disable a server by name
  */
 export const mcpCommand: CommandDefinition = {
-  name: "mcp",
-  description: "View and toggle MCP servers",
-  category: "builtin",
-  argumentHint: "[enable|disable <server>]",
-  execute: (args: string, _context: CommandContext): CommandResult => {
-    const servers = discoverMcpConfigs();
-    const trimmed = args.trim().toLowerCase();
+    name: "mcp",
+    description: "View and toggle MCP servers",
+    category: "builtin",
+    argumentHint: "[enable|disable <server>]",
+    execute: (args: string, _context: CommandContext): CommandResult => {
+        const servers = discoverMcpConfigs();
+        const trimmed = args.trim().toLowerCase();
 
-    // No args: list servers
-    if (!trimmed) {
-      if (servers.length === 0) {
+        // No args: list servers
+        if (!trimmed) {
+            if (servers.length === 0) {
+                return {
+                    success: true,
+                    message:
+                        "No MCP servers found.\n\nAdd servers via `.mcp.json`, `.copilot/mcp-config.json`, `.github/mcp-config.json`, or `.opencode/opencode.json`.",
+                };
+            }
+
+            const lines: string[] = ["**MCP Servers**", ""];
+            for (const server of servers) {
+                const transport =
+                    server.type ?? (server.url ? "http" : "stdio");
+                const target = server.url ?? server.command ?? "—";
+                const status = server.enabled !== false ? "●" : "○";
+                lines.push(`  ${status} **${server.name}** (${transport})`);
+                lines.push(`    ${target}`);
+            }
+            lines.push("");
+            lines.push(
+                "Use `/mcp enable <name>` or `/mcp disable <name>` to toggle.",
+            );
+            return { success: true, message: lines.join("\n") };
+        }
+
+        // enable/disable subcommands
+        const parts = trimmed.split(/\s+/);
+        const subcommand = parts[0];
+        const serverName = parts.slice(1).join(" ");
+
+        if (
+            (subcommand === "enable" || subcommand === "disable") &&
+            serverName
+        ) {
+            const found = servers.find(
+                (s) => s.name.toLowerCase() === serverName.toLowerCase(),
+            );
+            if (!found) {
+                return {
+                    success: false,
+                    message: `MCP server '${serverName}' not found. Run /mcp to see available servers.`,
+                };
+            }
+            // Note: Toggle is session-scoped only. Persistent toggle requires config file edit.
+            return {
+                success: true,
+                message: `MCP server '${found.name}' ${subcommand}d for this session.`,
+                stateUpdate: {
+                    mcpToggle: {
+                        name: found.name,
+                        enabled: subcommand === "enable",
+                    },
+                } as unknown as CommandResult["stateUpdate"],
+            };
+        }
+
         return {
-          success: true,
-          message: "No MCP servers found.\n\nAdd servers via `.mcp.json`, `.copilot/mcp-config.json`, `.github/mcp-config.json`, or `.opencode/opencode.json`.",
+            success: false,
+            message: "Usage: /mcp, /mcp enable <server>, /mcp disable <server>",
         };
-      }
-
-      const lines: string[] = ["**MCP Servers**", ""];
-      for (const server of servers) {
-        const transport = server.type ?? (server.url ? "http" : "stdio");
-        const target = server.url ?? server.command ?? "—";
-        const status = server.enabled !== false ? "●" : "○";
-        lines.push(`  ${status} **${server.name}** (${transport})`);
-        lines.push(`    ${target}`);
-      }
-      lines.push("");
-      lines.push("Use `/mcp enable <name>` or `/mcp disable <name>` to toggle.");
-      return { success: true, message: lines.join("\n") };
-    }
-
-    // enable/disable subcommands
-    const parts = trimmed.split(/\s+/);
-    const subcommand = parts[0];
-    const serverName = parts.slice(1).join(" ");
-
-    if ((subcommand === "enable" || subcommand === "disable") && serverName) {
-      const found = servers.find(s => s.name.toLowerCase() === serverName.toLowerCase());
-      if (!found) {
-        return {
-          success: false,
-          message: `MCP server '${serverName}' not found. Run /mcp to see available servers.`,
-        };
-      }
-      // Note: Toggle is session-scoped only. Persistent toggle requires config file edit.
-      return {
-        success: true,
-        message: `MCP server '${found.name}' ${subcommand}d for this session.`,
-        stateUpdate: {
-          mcpToggle: { name: found.name, enabled: subcommand === "enable" },
-        } as unknown as CommandResult["stateUpdate"],
-      };
-    }
-
-    return {
-      success: false,
-      message: "Usage: /mcp, /mcp enable <server>, /mcp disable <server>",
-    };
-  },
+    },
 };
 ```
 
@@ -451,13 +502,13 @@ export const mcpCommand: CommandDefinition = {
 
 ```typescript
 export const builtinCommands: CommandDefinition[] = [
-  helpCommand,
-  themeCommand,
-  clearCommand,
-  compactCommand,
-  exitCommand,
-  modelCommand,
-  mcpCommand,  // NEW
+    helpCommand,
+    themeCommand,
+    clearCommand,
+    compactCommand,
+    exitCommand,
+    modelCommand,
+    mcpCommand, // NEW
 ];
 ```
 
@@ -467,9 +518,9 @@ Add an optional field for future MCP overlay support:
 
 ```typescript
 export interface CommandResult {
-  // ... existing fields ...
-  /** If true, show the MCP server overlay/dialog */
-  showMcpOverlay?: boolean;
+    // ... existing fields ...
+    /** If true, show the MCP server overlay/dialog */
+    showMcpOverlay?: boolean;
 }
 ```
 
@@ -483,24 +534,24 @@ Pass `headers` for SSE/HTTP servers:
 
 ```typescript
 if (server.url && server.type === "sse") {
-  options.mcpServers[server.name] = {
-    type: "sse" as const,
-    url: server.url,
-    headers: server.headers,  // NEW
-  };
+    options.mcpServers[server.name] = {
+        type: "sse" as const,
+        url: server.url,
+        headers: server.headers, // NEW
+    };
 } else if (server.url) {
-  options.mcpServers[server.name] = {
-    type: "http" as const,
-    url: server.url,
-    headers: server.headers,  // NEW
-  };
+    options.mcpServers[server.name] = {
+        type: "http" as const,
+        url: server.url,
+        headers: server.headers, // NEW
+    };
 } else if (server.command) {
-  options.mcpServers[server.name] = {
-    type: "stdio" as const,
-    command: server.command,
-    args: server.args,
-    env: server.env,
-  };
+    options.mcpServers[server.name] = {
+        type: "stdio" as const,
+        command: server.command,
+        args: server.args,
+        env: server.env,
+    };
 }
 ```
 
@@ -571,18 +622,21 @@ mcpServers: config.mcpServers
 ### 8.1 Deployment Strategy
 
 No phased rollout needed — this is a non-breaking additive change. All new functionality is opt-in:
+
 - Users without Copilot/OpenCode config files see no change.
 - The `/mcp` command is available immediately but harmless if no MCP configs exist.
 
 ### 8.2 Test Plan
 
 **Unit Tests (new file: `tests/utils/mcp-config.test.ts`):**
+
 - [ ] `parseClaudeMcpConfig()`: valid `.mcp.json` with stdio, http, sse servers; missing file returns `[]`; malformed JSON returns `[]`; preserves `headers` field
 - [ ] `parseCopilotMcpConfig()`: valid `mcp-config.json` with `"local"` type mapped to `"stdio"`; `cwd` and `timeout` preserved; missing file returns `[]`
 - [ ] `parseOpenCodeMcpConfig()`: valid `opencode.json` with `"local"` mapped to `"stdio"`, `"remote"` mapped to `"http"`; `command: string[]` split into `command` + `args`; `command` as plain `string` split on whitespace; `environment` mapped to `env`; `enabled: false` respected; missing file returns `[]`; JSONC with comments and trailing commas parses correctly (covers `opencode.jsonc`)
 - [ ] `discoverMcpConfigs()`: merges from multiple sources; later sources override earlier by name; disabled servers filtered out; user-level configs loaded (incl. `~/.github/mcp-config.json`); project-level configs override user-level; `.github/mcp-config.json` at project level discovered
 
 **Unit Tests (existing file: `tests/ui/commands/builtin-commands.test.ts`):**
+
 - [ ] `/mcp` with no servers returns empty message
 - [ ] `/mcp` with servers returns formatted list
 - [ ] `/mcp enable <name>` returns success for known server
@@ -590,6 +644,7 @@ No phased rollout needed — this is a non-breaking additive change. All new fun
 - [ ] `/mcp disable <name>` returns success for known server
 
 **Integration Tests:**
+
 - [ ] `chatCommand` with `.mcp.json` present: `mcpServers` passed to `SessionConfig`
 - [ ] `chatCommand` with no config files: `mcpServers` is empty array
 - [ ] `chatCommand` with `.mcp.json` + `.opencode/opencode.json`: both configs merged, deduplicated
@@ -637,12 +692,12 @@ OpenCode's Zod schema strictly enforces `command` as `z.string().array()` (confi
 
 ```typescript
 if (Array.isArray(cfg.command)) {
-  command = cfg.command[0];
-  args = cfg.command.slice(1);
+    command = cfg.command[0];
+    args = cfg.command.slice(1);
 } else if (typeof cfg.command === "string") {
-  const parts = cfg.command.trim().split(/\s+/);
-  command = parts[0];
-  args = parts.slice(1);
+    const parts = cfg.command.trim().split(/\s+/);
+    command = parts[0];
+    args = parts.slice(1);
 }
 ```
 
@@ -669,10 +724,16 @@ OpenCode additionally supports `mcp.connect()` and `mcp.disconnect()` methods fo
 ```typescript
 /** Unified MCP server status across all SDK backends */
 export interface McpServerStatusInfo {
-  name: string;
-  status: "connected" | "pending" | "failed" | "disabled" | "needs-auth" | "unknown";
-  error?: string;
-  serverInfo?: { name: string; version: string };
+    name: string;
+    status:
+        | "connected"
+        | "pending"
+        | "failed"
+        | "disabled"
+        | "needs-auth"
+        | "unknown";
+    error?: string;
+    serverInfo?: { name: string; version: string };
 }
 ```
 

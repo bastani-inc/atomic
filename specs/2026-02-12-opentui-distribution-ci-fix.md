@@ -31,9 +31,10 @@ The pipeline also manually installs all 6 OpenTUI platform-specific native bindi
 
 ### 2.2 The Problem
 
-**Failed CI Run**: https://github.com/flora131/atomic/actions/runs/21928096164
+**Failed CI Run**: https://github.com/bastani/atomic/actions/runs/21928096164
 
 The workflow fails at `publish.yml:86` with:
+
 ```
 cp: cannot stat '.github/agents': No such file or directory
 ##[error]Process completed with exit code 1.
@@ -43,14 +44,15 @@ cp: cannot stat '.github/agents': No such file or directory
 
 | Directory           | Exists? | In Workflow (lines 86-90) | In `package.json` `files` |
 | ------------------- | ------- | ------------------------- | ------------------------- |
-| `.github/agents`    | ❌ No    | ✅ Line 86                 | ✅ Yes                     |
-| `.github/hooks`     | ❌ No    | ✅ Line 87                 | ✅ Yes                     |
-| `.github/prompts`   | ❌ No    | ✅ Line 88 (suppressed)    | ✅ Yes                     |
-| `.github/scripts`   | ❌ No    | ✅ Line 89                 | ✅ Yes                     |
-| `.github/skills`    | ✅ Yes   | ✅ Line 90                 | ✅ Yes                     |
-| `.github/workflows` | ✅ Yes   | Not copied                | Not in files              |
+| `.github/agents`    | ❌ No   | ✅ Line 86                | ✅ Yes                    |
+| `.github/hooks`     | ❌ No   | ✅ Line 87                | ✅ Yes                    |
+| `.github/prompts`   | ❌ No   | ✅ Line 88 (suppressed)   | ✅ Yes                    |
+| `.github/scripts`   | ❌ No   | ✅ Line 89                | ✅ Yes                    |
+| `.github/skills`    | ✅ Yes  | ✅ Line 90                | ✅ Yes                    |
+| `.github/workflows` | ✅ Yes  | Not copied                | Not in files              |
 
 **Current `.github/` contents**:
+
 ```
 .github/
 ├── dependabot.yml
@@ -132,41 +134,43 @@ No architectural change. This is a configuration-only fix affecting two files.
 ### 5.1 Change 1: `.github/workflows/publish.yml` — Config Archive Step
 
 **Current code** (lines 77-102):
+
 ```yaml
 - name: Create config archives
   run: |
-    mkdir -p config-staging
-    cp -r .claude config-staging/
-    cp -r .opencode config-staging/
-    mkdir -p config-staging/.github
-    cp -r .github/agents config-staging/.github/      # ❌ REMOVE
-    cp -r .github/hooks config-staging/.github/       # ❌ REMOVE
-    cp -r .github/prompts config-staging/.github/ 2>/dev/null || true  # ❌ REMOVE
-    cp -r .github/scripts config-staging/.github/     # ❌ REMOVE
-    cp -r .github/skills config-staging/.github/      # ✅ KEEP
-    cp CLAUDE.md config-staging/
-    cp AGENTS.md config-staging/
-    cp .mcp.json config-staging/ 2>/dev/null || true
-    rm -rf config-staging/.opencode/node_modules
-    tar -czvf dist/atomic-config.tar.gz -C config-staging .
-    cd config-staging && zip -r ../dist/atomic-config.zip . && cd ..
+      mkdir -p config-staging
+      cp -r .claude config-staging/
+      cp -r .opencode config-staging/
+      mkdir -p config-staging/.github
+      cp -r .github/agents config-staging/.github/      # ❌ REMOVE
+      cp -r .github/hooks config-staging/.github/       # ❌ REMOVE
+      cp -r .github/prompts config-staging/.github/ 2>/dev/null || true  # ❌ REMOVE
+      cp -r .github/scripts config-staging/.github/     # ❌ REMOVE
+      cp -r .github/skills config-staging/.github/      # ✅ KEEP
+      cp CLAUDE.md config-staging/
+      cp AGENTS.md config-staging/
+      cp .mcp.json config-staging/ 2>/dev/null || true
+      rm -rf config-staging/.opencode/node_modules
+      tar -czvf dist/atomic-config.tar.gz -C config-staging .
+      cd config-staging && zip -r ../dist/atomic-config.zip . && cd ..
 ```
 
 **Proposed code**:
+
 ```yaml
 - name: Create config archives
   run: |
-    mkdir -p config-staging
-    cp -r .claude config-staging/
-    cp -r .opencode config-staging/
-    mkdir -p config-staging/.github
-    cp -r .github/skills config-staging/.github/
-    cp CLAUDE.md config-staging/
-    cp AGENTS.md config-staging/
-    cp .mcp.json config-staging/ 2>/dev/null || true
-    rm -rf config-staging/.opencode/node_modules
-    tar -czvf dist/atomic-config.tar.gz -C config-staging .
-    cd config-staging && zip -r ../dist/atomic-config.zip . && cd ..
+      mkdir -p config-staging
+      cp -r .claude config-staging/
+      cp -r .opencode config-staging/
+      mkdir -p config-staging/.github
+      cp -r .github/skills config-staging/.github/
+      cp CLAUDE.md config-staging/
+      cp AGENTS.md config-staging/
+      cp .mcp.json config-staging/ 2>/dev/null || true
+      rm -rf config-staging/.opencode/node_modules
+      tar -czvf dist/atomic-config.tar.gz -C config-staging .
+      cd config-staging && zip -r ../dist/atomic-config.zip . && cd ..
 ```
 
 **Changes**: Remove lines 86-89 (the four `cp` commands for `agents`, `hooks`, `prompts`, `scripts`).
@@ -174,6 +178,7 @@ No architectural change. This is a configuration-only fix affecting two files.
 ### 5.2 Change 2: `package.json` — `files` Field
 
 **Current code** (lines 22-33):
+
 ```json
 "files": [
   "src",
@@ -190,6 +195,7 @@ No architectural change. This is a configuration-only fix affecting two files.
 ```
 
 **Proposed code**:
+
 ```json
 "files": [
   "src",
@@ -206,6 +212,7 @@ No architectural change. This is a configuration-only fix affecting two files.
 ### 5.3 Impact Analysis
 
 **Config archive contents (after fix)**:
+
 ```
 atomic-config.tar.gz / atomic-config.zip
 ├── .claude/
@@ -233,7 +240,7 @@ atomic-config.tar.gz / atomic-config.zip
 ## 6. Alternatives Considered
 
 | Option                                                        | Pros                                                          | Cons                                           | Reason for Rejection                                    |
-| ------------------------------------------------------------- | ------------------------------------------------------------- | ---------------------------------------------- | ------------------------------------------------------- |
+| ------------------------------------------------------------- | ------------------------------------------------------------- | ---------------------------------------------- | ------------------------------------------------------- | --------------------------------------------------------------------------------- | --------------------------------------------------------------- |
 | A: Error-suppress all `cp` commands with `                    |                                                               | true`                                          | Quickest fix, no behavior change for existing dirs      | Silently hides future breakages; config archive may be incomplete without warning | Masks real errors; doesn't fix the `package.json` `files` issue |
 | B: Remove stale references (Selected)                         | Clean, minimal, accurate; fixes both workflow and npm publish | None significant                               | **Selected**: Correctly reflects current repo structure |
 | C: Re-create the missing directories with placeholder content | Workflow would pass without changes                           | Adds unnecessary empty directories; misleading | No valid use case for empty `.github/agents`, etc.      |
@@ -273,16 +280,17 @@ No data migration required. This is a CI/config-only change.
 - **Unit Tests**: Run existing `bun test` suite — no new tests needed (no runtime code changes)
 - **Typecheck**: Run `bun run typecheck` — no new types affected
 - **Integration Tests**:
-  - Trigger the publish workflow via `workflow_dispatch` and verify it completes all jobs
-  - Download the resulting `atomic-config.tar.gz` and verify its contents match the expected structure in §5.3
-  - Run `npm pack` locally and verify the package tarball contains only the expected files
+    - Trigger the publish workflow via `workflow_dispatch` and verify it completes all jobs
+    - Download the resulting `atomic-config.tar.gz` and verify its contents match the expected structure in §5.3
+    - Run `npm pack` locally and verify the package tarball contains only the expected files
 - **End-to-End Tests**:
-  - Install from the new release using `install.sh` on Linux/macOS
-  - Install from the new release using `install.ps1` on Windows
-  - Verify `atomic --help` works after installation
-  - Verify config files are correctly extracted to the data directory
+    - Install from the new release using `install.sh` on Linux/macOS
+    - Install from the new release using `install.ps1` on Windows
+    - Verify `atomic --help` works after installation
+    - Verify config files are correctly extracted to the data directory
 
 **Local Validation Command**:
+
 ```bash
 # Verify package.json files field only references existing paths
 bun run --bun -e "

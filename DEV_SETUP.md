@@ -15,7 +15,7 @@ This repo uses **Bun** for all development, scripts, and testing. The `@bastani/
 ## Setup
 
 ```bash
-git clone git@github.com:flora131/atomic.git
+git clone git@github.com:bastani/atomic.git
 cd atomic
 bun install
 ```
@@ -159,23 +159,23 @@ pi exposes `DefaultResourceLoader.extensionFactories` for in-process extension i
 
 ```ts
 import {
-  createAgentSession,
-  DefaultResourceLoader,
-  SessionManager,
-  getAgentDir,
+    createAgentSession,
+    DefaultResourceLoader,
+    SessionManager,
+    getAgentDir,
 } from "@bastani/atomic";
 import factory from "./packages/workflows/src/extension/index.ts";
 
 const resourceLoader = new DefaultResourceLoader({
-  cwd: process.cwd(),
-  agentDir: getAgentDir(),
-  extensionFactories: [factory],
+    cwd: process.cwd(),
+    agentDir: getAgentDir(),
+    extensionFactories: [factory],
 });
 await resourceLoader.reload();
 
 const { session } = await createAgentSession({
-  resourceLoader,
-  sessionManager: SessionManager.inMemory(),
+    resourceLoader,
+    sessionManager: SessionManager.inMemory(),
 });
 ```
 
@@ -249,11 +249,11 @@ Atomic uses a tag-driven release flow: push a `v<version>` git tag and CI cross-
 3. Run `bun run typecheck`, `cd packages/coding-agent && bun run build`, and `bun run test:all`.
 4. Commit `packages/*/package.json`, `packages/*/README.md`, `packages/coding-agent/CHANGELOG.md`, and `bun.lock` with `chore(release): bump to v<version>`.
 5. Tag and push:
-   ```sh
-   git tag v<version>
-   git push origin main
-   git push origin v<version>
-   ```
+    ```sh
+    git tag v<version>
+    git push origin main
+    git push origin v<version>
+    ```
 6. The tag push triggers `.github/workflows/publish.yml`, which publishes `@bastani/atomic` to npm with OIDC provenance and creates the GitHub Release with six binary archives attached (darwin/linux/windows × arm64/x64).
 
 Bun is the development/test/runtime path. **npm is still the registry publication tool** because npm's provenance flow signs the published tarball via OIDC. Provenance is enabled in CI; no `NPM_TOKEN` is needed.

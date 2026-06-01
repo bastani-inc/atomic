@@ -1,11 +1,11 @@
 # CLI Auto-Initialize Agent Config Technical Design Document
 
-| Document Metadata      | Details         |
-| ---------------------- | --------------- |
-| Author(s)              | lavaman131      |
-| Status                 | Draft (WIP)     |
-| Team / Owner           | flora131/atomic |
-| Created / Last Updated | 2026-01-19      |
+| Document Metadata      | Details        |
+| ---------------------- | -------------- |
+| Author(s)              | lavaman131     |
+| Status                 | Draft (WIP)    |
+| Team / Owner           | bastani/atomic |
+| Created / Last Updated | 2026-01-19     |
 
 ## 1. Executive Summary
 
@@ -21,10 +21,10 @@ This spec defines the implementation of auto-initialization behavior for the `at
 
 The Atomic CLI currently supports two main flows:
 
-| Command                            | Behavior                                                 |
-| ---------------------------------- | -------------------------------------------------------- |
-| `atomic` / `atomic init`           | Full interactive setup with agent selection              |
-| `atomic --agent [name]` / `-a`     | Directly spawns agent process (requires config to exist) |
+| Command                        | Behavior                                                 |
+| ------------------------------ | -------------------------------------------------------- |
+| `atomic` / `atomic init`       | Full interactive setup with agent selection              |
+| `atomic --agent [name]` / `-a` | Directly spawns agent process (requires config to exist) |
 
 **Current Architecture** ([specs/2026-01-18-atomic-cli-implementation.md](./2026-01-18-atomic-cli-implementation.md)):
 
@@ -151,12 +151,12 @@ atomic --help, -h               # Show help (unchanged)
 
 **Behavior Matrix:**
 
-| Command                                        | Config Exists | Behavior                                          |
-| ---------------------------------------------- | ------------- | ------------------------------------------------- |
-| `atomic init`                                  | N/A           | Full interactive setup (always runs)              |
-| `atomic init --agent claude-code` / `init -a`  | N/A           | Streamlined setup - skip selection, run full init |
-| `atomic --agent claude-code` / `-a`            | No            | Auto-init with pre-selected agent, then spawn     |
-| `atomic --agent claude-code` / `-a`            | Yes           | Spawn agent directly                              |
+| Command                                       | Config Exists | Behavior                                          |
+| --------------------------------------------- | ------------- | ------------------------------------------------- |
+| `atomic init`                                 | N/A           | Full interactive setup (always runs)              |
+| `atomic init --agent claude-code` / `init -a` | N/A           | Streamlined setup - skip selection, run full init |
+| `atomic --agent claude-code` / `-a`           | No            | Auto-init with pre-selected agent, then spawn     |
+| `atomic --agent claude-code` / `-a`           | Yes           | Spawn agent directly                              |
 
 ### 5.2 Interface Changes
 
@@ -164,8 +164,8 @@ atomic --help, -h               # Show help (unchanged)
 
 ```typescript
 interface InitOptions {
-  showBanner?: boolean;
-  preSelectedAgent?: AgentKey; // NEW: Skip selection if provided
+    showBanner?: boolean;
+    preSelectedAgent?: AgentKey; // NEW: Skip selection if provided
 }
 ```
 
@@ -194,28 +194,28 @@ interface InitOptions {
 const command = positionals[0];
 
 switch (command) {
-  case undefined:
-    // No positional command
-    if (typeof values.agent === "string") {
-      // atomic --agent [name] → run with conditional init
-      const exitCode = await runAgentCommand(values.agent);
-      process.exit(exitCode);
-    }
-    // atomic → full interactive init (unchanged behavior)
-    await initCommand({ showBanner: !values["no-banner"] });
-    break;
+    case undefined:
+        // No positional command
+        if (typeof values.agent === "string") {
+            // atomic --agent [name] → run with conditional init
+            const exitCode = await runAgentCommand(values.agent);
+            process.exit(exitCode);
+        }
+        // atomic → full interactive init (unchanged behavior)
+        await initCommand({ showBanner: !values["no-banner"] });
+        break;
 
-  case "init":
-    // atomic init [--agent name] → init with optional pre-selection
-    await initCommand({
-      showBanner: !values["no-banner"],
-      preSelectedAgent: values.agent as AgentKey | undefined,
-    });
-    break;
+    case "init":
+        // atomic init [--agent name] → init with optional pre-selection
+        await initCommand({
+            showBanner: !values["no-banner"],
+            preSelectedAgent: values.agent as AgentKey | undefined,
+        });
+        break;
 
-  default:
-    console.error(`Unknown command: ${command}`);
-    process.exit(1);
+    default:
+        console.error(`Unknown command: ${command}`);
+        process.exit(1);
 }
 ```
 
@@ -227,33 +227,33 @@ switch (command) {
 let agentKey: AgentKey;
 
 if (options.preSelectedAgent) {
-  // Pre-selected agent - skip selection prompt
-  if (!isValidAgent(options.preSelectedAgent)) {
-    cancel(`Unknown agent: ${options.preSelectedAgent}`);
-    process.exit(1);
-  }
-  agentKey = options.preSelectedAgent;
-  log.info(`Configuring ${AGENT_CONFIG[agentKey].name}...`);
+    // Pre-selected agent - skip selection prompt
+    if (!isValidAgent(options.preSelectedAgent)) {
+        cancel(`Unknown agent: ${options.preSelectedAgent}`);
+        process.exit(1);
+    }
+    agentKey = options.preSelectedAgent;
+    log.info(`Configuring ${AGENT_CONFIG[agentKey].name}...`);
 } else {
-  // Interactive selection (existing code)
-  const agentKeys = getAgentKeys();
-  const agentOptions = agentKeys.map((key) => ({
-    value: key,
-    label: AGENT_CONFIG[key].name,
-    hint: AGENT_CONFIG[key].install_url.replace("https://", ""),
-  }));
+    // Interactive selection (existing code)
+    const agentKeys = getAgentKeys();
+    const agentOptions = agentKeys.map((key) => ({
+        value: key,
+        label: AGENT_CONFIG[key].name,
+        hint: AGENT_CONFIG[key].install_url.replace("https://", ""),
+    }));
 
-  const selectedAgent = await select({
-    message: "Select a coding agent to configure:",
-    options: agentOptions,
-  });
+    const selectedAgent = await select({
+        message: "Select a coding agent to configure:",
+        options: agentOptions,
+    });
 
-  if (isCancel(selectedAgent)) {
-    cancel("Operation cancelled.");
-    process.exit(0);
-  }
+    if (isCancel(selectedAgent)) {
+        cancel("Operation cancelled.");
+        process.exit(0);
+    }
 
-  agentKey = selectedAgent as AgentKey;
+    agentKey = selectedAgent as AgentKey;
 }
 ```
 
@@ -267,45 +267,45 @@ import { pathExists } from "../utils/copy";
 import { initCommand } from "./init";
 
 export async function runAgentCommand(agentKey: string): Promise<number> {
-  // Validate agent key (existing code)
-  if (!isValidAgent(agentKey)) {
-    const safeKey = sanitizeForDisplay(agentKey);
-    console.error(`Unknown agent: ${safeKey}`);
-    console.error(`Available agents: ${getAgentKeys().join(", ")}`);
-    return 1;
-  }
+    // Validate agent key (existing code)
+    if (!isValidAgent(agentKey)) {
+        const safeKey = sanitizeForDisplay(agentKey);
+        console.error(`Unknown agent: ${safeKey}`);
+        console.error(`Available agents: ${getAgentKeys().join(", ")}`);
+        return 1;
+    }
 
-  const agent = AGENT_CONFIG[agentKey as AgentKey];
+    const agent = AGENT_CONFIG[agentKey as AgentKey];
 
-  // NEW: Check if config folder exists
-  const configFolder = join(process.cwd(), agent.folder);
-  if (!(await pathExists(configFolder))) {
-    // Config not found - run init with pre-selected agent
-    log.info(`${agent.folder} not found. Running setup...`);
-    await initCommand({
-      preSelectedAgent: agentKey as AgentKey,
-      showBanner: false, // Skip banner for cleaner auto-init experience
+    // NEW: Check if config folder exists
+    const configFolder = join(process.cwd(), agent.folder);
+    if (!(await pathExists(configFolder))) {
+        // Config not found - run init with pre-selected agent
+        log.info(`${agent.folder} not found. Running setup...`);
+        await initCommand({
+            preSelectedAgent: agentKey as AgentKey,
+            showBanner: false, // Skip banner for cleaner auto-init experience
+        });
+    }
+
+    // Check if command is installed (existing code)
+    if (!isCommandInstalled(agent.cmd)) {
+        console.error(`${agent.name} is not installed.`);
+        console.error(`Install at: ${agent.install_url}`);
+        return 1;
+    }
+
+    // Spawn agent process (existing code)
+    const cmd = [agent.cmd, ...agent.additional_flags];
+    const proc = Bun.spawn(cmd, {
+        stdin: "inherit",
+        stdout: "inherit",
+        stderr: "inherit",
+        cwd: process.cwd(),
     });
-  }
 
-  // Check if command is installed (existing code)
-  if (!isCommandInstalled(agent.cmd)) {
-    console.error(`${agent.name} is not installed.`);
-    console.error(`Install at: ${agent.install_url}`);
-    return 1;
-  }
-
-  // Spawn agent process (existing code)
-  const cmd = [agent.cmd, ...agent.additional_flags];
-  const proc = Bun.spawn(cmd, {
-    stdin: "inherit",
-    stdout: "inherit",
-    stderr: "inherit",
-    cwd: process.cwd(),
-  });
-
-  const exitCode = await proc.exited;
-  return exitCode;
+    const exitCode = await proc.exited;
+    return exitCode;
 }
 ```
 
@@ -315,8 +315,8 @@ export async function runAgentCommand(agentKey: string): Promise<number> {
 
 ```typescript
 if (values.help) {
-  showHelp();
-  return;
+    showHelp();
+    return;
 }
 
 // In showHelp() function or inline:
@@ -398,24 +398,24 @@ This is a backward-compatible enhancement. Existing commands continue to work:
 import { test, expect, mock } from "bun:test";
 
 test("initCommand uses preSelectedAgent when provided", async () => {
-  // Mock @clack/prompts to verify select() is NOT called
-  const selectMock = mock(() => {});
+    // Mock @clack/prompts to verify select() is NOT called
+    const selectMock = mock(() => {});
 
-  await initCommand({
-    preSelectedAgent: "claude-code",
-    showBanner: false,
-  });
+    await initCommand({
+        preSelectedAgent: "claude-code",
+        showBanner: false,
+    });
 
-  expect(selectMock).not.toHaveBeenCalled();
+    expect(selectMock).not.toHaveBeenCalled();
 });
 
 test("initCommand rejects invalid preSelectedAgent", async () => {
-  await expect(
-    initCommand({
-      preSelectedAgent: "invalid-agent" as AgentKey,
-      showBanner: false,
-    }),
-  ).rejects.toThrow();
+    await expect(
+        initCommand({
+            preSelectedAgent: "invalid-agent" as AgentKey,
+            showBanner: false,
+        }),
+    ).rejects.toThrow();
 });
 ```
 
@@ -426,37 +426,37 @@ import { runAgentCommand } from "../src/commands/run-agent";
 import * as copyUtils from "../src/utils/copy";
 
 test("runAgentCommand calls initCommand when config folder missing", async () => {
-  // Mock pathExists to return false
-  mock.module("../src/utils/copy", () => ({
-    pathExists: () => Promise.resolve(false),
-  }));
+    // Mock pathExists to return false
+    mock.module("../src/utils/copy", () => ({
+        pathExists: () => Promise.resolve(false),
+    }));
 
-  const initMock = mock(() => Promise.resolve());
-  mock.module("../src/commands/init", () => ({
-    initCommand: initMock,
-  }));
+    const initMock = mock(() => Promise.resolve());
+    mock.module("../src/commands/init", () => ({
+        initCommand: initMock,
+    }));
 
-  await runAgentCommand("claude-code");
+    await runAgentCommand("claude-code");
 
-  expect(initMock).toHaveBeenCalledWith({
-    preSelectedAgent: "claude-code",
-    showBanner: false,
-  });
+    expect(initMock).toHaveBeenCalledWith({
+        preSelectedAgent: "claude-code",
+        showBanner: false,
+    });
 });
 
 test("runAgentCommand skips init when config folder exists", async () => {
-  mock.module("../src/utils/copy", () => ({
-    pathExists: () => Promise.resolve(true),
-  }));
+    mock.module("../src/utils/copy", () => ({
+        pathExists: () => Promise.resolve(true),
+    }));
 
-  const initMock = mock(() => Promise.resolve());
-  mock.module("../src/commands/init", () => ({
-    initCommand: initMock,
-  }));
+    const initMock = mock(() => Promise.resolve());
+    mock.module("../src/commands/init", () => ({
+        initCommand: initMock,
+    }));
 
-  await runAgentCommand("claude-code");
+    await runAgentCommand("claude-code");
 
-  expect(initMock).not.toHaveBeenCalled();
+    expect(initMock).not.toHaveBeenCalled();
 });
 ```
 
@@ -468,59 +468,59 @@ import { test, expect } from "bun:test";
 import { parseArgs } from "util";
 
 test("parses 'init --agent claude-code' correctly", () => {
-  const { values, positionals } = parseArgs({
-    args: ["init", "--agent", "claude-code"],
-    options: {
-      agent: { type: "string", short: "a" },
-    },
-    strict: false,
-    allowPositionals: true,
-  });
+    const { values, positionals } = parseArgs({
+        args: ["init", "--agent", "claude-code"],
+        options: {
+            agent: { type: "string", short: "a" },
+        },
+        strict: false,
+        allowPositionals: true,
+    });
 
-  expect(positionals[0]).toBe("init");
-  expect(values.agent).toBe("claude-code");
+    expect(positionals[0]).toBe("init");
+    expect(values.agent).toBe("claude-code");
 });
 
 test("parses 'init -a claude-code' correctly (short form)", () => {
-  const { values, positionals } = parseArgs({
-    args: ["init", "-a", "claude-code"],
-    options: {
-      agent: { type: "string", short: "a" },
-    },
-    strict: false,
-    allowPositionals: true,
-  });
+    const { values, positionals } = parseArgs({
+        args: ["init", "-a", "claude-code"],
+        options: {
+            agent: { type: "string", short: "a" },
+        },
+        strict: false,
+        allowPositionals: true,
+    });
 
-  expect(positionals[0]).toBe("init");
-  expect(values.agent).toBe("claude-code");
+    expect(positionals[0]).toBe("init");
+    expect(values.agent).toBe("claude-code");
 });
 
 test("parses '--agent claude-code' without init", () => {
-  const { values, positionals } = parseArgs({
-    args: ["--agent", "claude-code"],
-    options: {
-      agent: { type: "string", short: "a" },
-    },
-    strict: false,
-    allowPositionals: true,
-  });
+    const { values, positionals } = parseArgs({
+        args: ["--agent", "claude-code"],
+        options: {
+            agent: { type: "string", short: "a" },
+        },
+        strict: false,
+        allowPositionals: true,
+    });
 
-  expect(positionals[0]).toBeUndefined();
-  expect(values.agent).toBe("claude-code");
+    expect(positionals[0]).toBeUndefined();
+    expect(values.agent).toBe("claude-code");
 });
 
 test("parses '-a claude-code' without init (short form)", () => {
-  const { values, positionals } = parseArgs({
-    args: ["-a", "claude-code"],
-    options: {
-      agent: { type: "string", short: "a" },
-    },
-    strict: false,
-    allowPositionals: true,
-  });
+    const { values, positionals } = parseArgs({
+        args: ["-a", "claude-code"],
+        options: {
+            agent: { type: "string", short: "a" },
+        },
+        strict: false,
+        allowPositionals: true,
+    });
 
-  expect(positionals[0]).toBeUndefined();
-  expect(values.agent).toBe("claude-code");
+    expect(positionals[0]).toBeUndefined();
+    expect(values.agent).toBe("claude-code");
 });
 ```
 

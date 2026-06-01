@@ -1,11 +1,11 @@
 # Source Control Type Selection Technical Design Document
 
-| Document Metadata      | Details         |
-| ---------------------- | --------------- |
-| Author(s)              | flora131        |
-| Status                 | Draft (WIP)     |
-| Team / Owner           | flora131/atomic |
-| Created / Last Updated | 2026-02-11      |
+| Document Metadata      | Details        |
+| ---------------------- | -------------- |
+| Author(s)              | flora131       |
+| Status                 | Draft (WIP)    |
+| Team / Owner           | bastani/atomic |
+| Created / Last Updated | 2026-02-11     |
 
 ## 1. Executive Summary
 
@@ -14,6 +14,7 @@ This RFC proposes extending the `atomic init` flow to include source control typ
 The proposed solution introduces an SCM selection prompt during initialization that copies the appropriate SCM-specific command files to the user's configuration directory. This enables Sapling users to use native `sl` commands with Phabricator diff submission while maintaining the same developer experience.
 
 **Key changes:**
+
 - ~~**Remove SCM-related skills (`commit`, `create-gh-pr`) from `BUILTIN_SKILLS`**~~ — **COMPLETED** in the TUI merge (commit `aefdf73`). These skills are already removed from `BUILTIN_SKILLS` and exist only as disk-based `gh-commit.md` / `gh-create-pr.md` files.
 - Add source control selection prompt after agent selection in `atomic init`
 - Create Sapling-specific command file variants (`commit.md` with Sapling commands, `submit-diff.md` for Phabricator)
@@ -32,6 +33,7 @@ The proposed solution introduces an SCM selection prompt during initialization t
 The atomic CLI uses a well-structured agent configuration system that copies command files during `atomic init`. The recent TUI merge (`lavaman131/feature/tui`, commit `aefdf73`) introduced significant architectural changes including a simplified CLI surface, new TUI framework, and removal of embedded SCM skills.
 
 **Architecture (Post-TUI Merge):**
+
 - **CLI Framework:** Commander.js v14 (`src/cli.ts`) — migration already completed
 - **Agent Config:** `src/config.ts` defines agent types (Claude, OpenCode, Copilot) with their config folders
 - **Init Flow:** `src/commands/init.ts` handles interactive setup with `@clack/prompts`
@@ -43,44 +45,44 @@ The atomic CLI uses a well-structured agent configuration system that copies com
 
 ```typescript
 export interface AgentConfig {
-  name: string;                    // Display name
-  cmd: string;                     // Command to execute
-  additional_flags: string[];      // Extra flags when spawning agent
-  folder: string;                  // Config folder (.claude, .opencode, .github)
-  install_url: string;             // URL for installation instructions
-  exclude: string[];               // Paths to exclude when copying
-  additional_files: string[];      // Extra files to copy (CLAUDE.md, etc.)
-  preserve_files: string[];        // Files to skip if user has customized
-  merge_files: string[];           // Files to merge (.mcp.json)
+    name: string; // Display name
+    cmd: string; // Command to execute
+    additional_flags: string[]; // Extra flags when spawning agent
+    folder: string; // Config folder (.claude, .opencode, .github)
+    install_url: string; // URL for installation instructions
+    exclude: string[]; // Paths to exclude when copying
+    additional_files: string[]; // Extra files to copy (CLAUDE.md, etc.)
+    preserve_files: string[]; // Files to skip if user has customized
+    merge_files: string[]; // Files to merge (.mcp.json)
 }
 ```
 
 **Current Command File Locations (Post-TUI Merge — note `gh-` prefix):**
 
-| Agent    | Commands Location       | SCM-Specific Commands                        |
-| -------- | ----------------------- | -------------------------------------------- |
-| Claude   | `.claude/commands/`     | `gh-commit.md`, `gh-create-pr.md`            |
-| OpenCode | `.opencode/command/`    | `gh-commit.md`, `gh-create-pr.md`            |
-| Copilot  | `.github/skills/`       | `gh-commit/SKILL.md`, `gh-create-pr/SKILL.md` (empty placeholders) |
+| Agent    | Commands Location    | SCM-Specific Commands                                              |
+| -------- | -------------------- | ------------------------------------------------------------------ |
+| Claude   | `.claude/commands/`  | `gh-commit.md`, `gh-create-pr.md`                                  |
+| OpenCode | `.opencode/command/` | `gh-commit.md`, `gh-create-pr.md`                                  |
+| Copilot  | `.github/skills/`    | `gh-commit/SKILL.md`, `gh-create-pr/SKILL.md` (empty placeholders) |
 
 **SCM Commands Analysis (from research):**
 
-| Command         | Git Operations Used                                              |
-| --------------- | ---------------------------------------------------------------- |
+| Command         | Git Operations Used                                                        |
+| --------------- | -------------------------------------------------------------------------- |
 | `/gh-commit`    | `git status`, `git branch`, `git diff`, `git add`, `git commit`, `git log` |
-| `/gh-create-pr` | `git push`, `gh pr create`                                       |
+| `/gh-create-pr` | `git push`, `gh pr create`                                                 |
 
 **Built-in Skills Status in `skill-commands.ts` (Post-TUI Merge):**
 
 The SCM-related skills (`commit`, `create-gh-pr`) have **already been removed** from `BUILTIN_SKILLS` and `SKILL_DEFINITIONS` in the TUI merge. The current `BUILTIN_SKILLS` array (`src/ui/commands/skill-commands.ts:72-1101`) contains only **5 non-SCM skills**:
 
-| Skill | Lines | Description |
-|-------|-------|-------------|
-| `research-codebase` | 73-279 | Document codebase with research directory |
-| `create-spec` | 280-518 | Create execution plan from research |
-| `explain-code` | 519-726 | Explain code functionality |
-| `prompt-engineer` | 727-903 | Create/improve prompts (pinned) |
-| `testing-anti-patterns` | 904-1100 | Identify testing anti-patterns (pinned) |
+| Skill                   | Lines    | Description                               |
+| ----------------------- | -------- | ----------------------------------------- |
+| `research-codebase`     | 73-279   | Document codebase with research directory |
+| `create-spec`           | 280-518  | Create execution plan from research       |
+| `explain-code`          | 519-726  | Explain code functionality                |
+| `prompt-engineer`       | 727-903  | Create/improve prompts (pinned)           |
+| `testing-anti-patterns` | 904-1100 | Identify testing anti-patterns (pinned)   |
 
 `SKILL_DEFINITIONS` (lines 1113-1135) contains only 3 entries: `research-codebase`, `create-spec`, `explain-code`.
 
@@ -89,6 +91,7 @@ The SCM-related skills (`commit`, `create-gh-pr`) have **already been removed** 
 The disk-based skill discovery system (lines 1331-1581) with priority resolution is fully implemented: pinned builtin > project > user > builtin (non-pinned).
 
 **Limitations:**
+
 1. Command files are Git/GitHub-specific with no alternative for Sapling users
 2. No mechanism to select or configure SCM type during initialization
 3. Users must manually modify command files to use Sapling
@@ -101,10 +104,12 @@ The disk-based skill discovery system (lines 1331-1581) with priority resolution
 - **Technical Debt:** Disk-based command files (`gh-commit.md`, `gh-create-pr.md`) contain hardcoded `git` commands that should be abstracted based on SCM choice
 
 **Research Finding:** Only 2 disk-based commands currently use SCM-specific operations:
+
 1. `/gh-commit` (`gh-commit.md`) — Uses `git status`, `git add`, `git commit`, `git log`, `git diff`
 2. `/gh-create-pr` (`gh-create-pr.md`) — Uses `git push`, `gh pr create`
 
 **Sapling + Phabricator Equivalents:**
+
 1. `/commit` (`commit.md`) — Uses `sl status`, `sl add`, `sl commit`, `sl smartlog`, `sl diff`
 2. `/submit-diff` (`submit-diff.md`) — Uses `jf submit` (or `arc diff`) to create/update Phabricator diffs
 
@@ -212,6 +217,7 @@ flowchart TB
 **Template-based SCM Selection:** We extend the existing template copying pattern to include SCM-specific command file variants. The init flow gains a new step that determines which command file variants to copy.
 
 **Key Design Decisions:**
+
 1. **Explicit Selection:** Users explicitly choose their SCM type (no auto-detection)
 2. **Template Separation:** SCM-specific commands stored in separate template directories
 3. **Non-SCM Skills Unchanged:** Non-SCM skills remain in `BUILTIN_SKILLS` (no disk-based migration needed)
@@ -221,14 +227,14 @@ flowchart TB
 
 ### 4.3 Key Components
 
-| Component          | Current                            | Proposed                                           | Justification                               |
-| ------------------ | ---------------------------------- | -------------------------------------------------- | ------------------------------------------- |
-| **Builtin Skills** | SCM skills already removed from `BUILTIN_SKILLS` | Disk-based `gh-commit.md`/`gh-create-pr.md` already exist | **DONE** — enables SCM-variant selection    |
-| SCM Config         | N/A                                | `src/config.ts` - `SCM_CONFIG` object              | Centralized SCM definitions                 |
-| Init Flow          | Agent selection only               | Agent + SCM selection                              | Enable SCM-specific commands                |
-| Template Structure | Single command files per agent     | SCM-variant directories in `templates/scm/`        | Clean separation of variants                |
-| File Copy Logic    | `copyDirPreserving()` recursive copy | SCM-aware selective copy via `copyScmCommands()`   | Copy correct variant based on selection     |
-| Config Storage     | N/A                                | `.atomic.json` in project root                     | Persist SCM selection                       |
+| Component          | Current                                          | Proposed                                                  | Justification                            |
+| ------------------ | ------------------------------------------------ | --------------------------------------------------------- | ---------------------------------------- |
+| **Builtin Skills** | SCM skills already removed from `BUILTIN_SKILLS` | Disk-based `gh-commit.md`/`gh-create-pr.md` already exist | **DONE** — enables SCM-variant selection |
+| SCM Config         | N/A                                              | `src/config.ts` - `SCM_CONFIG` object                     | Centralized SCM definitions              |
+| Init Flow          | Agent selection only                             | Agent + SCM selection                                     | Enable SCM-specific commands             |
+| Template Structure | Single command files per agent                   | SCM-variant directories in `templates/scm/`               | Clean separation of variants             |
+| File Copy Logic    | `copyDirPreserving()` recursive copy             | SCM-aware selective copy via `copyScmCommands()`          | Copy correct variant based on selection  |
+| Config Storage     | N/A                                              | `.atomic.json` in project root                            | Persist SCM selection                    |
 
 ## 5. Detailed Design
 
@@ -238,48 +244,48 @@ flowchart TB
 
 ```typescript
 // New type for source control systems
-export type SourceControlType = 'github' | 'sapling-phabricator';
+export type SourceControlType = "github" | "sapling-phabricator";
 // Future: | 'azure-devops'
 
 export interface ScmConfig {
-  /** Internal identifier */
-  name: string;
-  /** Display name for prompts */
-  displayName: string;
-  /** Primary CLI tool (git or sl) */
-  cliTool: string;
-  /** Code review tool (gh, jf submit, arc diff, etc.) */
-  reviewTool: string;
-  /** Code review system (github, phabricator) */
-  reviewSystem: string;
-  /** Directory marker for potential future auto-detection */
-  detectDir: string;
-  /** Code review command file name */
-  reviewCommandFile: string;
-  /** Required configuration files */
-  requiredConfigFiles?: string[];
+    /** Internal identifier */
+    name: string;
+    /** Display name for prompts */
+    displayName: string;
+    /** Primary CLI tool (git or sl) */
+    cliTool: string;
+    /** Code review tool (gh, jf submit, arc diff, etc.) */
+    reviewTool: string;
+    /** Code review system (github, phabricator) */
+    reviewSystem: string;
+    /** Directory marker for potential future auto-detection */
+    detectDir: string;
+    /** Code review command file name */
+    reviewCommandFile: string;
+    /** Required configuration files */
+    requiredConfigFiles?: string[];
 }
 
 export const SCM_CONFIG: Record<SourceControlType, ScmConfig> = {
-  github: {
-    name: "github",
-    displayName: "GitHub / Git",
-    cliTool: "git",
-    reviewTool: "gh",
-    reviewSystem: "github",
-    detectDir: ".git",
-    reviewCommandFile: "create-gh-pr.md",
-  },
-  "sapling-phabricator": {
-    name: "sapling-phabricator",
-    displayName: "Sapling + Phabricator",
-    cliTool: "sl",
-    reviewTool: "jf submit",
-    reviewSystem: "phabricator",
-    detectDir: ".sl",
-    reviewCommandFile: "submit-diff.md",
-    requiredConfigFiles: [".arcconfig", "~/.arcrc"],
-  },
+    github: {
+        name: "github",
+        displayName: "GitHub / Git",
+        cliTool: "git",
+        reviewTool: "gh",
+        reviewSystem: "github",
+        detectDir: ".git",
+        reviewCommandFile: "create-gh-pr.md",
+    },
+    "sapling-phabricator": {
+        name: "sapling-phabricator",
+        displayName: "Sapling + Phabricator",
+        cliTool: "sl",
+        reviewTool: "jf submit",
+        reviewSystem: "phabricator",
+        detectDir: ".sl",
+        reviewCommandFile: "submit-diff.md",
+        requiredConfigFiles: [".arcconfig", "~/.arcrc"],
+    },
 };
 
 // Commands that have SCM-specific variants
@@ -287,15 +293,15 @@ export const SCM_SPECIFIC_COMMANDS = ["commit"];
 
 // Helper functions
 export function getScmKeys(): SourceControlType[] {
-  return Object.keys(SCM_CONFIG) as SourceControlType[];
+    return Object.keys(SCM_CONFIG) as SourceControlType[];
 }
 
 export function isValidScm(key: string): key is SourceControlType {
-  return key in SCM_CONFIG;
+    return key in SCM_CONFIG;
 }
 
 export function getScmConfig(key: SourceControlType): ScmConfig {
-  return SCM_CONFIG[key];
+    return SCM_CONFIG[key];
 }
 ```
 
@@ -304,26 +310,29 @@ export function getScmConfig(key: SourceControlType): ScmConfig {
 Sapling + Phabricator requires additional configuration files:
 
 1. **`.arcconfig`** (in repository root):
+
 ```json
 {
-  "conduit_uri": "https://phabricator.example.com/api/",
-  "project_id": "your-project-id"
+    "conduit_uri": "https://phabricator.example.com/api/",
+    "project_id": "your-project-id"
 }
 ```
 
 2. **`~/.arcrc`** (in home directory):
+
 ```json
 {
-  "hosts": {
-    "https://phabricator.example.com/api/": {
-      "user": "username",
-      "oauth": "your-oauth-token"
+    "hosts": {
+        "https://phabricator.example.com/api/": {
+            "user": "username",
+            "oauth": "your-oauth-token"
+        }
     }
-  }
 }
 ```
 
 3. **Sapling config** (`~/.sapling/config` or `.hg/hgrc`):
+
 ```ini
 [extensions]
 fbcodereview =
@@ -392,6 +401,7 @@ templates/
 ```
 
 **Rationale:**
+
 - Clean separation between SCM variants
 - Non-SCM skills (e.g., `research-codebase`, `create-spec`, `prompt-engineer`) remain in `BUILTIN_SKILLS` and do not require disk-based templates
 - Easy to add new SCM types (e.g., Azure DevOps) later
@@ -417,11 +427,11 @@ The codebase already has robust Windows detection in `src/utils/detect.ts`:
 ```typescript
 // Existing functions we will use
 export function isWindows(): boolean {
-  return process.platform === "win32";
+    return process.platform === "win32";
 }
 
 export function getOppositeScriptExtension(): string {
-  return isWindows() ? ".sh" : ".ps1";
+    return isWindows() ? ".sh" : ".ps1";
 }
 ```
 
@@ -437,10 +447,10 @@ The init flow already uses `getOppositeScriptExtension()` to skip platform-inapp
  * full paths to avoid the PowerShell `sl` alias conflict.
  */
 function getScmTemplatePath(scmType: SourceControlType): string {
-  if (scmType === 'sapling-phabricator' && isWindows()) {
-    return 'sapling-phabricator-windows';
-  }
-  return scmType;
+    if (scmType === "sapling-phabricator" && isWindows()) {
+        return "sapling-phabricator-windows";
+    }
+    return scmType;
 }
 ```
 
@@ -474,19 +484,24 @@ In the Markdown command files, this translates to:
 
 ```typescript
 interface InitOptions {
-  showBanner?: boolean;
-  preSelectedAgent?: AgentKey;
-  preSelectedScm?: SourceControlType;  // NEW
-  configNotFoundMessage?: string;
-  force?: boolean;
-  yes?: boolean;
+    showBanner?: boolean;
+    preSelectedAgent?: AgentKey;
+    preSelectedScm?: SourceControlType; // NEW
+    configNotFoundMessage?: string;
+    force?: boolean;
+    yes?: boolean;
 }
 ```
 
 **SCM Selection Prompt** (add after agent selection at line 135, before directory confirmation at line 142 in `initCommand()`):
 
 ```typescript
-import { SCM_CONFIG, type SourceControlType, getScmKeys, isValidScm } from '../config';
+import {
+    SCM_CONFIG,
+    type SourceControlType,
+    getScmKeys,
+    isValidScm,
+} from "../config";
 
 // ... existing agent selection code ...
 
@@ -494,36 +509,36 @@ import { SCM_CONFIG, type SourceControlType, getScmKeys, isValidScm } from '../c
 let scmType: SourceControlType;
 
 if (options.preSelectedScm) {
-  // Pre-selected SCM - validate and skip selection prompt
-  if (!isValidScm(options.preSelectedScm)) {
-    cancel(`Unknown source control: ${options.preSelectedScm}`);
-    process.exit(1);
-  }
-  scmType = options.preSelectedScm;
-  log.info(`Using ${SCM_CONFIG[scmType].displayName} for source control...`);
+    // Pre-selected SCM - validate and skip selection prompt
+    if (!isValidScm(options.preSelectedScm)) {
+        cancel(`Unknown source control: ${options.preSelectedScm}`);
+        process.exit(1);
+    }
+    scmType = options.preSelectedScm;
+    log.info(`Using ${SCM_CONFIG[scmType].displayName} for source control...`);
 } else if (autoConfirm) {
-  // Auto-confirm mode defaults to GitHub
-  scmType = 'github';
-  log.info('Defaulting to GitHub/Git for source control...');
+    // Auto-confirm mode defaults to GitHub
+    scmType = "github";
+    log.info("Defaulting to GitHub/Git for source control...");
 } else {
-  // Interactive selection
-  const scmOptions = getScmKeys().map((key) => ({
-    value: key,
-    label: SCM_CONFIG[key].displayName,
-    hint: `Uses ${SCM_CONFIG[key].cliTool} + ${SCM_CONFIG[key].reviewSystem}`,
-  }));
+    // Interactive selection
+    const scmOptions = getScmKeys().map((key) => ({
+        value: key,
+        label: SCM_CONFIG[key].displayName,
+        hint: `Uses ${SCM_CONFIG[key].cliTool} + ${SCM_CONFIG[key].reviewSystem}`,
+    }));
 
-  const selectedScm = await select({
-    message: "Select your source control system:",
-    options: scmOptions,
-  });
+    const selectedScm = await select({
+        message: "Select your source control system:",
+        options: scmOptions,
+    });
 
-  if (isCancel(selectedScm)) {
-    cancel("Operation cancelled.");
-    process.exit(0);
-  }
+    if (isCancel(selectedScm)) {
+        cancel("Operation cancelled.");
+        process.exit(0);
+    }
 
-  scmType = selectedScm as SourceControlType;
+    scmType = selectedScm as SourceControlType;
 }
 
 // ... continue with directory confirmation ...
@@ -536,16 +551,16 @@ if (options.preSelectedScm) {
 New function to copy SCM-specific command files with **automatic Windows detection**:
 
 ```typescript
-import { join } from 'path';
-import { SCM_CONFIG, type SourceControlType } from '../config';
-import { isWindows } from '../utils/detect';
+import { join } from "path";
+import { SCM_CONFIG, type SourceControlType } from "../config";
+import { isWindows } from "../utils/detect";
 
 interface CopyScmCommandsOptions {
-  scmType: SourceControlType;
-  agentFolder: string;        // e.g., ".claude"
-  commandsSubfolder: string;  // e.g., "commands" or "command"
-  targetDir: string;          // Project root
-  configRoot: string;         // Template root
+    scmType: SourceControlType;
+    agentFolder: string; // e.g., ".claude"
+    commandsSubfolder: string; // e.g., "commands" or "command"
+    targetDir: string; // Project root
+    configRoot: string; // Template root
 }
 
 /**
@@ -558,11 +573,11 @@ interface CopyScmCommandsOptions {
  * is handled via `isWindows()` from `src/utils/detect.ts`.
  */
 function getScmTemplatePath(scmType: SourceControlType): string {
-  // Windows requires special handling for Sapling due to PowerShell `sl` alias
-  if (scmType === 'sapling-phabricator' && isWindows()) {
-    return 'sapling-phabricator-windows';
-  }
-  return scmType;
+    // Windows requires special handling for Sapling due to PowerShell `sl` alias
+    if (scmType === "sapling-phabricator" && isWindows()) {
+        return "sapling-phabricator-windows";
+    }
+    return scmType;
 }
 
 /**
@@ -575,54 +590,57 @@ function getScmTemplatePath(scmType: SourceControlType): string {
  * that invoke sl.exe via full path to avoid PowerShell alias conflicts.
  */
 async function copyScmCommands(options: CopyScmCommandsOptions): Promise<void> {
-  const { scmType, agentFolder, commandsSubfolder, targetDir, configRoot } = options;
+    const { scmType, agentFolder, commandsSubfolder, targetDir, configRoot } =
+        options;
 
-  // Resolve platform-specific template path
-  const scmTemplateDir = getScmTemplatePath(scmType);
+    // Resolve platform-specific template path
+    const scmTemplateDir = getScmTemplatePath(scmType);
 
-  const scmTemplatePath = join(
-    configRoot,
-    'templates',
-    'scm',
-    scmTemplateDir,
-    agentFolder,
-    commandsSubfolder
-  );
+    const scmTemplatePath = join(
+        configRoot,
+        "templates",
+        "scm",
+        scmTemplateDir,
+        agentFolder,
+        commandsSubfolder,
+    );
 
-  const targetPath = join(targetDir, agentFolder, commandsSubfolder);
+    const targetPath = join(targetDir, agentFolder, commandsSubfolder);
 
-  // Check if SCM template directory exists
-  if (!(await pathExists(scmTemplatePath))) {
-    // No SCM-specific version exists; non-SCM skills are provided via BUILTIN_SKILLS
-    return;
-  }
-
-  // Log platform-specific selection in debug mode
-  if (process.env.DEBUG === '1') {
-    if (scmType === 'sapling-phabricator' && isWindows()) {
-      console.log(`[DEBUG] Using Windows-specific Sapling templates (full path to sl.exe)`);
+    // Check if SCM template directory exists
+    if (!(await pathExists(scmTemplatePath))) {
+        // No SCM-specific version exists; non-SCM skills are provided via BUILTIN_SKILLS
+        return;
     }
-    console.log(`[DEBUG] Copying SCM templates from: ${scmTemplatePath}`);
-  }
 
-  // Copy SCM-specific command files (overwrites base commands)
-  await copyDirPreserving(scmTemplatePath, targetPath);
+    // Log platform-specific selection in debug mode
+    if (process.env.DEBUG === "1") {
+        if (scmType === "sapling-phabricator" && isWindows()) {
+            console.log(
+                `[DEBUG] Using Windows-specific Sapling templates (full path to sl.exe)`,
+            );
+        }
+        console.log(`[DEBUG] Copying SCM templates from: ${scmTemplatePath}`);
+    }
+
+    // Copy SCM-specific command files (overwrites base commands)
+    await copyDirPreserving(scmTemplatePath, targetPath);
 }
 
 /**
  * Get the commands subfolder name for each agent type.
  */
 function getCommandsSubfolder(agentKey: AgentKey): string {
-  switch (agentKey) {
-    case 'claude':
-      return 'commands';
-    case 'opencode':
-      return 'command';
-    case 'copilot':
-      return 'skills';
-    default:
-      return 'commands';
-  }
+    switch (agentKey) {
+        case "claude":
+            return "commands";
+        case "opencode":
+            return "command";
+        case "copilot":
+            return "skills";
+        default:
+            return "commands";
+    }
 }
 ```
 
@@ -631,16 +649,16 @@ function getCommandsSubfolder(agentKey: AgentKey): string {
 ```typescript
 // After copying base template folder
 await copyDirPreserving(sourceFolder, targetFolder, {
-  exclude: agent.exclude,
+    exclude: agent.exclude,
 });
 
 // NEW: Copy SCM-specific command files (overwrites base versions)
 await copyScmCommands({
-  scmType,
-  agentFolder: agent.folder,
-  commandsSubfolder: getCommandsSubfolder(agentKey),
-  targetDir,
-  configRoot,
+    scmType,
+    agentFolder: agent.folder,
+    commandsSubfolder: getCommandsSubfolder(agentKey),
+    targetDir,
+    configRoot,
 });
 
 // Save SCM selection to config
@@ -652,63 +670,71 @@ await saveAtomicConfig(targetDir, { scm: scmType, agent: agentKey });
 **File:** `src/utils/atomic-config.ts` (new file)
 
 ```typescript
-import { join } from 'path';
-import { readFile, writeFile } from 'fs/promises';
-import type { SourceControlType } from '../config';
-import type { AgentKey } from '../config';
+import { join } from "path";
+import { readFile, writeFile } from "fs/promises";
+import type { SourceControlType } from "../config";
+import type { AgentKey } from "../config";
 
-const CONFIG_FILENAME = '.atomic.json';
+const CONFIG_FILENAME = ".atomic.json";
 
 export interface AtomicConfig {
-  /** Version of config schema */
-  version?: number;
-  /** Selected agent type */
-  agent?: AgentKey;
-  /** Selected source control type */
-  scm?: SourceControlType;
-  /** Timestamp of last init */
-  lastUpdated?: string;
+    /** Version of config schema */
+    version?: number;
+    /** Selected agent type */
+    agent?: AgentKey;
+    /** Selected source control type */
+    scm?: SourceControlType;
+    /** Timestamp of last init */
+    lastUpdated?: string;
 }
 
 /**
  * Read atomic config from project directory.
  */
-export async function readAtomicConfig(projectDir: string): Promise<AtomicConfig | null> {
-  const configPath = join(projectDir, CONFIG_FILENAME);
-  try {
-    const content = await readFile(configPath, 'utf-8');
-    return JSON.parse(content) as AtomicConfig;
-  } catch {
-    return null;
-  }
+export async function readAtomicConfig(
+    projectDir: string,
+): Promise<AtomicConfig | null> {
+    const configPath = join(projectDir, CONFIG_FILENAME);
+    try {
+        const content = await readFile(configPath, "utf-8");
+        return JSON.parse(content) as AtomicConfig;
+    } catch {
+        return null;
+    }
 }
 
 /**
  * Save atomic config to project directory.
  */
 export async function saveAtomicConfig(
-  projectDir: string,
-  updates: Partial<AtomicConfig>
+    projectDir: string,
+    updates: Partial<AtomicConfig>,
 ): Promise<void> {
-  const configPath = join(projectDir, CONFIG_FILENAME);
-  const existing = await readAtomicConfig(projectDir) ?? {};
+    const configPath = join(projectDir, CONFIG_FILENAME);
+    const existing = (await readAtomicConfig(projectDir)) ?? {};
 
-  const newConfig: AtomicConfig = {
-    ...existing,
-    ...updates,
-    version: 1,
-    lastUpdated: new Date().toISOString(),
-  };
+    const newConfig: AtomicConfig = {
+        ...existing,
+        ...updates,
+        version: 1,
+        lastUpdated: new Date().toISOString(),
+    };
 
-  await writeFile(configPath, JSON.stringify(newConfig, null, 2) + '\n', 'utf-8');
+    await writeFile(
+        configPath,
+        JSON.stringify(newConfig, null, 2) + "\n",
+        "utf-8",
+    );
 }
 
 /**
  * Get the selected SCM type from atomic config, or null if not set.
  */
-export async function getSelectedScm(projectDir: string): Promise<SourceControlType | null> {
-  const config = await readAtomicConfig(projectDir);
-  return config?.scm ?? null;
+export async function getSelectedScm(
+    projectDir: string,
+): Promise<SourceControlType | null> {
+    const config = await readAtomicConfig(projectDir);
+    return config?.scm ?? null;
 }
 ```
 
@@ -716,10 +742,10 @@ export async function getSelectedScm(projectDir: string): Promise<SourceControlT
 
 ```json
 {
-  "version": 1,
-  "agent": "claude",
-  "scm": "sapling-phabricator",
-  "lastUpdated": "2026-02-10T12:00:00.000Z"
+    "version": 1,
+    "agent": "claude",
+    "scm": "sapling-phabricator",
+    "lastUpdated": "2026-02-10T12:00:00.000Z"
 }
 ```
 
@@ -765,14 +791,14 @@ Create well-formatted commit: $ARGUMENTS
 
 ## Sapling Commit Commands Reference
 
-| Command | Description |
-|---------|-------------|
-| `sl commit -m "message"` | Create a new commit with message |
-| `sl commit -A` | Add untracked files and commit |
-| `sl amend` | Amend current commit (auto-rebases descendants) |
-| `sl amend --to COMMIT` | Amend changes to a specific commit in stack |
-| `sl absorb` | Intelligently absorb changes into stack commits |
-| `sl fold --from .^` | Combine parent commit into current |
+| Command                  | Description                                     |
+| ------------------------ | ----------------------------------------------- |
+| `sl commit -m "message"` | Create a new commit with message                |
+| `sl commit -A`           | Add untracked files and commit                  |
+| `sl amend`               | Amend current commit (auto-rebases descendants) |
+| `sl amend --to COMMIT`   | Amend changes to a specific commit in stack     |
+| `sl absorb`              | Intelligently absorb changes into stack commits |
+| `sl fold --from .^`      | Combine parent commit into current              |
 
 ## Best Practices for Commits
 
@@ -787,13 +813,14 @@ Create well-formatted commit: $ARGUMENTS
 The Conventional Commits specification is a lightweight convention on top of commit messages. It provides an easy set of rules for creating an explicit commit history.
 
 The commit message should be structured as follows:
-
 ```
+
 <type>[optional scope]: <description>
 
 [optional body]
 
 [optional footer(s)]
+
 ```
 
 ## Commit Types
@@ -807,19 +834,25 @@ The commit message should be structured as follows:
 
 ### Simple commit
 ```
+
 docs: correct spelling of CHANGELOG
+
 ```
 
 ### Commit with scope
 ```
+
 feat(lang): add Polish language
+
 ```
 
 ### Breaking change
 ```
+
 feat!: send an email to the customer when a product is shipped
 
 BREAKING CHANGE: `extends` key in config file is now used for extending other config files
+
 ```
 
 ## Important Notes
@@ -837,7 +870,7 @@ BREAKING CHANGE: `extends` key in config file is now used for extending other co
 
 **File:** `templates/scm/sapling-phabricator/.claude/commands/submit-diff.md`
 
-```markdown
+````markdown
 ---
 description: Submit commits as Phabricator diffs for code review using Sapling.
 model: opus
@@ -868,25 +901,27 @@ Submit commits to Phabricator for code review using `jf submit` (Meta) or `arc d
 The `jf submit` command (Meta's internal tool) submits commits to Phabricator for code review. For open-source Phabricator deployments, `arc diff` serves the same purpose. Note: there is no top-level `sl submit` CLI command in Sapling — submission is handled by these external tools or the ISL web UI.
 
 The submission process:
+
 - Creates a new diff if none exists for the commit
 - Updates existing diff if one is already linked (via `Differential Revision:` in commit message)
 - Handles stacked diffs with proper dependency relationships
 
 ### Common Operations
 
-| Task | Command |
-|------|---------|
-| Submit current commit | `jf submit` |
-| Submit as draft | Via ISL web UI only (no CLI flag) |
-| Update diff after amend | `sl amend && jf submit` |
-| View diff status | `sl ssl` (shows diff status in smartlog) |
-| Check sync status | `sl log -T '{syncstatus}\n' -r .` |
-| Get diff ID | `sl log -T '{phabdiff}\n' -r .` |
-| View changes since last submit | `sl diff --since-last-submit` |
+| Task                           | Command                                  |
+| ------------------------------ | ---------------------------------------- |
+| Submit current commit          | `jf submit`                              |
+| Submit as draft                | Via ISL web UI only (no CLI flag)        |
+| Update diff after amend        | `sl amend && jf submit`                  |
+| View diff status               | `sl ssl` (shows diff status in smartlog) |
+| Check sync status              | `sl log -T '{syncstatus}\n' -r .`        |
+| Get diff ID                    | `sl log -T '{phabdiff}\n' -r .`          |
+| View changes since last submit | `sl diff --since-last-submit`            |
 
 ### Diff Status Values
 
 The `{phabstatus}` template keyword shows:
+
 - `Needs Review` - Awaiting reviewer feedback
 - `Accepted` - Ready to land
 - `Needs Revision` - Reviewer requested changes
@@ -901,6 +936,7 @@ The `{phabstatus}` template keyword shows:
 ## Stacked Diffs
 
 Sapling naturally supports stacked commits. When submitting:
+
 - Each commit in the stack gets its own Phabricator diff (D12345, D12346, D12347)
 - Diffs are linked with proper dependency relationships
 - Reviewers can review each diff independently
@@ -914,6 +950,7 @@ sl commit -m "feat: add error handling"
 # Submit entire stack
 jf submit
 ```
+````
 
 ## Prerequisites
 
@@ -934,6 +971,7 @@ sl log -T '{phabstatus}\n' -r .  # Should not error
 ## After Diff is Approved
 
 Once a diff is accepted in Phabricator:
+
 1. The diff can be "landed" (merged to main branch)
 2. Sapling automatically marks landed commits as hidden
 3. Use `sl ssl` to verify the diff shows as `Committed`
@@ -943,7 +981,8 @@ Once a diff is accepted in Phabricator:
 - Unlike GitHub PRs, Phabricator diffs are tied to commits via the `Differential Revision:` line
 - Use `sl diff --since-last-submit` to see what changed since last submission
 - The ISL (Interactive Smartlog) web UI also supports submitting diffs
-```
+
+````
 
 **Reference:** [Sapling Reference Guide - Phabricator Integration](../research/docs/sapling-reference.md)
 
@@ -1009,11 +1048,11 @@ Create well-formatted commit: $ARGUMENTS
 - Use `sl amend` freely - Sapling handles rebasing automatically
 
 [... Conventional Commits specification same as Unix version ...]
-```
+````
 
 **File:** `templates/scm/sapling-phabricator-windows/.claude/commands/submit-diff.md`
 
-```markdown
+````markdown
 ---
 description: Submit commits as Phabricator diffs for code review using Sapling (Windows).
 model: opus
@@ -1044,19 +1083,20 @@ Submit commits to Phabricator for code review using `jf submit` (Meta) or `arc d
 ## Sapling + Phabricator Workflow (Windows)
 
 The submit command submits commits to Phabricator for code review:
+
 - Creates a new diff if none exists for the commit
 - Updates existing diff if one is already linked (via `Differential Revision:` in commit message)
 - Handles stacked diffs with proper dependency relationships
 
 ### Common Operations (Windows)
 
-| Task | Command |
-|------|---------|
-| Submit current commit | `jf submit` |
-| Submit as draft | Via ISL web UI only (no CLI flag) |
-| Update diff after amend | `& 'C:\Program Files\Sapling\sl.exe' amend; jf submit` |
-| View diff status | `& 'C:\Program Files\Sapling\sl.exe' ssl` |
-| Check sync status | `& 'C:\Program Files\Sapling\sl.exe' log -T '{syncstatus}\n' -r .` |
+| Task                    | Command                                                            |
+| ----------------------- | ------------------------------------------------------------------ |
+| Submit current commit   | `jf submit`                                                        |
+| Submit as draft         | Via ISL web UI only (no CLI flag)                                  |
+| Update diff after amend | `& 'C:\Program Files\Sapling\sl.exe' amend; jf submit`             |
+| View diff status        | `& 'C:\Program Files\Sapling\sl.exe' ssl`                          |
+| Check sync status       | `& 'C:\Program Files\Sapling\sl.exe' log -T '{syncstatus}\n' -r .` |
 
 ## Prerequisites
 
@@ -1076,13 +1116,15 @@ Get-Content .arcconfig
 # Verify authentication
 & 'C:\Program Files\Sapling\sl.exe' log -T '{phabstatus}\n' -r .
 ```
+````
 
 ## Notes
 
 - Unlike GitHub PRs, Phabricator diffs are tied to commits via the `Differential Revision:` line
 - Use `& 'C:\Program Files\Sapling\sl.exe' diff --since-last-submit` to see what changed since last submission
 - The ISL (Interactive Smartlog) web UI also supports submitting diffs and works identically on Windows
-```
+
+````
 
 **Key Differences in Windows Command Files:**
 
@@ -1122,7 +1164,7 @@ sl status
 sl bookmark
 sl smartlog -l 5
 sl diff --stat
-```
+````
 
 ## Commit Workflow
 
@@ -1142,14 +1184,14 @@ sl diff --stat
 
 ## Sapling Commit Commands
 
-| Command | Description |
-|---------|-------------|
-| `sl commit -m "message"` | Create a new commit with message |
-| `sl commit -A` | Add untracked files and commit |
-| `sl amend` | Amend current commit (auto-rebases descendants) |
-| `sl amend --to COMMIT` | Amend changes to a specific commit in stack |
-| `sl absorb` | Intelligently absorb changes into stack commits |
-| `sl fold --from .^` | Combine parent commit into current |
+| Command                  | Description                                     |
+| ------------------------ | ----------------------------------------------- |
+| `sl commit -m "message"` | Create a new commit with message                |
+| `sl commit -A`           | Add untracked files and commit                  |
+| `sl amend`               | Amend current commit (auto-rebases descendants) |
+| `sl amend --to COMMIT`   | Amend changes to a specific commit in stack     |
+| `sl absorb`              | Intelligently absorb changes into stack commits |
+| `sl fold --from .^`      | Combine parent commit into current              |
 
 ## Conventional Commits Format
 
@@ -1163,7 +1205,8 @@ Types: `feat:`, `fix:`, `build:`, `chore:`, `ci:`, `docs:`, `style:`, `refactor:
 - Use `sl amend` freely — Sapling handles rebasing automatically
 - IMPORTANT: DO NOT SKIP pre-commit checks
 - ALWAYS attribute AI-Assisted Code Authorship
-```
+
+````
 
 **File:** `templates/scm/sapling-phabricator/.github/skills/submit-diff/SKILL.md`
 
@@ -1186,32 +1229,33 @@ sl status
 sl bookmark
 sl ssl
 sl diff --stat
-```
+````
 
 ## Submission Workflow
 
 1. If there are uncommitted changes, first commit them using `sl commit`
 2. Submit commits to Phabricator:
-   ```bash
-   jf submit
-   ```
+    ```bash
+    jf submit
+    ```
 3. Each commit in the stack becomes a separate Phabricator diff (D12345)
 4. Commit messages are automatically updated with `Differential Revision:` link
 
 ## Common Operations
 
-| Task | Command |
-|------|---------|
-| Submit current commit | `jf submit` |
-| Update diff after amend | `sl amend && jf submit` |
-| View diff status | `sl ssl` (shows diff status in smartlog) |
-| Check sync status | `sl log -T '{syncstatus}\n' -r .` |
-| Get diff ID | `sl log -T '{phabdiff}\n' -r .` |
-| View changes since last submit | `sl diff --since-last-submit` |
+| Task                           | Command                                  |
+| ------------------------------ | ---------------------------------------- |
+| Submit current commit          | `jf submit`                              |
+| Update diff after amend        | `sl amend && jf submit`                  |
+| View diff status               | `sl ssl` (shows diff status in smartlog) |
+| Check sync status              | `sl log -T '{syncstatus}\n' -r .`        |
+| Get diff ID                    | `sl log -T '{phabdiff}\n' -r .`          |
+| View changes since last submit | `sl diff --since-last-submit`            |
 
 ## Stacked Diffs
 
 Sapling naturally supports stacked commits. When submitting:
+
 - Each commit in the stack gets its own Phabricator diff
 - Diffs are linked with proper dependency relationships
 - Reviewers can review each diff independently
@@ -1219,6 +1263,7 @@ Sapling naturally supports stacked commits. When submitting:
 ## After Diff is Approved
 
 Once a diff is accepted in Phabricator:
+
 1. The diff can be "landed" (merged to main branch)
 2. Sapling automatically marks landed commits as hidden
 3. Use `sl ssl` to verify the diff shows as `Committed`
@@ -1228,7 +1273,8 @@ Once a diff is accepted in Phabricator:
 1. `.arcconfig` must exist in repository root with Phabricator URL
 2. `~/.arcrc` must contain authentication credentials
 3. `fbcodereview` extension must be enabled in Sapling config
-```
+
+````
 
 **File:** `templates/scm/sapling-phabricator-windows/.github/skills/commit/SKILL.md`
 
@@ -1257,7 +1303,7 @@ Run these commands to understand the current state:
 & 'C:\Program Files\Sapling\sl.exe' bookmark
 & 'C:\Program Files\Sapling\sl.exe' smartlog -l 5
 & 'C:\Program Files\Sapling\sl.exe' diff --stat
-```
+````
 
 ## Commit Workflow
 
@@ -1276,19 +1322,20 @@ Run these commands to understand the current state:
 
 ## Sapling Commit Commands (Windows)
 
-| Command | Description |
-|---------|-------------|
-| `& 'C:\Program Files\Sapling\sl.exe' commit -m "message"` | Create a new commit |
-| `& 'C:\Program Files\Sapling\sl.exe' commit -A` | Add untracked files and commit |
-| `& 'C:\Program Files\Sapling\sl.exe' amend` | Amend current commit (auto-rebases descendants) |
-| `& 'C:\Program Files\Sapling\sl.exe' absorb` | Intelligently absorb changes into stack commits |
+| Command                                                   | Description                                     |
+| --------------------------------------------------------- | ----------------------------------------------- |
+| `& 'C:\Program Files\Sapling\sl.exe' commit -m "message"` | Create a new commit                             |
+| `& 'C:\Program Files\Sapling\sl.exe' commit -A`           | Add untracked files and commit                  |
+| `& 'C:\Program Files\Sapling\sl.exe' amend`               | Amend current commit (auto-rebases descendants) |
+| `& 'C:\Program Files\Sapling\sl.exe' absorb`              | Intelligently absorb changes into stack commits |
 
 ## Conventional Commits Format
 
 Use the format: `<type>[optional scope]: <description>`
 
 Types: `feat:`, `fix:`, `build:`, `chore:`, `ci:`, `docs:`, `style:`, `refactor:`, `perf:`, `test:`
-```
+
+````
 
 **File:** `templates/scm/sapling-phabricator-windows/.github/skills/submit-diff/SKILL.md`
 
@@ -1311,25 +1358,25 @@ Submit commits to Phabricator for code review using `jf submit` (Meta) or `arc d
 & 'C:\Program Files\Sapling\sl.exe' bookmark
 & 'C:\Program Files\Sapling\sl.exe' ssl
 & 'C:\Program Files\Sapling\sl.exe' diff --stat
-```
+````
 
 ## Submission Workflow
 
 1. If there are uncommitted changes, first commit them
 2. Submit commits to Phabricator:
-   ```powershell
-   jf submit
-   ```
+    ```powershell
+    jf submit
+    ```
 3. Each commit in the stack becomes a separate Phabricator diff (D12345)
 
 ## Common Operations (Windows)
 
-| Task | Command |
-|------|---------|
-| Submit current commit | `jf submit` |
-| Update diff after amend | `& 'C:\Program Files\Sapling\sl.exe' amend; jf submit` |
-| View diff status | `& 'C:\Program Files\Sapling\sl.exe' ssl` |
-| Check sync status | `& 'C:\Program Files\Sapling\sl.exe' log -T '{syncstatus}\n' -r .` |
+| Task                    | Command                                                            |
+| ----------------------- | ------------------------------------------------------------------ |
+| Submit current commit   | `jf submit`                                                        |
+| Update diff after amend | `& 'C:\Program Files\Sapling\sl.exe' amend; jf submit`             |
+| View diff status        | `& 'C:\Program Files\Sapling\sl.exe' ssl`                          |
+| Check sync status       | `& 'C:\Program Files\Sapling\sl.exe' log -T '{syncstatus}\n' -r .` |
 
 ## Prerequisites
 
@@ -1344,7 +1391,8 @@ Submit commits to Phabricator for code review using `jf submit` (Meta) or `arc d
 Get-Content .arcconfig
 & 'C:\Program Files\Sapling\sl.exe' log -T '{phabstatus}\n' -r .
 ```
-```
+
+````
 
 ### 5.8 Commands Summary
 
@@ -1459,7 +1507,7 @@ export function buildImplementFeaturePrompt(scm: SourceControlType = 'github'): 
 - After implementing, use ${commitRef} to commit your changes
 ...`;
 }
-```
+````
 
 No changes are needed to `workflow-commands.ts`, `RalphWorkflowState`, or `CommandContext`. PR creation and diff submission remain out of scope for the Ralph workflow.
 
@@ -1469,13 +1517,13 @@ No changes are needed to `workflow-commands.ts`, `RalphWorkflowState`, or `Comma
 
 **Current CLI Commands** (`src/cli.ts`):
 
-| Command | Lines | Description |
-|---------|-------|-------------|
-| `atomic` / `atomic init` | 75-91 | Default command — interactive setup (agent selection, file copying) |
-| `atomic chat` | 94-155 | Interactive chat session with a coding agent |
-| `atomic config set` | 163-170 | Set configuration values (parent `config` at 158-162) |
-| `atomic update` | 173-178 | Self-update binary installations |
-| `atomic uninstall` | 181-194 | Remove atomic installation |
+| Command                  | Lines   | Description                                                         |
+| ------------------------ | ------- | ------------------------------------------------------------------- |
+| `atomic` / `atomic init` | 75-91   | Default command — interactive setup (agent selection, file copying) |
+| `atomic chat`            | 94-155  | Interactive chat session with a coding agent                        |
+| `atomic config set`      | 163-170 | Set configuration values (parent `config` at 158-162)               |
+| `atomic update`          | 173-178 | Self-update binary installations                                    |
+| `atomic uninstall`       | 181-194 | Remove atomic installation                                          |
 
 **Updated `init` command structure (with SCM flag):**
 
@@ -1501,27 +1549,27 @@ atomic chat "fix the typecheck errors"         # Chat with initial prompt
 ```typescript
 // Add SCM option to init command
 program
-  .command("init", { isDefault: true })
-  .description("Interactive setup with agent selection")
-  .option(
-    "-a, --agent <name>",
-    `Pre-select agent to configure (${agentChoices})`
-  )
-  .option(
-    "-s, --scm <type>",
-    "Pre-select source control type (github, sapling-phabricator)"  // NEW
-  )
-  .action(async (localOpts) => {
-    const globalOpts = program.opts();
+    .command("init", { isDefault: true })
+    .description("Interactive setup with agent selection")
+    .option(
+        "-a, --agent <name>",
+        `Pre-select agent to configure (${agentChoices})`,
+    )
+    .option(
+        "-s, --scm <type>",
+        "Pre-select source control type (github, sapling-phabricator)", // NEW
+    )
+    .action(async (localOpts) => {
+        const globalOpts = program.opts();
 
-    await initCommand({
-      showBanner: globalOpts.banner !== false,
-      preSelectedAgent: localOpts.agent as AgentKey | undefined,
-      preSelectedScm: localOpts.scm as SourceControlType | undefined,  // NEW
-      force: globalOpts.force,
-      yes: globalOpts.yes,
+        await initCommand({
+            showBanner: globalOpts.banner !== false,
+            preSelectedAgent: localOpts.agent as AgentKey | undefined,
+            preSelectedScm: localOpts.scm as SourceControlType | undefined, // NEW
+            force: globalOpts.force,
+            yes: globalOpts.yes,
+        });
     });
-  });
 ```
 
 **Updated help text:**
@@ -1549,13 +1597,13 @@ When `atomic chat -a <agent>` is run and the agent's config folder doesn't exist
 
 ## 6. Alternatives Considered
 
-| Option                                     | Pros                                              | Cons                                                   | Reason for Rejection                                  |
-| ------------------------------------------ | ------------------------------------------------- | ------------------------------------------------------ | ----------------------------------------------------- |
-| **A: Auto-detect SCM from .git/.sl**       | Zero user friction, "just works"                  | Ambiguous for Sapling-on-Git repos, less explicit      | Hybrid repos make detection unreliable                |
-| **B: Single command with SCM flag**        | Less file duplication                             | Complexity in command files, harder to maintain        | Violates single-responsibility principle              |
-| **C: Runtime SCM detection in commands**   | No init changes, dynamic behavior                 | Commands become complex, harder to customize           | Moves complexity to wrong layer                       |
-| **D: Template variants (Selected)**        | Clean separation, easy to maintain, extensible    | More template files to manage                          | **Selected:** Best balance of simplicity and clarity  |
-| **E: Embedded SCM variants in skill-commands.ts** | Single source of truth                     | Large file, harder to customize                        | Disk-based commands are more user-editable            |
+| Option                                            | Pros                                           | Cons                                              | Reason for Rejection                                 |
+| ------------------------------------------------- | ---------------------------------------------- | ------------------------------------------------- | ---------------------------------------------------- |
+| **A: Auto-detect SCM from .git/.sl**              | Zero user friction, "just works"               | Ambiguous for Sapling-on-Git repos, less explicit | Hybrid repos make detection unreliable               |
+| **B: Single command with SCM flag**               | Less file duplication                          | Complexity in command files, harder to maintain   | Violates single-responsibility principle             |
+| **C: Runtime SCM detection in commands**          | No init changes, dynamic behavior              | Commands become complex, harder to customize      | Moves complexity to wrong layer                      |
+| **D: Template variants (Selected)**               | Clean separation, easy to maintain, extensible | More template files to manage                     | **Selected:** Best balance of simplicity and clarity |
+| **E: Embedded SCM variants in skill-commands.ts** | Single source of truth                         | Large file, harder to customize                   | Disk-based commands are more user-editable           |
 
 **Reference:** [Research Section "Open Questions"](../research/docs/2026-02-10-source-control-type-selection.md)
 
@@ -1567,8 +1615,8 @@ When `atomic chat -a <agent>` is run and the agent's config folder doesn't exist
 - **No network requests** - Selection is purely local configuration
 - **Input Validation** - SCM type validated via `isValidScm()` type guard
 - **Credential handling:**
-  - GitHub: Uses `gh` CLI authentication
-  - Sapling + Phabricator: Uses `.arcrc` credentials (OAuth tokens stored locally)
+    - GitHub: Uses `gh` CLI authentication
+    - Sapling + Phabricator: Uses `.arcrc` credentials (OAuth tokens stored locally)
 - **Command Allowlists** - Each SCM variant specifies appropriate `allowed-tools` in frontmatter
 - **Phabricator tokens** - Never stored in atomic config; uses existing `.arcrc` file
 
@@ -1587,17 +1635,18 @@ trackAtomicCommand("init", agentKey as AgentType, true, { scm: scmType });
 
 ### 7.3 Behavior Matrix
 
-| Scenario                          | Behavior                                               |
-| --------------------------------- | ------------------------------------------------------ |
-| `atomic init` without `--scm`     | Prompts for SCM selection (new step after agent selection) |
-| Re-running init with different SCM | Overwrites command files with new SCM variant         |
-| Auto-confirm (`--yes`) mode       | Sets SCM to GitHub (most common default)               |
-| `atomic chat -a <agent>` with existing config | Uses existing commands (no SCM check)      |
-| `atomic chat -a <agent>` without config | Runs full init flow including SCM selection prompt |
+| Scenario                                      | Behavior                                                   |
+| --------------------------------------------- | ---------------------------------------------------------- |
+| `atomic init` without `--scm`                 | Prompts for SCM selection (new step after agent selection) |
+| Re-running init with different SCM            | Overwrites command files with new SCM variant              |
+| Auto-confirm (`--yes`) mode                   | Sets SCM to GitHub (most common default)                   |
+| `atomic chat -a <agent>` with existing config | Uses existing commands (no SCM check)                      |
+| `atomic chat -a <agent>` without config       | Runs full init flow including SCM selection prompt         |
 
 ### 7.4 Extensibility for Future SCM Types
 
 The architecture supports adding new SCM types by:
+
 1. Adding entry to `SCM_CONFIG` in `src/config.ts`
 2. Creating variant files in the templates directory
 3. No changes required to init flow logic
@@ -1618,6 +1667,7 @@ The architecture supports adding new SCM types by:
 ```
 
 New template directories:
+
 ```
 templates/scm/azure-devops/
 ├── .claude/commands/
@@ -1646,107 +1696,113 @@ templates/scm/azure-devops/
 
 ```typescript
 // tests/scm-config.test.ts
-describe('SCM Configuration', () => {
-  test('getScmKeys returns all SCM types', () => {
-    expect(getScmKeys()).toEqual(['github', 'sapling-phabricator']);
-  });
+describe("SCM Configuration", () => {
+    test("getScmKeys returns all SCM types", () => {
+        expect(getScmKeys()).toEqual(["github", "sapling-phabricator"]);
+    });
 
-  test('isValidScm validates known SCM types', () => {
-    expect(isValidScm('github')).toBe(true);
-    expect(isValidScm('sapling-phabricator')).toBe(true);
-    expect(isValidScm('sapling')).toBe(false);  // Old name not valid
-    expect(isValidScm('unknown')).toBe(false);
-  });
+    test("isValidScm validates known SCM types", () => {
+        expect(isValidScm("github")).toBe(true);
+        expect(isValidScm("sapling-phabricator")).toBe(true);
+        expect(isValidScm("sapling")).toBe(false); // Old name not valid
+        expect(isValidScm("unknown")).toBe(false);
+    });
 
-  test('SCM_CONFIG contains required fields', () => {
-    for (const key of getScmKeys()) {
-      const config = SCM_CONFIG[key];
-      expect(config.name).toBeDefined();
-      expect(config.displayName).toBeDefined();
-      expect(config.cliTool).toBeDefined();
-      expect(config.reviewTool).toBeDefined();
-      expect(config.reviewSystem).toBeDefined();
-    }
-  });
+    test("SCM_CONFIG contains required fields", () => {
+        for (const key of getScmKeys()) {
+            const config = SCM_CONFIG[key];
+            expect(config.name).toBeDefined();
+            expect(config.displayName).toBeDefined();
+            expect(config.cliTool).toBeDefined();
+            expect(config.reviewTool).toBeDefined();
+            expect(config.reviewSystem).toBeDefined();
+        }
+    });
 
-  test('Sapling+Phabricator has required config files', () => {
-    const config = SCM_CONFIG['sapling-phabricator'];
-    expect(config.requiredConfigFiles).toContain('.arcconfig');
-    expect(config.requiredConfigFiles).toContain('~/.arcrc');
-  });
+    test("Sapling+Phabricator has required config files", () => {
+        const config = SCM_CONFIG["sapling-phabricator"];
+        expect(config.requiredConfigFiles).toContain(".arcconfig");
+        expect(config.requiredConfigFiles).toContain("~/.arcrc");
+    });
 });
 
 // tests/atomic-config.test.ts
-describe('Atomic Config', () => {
-  test('saves and reads SCM selection', async () => {
-    await saveAtomicConfig(tempDir, { scm: 'sapling-phabricator' });
-    const config = await readAtomicConfig(tempDir);
-    expect(config?.scm).toBe('sapling-phabricator');
-  });
+describe("Atomic Config", () => {
+    test("saves and reads SCM selection", async () => {
+        await saveAtomicConfig(tempDir, { scm: "sapling-phabricator" });
+        const config = await readAtomicConfig(tempDir);
+        expect(config?.scm).toBe("sapling-phabricator");
+    });
 });
 ```
 
 #### Integration Tests
 
-| Test Case                    | Command                                    | Expected                                    |
-| ---------------------------- | ------------------------------------------ | ------------------------------------------- |
-| Default SCM (interactive)    | `atomic init` (select GitHub)              | Copies github command variants              |
-| Sapling+Phabricator selection| `atomic init` (select Sapling+Phabricator) | Copies sapling-phabricator command variants |
-| Pre-selected SCM             | `atomic init --scm sapling-phabricator`    | Skips SCM prompt, uses Sapling+Phabricator  |
-| Auto-confirm mode            | `atomic init --yes`                        | Sets SCM to GitHub                          |
-| Config persistence           | Run init, check `.atomic.json`             | SCM selection saved                         |
-| Re-init with different SCM   | Init GitHub, then init Sapling+Phabricator | Command files updated to Sapling            |
-| Non-SCM skills unaffected    | Init with any SCM                          | `research-codebase` skill still works via BUILTIN_SKILLS |
-| Auto-init prompts for SCM    | `atomic chat -a claude` (no `.claude/`)    | Runs full init flow with SCM selection prompt |
-| Auto-init with pre-selected  | `atomic init -a claude --scm github --yes` | Non-interactive init, uses GitHub           |
+| Test Case                     | Command                                    | Expected                                                 |
+| ----------------------------- | ------------------------------------------ | -------------------------------------------------------- |
+| Default SCM (interactive)     | `atomic init` (select GitHub)              | Copies github command variants                           |
+| Sapling+Phabricator selection | `atomic init` (select Sapling+Phabricator) | Copies sapling-phabricator command variants              |
+| Pre-selected SCM              | `atomic init --scm sapling-phabricator`    | Skips SCM prompt, uses Sapling+Phabricator               |
+| Auto-confirm mode             | `atomic init --yes`                        | Sets SCM to GitHub                                       |
+| Config persistence            | Run init, check `.atomic.json`             | SCM selection saved                                      |
+| Re-init with different SCM    | Init GitHub, then init Sapling+Phabricator | Command files updated to Sapling                         |
+| Non-SCM skills unaffected     | Init with any SCM                          | `research-codebase` skill still works via BUILTIN_SKILLS |
+| Auto-init prompts for SCM     | `atomic chat -a claude` (no `.claude/`)    | Runs full init flow with SCM selection prompt            |
+| Auto-init with pre-selected   | `atomic init -a claude --scm github --yes` | Non-interactive init, uses GitHub                        |
 
 #### Windows-Specific Tests
 
 ```typescript
 // tests/scm-windows.test.ts
-describe('Windows SCM Template Selection', () => {
-  test('getScmTemplatePath returns windows variant on Windows', () => {
-    // Mock isWindows() to return true
-    jest.spyOn(detect, 'isWindows').mockReturnValue(true);
+describe("Windows SCM Template Selection", () => {
+    test("getScmTemplatePath returns windows variant on Windows", () => {
+        // Mock isWindows() to return true
+        jest.spyOn(detect, "isWindows").mockReturnValue(true);
 
-    expect(getScmTemplatePath('sapling-phabricator')).toBe('sapling-phabricator-windows');
-    expect(getScmTemplatePath('github')).toBe('github'); // GitHub unchanged
-  });
+        expect(getScmTemplatePath("sapling-phabricator")).toBe(
+            "sapling-phabricator-windows",
+        );
+        expect(getScmTemplatePath("github")).toBe("github"); // GitHub unchanged
+    });
 
-  test('getScmTemplatePath returns standard variant on Unix', () => {
-    jest.spyOn(detect, 'isWindows').mockReturnValue(false);
+    test("getScmTemplatePath returns standard variant on Unix", () => {
+        jest.spyOn(detect, "isWindows").mockReturnValue(false);
 
-    expect(getScmTemplatePath('sapling-phabricator')).toBe('sapling-phabricator');
-  });
+        expect(getScmTemplatePath("sapling-phabricator")).toBe(
+            "sapling-phabricator",
+        );
+    });
 
-  test('Windows Sapling commit.md uses full path', async () => {
-    const content = await readFile(
-      'templates/scm/sapling-phabricator-windows/.claude/commands/commit.md',
-      'utf-8'
-    );
+    test("Windows Sapling commit.md uses full path", async () => {
+        const content = await readFile(
+            "templates/scm/sapling-phabricator-windows/.claude/commands/commit.md",
+            "utf-8",
+        );
 
-    expect(content).toContain("& 'C:\\Program Files\\Sapling\\sl.exe'");
-    expect(content).not.toMatch(/^sl\s/m); // No bare 'sl' commands
-  });
+        expect(content).toContain("& 'C:\\Program Files\\Sapling\\sl.exe'");
+        expect(content).not.toMatch(/^sl\s/m); // No bare 'sl' commands
+    });
 
-  test('Windows command files have proper allowed-tools escaping', async () => {
-    const content = await readFile(
-      'templates/scm/sapling-phabricator-windows/.claude/commands/commit.md',
-      'utf-8'
-    );
+    test("Windows command files have proper allowed-tools escaping", async () => {
+        const content = await readFile(
+            "templates/scm/sapling-phabricator-windows/.claude/commands/commit.md",
+            "utf-8",
+        );
 
-    // Verify double-backslash escaping in YAML frontmatter
-    expect(content).toContain("Bash(& 'C:\\\\Program Files\\\\Sapling\\\\sl.exe':*)");
-  });
+        // Verify double-backslash escaping in YAML frontmatter
+        expect(content).toContain(
+            "Bash(& 'C:\\\\Program Files\\\\Sapling\\\\sl.exe':*)",
+        );
+    });
 });
 ```
 
-| Test Case                                | Platform | Command                                    | Expected                                    |
-| ---------------------------------------- | -------- | ------------------------------------------ | ------------------------------------------- |
-| Windows Sapling auto-detection           | Windows  | `atomic init` (select Sapling+Phabricator) | Copies `sapling-phabricator-windows` templates |
-| Windows commit.md uses full path         | Windows  | Check copied `commit.md`                   | Contains `& 'C:\Program Files\Sapling\sl.exe'` |
-| Unix Sapling uses standard templates     | macOS    | `atomic init` (select Sapling+Phabricator) | Copies `sapling-phabricator` templates (bare `sl`) |
-| GitHub unaffected by platform            | Both     | `atomic init` (select GitHub)              | Same templates on both platforms            |
+| Test Case                            | Platform | Command                                    | Expected                                           |
+| ------------------------------------ | -------- | ------------------------------------------ | -------------------------------------------------- |
+| Windows Sapling auto-detection       | Windows  | `atomic init` (select Sapling+Phabricator) | Copies `sapling-phabricator-windows` templates     |
+| Windows commit.md uses full path     | Windows  | Check copied `commit.md`                   | Contains `& 'C:\Program Files\Sapling\sl.exe'`     |
+| Unix Sapling uses standard templates | macOS    | `atomic init` (select Sapling+Phabricator) | Copies `sapling-phabricator` templates (bare `sl`) |
+| GitHub unaffected by platform        | Both     | `atomic init` (select GitHub)              | Same templates on both platforms                   |
 
 #### End-to-End Tests
 
@@ -1761,6 +1817,7 @@ describe('Windows SCM Template Selection', () => {
 ### 8.3 Rollback Plan
 
 If issues arise:
+
 1. Remove SCM selection prompt from init flow
 2. Revert to copying current (GitHub-only) command files
 3. The `.atomic.json` config file is benign and can remain
@@ -1770,34 +1827,34 @@ If issues arise:
 These questions should be resolved before marking the document "Approved":
 
 - [x] **Command Naming:** Should Sapling code review command be `create-sl-pr.md` or `submit-diff.md`?
-  - **Decision:** Use `submit-diff.md` for Phabricator workflows since Phabricator uses "diffs" not "pull requests"
+    - **Decision:** Use `submit-diff.md` for Phabricator workflows since Phabricator uses "diffs" not "pull requests"
 
 - [x] **CLI Flag:** Should we add `--scm <type>` flag to init command for scripting?
-  - **Decision:** Yes. Add `-s, --scm <type>` to the `init` command in `src/cli.ts:75-91`, following the same pattern as `-a, --agent <name>`. See Section 5.11 for implementation details.
+    - **Decision:** Yes. Add `-s, --scm <type>` to the `init` command in `src/cli.ts:75-91`, following the same pattern as `-a, --agent <name>`. See Section 5.11 for implementation details.
 
 - [x] **Ralph Workflow:** Should `/ralph` be extended to create PRs/submit diffs with SCM-awareness?
-  - **Decision:** No. Ralph will only support commit functionality with SCM-aware history and commit commands (e.g., `git log` vs `sl smartlog`, `/gh-commit` vs `/commit`). PR creation and diff submission are out of scope. See Section 5.10.
+    - **Decision:** No. Ralph will only support commit functionality with SCM-aware history and commit commands (e.g., `git log` vs `sl smartlog`, `/gh-commit` vs `/commit`). PR creation and diff submission are out of scope. See Section 5.10.
 
 - [x] **Built-in Skills:** Should we make the embedded skills in `skill-commands.ts` SCM-aware?
-  - **Decision:** No. Instead, **remove SCM-related skills** (`commit`, `create-gh-pr`) from `BUILTIN_SKILLS` entirely. They will be supported purely as disk-based `.md` files in `templates/scm/`, which enables SCM-variant selection during init. See Section 5.9 for migration details.
+    - **Decision:** No. Instead, **remove SCM-related skills** (`commit`, `create-gh-pr`) from `BUILTIN_SKILLS` entirely. They will be supported purely as disk-based `.md` files in `templates/scm/`, which enables SCM-variant selection during init. See Section 5.9 for migration details.
 
 - [x] **Hybrid Repos:** How to handle Sapling-on-Git repositories?
-  - **Decision:** Not supported. This spec only supports native Sapling with Phabricator. Hybrid Sapling-on-Git configurations are explicitly out of scope.
+    - **Decision:** Not supported. This spec only supports native Sapling with Phabricator. Hybrid Sapling-on-Git configurations are explicitly out of scope.
 
 - [x] **`.atomic.json` in `.gitignore`:** Should we auto-add `.atomic.json` to `.gitignore` since it's user-specific configuration?
-  - **Decision:** No. Keep it tracked in version control so the team shares the same SCM configuration. This ensures consistent behavior across developers.
+    - **Decision:** No. Keep it tracked in version control so the team shares the same SCM configuration. This ensures consistent behavior across developers.
 
 - [x] **SCM selection during auto-init:** When `atomic chat -a claude` triggers auto-init and config folder is missing, should it prompt for SCM or default to GitHub?
-  - **Decision:** Run the full init flow including SCM selection prompt. SCM-specific commands (`commit`, `create-gh-pr`/`submit-diff`) exist only as disk-based files, so users must select their SCM to get the correct command variants. For non-interactive/scripted usage, use `atomic init -a claude --scm github --yes`.
+    - **Decision:** Run the full init flow including SCM selection prompt. SCM-specific commands (`commit`, `create-gh-pr`/`submit-diff`) exist only as disk-based files, so users must select their SCM to get the correct command variants. For non-interactive/scripted usage, use `atomic init -a claude --scm github --yes`.
 
 - [x] **Phabricator Configuration Validation:** Should `atomic init` validate that `.arcconfig` and `~/.arcrc` exist when Sapling+Phabricator is selected?
-  - **Decision:** Yes. After copying Sapling command files, check for `.arcconfig` in the project root and warn (not error) if missing. Include setup instructions in the warning message referencing Section 5.1 Phabricator Configuration Notes. Do NOT check `~/.arcrc` (user home directory — too invasive).
+    - **Decision:** Yes. After copying Sapling command files, check for `.arcconfig` in the project root and warn (not error) if missing. Include setup instructions in the warning message referencing Section 5.1 Phabricator Configuration Notes. Do NOT check `~/.arcrc` (user home directory — too invasive).
 
 - [x] **Sapling + GitHub Support:** Should we also support Sapling with GitHub (`sl pr`) in addition to Phabricator?
-  - **Decision:** No. This spec focuses exclusively on **Sapling + Phabricator**. Sapling-on-Git (using `sl pr` with GitHub) is explicitly out of scope and will not be implemented.
+    - **Decision:** No. This spec focuses exclusively on **Sapling + Phabricator**. Sapling-on-Git (using `sl pr` with GitHub) is explicitly out of scope and will not be implemented.
 
 - [x] **Windows PowerShell `sl` Alias Conflict:** How do we handle the PowerShell built-in `sl` alias for `Set-Location` that conflicts with Sapling's `sl` command?
-  - **Decision:** Create Windows-specific Sapling command files (`sapling-phabricator-windows/`) that use the full executable path `& 'C:\Program Files\Sapling\sl.exe'` instead of bare `sl` commands. The init flow auto-detects Windows via the existing `isWindows()` function from `src/utils/detect.ts` and selects the appropriate template directory. This requires no user setup and works out of the box. See Section 5.2.1 for full details.
+    - **Decision:** Create Windows-specific Sapling command files (`sapling-phabricator-windows/`) that use the full executable path `& 'C:\Program Files\Sapling\sl.exe'` instead of bare `sl` commands. The init flow auto-detects Windows via the existing `isWindows()` function from `src/utils/detect.ts` and selects the appropriate template directory. This requires no user setup and works out of the box. See Section 5.2.1 for full details.
 
 **Reference:** [Research Section "Open Questions"](../research/docs/2026-02-10-source-control-type-selection.md)
 
@@ -1808,6 +1865,7 @@ These questions should be resolved before marking the document "Approved":
 ### ~~Phase 0: Remove SCM Skills from BUILTIN_SKILLS~~ — ✅ COMPLETED
 
 ~~All items completed in TUI merge (commit `aefdf73`):~~
+
 - [x] ~~Remove `commit` skill from `BUILTIN_SKILLS` in `skill-commands.ts`~~
 - [x] ~~Remove `create-gh-pr` skill from `BUILTIN_SKILLS` in `skill-commands.ts`~~
 - [x] ~~Remove corresponding entries from `SKILL_DEFINITIONS`~~
@@ -1840,15 +1898,15 @@ These questions should be resolved before marking the document "Approved":
 **New directory:** `templates/scm/`
 
 - [ ] Create `templates/scm/github/` with subdirectories for each agent:
-  - `.claude/commands/` — `commit.md` (adapted from existing `gh-commit.md`), `create-gh-pr.md`
-  - `.opencode/command/` — same files
-  - `.github/skills/` — `commit/SKILL.md`, `create-gh-pr/SKILL.md`
+    - `.claude/commands/` — `commit.md` (adapted from existing `gh-commit.md`), `create-gh-pr.md`
+    - `.opencode/command/` — same files
+    - `.github/skills/` — `commit/SKILL.md`, `create-gh-pr/SKILL.md`
 - [ ] Create `templates/scm/sapling-phabricator/` with same agent subdirectories:
-  - `.claude/commands/` — `commit.md` (Sapling/sl), `submit-diff.md` (Phabricator)
-  - `.opencode/command/` — same files
-  - `.github/skills/` — `commit/SKILL.md`, `submit-diff/SKILL.md` (**must have full content** — see Section 5.7.2)
+    - `.claude/commands/` — `commit.md` (Sapling/sl), `submit-diff.md` (Phabricator)
+    - `.opencode/command/` — same files
+    - `.github/skills/` — `commit/SKILL.md`, `submit-diff/SKILL.md` (**must have full content** — see Section 5.7.2)
 - [ ] Create `templates/scm/sapling-phabricator-windows/` — Windows-specific Sapling templates using full `& 'C:\Program Files\Sapling\sl.exe'` path
-  - Applies to all three agents: `.claude/commands/`, `.opencode/command/`, `.github/skills/`
+    - Applies to all three agents: `.claude/commands/`, `.opencode/command/`, `.github/skills/`
 - [ ] Write Sapling `commit.md` content per Section 5.6 (Claude/OpenCode)
 - [ ] Write Sapling `submit-diff.md` content per Section 5.7 (Claude/OpenCode)
 - [ ] Write Copilot Sapling SKILL.md files with full instructions per Section 5.7.2 (cannot be empty stubs — Copilot has no native Sapling support)
@@ -1996,49 +2054,51 @@ atomic/
 
 ### Files to Modify (with current line numbers)
 
-| File | Lines | What to Do |
-|------|-------|------------|
-| `src/config.ts` | 5-24 | `AgentConfig` interface — pattern for `ScmConfig`. Add `SourceControlType`, `ScmConfig`, `SCM_CONFIG` after line 82. |
-| `src/config.ts` | 29-70 | `AGENT_CONFIG` — pattern for `SCM_CONFIG` object structure. |
-| `src/cli.ts` | 75-91 | `init` command definition — add `--scm <type>` option after the `--agent` option (line 79). |
-| `src/commands/init.ts` | 27-35 | `InitOptions` interface — add `preSelectedScm?: SourceControlType`. |
-| `src/commands/init.ts` | 104-135 | Agent selection prompt — SCM selection goes **after** this block (after line 135, before directory confirmation at line 142). |
-| `src/commands/init.ts` | 49-79 | `copyDirPreserving()` function — used by `copyScmCommands()` for template copying. |
-| `src/commands/init.ts` | 84-300 | Main `initCommand()` function — integrate SCM selection and file copying. |
-| `src/graph/nodes/ralph-nodes.ts` | 71-147 | `buildImplementFeaturePrompt()` — references `git log` at line 91, `/commit` at line 143. Make SCM-aware. |
-| `src/graph/annotation.ts` | 463-543 | `RalphWorkflowState` interface definition — defines workflow state structure. |
-| `src/graph/annotation.ts` | 549-589 | `RalphStateAnnotation` schema — annotation definitions including `prUrl` at line 569 for Phabricator diff URLs. |
-| `src/ui/commands/registry.ts` | — | `CommandContext` interface — `streamAndWait()`, `clearContext()`, `updateWorkflowState()` used by Ralph. |
-| `src/utils/detect.ts` | 53 | `isWindows()` — used for Sapling template selection. |
-| `src/utils/detect.ts` | 11-13 | `isCommandInstalled(cmd)` — potentially useful for Phabricator config validation. |
+| File                             | Lines   | What to Do                                                                                                                    |
+| -------------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `src/config.ts`                  | 5-24    | `AgentConfig` interface — pattern for `ScmConfig`. Add `SourceControlType`, `ScmConfig`, `SCM_CONFIG` after line 82.          |
+| `src/config.ts`                  | 29-70   | `AGENT_CONFIG` — pattern for `SCM_CONFIG` object structure.                                                                   |
+| `src/cli.ts`                     | 75-91   | `init` command definition — add `--scm <type>` option after the `--agent` option (line 79).                                   |
+| `src/commands/init.ts`           | 27-35   | `InitOptions` interface — add `preSelectedScm?: SourceControlType`.                                                           |
+| `src/commands/init.ts`           | 104-135 | Agent selection prompt — SCM selection goes **after** this block (after line 135, before directory confirmation at line 142). |
+| `src/commands/init.ts`           | 49-79   | `copyDirPreserving()` function — used by `copyScmCommands()` for template copying.                                            |
+| `src/commands/init.ts`           | 84-300  | Main `initCommand()` function — integrate SCM selection and file copying.                                                     |
+| `src/graph/nodes/ralph-nodes.ts` | 71-147  | `buildImplementFeaturePrompt()` — references `git log` at line 91, `/commit` at line 143. Make SCM-aware.                     |
+| `src/graph/annotation.ts`        | 463-543 | `RalphWorkflowState` interface definition — defines workflow state structure.                                                 |
+| `src/graph/annotation.ts`        | 549-589 | `RalphStateAnnotation` schema — annotation definitions including `prUrl` at line 569 for Phabricator diff URLs.               |
+| `src/ui/commands/registry.ts`    | —       | `CommandContext` interface — `streamAndWait()`, `clearContext()`, `updateWorkflowState()` used by Ralph.                      |
+| `src/utils/detect.ts`            | 53      | `isWindows()` — used for Sapling template selection.                                                                          |
+| `src/utils/detect.ts`            | 11-13   | `isCommandInstalled(cmd)` — potentially useful for Phabricator config validation.                                             |
 
 ### Existing Implementation (Already Completed — Reference Only)
 
-| File | Lines | Status |
-|------|-------|--------|
-| `src/ui/commands/skill-commands.ts` | 72-1101 | `BUILTIN_SKILLS` — SCM skills **already removed**. Only 5 non-SCM skills remain. |
+| File                                | Lines     | Status                                                                                      |
+| ----------------------------------- | --------- | ------------------------------------------------------------------------------------------- |
+| `src/ui/commands/skill-commands.ts` | 72-1101   | `BUILTIN_SKILLS` — SCM skills **already removed**. Only 5 non-SCM skills remain.            |
 | `src/ui/commands/skill-commands.ts` | 1113-1135 | `SKILL_DEFINITIONS` — only 3 entries remain (research-codebase, create-spec, explain-code). |
-| `src/ui/commands/skill-commands.ts` | 1345-1348 | `PINNED_BUILTIN_SKILLS` — prompt-engineer, testing-anti-patterns. No SCM skills. |
-| `src/ui/commands/skill-commands.ts` | 1331-1581 | Disk-based skill discovery system — fully implemented with priority resolution. |
+| `src/ui/commands/skill-commands.ts` | 1345-1348 | `PINNED_BUILTIN_SKILLS` — prompt-engineer, testing-anti-patterns. No SCM skills.            |
+| `src/ui/commands/skill-commands.ts` | 1331-1581 | Disk-based skill discovery system — fully implemented with priority resolution.             |
 
 ### New Files to Create
 
-| File | Purpose |
-|------|---------|
-| `src/utils/atomic-config.ts` | `.atomic.json` read/write, `getSelectedScm()` |
-| `templates/scm/github/` | GitHub/Git command file variants for all agents |
-| `templates/scm/sapling-phabricator/` | Sapling+Phabricator command files (Unix/macOS) |
-| `templates/scm/sapling-phabricator-windows/` | Windows-specific Sapling command files |
-| `tests/scm-config.test.ts` | SCM config unit tests |
-| `tests/scm-windows.test.ts` | Windows template selection tests |
-| `tests/utils/atomic-config.test.ts` | Config persistence tests |
-| `tests/init-scm.test.ts` | Init flow integration tests |
+| File                                         | Purpose                                         |
+| -------------------------------------------- | ----------------------------------------------- |
+| `src/utils/atomic-config.ts`                 | `.atomic.json` read/write, `getSelectedScm()`   |
+| `templates/scm/github/`                      | GitHub/Git command file variants for all agents |
+| `templates/scm/sapling-phabricator/`         | Sapling+Phabricator command files (Unix/macOS)  |
+| `templates/scm/sapling-phabricator-windows/` | Windows-specific Sapling command files          |
+| `tests/scm-config.test.ts`                   | SCM config unit tests                           |
+| `tests/scm-windows.test.ts`                  | Windows template selection tests                |
+| `tests/utils/atomic-config.test.ts`          | Config persistence tests                        |
+| `tests/init-scm.test.ts`                     | Init flow integration tests                     |
 
 ### Research References
+
 - [research/docs/2026-02-10-source-control-type-selection.md](../research/docs/2026-02-10-source-control-type-selection.md) — Primary research document
 - [research/docs/sapling-reference.md](../research/docs/sapling-reference.md) — Complete Git → Sapling command mapping
 
 ### External References
+
 - [Sapling SCM Documentation](https://sapling-scm.com/docs/)
 - [Facebook Sapling Repository](https://github.com/facebook/sapling)
 - [Sapling Phabricator Integration](https://sapling-scm.com/docs/addons/phabricator) — fbcodereview extension
@@ -2046,6 +2106,7 @@ atomic/
 - [Arcanist Configuration](https://secure.phabricator.com/book/phabricator/article/arcanist/) — .arcconfig and .arcrc setup
 
 ### Related Specs
+
 - [specs/2026-01-25-commander-js-migration.md](./2026-01-25-commander-js-migration.md) — CLI framework migration (**COMPLETED** — Commander.js v14 already in use)
 - [specs/2026-01-19-cli-auto-init-agent.md](./2026-01-19-cli-auto-init-agent.md) — Auto-init design (SCM selection during auto-init)
 
@@ -2053,33 +2114,33 @@ atomic/
 
 ### Key Sapling Commands for Phabricator
 
-| Command | Description |
-|---------|-------------|
-| `jf submit` | Submit commits to Phabricator as diffs (Meta internal; use `arc diff` for open-source) |
-| `sl ssl` | Super smartlog - shows commit graph with diff status |
-| `sl diff --since-last-submit` | View changes since last Phabricator submission |
-| `sl log -T '{phabstatus}\n' -r .` | Get diff status (Needs Review, Accepted, etc.) |
-| `sl log -T '{phabdiff}\n' -r .` | Get diff ID (D12345) |
-| `sl log -T '{syncstatus}\n' -r .` | Check if local is in sync with Phabricator |
-| `sl log -T '{phabsignalstatus}\n' -r .` | Get diff signal status (CI status) |
-| `sl log -T '{phabcommit}\n' -r .` | Get remote commit hash in Phabricator |
-| `sl amend` | Amend current commit (auto-rebases descendants) |
-| `sl absorb` | Intelligently integrate changes into stack commits |
+| Command                                 | Description                                                                            |
+| --------------------------------------- | -------------------------------------------------------------------------------------- |
+| `jf submit`                             | Submit commits to Phabricator as diffs (Meta internal; use `arc diff` for open-source) |
+| `sl ssl`                                | Super smartlog - shows commit graph with diff status                                   |
+| `sl diff --since-last-submit`           | View changes since last Phabricator submission                                         |
+| `sl log -T '{phabstatus}\n' -r .`       | Get diff status (Needs Review, Accepted, etc.)                                         |
+| `sl log -T '{phabdiff}\n' -r .`         | Get diff ID (D12345)                                                                   |
+| `sl log -T '{syncstatus}\n' -r .`       | Check if local is in sync with Phabricator                                             |
+| `sl log -T '{phabsignalstatus}\n' -r .` | Get diff signal status (CI status)                                                     |
+| `sl log -T '{phabcommit}\n' -r .`       | Get remote commit hash in Phabricator                                                  |
+| `sl amend`                              | Amend current commit (auto-rebases descendants)                                        |
+| `sl absorb`                             | Intelligently integrate changes into stack commits                                     |
 
 ### Phabricator Diff Status Values
 
-| Status | Meaning |
-|--------|---------|
-| `Needs Review` | Awaiting reviewer feedback |
-| `Accepted` | Approved, ready to land |
-| `Needs Revision` | Reviewer requested changes |
-| `Needs Final Review` | Waiting for final approval |
-| `Committed` | Diff has been landed |
-| `Committing` | Landing recently succeeded |
-| `Abandoned` | Diff was closed without landing |
-| `Unpublished` | Draft diff |
-| `Landing` | Currently being landed |
-| `Recently Failed to Land` | Landing attempt failed |
+| Status                    | Meaning                         |
+| ------------------------- | ------------------------------- |
+| `Needs Review`            | Awaiting reviewer feedback      |
+| `Accepted`                | Approved, ready to land         |
+| `Needs Revision`          | Reviewer requested changes      |
+| `Needs Final Review`      | Waiting for final approval      |
+| `Committed`               | Diff has been landed            |
+| `Committing`              | Landing recently succeeded      |
+| `Abandoned`               | Diff was closed without landing |
+| `Unpublished`             | Draft diff                      |
+| `Landing`                 | Currently being landed          |
+| `Recently Failed to Land` | Landing attempt failed          |
 
 ### Commit Message Format with Phabricator
 
@@ -2118,26 +2179,29 @@ sl ssl
 ### Required Configuration Files
 
 **`.arcconfig`** (repository root):
+
 ```json
 {
-  "conduit_uri": "https://phabricator.example.com/api/",
-  "project_id": "myproject"
+    "conduit_uri": "https://phabricator.example.com/api/",
+    "project_id": "myproject"
 }
 ```
 
 **`~/.arcrc`** (home directory):
+
 ```json
 {
-  "hosts": {
-    "https://phabricator.example.com/api/": {
-      "user": "your-username",
-      "oauth": "cli-XXXXXXXXXXXXX"
+    "hosts": {
+        "https://phabricator.example.com/api/": {
+            "user": "your-username",
+            "oauth": "cli-XXXXXXXXXXXXX"
+        }
     }
-  }
 }
 ```
 
 **Sapling Config** (`~/.sapling/config`):
+
 ```ini
 [extensions]
 fbcodereview =

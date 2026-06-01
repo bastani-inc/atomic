@@ -1,11 +1,11 @@
 # CLI Agent Rename Technical Design Document
 
-| Document Metadata      | Details         |
-| ---------------------- | --------------- |
-| Author(s)              | lavaman131      |
-| Status                 | Draft (WIP)     |
-| Team / Owner           | flora131/atomic |
-| Created / Last Updated | 2026-01-20      |
+| Document Metadata      | Details        |
+| ---------------------- | -------------- |
+| Author(s)              | lavaman131     |
+| Status                 | Draft (WIP)    |
+| Team / Owner           | bastani/atomic |
+| Created / Last Updated | 2026-01-20     |
 
 ## 1. Executive Summary
 
@@ -19,11 +19,11 @@ This spec defines the implementation of renaming CLI agent identifiers from `cla
 
 The Atomic CLI currently uses the following agent key identifiers:
 
-| Agent Key      | Display Name       | Underlying Command |
-| -------------- | ------------------ | ------------------ |
-| `claude-code`  | Claude Code        | `claude`           |
-| `opencode`     | OpenCode           | `opencode`         |
-| `copilot-cli`  | GitHub Copilot CLI | `copilot`          |
+| Agent Key     | Display Name       | Underlying Command |
+| ------------- | ------------------ | ------------------ |
+| `claude-code` | Claude Code        | `claude`           |
+| `opencode`    | OpenCode           | `opencode`         |
+| `copilot-cli` | GitHub Copilot CLI | `copilot`          |
 
 **Primary Definition** (`src/config.ts:26-70`):
 
@@ -138,14 +138,14 @@ flowchart TB
 
 ### 4.3 Key Components
 
-| Component           | Responsibility         | Change Required                          |
-| ------------------- | ---------------------- | ---------------------------------------- |
-| `src/config.ts`     | Agent key definitions  | Rename keys in `AGENT_KEYS` and config   |
-| `src/index.ts`      | Help text              | Update CLI examples                      |
-| `src/commands/*.ts` | Command implementations| Update JSDoc examples                    |
-| `src/utils/*.ts`    | Utility functions      | Update JSDoc examples                    |
-| `tests/*.ts`        | Test suites            | Update all agent key references          |
-| `README.md`         | User documentation     | Update CLI examples and agent table      |
+| Component           | Responsibility          | Change Required                        |
+| ------------------- | ----------------------- | -------------------------------------- |
+| `src/config.ts`     | Agent key definitions   | Rename keys in `AGENT_KEYS` and config |
+| `src/index.ts`      | Help text               | Update CLI examples                    |
+| `src/commands/*.ts` | Command implementations | Update JSDoc examples                  |
+| `src/utils/*.ts`    | Utility functions       | Update JSDoc examples                  |
+| `tests/*.ts`        | Test suites             | Update all agent key references        |
+| `README.md`         | User documentation      | Update CLI examples and agent table    |
 
 ## 5. Detailed Design
 
@@ -159,16 +159,16 @@ export type AgentKey = (typeof AGENT_KEYS)[number];
 // Type: "claude-code" | "opencode" | "copilot-cli"
 
 export const AGENT_CONFIG: Record<AgentKey, AgentConfig> = {
-  "claude-code": {
-    name: "Claude Code",
-    cmd: "claude",
-    // ...
-  },
-  "copilot-cli": {
-    name: "GitHub Copilot CLI",
-    cmd: "copilot",
-    // ...
-  },
+    "claude-code": {
+        name: "Claude Code",
+        cmd: "claude",
+        // ...
+    },
+    "copilot-cli": {
+        name: "GitHub Copilot CLI",
+        cmd: "copilot",
+        // ...
+    },
 };
 ```
 
@@ -180,16 +180,16 @@ export type AgentKey = (typeof AGENT_KEYS)[number];
 // Type: "claude" | "opencode" | "copilot"
 
 export const AGENT_CONFIG: Record<AgentKey, AgentConfig> = {
-  claude: {
-    name: "Claude Code",
-    cmd: "claude",
-    // ...
-  },
-  copilot: {
-    name: "GitHub Copilot CLI",
-    cmd: "copilot",
-    // ...
-  },
+    claude: {
+        name: "Claude Code",
+        cmd: "claude",
+        // ...
+    },
+    copilot: {
+        name: "GitHub Copilot CLI",
+        cmd: "copilot",
+        // ...
+    },
 };
 ```
 
@@ -239,11 +239,11 @@ Examples:
 
 All test files must update their agent key references. The key patterns are:
 
-| Pattern                  | Replacement           |
-| ------------------------ | --------------------- |
-| `"claude-code"`          | `"claude"`            |
-| `"copilot-cli"`          | `"copilot"`           |
-| `"Claude-Code"` (case)   | `"Claude"` (case)     |
+| Pattern                | Replacement       |
+| ---------------------- | ----------------- |
+| `"claude-code"`        | `"claude"`        |
+| `"copilot-cli"`        | `"copilot"`       |
+| `"Claude-Code"` (case) | `"Claude"` (case) |
 
 **Example Test Update** (`tests/cli.test.ts:34-36`):
 
@@ -281,20 +281,20 @@ type AgentKey = "claude" | "opencode" | "copilot";
 **After**:
 
 ```markdown
-| Agent              | CLI Command               |
-| ------------------ | ------------------------- |
-| Claude Code        | `atomic --agent claude`   |
-| GitHub Copilot CLI | `atomic --agent copilot`  |
+| Agent              | CLI Command              |
+| ------------------ | ------------------------ |
+| Claude Code        | `atomic --agent claude`  |
+| GitHub Copilot CLI | `atomic --agent copilot` |
 ```
 
 ## 6. Alternatives Considered
 
-| Option                              | Pros                            | Cons                                      | Reason for Rejection                                      |
-| ----------------------------------- | ------------------------------- | ----------------------------------------- | --------------------------------------------------------- |
-| **A: Keep current names**           | No changes needed               | Confusing, inconsistent with cmd names    | User experience is the problem we're solving              |
-| **B: Add aliases for both names**   | Backward compatible             | Complexity, two names for same thing      | Adds confusion; clean break is simpler                    |
-| **C: Deprecation period with warnings** | Gentle transition           | Extended maintenance burden, complexity   | Internal tool with no external consumers; not needed      |
-| **D: Rename to match cmd names (Selected)** | Consistent, intuitive    | Breaking change                           | **Selected:** Simplicity outweighs breaking change cost   |
+| Option                                      | Pros                  | Cons                                    | Reason for Rejection                                    |
+| ------------------------------------------- | --------------------- | --------------------------------------- | ------------------------------------------------------- |
+| **A: Keep current names**                   | No changes needed     | Confusing, inconsistent with cmd names  | User experience is the problem we're solving            |
+| **B: Add aliases for both names**           | Backward compatible   | Complexity, two names for same thing    | Adds confusion; clean break is simpler                  |
+| **C: Deprecation period with warnings**     | Gentle transition     | Extended maintenance burden, complexity | Internal tool with no external consumers; not needed    |
+| **D: Rename to match cmd names (Selected)** | Consistent, intuitive | Breaking change                         | **Selected:** Simplicity outweighs breaking change cost |
 
 ## 7. Cross-Cutting Concerns
 

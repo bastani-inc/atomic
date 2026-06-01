@@ -1,11 +1,11 @@
 # Anonymous Telemetry Implementation Technical Design Document
 
-| Document Metadata      | Details                                                |
-| ---------------------- | ------------------------------------------------------ |
-| Author(s)              | flora131                                               |
-| Status                 | Draft (WIP)                                            |
-| Team / Owner           | flora131/atomic                                        |
-| Created / Last Updated | 2026-01-21                                             |
+| Document Metadata      | Details        |
+| ---------------------- | -------------- |
+| Author(s)              | flora131       |
+| Status                 | Draft (WIP)    |
+| Team / Owner           | bastani/atomic |
+| Created / Last Updated | 2026-01-21     |
 
 ## 1. Executive Summary
 
@@ -18,6 +18,7 @@ This RFC proposes implementing privacy-preserving anonymous telemetry for Atomic
 ### 2.1 Current State
 
 Atomic CLI currently has **no telemetry, user identification, or analytics** of any kind:
+
 - No UUID generation or anonymous ID tracking
 - No usage metrics collection
 - No external analytics services integrated
@@ -26,6 +27,7 @@ Atomic CLI currently has **no telemetry, user identification, or analytics** of 
 **Architecture:** The CLI spawns AI coding agents (Claude Code, OpenCode, GitHub Copilot CLI) and provides slash commands like `/research-codebase` and `/create-spec`. Users interact via both the CLI directly and within agent sessions.
 
 **Limitations:**
+
 - No visibility into which features are actually used
 - No data to prioritize development efforts
 - No understanding of user workflows or common patterns
@@ -140,6 +142,7 @@ flowchart TB
 ### 4.2 Architectural Pattern
 
 We adopt a **Local-First Buffered Telemetry with Spawned Upload** pattern (following Homebrew and Salesforce CLI best practices):
+
 1. All events are written to a local JSONL file first (zero network blocking)
 2. On CLI exit, a **detached background process** is spawned to upload buffered events
 3. Session hooks also spawn upload processes when sessions end (captures direct agent usage)
@@ -150,14 +153,14 @@ We adopt a **Local-First Buffered Telemetry with Spawned Upload** pattern (follo
 
 ### 4.3 Key Components
 
-| Component | Responsibility | Technology | Justification |
-|-----------|----------------|------------|---------------|
-| `telemetry.ts` | Anonymous ID generation, state management, opt-out checking | TypeScript | Core module, must be fast and reliable |
-| `telemetry-cli.ts` | Track CLI and slash command events | TypeScript | Integrates with existing CLI entry points |
-| `telemetry-upload.ts` | Batch upload to OTEL collector | TypeScript + fetch | No external dependencies, uses native fetch |
-| `telemetry-consent.ts` | First-run consent prompt | @clack/prompts | Consistent with existing CLI UX |
-| Session hooks | Parse agent transcripts for commands | Bash (Claude/Copilot), TypeScript (OpenCode) | Platform-specific integration |
-| OTEL Collector | Receive, batch, export telemetry | Docker container or cloud service | Industry standard, vendor-agnostic |
+| Component              | Responsibility                                              | Technology                                   | Justification                               |
+| ---------------------- | ----------------------------------------------------------- | -------------------------------------------- | ------------------------------------------- |
+| `telemetry.ts`         | Anonymous ID generation, state management, opt-out checking | TypeScript                                   | Core module, must be fast and reliable      |
+| `telemetry-cli.ts`     | Track CLI and slash command events                          | TypeScript                                   | Integrates with existing CLI entry points   |
+| `telemetry-upload.ts`  | Batch upload to OTEL collector                              | TypeScript + fetch                           | No external dependencies, uses native fetch |
+| `telemetry-consent.ts` | First-run consent prompt                                    | @clack/prompts                               | Consistent with existing CLI UX             |
+| Session hooks          | Parse agent transcripts for commands                        | Bash (Claude/Copilot), TypeScript (OpenCode) | Platform-specific integration               |
+| OTEL Collector         | Receive, batch, export telemetry                            | Docker container or cloud service            | Industry standard, vendor-agnostic          |
 
 ## 5. Detailed Design
 
@@ -166,28 +169,31 @@ We adopt a **Local-First Buffered Telemetry with Spawned Upload** pattern (follo
 **File Location:** `~/.local/share/atomic/telemetry.json` (binary installs)
 
 **Schema:**
+
 ```typescript
 interface TelemetryState {
-  enabled: boolean;           // Master toggle
-  consentGiven: boolean;      // Has user explicitly consented?
-  anonymousId: string;        // UUID v4
-  createdAt: string;          // ISO 8601 timestamp
-  rotatedAt: string;          // Last ID rotation timestamp
+    enabled: boolean; // Master toggle
+    consentGiven: boolean; // Has user explicitly consented?
+    anonymousId: string; // UUID v4
+    createdAt: string; // ISO 8601 timestamp
+    rotatedAt: string; // Last ID rotation timestamp
 }
 ```
 
 **Example:**
+
 ```json
 {
-  "enabled": true,
-  "consentGiven": true,
-  "anonymousId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-  "createdAt": "2026-01-21T10:00:00Z",
-  "rotatedAt": "2026-01-01T00:00:00Z"
+    "enabled": true,
+    "consentGiven": true,
+    "anonymousId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "createdAt": "2026-01-21T10:00:00Z",
+    "rotatedAt": "2026-01-01T00:00:00Z"
 }
 ```
 
 **Privacy Features:**
+
 - UUID v4 generated using `crypto.randomUUID()` (cryptographically secure)
 - ID rotated monthly (first of each month) for additional privacy
 - No correlation possible between monthly periods
@@ -199,37 +205,40 @@ interface TelemetryState {
 
 Multiple opt-out methods following industry standards (VS Code, npm, Yarn):
 
-| Method | Priority | Usage |
-|--------|----------|-------|
-| CI Environment | Highest | Auto-detected via `ci-info` package |
-| Environment Variable | High | `ATOMIC_TELEMETRY=0` or `DO_NOT_TRACK=1` |
-| CLI Command | Normal | `atomic config set telemetry false` |
-| Config File | Normal | Edit `telemetry.json`: `"enabled": false` |
+| Method               | Priority | Usage                                     |
+| -------------------- | -------- | ----------------------------------------- |
+| CI Environment       | Highest  | Auto-detected via `ci-info` package       |
+| Environment Variable | High     | `ATOMIC_TELEMETRY=0` or `DO_NOT_TRACK=1`  |
+| CLI Command          | Normal   | `atomic config set telemetry false`       |
+| Config File          | Normal   | Edit `telemetry.json`: `"enabled": false` |
 
 **CI Detection:** Telemetry is automatically disabled in CI environments (GitHub Actions, GitLab CI, Jenkins, CircleCI, etc.) using the [`ci-info`](https://www.npmjs.com/package/ci-info) package. This follows the pattern used by Yarn which never runs telemetry in CI by default.
 
 **Checking Logic (evaluated in order):**
+
 ```typescript
-import ci from 'ci-info';
+import ci from "ci-info";
 
 function isTelemetryEnabled(): boolean {
-  // 1. CI environment (highest priority - auto-disable)
-  if (ci.isCI) {
-    return false;
-  }
+    // 1. CI environment (highest priority - auto-disable)
+    if (ci.isCI) {
+        return false;
+    }
 
-  // 2. Environment variable
-  if (process.env.ATOMIC_TELEMETRY === '0' ||
-      process.env.ATOMIC_TELEMETRY === 'false' ||
-      process.env.DO_NOT_TRACK === '1') {
-    return false;
-  }
+    // 2. Environment variable
+    if (
+        process.env.ATOMIC_TELEMETRY === "0" ||
+        process.env.ATOMIC_TELEMETRY === "false" ||
+        process.env.DO_NOT_TRACK === "1"
+    ) {
+        return false;
+    }
 
-  // 3. Config file
-  const state = readTelemetryState();
-  if (!state) return false;
+    // 3. Config file
+    const state = readTelemetryState();
+    if (!state) return false;
 
-  return state.enabled && state.consentGiven;
+    return state.enabled && state.consentGiven;
 }
 ```
 
@@ -242,34 +251,36 @@ function isTelemetryEnabled(): boolean {
 **Integration Point:** `src/index.ts:198-230` (command routing switch)
 
 **Event Schema:**
+
 ```typescript
 interface AtomicCommandEvent {
-  anonymousId: string;
-  eventId: string;           // UUID per event
-  eventType: 'atomic_command';
-  timestamp: string;         // ISO 8601
-  command: 'init' | 'update' | 'uninstall' | 'run';
-  agentType: 'claude' | 'opencode' | 'copilot' | null;
-  success: boolean;
-  platform: 'darwin' | 'linux' | 'win32';
-  atomicVersion: string;
-  source: 'cli';
+    anonymousId: string;
+    eventId: string; // UUID per event
+    eventType: "atomic_command";
+    timestamp: string; // ISO 8601
+    command: "init" | "update" | "uninstall" | "run";
+    agentType: "claude" | "opencode" | "copilot" | null;
+    success: boolean;
+    platform: "darwin" | "linux" | "win32";
+    atomicVersion: string;
+    source: "cli";
 }
 ```
 
 **Example Event:**
+
 ```json
 {
-  "anonymousId": "a1b2c3d4-...",
-  "eventId": "evt-1111-2222-...",
-  "eventType": "atomic_command",
-  "timestamp": "2026-01-21T10:00:00Z",
-  "command": "init",
-  "agentType": "claude",
-  "success": true,
-  "platform": "darwin",
-  "atomicVersion": "0.1.0",
-  "source": "cli"
+    "anonymousId": "a1b2c3d4-...",
+    "eventId": "evt-1111-2222-...",
+    "eventType": "atomic_command",
+    "timestamp": "2026-01-21T10:00:00Z",
+    "command": "init",
+    "agentType": "claude",
+    "success": true,
+    "platform": "darwin",
+    "atomicVersion": "0.1.0",
+    "source": "cli"
 }
 ```
 
@@ -280,51 +291,53 @@ interface AtomicCommandEvent {
 **Integration Point:** `src/commands/run-agent.ts:58-129` (before `Bun.spawn()`)
 
 **Event Schema:**
+
 ```typescript
 interface CliCommandEvent {
-  anonymousId: string;
-  eventId: string;
-  eventType: 'cli_command';
-  timestamp: string;
-  agentType: 'claude' | 'opencode' | 'copilot';
-  commands: string[];        // e.g., ["/research-codebase"] (includes duplicates for frequency)
-  commandCount: number;      // Total count including repeated commands
-  platform: 'darwin' | 'linux' | 'win32';
-  atomicVersion: string;
-  source: 'cli';
+    anonymousId: string;
+    eventId: string;
+    eventType: "cli_command";
+    timestamp: string;
+    agentType: "claude" | "opencode" | "copilot";
+    commands: string[]; // e.g., ["/research-codebase"] (includes duplicates for frequency)
+    commandCount: number; // Total count including repeated commands
+    platform: "darwin" | "linux" | "win32";
+    atomicVersion: string;
+    source: "cli";
 }
 ```
 
 **Command Extraction Logic:**
+
 ```typescript
 const ATOMIC_COMMANDS = [
-  "/research-codebase",
-  "/create-spec",
-  "/create-feature-list",
-  "/implement-feature",
-  "/commit",
-  "/create-gh-pr",
-  "/explain-code",
-  "/ralph-loop",
-  "/ralph:ralph-loop",
-  "/cancel-ralph",
-  "/ralph:cancel-ralph",
-  "/ralph-help",
-  "/ralph:help",
+    "/research-codebase",
+    "/create-spec",
+    "/create-feature-list",
+    "/implement-feature",
+    "/commit",
+    "/create-gh-pr",
+    "/explain-code",
+    "/ralph-loop",
+    "/ralph:ralph-loop",
+    "/cancel-ralph",
+    "/ralph:cancel-ralph",
+    "/ralph-help",
+    "/ralph:help",
 ];
 
 function extractCommandsFromArgs(args: string[]): string[] {
-  const commands: string[] = [];
-  for (const arg of args) {
-    for (const cmd of ATOMIC_COMMANDS) {
-      if (arg === cmd || arg.startsWith(cmd + ' ')) {
-        commands.push(cmd);
-        break;
-      }
+    const commands: string[] = [];
+    for (const arg of args) {
+        for (const cmd of ATOMIC_COMMANDS) {
+            if (arg === cmd || arg.startsWith(cmd + " ")) {
+                commands.push(cmd);
+                break;
+            }
+        }
     }
-  }
-  // Return all occurrences (no deduplication) to track actual usage frequency
-  return commands;
+    // Return all occurrences (no deduplication) to track actual usage frequency
+    return commands;
 }
 ```
 
@@ -335,28 +348,29 @@ function extractCommandsFromArgs(args: string[]): string[] {
 **Trigger:** When an agent session ends (Stop/sessionEnd hook fires)
 
 **Event Schema:**
+
 ```typescript
 interface AgentSessionEvent {
-  anonymousId: string;
-  sessionId: string;         // UUID per session
-  eventType: 'agent_session';
-  timestamp: string;         // ISO 8601 timestamp when session ended
-  agentType: 'claude' | 'opencode' | 'copilot';
-  commands: string[];        // Commands extracted (includes duplicates for usage frequency)
-  commandCount: number;      // Total count including repeated commands
-  platform: 'darwin' | 'linux' | 'win32';
-  atomicVersion: string;
-  source: 'session_hook';
+    anonymousId: string;
+    sessionId: string; // UUID per session
+    eventType: "agent_session";
+    timestamp: string; // ISO 8601 timestamp when session ended
+    agentType: "claude" | "opencode" | "copilot";
+    commands: string[]; // Commands extracted (includes duplicates for usage frequency)
+    commandCount: number; // Total count including repeated commands
+    platform: "darwin" | "linux" | "win32";
+    atomicVersion: string;
+    source: "session_hook";
 }
 ```
 
 **Platform-Specific Implementation:**
 
-| Platform | Hook Type | Transcript Access | Implementation |
-|----------|-----------|-------------------|----------------|
-| Claude Code | `Stop` shell hook | `transcript_path` via stdin JSON | `.claude/hooks/telemetry-stop.sh` |
+| Platform    | Hook Type                                  | Transcript Access                           | Implementation                                                |
+| ----------- | ------------------------------------------ | ------------------------------------------- | ------------------------------------------------------------- |
+| Claude Code | `Stop` shell hook                          | `transcript_path` via stdin JSON            | `.claude/hooks/telemetry-stop.sh`                             |
 | Copilot CLI | `userPromptSubmitted` + `sessionEnd` hooks | Full prompt access via accumulated tracking | `.github/hooks/prompt-hook.sh` + `.github/hooks/stop-hook.sh` |
-| OpenCode | TypeScript plugin | `client.session.messages()` SDK | `.opencode/plugin/telemetry.ts` |
+| OpenCode    | TypeScript plugin                          | `client.session.messages()` SDK             | `.opencode/plugin/telemetry.ts`                               |
 
 **Copilot CLI Implementation Detail:**
 
@@ -364,29 +378,30 @@ GitHub Copilot Coding Agent's `sessionEnd` hook only receives metadata (`timesta
 
 ```json
 {
-  "timestamp": 1704614500000,
-  "cwd": "/path/to/project",
-  "prompt": "Fix the authentication bug"  // Full prompt text available!
+    "timestamp": 1704614500000,
+    "cwd": "/path/to/project",
+    "prompt": "Fix the authentication bug" // Full prompt text available!
 }
 ```
 
 We use a **three-hook accumulation strategy**:
 
 1. **`sessionStart`** (`.github/scripts/start-ralph-session.sh`):
-   - Clear temp file from previous session
-   - Extract commands from `initialPrompt` if present
+    - Clear temp file from previous session
+    - Extract commands from `initialPrompt` if present
 
 2. **`userPromptSubmitted`** (`.github/hooks/prompt-hook.sh`):
-   - Extract Atomic commands from each `prompt`
-   - Append to temp file (`.github/telemetry-session-commands.tmp`)
+    - Extract Atomic commands from each `prompt`
+    - Append to temp file (`.github/telemetry-session-commands.tmp`)
 
 3. **`sessionEnd`** (`.github/hooks/stop-hook.sh`):
-   - Read accumulated commands from temp file (preserving all occurrences for usage frequency)
-   - Write `agent_session` event with full command list
-   - Clean up temp files
-   - Spawn upload process
+    - Read accumulated commands from temp file (preserving all occurrences for usage frequency)
+    - Write `agent_session` event with full command list
+    - Clean up temp files
+    - Spawn upload process
 
 **Hook Upload Responsibility:** Session hooks are responsible for both:
+
 1. Writing `agent_session` events to `telemetry-events.jsonl`
 2. Spawning the upload process (ensures telemetry is uploaded even when users bypass `atomic` CLI)
 
@@ -401,6 +416,7 @@ This is critical because users who run agents directly (e.g., `claude` instead o
 **Format:** JSON Lines (one event per line, newline-delimited)
 
 **Example:**
+
 ```jsonl
 {"anonymousId":"a1b2c3d4-...","eventId":"evt-1111-...","eventType":"atomic_command","timestamp":"2026-01-21T10:00:00Z","command":"init","agentType":"claude","success":true,"platform":"darwin","atomicVersion":"0.1.0","source":"cli"}
 {"anonymousId":"a1b2c3d4-...","eventId":"evt-2222-...","eventType":"cli_command","timestamp":"2026-01-21T10:05:00Z","agentType":"claude","commands":["/research-codebase"],"commandCount":1,"platform":"darwin","atomicVersion":"0.1.0","source":"cli"}
@@ -408,6 +424,7 @@ This is critical because users who run agents directly (e.g., `claude` instead o
 ```
 
 **Benefits:**
+
 - Append-only writes (no read-modify-write, safe for concurrent access)
 - Human-readable format for inspection
 - Trivial to clear: `rm ~/.local/share/atomic/telemetry-events.jsonl`
@@ -418,11 +435,13 @@ This is critical because users who run agents directly (e.g., `claude` instead o
 **Pattern: Spawned Process on Exit (Zero Latency)**
 
 Following the industry-standard pattern used by Homebrew and Salesforce CLI, we spawn a **detached background process** to upload telemetry. This ensures:
+
 - Zero latency impact on CLI commands (main process exits immediately)
 - Reliable delivery (upload happens after command completes)
 - Works for both CLI invocations and session hooks
 
 **Upload Triggers:**
+
 1. **CLI Exit:** After any `atomic` command completes, spawn upload process
 2. **Session Hook Exit:** After session hooks write events, spawn upload process
 
@@ -438,33 +457,39 @@ atomic --upload-telemetry
 ```
 
 **Spawning Logic (CLI):**
+
 ```typescript
-import { spawn } from 'child_process';
+import { spawn } from "child_process";
 
 function spawnTelemetryUpload(): void {
-  // Don't spawn if telemetry disabled
-  if (!isTelemetryEnabled()) return;
+    // Don't spawn if telemetry disabled
+    if (!isTelemetryEnabled()) return;
 
-  // Spawn detached process that outlives parent
-  const child = spawn(process.execPath, [process.argv[1], '--upload-telemetry'], {
-    detached: true,
-    stdio: 'ignore',
-    env: { ...process.env, ATOMIC_TELEMETRY_UPLOAD: '1' }, // Prevent recursive spawns
-  });
+    // Spawn detached process that outlives parent
+    const child = spawn(
+        process.execPath,
+        [process.argv[1], "--upload-telemetry"],
+        {
+            detached: true,
+            stdio: "ignore",
+            env: { ...process.env, ATOMIC_TELEMETRY_UPLOAD: "1" }, // Prevent recursive spawns
+        },
+    );
 
-  // Unref allows parent to exit independently
-  child.unref();
+    // Unref allows parent to exit independently
+    child.unref();
 }
 
 // Call at CLI exit (in src/index.ts after command completes)
-process.on('beforeExit', () => {
-  if (!process.env.ATOMIC_TELEMETRY_UPLOAD) {
-    spawnTelemetryUpload();
-  }
+process.on("beforeExit", () => {
+    if (!process.env.ATOMIC_TELEMETRY_UPLOAD) {
+        spawnTelemetryUpload();
+    }
 });
 ```
 
 **Spawning Logic (Bash Hooks):**
+
 ```bash
 #!/bin/bash
 # .claude/hooks/telemetry-stop.sh
@@ -476,74 +501,77 @@ nohup atomic --upload-telemetry > /dev/null 2>&1 &
 ```
 
 **Spawning Logic (TypeScript Plugin - OpenCode):**
+
 ```typescript
 // .opencode/plugin/telemetry.ts
-import { spawn } from 'child_process';
+import { spawn } from "child_process";
 
 function spawnTelemetryUpload(): void {
-  const child = spawn('atomic', ['--upload-telemetry'], {
-    detached: true,
-    stdio: 'ignore',
-  });
-  child.unref();
+    const child = spawn("atomic", ["--upload-telemetry"], {
+        detached: true,
+        stdio: "ignore",
+    });
+    child.unref();
 }
 ```
 
 **Upload Handler (`--upload-telemetry`):**
+
 ```typescript
 async function handleTelemetryUpload(): Promise<void> {
-  const logPath = join(getBinaryDataDir(), 'telemetry-events.jsonl');
+    const logPath = join(getBinaryDataDir(), "telemetry-events.jsonl");
 
-  if (!existsSync(logPath)) return;
+    if (!existsSync(logPath)) return;
 
-  const content = readFileSync(logPath, 'utf-8');
-  const events = content
-    .split('\n')
-    .filter(line => line.trim())
-    .map(line => {
-      try {
-        return JSON.parse(line);
-      } catch {
-        return null; // Skip corrupt lines
-      }
-    })
-    .filter(Boolean);
+    const content = readFileSync(logPath, "utf-8");
+    const events = content
+        .split("\n")
+        .filter((line) => line.trim())
+        .map((line) => {
+            try {
+                return JSON.parse(line);
+            } catch {
+                return null; // Skip corrupt lines
+            }
+        })
+        .filter(Boolean);
 
-  if (events.length === 0) return;
+    if (events.length === 0) return;
 
-  try {
-    const response = await fetch(OTEL_ENDPOINT, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ events }),
-      signal: AbortSignal.timeout(3000), // 3s timeout (Homebrew uses 3s)
-    });
+    try {
+        const response = await fetch(OTEL_ENDPOINT, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ events }),
+            signal: AbortSignal.timeout(3000), // 3s timeout (Homebrew uses 3s)
+        });
 
-    if (response.ok) {
-      unlinkSync(logPath); // Clear on success
+        if (response.ok) {
+            unlinkSync(logPath); // Clear on success
+        }
+    } catch {
+        // Fail silently, retry on next spawn
     }
-  } catch {
-    // Fail silently, retry on next spawn
-  }
 }
 ```
 
 **Why This Pattern:**
 
-| Aspect | Benefit |
-|--------|---------|
-| **Zero Latency** | Main process exits immediately, upload happens in background |
-| **Reliable Delivery** | Events buffered locally, retried on each CLI/hook run |
-| **Works Offline** | Local buffer persists, uploads when network available |
-| **Covers Bypass Scenario** | Session hooks spawn uploads even without `atomic` CLI usage |
-| **Simple Implementation** | Reuses existing binary, no daemon or cron needed |
-| **Industry Proven** | Same pattern as Homebrew (10M+ users), Salesforce CLI |
+| Aspect                     | Benefit                                                      |
+| -------------------------- | ------------------------------------------------------------ |
+| **Zero Latency**           | Main process exits immediately, upload happens in background |
+| **Reliable Delivery**      | Events buffered locally, retried on each CLI/hook run        |
+| **Works Offline**          | Local buffer persists, uploads when network available        |
+| **Covers Bypass Scenario** | Session hooks spawn uploads even without `atomic` CLI usage  |
+| **Simple Implementation**  | Reuses existing binary, no daemon or cron needed             |
+| **Industry Proven**        | Same pattern as Homebrew (10M+ users), Salesforce CLI        |
 
 ### 5.6 First-Run Consent Prompt
 
 **Trigger:** First run of `atomic init` when `telemetry.json` doesn't exist
 
 **UI Flow:**
+
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                                                             │
@@ -570,14 +598,15 @@ async function handleTelemetryUpload(): Promise<void> {
 ```
 
 **Implementation:**
+
 ```typescript
 async function promptTelemetryConsent(): Promise<boolean> {
-  const consent = await confirm({
-    message: 'Help improve Atomic by enabling anonymous telemetry?',
-    initialValue: true,
-  });
+    const consent = await confirm({
+        message: "Help improve Atomic by enabling anonymous telemetry?",
+        initialValue: true,
+    });
 
-  return consent === true;
+    return consent === true;
 }
 ```
 
@@ -585,27 +614,27 @@ async function promptTelemetryConsent(): Promise<boolean> {
 
 **Privacy Guarantee:** The following data types are NEVER collected:
 
-| Category | Examples | Why Excluded |
-|----------|----------|--------------|
-| User Prompts | "Fix the bug in auth", "Add unit tests" | Contains user intent and context |
-| Command Arguments | `src/utils/`, `--force` | May reveal project structure |
-| File Paths | `/Users/john/projects/secret-project/` | Reveals identity and project names |
-| File Contents | Source code, configs | Proprietary information |
-| IP Addresses | `192.168.1.1`, `2001:db8::1` | Network identifier |
-| Usernames | `john_doe`, `admin@corp.com` | Direct PII |
-| Error Messages | Stack traces, exception text | May contain paths/code |
-| Repository Names | `secret-internal-tool` | Project identification |
-| Full Transcripts | Agent conversation history | Contains all of the above |
+| Category          | Examples                                | Why Excluded                       |
+| ----------------- | --------------------------------------- | ---------------------------------- |
+| User Prompts      | "Fix the bug in auth", "Add unit tests" | Contains user intent and context   |
+| Command Arguments | `src/utils/`, `--force`                 | May reveal project structure       |
+| File Paths        | `/Users/john/projects/secret-project/`  | Reveals identity and project names |
+| File Contents     | Source code, configs                    | Proprietary information            |
+| IP Addresses      | `192.168.1.1`, `2001:db8::1`            | Network identifier                 |
+| Usernames         | `john_doe`, `admin@corp.com`            | Direct PII                         |
+| Error Messages    | Stack traces, exception text            | May contain paths/code             |
+| Repository Names  | `secret-internal-tool`                  | Project identification             |
+| Full Transcripts  | Agent conversation history              | Contains all of the above          |
 
 ## 6. Alternatives Considered
 
-| Option | Pros | Cons | Reason for Rejection |
-|--------|------|------|---------------------|
-| **No Telemetry** | Zero privacy risk, no implementation cost | No product insights, blind development | Unable to prioritize features effectively |
-| **Third-Party Analytics (PostHog/Amplitude)** | Rich dashboards, easy setup | Vendor dependency, potential PII leakage, cost | Privacy concerns, adds external dependency |
-| **Real-Time Streaming** | Immediate visibility | Network blocking, higher failure rate | Latency-sensitive CLI, poor offline experience |
-| **Server-Side Session Tracking** | Complete session data | Requires backend changes, collects too much | Overkill for command usage metrics |
-| **OpenTelemetry + Batch Upload (Selected)** | Industry standard, privacy-preserving, vendor-agnostic | Requires OTEL collector setup | **Selected:** Best balance of privacy, flexibility, and industry alignment |
+| Option                                        | Pros                                                   | Cons                                           | Reason for Rejection                                                       |
+| --------------------------------------------- | ------------------------------------------------------ | ---------------------------------------------- | -------------------------------------------------------------------------- |
+| **No Telemetry**                              | Zero privacy risk, no implementation cost              | No product insights, blind development         | Unable to prioritize features effectively                                  |
+| **Third-Party Analytics (PostHog/Amplitude)** | Rich dashboards, easy setup                            | Vendor dependency, potential PII leakage, cost | Privacy concerns, adds external dependency                                 |
+| **Real-Time Streaming**                       | Immediate visibility                                   | Network blocking, higher failure rate          | Latency-sensitive CLI, poor offline experience                             |
+| **Server-Side Session Tracking**              | Complete session data                                  | Requires backend changes, collects too much    | Overkill for command usage metrics                                         |
+| **OpenTelemetry + Batch Upload (Selected)**   | Industry standard, privacy-preserving, vendor-agnostic | Requires OTEL collector setup                  | **Selected:** Best balance of privacy, flexibility, and industry alignment |
 
 ## 7. Cross-Cutting Concerns
 
@@ -622,15 +651,15 @@ async function promptTelemetryConsent(): Promise<boolean> {
 ### 7.2 Observability Strategy
 
 - **Metrics to Track:**
-  - `atomic_command_count` by command type, agent type, success status
-  - `slash_command_count` by command name, agent type
-  - `upload_success_rate` percentage
+    - `atomic_command_count` by command type, agent type, success status
+    - `slash_command_count` by command name, agent type
+    - `upload_success_rate` percentage
 
 - **Dashboards (Backend):**
-  - Daily/weekly active users (anonymous ID count)
-  - Command usage distribution
-  - Agent type popularity
-  - Feature adoption trends
+    - Daily/weekly active users (anonymous ID count)
+    - Command usage distribution
+    - Agent type popularity
+    - Feature adoption trends
 
 ### 7.3 Scalability and Capacity Planning
 
@@ -642,13 +671,13 @@ async function promptTelemetryConsent(): Promise<boolean> {
 
 ### 7.4 Failure Modes
 
-| Failure | Behavior | Recovery |
-|---------|----------|----------|
-| Local write fails | Fail silently, continue CLI operation | Event lost (acceptable) |
-| Upload fails | Retain local file, retry next run | Automatic retry |
-| Network timeout | 5s timeout, fail silently | No user impact |
-| Corrupt JSONL | Skip invalid lines during upload | Partial data preserved |
-| Consent file missing | Assume telemetry disabled | Prompt on next init |
+| Failure              | Behavior                              | Recovery                |
+| -------------------- | ------------------------------------- | ----------------------- |
+| Local write fails    | Fail silently, continue CLI operation | Event lost (acceptable) |
+| Upload fails         | Retain local file, retry next run     | Automatic retry         |
+| Network timeout      | 5s timeout, fail silently             | No user impact          |
+| Corrupt JSONL        | Skip invalid lines during upload      | Partial data preserved  |
+| Consent file missing | Assume telemetry disabled             | Prompt on next init     |
 
 ## 8. Migration, Rollout, and Testing
 
@@ -694,19 +723,19 @@ Not applicable - this is a new feature with no existing telemetry data.
 - [ ] **npm Installation:** For npm-installed Atomic, should telemetry state be global (`~/.local/share/atomic/`) or per-project? (Recommendation: Global for consistency)
 
 - [x] **Batch Upload Trigger:** ~~When should batch upload happen?~~ **RESOLVED:** Use spawned-process-on-exit pattern (see Section 5.5). Upload is triggered by:
-  1. CLI exit (spawns `atomic --upload-telemetry` in background)
-  2. Session hook exit (hooks spawn upload process)
+    1. CLI exit (spawns `atomic --upload-telemetry` in background)
+    2. Session hook exit (hooks spawn upload process)
 
-  This follows Homebrew/Salesforce CLI best practices and ensures telemetry uploads regardless of whether users use `atomic` CLI or run agents directly.
+    This follows Homebrew/Salesforce CLI best practices and ensures telemetry uploads regardless of whether users use `atomic` CLI or run agents directly.
 
 - [ ] **Retention Policy:** How long should local telemetry logs be retained before auto-deletion? (Recommendation: 30 days)
 
 - [x] **Copilot CLI Transcript Access:** ~~Can we access Copilot CLI session transcripts for command extraction?~~ **RESOLVED:** While `sessionEnd` hook only receives metadata, the `userPromptSubmitted` hook fires for every user prompt and includes the full prompt text. We use a three-hook accumulation strategy:
-  1. `sessionStart`: Initialize temp file, capture `initialPrompt` commands
-  2. `userPromptSubmitted`: Extract commands from each prompt, append to temp file
-  3. `sessionEnd`: Read accumulated commands, write telemetry event, clean up
+    1. `sessionStart`: Initialize temp file, capture `initialPrompt` commands
+    2. `userPromptSubmitted`: Extract commands from each prompt, append to temp file
+    3. `sessionEnd`: Read accumulated commands, write telemetry event, clean up
 
-  This provides full command tracking for Copilot CLI sessions. See Section 5.3.3 for implementation details.
+    This provides full command tracking for Copilot CLI sessions. See Section 5.3.3 for implementation details.
 
 - [ ] **Backend Selection:** Grafana Cloud vs Azure Monitor vs self-hosted? (Recommendation: Grafana Cloud for free tier and OTEL native support)
 
@@ -715,6 +744,7 @@ Not applicable - this is a new feature with no existing telemetry data.
 ## 10. Implementation Checklist
 
 ### Phase 1: Foundation
+
 - [ ] Create `src/utils/telemetry/telemetry.ts` with anonymous ID generation
 - [ ] Create `src/utils/telemetry/index.ts` for module exports
 - [ ] Implement opt-in/opt-out checking logic (including `ci-info` CI detection)
@@ -724,6 +754,7 @@ Not applicable - this is a new feature with no existing telemetry data.
 - [ ] Add `ci-info` package dependency
 
 ### Phase 2: Atomic CLI Command Tracking
+
 - [ ] Create `src/utils/telemetry/telemetry-cli.ts` with `trackAtomicCommand()` function
 - [ ] Integrate tracking into `src/index.ts` for `init`, `update`, `uninstall` commands
 - [ ] Track which agent type is selected in `src/commands/init.ts`
@@ -731,6 +762,7 @@ Not applicable - this is a new feature with no existing telemetry data.
 - [ ] Write unit tests for command tracking
 
 ### Phase 3: Slash Command CLI Tracking
+
 - [ ] Add `trackCliInvocation()` function to `telemetry-cli.ts`
 - [ ] Integrate tracking into `src/commands/run-agent.ts` before `Bun.spawn()`
 - [ ] Implement command extraction from CLI args
@@ -738,6 +770,7 @@ Not applicable - this is a new feature with no existing telemetry data.
 - [ ] Write unit tests for slash command extraction
 
 ### Phase 4: Agent Session Tracking (Hooks)
+
 - [x] Create `.claude/hooks/telemetry-stop.sh` for Claude Code (parses `transcript_path`)
 - [x] Create `.claude/hooks/hooks.json` to register Claude Code Stop hook
 - [x] Create `.github/hooks/prompt-hook.sh` for Copilot CLI `userPromptSubmitted` hook
@@ -752,6 +785,7 @@ Not applicable - this is a new feature with no existing telemetry data.
 - [x] Write integration tests for hook functionality (`telemetry-hook-integration.test.ts`)
 
 ### Phase 5: User Consent
+
 - [ ] Create `src/utils/telemetry/telemetry-consent.ts`
 - [ ] Add consent prompt to `src/commands/init.ts` first-run flow
 - [ ] Implement `atomic config set telemetry <true|false>` command
@@ -759,6 +793,7 @@ Not applicable - this is a new feature with no existing telemetry data.
 - [ ] Write tests for consent flow
 
 ### Phase 6: Backend Integration
+
 - [ ] Create `src/utils/telemetry/telemetry-upload.ts`
 - [ ] Implement hidden `--upload-telemetry` CLI flag handler
 - [ ] Implement `spawnTelemetryUpload()` function for detached background upload
@@ -771,24 +806,24 @@ Not applicable - this is a new feature with no existing telemetry data.
 
 ## 11. Code References
 
-| File | Line(s) | Description |
-|------|---------|-------------|
-| `research/docs/2026-01-21-anonymous-telemetry-implementation.md` | 1-1623 | Full research document |
-| `src/index.ts` | 87-243 | Main CLI entry point for tracking |
-| `src/commands/run-agent.ts` | 58-129 | Agent execution for CLI tracking |
-| `src/commands/init.ts` | N/A | Consent prompt integration point |
-| `src/utils/config-path.ts` | 54-64 | `getBinaryDataDir()` for storage path |
-| `src/utils/telemetry/types.ts` | 88-118 | `AgentSessionEvent` interface definition |
-| `src/utils/telemetry/telemetry-session.ts` | 1-172 | Session tracking utilities |
-| `src/utils/telemetry/telemetry-session.test.ts` | N/A | Unit tests for session tracking |
-| `src/utils/telemetry/telemetry-hook-integration.test.ts` | N/A | Integration tests for hooks |
-| `bin/telemetry-helper.sh` | N/A | Shared shell functions for hooks |
-| `.claude/hooks/telemetry-stop.sh` | N/A | Claude Code Stop hook |
-| `.claude/hooks/hooks.json` | N/A | Claude Code hook registration |
-| `.github/hooks/prompt-hook.sh` | N/A | Copilot CLI `userPromptSubmitted` hook |
-| `.github/hooks/stop-hook.sh` | 210-258 | Copilot CLI `sessionEnd` telemetry section |
-| `.github/scripts/start-ralph-session.sh` | 85-112 | Copilot CLI `sessionStart` telemetry init |
-| `.github/hooks/hooks.json` | N/A | Copilot CLI hook registration (includes `userPromptSubmitted`) |
-| `.opencode/plugin/telemetry.ts` | N/A | OpenCode session tracking plugin |
-| `install.sh` | 11-12 | DATA_DIR definition |
-| `install.ps1` | 16-17 | Windows DATA_DIR definition |
+| File                                                             | Line(s) | Description                                                    |
+| ---------------------------------------------------------------- | ------- | -------------------------------------------------------------- |
+| `research/docs/2026-01-21-anonymous-telemetry-implementation.md` | 1-1623  | Full research document                                         |
+| `src/index.ts`                                                   | 87-243  | Main CLI entry point for tracking                              |
+| `src/commands/run-agent.ts`                                      | 58-129  | Agent execution for CLI tracking                               |
+| `src/commands/init.ts`                                           | N/A     | Consent prompt integration point                               |
+| `src/utils/config-path.ts`                                       | 54-64   | `getBinaryDataDir()` for storage path                          |
+| `src/utils/telemetry/types.ts`                                   | 88-118  | `AgentSessionEvent` interface definition                       |
+| `src/utils/telemetry/telemetry-session.ts`                       | 1-172   | Session tracking utilities                                     |
+| `src/utils/telemetry/telemetry-session.test.ts`                  | N/A     | Unit tests for session tracking                                |
+| `src/utils/telemetry/telemetry-hook-integration.test.ts`         | N/A     | Integration tests for hooks                                    |
+| `bin/telemetry-helper.sh`                                        | N/A     | Shared shell functions for hooks                               |
+| `.claude/hooks/telemetry-stop.sh`                                | N/A     | Claude Code Stop hook                                          |
+| `.claude/hooks/hooks.json`                                       | N/A     | Claude Code hook registration                                  |
+| `.github/hooks/prompt-hook.sh`                                   | N/A     | Copilot CLI `userPromptSubmitted` hook                         |
+| `.github/hooks/stop-hook.sh`                                     | 210-258 | Copilot CLI `sessionEnd` telemetry section                     |
+| `.github/scripts/start-ralph-session.sh`                         | 85-112  | Copilot CLI `sessionStart` telemetry init                      |
+| `.github/hooks/hooks.json`                                       | N/A     | Copilot CLI hook registration (includes `userPromptSubmitted`) |
+| `.opencode/plugin/telemetry.ts`                                  | N/A     | OpenCode session tracking plugin                               |
+| `install.sh`                                                     | 11-12   | DATA_DIR definition                                            |
+| `install.ps1`                                                    | 16-17   | Windows DATA_DIR definition                                    |

@@ -5,7 +5,16 @@ git_commit: 38273399ecd104aff56275907e0cbff6e8c07011
 branch: main
 repository: atomic
 topic: "Binary Distribution via GitHub Releases and Shell Installer Scripts"
-tags: [research, codebase, binary-distribution, github-releases, installer-scripts, curl-bash, powershell]
+tags:
+    [
+        research,
+        codebase,
+        binary-distribution,
+        github-releases,
+        installer-scripts,
+        curl-bash,
+        powershell,
+    ]
 status: complete
 last_updated: 2026-01-21
 last_updated_by: Claude Code
@@ -61,6 +70,7 @@ checksums.txt
 #### Release Upload (`.github/workflows/publish.yml:83-97`)
 
 Uses `softprops/action-gh-release@v2` with:
+
 - SHA256 checksums via `sha256sum * > checksums.txt`
 - Auto-generated release notes
 - Version tag from `package.json`
@@ -90,6 +100,7 @@ esac
 ```
 
 **Rosetta 2 Detection (macOS Intel emulation on Apple Silicon)**:
+
 ```bash
 if [[ $target = darwin-x64 ]]; then
     if [[ $(sysctl -n sysctl.proc_translated 2>/dev/null) = 1 ]]; then
@@ -100,9 +111,10 @@ fi
 ```
 
 **Windows Detection and Delegation**:
+
 ```bash
 if [[ ${OS:-} = Windows_NT ]]; then
-    powershell -c "irm https://raw.githubusercontent.com/flora131/atomic/main/install.ps1 | iex"
+    powershell -c "irm https://raw.githubusercontent.com/bastani/atomic/main/install.ps1 | iex"
     exit $?
 fi
 ```
@@ -130,10 +142,10 @@ Based on the current `publish.yml` setup, the download URLs will follow this pat
 
 ```
 # Latest release
-https://github.com/flora131/atomic/releases/latest/download/atomic-{target}
+https://github.com/bastani/atomic/releases/latest/download/atomic-{target}
 
 # Specific version
-https://github.com/flora131/atomic/releases/download/v{version}/atomic-{target}
+https://github.com/bastani/atomic/releases/download/v{version}/atomic-{target}
 ```
 
 **Target Mapping**:
@@ -149,12 +161,13 @@ https://github.com/flora131/atomic/releases/download/v{version}/atomic-{target}
 
 #### Decided Locations
 
-| Platform | Default Path | Environment Override |
-|----------|--------------|---------------------|
-| Linux/macOS | `$HOME/.local/bin` | `ATOMIC_INSTALL` |
-| Windows | `%USERPROFILE%\.local\bin` | `ATOMIC_INSTALL` |
+| Platform    | Default Path               | Environment Override |
+| ----------- | -------------------------- | -------------------- |
+| Linux/macOS | `$HOME/.local/bin`         | `ATOMIC_INSTALL`     |
+| Windows     | `%USERPROFILE%\.local\bin` | `ATOMIC_INSTALL`     |
 
 **Rationale**:
+
 - `~/.local/bin` follows XDG Base Directory spec and is commonly in PATH on modern systems
 - User-writable directory that doesn't require sudo/admin privileges
 - Windows uses equivalent local directory to avoid requiring admin privileges
@@ -162,6 +175,7 @@ https://github.com/flora131/atomic/releases/download/v{version}/atomic-{target}
 #### Alternative Patterns (Not Used)
 
 Other tools use:
+
 - Tool-specific: `~/.bun/bin`, `~/.deno/bin`, `~/.cargo/bin`
 - `/usr/local/bin` (system-wide, requires sudo)
 
@@ -244,11 +258,12 @@ Checksum verification will be **mandatory** for security. The install scripts wi
 #### Current Workflow Implementation
 
 The `publish.yml` creates checksums:
+
 ```yaml
 - name: Create checksums
   run: |
-    cd dist
-    sha256sum * > checksums.txt
+      cd dist
+      sha256sum * > checksums.txt
 ```
 
 #### Unix Checksum Verification
@@ -349,19 +364,19 @@ try {
 
 **Decision**: Use GitHub raw URLs directly. No custom domain needed.
 
-| Option | URL Pattern | Status |
-|--------|-------------|--------|
-| **GitHub Raw** | `raw.githubusercontent.com/flora131/atomic/main/install.sh` | **Selected** |
-| Custom Domain | N/A | Not needed |
+| Option         | URL Pattern                                                | Status       |
+| -------------- | ---------------------------------------------------------- | ------------ |
+| **GitHub Raw** | `raw.githubusercontent.com/bastani/atomic/main/install.sh` | **Selected** |
+| Custom Domain  | N/A                                                        | Not needed   |
 
 **Final Installation Commands**:
 
 ```bash
 # Linux/macOS
-curl -fsSL https://raw.githubusercontent.com/flora131/atomic/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/bastani/atomic/main/install.sh | bash
 
 # Windows PowerShell
-irm https://raw.githubusercontent.com/flora131/atomic/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/bastani/atomic/main/install.ps1 | iex
 ```
 
 ### 9. Script Parameter Support
@@ -383,10 +398,11 @@ done
 ```
 
 **Usage**:
+
 ```bash
-curl -fsSL https://raw.githubusercontent.com/flora131/atomic/main/install.sh | bash
-curl -fsSL https://raw.githubusercontent.com/flora131/atomic/main/install.sh | bash -s -- v1.0.0
-curl -fsSL https://raw.githubusercontent.com/flora131/atomic/main/install.sh | bash -s -- -b /usr/local/bin
+curl -fsSL https://raw.githubusercontent.com/bastani/atomic/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/bastani/atomic/main/install.sh | bash -s -- v1.0.0
+curl -fsSL https://raw.githubusercontent.com/bastani/atomic/main/install.sh | bash -s -- -b /usr/local/bin
 ```
 
 #### PowerShell
@@ -400,14 +416,16 @@ param(
 ```
 
 **Usage**:
+
 ```powershell
-irm https://raw.githubusercontent.com/flora131/atomic/main/install.ps1 | iex
-iex "& { $(irm https://raw.githubusercontent.com/flora131/atomic/main/install.ps1) } -Version v1.0.0"
+irm https://raw.githubusercontent.com/bastani/atomic/main/install.ps1 | iex
+iex "& { $(irm https://raw.githubusercontent.com/bastani/atomic/main/install.ps1) } -Version v1.0.0"
 ```
 
 ### 10. Complete Install Script Templates
 
 These templates incorporate all decided requirements:
+
 - Install to `~/.local/bin` (Unix) / `%USERPROFILE%\.local\bin` (Windows)
 - Auto-modify shell configs for PATH
 - SHA256 checksum verification
@@ -418,12 +436,12 @@ These templates incorporate all decided requirements:
 ```bash
 #!/bin/bash
 # Atomic CLI Installer
-# Usage: curl -fsSL https://raw.githubusercontent.com/flora131/atomic/main/install.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/bastani/atomic/main/install.sh | bash
 
 set -euo pipefail
 
 # Configuration
-GITHUB_REPO="flora131/atomic"
+GITHUB_REPO="bastani/atomic"
 BINARY_NAME="atomic"
 BIN_DIR="${ATOMIC_INSTALL:-$HOME/.local/bin}"
 
@@ -632,7 +650,7 @@ main "$@"
 
 ```powershell
 # Atomic CLI Installer for Windows
-# Usage: irm https://raw.githubusercontent.com/flora131/atomic/main/install.ps1 | iex
+# Usage: irm https://raw.githubusercontent.com/bastani/atomic/main/install.ps1 | iex
 
 param(
     [String]$Version = "latest",
@@ -642,7 +660,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 # Configuration
-$GithubRepo = "flora131/atomic"
+$GithubRepo = "bastani/atomic"
 $BinaryName = "atomic"
 $BinDir = if ($env:ATOMIC_INSTALL) { $env:ATOMIC_INSTALL } else { "${Home}\.local\bin" }
 
@@ -843,13 +861,13 @@ public static extern IntPtr SendMessageTimeout(
 
 ## Decisions Made
 
-| Question | Decision |
-|----------|----------|
-| **Custom domain** | No - use `raw.githubusercontent.com` URLs directly |
-| **Checksum verification** | Yes - mandatory SHA256 verification for security |
-| **PATH modification** | Auto-modify shell configs (like NVM/Rustup) |
-| **Install directory** | `~/.local/bin` (Unix), `%USERPROFILE%\.local\bin` (Windows) |
-| **Admin privileges** | Not required - install to user directories only |
+| Question                  | Decision                                                    |
+| ------------------------- | ----------------------------------------------------------- |
+| **Custom domain**         | No - use `raw.githubusercontent.com` URLs directly          |
+| **Checksum verification** | Yes - mandatory SHA256 verification for security            |
+| **PATH modification**     | Auto-modify shell configs (like NVM/Rustup)                 |
+| **Install directory**     | `~/.local/bin` (Unix), `%USERPROFILE%\.local\bin` (Windows) |
+| **Admin privileges**      | Not required - install to user directories only             |
 
 ## Open Questions (Remaining)
 

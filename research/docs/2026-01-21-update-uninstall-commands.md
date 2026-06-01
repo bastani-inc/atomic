@@ -5,7 +5,16 @@ git_commit: 1816ee688508fe72f1a7ece9ecf556d12094b3b7
 branch: main
 repository: atomic
 topic: "Implementing atomic update and atomic uninstall CLI Commands"
-tags: [research, codebase, cli, update, uninstall, binary-distribution, self-update]
+tags:
+    [
+        research,
+        codebase,
+        cli,
+        update,
+        uninstall,
+        binary-distribution,
+        self-update,
+    ]
 status: complete
 last_updated: 2026-01-21
 last_updated_by: Claude Code
@@ -22,6 +31,7 @@ Research the codebase to understand how to add an `atomic update` command that w
 This document provides comprehensive research for implementing `atomic update` and `atomic uninstall` commands. The key design principle is that **these commands should only be available for binary installations** since npm/bun have their own upgrade mechanisms (`bun upgrade @bastani/atomic`, `npm update -g @bastani/atomic`).
 
 The codebase already has:
+
 1. **Installation detection** via `detectInstallationType()` in `src/utils/config-path.ts`
 2. **Data directory configuration** via `getBinaryDataDir()` and `getConfigRoot()`
 3. **Install scripts** (`install.sh`, `install.ps1`) that define the canonical locations
@@ -34,6 +44,7 @@ The codebase already has:
 #### Entry Point: `src/index.ts`
 
 The CLI uses a combination of:
+
 - **Manual argument parsing** for agent run mode (`isAgentRunMode`)
 - **`parseArgs` from `util`** for standard command parsing
 - **Positional commands** handled via switch statement
@@ -68,9 +79,11 @@ case "uninstall":
 #### Argument Parsing Pattern
 
 Commands receive options from `parseArgs`:
+
 - `src/index.ts:146-158` - Options definition
 
 New commands should follow the same pattern:
+
 1. Check if supported for installation type
 2. Parse command-specific flags
 3. Call the command handler
@@ -81,20 +94,24 @@ New commands should follow the same pattern:
 
 ```typescript
 export function detectInstallationType(): InstallationType {
-  const dir = import.meta.dir;
+    const dir = import.meta.dir;
 
-  // Bun compiled executables use a virtual filesystem with '$bunfs' prefix
-  if (dir.includes("$bunfs") || dir.startsWith("B:\\") || dir.startsWith("b:\\")) {
-    return "binary";
-  }
+    // Bun compiled executables use a virtual filesystem with '$bunfs' prefix
+    if (
+        dir.includes("$bunfs") ||
+        dir.startsWith("B:\\") ||
+        dir.startsWith("b:\\")
+    ) {
+        return "binary";
+    }
 
-  // Check for node_modules in path (npm/bun installed)
-  if (dir.includes("node_modules")) {
-    return "npm";
-  }
+    // Check for node_modules in path (npm/bun installed)
+    if (dir.includes("node_modules")) {
+        return "npm";
+    }
 
-  // Default to source (development mode)
-  return "source";
+    // Default to source (development mode)
+    return "source";
 }
 ```
 
@@ -108,6 +125,7 @@ export function detectInstallationType(): InstallationType {
 #### Recommended Error Messages
 
 For npm/bun installations:
+
 ```
 Error: 'atomic update' is not available for npm/bun installations.
 
@@ -118,6 +136,7 @@ To update atomic, use your package manager:
 ```
 
 For source installations:
+
 ```
 Error: 'atomic update' is not available in development mode.
 
@@ -130,19 +149,21 @@ To update atomic from source:
 
 #### Binary Installation Paths
 
-| Platform | Binary Location | Data Directory |
-|----------|-----------------|----------------|
-| Unix (default) | `~/.local/bin/atomic` | `~/.local/share/atomic` |
-| Unix (custom) | `$ATOMIC_INSTALL_DIR/atomic` | `$XDG_DATA_HOME/atomic` |
-| Windows | `%USERPROFILE%\.local\bin\atomic.exe` | `%LOCALAPPDATA%\atomic` |
+| Platform       | Binary Location                       | Data Directory          |
+| -------------- | ------------------------------------- | ----------------------- |
+| Unix (default) | `~/.local/bin/atomic`                 | `~/.local/share/atomic` |
+| Unix (custom)  | `$ATOMIC_INSTALL_DIR/atomic`          | `$XDG_DATA_HOME/atomic` |
+| Windows        | `%USERPROFILE%\.local\bin\atomic.exe` | `%LOCALAPPDATA%\atomic` |
 
 **Source: `install.sh:11-12`**
+
 ```bash
 BIN_DIR="${ATOMIC_INSTALL_DIR:-$HOME/.local/bin}"
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/atomic"
 ```
 
 **Source: `install.ps1:16-17`**
+
 ```powershell
 $BinDir = if ($env:ATOMIC_INSTALL_DIR) { ... } else { "${Home}\.local\bin" }
 $DataDir = if ($env:LOCALAPPDATA) { "${env:LOCALAPPDATA}\atomic" } else { ... }
@@ -167,18 +188,22 @@ export function getBinaryDataDir(): string {
 ```typescript
 // Proposed: src/utils/config-path.ts
 export function getBinaryInstallDir(): string {
-  if (isWindows()) {
-    return process.env.ATOMIC_INSTALL_DIR ||
-      join(process.env.USERPROFILE || "", ".local", "bin");
-  }
-  return process.env.ATOMIC_INSTALL_DIR ||
-    join(process.env.HOME || "", ".local", "bin");
+    if (isWindows()) {
+        return (
+            process.env.ATOMIC_INSTALL_DIR ||
+            join(process.env.USERPROFILE || "", ".local", "bin")
+        );
+    }
+    return (
+        process.env.ATOMIC_INSTALL_DIR ||
+        join(process.env.HOME || "", ".local", "bin")
+    );
 }
 
 export function getBinaryPath(): string {
-  const dir = getBinaryInstallDir();
-  const name = isWindows() ? "atomic.exe" : "atomic";
-  return join(dir, name);
+    const dir = getBinaryInstallDir();
+    const name = isWindows() ? "atomic.exe" : "atomic";
+    return join(dir, name);
 }
 ```
 
@@ -187,6 +212,7 @@ export function getBinaryPath(): string {
 **Source: `.github/workflows/publish.yml`**
 
 Assets published per release:
+
 ```
 atomic-linux-x64
 atomic-linux-arm64
@@ -199,15 +225,16 @@ checksums.txt
 ```
 
 **Release URL patterns:**
+
 ```
 # Latest release
-https://api.github.com/repos/flora131/atomic/releases/latest
+https://api.github.com/repos/bastani/atomic/releases/latest
 
 # Specific version
-https://github.com/flora131/atomic/releases/download/v{version}/atomic-{platform}
+https://github.com/bastani/atomic/releases/download/v{version}/atomic-{platform}
 
 # Config files
-https://github.com/flora131/atomic/releases/download/v{version}/atomic-config.tar.gz
+https://github.com/bastani/atomic/releases/download/v{version}/atomic-config.tar.gz
 ```
 
 ### 5. Update Command Implementation
@@ -248,6 +275,7 @@ atomic update
 #### Platform-Specific Binary Replacement
 
 **Unix:**
+
 - A running executable can be replaced via `rename()` syscall
 - The old binary continues running from memory
 - New invocations use the new binary
@@ -255,15 +283,16 @@ atomic update
 ```typescript
 // Pseudocode for Unix update
 async function replaceBinaryUnix(newBinary: string, targetPath: string) {
-  // 1. Make new binary executable
-  await chmod(newBinary, 0o755);
+    // 1. Make new binary executable
+    await chmod(newBinary, 0o755);
 
-  // 2. Atomic rename (replaces old)
-  await rename(newBinary, targetPath);
+    // 2. Atomic rename (replaces old)
+    await rename(newBinary, targetPath);
 }
 ```
 
 **Windows:**
+
 - Running executables are locked and cannot be deleted/overwritten
 - But they CAN be renamed
 - Strategy: rename old → move new → cleanup old later
@@ -271,26 +300,26 @@ async function replaceBinaryUnix(newBinary: string, targetPath: string) {
 ```typescript
 // Pseudocode for Windows update
 async function replaceBinaryWindows(newBinary: string, targetPath: string) {
-  const oldPath = targetPath + ".old";
+    const oldPath = targetPath + ".old";
 
-  // 1. Rename running executable to .old
-  await rename(targetPath, oldPath);
+    // 1. Rename running executable to .old
+    await rename(targetPath, oldPath);
 
-  // 2. Move new binary to target location
-  try {
-    await rename(newBinary, targetPath);
-  } catch (e) {
-    // Rollback: restore old binary
-    await rename(oldPath, targetPath);
-    throw e;
-  }
+    // 2. Move new binary to target location
+    try {
+        await rename(newBinary, targetPath);
+    } catch (e) {
+        // Rollback: restore old binary
+        await rename(oldPath, targetPath);
+        throw e;
+    }
 
-  // 3. Delete old binary (may fail if still running)
-  try {
-    await unlink(oldPath);
-  } catch {
-    // Will be cleaned up on next update
-  }
+    // 3. Delete old binary (may fail if still running)
+    try {
+        await unlink(oldPath);
+    } catch {
+        // Will be cleaned up on next update
+    }
 }
 ```
 
@@ -299,19 +328,19 @@ async function replaceBinaryWindows(newBinary: string, targetPath: string) {
 ```typescript
 // Fetch latest version from GitHub API
 async function getLatestVersion(): Promise<string> {
-  const response = await fetch(
-    "https://api.github.com/repos/flora131/atomic/releases/latest"
-  );
-  const data = await response.json();
-  return data.tag_name; // e.g., "v0.1.0"
+    const response = await fetch(
+        "https://api.github.com/repos/bastani/atomic/releases/latest",
+    );
+    const data = await response.json();
+    return data.tag_name; // e.g., "v0.1.0"
 }
 
 // Compare versions
 function isNewerVersion(latest: string, current: string): boolean {
-  // Strip 'v' prefix and compare semantically
-  const latestNum = latest.replace(/^v/, "");
-  const currentNum = current.replace(/^v/, "");
-  // Use semver comparison
+    // Strip 'v' prefix and compare semantically
+    const latestNum = latest.replace(/^v/, "");
+    const currentNum = current.replace(/^v/, "");
+    // Use semver comparison
 }
 ```
 
@@ -321,31 +350,33 @@ Reuse the pattern from `install.sh`:
 
 ```typescript
 async function verifyChecksum(
-  filePath: string,
-  checksums: string,
-  expectedFilename: string
+    filePath: string,
+    checksums: string,
+    expectedFilename: string,
 ): Promise<boolean> {
-  // Parse checksum from checksums.txt
-  const line = checksums.split("\n").find(l => l.includes(expectedFilename));
-  if (!line) throw new Error(`No checksum for ${expectedFilename}`);
-  const expectedHash = line.split(/\s+/)[0];
+    // Parse checksum from checksums.txt
+    const line = checksums
+        .split("\n")
+        .find((l) => l.includes(expectedFilename));
+    if (!line) throw new Error(`No checksum for ${expectedFilename}`);
+    const expectedHash = line.split(/\s+/)[0];
 
-  // Calculate actual hash
-  const file = Bun.file(filePath);
-  const hash = Bun.CryptoHasher.hash("sha256", await file.arrayBuffer());
-  const actualHash = Buffer.from(hash).toString("hex");
+    // Calculate actual hash
+    const file = Bun.file(filePath);
+    const hash = Bun.CryptoHasher.hash("sha256", await file.arrayBuffer());
+    const actualHash = Buffer.from(hash).toString("hex");
 
-  return actualHash === expectedHash;
+    return actualHash === expectedHash;
 }
 ```
 
 #### Flags for Update Command
 
-| Flag | Description |
-|------|-------------|
-| `--yes`, `-y` | Skip confirmation prompt |
+| Flag            | Description                                  |
+| --------------- | -------------------------------------------- |
+| `--yes`, `-y`   | Skip confirmation prompt                     |
 | `--version <v>` | Update to specific version (not just latest) |
-| `--check` | Only check for updates, don't install |
+| `--check`       | Only check for updates, don't install        |
 
 ### 6. Uninstall Command Implementation
 
@@ -376,27 +407,30 @@ atomic uninstall
 #### Self-Deletion Considerations
 
 **Unix:**
+
 - A process can delete its own executable file
 - The inode remains until the process exits
 - Simple `unlink()` works
 
 **Windows:**
+
 - Cannot delete running executable
 - Options:
-  1. Rename to `.delete` and schedule deletion at reboot
-  2. Spawn helper process to delete after exit
-  3. Instruct user to delete manually
+    1. Rename to `.delete` and schedule deletion at reboot
+    2. Spawn helper process to delete after exit
+    3. Instruct user to delete manually
 
 Recommended Windows approach:
+
 ```typescript
 // Windows: rename and schedule deletion
 async function selfDeleteWindows(binaryPath: string) {
-  const deletePath = binaryPath + ".delete";
-  await rename(binaryPath, deletePath);
+    const deletePath = binaryPath + ".delete";
+    await rename(binaryPath, deletePath);
 
-  // Schedule deletion at next reboot using MoveFileEx
-  // Or: print instructions for manual deletion
-  console.log(`
+    // Schedule deletion at next reboot using MoveFileEx
+    // Or: print instructions for manual deletion
+    console.log(`
 Please delete the following file manually:
   ${deletePath}
 
@@ -429,49 +463,49 @@ PowerShell ($PROFILE):
 
 #### Flags for Uninstall Command
 
-| Flag | Description |
-|------|-------------|
-| `--yes`, `-y` | Skip confirmation prompt |
-| `--keep-config` | Keep data directory, only remove binary |
-| `--dry-run` | Show what would be removed without removing |
+| Flag            | Description                                 |
+| --------------- | ------------------------------------------- |
+| `--yes`, `-y`   | Skip confirmation prompt                    |
+| `--keep-config` | Keep data directory, only remove binary     |
+| `--dry-run`     | Show what would be removed without removing |
 
 ### 7. Edge Cases and Error Handling
 
 #### Update Edge Cases
 
-| Scenario | Handling |
-|----------|----------|
-| Network failure during download | Delete partial file, show error with retry instructions |
-| Checksum mismatch | Delete downloaded file, show error |
-| Insufficient permissions | Check permissions before download, suggest running with elevated privileges or using user directory |
-| Already up to date | Inform user, exit 0 |
-| Version downgrade requested | Allow with `--force` flag |
-| GitHub API rate limit | Suggest using `GITHUB_TOKEN` env var |
-| Binary locked (Windows) | Rename strategy with cleanup |
+| Scenario                        | Handling                                                                                            |
+| ------------------------------- | --------------------------------------------------------------------------------------------------- |
+| Network failure during download | Delete partial file, show error with retry instructions                                             |
+| Checksum mismatch               | Delete downloaded file, show error                                                                  |
+| Insufficient permissions        | Check permissions before download, suggest running with elevated privileges or using user directory |
+| Already up to date              | Inform user, exit 0                                                                                 |
+| Version downgrade requested     | Allow with `--force` flag                                                                           |
+| GitHub API rate limit           | Suggest using `GITHUB_TOKEN` env var                                                                |
+| Binary locked (Windows)         | Rename strategy with cleanup                                                                        |
 
 #### Uninstall Edge Cases
 
-| Scenario | Handling |
-|----------|----------|
-| Binary not found | Already uninstalled, show success message |
-| Data directory not found | Warn but continue |
-| Insufficient permissions | Show error with suggested commands |
-| Binary in use (Windows) | Rename to `.delete`, show manual cleanup instructions |
-| Partial uninstall (previous failure) | Clean up `.delete` files |
+| Scenario                             | Handling                                              |
+| ------------------------------------ | ----------------------------------------------------- |
+| Binary not found                     | Already uninstalled, show success message             |
+| Data directory not found             | Warn but continue                                     |
+| Insufficient permissions             | Show error with suggested commands                    |
+| Binary in use (Windows)              | Rename to `.delete`, show manual cleanup instructions |
+| Partial uninstall (previous failure) | Clean up `.delete` files                              |
 
 #### Permission Handling
 
 ```typescript
 async function checkWritePermission(path: string): Promise<boolean> {
-  try {
-    // Try to create a temp file in the directory
-    const testPath = join(dirname(path), `.atomic-test-${Date.now()}`);
-    await Bun.write(testPath, "");
-    await unlink(testPath);
-    return true;
-  } catch {
-    return false;
-  }
+    try {
+        // Try to create a temp file in the directory
+        const testPath = join(dirname(path), `.atomic-test-${Date.now()}`);
+        await Bun.write(testPath, "");
+        await unlink(testPath);
+        return true;
+    } catch {
+        return false;
+    }
 }
 ```
 
@@ -555,11 +589,11 @@ To complete the uninstallation, remove the PATH entry from your shell config:
 
 ### 10. Command Behavior Summary
 
-| Command | Binary Install | npm/bun Install | Source Install |
-|---------|---------------|-----------------|----------------|
-| `atomic update` | ✓ Updates binary + config | ✗ Error: use package manager | ✗ Error: use git pull |
-| `atomic uninstall` | ✓ Removes binary + data | ✗ Error: use package manager | ✗ Error: not applicable |
-| `atomic update --check` | ✓ Shows available update | ✗ Error | ✗ Error |
+| Command                 | Binary Install            | npm/bun Install              | Source Install          |
+| ----------------------- | ------------------------- | ---------------------------- | ----------------------- |
+| `atomic update`         | ✓ Updates binary + config | ✗ Error: use package manager | ✗ Error: use git pull   |
+| `atomic uninstall`      | ✓ Removes binary + data   | ✗ Error: use package manager | ✗ Error: not applicable |
+| `atomic update --check` | ✓ Shows available update  | ✗ Error                      | ✗ Error                 |
 
 ## Code References
 
@@ -656,6 +690,7 @@ To complete the uninstallation, remove the PATH entry from your shell config:
 ## Implementation Checklist
 
 ### Update Command
+
 - [ ] Create `src/commands/update.ts`
 - [ ] Add `getBinaryInstallDir()` and `getBinaryPath()` to `src/utils/config-path.ts`
 - [ ] Create `src/utils/download.ts` with download and checksum helpers
@@ -666,6 +701,7 @@ To complete the uninstallation, remove the PATH entry from your shell config:
 - [ ] Update README with `atomic update` documentation
 
 ### Uninstall Command
+
 - [ ] Create `src/commands/uninstall.ts`
 - [ ] Add `uninstall` case to `src/index.ts` switch statement
 - [ ] Update help text in `showHelp()` function
@@ -674,6 +710,7 @@ To complete the uninstallation, remove the PATH entry from your shell config:
 - [ ] Update README with `atomic uninstall` documentation
 
 ### Documentation
+
 - [ ] Add "Updating Atomic" section to README
 - [ ] Add "Uninstalling Atomic" section (update existing) to include CLI command
 - [ ] Document installation type detection behavior

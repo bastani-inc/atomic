@@ -26,7 +26,7 @@ Extensions are TypeScript modules that extend Atomic's behavior. They can subscr
 - External integrations (file watchers, webhooks, CI triggers)
 - Games while you wait (see `snake.ts` example)
 
-See [examples/extensions/](https://github.com/flora131/atomic/tree/main/packages/coding-agent/examples/extensions) for working implementations.
+See [examples/extensions/](https://github.com/bastani/atomic/tree/main/packages/coding-agent/examples/extensions) for working implementations.
 
 ## Table of Contents
 
@@ -860,7 +860,7 @@ pi.on("input", async (event, ctx) => {
 - `transform` - modify text/images, then continue to expansion
 - `handled` - skip agent entirely (first handler to return this wins)
 
-Transforms chain across handlers. See [input-transform.ts](https://github.com/flora131/atomic/blob/main/packages/coding-agent/examples/extensions/input-transform.ts).
+Transforms chain across handlers. See [input-transform.ts](https://github.com/bastani/atomic/blob/main/packages/coding-agent/examples/extensions/input-transform.ts).
 
 ## ExtensionContext
 
@@ -1239,7 +1239,7 @@ Use `promptSnippet` to opt a custom tool into a one-line entry in `Available too
 
 **Important:** `promptGuidelines` bullets are appended flat to the `Guidelines` section with no tool name prefix. Each guideline must name the tool it refers to — avoid "Use this tool when..." because the LLM cannot tell which tool "this" means. Write "Use my_tool when..." instead.
 
-See [dynamic-tools.ts](https://github.com/flora131/atomic/blob/main/packages/coding-agent/examples/extensions/dynamic-tools.ts) for a full example.
+See [dynamic-tools.ts](https://github.com/bastani/atomic/blob/main/packages/coding-agent/examples/extensions/dynamic-tools.ts) for a full example.
 
 ```typescript
 import { Type } from "typebox";
@@ -1330,7 +1330,7 @@ pi.sendUserMessage("And then summarize", { deliverAs: "followUp" });
 
 When not streaming, the message is sent immediately and triggers a new turn. When streaming without `deliverAs`, throws an error.
 
-See [send-user-message.ts](https://github.com/flora131/atomic/blob/main/packages/coding-agent/examples/extensions/send-user-message.ts) for a complete example.
+See [send-user-message.ts](https://github.com/bastani/atomic/blob/main/packages/coding-agent/examples/extensions/send-user-message.ts) for a complete example.
 
 ### pi.appendEntry(customType, data?)
 
@@ -1776,7 +1776,7 @@ pi.registerTool({
 
 **Signaling errors:** To mark a tool execution as failed (sets `isError: true` on the result and reports it to the LLM), throw an error from `execute`. Returning a value never sets the error flag regardless of what properties you include in the return object.
 
-**Early termination:** Return `terminate: true` from `execute()` to hint that the automatic follow-up LLM call should be skipped after the current tool batch. This only takes effect when every finalized tool result in that batch is terminating. See [examples/extensions/structured-output.ts](https://github.com/flora131/atomic/blob/main/packages/coding-agent/examples/extensions/structured-output.ts) for a minimal example where the agent ends on a final structured-output tool call.
+**Early termination:** Return `terminate: true` from `execute()` to hint that the automatic follow-up LLM call should be skipped after the current tool batch. This only takes effect when every finalized tool result in that batch is terminating. See [examples/extensions/structured-output.ts](https://github.com/bastani/atomic/blob/main/packages/coding-agent/examples/extensions/structured-output.ts) for a minimal example where the agent ends on a final structured-output tool call.
 
 ```typescript
 // Correct: throw to signal an error
@@ -1852,7 +1852,7 @@ Alternatively, use `--no-builtin-tools` to start without any built-in tools whil
 atomic --no-builtin-tools -e ./my-extension.ts
 ```
 
-See [examples/extensions/tool-override.ts](https://github.com/flora131/atomic/blob/main/packages/coding-agent/examples/extensions/tool-override.ts) for a complete example that overrides `read` with logging and access control.
+See [examples/extensions/tool-override.ts](https://github.com/bastani/atomic/blob/main/packages/coding-agent/examples/extensions/tool-override.ts) for a complete example that overrides `read` with logging and access control.
 
 **Rendering:** Built-in renderer inheritance is resolved per slot. Execution override and rendering override are independent. If your override omits `renderCall`, the built-in `renderCall` is used. If your override omits `renderResult`, the built-in `renderResult` is used. If your override omits both, the built-in renderer is used automatically (syntax highlighting, diffs, etc.). This lets you wrap built-in tools for logging or access control without reimplementing the UI.
 
@@ -1916,7 +1916,7 @@ const bashTool = createBashTool(cwd, {
 });
 ```
 
-See [examples/extensions/ssh.ts](https://github.com/flora131/atomic/blob/main/packages/coding-agent/examples/extensions/ssh.ts) for a complete SSH example with `--ssh` flag.
+See [examples/extensions/ssh.ts](https://github.com/bastani/atomic/blob/main/packages/coding-agent/examples/extensions/ssh.ts) for a complete SSH example with `--ssh` flag.
 
 ### Output Truncation
 
@@ -1968,7 +1968,7 @@ async execute(toolCallId, params, signal, onUpdate, ctx) {
 - Always inform the LLM when output is truncated and where to find the full version
 - Document the truncation limits in your tool's description
 
-See [examples/extensions/truncated-tool.ts](https://github.com/flora131/atomic/blob/main/packages/coding-agent/examples/extensions/truncated-tool.ts) for a complete example wrapping `rg` (ripgrep) with proper truncation.
+See [examples/extensions/truncated-tool.ts](https://github.com/bastani/atomic/blob/main/packages/coding-agent/examples/extensions/truncated-tool.ts) for a complete example wrapping `rg` (ripgrep) with proper truncation.
 
 ### Multiple Tools
 
@@ -2195,7 +2195,7 @@ if (confirmed) {
 }
 ```
 
-See [examples/extensions/timed-confirm.ts](https://github.com/flora131/atomic/blob/main/packages/coding-agent/examples/extensions/timed-confirm.ts) for complete examples.
+See [examples/extensions/timed-confirm.ts](https://github.com/bastani/atomic/blob/main/packages/coding-agent/examples/extensions/timed-confirm.ts) for complete examples.
 
 ### Widgets, Status, and Footer
 
@@ -2338,7 +2338,7 @@ pi.on("session_start", (_event, ctx) => {
 });
 ```
 
-See [github-issue-autocomplete.ts](https://github.com/flora131/atomic/blob/main/packages/coding-agent/examples/extensions/github-issue-autocomplete.ts) for a complete example that preloads the latest open GitHub issues with `gh issue list` and filters them locally for fast `#...` completion. It requires GitHub CLI (`gh`) and a GitHub repository checkout.
+See [github-issue-autocomplete.ts](https://github.com/bastani/atomic/blob/main/packages/coding-agent/examples/extensions/github-issue-autocomplete.ts) for a complete example that preloads the latest open GitHub issues with `gh issue list` and filters them locally for fast `#...` completion. It requires GitHub CLI (`gh`) and a GitHub repository checkout.
 
 ### Custom Components
 
@@ -2398,7 +2398,7 @@ const result = await ctx.ui.custom<string | null>(
 );
 ```
 
-See [TUI components](/tui) for the full `OverlayOptions` API and [overlay-qa-tests.ts](https://github.com/flora131/atomic/blob/main/packages/coding-agent/examples/extensions/overlay-qa-tests.ts) for examples.
+See [TUI components](/tui) for the full `OverlayOptions` API and [overlay-qa-tests.ts](https://github.com/bastani/atomic/blob/main/packages/coding-agent/examples/extensions/overlay-qa-tests.ts) for examples.
 
 ### Custom Editor
 
@@ -2534,7 +2534,7 @@ In non-interactive modes, check `ctx.hasUI` before using UI methods.
 
 ## Examples Reference
 
-All examples in [examples/extensions/](https://github.com/flora131/atomic/tree/main/packages/coding-agent/examples/extensions).
+All examples in [examples/extensions/](https://github.com/bastani/atomic/tree/main/packages/coding-agent/examples/extensions).
 
 | Example | Description | Key APIs |
 |---------|-------------|----------|

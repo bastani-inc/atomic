@@ -9,7 +9,7 @@
 
 ## 1. Executive Summary
 
-This spec addresses [Issue #205](https://github.com/flora131/atomic/issues/205): the `SkillLoadIndicator` component renders **twice** when a skill is loaded via a slash command. The duplication is caused by two independent rendering paths — one from the `skill.invoked` SDK event (Path A) and another from the `tool.execution_start` SDK event with `toolName: "skill"` (Path B) — both producing a visually identical `SkillLoadIndicator`. The fix is to add `"skill"` and `"Skill"` to the `visibleToolCalls` filter in `chat.tsx`, matching the established pattern already used for HITL and sub-agent tools. This is a **one-line change** with no functional side effects, as the dedicated `message.skillLoads` rendering path (Path A) already provides the canonical indicator at the top of the message bubble.
+This spec addresses [Issue #205](https://github.com/bastani/atomic/issues/205): the `SkillLoadIndicator` component renders **twice** when a skill is loaded via a slash command. The duplication is caused by two independent rendering paths — one from the `skill.invoked` SDK event (Path A) and another from the `tool.execution_start` SDK event with `toolName: "skill"` (Path B) — both producing a visually identical `SkillLoadIndicator`. The fix is to add `"skill"` and `"Skill"` to the `visibleToolCalls` filter in `chat.tsx`, matching the established pattern already used for HITL and sub-agent tools. This is a **one-line change** with no functional side effects, as the dedicated `message.skillLoads` rendering path (Path A) already provides the canonical indicator at the top of the message bubble.
 
 ## 2. Context and Motivation
 
