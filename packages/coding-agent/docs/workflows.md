@@ -611,7 +611,7 @@ Use `connect` for the workflow graph. Use `attach` when you want a chat pane for
 
 <p align="center"><img src="images/workflow-graph.png" alt="Workflow Graph Viewer" width="600" /></p>
 
-Human-in-the-loop prompts from `ctx.ui.input`, `ctx.ui.confirm`, `ctx.ui.select`, and `ctx.ui.editor` appear as awaiting-input nodes in the workflow UI/graph viewer, not as ordinary chat modals.
+Human-in-the-loop prompts from `ctx.ui.input`, `ctx.ui.confirm`, `ctx.ui.select`, and `ctx.ui.editor` appear as awaiting-input nodes in the workflow UI/graph viewer, not as ordinary chat modals. Workflows do not declare HIL up front; prompt nodes are created when the runtime `ctx.ui.*` call executes.
 
 ## Monitor and Control Runs
 
@@ -668,6 +668,8 @@ Use slash commands for graph connect and stage attach because those are interact
 ## Lifecycle Notices and Human Input
 
 Atomic emits deduplicated main-chat notices when workflow runs complete or fail. These terminal notices are queued into the active main chat as steering/context messages (`triggerTurn: true`, `deliverAs: "steer"`) so the model can react without the user manually polling status. Awaiting-input workflow states are tracked for dedupe/restore, but they do not enqueue main-chat connect cards or wake the model; prompt state remains visible through workflow status/connect surfaces. Configure lifecycle behavior with `workflowNotifications.enabled` (default `true`) and `workflowNotifications.notifyOn` (default `["completed", "failed", "awaiting_input"]`).
+
+Human input is runtime-only: call `ctx.ui.input`, `ctx.ui.confirm`, `ctx.ui.select`, or `ctx.ui.editor` at the point where the workflow actually needs a decision. No builder-level declaration is required or supported.
 
 When a workflow needs human input, answer in the graph viewer or attached stage chat when possible:
 

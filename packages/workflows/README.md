@@ -122,6 +122,8 @@ export default defineWorkflow("review-and-merge")
   .compile();
 ```
 
+Human input is runtime-only: call `ctx.ui.input`, `ctx.ui.confirm`, `ctx.ui.select`, or `ctx.ui.editor` at the point where the workflow actually needs a decision. No builder-level declaration is required or supported.
+
 ### Example 4 — Compose workflows
 
 Prefer regular TypeScript module imports for reusable child workflows: import the compiled workflow definition, then pass it directly to `ctx.workflow(workflowDefinition, options)`.
@@ -333,7 +335,7 @@ registry.get("alpha"); // compiled workflow definition | undefined
 
 Input overrides are bare `key=value` tokens (no leading `--`). Values are JSON-parsed when possible, so numbers, booleans, and quoted strings work as expected (e.g. `count=3`, `flag=true`, `prompt="multi word value"`). A whole-object override can be passed as a single JSON token (e.g. `{"prompt":"...","count":3}`).
 
-Workflows always run as **background tasks** in interactive sessions — the chat editor stays free while a run executes. Press **F2** (or `/workflow connect <run-id>`) to attach to the live graph viewer; HIL prompts (`ctx.ui.input/confirm/select/editor`) appear as awaiting-input graph nodes. Press Enter on the node to answer locally, never as a modal dialog over the chat.
+Workflows always run as **background tasks** in interactive sessions — the chat editor stays free while a run executes. Press **F2** (or `/workflow connect <run-id>`) to attach to the live graph viewer; HIL prompts (`ctx.ui.input/confirm/select/editor`) appear as awaiting-input graph nodes. Press Enter on the node to answer locally, never as a modal dialog over the chat. Human input is detected when those runtime `ctx.ui.*` calls execute; workflows no longer have a declaration-time HIL flag.
 
 Prompt answer replay is live-memory only. `StageSnapshot.promptAnswerState` reports whether continuation can replay a prompt answer (`available`), must ask again because the private ledger entry is gone (`unavailable`), or must ask again because multiple matching prompt nodes are ambiguous (`ambiguous`). Raw answers stay in a private `PromptAnswerRecord` ledger, are never serialized to snapshots or persistence, and remain resident in memory until the answer is cleared, the run is removed, or the store is cleared. Replay keys include prompt kind, message text, select choices, input/editor initial value, and hashed author callsite, so changing any of those inputs may intentionally re-ask on continuation. Empty `ctx.ui.select(..., [])` calls throw before creating a prompt node.
 
