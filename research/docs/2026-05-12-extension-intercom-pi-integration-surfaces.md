@@ -18,6 +18,7 @@ last_updated_by: pi specialist agent
 Investigate the codebase partition `src/extension` and `src/intercom` as the pi integration surfaces for the broader research question: "test research question".
 
 Scout context partitions:
+
 - `test/` unit, integration, and support infrastructure
 - `src/runs` and `src/workflows` execution/runtime core
 - `src/extension` and `src/intercom` pi integration surfaces
@@ -56,6 +57,7 @@ Slash command registration is wrapped by `tryRegisterSlashCommand()`, which uses
 `/workflow:<name>` aliases are registered per workflow and dispatch directly to the same runtime path as the tool and main slash command. Alias args support `--detach`/`--bg` stripping plus key/value and JSON object input parsing (`src/extension/index.ts:540-587`).
 
 The main `/workflow` command supports:
+
 - empty or `list` → registry names (`src/extension/index.ts:999-1009`)
 - `status` → in-flight run summaries (`src/extension/index.ts:1012-1027`)
 - `kill <runId|prefix|--all>` → cancellation through the shared cancellation registry and persistence port (`src/extension/index.ts:1029-1083`)
@@ -122,6 +124,7 @@ The factory wires the subscription at the end of initialization, passing the sin
 ### 11. Test coverage touching this partition
 
 The test suite has direct unit and integration coverage for this partition:
+
 - `test/unit/extension.test.ts` checks the factory is callable and no-ops against `{}`.
 - `test/unit/slash-dispatch.test.ts` covers arg parsing, slash command dispatch semantics, aliases, completions, and `makeExecuteWorkflowTool` paths.
 - `test/unit/config-loader.test.ts`, `test/unit/config-loader-helpers.test.ts`, and `test/unit/config-provenance.test.ts` cover config loading/merge/scoping behavior.

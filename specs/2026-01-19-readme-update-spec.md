@@ -1,11 +1,11 @@
 # Atomic README.md Update Technical Design Document
 
-| Document Metadata      | Details                                                       |
-| ---------------------- | ------------------------------------------------------------- |
-| Author(s)              | lavaman131                                                    |
-| Status                 | Draft (WIP)                                                   |
-| Team / Owner           | Atomic CLI                                                    |
-| Created / Last Updated | 2026-01-19                                                    |
+| Document Metadata      | Details     |
+| ---------------------- | ----------- |
+| Author(s)              | lavaman131  |
+| Status                 | Draft (WIP) |
+| Team / Owner           | Atomic CLI  |
+| Created / Last Updated | 2026-01-19  |
 
 ## 1. Executive Summary
 
@@ -25,6 +25,7 @@ The current README.md (~430 lines) was written before the atomic CLI existed. It
 - **Verbose procedure section**: Good content but lacks CLI-driven examples
 
 **Current Quick Start Flow:**
+
 ```bash
 # Current: 7+ manual steps
 cp -r .devcontainer /path/to/your-project/
@@ -37,19 +38,20 @@ cp -r .vscode/ /path/to/your-project/
 
 ### 2.2 The Problem
 
-| Issue | Impact |
-|-------|--------|
-| **Onboarding friction** | New users spend 5+ minutes copying files manually |
-| **Error-prone setup** | Users often miss files or copy to wrong locations |
-| **Outdated examples** | README doesn't reflect the CLI-first workflow |
-| **Information overload** | 430 lines intimidate potential users |
-| **No CLI examples** | The `atomic --agent` pattern is undocumented |
+| Issue                    | Impact                                            |
+| ------------------------ | ------------------------------------------------- |
+| **Onboarding friction**  | New users spend 5+ minutes copying files manually |
+| **Error-prone setup**    | Users often miss files or copy to wrong locations |
+| **Outdated examples**    | README doesn't reflect the CLI-first workflow     |
+| **Information overload** | 430 lines intimidate potential users              |
+| **No CLI examples**      | The `atomic --agent` pattern is undocumented      |
 
 **User Impact:** Engineers evaluate Atomic, see complex setup, and abandon before trying it.
 
 **Technical Context:** The `@bastani/atomic` CLI (published to npm) now handles all setup automatically:
 
 From `src/config.ts:25-60`:
+
 ```typescript
 export const AGENT_CONFIG: Record<AgentKey, AgentConfig> = {
   "claude-code": {
@@ -66,6 +68,7 @@ export const AGENT_CONFIG: Record<AgentKey, AgentConfig> = {
 **Note:** The CLI automatically copies `.mcp.json` for Claude Code users, providing MCP server configuration out of the box.
 
 From `src/index.ts:1-11`:
+
 ```
 Usage:
   atomic              Interactive setup (same as 'atomic init')
@@ -120,23 +123,23 @@ flowchart TB
 
 ### 4.2 Section Mapping (Current → New)
 
-| Current Section | Lines | Action | New Section |
-|-----------------|-------|--------|-------------|
-| Header + Intro | 1-17 | Keep, condense | Header + Intro |
-| Video Overview | 19-23 | Keep | Video Overview |
-| Table of Contents | 25-40 | Remove | (none - too short to need) |
-| The Memory Gap | 43-54 | Remove or move to docs | (optional appendix) |
-| The Flywheel | 55-63 | Keep, simplify | The Flywheel |
-| How It Works | 65-78 | Keep diagram, condense text | How It Works |
-| Quick Start | 81-167 | **Replace entirely** | Quick Start |
-| Our Procedure | 171-325 | Rewrite with CLI examples | The Workflow |
-| The ROI | 328-337 | Remove | (none) |
-| Platform Reference | 340-349 | Keep as table | Supported Agents |
-| Ralph/Autonomous | 159-167 | **Expand with image** | Autonomous Execution (Ralph) |
-| What's Included | 351-375 | Condense to one-liner | What's Included |
-| How Atomic Differs | 378-398 | Remove or move to wiki | (none) |
-| Troubleshooting | 401-416 | Keep, condense | Troubleshooting |
-| License & Credits | 419-432 | Keep | License & Credits |
+| Current Section    | Lines   | Action                      | New Section                  |
+| ------------------ | ------- | --------------------------- | ---------------------------- |
+| Header + Intro     | 1-17    | Keep, condense              | Header + Intro               |
+| Video Overview     | 19-23   | Keep                        | Video Overview               |
+| Table of Contents  | 25-40   | Remove                      | (none - too short to need)   |
+| The Memory Gap     | 43-54   | Remove or move to docs      | (optional appendix)          |
+| The Flywheel       | 55-63   | Keep, simplify              | The Flywheel                 |
+| How It Works       | 65-78   | Keep diagram, condense text | How It Works                 |
+| Quick Start        | 81-167  | **Replace entirely**        | Quick Start                  |
+| Our Procedure      | 171-325 | Rewrite with CLI examples   | The Workflow                 |
+| The ROI            | 328-337 | Remove                      | (none)                       |
+| Platform Reference | 340-349 | Keep as table               | Supported Agents             |
+| Ralph/Autonomous   | 159-167 | **Expand with image**       | Autonomous Execution (Ralph) |
+| What's Included    | 351-375 | Condense to one-liner       | What's Included              |
+| How Atomic Differs | 378-398 | Remove or move to wiki      | (none)                       |
+| Troubleshooting    | 401-416 | Keep, condense              | Troubleshooting              |
+| License & Credits  | 419-432 | Keep                        | License & Credits            |
 
 ### 4.3 Key Content Changes
 
@@ -144,7 +147,7 @@ flowchart TB
 
 **Research Reference:** [research/docs/2026-01-19-readme-update-research.md, lines 159-187](../research/docs/2026-01-19-readme-update-research.md)
 
-```markdown
+````markdown
 ## Quick Start
 
 Install the atomic configuration for your AI coding agent:
@@ -156,6 +159,7 @@ bunx @bastani/atomic
 # Or using npx
 npx @bastani/atomic
 ```
+````
 
 Select your agent (Claude Code, OpenCode, or GitHub Copilot CLI) and the CLI will configure your project automatically.
 
@@ -163,7 +167,8 @@ Select your agent (Claude Code, OpenCode, or GitHub Copilot CLI) and the CLI wil
 
 - [bun](https://bun.sh/docs/installation) or Node.js 18+
 - Your preferred AI coding agent installed
-```
+
+````
 
 #### 4.3.2 New Workflow Section with CLI Examples
 
@@ -172,15 +177,17 @@ Select your agent (Claude Code, OpenCode, or GitHub Copilot CLI) and the CLI wil
 ```markdown
 ## The Workflow
 
-```
+````
+
 Research → Spec → Features → Implement → PR
-```
+
+````
 
 ### 1. Research the Codebase
 
 ```bash
 atomic --agent claude-code /research-codebase "Describe your feature or question"
-```
+````
 
 ### 2. Create a Specification
 
@@ -207,7 +214,8 @@ Repeat until all features pass. Use `/ralph-loop` for autonomous mode.
 ```bash
 atomic --agent claude-code /create-gh-pr
 ```
-```
+
+````
 
 #### 4.3.3 Command Reference Table
 
@@ -227,7 +235,7 @@ atomic --agent claude-code /create-gh-pr
 | `/explain-code` | `[path]` | Explain code section in detail |
 | `/ralph-loop` | `[--max-iterations N]` | Run autonomous implementation loop |
 | `/cancel-ralph` | — | Stop autonomous loop |
-```
+````
 
 #### 4.3.4 Supported Agents Table
 
@@ -236,11 +244,11 @@ atomic --agent claude-code /create-gh-pr
 ```markdown
 ## Supported Agents
 
-| Agent | CLI Command | Folder | Context File |
-|-------|-------------|--------|--------------|
-| Claude Code | `atomic --agent claude-code` | `.claude/` | `CLAUDE.md` |
-| OpenCode | `atomic --agent opencode` | `.opencode/` | `AGENTS.md` |
-| GitHub Copilot CLI | `atomic --agent copilot-cli` | `.github/` | `AGENTS.md` |
+| Agent              | CLI Command                  | Folder       | Context File |
+| ------------------ | ---------------------------- | ------------ | ------------ |
+| Claude Code        | `atomic --agent claude-code` | `.claude/`   | `CLAUDE.md`  |
+| OpenCode           | `atomic --agent opencode`    | `.opencode/` | `AGENTS.md`  |
+| GitHub Copilot CLI | `atomic --agent copilot-cli` | `.github/`   | `AGENTS.md`  |
 ```
 
 #### 4.3.5 Autonomous Execution (Ralph) Section
@@ -248,6 +256,7 @@ atomic --agent claude-code /create-gh-pr
 **Source:** [Ralph Wiggum Method](https://ghuntley.com/ralph/), [research/docs/2026-01-19-slash-commands.md](../research/docs/2026-01-19-slash-commands.md)
 
 This section includes:
+
 - Ralph Wiggum image for visual identity
 - Brief explanation of the technique
 - Commands table (`/ralph-loop`, `/cancel-ralph`, `/ralph-help`)
@@ -271,21 +280,23 @@ The [Ralph Wiggum Method](https://ghuntley.com/ralph/) enables multi-hour autono
 
 ### Commands
 
-| Command | Description |
-|---------|-------------|
-| `/ralph-loop` | Start autonomous implementation loop |
-| `/ralph-loop --max-iterations 20` | Limit to 20 iterations |
-| `/cancel-ralph` | Stop the autonomous loop |
-| `/ralph-help` | Show Ralph documentation |
+| Command                           | Description                          |
+| --------------------------------- | ------------------------------------ |
+| `/ralph-loop`                     | Start autonomous implementation loop |
+| `/ralph-loop --max-iterations 20` | Limit to 20 iterations               |
+| `/cancel-ralph`                   | Stop the autonomous loop             |
+| `/ralph-help`                     | Show Ralph documentation             |
 
 ### When to Use Ralph
 
 **Good for:**
+
 - Well-defined features with clear acceptance criteria
 - Repetitive implementation tasks
 - Overnight/background execution
 
 **Not good for:**
+
 - Tasks requiring human judgment or design decisions
 - Exploratory coding or prototyping
 - Features with unclear requirements
@@ -339,11 +350,12 @@ AI coding agents need context and procedures. Atomic provides both.
 
 ```markdown
 ## The Flywheel
-
 ```
+
 Research → Specs → Execution → Outcomes → Specs (persistent memory)
-                ↑                                    ↓
-                └────────────────────────────────────┘
+↑ ↓
+└────────────────────────────────────┘
+
 ```
 
 Every feature follows this cycle. Specs become memory for future sessions.
@@ -358,11 +370,11 @@ Every feature follows this cycle. Specs become memory for future sessions.
 
 [![Architecture](assets/architecture.svg)](assets/architecture.svg)
 
-| Resource | Purpose | Examples |
-|----------|---------|----------|
+| Resource     | Purpose            | Examples                                                   |
+| ------------ | ------------------ | ---------------------------------------------------------- |
 | **Commands** | Orchestrate agents | `/research-codebase`, `/create-spec`, `/implement-feature` |
-| **Agents** | Execute tasks | `codebase-analyzer`, `codebase-locator`, `debugger` |
-| **Skills** | Domain knowledge | `testing-anti-patterns`, `prompt-engineer` |
+| **Agents**   | Execute tasks      | `codebase-analyzer`, `codebase-locator`, `debugger`        |
+| **Skills**   | Domain knowledge   | `testing-anti-patterns`, `prompt-engineer`                 |
 ```
 
 #### 5.1.7 Quick Start (Lines 81-167)
@@ -370,6 +382,7 @@ Every feature follows this cycle. Specs become memory for future sessions.
 **Replace entirely with new CLI-driven section.** See Section 4.3.1.
 
 **Remove all:**
+
 - Manual `cp` commands
 - MCP configuration steps
 - `.devcontainer` copy instructions
@@ -380,11 +393,13 @@ Every feature follows this cycle. Specs become memory for future sessions.
 **Rewrite as "The Workflow" with CLI examples.** See Section 4.3.2.
 
 **Keep:**
+
 - Step-by-step flow
 - "You review (CRITICAL)" checkpoints
 - Key Principle at the end
 
 **Remove:**
+
 - Verbose explanations under each step
 - `/compact` and session management details (move to docs)
 - Debugging flow (move to Troubleshooting or docs)
@@ -433,12 +448,12 @@ See the full list in [.claude/commands/](.claude/commands/) and [.claude/agents/
 
 Content removed from README should be preserved:
 
-| Removed Content | New Location |
-|-----------------|--------------|
-| The Memory Gap table | `docs/concepts.md` |
-| Session Management (`/compact`, `/new`) | `docs/workflow.md` |
-| Debugging Flow (`/create-debug-report`) | `docs/debugging.md` |
-| How Atomic Differs from Spec Kit | `docs/comparison.md` or wiki |
+| Removed Content                         | New Location                 |
+| --------------------------------------- | ---------------------------- |
+| The Memory Gap table                    | `docs/concepts.md`           |
+| Session Management (`/compact`, `/new`) | `docs/workflow.md`           |
+| Debugging Flow (`/create-debug-report`) | `docs/debugging.md`          |
+| How Atomic Differs from Spec Kit        | `docs/comparison.md` or wiki |
 
 **Note:** Creating these docs is OUT OF SCOPE for this spec. They can be added in a future iteration if needed.
 
@@ -457,6 +472,7 @@ npx @bastani/atomic
 ```
 
 For running agents:
+
 ```bash
 # Through atomic CLI
 atomic --agent claude-code /implement-feature
@@ -468,12 +484,12 @@ atomic --agent claude-code
 
 ## 6. Alternatives Considered
 
-| Option | Pros | Cons | Decision |
-|--------|------|------|----------|
-| **A: Minimal README (<50 lines)** | Ultra-concise, fast to read | Misses key concepts (flywheel, checkpoints) | Rejected - too sparse |
-| **B: Split into multiple READMEs** | Highly organized | Fragmented experience, harder to discover | Rejected - complexity |
-| **C: Keep current structure, just update Quick Start** | Minimal changes | Still verbose, inconsistent examples | Rejected - doesn't solve core issues |
-| **D: Streamlined README (~150 lines)** | Balanced, CLI-focused, preserves key concepts | Requires content migration | **Selected** |
+| Option                                                 | Pros                                          | Cons                                        | Decision                             |
+| ------------------------------------------------------ | --------------------------------------------- | ------------------------------------------- | ------------------------------------ |
+| **A: Minimal README (<50 lines)**                      | Ultra-concise, fast to read                   | Misses key concepts (flywheel, checkpoints) | Rejected - too sparse                |
+| **B: Split into multiple READMEs**                     | Highly organized                              | Fragmented experience, harder to discover   | Rejected - complexity                |
+| **C: Keep current structure, just update Quick Start** | Minimal changes                               | Still verbose, inconsistent examples        | Rejected - doesn't solve core issues |
+| **D: Streamlined README (~150 lines)**                 | Balanced, CLI-focused, preserves key concepts | Requires content migration                  | **Selected**                         |
 
 **Rationale for Option D:** The README should be the single authoritative quick-start guide. Removing marketing content and manual setup instructions while keeping the workflow and troubleshooting creates the right balance.
 
@@ -534,7 +550,7 @@ atomic --agent claude-code
 
 ## Appendix A: Proposed README.md Draft
 
-```markdown
+````markdown
 # Atomic
 
 <p align="center">
@@ -563,6 +579,7 @@ bunx @bastani/atomic
 # Or using npx
 npx @bastani/atomic
 ```
+````
 
 Select your agent. The CLI configures your project automatically.
 
@@ -621,28 +638,28 @@ atomic --agent claude-code /create-gh-pr
 
 ## Commands
 
-| Command | Arguments | Description |
-|---------|-----------|-------------|
-| `/research-codebase` | `[question]` | Analyze codebase and document findings |
-| `/create-spec` | `[research-path]` | Generate technical specification |
-| `/create-feature-list` | `[spec-path]` | Break spec into implementable tasks |
-| `/implement-feature` | — | Implement next feature from list |
-| `/commit` | `[message]` | Create conventional commit |
-| `/create-gh-pr` | — | Push and create pull request |
-| `/explain-code` | `[path]` | Explain code section in detail |
-| `/ralph-loop` | `[--max-iterations N]` | Run autonomous implementation loop |
-| `/cancel-ralph` | — | Stop autonomous loop |
-| `/ralph-help` | — | Show Ralph documentation |
+| Command                | Arguments              | Description                            |
+| ---------------------- | ---------------------- | -------------------------------------- |
+| `/research-codebase`   | `[question]`           | Analyze codebase and document findings |
+| `/create-spec`         | `[research-path]`      | Generate technical specification       |
+| `/create-feature-list` | `[spec-path]`          | Break spec into implementable tasks    |
+| `/implement-feature`   | —                      | Implement next feature from list       |
+| `/commit`              | `[message]`            | Create conventional commit             |
+| `/create-gh-pr`        | —                      | Push and create pull request           |
+| `/explain-code`        | `[path]`               | Explain code section in detail         |
+| `/ralph-loop`          | `[--max-iterations N]` | Run autonomous implementation loop     |
+| `/cancel-ralph`        | —                      | Stop autonomous loop                   |
+| `/ralph-help`          | —                      | Show Ralph documentation               |
 
 ---
 
 ## Supported Agents
 
-| Agent | CLI Command | Folder | Context File |
-|-------|-------------|--------|--------------|
-| Claude Code | `atomic --agent claude-code` | `.claude/` | `CLAUDE.md` |
-| OpenCode | `atomic --agent opencode` | `.opencode/` | `AGENTS.md` |
-| GitHub Copilot CLI | `atomic --agent copilot-cli` | `.github/` | `AGENTS.md` |
+| Agent              | CLI Command                  | Folder       | Context File |
+| ------------------ | ---------------------------- | ------------ | ------------ |
+| Claude Code        | `atomic --agent claude-code` | `.claude/`   | `CLAUDE.md`  |
+| OpenCode           | `atomic --agent opencode`    | `.opencode/` | `AGENTS.md`  |
+| GitHub Copilot CLI | `atomic --agent copilot-cli` | `.github/`   | `AGENTS.md`  |
 
 ---
 
@@ -663,21 +680,23 @@ The [Ralph Wiggum Method](https://ghuntley.com/ralph/) enables multi-hour autono
 
 ### Commands
 
-| Command | Description |
-|---------|-------------|
-| `/ralph-loop` | Start autonomous implementation loop |
-| `/ralph-loop --max-iterations 20` | Limit to 20 iterations |
-| `/cancel-ralph` | Stop the autonomous loop |
-| `/ralph-help` | Show Ralph documentation |
+| Command                           | Description                          |
+| --------------------------------- | ------------------------------------ |
+| `/ralph-loop`                     | Start autonomous implementation loop |
+| `/ralph-loop --max-iterations 20` | Limit to 20 iterations               |
+| `/cancel-ralph`                   | Stop the autonomous loop             |
+| `/ralph-help`                     | Show Ralph documentation             |
 
 ### When to Use Ralph
 
 **Good for:**
+
 - Well-defined features with clear acceptance criteria
 - Repetitive implementation tasks
 - Overnight/background execution
 
 **Not good for:**
+
 - Tasks requiring human judgment or design decisions
 - Exploratory coding or prototyping
 - Features with unclear requirements
@@ -701,6 +720,7 @@ The [Ralph Wiggum Method](https://ghuntley.com/ralph/) enables multi-hour autono
 ## Troubleshooting
 
 **Git Identity Error:** Configure git identity:
+
 ```bash
 git config --global user.name "Your Name"
 git config --global user.email "you@example.com"
@@ -721,6 +741,7 @@ MIT
 - [Ralph Wiggum Method](https://ghuntley.com/ralph/)
 - [OpenAI Codex Cookbook](https://github.com/openai/openai-cookbook)
 - [HumanLayer](https://github.com/humanlayer/humanlayer)
+
 ```
 
 ---
@@ -741,3 +762,4 @@ MIT
 - Primary: [research/docs/2026-01-19-readme-update-research.md](../research/docs/2026-01-19-readme-update-research.md)
 - Supporting: [research/docs/2026-01-19-slash-commands.md](../research/docs/2026-01-19-slash-commands.md)
 - CLI Source: `src/index.ts`, `src/config.ts`, `src/commands/init.ts`
+```

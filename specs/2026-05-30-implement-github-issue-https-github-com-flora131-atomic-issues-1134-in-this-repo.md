@@ -9,7 +9,7 @@
 
 ## 1. Executive Summary
 
-GitHub issue [bastani/atomic#1134](https://github.com/bastani/atomic/issues/1134) requests a user-facing Codex fast mode in Atomic. Users should be able to run `/fast` in the TUI, toggle fast mode separately for normal chat sessions and workflow stage sessions, and have Atomic invoke supported OpenAI inference providers with the correct priority-service setting. The command must only be visible when the current session has supported OpenAI-backed models available: `openai/*` or `openai-codex/*`, explicitly excluding GitHub Copilot/OpenAI models such as `github-copilot/*`.
+GitHub issue [bastani-inc/atomic#1134](https://github.com/bastani-inc/atomic/issues/1134) requests a user-facing Codex fast mode in Atomic. Users should be able to run `/fast` in the TUI, toggle fast mode separately for normal chat sessions and workflow stage sessions, and have Atomic invoke supported OpenAI inference providers with the correct priority-service setting. The command must only be visible when the current session has supported OpenAI-backed models available: `openai/*` or `openai-codex/*`, explicitly excluding GitHub Copilot/OpenAI models such as `github-copilot/*`.
 
 This RFC proposes implementing Codex fast mode as a first-party coding-agent core feature, not as an external extension. The implementation will add:
 

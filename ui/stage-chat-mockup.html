@@ -1,167 +1,235 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <title>@bastani/workflows — stage chat (Pi-box UI)</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <style>
-      /* =============================================================
+    <head>
+        <meta charset="utf-8" />
+        <title>@bastani/workflows — stage chat (Pi-box UI)</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <style>
+            /* =============================================================
          Catppuccin Mocha — same tokens as ui/dispatch-mockup.html,
          ui/attach-mockup.html. Don't drift; the orchestrator overlay
          shares this palette with the graph view.
          ============================================================= */
-      :root {
-        --crust: #11111b;
-        --mantle: #181825;
-        --base: #1e1e2e;
-        --surface0: #313244;
-        --surface1: #45475a;
-        --surface2: #585b70;
-        --overlay0: #6c7086;
-        --overlay1: #7f849c;
-        --text: #cdd6f4;
-        --subtext0: #a6adc8;
-        --subtext1: #bac2de;
-        --blue: #89b4fa;
-        --green: #a6e3a1;
-        --yellow: #f9e2af;
-        --red: #f38ba8;
-        --mauve: #cba6f7;
-        --sky: #89dceb;
-        --teal: #94e2d5;
-        --peach: #fab387;
+            :root {
+                --crust: #11111b;
+                --mantle: #181825;
+                --base: #1e1e2e;
+                --surface0: #313244;
+                --surface1: #45475a;
+                --surface2: #585b70;
+                --overlay0: #6c7086;
+                --overlay1: #7f849c;
+                --text: #cdd6f4;
+                --subtext0: #a6adc8;
+                --subtext1: #bac2de;
+                --blue: #89b4fa;
+                --green: #a6e3a1;
+                --yellow: #f9e2af;
+                --red: #f38ba8;
+                --mauve: #cba6f7;
+                --sky: #89dceb;
+                --teal: #94e2d5;
+                --peach: #fab387;
 
-        /* Pi role tokens mapped onto Mocha. Mirrors
+                /* Pi role tokens mapped onto Mocha. Mirrors
            pi @ packages/coding-agent/src/modes/interactive/theme/dark.json
            but tuned to keep the surface readable on our base
            (#1e1e2e instead of Pi's #18181e). */
-        --pi-user-bg:        #313244; /* surface0 — solid bar */
-        --pi-user-text:      #cdd6f4; /* text */
-        --pi-tool-pending-bg:#292935; /* subtle dim of base */
-        --pi-tool-success-bg:#1f2c25; /* base + green tint */
-        --pi-tool-error-bg:  #2e1f28; /* base + red tint */
-        --pi-tool-title:     #cdd6f4;
-        --pi-tool-output:    #a6adc8;
-        --pi-thinking:       #7f849c; /* overlay1 italic */
-        --pi-md-heading:     #f9e2af;
-        --pi-md-code:        #cba6f7;
-        --pi-md-quote:       #7f849c;
-        --pi-accent:         #89b4fa;
-      }
-      * { box-sizing: border-box; }
-      html, body {
-        margin: 0; padding: 0;
-        background: var(--mantle);
-        color: var(--text);
-        font-family: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
-        font-size: 13px;
-        line-height: 1.55;
-        -webkit-font-smoothing: antialiased;
-        font-feature-settings: "calt" 1, "liga" 0;
-      }
-      .page { max-width: 1180px; margin: 0 auto; padding: 2.4rem 1.5rem 6rem; }
+                --pi-user-bg: #313244; /* surface0 — solid bar */
+                --pi-user-text: #cdd6f4; /* text */
+                --pi-tool-pending-bg: #292935; /* subtle dim of base */
+                --pi-tool-success-bg: #1f2c25; /* base + green tint */
+                --pi-tool-error-bg: #2e1f28; /* base + red tint */
+                --pi-tool-title: #cdd6f4;
+                --pi-tool-output: #a6adc8;
+                --pi-thinking: #7f849c; /* overlay1 italic */
+                --pi-md-heading: #f9e2af;
+                --pi-md-code: #cba6f7;
+                --pi-md-quote: #7f849c;
+                --pi-accent: #89b4fa;
+            }
+            * {
+                box-sizing: border-box;
+            }
+            html,
+            body {
+                margin: 0;
+                padding: 0;
+                background: var(--mantle);
+                color: var(--text);
+                font-family:
+                    "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+                font-size: 13px;
+                line-height: 1.55;
+                -webkit-font-smoothing: antialiased;
+                font-feature-settings:
+                    "calt" 1,
+                    "liga" 0;
+            }
+            .page {
+                max-width: 1180px;
+                margin: 0 auto;
+                padding: 2.4rem 1.5rem 6rem;
+            }
 
-      h1 {
-        font-size: 1.05rem; font-weight: 600; margin: 0 0 0.3rem;
-        color: var(--text); letter-spacing: 0.01em;
-      }
-      h2 {
-        font-size: 0.95rem; font-weight: 600;
-        margin: 3.2rem 0 0.6rem; color: var(--text); letter-spacing: 0.04em;
-      }
-      h2 .num { color: var(--blue); margin-right: 0.5em; }
-      .lede {
-        color: var(--subtext0); margin: 0 0 1.8rem;
-        font-size: 0.82rem; max-width: 78ch; line-height: 1.65;
-      }
-      .lede code, code.inline { color: var(--text); background: var(--base); padding: 0 0.35em; border-radius: 3px; }
+            h1 {
+                font-size: 1.05rem;
+                font-weight: 600;
+                margin: 0 0 0.3rem;
+                color: var(--text);
+                letter-spacing: 0.01em;
+            }
+            h2 {
+                font-size: 0.95rem;
+                font-weight: 600;
+                margin: 3.2rem 0 0.6rem;
+                color: var(--text);
+                letter-spacing: 0.04em;
+            }
+            h2 .num {
+                color: var(--blue);
+                margin-right: 0.5em;
+            }
+            .lede {
+                color: var(--subtext0);
+                margin: 0 0 1.8rem;
+                font-size: 0.82rem;
+                max-width: 78ch;
+                line-height: 1.65;
+            }
+            .lede code,
+            code.inline {
+                color: var(--text);
+                background: var(--base);
+                padding: 0 0.35em;
+                border-radius: 3px;
+            }
 
-      .label {
-        text-transform: uppercase; letter-spacing: 0.14em;
-        font-size: 0.62rem; color: var(--overlay1);
-        margin: 0 0 0.5rem; font-weight: 600;
-      }
-      .label.idle      { color: var(--subtext0); }
-      .label.streaming { color: var(--blue); }
-      .label.paused    { color: var(--yellow); }
-      .label.settled   { color: var(--green); }
-      .label.notice    { color: var(--mauve); }
+            .label {
+                text-transform: uppercase;
+                letter-spacing: 0.14em;
+                font-size: 0.62rem;
+                color: var(--overlay1);
+                margin: 0 0 0.5rem;
+                font-weight: 600;
+            }
+            .label.idle {
+                color: var(--subtext0);
+            }
+            .label.streaming {
+                color: var(--blue);
+            }
+            .label.paused {
+                color: var(--yellow);
+            }
+            .label.settled {
+                color: var(--green);
+            }
+            .label.notice {
+                color: var(--mauve);
+            }
 
-      .note {
-        font-size: 0.74rem; color: var(--overlay1);
-        margin: 0.6rem 0 0; max-width: 92ch; line-height: 1.7;
-      }
-      .note .k     { color: var(--subtext0); }
-      .note .ok    { color: var(--green); }
-      .note .bad   { color: var(--red); }
-      .note .em    { color: var(--text); font-weight: 700; }
-      .note code   { color: var(--text); background: var(--base); padding: 0 0.3em; border-radius: 3px; }
+            .note {
+                font-size: 0.74rem;
+                color: var(--overlay1);
+                margin: 0.6rem 0 0;
+                max-width: 92ch;
+                line-height: 1.7;
+            }
+            .note .k {
+                color: var(--subtext0);
+            }
+            .note .ok {
+                color: var(--green);
+            }
+            .note .bad {
+                color: var(--red);
+            }
+            .note .em {
+                color: var(--text);
+                font-weight: 700;
+            }
+            .note code {
+                color: var(--text);
+                background: var(--base);
+                padding: 0 0.3em;
+                border-radius: 3px;
+            }
 
-      hr {
-        border: none;
-        border-top: 1px dashed var(--surface1);
-        margin: 3.2rem 0;
-      }
+            hr {
+                border: none;
+                border-top: 1px dashed var(--surface1);
+                margin: 3.2rem 0;
+            }
 
-      /* =============================================================
+            /* =============================================================
          omp-window — the orchestrator overlay popup chrome. Same
          shape used by dispatch-mockup.html / attach-mockup.html so
          the stage chat reads as "same popup, swapped interior".
          ============================================================= */
-      .omp-frame {
-        position: relative;
-        padding: 0;
-      }
-      .chrome-tag {
-        position: absolute;
-        top: -0.7em;
-        left: 22px;
-        z-index: 2;
-        background: var(--mantle);
-        color: var(--subtext0);
-        padding: 0 0.55em;
-        font-size: 11.5px;
-        letter-spacing: 0.02em;
-      }
-      .chrome-tag .sub  { color: var(--overlay0); margin-left: 0.6ch; }
-      .chrome-tag .here { color: var(--blue);   margin-left: 0.6ch; font-weight: 700; }
+            .omp-frame {
+                position: relative;
+                padding: 0;
+            }
+            .chrome-tag {
+                position: absolute;
+                top: -0.7em;
+                left: 22px;
+                z-index: 2;
+                background: var(--mantle);
+                color: var(--subtext0);
+                padding: 0 0.55em;
+                font-size: 11.5px;
+                letter-spacing: 0.02em;
+            }
+            .chrome-tag .sub {
+                color: var(--overlay0);
+                margin-left: 0.6ch;
+            }
+            .chrome-tag .here {
+                color: var(--blue);
+                margin-left: 0.6ch;
+                font-weight: 700;
+            }
 
-      .omp-window {
-        position: relative;
-        background: var(--base);
-        border: 1px solid var(--overlay0);
-        border-radius: 10px;
-        overflow: hidden;
-      }
+            .omp-window {
+                position: relative;
+                background: var(--base);
+                border: 1px solid var(--overlay0);
+                border-radius: 10px;
+                overflow: hidden;
+            }
 
-      /* In-chat back affordance. */
-      .back-pill {
-        position: absolute;
-        top: 10px;
-        right: 12px;
-        z-index: 3;
-        display: inline-flex;
-        align-items: center;
-        gap: 0.6ch;
-        padding: 0.15rem 0.6rem 0.15rem 0.3rem;
-        background: var(--mantle);
-        border: 1px solid var(--surface1);
-        border-radius: 999px;
-        font-size: 11px;
-        color: var(--subtext0);
-      }
-      .back-pill .kc {
-        background: var(--surface0);
-        color: var(--text);
-        padding: 0.05rem 0.55em;
-        border-radius: 4px;
-        font-weight: 700;
-        letter-spacing: 0.02em;
-        font-size: 10.5px;
-      }
-      .back-pill .arrow { color: var(--surface2); }
+            /* In-chat back affordance. */
+            .back-pill {
+                position: absolute;
+                top: 10px;
+                right: 12px;
+                z-index: 3;
+                display: inline-flex;
+                align-items: center;
+                gap: 0.6ch;
+                padding: 0.15rem 0.6rem 0.15rem 0.3rem;
+                background: var(--mantle);
+                border: 1px solid var(--surface1);
+                border-radius: 999px;
+                font-size: 11px;
+                color: var(--subtext0);
+            }
+            .back-pill .kc {
+                background: var(--surface0);
+                color: var(--text);
+                padding: 0.05rem 0.55em;
+                border-radius: 4px;
+                font-weight: 700;
+                letter-spacing: 0.02em;
+                font-size: 10.5px;
+            }
+            .back-pill .arrow {
+                color: var(--surface2);
+            }
 
-      /* =============================================================
+            /* =============================================================
          Stage chat — Pi-box primitives.
          Mirrors @bastani/atomic components:
            - UserMessageComponent     → .pi-user (filled Box bar)
@@ -172,908 +240,1883 @@
            - CustomEditor             → .pi-editor (bordered band)
            - FooterComponent          → .pi-footer (2 dim lines)
          ============================================================= */
-      .pi-stage-header {
-        background: var(--mantle);
-        padding: 0.55rem 1.1rem;
-        display: flex;
-        align-items: center;
-        gap: 1.1ch;
-        font-size: 12.5px;
-        border-bottom: 1px solid var(--surface0);
-      }
-      .pi-stage-header .glyph { color: var(--mauve); font-weight: 700; }
-      .pi-stage-header .scope {
-        text-transform: uppercase; letter-spacing: 0.14em;
-        font-size: 10.5px; color: var(--subtext0); font-weight: 700;
-      }
-      .pi-stage-header .title { color: var(--text); }
-      .pi-stage-header .title .wf { color: var(--subtext0); }
-      .pi-stage-header .title .sep { color: var(--surface2); padding: 0 0.6ch; }
-      .pi-stage-header .title .stage { color: var(--text); font-weight: 700; }
-      .pi-stage-header .right { margin-left: auto; display: flex; align-items: center; gap: 1.2ch; }
+            .pi-stage-header {
+                background: var(--mantle);
+                padding: 0.55rem 1.1rem;
+                display: flex;
+                align-items: center;
+                gap: 1.1ch;
+                font-size: 12.5px;
+                border-bottom: 1px solid var(--surface0);
+            }
+            .pi-stage-header .glyph {
+                color: var(--mauve);
+                font-weight: 700;
+            }
+            .pi-stage-header .scope {
+                text-transform: uppercase;
+                letter-spacing: 0.14em;
+                font-size: 10.5px;
+                color: var(--subtext0);
+                font-weight: 700;
+            }
+            .pi-stage-header .title {
+                color: var(--text);
+            }
+            .pi-stage-header .title .wf {
+                color: var(--subtext0);
+            }
+            .pi-stage-header .title .sep {
+                color: var(--surface2);
+                padding: 0 0.6ch;
+            }
+            .pi-stage-header .title .stage {
+                color: var(--text);
+                font-weight: 700;
+            }
+            .pi-stage-header .right {
+                margin-left: auto;
+                display: flex;
+                align-items: center;
+                gap: 1.2ch;
+            }
 
-      .status-pill {
-        display: inline-flex; align-items: center; gap: 0.5ch;
-        padding: 0.1rem 0.7rem;
-        border-radius: 999px;
-        font-size: 10.5px; font-weight: 700; letter-spacing: 0.04em;
-      }
-      .status-pill .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
-      .status-pill.running   { background: rgba(137,180,250,0.16); color: var(--blue); }
-      .status-pill.paused    { background: rgba(249,226,175,0.18); color: var(--yellow); }
-      .status-pill.completed { background: rgba(166,227,161,0.18); color: var(--green); }
-      .status-pill.idle      { background: rgba(108,112,134,0.18); color: var(--subtext0); }
+            .status-pill {
+                display: inline-flex;
+                align-items: center;
+                gap: 0.5ch;
+                padding: 0.1rem 0.7rem;
+                border-radius: 999px;
+                font-size: 10.5px;
+                font-weight: 700;
+                letter-spacing: 0.04em;
+            }
+            .status-pill .dot {
+                width: 6px;
+                height: 6px;
+                border-radius: 50%;
+                background: currentColor;
+            }
+            .status-pill.running {
+                background: rgba(137, 180, 250, 0.16);
+                color: var(--blue);
+            }
+            .status-pill.paused {
+                background: rgba(249, 226, 175, 0.18);
+                color: var(--yellow);
+            }
+            .status-pill.completed {
+                background: rgba(166, 227, 161, 0.18);
+                color: var(--green);
+            }
+            .status-pill.idle {
+                background: rgba(108, 112, 134, 0.18);
+                color: var(--subtext0);
+            }
 
-      .stage-meta {
-        font-size: 10.5px;
-        color: var(--overlay1);
-        letter-spacing: 0;
-      }
-      .stage-meta .v { color: var(--subtext0); }
+            .stage-meta {
+                font-size: 10.5px;
+                color: var(--overlay1);
+                letter-spacing: 0;
+            }
+            .stage-meta .v {
+                color: var(--subtext0);
+            }
 
-      /* Conversation area — full-width vertical column. */
-      .pi-convo {
-        background: var(--base);
-        padding: 0;
-        font-size: 12.5px;
-        line-height: 1.65;
-      }
-      .pi-convo .row { white-space: normal; }
-      .pi-convo .row.pre { white-space: pre-wrap; }
+            /* Conversation area — full-width vertical column. */
+            .pi-convo {
+                background: var(--base);
+                padding: 0;
+                font-size: 12.5px;
+                line-height: 1.65;
+            }
+            .pi-convo .row {
+                white-space: normal;
+            }
+            .pi-convo .row.pre {
+                white-space: pre-wrap;
+            }
 
-      /* User message: filled bar, no border, no stripe. Edge-to-edge. */
-      .pi-user {
-        background: var(--pi-user-bg);
-        color: var(--pi-user-text);
-        padding: 0.55rem 1.1rem;
-      }
-      .pi-user .md-bold  { font-weight: 700; }
-      .pi-user .md-code  { color: var(--pi-md-code); background: rgba(0,0,0,0.15); padding: 0 0.3em; border-radius: 3px; }
+            /* User message: filled bar, no border, no stripe. Edge-to-edge. */
+            .pi-user {
+                background: var(--pi-user-bg);
+                color: var(--pi-user-text);
+                padding: 0.55rem 1.1rem;
+            }
+            .pi-user .md-bold {
+                font-weight: 700;
+            }
+            .pi-user .md-code {
+                color: var(--pi-md-code);
+                background: rgba(0, 0, 0, 0.15);
+                padding: 0 0.3em;
+                border-radius: 3px;
+            }
 
-      /* Assistant message: NO background. Just markdown body. */
-      .pi-assistant {
-        color: var(--text);
-        padding: 0.05rem 1.1rem;
-      }
-      .pi-assistant .md-h1     { color: var(--pi-md-heading); font-weight: 700; }
-      .pi-assistant .md-code   { color: var(--pi-md-code); background: rgba(203,166,247,0.07); padding: 0 0.3em; border-radius: 3px; }
-      .pi-assistant .md-quote  { color: var(--pi-md-quote); border-left: 0; padding-left: 0; font-style: italic; }
-      .pi-assistant .md-li     { color: var(--text); }
-      .pi-assistant .md-li::before { content: "  • "; color: var(--pi-accent); }
-      .pi-assistant .md-link   { color: var(--blue); text-decoration: underline; }
-      .pi-assistant .md-fence  {
-        color: var(--green); background: var(--crust);
-        padding: 0.35rem 0.8rem;
-        margin: 0.45rem 0;
-        border-radius: 4px;
-        font-size: 11.5px;
-        white-space: pre;
-      }
-      .pi-assistant .md-fence .kw { color: var(--mauve); }
-      .pi-assistant .md-fence .fn { color: var(--blue); }
-      .pi-assistant .md-fence .str { color: var(--yellow); }
-      .pi-assistant .md-fence .com { color: var(--overlay1); font-style: italic; }
-      .pi-assistant .stream-caret {
-        display: inline-block;
-        width: 0.75ch;
-        height: 1.05em;
-        background: var(--overlay1);
-        vertical-align: text-bottom;
-        margin-left: 0.2ch;
-        /* Static — no blink. */
-      }
+            /* Assistant message: NO background. Just markdown body. */
+            .pi-assistant {
+                color: var(--text);
+                padding: 0.05rem 1.1rem;
+            }
+            .pi-assistant .md-h1 {
+                color: var(--pi-md-heading);
+                font-weight: 700;
+            }
+            .pi-assistant .md-code {
+                color: var(--pi-md-code);
+                background: rgba(203, 166, 247, 0.07);
+                padding: 0 0.3em;
+                border-radius: 3px;
+            }
+            .pi-assistant .md-quote {
+                color: var(--pi-md-quote);
+                border-left: 0;
+                padding-left: 0;
+                font-style: italic;
+            }
+            .pi-assistant .md-li {
+                color: var(--text);
+            }
+            .pi-assistant .md-li::before {
+                content: "  • ";
+                color: var(--pi-accent);
+            }
+            .pi-assistant .md-link {
+                color: var(--blue);
+                text-decoration: underline;
+            }
+            .pi-assistant .md-fence {
+                color: var(--green);
+                background: var(--crust);
+                padding: 0.35rem 0.8rem;
+                margin: 0.45rem 0;
+                border-radius: 4px;
+                font-size: 11.5px;
+                white-space: pre;
+            }
+            .pi-assistant .md-fence .kw {
+                color: var(--mauve);
+            }
+            .pi-assistant .md-fence .fn {
+                color: var(--blue);
+            }
+            .pi-assistant .md-fence .str {
+                color: var(--yellow);
+            }
+            .pi-assistant .md-fence .com {
+                color: var(--overlay1);
+                font-style: italic;
+            }
+            .pi-assistant .stream-caret {
+                display: inline-block;
+                width: 0.75ch;
+                height: 1.05em;
+                background: var(--overlay1);
+                vertical-align: text-bottom;
+                margin-left: 0.2ch;
+                /* Static — no blink. */
+            }
 
-      /* Thinking: italic, dim, no background. */
-      .pi-thinking {
-        color: var(--pi-thinking);
-        font-style: italic;
-        padding: 0.05rem 1.1rem;
-      }
-      .pi-thinking.collapsed { color: var(--pi-thinking); }
+            /* Thinking: italic, dim, no background. */
+            .pi-thinking {
+                color: var(--pi-thinking);
+                font-style: italic;
+                padding: 0.05rem 1.1rem;
+            }
+            .pi-thinking.collapsed {
+                color: var(--pi-thinking);
+            }
 
-      /* Tool execution: filled bar, state-coloured bg, padded. */
-      .pi-tool {
-        padding: 0.55rem 1.1rem;
-        font-size: 12px;
-        line-height: 1.6;
-      }
-      .pi-tool.pending { background: var(--pi-tool-pending-bg); }
-      .pi-tool.success { background: var(--pi-tool-success-bg); }
-      .pi-tool.error   { background: var(--pi-tool-error-bg); }
-      .pi-tool .head {
-        display: flex; align-items: baseline; gap: 1.2ch;
-      }
-      .pi-tool .name {
-        color: var(--pi-tool-title);
-        font-weight: 700;
-      }
-      .pi-tool .args { color: var(--overlay1); }
-      .pi-tool .args .v { color: var(--subtext0); }
-      .pi-tool .badge {
-        margin-left: auto;
-        color: var(--overlay1);
-        font-size: 11px;
-        font-weight: 700;
-        letter-spacing: 0.04em;
-        display: inline-flex; align-items: center; gap: 0.5ch;
-      }
-      .pi-tool.pending .badge .dot {
-        width: 6px; height: 6px; border-radius: 50%;
-        background: var(--blue);
-        animation: pulse 1.6s ease-in-out infinite;
-      }
-      .pi-tool.success .badge { color: var(--green); }
-      .pi-tool.error   .badge { color: var(--red); }
-      .pi-tool .output {
-        color: var(--pi-tool-output);
-        margin-top: 0.25rem;
-        white-space: pre;
-        font-size: 11.5px;
-      }
-      .pi-tool .output .add { color: var(--green); }
-      .pi-tool .output .del { color: var(--red); }
-      .pi-tool .output .ctx { color: var(--overlay1); }
-      .pi-tool .output .ln  { color: var(--surface2); padding-right: 1ch; }
+            /* Tool execution: filled bar, state-coloured bg, padded. */
+            .pi-tool {
+                padding: 0.55rem 1.1rem;
+                font-size: 12px;
+                line-height: 1.6;
+            }
+            .pi-tool.pending {
+                background: var(--pi-tool-pending-bg);
+            }
+            .pi-tool.success {
+                background: var(--pi-tool-success-bg);
+            }
+            .pi-tool.error {
+                background: var(--pi-tool-error-bg);
+            }
+            .pi-tool .head {
+                display: flex;
+                align-items: baseline;
+                gap: 1.2ch;
+            }
+            .pi-tool .name {
+                color: var(--pi-tool-title);
+                font-weight: 700;
+            }
+            .pi-tool .args {
+                color: var(--overlay1);
+            }
+            .pi-tool .args .v {
+                color: var(--subtext0);
+            }
+            .pi-tool .badge {
+                margin-left: auto;
+                color: var(--overlay1);
+                font-size: 11px;
+                font-weight: 700;
+                letter-spacing: 0.04em;
+                display: inline-flex;
+                align-items: center;
+                gap: 0.5ch;
+            }
+            .pi-tool.pending .badge .dot {
+                width: 6px;
+                height: 6px;
+                border-radius: 50%;
+                background: var(--blue);
+                animation: pulse 1.6s ease-in-out infinite;
+            }
+            .pi-tool.success .badge {
+                color: var(--green);
+            }
+            .pi-tool.error .badge {
+                color: var(--red);
+            }
+            .pi-tool .output {
+                color: var(--pi-tool-output);
+                margin-top: 0.25rem;
+                white-space: pre;
+                font-size: 11.5px;
+            }
+            .pi-tool .output .add {
+                color: var(--green);
+            }
+            .pi-tool .output .del {
+                color: var(--red);
+            }
+            .pi-tool .output .ctx {
+                color: var(--overlay1);
+            }
+            .pi-tool .output .ln {
+                color: var(--surface2);
+                padding-right: 1ch;
+            }
 
-      /* Spacer — Pi inserts Spacer(1) between assistant and tool blocks. */
-      .pi-spacer-1 { height: 0.9em; }
-      .pi-spacer-half { height: 0.4em; }
+            /* Spacer — Pi inserts Spacer(1) between assistant and tool blocks. */
+            .pi-spacer-1 {
+                height: 0.9em;
+            }
+            .pi-spacer-half {
+                height: 0.4em;
+            }
 
-      /* Inline state notice. Single dim line surfacing SDK ops the
+            /* Inline state notice. Single dim line surfacing SDK ops the
          workflow performed on this stage. Mirrors Pi
          CustomMessageComponent's role but with the lightest possible
          visual weight: marker + key → value. */
-      .pi-notice {
-        color: var(--overlay1);
-        padding: 0.05rem 1.1rem;
-        font-size: 11.5px;
-        line-height: 1.6;
-      }
-      .pi-notice .marker { color: var(--surface2); padding-right: 0.5ch; }
-      .pi-notice .kw     { color: var(--mauve); }
-      .pi-notice .arrow  { color: var(--surface2); padding: 0 0.5ch; }
-      .pi-notice .val    { color: var(--text); }
-      .pi-notice .meta   { color: var(--overlay1); margin-left: 0.7ch; }
+            .pi-notice {
+                color: var(--overlay1);
+                padding: 0.05rem 1.1rem;
+                font-size: 11.5px;
+                line-height: 1.6;
+            }
+            .pi-notice .marker {
+                color: var(--surface2);
+                padding-right: 0.5ch;
+            }
+            .pi-notice .kw {
+                color: var(--mauve);
+            }
+            .pi-notice .arrow {
+                color: var(--surface2);
+                padding: 0 0.5ch;
+            }
+            .pi-notice .val {
+                color: var(--text);
+            }
+            .pi-notice .meta {
+                color: var(--overlay1);
+                margin-left: 0.7ch;
+            }
 
-      /* Bordered loader — DynamicBorder above/below. */
-      .pi-loader {
-        padding: 0;
-        color: var(--overlay1);
-        font-size: 12.5px;
-      }
-      .pi-loader .rule {
-        height: 1px;
-        background: var(--overlay0);
-        opacity: 0.6;
-      }
-      .pi-loader .body {
-        padding: 0.4rem 1.1rem;
-        display: flex;
-        align-items: center;
-        gap: 1ch;
-      }
-      .pi-loader .spinner {
-        color: var(--blue);
-        font-weight: 700;
-        display: inline-block;
-        width: 1ch;
-        animation: spin 1.2s linear infinite;
-      }
-      .pi-loader .message { color: var(--subtext0); }
-      .pi-loader .escape  { margin-left: auto; color: var(--overlay1); font-size: 11px; }
-      .pi-loader .escape .kc {
-        background: var(--surface0);
-        color: var(--text);
-        padding: 0.05rem 0.45em;
-        border-radius: 3px;
-        font-weight: 700;
-        margin-right: 0.5ch;
-        font-size: 10.5px;
-      }
+            /* Bordered loader — DynamicBorder above/below. */
+            .pi-loader {
+                padding: 0;
+                color: var(--overlay1);
+                font-size: 12.5px;
+            }
+            .pi-loader .rule {
+                height: 1px;
+                background: var(--overlay0);
+                opacity: 0.6;
+            }
+            .pi-loader .body {
+                padding: 0.4rem 1.1rem;
+                display: flex;
+                align-items: center;
+                gap: 1ch;
+            }
+            .pi-loader .spinner {
+                color: var(--blue);
+                font-weight: 700;
+                display: inline-block;
+                width: 1ch;
+                animation: spin 1.2s linear infinite;
+            }
+            .pi-loader .message {
+                color: var(--subtext0);
+            }
+            .pi-loader .escape {
+                margin-left: auto;
+                color: var(--overlay1);
+                font-size: 11px;
+            }
+            .pi-loader .escape .kc {
+                background: var(--surface0);
+                color: var(--text);
+                padding: 0.05rem 0.45em;
+                border-radius: 3px;
+                font-weight: 700;
+                margin-right: 0.5ch;
+                font-size: 10.5px;
+            }
 
-      /* Editor — DynamicBorder rules top and bottom, no side borders,
+            /* Editor — DynamicBorder rules top and bottom, no side borders,
          static block cursor. Matches Pi's actual editor band (full-width
          ─ rules above and below a single content row, no rounded box). */
-      .pi-editor {
-        margin: 0;
-        border: none;
-        border-top: 1px solid var(--overlay0);
-        border-bottom: 1px solid var(--overlay0);
-        border-radius: 0;
-        padding: 0.55rem 1.1rem;
-        display: flex;
-        align-items: center;
-        gap: 0.85ch;
-        background: var(--base);
-        color: var(--text);
-        min-height: 2.4em;
-        position: relative;
-      }
-      .pi-editor.thinking-medium {
-        border-top-color: rgba(137,180,250,0.55);
-        border-bottom-color: rgba(137,180,250,0.55);
-      }
-      .pi-editor.thinking-low {
-        border-top-color: rgba(127,132,156,0.65);
-        border-bottom-color: rgba(127,132,156,0.65);
-      }
-      .pi-editor.thinking-high {
-        border-top-color: rgba(203,166,247,0.65);
-        border-bottom-color: rgba(203,166,247,0.65);
-      }
-      .pi-editor.disabled {
-        opacity: 0.65;
-        cursor: not-allowed;
-        border-top-color: var(--surface1);
-        border-bottom-color: var(--surface1);
-      }
-      .pi-editor .prompt-glyph {
-        color: var(--blue);
-        font-weight: 700;
-        font-size: 13.5px;
-        line-height: 1;
-      }
-      .pi-editor .caret {
-        display: inline-block;
-        width: 1ch;
-        height: 1.15em;
-        background: var(--text);
-        vertical-align: text-bottom;
-        /* Static block cursor — no blink. */
-      }
-      .pi-editor .placeholder { color: var(--overlay1); font-style: italic; }
-      .pi-editor .typed       { color: var(--text); }
-      .pi-editor .right-tag {
-        margin-left: auto;
-        font-size: 10.5px;
-        color: var(--overlay1);
-        letter-spacing: 0.04em;
-      }
-      .pi-editor .right-tag .lvl { color: var(--subtext0); font-weight: 700; }
+            .pi-editor {
+                margin: 0;
+                border: none;
+                border-top: 1px solid var(--overlay0);
+                border-bottom: 1px solid var(--overlay0);
+                border-radius: 0;
+                padding: 0.55rem 1.1rem;
+                display: flex;
+                align-items: center;
+                gap: 0.85ch;
+                background: var(--base);
+                color: var(--text);
+                min-height: 2.4em;
+                position: relative;
+            }
+            .pi-editor.thinking-medium {
+                border-top-color: rgba(137, 180, 250, 0.55);
+                border-bottom-color: rgba(137, 180, 250, 0.55);
+            }
+            .pi-editor.thinking-low {
+                border-top-color: rgba(127, 132, 156, 0.65);
+                border-bottom-color: rgba(127, 132, 156, 0.65);
+            }
+            .pi-editor.thinking-high {
+                border-top-color: rgba(203, 166, 247, 0.65);
+                border-bottom-color: rgba(203, 166, 247, 0.65);
+            }
+            .pi-editor.disabled {
+                opacity: 0.65;
+                cursor: not-allowed;
+                border-top-color: var(--surface1);
+                border-bottom-color: var(--surface1);
+            }
+            .pi-editor .prompt-glyph {
+                color: var(--blue);
+                font-weight: 700;
+                font-size: 13.5px;
+                line-height: 1;
+            }
+            .pi-editor .caret {
+                display: inline-block;
+                width: 1ch;
+                height: 1.15em;
+                background: var(--text);
+                vertical-align: text-bottom;
+                /* Static block cursor — no blink. */
+            }
+            .pi-editor .placeholder {
+                color: var(--overlay1);
+                font-style: italic;
+            }
+            .pi-editor .typed {
+                color: var(--text);
+            }
+            .pi-editor .right-tag {
+                margin-left: auto;
+                font-size: 10.5px;
+                color: var(--overlay1);
+                letter-spacing: 0.04em;
+            }
+            .pi-editor .right-tag .lvl {
+                color: var(--subtext0);
+                font-weight: 700;
+            }
 
-      /* Footer — 2 dim lines, mirrors FooterComponent. */
-      .pi-footer {
-        padding: 0.15rem 1.1rem 0.45rem;
-        color: var(--overlay1);
-        font-size: 11.5px;
-        display: grid;
-        gap: 0.1rem;
-      }
-      .pi-footer .line { display: flex; justify-content: space-between; gap: 1.5ch; }
-      .pi-footer .left  { color: var(--overlay1); white-space: nowrap; overflow: hidden; text-overflow: clip; }
-      .pi-footer .right { color: var(--subtext0); white-space: nowrap; }
-      .pi-footer .right .prov { color: var(--overlay1); }
-      .pi-footer .right .model { color: var(--subtext0); font-weight: 600; }
-      .pi-footer .right .thinking { color: var(--mauve); }
-      .pi-footer .right .thinking.off { color: var(--surface2); }
-      .pi-footer .pct.ok   { color: var(--subtext0); }
-      .pi-footer .pct.warn { color: var(--yellow); }
-      .pi-footer .pct.crit { color: var(--red); }
-      .pi-footer .auto     { color: var(--overlay0); }
-      .pi-footer .sess     { color: var(--mauve); }
-      .pi-footer .branch   { color: var(--blue); }
+            /* Footer — 2 dim lines, mirrors FooterComponent. */
+            .pi-footer {
+                padding: 0.15rem 1.1rem 0.45rem;
+                color: var(--overlay1);
+                font-size: 11.5px;
+                display: grid;
+                gap: 0.1rem;
+            }
+            .pi-footer .line {
+                display: flex;
+                justify-content: space-between;
+                gap: 1.5ch;
+            }
+            .pi-footer .left {
+                color: var(--overlay1);
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: clip;
+            }
+            .pi-footer .right {
+                color: var(--subtext0);
+                white-space: nowrap;
+            }
+            .pi-footer .right .prov {
+                color: var(--overlay1);
+            }
+            .pi-footer .right .model {
+                color: var(--subtext0);
+                font-weight: 600;
+            }
+            .pi-footer .right .thinking {
+                color: var(--mauve);
+            }
+            .pi-footer .right .thinking.off {
+                color: var(--surface2);
+            }
+            .pi-footer .pct.ok {
+                color: var(--subtext0);
+            }
+            .pi-footer .pct.warn {
+                color: var(--yellow);
+            }
+            .pi-footer .pct.crit {
+                color: var(--red);
+            }
+            .pi-footer .auto {
+                color: var(--overlay0);
+            }
+            .pi-footer .sess {
+                color: var(--mauve);
+            }
+            .pi-footer .branch {
+                color: var(--blue);
+            }
 
-      /* Keyhints strip — mirrors keyHint(...) formatting. */
-      .pi-hints {
-        padding: 0.4rem 1.1rem 0.65rem;
-        display: flex;
-        gap: 1.5ch;
-        flex-wrap: wrap;
-        color: var(--overlay1);
-        font-size: 11.5px;
-        border-top: 1px dashed var(--surface1);
-        align-items: baseline;
-      }
-      .pi-hints .pair { display: inline-flex; gap: 0.55ch; align-items: baseline; }
-      .pi-hints .kc {
-        background: var(--surface0);
-        color: var(--text);
-        padding: 0.05rem 0.5em;
-        border-radius: 3px;
-        font-weight: 700;
-        font-size: 10.5px;
-        letter-spacing: 0.02em;
-      }
-      .pi-hints .lbl { color: var(--overlay1); }
-      .pi-hints .lbl.em { color: var(--subtext0); font-weight: 700; }
-      .pi-hints .sep { color: var(--surface2); padding: 0 0.05ch; }
+            /* Keyhints strip — mirrors keyHint(...) formatting. */
+            .pi-hints {
+                padding: 0.4rem 1.1rem 0.65rem;
+                display: flex;
+                gap: 1.5ch;
+                flex-wrap: wrap;
+                color: var(--overlay1);
+                font-size: 11.5px;
+                border-top: 1px dashed var(--surface1);
+                align-items: baseline;
+            }
+            .pi-hints .pair {
+                display: inline-flex;
+                gap: 0.55ch;
+                align-items: baseline;
+            }
+            .pi-hints .kc {
+                background: var(--surface0);
+                color: var(--text);
+                padding: 0.05rem 0.5em;
+                border-radius: 3px;
+                font-weight: 700;
+                font-size: 10.5px;
+                letter-spacing: 0.02em;
+            }
+            .pi-hints .lbl {
+                color: var(--overlay1);
+            }
+            .pi-hints .lbl.em {
+                color: var(--subtext0);
+                font-weight: 700;
+            }
+            .pi-hints .sep {
+                color: var(--surface2);
+                padding: 0 0.05ch;
+            }
 
-      /* Welcome panel for IDLE state. Pi has no equivalent — this is
+            /* Welcome panel for IDLE state. Pi has no equivalent — this is
          our addition for first-attach so the popup never opens to a
          blank surface. Kept minimal: one heading, two muted lines, one
          pre-filled hint about how to send. */
-      .pi-welcome {
-        padding: 1.4rem 1.2rem 1.6rem;
-        text-align: center;
-        color: var(--subtext0);
-      }
-      .pi-welcome .glyph {
-        color: var(--mauve);
-        font-size: 22px;
-        line-height: 1;
-        margin-bottom: 0.7rem;
-      }
-      .pi-welcome h3 {
-        color: var(--text);
-        font-size: 13px;
-        font-weight: 700;
-        margin: 0 0 0.4rem;
-        letter-spacing: 0.01em;
-      }
-      .pi-welcome .sub  { color: var(--subtext0); font-size: 12px; line-height: 1.65; max-width: 56ch; margin: 0 auto; }
-      .pi-welcome .grid {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(220px, 1fr));
-        gap: 0.5rem 1.5rem;
-        margin: 1rem auto 0;
-        max-width: 60ch;
-        text-align: left;
-        font-size: 11.5px;
-      }
-      .pi-welcome .grid .row { display: flex; gap: 1ch; align-items: baseline; }
-      .pi-welcome .grid .k { color: var(--overlay1); min-width: 11ch; }
-      .pi-welcome .grid .v { color: var(--subtext0); }
-      .pi-welcome .grid .v.b { color: var(--text); font-weight: 700; }
+            .pi-welcome {
+                padding: 1.4rem 1.2rem 1.6rem;
+                text-align: center;
+                color: var(--subtext0);
+            }
+            .pi-welcome .glyph {
+                color: var(--mauve);
+                font-size: 22px;
+                line-height: 1;
+                margin-bottom: 0.7rem;
+            }
+            .pi-welcome h3 {
+                color: var(--text);
+                font-size: 13px;
+                font-weight: 700;
+                margin: 0 0 0.4rem;
+                letter-spacing: 0.01em;
+            }
+            .pi-welcome .sub {
+                color: var(--subtext0);
+                font-size: 12px;
+                line-height: 1.65;
+                max-width: 56ch;
+                margin: 0 auto;
+            }
+            .pi-welcome .grid {
+                display: grid;
+                grid-template-columns: repeat(2, minmax(220px, 1fr));
+                gap: 0.5rem 1.5rem;
+                margin: 1rem auto 0;
+                max-width: 60ch;
+                text-align: left;
+                font-size: 11.5px;
+            }
+            .pi-welcome .grid .row {
+                display: flex;
+                gap: 1ch;
+                align-items: baseline;
+            }
+            .pi-welcome .grid .k {
+                color: var(--overlay1);
+                min-width: 11ch;
+            }
+            .pi-welcome .grid .v {
+                color: var(--subtext0);
+            }
+            .pi-welcome .grid .v.b {
+                color: var(--text);
+                font-weight: 700;
+            }
 
-      /* Paused & settled banners. Use full-width filled bars to match
+            /* Paused & settled banners. Use full-width filled bars to match
          Pi's box vocabulary. */
-      .pi-banner {
-        padding: 0.5rem 1.1rem;
-        font-size: 11.5px;
-        letter-spacing: 0.04em;
-        font-weight: 700;
-        display: flex; gap: 1.2ch; align-items: baseline;
-      }
-      .pi-banner.paused    { background: rgba(249,226,175,0.10); color: var(--yellow); }
-      .pi-banner.completed { background: rgba(166,227,161,0.10); color: var(--green); }
-      .pi-banner .meta { color: var(--overlay1); font-weight: 400; letter-spacing: 0; }
-      .pi-banner .glyph { color: currentColor; }
+            .pi-banner {
+                padding: 0.5rem 1.1rem;
+                font-size: 11.5px;
+                letter-spacing: 0.04em;
+                font-weight: 700;
+                display: flex;
+                gap: 1.2ch;
+                align-items: baseline;
+            }
+            .pi-banner.paused {
+                background: rgba(249, 226, 175, 0.1);
+                color: var(--yellow);
+            }
+            .pi-banner.completed {
+                background: rgba(166, 227, 161, 0.1);
+                color: var(--green);
+            }
+            .pi-banner .meta {
+                color: var(--overlay1);
+                font-weight: 400;
+                letter-spacing: 0;
+            }
+            .pi-banner .glyph {
+                color: currentColor;
+            }
 
-      /* Animations */
-      @keyframes pulse { 50% { opacity: 0.35; } }
-      @keyframes spin {
-        0%   { transform: rotate(0deg); }
-        100% { transform: rotate(360deg); }
-      }
+            /* Animations */
+            @keyframes pulse {
+                50% {
+                    opacity: 0.35;
+                }
+            }
+            @keyframes spin {
+                0% {
+                    transform: rotate(0deg);
+                }
+                100% {
+                    transform: rotate(360deg);
+                }
+            }
 
-      /* =============================================================
+            /* =============================================================
          Inline atoms reused across captions/notes.
          ============================================================= */
-      .blue   { color: var(--blue); }
-      .green  { color: var(--green); }
-      .yellow { color: var(--yellow); }
-      .red    { color: var(--red); }
-      .mauve  { color: var(--mauve); }
-      .dim    { color: var(--overlay1); }
-      .muted  { color: var(--subtext0); }
-      .faint  { color: var(--overlay0); }
-      .b      { font-weight: 700; }
-    </style>
-  </head>
-  <body>
-    <div class="page">
-      <h1>@bastani/workflows · stage chat (Pi-box UI)</h1>
-      <p class="lede">
-        Pressing <b class="blue">enter</b> on a graph node attaches the orchestrator overlay to that stage's <b class="b">live pi AgentSession</b>. Same popup chrome, swapped interior. The chat surface here is intentionally <b class="b">minimal</b> &mdash; a steering surface, not a second Pi shell. It reuses Pi's box primitives verbatim: filled <span class="muted">user</span> bars, unboxed assistant Markdown, state-coloured tool bars, italic <span class="dim">thinking</span>, bordered loader, rounded editor, two-line dim footer, key-hint strip. Every SDK operation the workflow performs on the stage session (<code class="inline">setModel</code>, <code class="inline">setThinkingLevel</code>, <code class="inline">compact</code>, &hellip;) surfaces here so the user can see <b class="b">what the workflow is doing</b> without leaving the overlay.
-      </p>
+            .blue {
+                color: var(--blue);
+            }
+            .green {
+                color: var(--green);
+            }
+            .yellow {
+                color: var(--yellow);
+            }
+            .red {
+                color: var(--red);
+            }
+            .mauve {
+                color: var(--mauve);
+            }
+            .dim {
+                color: var(--overlay1);
+            }
+            .muted {
+                color: var(--subtext0);
+            }
+            .faint {
+                color: var(--overlay0);
+            }
+            .b {
+                font-weight: 700;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="page">
+            <h1>@bastani/workflows · stage chat (Pi-box UI)</h1>
+            <p class="lede">
+                Pressing <b class="blue">enter</b> on a graph node attaches the
+                orchestrator overlay to that stage's
+                <b class="b">live pi AgentSession</b>. Same popup chrome,
+                swapped interior. The chat surface here is intentionally
+                <b class="b">minimal</b> &mdash; a steering surface, not a
+                second Pi shell. It reuses Pi's box primitives verbatim: filled
+                <span class="muted">user</span> bars, unboxed assistant
+                Markdown, state-coloured tool bars, italic
+                <span class="dim">thinking</span>, bordered loader, rounded
+                editor, two-line dim footer, key-hint strip. Every SDK operation
+                the workflow performs on the stage session (<code class="inline"
+                    >setModel</code
+                >, <code class="inline">setThinkingLevel</code>,
+                <code class="inline">compact</code>, &hellip;) surfaces here so
+                the user can see
+                <b class="b">what the workflow is doing</b> without leaving the
+                overlay.
+            </p>
 
-      <!-- ============================================================
+            <!-- ============================================================
            §1  IDLE — first attach, no transcript yet
       ============================================================ -->
-      <h2><span class="num">§1</span> idle · just attached, editor empty</h2>
-      <div class="label idle">▼ stage chat — pending first message</div>
+            <h2>
+                <span class="num">§1</span> idle · just attached, editor empty
+            </h2>
+            <div class="label idle">▼ stage chat — pending first message</div>
 
-      <div class="omp-frame">
-        <span class="chrome-tag"><span class="dim">pi-workflows</span><span class="sub">/ review-fix-loop ›</span><span class="here">review-a</span></span>
-        <div class="omp-window">
-          <span class="back-pill"><span class="kc">ctrl+d</span><span class="arrow">←</span><span>back to graph</span></span>
+            <div class="omp-frame">
+                <span class="chrome-tag"
+                    ><span class="dim">pi-workflows</span
+                    ><span class="sub">/ review-fix-loop ›</span
+                    ><span class="here">review-a</span></span
+                >
+                <div class="omp-window">
+                    <span class="back-pill"
+                        ><span class="kc">ctrl+d</span
+                        ><span class="arrow">←</span
+                        ><span>back to graph</span></span
+                    >
 
-          <div class="pi-stage-header">
-            <span class="glyph"> </span>
-            <span class="scope">STAGE</span>
-            <span class="title"><span class="wf">review-fix-loop</span><span class="sep">/</span><span class="stage">review-a</span></span>
-            <div class="right">
-              <span class="stage-meta">just attached <span class="v">·</span> session <span class="v">9e2a47c1</span></span>
-              <span class="status-pill idle"><span class="dot"></span>idle</span>
+                    <div class="pi-stage-header">
+                        <span class="glyph"> </span>
+                        <span class="scope">STAGE</span>
+                        <span class="title"
+                            ><span class="wf">review-fix-loop</span
+                            ><span class="sep">/</span
+                            ><span class="stage">review-a</span></span
+                        >
+                        <div class="right">
+                            <span class="stage-meta"
+                                >just attached <span class="v">·</span> session
+                                <span class="v">9e2a47c1</span></span
+                            >
+                            <span class="status-pill idle"
+                                ><span class="dot"></span>idle</span
+                            >
+                        </div>
+                    </div>
+
+                    <div class="pi-convo">
+                        <div class="pi-welcome">
+                            <div class="glyph"></div>
+                            <h3>
+                                Attached to
+                                <span class="muted">review-fix-loop</span
+                                ><span class="faint"> / </span>review-a
+                            </h3>
+                            <p class="sub">
+                                This stage is idle. Press
+                                <span class="b" style="color: var(--text)"
+                                    >↵</span
+                                >
+                                to send the first prompt &mdash; the SDK session
+                                will be created on submit. The workflow body
+                                keeps running in the background; closing this
+                                overlay does <span class="b">not</span> kill the
+                                run.
+                            </p>
+                            <div class="grid">
+                                <div class="row">
+                                    <span class="k">model</span
+                                    ><span class="v b">claude-sonnet-4-5</span>
+                                </div>
+                                <div class="row">
+                                    <span class="k">thinking</span
+                                    ><span class="v">medium</span>
+                                </div>
+                                <div class="row">
+                                    <span class="k">parents</span
+                                    ><span class="v">setup</span>
+                                </div>
+                                <div class="row">
+                                    <span class="k">depth</span
+                                    ><span class="v">1</span>
+                                </div>
+                                <div class="row">
+                                    <span class="k">mcp scope</span
+                                    ><span class="v"
+                                        ><span class="dim">all</span></span
+                                    >
+                                </div>
+                                <div class="row">
+                                    <span class="k">tools</span
+                                    ><span class="v"
+                                        >read · grep · edit · bash ·
+                                        workflow</span
+                                    >
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="pi-editor thinking-medium">
+                        <span class="prompt-glyph">❯</span>
+                        <span class="placeholder">type a message…</span>
+                        <span class="caret"></span>
+                        <span class="right-tag"
+                            ><span class="lvl">medium</span> thinking</span
+                        >
+                    </div>
+
+                    <div class="pi-footer">
+                        <div class="line">
+                            <span class="left"
+                                >~/atomic
+                                <span class="branch">(release/v0.1.1)</span>
+                                <span class="dim">•</span>
+                                <span class="sess"
+                                    >review-fix-loop-run-9e2a</span
+                                ></span
+                            >
+                            <span class="right"
+                                ><span class="prov">(anthropic)</span>
+                                <span class="model">claude-sonnet-4-5</span>
+                                <span class="dim">•</span>
+                                <span class="thinking">medium</span></span
+                            >
+                        </div>
+                        <div class="line">
+                            <span class="left"
+                                ><span class="dim">↑0 ↓0 R0 W0 $0.000</span>
+                                <span class="pct ok">0.0%/200k</span>
+                                <span class="auto">(auto)</span></span
+                            >
+                            <span class="right dim"
+                                >stage session not yet realized</span
+                            >
+                        </div>
+                    </div>
+
+                    <div class="pi-hints">
+                        <span class="pair"
+                            ><span class="kc">↵</span
+                            ><span class="lbl em">send</span></span
+                        >
+                        <span class="sep">·</span>
+                        <span class="pair"
+                            ><span class="kc">ctrl+f</span
+                            ><span class="lbl">follow-up</span></span
+                        >
+                        <span class="sep">·</span>
+                        <span class="pair"
+                            ><span class="kc">ctrl+p</span
+                            ><span class="lbl">pause</span></span
+                        >
+                        <span class="sep">·</span>
+                        <span class="pair"
+                            ><span class="kc">ctrl+d</span
+                            ><span class="lbl">back</span></span
+                        >
+                        <span class="sep">·</span>
+                        <span class="pair"
+                            ><span class="kc">esc</span
+                            ><span class="lbl">close</span></span
+                        >
+                    </div>
+                </div>
             </div>
-          </div>
+            <p class="note">
+                <span class="k">why this shape</span> · the popup interior keeps
+                Pi's vocabulary <span class="em">exactly</span> &mdash; same
+                editor band, same footer composition, same hint strip. The
+                welcome panel is the only addition (Pi never starts blank
+                because its editor is permanent; we need an explicit landing for
+                first attach). All the SDK state Pi shows in its footer is shown
+                here, sourced from the <b>stage's own AgentSession</b> &mdash;
+                not the host chat.
+            </p>
 
-          <div class="pi-convo">
-            <div class="pi-welcome">
-              <div class="glyph"> </div>
-              <h3>Attached to <span class="muted">review-fix-loop</span><span class="faint"> / </span>review-a</h3>
-              <p class="sub">This stage is idle. Press <span class="b" style="color:var(--text)">↵</span> to send the first prompt &mdash; the SDK session will be created on submit. The workflow body keeps running in the background; closing this overlay does <span class="b">not</span> kill the run.</p>
-              <div class="grid">
-                <div class="row"><span class="k">model</span><span class="v b">claude-sonnet-4-5</span></div>
-                <div class="row"><span class="k">thinking</span><span class="v">medium</span></div>
-                <div class="row"><span class="k">parents</span><span class="v">setup</span></div>
-                <div class="row"><span class="k">depth</span><span class="v">1</span></div>
-                <div class="row"><span class="k">mcp scope</span><span class="v"><span class="dim">all</span></span></div>
-                <div class="row"><span class="k">tools</span><span class="v">read · grep · edit · bash · workflow</span></div>
-              </div>
-            </div>
-          </div>
+            <hr />
 
-          <div class="pi-editor thinking-medium">
-            <span class="prompt-glyph">❯</span>
-            <span class="placeholder">type a message…</span>
-            <span class="caret"></span>
-            <span class="right-tag"><span class="lvl">medium</span> thinking</span>
-          </div>
-
-          <div class="pi-footer">
-            <div class="line">
-              <span class="left">~/atomic <span class="branch">(release/v0.1.1)</span> <span class="dim">•</span> <span class="sess">review-fix-loop-run-9e2a</span></span>
-              <span class="right"><span class="prov">(anthropic)</span> <span class="model">claude-sonnet-4-5</span> <span class="dim">•</span> <span class="thinking">medium</span></span>
-            </div>
-            <div class="line">
-              <span class="left"><span class="dim">↑0 ↓0 R0 W0 $0.000</span> <span class="pct ok">0.0%/200k</span> <span class="auto">(auto)</span></span>
-              <span class="right dim">stage session not yet realized</span>
-            </div>
-          </div>
-
-          <div class="pi-hints">
-            <span class="pair"><span class="kc">↵</span><span class="lbl em">send</span></span>
-            <span class="sep">·</span>
-            <span class="pair"><span class="kc">ctrl+f</span><span class="lbl">follow-up</span></span>
-            <span class="sep">·</span>
-            <span class="pair"><span class="kc">ctrl+p</span><span class="lbl">pause</span></span>
-            <span class="sep">·</span>
-            <span class="pair"><span class="kc">ctrl+d</span><span class="lbl">back</span></span>
-            <span class="sep">·</span>
-            <span class="pair"><span class="kc">esc</span><span class="lbl">close</span></span>
-          </div>
-        </div>
-      </div>
-      <p class="note"><span class="k">why this shape</span> · the popup interior keeps Pi's vocabulary <span class="em">exactly</span> &mdash; same editor band, same footer composition, same hint strip. The welcome panel is the only addition (Pi never starts blank because its editor is permanent; we need an explicit landing for first attach). All the SDK state Pi shows in its footer is shown here, sourced from the <b>stage's own AgentSession</b> &mdash; not the host chat.</p>
-
-      <hr />
-
-      <!-- ============================================================
+            <!-- ============================================================
            §2  STREAMING — assistant turn live, tools mid-flight
       ============================================================ -->
-      <h2><span class="num">§2</span> streaming · assistant turn live, tools mid-flight</h2>
-      <div class="label streaming">▼ stage chat — turn in progress</div>
+            <h2>
+                <span class="num">§2</span> streaming · assistant turn live,
+                tools mid-flight
+            </h2>
+            <div class="label streaming">▼ stage chat — turn in progress</div>
 
-      <div class="omp-frame">
-        <span class="chrome-tag"><span class="dim">pi-workflows</span><span class="sub">/ review-fix-loop ›</span><span class="here">review-a</span></span>
-        <div class="omp-window">
-          <span class="back-pill"><span class="kc">ctrl+d</span><span class="arrow">←</span><span>back to graph</span></span>
+            <div class="omp-frame">
+                <span class="chrome-tag"
+                    ><span class="dim">pi-workflows</span
+                    ><span class="sub">/ review-fix-loop ›</span
+                    ><span class="here">review-a</span></span
+                >
+                <div class="omp-window">
+                    <span class="back-pill"
+                        ><span class="kc">ctrl+d</span
+                        ><span class="arrow">←</span
+                        ><span>back to graph</span></span
+                    >
 
-          <div class="pi-stage-header">
-            <span class="glyph"> </span>
-            <span class="scope">STAGE</span>
-            <span class="title"><span class="wf">review-fix-loop</span><span class="sep">/</span><span class="stage">review-a</span></span>
-            <div class="right">
-              <span class="stage-meta">running <span class="v">38s</span> <span class="v">·</span> session <span class="v">9e2a47c1</span></span>
-              <span class="status-pill running"><span class="dot"></span>running</span>
+                    <div class="pi-stage-header">
+                        <span class="glyph"> </span>
+                        <span class="scope">STAGE</span>
+                        <span class="title"
+                            ><span class="wf">review-fix-loop</span
+                            ><span class="sep">/</span
+                            ><span class="stage">review-a</span></span
+                        >
+                        <div class="right">
+                            <span class="stage-meta"
+                                >running <span class="v">38s</span>
+                                <span class="v">·</span> session
+                                <span class="v">9e2a47c1</span></span
+                            >
+                            <span class="status-pill running"
+                                ><span class="dot"></span>running</span
+                            >
+                        </div>
+                    </div>
+
+                    <div class="pi-convo">
+                        <div class="pi-spacer-1"></div>
+
+                        <div class="pi-user row">
+                            Review the auth module for security issues,
+                            especially around
+                            <span class="md-code">setRuntimeApiKey</span>
+                            lifecycle. Be thorough.
+                        </div>
+
+                        <div class="pi-spacer-1"></div>
+
+                        <div class="pi-thinking row">
+                            Looking at the auth surface. I'll start with
+                            <span style="color: var(--text)"
+                                >core/auth-storage.ts</span
+                            >
+                            and trace runtime overrides, then check dispose
+                            paths.
+                        </div>
+
+                        <div class="pi-spacer-1"></div>
+
+                        <div class="pi-assistant row">
+                            I'll walk through the auth files and check the usual
+                            suspects: storage lifecycle, dispose hygiene,
+                            env-var precedence, runtime-override clearing.
+                            Starting with the file you mentioned.
+                        </div>
+
+                        <div class="pi-spacer-1"></div>
+
+                        <div class="pi-tool success">
+                            <div class="head">
+                                <span class="name">read</span>
+                                <span class="args"
+                                    >path=<span class="v"
+                                        >packages/coding-agent/src/core/auth-storage.ts</span
+                                    ></span
+                                >
+                                <span class="badge">✓ 412 lines</span>
+                            </div>
+                        </div>
+
+                        <div class="pi-tool success">
+                            <div class="head">
+                                <span class="name">grep</span>
+                                <span class="args"
+                                    >pattern=<span class="v"
+                                        >"setRuntimeApiKey|clearRuntime"</span
+                                    ></span
+                                >
+                                <span class="badge"
+                                    >✓ 6 matches in 3 files</span
+                                >
+                            </div>
+                            <div class="output">
+                                <span class="ln">142:</span
+                                >setRuntimeApiKey(provider: string, key:
+                                string): void {
+                                <span class="ln">156:</span
+                                >clearRuntimeApiKey(provider: string): void {
+                                <span class="ln">312:</span>dispose(): void { /*
+                                no clearRuntime — see issue */
+                            </div>
+                        </div>
+
+                        <div class="pi-tool pending">
+                            <div class="head">
+                                <span class="name">read</span>
+                                <span class="args"
+                                    >path=<span class="v"
+                                        >packages/coding-agent/src/core/agent-session.ts</span
+                                    ></span
+                                >
+                                <span class="badge"
+                                    ><span class="dot"></span>READING</span
+                                >
+                            </div>
+                        </div>
+
+                        <div class="pi-spacer-1"></div>
+
+                        <div class="pi-assistant row">
+                            <span class="md-h1">## Findings</span>
+                            <br /><br />
+                            <span class="md-li"
+                                >Runtime API key overrides set via
+                                <span class="md-code">setRuntimeApiKey</span>
+                                are not cleared on
+                                <span class="md-code">AgentSession.dispose</span
+                                >. If the host process reuses the same
+                                <span class="md-code">AuthStorage</span>
+                                instance across sessions (which the SDK
+                                encourages), a previous session's key continues
+                                to win against env vars in the next
+                                session.</span
+                            >
+                            <br /><br />
+                            <span class="md-li"
+                                >The resolution chain is
+                                <span class="md-code"
+                                    >runtime &gt; agent.db &gt; env &gt;
+                                    custom-provider</span
+                                >; that's correct but means a stale runtime
+                                override is the highest-priority slot and
+                                silently masks the configured key.</span
+                            >
+                            <br /><br />
+                            <span style="color: var(--overlay1)"
+                                >Inspecting the session dispose path next to
+                                confirm the leak<span
+                                    class="stream-caret"
+                                ></span
+                            ></span>
+                        </div>
+
+                        <div class="pi-spacer-1"></div>
+                    </div>
+
+                    <div class="pi-loader">
+                        <div class="rule"></div>
+                        <div class="body">
+                            <span class="spinner">⠴</span>
+                            <span class="message"
+                                >Working <span class="dim">·</span> 38s
+                                <span class="dim">·</span> 12.3k in, 1.8k out,
+                                4.3% ctx</span
+                            >
+                            <span class="escape"
+                                ><span class="kc">esc</span> to interrupt</span
+                            >
+                        </div>
+                        <div class="rule"></div>
+                    </div>
+
+                    <div class="pi-editor thinking-medium">
+                        <span class="prompt-glyph">❯</span>
+                        <span class="placeholder"
+                            >type to steer the current turn… (queues with
+                            ↵)</span
+                        >
+                        <span class="caret"></span>
+                        <span class="right-tag"
+                            ><span class="lvl">medium</span> thinking</span
+                        >
+                    </div>
+
+                    <div class="pi-footer">
+                        <div class="line">
+                            <span class="left"
+                                >~/atomic
+                                <span class="branch">(release/v0.1.1)</span>
+                                <span class="dim">•</span>
+                                <span class="sess"
+                                    >review-fix-loop-run-9e2a</span
+                                ></span
+                            >
+                            <span class="right"
+                                ><span class="prov">(anthropic)</span>
+                                <span class="model">claude-sonnet-4-5</span>
+                                <span class="dim">•</span>
+                                <span class="thinking">medium</span></span
+                            >
+                        </div>
+                        <div class="line">
+                            <span class="left"
+                                >↑12.3k ↓1.8k R1.1k W342 $0.034
+                                <span class="pct ok">4.3%/200k</span>
+                                <span class="auto">(auto)</span></span
+                            >
+                            <span class="right dim">streaming · 38s</span>
+                        </div>
+                    </div>
+
+                    <div class="pi-hints">
+                        <span class="pair"
+                            ><span class="kc">↵</span
+                            ><span class="lbl em">steer</span></span
+                        >
+                        <span class="sep">·</span>
+                        <span class="pair"
+                            ><span class="kc">ctrl+f</span
+                            ><span class="lbl em">follow-up</span></span
+                        >
+                        <span class="sep">·</span>
+                        <span class="pair"
+                            ><span class="kc">ctrl+p</span
+                            ><span class="lbl">pause</span></span
+                        >
+                        <span class="sep">·</span>
+                        <span class="pair"
+                            ><span class="kc">ctrl+d</span
+                            ><span class="lbl">back</span></span
+                        >
+                        <span class="sep">·</span>
+                        <span class="pair"
+                            ><span class="kc">esc</span
+                            ><span class="lbl">interrupt</span></span
+                        >
+                    </div>
+                </div>
             </div>
-          </div>
+            <p class="note">
+                <span class="k">contract</span> · enter
+                <span class="em">steers</span> the active turn (interrupt
+                mid-stream &mdash; <code>handle.steer(text)</code>), ctrl+f
+                <span class="em">follows up</span> after the turn finishes
+                (<code>handle.followUp(text)</code>). ctrl+p pauses cleanly
+                without aborting; the original prompt awaiter is held until
+                resume. The loader mirrors Pi's
+                <code>BorderedLoader</code> exactly: top rule + spinner +
+                message + cancel hint + bottom rule, no surrounding box. The
+                footer always reflects the stage's own session state, not the
+                host chat's.
+            </p>
 
-          <div class="pi-convo">
-            <div class="pi-spacer-1"></div>
+            <hr />
 
-            <div class="pi-user row">Review the auth module for security issues, especially around <span class="md-code">setRuntimeApiKey</span> lifecycle. Be thorough.</div>
-
-            <div class="pi-spacer-1"></div>
-
-            <div class="pi-thinking row">Looking at the auth surface. I'll start with <span style="color:var(--text)">core/auth-storage.ts</span> and trace runtime overrides, then check dispose paths.</div>
-
-            <div class="pi-spacer-1"></div>
-
-            <div class="pi-assistant row">I'll walk through the auth files and check the usual suspects: storage lifecycle, dispose hygiene, env-var precedence, runtime-override clearing. Starting with the file you mentioned.</div>
-
-            <div class="pi-spacer-1"></div>
-
-            <div class="pi-tool success">
-              <div class="head">
-                <span class="name">read</span>
-                <span class="args">path=<span class="v">packages/coding-agent/src/core/auth-storage.ts</span></span>
-                <span class="badge">✓ 412 lines</span>
-              </div>
-            </div>
-
-            <div class="pi-tool success">
-              <div class="head">
-                <span class="name">grep</span>
-                <span class="args">pattern=<span class="v">"setRuntimeApiKey|clearRuntime"</span></span>
-                <span class="badge">✓ 6 matches in 3 files</span>
-              </div>
-              <div class="output"><span class="ln">142:</span>setRuntimeApiKey(provider: string, key: string): void {
-<span class="ln">156:</span>clearRuntimeApiKey(provider: string): void {
-<span class="ln">312:</span>dispose(): void { /* no clearRuntime — see issue */</div>
-            </div>
-
-            <div class="pi-tool pending">
-              <div class="head">
-                <span class="name">read</span>
-                <span class="args">path=<span class="v">packages/coding-agent/src/core/agent-session.ts</span></span>
-                <span class="badge"><span class="dot"></span>READING</span>
-              </div>
-            </div>
-
-            <div class="pi-spacer-1"></div>
-
-            <div class="pi-assistant row">
-              <span class="md-h1">## Findings</span>
-              <br /><br />
-              <span class="md-li">Runtime API key overrides set via <span class="md-code">setRuntimeApiKey</span> are not cleared on <span class="md-code">AgentSession.dispose</span>. If the host process reuses the same <span class="md-code">AuthStorage</span> instance across sessions (which the SDK encourages), a previous session's key continues to win against env vars in the next session.</span>
-              <br /><br />
-              <span class="md-li">The resolution chain is <span class="md-code">runtime &gt; agent.db &gt; env &gt; custom-provider</span>; that's correct but means a stale runtime override is the highest-priority slot and silently masks the configured key.</span>
-              <br /><br />
-              <span style="color: var(--overlay1)">Inspecting the session dispose path next to confirm the leak<span class="stream-caret"></span></span>
-            </div>
-
-            <div class="pi-spacer-1"></div>
-          </div>
-
-          <div class="pi-loader">
-            <div class="rule"></div>
-            <div class="body">
-              <span class="spinner">⠴</span>
-              <span class="message">Working <span class="dim">·</span> 38s <span class="dim">·</span> 12.3k in, 1.8k out, 4.3% ctx</span>
-              <span class="escape"><span class="kc">esc</span> to interrupt</span>
-            </div>
-            <div class="rule"></div>
-          </div>
-
-          <div class="pi-editor thinking-medium">
-            <span class="prompt-glyph">❯</span>
-            <span class="placeholder">type to steer the current turn… (queues with ↵)</span>
-            <span class="caret"></span>
-            <span class="right-tag"><span class="lvl">medium</span> thinking</span>
-          </div>
-
-          <div class="pi-footer">
-            <div class="line">
-              <span class="left">~/atomic <span class="branch">(release/v0.1.1)</span> <span class="dim">•</span> <span class="sess">review-fix-loop-run-9e2a</span></span>
-              <span class="right"><span class="prov">(anthropic)</span> <span class="model">claude-sonnet-4-5</span> <span class="dim">•</span> <span class="thinking">medium</span></span>
-            </div>
-            <div class="line">
-              <span class="left">↑12.3k ↓1.8k R1.1k W342 $0.034 <span class="pct ok">4.3%/200k</span> <span class="auto">(auto)</span></span>
-              <span class="right dim">streaming · 38s</span>
-            </div>
-          </div>
-
-          <div class="pi-hints">
-            <span class="pair"><span class="kc">↵</span><span class="lbl em">steer</span></span>
-            <span class="sep">·</span>
-            <span class="pair"><span class="kc">ctrl+f</span><span class="lbl em">follow-up</span></span>
-            <span class="sep">·</span>
-            <span class="pair"><span class="kc">ctrl+p</span><span class="lbl">pause</span></span>
-            <span class="sep">·</span>
-            <span class="pair"><span class="kc">ctrl+d</span><span class="lbl">back</span></span>
-            <span class="sep">·</span>
-            <span class="pair"><span class="kc">esc</span><span class="lbl">interrupt</span></span>
-          </div>
-        </div>
-      </div>
-      <p class="note"><span class="k">contract</span> · enter <span class="em">steers</span> the active turn (interrupt mid-stream &mdash; <code>handle.steer(text)</code>), ctrl+f <span class="em">follows up</span> after the turn finishes (<code>handle.followUp(text)</code>). ctrl+p pauses cleanly without aborting; the original prompt awaiter is held until resume. The loader mirrors Pi's <code>BorderedLoader</code> exactly: top rule + spinner + message + cancel hint + bottom rule, no surrounding box. The footer always reflects the stage's own session state, not the host chat's.</p>
-
-      <hr />
-
-      <!-- ============================================================
+            <!-- ============================================================
            §3  PAUSED — controlled pause via ctrl+p
       ============================================================ -->
-      <h2><span class="num">§3</span> paused · controlled pause via ctrl+p</h2>
-      <div class="label paused">▼ stage chat — paused, awaiting resume message</div>
-
-      <div class="omp-frame">
-        <span class="chrome-tag"><span class="dim">pi-workflows</span><span class="sub">/ review-fix-loop ›</span><span class="here">review-a</span></span>
-        <div class="omp-window">
-          <span class="back-pill"><span class="kc">ctrl+d</span><span class="arrow">←</span><span>back to graph</span></span>
-
-          <div class="pi-stage-header">
-            <span class="glyph"> </span>
-            <span class="scope">STAGE</span>
-            <span class="title"><span class="wf">review-fix-loop</span><span class="sep">/</span><span class="stage">review-a</span></span>
-            <div class="right">
-              <span class="stage-meta">paused 12s ago <span class="v">·</span> session <span class="v">9e2a47c1</span></span>
-              <span class="status-pill paused"><span class="dot"></span>paused</span>
-            </div>
-          </div>
-
-          <div class="pi-convo">
-            <div class="pi-banner paused">
-              <span class="glyph">❚❚</span>
-              <span>PAUSED</span>
-              <span class="meta">stopped between turns · type a message to resume, or ctrl+p to release without input</span>
+            <h2>
+                <span class="num">§3</span> paused · controlled pause via ctrl+p
+            </h2>
+            <div class="label paused">
+                ▼ stage chat — paused, awaiting resume message
             </div>
 
-            <div class="pi-spacer-half"></div>
+            <div class="omp-frame">
+                <span class="chrome-tag"
+                    ><span class="dim">pi-workflows</span
+                    ><span class="sub">/ review-fix-loop ›</span
+                    ><span class="here">review-a</span></span
+                >
+                <div class="omp-window">
+                    <span class="back-pill"
+                        ><span class="kc">ctrl+d</span
+                        ><span class="arrow">←</span
+                        ><span>back to graph</span></span
+                    >
 
-            <div class="pi-user row">Review the auth module for security issues, especially around <span class="md-code">setRuntimeApiKey</span> lifecycle. Be thorough.</div>
+                    <div class="pi-stage-header">
+                        <span class="glyph"> </span>
+                        <span class="scope">STAGE</span>
+                        <span class="title"
+                            ><span class="wf">review-fix-loop</span
+                            ><span class="sep">/</span
+                            ><span class="stage">review-a</span></span
+                        >
+                        <div class="right">
+                            <span class="stage-meta"
+                                >paused 12s ago <span class="v">·</span> session
+                                <span class="v">9e2a47c1</span></span
+                            >
+                            <span class="status-pill paused"
+                                ><span class="dot"></span>paused</span
+                            >
+                        </div>
+                    </div>
 
-            <div class="pi-spacer-1"></div>
+                    <div class="pi-convo">
+                        <div class="pi-banner paused">
+                            <span class="glyph">❚❚</span>
+                            <span>PAUSED</span>
+                            <span class="meta"
+                                >stopped between turns · type a message to
+                                resume, or ctrl+p to release without input</span
+                            >
+                        </div>
 
-            <div class="pi-assistant row">I started with <span class="md-code">core/auth-storage.ts</span> &mdash; found one leak around <span class="md-code">setRuntimeApiKey</span> not being cleared on dispose. Working through the session dispose path next.</div>
+                        <div class="pi-spacer-half"></div>
 
-            <div class="pi-spacer-1"></div>
+                        <div class="pi-user row">
+                            Review the auth module for security issues,
+                            especially around
+                            <span class="md-code">setRuntimeApiKey</span>
+                            lifecycle. Be thorough.
+                        </div>
 
-            <div class="pi-tool success">
-              <div class="head">
-                <span class="name">read</span>
-                <span class="args">path=<span class="v">packages/coding-agent/src/core/auth-storage.ts</span></span>
-                <span class="badge">✓ 412 lines</span>
-              </div>
+                        <div class="pi-spacer-1"></div>
+
+                        <div class="pi-assistant row">
+                            I started with
+                            <span class="md-code">core/auth-storage.ts</span>
+                            &mdash; found one leak around
+                            <span class="md-code">setRuntimeApiKey</span> not
+                            being cleared on dispose. Working through the
+                            session dispose path next.
+                        </div>
+
+                        <div class="pi-spacer-1"></div>
+
+                        <div class="pi-tool success">
+                            <div class="head">
+                                <span class="name">read</span>
+                                <span class="args"
+                                    >path=<span class="v"
+                                        >packages/coding-agent/src/core/auth-storage.ts</span
+                                    ></span
+                                >
+                                <span class="badge">✓ 412 lines</span>
+                            </div>
+                        </div>
+
+                        <div class="pi-tool success">
+                            <div class="head">
+                                <span class="name">grep</span>
+                                <span class="args"
+                                    >pattern=<span class="v"
+                                        >"setRuntimeApiKey|clearRuntime"</span
+                                    ></span
+                                >
+                                <span class="badge"
+                                    >✓ 6 matches in 3 files</span
+                                >
+                            </div>
+                        </div>
+
+                        <div class="pi-spacer-1"></div>
+                    </div>
+
+                    <div class="pi-editor thinking-medium">
+                        <span class="prompt-glyph">❯</span>
+                        <span class="typed"
+                            >also check pi-tui auth boundary while you're
+                            paused</span
+                        >
+                        <span class="caret"></span>
+                        <span class="right-tag"
+                            ><span class="lvl">medium</span> thinking</span
+                        >
+                    </div>
+
+                    <div class="pi-footer">
+                        <div class="line">
+                            <span class="left"
+                                >~/atomic
+                                <span class="branch">(release/v0.1.1)</span>
+                                <span class="dim">•</span>
+                                <span class="sess"
+                                    >review-fix-loop-run-9e2a</span
+                                ></span
+                            >
+                            <span class="right"
+                                ><span class="prov">(anthropic)</span>
+                                <span class="model">claude-sonnet-4-5</span>
+                                <span class="dim">•</span>
+                                <span class="thinking">medium</span></span
+                            >
+                        </div>
+                        <div class="line">
+                            <span class="left"
+                                >↑12.3k ↓1.8k R1.1k W342 $0.034
+                                <span class="pct ok">4.3%/200k</span>
+                                <span class="auto">(auto)</span></span
+                            >
+                            <span class="right yellow"
+                                >paused · ready to resume</span
+                            >
+                        </div>
+                    </div>
+
+                    <div class="pi-hints">
+                        <span class="pair"
+                            ><span class="kc">↵</span
+                            ><span class="lbl em"
+                                >resume with message</span
+                            ></span
+                        >
+                        <span class="sep">·</span>
+                        <span class="pair"
+                            ><span class="kc">ctrl+p</span
+                            ><span class="lbl">resume empty</span></span
+                        >
+                        <span class="sep">·</span>
+                        <span class="pair"
+                            ><span class="kc">ctrl+d</span
+                            ><span class="lbl">back</span></span
+                        >
+                        <span class="sep">·</span>
+                        <span class="pair"
+                            ><span class="kc">esc</span
+                            ><span class="lbl">close</span></span
+                        >
+                    </div>
+                </div>
             </div>
+            <p class="note">
+                <span class="k">contract</span> · the paused banner is
+                full-width and color-coded yellow to match Mocha's warning
+                vocabulary. enter resumes with the typed text fed back into the
+                SDK session as the next user message
+                (<code>handle.resume(text)</code>); ctrl+p resumes empty
+                (<code>handle.resume()</code>). The previous transcript stays
+                visible so the user can read what the stage already produced.
+                Footer right-rail flips to
+                <span class="yellow">paused · ready to resume</span> so the SDK
+                state is unambiguous.
+            </p>
 
-            <div class="pi-tool success">
-              <div class="head">
-                <span class="name">grep</span>
-                <span class="args">pattern=<span class="v">"setRuntimeApiKey|clearRuntime"</span></span>
-                <span class="badge">✓ 6 matches in 3 files</span>
-              </div>
-            </div>
+            <hr />
 
-            <div class="pi-spacer-1"></div>
-          </div>
-
-          <div class="pi-editor thinking-medium">
-            <span class="prompt-glyph">❯</span>
-            <span class="typed">also check pi-tui auth boundary while you're paused</span>
-            <span class="caret"></span>
-            <span class="right-tag"><span class="lvl">medium</span> thinking</span>
-          </div>
-
-          <div class="pi-footer">
-            <div class="line">
-              <span class="left">~/atomic <span class="branch">(release/v0.1.1)</span> <span class="dim">•</span> <span class="sess">review-fix-loop-run-9e2a</span></span>
-              <span class="right"><span class="prov">(anthropic)</span> <span class="model">claude-sonnet-4-5</span> <span class="dim">•</span> <span class="thinking">medium</span></span>
-            </div>
-            <div class="line">
-              <span class="left">↑12.3k ↓1.8k R1.1k W342 $0.034 <span class="pct ok">4.3%/200k</span> <span class="auto">(auto)</span></span>
-              <span class="right yellow">paused · ready to resume</span>
-            </div>
-          </div>
-
-          <div class="pi-hints">
-            <span class="pair"><span class="kc">↵</span><span class="lbl em">resume with message</span></span>
-            <span class="sep">·</span>
-            <span class="pair"><span class="kc">ctrl+p</span><span class="lbl">resume empty</span></span>
-            <span class="sep">·</span>
-            <span class="pair"><span class="kc">ctrl+d</span><span class="lbl">back</span></span>
-            <span class="sep">·</span>
-            <span class="pair"><span class="kc">esc</span><span class="lbl">close</span></span>
-          </div>
-        </div>
-      </div>
-      <p class="note"><span class="k">contract</span> · the paused banner is full-width and color-coded yellow to match Mocha's warning vocabulary. enter resumes with the typed text fed back into the SDK session as the next user message (<code>handle.resume(text)</code>); ctrl+p resumes empty (<code>handle.resume()</code>). The previous transcript stays visible so the user can read what the stage already produced. Footer right-rail flips to <span class="yellow">paused · ready to resume</span> so the SDK state is unambiguous.</p>
-
-      <hr />
-
-      <!-- ============================================================
+            <!-- ============================================================
            §4  OBSERVABILITY — every SDK op surfaces inline
       ============================================================ -->
-      <h2><span class="num">§4</span> observability · every SDK op the workflow performs surfaces inline</h2>
-      <div class="label notice">▼ stage chat — workflow steered the stage from inside the SDK</div>
-
-      <div class="omp-frame">
-        <span class="chrome-tag"><span class="dim">pi-workflows</span><span class="sub">/ review-fix-loop ›</span><span class="here">review-a</span></span>
-        <div class="omp-window">
-          <span class="back-pill"><span class="kc">ctrl+d</span><span class="arrow">←</span><span>back to graph</span></span>
-
-          <div class="pi-stage-header">
-            <span class="glyph"> </span>
-            <span class="scope">STAGE</span>
-            <span class="title"><span class="wf">review-fix-loop</span><span class="sep">/</span><span class="stage">review-a</span></span>
-            <div class="right">
-              <span class="stage-meta">running <span class="v">2m 14s</span></span>
-              <span class="status-pill running"><span class="dot"></span>running</span>
-            </div>
-          </div>
-
-          <div class="pi-convo">
-            <div class="pi-spacer-1"></div>
-
-            <div class="pi-user row">Run a first pass quickly, then deepen on anything suspicious.</div>
-
-            <div class="pi-spacer-1"></div>
-
-            <div class="pi-notice row"><span class="marker">~</span><span class="kw">thinking</span><span class="arrow">→</span><span class="val">low</span><span class="meta">was medium · workflow body called <span style="color:var(--text)">stage.setThinkingLevel("low")</span></span></div>
-            <div class="pi-notice row"><span class="marker">~</span><span class="kw">model</span><span class="arrow">→</span><span class="val">claude-haiku-4</span><span class="meta">was claude-sonnet-4-5 · <span style="color:var(--text)">stage.setModel(haiku)</span></span></div>
-
-            <div class="pi-spacer-1"></div>
-
-            <div class="pi-assistant row">Scanning quickly. Will surface the highest-priority findings first.</div>
-
-            <div class="pi-spacer-1"></div>
-
-            <div class="pi-tool success">
-              <div class="head">
-                <span class="name">find</span>
-                <span class="args">glob=<span class="v">packages/coding-agent/src/core/**/*.ts</span></span>
-                <span class="badge">✓ 47 files</span>
-              </div>
+            <h2>
+                <span class="num">§4</span> observability · every SDK op the
+                workflow performs surfaces inline
+            </h2>
+            <div class="label notice">
+                ▼ stage chat — workflow steered the stage from inside the SDK
             </div>
 
-            <div class="pi-spacer-1"></div>
+            <div class="omp-frame">
+                <span class="chrome-tag"
+                    ><span class="dim">pi-workflows</span
+                    ><span class="sub">/ review-fix-loop ›</span
+                    ><span class="here">review-a</span></span
+                >
+                <div class="omp-window">
+                    <span class="back-pill"
+                        ><span class="kc">ctrl+d</span
+                        ><span class="arrow">←</span
+                        ><span>back to graph</span></span
+                    >
 
-            <div class="pi-notice row"><span class="marker">~</span><span class="kw">compaction</span><span class="arrow">→</span><span class="val">summarized 14 turns</span><span class="meta">14.2k → 1.4k tokens · <span style="color:var(--text)">stage.compact()</span> · auto-triggered at 78%</span></div>
+                    <div class="pi-stage-header">
+                        <span class="glyph"> </span>
+                        <span class="scope">STAGE</span>
+                        <span class="title"
+                            ><span class="wf">review-fix-loop</span
+                            ><span class="sep">/</span
+                            ><span class="stage">review-a</span></span
+                        >
+                        <div class="right">
+                            <span class="stage-meta"
+                                >running <span class="v">2m 14s</span></span
+                            >
+                            <span class="status-pill running"
+                                ><span class="dot"></span>running</span
+                            >
+                        </div>
+                    </div>
 
-            <div class="pi-spacer-1"></div>
+                    <div class="pi-convo">
+                        <div class="pi-spacer-1"></div>
 
-            <div class="pi-notice row"><span class="marker">~</span><span class="kw">model</span><span class="arrow">→</span><span class="val">claude-sonnet-4-5</span><span class="meta">workflow restored deeper model for findings pass</span></div>
-            <div class="pi-notice row"><span class="marker">~</span><span class="kw">thinking</span><span class="arrow">→</span><span class="val">high</span><span class="meta"><span style="color:var(--text)">stage.setThinkingLevel("high")</span></span></div>
+                        <div class="pi-user row">
+                            Run a first pass quickly, then deepen on anything
+                            suspicious.
+                        </div>
 
-            <div class="pi-spacer-1"></div>
+                        <div class="pi-spacer-1"></div>
 
-            <div class="pi-thinking row">Re-examining with deeper analysis. The earlier scan flagged three sites worth detailing.</div>
+                        <div class="pi-notice row">
+                            <span class="marker">~</span
+                            ><span class="kw">thinking</span
+                            ><span class="arrow">→</span
+                            ><span class="val">low</span
+                            ><span class="meta"
+                                >was medium · workflow body called
+                                <span style="color: var(--text)"
+                                    >stage.setThinkingLevel("low")</span
+                                ></span
+                            >
+                        </div>
+                        <div class="pi-notice row">
+                            <span class="marker">~</span
+                            ><span class="kw">model</span
+                            ><span class="arrow">→</span
+                            ><span class="val">claude-haiku-4</span
+                            ><span class="meta"
+                                >was claude-sonnet-4-5 ·
+                                <span style="color: var(--text)"
+                                    >stage.setModel(haiku)</span
+                                ></span
+                            >
+                        </div>
 
-            <div class="pi-spacer-1"></div>
+                        <div class="pi-spacer-1"></div>
 
-            <div class="pi-assistant row">Three findings, ranked by severity<span class="stream-caret"></span></div>
+                        <div class="pi-assistant row">
+                            Scanning quickly. Will surface the highest-priority
+                            findings first.
+                        </div>
 
-            <div class="pi-spacer-1"></div>
-          </div>
+                        <div class="pi-spacer-1"></div>
 
-          <div class="pi-loader">
-            <div class="rule"></div>
-            <div class="body">
-              <span class="spinner">⠴</span>
-              <span class="message">Working <span class="dim">·</span> 2m 14s <span class="dim">·</span> 1.4k in (post-compact), 312 out</span>
-              <span class="escape"><span class="kc">esc</span> to interrupt</span>
+                        <div class="pi-tool success">
+                            <div class="head">
+                                <span class="name">find</span>
+                                <span class="args"
+                                    >glob=<span class="v"
+                                        >packages/coding-agent/src/core/**/*.ts</span
+                                    ></span
+                                >
+                                <span class="badge">✓ 47 files</span>
+                            </div>
+                        </div>
+
+                        <div class="pi-spacer-1"></div>
+
+                        <div class="pi-notice row">
+                            <span class="marker">~</span
+                            ><span class="kw">compaction</span
+                            ><span class="arrow">→</span
+                            ><span class="val">summarized 14 turns</span
+                            ><span class="meta"
+                                >14.2k → 1.4k tokens ·
+                                <span style="color: var(--text)"
+                                    >stage.compact()</span
+                                >
+                                · auto-triggered at 78%</span
+                            >
+                        </div>
+
+                        <div class="pi-spacer-1"></div>
+
+                        <div class="pi-notice row">
+                            <span class="marker">~</span
+                            ><span class="kw">model</span
+                            ><span class="arrow">→</span
+                            ><span class="val">claude-sonnet-4-5</span
+                            ><span class="meta"
+                                >workflow restored deeper model for findings
+                                pass</span
+                            >
+                        </div>
+                        <div class="pi-notice row">
+                            <span class="marker">~</span
+                            ><span class="kw">thinking</span
+                            ><span class="arrow">→</span
+                            ><span class="val">high</span
+                            ><span class="meta"
+                                ><span style="color: var(--text)"
+                                    >stage.setThinkingLevel("high")</span
+                                ></span
+                            >
+                        </div>
+
+                        <div class="pi-spacer-1"></div>
+
+                        <div class="pi-thinking row">
+                            Re-examining with deeper analysis. The earlier scan
+                            flagged three sites worth detailing.
+                        </div>
+
+                        <div class="pi-spacer-1"></div>
+
+                        <div class="pi-assistant row">
+                            Three findings, ranked by severity<span
+                                class="stream-caret"
+                            ></span>
+                        </div>
+
+                        <div class="pi-spacer-1"></div>
+                    </div>
+
+                    <div class="pi-loader">
+                        <div class="rule"></div>
+                        <div class="body">
+                            <span class="spinner">⠴</span>
+                            <span class="message"
+                                >Working <span class="dim">·</span> 2m 14s
+                                <span class="dim">·</span> 1.4k in
+                                (post-compact), 312 out</span
+                            >
+                            <span class="escape"
+                                ><span class="kc">esc</span> to interrupt</span
+                            >
+                        </div>
+                        <div class="rule"></div>
+                    </div>
+
+                    <div class="pi-editor thinking-high">
+                        <span class="prompt-glyph">❯</span>
+                        <span class="placeholder"
+                            >type to steer the current turn…</span
+                        >
+                        <span class="caret"></span>
+                        <span class="right-tag"
+                            ><span class="lvl" style="color: var(--mauve)"
+                                >high</span
+                            >
+                            thinking</span
+                        >
+                    </div>
+
+                    <div class="pi-footer">
+                        <div class="line">
+                            <span class="left"
+                                >~/atomic
+                                <span class="branch">(release/v0.1.1)</span>
+                                <span class="dim">•</span>
+                                <span class="sess"
+                                    >review-fix-loop-run-9e2a</span
+                                ></span
+                            >
+                            <span class="right"
+                                ><span class="prov">(anthropic)</span>
+                                <span class="model">claude-sonnet-4-5</span>
+                                <span class="dim">•</span>
+                                <span class="thinking">high</span></span
+                            >
+                        </div>
+                        <div class="line">
+                            <span class="left"
+                                >↑14.6k ↓2.1k R1.4k W612 $0.062
+                                <span class="pct ok">7.8%/200k</span>
+                                <span class="auto">(auto)</span></span
+                            >
+                            <span class="right blue"
+                                >streaming · post-compact</span
+                            >
+                        </div>
+                    </div>
+
+                    <div class="pi-hints">
+                        <span class="pair"
+                            ><span class="kc">↵</span
+                            ><span class="lbl em">steer</span></span
+                        >
+                        <span class="sep">·</span>
+                        <span class="pair"
+                            ><span class="kc">ctrl+f</span
+                            ><span class="lbl">follow-up</span></span
+                        >
+                        <span class="sep">·</span>
+                        <span class="pair"
+                            ><span class="kc">ctrl+p</span
+                            ><span class="lbl">pause</span></span
+                        >
+                        <span class="sep">·</span>
+                        <span class="pair"
+                            ><span class="kc">ctrl+d</span
+                            ><span class="lbl">back</span></span
+                        >
+                        <span class="sep">·</span>
+                        <span class="pair"
+                            ><span class="kc">esc</span
+                            ><span class="lbl">interrupt</span></span
+                        >
+                    </div>
+                </div>
             </div>
-            <div class="rule"></div>
-          </div>
+            <p class="note">
+                <span class="k em">this is the load-bearing decision</span> ·
+                every state-changing SDK call the workflow body performs against
+                this stage (<code>setModel</code>,
+                <code>setThinkingLevel</code>, <code>compact</code>,
+                <code>cycleModel</code>, <code>navigateTree</code>, model
+                auto-fallback, MCP scope changes) emits a one-line dim notice in
+                the transcript <span class="em">and</span> updates the footer
+                immediately. The user attaches, glances, and instantly sees not
+                just <em>what the stage said</em> but
+                <em>what the workflow steered it to do</em>. This is what makes
+                the overlay a steering surface rather than a log viewer.
+            </p>
 
-          <div class="pi-editor thinking-high">
-            <span class="prompt-glyph">❯</span>
-            <span class="placeholder">type to steer the current turn…</span>
-            <span class="caret"></span>
-            <span class="right-tag"><span class="lvl" style="color:var(--mauve)">high</span> thinking</span>
-          </div>
+            <hr />
 
-          <div class="pi-footer">
-            <div class="line">
-              <span class="left">~/atomic <span class="branch">(release/v0.1.1)</span> <span class="dim">•</span> <span class="sess">review-fix-loop-run-9e2a</span></span>
-              <span class="right"><span class="prov">(anthropic)</span> <span class="model">claude-sonnet-4-5</span> <span class="dim">•</span> <span class="thinking">high</span></span>
-            </div>
-            <div class="line">
-              <span class="left">↑14.6k ↓2.1k R1.4k W612 $0.062 <span class="pct ok">7.8%/200k</span> <span class="auto">(auto)</span></span>
-              <span class="right blue">streaming · post-compact</span>
-            </div>
-          </div>
-
-          <div class="pi-hints">
-            <span class="pair"><span class="kc">↵</span><span class="lbl em">steer</span></span>
-            <span class="sep">·</span>
-            <span class="pair"><span class="kc">ctrl+f</span><span class="lbl">follow-up</span></span>
-            <span class="sep">·</span>
-            <span class="pair"><span class="kc">ctrl+p</span><span class="lbl">pause</span></span>
-            <span class="sep">·</span>
-            <span class="pair"><span class="kc">ctrl+d</span><span class="lbl">back</span></span>
-            <span class="sep">·</span>
-            <span class="pair"><span class="kc">esc</span><span class="lbl">interrupt</span></span>
-          </div>
-        </div>
-      </div>
-      <p class="note"><span class="k em">this is the load-bearing decision</span> · every state-changing SDK call the workflow body performs against this stage (<code>setModel</code>, <code>setThinkingLevel</code>, <code>compact</code>, <code>cycleModel</code>, <code>navigateTree</code>, model auto-fallback, MCP scope changes) emits a one-line dim notice in the transcript <span class="em">and</span> updates the footer immediately. The user attaches, glances, and instantly sees not just <em>what the stage said</em> but <em>what the workflow steered it to do</em>. This is what makes the overlay a steering surface rather than a log viewer.</p>
-
-      <hr />
-
-      <!-- ============================================================
+            <!-- ============================================================
            §5  SETTLED — completed stage, read-only post-mortem
       ============================================================ -->
-      <h2><span class="num">§5</span> settled · completed stage, read-only post-mortem</h2>
-      <div class="label settled">▼ stage chat — stage completed, no editor</div>
-
-      <div class="omp-frame">
-        <span class="chrome-tag"><span class="dim">pi-workflows</span><span class="sub">/ review-fix-loop ›</span><span class="here">review-a</span></span>
-        <div class="omp-window">
-          <span class="back-pill"><span class="kc">ctrl+d</span><span class="arrow">←</span><span>back to graph</span></span>
-
-          <div class="pi-stage-header">
-            <span class="glyph"> </span>
-            <span class="scope">STAGE</span>
-            <span class="title"><span class="wf">review-fix-loop</span><span class="sep">/</span><span class="stage">review-a</span></span>
-            <div class="right">
-              <span class="stage-meta">completed <span class="v">3m 42s</span> <span class="v">·</span> session <span class="v">9e2a47c1</span></span>
-              <span class="status-pill completed"><span class="dot"></span>completed</span>
-            </div>
-          </div>
-
-          <div class="pi-convo">
-            <div class="pi-banner completed">
-              <span class="glyph">✓</span>
-              <span>COMPLETED</span>
-              <span class="meta">stage settled · transcript is read-only · session file persisted at .pi/sessions/&hellip;/9e2a47c1.jsonl</span>
+            <h2>
+                <span class="num">§5</span> settled · completed stage, read-only
+                post-mortem
+            </h2>
+            <div class="label settled">
+                ▼ stage chat — stage completed, no editor
             </div>
 
-            <div class="pi-spacer-half"></div>
+            <div class="omp-frame">
+                <span class="chrome-tag"
+                    ><span class="dim">pi-workflows</span
+                    ><span class="sub">/ review-fix-loop ›</span
+                    ><span class="here">review-a</span></span
+                >
+                <div class="omp-window">
+                    <span class="back-pill"
+                        ><span class="kc">ctrl+d</span
+                        ><span class="arrow">←</span
+                        ><span>back to graph</span></span
+                    >
 
-            <div class="pi-user row">Review the auth module for security issues.</div>
+                    <div class="pi-stage-header">
+                        <span class="glyph"> </span>
+                        <span class="scope">STAGE</span>
+                        <span class="title"
+                            ><span class="wf">review-fix-loop</span
+                            ><span class="sep">/</span
+                            ><span class="stage">review-a</span></span
+                        >
+                        <div class="right">
+                            <span class="stage-meta"
+                                >completed <span class="v">3m 42s</span>
+                                <span class="v">·</span> session
+                                <span class="v">9e2a47c1</span></span
+                            >
+                            <span class="status-pill completed"
+                                ><span class="dot"></span>completed</span
+                            >
+                        </div>
+                    </div>
 
-            <div class="pi-spacer-1"></div>
+                    <div class="pi-convo">
+                        <div class="pi-banner completed">
+                            <span class="glyph">✓</span>
+                            <span>COMPLETED</span>
+                            <span class="meta"
+                                >stage settled · transcript is read-only ·
+                                session file persisted at
+                                .pi/sessions/&hellip;/9e2a47c1.jsonl</span
+                            >
+                        </div>
 
-            <div class="pi-assistant row">
-              <span class="md-h1">## Findings (final)</span>
-              <br /><br />
-              <span class="md-li"><span class="b" style="color:var(--text)">Runtime API key not cleared on dispose</span> &mdash; <span class="md-code">setRuntimeApiKey</span> overrides survive across sessions when <span class="md-code">AuthStorage</span> is reused. Suggest clearing in <span class="md-code">AgentSession.dispose</span>.</span>
-              <br /><br />
-              <span class="md-li"><span class="b" style="color:var(--text)">Env-var precedence is masked by stale runtime overrides</span> &mdash; same root cause; documenting the resolution order in the SDK README would help embedders avoid the foot-gun.</span>
-              <br /><br />
-              <span class="md-li"><span class="b" style="color:var(--text)">No automated cleanup on process exit</span> &mdash; minor; runtime overrides are in-memory so this is a same-process leak only.</span>
+                        <div class="pi-spacer-half"></div>
+
+                        <div class="pi-user row">
+                            Review the auth module for security issues.
+                        </div>
+
+                        <div class="pi-spacer-1"></div>
+
+                        <div class="pi-assistant row">
+                            <span class="md-h1">## Findings (final)</span>
+                            <br /><br />
+                            <span class="md-li"
+                                ><span class="b" style="color: var(--text)"
+                                    >Runtime API key not cleared on
+                                    dispose</span
+                                >
+                                &mdash;
+                                <span class="md-code">setRuntimeApiKey</span>
+                                overrides survive across sessions when
+                                <span class="md-code">AuthStorage</span> is
+                                reused. Suggest clearing in
+                                <span class="md-code">AgentSession.dispose</span
+                                >.</span
+                            >
+                            <br /><br />
+                            <span class="md-li"
+                                ><span class="b" style="color: var(--text)"
+                                    >Env-var precedence is masked by stale
+                                    runtime overrides</span
+                                >
+                                &mdash; same root cause; documenting the
+                                resolution order in the SDK README would help
+                                embedders avoid the foot-gun.</span
+                            >
+                            <br /><br />
+                            <span class="md-li"
+                                ><span class="b" style="color: var(--text)"
+                                    >No automated cleanup on process exit</span
+                                >
+                                &mdash; minor; runtime overrides are in-memory
+                                so this is a same-process leak only.</span
+                            >
+                        </div>
+
+                        <div class="pi-spacer-1"></div>
+
+                        <div class="pi-tool success">
+                            <div class="head">
+                                <span class="name">edit</span>
+                                <span class="args"
+                                    >path=<span class="v"
+                                        >packages/coding-agent/src/core/agent-session.ts</span
+                                    ></span
+                                >
+                                <span class="badge">✓ 1 edit applied</span>
+                            </div>
+                            <div class="output">
+                                <span class="ln">312</span
+                                ><span class="ctx"> dispose(): void {</span>
+                                <span class="ln">313</span
+                                ><span class="add"
+                                    >+
+                                    this.auth.clearRuntimeApiKey(this.model?.provider
+                                    ?? "");</span
+                                >
+                                <span class="ln">314</span
+                                ><span class="ctx">
+                                    this.eventBus.removeAllListeners();</span
+                                >
+                            </div>
+                        </div>
+
+                        <div class="pi-spacer-1"></div>
+
+                        <div class="pi-assistant row">
+                            Wrote one defensive clear-on-dispose. The other two
+                            findings are doc-only and surfaced for the next
+                            stage in the loop.
+                        </div>
+
+                        <div class="pi-spacer-1"></div>
+                    </div>
+
+                    <div class="pi-editor disabled">
+                        <span class="prompt-glyph faint">❯</span>
+                        <span class="placeholder"
+                            >read-only · stage has no live handle</span
+                        >
+                        <span class="right-tag"
+                            ><span class="lvl faint">medium</span>
+                            <span class="faint">thinking</span></span
+                        >
+                    </div>
+
+                    <div class="pi-footer">
+                        <div class="line">
+                            <span class="left"
+                                >~/atomic
+                                <span class="branch">(release/v0.1.1)</span>
+                                <span class="dim">•</span>
+                                <span class="sess"
+                                    >review-fix-loop-run-9e2a</span
+                                ></span
+                            >
+                            <span class="right"
+                                ><span class="prov">(anthropic)</span>
+                                <span class="model">claude-sonnet-4-5</span>
+                                <span class="dim">•</span>
+                                <span class="thinking">medium</span></span
+                            >
+                        </div>
+                        <div class="line">
+                            <span class="left"
+                                >↑18.4k ↓3.6k R1.4k W612 $0.087
+                                <span class="pct ok">9.2%/200k</span></span
+                            >
+                            <span class="right green"
+                                >completed · settled at 3m 42s</span
+                            >
+                        </div>
+                    </div>
+
+                    <div class="pi-hints">
+                        <span class="pair"
+                            ><span class="kc">ctrl+d</span
+                            ><span class="lbl em">back to graph</span></span
+                        >
+                        <span class="sep">·</span>
+                        <span class="pair"
+                            ><span class="kc">esc</span
+                            ><span class="lbl">close</span></span
+                        >
+                        <span class="sep">·</span>
+                        <span class="lbl dim"
+                            >/workflow inspect 9e2a opens this session in a
+                            fresh Pi shell when you want a full editor</span
+                        >
+                    </div>
+                </div>
             </div>
+            <p class="note">
+                <span class="k">contract</span> · settled stages drop the live
+                editor (no <code>StageControlHandle</code> means nothing to send
+                to). We keep the transcript fully scrollable and the footer
+                numbers final-frozen. The hints strip drops the send-side keys
+                and replaces them with a single forward-pointer: power users who
+                want a full Pi editor on the persisted session can launch one
+                with <code>/workflow inspect</code> &mdash; an opt-in separate
+                command, not the default node-enter path.
+            </p>
 
-            <div class="pi-spacer-1"></div>
+            <hr />
 
-            <div class="pi-tool success">
-              <div class="head">
-                <span class="name">edit</span>
-                <span class="args">path=<span class="v">packages/coding-agent/src/core/agent-session.ts</span></span>
-                <span class="badge">✓ 1 edit applied</span>
-              </div>
-              <div class="output"><span class="ln">312</span><span class="ctx">  dispose(): void {</span>
-<span class="ln">313</span><span class="add">+   this.auth.clearRuntimeApiKey(this.model?.provider ?? "");</span>
-<span class="ln">314</span><span class="ctx">    this.eventBus.removeAllListeners();</span></div>
-            </div>
-
-            <div class="pi-spacer-1"></div>
-
-            <div class="pi-assistant row">Wrote one defensive clear-on-dispose. The other two findings are doc-only and surfaced for the next stage in the loop.</div>
-
-            <div class="pi-spacer-1"></div>
-          </div>
-
-          <div class="pi-editor disabled">
-            <span class="prompt-glyph faint">❯</span>
-            <span class="placeholder">read-only · stage has no live handle</span>
-            <span class="right-tag"><span class="lvl faint">medium</span> <span class="faint">thinking</span></span>
-          </div>
-
-          <div class="pi-footer">
-            <div class="line">
-              <span class="left">~/atomic <span class="branch">(release/v0.1.1)</span> <span class="dim">•</span> <span class="sess">review-fix-loop-run-9e2a</span></span>
-              <span class="right"><span class="prov">(anthropic)</span> <span class="model">claude-sonnet-4-5</span> <span class="dim">•</span> <span class="thinking">medium</span></span>
-            </div>
-            <div class="line">
-              <span class="left">↑18.4k ↓3.6k R1.4k W612 $0.087 <span class="pct ok">9.2%/200k</span></span>
-              <span class="right green">completed · settled at 3m 42s</span>
-            </div>
-          </div>
-
-          <div class="pi-hints">
-            <span class="pair"><span class="kc">ctrl+d</span><span class="lbl em">back to graph</span></span>
-            <span class="sep">·</span>
-            <span class="pair"><span class="kc">esc</span><span class="lbl">close</span></span>
-            <span class="sep">·</span>
-            <span class="lbl dim">/workflow inspect 9e2a opens this session in a fresh Pi shell when you want a full editor</span>
-          </div>
-        </div>
-      </div>
-      <p class="note"><span class="k">contract</span> · settled stages drop the live editor (no <code>StageControlHandle</code> means nothing to send to). We keep the transcript fully scrollable and the footer numbers final-frozen. The hints strip drops the send-side keys and replaces them with a single forward-pointer: power users who want a full Pi editor on the persisted session can launch one with <code>/workflow inspect</code> &mdash; an opt-in separate command, not the default node-enter path.</p>
-
-      <hr />
-
-      <!-- ============================================================
+            <!-- ============================================================
            §6  Anti-patterns avoided
       ============================================================ -->
-      <h2><span class="num">§6</span> what we are <span class="red">not</span> doing</h2>
-      <ul style="color: var(--subtext0); font-size: 0.82rem; line-height: 1.75; padding-left: 1.2rem; max-width: 88ch">
-        <li><b class="red">no chat bubbles</b> · Pi is a full-width continuous column. Bubbles imply two participants on the same plane; this is an SDK session in a single column.</li>
-        <li><b class="red">no left-stripe accents on messages</b> · user identity is the filled background; we don't need a colored bar on the side too.</li>
-        <li><b class="red">no nested cards</b> · the omp-window is the only frame. Boxes inside are background fills, not card-on-card.</li>
-        <li><b class="red">no gradient text, no glass blur, no decorative icons</b> · Pi's chat is sober terminal-native. We match.</li>
-        <li><b class="red">no second Pi shell</b> · we deliberately do <span class="em">not</span> instantiate <code>InteractiveMode</code> here. The host Pi owns the only terminal loop. This overlay reuses Pi's <span class="em">components</span> (UserMessage, AssistantMessage, ToolExecution, BorderedLoader, CustomEditor, Footer) but not its mode controller.</li>
-        <li><b class="red">no nested session manager</b> · the stage's <code>AgentSession</code> is created by the workflow runtime via <code>createAgentSession</code>; the chat just attaches to its handle. There is exactly one session per stage, persisted to one file.</li>
-        <li><b class="red">no model-picker / login / tree / fork commands inside the overlay</b> · those are full-Pi flows. From the overlay you can <span class="em">see</span> the model/thinking state (footer) and <span class="em">see</span> when the workflow changes them (inline notices). To change them yourself, you go back to the host Pi.</li>
-      </ul>
+            <h2>
+                <span class="num">§6</span> what we are
+                <span class="red">not</span> doing
+            </h2>
+            <ul
+                style="
+                    color: var(--subtext0);
+                    font-size: 0.82rem;
+                    line-height: 1.75;
+                    padding-left: 1.2rem;
+                    max-width: 88ch;
+                "
+            >
+                <li>
+                    <b class="red">no chat bubbles</b> · Pi is a full-width
+                    continuous column. Bubbles imply two participants on the
+                    same plane; this is an SDK session in a single column.
+                </li>
+                <li>
+                    <b class="red">no left-stripe accents on messages</b> · user
+                    identity is the filled background; we don't need a colored
+                    bar on the side too.
+                </li>
+                <li>
+                    <b class="red">no nested cards</b> · the omp-window is the
+                    only frame. Boxes inside are background fills, not
+                    card-on-card.
+                </li>
+                <li>
+                    <b class="red"
+                        >no gradient text, no glass blur, no decorative icons</b
+                    >
+                    · Pi's chat is sober terminal-native. We match.
+                </li>
+                <li>
+                    <b class="red">no second Pi shell</b> · we deliberately do
+                    <span class="em">not</span> instantiate
+                    <code>InteractiveMode</code> here. The host Pi owns the only
+                    terminal loop. This overlay reuses Pi's
+                    <span class="em">components</span> (UserMessage,
+                    AssistantMessage, ToolExecution, BorderedLoader,
+                    CustomEditor, Footer) but not its mode controller.
+                </li>
+                <li>
+                    <b class="red">no nested session manager</b> · the stage's
+                    <code>AgentSession</code> is created by the workflow runtime
+                    via <code>createAgentSession</code>; the chat just attaches
+                    to its handle. There is exactly one session per stage,
+                    persisted to one file.
+                </li>
+                <li>
+                    <b class="red"
+                        >no model-picker / login / tree / fork commands inside
+                        the overlay</b
+                    >
+                    · those are full-Pi flows. From the overlay you can
+                    <span class="em">see</span> the model/thinking state
+                    (footer) and <span class="em">see</span> when the workflow
+                    changes them (inline notices). To change them yourself, you
+                    go back to the host Pi.
+                </li>
+            </ul>
 
-      <h2><span class="num">§7</span> what gets surfaced when the workflow steers the stage</h2>
-      <ul style="color: var(--subtext0); font-size: 0.82rem; line-height: 1.75; padding-left: 1.2rem; max-width: 88ch">
-        <li><code>stage.setModel(model)</code> · <span class="muted">inline notice</span> <code>~ model → &lt;new-id&gt;</code> + footer model field updates immediately</li>
-        <li><code>stage.setThinkingLevel(level)</code> · <span class="muted">inline notice</span> <code>~ thinking → &lt;level&gt;</code> + footer thinking field + editor border tint updates</li>
-        <li><code>stage.cycleModel()</code> / <code>stage.cycleThinkingLevel()</code> · same as above</li>
-        <li><code>stage.compact()</code> · <span class="muted">inline notice</span> <code>~ compaction → summarized N turns (Xk → Yk tokens)</code> + footer token deltas reflect the new baseline</li>
-        <li><code>stage.navigateTree(targetId)</code> · <span class="muted">inline notice</span> <code>~ tree → navigated to &lt;label&gt;</code> + transcript rebuilds from the new branch</li>
-        <li><code>stage.abort()</code> / kill · transcript appends <code>~ aborted (reason: …)</code> and footer status flips to <code>aborted</code></li>
-        <li><code>handle.pause()</code> / <code>handle.resume()</code> · paused banner + status pill swap; resume keeps transcript</li>
-        <li>model auto-fallback (provider returned 429, host swapped model) · same shape as explicit <code>setModel</code> notice but tagged <code>(fallback)</code></li>
-        <li>MCP scope changes (<code>mcp.scope.set</code>) · <span class="muted">inline notice</span> <code>~ mcp → allow=… deny=…</code> when scope is non-trivial</li>
-      </ul>
+            <h2>
+                <span class="num">§7</span> what gets surfaced when the workflow
+                steers the stage
+            </h2>
+            <ul
+                style="
+                    color: var(--subtext0);
+                    font-size: 0.82rem;
+                    line-height: 1.75;
+                    padding-left: 1.2rem;
+                    max-width: 88ch;
+                "
+            >
+                <li>
+                    <code>stage.setModel(model)</code> ·
+                    <span class="muted">inline notice</span>
+                    <code>~ model → &lt;new-id&gt;</code> + footer model field
+                    updates immediately
+                </li>
+                <li>
+                    <code>stage.setThinkingLevel(level)</code> ·
+                    <span class="muted">inline notice</span>
+                    <code>~ thinking → &lt;level&gt;</code> + footer thinking
+                    field + editor border tint updates
+                </li>
+                <li>
+                    <code>stage.cycleModel()</code> /
+                    <code>stage.cycleThinkingLevel()</code> · same as above
+                </li>
+                <li>
+                    <code>stage.compact()</code> ·
+                    <span class="muted">inline notice</span>
+                    <code
+                        >~ compaction → summarized N turns (Xk → Yk
+                        tokens)</code
+                    >
+                    + footer token deltas reflect the new baseline
+                </li>
+                <li>
+                    <code>stage.navigateTree(targetId)</code> ·
+                    <span class="muted">inline notice</span>
+                    <code>~ tree → navigated to &lt;label&gt;</code> +
+                    transcript rebuilds from the new branch
+                </li>
+                <li>
+                    <code>stage.abort()</code> / kill · transcript appends
+                    <code>~ aborted (reason: …)</code> and footer status flips
+                    to <code>aborted</code>
+                </li>
+                <li>
+                    <code>handle.pause()</code> / <code>handle.resume()</code> ·
+                    paused banner + status pill swap; resume keeps transcript
+                </li>
+                <li>
+                    model auto-fallback (provider returned 429, host swapped
+                    model) · same shape as explicit <code>setModel</code> notice
+                    but tagged <code>(fallback)</code>
+                </li>
+                <li>
+                    MCP scope changes (<code>mcp.scope.set</code>) ·
+                    <span class="muted">inline notice</span>
+                    <code>~ mcp → allow=… deny=…</code> when scope is
+                    non-trivial
+                </li>
+            </ul>
 
-      <p class="note" style="margin-top: 1.4rem"><span class="k em">summary</span> · the attach UI is a minimal steering surface that mirrors Pi's component vocabulary and the stage's SDK session state. Boxed bars for user/tool, unboxed Markdown for assistant, italic dim for thinking, bordered loader, rounded editor, two-line dim footer, key-hint strip. Everything the workflow author can do to a stage via the SDK shows up here without leaving the overlay.</p>
-    </div>
-  </body>
+            <p class="note" style="margin-top: 1.4rem">
+                <span class="k em">summary</span> · the attach UI is a minimal
+                steering surface that mirrors Pi's component vocabulary and the
+                stage's SDK session state. Boxed bars for user/tool, unboxed
+                Markdown for assistant, italic dim for thinking, bordered
+                loader, rounded editor, two-line dim footer, key-hint strip.
+                Everything the workflow author can do to a stage via the SDK
+                shows up here without leaving the overlay.
+            </p>
+        </div>
+    </body>
 </html>

@@ -1,11 +1,11 @@
 # @bastani/atomic-workflows Technical Design Document / RFC
 
-| Document Metadata      | Details |
-| ---------------------- | ------- |
-| Author(s)              | Norin Lavaee |
-| Status                 | Draft (WIP) |
+| Document Metadata      | Details                         |
+| ---------------------- | ------------------------------- |
+| Author(s)              | Norin Lavaee                    |
+| Status                 | Draft (WIP)                     |
 | Team / Owner           | Atomic Workflows / pi Extension |
-| Created / Last Updated | 2026-05-14 |
+| Created / Last Updated | 2026-05-14                      |
 
 ## 1. Executive Summary
 
@@ -48,9 +48,9 @@ By contrast, `pi-subagents` centers on a single high-surface-area tool named `su
 
 - [ ] Replace the current workflow SDK/tool API with a clean pi-subagents-inspired workflow API; do not add legacy compatibility shims.
 - [ ] Add pi-subagents-style direct execution modes to the `workflow` tool:
-  - [ ] single task execution;
-  - [ ] top-level parallel task execution;
-  - [ ] sequential/parallel chain execution.
+    - [ ] single task execution;
+    - [ ] top-level parallel task execution;
+    - [ ] sequential/parallel chain execution.
 - [ ] Add SDK-level public types and helper functions for direct task/parallel/chain execution so tool behavior is not extension-only.
 - [ ] Ensure `ctx.task` and direct task items accept the full `createAgentSession()` option surface, including `model`, `tools`, reasoning/thinking effort, MCP/tool controls, and future session options without requiring separate task-specific shims.
 - [ ] Define a unified `WorkflowDetails` result envelope modeled after pi-subagents `Details` while using workflow-native terminology.
@@ -131,14 +131,14 @@ The design uses an **action-discriminated orchestration facade**: one rewritten 
 
 ### 4.3 Key Components
 
-| Component | Responsibility | Technology Stack | Justification |
-| --------- | -------------- | ---------------- | ------------- |
-| Workflow params schema | Describe direct execution, named workflow, read-only inspection, control, output, and intercom fields | TypeScript + TypeBox or existing schema style | `pi-subagents` uses TypeBox; local `ask_user_question` already uses TypeBox (`research/docs/2026-05-14-local-atomic-workflows-api-analysis.md`). |
-| Mode/action router | Validate exactly one mode and dispatch actions before normal execution | `src/extension/index.ts`, `src/extension/dispatcher.ts` | Mirrors `subagent` routing semantics (`research/docs/2026-05-14-pi-subagents-api-parity-for-atomic-workflows.md`). |
-| Direct execution adapter | Convert ad hoc single/parallel/chain payloads into ephemeral workflow execution plans or direct foreground calls | `src/runs/foreground/executor.ts`, new SDK module | Uses the rewritten `ctx.task`, `ctx.chain`, `ctx.parallel` as the semantic source. |
-| Unified result envelope | Represent mode, run id, status, outputs, progress, artifacts, control events, and chain metadata | `src/shared/types.ts`, renderers | Avoids divergent action-specific states and enables intercom delivery. |
-| Intercom bridge | Parent session registration, control prompt routing, notifications, and result events | `src/intercom/*`, `pi.events`, optional `pi.ui.confirm` | Local research identifies existing intercom integration points; parity requires workflow-native events (`research/docs/2026-05-12-extension-intercom-pi-integration-surfaces.md`). |
-| Skill/prompt assets | Teach agents how and when to use workflows | `skills/workflow/SKILL.md`, `prompts/*.md`, package `pi.skills`/`pi.prompts` | `pi-subagents` packages skill/prompt guidance as part of API ergonomics. |
+| Component                | Responsibility                                                                                                   | Technology Stack                                                             | Justification                                                                                                                                                                      |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Workflow params schema   | Describe direct execution, named workflow, read-only inspection, control, output, and intercom fields            | TypeScript + TypeBox or existing schema style                                | `pi-subagents` uses TypeBox; local `ask_user_question` already uses TypeBox (`research/docs/2026-05-14-local-atomic-workflows-api-analysis.md`).                                   |
+| Mode/action router       | Validate exactly one mode and dispatch actions before normal execution                                           | `src/extension/index.ts`, `src/extension/dispatcher.ts`                      | Mirrors `subagent` routing semantics (`research/docs/2026-05-14-pi-subagents-api-parity-for-atomic-workflows.md`).                                                                 |
+| Direct execution adapter | Convert ad hoc single/parallel/chain payloads into ephemeral workflow execution plans or direct foreground calls | `src/runs/foreground/executor.ts`, new SDK module                            | Uses the rewritten `ctx.task`, `ctx.chain`, `ctx.parallel` as the semantic source.                                                                                                 |
+| Unified result envelope  | Represent mode, run id, status, outputs, progress, artifacts, control events, and chain metadata                 | `src/shared/types.ts`, renderers                                             | Avoids divergent action-specific states and enables intercom delivery.                                                                                                             |
+| Intercom bridge          | Parent session registration, control prompt routing, notifications, and result events                            | `src/intercom/*`, `pi.events`, optional `pi.ui.confirm`                      | Local research identifies existing intercom integration points; parity requires workflow-native events (`research/docs/2026-05-12-extension-intercom-pi-integration-surfaces.md`). |
+| Skill/prompt assets      | Teach agents how and when to use workflows                                                                       | `skills/workflow/SKILL.md`, `prompts/*.md`, package `pi.skills`/`pi.prompts` | `pi-subagents` packages skill/prompt guidance as part of API ergonomics.                                                                                                           |
 
 ## 5. Detailed Design
 
@@ -149,12 +149,12 @@ The design uses an **action-discriminated orchestration facade**: one rewritten 
 Named workflow execution remains an intentional feature, but the API is not constrained by the current implementation. Use one canonical shape and reject legacy alternatives instead of normalizing them.
 
 ```ts
-workflow({ action: "list" })
-workflow({ action: "inputs", workflow: "deep-research-codebase" })
-workflow({ workflow: "deep-research-codebase", inputs: { prompt: "..." } })
-workflow({ action: "status", runId: "run-prefix" })
-workflow({ action: "interrupt", runId: "run-prefix" })
-workflow({ action: "resume", runId: "run-prefix" })
+workflow({ action: "list" });
+workflow({ action: "inputs", workflow: "deep-research-codebase" });
+workflow({ workflow: "deep-research-codebase", inputs: { prompt: "..." } });
+workflow({ action: "status", runId: "run-prefix" });
+workflow({ action: "interrupt", runId: "run-prefix" });
+workflow({ action: "resume", runId: "run-prefix" });
 ```
 
 Canonical field decisions:
@@ -172,14 +172,14 @@ Recommended tool shape:
 
 ```ts
 workflow({
-  task: {
-    name: "reviewer",
-    prompt: "Review the authentication module and summarize risks.",
-    context: "fresh",
-    model: "anthropic/claude-sonnet-4",
-    output: "reviews/auth.md"
-  }
-})
+    task: {
+        name: "reviewer",
+        prompt: "Review the authentication module and summarize risks.",
+        context: "fresh",
+        model: "anthropic/claude-sonnet-4",
+        output: "reviews/auth.md",
+    },
+});
 ```
 
 Clean-break rule:
@@ -190,14 +190,18 @@ Clean-break rule:
 
 ```ts
 workflow({
-  tasks: [
-    { name: "api-reviewer", task: "Review API surfaces", output: "api.md" },
-    { name: "runtime-reviewer", task: "Review runtime behavior", output: "runtime.md" }
-  ],
-  concurrency: 2,
-  async: true,
-  intercom: { delivery: "result" }
-})
+    tasks: [
+        { name: "api-reviewer", task: "Review API surfaces", output: "api.md" },
+        {
+            name: "runtime-reviewer",
+            task: "Review runtime behavior",
+            output: "runtime.md",
+        },
+    ],
+    concurrency: 2,
+    async: true,
+    intercom: { delivery: "result" },
+});
 ```
 
 Canonical fields:
@@ -211,17 +215,19 @@ Canonical fields:
 
 ```ts
 workflow({
-  chain: [
-    { name: "researcher", task: "Research {task}", output: "research.md" },
-    { parallel: [
-      { name: "reviewer-a", task: "Review {previous}" },
-      { name: "reviewer-b", task: "Find gaps in {previous}" }
-    ]},
-    { name: "planner", task: "Create a plan from {previous}" }
-  ],
-  task: "workflow-sdk parity with pi-subagents",
-  chainDir: ".pi/workflows/runs/parity"
-})
+    chain: [
+        { name: "researcher", task: "Research {task}", output: "research.md" },
+        {
+            parallel: [
+                { name: "reviewer-a", task: "Review {previous}" },
+                { name: "reviewer-b", task: "Find gaps in {previous}" },
+            ],
+        },
+        { name: "planner", task: "Create a plan from {previous}" },
+    ],
+    task: "workflow-sdk parity with pi-subagents",
+    chainDir: ".pi/workflows/runs/parity",
+});
 ```
 
 Template defaults should match pi-subagents research:
@@ -237,22 +243,28 @@ Proposed actions:
 
 ```ts
 type WorkflowAction =
-  | "list" | "get" | "inputs" | "run"
-  | "status" | "interrupt" | "resume" | "doctor";
+    | "list"
+    | "get"
+    | "inputs"
+    | "run"
+    | "status"
+    | "interrupt"
+    | "resume"
+    | "doctor";
 ```
 
 Workflow-native meanings:
 
-| Action | Meaning |
-| ------ | ------- |
-| `list` | List named workflows and their descriptions. |
-| `get` | Return details for a named workflow. |
-| `inputs` | Return input schema for a named workflow. |
-| `run` | Run a named workflow when `name` is present and no direct execution mode is present. |
-| `status` | Return list/detail status from the run store. |
+| Action      | Meaning                                                                                                                               |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `list`      | List named workflows and their descriptions.                                                                                          |
+| `get`       | Return details for a named workflow.                                                                                                  |
+| `inputs`    | Return input schema for a named workflow.                                                                                             |
+| `run`       | Run a named workflow when `name` is present and no direct execution mode is present.                                                  |
+| `status`    | Return list/detail status from the run store.                                                                                         |
 | `interrupt` | Canonical control action for pausing/soft-interrupting or cancelling an active workflow according to the rewritten runtime semantics. |
-| `resume` | Return/resume snapshot according to rewritten workflow overlay semantics. |
-| `doctor` | Return workflow extension diagnostics equivalent to `/workflows-doctor`. |
+| `resume`    | Return/resume snapshot according to rewritten workflow overlay semantics.                                                             |
+| `doctor`    | Return workflow extension diagnostics equivalent to `/workflows-doctor`.                                                              |
 
 Resolved decision: `create`, `update`, and `delete` are not MVP workflow-tool actions. Workflow definitions remain code-authored and direct-execution recipes are deferred.
 
@@ -262,45 +274,52 @@ Add workflow-native public types to `src/shared/types.ts` or a new `src/workflow
 
 ```ts
 export interface WorkflowTaskSessionOptions extends CreateAgentSessionOptions {
-  /** Prompt text. Use exactly one prompt field in the final clean schema. */
-  prompt: string;
-  /** Optional task-local working directory. */
-  cwd?: string;
-  /** Optional output artifact path or disabled output. */
-  output?: string | false;
-  outputMode?: "inline" | "file-only";
-  reads?: string[] | false;
-  /** Workflow-owned worktree isolation; not forwarded directly to createAgentSession(). */
-  worktree?: boolean;
+    /** Prompt text. Use exactly one prompt field in the final clean schema. */
+    prompt: string;
+    /** Optional task-local working directory. */
+    cwd?: string;
+    /** Optional output artifact path or disabled output. */
+    output?: string | false;
+    outputMode?: "inline" | "file-only";
+    reads?: string[] | false;
+    /** Workflow-owned worktree isolation; not forwarded directly to createAgentSession(). */
+    worktree?: boolean;
 }
 
 export interface WorkflowDirectTaskItem extends WorkflowTaskSessionOptions {
-  /** Task/stage label passed to ctx.task(name, ...). */
-  name: string;
-  /** Repeat count for direct parallel expansion. */
-  count?: number;
+    /** Task/stage label passed to ctx.task(name, ...). */
+    name: string;
+    /** Repeat count for direct parallel expansion. */
+    count?: number;
 }
 
 export interface WorkflowChainStep extends WorkflowDirectTaskItem {
-  parallel?: WorkflowDirectTaskItem[];
-  concurrency?: number;
-  failFast?: boolean;
+    parallel?: WorkflowDirectTaskItem[];
+    concurrency?: number;
+    failFast?: boolean;
 }
 
 export interface WorkflowDetails {
-  mode: "named" | "single" | "parallel" | "chain" | "inspection" | "control" | "doctor";
-  action?: WorkflowAction;
-  runId?: string;
-  status: "accepted" | "running" | "completed" | "failed" | "killed" | "noop";
-  context?: "fresh" | "fork";
-  results?: WorkflowTaskResult[];
-  output?: Record<string, unknown>;
-  progress?: WorkflowProgressSummary;
-  artifacts?: WorkflowArtifact[];
-  controlEvents?: WorkflowControlEvent[];
-  intercom?: WorkflowIntercomSummary;
-  warnings?: string[];
-  error?: string;
+    mode:
+        | "named"
+        | "single"
+        | "parallel"
+        | "chain"
+        | "inspection"
+        | "control"
+        | "doctor";
+    action?: WorkflowAction;
+    runId?: string;
+    status: "accepted" | "running" | "completed" | "failed" | "killed" | "noop";
+    context?: "fresh" | "fork";
+    results?: WorkflowTaskResult[];
+    output?: Record<string, unknown>;
+    progress?: WorkflowProgressSummary;
+    artifacts?: WorkflowArtifact[];
+    controlEvents?: WorkflowControlEvent[];
+    intercom?: WorkflowIntercomSummary;
+    warnings?: string[];
+    error?: string;
 }
 ```
 
@@ -339,10 +358,10 @@ Routing order should mirror pi-subagents:
 1. Validate canonical fields and reject legacy aliases rather than normalizing them.
 2. Detect action mode. Handle `doctor`, `status`, `resume`, `interrupt`, and read-only inspection actions before normal execution.
 3. Validate exactly one normal execution mode:
-   - named workflow run;
-   - direct single task;
-   - direct parallel tasks;
-   - direct chain.
+    - named workflow run;
+    - direct single task;
+    - direct parallel tasks;
+    - direct chain.
 4. Enforce recursion/depth and concurrency limits using the rewritten runtime config.
 5. Expand repeated parallel items (`count`).
 6. Resolve effective context (`fresh` / `fork`) and stage options.
@@ -357,21 +376,23 @@ Local intercom research shows stable parent-session registration and `subagent:c
 
 Proposed additions:
 
-| Channel / API | Direction | Purpose |
-| ------------- | --------- | ------- |
-| `workflow:control-intercom` | child/direct workflow → parent | Workflow needs a decision, acknowledgement, or parent attention. |
-| `workflow:control-intercom:response` | parent → child/direct workflow | Parent response to decision requests. |
-| `workflow:result-intercom` | workflow → parent session | Deliver completed async, parallel, or chain results without relying only on tool return text. |
-| `subagent:control-intercom` bridge | subagent child → workflow parent | Support child subagent control routing as a first-class integration, not as a legacy shim. |
+| Channel / API                        | Direction                        | Purpose                                                                                       |
+| ------------------------------------ | -------------------------------- | --------------------------------------------------------------------------------------------- |
+| `workflow:control-intercom`          | child/direct workflow → parent   | Workflow needs a decision, acknowledgement, or parent attention.                              |
+| `workflow:control-intercom:response` | parent → child/direct workflow   | Parent response to decision requests.                                                         |
+| `workflow:result-intercom`           | workflow → parent session        | Deliver completed async, parallel, or chain results without relying only on tool return text. |
+| `subagent:control-intercom` bridge   | subagent child → workflow parent | Support child subagent control routing as a first-class integration, not as a legacy shim.    |
 
 Workflow tool options:
 
 ```ts
 interface WorkflowIntercomOptions {
-  enabled?: boolean;
-  delivery?: "off" | "notify" | "result" | "control-and-result";
-  parentSession?: string;
-  notifyOn?: Array<"active_long_running" | "needs_attention" | "completed" | "failed">;
+    enabled?: boolean;
+    delivery?: "off" | "notify" | "result" | "control-and-result";
+    parentSession?: string;
+    notifyOn?: Array<
+        "active_long_running" | "needs_attention" | "completed" | "failed"
+    >;
 }
 ```
 
@@ -389,21 +410,21 @@ Update package metadata to include workflow skill and prompts:
 
 ```json
 {
-  "files": [
-    "src/**/*.ts",
-    "workflows/**/*.ts",
-    "skills/**/*",
-    "prompts/**/*",
-    "README.md",
-    "CHANGELOG.md",
-    "LICENSE"
-  ],
-  "pi": {
-    "extensions": ["./src/extension/index.ts"],
-    "workflows": ["./workflows"],
-    "skills": ["./skills"],
-    "prompts": ["./prompts"]
-  }
+    "files": [
+        "src/**/*.ts",
+        "workflows/**/*.ts",
+        "skills/**/*",
+        "prompts/**/*",
+        "README.md",
+        "CHANGELOG.md",
+        "LICENSE"
+    ],
+    "pi": {
+        "extensions": ["./src/extension/index.ts"],
+        "workflows": ["./workflows"],
+        "skills": ["./skills"],
+        "prompts": ["./prompts"]
+    }
 }
 ```
 
@@ -450,14 +471,14 @@ Future consideration: if saved recipes are reintroduced, prefer a non-executable
 
 ## 6. Alternatives Considered
 
-| Option | Pros | Cons | Reason for Rejection / Selection |
-| ------ | ---- | ---- | -------------------------------- |
-| Replace `workflow` API with exact `subagent` schema | Maximum mechanical parity | Workflow concepts do not map perfectly to agents | Rejected. The rewrite should be inspired by pi-subagents, not a blind clone. |
-| Add a second tool such as `workflow_direct` | Avoids overloading `workflow`; cleaner schema split | Agents must learn another tool; weakens parity with `pi-subagents` single-tool design | Rejected for MVP. |
-| Clean rewrite of `workflow` | Produces one coherent API without shims; matches the user's rewrite intent | Requires migrating existing callers/tests | Selected. |
-| Manage executable workflow files through `create/update/delete` | Closer to code-generation workflow authoring | Security, validation, and trust risks; hard to maintain raw TS safely | Rejected for MVP. |
-| Manage saved JSON recipes | Safe, inspectable, workflow-native; supports pi-subagents-style management | Less powerful than authoring real workflows | Deferred; no CRUD in MVP. |
-| Copy `/run`, `/chain`, `/parallel` exactly | Strong slash parity | Namespace conflicts with other extensions; direct orchestration should live in workflow code | Rejected for MVP. |
+| Option                                                          | Pros                                                                       | Cons                                                                                         | Reason for Rejection / Selection                                             |
+| --------------------------------------------------------------- | -------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| Replace `workflow` API with exact `subagent` schema             | Maximum mechanical parity                                                  | Workflow concepts do not map perfectly to agents                                             | Rejected. The rewrite should be inspired by pi-subagents, not a blind clone. |
+| Add a second tool such as `workflow_direct`                     | Avoids overloading `workflow`; cleaner schema split                        | Agents must learn another tool; weakens parity with `pi-subagents` single-tool design        | Rejected for MVP.                                                            |
+| Clean rewrite of `workflow`                                     | Produces one coherent API without shims; matches the user's rewrite intent | Requires migrating existing callers/tests                                                    | Selected.                                                                    |
+| Manage executable workflow files through `create/update/delete` | Closer to code-generation workflow authoring                               | Security, validation, and trust risks; hard to maintain raw TS safely                        | Rejected for MVP.                                                            |
+| Manage saved JSON recipes                                       | Safe, inspectable, workflow-native; supports pi-subagents-style management | Less powerful than authoring real workflows                                                  | Deferred; no CRUD in MVP.                                                    |
+| Copy `/run`, `/chain`, `/parallel` exactly                      | Strong slash parity                                                        | Namespace conflicts with other extensions; direct orchestration should live in workflow code | Rejected for MVP.                                                            |
 
 ## 7. Cross-Cutting Concerns
 
@@ -476,12 +497,12 @@ Future consideration: if saved recipes are reintroduced, prefer a non-executable
 - Use rewritten store snapshots as the source of truth for status.
 - Emit lifecycle events for direct single/parallel/chain runs through the same store/persistence path as named workflows.
 - Add doctor diagnostics for:
-  - direct execution support;
-  - unsupported CRUD action handling;
-  - skill/prompt package registration;
-  - intercom capability and channel subscription status;
-  - worktree isolation capability, active worktree paths, retained worktree diagnostics, and diff/artifact summaries;
-  - subagent bridge availability.
+    - direct execution support;
+    - unsupported CRUD action handling;
+    - skill/prompt package registration;
+    - intercom capability and channel subscription status;
+    - worktree isolation capability, active worktree paths, retained worktree diagnostics, and diff/artifact summaries;
+    - subagent bridge availability.
 
 ### 7.3 Scalability and Capacity Planning
 
@@ -522,31 +543,31 @@ Saved recipe migration is not required for MVP because recipe CRUD is out of sco
 Use Bun only, per repository instructions.
 
 - **Unit Tests:**
-  - schema validation for mutually exclusive modes and rejection of legacy aliases;
-  - direct helper type/runtime behavior;
-  - `ctx.task` and direct task items accept/pass through full `createAgentSession()` options such as `model`, `tools`, and reasoning effort;
-  - ephemeral workflow execution plan construction;
-  - worktree isolation setup, clean-state enforcement, diff artifact collection, and cleanup/retention behavior;
-  - result envelope rendering;
-  - rejection of unsupported `create/update/delete` actions;
-  - intercom payload validation/routing;
-  - new slash parsing and named workflow execution contract.
+    - schema validation for mutually exclusive modes and rejection of legacy aliases;
+    - direct helper type/runtime behavior;
+    - `ctx.task` and direct task items accept/pass through full `createAgentSession()` options such as `model`, `tools`, and reasoning effort;
+    - ephemeral workflow execution plan construction;
+    - worktree isolation setup, clean-state enforcement, diff artifact collection, and cleanup/retention behavior;
+    - result envelope rendering;
+    - rejection of unsupported `create/update/delete` actions;
+    - intercom payload validation/routing;
+    - new slash parsing and named workflow execution contract.
 - **Integration Tests:**
-  - extension factory registers the rewritten `workflow` tool and approved commands;
-  - direct single/parallel/chain runs create store snapshots and complete through mocked stage adapters;
-  - direct parallel and chain-parallel runs can execute in isolated worktrees without path collisions;
-  - async direct runs can be inspected, interrupted, and resumed via status paths;
-  - doctor reports package/intercom/direct-mode capability;
-  - package metadata includes skills/prompts/workflows.
+    - extension factory registers the rewritten `workflow` tool and approved commands;
+    - direct single/parallel/chain runs create store snapshots and complete through mocked stage adapters;
+    - direct parallel and chain-parallel runs can execute in isolated worktrees without path collisions;
+    - async direct runs can be inspected, interrupted, and resumed via status paths;
+    - doctor reports package/intercom/direct-mode capability;
+    - package metadata includes skills/prompts/workflows.
 - **Migration/Contract Tests:**
-  - old legacy argument shims such as run-control `name` and direct `agent`/`stage` aliases are rejected;
-  - rewritten `ctx.task`, `ctx.chain`, and `ctx.parallel` semantics are covered as the canonical contract;
-  - rewritten subagent bridge behavior is covered as an intentional cross-extension integration.
+    - old legacy argument shims such as run-control `name` and direct `agent`/`stage` aliases are rejected;
+    - rewritten `ctx.task`, `ctx.chain`, and `ctx.parallel` semantics are covered as the canonical contract;
+    - rewritten subagent bridge behavior is covered as an intentional cross-extension integration.
 - **Commands:**
-  - `bun run typecheck`
-  - `bun run test:unit`
-  - `bun run test:integration`
-  - `bun run test:all`
+    - `bun run typecheck`
+    - `bun run test:unit`
+    - `bun run test:integration`
+    - `bun run test:all`
 
 ## 9. Open Questions / Unresolved Issues
 

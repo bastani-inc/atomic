@@ -1,11 +1,11 @@
 # Binary Distribution and Installer Scripts Technical Design Document
 
-| Document Metadata      | Details        |
-| ---------------------- | -------------- |
-| Author(s)              | lavaman131     |
-| Status                 | Draft (WIP)    |
-| Team / Owner           | bastani/atomic |
-| Created / Last Updated | 2026-01-21     |
+| Document Metadata      | Details            |
+| ---------------------- | ------------------ |
+| Author(s)              | lavaman131         |
+| Status                 | Draft (WIP)        |
+| Team / Owner           | bastani-inc/atomic |
+| Created / Last Updated | 2026-01-21         |
 
 ## 1. Executive Summary
 
@@ -15,10 +15,10 @@ This RFC proposes adding shell-based installer scripts (`install.sh` and `instal
 
 ```bash
 # Linux/macOS
-curl -fsSL https://raw.githubusercontent.com/bastani/atomic/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/bastani-inc/atomic/main/install.sh | bash
 
 # Windows PowerShell
-irm https://raw.githubusercontent.com/bastani/atomic/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/bastani-inc/atomic/main/install.ps1 | iex
 ```
 
 **Research Reference:** [research/docs/2026-01-21-binary-distribution-installers.md](../research/docs/2026-01-21-binary-distribution-installers.md)
@@ -234,13 +234,13 @@ The implementation follows the standard pattern used by Bun, Deno, and Starship:
 
 ```
 # Latest release
-https://github.com/bastani/atomic/releases/latest/download/atomic-{target}
+https://github.com/bastani-inc/atomic/releases/latest/download/atomic-{target}
 
 # Specific version
-https://github.com/bastani/atomic/releases/download/v{version}/atomic-{target}
+https://github.com/bastani-inc/atomic/releases/download/v{version}/atomic-{target}
 
 # Checksums file
-https://github.com/bastani/atomic/releases/download/v{version}/checksums.txt
+https://github.com/bastani-inc/atomic/releases/download/v{version}/checksums.txt
 ```
 
 ## 5. Detailed Design
@@ -343,17 +343,17 @@ $ActualHash = (Get-FileHash -Path $BinaryPath -Algorithm SHA256).Hash.ToLower()
 
 ```bash
 # Usage examples
-curl -fsSL https://raw.githubusercontent.com/bastani/atomic/main/install.sh | bash
-curl -fsSL https://raw.githubusercontent.com/bastani/atomic/main/install.sh | bash -s -- v1.0.0
-curl -fsSL https://raw.githubusercontent.com/bastani/atomic/main/install.sh | bash -s -- -b /usr/local/bin
+curl -fsSL https://raw.githubusercontent.com/bastani-inc/atomic/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/bastani-inc/atomic/main/install.sh | bash -s -- v1.0.0
+curl -fsSL https://raw.githubusercontent.com/bastani-inc/atomic/main/install.sh | bash -s -- -b /usr/local/bin
 ```
 
 **Windows:**
 
 ```powershell
 # Usage examples
-irm https://raw.githubusercontent.com/bastani/atomic/main/install.ps1 | iex
-iex "& { $(irm https://raw.githubusercontent.com/bastani/atomic/main/install.ps1) } -Version v1.0.0"
+irm https://raw.githubusercontent.com/bastani-inc/atomic/main/install.ps1 | iex
+iex "& { $(irm https://raw.githubusercontent.com/bastani-inc/atomic/main/install.ps1) } -Version v1.0.0"
 ```
 
 ### 5.6 README.md Updates
@@ -368,14 +368,14 @@ iex "& { $(irm https://raw.githubusercontent.com/bastani/atomic/main/install.ps1
 **Linux/macOS:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/bastani/atomic/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/bastani-inc/atomic/main/install.sh | bash
 ```
 ````
 
 **Windows (PowerShell):**
 
 ```powershell
-irm https://raw.githubusercontent.com/bastani/atomic/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/bastani-inc/atomic/main/install.ps1 | iex
 ```
 
 ### Alternative Methods

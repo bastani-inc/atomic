@@ -941,7 +941,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       });
     }, 0);
   });
-  
+
   pi.on("session_shutdown", async () => {
     shuttingDown = true;
     disposed = true;

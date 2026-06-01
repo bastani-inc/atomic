@@ -32,8 +32,8 @@ call :verify_checksum "!BINARY_PATH!" "!EXPECTED_CHECKSUM!"
 
 **Atomic-Specific Hardcodes:**
 
-- Line 51: `set "RELEASES_BASE=https://github.com/bastani/atomic/releases"`
-- Line 11: Usage example hardcodes `bastani/atomic/main/install.cmd`
+- Line 51: `set "RELEASES_BASE=https://github.com/bastani-inc/atomic/releases"`
+- Line 11: Usage example hardcodes `bastani-inc/atomic/main/install.cmd`
 - All three scripts only reference `atomic` (not configurable agent name)
 
 **Seams for pi-coding-agent:**
@@ -474,11 +474,11 @@ export function cleanupOldArtifacts(
 
 ### Tightly Coupled (Must Change for pi-coding-agent)
 
-1. **GitHub Release URL Base**: `https://github.com/bastani/atomic/releases` (install.cmd:51, install.ps1:30, install.sh:24)
+1. **GitHub Release URL Base**: `https://github.com/bastani-inc/atomic/releases` (install.cmd:51, install.ps1:30, install.sh:24)
 2. **Package Scope**: `@bastani/atomic` (install-method.ts:22, install.ts:614-617)
 3. **Binary Name**: `atomic` (hardcoded in paths, regex patterns, completion scripts)
 4. **Tmux/Psmux Detection**: Tied to Atomic's multiplexer strategy
-5. **GitHub Org/Repo**: `bastani/atomic` (hardcoded in usage examples)
+5. **GitHub Org/Repo**: `bastani-inc/atomic` (hardcoded in usage examples)
 
 ### Loosely Coupled (Reusable or Parameterizable)
 

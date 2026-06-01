@@ -15,7 +15,7 @@ last_updated_by: Copilot
 
 ## Research Question
 
-Research the current way that OpenTUI is being distributed in the atomic TUI and understand how to fix it so CI deployment works. Reference the publishing failures in GitHub Actions run: https://github.com/bastani/atomic/actions/runs/21928096164. Thoroughly reference how `sst/opencode` and `sst/opentui` handle this distribution.
+Research the current way that OpenTUI is being distributed in the atomic TUI and understand how to fix it so CI deployment works. Reference the publishing failures in GitHub Actions run: https://github.com/bastani-inc/atomic/actions/runs/21928096164. Thoroughly reference how `sst/opencode` and `sst/opentui` handle this distribution.
 
 ## Summary
 
@@ -25,7 +25,7 @@ The CI publish workflow fails at the "Create config archives" step because it tr
 
 ### 1. CI Publish Workflow Failure
 
-**Failed Run**: https://github.com/bastani/atomic/actions/runs/21928096164
+**Failed Run**: https://github.com/bastani-inc/atomic/actions/runs/21928096164
 
 **Job**: `Build Binaries` — Step: `Create config archives`
 

@@ -1,11 +1,11 @@
 # Atomic CLI Cross-Platform Support Technical Design Document
 
-| Document Metadata      | Details        |
-| ---------------------- | -------------- |
-| Author(s)              | Alex Lavaee    |
-| Status                 | Draft (WIP)    |
-| Team / Owner           | bastani/atomic |
-| Created / Last Updated | 2026-01-20     |
+| Document Metadata      | Details            |
+| ---------------------- | ------------------ |
+| Author(s)              | Alex Lavaee        |
+| Status                 | Draft (WIP)        |
+| Team / Owner           | bastani-inc/atomic |
+| Created / Last Updated | 2026-01-20         |
 
 ## 1. Executive Summary
 

@@ -5,7 +5,16 @@ git_commit: be48427c29302f27573c917102c626d1f10cc15d
 branch: lavaman131/feature/tui
 repository: atomic
 topic: "Workflow SDK Implementation: Custom Tools, Sub-Agents, and Graph Execution"
-tags: [research, codebase, workflow-sdk, graph-engine, custom-tools, sub-agents, tui]
+tags:
+    [
+        research,
+        codebase,
+        workflow-sdk,
+        graph-engine,
+        custom-tools,
+        sub-agents,
+        tui,
+    ]
 status: complete
 last_updated: 2026-02-11
 last_updated_by: Copilot CLI
@@ -48,22 +57,23 @@ Fluent API for constructing graphs:
 
 ```typescript
 const workflow = graph<MyState>()
-  .start(startNode)
-  .then(nodeA)
-  .if(condition)
+    .start(startNode)
+    .then(nodeA)
+    .if(condition)
     .then(nodeB)
-  .else()
+    .else()
     .then(nodeC)
-  .endif()
-  .loop([nodeD, nodeE], { until: (state) => state.done, maxIterations: 100 })
-  .parallel([branchA, branchB], { strategy: "all" })
-  .wait({ prompt: "Continue?" })
-  .catch(errorHandler)
-  .end()
-  .compile(config);
+    .endif()
+    .loop([nodeD, nodeE], { until: (state) => state.done, maxIterations: 100 })
+    .parallel([branchA, branchB], { strategy: "all" })
+    .wait({ prompt: "Continue?" })
+    .catch(errorHandler)
+    .end()
+    .compile(config);
 ```
 
 Key methods:
+
 - `start(node)` — Set the entry node
 - `then(node)` — Append a sequential node
 - `if(condition)/else()/endif()` — Conditional branching
@@ -101,10 +111,12 @@ Type-safe state management inspired by LangGraph:
 - **`applyStateUpdate(schema, current, update)`**: Apply partial updates with reducers
 
 Two annotation schemas exist:
+
 1. **`AtomicStateAnnotation`** — For general Atomic workflows (researchDoc, specDoc, featureList, etc.)
 2. **`RalphStateAnnotation`** — Extended for Ralph sessions (adds `ralphSessionId`, `yolo`, `maxIterations`, `shouldContinue`, etc.)
 
 Corresponding state types:
+
 - `AtomicWorkflowState = StateFromAnnotation<typeof AtomicStateAnnotation>`
 - `RalphWorkflowState` — Manually defined interface at `src/graph/annotation.ts:463`
 
@@ -120,18 +132,19 @@ Creates a node that executes an AI agent session:
 
 ```typescript
 agentNode<MyState>({
-  id: "research",
-  agentType: "claude",      // "claude" | "opencode" | "copilot"
-  systemPrompt: "...",
-  tools: ["tool1", "tool2"],
-  buildMessage: (state) => `Research: ${state.topic}`,
-  outputMapper: (messages, state) => ({ result: messages }),
-  sessionConfig: { model: "sonnet" },
-  retry: { maxAttempts: 3 },
+    id: "research",
+    agentType: "claude", // "claude" | "opencode" | "copilot"
+    systemPrompt: "...",
+    tools: ["tool1", "tool2"],
+    buildMessage: (state) => `Research: ${state.topic}`,
+    outputMapper: (messages, state) => ({ result: messages }),
+    sessionConfig: { model: "sonnet" },
+    retry: { maxAttempts: 3 },
 });
 ```
 
 **Key mechanics:**
+
 - Uses `globalClientProvider` (set via `setClientProvider()`) to get a `CodingAgentClient` for the agent type
 - Creates an SDK session via `client.createSession()`
 - Sends a message built from state, streams the response
@@ -146,12 +159,12 @@ Executes a specific tool function:
 
 ```typescript
 toolNode<MyState, { url: string }, Response>({
-  id: "fetch-data",
-  toolName: "http_fetch",
-  execute: async (args) => fetch(args.url),
-  args: (state) => ({ url: state.targetUrl }),
-  outputMapper: (result, state) => ({ fetchedData: result }),
-  timeout: 30000,
+    id: "fetch-data",
+    toolName: "http_fetch",
+    execute: async (args) => fetch(args.url),
+    args: (state) => ({ url: state.targetUrl }),
+    outputMapper: (result, state) => ({ fetchedData: result }),
+    timeout: 30000,
 });
 ```
 
@@ -169,12 +182,12 @@ Routes based on state conditions:
 
 ```typescript
 decisionNode<MyState>({
-  id: "router",
-  routes: [
-    { condition: (s) => s.score >= 90, target: "fast-track" },
-    { condition: (s) => s.score >= 70, target: "standard" },
-  ],
-  fallback: "manual-review",
+    id: "router",
+    routes: [
+        { condition: (s) => s.score >= 90, target: "fast-track" },
+        { condition: (s) => s.score >= 70, target: "standard" },
+    ],
+    fallback: "manual-review",
 });
 ```
 
@@ -190,15 +203,15 @@ Primary node type for explicit human input in workflows:
 
 ```typescript
 askUserNode<MyState>({
-  id: "confirm",
-  options: {
-    question: "Continue?",
-    header: "Confirmation",
-    options: [
-      { label: "Yes", description: "Proceed" },
-      { label: "No", description: "Cancel" },
-    ],
-  },
+    id: "confirm",
+    options: {
+        question: "Continue?",
+        header: "Confirmation",
+        options: [
+            { label: "Yes", description: "Proceed" },
+            { label: "No", description: "Cancel" },
+        ],
+    },
 });
 ```
 
@@ -213,10 +226,10 @@ Executes branches concurrently:
 
 ```typescript
 parallelNode<MyState>({
-  id: "gather",
-  branches: ["fetch-1", "fetch-2", "fetch-3"],
-  strategy: "all",    // "all" | "race" | "any"
-  merge: (results, state) => ({ allData: Array.from(results.values()) }),
+    id: "gather",
+    branches: ["fetch-1", "fetch-2", "fetch-3"],
+    strategy: "all", // "all" | "race" | "any"
+    merge: (results, state) => ({ allData: Array.from(results.values()) }),
 });
 ```
 
@@ -229,20 +242,21 @@ Executes a nested graph:
 ```typescript
 // Direct compiled graph
 subgraphNode<MainState, SubState>({
-  id: "analysis",
-  subgraph: compiledGraph,
-  inputMapper: (state) => ({ doc: state.document }),
-  outputMapper: (subState, state) => ({ results: subState.results }),
+    id: "analysis",
+    subgraph: compiledGraph,
+    inputMapper: (state) => ({ doc: state.document }),
+    outputMapper: (subState, state) => ({ results: subState.results }),
 });
 
 // Workflow name string (resolved at runtime)
 subgraphNode<MainState, SubState>({
-  id: "research",
-  subgraph: "research-codebase",
+    id: "research",
+    subgraph: "research-codebase",
 });
 ```
 
 **Workflow resolution:**
+
 - String refs resolved via `globalWorkflowResolver` (set by `setWorkflowResolver()`)
 - Circular dependency detection via `resolutionStack` Set
 - Resolver is initialized in `workflow-commands.ts` via `initializeWorkflowResolver()`
@@ -250,6 +264,7 @@ subgraphNode<MainState, SubState>({
 #### 2.9 Context Monitor Node (`contextMonitorNode()`, line 1367)
 
 Monitors context window usage and takes action when threshold is exceeded:
+
 - `"summarize"` — Calls `session.summarize()` (OpenCode)
 - `"recreate"` — Signals session recreation (Claude)
 - `"warn"` — Emits warning only (Copilot)
@@ -264,29 +279,32 @@ Monitors context window usage and takes action when threshold is exceeded:
 The only currently implemented workflow. Defined in `src/workflows/ralph/`:
 
 **Files:**
+
 - `src/workflows/ralph/workflow.ts` — Graph definition via `createRalphWorkflow()`
 - `src/workflows/ralph/executor.ts` — `RalphExecutor` class for interrupt handling and session persistence
 - `src/workflows/ralph/session.ts` — Session CRUD operations, session stored at `.ralph/sessions/{sessionId}/session.json`
 - `src/graph/nodes/ralph-nodes.ts` — Ralph-specific node factories
 
 **Ralph Workflow Structure** (`workflow.ts:169`):
+
 ```typescript
 export function createRalphWorkflow(config?: CreateRalphWorkflowConfig) {
-  return graph<RalphWorkflowState>()
-    .start(initSessionNode)
-    .loop([clearContextNode, implementFeatureNode], {
-      until: (state) => !state.shouldContinue,
-      maxIterations: config?.maxIterations ?? 100,
-    })
-    .then(checkCompletionNode)
-    .end()
-    .compile({ checkpointing: config?.checkpointing ?? true });
+    return graph<RalphWorkflowState>()
+        .start(initSessionNode)
+        .loop([clearContextNode, implementFeatureNode], {
+            until: (state) => !state.shouldContinue,
+            maxIterations: config?.maxIterations ?? 100,
+        })
+        .then(checkCompletionNode)
+        .end()
+        .compile({ checkpointing: config?.checkpointing ?? true });
 }
 ```
 
 **Ralph Node IDs** (`workflow.ts:40`): `RALPH_NODE_IDS` constant with `initSession`, `clearContext`, `implementFeature`, `checkCompletion`
 
 **Ralph-specific nodes** (`ralph-nodes.ts`):
+
 - `initRalphSessionNode` — Initialize or resume a session, create directory structure
 - `implementFeatureNode` — Pick next available task, delegate to agent
 - `checkCompletionNode` — Deterministic termination check: any available (non-blocked) tasks remaining?
@@ -295,6 +313,7 @@ export function createRalphWorkflow(config?: CreateRalphWorkflowConfig) {
 **RalphWorkflowState** (`ralph-nodes.ts:202`): Extends `BaseState` with `ralphSessionId`, `ralphSessionDir`, `tasks: TodoItem[]`, `currentFeatureIndex`, `completedFeatures`, `iteration`, `sessionStatus`, `shouldContinue`, `prUrl`, `prBranch`, `contextWindowUsage`, `debugReports`
 
 **Ralph Executor** (`executor.ts`):
+
 - Manages SIGINT/Esc interrupt handling
 - Session state persistence to `.ralph/sessions/{sessionId}/`
 - `run()` method at line 236 returns placeholder result — actual execution integration is TODO
@@ -302,23 +321,26 @@ export function createRalphWorkflow(config?: CreateRalphWorkflowConfig) {
 #### 3.2 Workflow Discovery and Registration (`workflow-commands.ts`)
 
 **Search paths** (line 219):
+
 ```typescript
 export const CUSTOM_WORKFLOW_SEARCH_PATHS = [
-  ".atomic/workflows",      // Project-local (highest priority)
-  "~/.atomic/workflows",    // Global user workflows
+    ".atomic/workflows", // Project-local (highest priority)
+    "~/.atomic/workflows", // Global user workflows
 ];
 ```
 
 **Discovery flow:**
+
 1. `discoverWorkflowFiles()` — Scans paths for `.ts` files
 2. `loadWorkflowsFromDisk()` — Dynamic `import()` of discovered files
 3. Each file expected to export:
-   - `default` — Function `(config?) => CompiledGraph` (required)
-   - `name` — Workflow name (optional, defaults to filename)
-   - `description` — Human-readable description (optional)
-   - `aliases` — Alternative command names (optional)
+    - `default` — Function `(config?) => CompiledGraph` (required)
+    - `name` — Workflow name (optional, defaults to filename)
+    - `description` — Human-readable description (optional)
+    - `aliases` — Alternative command names (optional)
 
 **Example custom workflow file:**
+
 ```typescript
 // .atomic/workflows/my-workflow.ts
 import { graph, agentNode } from "@bastani/atomic/graph";
@@ -328,41 +350,45 @@ export const description = "My custom workflow";
 export const aliases = ["mw"];
 
 export default function createWorkflow(config?: Record<string, unknown>) {
-  return graph<MyState>()
-    .start(researchNode)
-    .then(implementNode)
-    .end()
-    .compile();
+    return graph<MyState>()
+        .start(researchNode)
+        .then(implementNode)
+        .end()
+        .compile();
 }
 ```
 
 **Priority**: Local `.atomic/workflows/` overrides global `~/.atomic/workflows/` overrides built-in
 
 **Workflow Registry** (line 410):
+
 - `workflowRegistry: Map<string, WorkflowMetadata>` — Maps lowercase name/alias to metadata
 - `getWorkflowFromRegistry(name)` — Lookup by name or alias
 - `resolveWorkflowRef(name)` — Resolve name to compiled graph (with circular dependency detection)
 - `refreshWorkflowRegistry()` — Clear and reinitialize after loading new workflows
 
 **Registration** (line 825):
+
 - `registerWorkflowCommands()` — Creates command definitions and registers with `globalRegistry`
 - Also calls `initializeWorkflowResolver()` to enable `subgraphNode()` string workflow references
 - Each workflow gets a `/` slash command in the TUI
 
 **WorkflowMetadata** (line 94):
+
 ```typescript
 interface WorkflowMetadata<TState extends BaseState> {
-  name: string;
-  description: string;
-  aliases?: string[];
-  createWorkflow: (config?) => CompiledGraph<TState>;
-  defaultConfig?: Record<string, unknown>;
-  source?: "builtin" | "global" | "local";
-  argumentHint?: string;
+    name: string;
+    description: string;
+    aliases?: string[];
+    createWorkflow: (config?) => CompiledGraph<TState>;
+    defaultConfig?: Record<string, unknown>;
+    source?: "builtin" | "global" | "local";
+    argumentHint?: string;
 }
 ```
 
 **Workflow Session Tracking** (line 114):
+
 - `WorkflowSession` — Tracks sessionId, agentType, currentStep, paths, timestamps
 - `WorkflowStep` union: `"research" | "research_complete" | "create_spec" | ... | "complete"`
 - Active sessions stored in-memory `Map<string, WorkflowSession>`
@@ -377,14 +403,16 @@ interface WorkflowMetadata<TState extends BaseState> {
 import { tool } from "@atomic/plugin";
 
 export default tool({
-  description: "Run the project linter",
-  args: {
-    filePath: tool.schema.string().describe("Path to lint"),
-  },
-  async execute(args, context) {
-    const proc = Bun.spawn(["bun", "lint", args.filePath], { cwd: context.directory });
-    return await new Response(proc.stdout).text();
-  },
+    description: "Run the project linter",
+    args: {
+        filePath: tool.schema.string().describe("Path to lint"),
+    },
+    async execute(args, context) {
+        const proc = Bun.spawn(["bun", "lint", args.filePath], {
+            cwd: context.directory,
+        });
+        return await new Response(proc.stdout).text();
+    },
 });
 ```
 
@@ -396,40 +424,48 @@ export default tool({
 #### 4.2 Tool Discovery (`src/sdk/tools/discovery.ts`)
 
 **Search paths** (line 45):
+
 ```typescript
 export const TOOL_SEARCH_PATHS = [
-  ".atomic/tools",                        // Project-local (highest priority)
-  join(HOME, ".atomic", "tools"),          // Global user tools (~/.atomic/tools)
+    ".atomic/tools", // Project-local (highest priority)
+    join(HOME, ".atomic", "tools"), // Global user tools (~/.atomic/tools)
 ];
 ```
 
 **Discovery flow:**
+
 1. `discoverToolFiles()` — Scans paths for `.ts` and `.js` files
 2. `loadToolsFromDisk()` — Dynamic import with `@atomic/plugin` import rewriting
 3. `registerCustomTools(client)` — Registers all discovered tools with SDK client
 
 **Naming convention:**
+
 - Default export → tool name = filename (e.g., `lint.ts` → `lint`)
 - Named exports → `<filename>_<exportName>` (e.g., `weather.ts:getTemp` → `weather_getTemp`)
 
 **Import resolution:**
+
 - `@atomic/plugin` imports rewritten to absolute path to `plugin.ts`
 - Necessary because Bun can't resolve `@`-scoped packages at runtime for dynamic imports
 - Temporary rewritten files stored in `~/.atomic/.tmp/tools/` and cleaned up on exit
 
 **Conversion** (`discovery.ts:183`):
+
 - `convertToToolDefinition()` — Converts `ToolInput` (Zod) to `ToolDefinition` (JSON Schema)
 - Uses `zodToJsonSchema()` from `schema-utils.ts`
 - Handler wraps execute with Zod validation and output truncation
 
 **Registration** (`discovery.ts:260`):
+
 ```typescript
-export async function registerCustomTools(client: CodingAgentClient): Promise<number> {
-  discoveredCustomTools = await loadToolsFromDisk();
-  for (const { definition } of discoveredCustomTools) {
-    client.registerTool(definition);
-  }
-  return discoveredCustomTools.length;
+export async function registerCustomTools(
+    client: CodingAgentClient,
+): Promise<number> {
+    discoveredCustomTools = await loadToolsFromDisk();
+    for (const { definition } of discoveredCustomTools) {
+        client.registerTool(definition);
+    }
+    return discoveredCustomTools.length;
 }
 ```
 
@@ -453,25 +489,26 @@ Manages independent sub-agent sessions in the TUI layer:
 
 ```typescript
 interface SubagentSpawnOptions {
-  agentId: string;
-  agentName: string;
-  task: string;
-  systemPrompt?: string;
-  model?: string;
-  tools?: string[];
+    agentId: string;
+    agentName: string;
+    task: string;
+    systemPrompt?: string;
+    model?: string;
+    tools?: string[];
 }
 
 interface SubagentResult {
-  agentId: string;
-  success: boolean;
-  output: string;
-  error?: string;
-  toolUses: number;
-  durationMs: number;
+    agentId: string;
+    success: boolean;
+    output: string;
+    error?: string;
+    toolUses: number;
+    durationMs: number;
 }
 ```
 
 **Key features:**
+
 - **Independent sessions**: Each sub-agent gets its own isolated SDK session via `createSession()`
 - **Concurrency limiting**: Configurable `maxConcurrent` (default 5) with request queuing
 - **Real-time updates**: Status callback updates `ParallelAgentsTree` component
@@ -481,6 +518,7 @@ interface SubagentResult {
 - **Cleanup**: Always destroys session in `finally` block
 
 **Session flow** (`executeSpawn()`, line 283):
+
 1. Create independent session via `createSession(config)`
 2. Store session in tracking Map
 3. Emit "running" status
@@ -521,6 +559,7 @@ TUI commands for managing sub-agents (referenced in grep results but not fully r
 #### 6.1 Chat Interface (`src/ui/chat.tsx`)
 
 The main TUI component integrates:
+
 - Sub-agent session management via `SubagentSessionManager`
 - Tool registration via `registerCustomTools(client)` (from `src/commands/chat.ts`)
 - Workflow command dispatch
@@ -529,6 +568,7 @@ The main TUI component integrates:
 #### 6.2 Command Registry
 
 Commands are registered in a global registry (`src/ui/commands/registry.ts`):
+
 - Workflow commands registered via `registerWorkflowCommands()`
 - Each workflow becomes a `/` slash command
 - Agent commands handle sub-agent operations
@@ -536,6 +576,7 @@ Commands are registered in a global registry (`src/ui/commands/registry.ts`):
 #### 6.3 Workflow Session State in UI
 
 The TUI tracks workflow sessions with:
+
 - `WorkflowSession` — Session metadata (step, paths, timestamps)
 - Active sessions Map for multi-session support
 - Step progression: research → create_spec → spec_review → implement → complete
@@ -546,31 +587,34 @@ The TUI tracks workflow sessions with:
 
 ```typescript
 interface CodingAgentClient {
-  readonly agentType: AgentType;
-  createSession(config?: SessionConfig): Promise<Session>;
-  resumeSession(sessionId: string): Promise<Session | null>;
-  on<T extends EventType>(eventType: T, handler: EventHandler<T>): () => void;
-  registerTool(tool: ToolDefinition): void;
-  start(): Promise<void>;
-  stop(): Promise<void>;
-  getModelDisplayInfo(modelHint?: string): Promise<ModelDisplayInfo>;
+    readonly agentType: AgentType;
+    createSession(config?: SessionConfig): Promise<Session>;
+    resumeSession(sessionId: string): Promise<Session | null>;
+    on<T extends EventType>(eventType: T, handler: EventHandler<T>): () => void;
+    registerTool(tool: ToolDefinition): void;
+    start(): Promise<void>;
+    stop(): Promise<void>;
+    getModelDisplayInfo(modelHint?: string): Promise<ModelDisplayInfo>;
 }
 
 interface Session {
-  readonly id: string;
-  send(message: string): Promise<AgentMessage>;
-  stream(message: string): AsyncIterable<AgentMessage>;
-  summarize(): Promise<void>;
-  getContextUsage(): Promise<ContextUsage>;
-  getSystemToolsTokens(): number;
-  destroy(): Promise<void>;
+    readonly id: string;
+    send(message: string): Promise<AgentMessage>;
+    stream(message: string): AsyncIterable<AgentMessage>;
+    summarize(): Promise<void>;
+    getContextUsage(): Promise<ContextUsage>;
+    getSystemToolsTokens(): number;
+    destroy(): Promise<void>;
 }
 
 interface ToolDefinition {
-  name: string;
-  description: string;
-  inputSchema: Record<string, unknown>;
-  handler: (input, context: ToolContext) => ToolHandlerResult | Promise<ToolHandlerResult>;
+    name: string;
+    description: string;
+    inputSchema: Record<string, unknown>;
+    handler: (
+        input,
+        context: ToolContext,
+    ) => ToolHandlerResult | Promise<ToolHandlerResult>;
 }
 ```
 
@@ -581,6 +625,7 @@ Three implementations exist: `src/sdk/claude-client.ts`, `src/sdk/opencode-clien
 ## Code References
 
 ### Graph Engine
+
 - `src/graph/types.ts` — All core type definitions (BaseState, NodeDefinition, CompiledGraph, GraphConfig)
 - `src/graph/builder.ts:694` — `graph<TState>()` factory function
 - `src/graph/compiled.ts:232` — `GraphExecutor.execute()` entry point
@@ -594,6 +639,7 @@ Three implementations exist: `src/sdk/claude-client.ts`, `src/sdk/opencode-clien
 - `src/graph/index.ts` — Re-exports entire graph API surface
 
 ### Node Factories
+
 - `src/graph/nodes.ts:100` — `ClientProvider` type
 - `src/graph/nodes.ts:113` — `setClientProvider(provider)`
 - `src/graph/nodes.ts:163` — `agentNode<TState>(config)` factory
@@ -610,6 +656,7 @@ Three implementations exist: `src/sdk/claude-client.ts`, `src/sdk/opencode-clien
 - `src/graph/nodes.ts:1367` — `contextMonitorNode<TState>(config)` factory
 
 ### Ralph Workflow
+
 - `src/workflows/index.ts:1-51` — Module exports
 - `src/workflows/ralph/workflow.ts:40` — `RALPH_NODE_IDS` constant
 - `src/workflows/ralph/workflow.ts:169` — `createRalphWorkflow()` factory
@@ -622,6 +669,7 @@ Three implementations exist: `src/sdk/claude-client.ts`, `src/sdk/opencode-clien
 - `src/graph/nodes/ralph-nodes.ts:505` — `buildSpecToTasksPrompt(spec)`
 
 ### Custom Tools
+
 - `src/sdk/tools/plugin.ts:10` — `ToolInput<Args>` interface
 - `src/sdk/tools/plugin.ts:40` — `tool()` helper function
 - `src/sdk/tools/discovery.ts:45` — `TOOL_SEARCH_PATHS` constant
@@ -631,6 +679,7 @@ Three implementations exist: `src/sdk/claude-client.ts`, `src/sdk/opencode-clien
 - `src/sdk/tools/discovery.ts:183` — `convertToToolDefinition()` Zod→JSON Schema conversion
 
 ### Workflow Commands
+
 - `src/ui/commands/workflow-commands.ts:51` — `parseRalphArgs(args)` parser
 - `src/ui/commands/workflow-commands.ts:94` — `WorkflowMetadata` interface
 - `src/ui/commands/workflow-commands.ts:219` — `CUSTOM_WORKFLOW_SEARCH_PATHS`
@@ -643,6 +692,7 @@ Three implementations exist: `src/sdk/claude-client.ts`, `src/sdk/opencode-clien
 - `src/ui/commands/workflow-commands.ts:825` — `registerWorkflowCommands()`
 
 ### Sub-Agent Management
+
 - `src/ui/subagent-session-manager.ts:23` — `SubagentSpawnOptions` interface
 - `src/ui/subagent-session-manager.ts:41` — `SubagentResult` interface
 - `src/ui/subagent-session-manager.ts:106` — `SubagentSessionManager` class
@@ -651,6 +701,7 @@ Three implementations exist: `src/sdk/claude-client.ts`, `src/sdk/opencode-clien
 - `src/ui/subagent-session-manager.ts:283` — `executeSpawn(options)` private method
 
 ### SDK Types
+
 - `src/sdk/types.ts:114` — `SessionConfig` interface
 - `src/sdk/types.ts:201` — `Session` interface
 - `src/sdk/types.ts:481` — `ToolContext` interface
@@ -817,6 +868,7 @@ The codebase uses global setter/getter patterns for loose coupling:
 ### Supplementary Agent Documentation
 
 During this research, three detailed reference documents were generated by sub-agents:
+
 - `docs/graph-execution-engine.md` (37KB) — Comprehensive graph engine reference
 - `docs/sdk-tools-system.md` (30KB) — SDK tools system reference
 - `docs/tui-layer.md` (39KB) — TUI layer reference

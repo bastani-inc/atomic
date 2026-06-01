@@ -54,9 +54,9 @@ This research documents the current Atomic codebase architecture and provides pa
 
 **Source References:**
 
-- [`install.sh:11-12`](https://github.com/bastani/atomic/blob/5d58ef1724770799ec94649c4a6f3285a0b67461/install.sh#L11-L12) - Defines `BIN_DIR` and `DATA_DIR`
-- [`install.ps1:16-17`](https://github.com/bastani/atomic/blob/5d58ef1724770799ec94649c4a6f3285a0b67461/install.ps1#L16-L17) - Windows equivalents
-- [`src/utils/config-path.ts:54-64`](https://github.com/bastani/atomic/blob/5d58ef1724770799ec94649c4a6f3285a0b67461/src/utils/config-path.ts#L54-L64) - `getBinaryDataDir()` function
+- [`install.sh:11-12`](https://github.com/bastani-inc/atomic/blob/5d58ef1724770799ec94649c4a6f3285a0b67461/install.sh#L11-L12) - Defines `BIN_DIR` and `DATA_DIR`
+- [`install.ps1:16-17`](https://github.com/bastani-inc/atomic/blob/5d58ef1724770799ec94649c4a6f3285a0b67461/install.ps1#L16-L17) - Windows equivalents
+- [`src/utils/config-path.ts:54-64`](https://github.com/bastani-inc/atomic/blob/5d58ef1724770799ec94649c4a6f3285a0b67461/src/utils/config-path.ts#L54-L64) - `getBinaryDataDir()` function
 
 **Key Code from `install.sh:11-12`:**
 
@@ -96,7 +96,7 @@ A comprehensive search confirms **no telemetry, user identification, or session 
 
 #### Main Entry Point
 
-[`src/index.ts:87-243`](https://github.com/bastani/atomic/blob/5d58ef1724770799ec94649c4a6f3285a0b67461/src/index.ts#L87-L243)
+[`src/index.ts:87-243`](https://github.com/bastani-inc/atomic/blob/5d58ef1724770799ec94649c4a6f3285a0b67461/src/index.ts#L87-L243)
 
 The main function at line 87 processes all CLI commands:
 
@@ -123,7 +123,7 @@ async function main(): Promise<void> {
 
 #### Agent Run Command
 
-[`src/commands/run-agent.ts:58-129`](https://github.com/bastani/atomic/blob/5d58ef1724770799ec94649c4a6f3285a0b67461/src/commands/run-agent.ts#L58-L129)
+[`src/commands/run-agent.ts:58-129`](https://github.com/bastani-inc/atomic/blob/5d58ef1724770799ec94649c4a6f3285a0b67461/src/commands/run-agent.ts#L58-L129)
 
 ```typescript
 export async function runAgentCommand(
@@ -427,7 +427,7 @@ trackAtomicCommand("init", { agentType: selectedAgent as AgentKey });
 
 #### Supported Agents and Commands
 
-**Agent Configuration** ([`src/config.ts:29-70`](https://github.com/bastani/atomic/blob/5d58ef1724770799ec94649c4a6f3285a0b67461/src/config.ts#L29-L70)):
+**Agent Configuration** ([`src/config.ts:29-70`](https://github.com/bastani-inc/atomic/blob/5d58ef1724770799ec94649c4a6f3285a0b67461/src/config.ts#L29-L70)):
 | Agent Key | CLI Command | Config Folder |
 |-----------|-------------|---------------|
 | `claude` | `claude` | `.claude/` |
@@ -456,7 +456,7 @@ trackAtomicCommand("init", { agentType: selectedAgent as AgentKey });
 
 #### Hook Configuration Format
 
-**GitHub Copilot CLI** ([`.github/hooks/hooks.json`](https://github.com/bastani/atomic/blob/5d58ef1724770799ec94649c4a6f3285a0b67461/.github/hooks/hooks.json)):
+**GitHub Copilot CLI** ([`.github/hooks/hooks.json`](https://github.com/bastani-inc/atomic/blob/5d58ef1724770799ec94649c4a6f3285a0b67461/.github/hooks/hooks.json)):
 
 ```json
 {
@@ -484,7 +484,7 @@ trackAtomicCommand("init", { agentType: selectedAgent as AgentKey });
 }
 ```
 
-**Claude Code Plugin** ([`plugins/ralph/hooks/hooks.json`](https://github.com/bastani/atomic/blob/5d58ef1724770799ec94649c4a6f3285a0b67461/plugins/ralph/hooks/hooks.json)):
+**Claude Code Plugin** ([`plugins/ralph/hooks/hooks.json`](https://github.com/bastani-inc/atomic/blob/5d58ef1724770799ec94649c4a6f3285a0b67461/plugins/ralph/hooks/hooks.json)):
 
 ```json
 {
@@ -503,7 +503,7 @@ trackAtomicCommand("init", { agentType: selectedAgent as AgentKey });
 }
 ```
 
-**OpenCode Plugin** ([`.opencode/plugin/ralph.ts`](https://github.com/bastani/atomic/blob/5d58ef1724770799ec94649c4a6f3285a0b67461/.opencode/plugin/ralph.ts)):
+**OpenCode Plugin** ([`.opencode/plugin/ralph.ts`](https://github.com/bastani-inc/atomic/blob/5d58ef1724770799ec94649c4a6f3285a0b67461/.opencode/plugin/ralph.ts)):
 
 OpenCode uses a **completely different architecture** - TypeScript plugins via the `@opencode-ai/plugin` SDK instead of shell-based hooks:
 

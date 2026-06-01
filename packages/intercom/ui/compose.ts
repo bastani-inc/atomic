@@ -100,14 +100,14 @@ export class ComposeOverlay implements Component {
       const result = await this.client.send(this.target.id, {
         text: this.inputBuffer.trim(),
       });
-      
+
       if (!result.delivered) {
         this.error = result.reason ?? "Message not delivered. Session may not exist or has disconnected.";
         this.sending = false;
         this.tui.requestRender();
         return;
       }
-      
+
       this.done({
         sent: true,
         messageId: result.id,

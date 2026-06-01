@@ -45,7 +45,7 @@ The issue is:
 
 ## Summary
 
-The current implementation has a display ordering issue in `runAgentCommand()` function at [src/commands/run-agent.ts:43-50](https://github.com/bastani/atomic/blob/3792ff38ae13803ded8ddad72cbe0b23e0477e78/src/commands/run-agent.ts#L43-L50).
+The current implementation has a display ordering issue in `runAgentCommand()` function at [src/commands/run-agent.ts:43-50](https://github.com/bastani-inc/atomic/blob/3792ff38ae13803ded8ddad72cbe0b23e0477e78/src/commands/run-agent.ts#L43-L50).
 
 **Current Flow:**
 
@@ -68,7 +68,7 @@ The current implementation has a display ordering issue in `runAgentCommand()` f
 
 ### 1. Entry Flow for `atomic init -a [agent_name]`
 
-**Entry Point:** [src/index.ts:83-93](https://github.com/bastani/atomic/blob/3792ff38ae13803ded8ddad72cbe0b23e0477e78/src/index.ts#L83-L93)
+**Entry Point:** [src/index.ts:83-93](https://github.com/bastani-inc/atomic/blob/3792ff38ae13803ded8ddad72cbe0b23e0477e78/src/index.ts#L83-L93)
 
 When user runs `atomic init -a claude-code`:
 
@@ -86,7 +86,7 @@ This correctly passes `showBanner: true` (unless `--no-banner` is specified).
 
 ### 2. Entry Flow for `atomic -a [agent_name]` (without `init`)
 
-**Entry Point:** [src/index.ts:95-101](https://github.com/bastani/atomic/blob/3792ff38ae13803ded8ddad72cbe0b23e0477e78/src/index.ts#L95-L101)
+**Entry Point:** [src/index.ts:95-101](https://github.com/bastani-inc/atomic/blob/3792ff38ae13803ded8ddad72cbe0b23e0477e78/src/index.ts#L95-L101)
 
 When user runs `atomic -a claude-code` (no `init` positional):
 
@@ -105,7 +105,7 @@ This calls `runAgentCommand()`, which handles the auto-init logic.
 
 ### 3. The Problem: `runAgentCommand()` Display Order
 
-**Location:** [src/commands/run-agent.ts:42-50](https://github.com/bastani/atomic/blob/3792ff38ae13803ded8ddad72cbe0b23e0477e78/src/commands/run-agent.ts#L42-L50)
+**Location:** [src/commands/run-agent.ts:42-50](https://github.com/bastani-inc/atomic/blob/3792ff38ae13803ded8ddad72cbe0b23e0477e78/src/commands/run-agent.ts#L42-L50)
 
 ```typescript
 // Check if config folder exists
@@ -128,7 +128,7 @@ if (!(await pathExists(configFolder))) {
 
 ### 4. The `initCommand()` Display Sequence
 
-**Location:** [src/commands/init.ts:51-76](https://github.com/bastani/atomic/blob/3792ff38ae13803ded8ddad72cbe0b23e0477e78/src/commands/init.ts#L51-L76)
+**Location:** [src/commands/init.ts:51-76](https://github.com/bastani-inc/atomic/blob/3792ff38ae13803ded8ddad72cbe0b23e0477e78/src/commands/init.ts#L51-L76)
 
 ```typescript
 export async function initCommand(options: InitOptions = {}): Promise<void> {
@@ -172,7 +172,7 @@ When `showBanner: true`:
 
 ### 5. Banner Display Logic
 
-**Location:** [src/utils/banner/banner.ts:31-43](https://github.com/bastani/atomic/blob/3792ff38ae13803ded8ddad72cbe0b23e0477e78/src/utils/banner/banner.ts#L31-L43)
+**Location:** [src/utils/banner/banner.ts:31-43](https://github.com/bastani-inc/atomic/blob/3792ff38ae13803ded8ddad72cbe0b23e0477e78/src/utils/banner/banner.ts#L31-L43)
 
 ```typescript
 export function displayBanner(): void {
@@ -190,7 +190,7 @@ export function displayBanner(): void {
 }
 ```
 
-**Constants:** [src/utils/banner/constants.ts:46-50](https://github.com/bastani/atomic/blob/3792ff38ae13803ded8ddad72cbe0b23e0477e78/src/utils/banner/constants.ts#L46-L50)
+**Constants:** [src/utils/banner/constants.ts:46-50](https://github.com/bastani-inc/atomic/blob/3792ff38ae13803ded8ddad72cbe0b23e0477e78/src/utils/banner/constants.ts#L46-L50)
 
 ```typescript
 /** Minimum terminal columns to display the logo */

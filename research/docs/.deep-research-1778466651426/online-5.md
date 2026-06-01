@@ -29,12 +29,12 @@ Key option fields seen in examples:
 ```typescript
 // examples/structured-output-demo/claude/index.ts:45-52
 const result = await s.session.query(buildPrompt(topic), {
-  permissionMode: "bypassPermissions",
-  allowDangerouslySkipPermissions: true,
-  outputFormat: {
-    type: "json_schema",
-    schema: LANGUAGE_FACTS_JSON_SCHEMA,   // z.toJSONSchema(zodSchema, { target: "openapi-3.0" })
-  },
+    permissionMode: "bypassPermissions",
+    allowDangerouslySkipPermissions: true,
+    outputFormat: {
+        type: "json_schema",
+        schema: LANGUAGE_FACTS_JSON_SCHEMA, // z.toJSONSchema(zodSchema, { target: "openapi-3.0" })
+    },
 });
 // validated object is at: s.session.lastStructuredOutput
 ```
@@ -51,13 +51,13 @@ helper used to pull the first assistant-turn text out of the returned message ar
 
 **Where used (representative):**
 
-| Call site | Notes |
-|---|---|
-| `examples/hello-world/claude/index.ts:53` | Plain `query(prompt)` — two turns in sequence |
-| `examples/structured-output-demo/claude/index.ts:45` | `query(prompt, { outputFormat: { type:"json_schema", schema } })` |
-| `examples/headless-test/claude/index.ts:27–108` | `query(prompt, { permissionMode, allowDangerouslySkipPermissions })` in parallel stages |
-| `examples/review-fix-loop/claude/index.ts:69` | `query()` returns `SDKMessage[]`; `extractAssistantText()` reads verdict string |
-| `examples/hil-favorite-color-headless/claude/index.ts:38` | headless query with disallowedTools injected by runtime |
+| Call site                                                 | Notes                                                                                   |
+| --------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `examples/hello-world/claude/index.ts:53`                 | Plain `query(prompt)` — two turns in sequence                                           |
+| `examples/structured-output-demo/claude/index.ts:45`      | `query(prompt, { outputFormat: { type:"json_schema", schema } })`                       |
+| `examples/headless-test/claude/index.ts:27–108`           | `query(prompt, { permissionMode, allowDangerouslySkipPermissions })` in parallel stages |
+| `examples/review-fix-loop/claude/index.ts:69`             | `query()` returns `SDKMessage[]`; `extractAssistantText()` reads verdict string         |
+| `examples/hil-favorite-color-headless/claude/index.ts:38` | headless query with disallowedTools injected by runtime                                 |
 
 ---
 
@@ -84,14 +84,14 @@ headless-test copilot index defines a local helper:
 ```typescript
 // examples/headless-test/copilot/index.ts:6-13
 function getAssistantText(messages: SessionEvent[]): string {
-  return messages
-    .filter(
-      (m): m is Extract<SessionEvent, { type: "assistant.message" }> =>
-        m.type === "assistant.message" && !m.data.parentToolCallId,
-    )
-    .map((m) => m.data.content)
-    .filter((c) => c.length > 0)
-    .join("\n\n");
+    return messages
+        .filter(
+            (m): m is Extract<SessionEvent, { type: "assistant.message" }> =>
+                m.type === "assistant.message" && !m.data.parentToolCallId,
+        )
+        .map((m) => m.data.content)
+        .filter((c) => c.length > 0)
+        .join("\n\n");
 }
 ```
 
@@ -102,13 +102,13 @@ tool-call arguments before firing `handler`:
 ```typescript
 // examples/structured-output-demo/copilot/index.ts:46-54
 const submitFacts = defineTool("submit_facts", {
-  description: SUBMIT_TOOL_DESCRIPTION,
-  parameters: LanguageFactsSchema,   // z.object({ ... })
-  skipPermission: true,
-  handler: async (data: LanguageFacts) => {
-    captured = data;
-    return "Facts submitted.";
-  },
+    description: SUBMIT_TOOL_DESCRIPTION,
+    parameters: LanguageFactsSchema, // z.object({ ... })
+    skipPermission: true,
+    handler: async (data: LanguageFacts) => {
+        captured = data;
+        return "Facts submitted.";
+    },
 });
 // tool passed in stageOptions.tools; prompt instructs model to call it
 ```
@@ -120,21 +120,21 @@ tool registry (including SDK-registered tools):
 ```typescript
 // examples/reviewer-tool-test/copilot/index.ts:72-79
 const inlineReviewer: CustomAgentConfig = {
-  name: "reviewer",
-  tools: ["execute", "read", "search", "submit_review"],
-  prompt: "...",
+    name: "reviewer",
+    tools: ["execute", "read", "search", "submit_review"],
+    prompt: "...",
 };
 ```
 
 **Where used (representative):**
 
-| Call site | Notes |
-|---|---|
-| `examples/hello-world/copilot/index.ts:51` | `session.send({ prompt })` + `getMessages()` |
-| `examples/hil-favorite-color/copilot/index.ts:27–59` | Two-stage HIL with `send()` + transcript handoff via `prior.content` |
-| `examples/structured-output-demo/copilot/index.ts:46–73` | `defineTool` with Zod schema; no `outputFormat` option |
-| `examples/reviewer-tool-test/copilot/index.ts:61–106` | `defineTool` + `CustomAgentConfig` inline subagent |
-| `examples/headless-test/copilot/index.ts:39–125` | `send()` + `getMessages()` in parallel stages; `SessionEvent` type import |
+| Call site                                                | Notes                                                                     |
+| -------------------------------------------------------- | ------------------------------------------------------------------------- |
+| `examples/hello-world/copilot/index.ts:51`               | `session.send({ prompt })` + `getMessages()`                              |
+| `examples/hil-favorite-color/copilot/index.ts:27–59`     | Two-stage HIL with `send()` + transcript handoff via `prior.content`      |
+| `examples/structured-output-demo/copilot/index.ts:46–73` | `defineTool` with Zod schema; no `outputFormat` option                    |
+| `examples/reviewer-tool-test/copilot/index.ts:61–106`    | `defineTool` + `CustomAgentConfig` inline subagent                        |
+| `examples/headless-test/copilot/index.ts:39–125`         | `send()` + `getMessages()` in parallel stages; `SessionEvent` type import |
 
 ---
 
@@ -151,8 +151,8 @@ endpoint and returns `{ data: AssistantMessage }` synchronously (not a stream).
 ```typescript
 // examples/hello-world/opencode/index.ts:54-58
 const result = await s.client.session.prompt({
-  sessionID: s.session.id,
-  parts: [{ type: "text", text: prompt }],
+    sessionID: s.session.id,
+    parts: [{ type: "text", text: prompt }],
 });
 s.save(result.data!);
 ```
@@ -176,12 +176,12 @@ Structured output uses a `format` parameter in the same `prompt()` call:
 ```typescript
 // examples/structured-output-demo/opencode/index.ts:48-55
 const result = await s.client.session.prompt({
-  sessionID: s.session.id,
-  parts: [{ type: "text", text: buildPrompt(topic) }],
-  format: {
-    type: "json_schema" as const,
-    schema: LANGUAGE_FACTS_JSON_SCHEMA,
-  },
+    sessionID: s.session.id,
+    parts: [{ type: "text", text: buildPrompt(topic) }],
+    format: {
+        type: "json_schema" as const,
+        schema: LANGUAGE_FACTS_JSON_SCHEMA,
+    },
 });
 // validated object: (result.data!.info as { structured?: unknown })?.structured
 ```
@@ -193,24 +193,25 @@ across examples.
 ```typescript
 // examples/headless-test/opencode/index.ts:7-11 (local helper)
 function extractResponseText(
-  parts: Array<{ type: string; [key: string]: unknown }>,
+    parts: Array<{ type: string; [key: string]: unknown }>,
 ): string {
-  return parts.filter((p) => p.type === "text")
-              .map((p) => (p as { type: string; text: string }).text)
-              .join("\n");
+    return parts
+        .filter((p) => p.type === "text")
+        .map((p) => (p as { type: string; text: string }).text)
+        .join("\n");
 }
 // usage: extractResponseText(result.data!.parts)
 ```
 
 **Where used (representative):**
 
-| Call site | Notes |
-|---|---|
-| `examples/hello-world/opencode/index.ts:54` | `client.session.prompt({ sessionID, parts })` |
-| `examples/hil-favorite-color/opencode/index.ts:30–76` | Two-stage; transcript via `prior.content`; each stage needs fresh `sessionID` |
-| `examples/structured-output-demo/opencode/index.ts:48` | `prompt()` + `format: { type:"json_schema", schema }` |
-| `examples/headless-test/opencode/index.ts:39–170` | Parallel stages; each awaits `prompt()` independently; no headless option needed (no interactive TUI) |
-| `examples/parallel-hello-world/opencode/index.ts:42–118` | Fan-out/fan-in with `s.transcript()` handoff |
+| Call site                                                | Notes                                                                                                 |
+| -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `examples/hello-world/opencode/index.ts:54`              | `client.session.prompt({ sessionID, parts })`                                                         |
+| `examples/hil-favorite-color/opencode/index.ts:30–76`    | Two-stage; transcript via `prior.content`; each stage needs fresh `sessionID`                         |
+| `examples/structured-output-demo/opencode/index.ts:48`   | `prompt()` + `format: { type:"json_schema", schema }`                                                 |
+| `examples/headless-test/opencode/index.ts:39–170`        | Parallel stages; each awaits `prompt()` independently; no headless option needed (no interactive TUI) |
+| `examples/parallel-hello-world/opencode/index.ts:42–118` | Fan-out/fan-in with `s.transcript()` handoff                                                          |
 
 ---
 

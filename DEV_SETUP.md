@@ -15,7 +15,7 @@ This repo uses **Bun** for all development, scripts, and testing. The `@bastani/
 ## Setup
 
 ```bash
-git clone git@github.com:bastani/atomic.git
+git clone git@github.com:bastani-inc/atomic.git
 cd atomic
 bun install
 ```

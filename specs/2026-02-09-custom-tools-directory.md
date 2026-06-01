@@ -6,7 +6,7 @@
 | Status                 | Draft (WIP)                                              |
 | Team / Owner           | Atomic CLI                                               |
 | Created / Last Updated | 2026-02-09                                               |
-| Issue                  | https://github.com/bastani/atomic/issues/165             |
+| Issue                  | https://github.com/bastani-inc/atomic/issues/165         |
 | Research               | `research/docs/2026-02-09-165-custom-tools-directory.md` |
 
 ## 1. Executive Summary

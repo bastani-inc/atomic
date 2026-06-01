@@ -6,7 +6,7 @@
 
 ## Configuration
 
-- `install.cmd` — Hardcoded GitHub release base URL (`bastani/atomic`), download directory (`%USERPROFILE%\.atomic\downloads`), manifest.json parsing strategy, platform detection (AMD64 vs ARM64), and version validation regex.
+- `install.cmd` — Hardcoded GitHub release base URL (`bastani-inc/atomic`), download directory (`%USERPROFILE%\.atomic\downloads`), manifest.json parsing strategy, platform detection (AMD64 vs ARM64), and version validation regex.
 
 ## Notable Clusters
 

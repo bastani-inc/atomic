@@ -5,6 +5,7 @@ Researched libraries: `@commander-js/extra-typings` v14.0.0, Claude Code CLI hoo
 ---
 
 #### @commander-js/extra-typings (v14.0.0)
+
 **Docs:** https://github.com/commander-js/extra-typings, https://www.npmjs.com/package/@commander-js/extra-typings  
 **Relevant behaviour:**
 
@@ -32,20 +33,23 @@ Key API surface in active use across `packages/atomic/src/`:
 
 For the pi-rewrite context: if tmux-based workflow dispatch is removed, the hidden `_orchestrator-entry`, `_cc-debounce`, `_claude-stop-hook`, `_claude-session-start-hook`, `_claude-ask-hook`, `_claude-inflight-hook`, and `_runtime-assets-smoke` Commander subcommands (cli.ts:304-448) are all candidates for removal or replacement. The core `chat`, `workflow`, `session`, `config`, `install`, `uninstall`, `update`, and `completions` subcommands are non-tmux surface.
 
-**Where used:**  
-- `packages/atomic/src/cli.ts:26` — `import { Command, Option } from "@commander-js/extra-typings"` — root program construction  
-- `packages/atomic/src/commands/cli/workflow.ts:21` — workflow dispatcher Command  
+**Where used:**
+
+- `packages/atomic/src/cli.ts:26` — `import { Command, Option } from "@commander-js/extra-typings"` — root program construction
+- `packages/atomic/src/commands/cli/workflow.ts:21` — workflow dispatcher Command
 - `packages/atomic/src/commands/cli/management-commands.ts:10` — session sub-command builder (type import only)
 
 ---
 
 #### Claude Code CLI Hook Contracts (consumed via `@anthropic-ai/claude-agent-sdk` v0.2.132 + CLI hooks)
+
 **Docs:** https://code.claude.com/docs/hooks (local copy: `docs/claude-code/cli/hooks.md`), local research: `research/web/2026-04-19-claude-code-hook-askuserquestion.md`  
 **Relevant behaviour:**
 
 The atomic CLI registers four Claude Code hook handlers as hidden Commander subcommands. Each reads a JSON payload from stdin and returns exit 0 (never exit 2 from these handlers — an error from a hook shows as a red annotation in Claude's transcript, which is worse than a silently-missed signal).
 
 **Stop hook** (`_claude-stop-hook`, `@bastani/atomic-sdk/providers/claude-stop-hook`):
+
 - Fires when Claude finishes responding (once per turn). No matcher support; always fires on every stop.
 - Stdin payload: `{ session_id: string, transcript_path?: string, cwd?: string, stop_hook_active?: boolean, last_assistant_message?: string, hook_event_name: "Stop" }`.
 - `stop_hook_active: true` is set on every subsequent turn after the hook has returned `{ decision: "block", reason }` at least once. The implementation still writes the idle-marker and polls for queued prompts on every call regardless of `stop_hook_active` (confirmed by test: `claude-stop-hook.test.ts:90`).
@@ -54,12 +58,14 @@ The atomic CLI registers four Claude Code hook handlers as hidden Commander subc
 - The hook is registered in `.claude/settings.json` as a command hook on the `Stop` event.
 
 **SessionStart hook** (`_claude-session-start-hook`, `packages/atomic/src/commands/cli/claude-session-start-hook.ts`):
+
 - Fires when a new Claude session starts (matcher value `"startup"`). Also fires for `resume`, `clear`, `compact` if no matcher is specified.
 - Stdin payload: `{ session_id: string, source?: "startup"|"resume"|"clear"|"compact", transcript_path?: string, cwd?: string, model?: string, hook_event_name: "SessionStart" }`.
 - Decision control: stdout text is added as context for Claude. Return `{ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: "..." } }` for structured context injection.
 - The atomic implementation writes a `~/.atomic/claude-ready/<session_id>` file immediately on receipt so the workflow runtime can resolve spawn-readiness via `fs.watch` without polling the transcript file.
 
 **AskUserQuestion hook (PreToolUse / PostToolUse / PostToolUseFailure)** (`_claude-ask-hook`, `packages/atomic/src/commands/cli/claude-ask-hook.ts`):
+
 - Fires on every `PreToolUse` for the `AskUserQuestion` tool (matcher string: `"AskUserQuestion"`).
 - PreToolUse stdin payload: `{ session_id: string, hook_event_name: "PreToolUse", tool_name: "AskUserQuestion", tool_input: unknown, tool_use_id: string, cwd?: string, permission_mode?: string }`.
 - PostToolUse stdin payload: same with `hook_event_name: "PostToolUse"` and `tool_response: unknown` replacing no error field.
@@ -67,24 +73,28 @@ The atomic CLI registers four Claude Code hook handlers as hidden Commander subc
 - `_claude-ask-hook` is invoked as `atomic _claude-ask-hook enter` for PreToolUse and `atomic _claude-ask-hook exit` for both PostToolUse and PostToolUseFailure.
 
 **Inflight / TeammateIdle hook** (`_claude-inflight-hook`, `@bastani/atomic-sdk/providers/claude-inflight-hook`):
+
 - SubagentStart/SubagentStop: fires when a Claude subagent spawns or finishes. Payload includes `agent_id`, `agent_type`, `hook_event_name: "SubagentStart"|"SubagentStop"`, `session_id`.
 - TeammateIdle: fires when an agent team teammate is about to go idle. Payload includes `hook_event_name: "TeammateIdle"`, `session_id`, `teammate_name`, `team_name`.
 - Decision for TeammateIdle: exit code 2 keeps the teammate running (feeds stderr back as feedback). JSON `{ "continue": false, "stopReason": "..." }` stops the teammate entirely. The atomic handler resolves root session IDs via a `.session-roots` mapping file to correctly bucket nested subagent markers under the originating root session.
 
 **Claude Agent SDK auth probe** (via `@anthropic-ai/claude-agent-sdk`):
+
 - `auth.ts:100` — `query({ prompt: emptyStream(), options: { pathToClaudeCodeExecutable } })` is called then `q.initializationResult()` is awaited. The `account` object in the result (`{ email?, tokenSource?, apiKeySource? }`) determines authentication status.
 - The SDK's `query()` function starts the Claude CLI subprocess on construction; `q.close()` tears it down.
 
-**Where used:**  
-- `packages/atomic/src/commands/cli/claude-stop-hook.test.ts:22` — imports `claudeStopHookCommand, claudeHookDirs` from `@bastani/atomic-sdk/providers/claude-stop-hook`  
-- `packages/atomic/src/commands/cli/claude-ask-hook.ts:23` — uses `claudeHookDirs()` to resolve `hil` directory  
-- `packages/atomic/src/commands/cli/claude-session-start-hook.ts:20` — uses `claudeHookDirs().ready`  
-- `packages/atomic/src/commands/cli/claude-inflight-hook.test.ts:23` — imports inflight hook + stop hook helpers  
+**Where used:**
+
+- `packages/atomic/src/commands/cli/claude-stop-hook.test.ts:22` — imports `claudeStopHookCommand, claudeHookDirs` from `@bastani/atomic-sdk/providers/claude-stop-hook`
+- `packages/atomic/src/commands/cli/claude-ask-hook.ts:23` — uses `claudeHookDirs()` to resolve `hil` directory
+- `packages/atomic/src/commands/cli/claude-session-start-hook.ts:20` — uses `claudeHookDirs().ready`
+- `packages/atomic/src/commands/cli/claude-inflight-hook.test.ts:23` — imports inflight hook + stop hook helpers
 - `packages/atomic/src/services/system/auth.ts:100` — `import { query } from "@anthropic-ai/claude-agent-sdk"` for auth probe
 
 ---
 
 #### @github/copilot-sdk (v0.3.0)
+
 **Docs:** `docs/copilot-cli/sdk.md`, local research: `research/web/2026-04-14-copilot-sdk-hil-events.md`  
 **Relevant behaviour:**
 
@@ -107,12 +117,14 @@ The full SDK surface (`CopilotSession`, `session.on()`, `user_input.requested`, 
 
 The Copilot SDK v0.3.0 adds `zod ^4.3.6` as a dependency (lockfile), meaning zod v4 is in the dependency tree. The `CopilotClient` API is a JSON-RPC wrapper: `start()` launches the Copilot CLI subprocess, `getAuthStatus()` sends an `auth.status` RPC call, `stop()` terminates the subprocess. No command-path resolution or scm-disable flags are exercised in this package's own source.
 
-**Where used:**  
+**Where used:**
+
 - `packages/atomic/src/services/system/auth.ts:75` — `const { CopilotClient } = await import("@github/copilot-sdk")` — Copilot auth probe only
 
 ---
 
 #### @clack/prompts (v1.3.0)
+
 **Docs:** https://github.com/bombshell-dev/clack, https://www.npmjs.com/package/@clack/prompts  
 **Relevant behaviour:**
 
@@ -124,9 +136,10 @@ Used for interactive CLI prompts in three files:
 
 The `select` API: `await select({ message: string, options: Array<{ value, label, hint? }> })` — returns the selected `value` or a cancellation symbol. The `multiselect` API is analogous with checkboxes. The `spinner` API: `const s = spinner(); s.start(msg); … s.stop(msg);`.
 
-**Where used:**  
-- `packages/atomic/src/commands/cli/session.ts:10` — session picker and kill confirmation  
-- `packages/atomic/src/commands/cli/update.ts:17` — update download spinner and log output  
+**Where used:**
+
+- `packages/atomic/src/commands/cli/session.ts:10` — session picker and kill confirmation
+- `packages/atomic/src/commands/cli/update.ts:17` — update download spinner and log output
 - `packages/atomic/src/commands/cli/config.ts:11` — config set success/error log output
 
 ---

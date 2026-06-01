@@ -5,7 +5,17 @@ git_commit: f06be183847709686491a5d58b559e0e63f75156
 branch: refactor/pi-rewrite
 repository: atomic-pi-rewrite
 topic: "nicobailon/pi-subagents API parity for atomic-workflows SDK and workflow tool"
-tags: [research, codebase, github-mcp, pi-subagents, atomic-workflows, workflow-tool, sdk, skills]
+tags:
+    [
+        research,
+        codebase,
+        github-mcp,
+        pi-subagents,
+        atomic-workflows,
+        workflow-tool,
+        sdk,
+        skills,
+    ]
 status: complete
 last_updated: 2026-05-14
 last_updated_by: Pi AI coding agent
@@ -41,10 +51,10 @@ The current local `@bastani/atomic-workflows` package already has a raw-TypeScri
 ### 2. `subagent` tool schema and result types
 
 - The remote schema uses TypeBox and separates reusable nested shapes:
-  - top-level parallel task item (`TaskItem`) begins at `src/extension/schemas.ts` line [38](https://github.com/nicobailon/pi-subagents/blob/635112deea068528d89694e58ca068ddc1fe4b2d/src/extension/schemas.ts#L38);
-  - chain parallel task item begins at line [52](https://github.com/nicobailon/pi-subagents/blob/635112deea068528d89694e58ca068ddc1fe4b2d/src/extension/schemas.ts#L52);
-  - chain item begins at line [66](https://github.com/nicobailon/pi-subagents/blob/635112deea068528d89694e58ca068ddc1fe4b2d/src/extension/schemas.ts#L66);
-  - control overrides begin at line [86](https://github.com/nicobailon/pi-subagents/blob/635112deea068528d89694e58ca068ddc1fe4b2d/src/extension/schemas.ts#L86).
+    - top-level parallel task item (`TaskItem`) begins at `src/extension/schemas.ts` line [38](https://github.com/nicobailon/pi-subagents/blob/635112deea068528d89694e58ca068ddc1fe4b2d/src/extension/schemas.ts#L38);
+    - chain parallel task item begins at line [52](https://github.com/nicobailon/pi-subagents/blob/635112deea068528d89694e58ca068ddc1fe4b2d/src/extension/schemas.ts#L52);
+    - chain item begins at line [66](https://github.com/nicobailon/pi-subagents/blob/635112deea068528d89694e58ca068ddc1fe4b2d/src/extension/schemas.ts#L66);
+    - control overrides begin at line [86](https://github.com/nicobailon/pi-subagents/blob/635112deea068528d89694e58ca068ddc1fe4b2d/src/extension/schemas.ts#L86).
 - `SubagentParams` includes execution fields, management/control action fields, async/background controls, output/file-only controls, skills/model overrides, clarify TUI toggle, worktree flag, and session/artifact settings (`src/extension/schemas.ts` lines [101-171](https://github.com/nicobailon/pi-subagents/blob/635112deea068528d89694e58ca068ddc1fe4b2d/src/extension/schemas.ts#L101-L171)).
 - `Details` is the structured result envelope with mode, run id, context, results, control events, async id/dir, progress, artifacts, and chain metadata (`src/shared/types.ts` lines [208-229](https://github.com/nicobailon/pi-subagents/blob/635112deea068528d89694e58ca068ddc1fe4b2d/src/shared/types.ts#L208-L229)).
 - `AsyncStatus`, `SubagentState`, and `ExtensionConfig` describe background state, extension runtime state, and config (`src/shared/types.ts` lines [277-326](https://github.com/nicobailon/pi-subagents/blob/635112deea068528d89694e58ca068ddc1fe4b2d/src/shared/types.ts#L277-L326), [380-425](https://github.com/nicobailon/pi-subagents/blob/635112deea068528d89694e58ca068ddc1fe4b2d/src/shared/types.ts#L380-L425), [497-509](https://github.com/nicobailon/pi-subagents/blob/635112deea068528d89694e58ca068ddc1fe4b2d/src/shared/types.ts#L497-L509)).

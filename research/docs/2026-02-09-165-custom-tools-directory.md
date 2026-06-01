@@ -28,7 +28,7 @@ last_updated_by: Claude Opus 4.6
 
 How should the custom tools directory feature (issue #165) be implemented in Atomic CLI, leveraging existing SDK tool registration patterns from OpenCode SDK, Claude Agent SDK, and Copilot SDK?
 
-Issue: https://github.com/bastani/atomic/issues/165
+Issue: https://github.com/bastani-inc/atomic/issues/165
 
 ## Summary
 

@@ -36,12 +36,12 @@ The goal is **not** standalone Docker images, but **devcontainer features** — 
 // In any existing devcontainer.json
 {
     "features": {
-        "ghcr.io/bastani/atomic/claude:1": {},
+        "ghcr.io/bastani-inc/atomic/claude:1": {},
     },
 }
 ```
 
-This research documents everything needed to create a **devcontainer feature collection** published to `ghcr.io/bastani/atomic/<feature-id>`, with three agent-specific features (`claude`, `opencode`, `copilot`). Each feature runs the stock `install.sh` to install the Atomic CLI and all shared dependencies/configs, then installs only its specific agent CLI. Features are published as OCI artifacts via `devcontainers/action@v1` in a GitHub Actions workflow.
+This research documents everything needed to create a **devcontainer feature collection** published to `ghcr.io/bastani-inc/atomic/<feature-id>`, with three agent-specific features (`claude`, `opencode`, `copilot`). Each feature runs the stock `install.sh` to install the Atomic CLI and all shared dependencies/configs, then installs only its specific agent CLI. Features are published as OCI artifacts via `devcontainers/action@v1` in a GitHub Actions workflow.
 
 ### How Devcontainer Features Work
 
@@ -66,11 +66,11 @@ Current distribution channels:
 - **npm** package `@bastani/atomic-workflows`
 - **Install scripts** (`install.sh` / `install.ps1`) that download binary + config archive
 
-The `install.sh` script's [`sync_global_agent_configs()`](https://github.com/bastani/atomic/blob/b0ac459f0ba55f4971e03fcefc7cfe322f67e316/install.sh#L249) function (lines 249-327) is the closest prior art — it already handles per-agent config syncing and shared tool installation.
+The `install.sh` script's [`sync_global_agent_configs()`](https://github.com/bastani-inc/atomic/blob/b0ac459f0ba55f4971e03fcefc7cfe322f67e316/install.sh#L249) function (lines 249-327) is the closest prior art — it already handles per-agent config syncing and shared tool installation.
 
 ### 2. How the Three Agent Variants Differ
 
-Each variant is defined centrally in [`src/services/config/definitions.ts:29`](https://github.com/bastani/atomic/blob/b0ac459f0ba55f4971e03fcefc7cfe322f67e316/src/services/config/definitions.ts#L29).
+Each variant is defined centrally in [`src/services/config/definitions.ts:29`](https://github.com/bastani-inc/atomic/blob/b0ac459f0ba55f4971e03fcefc7cfe322f67e316/src/services/config/definitions.ts#L29).
 
 #### Per-Agent Install & Config Summary
 
@@ -92,7 +92,7 @@ All three share the same 10 agent definitions and 15 skill definitions (identica
 
 #### Shared Dependencies (All Agents)
 
-From the existing [`.devcontainer/Dockerfile`](https://github.com/bastani/atomic/blob/b0ac459f0ba55f4971e03fcefc7cfe322f67e316/.devcontainer/Dockerfile) and [`install.sh`](https://github.com/bastani/atomic/blob/b0ac459f0ba55f4971e03fcefc7cfe322f67e316/install.sh):
+From the existing [`.devcontainer/Dockerfile`](https://github.com/bastani-inc/atomic/blob/b0ac459f0ba55f4971e03fcefc7cfe322f67e316/.devcontainer/Dockerfile) and [`install.sh`](https://github.com/bastani-inc/atomic/blob/b0ac459f0ba55f4971e03fcefc7cfe322f67e316/install.sh):
 
 | Tool                 | Source             | Purpose                                     |
 | -------------------- | ------------------ | ------------------------------------------- |
@@ -148,9 +148,9 @@ src/devcontainer/
 
 Each feature becomes a separate OCI package:
 
-- `ghcr.io/bastani/atomic/claude:1`
-- `ghcr.io/bastani/atomic/opencode:1`
-- `ghcr.io/bastani/atomic/copilot:1`
+- `ghcr.io/bastani-inc/atomic/claude:1`
+- `ghcr.io/bastani-inc/atomic/opencode:1`
+- `ghcr.io/bastani-inc/atomic/copilot:1`
 
 #### Feature 1: `claude` (Claude Code agent)
 
@@ -162,7 +162,7 @@ Each feature becomes a separate OCI package:
     "version": "0.4.44",
     "name": "Atomic + Claude Code",
     "description": "Installs Atomic CLI with Claude Code agent, skills, and shared tooling (bun, cocoindex-code, playwright)",
-    "documentationURL": "https://github.com/bastani/atomic",
+    "documentationURL": "https://github.com/bastani-inc/atomic",
     "containerEnv": {
         "COCOINDEX_CODE_DB_PATH_MAPPING": "/workspaces=/tmp/cocoindex-db"
     },
@@ -184,7 +184,7 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 # ─── Install Atomic CLI + all shared deps/configs via stock installer ────────
-curl -fsSL https://raw.githubusercontent.com/bastani/atomic/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/bastani-inc/atomic/main/install.sh | bash
 
 # ─── Install Claude Code CLI ────────────────────────────────────────────────
 curl -fsSL https://claude.ai/install.sh | bash
@@ -202,7 +202,7 @@ echo "Atomic + Claude Code installed successfully."
     "version": "0.4.44",
     "name": "Atomic + OpenCode",
     "description": "Installs Atomic CLI with OpenCode agent, skills, and shared tooling (bun, cocoindex-code, playwright)",
-    "documentationURL": "https://github.com/bastani/atomic",
+    "documentationURL": "https://github.com/bastani-inc/atomic",
     "containerEnv": {
         "COCOINDEX_CODE_DB_PATH_MAPPING": "/workspaces=/tmp/cocoindex-db"
     },
@@ -222,7 +222,7 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 # ─── Install Atomic CLI + all shared deps/configs via stock installer ────────
-curl -fsSL https://raw.githubusercontent.com/bastani/atomic/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/bastani-inc/atomic/main/install.sh | bash
 
 # ─── Install OpenCode CLI ───────────────────────────────────────────────────
 curl -fsSL https://opencode.ai/install | bash
@@ -240,7 +240,7 @@ echo "Atomic + OpenCode installed successfully."
     "version": "0.4.44",
     "name": "Atomic + Copilot CLI",
     "description": "Installs Atomic CLI with GitHub Copilot agent, skills, and shared tooling (bun, cocoindex-code, playwright)",
-    "documentationURL": "https://github.com/bastani/atomic",
+    "documentationURL": "https://github.com/bastani-inc/atomic",
     "containerEnv": {
         "COCOINDEX_CODE_DB_PATH_MAPPING": "/workspaces=/tmp/cocoindex-db"
     },
@@ -263,7 +263,7 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 # ─── Install Atomic CLI + all shared deps/configs via stock installer ────────
-curl -fsSL https://raw.githubusercontent.com/bastani/atomic/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/bastani-inc/atomic/main/install.sh | bash
 
 # ─── Install Copilot CLI ────────────────────────────────────────────────────
 curl -fsSL https://gh.io/copilot-install | bash
@@ -282,7 +282,7 @@ Users add a **single feature** to get Atomic + their chosen agent. No `atomic-ba
 {
     "image": "mcr.microsoft.com/devcontainers/rust:latest",
     "features": {
-        "ghcr.io/bastani/atomic/claude:1": {},
+        "ghcr.io/bastani-inc/atomic/claude:1": {},
     },
     "remoteEnv": {
         "ANTHROPIC_API_KEY": "${localEnv:ANTHROPIC_API_KEY}",
@@ -297,7 +297,7 @@ Users add a **single feature** to get Atomic + their chosen agent. No `atomic-ba
     "image": "mcr.microsoft.com/devcontainers/python:3.12",
     "features": {
         "ghcr.io/devcontainers/features/github-cli:1": {},
-        "ghcr.io/bastani/atomic/copilot:1": {},
+        "ghcr.io/bastani-inc/atomic/copilot:1": {},
     },
     "remoteEnv": {
         "GH_TOKEN": "${localEnv:GH_TOKEN}",
@@ -311,7 +311,7 @@ Users add a **single feature** to get Atomic + their chosen agent. No `atomic-ba
 {
     "image": "mcr.microsoft.com/devcontainers/go:1.22",
     "features": {
-        "ghcr.io/bastani/atomic/opencode:1": {},
+        "ghcr.io/bastani-inc/atomic/opencode:1": {},
     },
 }
 ```
@@ -368,13 +368,13 @@ Uses `GITHUB_TOKEN` (auto-provisioned). Required permissions:
 
 ### 8. Mono-Repo vs Separate Repo
 
-**Option A: Features in the Atomic repo (mono-repo)** — Feature source lives under `src/` in the existing `bastani/atomic` repo. Config files are already here. Simpler to keep configs in sync.
+**Option A: Features in the Atomic repo (mono-repo)** — Feature source lives under `src/` in the existing `bastani-inc/atomic` repo. Config files are already here. Simpler to keep configs in sync.
 
-**Option B: Separate features repo** — A new `bastani/atomic-devcontainer-features` repo. Cleaner separation of concerns. Standard pattern used by `devcontainers/features` and community repos.
+**Option B: Separate features repo** — A new `bastani-inc/atomic-devcontainer-features` repo. Cleaner separation of concerns. Standard pattern used by `devcontainers/features` and community repos.
 
 **Recommendation**: Option A (mono-repo) is simpler to start. The publish workflow can target a subdirectory. If the feature source grows large, extract to a separate repo later.
 
-However, note that `devcontainers/action@v1` publishes features to `ghcr.io/<owner>/<repo>/<feature-id>`. If features live in the `atomic` repo, references would be `ghcr.io/bastani/atomic/claude:1`. If in a separate repo `atomic-features`, they'd be `ghcr.io/bastani/atomic-features/claude:1`.
+However, note that `devcontainers/action@v1` publishes features to `ghcr.io/<owner>/<repo>/<feature-id>`. If features live in the `atomic` repo, references would be `ghcr.io/bastani-inc/atomic/claude:1`. If in a separate repo `atomic-features`, they'd be `ghcr.io/bastani-inc/atomic-features/claude:1`.
 
 ## Code References
 
@@ -447,7 +447,7 @@ Binaries  Configs    npm         claude      opencode    copilot
   │ {                                                     │
   │   "image": "mcr.microsoft.com/devcontainers/rust",   │
   │   "features": {                                       │
-  │     "ghcr.io/bastani/atomic/claude:1": {}            │
+  │     "ghcr.io/bastani-inc/atomic/claude:1": {}            │
   │   }                                                   │
   │ }                                                     │
   └──────────────────────────────────────────────────────┘
@@ -468,7 +468,7 @@ Binaries  Configs    npm         claude      opencode    copilot
 
 ## Open Questions
 
-1. **Mono-repo vs separate repo**: Should features live in `bastani/atomic` (refs become `ghcr.io/bastani/atomic/claude:1`) or a separate `bastani/atomic-features` repo (`ghcr.io/bastani/atomic-features/claude:1`)?
+1. **Mono-repo vs separate repo**: Should features live in `bastani-inc/atomic` (refs become `ghcr.io/bastani-inc/atomic/claude:1`) or a separate `bastani-inc/atomic-features` repo (`ghcr.io/bastani-inc/atomic-features/claude:1`)?
 
 2. **Existing devcontainer**: Should `.devcontainer/Dockerfile` be refactored to consume these features instead of inline installs? This would dogfood the features in Atomic's own development.
 

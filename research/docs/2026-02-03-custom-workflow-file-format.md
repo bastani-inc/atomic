@@ -45,6 +45,7 @@ Custom workflow files can be placed in two locations:
 ```
 
 Place workflow files in this directory for project-specific workflows that should only apply to the current project. These workflows:
+
 - Take precedence over global workflows with the same name
 - Are typically checked into version control
 - Can reference project-specific code or configuration
@@ -58,6 +59,7 @@ Place workflow files in this directory for project-specific workflows that shoul
 ```
 
 Place workflow files here for personal workflows that should be available across all projects. These workflows:
+
 - Are overridden by local workflows with the same name
 - Are stored in your home directory
 - Are useful for personal productivity workflows
@@ -70,8 +72,8 @@ The search paths are defined in `src/ui/commands/workflow-commands.ts`:
 
 ```typescript
 export const CUSTOM_WORKFLOW_SEARCH_PATHS = [
-  ".atomic/workflows",       // Local project workflows (highest priority)
-  "~/.atomic/workflows",     // Global user workflows
+    ".atomic/workflows", // Local project workflows (highest priority)
+    "~/.atomic/workflows", // Global user workflows
 ];
 ```
 
@@ -86,16 +88,15 @@ Every custom workflow file must export a `default` function that creates a compi
 The default export must be a function that returns a `CompiledGraph`:
 
 ```typescript
-export default function createWorkflow(config?: Record<string, unknown>): CompiledGraph<YourState> {
-  return graph<YourState>()
-    .start(/* ... */)
-    .then(/* ... */)
-    .end()
-    .compile();
+export default function createWorkflow(
+    config?: Record<string, unknown>,
+): CompiledGraph<YourState> {
+    return graph<YourState>().start(/* ... */).then(/* ... */).end().compile();
 }
 ```
 
 **Function Signature:**
+
 - **Parameters:** `config?: Record<string, unknown>` - Optional configuration object
 - **Returns:** `CompiledGraph<TState>` - A compiled workflow graph
 
@@ -143,9 +144,9 @@ Default configuration values passed to the workflow when created.
 
 ```typescript
 export const defaultConfig = {
-  maxIterations: 50,
-  checkpointing: true,
-  verbose: false,
+    maxIterations: 50,
+    checkpointing: true,
+    verbose: false,
 };
 ```
 
@@ -157,11 +158,11 @@ These values are merged with any config passed at runtime, with runtime config t
 
 When multiple workflows share the same name, Atomic uses the following precedence order:
 
-| Priority | Location | Source |
-|----------|----------|--------|
-| 1 (Highest) | `.atomic/workflows/` | `"local"` |
-| 2 | `~/.atomic/workflows/` | `"global"` |
-| 3 (Lowest) | Built-in | `"builtin"` |
+| Priority    | Location               | Source      |
+| ----------- | ---------------------- | ----------- |
+| 1 (Highest) | `.atomic/workflows/`   | `"local"`   |
+| 2           | `~/.atomic/workflows/` | `"global"`  |
+| 3 (Lowest)  | Built-in               | `"builtin"` |
 
 ### How Precedence Works
 
@@ -175,11 +176,13 @@ When multiple workflows share the same name, Atomic uses the following precedenc
 When a workflow is skipped due to precedence rules, no warning is logged (this is intentional to allow seamless overriding).
 
 When a workflow file fails to load due to errors, a warning is logged:
+
 ```
 Failed to load workflow from /path/to/workflow.ts: [error message]
 ```
 
 When a file doesn't export a default function:
+
 ```
 Workflow file /path/to/workflow.ts does not export a default function, skipping
 ```
@@ -193,7 +196,12 @@ Here's a complete example of a custom workflow file:
 ```typescript
 // .atomic/workflows/feature-builder.ts
 
-import { graph, agentNode, clearContextNode, loopNode } from "@bastani/atomic/graph";
+import {
+    graph,
+    agentNode,
+    clearContextNode,
+    loopNode,
+} from "@bastani/atomic/graph";
 import type { BaseState, NodeDefinition } from "@bastani/atomic/graph/types";
 
 // ============================================================================
@@ -204,15 +212,16 @@ import type { BaseState, NodeDefinition } from "@bastani/atomic/graph/types";
 export const name = "feature-builder";
 
 /** Human-readable description for help text */
-export const description = "Build features iteratively with research and implementation phases";
+export const description =
+    "Build features iteratively with research and implementation phases";
 
 /** Alternative command names */
 export const aliases = ["fb", "build-feature"];
 
 /** Default configuration */
 export const defaultConfig = {
-  maxIterations: 10,
-  checkpointing: true,
+    maxIterations: 10,
+    checkpointing: true,
 };
 
 // ============================================================================
@@ -220,16 +229,16 @@ export const defaultConfig = {
 // ============================================================================
 
 interface FeatureBuilderState extends BaseState {
-  /** User's feature request */
-  featureRequest: string;
-  /** Research findings */
-  research?: string;
-  /** Implementation status */
-  implemented: boolean;
-  /** Current iteration */
-  iteration: number;
-  /** Maximum iterations */
-  maxIterations: number;
+    /** User's feature request */
+    featureRequest: string;
+    /** Research findings */
+    research?: string;
+    /** Implementation status */
+    implemented: boolean;
+    /** Current iteration */
+    iteration: number;
+    /** Maximum iterations */
+    maxIterations: number;
 }
 
 // ============================================================================
@@ -237,10 +246,10 @@ interface FeatureBuilderState extends BaseState {
 // ============================================================================
 
 const researchNode: NodeDefinition<FeatureBuilderState> = agentNode({
-  id: "research",
-  name: "Research Phase",
-  description: "Research the codebase for relevant patterns",
-  prompt: (state) => `
+    id: "research",
+    name: "Research Phase",
+    description: "Research the codebase for relevant patterns",
+    prompt: (state) => `
     Research the codebase to understand how to implement:
     ${state.featureRequest}
 
@@ -252,10 +261,10 @@ const researchNode: NodeDefinition<FeatureBuilderState> = agentNode({
 });
 
 const implementNode: NodeDefinition<FeatureBuilderState> = agentNode({
-  id: "implement",
-  name: "Implementation Phase",
-  description: "Implement the feature based on research",
-  prompt: (state) => `
+    id: "implement",
+    name: "Implementation Phase",
+    description: "Implement the feature based on research",
+    prompt: (state) => `
     Based on the research:
     ${state.research}
 
@@ -266,15 +275,15 @@ const implementNode: NodeDefinition<FeatureBuilderState> = agentNode({
 });
 
 const checkCompletionNode: NodeDefinition<FeatureBuilderState> = {
-  id: "check-completion",
-  name: "Check Completion",
-  type: "decision",
-  execute: async (state) => {
-    return {
-      implemented: state.iteration >= 1, // Simplified check
-      iteration: state.iteration + 1,
-    };
-  },
+    id: "check-completion",
+    name: "Check Completion",
+    type: "decision",
+    execute: async (state) => {
+        return {
+            implemented: state.iteration >= 1, // Simplified check
+            iteration: state.iteration + 1,
+        };
+    },
 };
 
 // ============================================================================
@@ -288,25 +297,21 @@ const checkCompletionNode: NodeDefinition<FeatureBuilderState> = {
  * @returns Compiled workflow graph
  */
 export default function createWorkflow(config?: Record<string, unknown>) {
-  const maxIterations = typeof config?.maxIterations === "number"
-    ? config.maxIterations
-    : 10;
+    const maxIterations =
+        typeof config?.maxIterations === "number" ? config.maxIterations : 10;
 
-  return graph<FeatureBuilderState>()
-    .start(researchNode)
-    .then(clearContextNode({ id: "clear-research" }))
-    .loop(
-      implementNode,
-      checkCompletionNode,
-      {
-        until: (state) => state.implemented || state.iteration >= maxIterations,
-        maxIterations,
-      }
-    )
-    .end()
-    .compile({
-      checkpointing: config?.checkpointing !== false,
-    });
+    return graph<FeatureBuilderState>()
+        .start(researchNode)
+        .then(clearContextNode({ id: "clear-research" }))
+        .loop(implementNode, checkCompletionNode, {
+            until: (state) =>
+                state.implemented || state.iteration >= maxIterations,
+            maxIterations,
+        })
+        .end()
+        .compile({
+            checkpointing: config?.checkpointing !== false,
+        });
 }
 ```
 
@@ -333,17 +338,19 @@ import { graph, agentNode } from "@bastani/atomic/graph";
 import type { BaseState } from "@bastani/atomic/graph/types";
 
 interface SimpleState extends BaseState {
-  task: string;
+    task: string;
 }
 
 export default function createWorkflow() {
-  return graph<SimpleState>()
-    .start(agentNode({
-      id: "execute",
-      prompt: (state) => `Execute this task: ${state.task}`,
-    }))
-    .end()
-    .compile();
+    return graph<SimpleState>()
+        .start(
+            agentNode({
+                id: "execute",
+                prompt: (state) => `Execute this task: ${state.task}`,
+            }),
+        )
+        .end()
+        .compile();
 }
 ```
 
@@ -398,18 +405,18 @@ const allWorkflows = getAllWorkflows();
 
 ```typescript
 interface WorkflowMetadata<TState extends BaseState = AtomicWorkflowState> {
-  /** Command name (without leading slash) */
-  name: string;
-  /** Human-readable description */
-  description: string;
-  /** Alternative names for the command */
-  aliases?: string[];
-  /** Function to create the workflow graph */
-  createWorkflow: (config?: Record<string, unknown>) => CompiledGraph<TState>;
-  /** Optional default configuration */
-  defaultConfig?: Record<string, unknown>;
-  /** Source: built-in, global (~/.atomic/workflows), or local (.atomic/workflows) */
-  source?: "builtin" | "global" | "local";
+    /** Command name (without leading slash) */
+    name: string;
+    /** Human-readable description */
+    description: string;
+    /** Alternative names for the command */
+    aliases?: string[];
+    /** Function to create the workflow graph */
+    createWorkflow: (config?: Record<string, unknown>) => CompiledGraph<TState>;
+    /** Optional default configuration */
+    defaultConfig?: Record<string, unknown>;
+    /** Source: built-in, global (~/.atomic/workflows), or local (.atomic/workflows) */
+    source?: "builtin" | "global" | "local";
 }
 ```
 

@@ -42,7 +42,7 @@ A bash script that downloads pre-compiled binaries from GitHub Releases and sync
 #### 1. Configuration and Setup (`install.sh:8-20`)
 
 ```bash
-GITHUB_REPO="bastani/atomic"
+GITHUB_REPO="bastani-inc/atomic"
 BINARY_NAME="atomic"
 BIN_DIR="${ATOMIC_INSTALL_DIR:-$HOME/.local/bin}"
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/atomic"
@@ -243,7 +243,7 @@ PowerShell script providing equivalent functionality to `install.sh` for Windows
 #### 1. Configuration (`install.ps1:13-18`)
 
 ```powershell
-$GithubRepo = "bastani/atomic"
+$GithubRepo = "bastani-inc/atomic"
 $BinaryName = "atomic"
 $BinDir = if ($env:ATOMIC_INSTALL_DIR) { $env:ATOMIC_INSTALL_DIR } elseif ($InstallDir) { $InstallDir } else { "${Home}\.local\bin" }
 $DataDir = if ($env:LOCALAPPDATA) { "${env:LOCALAPPDATA}\atomic" } else { "${Home}\AppData\Local\atomic" }

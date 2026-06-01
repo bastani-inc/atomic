@@ -15,11 +15,11 @@ The three feature install scripts (`features/claude/install.sh`, `features/copil
 
 The `devcontainer-feature.json` descriptors declare GHCR feature dependencies:
 
-| Feature file | `dependsOn` GHCR features |
-|---|---|
-| `claude` | `tmux-apt-get:1`, `bun:1`, `claude-code:1` |
-| `copilot` | `tmux-apt-get:1`, `bun:1`, `copilot-cli:1` |
-| `opencode` | `tmux-apt-get:1`, `bun:1`, `opencode:1` |
+| Feature file | `dependsOn` GHCR features                  |
+| ------------ | ------------------------------------------ |
+| `claude`     | `tmux-apt-get:1`, `bun:1`, `claude-code:1` |
+| `copilot`    | `tmux-apt-get:1`, `bun:1`, `copilot-cli:1` |
+| `opencode`   | `tmux-apt-get:1`, `bun:1`, `opencode:1`    |
 
 The root `devcontainer.json` and the three agent-specific manifests reference the same GHCR features inline.
 

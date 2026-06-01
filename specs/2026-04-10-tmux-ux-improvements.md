@@ -1,11 +1,11 @@
 # tmux UX Improvements Technical Design Document
 
-| Document Metadata      | Details                                          |
-| ---------------------- | ------------------------------------------------ |
-| Author(s)              | flora131                                         |
-| Status                 | Draft (WIP)                                      |
-| Team / Owner           | Atomic CLI                                       |
-| Created / Last Updated | 2026-04-10                                       |
+| Document Metadata      | Details     |
+| ---------------------- | ----------- |
+| Author(s)              | flora131    |
+| Status                 | Draft (WIP) |
+| Team / Owner           | Atomic CLI  |
+| Created / Last Updated | 2026-04-10  |
 
 ## 1. Executive Summary
 
@@ -20,6 +20,7 @@ Atomic spawns coding agent sessions inside tmux panes, but ships no tmux configu
 All tmux commands flow through `tmuxRun()` in `src/sdk/runtime/tmux.ts:71-86`. This central dispatcher calls `Bun.spawnSync([binary, ...args])` with no `-f` (config) or `-L` (socket) flags. Sessions land in the user's default tmux server and inherit whatever config (or no config) the user has.
 
 Four call sites bypass `tmuxRun()` and call `Bun.spawnSync`/`Bun.spawn` directly:
+
 - `sessionExists()` at `src/sdk/runtime/tmux.ts:320-329`
 - `attachSession()` at `src/sdk/runtime/tmux.ts:334-349`
 - Executor attach at `src/sdk/runtime/executor.ts:324-330`
@@ -95,15 +96,15 @@ flowchart TB
 
 ### 4.3 Key Components
 
-| Component | Responsibility | Location | Change Type |
-|---|---|---|---|
-| `tmux.conf` | Bundled config (mouse, vi, clipboard, status bar) — shared by tmux and psmux (verified compatible) | `src/sdk/runtime/tmux.conf` | New file |
-| `SOCKET_NAME` / `CONFIG_PATH` | Module-level constants for socket name and config path | `src/sdk/runtime/tmux.ts` | New constants |
-| `tmuxRun()` | Inject `-f` and `-L` flags using constants | `src/sdk/runtime/tmux.ts:71-86` | Modify |
-| `sessionExists()` | Refactor to use `tmuxRun()` (eliminates bypass) | `src/sdk/runtime/tmux.ts:320-329` | Modify |
-| `spawnMuxAttach()` | Encapsulate interactive attach-session spawn (binary + flags + stdio) | `src/sdk/runtime/tmux.ts` | New function |
-| Bypass updates | Replace 3 attach call sites with `spawnMuxAttach()` | See §5.2 | Modify |
-| Reattach message | Print connection info after session creation (uses `SOCKET_NAME` constant) | `executor.ts`, `chat/index.ts` | New code |
+| Component                     | Responsibility                                                                                     | Location                          | Change Type   |
+| ----------------------------- | -------------------------------------------------------------------------------------------------- | --------------------------------- | ------------- |
+| `tmux.conf`                   | Bundled config (mouse, vi, clipboard, status bar) — shared by tmux and psmux (verified compatible) | `src/sdk/runtime/tmux.conf`       | New file      |
+| `SOCKET_NAME` / `CONFIG_PATH` | Module-level constants for socket name and config path                                             | `src/sdk/runtime/tmux.ts`         | New constants |
+| `tmuxRun()`                   | Inject `-f` and `-L` flags using constants                                                         | `src/sdk/runtime/tmux.ts:71-86`   | Modify        |
+| `sessionExists()`             | Refactor to use `tmuxRun()` (eliminates bypass)                                                    | `src/sdk/runtime/tmux.ts:320-329` | Modify        |
+| `spawnMuxAttach()`            | Encapsulate interactive attach-session spawn (binary + flags + stdio)                              | `src/sdk/runtime/tmux.ts`         | New function  |
+| Bypass updates                | Replace 3 attach call sites with `spawnMuxAttach()`                                                | See §5.2                          | Modify        |
+| Reattach message              | Print connection info after session creation (uses `SOCKET_NAME` constant)                         | `executor.ts`, `chat/index.ts`    | New code      |
 
 ## 5. Detailed Design
 
@@ -184,38 +185,52 @@ const CONFIG_PATH = join(import.meta.dir, "tmux.conf");
  * Used by all attach call sites (attachSession, executor, chat).
  */
 export function spawnMuxAttach(sessionName: string): Subprocess {
-  const binary = getMuxBinary();
-  if (!binary) {
-    throw new Error("No terminal multiplexer (tmux/psmux) found on PATH");
-  }
-  return Bun.spawn(
-    [binary, "-f", CONFIG_PATH, "-L", SOCKET_NAME, "attach-session", "-t", sessionName],
-    { stdio: ["inherit", "inherit", "inherit"] },
-  );
+    const binary = getMuxBinary();
+    if (!binary) {
+        throw new Error("No terminal multiplexer (tmux/psmux) found on PATH");
+    }
+    return Bun.spawn(
+        [
+            binary,
+            "-f",
+            CONFIG_PATH,
+            "-L",
+            SOCKET_NAME,
+            "attach-session",
+            "-t",
+            sessionName,
+        ],
+        { stdio: ["inherit", "inherit", "inherit"] },
+    );
 }
 ```
 
 #### 5.2.2 Modified: `tmuxRun()`
 
 ```ts
-export function tmuxRun(args: string[]): { ok: true; stdout: string } | { ok: false; stderr: string } {
-  const binary = getMuxBinary();
-  if (!binary) {
-    return { ok: false, stderr: "No terminal multiplexer (tmux/psmux) found on PATH" };
-  }
-  
-  const fullArgs = ["-f", CONFIG_PATH, "-L", SOCKET_NAME, ...args];
-  
-  const result = Bun.spawnSync({
-    cmd: [binary, ...fullArgs],
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  if (!result.success) {
-    const stderr = new TextDecoder().decode(result.stderr).trim();
-    return { ok: false, stderr };
-  }
-  return { ok: true, stdout: new TextDecoder().decode(result.stdout).trim() };
+export function tmuxRun(
+    args: string[],
+): { ok: true; stdout: string } | { ok: false; stderr: string } {
+    const binary = getMuxBinary();
+    if (!binary) {
+        return {
+            ok: false,
+            stderr: "No terminal multiplexer (tmux/psmux) found on PATH",
+        };
+    }
+
+    const fullArgs = ["-f", CONFIG_PATH, "-L", SOCKET_NAME, ...args];
+
+    const result = Bun.spawnSync({
+        cmd: [binary, ...fullArgs],
+        stdout: "pipe",
+        stderr: "pipe",
+    });
+    if (!result.success) {
+        const stderr = new TextDecoder().decode(result.stderr).trim();
+        return { ok: false, stderr };
+    }
+    return { ok: true, stdout: new TextDecoder().decode(result.stdout).trim() };
 }
 ```
 
@@ -223,8 +238,8 @@ export function tmuxRun(args: string[]): { ok: true; stdout: string } | { ok: fa
 
 ```ts
 export function sessionExists(sessionName: string): boolean {
-  const result = tmuxRun(["has-session", "-t", sessionName]);
-  return result.ok;
+    const result = tmuxRun(["has-session", "-t", sessionName]);
+    return result.ok;
 }
 ```
 
@@ -236,20 +251,31 @@ This eliminates one bypass entirely. The exit-code check maps cleanly: `tmuxRun(
 
 ```ts
 export function attachSession(sessionName: string): void {
-  const binary = getMuxBinary();
-  if (!binary) {
-    throw new Error("No terminal multiplexer (tmux/psmux) found on PATH");
-  }
-  const proc = Bun.spawnSync({
-    cmd: [binary, "-f", CONFIG_PATH, "-L", SOCKET_NAME, "attach-session", "-t", sessionName],
-    stdin: "inherit",
-    stdout: "inherit",
-    stderr: "pipe",
-  });
-  if (!proc.success) {
-    const stderr = new TextDecoder().decode(proc.stderr).trim();
-    throw new Error(`Failed to attach to session: ${sessionName}${stderr ? ` (${stderr})` : ""}`);
-  }
+    const binary = getMuxBinary();
+    if (!binary) {
+        throw new Error("No terminal multiplexer (tmux/psmux) found on PATH");
+    }
+    const proc = Bun.spawnSync({
+        cmd: [
+            binary,
+            "-f",
+            CONFIG_PATH,
+            "-L",
+            SOCKET_NAME,
+            "attach-session",
+            "-t",
+            sessionName,
+        ],
+        stdin: "inherit",
+        stdout: "inherit",
+        stderr: "pipe",
+    });
+    if (!proc.success) {
+        const stderr = new TextDecoder().decode(proc.stderr).trim();
+        throw new Error(
+            `Failed to attach to session: ${sessionName}${stderr ? ` (${stderr})` : ""}`,
+        );
+    }
 }
 ```
 
@@ -278,7 +304,9 @@ After session creation in both `executeWorkflow()` and `chatCommand()`:
 import { SOCKET_NAME } from "./tmux.ts";
 
 const binary = getMuxBinary() ?? "tmux";
-console.log(`[atomic] Session: ${sessionName} | Reattach: ${binary} -L ${SOCKET_NAME} attach -t ${sessionName}`);
+console.log(
+    `[atomic] Session: ${sessionName} | Reattach: ${binary} -L ${SOCKET_NAME} attach -t ${sessionName}`,
+);
 ```
 
 ### 5.3 Export Surface Changes
@@ -289,12 +317,12 @@ console.log(`[atomic] Session: ${sessionName} | Reattach: ${binary} -L ${SOCKET_
 
 ## 6. Alternatives Considered
 
-| Option | Pros | Cons | Reason for Rejection |
-|---|---|---|---|
-| Inject flags at each call site individually | Explicit, no hidden behavior | ~20 call sites to update, easy to miss one | Too error-prone; central injection is safer |
-| Use environment variable `TMUX_SOCKET` | No code changes to call sites | Non-standard, not all tmux versions support it | Not portable |
-| Ship config via `~/.config/tmux/` | Survives across sessions | Conflicts with user's personal config | Violates isolation goal |
-| **Central injection in `tmuxRun()` (Selected)** | Single change point, covers 95% of calls | 4 bypasses need manual update | **Selected:** Minimal surface area, hardest to regress |
+| Option                                          | Pros                                     | Cons                                           | Reason for Rejection                                   |
+| ----------------------------------------------- | ---------------------------------------- | ---------------------------------------------- | ------------------------------------------------------ |
+| Inject flags at each call site individually     | Explicit, no hidden behavior             | ~20 call sites to update, easy to miss one     | Too error-prone; central injection is safer            |
+| Use environment variable `TMUX_SOCKET`          | No code changes to call sites            | Non-standard, not all tmux versions support it | Not portable                                           |
+| Ship config via `~/.config/tmux/`               | Survives across sessions                 | Conflicts with user's personal config          | Violates isolation goal                                |
+| **Central injection in `tmuxRun()` (Selected)** | Single change point, covers 95% of calls | 4 bypasses need manual update                  | **Selected:** Minimal surface area, hardest to regress |
 
 ## 7. Cross-Cutting Concerns
 
@@ -316,7 +344,7 @@ The `files` field in `package.json` already includes `"src"`, so `src/sdk/runtim
 ### 7.4 Backward Compatibility
 
 - Existing sessions on the default socket are unaffected
-- `isInsideTmux()` check remains valid: if the user is inside *any* tmux, we switch-client rather than nest
+- `isInsideTmux()` check remains valid: if the user is inside _any_ tmux, we switch-client rather than nest
 - No changes to the public SDK API (`createSession`, `createWindow`, etc.) — flags are injected internally
 
 ## 8. Migration, Rollout, and Testing

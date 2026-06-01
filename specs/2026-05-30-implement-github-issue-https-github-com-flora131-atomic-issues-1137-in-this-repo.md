@@ -9,7 +9,7 @@
 
 ## 1. Executive Summary
 
-GitHub issue [bastani/atomic#1137](https://github.com/bastani/atomic/issues/1137) requests that when a workflow human-in-the-loop (HiL) prompt is answered, the main agent is notified immediately with an interrupt-style custom message instead of a queued steer message. The notice must tell the agent that the pending HiL request has already been answered, must prevent the agent from re-asking the same question, and must not wait until the next tool-call boundary.
+GitHub issue [bastani-inc/atomic#1137](https://github.com/bastani-inc/atomic/issues/1137) requests that when a workflow human-in-the-loop (HiL) prompt is answered, the main agent is notified immediately with an interrupt-style custom message instead of a queued steer message. The notice must tell the agent that the pending HiL request has already been answered, must prevent the agent from re-asking the same question, and must not wait until the next tool-call boundary.
 
 Current branch `fix/1137-workflow-hil-answer-interrupt` already implements the core issue behavior:
 

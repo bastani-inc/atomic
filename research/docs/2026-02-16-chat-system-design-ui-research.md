@@ -228,34 +228,34 @@ Key design decisions in the reference:
 
 ### OpenCode TUI
 
-- [`docs/opencode/packages/sdk/js/src/v2/gen/types.gen.ts:263-522`](https://github.com/bastani/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opencode/packages/sdk/js/src/v2/gen/types.gen.ts#L263-L522) — Part type definitions
-- [`docs/opencode/packages/opencode/src/id/id.ts:55-74`](https://github.com/bastani/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opencode/packages/opencode/src/id/id.ts#L55-L74) — Timestamp-encoded ID generation
-- [`docs/opencode/packages/opencode/src/session/message-v2.ts:771`](https://github.com/bastani/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opencode/packages/opencode/src/session/message-v2.ts#L771) — Parts ordered by ID
-- [`docs/opencode/packages/opencode/src/session/processor.ts:45-349`](https://github.com/bastani/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opencode/packages/opencode/src/session/processor.ts#L45-L349) — Stream processing pipeline
-- [`docs/opencode/packages/opencode/src/cli/cmd/tui/context/sync.tsx:281-318`](https://github.com/bastani/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opencode/packages/opencode/src/cli/cmd/tui/context/sync.tsx#L281-L318) — Binary search insertion in store
-- [`docs/opencode/packages/ui/src/components/message-part.tsx:484-497`](https://github.com/bastani/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opencode/packages/ui/src/components/message-part.tsx#L484-L497) — Part registry + dynamic dispatch
-- [`docs/opencode/packages/ui/src/components/message-part.tsx:535-667`](https://github.com/bastani/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opencode/packages/ui/src/components/message-part.tsx#L535-L667) — ToolPartDisplay with inline HITL
-- [`docs/opencode/packages/ui/src/components/message-part.tsx:874-1077`](https://github.com/bastani/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opencode/packages/ui/src/components/message-part.tsx#L874-L1077) — Task tool sub-agent rendering
-- [`docs/opencode/packages/ui/src/components/session-turn.tsx:186-289`](https://github.com/bastani/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opencode/packages/ui/src/components/session-turn.tsx#L186-L289) — SessionTurn message hierarchy
+- [`docs/opencode/packages/sdk/js/src/v2/gen/types.gen.ts:263-522`](https://github.com/bastani-inc/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opencode/packages/sdk/js/src/v2/gen/types.gen.ts#L263-L522) — Part type definitions
+- [`docs/opencode/packages/opencode/src/id/id.ts:55-74`](https://github.com/bastani-inc/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opencode/packages/opencode/src/id/id.ts#L55-L74) — Timestamp-encoded ID generation
+- [`docs/opencode/packages/opencode/src/session/message-v2.ts:771`](https://github.com/bastani-inc/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opencode/packages/opencode/src/session/message-v2.ts#L771) — Parts ordered by ID
+- [`docs/opencode/packages/opencode/src/session/processor.ts:45-349`](https://github.com/bastani-inc/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opencode/packages/opencode/src/session/processor.ts#L45-L349) — Stream processing pipeline
+- [`docs/opencode/packages/opencode/src/cli/cmd/tui/context/sync.tsx:281-318`](https://github.com/bastani-inc/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opencode/packages/opencode/src/cli/cmd/tui/context/sync.tsx#L281-L318) — Binary search insertion in store
+- [`docs/opencode/packages/ui/src/components/message-part.tsx:484-497`](https://github.com/bastani-inc/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opencode/packages/ui/src/components/message-part.tsx#L484-L497) — Part registry + dynamic dispatch
+- [`docs/opencode/packages/ui/src/components/message-part.tsx:535-667`](https://github.com/bastani-inc/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opencode/packages/ui/src/components/message-part.tsx#L535-L667) — ToolPartDisplay with inline HITL
+- [`docs/opencode/packages/ui/src/components/message-part.tsx:874-1077`](https://github.com/bastani-inc/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opencode/packages/ui/src/components/message-part.tsx#L874-L1077) — Task tool sub-agent rendering
+- [`docs/opencode/packages/ui/src/components/session-turn.tsx:186-289`](https://github.com/bastani-inc/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opencode/packages/ui/src/components/session-turn.tsx#L186-L289) — SessionTurn message hierarchy
 
 ### OpenTUI
 
-- [`docs/opentui/packages/core/src/renderables/ScrollBox.ts:44-58`](https://github.com/bastani/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opentui/packages/core/src/renderables/ScrollBox.ts#L44-L58) — ScrollBoxOptions
-- [`docs/opentui/packages/core/src/renderables/ScrollBox.ts:87-95`](https://github.com/bastani/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opentui/packages/core/src/renderables/ScrollBox.ts#L87-L95) — Sticky scroll state variables
-- [`docs/opentui/packages/core/src/renderables/ScrollBox.ts:161-227`](https://github.com/bastani/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opentui/packages/core/src/renderables/ScrollBox.ts#L161-L227) — Sticky scroll state machine
-- [`docs/opentui/packages/core/src/renderables/ScrollBox.ts:633-678`](https://github.com/bastani/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opentui/packages/core/src/renderables/ScrollBox.ts#L633-L678) — recalculateBarProps (auto-scroll on content grow)
-- [`docs/opentui/packages/core/src/renderables/Box.ts`](https://github.com/bastani/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opentui/packages/core/src/renderables/Box.ts) — BoxRenderable container
-- [`docs/opentui/packages/react/src/host-config.ts`](https://github.com/bastani/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opentui/packages/react/src/host-config.ts) — React reconciler host config
+- [`docs/opentui/packages/core/src/renderables/ScrollBox.ts:44-58`](https://github.com/bastani-inc/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opentui/packages/core/src/renderables/ScrollBox.ts#L44-L58) — ScrollBoxOptions
+- [`docs/opentui/packages/core/src/renderables/ScrollBox.ts:87-95`](https://github.com/bastani-inc/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opentui/packages/core/src/renderables/ScrollBox.ts#L87-L95) — Sticky scroll state variables
+- [`docs/opentui/packages/core/src/renderables/ScrollBox.ts:161-227`](https://github.com/bastani-inc/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opentui/packages/core/src/renderables/ScrollBox.ts#L161-L227) — Sticky scroll state machine
+- [`docs/opentui/packages/core/src/renderables/ScrollBox.ts:633-678`](https://github.com/bastani-inc/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opentui/packages/core/src/renderables/ScrollBox.ts#L633-L678) — recalculateBarProps (auto-scroll on content grow)
+- [`docs/opentui/packages/core/src/renderables/Box.ts`](https://github.com/bastani-inc/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opentui/packages/core/src/renderables/Box.ts) — BoxRenderable container
+- [`docs/opentui/packages/react/src/host-config.ts`](https://github.com/bastani-inc/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/docs/opentui/packages/react/src/host-config.ts) — React reconciler host config
 
 ### Atomic CLI (Current)
 
-- [`src/ui/chat.tsx:1287-1483`](https://github.com/bastani/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/src/ui/chat.tsx#L1287-L1483) — buildContentSegments()
-- [`src/ui/chat.tsx:1502-1757`](https://github.com/bastani/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/src/ui/chat.tsx#L1502-L1757) — MessageBubble rendering
-- [`src/ui/chat.tsx:2607-2631`](https://github.com/bastani/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/src/ui/chat.tsx#L2607-L2631) — Parallel agent bridge to streaming message
-- [`src/ui/chat.tsx:5358-5364`](https://github.com/bastani/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/src/ui/chat.tsx#L5358-L5364) — Fixed-position HITL dialog
-- [`src/ui/index.ts:649-664`](https://github.com/bastani/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/src/ui/index.ts#L649-L664) — tool.complete premature agent finalization
-- [`src/ui/components/parallel-agents-tree.tsx:26`](https://github.com/bastani/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/src/ui/components/parallel-agents-tree.tsx#L26) — AgentStatus type with background
-- [`src/ui/components/parallel-agents-tree.tsx:158-166`](https://github.com/bastani/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/src/ui/components/parallel-agents-tree.tsx#L158-L166) — Status color mapping
+- [`src/ui/chat.tsx:1287-1483`](https://github.com/bastani-inc/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/src/ui/chat.tsx#L1287-L1483) — buildContentSegments()
+- [`src/ui/chat.tsx:1502-1757`](https://github.com/bastani-inc/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/src/ui/chat.tsx#L1502-L1757) — MessageBubble rendering
+- [`src/ui/chat.tsx:2607-2631`](https://github.com/bastani-inc/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/src/ui/chat.tsx#L2607-L2631) — Parallel agent bridge to streaming message
+- [`src/ui/chat.tsx:5358-5364`](https://github.com/bastani-inc/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/src/ui/chat.tsx#L5358-L5364) — Fixed-position HITL dialog
+- [`src/ui/index.ts:649-664`](https://github.com/bastani-inc/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/src/ui/index.ts#L649-L664) — tool.complete premature agent finalization
+- [`src/ui/components/parallel-agents-tree.tsx:26`](https://github.com/bastani-inc/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/src/ui/components/parallel-agents-tree.tsx#L26) — AgentStatus type with background
+- [`src/ui/components/parallel-agents-tree.tsx:158-166`](https://github.com/bastani-inc/atomic/blob/f4c3330950f6747dc6ccc64e942743f1a0bfefa2/src/ui/components/parallel-agents-tree.tsx#L158-L166) — Status color mapping
 
 ## Architecture Documentation
 

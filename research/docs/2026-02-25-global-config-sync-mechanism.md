@@ -318,11 +318,13 @@ export async function syncAtomicGlobalAgentConfigs(
     - `baseDir` - destination (defaults to `~/.atomic/`)
 - **Implementation** (lines 132-151):
     1. **Create base directory** (line 132):
+
         ```typescript
         await mkdir(baseDir, { recursive: true });
         ```
 
         - Ensures `~/.atomic/` exists
+
     2. **Iterate all agent keys** (lines 134-148):
 
         ```typescript
@@ -416,6 +418,7 @@ export async function hasAtomicGlobalAgentConfigs(
         - Return `false` if any required entry is missing
 
     2. **Check atomic home entries** (lines 175-180):
+
         ```typescript
         const atomicHomeChecks = await Promise.all(
             REQUIRED_ATOMIC_HOME_ENTRIES.map((entryName) =>
@@ -549,7 +552,7 @@ export function getConfigRoot(): string {
                 `Config data directory not found: ${dataDir}\n\n` +
                     `This usually means the installation is incomplete.\n` +
                     `Please reinstall using the install script:\n` +
-                    `  curl -fsSL https://raw.githubusercontent.com/bastani/atomic/main/install.sh | bash`,
+                    `  curl -fsSL https://raw.githubusercontent.com/bastani-inc/atomic/main/install.sh | bash`,
             );
         }
 
@@ -799,6 +802,7 @@ async function main(): Promise<void> {
     - Sets `OPENCODE_CONFIG_DIR` environment variable for OpenCode SDK
 
 3. **Auto-init if SCM skills missing** (lines 228-237):
+
     ```typescript
     if (await shouldAutoInitChat(agentType, projectRoot)) {
         await initCommand({
@@ -868,6 +872,7 @@ async function main(): Promise<void> {
     - Function `reconcileScmVariants()` at lines 78-112
 
 5. **Save config** (lines 395-398):
+
     ```typescript
     await saveAtomicConfig(targetDir, {
         scm: scmType,
@@ -918,6 +923,7 @@ async function main(): Promise<void> {
     ```
 
 3. **Deduplication with ecosystem isolation** (lines 176-185):
+
     ```typescript
     const byName = new Map<string, TaggedSource>();
     for (const entry of sources) {

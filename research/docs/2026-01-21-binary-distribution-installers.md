@@ -114,7 +114,7 @@ fi
 
 ```bash
 if [[ ${OS:-} = Windows_NT ]]; then
-    powershell -c "irm https://raw.githubusercontent.com/bastani/atomic/main/install.ps1 | iex"
+    powershell -c "irm https://raw.githubusercontent.com/bastani-inc/atomic/main/install.ps1 | iex"
     exit $?
 fi
 ```
@@ -142,10 +142,10 @@ Based on the current `publish.yml` setup, the download URLs will follow this pat
 
 ```
 # Latest release
-https://github.com/bastani/atomic/releases/latest/download/atomic-{target}
+https://github.com/bastani-inc/atomic/releases/latest/download/atomic-{target}
 
 # Specific version
-https://github.com/bastani/atomic/releases/download/v{version}/atomic-{target}
+https://github.com/bastani-inc/atomic/releases/download/v{version}/atomic-{target}
 ```
 
 **Target Mapping**:
@@ -364,19 +364,19 @@ try {
 
 **Decision**: Use GitHub raw URLs directly. No custom domain needed.
 
-| Option         | URL Pattern                                                | Status       |
-| -------------- | ---------------------------------------------------------- | ------------ |
-| **GitHub Raw** | `raw.githubusercontent.com/bastani/atomic/main/install.sh` | **Selected** |
-| Custom Domain  | N/A                                                        | Not needed   |
+| Option         | URL Pattern                                                    | Status       |
+| -------------- | -------------------------------------------------------------- | ------------ |
+| **GitHub Raw** | `raw.githubusercontent.com/bastani-inc/atomic/main/install.sh` | **Selected** |
+| Custom Domain  | N/A                                                            | Not needed   |
 
 **Final Installation Commands**:
 
 ```bash
 # Linux/macOS
-curl -fsSL https://raw.githubusercontent.com/bastani/atomic/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/bastani-inc/atomic/main/install.sh | bash
 
 # Windows PowerShell
-irm https://raw.githubusercontent.com/bastani/atomic/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/bastani-inc/atomic/main/install.ps1 | iex
 ```
 
 ### 9. Script Parameter Support
@@ -400,9 +400,9 @@ done
 **Usage**:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/bastani/atomic/main/install.sh | bash
-curl -fsSL https://raw.githubusercontent.com/bastani/atomic/main/install.sh | bash -s -- v1.0.0
-curl -fsSL https://raw.githubusercontent.com/bastani/atomic/main/install.sh | bash -s -- -b /usr/local/bin
+curl -fsSL https://raw.githubusercontent.com/bastani-inc/atomic/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/bastani-inc/atomic/main/install.sh | bash -s -- v1.0.0
+curl -fsSL https://raw.githubusercontent.com/bastani-inc/atomic/main/install.sh | bash -s -- -b /usr/local/bin
 ```
 
 #### PowerShell
@@ -418,8 +418,8 @@ param(
 **Usage**:
 
 ```powershell
-irm https://raw.githubusercontent.com/bastani/atomic/main/install.ps1 | iex
-iex "& { $(irm https://raw.githubusercontent.com/bastani/atomic/main/install.ps1) } -Version v1.0.0"
+irm https://raw.githubusercontent.com/bastani-inc/atomic/main/install.ps1 | iex
+iex "& { $(irm https://raw.githubusercontent.com/bastani-inc/atomic/main/install.ps1) } -Version v1.0.0"
 ```
 
 ### 10. Complete Install Script Templates
@@ -436,12 +436,12 @@ These templates incorporate all decided requirements:
 ```bash
 #!/bin/bash
 # Atomic CLI Installer
-# Usage: curl -fsSL https://raw.githubusercontent.com/bastani/atomic/main/install.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/bastani-inc/atomic/main/install.sh | bash
 
 set -euo pipefail
 
 # Configuration
-GITHUB_REPO="bastani/atomic"
+GITHUB_REPO="bastani-inc/atomic"
 BINARY_NAME="atomic"
 BIN_DIR="${ATOMIC_INSTALL:-$HOME/.local/bin}"
 
@@ -650,7 +650,7 @@ main "$@"
 
 ```powershell
 # Atomic CLI Installer for Windows
-# Usage: irm https://raw.githubusercontent.com/bastani/atomic/main/install.ps1 | iex
+# Usage: irm https://raw.githubusercontent.com/bastani-inc/atomic/main/install.ps1 | iex
 
 param(
     [String]$Version = "latest",
@@ -660,7 +660,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 # Configuration
-$GithubRepo = "bastani/atomic"
+$GithubRepo = "bastani-inc/atomic"
 $BinaryName = "atomic"
 $BinDir = if ($env:ATOMIC_INSTALL) { $env:ATOMIC_INSTALL } else { "${Home}\.local\bin" }
 

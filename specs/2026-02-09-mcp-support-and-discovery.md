@@ -1,13 +1,13 @@
 # MCP Support and Discovery for Config Files
 
-| Document Metadata      | Details                                              |
-| ---------------------- | ---------------------------------------------------- |
-| Author(s)              | Developer                                            |
-| Status                 | Draft (WIP)                                          |
-| Team / Owner           | Atomic TUI                                           |
-| Created / Last Updated | 2026-02-08                                           |
-| Issue                  | [#164](https://github.com/bastani/atomic/issues/164) |
-| Branch                 | lavaman131/feature/tui                               |
+| Document Metadata      | Details                                                  |
+| ---------------------- | -------------------------------------------------------- |
+| Author(s)              | Developer                                                |
+| Status                 | Draft (WIP)                                              |
+| Team / Owner           | Atomic TUI                                               |
+| Created / Last Updated | 2026-02-08                                               |
+| Issue                  | [#164](https://github.com/bastani-inc/atomic/issues/164) |
+| Branch                 | lavaman131/feature/tui                                   |
 
 ## 1. Executive Summary
 

@@ -16,11 +16,11 @@ Partition 10 scopes the primary POSIX bootstrap installer for Atomic CLI. Single
 
 ### Implementation
 
-- `install.sh` — POSIX bash bootstrap installer with curl/wget fallback, GitHub Release hardcoding (`bastani/atomic`), manifest.json parsing, platform detection (Darwin/Linux, x64/arm64, musl detection), SHA-256 verification, and delegation to binary's `atomic install` subcommand.
+- `install.sh` — POSIX bash bootstrap installer with curl/wget fallback, GitHub Release hardcoding (`bastani-inc/atomic`), manifest.json parsing, platform detection (Darwin/Linux, x64/arm64, musl detection), SHA-256 verification, and delegation to binary's `atomic install` subcommand.
 
 ### Key Hard-Coded URLs & Configuration
 
-- **Releases Base**: `https://github.com/bastani/atomic/releases` (line 24, hardcoded as `RELEASES_BASE`)
+- **Releases Base**: `https://github.com/bastani-inc/atomic/releases` (line 24, hardcoded as `RELEASES_BASE`)
 - **Manifest URL Pattern**: `$RELEASES_BASE/latest/download/manifest.json` or `$RELEASES_BASE/download/v$TARGET/manifest.json` (lines 118–120)
 - **Binary URL Pattern**: `$RELEASES_BASE/download/v$version/atomic-$platform` (line 140)
 - **Repository Owner**: `flora131` (embedded in RELEASES_BASE URL)
@@ -28,7 +28,7 @@ Partition 10 scopes the primary POSIX bootstrap installer for Atomic CLI. Single
 ### Download & Install Workflow
 
 - **Downloader Detection**: `curl` or `wget` with fallback logic (lines 28–35)
-- **Entry Point**: Raw GitHub URL with piping: `curl -fsSL https://raw.githubusercontent.com/bastani/atomic/main/install.sh | bash` (line 10)
+- **Entry Point**: Raw GitHub URL with piping: `curl -fsSL https://raw.githubusercontent.com/bastani-inc/atomic/main/install.sh | bash` (line 10)
 - **Version Pinning**: Optional version argument: `bash -s -- 0.4.47` (line 13)
 - **Platform Detection**:
     - OS detection via `uname -s`: Darwin (macOS), Linux, Windows rejection (lines 76–84)
@@ -60,7 +60,7 @@ Partition 10 scopes the primary POSIX bootstrap installer for Atomic CLI. Single
 
 ## Notes for PI-Coding-Agent Rewrite
 
-1. **URL Authority Migration**: All GitHub hardcoding (`bastani/atomic`) must be replaced with pi-coding-agent equivalent registry/domain.
+1. **URL Authority Migration**: All GitHub hardcoding (`bastani-inc/atomic`) must be replaced with pi-coding-agent equivalent registry/domain.
 2. **Manifest Schema**: The manifest.json structure assumes `{ "version": "...", "<platform>": { "checksum": "<hex>" } }` — must be confirmed or adapted for pi schema.
 3. **Agent-Specific Download URLs**: No agent-specific branching detected in current script; all platforms resolve from single repo.
 4. **No npm Involvement**: Bootstrap installer is pure POSIX bash; `npm install` is not invoked at this stage (that occurs in the binary's `install` subcommand, outside this scope).
@@ -85,7 +85,7 @@ Partition 10 scopes the primary POSIX bootstrap installer for Atomic CLI. Single
 
 - **Key symbols:**
     - `TARGET` (line 17) — positional arg `$1`, defaults to `"latest"`. Validated against the regex `^(stable|latest|[0-9]+\.[0-9]+\.[0-9]+(-[^[:space:]]+)?)$` at line 19.
-    - `RELEASES_BASE` (line 24) — `https://github.com/bastani/atomic/releases`. Hardcoded to the `bastani/atomic` GitHub repo.
+    - `RELEASES_BASE` (line 24) — `https://github.com/bastani-inc/atomic/releases`. Hardcoded to the `bastani-inc/atomic` GitHub repo.
     - `DOWNLOAD_DIR` (line 25) — `$HOME/.atomic/downloads`. Temp storage for the downloaded binary.
     - `DOWNLOADER` (lines 28–35) — shell variable set to `"curl"` or `"wget"` based on PATH probing.
     - `download_file()` (lines 37–52) — abstraction that dispatches to curl (`-fsSL --retry 3`) or wget (`-q`) depending on `DOWNLOADER`. When `$output` is empty, writes to stdout; otherwise writes to file.
@@ -140,7 +140,7 @@ Partition 10 scopes the primary POSIX bootstrap installer for Atomic CLI. Single
     - External tools: `curl` or `wget` (HTTP), `uname`, `sysctl` (Darwin only), `ldd` (Linux only), `shasum` (Darwin) or `sha256sum` (Linux), `chmod`, `rm`, `mkdir`.
     - No jq dependency — JSON parsing implemented entirely in bash via `BASH_REMATCH`.
     - `set -e` (line 15) — any unhandled non-zero exit aborts the script.
-    - Network: `https://github.com/bastani/atomic/releases` for both the manifest and the binary artifact.
+    - Network: `https://github.com/bastani-inc/atomic/releases` for both the manifest and the binary artifact.
     - Binary handoff: relies on `packages/atomic/src/commands/cli/install.ts` (`installCommand`) being compiled into the distributed `atomic` binary and responding to the `install` subargument.
 
 ---
@@ -153,7 +153,7 @@ Partition 10 scopes the primary POSIX bootstrap installer for Atomic CLI. Single
 
 ### Out-of-Partition References
 
-- `install.ps1` — Windows counterpart to `install.sh`; referenced at line 80 as the redirect target for MINGW/MSYS/CYGWIN hosts; uses the same `bastani/atomic` releases base and same manifest-then-binary pattern.
+- `install.ps1` — Windows counterpart to `install.sh`; referenced at line 80 as the redirect target for MINGW/MSYS/CYGWIN hosts; uses the same `bastani-inc/atomic` releases base and same manifest-then-binary pattern.
 - `install.cmd` — Windows CMD fallback installer; referenced at line 80 alongside `install.ps1`.
 - `packages/atomic/src/commands/cli/install.ts` — TypeScript implementation of `installCommand` (exported at line 751); receives control after `"$binary_path" install` at `install.sh:166`; handles binary self-copy (`copyBinary`), PATH wiring (`persistPathEntry`), tmux/psmux detection (`detectMuxBinary`), shell completions (`installCompletions`), and artifact reaping (`cleanupOldArtifacts`).
 - `packages/atomic/src/commands/cli/install.test.ts` — test suite for the TypeScript install subcommand; not directly referenced by `install.sh` but exercises the code that `install.sh` delegates to.
@@ -173,10 +173,10 @@ Partition 10 scopes the primary POSIX bootstrap installer for Atomic CLI. Single
 
 ```bash
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/bastani/atomic/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/bastani-inc/atomic/main/install.sh | bash
 #
 # Pin a specific version:
-#   curl -fsSL https://raw.githubusercontent.com/bastani/atomic/main/install.sh | bash -s -- 0.4.47
+#   curl -fsSL https://raw.githubusercontent.com/bastani-inc/atomic/main/install.sh | bash -s -- 0.4.47
 ```
 
 **Variations / call-sites:** Comments only; the script itself is designed to receive `$1` as the version target (line 17).
@@ -264,7 +264,7 @@ else
 fi
 ```
 
-**Variations / call-sites:** Hard-coded base at line 24: `RELEASES_BASE="https://github.com/bastani/atomic/releases"`; binary URL template at line 140.
+**Variations / call-sites:** Hard-coded base at line 24: `RELEASES_BASE="https://github.com/bastani-inc/atomic/releases"`; binary URL template at line 140.
 
 ---
 

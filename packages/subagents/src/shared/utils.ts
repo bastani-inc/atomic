@@ -390,7 +390,7 @@ export function extractToolArgsPreview(args: Record<string, unknown>): string {
 	const urlsPreview = previewArray(args.urls);
 	if (urlsPreview) return truncatePreview(urlsPreview, 60);
 	if (typeof args.prompt === "string" && args.prompt.trim().length > 0) return truncatePreview(args.prompt, 60);
-	
+
 	const previewKeys = ["command", "path", "file_path", "pattern", "query", "url", "task", "describe", "search"];
 	for (const key of previewKeys) {
 		if (args[key] && typeof args[key] === "string") {
@@ -398,7 +398,7 @@ export function extractToolArgsPreview(args: Record<string, unknown>): string {
 			return truncatePreview(value, 60);
 		}
 	}
-	
+
 	// Fallback: show first string value found
 	for (const [key, value] of Object.entries(args)) {
 		const arrayPreview = previewArray(value);

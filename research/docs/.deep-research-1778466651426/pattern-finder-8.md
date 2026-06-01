@@ -19,7 +19,7 @@ The `.devcontainer/` partition contains agent-specific devcontainer configuratio
     "version": "1.0.15",
     "name": "Atomic + Claude Code",
     "description": "Installs Atomic CLI with Claude Code agent, skills, and shared tooling (playwright, liteparse)",
-    "documentationURL": "https://github.com/bastani/atomic",
+    "documentationURL": "https://github.com/bastani-inc/atomic",
     "options": {
         "version": {
             "type": "string",

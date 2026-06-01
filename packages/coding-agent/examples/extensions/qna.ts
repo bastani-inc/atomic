@@ -20,10 +20,10 @@ Output format:
 
 Example output:
 Q: What is your preferred database?
-A: 
+A:
 
 Q: Should we use TypeScript or JavaScript?
-A: 
+A:
 
 Keep questions in the order they appeared. Be concise.`;
 

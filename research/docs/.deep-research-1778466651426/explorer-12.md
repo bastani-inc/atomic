@@ -48,7 +48,7 @@ The partition contains a single Windows installer script (128 LOC) that is entir
 - **Role:** Windows PowerShell 5.1+ bootstrap that fetches a manifest, downloads and SHA256-verifies the prebuilt binary, then delegates all placement logic to `atomic install`.
 - **Key symbols:**
     - `$Target` param (`install.ps1:15-18`) — accepts `stable`, `latest`, or a semver string; validated by `ValidatePattern`.
-    - `$RELEASES_BASE` (`install.ps1:30`) — GitHub releases URL: `https://github.com/bastani/atomic/releases`.
+    - `$RELEASES_BASE` (`install.ps1:30`) — GitHub releases URL: `https://github.com/bastani-inc/atomic/releases`.
     - `$DOWNLOAD_DIR` (`install.ps1:31`) — `%USERPROFILE%\.atomic\downloads`.
     - `$platform` (`install.ps1:34-38`) — set to `windows-arm64` or `windows-x64` based on `$env:PROCESSOR_ARCHITECTURE`.
     - Manifest fetch via `Invoke-RestMethod` (`install.ps1:54`).
@@ -626,7 +626,7 @@ export function ensureCompletionsSourcedFromRc(
 
 ### Seams for pi-coding-agent Extensions
 
-1. **manifest.json URL**: Parameterize org/repo (currently hardcoded `bastani/atomic`)
+1. **manifest.json URL**: Parameterize org/repo (currently hardcoded `bastani-inc/atomic`)
     - install.ps1:30, install.sh:24, install.cmd:51
     - install.ts: none (binary uses hardcoded URL; move to config)
 

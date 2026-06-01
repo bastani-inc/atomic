@@ -9,10 +9,10 @@
 
 ```bash
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/bastani/atomic/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/bastani-inc/atomic/main/install.sh | bash
 #
 # Pin a specific version:
-#   curl -fsSL https://raw.githubusercontent.com/bastani/atomic/main/install.sh | bash -s -- 0.4.47
+#   curl -fsSL https://raw.githubusercontent.com/bastani-inc/atomic/main/install.sh | bash -s -- 0.4.47
 ```
 
 **Variations / call-sites:** Comments only; the script itself is designed to receive `$1` as the version target (line 17).
@@ -100,7 +100,7 @@ else
 fi
 ```
 
-**Variations / call-sites:** Hard-coded base at line 24: `RELEASES_BASE="https://github.com/bastani/atomic/releases"`; binary URL template at line 140.
+**Variations / call-sites:** Hard-coded base at line 24: `RELEASES_BASE="https://github.com/bastani-inc/atomic/releases"`; binary URL template at line 140.
 
 ---
 

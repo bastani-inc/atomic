@@ -115,7 +115,7 @@ Move the hook configuration from `.claude/hooks/hooks.json` into `.claude/settin
         "atomic-plugins": {
             "source": {
                 "source": "github",
-                "repo": "bastani/atomic"
+                "repo": "bastani-inc/atomic"
             }
         }
     },

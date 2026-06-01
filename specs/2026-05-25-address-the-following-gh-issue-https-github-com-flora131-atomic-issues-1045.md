@@ -9,7 +9,7 @@
 
 ## 1. Executive Summary
 
-GitHub issue [#1045](https://github.com/bastani/atomic/issues/1045) reports that the workflow graph/orchestrator panel displays repeated `MCP OAuth initialization failed` messages when a configured MCP server requires OAuth and the user is not authenticated. This failure is non-blocking: workflows and subagent orchestration can continue, but the panel makes it look like the workflow itself failed.
+GitHub issue [#1045](https://github.com/bastani-inc/atomic/issues/1045) reports that the workflow graph/orchestrator panel displays repeated `MCP OAuth initialization failed` messages when a configured MCP server requires OAuth and the user is not authenticated. This failure is non-blocking: workflows and subagent orchestration can continue, but the panel makes it look like the workflow itself failed.
 
 Repository inspection shows the root noise source is the MCP extension startup path in `packages/mcp/index.ts:107-109`, which catches OAuth callback-server initialization failures and writes the exact user-visible string to `console.error`. Workflow stages create child `AgentSession`s through `packages/workflows/src/extension/wiring.ts:178-183`; those stage sessions keep bundled MCP enabled while excluding only workflows (`packages/workflows/src/extension/wiring.ts:169-175`). Therefore each workflow/stage session can repeat MCP startup and emit the same stderr line.
 
@@ -25,7 +25,7 @@ The proposed first-iteration fix is to make MCP OAuth callback initialization la
 
 ### 2.1 Current State
 
-Issue evidence from `gh issue view 1045 --repo bastani/atomic`:
+Issue evidence from `gh issue view 1045 --repo bastani-inc/atomic`:
 
 - Problem: the graph orchestrator panel surfaces repeated inline `MCP OAuth initialization failed` entries.
 - Expected behavior:

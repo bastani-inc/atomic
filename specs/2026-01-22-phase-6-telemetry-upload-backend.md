@@ -4,7 +4,7 @@
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | Author(s)              | flora131                                                                                                                                    |
 | Status                 | Draft (WIP)                                                                                                                                 |
-| Team / Owner           | bastani/atomic                                                                                                                              |
+| Team / Owner           | bastani-inc/atomic                                                                                                                          |
 | Created / Last Updated | 2026-01-22                                                                                                                                  |
 | Parent Spec            | [specs/2026-01-21-anonymous-telemetry-implementation.md](./2026-01-21-anonymous-telemetry-implementation.md)                                |
 | Research Reference     | [research/docs/2026-01-22-azure-app-insights-backend-integration.md](../research/docs/2026-01-22-azure-app-insights-backend-integration.md) |

@@ -4,30 +4,30 @@
 
 ### Added
 
-- Added `ExtensionUIContext.requestRender()` and a shared reactive widget installer for extensions to mount widgets once, repaint via coalesced render requests, and own timer-based refreshes without remount flicker ([#1150](https://github.com/bastani/atomic/issues/1150)).
-- Added `/fast` Codex fast mode toggles for chat and workflow-stage sessions, applying OpenAI priority service tier to supported `openai/*` and `openai-codex/*` models only; active supported models now show a visible `fast` indicator after the model name ([#1134](https://github.com/bastani/atomic/issues/1134)).
-- Added extension custom-message `deliverAs: "interrupt"` delivery so first-party extensions can abort a stale streaming turn and start an immediate custom-message turn ([#1137](https://github.com/bastani/atomic/issues/1137)).
-- Added an `interruptAbortMessage` option for interrupt-delivered extension messages so meaningful external events can replace generic `Operation aborted` tool output ([#1137](https://github.com/bastani/atomic/issues/1137)).
+- Added `ExtensionUIContext.requestRender()` and a shared reactive widget installer for extensions to mount widgets once, repaint via coalesced render requests, and own timer-based refreshes without remount flicker ([#1150](https://github.com/bastani-inc/atomic/issues/1150)).
+- Added `/fast` Codex fast mode toggles for chat and workflow-stage sessions, applying OpenAI priority service tier to supported `openai/*` and `openai-codex/*` models only; active supported models now show a visible `fast` indicator after the model name ([#1134](https://github.com/bastani-inc/atomic/issues/1134)).
+- Added extension custom-message `deliverAs: "interrupt"` delivery so first-party extensions can abort a stale streaming turn and start an immediate custom-message turn ([#1137](https://github.com/bastani-inc/atomic/issues/1137)).
+- Added an `interruptAbortMessage` option for interrupt-delivered extension messages so meaningful external events can replace generic `Operation aborted` tool output ([#1137](https://github.com/bastani-inc/atomic/issues/1137)).
 
 ### Changed
 
 - Documented TypeScript module-style workflow imports and reusable builtin workflow modules in the bundled workflow authoring guide.
-- Refined the `/fast` selector into a conventional toggle UI with on/off states, clearer scope descriptions, and space/enter toggle support ([#1134](https://github.com/bastani/atomic/issues/1134)).
-- Compressed the `/fast` selector copy, row layout, and per-change status message so the summary, toggles, scopes, and keyboard hints stay readable without duplicate off/standard-tier messaging ([#1134](https://github.com/bastani/atomic/issues/1134)).
+- Refined the `/fast` selector into a conventional toggle UI with on/off states, clearer scope descriptions, and space/enter toggle support ([#1134](https://github.com/bastani-inc/atomic/issues/1134)).
+- Compressed the `/fast` selector copy, row layout, and per-change status message so the summary, toggles, scopes, and keyboard hints stay readable without duplicate off/standard-tier messaging ([#1134](https://github.com/bastani-inc/atomic/issues/1134)).
 - Clarified workflow-creation guidance so Atomic asks clarifying questions and writes first-time workflows directly, reserving `/goal` for explicitly chosen long-running reviewer-gated implementation.
-- Documented the current workflow tool action surface, lifecycle notices, human-in-the-loop answer notifications, workflow notification config, `/workflow` slash-command discovery, and workflow Codex fast-mode behavior ([#1151](https://github.com/bastani/atomic/issues/1151)).
+- Documented the current workflow tool action surface, lifecycle notices, human-in-the-loop answer notifications, workflow notification config, `/workflow` slash-command discovery, and workflow Codex fast-mode behavior ([#1151](https://github.com/bastani-inc/atomic/issues/1151)).
 
 ### Fixed
 
-- Added a host workflow-resource refresh path so workflow reloads can re-read package manifests without a full Atomic reload ([#1155](https://github.com/bastani/atomic/issues/1155)).
-- Preserved custom registered provider streamers when Codex fast mode is enabled for native OpenAI response APIs ([#1134](https://github.com/bastani/atomic/issues/1134)).
-- Fixed `/fast` changes so the banner/footer and current session update immediately, and inherited chat fast-mode state now reaches subagent child sessions without waiting for a restart ([#1134](https://github.com/bastani/atomic/issues/1134)).
-- Fixed `/fast` persistence so existing project-level fast-mode overrides are updated alongside global settings for the changed scope without clobbering untouched global chat or workflow fast-mode preferences ([#1134](https://github.com/bastani/atomic/issues/1134)).
-- Made Codex fast-mode request helpers require an explicit enabled flag and treat `service_tier: undefined` as unset when preparing OpenAI payloads ([#1134](https://github.com/bastani/atomic/issues/1134)).
-- Fixed attached workflow-stage chat footers to resolve the `fast` model indicator against workflow fast-mode settings instead of chat settings ([#1134](https://github.com/bastani/atomic/issues/1134)).
-- Scoped print-mode non-zero extension-error exits to command-originated failures so non-fatal lifecycle extension errors do not fail otherwise successful headless output ([#1123](https://github.com/bastani/atomic/issues/1123)).
-- Fixed `ask_user_question` custom UI abort handling so interrupt-delivered workflow HiL answer notices are not stuck behind a blocking question modal ([#1137](https://github.com/bastani/atomic/issues/1137)).
-- Fixed print-mode slash-command output for headless `/workflow` automation by printing final displayable custom messages and treating command-originated extension errors as non-zero while suppressing stale final output ([#1156](https://github.com/bastani/atomic/issues/1156)).
+- Added a host workflow-resource refresh path so workflow reloads can re-read package manifests without a full Atomic reload ([#1155](https://github.com/bastani-inc/atomic/issues/1155)).
+- Preserved custom registered provider streamers when Codex fast mode is enabled for native OpenAI response APIs ([#1134](https://github.com/bastani-inc/atomic/issues/1134)).
+- Fixed `/fast` changes so the banner/footer and current session update immediately, and inherited chat fast-mode state now reaches subagent child sessions without waiting for a restart ([#1134](https://github.com/bastani-inc/atomic/issues/1134)).
+- Fixed `/fast` persistence so existing project-level fast-mode overrides are updated alongside global settings for the changed scope without clobbering untouched global chat or workflow fast-mode preferences ([#1134](https://github.com/bastani-inc/atomic/issues/1134)).
+- Made Codex fast-mode request helpers require an explicit enabled flag and treat `service_tier: undefined` as unset when preparing OpenAI payloads ([#1134](https://github.com/bastani-inc/atomic/issues/1134)).
+- Fixed attached workflow-stage chat footers to resolve the `fast` model indicator against workflow fast-mode settings instead of chat settings ([#1134](https://github.com/bastani-inc/atomic/issues/1134)).
+- Scoped print-mode non-zero extension-error exits to command-originated failures so non-fatal lifecycle extension errors do not fail otherwise successful headless output ([#1123](https://github.com/bastani-inc/atomic/issues/1123)).
+- Fixed `ask_user_question` custom UI abort handling so interrupt-delivered workflow HiL answer notices are not stuck behind a blocking question modal ([#1137](https://github.com/bastani-inc/atomic/issues/1137)).
+- Fixed print-mode slash-command output for headless `/workflow` automation by printing final displayable custom messages and treating command-originated extension errors as non-zero while suppressing stale final output ([#1156](https://github.com/bastani-inc/atomic/issues/1156)).
 
 ## [0.8.21] - 2026-05-30
 
@@ -39,7 +39,7 @@
 
 ### Changed
 
-- Upgraded the pi runtime packages (`@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, `@earendil-works/pi-tui`) to 0.78.0 and aligned skill name validation with upstream pi so frontmatter names no longer need to match parent directory names ([#1124](https://github.com/bastani/atomic/issues/1124)).
+- Upgraded the pi runtime packages (`@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, `@earendil-works/pi-tui`) to 0.78.0 and aligned skill name validation with upstream pi so frontmatter names no longer need to match parent directory names ([#1124](https://github.com/bastani-inc/atomic/issues/1124)).
 
 ## [0.8.20] - 2026-05-29
 
@@ -52,13 +52,13 @@
 ### Added
 
 - Added session-scoped `orchestrationContext` support to SDK agent sessions and extension contexts for workflow-stage policy enforcement.
-- Added support for the Claude Opus 4.8 model across model configuration, selection, and validation via the `@earendil-works/pi-ai` 0.77.0 upgrade ([#1097](https://github.com/bastani/atomic/issues/1097)).
+- Added support for the Claude Opus 4.8 model across model configuration, selection, and validation via the `@earendil-works/pi-ai` 0.77.0 upgrade ([#1097](https://github.com/bastani-inc/atomic/issues/1097)).
 
 ### Changed
 
 - Upgraded the pi runtime packages (`@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, `@earendil-works/pi-tui`) from 0.75.5 to 0.77.0 and bumped `@modelcontextprotocol/ext-apps` to 1.7.2, `highlight.js` to 11.x, `linkedom` to 0.18.x, `undici` to 8.x, and `vitest` (dev) to 4.x.
 - Switched the `highlight.js` import to the package-root default export and replaced the Node stream pipeline in the tools downloader with `Bun.write()` to align with the upgraded dependencies.
-- Pinned the footer (model + cwd identity) directly under the editor and moved below-editor widgets beneath it (separated by a blank line), so transient run status such as the workflow companion counter renders at the very bottom instead of separating the footer from the input. Stacked below-editor widgets (e.g. the async-subagent widget and the workflow run counter) are also separated from each other by a blank line. Rendering below-editor widgets last keeps a live widget at the bottom of the buffer (within the viewport), preserving the widget resize-flicker fix. Extension-provided custom footers are now swapped in place (rather than appended), so installing a custom footer keeps the below-editor widget container as the last UI child and does not regress this ordering ([#1109](https://github.com/bastani/atomic/issues/1109)).
+- Pinned the footer (model + cwd identity) directly under the editor and moved below-editor widgets beneath it (separated by a blank line), so transient run status such as the workflow companion counter renders at the very bottom instead of separating the footer from the input. Stacked below-editor widgets (e.g. the async-subagent widget and the workflow run counter) are also separated from each other by a blank line. Rendering below-editor widgets last keeps a live widget at the bottom of the buffer (within the viewport), preserving the widget resize-flicker fix. Extension-provided custom footers are now swapped in place (rather than appended), so installing a custom footer keeps the below-editor widget container as the last UI child and does not regress this ordering ([#1109](https://github.com/bastani-inc/atomic/issues/1109)).
 
 ## [0.8.19] - 2026-05-27
 
@@ -82,7 +82,7 @@
 
 ### Added
 
-- Added SDK `excludeTools` support for omitting named built-in, extension, and custom tools from `createAgentSession()` sessions while preserving existing `tools` and `noTools` behavior ([#1070](https://github.com/bastani/atomic/issues/1070)).
+- Added SDK `excludeTools` support for omitting named built-in, extension, and custom tools from `createAgentSession()` sessions while preserving existing `tools` and `noTools` behavior ([#1070](https://github.com/bastani-inc/atomic/issues/1070)).
 
 ### Changed
 
@@ -98,11 +98,11 @@
 
 ### Breaking Changes
 
-- Removed bundled Ralph's configurable `review_quorum` and `blocker_threshold` inputs; `max_turns` remains configurable alongside `objective` and optional `base_branch` ([#1061](https://github.com/bastani/atomic/issues/1061)).
+- Removed bundled Ralph's configurable `review_quorum` and `blocker_threshold` inputs; `max_turns` remains configurable alongside `objective` and optional `base_branch` ([#1061](https://github.com/bastani-inc/atomic/issues/1061)).
 
 ### Changed
 
-- Updated bundled Ralph docs and prompts to more closely match Codex `/goal` continuation guidance while retaining deterministic reviewer-gated completion ([#1061](https://github.com/bastani/atomic/issues/1061)).
+- Updated bundled Ralph docs and prompts to more closely match Codex `/goal` continuation guidance while retaining deterministic reviewer-gated completion ([#1061](https://github.com/bastani-inc/atomic/issues/1061)).
 - Restored bundled Ralph's stronger historical review gate prompt and `review_decision` schema with findings, oracle satisfaction, receipt assessment, verification remaining, and reviewer-error guard fields.
 
 ## [0.8.16] - 2026-05-26
@@ -115,15 +115,15 @@
 
 ### Breaking Changes
 
-- Removed Ralph's `prompt` and `max_loops` compatibility inputs from the bundled workflow; use `objective` and `max_turns` instead ([#1061](https://github.com/bastani/atomic/issues/1061)).
+- Removed Ralph's `prompt` and `max_loops` compatibility inputs from the bundled workflow; use `objective` and `max_turns` instead ([#1061](https://github.com/bastani-inc/atomic/issues/1061)).
 
 ### Changed
 
-- Updated bundled Ralph docs and guide examples for the Goal Runner workflow with goal-ledger receipts, reviewer quorum, repeated-blocker gating, and `max_turns`/`objective` inputs ([#1061](https://github.com/bastani/atomic/issues/1061)).
+- Updated bundled Ralph docs and guide examples for the Goal Runner workflow with goal-ledger receipts, reviewer quorum, repeated-blocker gating, and `max_turns`/`objective` inputs ([#1061](https://github.com/bastani-inc/atomic/issues/1061)).
 
 ### Fixed
 
-- Clarified bundled Ralph's bounded `blocker_threshold` behavior ([#1061](https://github.com/bastani/atomic/issues/1061)).
+- Clarified bundled Ralph's bounded `blocker_threshold` behavior ([#1061](https://github.com/bastani-inc/atomic/issues/1061)).
 
 ## [0.8.15] - 2026-05-26
 

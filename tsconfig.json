@@ -1,41 +1,43 @@
 {
-  "compilerOptions": {
-    "target": "ESNext",
-    "module": "ESNext",
-    "moduleResolution": "bundler",
-    "strict": true,
-    "esModuleInterop": true,
-    "skipLibCheck": true,
-    "types": ["bun"],
-    "typeRoots": ["./node_modules/@types"],
-    "lib": ["ESNext"],
-    "allowImportingTsExtensions": true,
-    "allowArbitraryExtensions": true,
-    "noEmit": true,
-    "resolveJsonModule": true,
-    "isolatedModules": true,
-    "verbatimModuleSyntax": true,
-    "paths": {
-      "@bastani/atomic": ["./packages/coding-agent/src/index.ts"],
-      "@bastani/workflows": ["./packages/workflows/src/index.ts"],
-      "@bastani/workflows/*": ["./packages/workflows/src/*"],
-      "@bastani/subagents": ["./packages/subagents/src/extension/index.ts"],
-      "@bastani/subagents/*": ["./packages/subagents/src/*"],
-      "@bastani/mcp": ["./packages/mcp/index.ts"],
-      "@bastani/mcp/*": ["./packages/mcp/*"],
-      "@bastani/web-access": ["./packages/web-access/index.ts"],
-      "@bastani/web-access/*": ["./packages/web-access/*"],
-      "@bastani/intercom": ["./packages/intercom/index.ts"],
-      "@bastani/intercom/*": ["./packages/intercom/*"]
-    }
-  },
-  "include": ["packages/workflows/**/*", "test/**/*", "examples/**/*"],
-  "exclude": [
-    "node_modules",
-    "packages/coding-agent",
-    "packages/subagents",
-    "packages/mcp",
-    "packages/web-access",
-    "packages/intercom"
-  ]
+    "compilerOptions": {
+        "target": "ESNext",
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "strict": true,
+        "esModuleInterop": true,
+        "skipLibCheck": true,
+        "types": ["bun"],
+        "typeRoots": ["./node_modules/@types"],
+        "lib": ["ESNext"],
+        "allowImportingTsExtensions": true,
+        "allowArbitraryExtensions": true,
+        "noEmit": true,
+        "resolveJsonModule": true,
+        "isolatedModules": true,
+        "verbatimModuleSyntax": true,
+        "paths": {
+            "@bastani/atomic": ["./packages/coding-agent/src/index.ts"],
+            "@bastani/workflows": ["./packages/workflows/src/index.ts"],
+            "@bastani/workflows/*": ["./packages/workflows/src/*"],
+            "@bastani/subagents": [
+                "./packages/subagents/src/extension/index.ts"
+            ],
+            "@bastani/subagents/*": ["./packages/subagents/src/*"],
+            "@bastani/mcp": ["./packages/mcp/index.ts"],
+            "@bastani/mcp/*": ["./packages/mcp/*"],
+            "@bastani/web-access": ["./packages/web-access/index.ts"],
+            "@bastani/web-access/*": ["./packages/web-access/*"],
+            "@bastani/intercom": ["./packages/intercom/index.ts"],
+            "@bastani/intercom/*": ["./packages/intercom/*"]
+        }
+    },
+    "include": ["packages/workflows/**/*", "test/**/*", "examples/**/*"],
+    "exclude": [
+        "node_modules",
+        "packages/coding-agent",
+        "packages/subagents",
+        "packages/mcp",
+        "packages/web-access",
+        "packages/intercom"
+    ]
 }

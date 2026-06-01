@@ -42,7 +42,7 @@ The CLI needs to support three distinct behaviors:
 
 ### 1. Current CLI Argument Parsing
 
-**Entry Point:** [src/index.ts:54-106](https://github.com/bastani/atomic/blob/bac12df582f3752fc22f0a5d1b9806d568b0dcdb/src/index.ts#L54-L106)
+**Entry Point:** [src/index.ts:54-106](https://github.com/bastani-inc/atomic/blob/bac12df582f3752fc22f0a5d1b9806d568b0dcdb/src/index.ts#L54-L106)
 
 ```typescript
 const { values, positionals } = parseArgs({
@@ -67,7 +67,7 @@ Current routing logic (lines 80-101):
 
 ### 2. Current `--agent` Flow
 
-**Entry Point:** [src/index.ts:80-84](https://github.com/bastani/atomic/blob/bac12df582f3752fc22f0a5d1b9806d568b0dcdb/src/index.ts#L80-L84)
+**Entry Point:** [src/index.ts:80-84](https://github.com/bastani-inc/atomic/blob/bac12df582f3752fc22f0a5d1b9806d568b0dcdb/src/index.ts#L80-L84)
 
 ```typescript
 // Handle --agent
@@ -77,7 +77,7 @@ if (typeof values.agent === "string") {
 }
 ```
 
-**Run Agent Implementation:** [src/commands/run-agent.ts:24-57](https://github.com/bastani/atomic/blob/bac12df582f3752fc22f0a5d1b9806d568b0dcdb/src/commands/run-agent.ts#L24-L57)
+**Run Agent Implementation:** [src/commands/run-agent.ts:24-57](https://github.com/bastani-inc/atomic/blob/bac12df582f3752fc22f0a5d1b9806d568b0dcdb/src/commands/run-agent.ts#L24-L57)
 
 Current flow:
 
@@ -97,9 +97,9 @@ Each agent has a `folder` property in `AGENT_CONFIG` that specifies where its co
 | `opencode`    | `.opencode` | `AGENTS.md`              |
 | `copilot-cli` | `.github`   | `AGENTS.md`              |
 
-**Config Definition:** [src/config.ts:25-60](https://github.com/bastani/atomic/blob/bac12df582f3752fc22f0a5d1b9806d568b0dcdb/src/config.ts#L25-L60)
+**Config Definition:** [src/config.ts:25-60](https://github.com/bastani-inc/atomic/blob/bac12df582f3752fc22f0a5d1b9806d568b0dcdb/src/config.ts#L25-L60)
 
-**Path Existence Check Utility:** [src/utils/copy.ts:169-176](https://github.com/bastani/atomic/blob/bac12df582f3752fc22f0a5d1b9806d568b0dcdb/src/utils/copy.ts#L169-L176)
+**Path Existence Check Utility:** [src/utils/copy.ts:169-176](https://github.com/bastani-inc/atomic/blob/bac12df582f3752fc22f0a5d1b9806d568b0dcdb/src/utils/copy.ts#L169-L176)
 
 ```typescript
 export async function pathExists(path: string): Promise<boolean> {
@@ -114,7 +114,7 @@ export async function pathExists(path: string): Promise<boolean> {
 
 ### 4. Init Command - Selection Flow
 
-**Full Implementation:** [src/commands/init.ts:50-181](https://github.com/bastani/atomic/blob/bac12df582f3752fc22f0a5d1b9806d568b0dcdb/src/commands/init.ts#L50-L181)
+**Full Implementation:** [src/commands/init.ts:50-181](https://github.com/bastani-inc/atomic/blob/bac12df582f3752fc22f0a5d1b9806d568b0dcdb/src/commands/init.ts#L50-L181)
 
 The selection prompt is at lines 65-81:
 
@@ -142,7 +142,7 @@ const agentKey = selectedAgent as AgentKey;
 
 ### 5. Current `InitOptions` Interface
 
-[src/commands/init.ts:24-26](https://github.com/bastani/atomic/blob/bac12df582f3752fc22f0a5d1b9806d568b0dcdb/src/commands/init.ts#L24-L26)
+[src/commands/init.ts:24-26](https://github.com/bastani-inc/atomic/blob/bac12df582f3752fc22f0a5d1b9806d568b0dcdb/src/commands/init.ts#L24-L26)
 
 ```typescript
 interface InitOptions {
@@ -237,7 +237,7 @@ The current routing checks `--agent` before positional commands. This needs to c
 3. Positional commands (`init`, etc.) ← check first, pass `--agent` to init if present
 4. `--agent` (only if no positional command)
 
-**Location:** [src/index.ts:80-101](https://github.com/bastani/atomic/blob/bac12df582f3752fc22f0a5d1b9806d568b0dcdb/src/index.ts#L80-L101)
+**Location:** [src/index.ts:80-101](https://github.com/bastani-inc/atomic/blob/bac12df582f3752fc22f0a5d1b9806d568b0dcdb/src/index.ts#L80-L101)
 
 ```typescript
 // Handle positional commands FIRST
@@ -271,7 +271,7 @@ switch (command) {
 
 ### Step 2: Extend `InitOptions` Interface
 
-**Location:** [src/commands/init.ts:24-26](https://github.com/bastani/atomic/blob/bac12df582f3752fc22f0a5d1b9806d568b0dcdb/src/commands/init.ts#L24-L26)
+**Location:** [src/commands/init.ts:24-26](https://github.com/bastani-inc/atomic/blob/bac12df582f3752fc22f0a5d1b9806d568b0dcdb/src/commands/init.ts#L24-L26)
 
 ```typescript
 interface InitOptions {
@@ -282,7 +282,7 @@ interface InitOptions {
 
 ### Step 3: Modify `initCommand()` Selection Logic
 
-**Location:** [src/commands/init.ts:65-81](https://github.com/bastani/atomic/blob/bac12df582f3752fc22f0a5d1b9806d568b0dcdb/src/commands/init.ts#L65-L81)
+**Location:** [src/commands/init.ts:65-81](https://github.com/bastani-inc/atomic/blob/bac12df582f3752fc22f0a5d1b9806d568b0dcdb/src/commands/init.ts#L65-L81)
 
 ```typescript
 let agentKey: AgentKey;
@@ -319,7 +319,7 @@ if (options.preSelectedAgent) {
 
 ### Step 4: Modify `runAgentCommand()` for Conditional Init
 
-**Location:** [src/commands/run-agent.ts:24-57](https://github.com/bastani/atomic/blob/bac12df582f3752fc22f0a5d1b9806d568b0dcdb/src/commands/run-agent.ts#L24-L57)
+**Location:** [src/commands/run-agent.ts:24-57](https://github.com/bastani-inc/atomic/blob/bac12df582f3752fc22f0a5d1b9806d568b0dcdb/src/commands/run-agent.ts#L24-L57)
 
 After validating the agent key (line 32), add config detection:
 

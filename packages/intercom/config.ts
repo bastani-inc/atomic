@@ -13,10 +13,10 @@ export interface IntercomConfig {
 
   /** Optional custom status suffix shown after automatic lifecycle status */
   status?: string;
-  
+
   /** Enable/disable intercom (default: true) */
   enabled: boolean;
-  
+
   /** Show reply hint in incoming messages (default: true) */
   replyHint: boolean;
 }
@@ -36,7 +36,7 @@ export function loadConfig(): IntercomConfig {
   if (!existsSync(CONFIG_PATH)) {
     return { ...defaults };
   }
-  
+
   try {
     const raw = readFileSync(CONFIG_PATH, "utf-8");
     const parsed: unknown = JSON.parse(raw);

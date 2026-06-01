@@ -5,7 +5,17 @@ git_commit: 2685610703fed9d71ff0447287950059b05ffe70
 branch: flora131/feature/sapling-integration
 repository: atomic
 topic: "Source Control Type Selection Feature - Extending Init Flow for Multi-SCM Support"
-tags: [research, codebase, source-control, sapling, github, init-flow, commands, skills]
+tags:
+    [
+        research,
+        codebase,
+        source-control,
+        sapling,
+        github,
+        init-flow,
+        commands,
+        skills,
+    ]
 status: complete
 last_updated: 2026-02-10
 last_updated_by: Claude Code
@@ -16,6 +26,7 @@ last_updated_by: Claude Code
 ## Research Question
 
 How can we extend the current agent selection flow to include source control type selection (initially supporting Sapling and GitHub, with future extensibility for Azure DevOps), where:
+
 1. Non-built-in/configurable commands get separate prompt/md files per source control type (e.g., `commit-github.md`, `commit-sapling.md`)
 2. General commands that don't use source control tools remain unified (e.g., `research-codebase.md`)
 3. The `atomic init` flow places the correct files in the user's `.opencode`, `.github`, or `.claude` directory based on their source control selection
@@ -24,12 +35,14 @@ How can we extend the current agent selection flow to include source control typ
 ## Summary
 
 The atomic CLI codebase has a well-structured agent configuration and command system that can be extended to support source control type selection. The current architecture already supports:
+
 - Multiple agent types (Claude, OpenCode, Copilot) with different config folders
 - Command/skill files with YAML frontmatter in markdown format
 - A template-based init flow with preservation and merge logic
 - Both built-in commands and disk-discoverable custom commands
 
 **Key findings for source control integration:**
+
 1. Only 2 commands currently use SCM-specific operations: `/commit` and `/create-gh-pr`
 2. These commands exist as duplicates across all agent folders (`.claude/commands/`, `.opencode/command/`, `.github/skills/`)
 3. The `/commit` command uses generic `git` commands that need Sapling equivalents
@@ -46,35 +59,35 @@ The agent system is defined in `src/config.ts`:
 
 ```typescript
 export interface AgentConfig {
-  name: string;                    // Display name
-  cmd: string;                     // Command to execute
-  additional_flags: string[];      // Flags for agent spawning
-  folder: string;                  // Config folder (.claude, .opencode, .github)
-  install_url: string;             // Installation URL
-  exclude: string[];               // Files to skip when copying folder
-  additional_files: string[];      // Extra files to copy (CLAUDE.md, AGENTS.md, .mcp.json)
-  preserve_files: string[];        // Files to skip if user has customized them
-  merge_files: string[];           // Files to merge instead of overwrite (.mcp.json)
+    name: string; // Display name
+    cmd: string; // Command to execute
+    additional_flags: string[]; // Flags for agent spawning
+    folder: string; // Config folder (.claude, .opencode, .github)
+    install_url: string; // Installation URL
+    exclude: string[]; // Files to skip when copying folder
+    additional_files: string[]; // Extra files to copy (CLAUDE.md, AGENTS.md, .mcp.json)
+    preserve_files: string[]; // Files to skip if user has customized them
+    merge_files: string[]; // Files to merge instead of overwrite (.mcp.json)
 }
 ```
 
 **Current Agent Configurations:**
 
-| Agent | Folder | Additional Files | Preserve Files | Merge Files |
-|-------|--------|------------------|----------------|-------------|
-| Claude Code | `.claude` | `CLAUDE.md`, `.mcp.json` | `CLAUDE.md` | `.mcp.json` |
-| OpenCode | `.opencode` | `AGENTS.md` | `AGENTS.md` | - |
-| Copilot | `.github` | `AGENTS.md` | `AGENTS.md` | - |
+| Agent       | Folder      | Additional Files         | Preserve Files | Merge Files |
+| ----------- | ----------- | ------------------------ | -------------- | ----------- |
+| Claude Code | `.claude`   | `CLAUDE.md`, `.mcp.json` | `CLAUDE.md`    | `.mcp.json` |
+| OpenCode    | `.opencode` | `AGENTS.md`              | `AGENTS.md`    | -           |
+| Copilot     | `.github`   | `AGENTS.md`              | `AGENTS.md`    | -           |
 
 ### 2. Current Command/Skill File Locations
 
 Commands and skills are stored in different directories per agent:
 
-| Agent | Commands Location | File Pattern |
-|-------|-------------------|--------------|
-| Claude | `.claude/commands/` | `*.md` files |
-| OpenCode | `.opencode/command/` | `*.md` files |
-| Copilot | `.github/skills/` | `*/SKILL.md` subdirectories |
+| Agent    | Commands Location    | File Pattern                |
+| -------- | -------------------- | --------------------------- |
+| Claude   | `.claude/commands/`  | `*.md` files                |
+| OpenCode | `.opencode/command/` | `*.md` files                |
+| Copilot  | `.github/skills/`    | `*/SKILL.md` subdirectories |
 
 **Current command files found:**
 
@@ -101,12 +114,14 @@ Based on comprehensive analysis, only **2 commands** use SCM-specific operations
 #### `/commit` Command
 
 **Files:**
+
 - `src/ui/commands/skill-commands.ts:72-316` - Embedded prompt in BUILTIN_SKILLS
 - `.claude/commands/commit.md` - Claude Agent SDK configuration
 - `.opencode/command/commit.md` - OpenCode SDK configuration
 - `.github/skills/commit/SKILL.md` - Empty placeholder
 
 **Git operations used:**
+
 - `git status --porcelain`
 - `git branch --show-current`
 - `git diff --cached --stat`
@@ -119,43 +134,46 @@ Based on comprehensive analysis, only **2 commands** use SCM-specific operations
 
 **Git → Sapling Command Mapping for /commit:**
 
-| Operation | Git | Sapling |
-|-----------|-----|---------|
-| Check status | `git status --porcelain` | `sl status` |
-| Get current branch | `git branch --show-current` | `sl bookmark` or smartlog |
-| View staged changes | `git diff --cached --stat` | `sl diff --stat` |
-| View unstaged changes | `git diff --stat` | `sl diff --stat` |
-| Recent commits | `git log --oneline -5` | `sl smartlog` or `sl ssl` |
-| Stage files | `git add <files>` | `sl add <files>` |
-| Create commit | `git commit -m "msg"` | `sl commit -m "msg"` |
-| Amend commit | `git commit --amend` | `sl amend` |
+| Operation             | Git                         | Sapling                   |
+| --------------------- | --------------------------- | ------------------------- |
+| Check status          | `git status --porcelain`    | `sl status`               |
+| Get current branch    | `git branch --show-current` | `sl bookmark` or smartlog |
+| View staged changes   | `git diff --cached --stat`  | `sl diff --stat`          |
+| View unstaged changes | `git diff --stat`           | `sl diff --stat`          |
+| Recent commits        | `git log --oneline -5`      | `sl smartlog` or `sl ssl` |
+| Stage files           | `git add <files>`           | `sl add <files>`          |
+| Create commit         | `git commit -m "msg"`       | `sl commit -m "msg"`      |
+| Amend commit          | `git commit --amend`        | `sl amend`                |
 
 #### `/create-gh-pr` Command
 
 **Files:**
+
 - `src/ui/commands/skill-commands.ts:855-866` - Skill definition
 - `.claude/commands/create-gh-pr.md`
 - `.opencode/command/create-gh-pr.md`
 - `.github/skills/create-gh-pr/SKILL.md` (empty placeholder)
 
 **GitHub-specific operations:**
+
 - `gh pr create --title "TITLE" --body "BODY" --base $BASE_BRANCH`
 - Uses `/commit` command internally
 
 **Git/GitHub → Sapling Mapping for /create-gh-pr:**
 
-| Operation | Git/GitHub | Sapling |
-|-----------|------------|---------|
-| Push changes | `git push` | `sl push --to <bookmark>` |
-| Create PR | `gh pr create` | `sl pr submit` |
-| Update PR | Push + amend | `sl amend && sl pr submit` |
-| List PRs | `gh pr list` | `sl pr list` |
+| Operation    | Git/GitHub     | Sapling                    |
+| ------------ | -------------- | -------------------------- |
+| Push changes | `git push`     | `sl push --to <bookmark>`  |
+| Create PR    | `gh pr create` | `sl pr submit`             |
+| Update PR    | Push + amend   | `sl amend && sl pr submit` |
+| List PRs     | `gh pr list`   | `sl pr list`               |
 
 ### 4. Commands That Do NOT Need SCM Variants
 
 All other built-in skills/commands are SCM-agnostic:
 
 **Configurable Skills (no SCM usage):**
+
 - `/research-codebase` - File analysis only
 - `/create-spec` - Document generation only
 - `/implement-feature` - Code writing only
@@ -164,6 +182,7 @@ All other built-in skills/commands are SCM-agnostic:
 - `/testing-anti-patterns` - Pattern analysis only (pinned builtin)
 
 **Built-in Commands (hardcoded, no SCM usage):**
+
 - `/help`, `/theme`, `/clear`, `/compact`, `/exit`, `/model`, `/mcp`, `/context`
 
 ### 5. Init Command Flow Analysis
@@ -183,11 +202,11 @@ The init command (`src/commands/init.ts`) follows this flow:
 
 **Template file storage locations:**
 
-| Install Type | Template Location |
-|--------------|------------------|
-| Source/dev | Repository root (`/atomic`) |
-| npm/bun global | `node_modules/@bastani/atomic` |
-| Binary | `~/.local/share/atomic` or `%LOCALAPPDATA%\atomic` |
+| Install Type   | Template Location                                  |
+| -------------- | -------------------------------------------------- |
+| Source/dev     | Repository root (`/atomic`)                        |
+| npm/bun global | `node_modules/@bastani/atomic`                     |
+| Binary         | `~/.local/share/atomic` or `%LOCALAPPDATA%\atomic` |
 
 ### 6. File Copy Logic
 
@@ -199,6 +218,7 @@ The `copyDirPreserving()` function (`src/commands/init.ts:49-79`) handles templa
 - **Filters** items in `exclude` list
 
 For `additional_files`:
+
 - **Preserve files** (CLAUDE.md, AGENTS.md): Skip if exists and non-empty
 - **Merge files** (.mcp.json): Deep merge user + template content
 - **Default**: Only copy if destination doesn't exist
@@ -225,24 +245,29 @@ A comprehensive Sapling reference document has been created at `research/docs/sa
 ## Code References
 
 ### Core Configuration
+
 - `src/config.ts:5-24` - AgentConfig interface definition
 - `src/config.ts:26-70` - AGENT_CONFIG object with all agent definitions
 - `src/config.ts:72-82` - Helper functions (isValidAgent, getAgentConfig, getAgentKeys)
 
 ### Init Command Flow
+
 - `src/commands/init.ts:84-300` - Main initCommand function
 - `src/commands/init.ts:49-79` - copyDirPreserving function
 - `src/commands/init.ts:124-135` - Agent selection prompt (insertion point for SCM)
 
 ### Skill Commands
+
 - `src/ui/commands/skill-commands.ts:72-316` - commit skill (embedded)
 - `src/ui/commands/skill-commands.ts:855-866` - create-gh-pr skill
 - `src/ui/commands/skill-commands.ts:1708-1711` - PINNED_BUILTIN_SKILLS
 
 ### Built-in Commands
+
 - `src/ui/commands/builtin-commands.ts` - All built-in command definitions
 
 ### Command Files (SCM-Specific)
+
 - `.claude/commands/commit.md` - Git commit command for Claude
 - `.claude/commands/create-gh-pr.md` - GitHub PR command for Claude
 - `.opencode/command/commit.md` - Git commit command for OpenCode
@@ -352,6 +377,7 @@ templates/
 ## Historical Context (from research/)
 
 Related research documents:
+
 - `research/docs/2026-01-19-cli-auto-init-agent.md` - Auto-init behavior when config missing
 - `research/docs/2026-01-20-cli-agent-rename-research.md` - Agent naming research
 - `research/docs/sapling-reference.md` - Complete Sapling command reference
@@ -361,11 +387,13 @@ Related research documents:
 ## Related Research
 
 ### External References
+
 - **Facebook Sapling Repository:** https://github.com/facebook/sapling
 - **Sapling Documentation:** https://sapling-scm.com/docs/
 - **DeepWiki Sapling:** https://deepwiki.com/facebook/sapling
 
 ### Created Reference Documents
+
 - `research/docs/sapling-reference.md` - Complete Git → Sapling command mapping guide
 
 ---
@@ -379,9 +407,9 @@ Related research documents:
 3. **Azure DevOps Support**: What CLI tools does ADO use? Will need similar research for ADO as done for Sapling.
 
 4. **Command Naming**: Should Sapling PR command be named:
-   - `create-sl-pr.md` (matches tool name)
-   - `create-pr-sapling.md` (matches pattern `create-pr-{scm}`)
-   - `submit-pr.md` (matches Sapling's `sl pr submit`)
+    - `create-sl-pr.md` (matches tool name)
+    - `create-pr-sapling.md` (matches pattern `create-pr-{scm}`)
+    - `submit-pr.md` (matches Sapling's `sl pr submit`)
 
 5. **Backwards Compatibility**: How do we handle existing installations when a user switches SCM types?
 
@@ -397,52 +425,52 @@ Related research documents:
 
 ### Required Changes Summary
 
-| File | Change Type | Description |
-|------|-------------|-------------|
-| `src/config.ts` | Extend | Add `SourceControlType` and `SCM_CONFIG` |
-| `src/commands/init.ts` | Modify | Add SCM selection prompt after agent selection |
-| `.claude/commands/` | Create | SCM-specific command file variants |
-| `.opencode/command/` | Create | SCM-specific command file variants |
-| `.github/skills/` | Create | SCM-specific skill file variants |
-| `src/commands/run-agent.ts` | Verify | Auto-init already exists, may need SCM handling |
+| File                        | Change Type | Description                                     |
+| --------------------------- | ----------- | ----------------------------------------------- |
+| `src/config.ts`             | Extend      | Add `SourceControlType` and `SCM_CONFIG`        |
+| `src/commands/init.ts`      | Modify      | Add SCM selection prompt after agent selection  |
+| `.claude/commands/`         | Create      | SCM-specific command file variants              |
+| `.opencode/command/`        | Create      | SCM-specific command file variants              |
+| `.github/skills/`           | Create      | SCM-specific skill file variants                |
+| `src/commands/run-agent.ts` | Verify      | Auto-init already exists, may need SCM handling |
 
 ### Proposed Configuration Extensions
 
 ```typescript
 // src/config.ts additions
 
-export type SourceControlType = 'github' | 'sapling' | 'azure-devops';
+export type SourceControlType = "github" | "sapling" | "azure-devops";
 
 export interface ScmConfig {
-  name: string;                    // "GitHub/Git" or "Sapling"
-  displayName: string;             // For prompts
-  cliTool: string;                 // "git" or "sl"
-  prTool: string;                  // "gh" or "sl pr"
-  detectDir?: string;              // ".git" or ".sl" for auto-detection
+    name: string; // "GitHub/Git" or "Sapling"
+    displayName: string; // For prompts
+    cliTool: string; // "git" or "sl"
+    prTool: string; // "gh" or "sl pr"
+    detectDir?: string; // ".git" or ".sl" for auto-detection
 }
 
 export const SCM_CONFIG: Record<SourceControlType, ScmConfig> = {
-  github: {
-    name: "github",
-    displayName: "GitHub / Git",
-    cliTool: "git",
-    prTool: "gh",
-    detectDir: ".git",
-  },
-  sapling: {
-    name: "sapling",
-    displayName: "Sapling",
-    cliTool: "sl",
-    prTool: "sl pr",
-    detectDir: ".sl",
-  },
-  "azure-devops": {
-    name: "azure-devops",
-    displayName: "Azure DevOps",
-    cliTool: "git",
-    prTool: "az repos",
-    detectDir: ".git",  // ADO uses git
-  },
+    github: {
+        name: "github",
+        displayName: "GitHub / Git",
+        cliTool: "git",
+        prTool: "gh",
+        detectDir: ".git",
+    },
+    sapling: {
+        name: "sapling",
+        displayName: "Sapling",
+        cliTool: "sl",
+        prTool: "sl pr",
+        detectDir: ".sl",
+    },
+    "azure-devops": {
+        name: "azure-devops",
+        displayName: "Azure DevOps",
+        cliTool: "git",
+        prTool: "az repos",
+        detectDir: ".git", // ADO uses git
+    },
 };
 
 // Commands that have SCM-specific variants
@@ -456,18 +484,18 @@ export const SCM_SPECIFIC_COMMANDS = ["commit", "create-pr"];
 
 // Select source control type
 const scmOptions = Object.entries(SCM_CONFIG).map(([key, config]) => ({
-  value: key as SourceControlType,
-  label: config.displayName,
+    value: key as SourceControlType,
+    label: config.displayName,
 }));
 
 const selectedScm = await select({
-  message: "Select source control type:",
-  options: scmOptions,
+    message: "Select source control type:",
+    options: scmOptions,
 });
 
 if (isCancel(selectedScm)) {
-  cancel("Operation cancelled.");
-  process.exit(0);
+    cancel("Operation cancelled.");
+    process.exit(0);
 }
 
 const scmType = selectedScm as SourceControlType;
@@ -482,9 +510,9 @@ For the initial implementation:
 
 1. **Add SCM selection prompt** after agent selection in init flow
 2. **Create Sapling command variants:**
-   - `.claude/commands/commit-sapling.md`
-   - `.claude/commands/create-sl-pr.md`
-   - Similar for `.opencode/` and `.github/`
+    - `.claude/commands/commit-sapling.md`
+    - `.claude/commands/create-sl-pr.md`
+    - Similar for `.opencode/` and `.github/`
 3. **Modify file copy logic** to select appropriate command files based on SCM
 4. **Store selection** in a config file for future reference
 
@@ -494,22 +522,22 @@ This keeps the initial scope small while enabling future expansion.
 
 ## Commands Summary Table
 
-| Command | Category | Uses SCM? | Needs Variants? | Notes |
-|---------|----------|-----------|-----------------|-------|
-| `commit` | skill | **YES** (git) | **YES** | Primary SCM command |
-| `create-gh-pr` | skill | **YES** (gh, git) | **YES** | Becomes `create-pr` with variants |
-| `research-codebase` | skill | No | No | File analysis only |
-| `create-spec` | skill | No | No | Document generation |
-| `implement-feature` | skill | No | No | Code writing |
-| `explain-code` | skill | No | No | Code analysis |
-| `prompt-engineer` | skill (pinned) | No | No | Prompt optimization |
-| `testing-anti-patterns` | skill (pinned) | No | No | Pattern analysis |
-| `/help` | builtin | No | No | UI command |
-| `/theme` | builtin | No | No | UI command |
-| `/clear` | builtin | No | No | UI command |
-| `/model` | builtin | No | No | UI command |
-| `/mcp` | builtin | No | No | UI command |
-| `/context` | builtin | No | No | UI command |
-| `/compact` | builtin | No | No | UI command |
-| `/exit` | builtin | No | No | UI command |
-| `/ralph` | workflow | **YES** (in PR node) | **Maybe** | Uses `gh pr create` in createPRNode |
+| Command                 | Category       | Uses SCM?            | Needs Variants? | Notes                               |
+| ----------------------- | -------------- | -------------------- | --------------- | ----------------------------------- |
+| `commit`                | skill          | **YES** (git)        | **YES**         | Primary SCM command                 |
+| `create-gh-pr`          | skill          | **YES** (gh, git)    | **YES**         | Becomes `create-pr` with variants   |
+| `research-codebase`     | skill          | No                   | No              | File analysis only                  |
+| `create-spec`           | skill          | No                   | No              | Document generation                 |
+| `implement-feature`     | skill          | No                   | No              | Code writing                        |
+| `explain-code`          | skill          | No                   | No              | Code analysis                       |
+| `prompt-engineer`       | skill (pinned) | No                   | No              | Prompt optimization                 |
+| `testing-anti-patterns` | skill (pinned) | No                   | No              | Pattern analysis                    |
+| `/help`                 | builtin        | No                   | No              | UI command                          |
+| `/theme`                | builtin        | No                   | No              | UI command                          |
+| `/clear`                | builtin        | No                   | No              | UI command                          |
+| `/model`                | builtin        | No                   | No              | UI command                          |
+| `/mcp`                  | builtin        | No                   | No              | UI command                          |
+| `/context`              | builtin        | No                   | No              | UI command                          |
+| `/compact`              | builtin        | No                   | No              | UI command                          |
+| `/exit`                 | builtin        | No                   | No              | UI command                          |
+| `/ralph`                | workflow       | **YES** (in PR node) | **Maybe**       | Uses `gh pr create` in createPRNode |

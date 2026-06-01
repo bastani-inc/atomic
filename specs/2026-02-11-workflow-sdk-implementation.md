@@ -48,21 +48,25 @@ The Atomic CLI has a layered architecture with three distinct subsystems relevan
 ### 2.2 The Problem
 
 **Custom tools cannot be referenced from workflow graphs:**
+
 - `toolNode()` requires an explicit `execute` function at graph definition time (`src/graph/nodes.ts:362`)
 - Custom tools from `.atomic/tools/` are only registered with the SDK client, not accessible to the graph engine
 - Workflow authors must duplicate tool logic instead of referencing existing tools by name
 
 **Sub-agents are isolated from graph state:**
+
 - `SubagentSessionManager` operates in the TUI layer independently of `GraphExecutor` (`src/ui/subagent-session-manager.ts:106`)
 - No mechanism to feed sub-agent results back into parent workflow state updates
 - `parallelNode()` defines branches by node IDs, not by sub-agent sessions — no native way to spawn multiple sub-agents and synchronize results
 - Built-in sub-agent types (explore, task, general-purpose, code-review) are not formalized as a discoverable registry
 
 **Tool context mismatch:**
+
 - Custom tool handlers receive `ToolContext` (sessionID, messageID, agent, directory, abort) but lack workflow state access
 - `agentNode()` operates within `ExecutionContext<TState>` with full state — this context is not propagated to tool handlers
 
 **Workflow resolver type safety gap:**
+
 - `WorkflowResolver` returns `CompiledSubgraph<BaseState>` but subgraph nodes are generic over `TSubState`
 - Runtime casting at `src/graph/nodes.ts:1189` (`as unknown as CompiledSubgraph<TSubState>`) masks type mismatches
 
@@ -188,49 +192,49 @@ import type { ToolDefinition } from "../types";
 import type { ToolInput } from "./plugin";
 
 interface ToolEntry {
-  name: string;
-  description: string;
-  definition: ToolDefinition;
-  source: "local" | "global";
-  filePath: string;
+    name: string;
+    description: string;
+    definition: ToolDefinition;
+    source: "local" | "global";
+    filePath: string;
 }
 
 class ToolRegistry {
-  private tools = new Map<string, ToolEntry>();
+    private tools = new Map<string, ToolEntry>();
 
-  register(entry: ToolEntry): void {
-    this.tools.set(entry.name, entry);
-  }
+    register(entry: ToolEntry): void {
+        this.tools.set(entry.name, entry);
+    }
 
-  get(name: string): ToolEntry | undefined {
-    return this.tools.get(name);
-  }
+    get(name: string): ToolEntry | undefined {
+        return this.tools.get(name);
+    }
 
-  has(name: string): boolean {
-    return this.tools.has(name);
-  }
+    has(name: string): boolean {
+        return this.tools.has(name);
+    }
 
-  getAll(): ToolEntry[] {
-    return Array.from(this.tools.values());
-  }
+    getAll(): ToolEntry[] {
+        return Array.from(this.tools.values());
+    }
 
-  clear(): void {
-    this.tools.clear();
-  }
+    clear(): void {
+        this.tools.clear();
+    }
 }
 
 // Singleton instance
 let globalToolRegistry: ToolRegistry | null = null;
 
 export function getToolRegistry(): ToolRegistry {
-  if (!globalToolRegistry) {
-    globalToolRegistry = new ToolRegistry();
-  }
-  return globalToolRegistry;
+    if (!globalToolRegistry) {
+        globalToolRegistry = new ToolRegistry();
+    }
+    return globalToolRegistry;
 }
 
 export function setToolRegistry(registry: ToolRegistry): void {
-  globalToolRegistry = registry;
+    globalToolRegistry = registry;
 }
 ```
 
@@ -239,20 +243,22 @@ export function setToolRegistry(registry: ToolRegistry): void {
 Modify `registerCustomTools()` to also populate the `ToolRegistry`:
 
 ```typescript
-export async function registerCustomTools(client: CodingAgentClient): Promise<number> {
-  const registry = getToolRegistry();
-  discoveredCustomTools = await loadToolsFromDisk();
-  for (const { definition, source, filePath } of discoveredCustomTools) {
-    client.registerTool(definition);
-    registry.register({
-      name: definition.name,
-      description: definition.description,
-      definition,
-      source,
-      filePath,
-    });
-  }
-  return discoveredCustomTools.length;
+export async function registerCustomTools(
+    client: CodingAgentClient,
+): Promise<number> {
+    const registry = getToolRegistry();
+    discoveredCustomTools = await loadToolsFromDisk();
+    for (const { definition, source, filePath } of discoveredCustomTools) {
+        client.registerTool(definition);
+        registry.register({
+            name: definition.name,
+            description: definition.description,
+            definition,
+            source,
+            filePath,
+        });
+    }
+    return discoveredCustomTools.length;
 }
 ```
 
@@ -277,51 +283,54 @@ Project-local agents override user-global agents, which override built-in agents
 **File:** `src/graph/subagent-registry.ts`
 
 ```typescript
-import type { AgentDefinition, AgentSource } from "../ui/commands/agent-commands";
+import type {
+    AgentDefinition,
+    AgentSource,
+} from "../ui/commands/agent-commands";
 import { discoverAgents, BUILTIN_AGENTS } from "../ui/commands/agent-commands";
 
 interface SubagentEntry {
-  name: string;
-  definition: AgentDefinition;
-  source: AgentSource;
+    name: string;
+    definition: AgentDefinition;
+    source: AgentSource;
 }
 
 class SubagentTypeRegistry {
-  private agents = new Map<string, SubagentEntry>();
+    private agents = new Map<string, SubagentEntry>();
 
-  register(entry: SubagentEntry): void {
-    this.agents.set(entry.name, entry);
-  }
+    register(entry: SubagentEntry): void {
+        this.agents.set(entry.name, entry);
+    }
 
-  get(name: string): SubagentEntry | undefined {
-    return this.agents.get(name);
-  }
+    get(name: string): SubagentEntry | undefined {
+        return this.agents.get(name);
+    }
 
-  has(name: string): boolean {
-    return this.agents.has(name);
-  }
+    has(name: string): boolean {
+        return this.agents.has(name);
+    }
 
-  getAll(): SubagentEntry[] {
-    return Array.from(this.agents.values());
-  }
+    getAll(): SubagentEntry[] {
+        return Array.from(this.agents.values());
+    }
 
-  clear(): void {
-    this.agents.clear();
-  }
+    clear(): void {
+        this.agents.clear();
+    }
 }
 
 // Singleton following existing setClientProvider/setWorkflowResolver pattern
 let globalSubagentRegistry: SubagentTypeRegistry | null = null;
 
 export function getSubagentRegistry(): SubagentTypeRegistry {
-  if (!globalSubagentRegistry) {
-    globalSubagentRegistry = new SubagentTypeRegistry();
-  }
-  return globalSubagentRegistry;
+    if (!globalSubagentRegistry) {
+        globalSubagentRegistry = new SubagentTypeRegistry();
+    }
+    return globalSubagentRegistry;
 }
 
 export function setSubagentRegistry(registry: SubagentTypeRegistry): void {
-  globalSubagentRegistry = registry;
+    globalSubagentRegistry = registry;
 }
 ```
 
@@ -329,28 +338,28 @@ export function setSubagentRegistry(registry: SubagentTypeRegistry): void {
 
 ```typescript
 export async function populateSubagentRegistry(): Promise<number> {
-  const registry = getSubagentRegistry();
+    const registry = getSubagentRegistry();
 
-  // Built-in agents (lowest priority, registered first)
-  for (const agent of BUILTIN_AGENTS) {
-    registry.register({
-      name: agent.name,
-      definition: agent,
-      source: "builtin",
-    });
-  }
+    // Built-in agents (lowest priority, registered first)
+    for (const agent of BUILTIN_AGENTS) {
+        registry.register({
+            name: agent.name,
+            definition: agent,
+            source: "builtin",
+        });
+    }
 
-  // Discovered agents (project + user) — overwrites built-in on conflict
-  const discovered = await discoverAgents();
-  for (const agent of discovered) {
-    registry.register({
-      name: agent.name,
-      definition: agent,
-      source: agent.source,
-    });
-  }
+    // Discovered agents (project + user) — overwrites built-in on conflict
+    const discovered = await discoverAgents();
+    for (const agent of discovered) {
+        registry.register({
+            name: agent.name,
+            definition: agent,
+            source: agent.source,
+        });
+    }
 
-  return registry.getAll().length;
+    return registry.getAll().length;
 }
 ```
 
@@ -361,17 +370,17 @@ export async function populateSubagentRegistry(): Promise<number> {
 ```typescript
 // subagentNode references a discovered agent by name
 subagentNode<MyState>({
-  id: "analyze",
-  agentName: "codebase-analyzer",        // Resolved from SubagentTypeRegistry
-  task: (state) => `Analyze ${state.targetFile}`,
-})
+    id: "analyze",
+    agentName: "codebase-analyzer", // Resolved from SubagentTypeRegistry
+    task: (state) => `Analyze ${state.targetFile}`,
+});
 
 // Custom user agent from .claude/agents/security-reviewer.md
 subagentNode<MyState>({
-  id: "security-review",
-  agentName: "security-reviewer",        // Discovered from project-local agents
-  task: (state) => `Review for vulnerabilities: ${state.code}`,
-})
+    id: "security-review",
+    agentName: "security-reviewer", // Discovered from project-local agents
+    task: (state) => `Review for vulnerabilities: ${state.code}`,
+});
 ```
 
 **Reference:** Existing agent discovery implementation in `src/ui/commands/agent-commands.ts` — `AGENT_DISCOVERY_PATHS` (line 35), `GLOBAL_AGENT_PATHS` (line 46), `discoverAgents()` (line 1440), `shouldAgentOverride()` (line 1475).
@@ -386,97 +395,111 @@ A new node factory that resolves a tool by name from the registry and wraps its 
 import type { z } from "zod";
 
 interface CustomToolNodeConfig<TState extends BaseState, TArgs, TResult> {
-  id: string;
-  toolName: string;
-  name?: string;
-  description?: string;
-  /** Zod schema enforcing the contract between the previous node's output and this tool's input.
-   *  When provided, args are validated against this schema before tool execution.
-   *  On validation failure, the ancestor agent retry mechanism (§5.12) kicks in:
-   *  the executor traverses backward to the nearest ancestor agent node and
-   *  re-runs it with the validation error, so the LLM can re-generate conforming output. */
-  inputSchema?: z.ZodType<TArgs>;
-  args?: TArgs | ((state: TState) => TArgs);
-  outputMapper?: (result: TResult, state: TState) => Partial<TState>;
-  timeout?: number;
-  /** Maximum failures allowed for THIS node before the workflow aborts.
-   *  Each failure triggers the ancestor agent retry mechanism (§5.12):
-   *  the executor traverses backward (depth-first) to the nearest ancestor
-   *  agent node and re-runs it with the error message, so the LLM can
-   *  re-generate output that fixes the issue. If the immediately preceding
-   *  node is a tool (not an agent), traversal continues upward. This is a
-   *  per-node budget, not a global workflow limit. */
-  retry?: RetryConfig;
+    id: string;
+    toolName: string;
+    name?: string;
+    description?: string;
+    /** Zod schema enforcing the contract between the previous node's output and this tool's input.
+     *  When provided, args are validated against this schema before tool execution.
+     *  On validation failure, the ancestor agent retry mechanism (§5.12) kicks in:
+     *  the executor traverses backward to the nearest ancestor agent node and
+     *  re-runs it with the validation error, so the LLM can re-generate conforming output. */
+    inputSchema?: z.ZodType<TArgs>;
+    args?: TArgs | ((state: TState) => TArgs);
+    outputMapper?: (result: TResult, state: TState) => Partial<TState>;
+    timeout?: number;
+    /** Maximum failures allowed for THIS node before the workflow aborts.
+     *  Each failure triggers the ancestor agent retry mechanism (§5.12):
+     *  the executor traverses backward (depth-first) to the nearest ancestor
+     *  agent node and re-runs it with the error message, so the LLM can
+     *  re-generate output that fixes the issue. If the immediately preceding
+     *  node is a tool (not an agent), traversal continues upward. This is a
+     *  per-node budget, not a global workflow limit. */
+    retry?: RetryConfig;
 }
 
 export function customToolNode<
-  TState extends BaseState,
-  TArgs = Record<string, unknown>,
-  TResult = unknown,
->(config: CustomToolNodeConfig<TState, TArgs, TResult>): NodeDefinition<TState> {
-  return {
-    id: config.id,
-    type: "tool",
-    name: config.name ?? config.toolName,
-    description: config.description ?? `Execute custom tool: ${config.toolName}`,
-    retry: config.retry,
-    async execute(ctx: ExecutionContext<TState>): Promise<NodeResult<TState>> {
-      const registry = getToolRegistry();
-      const entry = registry.get(config.toolName);
-      if (!entry) {
-        throw new Error(
-          `Custom tool "${config.toolName}" not found in registry. ` +
-          `Available tools: ${registry.getAll().map(t => t.name).join(", ")}`
-        );
-      }
+    TState extends BaseState,
+    TArgs = Record<string, unknown>,
+    TResult = unknown,
+>(
+    config: CustomToolNodeConfig<TState, TArgs, TResult>,
+): NodeDefinition<TState> {
+    return {
+        id: config.id,
+        type: "tool",
+        name: config.name ?? config.toolName,
+        description:
+            config.description ?? `Execute custom tool: ${config.toolName}`,
+        retry: config.retry,
+        async execute(
+            ctx: ExecutionContext<TState>,
+        ): Promise<NodeResult<TState>> {
+            const registry = getToolRegistry();
+            const entry = registry.get(config.toolName);
+            if (!entry) {
+                throw new Error(
+                    `Custom tool "${config.toolName}" not found in registry. ` +
+                        `Available tools: ${registry
+                            .getAll()
+                            .map((t) => t.name)
+                            .join(", ")}`,
+                );
+            }
 
-      const rawArgs = typeof config.args === "function"
-        ? (config.args as (state: TState) => TArgs)(ctx.state)
-        : config.args ?? ({} as TArgs);
+            const rawArgs =
+                typeof config.args === "function"
+                    ? (config.args as (state: TState) => TArgs)(ctx.state)
+                    : (config.args ?? ({} as TArgs));
 
-      // Enforce input contract: validate args against the Zod schema.
-      // On failure, throw SchemaValidationError so the graph executor can
-      // retry the preceding node to re-generate conforming output.
-      let args: TArgs;
-      if (config.inputSchema) {
-        const parseResult = config.inputSchema.safeParse(rawArgs);
-        if (!parseResult.success) {
-          throw new SchemaValidationError(
-            `Tool "${config.toolName}" input validation failed: ` +
-            `${parseResult.error.issues.map(i => `${i.path.join(".")}: ${i.message}`).join("; ")}`,
-            parseResult.error,
-          );
-        }
-        args = parseResult.data;
-      } else {
-        args = rawArgs as TArgs;
-      }
+            // Enforce input contract: validate args against the Zod schema.
+            // On failure, throw SchemaValidationError so the graph executor can
+            // retry the preceding node to re-generate conforming output.
+            let args: TArgs;
+            if (config.inputSchema) {
+                const parseResult = config.inputSchema.safeParse(rawArgs);
+                if (!parseResult.success) {
+                    throw new SchemaValidationError(
+                        `Tool "${config.toolName}" input validation failed: ` +
+                            `${parseResult.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`,
+                        parseResult.error,
+                    );
+                }
+                args = parseResult.data;
+            } else {
+                args = rawArgs as TArgs;
+            }
 
-      // WorkflowToolContext is passed unconditionally to all custom tool handlers.
-      // Existing tools that only use base ToolContext properties work unchanged
-      // due to structural typing.
-      const toolContext: WorkflowToolContext = {
-        sessionID: ctx.state.executionId,
-        messageID: crypto.randomUUID(),
-        agent: "workflow",
-        directory: process.cwd(),
-        abort: config.timeout
-          ? AbortSignal.timeout(config.timeout)
-          : new AbortController().signal,
-        workflowState: Object.freeze({ ...ctx.state }),
-        nodeId: config.id,
-        executionId: ctx.state.executionId,
-      };
+            // WorkflowToolContext is passed unconditionally to all custom tool handlers.
+            // Existing tools that only use base ToolContext properties work unchanged
+            // due to structural typing.
+            const toolContext: WorkflowToolContext = {
+                sessionID: ctx.state.executionId,
+                messageID: crypto.randomUUID(),
+                agent: "workflow",
+                directory: process.cwd(),
+                abort: config.timeout
+                    ? AbortSignal.timeout(config.timeout)
+                    : new AbortController().signal,
+                workflowState: Object.freeze({ ...ctx.state }),
+                nodeId: config.id,
+                executionId: ctx.state.executionId,
+            };
 
-      const result = await entry.definition.handler(args, toolContext) as TResult;
+            const result = (await entry.definition.handler(
+                args,
+                toolContext,
+            )) as TResult;
 
-      const stateUpdate = config.outputMapper
-        ? config.outputMapper(result, ctx.state)
-        : { outputs: { ...ctx.state.outputs, [config.id]: result } } as Partial<TState>;
+            const stateUpdate = config.outputMapper
+                ? config.outputMapper(result, ctx.state)
+                : ({
+                      outputs: { ...ctx.state.outputs, [config.id]: result },
+                  } as Partial<TState>);
 
-      return { stateUpdate };
-    },
-  };
+            return { stateUpdate };
+        },
+    };
 }
 ```
 
@@ -486,24 +509,24 @@ export function customToolNode<
 import type { ZodError } from "zod";
 
 export class SchemaValidationError extends Error {
-  constructor(
-    message: string,
-    public readonly zodError: ZodError,
-  ) {
-    super(message);
-    this.name = "SchemaValidationError";
-  }
+    constructor(
+        message: string,
+        public readonly zodError: ZodError,
+    ) {
+        super(message);
+        this.name = "SchemaValidationError";
+    }
 }
 
 export class NodeExecutionError extends Error {
-  constructor(
-    message: string,
-    public readonly nodeId: string,
-    public readonly cause?: Error,
-  ) {
-    super(message);
-    this.name = "NodeExecutionError";
-  }
+    constructor(
+        message: string,
+        public readonly nodeId: string,
+        public readonly cause?: Error,
+    ) {
+        super(message);
+        this.name = "NodeExecutionError";
+    }
 }
 ```
 
@@ -520,37 +543,38 @@ import { graph, customToolNode, agentNode } from "@bastani/atomic/graph";
 // Zod schema enforces the contract: the preceding agent node must produce
 // output that includes a valid file path string.
 const LintInputSchema = z.object({
-  filePath: z.string().min(1, "filePath is required"),
+    filePath: z.string().min(1, "filePath is required"),
 });
 
 export default function createWorkflow() {
-  return graph<MyState>()
-    .start(
-      agentNode<MyState>({
-        id: "identify-file",
-        agentType: "claude",
-        buildMessage: () => "Which file should be linted?",
-      })
-    )
-    .then(
-      customToolNode<MyState, z.infer<typeof LintInputSchema>>({
-        id: "lint-code",
-        toolName: "lint",                          // References .atomic/tools/lint.ts
-        inputSchema: LintInputSchema,              // Validates args before execution
-        args: (state) => ({ filePath: state.targetFile }),
-        outputMapper: (result, state) => ({ lintResult: result }),
-        retry: { maxAttempts: 3 },                 // Re-generate up to 3 times on schema failure
-      })
-    )
-    .then(
-      agentNode<MyState>({
-        id: "fix-issues",
-        agentType: "claude",
-        buildMessage: (state) => `Fix these lint issues: ${state.lintResult}`,
-      })
-    )
-    .end()
-    .compile();
+    return graph<MyState>()
+        .start(
+            agentNode<MyState>({
+                id: "identify-file",
+                agentType: "claude",
+                buildMessage: () => "Which file should be linted?",
+            }),
+        )
+        .then(
+            customToolNode<MyState, z.infer<typeof LintInputSchema>>({
+                id: "lint-code",
+                toolName: "lint", // References .atomic/tools/lint.ts
+                inputSchema: LintInputSchema, // Validates args before execution
+                args: (state) => ({ filePath: state.targetFile }),
+                outputMapper: (result, state) => ({ lintResult: result }),
+                retry: { maxAttempts: 3 }, // Re-generate up to 3 times on schema failure
+            }),
+        )
+        .then(
+            agentNode<MyState>({
+                id: "fix-issues",
+                agentType: "claude",
+                buildMessage: (state) =>
+                    `Fix these lint issues: ${state.lintResult}`,
+            }),
+        )
+        .end()
+        .compile();
 }
 ```
 
@@ -579,75 +603,77 @@ import { join } from "path";
 import { homedir } from "os";
 
 export interface WorkflowSession {
-  sessionId: string;
-  workflowName: string;
-  sessionDir: string;
-  createdAt: string;
-  lastUpdated: string;
-  status: "running" | "paused" | "completed" | "failed";
-  nodeHistory: string[];
-  outputs: Record<string, unknown>;
+    sessionId: string;
+    workflowName: string;
+    sessionDir: string;
+    createdAt: string;
+    lastUpdated: string;
+    status: "running" | "paused" | "completed" | "failed";
+    nodeHistory: string[];
+    outputs: Record<string, unknown>;
 }
 
 export const WORKFLOW_SESSIONS_DIR = join(
-  homedir(),
-  ".atomic",
-  "workflows",
-  "sessions",
+    homedir(),
+    ".atomic",
+    "workflows",
+    "sessions",
 );
 
 export function generateWorkflowSessionId(): string {
-  return crypto.randomUUID();
+    return crypto.randomUUID();
 }
 
 export function getWorkflowSessionDir(sessionId: string): string {
-  return join(WORKFLOW_SESSIONS_DIR, sessionId);
+    return join(WORKFLOW_SESSIONS_DIR, sessionId);
 }
 
 export async function initWorkflowSession(
-  workflowName: string,
-  sessionId?: string,
+    workflowName: string,
+    sessionId?: string,
 ): Promise<WorkflowSession> {
-  const id = sessionId ?? generateWorkflowSessionId();
-  const sessionDir = getWorkflowSessionDir(id);
+    const id = sessionId ?? generateWorkflowSessionId();
+    const sessionDir = getWorkflowSessionDir(id);
 
-  // Create directory structure
-  await Bun.write(join(sessionDir, ".gitkeep"), "");
-  for (const subdir of ["checkpoints", "agents", "logs"]) {
-    await Bun.write(join(sessionDir, subdir, ".gitkeep"), "");
-  }
+    // Create directory structure
+    await Bun.write(join(sessionDir, ".gitkeep"), "");
+    for (const subdir of ["checkpoints", "agents", "logs"]) {
+        await Bun.write(join(sessionDir, subdir, ".gitkeep"), "");
+    }
 
-  const session: WorkflowSession = {
-    sessionId: id,
-    workflowName,
-    sessionDir,
-    createdAt: new Date().toISOString(),
-    lastUpdated: new Date().toISOString(),
-    status: "running",
-    nodeHistory: [],
-    outputs: {},
-  };
+    const session: WorkflowSession = {
+        sessionId: id,
+        workflowName,
+        sessionDir,
+        createdAt: new Date().toISOString(),
+        lastUpdated: new Date().toISOString(),
+        status: "running",
+        nodeHistory: [],
+        outputs: {},
+    };
 
-  await saveWorkflowSession(session);
-  return session;
+    await saveWorkflowSession(session);
+    return session;
 }
 
-export async function saveWorkflowSession(session: WorkflowSession): Promise<void> {
-  session.lastUpdated = new Date().toISOString();
-  await Bun.write(
-    join(session.sessionDir, "session.json"),
-    JSON.stringify(session, null, 2),
-  );
+export async function saveWorkflowSession(
+    session: WorkflowSession,
+): Promise<void> {
+    session.lastUpdated = new Date().toISOString();
+    await Bun.write(
+        join(session.sessionDir, "session.json"),
+        JSON.stringify(session, null, 2),
+    );
 }
 
 export async function saveSubagentOutput(
-  sessionDir: string,
-  agentId: string,
-  result: SubagentResult,
+    sessionDir: string,
+    agentId: string,
+    result: SubagentResult,
 ): Promise<string> {
-  const outputPath = join(sessionDir, "agents", `${agentId}.json`);
-  await Bun.write(outputPath, JSON.stringify(result, null, 2));
-  return outputPath;
+    const outputPath = join(sessionDir, "agents", `${agentId}.json`);
+    await Bun.write(outputPath, JSON.stringify(result, null, 2));
+    return outputPath;
 }
 ```
 
@@ -664,66 +690,77 @@ A bridge class that adapts `SubagentSessionManager` for use within graph executi
 **File:** `src/graph/subagent-bridge.ts`
 
 ```typescript
-import type { SubagentSessionManager, SubagentSpawnOptions, SubagentResult } from "../ui/subagent-session-manager";
+import type {
+    SubagentSessionManager,
+    SubagentSpawnOptions,
+    SubagentResult,
+} from "../ui/subagent-session-manager";
 import { saveSubagentOutput } from "../workflows/session";
 
 interface SubagentGraphBridgeConfig {
-  sessionManager: SubagentSessionManager;
-  sessionDir?: string;
+    sessionManager: SubagentSessionManager;
+    sessionDir?: string;
 }
 
 export class SubagentGraphBridge {
-  private sessionManager: SubagentSessionManager;
-  private sessionDir: string | undefined;
+    private sessionManager: SubagentSessionManager;
+    private sessionDir: string | undefined;
 
-  constructor(config: SubagentGraphBridgeConfig) {
-    this.sessionManager = config.sessionManager;
-    this.sessionDir = config.sessionDir;
-  }
-
-  setSessionDir(dir: string): void {
-    this.sessionDir = dir;
-  }
-
-  async spawn(options: SubagentSpawnOptions): Promise<SubagentResult> {
-    const result = await this.sessionManager.spawn(options);
-    if (this.sessionDir) {
-      await saveSubagentOutput(this.sessionDir, options.agentId, result);
+    constructor(config: SubagentGraphBridgeConfig) {
+        this.sessionManager = config.sessionManager;
+        this.sessionDir = config.sessionDir;
     }
-    return result;
-  }
 
-  async spawnParallel(
-    agents: SubagentSpawnOptions[],
-  ): Promise<SubagentResult[]> {
-    const results = await this.sessionManager.spawnParallel(agents);
-    if (this.sessionDir) {
-      await Promise.all(
-        results.map((result, i) =>
-          saveSubagentOutput(this.sessionDir!, agents[i].agentId, result),
-        ),
-      );
+    setSessionDir(dir: string): void {
+        this.sessionDir = dir;
     }
-    return results;
-  }
+
+    async spawn(options: SubagentSpawnOptions): Promise<SubagentResult> {
+        const result = await this.sessionManager.spawn(options);
+        if (this.sessionDir) {
+            await saveSubagentOutput(this.sessionDir, options.agentId, result);
+        }
+        return result;
+    }
+
+    async spawnParallel(
+        agents: SubagentSpawnOptions[],
+    ): Promise<SubagentResult[]> {
+        const results = await this.sessionManager.spawnParallel(agents);
+        if (this.sessionDir) {
+            await Promise.all(
+                results.map((result, i) =>
+                    saveSubagentOutput(
+                        this.sessionDir!,
+                        agents[i].agentId,
+                        result,
+                    ),
+                ),
+            );
+        }
+        return results;
+    }
 }
 
 // Global setter following existing pattern (setClientProvider, setWorkflowResolver)
 let globalSubagentBridge: SubagentGraphBridge | null = null;
 
 export function setSubagentBridge(bridge: SubagentGraphBridge): void {
-  globalSubagentBridge = bridge;
+    globalSubagentBridge = bridge;
 }
 
 export function getSubagentBridge(): SubagentGraphBridge | null {
-  return globalSubagentBridge;
+    return globalSubagentBridge;
 }
 ```
 
 **Initialization** (in `src/ui/chat.tsx` or `src/commands/chat.ts`, after `SubagentSessionManager` creation):
 
 ```typescript
-import { SubagentGraphBridge, setSubagentBridge } from "../graph/subagent-bridge";
+import {
+    SubagentGraphBridge,
+    setSubagentBridge,
+} from "../graph/subagent-bridge";
 import { initWorkflowSession } from "../workflows/session";
 
 // After creating SubagentSessionManager
@@ -745,82 +782,94 @@ A graph node factory that spawns a single sub-agent within graph execution. The 
 
 ```typescript
 interface SubagentNodeConfig<TState extends BaseState> {
-  id: string;
-  name?: string;
-  description?: string;
-  /** Agent name resolved from SubagentTypeRegistry. Can reference built-in agents
-   *  (e.g., "codebase-analyzer"), user-global agents (~/.claude/agents/), or
-   *  project-local agents (.claude/agents/, .opencode/agents/, .github/agents/). */
-  agentName: string;
-  task: string | ((state: TState) => string);
-  /** Override the agent's system prompt. If omitted, uses the prompt from the
-   *  agent's definition in the registry (e.g., from the .md file frontmatter). */
-  systemPrompt?: string | ((state: TState) => string);
-  model?: string;
-  tools?: string[];
-  outputMapper?: (result: SubagentResult, state: TState) => Partial<TState>;
-  retry?: RetryConfig;
+    id: string;
+    name?: string;
+    description?: string;
+    /** Agent name resolved from SubagentTypeRegistry. Can reference built-in agents
+     *  (e.g., "codebase-analyzer"), user-global agents (~/.claude/agents/), or
+     *  project-local agents (.claude/agents/, .opencode/agents/, .github/agents/). */
+    agentName: string;
+    task: string | ((state: TState) => string);
+    /** Override the agent's system prompt. If omitted, uses the prompt from the
+     *  agent's definition in the registry (e.g., from the .md file frontmatter). */
+    systemPrompt?: string | ((state: TState) => string);
+    model?: string;
+    tools?: string[];
+    outputMapper?: (result: SubagentResult, state: TState) => Partial<TState>;
+    retry?: RetryConfig;
 }
 
 export function subagentNode<TState extends BaseState>(
-  config: SubagentNodeConfig<TState>,
+    config: SubagentNodeConfig<TState>,
 ): NodeDefinition<TState> {
-  return {
-    id: config.id,
-    type: "agent",
-    name: config.name ?? config.agentName,
-    description: config.description ?? `Sub-agent: ${config.agentName}`,
-    retry: config.retry,
-    async execute(ctx: ExecutionContext<TState>): Promise<NodeResult<TState>> {
-      const bridge = getSubagentBridge();
-      if (!bridge) {
-        throw new Error(
-          "SubagentGraphBridge not initialized. " +
-          "Ensure setSubagentBridge() is called before graph execution."
-        );
-      }
+    return {
+        id: config.id,
+        type: "agent",
+        name: config.name ?? config.agentName,
+        description: config.description ?? `Sub-agent: ${config.agentName}`,
+        retry: config.retry,
+        async execute(
+            ctx: ExecutionContext<TState>,
+        ): Promise<NodeResult<TState>> {
+            const bridge = getSubagentBridge();
+            if (!bridge) {
+                throw new Error(
+                    "SubagentGraphBridge not initialized. " +
+                        "Ensure setSubagentBridge() is called before graph execution.",
+                );
+            }
 
-      // Resolve agent definition from the registry
-      const registry = getSubagentRegistry();
-      const entry = registry.get(config.agentName);
-      if (!entry) {
-        throw new Error(
-          `Sub-agent "${config.agentName}" not found in registry. ` +
-          `Available agents: ${registry.getAll().map(a => a.name).join(", ")}`
-        );
-      }
+            // Resolve agent definition from the registry
+            const registry = getSubagentRegistry();
+            const entry = registry.get(config.agentName);
+            if (!entry) {
+                throw new Error(
+                    `Sub-agent "${config.agentName}" not found in registry. ` +
+                        `Available agents: ${registry
+                            .getAll()
+                            .map((a) => a.name)
+                            .join(", ")}`,
+                );
+            }
 
-      const task = typeof config.task === "function"
-        ? config.task(ctx.state)
-        : config.task;
+            const task =
+                typeof config.task === "function"
+                    ? config.task(ctx.state)
+                    : config.task;
 
-      // Use config overrides, fall back to registry definition
-      const systemPrompt = typeof config.systemPrompt === "function"
-        ? config.systemPrompt(ctx.state)
-        : config.systemPrompt ?? entry.definition.prompt;
+            // Use config overrides, fall back to registry definition
+            const systemPrompt =
+                typeof config.systemPrompt === "function"
+                    ? config.systemPrompt(ctx.state)
+                    : (config.systemPrompt ?? entry.definition.prompt);
 
-      const result = await bridge.spawn({
-        agentId: `${config.id}-${ctx.state.executionId}`,
-        agentName: config.agentName,
-        task,
-        systemPrompt,
-        model: config.model ?? entry.definition.model ?? ctx.model,
-        tools: config.tools ?? entry.definition.tools,
-      });
+            const result = await bridge.spawn({
+                agentId: `${config.id}-${ctx.state.executionId}`,
+                agentName: config.agentName,
+                task,
+                systemPrompt,
+                model: config.model ?? entry.definition.model ?? ctx.model,
+                tools: config.tools ?? entry.definition.tools,
+            });
 
-      if (!result.success) {
-        throw new Error(
-          `Sub-agent "${config.agentName}" failed: ${result.error ?? "Unknown error"}`
-        );
-      }
+            if (!result.success) {
+                throw new Error(
+                    `Sub-agent "${config.agentName}" failed: ${result.error ?? "Unknown error"}`,
+                );
+            }
 
-      const stateUpdate = config.outputMapper
-        ? config.outputMapper(result, ctx.state)
-        : { outputs: { ...ctx.state.outputs, [config.id]: result.output } } as Partial<TState>;
+            const stateUpdate = config.outputMapper
+                ? config.outputMapper(result, ctx.state)
+                : ({
+                      outputs: {
+                          ...ctx.state.outputs,
+                          [config.id]: result.output,
+                      },
+                  } as Partial<TState>);
 
-      return { stateUpdate };
-    },
-  };
+            return { stateUpdate };
+        },
+    };
 }
 ```
 
@@ -832,57 +881,67 @@ Enables concurrent sub-agent execution with a single `"merge"` strategy. All age
 
 ```typescript
 interface ParallelSubagentNodeConfig<TState extends BaseState> {
-  id: string;
-  name?: string;
-  description?: string;
-  agents: Array<{
-    agentName: string;
-    task: string | ((state: TState) => string);
-    systemPrompt?: string;
-    model?: string;
-    tools?: string[];
-  }>;
-  merge: (results: Map<string, SubagentResult>, state: TState) => Partial<TState>;
-  retry?: RetryConfig;
+    id: string;
+    name?: string;
+    description?: string;
+    agents: Array<{
+        agentName: string;
+        task: string | ((state: TState) => string);
+        systemPrompt?: string;
+        model?: string;
+        tools?: string[];
+    }>;
+    merge: (
+        results: Map<string, SubagentResult>,
+        state: TState,
+    ) => Partial<TState>;
+    retry?: RetryConfig;
 }
 
 export function parallelSubagentNode<TState extends BaseState>(
-  config: ParallelSubagentNodeConfig<TState>,
+    config: ParallelSubagentNodeConfig<TState>,
 ): NodeDefinition<TState> {
-  return {
-    id: config.id,
-    type: "parallel",
-    name: config.name ?? `Parallel sub-agents (${config.agents.length})`,
-    description: config.description,
-    retry: config.retry,
-    async execute(ctx: ExecutionContext<TState>): Promise<NodeResult<TState>> {
-      const bridge = getSubagentBridge();
-      if (!bridge) {
-        throw new Error("SubagentGraphBridge not initialized.");
-      }
+    return {
+        id: config.id,
+        type: "parallel",
+        name: config.name ?? `Parallel sub-agents (${config.agents.length})`,
+        description: config.description,
+        retry: config.retry,
+        async execute(
+            ctx: ExecutionContext<TState>,
+        ): Promise<NodeResult<TState>> {
+            const bridge = getSubagentBridge();
+            if (!bridge) {
+                throw new Error("SubagentGraphBridge not initialized.");
+            }
 
-      const spawnOptions: SubagentSpawnOptions[] = config.agents.map((agent, i) => ({
-        agentId: `${config.id}-${i}-${ctx.state.executionId}`,
-        agentName: agent.agentName,
-        task: typeof agent.task === "function" ? agent.task(ctx.state) : agent.task,
-        systemPrompt: agent.systemPrompt,
-        model: agent.model ?? ctx.model,
-        tools: agent.tools,
-      }));
+            const spawnOptions: SubagentSpawnOptions[] = config.agents.map(
+                (agent, i) => ({
+                    agentId: `${config.id}-${i}-${ctx.state.executionId}`,
+                    agentName: agent.agentName,
+                    task:
+                        typeof agent.task === "function"
+                            ? agent.task(ctx.state)
+                            : agent.task,
+                    systemPrompt: agent.systemPrompt,
+                    model: agent.model ?? ctx.model,
+                    tools: agent.tools,
+                }),
+            );
 
-      // All agents run to completion; results persisted to session dir by bridge
-      const results = await bridge.spawnParallel(spawnOptions);
+            // All agents run to completion; results persisted to session dir by bridge
+            const results = await bridge.spawnParallel(spawnOptions);
 
-      const resultMap = new Map<string, SubagentResult>();
-      results.forEach((result, i) => {
-        const key = `${config.agents[i].agentName}-${i}`;
-        resultMap.set(key, result);
-      });
+            const resultMap = new Map<string, SubagentResult>();
+            results.forEach((result, i) => {
+                const key = `${config.agents[i].agentName}-${i}`;
+                resultMap.set(key, result);
+            });
 
-      const stateUpdate = config.merge(resultMap, ctx.state);
-      return { stateUpdate };
-    },
-  };
+            const stateUpdate = config.merge(resultMap, ctx.state);
+            return { stateUpdate };
+        },
+    };
 }
 ```
 
@@ -892,29 +951,41 @@ export function parallelSubagentNode<TState extends BaseState>(
 import { graph, parallelSubagentNode, agentNode } from "@bastani/atomic/graph";
 
 export default function createWorkflow() {
-  return graph<MyState>()
-    .start(
-      parallelSubagentNode<MyState>({
-        id: "research-phase",
-        agents: [
-          { agentName: "explore", task: (s) => `Find files related to: ${s.topic}` },
-          { agentName: "explore", task: (s) => `Find tests related to: ${s.topic}` },
-          { agentName: "explore", task: (s) => `Find docs related to: ${s.topic}` },
-        ],
-        merge: (results, state) => ({
-          researchFindings: Array.from(results.values()).map(r => r.output),
-        }),
-      })
-    )
-    .then(
-      agentNode<MyState>({
-        id: "synthesize",
-        agentType: "claude",
-        buildMessage: (s) => `Synthesize: ${s.researchFindings.join("\n")}`,
-      })
-    )
-    .end()
-    .compile();
+    return graph<MyState>()
+        .start(
+            parallelSubagentNode<MyState>({
+                id: "research-phase",
+                agents: [
+                    {
+                        agentName: "explore",
+                        task: (s) => `Find files related to: ${s.topic}`,
+                    },
+                    {
+                        agentName: "explore",
+                        task: (s) => `Find tests related to: ${s.topic}`,
+                    },
+                    {
+                        agentName: "explore",
+                        task: (s) => `Find docs related to: ${s.topic}`,
+                    },
+                ],
+                merge: (results, state) => ({
+                    researchFindings: Array.from(results.values()).map(
+                        (r) => r.output,
+                    ),
+                }),
+            }),
+        )
+        .then(
+            agentNode<MyState>({
+                id: "synthesize",
+                agentType: "claude",
+                buildMessage: (s) =>
+                    `Synthesize: ${s.researchFindings.join("\n")}`,
+            }),
+        )
+        .end()
+        .compile();
 }
 ```
 
@@ -928,12 +999,12 @@ export default function createWorkflow() {
 
 ```typescript
 export interface WorkflowToolContext extends ToolContext {
-  /** Read-only snapshot of the current workflow state */
-  workflowState: Readonly<Record<string, unknown>>;
-  /** The graph node ID invoking this tool */
-  nodeId: string;
-  /** The workflow execution ID */
-  executionId: string;
+    /** Read-only snapshot of the current workflow state */
+    workflowState: Readonly<Record<string, unknown>>;
+    /** The graph node ID invoking this tool */
+    nodeId: string;
+    /** The workflow execution ID */
+    executionId: string;
 }
 ```
 
@@ -946,12 +1017,20 @@ export interface WorkflowToolContext extends ToolContext {
 ```typescript
 // Existing exports
 export { graph } from "./builder";
-export { agentNode, toolNode, decisionNode, /* ... */ } from "./nodes";
+export { agentNode, toolNode, decisionNode /* ... */ } from "./nodes";
 
 // New exports
 export { customToolNode, subagentNode, parallelSubagentNode } from "./nodes";
-export { SubagentGraphBridge, setSubagentBridge, getSubagentBridge } from "./subagent-bridge";
-export { getSubagentRegistry, setSubagentRegistry, populateSubagentRegistry } from "./subagent-registry";
+export {
+    SubagentGraphBridge,
+    setSubagentBridge,
+    getSubagentBridge,
+} from "./subagent-bridge";
+export {
+    getSubagentRegistry,
+    setSubagentRegistry,
+    populateSubagentRegistry,
+} from "./subagent-registry";
 export type { WorkflowToolContext } from "./types";
 export type { SubagentEntry } from "./subagent-registry";
 ```
@@ -1051,13 +1130,13 @@ The `retry.maxAttempts` field on any node specifies the **maximum number of fail
 
 ```typescript
 interface RetryConfig {
-  /** Maximum number of failures allowed for THIS node before the workflow fails.
-   *  Each failure triggers a re-run of the nearest ancestor agent with the error.
-   *  This is a per-node budget, not a global workflow limit. */
-  maxAttempts: number;
-  backoffMs: number;
-  backoffMultiplier: number;
-  retryOn?: (error: Error) => boolean;
+    /** Maximum number of failures allowed for THIS node before the workflow fails.
+     *  Each failure triggers a re-run of the nearest ancestor agent with the error.
+     *  This is a per-node budget, not a global workflow limit. */
+    maxAttempts: number;
+    backoffMs: number;
+    backoffMultiplier: number;
+    retryOn?: (error: Error) => boolean;
 }
 ```
 
@@ -1069,18 +1148,18 @@ When an ancestor agent is re-run due to a downstream failure, the error is injec
 
 ```typescript
 interface ErrorFeedback {
-  /** The node that failed */
-  failedNodeId: string;
-  /** The error message from the failed node */
-  errorMessage: string;
-  /** The error type (e.g., "SchemaValidationError", "ToolExecutionError") */
-  errorType: string;
-  /** Which retry attempt this is (1-indexed) */
-  attempt: number;
-  /** Max attempts before workflow failure */
-  maxAttempts: number;
-  /** The output the agent produced that led to the failure (if available) */
-  previousOutput?: unknown;
+    /** The node that failed */
+    failedNodeId: string;
+    /** The error message from the failed node */
+    errorMessage: string;
+    /** The error type (e.g., "SchemaValidationError", "ToolExecutionError") */
+    errorType: string;
+    /** Which retry attempt this is (1-indexed) */
+    attempt: number;
+    /** Max attempts before workflow failure */
+    maxAttempts: number;
+    /** The output the agent produced that led to the failure (if available) */
+    previousOutput?: unknown;
 }
 ```
 
@@ -1098,36 +1177,36 @@ The executor uses a depth-first backward traversal to find the retry target:
 
 ```typescript
 function findRetryTarget(
-  failedNodeId: string,
-  graph: CompiledGraph<TState>,
+    failedNodeId: string,
+    graph: CompiledGraph<TState>,
 ): NodeDefinition<TState> | null {
-  const visited = new Set<string>();
+    const visited = new Set<string>();
 
-  function traverse(nodeId: string): NodeDefinition<TState> | null {
-    if (visited.has(nodeId)) return null;
-    visited.add(nodeId);
+    function traverse(nodeId: string): NodeDefinition<TState> | null {
+        if (visited.has(nodeId)) return null;
+        visited.add(nodeId);
 
-    // Get all predecessor nodes (nodes with edges pointing to nodeId)
-    const predecessors = graph.getPredecessors(nodeId);
+        // Get all predecessor nodes (nodes with edges pointing to nodeId)
+        const predecessors = graph.getPredecessors(nodeId);
 
-    for (const predId of predecessors) {
-      const predNode = graph.getNode(predId);
-      if (!predNode) continue;
+        for (const predId of predecessors) {
+            const predNode = graph.getNode(predId);
+            if (!predNode) continue;
 
-      // Agent nodes can self-correct — they are valid retry targets
-      if (predNode.type === "agent") {
-        return predNode;
-      }
+            // Agent nodes can self-correct — they are valid retry targets
+            if (predNode.type === "agent") {
+                return predNode;
+            }
 
-      // Non-agent nodes: continue traversing upward
-      const result = traverse(predId);
-      if (result) return result;
+            // Non-agent nodes: continue traversing upward
+            const result = traverse(predId);
+            if (result) return result;
+        }
+
+        return null;
     }
 
-    return null;
-  }
-
-  return traverse(failedNodeId);
+    return traverse(failedNodeId);
 }
 ```
 
@@ -1178,14 +1257,14 @@ In addition to `SchemaValidationError` for input validation, a `NodeExecutionErr
 
 ```typescript
 export class NodeExecutionError extends Error {
-  constructor(
-    message: string,
-    public readonly nodeId: string,
-    public readonly cause?: Error,
-  ) {
-    super(message);
-    this.name = "NodeExecutionError";
-  }
+    constructor(
+        message: string,
+        public readonly nodeId: string,
+        public readonly cause?: Error,
+    ) {
+        super(message);
+        this.name = "NodeExecutionError";
+    }
 }
 ```
 
@@ -1198,17 +1277,20 @@ The `customToolNode()` factory wraps tool handler errors in `NodeExecutionError`
 ```typescript
 // Inside customToolNode.execute():
 try {
-  const result = await entry.definition.handler(args, toolContext) as TResult;
-  // ... outputMapper, return
+    const result = (await entry.definition.handler(
+        args,
+        toolContext,
+    )) as TResult;
+    // ... outputMapper, return
 } catch (error) {
-  if (error instanceof SchemaValidationError) {
-    throw error; // Already structured — propagate as-is
-  }
-  throw new NodeExecutionError(
-    `Custom tool "${config.toolName}" failed: ${error instanceof Error ? error.message : String(error)}`,
-    config.id,
-    error instanceof Error ? error : undefined,
-  );
+    if (error instanceof SchemaValidationError) {
+        throw error; // Already structured — propagate as-is
+    }
+    throw new NodeExecutionError(
+        `Custom tool "${config.toolName}" failed: ${error instanceof Error ? error.message : String(error)}`,
+        config.id,
+        error instanceof Error ? error : undefined,
+    );
 }
 ```
 
@@ -1261,6 +1343,7 @@ try {
 ### 8.2 Test Plan
 
 **Unit Tests:**
+
 - `ToolRegistry`: register, get, has, getAll, clear operations
 - `customToolNode()`: tool resolution, arg resolution (static + dynamic), timeout, output mapping, error on missing tool
 - `subagentNode()`: task resolution, model fallback, success/failure handling, output mapping
@@ -1272,6 +1355,7 @@ try {
 - Per-node retry budget: failure count is tracked independently per node; reaching `maxAttempts` on one node does not affect other nodes' budgets
 
 **Integration Tests:**
+
 - End-to-end graph execution with `customToolNode()` using a mock tool registered in `ToolRegistry`
 - End-to-end graph execution with `subagentNode()` using a mock `SubagentGraphBridge`
 - Mixed graph with `agentNode()`, `customToolNode()`, `subagentNode()`, and `decisionNode()` in a single workflow
@@ -1281,6 +1365,7 @@ try {
 - Retry budget exhaustion: node fails `maxAttempts` times; verify workflow aborts with accumulated error rather than infinite loop
 
 **Regression Tests:**
+
 - Existing `toolNode()` behavior unchanged after `ToolRegistry` addition
 - Existing `registerCustomTools()` continues to register tools with SDK client
 - Existing `SubagentSessionManager` TUI operations unaffected by bridge
@@ -1289,13 +1374,13 @@ try {
 
 ### New Files
 
-| File                             | Purpose                                                                |
-| -------------------------------- | ---------------------------------------------------------------------- |
-| `src/sdk/tools/registry.ts`      | `ToolRegistry` singleton and `ToolEntry` type                          |
-| `src/graph/subagent-registry.ts` | `SubagentTypeRegistry` singleton, discovery, and `SubagentEntry` type  |
-| `src/graph/subagent-bridge.ts`   | `SubagentGraphBridge` class with session-aware persistence             |
+| File                             | Purpose                                                                                  |
+| -------------------------------- | ---------------------------------------------------------------------------------------- |
+| `src/sdk/tools/registry.ts`      | `ToolRegistry` singleton and `ToolEntry` type                                            |
+| `src/graph/subagent-registry.ts` | `SubagentTypeRegistry` singleton, discovery, and `SubagentEntry` type                    |
+| `src/graph/subagent-bridge.ts`   | `SubagentGraphBridge` class with session-aware persistence                               |
 | `src/graph/errors.ts`            | `SchemaValidationError`, `NodeExecutionError`, `ErrorFeedback` type, `findRetryTarget()` |
-| `src/workflows/session.ts`       | `WorkflowSessionManager` for `~/.atomic/workflows/sessions/` lifecycle |
+| `src/workflows/session.ts`       | `WorkflowSessionManager` for `~/.atomic/workflows/sessions/` lifecycle                   |
 
 ### Modified Files
 

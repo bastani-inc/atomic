@@ -1,11 +1,11 @@
 # Atomic Package Split — CLI Binary Wrapper + Standalone SDK
 
-| Document Metadata      | Details        |
-| ---------------------- | -------------- |
-| Author(s)              | Norin Lavaee   |
-| Status                 | Draft (WIP)    |
-| Team / Owner           | bastani/atomic |
-| Created / Last Updated | 2026-05-03     |
+| Document Metadata      | Details            |
+| ---------------------- | ------------------ |
+| Author(s)              | Norin Lavaee       |
+| Status                 | Draft (WIP)        |
+| Team / Owner           | bastani-inc/atomic |
+| Created / Last Updated | 2026-05-03         |
 
 ## 1. Executive Summary
 

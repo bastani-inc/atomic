@@ -1,7 +1,4 @@
-
 > **Scope note**: this is Spec 2 of 2. **Spec 1 is `specs/2026-05-11-pi-workflows-extension.md`** and covers the publishable `pi-workflows` npm package — its internal design, slash commands, executor, persistence, sibling integrations, builtin workflows. **All of that is out of scope here.** This Spec 2 covers Atomic-specific concerns: the pi-coding-agent fork, bundled content (skills, prompts, themes, sub-agents, MCP server configs), Atomic-side glue extensions, CLI surface, install/update/first-run, CI/CD. The two specs are developed in succession: Spec 1 first (testable against any installed pi binary), Spec 2 second (consumes Spec 1's npm artifact).
-
-
 
 | Document Metadata      | Details                                                                                                                                                                                                                                                                                 |
 | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -35,18 +32,18 @@ This framing matters: there is nothing Atomic-proprietary about workflows. The A
 
 ### Packaging model at a glance
 
-| Artifact                          | Lives where                          | Distributed how                                                |
-| --------------------------------- | ------------------------------------ | -------------------------------------------------------------- |
-| `pi-workflows` extension          | `packages/pi-workflows/` in our repo | **Published to npm** as `pi-workflows`. Anyone can install.    |
-| `pi-mcp-adapter` (the framework)  | `nicobailon/pi-mcp-adapter` upstream | Consumed from npm; declared in Atomic's default `packages:`.   |
-| `pi-subagents` (the framework)    | `nicobailon/pi-subagents` upstream   | Consumed from npm; declared in Atomic's default `packages:`.   |
-| `pi-intercom` (the framework)     | `nicobailon/pi-intercom` upstream    | Consumed from npm; declared in Atomic's default `packages:`.   |
-| **Skills** (curated SKILL.md set) | `packages/atomic/skills/`            | **Bundled into the atomic binary.** Loaded via `pi.skills` manifest. Not separately publishable. |
-| **MCP server configs** (curated)  | `packages/atomic/mcp-servers/` (seeded into `~/.atomic/agent/mcp.json` on first run) | **Bundled into the atomic binary.** Default servers pi-mcp-adapter then loads. |
-| **Sub-agent definitions**         | `packages/atomic/agents/`            | **Bundled into the atomic binary.** Discovered by pi-subagents. |
-| **Prompt templates**              | `packages/atomic/prompts/`           | **Bundled into the atomic binary.** Loaded via `pi.prompts`.    |
-| **Themes**                        | `packages/atomic/themes/`            | **Bundled into the atomic binary.** Loaded via `pi.themes`.     |
-| Atomic-side glue extensions       | `packages/atomic/extensions/`        | **Bundled into the atomic binary.** Loaded via `pi.extensions`. |
+| Artifact                          | Lives where                                                                          | Distributed how                                                                                  |
+| --------------------------------- | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------ |
+| `pi-workflows` extension          | `packages/pi-workflows/` in our repo                                                 | **Published to npm** as `pi-workflows`. Anyone can install.                                      |
+| `pi-mcp-adapter` (the framework)  | `nicobailon/pi-mcp-adapter` upstream                                                 | Consumed from npm; declared in Atomic's default `packages:`.                                     |
+| `pi-subagents` (the framework)    | `nicobailon/pi-subagents` upstream                                                   | Consumed from npm; declared in Atomic's default `packages:`.                                     |
+| `pi-intercom` (the framework)     | `nicobailon/pi-intercom` upstream                                                    | Consumed from npm; declared in Atomic's default `packages:`.                                     |
+| **Skills** (curated SKILL.md set) | `packages/atomic/skills/`                                                            | **Bundled into the atomic binary.** Loaded via `pi.skills` manifest. Not separately publishable. |
+| **MCP server configs** (curated)  | `packages/atomic/mcp-servers/` (seeded into `~/.atomic/agent/mcp.json` on first run) | **Bundled into the atomic binary.** Default servers pi-mcp-adapter then loads.                   |
+| **Sub-agent definitions**         | `packages/atomic/agents/`                                                            | **Bundled into the atomic binary.** Discovered by pi-subagents.                                  |
+| **Prompt templates**              | `packages/atomic/prompts/`                                                           | **Bundled into the atomic binary.** Loaded via `pi.prompts`.                                     |
+| **Themes**                        | `packages/atomic/themes/`                                                            | **Bundled into the atomic binary.** Loaded via `pi.themes`.                                      |
+| Atomic-side glue extensions       | `packages/atomic/extensions/`                                                        | **Bundled into the atomic binary.** Loaded via `pi.extensions`.                                  |
 
 The rule: **the runtime mechanisms (workflow runtime, MCP adapter, subagent dispatcher, intercom)** travel as npm packages so any pi user can adopt them; **the curated content** (skills, MCP server lists, agent definitions, prompts, themes) ships inside Atomic itself. A user installing plain `pi` plus `pi-workflows`/`pi-mcp-adapter`/etc. gets the runtime but none of Atomic's curation — that's the differentiation.
 
@@ -63,6 +60,7 @@ Nothing else. No `packages/atomic/`, no `packages/atomic-sdk/`, no `.github/work
 This means **every file path mentioned in this spec under `packages/atomic/...`** refers to a file that does not yet exist; it's a target for creation, not a target for edit. Where the spec previously had "Survives, edited" language for v0.x file paths, those paths are now creation targets for v1 — the v0.x file of the same name in `git show v0.x-archive:...` is design reference only.
 
 Concretely:
+
 - No backwards compatibility with v0.x at any level (filesystem layout, CLI surface, SDK import paths, on-disk state, workflow status format, settings schema).
 - No `atomic init --migrate` script. Users on v0.x install fresh; we do not promise to bring over any v0.x state.
 - No "survives," "edited," "moves" language in the design — every file in the new tree is greenfield.
@@ -242,6 +240,7 @@ Everything runs in **one process**. No tmux. No spawned agent CLIs. Sub-agent sp
 **Single-package pi fork + `pi-workflows` as a first-party pi extension + npm deps for everything else**, per pi's officially documented fork recipe (`docs/development.md:24-35` in pi's repo). The Atomic monorepo forks **only** `@bastani/atomic` into `packages/atomic/`; all third-party pi extensions (`pi-mcp-adapter`, `pi-subagents`, `pi-intercom`) are consumed from npm; **`pi-workflows` lives in `packages/pi-workflows/` and is published to npm alongside its consumers** (Atomic plus anyone in the pi ecosystem). The monorepo also adds `skills/`, `prompts/`, `themes/`, and `agents/` directories that the forked pi-coding-agent auto-discovers via its `pi.*` manifest.
 
 The workflow orchestrator becomes a **single extension** (`pi-workflows/`) that exposes:
+
 1. A `workflow` tool (the model can invoke `workflow({name, inputs})`).
 2. A `/workflow [name] [args]` slash command (humans).
 3. A workflow-results overlay (`ctx.ui.custom`).
@@ -250,22 +249,22 @@ The workflow orchestrator becomes a **single extension** (`pi-workflows/`) that 
 
 ### 4.3 Key Components
 
-| Component                             | Responsibility                                                                                                                                                                                    | Technology / Origin                                           | Justification                                                                                               |
-| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `packages/atomic` (root)              | The forked `@bastani/atomic` CLI package, rebranded via `piConfig`. Provides the `atomic` binary. Depends on upstream `pi-ai`, `pi-agent-core`, `pi-tui` via npm.                 | Bun + TypeScript                                              | Hybrid strategy (Q1): minimal fork surface; `piConfig` requires forking the CLI's own package.json.         |
-| `pi-workflows/`               | Native workflow tool, overlay pane, slash command, status writer, custom entry persistence.                                                                                                       | pi extension API (`registerTool`, `ui.custom`, `appendEntry`) | Replaces 65–70% of the current Atomic SDK (executor.ts, orchestrator-panel, workflow-picker, tmux runtime). |
-| ~~`extensions/branding/`~~ (deferred) | **Not in v1** (Q8). Pi's `piConfig.name` auto-reflows the banner. A custom branding extension is deferred until we want the gradient block-logo back.                                             | n/a                                                           | Reduces v1 scope; piConfig is sufficient for identity.                                                      |
-| `extensions/telemetry/`               | Anonymous install/update telemetry, opt-in tool-use telemetry.                                                                                                                                    | pi extension API (`on(agent_end)`, `pi.events`)               | Reuses existing telemetry-backend (`rest-api/`); decouples from pi's own update-check flow.                 |
-| `extensions/init/`                    | `/init` slash command equivalent of `atomic init` for in-TUI bootstrap; writes `.atomic/` configs.                                                                                                | pi extension API (`registerCommand`)                          | Lets users onboard a project without leaving the TUI; deprecates the standalone `atomic init` CLI command.  |
-| `skills/`                             | Bundled SKILL.md skills (the existing 170+ skills, curated).                                                                                                                                      | Agent Skills standard, pi-loaded                              | Pi auto-discovers from convention dir or `pi.skills` manifest.                                              |
-| `prompts/`                            | Bundled markdown prompt templates.                                                                                                                                                                | Pi prompt-template loader                                     | Replaces our current per-agent prompt directories.                                                          |
-| `themes/`                             | Atomic dark + light themes (Catppuccin-derived).                                                                                                                                                  | Pi theme JSON format (51 tokens)                              | Pi hot-reloads active themes; we get free dev UX.                                                           |
-| `agents/`                             | Default sub-agent markdown files (orchestrator, worker, reviewer, planner, scout, etc.).                                                                                                          | pi-subagents discovery roots                                  | Same format pi-subagents already loads from `~/.pi/agent/agents/`.                                          |
-| `pi-mcp-adapter` (npm, upstream)      | MCP support. Declared in pi's `packages: [...]` settings; pi auto-installs from npm on first run.                                                                                                 | TypeScript, `@modelcontextprotocol/sdk`                       | No vendored fork — `pi-coding-agent` is the only direct fork. Upstream issues escape via `overrides`/`patch-package`. |
-| `pi-subagents` (npm, upstream)        | Sub-agent support. Declared in pi's `packages: [...]` settings; pi auto-installs from npm on first run.                                                                                           | TypeScript                                                    | Same posture.                                                                                              |
-| `pi-intercom` (npm, upstream)         | Parent↔child coordination channel. Optional companion to pi-subagents; pi-subagents auto-detects it and exposes `contact_supervisor` to children for blocking decisions, clarifications, and meaningful progress updates. Declared in `packages: [...]`. | TypeScript                                                    | Same posture.                                                                                              |
-| `extensions/integrations/`            | Tiny Atomic-side glue that wires `pi-mcp-adapter` ↔ `pi-subagents` ↔ `pi-intercom` together via `pi.events` (shared MCP server pool, parent permission inheritance, workflow-stage server toggling, intercom routing, attention surfacing), without patching any upstream package. | pi extension API                                              | Cross-cutting wins without owning the upstream packages.                                                    |
-| ~~`packages/atomic-sdk`~~ (superseded) | **Deprecated.** Contents migrate into `packages/pi-workflows/src/` (extension runtime + public authoring API in one publishable npm package, mirroring pi-subagents). External authors swap `import { defineWorkflow } from "@bastani/atomic-sdk"` → `... from "pi-workflows"`. | n/a                                                            | Consolidating SDK + extension into one publishable npm package matches pi-subagents'/pi-mcp-adapter's posture exactly.   |
+| Component                              | Responsibility                                                                                                                                                                                                                                                                     | Technology / Origin                                           | Justification                                                                                                          |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `packages/atomic` (root)               | The forked `@bastani/atomic` CLI package, rebranded via `piConfig`. Provides the `atomic` binary. Depends on upstream `pi-ai`, `pi-agent-core`, `pi-tui` via npm.                                                                                                                  | Bun + TypeScript                                              | Hybrid strategy (Q1): minimal fork surface; `piConfig` requires forking the CLI's own package.json.                    |
+| `pi-workflows/`                        | Native workflow tool, overlay pane, slash command, status writer, custom entry persistence.                                                                                                                                                                                        | pi extension API (`registerTool`, `ui.custom`, `appendEntry`) | Replaces 65–70% of the current Atomic SDK (executor.ts, orchestrator-panel, workflow-picker, tmux runtime).            |
+| ~~`extensions/branding/`~~ (deferred)  | **Not in v1** (Q8). Pi's `piConfig.name` auto-reflows the banner. A custom branding extension is deferred until we want the gradient block-logo back.                                                                                                                              | n/a                                                           | Reduces v1 scope; piConfig is sufficient for identity.                                                                 |
+| `extensions/telemetry/`                | Anonymous install/update telemetry, opt-in tool-use telemetry.                                                                                                                                                                                                                     | pi extension API (`on(agent_end)`, `pi.events`)               | Reuses existing telemetry-backend (`rest-api/`); decouples from pi's own update-check flow.                            |
+| `extensions/init/`                     | `/init` slash command equivalent of `atomic init` for in-TUI bootstrap; writes `.atomic/` configs.                                                                                                                                                                                 | pi extension API (`registerCommand`)                          | Lets users onboard a project without leaving the TUI; deprecates the standalone `atomic init` CLI command.             |
+| `skills/`                              | Bundled SKILL.md skills (the existing 170+ skills, curated).                                                                                                                                                                                                                       | Agent Skills standard, pi-loaded                              | Pi auto-discovers from convention dir or `pi.skills` manifest.                                                         |
+| `prompts/`                             | Bundled markdown prompt templates.                                                                                                                                                                                                                                                 | Pi prompt-template loader                                     | Replaces our current per-agent prompt directories.                                                                     |
+| `themes/`                              | Atomic dark + light themes (Catppuccin-derived).                                                                                                                                                                                                                                   | Pi theme JSON format (51 tokens)                              | Pi hot-reloads active themes; we get free dev UX.                                                                      |
+| `agents/`                              | Default sub-agent markdown files (orchestrator, worker, reviewer, planner, scout, etc.).                                                                                                                                                                                           | pi-subagents discovery roots                                  | Same format pi-subagents already loads from `~/.pi/agent/agents/`.                                                     |
+| `pi-mcp-adapter` (npm, upstream)       | MCP support. Declared in pi's `packages: [...]` settings; pi auto-installs from npm on first run.                                                                                                                                                                                  | TypeScript, `@modelcontextprotocol/sdk`                       | No vendored fork — `pi-coding-agent` is the only direct fork. Upstream issues escape via `overrides`/`patch-package`.  |
+| `pi-subagents` (npm, upstream)         | Sub-agent support. Declared in pi's `packages: [...]` settings; pi auto-installs from npm on first run.                                                                                                                                                                            | TypeScript                                                    | Same posture.                                                                                                          |
+| `pi-intercom` (npm, upstream)          | Parent↔child coordination channel. Optional companion to pi-subagents; pi-subagents auto-detects it and exposes `contact_supervisor` to children for blocking decisions, clarifications, and meaningful progress updates. Declared in `packages: [...]`.                           | TypeScript                                                    | Same posture.                                                                                                          |
+| `extensions/integrations/`             | Tiny Atomic-side glue that wires `pi-mcp-adapter` ↔ `pi-subagents` ↔ `pi-intercom` together via `pi.events` (shared MCP server pool, parent permission inheritance, workflow-stage server toggling, intercom routing, attention surfacing), without patching any upstream package. | pi extension API                                              | Cross-cutting wins without owning the upstream packages.                                                               |
+| ~~`packages/atomic-sdk`~~ (superseded) | **Deprecated.** Contents migrate into `packages/pi-workflows/src/` (extension runtime + public authoring API in one publishable npm package, mirroring pi-subagents). External authors swap `import { defineWorkflow } from "@bastani/atomic-sdk"` → `... from "pi-workflows"`.    | n/a                                                           | Consolidating SDK + extension into one publishable npm package matches pi-subagents'/pi-mcp-adapter's posture exactly. |
 
 ---
 
@@ -276,6 +275,7 @@ This section is hierarchical. Each subsection corresponds to one component / mig
 ### 5.1 Fork & Rebrand
 
 #### Goal
+
 Produce an `atomic` binary that IS pi-coding-agent with Atomic identity, config paths, and env var prefix.
 
 #### Fork-scope rule (decided)
@@ -283,6 +283,7 @@ Produce an `atomic` binary that IS pi-coding-agent with Atomic identity, config 
 **The fork exists solely to apply the rebrand.** Everything else uses pi's built-in functionality.
 
 The forked `packages/atomic/` differs from upstream `packages/coding-agent/` ONLY in `package.json`:
+
 - `name`: `"@bastani/atomic"` → `"atomic"`.
 - `bin`: `{ "pi": "..." }` → `{ "atomic": "..." }`.
 - `piConfig`: `{ "name": "atomic", "configDir": ".atomic" }`.
@@ -293,28 +294,30 @@ The forked `packages/atomic/` differs from upstream `packages/coding-agent/` ONL
 **Zero TypeScript files inside the forked package are edited.** All Atomic behavior is delivered via pi's documented surfaces (extensions, skills, prompts, themes, agents, `settings.json`, `pi.events`). If extension API surface is insufficient, we contribute a PR upstream instead of patching the fork. This rule is enforced by a CI check (`bun run check-fork-purity`) that fails if any file under `packages/atomic/src/**` or `packages/atomic/**/*.ts` is modified.
 
 #### Mechanism
+
 Per pi `docs/development.md`:
 
 ```jsonc
 // packages/atomic/package.json
 {
-  "name": "atomic",
-  "version": "...",
-  "bin": { "atomic": "./bin/atomic" },
-  "piConfig": {
     "name": "atomic",
-    "configDir": ".atomic"
-  },
-  "pi": {
-    "extensions": ["./extensions"],
-    "skills": ["./skills"],
-    "prompts": ["./prompts"],
-    "themes": ["./themes"]
-  }
+    "version": "...",
+    "bin": { "atomic": "./bin/atomic" },
+    "piConfig": {
+        "name": "atomic",
+        "configDir": ".atomic",
+    },
+    "pi": {
+        "extensions": ["./extensions"],
+        "skills": ["./skills"],
+        "prompts": ["./prompts"],
+        "themes": ["./themes"],
+    },
 }
 ```
 
 This single block produces:
+
 - Binary name: `atomic`.
 - CLI banner: "atomic".
 - Global config dir: `~/.atomic/agent/` (replaces `~/.pi/agent/`).
@@ -327,12 +330,14 @@ This single block produces:
 **Decided** (Q1, refined per user request): `@bastani/atomic` is the **only** package this repo directly forks. Everything else — `pi-ai`, `pi-agent-core`, `pi-tui`, plus third-party pi extensions like `pi-mcp-adapter` and `pi-subagents` — is consumed as an ordinary npm dependency. Vendor a package as a fork **only if** a specific blocker forces it (rule: "only vendor deps in pi if you have to").
 
 Why only pi-coding-agent:
+
 - The `piConfig` rebrand (`{ piConfig: { name, configDir } }` in `package.json`) MUST live in the CLI package's own `package.json`. `npm install` would overwrite consumer-side changes. **This is the only reason we fork at all.**
 - The deeper libs (`pi-ai`, `pi-agent-core`, `pi-tui`) are stable, semver-respecting, and consumed via standard npm semver.
 - Third-party pi extensions (`pi-mcp-adapter`, `pi-subagents`) are not pi core; they're installed at runtime by pi's package manager. We don't need source-level access to ship them.
 - Smaller fork surface = easier rebases, less maintenance debt. Since the fork delta is `package.json`-only, **rebases against upstream are mechanical** — `git merge upstream/main` on the source tree should never conflict (our changes don't touch any of the files pi authors edit).
 
 Escape hatches when we **must** patch something we don't fork:
+
 - **npm `overrides` / `resolutions`** in our root `package.json` redirect a transitive dependency (e.g., redirect pi-mcp-adapter's deprecated `@mariozechner/pi-ai` → `@earendil-works/pi-ai` until upstream issue #91 lands).
 - **`patch-package`** applies a tracked patch on `npm install` for tiny localized fixes.
 - **Upstream contribution**: open a PR against the source repo; drop our patch once accepted.
@@ -341,6 +346,7 @@ Escape hatches when we **must** patch something we don't fork:
 #### Upstream rebase cadence (decided)
 
 **Decided** (Q5): weekly automated rebase attempt. A scheduled GitHub Action runs every Monday:
+
 1. `git remote add upstream https://github.com/earendil-works/pi-mono` (if not present).
 2. `git fetch upstream && git checkout -b rebase/upstream-YYYY-MM-DD`.
 3. Cherry-pick the latest upstream `packages/coding-agent/**` changes onto our forked `packages/atomic/`.
@@ -351,6 +357,7 @@ Escape hatches when we **must** patch something we don't fork:
 Because the fork delta is package.json-only, step 4 is the only point where conflicts are possible — and conflicts there only happen if upstream restructures their own package.json. Source-code rebases are conflict-free by construction.
 
 #### Files affected
+
 - **Edited (the entire rebrand surface)**: `packages/atomic/package.json` — change `name`, `bin` mapping, add `piConfig` block, add `pi.*` manifest, trim deps + add `jiti`. Plus `packages/atomic/PACKAGE_JSON_REBRAND.patch` (the diff file applied during upstream rebases). The bin script file itself is reused from upstream verbatim (only the `bin` map key changes).
 - **Untouched in the fork**: every `packages/atomic/src/**/*.ts`, every test, every README inside the package. Source-code purity enforced by `check-fork-purity` CI script.
 - **Removed**: `packages/atomic/bin/atomic` (current Node.js platform-resolver stub — replaced by pi's bin script).
@@ -359,6 +366,7 @@ Because the fork delta is package.json-only, step 4 is the only point where conf
 - **Renamed/migrated**: all `~/.atomic/sessions/` references in surviving Atomic code should now resolve under pi's `~/.atomic/agent/sessions/`.
 
 #### Risks
+
 - **Upstream drift**: pi ships frequent releases. We must establish a rebase cadence (see Open Question 9.5).
 - **Forking commits the maintainer**: the fork is permanent, but the delta is package.json-only, so the ongoing cost is rebasing a single file weekly. Source-code rebases are conflict-free by construction.
 - **Extension-API gaps**: if Atomic needs a hook pi doesn't yet expose, we MUST upstream the API addition rather than patch the fork. This may slow specific features. Mitigation: pi's extension surface is already very rich (`docs/extensions.md` is 96 KB); we've audited every Atomic concern in §5.4.10 and confirmed coverage.
@@ -368,6 +376,7 @@ Because the fork delta is package.json-only, step 4 is the only point where conf
 ### 5.2 Bundled Resources (skills / prompts / themes / agents)
 
 #### Goal
+
 All Atomic-curated content ships inside the Atomic binary, discoverable via pi's package mechanism. Users get the full experience after `atomic install`, no additional `pi install` steps.
 
 #### Layout
@@ -404,8 +413,16 @@ packages/atomic/
 #### Discovery
 
 Pi reads the `pi` key from `package.json`:
+
 ```json
-{ "pi": { "extensions": ["./extensions"], "skills": ["./skills"], "prompts": ["./prompts"], "themes": ["./themes"] } }
+{
+    "pi": {
+        "extensions": ["./extensions"],
+        "skills": ["./skills"],
+        "prompts": ["./prompts"],
+        "themes": ["./themes"]
+    }
+}
 ```
 
 pi-subagents discovers agents from project-local `.pi/agents/` / `.agents/` walking up from cwd. Under our `piConfig.configDir = ".atomic"` rebrand, that becomes `.atomic/agents/`. The Atomic binary's own root counts as a project root, so `packages/atomic/agents/*.md` is discovered automatically when running from within (or under) the Atomic source tree, and the bundle is also installed into `~/.atomic/agent/agents/` at first run for global discovery. **No upstream patching required.**
@@ -417,6 +434,7 @@ pi-subagents discovers agents from project-local `.pi/agents/` / `.agents/` walk
 **Q2 — legacy paths**: Atomic does **NOT** auto-load `~/.agents/skills/` or `~/.claude/skills/` by default. Bundled skills are self-described via the project's `pi.skills` manifest pointing at `packages/atomic/skills/` — no on-disk copying to user roots, no settings entries pointing at user-owned dirs. This keeps user settings clean (no Atomic-imposed entries) and avoids duplicate-skill warnings.
 
 **Q3 — curation rule**: Ship **everything** from the current `.agents/skills/` tree **EXCEPT**:
+
 - Skills with frontmatter `metadata.internal: true` (project-internal skills not meant for general use).
 - Provider/vendor-specific skills with prefixes `gh-*` (GitHub Copilot specific), `ado-*` (Azure DevOps), `sl-*` (Sapling).
 
@@ -425,11 +443,13 @@ A build-time script (`packages/atomic/script/curate-skills.ts`) reads each `SKIL
 Users who want any excluded skill back: copy from the source repo or install a separate pi-package.
 
 #### Files affected
+
 - **New**: `packages/atomic/skills/`, `prompts/`, `themes/`, `agents/`.
 - **Removed**: `packages/atomic/script/build-assets.ts` (the embedded asset tarball builder), `packages/atomic/script/bundle-configs.ts`, the embedded `.claude.tar`, `.opencode.tar`, `.github.tar`, `skills.tar` assets.
 - **Removed**: `packages/atomic/src/services/system/skills.ts` (`installGlobalSkills` — pi handles discovery natively), `packages/atomic/src/services/system/agents.ts` (`installGlobalAgents`).
 
 #### Risks
+
 - **Skill duplication**: users with existing `~/.agents/skills` may see duplicate skill IDs. Pi warns on duplicates but does not error. Mitigation: clear migration docs (§5.13).
 
 ---
@@ -437,7 +457,9 @@ Users who want any excluded skill back: copy from the source repo or install a s
 ### 5.3 SDK Consolidation — `@bastani/atomic-sdk` → `pi-workflows`
 
 #### Goal
+
 **Supersede `@bastani/atomic-sdk` with `pi-workflows`.** Following the pi-subagents posture (one npm package exports both the extension `default` and the types/authoring helpers), `pi-workflows` exports:
+
 - `default function (pi: ExtensionAPI)` — the pi extension entry point.
 - `defineWorkflow(name)`, `createRegistry`, `validateInputs`, all surviving types — the authoring API external workflow authors `import` from.
 
@@ -445,19 +467,19 @@ External workflow files use `import { defineWorkflow } from "pi-workflows"`. The
 
 `packages/pi-workflows/src/` is written from scratch. The previous `packages/atomic-sdk/src/` is deleted; below is a cross-reference table mapping each new module to the previous-impl file that informed its design. **No code is copied** — each module is re-derived. The references exist so a future maintainer can read the v0.x file in git history and understand the design pedigree.
 
-| New module (greenfield)                              | Cross-reference (v0.x, design inspiration only)                                                | What's being preserved                                                                                                                          |
-| ---------------------------------------------------- | ---------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pi-workflows/src/define-workflow.ts`                | `packages/atomic-sdk/src/define-workflow.ts`                                                   | Public authoring DSL shape: `defineWorkflow(name).for(model).run(fn).compile()`.                                                                |
-| `pi-workflows/src/registry.ts`                       | `packages/atomic-sdk/src/registry.ts`                                                          | Immutable chainable registry (`createRegistry`, `register`, `upsert`).                                                                          |
-| `pi-workflows/src/input-validation.ts`               | `packages/atomic-sdk/src/worker-shared.ts` + `src/primitives/inputs.ts`                       | Camel-case normalization, input schema validation, default application.                                                                          |
-| `pi-workflows/src/errors.ts`                         | `packages/atomic-sdk/src/errors.ts`                                                            | Typed error class taxonomy (`MissingDependencyError`, `WorkflowNotCompiledError`, etc.).                                                        |
-| `pi-workflows/src/types.ts`                          | `packages/atomic-sdk/src/types.ts`                                                             | Public type surface (`WorkflowDefinition`, `WorkflowContext`, `SessionContext`, etc.); claude/copilot/opencode-specific types do not reappear. |
-| `pi-workflows/src/metadata.ts`                       | `packages/atomic-sdk/src/primitives/metadata.ts`                                               | Workflow metadata accessors.                                                                                                                     |
-| `pi-workflows/src/runtime/graph-inference.ts`        | `packages/atomic-sdk/src/runtime/graph-inference.ts`                                           | `GraphFrontierTracker` topology inference (the key algorithm; re-derived but identical in spirit).                                              |
-| `pi-workflows/src/runtime/status-writer.ts` (optional) | `packages/atomic-sdk/src/runtime/status-writer.ts`                                            | Optional opt-in `status.json` schema for CI polling. Primary state is session JSONL via `pi.appendEntry` (§5.4.6); status file is derived.    |
-| `pi-workflows/src/overlay/layout.ts`, `connectors.ts`, `theme.ts`, `status-helpers.ts`, `color-utils.ts` | `packages/atomic-sdk/src/components/{layout,connectors,graph-theme,status-helpers,color-utils}.ts` | Graph layout math + status helpers, ported to pi-tui's component API.                                                                            |
-| `pi-workflows/src/lib/common-ignore.ts`              | `packages/atomic-sdk/src/lib/common-ignore.ts`                                                 | Generic ignore filter for fs scans.                                                                                                              |
-| `pi-workflows/src/lib/telemetry.ts`                  | `packages/atomic-sdk/src/lib/telemetry/index.ts`                                               | `TelemetrySink` interface + production sink wiring.                                                                                              |
+| New module (greenfield)                                                                                  | Cross-reference (v0.x, design inspiration only)                                                    | What's being preserved                                                                                                                         |
+| -------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pi-workflows/src/define-workflow.ts`                                                                    | `packages/atomic-sdk/src/define-workflow.ts`                                                       | Public authoring DSL shape: `defineWorkflow(name).for(model).run(fn).compile()`.                                                               |
+| `pi-workflows/src/registry.ts`                                                                           | `packages/atomic-sdk/src/registry.ts`                                                              | Immutable chainable registry (`createRegistry`, `register`, `upsert`).                                                                         |
+| `pi-workflows/src/input-validation.ts`                                                                   | `packages/atomic-sdk/src/worker-shared.ts` + `src/primitives/inputs.ts`                            | Camel-case normalization, input schema validation, default application.                                                                        |
+| `pi-workflows/src/errors.ts`                                                                             | `packages/atomic-sdk/src/errors.ts`                                                                | Typed error class taxonomy (`MissingDependencyError`, `WorkflowNotCompiledError`, etc.).                                                       |
+| `pi-workflows/src/types.ts`                                                                              | `packages/atomic-sdk/src/types.ts`                                                                 | Public type surface (`WorkflowDefinition`, `WorkflowContext`, `SessionContext`, etc.); claude/copilot/opencode-specific types do not reappear. |
+| `pi-workflows/src/metadata.ts`                                                                           | `packages/atomic-sdk/src/primitives/metadata.ts`                                                   | Workflow metadata accessors.                                                                                                                   |
+| `pi-workflows/src/runtime/graph-inference.ts`                                                            | `packages/atomic-sdk/src/runtime/graph-inference.ts`                                               | `GraphFrontierTracker` topology inference (the key algorithm; re-derived but identical in spirit).                                             |
+| `pi-workflows/src/runtime/status-writer.ts` (optional)                                                   | `packages/atomic-sdk/src/runtime/status-writer.ts`                                                 | Optional opt-in `status.json` schema for CI polling. Primary state is session JSONL via `pi.appendEntry` (§5.4.6); status file is derived.     |
+| `pi-workflows/src/overlay/layout.ts`, `connectors.ts`, `theme.ts`, `status-helpers.ts`, `color-utils.ts` | `packages/atomic-sdk/src/components/{layout,connectors,graph-theme,status-helpers,color-utils}.ts` | Graph layout math + status helpers, ported to pi-tui's component API.                                                                          |
+| `pi-workflows/src/lib/common-ignore.ts`                                                                  | `packages/atomic-sdk/src/lib/common-ignore.ts`                                                     | Generic ignore filter for fs scans.                                                                                                            |
+| `pi-workflows/src/lib/telemetry.ts`                                                                      | `packages/atomic-sdk/src/lib/telemetry/index.ts`                                                   | `TelemetrySink` interface + production sink wiring.                                                                                            |
 
 **The v0.x files above are deleted along with the rest of `packages/atomic-sdk/`.** This is not an incremental refactor.
 
@@ -479,6 +501,7 @@ The new top-level Atomic config concerns (Atomic-namespaced keys in pi's `settin
 The rewrite eliminates **all** underscore-prefixed hidden subcommands. The current `lib/auto-dispatch.ts` (intercepts `_orchestrator-entry`, `_cc-debounce`), `lib/host-local-workflows.ts` (`_emit-workflow-meta`, `_atomic-run`), and `lib/dispatch-utils.ts` are all **deleted**.
 
 Custom-workflow registration replaces the metadata-emission protocol with **direct SDK module import**. The workflow extension scans:
+
 1. `.atomic/workflows/*.ts` (project-local, walked up from cwd).
 2. `~/.atomic/agent/workflows/*.ts` (global).
 3. Each entry in `settings.json` `atomic.workflows` map (`{ name: { path: "..." } }`).
@@ -487,18 +510,20 @@ For each file it does:
 
 ```ts
 // pi-workflows/registry-loader.ts (sketch)
-const mod = await import(absolutePath);              // jiti for TS, native for JS
-const def = mod.default;                              // a WorkflowDefinition
-assert(def && def.__atomicWorkflow === true);         // shape check
+const mod = await import(absolutePath); // jiti for TS, native for JS
+const def = mod.default; // a WorkflowDefinition
+assert(def && def.__atomicWorkflow === true); // shape check
 registry.upsert(def);
 ```
 
 No subprocess. No CLI envelope. No dispatch token (the security model is "the user added this path to settings — they trust it," identical to pi's extension-loading posture). Bun and TS files load via `jiti` (already present as a runtime dep for pi-subagents per §5.7).
 
 #### Public API stability (decided Q4)
+
 The `defineWorkflow` and `createRegistry` **function signatures MUST NOT BREAK**, only the import path. External workflow authors depend on them; the rewrite changes their import from `@bastani/atomic-sdk` to `pi-workflows`. The signatures stay identical; the executor underneath is swapped wholesale.
 
 **Decided (Q4)**: `runWorkflow()` and `RunWorkflowOptions` / `RunWorkflowResult` are **removed entirely** from the SDK's public API. The only ways to invoke a workflow after the rewrite:
+
 1. `/workflow <name>` slash command inside the chat TUI.
 2. `atomic workflow -n <name>` CLI command (which spawns a fresh `atomic -p` subprocess — see §5.9 + Q10).
 3. The in-extension executor (callable from other extensions via `pi.events`).
@@ -508,7 +533,6 @@ External Node scripts that previously called `runWorkflow()` must shell out to `
 The `primitives/run.ts` file is **deleted**.
 
 ---
-
 
 ### 5.4 Workflows: `pi-workflows` from npm (Spec 1)
 
@@ -525,7 +549,6 @@ From Atomic's perspective in this spec, the relevant facts are:
 
 If you find yourself wanting to read about renderer slots, `pi.appendEntry` calls, the GraphFrontierTracker algorithm, or the workflow tool's `renderResult` streaming behavior — open Spec 1.
 
-
 ### 5.5 Branding (via piConfig — decided Q8)
 
 #### Decision
@@ -534,7 +557,7 @@ If you find yourself wanting to read about renderer slots, `pi.appendEntry` call
 
 ```jsonc
 {
-  "piConfig": { "name": "atomic", "configDir": ".atomic" }
+    "piConfig": { "name": "atomic", "configDir": ".atomic" },
 }
 ```
 
@@ -549,6 +572,7 @@ Two themes ship: `atomic-dark.json`, `atomic-light.json` — Catppuccin-derived.
 If/when we want the gradient block-logo banner from the current `theme/logo.ts`, build it as `extensions/branding/` calling `ctx.ui.setHeader(...)`. Scoped out of v1.
 
 #### Files affected
+
 - **New**: `packages/atomic/themes/atomic-dark.json`, `packages/atomic/themes/atomic-light.json`.
 - **Reference for a future branding extension**: the v0.x `packages/atomic/src/theme/logo.ts` (gradient/figlet block-logo) is design reference if we later want a custom banner. The v0.x file is deleted; a future extension would re-derive the helpers from scratch.
 
@@ -557,16 +581,16 @@ If/when we want the gradient block-logo banner from the current `theme/logo.ts`,
 ### 5.6 MCP Support (via upstream `pi-mcp-adapter` from npm)
 
 #### Goal
+
 Ship MCP server support by **consuming the upstream `pi-mcp-adapter` package directly from npm**, replacing the current `.claude/.mcp.json` + claude-CLI-native MCP loading. No vendored fork (per §5.1 rule).
 
 #### Install posture
+
 Declare in Atomic's default bundled `settings.json`:
 
 ```jsonc
 {
-  "packages": [
-    { "source": "npm:pi-mcp-adapter", "lifecycle": "auto" }
-  ]
+    "packages": [{ "source": "npm:pi-mcp-adapter", "lifecycle": "auto" }],
 }
 ```
 
@@ -574,11 +598,11 @@ Pi's existing package installer fetches it from npm on first session start (Q9).
 
 #### Addressing upstream blockers without forking
 
-| Blocker                                                                                | Resolution                                                                                                                                                                                                                                                                              |
-| -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Issue #91 — uses deprecated `@mariozechner/pi-ai`                                      | **npm `overrides`** in our root `package.json`: `"overrides": { "pi-mcp-adapter": { "@mariozechner/pi-ai": "npm:@earendil-works/pi-ai@latest" } }`. Track upstream PR; remove override once merged. Backup: `patch-package`.                                                |
-| Issue #91 — uses deprecated `@bastani/atomic`                           | Same `overrides` approach pointing at our forked `packages/atomic/` workspace symbol (or `@bastani/atomic` if the adapter accepts that).                                                                                                                                |
-| `agent-dir.ts` honors `PI_CODING_AGENT_DIR` only                                       | Pi's `piConfig.configDir` rebrand automatically remaps env-var lookups; `pi-mcp-adapter` calls pi's config-dir API so it transparently sees `ATOMIC_CODING_AGENT_DIR`. Verify in Phase 3 smoke; if not, push a small upstream PR.                                                       |
+| Blocker                                           | Resolution                                                                                                                                                                                                                        |
+| ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Issue #91 — uses deprecated `@mariozechner/pi-ai` | **npm `overrides`** in our root `package.json`: `"overrides": { "pi-mcp-adapter": { "@mariozechner/pi-ai": "npm:@earendil-works/pi-ai@latest" } }`. Track upstream PR; remove override once merged. Backup: `patch-package`.      |
+| Issue #91 — uses deprecated `@bastani/atomic`     | Same `overrides` approach pointing at our forked `packages/atomic/` workspace symbol (or `@bastani/atomic` if the adapter accepts that).                                                                                          |
+| `agent-dir.ts` honors `PI_CODING_AGENT_DIR` only  | Pi's `piConfig.configDir` rebrand automatically remaps env-var lookups; `pi-mcp-adapter` calls pi's config-dir API so it transparently sees `ATOMIC_CODING_AGENT_DIR`. Verify in Phase 3 smoke; if not, push a small upstream PR. |
 
 #### Atomic-side glue: `extensions/integrations/mcp-bridge.ts`
 
@@ -586,14 +610,15 @@ We do NOT modify the upstream adapter. Instead a tiny Atomic-owned extension lis
 
 ```ts
 pi.events.on("atomic.workflow.stage_start", ({ stageName, modelHint }) => {
-  // Apply per-stage MCP server enable/disable rules (replacement for scm-sync.ts)
-  // Communicate via pi-mcp-adapter's public command surface or its event bus
+    // Apply per-stage MCP server enable/disable rules (replacement for scm-sync.ts)
+    // Communicate via pi-mcp-adapter's public command surface or its event bus
 });
 ```
 
 This replaces the current `scm-sync.ts` per-agent toggling without touching upstream code.
 
 #### Config locations after rewrite (no change from upstream)
+
 - `~/.config/mcp/mcp.json` — preserved.
 - `~/.atomic/agent/mcp.json` — replaces current `.claude/.mcp.json` user copy (pi-mcp-adapter reads `<agent-dir>/mcp.json`, which under our fork is `~/.atomic/agent/mcp.json`).
 - `.mcp.json` — preserved.
@@ -617,34 +642,34 @@ packages/atomic/mcp-servers/
 
 ```jsonc
 {
-  "mcpServers": {
-    "filesystem": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
-      "lifecycle": "lazy"
+    "mcpServers": {
+        "filesystem": {
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+            "lifecycle": "lazy",
+        },
+        "github": {
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-github"],
+            "env": { "GITHUB_TOKEN": "$GITHUB_TOKEN" },
+            "lifecycle": "lazy",
+        },
+        "fetch": {
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-fetch"],
+            "lifecycle": "lazy",
+        },
+        "memory": {
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-memory"],
+            "lifecycle": "lazy",
+        },
+        "sequentialthinking": {
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
+            "lifecycle": "lazy",
+        },
     },
-    "github": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-github"],
-      "env": { "GITHUB_TOKEN": "$GITHUB_TOKEN" },
-      "lifecycle": "lazy"
-    },
-    "fetch": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-fetch"],
-      "lifecycle": "lazy"
-    },
-    "memory": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-memory"],
-      "lifecycle": "lazy"
-    },
-    "sequentialthinking": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
-      "lifecycle": "lazy"
-    }
-  }
 }
 ```
 
@@ -663,12 +688,15 @@ Project-level `.atomic/mcp.json` entries (per pi-mcp-adapter's existing config p
 We considered (and rejected) embedding the MCP server defs as in-memory entries registered programmatically by an atomic extension. That would require an upstream API in pi-mcp-adapter for "accept additional mcpServers from extensions," which violates our fork-purity rule (§5.1). Seeding `~/.atomic/agent/mcp.json` from a bundled file is the simplest pi-native approach.
 
 ##### Files affected (additions)
+
 - **New**: `packages/atomic/mcp-servers/default.json` — the curated MCP server bundle.
 - **New**: `packages/atomic/mcp-servers/README.md` — one-line description of each server.
 - **New (extension behavior)**: `packages/atomic/extensions/init/` seeds the bundled `default.json` into `~/.atomic/agent/mcp.json` on first run.
 
 #### Config locations after rewrite
+
 Per pi-mcp-adapter's existing multi-source loader:
+
 - `~/.config/mcp/mcp.json` (cross-tool generic global) — **preserved**.
 - `~/.atomic/agent/mcp.json` (Atomic global override) — replaces current `.claude/.mcp.json` user copy.
 - `.mcp.json` (project shared) — **preserved**.
@@ -681,18 +709,20 @@ The auto-import functionality (Cursor, Claude Code, Claude Desktop, Codex, Winds
 **Decided (Q9)**: declare both packages in pi's `packages: [...]` settings — pi's existing package installer handles them like any other.
 
 Default bundled settings ship with:
+
 ```jsonc
 {
-  "packages": [
-    { "source": "npm:pi-mcp-adapter", "lifecycle": "auto" },
-    { "source": "npm:pi-subagents", "lifecycle": "auto" }
-  ]
+    "packages": [
+        { "source": "npm:pi-mcp-adapter", "lifecycle": "auto" },
+        { "source": "npm:pi-subagents", "lifecycle": "auto" },
+    ],
 }
 ```
 
 On first run pi installs from npm (or from a vendored tarball if `--offline` is set). Users can disable either package via `atomic config` (pi's existing package config UI) or by removing the entry from settings.
 
 Rationale:
+
 - No binary bloat from embedded tarballs.
 - Matches pi's idiom — first-party packages aren't structurally special; they're just default-installed.
 - Updates flow via `atomic update --extensions` (pi's existing flow).
@@ -701,12 +731,14 @@ Rationale:
 Offline-mode users: we still publish tarballs to GitHub Releases that `install.sh` can pre-populate into `~/.atomic/agent/packages/` before first launch.
 
 #### Files affected
+
 - **New**: `packages/atomic/extensions/integrations/mcp-bridge.ts` (tiny Atomic-owned glue, no upstream patching).
 - **Configured**: `packages/atomic/default-settings.json` (the bundled default settings) declares `pi-mcp-adapter` under `packages: [...]`.
 - **New (root)**: `package.json` `overrides` block for pi-mcp-adapter's transitive deps.
 - **Removed**: `.claude/.mcp.json` (project), embedded `.claude.tar` MCP entries, `services/config/scm-sync.ts` (replaced by event-driven toggling).
 
 #### Risks
+
 - **Direct-tools register at module-load** (pi-mcp-adapter limitation, upstream issue #69). MCP tools can't be added without a `/reload`. Acceptable for v1.
 - **npm overrides can be fragile** if pi-mcp-adapter's internal version pins change. We add a CI check (`bun run check-overrides`) that verifies overrides still resolve cleanly after dep bumps.
 
@@ -715,17 +747,19 @@ Offline-mode users: we still publish tarballs to GitHub Releases that `install.s
 ### 5.7 Sub-agent Support (via upstream `pi-subagents` from npm)
 
 #### Goal
+
 Replace the current Claude-Code sub-agent system (`.claude/agents/` + Claude Code's native sub-agent dispatch) with the **upstream `pi-subagents` package consumed from npm**. No vendored fork (per §5.1 rule).
 
 #### Install posture
+
 Declare in Atomic's default bundled `settings.json`. We ship **both** `pi-subagents` and its optional companion `pi-intercom` (see §5.7a for the rationale and integration details):
 
 ```jsonc
 {
-  "packages": [
-    { "source": "npm:pi-subagents", "lifecycle": "auto" },
-    { "source": "npm:pi-intercom",  "lifecycle": "auto" }
-  ]
+    "packages": [
+        { "source": "npm:pi-subagents", "lifecycle": "auto" },
+        { "source": "npm:pi-intercom", "lifecycle": "auto" },
+    ],
 }
 ```
 
@@ -733,22 +767,24 @@ Pi installs both on first session start. The presence of `pi-intercom` is what a
 
 #### Addressing upstream blockers without forking
 
-| Blocker                                                                              | Resolution                                                                                                                                                                                                                                                                              |
-| ------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Issue #157 — `jiti` resolution fails on Homebrew installs                            | Declare `jiti` as a top-level dependency of Atomic so it's always on disk. The adapter's runtime lookup picks ours up. No upstream change required.                                                                                                                                     |
-| Issue #147 — fork-context child crashes after parent compaction (thinking-block replay) | **Compaction policy** owned by Atomic: install a `session_before_compact` hook in `extensions/integrations/subagent-bridge.ts` that strips thinking blocks from the last assistant turn when an in-flight sub-agent depends on a fork. No upstream change required.                  |
-| `pi-spawn.ts` spawns `pi` binary, not `atomic`                                       | pi-subagents resolves the consuming binary via `process.execPath`. Under our fork, that's `atomic`. **Verify in Phase 3 smoke**; if not, push a tiny upstream PR.                                                                                                                       |
-| Issue #143 — sub-agents bypass parent permission gates                              | Atomic doesn't ship a default permission gate (Q12), so this is moot in v1. If/when a user installs one, the glue extension can propagate it.                                                                                                                                          |
-| Atomic-default agents (`orchestrator`, `worker`, `reviewer`, etc.)                    | Bundled in `packages/atomic/agents/` — pi-subagents discovers `.atomic/agents/` (after configDir rebrand). The Atomic binary's own root counts as a project root for the bundled agents.                                                                                                |
+| Blocker                                                                                 | Resolution                                                                                                                                                                                                                                                          |
+| --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Issue #157 — `jiti` resolution fails on Homebrew installs                               | Declare `jiti` as a top-level dependency of Atomic so it's always on disk. The adapter's runtime lookup picks ours up. No upstream change required.                                                                                                                 |
+| Issue #147 — fork-context child crashes after parent compaction (thinking-block replay) | **Compaction policy** owned by Atomic: install a `session_before_compact` hook in `extensions/integrations/subagent-bridge.ts` that strips thinking blocks from the last assistant turn when an in-flight sub-agent depends on a fork. No upstream change required. |
+| `pi-spawn.ts` spawns `pi` binary, not `atomic`                                          | pi-subagents resolves the consuming binary via `process.execPath`. Under our fork, that's `atomic`. **Verify in Phase 3 smoke**; if not, push a tiny upstream PR.                                                                                                   |
+| Issue #143 — sub-agents bypass parent permission gates                                  | Atomic doesn't ship a default permission gate (Q12), so this is moot in v1. If/when a user installs one, the glue extension can propagate it.                                                                                                                       |
+| Atomic-default agents (`orchestrator`, `worker`, `reviewer`, etc.)                      | Bundled in `packages/atomic/agents/` — pi-subagents discovers `.atomic/agents/` (after configDir rebrand). The Atomic binary's own root counts as a project root for the bundled agents.                                                                            |
 
 #### Atomic-side glue: `extensions/integrations/subagent-bridge.ts`
 
 Same posture as the MCP bridge. The glue listens on `pi.events` and:
+
 - Inherits workflow context into spawned sub-agents (via env vars on spawn).
 - Shares the MCP server pool by responding to `pi-mcp-adapter`'s lookup events.
 - Mediates the fork-context compaction issue (#147).
 
 #### Agent definition migration
+
 Atomic does not migrate `.claude/agents/*.md` automatically (no backwards compat — see §3.2 and §5.13). Users with prior Claude-Code-shaped agent files who want to keep them: hand-edit the frontmatter to pi-subagents' shape. For reference, the mapping is:
 
 | Claude Code agent frontmatter | pi-subagents frontmatter equivalent |
@@ -759,6 +795,7 @@ Atomic does not migrate `.claude/agents/*.md` automatically (no backwards compat
 | (Claude-only fields)          | dropped                             |
 
 #### Files affected
+
 - **New**: `packages/atomic/extensions/integrations/subagent-bridge.ts` (Atomic-owned glue, no upstream patching).
 - **New**: `packages/atomic/agents/*.md` (bundled Atomic-default agents).
 - **Configured**: bundled default settings declares `pi-subagents` and `pi-intercom` under `packages: [...]`.
@@ -766,6 +803,7 @@ Atomic does not migrate `.claude/agents/*.md` automatically (no backwards compat
 - **Removed**: all current Claude-specific sub-agent dispatch code; `.claude/agents/` references in onboarding.
 
 #### Risks
+
 - **Sub-agent depth blow-up**: pi-subagents spawns a child `atomic` process per invocation. Cold-start matters. Mitigation: depth limit (default 2).
 
 ---
@@ -773,22 +811,25 @@ Atomic does not migrate `.claude/agents/*.md` automatically (no backwards compat
 ### 5.7a Parent↔Child Coordination (via upstream `pi-intercom` from npm)
 
 #### Goal
-Give child sub-agents a private channel back to the parent Atomic session so they can ask for blocking decisions, clarifications, and meaningful progress updates instead of guessing. Critical for long-running background work where the user has detached and a sub-agent hits an unexpected fork in the road. Per pi-subagents' README: *"Install `pi-intercom` only if you want child agents to talk back to the parent Pi session while they are running."* Atomic opts in by default because workflow stages frequently run in the background.
+
+Give child sub-agents a private channel back to the parent Atomic session so they can ask for blocking decisions, clarifications, and meaningful progress updates instead of guessing. Critical for long-running background work where the user has detached and a sub-agent hits an unexpected fork in the road. Per pi-subagents' README: _"Install `pi-intercom` only if you want child agents to talk back to the parent Pi session while they are running."_ Atomic opts in by default because workflow stages frequently run in the background.
 
 #### What it adds
 
 - A `contact_supervisor` tool injected into child sub-agents, with two `reason` values:
-  - `reason: "need_decision"` — blocking call, child waits for parent's answer.
-  - `reason: "progress_update"` — non-blocking, surfaces in the parent session when a discovery changes the plan.
+    - `reason: "need_decision"` — blocking call, child waits for parent's answer.
+    - `reason: "progress_update"` — non-blocking, surfaces in the parent session when a discovery changes the plan.
 - A generic `intercom` tool as fallback plumbing.
 - Parent-side grouped delivery of child results back through intercom (one grouped message per foreground parent `subagent` run + one per completed async result file).
 - Needs-attention notices in the parent session when a child appears stalled, with actionable next steps (check status, interrupt, nudge).
 - New `pi.events` channels: `subagent:control-intercom` and `subagent:result-intercom`.
 
 #### Install posture
+
 Declared alongside `pi-subagents` in §5.7's default `packages: [...]` block. Pi installs both from npm on first session start. Activation is automatic: pi-subagents' `intercom-bridge.ts` detects `pi-intercom` is present and starts injecting `contact_supervisor` into children.
 
 Activation also requires (per pi-subagents README):
+
 1. `pi-intercom` installed and enabled (✓ — we ship it by default).
 2. A targetable current session name or fallback alias. Atomic sets `pi.setSessionName(...)` from `extensions/integrations/subagent-bridge.ts` on `session_start` so children always have a target.
 3. `pi-intercom` present in any explicit agent `extensions` allowlist. **All Atomic-bundled agents in `packages/atomic/agents/*.md` either omit `extensions` (loading all normal extensions including intercom) or include `pi-intercom` explicitly.** Users with their own agent files that have explicit allowlists must add `pi-intercom` manually if they want the bridge active for those agents (no migration script — §5.13).
@@ -799,16 +840,16 @@ Activation also requires (per pi-subagents README):
 
 ```jsonc
 {
-  "intercomBridge": {
-    "mode": "always",
-    "instructionFile": "./intercom-bridge.md"
-  }
+    "intercomBridge": {
+        "mode": "always",
+        "instructionFile": "./intercom-bridge.md",
+    },
 }
 ```
 
-| Field             | Atomic default                                   | Notes                                                                                                                              |
-| ----------------- | ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `mode`            | `"always"`                                       | Inject for every sub-agent run. Alternatives: `"fork-only"` (only forked-context children) or `"off"` (disable the bridge).        |
+| Field             | Atomic default                                           | Notes                                                                                                                                         |
+| ----------------- | -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mode`            | `"always"`                                               | Inject for every sub-agent run. Alternatives: `"fork-only"` (only forked-context children) or `"off"` (disable the bridge).                   |
 | `instructionFile` | `~/.atomic/agent/extensions/subagent/intercom-bridge.md` | Atomic-tuned guidance template. `{orchestratorTarget}` is interpolated by pi-subagents. Optional override; default upstream prompt works too. |
 
 The instruction file is part of Atomic's bundled assets; if the user wants to disable intercom globally, they set `mode: "off"` or remove `pi-intercom` from `packages: [...]` and the bridge inactivates automatically.
@@ -816,6 +857,7 @@ The instruction file is part of Atomic's bundled assets; if the user wants to di
 #### Atomic-side glue: `extensions/integrations/subagent-bridge.ts` additions
 
 The same glue extension from §5.7 also handles intercom:
+
 - On `session_start`, set a stable, targetable session name via `pi.setSessionName("atomic-<cwd-hash>")` so children can always reach the parent.
 - Subscribe to `pi.events.on("subagent:control-intercom", ...)` to surface `need_decision` calls in the chat with a one-keystroke approve/deny UI built on `ctx.ui.confirm` (`docs/extensions.md` HIL dialogs).
 - Subscribe to `pi.events.on("subagent:result-intercom", ...)` to render grouped child completion deliveries inline via `pi.registerMessageRenderer` (mirrors §5.4.6's pattern for workflow stage events).
@@ -825,17 +867,19 @@ The same glue extension from §5.7 also handles intercom:
 
 Pi-subagents alone is fire-and-forget: spawn child, wait, get result. That's fine for short scout/review tasks. But Atomic's workflow extension (§5.4) routinely spawns long-running stages and lets users detach. Without intercom, a stuck stage either burns tokens guessing or fails silently. With intercom, the stage **can wake the user**. This pattern is precisely the use case the pi-subagents README highlights:
 
-> *"Run this implementation in the background. If the worker gets blocked or needs a product decision, have it ask me through intercom."*
+> _"Run this implementation in the background. If the worker gets blocked or needs a product decision, have it ask me through intercom."_
 
 Atomic's `ralph` and `deep-research-codebase` workflows both contain stages that benefit; we add explicit guidance to their prompt templates to use `contact_supervisor` when appropriate.
 
 #### Files affected
+
 - **Configured**: `pi-intercom` added to the bundled default settings `packages: [...]` (§5.7 already shows this).
 - **New**: `packages/atomic/extensions/integrations/subagent-bridge.ts` adds intercom-event subscriptions + `setSessionName` setup (extends the file new'd in §5.7).
 - **New**: `packages/atomic/extensions/init/intercom-bridge.md` — bundled `instructionFile` template (Atomic-tuned guidance).
 - **New (root)**: nothing — `pi-intercom` brings its own deps.
 
 #### Risks
+
 - **Untargetable session name**: if `pi.setSessionName` hasn't fired by the time a child spawns, the bridge can't activate. Mitigation: `subagent-bridge.ts` sets the name in its `session_start` handler with high registration priority, before any sub-agent tool can be invoked.
 - **Intercom message noise**: `progress_update` calls from chatty agents could spam the parent. Mitigation: the Atomic glue rate-limits non-blocking intercom messages per child to 1 per 30s in the chat scroll (still recorded in the session JSONL via `appendEntry`, just not flashed at the user).
 
@@ -844,16 +888,18 @@ Atomic's `ralph` and `deep-research-codebase` workflows both contain stages that
 ### 5.8 Telemetry Extension (`extensions/telemetry/`)
 
 #### Goal
+
 Preserve current anonymous install/update telemetry against `rest-api/`, decoupled from pi's own update-check.
 
 #### Mechanism
+
 Pi has its own install/update telemetry that pings `pi.dev/api/report-install`. We disable pi's telemetry by default (since we're not pi) and replace with our own:
 
 ```ts
 export default function (pi: ExtensionAPI) {
-  if (!isTelemetryOptedIn()) return;
-  pi.on("session_start", () => maybePingInstall());
-  pi.on("agent_end", (event) => recordToolUsage(event));
+    if (!isTelemetryOptedIn()) return;
+    pi.on("session_start", () => maybePingInstall());
+    pi.on("agent_end", (event) => recordToolUsage(event));
 }
 ```
 
@@ -862,6 +908,7 @@ Existing `packages/atomic-sdk/src/lib/telemetry/index.ts` (`TelemetrySink`, `set
 The `rest-api/` backend continues to receive pings via the existing endpoints.
 
 #### Files affected
+
 - **New**: `packages/atomic/extensions/telemetry/index.ts`.
 - **v1 files** (new): `packages/pi-workflows/src/lib/telemetry.ts` (re-derived from v0.x `packages/atomic-sdk/src/lib/telemetry/index.ts` design reference); `packages/atomic/extensions/telemetry/`; `rest-api/` directory rebuilt fresh.
 
@@ -870,31 +917,32 @@ The `rest-api/` backend continues to receive pings via the existing endpoints.
 ### 5.9 CLI Command Surface
 
 #### Goal
+
 Preserve all useful CLI commands as thin wrappers over the pi binary. Remove commands tied to tmux/Claude/Copilot/OpenCode and **all hidden underscore-prefixed subcommands**. The CLI-to-workflow handoff is via public pi flags (`--workflow=<name>`, `--workflow-input-<key>=<value>`) registered by the workflow extension — not via hidden subcommands or RPC sockets.
 
 #### Resulting commands
 
-| Command                                                               | Behavior after rewrite                                                                                                                                                                                            |
-| --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `atomic` (default)                                                    | **Pi's interactive chat TUI** with bundled Atomic resources. Replaces `atomic chat`. The current `atomic chat` becomes an alias or is removed (see Open Question 9.6).                                            |
-| `atomic -c` / `--continue`                                            | Pi's continue-most-recent-session.                                                                                                                                                                                |
-| `atomic -r` / `--resume`                                              | Pi's session selector.                                                                                                                                                                                            |
-| `atomic -p "..."` / `--print`                                         | Pi's print-mode (used by sub-agent spawning and external scripts).                                                                                                                                                |
-| `atomic --mode rpc` / `--mode json`                                   | Pi's RPC and JSON modes (used by external host integrations and the `atomic workflow` CLI wrapper).                                                                                                               |
-| `atomic install`                                                      | **v1 ships this command** — self-install of the binary into `~/.atomic/bin`. Touches PATH, shell completions, first-run config. The tmux-bootstrap step is removed.                                                            |
-| `atomic uninstall`                                                    | **v1 ships this command** — removes binary, optionally `~/.atomic/`.                                                                                                                                                           |
-| `atomic update [--self] [--force]`                                    | **v1 ships this command** — fetches binary from GitHub Releases, sha256 verify. The `--extensions` flag now applies to first-party `@atomic/*` packages via pi's package mechanism.                                            |
-| `atomic init`                                                         | **v1 ships this command, simplified** — writes `.atomic/settings.json`, seeds `AGENTS.md` (or `.atomic/AGENTS.md`), optionally writes `.atomic/mcp.json` skeleton. Does NOT write to `.claude/`, `.opencode/`, `.github/`. No `--migrate` flag (no backwards compat). |
-| `atomic config [set ...]`                                             | **v1 ships this command** — `atomic config set telemetry off`, `atomic config set scm github`.                                                                                                                                 |
-| `atomic completions <shell>`                                          | **v1 ships this command** — bash/zsh/fish/powershell completions.                                                                                                                                                              |
-| `atomic workflow [-n name] [-a agent] [--prompt ...] [--<input> ...]` | **v1 ships this command, redesigned** — see below.                                                                                                                                                                |
-| `atomic workflow list [-a agent]`                                     | **v1 ships this command** — lists builtin + custom workflows.                                                                                                                                                                  |
-| `atomic workflow inputs <name>`                                       | **v1 ships this command** — prints input schema.                                                                                                                                                                               |
-| `atomic workflow status [id]`                                         | **v1 ships this command** — reads `status.json` snapshot from disk (still useful for CI / scripting).                                                                                                                          |
-| `atomic workflow read --sessionId <id> [--stageId <s>]`               | **v1 ships this command** — prints on-disk path under `~/.atomic/agent/sessions/`.                                                                                                                                             |
-| `atomic workflow refresh`                                             | **v1 ships this command** — re-scans `.atomic/workflows/` + the `atomic.workflows` settings map and rebuilds the in-process registry by re-importing each file.                                                                |
-| `atomic chat`                                                         | **Removed** (Q6). Plain `atomic` IS the chat TUI. Users who run `atomic chat` get a friendly error suggesting `atomic`.                                                                                           |
-| `atomic workflow session list/connect/kill`                           | **Removed** at the CLI level (Q7). Functionality **repurposed** as slash-command subcommands inside the TUI: `/workflow list`, `/workflow kill <runId>`, `/workflow status`. See §5.4.9.                          |
+| Command                                                               | Behavior after rewrite                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `atomic` (default)                                                    | **Pi's interactive chat TUI** with bundled Atomic resources. Replaces `atomic chat`. The current `atomic chat` becomes an alias or is removed (see Open Question 9.6).                                                                                                                                                                                                                                                                             |
+| `atomic -c` / `--continue`                                            | Pi's continue-most-recent-session.                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `atomic -r` / `--resume`                                              | Pi's session selector.                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `atomic -p "..."` / `--print`                                         | Pi's print-mode (used by sub-agent spawning and external scripts).                                                                                                                                                                                                                                                                                                                                                                                 |
+| `atomic --mode rpc` / `--mode json`                                   | Pi's RPC and JSON modes (used by external host integrations and the `atomic workflow` CLI wrapper).                                                                                                                                                                                                                                                                                                                                                |
+| `atomic install`                                                      | **v1 ships this command** — self-install of the binary into `~/.atomic/bin`. Touches PATH, shell completions, first-run config. The tmux-bootstrap step is removed.                                                                                                                                                                                                                                                                                |
+| `atomic uninstall`                                                    | **v1 ships this command** — removes binary, optionally `~/.atomic/`.                                                                                                                                                                                                                                                                                                                                                                               |
+| `atomic update [--self] [--force]`                                    | **v1 ships this command** — fetches binary from GitHub Releases, sha256 verify. The `--extensions` flag now applies to first-party `@atomic/*` packages via pi's package mechanism.                                                                                                                                                                                                                                                                |
+| `atomic init`                                                         | **v1 ships this command, simplified** — writes `.atomic/settings.json`, seeds `AGENTS.md` (or `.atomic/AGENTS.md`), optionally writes `.atomic/mcp.json` skeleton. Does NOT write to `.claude/`, `.opencode/`, `.github/`. No `--migrate` flag (no backwards compat).                                                                                                                                                                              |
+| `atomic config [set ...]`                                             | **v1 ships this command** — `atomic config set telemetry off`, `atomic config set scm github`.                                                                                                                                                                                                                                                                                                                                                     |
+| `atomic completions <shell>`                                          | **v1 ships this command** — bash/zsh/fish/powershell completions.                                                                                                                                                                                                                                                                                                                                                                                  |
+| `atomic workflow [-n name] [-a agent] [--prompt ...] [--<input> ...]` | **v1 ships this command, redesigned** — see below.                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `atomic workflow list [-a agent]`                                     | **v1 ships this command** — lists builtin + custom workflows.                                                                                                                                                                                                                                                                                                                                                                                      |
+| `atomic workflow inputs <name>`                                       | **v1 ships this command** — prints input schema.                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `atomic workflow status [id]`                                         | **v1 ships this command** — reads `status.json` snapshot from disk (still useful for CI / scripting).                                                                                                                                                                                                                                                                                                                                              |
+| `atomic workflow read --sessionId <id> [--stageId <s>]`               | **v1 ships this command** — prints on-disk path under `~/.atomic/agent/sessions/`.                                                                                                                                                                                                                                                                                                                                                                 |
+| `atomic workflow refresh`                                             | **v1 ships this command** — re-scans `.atomic/workflows/` + the `atomic.workflows` settings map and rebuilds the in-process registry by re-importing each file.                                                                                                                                                                                                                                                                                    |
+| `atomic chat`                                                         | **Removed** (Q6). Plain `atomic` IS the chat TUI. Users who run `atomic chat` get a friendly error suggesting `atomic`.                                                                                                                                                                                                                                                                                                                            |
+| `atomic workflow session list/connect/kill`                           | **Removed** at the CLI level (Q7). Functionality **repurposed** as slash-command subcommands inside the TUI: `/workflow list`, `/workflow kill <runId>`, `/workflow status`. See §5.4.9.                                                                                                                                                                                                                                                           |
 | All `atomic _<hidden-command>` subcommands                            | **Removed entirely.** No `_emit-workflow-meta`, `_atomic-run`, `_orchestrator-entry`, `_cc-debounce`, `_claude-ask-hook`, `_claude-session-start-hook`, `_claude-stop-hook`, `_claude-inflight-hook`, or `_runtime-assets-smoke`. **Zero hidden subcommands.** All cross-component communication is in-process via direct SDK imports + pi's event bus (`pi.events`). Custom workflows are loaded by direct module import, not via argv envelopes. |
 
 #### `atomic workflow` redesign
@@ -908,6 +956,7 @@ atomic workflow -n deep-research-codebase --prompt "Map the codebase"
 Behavior (decided Q10): **always spawn a fresh `atomic -p` subprocess**. The CLI does not attempt to attach to a running TUI.
 
 Concrete behavior:
+
 1. **TTY mode** (default): the spawned `atomic -p` streams progress to the terminal via pi's print mode. Workflow stage events stream in human-readable form.
 2. **`--mode json`** (explicit): JSON event stream on stdout (uses pi's existing `--mode json`).
 3. **`-d` / `--detach`**: spawn `atomic -p` in the background with `nohup`-equivalent; PID/runId written to `~/.atomic/agent/runs/<runId>/state.json` for status queries.
@@ -918,6 +967,7 @@ No IPC, no sockets, no warm-process reuse. Cold-start cost per CLI call is accep
 The interactive picker (current `atomic workflow` with no args + TTY) becomes a pi slash-command picker inside the chat TUI (`/workflow` opens a SelectList overlay) — there's no separate picker UI outside the chat.
 
 #### Files affected
+
 - **v1 files** (new, written from scratch under `packages/atomic/src/commands/`): `cli.ts`, `commands/cli/install.ts`, `update.ts`, `init/`, `config.ts`, `completions.ts`, `workflow.ts`, `workflow-list.ts`, `workflow-status.ts`, `workflow-read.ts`, `workflow-refresh.ts`, `workflow-inputs.ts`. The v0.x files of these names in git history are design reference for CLI surface and flag shapes only.
 - **Removed**: `commands/cli/chat/index.ts` (and all sub-files), `commands/cli/session.ts`, `claude-ask-hook.ts`, `claude-session-start-hook.ts`, `claude-stop-hook.ts`, `claude-inflight-hook.ts`, `runtime-assets-smoke.ts`, `management-commands.ts` (session subcommand glue).
 - **Heavily edited**: `commands/builtin-registry.ts` (today registers 3 per-agent variants of each workflow; after rewrite registers single workflow defs).
@@ -942,34 +992,34 @@ Pi's settings schema (`docs/settings.md`) is largely sufficient. Atomic-specific
 
 ```jsonc
 {
-  "$schema": "https://atomic.dev/schemas/settings.json",
-  // pi-native keys
-  "defaultModel": "claude-sonnet-4-6",
-  "defaultThinkingLevel": "medium",
-  "theme": "atomic-dark",
-  "compaction": { "enabled": true, "keepRecentTokens": 20000 },
-  "extensions": [],
-  "skills": [],
-  "prompts": [],
-  "themes": [],
-  "packages": [
-    { "source": "npm:pi-workflows",   "lifecycle": "auto" },
-    { "source": "npm:pi-mcp-adapter", "lifecycle": "auto" },
-    { "source": "npm:pi-subagents",   "lifecycle": "auto" },
-    { "source": "npm:pi-intercom",    "lifecycle": "auto" }
-  ],
+    "$schema": "https://atomic.dev/schemas/settings.json",
+    // pi-native keys
+    "defaultModel": "claude-sonnet-4-6",
+    "defaultThinkingLevel": "medium",
+    "theme": "atomic-dark",
+    "compaction": { "enabled": true, "keepRecentTokens": 20000 },
+    "extensions": [],
+    "skills": [],
+    "prompts": [],
+    "themes": [],
+    "packages": [
+        { "source": "npm:pi-workflows", "lifecycle": "auto" },
+        { "source": "npm:pi-mcp-adapter", "lifecycle": "auto" },
+        { "source": "npm:pi-subagents", "lifecycle": "auto" },
+        { "source": "npm:pi-intercom", "lifecycle": "auto" },
+    ],
 
-  // Atomic-specific
-  "atomic": {
-    "telemetry": { "enabled": true, "id": "uuid" },
-    "scm": "github",
-    "workflows": {
-      "<custom-id>": {
-        "path": "./workflows/my-workflow.ts"
-      }
+    // Atomic-specific
+    "atomic": {
+        "telemetry": { "enabled": true, "id": "uuid" },
+        "scm": "github",
+        "workflows": {
+            "<custom-id>": {
+                "path": "./workflows/my-workflow.ts",
+            },
+        },
+        "branding": { "header": "default", "footer": "default" },
     },
-    "branding": { "header": "default", "footer": "default" }
-  }
 }
 ```
 
@@ -980,12 +1030,15 @@ Path resolution: relative paths resolve against the settings file's directory (p
 `atomic.telemetry`, `atomic.scm` are read by the telemetry extension and the workflow extension respectively.
 
 #### Settings migration
+
 `atomic init` performs a one-time migration when it detects old-shape settings:
+
 - Reads `~/.atomic/settings.json` if it lives at the old path (`~/.atomic/`) and rewrites to `~/.atomic/agent/settings.json` (pi's expected path under our fork).
 - Normalizes `workflows` map to the same nested location.
 - Leaves `.claude/`, `.opencode/`, `.github/` untouched — they're no longer read.
 
 #### Files affected
+
 - **New**: `assets/settings.schema.json` (updated to reflect pi-fork schema + Atomic additions).
 - **v1 files** (new): settings access is inlined into the few extensions that need it. v0.x cross-references: `packages/atomic-sdk/src/services/config/atomic-config.ts` and `packages/atomic/src/services/config/settings.ts` (both deleted).
 
@@ -1037,6 +1090,7 @@ atomic
 ```
 
 The user's existing `.claude/`, `.opencode/`, `.github/` config directories are left in place by us — they're the user's, not ours, and v1 simply does not read them. If users want their pre-existing MCP servers or skills picked up, they:
+
 - Manually run `/mcp setup` inside the new TUI (pi-mcp-adapter's existing wizard imports from Cursor / Claude Code / Claude Desktop / Codex / Windsurf / VS Code formats).
 - Manually add skill paths to `~/.atomic/agent/settings.json` `skills: [...]` if they want their `~/.agents/skills/` or `~/.claude/skills/` available (per Q2, Atomic does not auto-load these).
 
@@ -1047,9 +1101,11 @@ No documentation is written promising state migration. The README's "Upgrading f
 ### 5.14 Testing Strategy
 
 #### Existing tests
+
 Per `research/docs/2026-05-11-atomic-codebase-inventory.md` Partition 10, most test files are tied to removed code (~70%+ of test files are REMOVE-CANDIDATE).
 
 **v1 test files** (all new; v0.x tests are deleted along with the v0.x packages they covered):
+
 - The test directory layout mirrors the new code layout: `packages/pi-workflows/test/`, `packages/atomic/test/`, plus a top-level `tests/` for integration smoke. Selected v0.x tests that targeted pure utilities (`tests/lib/merge.test.ts`, `common-ignore.test.ts`, `path-root-guard.test.ts`) are design reference for the shape of the new utility tests, not carried over.
 - `tests/services/config/settings.test.ts`.
 - `tests/ci/onboarding.test.ts`, `coverage-paths.test.ts`, `no-import-meta-dir-in-runtime.test.ts`.
@@ -1057,6 +1113,7 @@ Per `research/docs/2026-05-11-atomic-codebase-inventory.md` Partition 10, most t
 - `packages/atomic-sdk/src/lib/telemetry/index.test.ts`.
 
 **Rewritten or new**:
+
 - Tests for `pi-workflows/executor.ts` (replaces all `executor.*.test.ts`).
 - Tests for `pi-workflows/overlay.tsx` (replaces orchestrator-panel tests; uses pi-tui's testing primitives — see `docs/tui.md`).
 - Tests for builtin workflow migrations (`deep-research-codebase`, `ralph`, `open-claude-design`) — smoke tests under `--mode json` + a fake provider.
@@ -1065,9 +1122,11 @@ Per `research/docs/2026-05-11-atomic-codebase-inventory.md` Partition 10, most t
 - Tests for `atomic-subagents` integration: sub-agent spawning + parent permission inheritance.
 
 #### Test runner
+
 Continue using `bun test`. `CLAUDECODE=1`-style AI-friendly output remains supported via pi's testing posture.
 
 #### Integration smoke
+
 Replace `tests/fixtures/sdk-compiled-consumer/` (currently spawns tmux) with a single fixture that invokes `atomic --mode json -p` against a mock provider and verifies a known workflow's JSON event stream.
 
 ---
@@ -1075,16 +1134,19 @@ Replace `tests/fixtures/sdk-compiled-consumer/` (currently spawns tmux) with a s
 ### 5.15 CI/CD
 
 #### Workflows kept
+
 - `.github/workflows/ci.yml` — tests, lint, typecheck on PR. Adjusted to drop tmux/claude/copilot/opencode steps.
 - `.github/workflows/publish.yml` — multi-platform `bun build --compile` matrix → 8 binary targets → npm publish with provenance + GitHub Release. Adjusted: pi-fork build steps; remove embedded tarball generation; remove devcontainer feature publishing.
 - `.github/workflows/bump-version.yml` — unchanged.
 - `.github/workflows/sdk-fixture-smoke.yml` — adjusted to use new fixture (§5.14).
 
 #### Workflows removed
+
 - `.github/workflows/claude.yml`, `code-review.yml`, `pr-description.yml` — Claude/Copilot CI integrations.
 - `.github/workflows/publish-features.yml`, `validate-features.yml` — devcontainer feature publishing.
 
 #### Devcontainers
+
 The three current devcontainers (`.devcontainer/claude/`, `copilot/`, `opencode/`) are deleted. A single `.devcontainer/devcontainer.json` is updated to install `bun` and run `atomic install` post-create.
 
 ---
@@ -1103,6 +1165,7 @@ On first launch of the new Atomic binary, in order:
 8. **Atomic banner**: displayed automatically via `piConfig.name = "atomic"` (no custom branding extension in v1 — Q8).
 
 #### Files affected
+
 - **New**: `packages/atomic/src/services/system/first-run.ts` (bootstrap logic).
 - **Edited**: `packages/atomic/src/cli.ts` (call first-run on every startup; it's idempotent).
 
@@ -1110,12 +1173,12 @@ On first launch of the new Atomic binary, in order:
 
 ## 6. Alternatives Considered
 
-| Option                                                                  | Pros                                                                                                                                                                                        | Cons                                                                                                                                                    | Reason for Rejection                                                                                                                                                          |
-| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **A: Keep current architecture, just remove tmux**                      | Smallest blast radius; preserves agent CLI integrations.                                                                                                                                    | Doesn't solve vendor coupling, HIL fragility, multi-vendor config sprawl, multi-process gravity. Tmux removal alone deletes 45% of source.              | Half-measure. The complexity tax of three native agent CLIs is the root cause.                                                                                                |
-| **B: Build Atomic's own TUI from scratch on OpenTUI**                   | Total control. No upstream dependency.                                                                                                                                                      | Reinvents pi's editor, session tree, compaction, skills/prompts/themes/extensions runtime, OAuth flows for 3 vendors, 20+ provider integrations.        | Years of engineering to reach feature parity with pi. The pi fork is designed exactly for this.                                                                               |
-| **C: Use pi-coding-agent as an npm dependency (not a fork)**            | Simplest possible update story.                                                                                                                                                              | `piConfig` requires editing the CLI package's own `package.json` (`bin`, `name`, `piConfig`, `pi.*` manifest). `npm install` overwrites these. There's no consumer-side knob that produces the same rebrand. | Selected approach (E) is essentially "Option C plus a rebrand-only fork." We get the simplicity of C for all pi source code (zero edits), and only differ from C in `package.json`. |
-| **D: Atomic stays multi-process, vendors pi as the orchestrator agent** | Preserves multi-agent ergonomics.                                                                                                                                                           | Multi-process complexity remains. Tmux remains. No simplification.                                                                                      | Defeats the rewrite's goal.                                                                                                                                                   |
+| Option                                                                             | Pros                                                                                                                                                                                                                                                                             | Cons                                                                                                                                                                                                                                                                                                                                                              | Reason for Rejection                                                                                                                                                                                                                                                                                             |
+| ---------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **A: Keep current architecture, just remove tmux**                                 | Smallest blast radius; preserves agent CLI integrations.                                                                                                                                                                                                                         | Doesn't solve vendor coupling, HIL fragility, multi-vendor config sprawl, multi-process gravity. Tmux removal alone deletes 45% of source.                                                                                                                                                                                                                        | Half-measure. The complexity tax of three native agent CLIs is the root cause.                                                                                                                                                                                                                                   |
+| **B: Build Atomic's own TUI from scratch on OpenTUI**                              | Total control. No upstream dependency.                                                                                                                                                                                                                                           | Reinvents pi's editor, session tree, compaction, skills/prompts/themes/extensions runtime, OAuth flows for 3 vendors, 20+ provider integrations.                                                                                                                                                                                                                  | Years of engineering to reach feature parity with pi. The pi fork is designed exactly for this.                                                                                                                                                                                                                  |
+| **C: Use pi-coding-agent as an npm dependency (not a fork)**                       | Simplest possible update story.                                                                                                                                                                                                                                                  | `piConfig` requires editing the CLI package's own `package.json` (`bin`, `name`, `piConfig`, `pi.*` manifest). `npm install` overwrites these. There's no consumer-side knob that produces the same rebrand.                                                                                                                                                      | Selected approach (E) is essentially "Option C plus a rebrand-only fork." We get the simplicity of C for all pi source code (zero edits), and only differ from C in `package.json`.                                                                                                                              |
+| **D: Atomic stays multi-process, vendors pi as the orchestrator agent**            | Preserves multi-agent ergonomics.                                                                                                                                                                                                                                                | Multi-process complexity remains. Tmux remains. No simplification.                                                                                                                                                                                                                                                                                                | Defeats the rewrite's goal.                                                                                                                                                                                                                                                                                      |
 | **E: Selected — Rebrand-only pi-coding-agent fork + npm deps for everything else** | Minimal core delta from pi (literally `package.json`); max customization through extensions; native pi UX (sessions, compaction, providers, theme, skills); single process; clean removal of all four current vendors; **only one fork to maintain, and its delta is one file**. | Source-code rebases are conflict-free by construction, but we still need to track upstream weekly. Upstream extension bugs (pi-mcp-adapter, pi-subagents) are mitigated via npm `overrides` / `patch-package` rather than forking, which can be fragile if upstream dep pins change. Extension-API gaps must be contributed upstream rather than patched locally. | **Selected**. Extension API is rich enough to host our workflow orchestrator, branding, telemetry, init (per §5.4.10 audit). Keeping only `pi-coding-agent` as a fork — with `pi-ai`/`pi-agent-core`/`pi-tui`/`pi-mcp-adapter`/`pi-subagents` as npm deps — minimizes maintenance surface to one `package.json`. |
 
 ---
@@ -1221,6 +1284,7 @@ For reference, the rewrite eliminates these load-bearing concepts from the curre
 - ❌ `GraphFrontierTracker` (SURVIVES).
 
 These survive into the rewrite:
+
 - ✅ `WorkflowDefinition` / `defineWorkflow` builder.
 - ✅ `ctx.stage()` DAG execution model (semantics unchanged; underlying executor swapped).
 - ✅ `WorkflowRegistry` / `createRegistry()`.

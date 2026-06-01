@@ -11,8 +11,8 @@ Extensions can register custom model providers via `pi.registerProvider()`. This
 
 See these complete provider examples:
 
-- [`examples/extensions/custom-provider-anthropic/`](https://github.com/bastani/atomic/tree/main/packages/coding-agent/examples/extensions/custom-provider-anthropic)
-- [`examples/extensions/custom-provider-gitlab-duo/`](https://github.com/bastani/atomic/tree/main/packages/coding-agent/examples/extensions/custom-provider-gitlab-duo)
+- [`examples/extensions/custom-provider-anthropic/`](https://github.com/bastani-inc/atomic/tree/main/packages/coding-agent/examples/extensions/custom-provider-anthropic)
+- [`examples/extensions/custom-provider-gitlab-duo/`](https://github.com/bastani-inc/atomic/tree/main/packages/coding-agent/examples/extensions/custom-provider-gitlab-duo)
 
 ## Table of Contents
 

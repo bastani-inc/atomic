@@ -16,7 +16,7 @@
 
 ## Configuration
 
-- `install.cmd` — Hardcoded GitHub release base URL (`bastani/atomic`), download directory (`%USERPROFILE%\.atomic\downloads`), manifest.json parsing strategy, platform detection (AMD64 vs ARM64), and version validation regex.
+- `install.cmd` — Hardcoded GitHub release base URL (`bastani-inc/atomic`), download directory (`%USERPROFILE%\.atomic\downloads`), manifest.json parsing strategy, platform detection (AMD64 vs ARM64), and version validation regex.
 
 ## Notable Clusters
 
@@ -50,7 +50,7 @@ The `install.cmd` script is a lightweight bootstrap for Windows that decouples p
 
 - **Key symbols:**
     - `TARGET` (`install.cmd:16`) — positional arg (`latest`, `stable`, or `x.y.z[-pre]`), defaults to `latest`
-    - `RELEASES_BASE` (`install.cmd:51`) — hardcoded `https://github.com/bastani/atomic/releases`
+    - `RELEASES_BASE` (`install.cmd:51`) — hardcoded `https://github.com/bastani-inc/atomic/releases`
     - `DOWNLOAD_DIR` (`install.cmd:52`) — hardcoded `%USERPROFILE%\.atomic\downloads`
     - `PLATFORM` (`install.cmd:54-58`) — set to `windows-arm64` or `windows-x64` based on `%PROCESSOR_ARCHITECTURE%`
     - `:download_file` subroutine (`install.cmd:144-147`) — thin `curl -fsSL --retry 3` wrapper
@@ -80,7 +80,7 @@ The `install.cmd` script is a lightweight bootstrap for Windows that decouples p
 
 - **Key symbols:**
     - `$Target` param (`install.ps1:16-19`) — validated via `[ValidatePattern('^(stable|latest|\d+\.\d+\.\d+(-[^\s]+)?)$')]`
-    - `$RELEASES_BASE` (`install.ps1:30`) — same hardcoded `https://github.com/bastani/atomic/releases`
+    - `$RELEASES_BASE` (`install.ps1:30`) — same hardcoded `https://github.com/bastani-inc/atomic/releases`
     - `$DOWNLOAD_DIR` (`install.ps1:31`) — `$env:USERPROFILE\.atomic\downloads`
     - `$platform` (`install.ps1:34-38`) — `windows-arm64` or `windows-x64`
 
@@ -187,7 +187,7 @@ The `install.cmd` script is a lightweight bootstrap for Windows that decouples p
 
 ### Cross-Cutting Synthesis
 
-The binary distribution installer is a two-phase pipeline split across two layers. The outer layer (`install.cmd`, `install.ps1`, `install.sh`) is a minimal OS-native bootstrap whose sole job is: validate target version, detect architecture, download `manifest.json` from `https://github.com/bastani/atomic/releases`, parse the platform-specific SHA-256 checksum, download the versioned binary, verify it, and hand off via `<binary> install`. All three scripts use a `$RELEASES_BASE/download/v$version/<asset>` pin strategy (never `latest/download` for the binary itself) to avoid race conditions during release. The inner layer (`install.ts` `installCommand`) performs the durable work: atomic-move self-copy, PATH persistence (registry on Windows, rc-file appends on Unix), tmux/psmux binary detection with `wellKnownMuxInstallDirs`, shell completion cache writes, and a non-blocking reaper for install artifacts. `install-method.ts` provides a memoized detection of how the binary was installed, which gates `uninstallCommand` behaviour. The tmux/psmux detection block in `install.ts:403-462` is the primary agent-specific dependency in this layer; all other logic is agent-agnostic PATH and completions management directly replaceable for a pi-coding-agent fork.
+The binary distribution installer is a two-phase pipeline split across two layers. The outer layer (`install.cmd`, `install.ps1`, `install.sh`) is a minimal OS-native bootstrap whose sole job is: validate target version, detect architecture, download `manifest.json` from `https://github.com/bastani-inc/atomic/releases`, parse the platform-specific SHA-256 checksum, download the versioned binary, verify it, and hand off via `<binary> install`. All three scripts use a `$RELEASES_BASE/download/v$version/<asset>` pin strategy (never `latest/download` for the binary itself) to avoid race conditions during release. The inner layer (`install.ts` `installCommand`) performs the durable work: atomic-move self-copy, PATH persistence (registry on Windows, rc-file appends on Unix), tmux/psmux binary detection with `wellKnownMuxInstallDirs`, shell completion cache writes, and a non-blocking reaper for install artifacts. `install-method.ts` provides a memoized detection of how the binary was installed, which gates `uninstallCommand` behaviour. The tmux/psmux detection block in `install.ts:403-462` is the primary agent-specific dependency in this layer; all other logic is agent-agnostic PATH and completions management directly replaceable for a pi-coding-agent fork.
 
 ---
 
@@ -196,7 +196,7 @@ The binary distribution installer is a two-phase pipeline split across two layer
 - `packages/atomic/src/completions/index.ts` — exports `Shell` type and four completion script strings (`bash`, `zsh`, `fish`, `powershell`) consumed by `installCommand` to write shell completion caches; the per-shell scripts in `packages/atomic/src/completions/` carry the actual completion logic.
 - `packages/atomic/src/commands/cli/install.test.ts` — test suite for `installCommand`/`uninstallCommand`; relevant for understanding which code paths are tested and what must be adapted in a rewrite.
 - `packages/atomic/src/services/system/install-method.ts` — a second `install-method.ts` at a different path; may be an alternate or service-layer variant of the detection logic.
-- `install.ps1` — the PowerShell peer of `install.cmd`; shares identical flow and hardcoded `bastani/atomic` release URL; must be rebranded for pi-coding-agent.
+- `install.ps1` — the PowerShell peer of `install.cmd`; shares identical flow and hardcoded `bastani-inc/atomic` release URL; must be rebranded for pi-coding-agent.
 - `install.sh` — the macOS/Linux peer; includes musl and Rosetta 2 detection not present in the Windows scripts.
 
 ## Patterns
@@ -237,8 +237,8 @@ call :verify_checksum "!BINARY_PATH!" "!EXPECTED_CHECKSUM!"
 
 **Atomic-Specific Hardcodes:**
 
-- Line 51: `set "RELEASES_BASE=https://github.com/bastani/atomic/releases"`
-- Line 11: Usage example hardcodes `bastani/atomic/main/install.cmd`
+- Line 51: `set "RELEASES_BASE=https://github.com/bastani-inc/atomic/releases"`
+- Line 11: Usage example hardcodes `bastani-inc/atomic/main/install.cmd`
 - All three scripts only reference `atomic` (not configurable agent name)
 
 **Seams for pi-coding-agent:**
@@ -679,11 +679,11 @@ export function cleanupOldArtifacts(
 
 ### Tightly Coupled (Must Change for pi-coding-agent)
 
-1. **GitHub Release URL Base**: `https://github.com/bastani/atomic/releases` (install.cmd:51, install.ps1:30, install.sh:24)
+1. **GitHub Release URL Base**: `https://github.com/bastani-inc/atomic/releases` (install.cmd:51, install.ps1:30, install.sh:24)
 2. **Package Scope**: `@bastani/atomic` (install-method.ts:22, install.ts:614-617)
 3. **Binary Name**: `atomic` (hardcoded in paths, regex patterns, completion scripts)
 4. **Tmux/Psmux Detection**: Tied to Atomic's multiplexer strategy
-5. **GitHub Org/Repo**: `bastani/atomic` (hardcoded in usage examples)
+5. **GitHub Org/Repo**: `bastani-inc/atomic` (hardcoded in usage examples)
 
 ### Loosely Coupled (Reusable or Parameterizable)
 

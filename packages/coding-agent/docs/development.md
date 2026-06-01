@@ -1,11 +1,11 @@
 # Development
 
-See [AGENTS.md](https://github.com/bastani/atomic/blob/main/AGENTS.md) for additional guidelines.
+See [AGENTS.md](https://github.com/bastani-inc/atomic/blob/main/AGENTS.md) for additional guidelines.
 
 ## Setup
 
 ```bash
-git clone https://github.com/bastani/atomic
+git clone https://github.com/bastani-inc/atomic
 cd atomic
 bun install
 bun run typecheck

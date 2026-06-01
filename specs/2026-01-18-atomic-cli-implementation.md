@@ -1,11 +1,11 @@
 # Atomic CLI Technical Design Document
 
-| Document Metadata      | Details        |
-| ---------------------- | -------------- |
-| Author(s)              | lavaman131     |
-| Status                 | Draft (WIP)    |
-| Team / Owner           | bastani/atomic |
-| Created / Last Updated | 2026-01-18     |
+| Document Metadata      | Details            |
+| ---------------------- | ------------------ |
+| Author(s)              | lavaman131         |
+| Status                 | Draft (WIP)        |
+| Team / Owner           | bastani-inc/atomic |
+| Created / Last Updated | 2026-01-18         |
 
 ## 1. Executive Summary
 

@@ -3,11 +3,11 @@
 ## [Unreleased]
 
 ### Fixed
-- Show Codex fast-mode launch metadata in foreground subagent result badges, async subagent widgets, and async status output when eligible OpenAI/OpenAI Codex child runs start with `/fast` enabled ([#1153](https://github.com/bastani/atomic/issues/1153)).
-- Scope subagent Codex fast-mode launches to the parent chat surface, so main-chat subagents follow `codexFastMode.chat` while workflow-node subagents follow `codexFastMode.workflow` ([#1153](https://github.com/bastani/atomic/issues/1153)).
-- Keep the async subagent widget mounted across visible status updates, capture widget animation clocks outside arbitrary host re-renders, and animate foreground subagent chatbox spinners with spinner-only ticks that leave elapsed/activity text stable between semantic progress updates ([#1150](https://github.com/bastani/atomic/issues/1150)).
+- Show Codex fast-mode launch metadata in foreground subagent result badges, async subagent widgets, and async status output when eligible OpenAI/OpenAI Codex child runs start with `/fast` enabled ([#1153](https://github.com/bastani-inc/atomic/issues/1153)).
+- Scope subagent Codex fast-mode launches to the parent chat surface, so main-chat subagents follow `codexFastMode.chat` while workflow-node subagents follow `codexFastMode.workflow` ([#1153](https://github.com/bastani-inc/atomic/issues/1153)).
+- Keep the async subagent widget mounted across visible status updates, capture widget animation clocks outside arbitrary host re-renders, and animate foreground subagent chatbox spinners with spinner-only ticks that leave elapsed/activity text stable between semantic progress updates ([#1150](https://github.com/bastani-inc/atomic/issues/1150)).
 - Harden global npm skill discovery by suppressing noisy probe output while keeping a conservative timeout and caching failures for constrained environments.
-- Hydrate active async subagent runs from durable status files into the below-editor widget so background work visible via `subagent({ action: "status" })` also appears in the TUI after launch/session rebinding ([#1146](https://github.com/bastani/atomic/issues/1146)).
+- Hydrate active async subagent runs from durable status files into the below-editor widget so background work visible via `subagent({ action: "status" })` also appears in the TUI after launch/session rebinding ([#1146](https://github.com/bastani-inc/atomic/issues/1146)).
 
 ## [0.8.20] - 2026-05-29
 
@@ -18,11 +18,11 @@
 
 ### Fixed
 
-- Fixed the subagent running spinner freezing/stuttering and the surrounding TUI flickering while subagents run: the running glyph is now driven by wall-clock time with a steady re-render ticker (result cards, slash result cards, and the async-agents widget), so it animates smoothly and continuously instead of only advancing when progress data changes. Per-frame diffs stay limited to the spinner glyph cell, so the differential renderer keeps doing partial redraws (no full-screen clear / flicker), and the ticker is torn down on completion, reload, and session shutdown ([#1084](https://github.com/bastani/atomic/issues/1084)).
-- Moved the async-agents (background subagent) widget from above the editor to below it (`belowEditor`). The widget animates a running glyph and elapsed labels every tick; pi-tui full-clears the screen+scrollback whenever a changed line sits above the viewport fold, so an above-editor widget flickered once the bottom region grew tall and pushed it above the fold. Rendering below the editor keeps the live line within the bottom viewport (flicker-free) and matches the workflow companion widget's placement ([#1109](https://github.com/bastani/atomic/issues/1109)).
-- Hardened workflow-stage subagent guard propagation tests with an internal executor runtime DI seam ([#1088](https://github.com/bastani/atomic/issues/1088)).
+- Fixed the subagent running spinner freezing/stuttering and the surrounding TUI flickering while subagents run: the running glyph is now driven by wall-clock time with a steady re-render ticker (result cards, slash result cards, and the async-agents widget), so it animates smoothly and continuously instead of only advancing when progress data changes. Per-frame diffs stay limited to the spinner glyph cell, so the differential renderer keeps doing partial redraws (no full-screen clear / flicker), and the ticker is torn down on completion, reload, and session shutdown ([#1084](https://github.com/bastani-inc/atomic/issues/1084)).
+- Moved the async-agents (background subagent) widget from above the editor to below it (`belowEditor`). The widget animates a running glyph and elapsed labels every tick; pi-tui full-clears the screen+scrollback whenever a changed line sits above the viewport fold, so an above-editor widget flickered once the bottom region grew tall and pushed it above the fold. Rendering below the editor keeps the live line within the bottom viewport (flicker-free) and matches the workflow companion widget's placement ([#1109](https://github.com/bastani-inc/atomic/issues/1109)).
+- Hardened workflow-stage subagent guard propagation tests with an internal executor runtime DI seam ([#1088](https://github.com/bastani-inc/atomic/issues/1088)).
 - Capped subagent fanout spawned from workflow stages to a single child level with a workflow-specific nested-subagent error.
-- Fixed builtin subagent skill resolution from project cwd ([#1087](https://github.com/bastani/atomic/issues/1087)).
+- Fixed builtin subagent skill resolution from project cwd ([#1087](https://github.com/bastani-inc/atomic/issues/1087)).
 
 ## [0.24.3] - 2026-05-14
 

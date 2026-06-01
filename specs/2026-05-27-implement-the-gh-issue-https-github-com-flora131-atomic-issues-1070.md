@@ -9,7 +9,7 @@
 
 ## 1. Executive Summary
 
-GitHub issue [bastani/atomic#1070](https://github.com/bastani/atomic/issues/1070) requests a new SDK option, `excludedTools`, on `createAgentSession()`. SDK consumers can already provide a positive `tools` allowlist, but removing one or two default tools currently requires reconstructing the full desired tool list manually. The motivating example is disabling the built-in `ask_user_question` tool while preserving the rest of Atomic’s default tools.
+GitHub issue [bastani-inc/atomic#1070](https://github.com/bastani-inc/atomic/issues/1070) requests a new SDK option, `excludedTools`, on `createAgentSession()`. SDK consumers can already provide a positive `tools` allowlist, but removing one or two default tools currently requires reconstructing the full desired tool list manually. The motivating example is disabling the built-in `ask_user_question` tool while preserving the rest of Atomic’s default tools.
 
 This RFC proposes adding `excludedTools?: string[]` to the public `CreateAgentSessionOptions` API, matching the existing `tools?: string[]` tool-name identifier shape in `packages/coding-agent/src/core/sdk.ts`. The exclusion will be enforced inside `AgentSession`’s runtime tool registry refresh path so it applies consistently to built-in tools, SDK `customTools`, extension-registered tools, dynamic tool registration, and reloads. When `excludedTools` is omitted, existing behavior remains unchanged.
 

@@ -37,7 +37,7 @@ Research how to resolve the 104 failing `bun test` errors documented in `bun_err
 
 **Root Cause**: The `AgentDefinition` interface defines an optional `model?: AgentModel` field, but **none of the builtin agent definitions include a `model` property**. Tests expect `agent.model` to be `"opus"` but it's `undefined`.
 
-**Source**: [`src/ui/commands/agent-commands.ts`](https://github.com/bastani/atomic/blob/f9603b88b96c47859073b0647d2c6b7d95057f8d/src/ui/commands/agent-commands.ts)
+**Source**: [`src/ui/commands/agent-commands.ts`](https://github.com/bastani-inc/atomic/blob/f9603b88b96c47859073b0647d2c6b7d95057f8d/src/ui/commands/agent-commands.ts)
 
 - **Interface**: Lines 175-225 — `AgentDefinition` has `model?: AgentModel` (line ~205)
 - **Agent Definitions**: The `BUILTIN_AGENTS` array contains agents like `debugger` (line ~1085), `codebase-analyzer`, `codebase-locator`, `codebase-pattern-finder`, `codebase-online-researcher`, `codebase-research-analyzer`, `codebase-research-locator` — **none include `model: "opus"`**
@@ -57,7 +57,7 @@ Research how to resolve the 104 failing `bun test` errors documented in `bun_err
 
 **Root Cause**: `createAgentCommand().execute()` calls `context.spawnSubagent()` (fire-and-forget via `void`) and returns `{ success: true }` immediately. It **never calls `context.sendMessage()` or `context.sendSilentMessage()`**. The mock context's `sentMessages` array only tracks those two methods, so it remains empty.
 
-**Source**: [`src/ui/commands/agent-commands.ts`](https://github.com/bastani/atomic/blob/f9603b88b96c47859073b0647d2c6b7d95057f8d/src/ui/commands/agent-commands.ts)
+**Source**: [`src/ui/commands/agent-commands.ts`](https://github.com/bastani-inc/atomic/blob/f9603b88b96c47859073b0647d2c6b7d95057f8d/src/ui/commands/agent-commands.ts)
 
 - **`createAgentCommand()`**: Lines 1495-1532
     ```typescript
@@ -83,7 +83,7 @@ Research how to resolve the 104 failing `bun test` errors documented in `bun_err
 
 **Root Cause**: The source theme uses **Catppuccin palette** colors, but tests expect **Tailwind CSS palette** colors. The theme was changed but tests were not updated.
 
-**Source**: [`src/ui/theme.tsx`](https://github.com/bastani/atomic/blob/f9603b88b96c47859073b0647d2c6b7d95057f8d/src/ui/theme.tsx)
+**Source**: [`src/ui/theme.tsx`](https://github.com/bastani-inc/atomic/blob/f9603b88b96c47859073b0647d2c6b7d95057f8d/src/ui/theme.tsx)
 
 | Property           | Source (Catppuccin)        | Test Expected (Tailwind) |
 | ------------------ | -------------------------- | ------------------------ |
@@ -121,7 +121,7 @@ Research how to resolve the 104 failing `bun test` errors documented in `bun_err
 
 **Root Cause**: Tool renderers use **ASCII/Unicode symbols** in source, but tests expect **emoji icons**. The source was changed but tests were not updated.
 
-**Source**: [`src/ui/tools/registry.ts`](https://github.com/bastani/atomic/blob/f9603b88b96c47859073b0647d2c6b7d95057f8d/src/ui/tools/registry.ts)
+**Source**: [`src/ui/tools/registry.ts`](https://github.com/bastani-inc/atomic/blob/f9603b88b96c47859073b0647d2c6b7d95057f8d/src/ui/tools/registry.ts)
 
 | Tool    | Source Icon (Actual) | Test Expected Icon |
 | ------- | -------------------- | ------------------ |
@@ -146,7 +146,7 @@ Research how to resolve the 104 failing `bun test` errors documented in `bun_err
 
 **Root Cause**: `createSession()` **no longer calls `query()`** internally. A previous refactoring removed the initial empty-prompt query to fix a leaked subprocess issue. The comment in source explains: _"Don't create an initial query here — send()/stream() each create their own query with the actual user message. Previously an empty-prompt query was spawned here, which leaked a Claude Code subprocess that was never consumed."_
 
-**Source**: [`src/sdk/claude-client.ts`](https://github.com/bastani/atomic/blob/f9603b88b96c47859073b0647d2c6b7d95057f8d/src/sdk/claude-client.ts)
+**Source**: [`src/sdk/claude-client.ts`](https://github.com/bastani-inc/atomic/blob/f9603b88b96c47859073b0647d2c6b7d95057f8d/src/sdk/claude-client.ts)
 
 - **`createSession()`**: Lines 752-768 — calls `this.wrapQuery(null, sessionId, config)` without invoking `query()`
 - **`query()` only called by**: `send()` (line 392), `stream()` (line 454), `summarize()` (line 599), `resumeSession()` (line 805)
@@ -169,7 +169,7 @@ Research how to resolve the 104 failing `bun test` errors documented in `bun_err
 
 **Root Cause**: `truncateText()` uses `"..."` (three periods) instead of `"…"` (single ellipsis character), and uses `maxLength - 3` for the slice which breaks at small limits.
 
-**Source**: [`src/ui/utils/format.ts`](https://github.com/bastani/atomic/blob/f9603b88b96c47859073b0647d2c6b7d95057f8d/src/ui/utils/format.ts) lines 144-147
+**Source**: [`src/ui/utils/format.ts`](https://github.com/bastani-inc/atomic/blob/f9603b88b96c47859073b0647d2c6b7d95057f8d/src/ui/utils/format.ts) lines 144-147
 
 ```typescript
 export function truncateText(text: string, maxLength: number = 40): string {
@@ -191,7 +191,7 @@ export function truncateText(text: string, maxLength: number = 40): string {
 
 **Root Cause**: `formatDuration()` uses `Math.floor()` for seconds, discarding sub-second precision.
 
-**Source**: [`src/ui/utils/format.ts`](https://github.com/bastani/atomic/blob/f9603b88b96c47859073b0647d2c6b7d95057f8d/src/ui/utils/format.ts) line ~68
+**Source**: [`src/ui/utils/format.ts`](https://github.com/bastani-inc/atomic/blob/f9603b88b96c47859073b0647d2c6b7d95057f8d/src/ui/utils/format.ts) line ~68
 
 ```typescript
 const seconds = Math.floor(ms / 1000); // 1500 → 1, not 1.5
@@ -211,8 +211,8 @@ return { text: `${seconds}s`, ms };
 
 **Source**:
 
-- [`src/ui/commands/builtin-commands.ts`](https://github.com/bastani/atomic/blob/f9603b88b96c47859073b0647d2c6b7d95057f8d/src/ui/commands/builtin-commands.ts) lines 551-560 — registered commands: help, theme, clear, compact, exit, model, mcp, context
-- [`src/ui/commands/skill-commands.ts`](https://github.com/bastani/atomic/blob/f9603b88b96c47859073b0647d2c6b7d95057f8d/src/ui/commands/skill-commands.ts) lines 1113-1135 — skills: research-codebase, create-spec, explain-code
+- [`src/ui/commands/builtin-commands.ts`](https://github.com/bastani-inc/atomic/blob/f9603b88b96c47859073b0647d2c6b7d95057f8d/src/ui/commands/builtin-commands.ts) lines 551-560 — registered commands: help, theme, clear, compact, exit, model, mcp, context
+- [`src/ui/commands/skill-commands.ts`](https://github.com/bastani-inc/atomic/blob/f9603b88b96c47859073b0647d2c6b7d95057f8d/src/ui/commands/skill-commands.ts) lines 1113-1135 — skills: research-codebase, create-spec, explain-code
 
 **Test**: `tests/ui/commands/index.test.ts` line 79
 

@@ -185,12 +185,12 @@ class IntercomBroker {
         if (currentId) {
           throw new Error("Received duplicate register message");
         }
-        
+
         const id = randomUUID();
         setId(id);
         const info: SessionInfo = { ...clientMessage.session, id };
         this.sessions.set(id, { socket, info });
-        
+
         if (this.shutdownTimer) {
           clearTimeout(this.shutdownTimer);
           this.shutdownTimer = null;
@@ -321,7 +321,7 @@ class IntercomBroker {
 
   private shutdown(): void {
     console.log("Broker shutting down");
-    
+
     for (const session of this.sessions.values()) {
       session.socket.end();
     }

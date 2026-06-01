@@ -22,6 +22,7 @@ Lifecycle modes per-server: `lazy` (default), `eager`, `keep-alive`.
 Entry point: `index.ts` (`export default function mcpAdapter(pi: ExtensionAPI)`).
 
 Top-level structure:
+
 1. Module-load reads `mcp-config` argv flag and early metadata cache.
 2. Calls `pi.registerTool({name: spec.prefixedName, ...})` once per direct tool (synchronously, BEFORE session_start).
 3. `pi.registerFlag("mcp-config", {type: "string"})` — CLI flag for explicit config path.
@@ -37,49 +38,50 @@ Key files: `index.ts`, `init.ts`, `server-manager.ts`, `lifecycle.ts`, `config.t
 
 ```ts
 interface McpConfig {
-  mcpServers: Record<string, ServerEntry>;
-  imports?: ImportKind[];   // cursor | claude-code | claude-desktop | codex | windsurf | vscode
-  settings?: McpSettings;
+    mcpServers: Record<string, ServerEntry>;
+    imports?: ImportKind[]; // cursor | claude-code | claude-desktop | codex | windsurf | vscode
+    settings?: McpSettings;
 }
 
 interface ServerEntry {
-  // stdio
-  command?: string;
-  args?: string[];
-  env?: Record<string, string>;
-  cwd?: string;
-  // http
-  url?: string;
-  headers?: Record<string, string>;
-  auth?: "oauth" | "bearer" | false;
-  bearerToken?: string;
-  bearerTokenEnv?: string;
-  oauth?: OAuthConfig | false;
-  // lifecycle
-  lifecycle?: "keep-alive" | "lazy" | "eager";
-  idleTimeout?: number;
-  // tool surface
-  exposeResources?: boolean;
-  directTools?: boolean | string[];
-  excludeTools?: string[];
-  debug?: boolean;
+    // stdio
+    command?: string;
+    args?: string[];
+    env?: Record<string, string>;
+    cwd?: string;
+    // http
+    url?: string;
+    headers?: Record<string, string>;
+    auth?: "oauth" | "bearer" | false;
+    bearerToken?: string;
+    bearerTokenEnv?: string;
+    oauth?: OAuthConfig | false;
+    // lifecycle
+    lifecycle?: "keep-alive" | "lazy" | "eager";
+    idleTimeout?: number;
+    // tool surface
+    exposeResources?: boolean;
+    directTools?: boolean | string[];
+    excludeTools?: string[];
+    debug?: boolean;
 }
 
 interface McpSettings {
-  toolPrefix?: "server" | "none" | "short";
-  idleTimeout?: number;
-  directTools?: boolean;
-  disableProxyTool?: boolean;
-  autoAuth?: boolean;
-  sampling?: boolean;
-  samplingAutoApprove?: boolean;
-  authRequiredMessage?: string;
+    toolPrefix?: "server" | "none" | "short";
+    idleTimeout?: number;
+    directTools?: boolean;
+    disableProxyTool?: boolean;
+    autoAuth?: boolean;
+    sampling?: boolean;
+    samplingAutoApprove?: boolean;
+    authRequiredMessage?: string;
 }
 ```
 
 ### Discovery / loading
 
 Config files only. No autodiscovery from running processes. All three MCP transports via `@modelcontextprotocol/sdk@^1.25.1`:
+
 - **stdio** via `StdioClientTransport` (npx commands rewritten to direct `node ...` for speed).
 - **streamable-http** first choice when `url` set.
 - **SSE** fallback when streamable-http throws non-`UnauthorizedError`.
@@ -87,6 +89,7 @@ Config files only. No autodiscovery from running processes. All three MCP transp
 ### Tool surfacing
 
 Hybrid by default:
+
 1. **Direct tools** — one `pi.registerTool()` per MCP tool at module-load (uses cached metadata, works without active connection).
 2. **Proxy tool** (`mcp`) — single tool with `tool?`, `args?`, `connect?`, `describe?`, `search?`, `regex?`, `includeSchemas?`, `server?`, `action?` params.
 3. Both can coexist. Proxy omitted when every server is fully direct.
@@ -128,6 +131,7 @@ Delegation extension turning pi into a multi-agent orchestrator with builtin age
 ### Source map
 
 Entry: `src/extension/index.ts` (22 KB).
+
 - `loadConfig()` from `~/.pi/agent/extensions/subagent/config.json`.
 - **One** `pi.registerTool({name: "subagent", ...})` with `renderCall`/`renderResult`.
 - Four `pi.on(...)` subscriptions (`tool_result`, `session_start`, `session_shutdown`).
@@ -157,21 +161,21 @@ output: filename.md
 interactive: true|false
 maxSubagentDepth: 2
 ---
-
 <body becomes systemPrompt>
 ```
 
 ### Discovery roots
 
-| Source | User | Project | Builtins |
-|---|---|---|---|
-| Agents | `~/.pi/agent/agents/`, `~/.agents/` | `.pi/agents/`, `.agents/` | shipped `agents/*.md` |
-| Chains | `~/.pi/agent/chains/` | `.pi/chains/` | – |
-| Skills | `~/.agents/skills/`, `~/.pi/agent/skills/` | `.pi/skills/`, `.agents/skills/` | – |
+| Source | User                                       | Project                          | Builtins              |
+| ------ | ------------------------------------------ | -------------------------------- | --------------------- |
+| Agents | `~/.pi/agent/agents/`, `~/.agents/`        | `.pi/agents/`, `.agents/`        | shipped `agents/*.md` |
+| Chains | `~/.pi/agent/chains/`                      | `.pi/chains/`                    | –                     |
+| Skills | `~/.agents/skills/`, `~/.pi/agent/skills/` | `.pi/skills/`, `.agents/skills/` | –                     |
 
 ### Context isolation strategy — **subprocess-based**
 
 `pi-spawn.ts` spawns a separate `pi` CLI process per sub-agent. Two flavors:
+
 - `defaultContext: "fresh"` — child gets fresh `--session` directory.
 - `defaultContext: "fork"` — `fork-context.ts` pre-creates a forked session from parent JSONL, child opens via `--session <file>`.
 
@@ -208,8 +212,8 @@ Per the pi-subagents README's [Optional pi-intercom companion](https://github.co
 ### What it gives children
 
 - **`contact_supervisor` tool** with two `reason` values:
-  - `reason: "need_decision"` — blocking call; child waits for parent's answer (clarification, decision when discovery changes the plan).
-  - `reason: "progress_update"` — non-blocking; surfaces in the parent session as a notification when something meaningful changes.
+    - `reason: "need_decision"` — blocking call; child waits for parent's answer (clarification, decision when discovery changes the plan).
+    - `reason: "progress_update"` — non-blocking; surfaces in the parent session as a notification when something meaningful changes.
 - **Generic `intercom` tool** as fallback plumbing.
 
 ### What it gives the parent
@@ -230,10 +234,10 @@ Read from `~/.pi/agent/extensions/subagent/config.json`:
 
 ```jsonc
 {
-  "intercomBridge": {
-    "mode": "always",        // "always" | "fork-only" | "off"
-    "instructionFile": "./intercom-bridge.md"  // optional Markdown template; {orchestratorTarget} interpolated
-  }
+    "intercomBridge": {
+        "mode": "always", // "always" | "fork-only" | "off"
+        "instructionFile": "./intercom-bridge.md", // optional Markdown template; {orchestratorTarget} interpolated
+    },
 }
 ```
 
@@ -243,9 +247,9 @@ Read from `~/.pi/agent/extensions/subagent/config.json`:
 
 ### Use-case examples (verbatim from README)
 
-> *"Run this implementation in the background. If the worker gets blocked or needs a product decision, have it ask me through intercom."*
+> _"Run this implementation in the background. If the worker gets blocked or needs a product decision, have it ask me through intercom."_
 >
-> *"Ask oracle to review this plan. If it sees a decision I need to make, have it ask me instead of assuming."*
+> _"Ask oracle to review this plan. If it sees a decision I need to make, have it ask me instead of assuming."_
 
 ### Diagnostics
 
@@ -264,14 +268,17 @@ Read from `~/.pi/agent/extensions/subagent/config.json`:
 ### Trade-offs
 
 **Option 1 — Bundle in-tree (delete the extension shape):**
+
 - Pros: zero install friction, tight integration, can fix open issues without extension API straitjacket.
 - Cons: ~100 TS files merged; forfeit upstream patches; harder to support opt-out; tightly couples release cadence to MCP spec drift.
 
 **Option 2 — First-class default-installed packages (`@atomic/mcp`, `@atomic/subagents`):**
+
 - Pros: clean extension boundary; CLI guarantees presence (auto-install on `atomic init`/upgrade); users can pin/disable individually; can keep tracking upstream via thin fork.
 - Cons: two more npm packages; deeper integration points need cross-package coordination.
 
 **Option 3 — Extension-only, document third-party install:**
+
 - Pros: zero new code in Atomic.
 - Cons: defeats out-of-the-box pitch; users hit pi-mcp-adapter's brittle installer (issue #47); rebrand muddied.
 
@@ -280,13 +287,13 @@ Read from `~/.pi/agent/extensions/subagent/config.json`:
 1. **Vendor both as `@atomic/mcp` and `@atomic/subagents`** in the monorepo (pi-subagents at `635112d`, pi-mcp-adapter at `184d3cb`).
 2. **Atomic CLI auto-installs them on first launch** (silent, no GitHub clone).
 3. **Immediate patches**:
-   - pi-mcp-adapter: swap `@mariozechner/pi-ai` → `@earendil-works/pi-ai` (#91).
-   - pi-subagents: add `jiti` to direct deps (#157). Test fork-context against compaction (#147).
+    - pi-mcp-adapter: swap `@mariozechner/pi-ai` → `@earendil-works/pi-ai` (#91).
+    - pi-subagents: add `jiti` to direct deps (#157). Test fork-context against compaction (#147).
 4. **Cross-cutting wins**:
-   - Share MCP server pool across parent + foreground sub-agents (closes #76 + #20 together).
-   - Permission inheritance: parent's `tool_call` interceptors apply to children (#143).
-   - Compact-friendly fork context.
-   - Atomic-themed renderer for MCP tools (#57, #82, #55).
+    - Share MCP server pool across parent + foreground sub-agents (closes #76 + #20 together).
+    - Permission inheritance: parent's `tool_call` interceptors apply to children (#143).
+    - Compact-friendly fork context.
+    - Atomic-themed renderer for MCP tools (#57, #82, #55).
 5. **Keep extension hook surface unchanged** so we can rebase from upstream.
 
 ### Public extension hook idioms to mirror

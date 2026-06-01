@@ -22,6 +22,7 @@ Research how to update the README.md to reflect the new atomic CLI interface way
 The current README.md is **overly verbose** (~430 lines) with manual copy commands for setup. The new atomic CLI (`@bastani/atomic`) simplifies everything to a single interactive command: `bunx @bastani/atomic` or `npx @bastani/atomic`.
 
 **Key changes needed:**
+
 1. Replace manual `cp` commands with `bunx @bastani/atomic` (or `npx`)
 2. Simplify Quick Start to ~5 lines
 3. Show the new CLI workflow: `atomic` for setup, `atomic --agent <name>` for running
@@ -35,12 +36,14 @@ The current README.md is **overly verbose** (~430 lines) with manual copy comman
 ### Lines 81-167: Overly Complex Quick Start
 
 The current Quick Start has:
+
 - Manual `cp -r .claude /path/to/your-project/` commands
 - Separate steps for each platform
 - MCP configuration copy steps
 - Manual `.devcontainer` setup
 
 **This is now replaced by:**
+
 ```bash
 bunx @bastani/atomic
 # or
@@ -48,6 +51,7 @@ npx @bastani/atomic
 ```
 
 The CLI handles:
+
 1. Agent selection (Claude Code, OpenCode, GitHub Copilot CLI)
 2. Directory confirmation
 3. Folder copying with proper exclusions
@@ -58,6 +62,7 @@ The CLI handles:
 The procedure section is good but examples should be updated to show the CLI-driven workflow:
 
 **Old way (manual):**
+
 ```bash
 # Copy files manually
 cp -r .claude /path/to/your-project/
@@ -66,6 +71,7 @@ cp -r .claude /path/to/your-project/
 ```
 
 **New way (CLI-driven):**
+
 ```bash
 # One-time setup
 bunx @bastani/atomic
@@ -93,22 +99,23 @@ Available agents: claude-code, opencode, copilot-cli
 
 ### Source: `src/config.ts`
 
-| Agent Key | Display Name | Command | Flags | Folder |
-|-----------|--------------|---------|-------|--------|
-| `claude-code` | Claude Code | `claude` | `--dangerously-skip-permissions` | `.claude` |
-| `opencode` | OpenCode | `opencode` | (none) | `.opencode` |
-| `copilot-cli` | GitHub Copilot CLI | `copilot` | `--allow-all-tools --allow-all-paths` | `.github` |
+| Agent Key     | Display Name       | Command    | Flags                                 | Folder      |
+| ------------- | ------------------ | ---------- | ------------------------------------- | ----------- |
+| `claude-code` | Claude Code        | `claude`   | `--dangerously-skip-permissions`      | `.claude`   |
+| `opencode`    | OpenCode           | `opencode` | (none)                                | `.opencode` |
+| `copilot-cli` | GitHub Copilot CLI | `copilot`  | `--allow-all-tools --allow-all-paths` | `.github`   |
 
 ### Package: `@bastani/atomic`
 
 From `package.json`:
+
 ```json
 {
-  "name": "@bastani/atomic",
-  "version": "1.0.1",
-  "bin": {
-    "atomic": "src/index.ts"
-  }
+    "name": "@bastani/atomic",
+    "version": "1.0.1",
+    "bin": {
+        "atomic": "src/index.ts"
+    }
 }
 ```
 
@@ -159,13 +166,15 @@ From `package.json`:
 ### 1. Quick Start Section
 
 **Remove (lines 81-167):**
+
 - All manual `cp` commands
 - MCP configuration steps
 - `.devcontainer` copy instructions
 - Platform-specific folder copy instructions
 
 **Replace with:**
-```markdown
+
+````markdown
 ## Quick Start
 
 Install the atomic configuration for your AI coding agent:
@@ -177,6 +186,7 @@ bunx @bastani/atomic
 # Or using npx
 npx @bastani/atomic
 ```
+````
 
 Select your agent (Claude Code, OpenCode, or GitHub Copilot CLI) and the CLI will configure your project automatically.
 
@@ -184,7 +194,8 @@ Select your agent (Claude Code, OpenCode, or GitHub Copilot CLI) and the CLI wil
 
 - [bun](https://bun.sh/docs/installation) or Node.js 18+
 - Your preferred AI coding agent installed ([Claude Code](https://docs.anthropic.com/en/docs/claude-code/setup), [OpenCode](https://opencode.ai), or [GitHub Copilot CLI](https://github.com/github/copilot-cli))
-```
+
+````
 
 ### 2. Procedure Section
 
@@ -197,7 +208,7 @@ Select your agent (Claude Code, OpenCode, or GitHub Copilot CLI) and the CLI wil
 
 ```bash
 atomic --agent claude-code /research-codebase "I'm building a real-time collaboration tool..."
-```
+````
 
 ### Step 2: Create a Specification
 
@@ -222,7 +233,8 @@ atomic --agent claude-code /implement-feature
 ```bash
 atomic --agent claude-code /create-gh-pr
 ```
-```
+
+````
 
 ### 3. Available Commands Table
 
@@ -256,7 +268,7 @@ atomic --agent opencode /implement-feature
 
 # GitHub Copilot CLI
 atomic --agent copilot-cli /research-codebase "How does authentication work?"
-```
+````
 
 Or start the agent interactively and use slash commands directly:
 
@@ -264,7 +276,8 @@ Or start the agent interactively and use slash commands directly:
 atomic --agent claude-code
 # Then type: /research-codebase "..."
 ```
-```
+
+````
 
 ### 5. Remove Redundant Sections
 
@@ -342,7 +355,7 @@ AI coding agents need context and procedures. Atomic provides both.
 
 ```bash
 bunx @bastani/atomic   # or: npx @bastani/atomic
-```
+````
 
 Select your agent. That's it.
 
@@ -386,23 +399,23 @@ atomic --agent claude-code /create-gh-pr
 
 ## Commands
 
-| Command | Purpose |
-|---------|---------|
-| `/research-codebase` | Analyze codebase and document findings |
-| `/create-spec` | Generate technical specification |
-| `/create-feature-list` | Break spec into implementable tasks |
-| `/implement-feature` | Implement next feature from list |
-| `/commit` | Create conventional commit |
-| `/create-gh-pr` | Push and create pull request |
-| `/explain-code` | Explain code section in detail |
-| `/ralph-loop` | Run autonomous implementation loop |
+| Command                | Purpose                                |
+| ---------------------- | -------------------------------------- |
+| `/research-codebase`   | Analyze codebase and document findings |
+| `/create-spec`         | Generate technical specification       |
+| `/create-feature-list` | Break spec into implementable tasks    |
+| `/implement-feature`   | Implement next feature from list       |
+| `/commit`              | Create conventional commit             |
+| `/create-gh-pr`        | Push and create pull request           |
+| `/explain-code`        | Explain code section in detail         |
+| `/ralph-loop`          | Run autonomous implementation loop     |
 
 ## Supported Agents
 
-| Agent | Command |
-|-------|---------|
-| Claude Code | `atomic --agent claude-code` |
-| OpenCode | `atomic --agent opencode` |
+| Agent              | Command                      |
+| ------------------ | ---------------------------- |
+| Claude Code        | `atomic --agent claude-code` |
+| OpenCode           | `atomic --agent opencode`    |
 | GitHub Copilot CLI | `atomic --agent copilot-cli` |
 
 ## Prerequisites
@@ -419,6 +432,7 @@ atomic --agent claude-code /create-gh-pr
 ## License
 
 MIT
+
 ```
 
 ---
@@ -450,3 +464,4 @@ MIT
 | Comparison section | Consider removing | Reduces noise |
 | Memory/Flywheel | Keep but simplify | Still valuable |
 | Commands table | Add/update | Clear reference |
+```

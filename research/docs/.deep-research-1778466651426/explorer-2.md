@@ -397,8 +397,8 @@ The skill ecosystem is a **natural extension point** for pi-coding-agent: all sk
     - **GitHub Copilot SDK** (`@github/copilot-sdk`) — provider SDK for `.for("copilot")` branch.
     - **OpenCode SDK** (`@opencode-ai/sdk`) — provider SDK for `.for("opencode")` branch.
     - **`@bastani/atomic-sdk`** — orchestration SDK; the only package imported in workflow files (lines 8–10, 327–349).
-    - **`settings.json`** schema at `https://raw.githubusercontent.com/bastani/atomic/main/assets/settings.schema.json` (line 120).
-    - Devcontainer images `ghcr.io/bastani/atomic/<agent>:1` referenced as bundling Bun + tmux + agent CLI (line 83).
+    - **`settings.json`** schema at `https://raw.githubusercontent.com/bastani-inc/atomic/main/assets/settings.schema.json` (line 120).
+    - Devcontainer images `ghcr.io/bastani-inc/atomic/<agent>:1` referenced as bundling Bun + tmux + agent CLI (line 83).
 
 ---
 

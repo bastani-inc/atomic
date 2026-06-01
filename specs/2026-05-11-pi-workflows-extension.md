@@ -1,12 +1,12 @@
 # `pi-workflows` — Pi Extension Technical Design Document
 
-| Document Metadata      | Details                                                                                                                                                                                                                                              |
-| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Author(s)              | Norin Lavaee                                                                                                                                                                                                                                         |
-| Status                 | Draft (WIP)                                                                                                                                                                                                                                          |
-| Team / Owner           | Atomic                                                                                                                                                                                                                                               |
-| Created / Last Updated | 2026-05-11                                                                                                                                                                                                                                           |
-| Sibling Spec           | `specs/2026-05-11-atomic-pi-coding-agent-rewrite.md` (the Atomic rebrand; depends on this spec landing first)                                                                                                                                       |
+| Document Metadata      | Details                                                                                                                                                                                                                                        |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Author(s)              | Norin Lavaee                                                                                                                                                                                                                                   |
+| Status                 | Draft (WIP)                                                                                                                                                                                                                                    |
+| Team / Owner           | Atomic                                                                                                                                                                                                                                         |
+| Created / Last Updated | 2026-05-11                                                                                                                                                                                                                                     |
+| Sibling Spec           | `specs/2026-05-11-atomic-pi-coding-agent-rewrite.md` (the Atomic rebrand; depends on this spec landing first)                                                                                                                                  |
 | Research Inputs        | `research/docs/2026-05-11-pi-coding-agent-reference.md`, `research/docs/2026-05-11-pi-mcp-adapter-and-subagents.md`, `research/docs/2026-05-11-atomic-codebase-inventory.md`, `research/docs/2026-05-11-map-the-entire-atomic-cli-codebase.md` |
 
 ---
@@ -35,11 +35,11 @@ The workflow design pattern is mature: a definition declares input schemas and a
 
 ### 2.2 Relationship to siblings
 
-| Sibling          | What it adds                                            | How pi-workflows uses it                                                                                                  |
-| ---------------- | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `pi-subagents`   | Delegated child agents via the `subagent` tool          | Stages call `subagent({agent, task})` for context-isolated work — same flow a chat user gets when they type `/run`.       |
-| `pi-mcp-adapter` | MCP server proxy / direct-tool registration             | Stages inherit pi's tool list including MCP tools; the integration glue may toggle per-stage server availability.        |
-| `pi-intercom`    | Child↔parent coordination (optional companion)          | When present, workflow stages running detached can `contact_supervisor` to ask the user blocking questions.              |
+| Sibling          | What it adds                                   | How pi-workflows uses it                                                                                            |
+| ---------------- | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `pi-subagents`   | Delegated child agents via the `subagent` tool | Stages call `subagent({agent, task})` for context-isolated work — same flow a chat user gets when they type `/run`. |
+| `pi-mcp-adapter` | MCP server proxy / direct-tool registration    | Stages inherit pi's tool list including MCP tools; the integration glue may toggle per-stage server availability.   |
+| `pi-intercom`    | Child↔parent coordination (optional companion) | When present, workflow stages running detached can `contact_supervisor` to ask the user blocking questions.         |
 
 The dependency direction is one-way: `pi-workflows` declares them as runtime peer-deps and degrades gracefully if absent. None of the siblings depend on `pi-workflows`.
 
@@ -162,22 +162,22 @@ flowchart TB
 
 The two extensions are deliberately isomorphic. This is the design principle.
 
-| Concern                           | `pi-subagents`                                                                       | `pi-workflows`                                                                                                              |
-| --------------------------------- | ------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
-| Single tool registered            | `subagent` (multi-action via discriminator)                                          | `workflow` (`name` + `inputs` params)                                                                                       |
-| Authoring artifact                | Agent markdown + YAML frontmatter (e.g. `scout.md`)                                  | TypeScript file with `export default defineWorkflow(...).compile()`                                                          |
-| Discovery roots                   | `~/.pi/agent/agents/`, `.pi/agents/`, package's own bundled `agents/`                | `~/.pi/agent/workflows/`, `.pi/workflows/`, package's own bundled `workflows/`                                              |
-| Slash commands                    | `/run`, `/chain`, `/parallel`, `/run-chain`, `/subagents-doctor`                     | `/workflow`, `/workflow:<name>`, `/workflow list/kill/status/resume/inputs`, `/workflows-doctor`                            |
-| Clarify UI                        | Built-in chain clarify UI                                                            | `ctx.ui.custom({overlay:true})` preview before run                                                                          |
-| Background / detached execution   | `async: true` / `--bg`                                                               | `detach: true` / `--detach`                                                                                                  |
-| Recursion guard                   | `PI_SUBAGENT_MAX_DEPTH` env (default 2)                                              | `PI_WORKFLOW_MAX_DEPTH` env (default 4)                                                                                      |
-| Session persistence               | `pi.appendEntry` + `pi.appendCustomMessageEntry`                                     | Same primitives (§5.6)                                                                                                       |
-| Custom message renderers          | Slash result cards, async-job widgets, control notices                               | Run banner, stage chips, stage progress, stage results, run summary                                                          |
-| Live progress widget              | `ctx.ui.setWidget("subagent.async", ...)`                                            | `ctx.ui.setWidget("workflow.run", ...)`                                                                                      |
-| Diagnostics                       | `/subagents-doctor`                                                                  | `/workflows-doctor`                                                                                                          |
-| Config file                       | `~/.pi/agent/extensions/subagent/config.json`                                        | `~/.pi/agent/extensions/workflow/config.json`                                                                                |
-| Intercom integration              | Detects `pi-intercom`; injects `contact_supervisor`                                  | Detects `pi-intercom`; routes stage-level `contact_supervisor` to the parent session                                        |
-| Publishability                    | npm: `pi-subagents`                                                                  | npm: `pi-workflows`                                                                                                          |
+| Concern                         | `pi-subagents`                                                        | `pi-workflows`                                                                                   |
+| ------------------------------- | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| Single tool registered          | `subagent` (multi-action via discriminator)                           | `workflow` (`name` + `inputs` params)                                                            |
+| Authoring artifact              | Agent markdown + YAML frontmatter (e.g. `scout.md`)                   | TypeScript file with `export default defineWorkflow(...).compile()`                              |
+| Discovery roots                 | `~/.pi/agent/agents/`, `.pi/agents/`, package's own bundled `agents/` | `~/.pi/agent/workflows/`, `.pi/workflows/`, package's own bundled `workflows/`                   |
+| Slash commands                  | `/run`, `/chain`, `/parallel`, `/run-chain`, `/subagents-doctor`      | `/workflow`, `/workflow:<name>`, `/workflow list/kill/status/resume/inputs`, `/workflows-doctor` |
+| Clarify UI                      | Built-in chain clarify UI                                             | `ctx.ui.custom({overlay:true})` preview before run                                               |
+| Background / detached execution | `async: true` / `--bg`                                                | `detach: true` / `--detach`                                                                      |
+| Recursion guard                 | `PI_SUBAGENT_MAX_DEPTH` env (default 2)                               | `PI_WORKFLOW_MAX_DEPTH` env (default 4)                                                          |
+| Session persistence             | `pi.appendEntry` + `pi.appendCustomMessageEntry`                      | Same primitives (§5.6)                                                                           |
+| Custom message renderers        | Slash result cards, async-job widgets, control notices                | Run banner, stage chips, stage progress, stage results, run summary                              |
+| Live progress widget            | `ctx.ui.setWidget("subagent.async", ...)`                             | `ctx.ui.setWidget("workflow.run", ...)`                                                          |
+| Diagnostics                     | `/subagents-doctor`                                                   | `/workflows-doctor`                                                                              |
+| Config file                     | `~/.pi/agent/extensions/subagent/config.json`                         | `~/.pi/agent/extensions/workflow/config.json`                                                    |
+| Intercom integration            | Detects `pi-intercom`; injects `contact_supervisor`                   | Detects `pi-intercom`; routes stage-level `contact_supervisor` to the parent session             |
+| Publishability                  | npm: `pi-subagents`                                                   | npm: `pi-workflows`                                                                              |
 
 When tempted to design something on the right that doesn't have an obvious analog on the left, audit first whether we're solving a real new problem or reinventing one pi-subagents already solved.
 
@@ -332,29 +332,29 @@ packages/pi-workflows/
 
 ```jsonc
 {
-  "name": "pi-workflows",
-  "version": "0.1.0",
-  "keywords": ["pi-package"],
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
-  "pi": {
-    "extensions": ["./dist/extension/index.js"],
-    "workflows": ["./workflows"]
-  },
-  "peerDependencies": {
-    "pi-subagents": "*",
-    "pi-mcp-adapter": "*",
-    "pi-intercom": "*"
-  },
-  "peerDependenciesMeta": {
-    "pi-subagents":   { "optional": true },
-    "pi-mcp-adapter": { "optional": true },
-    "pi-intercom":    { "optional": true }
-  },
-  "dependencies": {
-    "jiti": "^2.0.0",
-    "typebox": "^0.34.0"
-  }
+    "name": "pi-workflows",
+    "version": "0.1.0",
+    "keywords": ["pi-package"],
+    "main": "dist/index.js",
+    "types": "dist/index.d.ts",
+    "pi": {
+        "extensions": ["./dist/extension/index.js"],
+        "workflows": ["./workflows"],
+    },
+    "peerDependencies": {
+        "pi-subagents": "*",
+        "pi-mcp-adapter": "*",
+        "pi-intercom": "*",
+    },
+    "peerDependenciesMeta": {
+        "pi-subagents": { "optional": true },
+        "pi-mcp-adapter": { "optional": true },
+        "pi-intercom": { "optional": true },
+    },
+    "dependencies": {
+        "jiti": "^2.0.0",
+        "typebox": "^0.34.0",
+    },
 }
 ```
 
@@ -371,23 +371,35 @@ External workflow files look like:
 import { defineWorkflow } from "pi-workflows";
 
 export default defineWorkflow("deep-research-codebase")
-  .description("Scout → per-partition specialists → aggregator")
-  .input("prompt", { type: "text", required: true, description: "research question" })
-  .input("max_partitions", { type: "number", default: 4 })
-  .run(async (ctx) => {
-    const scout = await ctx.stage("scout").prompt(`Scout the codebase: ${ctx.inputs.prompt}`);
-    const partitions = await ctx.stage("partition").prompt(`Partition based on: ${scout}`);
-    const specialists = await Promise.all(
-      partitions.split("\n").map((p, i) =>
-        ctx.stage(`specialist-${i}`).prompt(`Investigate partition ${p}`)
-      )
-    );
-    const aggregate = await ctx.stage("aggregator").prompt(
-      `Aggregate findings:\n${specialists.join("\n---\n")}`
-    );
-    return { findings: aggregate };
-  })
-  .compile();
+    .description("Scout → per-partition specialists → aggregator")
+    .input("prompt", {
+        type: "text",
+        required: true,
+        description: "research question",
+    })
+    .input("max_partitions", { type: "number", default: 4 })
+    .run(async (ctx) => {
+        const scout = await ctx
+            .stage("scout")
+            .prompt(`Scout the codebase: ${ctx.inputs.prompt}`);
+        const partitions = await ctx
+            .stage("partition")
+            .prompt(`Partition based on: ${scout}`);
+        const specialists = await Promise.all(
+            partitions
+                .split("\n")
+                .map((p, i) =>
+                    ctx
+                        .stage(`specialist-${i}`)
+                        .prompt(`Investigate partition ${p}`),
+                ),
+        );
+        const aggregate = await ctx
+            .stage("aggregator")
+            .prompt(`Aggregate findings:\n${specialists.join("\n---\n")}`);
+        return { findings: aggregate };
+    })
+    .compile();
 ```
 
 `.compile()` returns a frozen `WorkflowDefinition` carrying a sentinel `__piWorkflow: true` so the loader can validate.
@@ -398,20 +410,32 @@ export default defineWorkflow("deep-research-codebase")
 
 ```ts
 pi.registerTool({
-  name: "workflow",
-  label: "workflow",
-  description: "Run a defined multi-stage workflow by name.",
-  parameters: Type.Object({
-    name: Type.String({ description: "Workflow ID (use {action:'list'} to enumerate)" }),
-    inputs: Type.Record(Type.String(), Type.Unknown(), { default: {} }),
-    action: Type.Optional(Type.Union([
-      Type.Literal("run"), Type.Literal("list"), Type.Literal("status"),
-      Type.Literal("kill"), Type.Literal("resume"), Type.Literal("inputs"),
-    ])),
-  }),
-  execute: async (args, ctx) => { /* dispatch by action */ },
-  renderCall: ({args}, theme, context) => renderToolCall(args, theme, context),
-  renderResult: ({result}, opts, theme, context) => renderToolResult(result, opts, theme, context),
+    name: "workflow",
+    label: "workflow",
+    description: "Run a defined multi-stage workflow by name.",
+    parameters: Type.Object({
+        name: Type.String({
+            description: "Workflow ID (use {action:'list'} to enumerate)",
+        }),
+        inputs: Type.Record(Type.String(), Type.Unknown(), { default: {} }),
+        action: Type.Optional(
+            Type.Union([
+                Type.Literal("run"),
+                Type.Literal("list"),
+                Type.Literal("status"),
+                Type.Literal("kill"),
+                Type.Literal("resume"),
+                Type.Literal("inputs"),
+            ]),
+        ),
+    }),
+    execute: async (args, ctx) => {
+        /* dispatch by action */
+    },
+    renderCall: ({ args }, theme, context) =>
+        renderToolCall(args, theme, context),
+    renderResult: ({ result }, opts, theme, context) =>
+        renderToolResult(result, opts, theme, context),
 });
 ```
 
@@ -419,18 +443,18 @@ The tool uses pi-subagents' multi-action-via-discriminator pattern: one tool reg
 
 ### 5.3 Slash commands
 
-| Slash invocation              | Behavior                                                                                                |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `/workflow`                   | Opens a `SelectList` overlay with all registered workflows; fuzzy filter.                              |
-| `/workflow <name> [args]`     | Starts a run of `<name>` with parsed args (TypeBox-validated inputs).                                  |
-| `/workflow:<name>`            | Shorthand for `/workflow <name>`.                                                                       |
-| `/workflow list`              | Lists workflows in an overlay (registry inspection).                                                    |
-| `/workflow status`            | Lists in-flight runs in an overlay.                                                                     |
-| `/workflow kill <runId>`      | Aborts a run (`AbortController.abort()`).                                                               |
-| `/workflow kill --all`        | Aborts every in-flight run.                                                                              |
-| `/workflow resume <runId>`    | Re-opens the overlay for a specific run.                                                                |
-| `/workflow inputs <name>`     | Shows a workflow's input schema in an overlay.                                                          |
-| `/workflows-doctor`           | Read-only diagnostics: loaded workflows, available siblings (pi-subagents/pi-mcp-adapter/pi-intercom), config validation. |
+| Slash invocation           | Behavior                                                                                                                  |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `/workflow`                | Opens a `SelectList` overlay with all registered workflows; fuzzy filter.                                                 |
+| `/workflow <name> [args]`  | Starts a run of `<name>` with parsed args (TypeBox-validated inputs).                                                     |
+| `/workflow:<name>`         | Shorthand for `/workflow <name>`.                                                                                         |
+| `/workflow list`           | Lists workflows in an overlay (registry inspection).                                                                      |
+| `/workflow status`         | Lists in-flight runs in an overlay.                                                                                       |
+| `/workflow kill <runId>`   | Aborts a run (`AbortController.abort()`).                                                                                 |
+| `/workflow kill --all`     | Aborts every in-flight run.                                                                                               |
+| `/workflow resume <runId>` | Re-opens the overlay for a specific run.                                                                                  |
+| `/workflow inputs <name>`  | Shows a workflow's input schema in an overlay.                                                                            |
+| `/workflows-doctor`        | Read-only diagnostics: loaded workflows, available siblings (pi-subagents/pi-mcp-adapter/pi-intercom), config validation. |
 
 Tab-completion via `getArgumentCompletions`.
 
@@ -447,23 +471,23 @@ The point: **one rendering engine, two presentation modes** — overlay and widg
 
 Each file below is **design reference only** — the v0.x packages are deleted (Spec 2 §5.12 "Clean-slate posture"). Pi-workflows re-derives each piece against pi-tui's primitives (`Container`, `Box`, `Text`, `Spacer`, `Markdown`, plus the focusable/overlay machinery in `docs/tui.md`):
 
-| v0.x file (cross-reference)                                                  | What's preserved                                                                                                                                                                          | New home in `pi-workflows`                                          |
-| ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| `packages/atomic-sdk/src/components/session-graph-panel.tsx`                 | Top-level graph component: pulse animation at 60 ms tick; keyboard nav (↑↓/j/k/Enter/gg/"/" switcher/q); `decideAttachAction` (resume vs. switch-client logic).                          | `src/tui/graph-view.ts`                                            |
-| `packages/atomic-sdk/src/components/node-card.tsx`                           | Single node renderer: animated border pulse, status-color application, duration formatting, content slot.                                                                                | `src/tui/node-card.ts`                                             |
-| `packages/atomic-sdk/src/components/edge.tsx`                                | Connector edge between graph nodes (SVG-style box-drawing characters).                                                                                                                    | `src/tui/edge.ts`                                                  |
-| `packages/atomic-sdk/src/components/header.tsx`                              | Header band showing workflow name, status count badges, elapsed duration, fatal-error band.                                                                                              | `src/tui/header.ts`                                                |
-| `packages/atomic-sdk/src/components/compact-switcher.tsx`                    | "/" popup list of all stages for direct keyboard jump.                                                                                                                                    | `src/tui/switcher.ts`                                              |
-| `packages/atomic-sdk/src/components/toast.tsx`                               | Top-right nvim-style notification card stack with auto-dismiss timers.                                                                                                                    | `src/tui/toast.ts`                                                 |
-| `packages/atomic-sdk/src/components/layout.ts`                               | `computeLayout(SessionData[]) → LayoutNode[]`: flat node list → 2D grid DAG layout with constants `NODE_W`/`NODE_H`. Pure TS, ports directly.                                            | `src/tui/layout.ts` (near-verbatim re-derivation)                  |
-| `packages/atomic-sdk/src/components/connectors.ts`                          | `buildConnector()`, `buildMergeConnector()` → `ConnectorResult` with box-drawing character paths for edges. Pure TS.                                                                     | `src/tui/connectors.ts`                                            |
-| `packages/atomic-sdk/src/components/graph-theme.ts`                         | `deriveGraphTheme(TerminalTheme) → GraphTheme`: maps pi's theme tokens to graph-specific color slots.                                                                                    | `src/tui/graph-theme.ts`                                           |
-| `packages/atomic-sdk/src/components/status-helpers.ts`                      | `statusColor()`, `statusIcon()`, `fmtDuration()`. Pure helpers.                                                                                                                            | `src/tui/status-helpers.ts`                                        |
-| `packages/atomic-sdk/src/components/color-utils.ts`                         | `lerpColor()` for hex interpolation (used in pulse animation).                                                                                                                            | `src/tui/color-utils.ts`                                           |
-| `packages/atomic-sdk/src/components/orchestrator-panel-store.ts`            | `PanelStore` mutable store with `subscribe(fn)` → version-counter increment. Now degenerates to plain in-extension state (no cross-process IPC needed — see §5.7 below).                  | `src/store.ts` (simplified, no IPC)                                |
-| `packages/atomic-sdk/src/components/orchestrator-panel-types.ts`            | `SessionData`, `SessionStatus`, `ViewMode`, `PanelSession`, `SYNTHETIC_ORCHESTRATOR_NAME` (renamed to `WORKFLOW_ROOT_NAME`).                                                              | `src/store-types.ts`                                               |
-| `packages/atomic-sdk/src/components/orchestrator-panel.tsx`                 | Imperative `OrchestratorPanel` class that bridges executor → React tree. In pi-tui we don't need the imperative bridge — `ctx.ui.custom`/`setWidget` give us the entry points directly.   | merged into `src/tui/graph-view.ts` and `src/tui/widget.ts`        |
-| `packages/atomic-sdk/src/components/hooks.ts`                               | `useLatest()` stable-ref-to-latest-value pattern. Pi-tui's reconciler may or may not need this; port if equivalent issue surfaces.                                                       | `src/tui/hooks.ts` if needed                                       |
+| v0.x file (cross-reference)                                      | What's preserved                                                                                                                                                                        | New home in `pi-workflows`                                  |
+| ---------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| `packages/atomic-sdk/src/components/session-graph-panel.tsx`     | Top-level graph component: pulse animation at 60 ms tick; keyboard nav (↑↓/j/k/Enter/gg/"/" switcher/q); `decideAttachAction` (resume vs. switch-client logic).                         | `src/tui/graph-view.ts`                                     |
+| `packages/atomic-sdk/src/components/node-card.tsx`               | Single node renderer: animated border pulse, status-color application, duration formatting, content slot.                                                                               | `src/tui/node-card.ts`                                      |
+| `packages/atomic-sdk/src/components/edge.tsx`                    | Connector edge between graph nodes (SVG-style box-drawing characters).                                                                                                                  | `src/tui/edge.ts`                                           |
+| `packages/atomic-sdk/src/components/header.tsx`                  | Header band showing workflow name, status count badges, elapsed duration, fatal-error band.                                                                                             | `src/tui/header.ts`                                         |
+| `packages/atomic-sdk/src/components/compact-switcher.tsx`        | "/" popup list of all stages for direct keyboard jump.                                                                                                                                  | `src/tui/switcher.ts`                                       |
+| `packages/atomic-sdk/src/components/toast.tsx`                   | Top-right nvim-style notification card stack with auto-dismiss timers.                                                                                                                  | `src/tui/toast.ts`                                          |
+| `packages/atomic-sdk/src/components/layout.ts`                   | `computeLayout(SessionData[]) → LayoutNode[]`: flat node list → 2D grid DAG layout with constants `NODE_W`/`NODE_H`. Pure TS, ports directly.                                           | `src/tui/layout.ts` (near-verbatim re-derivation)           |
+| `packages/atomic-sdk/src/components/connectors.ts`               | `buildConnector()`, `buildMergeConnector()` → `ConnectorResult` with box-drawing character paths for edges. Pure TS.                                                                    | `src/tui/connectors.ts`                                     |
+| `packages/atomic-sdk/src/components/graph-theme.ts`              | `deriveGraphTheme(TerminalTheme) → GraphTheme`: maps pi's theme tokens to graph-specific color slots.                                                                                   | `src/tui/graph-theme.ts`                                    |
+| `packages/atomic-sdk/src/components/status-helpers.ts`           | `statusColor()`, `statusIcon()`, `fmtDuration()`. Pure helpers.                                                                                                                         | `src/tui/status-helpers.ts`                                 |
+| `packages/atomic-sdk/src/components/color-utils.ts`              | `lerpColor()` for hex interpolation (used in pulse animation).                                                                                                                          | `src/tui/color-utils.ts`                                    |
+| `packages/atomic-sdk/src/components/orchestrator-panel-store.ts` | `PanelStore` mutable store with `subscribe(fn)` → version-counter increment. Now degenerates to plain in-extension state (no cross-process IPC needed — see §5.7 below).                | `src/store.ts` (simplified, no IPC)                         |
+| `packages/atomic-sdk/src/components/orchestrator-panel-types.ts` | `SessionData`, `SessionStatus`, `ViewMode`, `PanelSession`, `SYNTHETIC_ORCHESTRATOR_NAME` (renamed to `WORKFLOW_ROOT_NAME`).                                                            | `src/store-types.ts`                                        |
+| `packages/atomic-sdk/src/components/orchestrator-panel.tsx`      | Imperative `OrchestratorPanel` class that bridges executor → React tree. In pi-tui we don't need the imperative bridge — `ctx.ui.custom`/`setWidget` give us the entry points directly. | merged into `src/tui/graph-view.ts` and `src/tui/widget.ts` |
+| `packages/atomic-sdk/src/components/hooks.ts`                    | `useLatest()` stable-ref-to-latest-value pattern. Pi-tui's reconciler may or may not need this; port if equivalent issue surfaces.                                                      | `src/tui/hooks.ts` if needed                                |
 
 The `_panel-contexts.ts` React contexts from v0.x (`StoreContext`, `ThemeContext`, `TmuxSessionContext`, `OffloadManagerContext`) **do not port** — there's no tmux, no offload, no cross-process IPC. The store and theme reach components through pi-tui's natural prop passing.
 
@@ -505,19 +529,19 @@ The same `layout.ts` `computeLayout(nodes, opts) → LayoutNode[]` is called by 
 
 ```ts
 ctx.ui.custom(
-  (tui, theme, keybindings, done) =>
-    new GraphView({
-      mode: "overlay",
-      runId,
-      store,
-      graphTheme: deriveGraphTheme(theme),
-      keybindings,
-      onClose: () => done(undefined),
-    }),
-  {
-    overlay: true,
-    overlayOptions: { width: "90%", maxHeight: "85%", anchor: "center" },
-  }
+    (tui, theme, keybindings, done) =>
+        new GraphView({
+            mode: "overlay",
+            runId,
+            store,
+            graphTheme: deriveGraphTheme(theme),
+            keybindings,
+            onClose: () => done(undefined),
+        }),
+    {
+        overlay: true,
+        overlayOptions: { width: "90%", maxHeight: "85%", anchor: "center" },
+    },
 );
 ```
 
@@ -526,15 +550,19 @@ ctx.ui.custom(
 #### 5.4.4 Widget invocation
 
 ```ts
-ctx.ui.setWidget("workflow.run", (tui, theme) =>
-  new GraphView({
-    mode: "widget",
-    runId: store.activeRunId(),
-    store,
-    graphTheme: deriveGraphTheme(theme),
-  }), {
-    placement: "aboveEditor",
-});
+ctx.ui.setWidget(
+    "workflow.run",
+    (tui, theme) =>
+        new GraphView({
+            mode: "widget",
+            runId: store.activeRunId(),
+            store,
+            graphTheme: deriveGraphTheme(theme),
+        }),
+    {
+        placement: "aboveEditor",
+    },
+);
 ```
 
 In `mode: "widget"`, `GraphView.render(width)` returns 1–3 compact lines:
@@ -571,16 +599,16 @@ Tool-execution events (`tool_execution_start/_update/_end`) feed `store.recordTo
 ```ts
 // src/store.ts (sketch)
 export interface Store {
-  runs(): readonly RunSnapshot[];
-  activeRunId(): string | null;
-  recordRunStart(run: RunSnapshot): void;
-  recordStageStart(runId: string, stage: StageSnapshot): void;
-  recordToolStart(runId: string, stageId: string, evt: ToolEvent): void;
-  recordToolEnd(runId: string, stageId: string, evt: ToolEvent): void;
-  recordStageEnd(runId: string, stage: StageSnapshot): void;
-  recordRunEnd(runId: string, status: RunStatus, result?: unknown): void;
-  snapshot(): StoreSnapshot;
-  subscribe(fn: (snap: StoreSnapshot) => void): () => void;
+    runs(): readonly RunSnapshot[];
+    activeRunId(): string | null;
+    recordRunStart(run: RunSnapshot): void;
+    recordStageStart(runId: string, stage: StageSnapshot): void;
+    recordToolStart(runId: string, stageId: string, evt: ToolEvent): void;
+    recordToolEnd(runId: string, stageId: string, evt: ToolEvent): void;
+    recordStageEnd(runId: string, stage: StageSnapshot): void;
+    recordRunEnd(runId: string, status: RunStatus, result?: unknown): void;
+    snapshot(): StoreSnapshot;
+    subscribe(fn: (snap: StoreSnapshot) => void): () => void;
 }
 ```
 
@@ -591,13 +619,29 @@ The store also drives `setWidget` re-registration: every snapshot change calls `
 ### 5.6 Persistence via session entries
 
 ```ts
-pi.appendEntry("workflow.run.start",     { runId, name, inputs, ts });
-pi.appendEntry("workflow.stage.start",   { runId, stageId, name, parentIds, model, ts });
-pi.appendEntry("workflow.stage.progress",{ runId, stageId, kind, payload });  // tool calls, message deltas, etc.
-pi.appendEntry("workflow.stage.end",     { runId, stageId, status, durationMs, summary });
-pi.appendEntry("workflow.run.end",       { runId, status, result, ts });
+pi.appendEntry("workflow.run.start", { runId, name, inputs, ts });
+pi.appendEntry("workflow.stage.start", {
+    runId,
+    stageId,
+    name,
+    parentIds,
+    model,
+    ts,
+});
+pi.appendEntry("workflow.stage.progress", { runId, stageId, kind, payload }); // tool calls, message deltas, etc.
+pi.appendEntry("workflow.stage.end", {
+    runId,
+    stageId,
+    status,
+    durationMs,
+    summary,
+});
+pi.appendEntry("workflow.run.end", { runId, status, result, ts });
 // optional narrative for the LLM:
-pi.appendCustomMessageEntry({ role: "system", content: `Workflow ${name} stage ${stageName} completed: ${summary}` });
+pi.appendCustomMessageEntry({
+    role: "system",
+    content: `Workflow ${name} stage ${stageName} completed: ${summary}`,
+});
 ```
 
 Each `workflow.run.start` entry is labeled via `pi.setLabel(entryId, "wf:<name>:<short-id>")` for `/tree` bookmark filtering.
@@ -605,11 +649,11 @@ Each `workflow.run.start` entry is labeled via `pi.setLabel(entryId, "wf:<name>:
 Renderers:
 
 ```ts
-pi.registerMessageRenderer("workflow.run.start",      renderRunBanner);
-pi.registerMessageRenderer("workflow.stage.start",    renderStageChip);
+pi.registerMessageRenderer("workflow.run.start", renderRunBanner);
+pi.registerMessageRenderer("workflow.stage.start", renderStageChip);
 pi.registerMessageRenderer("workflow.stage.progress", renderStageProgress);
-pi.registerMessageRenderer("workflow.stage.end",      renderStageResult);
-pi.registerMessageRenderer("workflow.run.end",        renderRunSummary);
+pi.registerMessageRenderer("workflow.stage.end", renderStageResult);
+pi.registerMessageRenderer("workflow.run.end", renderRunSummary);
 ```
 
 On `session_start`, the extension scans `ctx.sessionManager.getEntries()` for in-flight runs (have `workflow.run.start` without matching `workflow.run.end` on the active branch) and either marks them crashed or attempts resume (depending on config).
@@ -622,27 +666,35 @@ The executor in `src/executor.ts`:
 
 ```ts
 interface Executor {
-  run(def: WorkflowDefinition, inputs: ResolvedInputs, opts: RunOpts): Promise<RunResult>;
+    run(
+        def: WorkflowDefinition,
+        inputs: ResolvedInputs,
+        opts: RunOpts,
+    ): Promise<RunResult>;
 }
 ```
 
 Per-stage execution paths (each isolated to its own pi sub-session unless the workflow body explicitly uses the same context):
 
-| Stage shape                                                        | Implementation                                                                                                                                       |
-| ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ctx.stage("name").prompt(text)` (default)                         | `ctx.newSession({ withSession: async (newCtx) => { const result = await newCtx.session.prompt(text); return result; } })`.                            |
+| Stage shape                                                           | Implementation                                                                                                                                        |
+| --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ctx.stage("name").prompt(text)` (default)                            | `ctx.newSession({ withSession: async (newCtx) => { const result = await newCtx.session.prompt(text); return result; } })`.                            |
 | `ctx.stage("name").subagent({agent, task})` (if pi-subagents present) | Invokes the `subagent` tool through the parent session so it shows up in chat scroll naturally.                                                       |
-| `ctx.stage("name").complete(text, {model})` (one-shot, no session) | Uses `complete()` from `@earendil-works/pi-ai` directly — for cheap stages that don't need session tree (cross-reference: pi's `handoff.ts` example). |
-| HIL — `ctx.ui.input/confirm/select/editor`                         | Pi's documented dialog methods. **Every workflow stage gets uniform HIL primitives** regardless of provider.                                          |
+| `ctx.stage("name").complete(text, {model})` (one-shot, no session)    | Uses `complete()` from `@earendil-works/pi-ai` directly — for cheap stages that don't need session tree (cross-reference: pi's `handoff.ts` example). |
+| HIL — `ctx.ui.input/confirm/select/editor`                            | Pi's documented dialog methods. **Every workflow stage gets uniform HIL primitives** regardless of provider.                                          |
 
 The `GraphFrontierTracker` (re-derived from v0.x `runtime/graph-inference.ts`) wraps `ctx.stage()` to record spawn/settle events; parent inference happens automatically from `Promise.all` (parallel) and `await` (sequential) patterns. No `dependsOn` declarations.
 
 The executor subscribes to pi's tool-execution lifecycle to drive the widget/overlay:
 
 ```ts
-pi.on("tool_execution_start",  (e, ctx) => store.recordToolStart(currentStageId, e));
-pi.on("tool_execution_update", (e)      => store.recordToolUpdate(currentStageId, e));
-pi.on("tool_execution_end",    (e)      => store.recordToolEnd(currentStageId, e));
+pi.on("tool_execution_start", (e, ctx) =>
+    store.recordToolStart(currentStageId, e),
+);
+pi.on("tool_execution_update", (e) =>
+    store.recordToolUpdate(currentStageId, e),
+);
+pi.on("tool_execution_end", (e) => store.recordToolEnd(currentStageId, e));
 ```
 
 File-mutation safety inside stages uses pi's `withFileMutationQueue(absolutePath, fn)`. Output truncation uses pi's `truncateHead`/`truncateTail`/`formatSize` exports.
@@ -652,6 +704,7 @@ File-mutation safety inside stages uses pi's `withFileMutationQueue(absolutePath
 `pi-workflows` requires `pi-subagents` as a peer dep. At runtime, if absent, `ctx.stage(...).subagent(...)` throws a clear error pointing the user to `pi install npm:pi-subagents`.
 
 Cooperation mechanism:
+
 - Workflow stages that opt into sub-agent delegation call the existing `subagent` tool (registered by pi-subagents) via the chat agent driving the stage. No special API surface.
 - The integration extension (`src/integrations/subagents.ts`) injects `PI_WORKFLOW_RUN_ID` and `PI_WORKFLOW_STAGE_ID` env vars when pi-subagents spawns a child process, so the child knows which workflow context it's in.
 - Workflow `pi.events` (`workflow.stage.start`, `workflow.stage.end`) are emitted so pi-subagents (or other extensions) can react.
@@ -661,6 +714,7 @@ Cooperation mechanism:
 `pi-workflows` requires `pi-mcp-adapter` as a peer dep. If absent, workflows still run; they just don't have MCP tools available (which the workflow's prompt or agent will discover at LLM call time).
 
 Cooperation mechanism:
+
 - Workflow stages inherit pi's tool list including any MCP tools `pi-mcp-adapter` has registered (direct tools) or the `mcp` proxy. Default behavior — no integration code needed.
 - Optional per-stage server gating: a stage can declare `mcpServers: { allow: ["github", "fetch"], deny: ["filesystem"] }` and `src/integrations/mcp.ts` emits a `pi.events.emit("mcp.scope.set", {...})` event the adapter listens for. (This requires the adapter to expose such an event — if it doesn't yet, the integration documents the gap and we open an upstream PR to pi-mcp-adapter; we do NOT patch the adapter locally.)
 
@@ -669,6 +723,7 @@ Cooperation mechanism:
 `pi-intercom` is optional. When absent, workflow stages cannot escalate to the user mid-run — they must complete with whatever context they have.
 
 When present:
+
 - `src/integrations/intercom.ts` calls `pi.setSessionName("pi-workflows-parent-<short-hash>")` on `session_start` so children have a target.
 - The workflow extension subscribes to `pi.events.on("subagent:control-intercom", ...)` (pi-subagents' channel) — when a child sub-agent of a workflow stage calls `contact_supervisor`, the workflow extension surfaces it in the workflow overlay (if open) AND in the chat (`ctx.ui.confirm` for `need_decision`).
 - Cross-reference: see pi-subagents' [Optional pi-intercom companion](https://github.com/nicobailon/pi-subagents/tree/main#optional-pi-intercom-companion) section.
@@ -677,11 +732,11 @@ When present:
 
 Three workflows ship inside the package's `workflows/` directory (bundled via `pi: {workflows: ["./workflows"]}` in `package.json`):
 
-| Workflow                  | Shape                                                                                                                                                                |
-| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `deep-research-codebase`  | Scout → per-partition specialist sub-agents (via pi-subagents) → aggregator. Each sub-agent gets a `defaultContext: "fork"` so it inherits scout's findings.        |
-| `ralph`                   | Plan → orchestrate → review loop with bounded iteration. HIL via `ctx.ui.editor()` / `ctx.ui.confirm()` between iterations. Bounded iteration is a JS `for` loop.   |
-| `open-claude-design`      | Design system onboarding → import → generate → refine → export/handoff. Input flags: `--reference`, `--output-type`, `--design-system`.                              |
+| Workflow                 | Shape                                                                                                                                                             |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `deep-research-codebase` | Scout → per-partition specialist sub-agents (via pi-subagents) → aggregator. Each sub-agent gets a `defaultContext: "fork"` so it inherits scout's findings.      |
+| `ralph`                  | Plan → orchestrate → review loop with bounded iteration. HIL via `ctx.ui.editor()` / `ctx.ui.confirm()` between iterations. Bounded iteration is a JS `for` loop. |
+| `open-claude-design`     | Design system onboarding → import → generate → refine → export/handoff. Input flags: `--reference`, `--output-type`, `--design-system`.                           |
 
 Each builtin file imports from `pi-workflows` itself (a workspace self-reference during dev; the normal published import in user code).
 
@@ -699,9 +754,9 @@ The registry loader scans these paths at `session_start` and on `/reload`:
 For each file:
 
 ```ts
-const mod = await import(absolutePath);   // jiti for TS, native for JS
+const mod = await import(absolutePath); // jiti for TS, native for JS
 const def = mod.default;
-if (!def || def.__piWorkflow !== true) continue;  // silently skip non-workflow files
+if (!def || def.__piWorkflow !== true) continue; // silently skip non-workflow files
 registry.upsert(def);
 ```
 
@@ -713,20 +768,20 @@ No subprocess. No metadata-emission protocol. No dispatch token.
 
 ```jsonc
 {
-  "maxDepth": 4,                              // recursion guard (env var override: PI_WORKFLOW_MAX_DEPTH)
-  "defaultConcurrency": 4,                    // parallel-stage default
-  "persistRuns": true,                        // pi.appendEntry on/off
-  "statusFile": false,                        // opt-in derived status.json for CI
-  "resumeInFlight": "ask",                    // "ask" | "auto" | "never" on session_start
-  "overlay": {
-    "autoOpenOnStart": false,                 // open overlay automatically when a run begins
-    "anchor": "center"
-  },
-  "integrations": {
-    "subagents": "auto",                      // "auto" | "off"
-    "mcp": "auto",
-    "intercom": "auto"
-  }
+    "maxDepth": 4, // recursion guard (env var override: PI_WORKFLOW_MAX_DEPTH)
+    "defaultConcurrency": 4, // parallel-stage default
+    "persistRuns": true, // pi.appendEntry on/off
+    "statusFile": false, // opt-in derived status.json for CI
+    "resumeInFlight": "ask", // "ask" | "auto" | "never" on session_start
+    "overlay": {
+        "autoOpenOnStart": false, // open overlay automatically when a run begins
+        "anchor": "center",
+    },
+    "integrations": {
+        "subagents": "auto", // "auto" | "off"
+        "mcp": "auto",
+        "intercom": "auto",
+    },
 }
 ```
 
@@ -738,12 +793,12 @@ All keys optional with sane defaults.
 
 ```jsonc
 {
-  "scripts": {
-    "build": "bun build src/index.ts --outdir dist --target node",
-    "test": "bun test",
-    "test:e2e": "PI_BIN=$(which pi) bun test test/e2e",
-    "dev:link": "bun link && cd ~/some-test-project && bun link pi-workflows && pi install ./dist"
-  }
+    "scripts": {
+        "build": "bun build src/index.ts --outdir dist --target node",
+        "test": "bun test",
+        "test:e2e": "PI_BIN=$(which pi) bun test test/e2e",
+        "dev:link": "bun link && cd ~/some-test-project && bun link pi-workflows && pi install ./dist",
+    },
 }
 ```
 
@@ -759,13 +814,13 @@ Pi's existing test conventions apply: `CLAUDECODE=1` / `AGENT=1` / `REPL_ID=1` e
 
 ## 6. Alternatives Considered
 
-| Option                                                            | Why considered                                                                                                              | Why rejected                                                                                                          |
-| ----------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| Bundle workflow runtime into Atomic, not as an npm package       | Less surface to publish/maintain.                                                                                            | Misses the user's stated framing (pi-workflows is structurally a sibling of pi-subagents — publishable to pi ecosystem). |
-| Build on top of pi-subagents' chain abstraction instead of new tool | pi-subagents already does chains and parallel.                                                                                | Chains are linear/parallel; workflows need fan-in topology, programmatic input schemas, and per-stage HIL beyond pi-subagents' frontmatter. |
-| Use pi's RPC mode for cross-process workflow execution            | Decouples workflow runner from chat TUI.                                                                                     | Adds an IPC layer for no benefit — both run in the same process. RPC mode is for OTHER consumers of pi.              |
-| Programmatic `runWorkflow()` Node API                              | Lets external Node scripts trigger workflows.                                                                                | External scripts shell out to `pi -p --workflow=<name>`. One less API surface to maintain.                            |
-| Inherit type-system from typebox vs. zod                           | Pi's tool params already use typebox; consistency.                                                                            | Selected typebox to match pi (no decision; aligns with sibling packages).                                            |
+| Option                                                              | Why considered                                     | Why rejected                                                                                                                                |
+| ------------------------------------------------------------------- | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Bundle workflow runtime into Atomic, not as an npm package          | Less surface to publish/maintain.                  | Misses the user's stated framing (pi-workflows is structurally a sibling of pi-subagents — publishable to pi ecosystem).                    |
+| Build on top of pi-subagents' chain abstraction instead of new tool | pi-subagents already does chains and parallel.     | Chains are linear/parallel; workflows need fan-in topology, programmatic input schemas, and per-stage HIL beyond pi-subagents' frontmatter. |
+| Use pi's RPC mode for cross-process workflow execution              | Decouples workflow runner from chat TUI.           | Adds an IPC layer for no benefit — both run in the same process. RPC mode is for OTHER consumers of pi.                                     |
+| Programmatic `runWorkflow()` Node API                               | Lets external Node scripts trigger workflows.      | External scripts shell out to `pi -p --workflow=<name>`. One less API surface to maintain.                                                  |
+| Inherit type-system from typebox vs. zod                            | Pi's tool params already use typebox; consistency. | Selected typebox to match pi (no decision; aligns with sibling packages).                                                                   |
 
 ---
 

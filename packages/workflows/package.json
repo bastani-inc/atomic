@@ -21,12 +21,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/bastani/atomic.git",
+    "url": "git+https://github.com/bastani-inc/atomic.git",
     "directory": "packages/workflows"
   },
-  "homepage": "https://github.com/bastani/atomic/tree/main/packages/workflows#readme",
+  "homepage": "https://github.com/bastani-inc/atomic/tree/main/packages/workflows#readme",
   "bugs": {
-    "url": "https://github.com/bastani/atomic/issues"
+    "url": "https://github.com/bastani-inc/atomic/issues"
   },
   "keywords": [
     "pi-package",

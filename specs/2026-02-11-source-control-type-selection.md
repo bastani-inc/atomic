@@ -1,11 +1,11 @@
 # Source Control Type Selection Technical Design Document
 
-| Document Metadata      | Details        |
-| ---------------------- | -------------- |
-| Author(s)              | flora131       |
-| Status                 | Draft (WIP)    |
-| Team / Owner           | bastani/atomic |
-| Created / Last Updated | 2026-02-11     |
+| Document Metadata      | Details            |
+| ---------------------- | ------------------ |
+| Author(s)              | flora131           |
+| Status                 | Draft (WIP)        |
+| Team / Owner           | bastani-inc/atomic |
+| Created / Last Updated | 2026-02-11         |
 
 ## 1. Executive Summary
 

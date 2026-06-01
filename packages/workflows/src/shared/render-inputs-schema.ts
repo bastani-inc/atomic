@@ -19,7 +19,7 @@
  *     and for non-TTY consumers (LLM tool results, logfiles, --help in
  *     redirected output).
  *
- * The layout in pretty mode mirrors bastani/atomic's `renderInputsText` so a
+ * The layout in pretty mode mirrors bastani-inc/atomic's `renderInputsText` so a
  * dev moving between the atomic CLI and the pi extension feels at home:
  *
  *     INPUTS FOR ralph

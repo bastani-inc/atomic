@@ -100,19 +100,19 @@ These are the current-state transition points where background-aware lifecycle h
 
 ## Code References
 
-- [`src/ui/chat.tsx:1287-1482`](https://github.com/bastani/atomic/blob/460864d3c6a18c43126eaa7d0945e7dfa3803d6a/src/ui/chat.tsx#L1287-L1482) - Segment construction and inline insertion model.
-- [`src/ui/chat.tsx:1687-1702`](https://github.com/bastani/atomic/blob/460864d3c6a18c43126eaa7d0945e7dfa3803d6a/src/ui/chat.tsx#L1687-L1702) - Inline rendering of `ParallelAgentsTree`.
-- [`src/ui/chat.tsx:2626-2638`](https://github.com/bastani/atomic/blob/460864d3c6a18c43126eaa7d0945e7dfa3803d6a/src/ui/chat.tsx#L2626-L2638) - Live-agent anchoring into streaming message.
-- [`src/ui/chat.tsx:5416-5422`](https://github.com/bastani/atomic/blob/460864d3c6a18c43126eaa7d0945e7dfa3803d6a/src/ui/chat.tsx#L5416-L5422) - Pinned Ralph task panel render path.
-- [`src/ui/components/parallel-agents-tree.tsx:26`](https://github.com/bastani/atomic/blob/460864d3c6a18c43126eaa7d0945e7dfa3803d6a/src/ui/components/parallel-agents-tree.tsx#L26) - `AgentStatus` union.
-- [`src/ui/components/parallel-agents-tree.tsx:158-166`](https://github.com/bastani/atomic/blob/460864d3c6a18c43126eaa7d0945e7dfa3803d6a/src/ui/components/parallel-agents-tree.tsx#L158-L166) - Status color mapping.
-- [`src/ui/index.ts:517-541`](https://github.com/bastani/atomic/blob/460864d3c6a18c43126eaa7d0945e7dfa3803d6a/src/ui/index.ts#L517-L541) - Eager Task agent creation.
-- [`src/ui/index.ts:871-895`](https://github.com/bastani/atomic/blob/460864d3c6a18c43126eaa7d0945e7dfa3803d6a/src/ui/index.ts#L871-L895) - Subagent completion status mapping.
-- [`src/ui/index.ts:649-664`](https://github.com/bastani/atomic/blob/460864d3c6a18c43126eaa7d0945e7dfa3803d6a/src/ui/index.ts#L649-L664) - Tool-complete result propagation and status finalization.
-- [`src/ui/chat.tsx:3335-3341`](https://github.com/bastani/atomic/blob/460864d3c6a18c43126eaa7d0945e7dfa3803d6a/src/ui/chat.tsx#L3335-L3341) - Stream completion finalization mapping.
-- [`src/ui/chat.tsx:3905-3911`](https://github.com/bastani/atomic/blob/460864d3c6a18c43126eaa7d0945e7dfa3803d6a/src/ui/chat.tsx#L3905-L3911) - Interrupt mapping to `interrupted`.
-- [`src/ui/tools/registry.ts:693-697`](https://github.com/bastani/atomic/blob/460864d3c6a18c43126eaa7d0945e7dfa3803d6a/src/ui/tools/registry.ts#L693-L697) - Task `mode` captured for display.
-- [`src/sdk/types.ts:274-287`](https://github.com/bastani/atomic/blob/460864d3c6a18c43126eaa7d0945e7dfa3803d6a/src/sdk/types.ts#L274-L287) - Unified event type contract.
+- [`src/ui/chat.tsx:1287-1482`](https://github.com/bastani-inc/atomic/blob/460864d3c6a18c43126eaa7d0945e7dfa3803d6a/src/ui/chat.tsx#L1287-L1482) - Segment construction and inline insertion model.
+- [`src/ui/chat.tsx:1687-1702`](https://github.com/bastani-inc/atomic/blob/460864d3c6a18c43126eaa7d0945e7dfa3803d6a/src/ui/chat.tsx#L1687-L1702) - Inline rendering of `ParallelAgentsTree`.
+- [`src/ui/chat.tsx:2626-2638`](https://github.com/bastani-inc/atomic/blob/460864d3c6a18c43126eaa7d0945e7dfa3803d6a/src/ui/chat.tsx#L2626-L2638) - Live-agent anchoring into streaming message.
+- [`src/ui/chat.tsx:5416-5422`](https://github.com/bastani-inc/atomic/blob/460864d3c6a18c43126eaa7d0945e7dfa3803d6a/src/ui/chat.tsx#L5416-L5422) - Pinned Ralph task panel render path.
+- [`src/ui/components/parallel-agents-tree.tsx:26`](https://github.com/bastani-inc/atomic/blob/460864d3c6a18c43126eaa7d0945e7dfa3803d6a/src/ui/components/parallel-agents-tree.tsx#L26) - `AgentStatus` union.
+- [`src/ui/components/parallel-agents-tree.tsx:158-166`](https://github.com/bastani-inc/atomic/blob/460864d3c6a18c43126eaa7d0945e7dfa3803d6a/src/ui/components/parallel-agents-tree.tsx#L158-L166) - Status color mapping.
+- [`src/ui/index.ts:517-541`](https://github.com/bastani-inc/atomic/blob/460864d3c6a18c43126eaa7d0945e7dfa3803d6a/src/ui/index.ts#L517-L541) - Eager Task agent creation.
+- [`src/ui/index.ts:871-895`](https://github.com/bastani-inc/atomic/blob/460864d3c6a18c43126eaa7d0945e7dfa3803d6a/src/ui/index.ts#L871-L895) - Subagent completion status mapping.
+- [`src/ui/index.ts:649-664`](https://github.com/bastani-inc/atomic/blob/460864d3c6a18c43126eaa7d0945e7dfa3803d6a/src/ui/index.ts#L649-L664) - Tool-complete result propagation and status finalization.
+- [`src/ui/chat.tsx:3335-3341`](https://github.com/bastani-inc/atomic/blob/460864d3c6a18c43126eaa7d0945e7dfa3803d6a/src/ui/chat.tsx#L3335-L3341) - Stream completion finalization mapping.
+- [`src/ui/chat.tsx:3905-3911`](https://github.com/bastani-inc/atomic/blob/460864d3c6a18c43126eaa7d0945e7dfa3803d6a/src/ui/chat.tsx#L3905-L3911) - Interrupt mapping to `interrupted`.
+- [`src/ui/tools/registry.ts:693-697`](https://github.com/bastani-inc/atomic/blob/460864d3c6a18c43126eaa7d0945e7dfa3803d6a/src/ui/tools/registry.ts#L693-L697) - Task `mode` captured for display.
+- [`src/sdk/types.ts:274-287`](https://github.com/bastani-inc/atomic/blob/460864d3c6a18c43126eaa7d0945e7dfa3803d6a/src/sdk/types.ts#L274-L287) - Unified event type contract.
 
 ## Architecture Documentation
 

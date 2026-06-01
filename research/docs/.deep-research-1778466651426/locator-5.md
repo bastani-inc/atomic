@@ -1,6 +1,7 @@
 # Partition 5: examples/ — Per-Agent Worker Scripts & DSL Reference
 
 ## Overview
+
 The `examples/` directory (14 subdirectories, 80+ files, 3,981 LOC) contains canonical reference implementations for the Atomic CLI workflow DSL. Each example demonstrates a distinct pattern: workflow definition (`defineWorkflow().for().run().compile()`), per-agent variations (claude/copilot/opencode), and CLI entrypoints via Commander worker scripts.
 
 ---
@@ -10,6 +11,7 @@ The `examples/` directory (14 subdirectories, 80+ files, 3,981 LOC) contains can
 ### Workflow Definition Patterns
 
 #### Single-Workflow Examples
+
 - `examples/hello-world/claude/index.ts` — Basic `defineWorkflow` + `.for("claude").run().compile()` with structured inputs (string/enum/text), two-turn conversation, and prompt-in-argv delivery
 - `examples/hello-world/copilot/index.ts` — Same workflow schema for Copilot SDK (`.send()` instead of `.query()`)
 - `examples/hello-world/opencode/index.ts` — OpenCode variant using `s.client.session.prompt()` with permission records
@@ -28,13 +30,16 @@ The `examples/` directory (14 subdirectories, 80+ files, 3,981 LOC) contains can
 - `examples/pane-navigation/claude/index.ts` — 3-stage workflow for SDK pane primitives testing (nextWindow, previousWindow, gotoOrchestrator, attachSession, detachSession)
 
 #### Multi-Workflow Example
+
 - `examples/multi-workflow/hello/claude.ts` — Subworkflow for multi-registry pattern, greet-by-name workflow
 - `examples/multi-workflow/goodbye/claude.ts` — Second subworkflow in multi-registry (registered via `.register().register()`)
 
 #### Custom Distributed Workflow
+
 - `examples/custom-workflow-bunx/index.ts` — `hostLocalWorkflows([wf])` dispatch gate for bunx-published workflows, token-gated sub-commands (`_emit-workflow-meta`, `_atomic-run`)
 
 ### Worker Scripts (Headless Entry Points)
+
 All per-agent patterns follow `<agent>-worker.ts` naming, using Commander to parse `--<flag> <value>` options matching workflow inputs:
 
 - `examples/hello-world/<agent>-worker.ts` — (x3) Parses `--greeting`, `--style`, `--notes`; calls `runWorkflow()`
@@ -56,6 +61,7 @@ All per-agent patterns follow `<agent>-worker.ts` naming, using Commander to par
 ## Configuration
 
 ### Package Manifests
+
 - `examples/hello-world/package.json` — Per-agent `scripts`: `"claude": "bun run claude-worker.ts"`, etc.; `@bastani/atomic-sdk`, `@commander-js/extra-typings` dependencies
 - `examples/headless-test/package.json` — Same pattern
 - `examples/parallel-hello-world/package.json` — Same pattern
@@ -72,9 +78,11 @@ All per-agent patterns follow `<agent>-worker.ts` naming, using Commander to par
 - `examples/reviewer-tool-test/package.json` — Same pattern
 
 ### SDK Configuration
+
 - `examples/hello-world/.opencode/opencode.json` — MCP config (azure-devops local, github-mcp-server remote), permission `"allow"`, instructions from `~/.atomic/AGENTS.md`
 
 ### TypeScript Config
+
 - `examples/tsconfig.json` — Extends root config, path aliases for `@bastani/atomic-sdk` → `../packages/atomic-sdk/src/index.ts`, `@bastani/atomic-sdk/workflows`
 
 ---
@@ -82,6 +90,7 @@ All per-agent patterns follow `<agent>-worker.ts` naming, using Commander to par
 ## Types / Interfaces
 
 ### Shared Schema (Structured Output)
+
 - `examples/structured-output-demo/helpers/schema.ts` — `LanguageFactsSchema` (Zod), `LANGUAGE_FACTS_JSON_SCHEMA` (OpenAPI 3.0 JSON Schema), `LanguageFacts` type, `buildPrompt(topic)`, `logFacts(agent, facts)` helper; demonstrates per-SDK native shape mapping (Claude JSON schema, OpenCode JSON schema, Copilot `defineTool`)
 
 ---
@@ -89,6 +98,7 @@ All per-agent patterns follow `<agent>-worker.ts` naming, using Commander to par
 ## Documentation
 
 ### Example READMEs (Per-Directory)
+
 - `examples/hello-world/README.md` — Single-session two-turn conversation with structured inputs
 - `examples/parallel-hello-world/README.md` — `Promise.all()` fan-out + transcript merge; "JavaScript control flow is the only orchestration primitive"
 - `examples/hil-favorite-color/README.md` — Human-in-the-loop interactive pause in tmux pane
@@ -111,10 +121,12 @@ All per-agent patterns follow `<agent>-worker.ts` naming, using Commander to par
 ## Notable Clusters
 
 ### Per-Agent Workflow Family (hello-world)
+
 - `examples/hello-world/` — 8 files: claude/index.ts, copilot/index.ts, opencode/index.ts, claude-worker.ts, copilot-worker.ts, opencode-worker.ts, package.json, README.md, .opencode/opencode.json
 - **Pattern**: Identical DSL definition (inputs, stages) with agent-specific session APIs (`.query()` for Claude, `.send()` for Copilot, `.client.session.prompt()` for OpenCode); demonstrates cross-agent schema portability
 
 ### Multi-Agent Coverage (7 examples with full claude/copilot/opencode coverage)
+
 - `examples/hello-world/` — hello-world, single-session 2-turn
 - `examples/parallel-hello-world/` — parallel fan-out, transcript merge
 - `examples/hil-favorite-color/` — interactive HIL in tmux pane
@@ -124,17 +136,20 @@ All per-agent patterns follow `<agent>-worker.ts` naming, using Commander to par
 - `examples/pane-navigation/` — pane navigation primitives
 
 ### Single-Agent Specialized Examples (Claude-only or Copilot-only)
+
 - `examples/sequential-describe-summarize/` — Claude 2-stage transcript handoff
 - `examples/review-fix-loop/` — Claude bounded review loop
 - `examples/claude-background-subagents/` — Claude background subagents with in-flight gating
 - `examples/reviewer-tool-test/` — Copilot custom `defineTool`
 
 ### Framework Integration Examples
+
 - `examples/commander-embed/` — Parent Commander CLI embedding workflow; compiled binary support
 - `examples/multi-workflow/` — Multi-registry + Commander subcommand dispatcher
 - `examples/custom-workflow-bunx/` — Distributed custom workflow via bunx with `hostLocalWorkflows()` dispatch
 
 ### Helper & Schema Utilities
+
 - `examples/structured-output-demo/helpers/` — Shared `schema.ts` with Zod definition, JSON Schema export, prompt builders, logging utilities
 
 ---
@@ -150,4 +165,3 @@ The `examples/` directory houses 14 canonical examples totaling 80+ files (~3,98
 3. **Entrypoint Strategies** (3 patterns): Worker scripts (`<agent>-worker.ts` + Commander), multi-registry with dynamic subcommands, compiled-binary distribution.
 
 All examples use `defineWorkflow()...for("agent").run().compile()` DSL and `runWorkflow({ workflow, inputs })` execution, demonstrating that JavaScript control flow (`Promise.all()`, `for`, `if`) is the only orchestration primitive needed. Shared schema utilities (Zod → per-SDK JSON/tool format) appear in structured-output-demo/helpers/.
-

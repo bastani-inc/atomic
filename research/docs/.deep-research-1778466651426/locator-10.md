@@ -6,11 +6,11 @@ Partition 10 scopes the primary POSIX bootstrap installer for Atomic CLI. Single
 
 ### Implementation
 
-- `install.sh` — POSIX bash bootstrap installer with curl/wget fallback, GitHub Release hardcoding (`bastani/atomic`), manifest.json parsing, platform detection (Darwin/Linux, x64/arm64, musl detection), SHA-256 verification, and delegation to binary's `atomic install` subcommand.
+- `install.sh` — POSIX bash bootstrap installer with curl/wget fallback, GitHub Release hardcoding (`bastani-inc/atomic`), manifest.json parsing, platform detection (Darwin/Linux, x64/arm64, musl detection), SHA-256 verification, and delegation to binary's `atomic install` subcommand.
 
 ### Key Hard-Coded URLs & Configuration
 
-- **Releases Base**: `https://github.com/bastani/atomic/releases` (line 24, hardcoded as `RELEASES_BASE`)
+- **Releases Base**: `https://github.com/bastani-inc/atomic/releases` (line 24, hardcoded as `RELEASES_BASE`)
 - **Manifest URL Pattern**: `$RELEASES_BASE/latest/download/manifest.json` or `$RELEASES_BASE/download/v$TARGET/manifest.json` (lines 118–120)
 - **Binary URL Pattern**: `$RELEASES_BASE/download/v$version/atomic-$platform` (line 140)
 - **Repository Owner**: `flora131` (embedded in RELEASES_BASE URL)
@@ -18,7 +18,7 @@ Partition 10 scopes the primary POSIX bootstrap installer for Atomic CLI. Single
 ### Download & Install Workflow
 
 - **Downloader Detection**: `curl` or `wget` with fallback logic (lines 28–35)
-- **Entry Point**: Raw GitHub URL with piping: `curl -fsSL https://raw.githubusercontent.com/bastani/atomic/main/install.sh | bash` (line 10)
+- **Entry Point**: Raw GitHub URL with piping: `curl -fsSL https://raw.githubusercontent.com/bastani-inc/atomic/main/install.sh | bash` (line 10)
 - **Version Pinning**: Optional version argument: `bash -s -- 0.4.47` (line 13)
 - **Platform Detection**:
     - OS detection via `uname -s`: Darwin (macOS), Linux, Windows rejection (lines 76–84)
@@ -50,7 +50,7 @@ Partition 10 scopes the primary POSIX bootstrap installer for Atomic CLI. Single
 
 ## Notes for PI-Coding-Agent Rewrite
 
-1. **URL Authority Migration**: All GitHub hardcoding (`bastani/atomic`) must be replaced with pi-coding-agent equivalent registry/domain.
+1. **URL Authority Migration**: All GitHub hardcoding (`bastani-inc/atomic`) must be replaced with pi-coding-agent equivalent registry/domain.
 2. **Manifest Schema**: The manifest.json structure assumes `{ "version": "...", "<platform>": { "checksum": "<hex>" } }` — must be confirmed or adapted for pi schema.
 3. **Agent-Specific Download URLs**: No agent-specific branching detected in current script; all platforms resolve from single repo.
 4. **No npm Involvement**: Bootstrap installer is pure POSIX bash; `npm install` is not invoked at this stage (that occurs in the binary's `install` subcommand, outside this scope).

@@ -1,11 +1,11 @@
 # Atomic Built-in Workflows and Commands Technical Design Document
 
-| Document Metadata      | Details        |
-| ---------------------- | -------------- |
-| Author(s)              | Developer      |
-| Status                 | Draft (WIP)    |
-| Team / Owner           | bastani/atomic |
-| Created / Last Updated | 2026-02-02     |
+| Document Metadata      | Details            |
+| ---------------------- | ------------------ |
+| Author(s)              | Developer          |
+| Status                 | Draft (WIP)        |
+| Team / Owner           | bastani-inc/atomic |
+| Created / Last Updated | 2026-02-02         |
 
 ## 1. Executive Summary
 

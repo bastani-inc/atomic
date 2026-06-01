@@ -9,7 +9,7 @@
 
 ## 1. Executive Summary
 
-Implement GitHub issue [#1088](https://github.com/bastani/atomic/issues/1088) by refactoring `test/unit/subagents-foreground-guard-propagation.test.ts` away from `spyOn` against ESM namespace imports. The issue is a follow-up from PR #1081 review: Bun currently allows this pattern, but it is fragile if imported ESM module bindings become read-only or if module-load ordering changes.
+Implement GitHub issue [#1088](https://github.com/bastani-inc/atomic/issues/1088) by refactoring `test/unit/subagents-foreground-guard-propagation.test.ts` away from `spyOn` against ESM namespace imports. The issue is a follow-up from PR #1081 review: Bun currently allows this pattern, but it is fragile if imported ESM module bindings become read-only or if module-load ordering changes.
 
 The proposed fix is to add a narrow, internal dependency-injection seam to `createSubagentExecutor()` in `packages/subagents/src/runs/foreground/subagent-executor.ts`. Production callers continue using the real foreground/background execution functions by default, while tests can inject typed fakes for `runSync`, `executeAsyncChain`, `executeAsyncSingle`, and async availability checks. The existing guard-propagation tests will then assert behavior through injected collaborators instead of monkey-patching module exports.
 

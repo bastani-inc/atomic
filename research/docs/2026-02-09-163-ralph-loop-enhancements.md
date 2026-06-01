@@ -41,15 +41,15 @@ The Ralph Loop is a graph-based autonomous workflow engine that iterates over fe
 
 #### Core Files
 
-| File                                                                                                                                   | Purpose                                                     |
-| -------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
-| [`src/workflows/ralph/workflow.ts:185`](https://github.com/bastani/atomic/blob/5b33b79/src/workflows/ralph/workflow.ts#L185)           | `createRalphWorkflow()` factory - builds the compiled graph |
-| [`src/workflows/ralph/executor.ts:80`](https://github.com/bastani/atomic/blob/5b33b79/src/workflows/ralph/executor.ts#L80)             | `RalphExecutor` class - manages interrupt handling          |
-| [`src/workflows/ralph/session.ts:107`](https://github.com/bastani/atomic/blob/5b33b79/src/workflows/ralph/session.ts#L107)             | `RalphSession` interface and persistence functions          |
-| [`src/graph/nodes/ralph-nodes.ts:300`](https://github.com/bastani/atomic/blob/5b33b79/src/graph/nodes/ralph-nodes.ts#L300)             | `RalphWorkflowState` and all graph node implementations     |
-| [`src/commands/ralph.ts:322`](https://github.com/bastani/atomic/blob/5b33b79/src/commands/ralph.ts#L322)                               | `ralphSetup()` CLI entry point                              |
-| [`src/config/ralph.ts:17`](https://github.com/bastani/atomic/blob/5b33b79/src/config/ralph.ts#L17)                                     | `RalphConfig` type and defaults                             |
-| [`src/ui/commands/workflow-commands.ts:780`](https://github.com/bastani/atomic/blob/5b33b79/src/ui/commands/workflow-commands.ts#L780) | `createRalphCommand()` - UI slash command handler           |
+| File                                                                                                                                       | Purpose                                                     |
+| ------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------- |
+| [`src/workflows/ralph/workflow.ts:185`](https://github.com/bastani-inc/atomic/blob/5b33b79/src/workflows/ralph/workflow.ts#L185)           | `createRalphWorkflow()` factory - builds the compiled graph |
+| [`src/workflows/ralph/executor.ts:80`](https://github.com/bastani-inc/atomic/blob/5b33b79/src/workflows/ralph/executor.ts#L80)             | `RalphExecutor` class - manages interrupt handling          |
+| [`src/workflows/ralph/session.ts:107`](https://github.com/bastani-inc/atomic/blob/5b33b79/src/workflows/ralph/session.ts#L107)             | `RalphSession` interface and persistence functions          |
+| [`src/graph/nodes/ralph-nodes.ts:300`](https://github.com/bastani-inc/atomic/blob/5b33b79/src/graph/nodes/ralph-nodes.ts#L300)             | `RalphWorkflowState` and all graph node implementations     |
+| [`src/commands/ralph.ts:322`](https://github.com/bastani-inc/atomic/blob/5b33b79/src/commands/ralph.ts#L322)                               | `ralphSetup()` CLI entry point                              |
+| [`src/config/ralph.ts:17`](https://github.com/bastani-inc/atomic/blob/5b33b79/src/config/ralph.ts#L17)                                     | `RalphConfig` type and defaults                             |
+| [`src/ui/commands/workflow-commands.ts:780`](https://github.com/bastani-inc/atomic/blob/5b33b79/src/ui/commands/workflow-commands.ts#L780) | `createRalphCommand()` - UI slash command handler           |
 
 #### Graph Structure
 

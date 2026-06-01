@@ -164,7 +164,7 @@ Add a `workflows` property at the top level using the MCP-style shape:
 
 ```jsonc
 {
-    "$schema": "https://raw.githubusercontent.com/bastani/atomic/main/assets/settings.schema.json",
+    "$schema": "https://raw.githubusercontent.com/bastani-inc/atomic/main/assets/settings.schema.json",
     "version": 1,
     "scm": "github",
     "workflows": {

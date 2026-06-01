@@ -1,5 +1,5 @@
 ---
-issue: https://github.com/bastani/atomic/issues/164
+issue: https://github.com/bastani-inc/atomic/issues/164
 title: "feat: add MCP support and discovery for config files"
 date: 2026-02-08
 branch: lavaman131/feature/tui
@@ -13,7 +13,7 @@ tags: [mcp, config-discovery, slash-command, sdk-parity]
 
 ## Issue Summary
 
-[Issue #164](https://github.com/bastani/atomic/issues/164) requests:
+[Issue #164](https://github.com/bastani-inc/atomic/issues/164) requests:
 
 1. Parse MCP config files from all three SDK config formats (`.mcp.json`, `mcp-config.json`, `opencode.json`)
 2. Auto-discover config files in the project root
@@ -26,17 +26,17 @@ tags: [mcp, config-discovery, slash-command, sdk-parity]
 
 ### What Works
 
-- **Claude SDK auto-discovery**: `settingSources: ["project"]` in [`src/sdk/init.ts:27`](https://github.com/bastani/atomic/blob/5b33b79/src/sdk/init.ts#L27) causes the Claude SDK to auto-discover and connect to MCP servers defined in `.mcp.json` at the project root.
-- **Claude client MCP passthrough**: [`src/sdk/claude-client.ts:270-281`](https://github.com/bastani/atomic/blob/5b33b79/src/sdk/claude-client.ts#L270-L281) converts `SessionConfig.mcpServers` to the Claude SDK format.
-- **Copilot client MCP mapping**: [`src/sdk/copilot-client.ts:641-661`](https://github.com/bastani/atomic/blob/5b33b79/src/sdk/copilot-client.ts#L641-L661) maps the unified `McpServerConfig[]` to Copilot SDK's `Record<string, MCPServerConfig>`.
-- **MCP tool renderer**: [`src/ui/tools/registry.ts:506-589`](https://github.com/bastani/atomic/blob/5b33b79/src/ui/tools/registry.ts#L506-L589) with `parseMcpToolName()` at line 515 and `mcpToolRenderer` at line 525 can render MCP tool calls in the TUI.
-- **Unified McpServerConfig type**: [`src/sdk/types.ts:26-39`](https://github.com/bastani/atomic/blob/5b33b79/src/sdk/types.ts#L26-L39) defines a shared interface.
+- **Claude SDK auto-discovery**: `settingSources: ["project"]` in [`src/sdk/init.ts:27`](https://github.com/bastani-inc/atomic/blob/5b33b79/src/sdk/init.ts#L27) causes the Claude SDK to auto-discover and connect to MCP servers defined in `.mcp.json` at the project root.
+- **Claude client MCP passthrough**: [`src/sdk/claude-client.ts:270-281`](https://github.com/bastani-inc/atomic/blob/5b33b79/src/sdk/claude-client.ts#L270-L281) converts `SessionConfig.mcpServers` to the Claude SDK format.
+- **Copilot client MCP mapping**: [`src/sdk/copilot-client.ts:641-661`](https://github.com/bastani-inc/atomic/blob/5b33b79/src/sdk/copilot-client.ts#L641-L661) maps the unified `McpServerConfig[]` to Copilot SDK's `Record<string, MCPServerConfig>`.
+- **MCP tool renderer**: [`src/ui/tools/registry.ts:506-589`](https://github.com/bastani-inc/atomic/blob/5b33b79/src/ui/tools/registry.ts#L506-L589) with `parseMcpToolName()` at line 515 and `mcpToolRenderer` at line 525 can render MCP tool calls in the TUI.
+- **Unified McpServerConfig type**: [`src/sdk/types.ts:26-39`](https://github.com/bastani-inc/atomic/blob/5b33b79/src/sdk/types.ts#L26-L39) defines a shared interface.
 
 ### What Does NOT Work
 
-- **OpenCode client ignores `mcpServers`**: [`src/sdk/opencode-client.ts`](https://github.com/bastani/atomic/blob/5b33b79/src/sdk/opencode-client.ts#L1019) does not pass `config.mcpServers` to the OpenCode SDK. OpenCode handles MCP server-side via its own config.
-- **Only `.mcp.json` is read**: [`src/commands/chat.ts:177-194`](https://github.com/bastani/atomic/blob/5b33b79/src/commands/chat.ts#L177-L194) reads `.mcp.json` (Claude format) and passes `mcpServers` to `SessionConfig`, but does NOT read `mcp-config.json` (Copilot) or `opencode.json` (OpenCode) configs.
-- **No `/mcp` slash command exists**: Not in [`src/ui/commands/builtin-commands.ts`](https://github.com/bastani/atomic/blob/5b33b79/src/ui/commands/builtin-commands.ts) or any other command file.
+- **OpenCode client ignores `mcpServers`**: [`src/sdk/opencode-client.ts`](https://github.com/bastani-inc/atomic/blob/5b33b79/src/sdk/opencode-client.ts#L1019) does not pass `config.mcpServers` to the OpenCode SDK. OpenCode handles MCP server-side via its own config.
+- **Only `.mcp.json` is read**: [`src/commands/chat.ts:177-194`](https://github.com/bastani-inc/atomic/blob/5b33b79/src/commands/chat.ts#L177-L194) reads `.mcp.json` (Claude format) and passes `mcpServers` to `SessionConfig`, but does NOT read `mcp-config.json` (Copilot) or `opencode.json` (OpenCode) configs.
+- **No `/mcp` slash command exists**: Not in [`src/ui/commands/builtin-commands.ts`](https://github.com/bastani-inc/atomic/blob/5b33b79/src/ui/commands/builtin-commands.ts) or any other command file.
 - **No multi-format config discovery**: No code discovers or normalizes MCP configs from Copilot or OpenCode config formats.
 - **No MCP status display**: No UI component shows MCP server status to the user.
 
@@ -169,7 +169,7 @@ Location: project root `opencode.json` or `.opencode/opencode.json`
 
 ## Unified McpServerConfig (Current)
 
-Current interface at [`src/sdk/types.ts:26-39`](https://github.com/bastani/atomic/blob/5b33b79/src/sdk/types.ts#L26-L39):
+Current interface at [`src/sdk/types.ts:26-39`](https://github.com/bastani-inc/atomic/blob/5b33b79/src/sdk/types.ts#L26-L39):
 
 ```typescript
 export interface McpServerConfig {
@@ -293,7 +293,7 @@ Additionally, a unified approach could read ALL config files and merge, deduplic
 
 ### Registration Pattern
 
-From [`src/ui/commands/registry.ts`](https://github.com/bastani/atomic/blob/5b33b79/src/ui/commands/registry.ts):
+From [`src/ui/commands/registry.ts`](https://github.com/bastani-inc/atomic/blob/5b33b79/src/ui/commands/registry.ts):
 
 ```typescript
 // CommandDefinition (lines 171-186)
@@ -329,11 +329,11 @@ interface CommandResult {
 
 ### Existing Commands
 
-6 built-in commands at [`src/ui/commands/builtin-commands.ts:460-467`](https://github.com/bastani/atomic/blob/5b33b79/src/ui/commands/builtin-commands.ts#L460-L467):
+6 built-in commands at [`src/ui/commands/builtin-commands.ts:460-467`](https://github.com/bastani-inc/atomic/blob/5b33b79/src/ui/commands/builtin-commands.ts#L460-L467):
 
 - `/help`, `/theme`, `/clear`, `/compact`, `/exit`, `/model`
 
-Registration flow at [`src/ui/commands/index.ts:145-168`](https://github.com/bastani/atomic/blob/5b33b79/src/ui/commands/index.ts#L145-L168):
+Registration flow at [`src/ui/commands/index.ts:145-168`](https://github.com/bastani-inc/atomic/blob/5b33b79/src/ui/commands/index.ts#L145-L168):
 
 ```
 initializeCommandsAsync() → registerBuiltinCommands()

@@ -16,13 +16,13 @@ The README was substantially updated in v0.4.8 and is largely accurate. However,
 
 ### Current README
 
-| Command                    | Description                                                      |
-| -------------------------- | ---------------------------------------------------------------- |
-| `atomic init`              | Interactive setup (default command)                             |
-| `atomic chat`              | Start TUI chat with a coding agent                              |
-| `atomic config set <k> <v>` | Set CLI configuration values (example: telemetry opt-in/out)    |
-| `atomic update`            | Self-update Atomic (binary installs only)                       |
-| `atomic uninstall`         | Remove Atomic installation (binary installs only)               |
+| Command                     | Description                                                  |
+| --------------------------- | ------------------------------------------------------------ |
+| `atomic init`               | Interactive setup (default command)                          |
+| `atomic chat`               | Start TUI chat with a coding agent                           |
+| `atomic config set <k> <v>` | Set CLI configuration values (example: telemetry opt-in/out) |
+| `atomic update`             | Self-update Atomic (binary installs only)                    |
+| `atomic uninstall`          | Remove Atomic installation (binary installs only)            |
 
 ### What Exists in Code
 
@@ -32,14 +32,14 @@ The same 5 commands exist. There is one hidden command (`atomic upload-telemetry
 
 The README does not document all flags for `atomic chat`. The actual flags are:
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `-a, --agent <name>` | `"claude"` | Agent to chat with (`claude`, `opencode`, `copilot`) |
-| `-w, --workflow` | `false` | Enable graph workflow mode |
-| `-t, --theme <name>` | `"dark"` | UI theme (`dark`, `light`) |
-| `-m, --model <name>` | (none) | Model to use for the chat session |
-| `--max-iterations <n>` | `"100"` | Maximum iterations for workflow mode |
-| `[prompt...]` | (none) | Initial prompt to send |
+| Flag                   | Default    | Description                                          |
+| ---------------------- | ---------- | ---------------------------------------------------- |
+| `-a, --agent <name>`   | `"claude"` | Agent to chat with (`claude`, `opencode`, `copilot`) |
+| `-w, --workflow`       | `false`    | Enable graph workflow mode                           |
+| `-t, --theme <name>`   | `"dark"`   | UI theme (`dark`, `light`)                           |
+| `-m, --model <name>`   | (none)     | Model to use for the chat session                    |
+| `--max-iterations <n>` | `"100"`    | Maximum iterations for workflow mode                 |
+| `[prompt...]`          | (none)     | Initial prompt to send                               |
 
 The README currently shows `atomic chat -a <claude|opencode|copilot>` and `atomic chat -a opencode --theme <light/dark>` in the Ralph section, but the full flag reference is not in the CLI Commands table.
 
@@ -48,6 +48,7 @@ The README currently shows `atomic chat -a <claude|opencode|copilot>` and `atomi
 `atomic init` also supports a `-a, --agent <name>` flag to pre-select the agent, which is not documented in the CLI Commands table.
 
 ### Action Needed
+
 - Consider adding a more detailed flag reference for `atomic chat` and `atomic init`
 
 ---
@@ -56,40 +57,41 @@ The README currently shows `atomic chat -a <claude|opencode|copilot>` and `atomi
 
 ### Current README
 
-| Command              | Arguments            | Description                                                    |
-| -------------------- | -------------------- | -------------------------------------------------------------- |
-| `/help`              |                      | Show all available commands                                   |
-| `/clear`             |                      | Clear all messages and reset session                          |
-| `/compact`           |                      | Compact context to reduce token usage                         |
+| Command              | Arguments               | Description                                                |
+| -------------------- | ----------------------- | ---------------------------------------------------------- |
+| `/help`              |                         | Show all available commands                                |
+| `/clear`             |                         | Clear all messages and reset session                       |
+| `/compact`           |                         | Compact context to reduce token usage                      |
 | `/model`             | `[model\|list\|select]` | View/switch active model                                   |
-| `/mcp`               | `[enable\|disable]`  | View and toggle MCP servers                                   |
-| `/init`              |                      | Generate `CLAUDE.md` and `AGENTS.md` by exploring codebase   |
-| `/research-codebase` | `"<question>"`       | Analyze codebase and document findings                         |
-| `/create-spec`       | `"<research-path>"`  | Generate technical specification                               |
-| `/explain-code`      | `"<path>"`           | Explain code section in detail                                 |
-| `/gh-commit`         |                      | Create a Git commit using Git/GitHub workflow                 |
-| `/gh-create-pr`      |                      | Commit, push, and open a GitHub pull request                  |
-| `/sl-commit`         |                      | Create a Sapling commit                                       |
-| `/sl-submit-diff`    |                      | Submit Sapling changes to Phabricator                         |
-| `/ralph`             | `"<prompt>"`         | Run autonomous implementation workflow                         |
+| `/mcp`               | `[enable\|disable]`     | View and toggle MCP servers                                |
+| `/init`              |                         | Generate `CLAUDE.md` and `AGENTS.md` by exploring codebase |
+| `/research-codebase` | `"<question>"`          | Analyze codebase and document findings                     |
+| `/create-spec`       | `"<research-path>"`     | Generate technical specification                           |
+| `/explain-code`      | `"<path>"`              | Explain code section in detail                             |
+| `/gh-commit`         |                         | Create a Git commit using Git/GitHub workflow              |
+| `/gh-create-pr`      |                         | Commit, push, and open a GitHub pull request               |
+| `/sl-commit`         |                         | Create a Sapling commit                                    |
+| `/sl-submit-diff`    |                         | Submit Sapling changes to Phabricator                      |
+| `/ralph`             | `"<prompt>"`            | Run autonomous implementation workflow                     |
 
 ### What's Missing from the README
 
-| Command | Aliases | Description | Notes |
-|---------|---------|-------------|-------|
-| `/theme` | (none) | Toggle between dark and light theme. Arg: `[dark \| light]` | Built-in command, not listed |
-| `/exit` | `/quit`, `/q` | Exit the chat application | Built-in command, not listed |
+| Command  | Aliases       | Description                                                 | Notes                        |
+| -------- | ------------- | ----------------------------------------------------------- | ---------------------------- |
+| `/theme` | (none)        | Toggle between dark and light theme. Arg: `[dark \| light]` | Built-in command, not listed |
+| `/exit`  | `/quit`, `/q` | Exit the chat application                                   | Built-in command, not listed |
 
 ### Alias Not Documented
 
-| Command | Alias |
-|---------|-------|
-| `/ralph` | `/loop` |
-| `/help` | `/h`, `/?` |
+| Command  | Alias        |
+| -------- | ------------ |
+| `/ralph` | `/loop`      |
+| `/help`  | `/h`, `/?`   |
 | `/clear` | `/cls`, `/c` |
-| `/model` | `/m` |
+| `/model` | `/m`         |
 
 ### Action Needed
+
 - Add `/theme` and `/exit` to the Slash Commands table
 - Optionally add aliases column to the table
 
@@ -111,12 +113,13 @@ The README currently shows `atomic chat -a <claude|opencode|copilot>` and `atomi
 
 ### What's Missing from the README
 
-| Agent | Purpose | Notes |
-|-------|---------|-------|
-| `reviewer` | Code reviewer for proposed code changes. Outputs structured JSON findings with priority levels. | Used internally by Ralph Step 3. Exists in all three agent directories. |
-| `worker` | Implements a SINGLE task from a task list. Used by the Ralph workflow. | Used internally by Ralph for task implementation. Exists in all three agent directories. |
+| Agent      | Purpose                                                                                         | Notes                                                                                    |
+| ---------- | ----------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `reviewer` | Code reviewer for proposed code changes. Outputs structured JSON findings with priority levels. | Used internally by Ralph Step 3. Exists in all three agent directories.                  |
+| `worker`   | Implements a SINGLE task from a task list. Used by the Ralph workflow.                          | Used internally by Ralph for task implementation. Exists in all three agent directories. |
 
 ### Action Needed
+
 - Add `reviewer` and `worker` to the Agents table
 
 ---
@@ -132,8 +135,8 @@ The README currently shows `atomic chat -a <claude|opencode|copilot>` and `atomi
 
 ### What's Missing from the README
 
-| Skill | Purpose | Notes |
-|-------|---------|-------|
+| Skill             | Purpose                                                                           | Notes                                 |
+| ----------------- | --------------------------------------------------------------------------------- | ------------------------------------- |
 | `frontend-design` | Create distinctive, production-grade frontend interfaces with high design quality | Exists in all three skill directories |
 
 ### Notes
@@ -141,6 +144,7 @@ The README currently shows `atomic chat -a <claude|opencode|copilot>` and `atomi
 The README's "Skills" table specifically documents skills that are "automatically invoked when relevant" (i.e., passive/background skills). The slash-command skills (`/init`, `/research-codebase`, `/create-spec`, etc.) are already listed in the Slash Commands table. The `frontend-design` skill falls into the same category as `testing-anti-patterns` and `prompt-engineer` — it provides domain knowledge during work and should be listed here.
 
 ### Action Needed
+
 - Add `frontend-design` to the Skills table
 
 ---
@@ -160,6 +164,7 @@ The README's "Skills" table specifically documents skills that are "automaticall
 This table is **accurate**. All three agents are still supported with the same folders and context files.
 
 ### Action Needed
+
 - No changes needed
 
 ---
@@ -169,6 +174,7 @@ This table is **accurate**. All three agents are still supported with the same f
 ### Current README Description
 
 The README describes Ralph as enabling "multi-hour autonomous coding sessions" with 3 steps:
+
 1. Create and approve your spec (`/create-spec`)
 2. Start the workflow (`/ralph "<prompt-or-spec-path>"`)
 3. Ralph decomposes tasks and implements features one-by-one until complete
@@ -182,11 +188,13 @@ The Ralph workflow (`workflow-commands.ts:547-800`) implements a **3-step proces
 3. **Step 3 (Review & Fix)**: Spawns a **reviewer sub-agent**, parses findings, generates fix specs, and re-invokes Steps 1-2 if needed. Up to 1 review-fix cycle.
 
 The README's description is largely accurate but does not mention:
+
 - The **review step** (Step 3 with reviewer sub-agent)
 - The **worker sub-agent dispatch** pattern
 - Custom workflows loadable from `.atomic/workflows/` directories
 
 ### Action Needed
+
 - Update the "How It Works" subsection to mention the 3-step process including review
 - Note: The usage examples and arguments table are still accurate
 
@@ -220,6 +228,7 @@ This is **accurate**. The `.atomic.json` schema and fields table are correct.
 This is **accurate**.
 
 ### Action Needed
+
 - No changes needed
 
 ---
@@ -229,11 +238,13 @@ This is **accurate**.
 ### Current State
 
 Installation methods are **accurate**:
+
 - Native install (macOS/Linux via curl, Windows via PowerShell)
 - Bun installation (`bun add -g @bastani/atomic`)
 - Version pinning and custom directories
 
 ### Action Needed
+
 - No changes needed
 
 ---
@@ -243,6 +254,7 @@ Installation methods are **accurate**:
 ### Current State
 
 The telemetry section is **accurate**. It correctly documents:
+
 - What is collected (command names, agent type, success/failure, session metrics)
 - What is never collected (prompts, file paths, code, IP addresses, PII)
 - Privacy features (anonymous ID, local logging, CI auto-disable, first-run consent)
@@ -251,6 +263,7 @@ The telemetry section is **accurate**. It correctly documents:
 - Programmatic configuration examples
 
 ### Action Needed
+
 - No changes needed
 
 ---
@@ -260,6 +273,7 @@ The telemetry section is **accurate**. It correctly documents:
 ### Current README
 
 Documents:
+
 - Git identity error fix
 - Windows command resolution
 - Generating CLAUDE.md/AGENTS.md (correctly states to use `/init` in chat)
@@ -270,6 +284,7 @@ Documents:
 This is **accurate**.
 
 ### Action Needed
+
 - No changes needed
 
 ---
@@ -293,6 +308,7 @@ Research -> Plan (Spec) -> Implement (Ralph) -> (Debug) -> PR
 This workflow is still **accurate**. The only enhancement is that Ralph now includes an automatic review step (Step 3 with reviewer sub-agent), which means debugging may be less necessary for issues Ralph catches itself.
 
 ### Action Needed
+
 - Optionally mention that Ralph includes built-in review in Step 3
 
 ---

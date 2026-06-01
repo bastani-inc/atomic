@@ -72,7 +72,7 @@ The primary **architectural inversion** for pi-coding-agent is the agent-pane mo
 - `installCompletions(paths)` at `install.ts:472` — writes `~/.atomic/completions/atomic.<ext>` from `COMPLETION_SCRIPTS[shell]`, sources from rc file.
 - `cleanupOldArtifacts(binDir, now)` at `install.ts:160` — reaps `.old.<ts>` and `.tmp.<pid>.<ts>` older than 1 hour.
 - `install-method.ts` — `InstallMethod = "binary"|"bun"|"npm"|"pnpm"|"yarn"|"source"|"unknown"` (`install-method.ts:4`); `PKG_PATH_RE = /\/node_modules\/@bastani\/atomic(?:-[a-z0-9-]+)?\//` (`install-method.ts:22`); memoised via `cached` module-level variable.
-- `update.ts` — uses `release-fetch.ts:downloadAssetFromUrl()` and GitHub Releases API at `DEFAULT_GITHUB_API_BASE = "https://api.github.com/repos/bastani/atomic"` (`release-fetch.ts:30`).
+- `update.ts` — uses `release-fetch.ts:downloadAssetFromUrl()` and GitHub Releases API at `DEFAULT_GITHUB_API_BASE = "https://api.github.com/repos/bastani-inc/atomic"` (`release-fetch.ts:30`).
 
 **Banner & Logo**:
 
@@ -558,7 +558,7 @@ The primary **architectural inversion** for pi-coding-agent is the agent-pane mo
 **Devcontainer Features** (`.devcontainer/`):
 
 - Root `.devcontainer/devcontainer.json` — all three agents, base `mcr.microsoft.com/devcontainers/base:ubuntu`, env passthrough `GH_TOKEN`/`COPILOT_GITHUB_TOKEN`/`ANTHROPIC_API_KEY`, `postCreateCommand: bun install`, mounts `~/.ssh` + `~/.gitconfig`.
-- Per-agent manifests: `.devcontainer/{claude,copilot,opencode}/devcontainer.json` each referencing `ghcr.io/bastani/atomic/<agent>:1`.
+- Per-agent manifests: `.devcontainer/{claude,copilot,opencode}/devcontainer.json` each referencing `ghcr.io/bastani-inc/atomic/<agent>:1`.
 - Feature manifests (`.devcontainer/features/<agent>/devcontainer-feature.json`, version `1.0.15`) declare `dependsOn`: tmux-apt-get, bun, agent-specific CLI feature (Anthropics `claude-code:1`, devcontainers `copilot-cli:1`, devcontainers-extra `opencode:1`).
 - `install.sh` scripts in each feature dir are **byte-for-byte identical** (line 8 comment explicitly notes this requires manual sync). Each installs `@bastani/atomic` globally via `bun add -g`, configures PATH across bash/zsh/fish/login shells, generates `en_US.UTF-8` locale (apt-get or apk branches), installs `@playwright/cli` + `@llamaindex/liteparse` as global tools.
 
@@ -579,7 +579,7 @@ The primary **architectural inversion** for pi-coding-agent is the agent-pane mo
 
 **Binary Distribution Installers**:
 
-- `install.sh` (173 LOC) — POSIX bash; curl/wget; `RELEASES_BASE = "https://github.com/bastani/atomic/releases"`; downloads manifest, validates SHA256 via `shasum -a 256`/`sha256sum`, handoff to `<binary> install`. musl detection via `ldd --version` + `/lib/ld-musl-*` fallback. Rosetta 2 detection via `sysctl -n sysctl.proc_translated`.
+- `install.sh` (173 LOC) — POSIX bash; curl/wget; `RELEASES_BASE = "https://github.com/bastani-inc/atomic/releases"`; downloads manifest, validates SHA256 via `shasum -a 256`/`sha256sum`, handoff to `<binary> install`. musl detection via `ldd --version` + `/lib/ld-musl-*` fallback. Rosetta 2 detection via `sysctl -n sysctl.proc_translated`.
 - `install.cmd` (169 LOC) — Windows cmd.exe; delegates input validation regex to inline PowerShell; SHA256 via `certutil`; rejects 32-bit; supports `windows-x64` + `windows-arm64`.
 - `install.ps1` (128 LOC) — PowerShell 5.1+; `Invoke-RestMethod` for manifest, retry loop (3 attempts, exp backoff capped 5s); `Get-FileHash` for SHA256; `finally` block deletes temp.
 - All three use **manifest-then-pinned-version** pattern: `latest` resolves manifest, then binary URL is always `download/v$version/` to prevent races.

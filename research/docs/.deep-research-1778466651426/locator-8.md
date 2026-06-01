@@ -3,9 +3,9 @@
 ## Implementation
 
 - `.devcontainer/devcontainer.json` — Root devcontainer manifest; references three agent-specific features (claude, copilot, opencode) and defines common environment setup for Atomic CLI development
-- `.devcontainer/claude/devcontainer.json` — Per-agent devcontainer for Claude Code workflow; references GHCR feature `ghcr.io/bastani/atomic/claude:1`
-- `.devcontainer/copilot/devcontainer.json` — Per-agent devcontainer for Copilot CLI workflow; references GHCR feature `ghcr.io/bastani/atomic/copilot:1`
-- `.devcontainer/opencode/devcontainer.json` — Per-agent devcontainer for OpenCode workflow; references GHCR feature `ghcr.io/bastani/atomic/opencode:1`
+- `.devcontainer/claude/devcontainer.json` — Per-agent devcontainer for Claude Code workflow; references GHCR feature `ghcr.io/bastani-inc/atomic/claude:1`
+- `.devcontainer/copilot/devcontainer.json` — Per-agent devcontainer for Copilot CLI workflow; references GHCR feature `ghcr.io/bastani-inc/atomic/copilot:1`
+- `.devcontainer/opencode/devcontainer.json` — Per-agent devcontainer for OpenCode workflow; references GHCR feature `ghcr.io/bastani-inc/atomic/opencode:1`
 
 ## Configuration
 

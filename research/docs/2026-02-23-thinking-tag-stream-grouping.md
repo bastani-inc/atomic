@@ -32,30 +32,30 @@ Current code paths collect thinking text by concatenating incoming `thinking` ch
 
 ### 1) Claude SDK emits thinking deltas as chunked events
 
-- The Claude client handles `content_block_delta` and emits `type: "thinking"` when `event.delta.type === "thinking_delta"` ([src/sdk/clients/claude.ts:730-818](https://github.com/bastani/atomic/blob/b29d8b8d3c1fa82a7ad43fc2da310719ac3c4092/src/sdk/clients/claude.ts#L730-L818)).
-- Each emitted thinking message includes `content` and `metadata.streamingStats.thinkingMs/outputTokens` ([src/sdk/clients/claude.ts:801-817](https://github.com/bastani/atomic/blob/b29d8b8d3c1fa82a7ad43fc2da310719ac3c4092/src/sdk/clients/claude.ts#L801-L817)).
+- The Claude client handles `content_block_delta` and emits `type: "thinking"` when `event.delta.type === "thinking_delta"` ([src/sdk/clients/claude.ts:730-818](https://github.com/bastani-inc/atomic/blob/b29d8b8d3c1fa82a7ad43fc2da310719ac3c4092/src/sdk/clients/claude.ts#L730-L818)).
+- Each emitted thinking message includes `content` and `metadata.streamingStats.thinkingMs/outputTokens` ([src/sdk/clients/claude.ts:801-817](https://github.com/bastani-inc/atomic/blob/b29d8b8d3c1fa82a7ad43fc2da310719ac3c4092/src/sdk/clients/claude.ts#L801-L817)).
 
 ### 2) UI stream loop accumulates thinking text by string concatenation
 
-- In `streamAndProcess`, `thinkingText` starts as `""` and is appended with each thinking chunk via `thinkingText += message.content` ([src/ui/index.ts:1338](https://github.com/bastani/atomic/blob/b29d8b8d3c1fa82a7ad43fc2da310719ac3c4092/src/ui/index.ts#L1338), [src/ui/index.ts:1425-1427](https://github.com/bastani/atomic/blob/b29d8b8d3c1fa82a7ad43fc2da310719ac3c4092/src/ui/index.ts#L1425-L1427)).
-- The loop publishes accumulated metadata through `onMeta({ ..., thinkingText })` after processing thinking events ([src/ui/index.ts:1446](https://github.com/bastani/atomic/blob/b29d8b8d3c1fa82a7ad43fc2da310719ac3c4092/src/ui/index.ts#L1446)).
+- In `streamAndProcess`, `thinkingText` starts as `""` and is appended with each thinking chunk via `thinkingText += message.content` ([src/ui/index.ts:1338](https://github.com/bastani-inc/atomic/blob/b29d8b8d3c1fa82a7ad43fc2da310719ac3c4092/src/ui/index.ts#L1338), [src/ui/index.ts:1425-1427](https://github.com/bastani-inc/atomic/blob/b29d8b8d3c1fa82a7ad43fc2da310719ac3c4092/src/ui/index.ts#L1425-L1427)).
+- The loop publishes accumulated metadata through `onMeta({ ..., thinkingText })` after processing thinking events ([src/ui/index.ts:1446](https://github.com/bastani-inc/atomic/blob/b29d8b8d3c1fa82a7ad43fc2da310719ac3c4092/src/ui/index.ts#L1446)).
 
 ### 3) Thinking metadata is applied to the current streaming message
 
-- The chat component updates state by reading `streamingMessageIdRef.current` and applying a `thinking-meta` event to that message ([src/ui/chat.tsx:3440-3456](https://github.com/bastani/atomic/blob/b29d8b8d3c1fa82a7ad43fc2da310719ac3c4092/src/ui/chat.tsx#L3440-L3456), [src/ui/chat.tsx:5138-5155](https://github.com/bastani/atomic/blob/b29d8b8d3c1fa82a7ad43fc2da310719ac3c4092/src/ui/chat.tsx#L5138-L5155)).
-- `streamingMessageIdRef` is a single shared ref in this component ([src/ui/chat.tsx:1773](https://github.com/bastani/atomic/blob/b29d8b8d3c1fa82a7ad43fc2da310719ac3c4092/src/ui/chat.tsx#L1773)).
+- The chat component updates state by reading `streamingMessageIdRef.current` and applying a `thinking-meta` event to that message ([src/ui/chat.tsx:3440-3456](https://github.com/bastani-inc/atomic/blob/b29d8b8d3c1fa82a7ad43fc2da310719ac3c4092/src/ui/chat.tsx#L3440-L3456), [src/ui/chat.tsx:5138-5155](https://github.com/bastani-inc/atomic/blob/b29d8b8d3c1fa82a7ad43fc2da310719ac3c4092/src/ui/chat.tsx#L5138-L5155)).
+- `streamingMessageIdRef` is a single shared ref in this component ([src/ui/chat.tsx:1773](https://github.com/bastani-inc/atomic/blob/b29d8b8d3c1fa82a7ad43fc2da310719ac3c4092/src/ui/chat.tsx#L1773)).
 
 ### 4) Stream pipeline keeps one active streaming reasoning part
 
-- `ThinkingMetaEvent` includes `thinkingText`/`thinkingMs` and optional `includeReasoningPart`, with no stream/source ID field ([src/ui/parts/stream-pipeline.ts:49-58](https://github.com/bastani/atomic/blob/b29d8b8d3c1fa82a7ad43fc2da310719ac3c4092/src/ui/parts/stream-pipeline.ts#L49-L58)).
-- `upsertThinkingMeta` finds the last streaming reasoning part and replaces its content with `event.thinkingText`; otherwise it creates one reasoning part ([src/ui/parts/stream-pipeline.ts:414-463](https://github.com/bastani/atomic/blob/b29d8b8d3c1fa82a7ad43fc2da310719ac3c4092/src/ui/parts/stream-pipeline.ts#L414-L463)).
-- Reasoning display prints a single heading (`Thinking...` while streaming) and renders the accumulated markdown content ([src/ui/components/parts/reasoning-part-display.tsx:46-63](https://github.com/bastani/atomic/blob/b29d8b8d3c1fa82a7ad43fc2da310719ac3c4092/src/ui/components/parts/reasoning-part-display.tsx#L46-L63)).
+- `ThinkingMetaEvent` includes `thinkingText`/`thinkingMs` and optional `includeReasoningPart`, with no stream/source ID field ([src/ui/parts/stream-pipeline.ts:49-58](https://github.com/bastani-inc/atomic/blob/b29d8b8d3c1fa82a7ad43fc2da310719ac3c4092/src/ui/parts/stream-pipeline.ts#L49-L58)).
+- `upsertThinkingMeta` finds the last streaming reasoning part and replaces its content with `event.thinkingText`; otherwise it creates one reasoning part ([src/ui/parts/stream-pipeline.ts:414-463](https://github.com/bastani-inc/atomic/blob/b29d8b8d3c1fa82a7ad43fc2da310719ac3c4092/src/ui/parts/stream-pipeline.ts#L414-L463)).
+- Reasoning display prints a single heading (`Thinking...` while streaming) and renders the accumulated markdown content ([src/ui/components/parts/reasoning-part-display.tsx:46-63](https://github.com/bastani-inc/atomic/blob/b29d8b8d3c1fa82a7ad43fc2da310719ac3c4092/src/ui/components/parts/reasoning-part-display.tsx#L46-L63)).
 
 ### 5) Existing separation patterns elsewhere in codebase
 
-- Per-session state in SDK clients uses keyed `Map` structures (e.g., `sessions: Map<string, ClaudeSessionState>`) ([src/sdk/clients/claude.ts:273](https://github.com/bastani/atomic/blob/b29d8b8d3c1fa82a7ad43fc2da310719ac3c4092/src/sdk/clients/claude.ts#L273)).
-- Copilot session state uses nested maps for per-session/per-tool identity mapping ([src/sdk/clients/copilot.ts:126](https://github.com/bastani/atomic/blob/b29d8b8d3c1fa82a7ad43fc2da310719ac3c4092/src/sdk/clients/copilot.ts#L126)).
-- UI streaming state also uses keyed map structures for tool executions ([src/ui/hooks/use-streaming-state.ts:35-50](https://github.com/bastani/atomic/blob/b29d8b8d3c1fa82a7ad43fc2da310719ac3c4092/src/ui/hooks/use-streaming-state.ts#L35-L50)).
+- Per-session state in SDK clients uses keyed `Map` structures (e.g., `sessions: Map<string, ClaudeSessionState>`) ([src/sdk/clients/claude.ts:273](https://github.com/bastani-inc/atomic/blob/b29d8b8d3c1fa82a7ad43fc2da310719ac3c4092/src/sdk/clients/claude.ts#L273)).
+- Copilot session state uses nested maps for per-session/per-tool identity mapping ([src/sdk/clients/copilot.ts:126](https://github.com/bastani-inc/atomic/blob/b29d8b8d3c1fa82a7ad43fc2da310719ac3c4092/src/sdk/clients/copilot.ts#L126)).
+- UI streaming state also uses keyed map structures for tool executions ([src/ui/hooks/use-streaming-state.ts:35-50](https://github.com/bastani-inc/atomic/blob/b29d8b8d3c1fa82a7ad43fc2da310719ac3c4092/src/ui/hooks/use-streaming-state.ts#L35-L50)).
 
 ### 6) External documentation references
 

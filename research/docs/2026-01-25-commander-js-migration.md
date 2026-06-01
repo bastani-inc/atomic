@@ -47,8 +47,8 @@ The current CLI uses a priority-based routing system:
 
 **Key Code References:**
 
-- Main entry: [`src/index.ts:130-349`](https://github.com/bastani/atomic/blob/630163e349c25c487c1b4b07735ef449526861d1/src/index.ts#L130-L349)
-- Argument parsing utilities: [`src/utils/arg-parser.ts`](https://github.com/bastani/atomic/blob/630163e349c25c487c1b4b07735ef449526861d1/src/utils/arg-parser.ts)
+- Main entry: [`src/index.ts:130-349`](https://github.com/bastani-inc/atomic/blob/630163e349c25c487c1b4b07735ef449526861d1/src/index.ts#L130-L349)
+- Argument parsing utilities: [`src/utils/arg-parser.ts`](https://github.com/bastani-inc/atomic/blob/630163e349c25c487c1b4b07735ef449526861d1/src/utils/arg-parser.ts)
 
 #### Commands Inventory
 

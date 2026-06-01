@@ -38,7 +38,7 @@ The main CLI file demonstrates proper Commander.js usage:
 | Hidden commands             | Line 257 - upload-telemetry hidden              | Correct |
 | Nested subcommands          | config, ralph with subcommands                  | Correct |
 
-**Code Reference**: [src/cli.ts:47-74](https://github.com/bastani/atomic/blob/f69ae795e1fca2f53df549f939608f5c0ebe25d4/src/cli.ts#L47-L74)
+**Code Reference**: [src/cli.ts:47-74](https://github.com/bastani-inc/atomic/blob/f69ae795e1fca2f53df549f939608f5c0ebe25d4/src/cli.ts#L47-L74)
 
 ```typescript
 export function createProgram() {
@@ -64,13 +64,13 @@ The init command correctly uses:
 - Local `-a, --agent` option
 - Global options accessed via `program.opts()`
 
-**Code Reference**: [src/cli.ts:79-96](https://github.com/bastani/atomic/blob/f69ae795e1fca2f53df549f939608f5c0ebe25d4/src/cli.ts#L79-L96)
+**Code Reference**: [src/cli.ts:79-96](https://github.com/bastani-inc/atomic/blob/f69ae795e1fca2f53df549f939608f5c0ebe25d4/src/cli.ts#L79-L96)
 
 #### 2. `run` Command - Clean Implementation
 
 Properly uses `passThroughOptions()` for CLI wrapper functionality:
 
-**Code Reference**: [src/cli.ts:98-133](https://github.com/bastani/atomic/blob/f69ae795e1fca2f53df549f939608f5c0ebe25d4/src/cli.ts#L98-L133)
+**Code Reference**: [src/cli.ts:98-133](https://github.com/bastani-inc/atomic/blob/f69ae795e1fca2f53df549f939608f5c0ebe25d4/src/cli.ts#L98-L133)
 
 ```typescript
 program
@@ -94,7 +94,7 @@ program
 
 Uses nested subcommand structure:
 
-**Code Reference**: [src/cli.ts:135-148](https://github.com/bastani/atomic/blob/f69ae795e1fca2f53df549f939608f5c0ebe25d4/src/cli.ts#L135-L148)
+**Code Reference**: [src/cli.ts:135-148](https://github.com/bastani-inc/atomic/blob/f69ae795e1fca2f53df549f939608f5c0ebe25d4/src/cli.ts#L135-L148)
 
 #### 4. `ralph` Command - Identified Redundancy
 
@@ -102,7 +102,7 @@ This command exhibits **redundant argument parsing**:
 
 **Issue**: Commander.js parses options in `cli.ts`, then the action handler reconstructs an args array, which `ralphSetup()` re-parses manually.
 
-**Code Reference** (argument reconstruction): [src/cli.ts:205-234](https://github.com/bastani/atomic/blob/f69ae795e1fca2f53df549f939608f5c0ebe25d4/src/cli.ts#L205-L234)
+**Code Reference** (argument reconstruction): [src/cli.ts:205-234](https://github.com/bastani-inc/atomic/blob/f69ae795e1fca2f53df549f939608f5c0ebe25d4/src/cli.ts#L205-L234)
 
 ```typescript
 // cli.ts - Commander already parsed these options
@@ -120,7 +120,7 @@ This command exhibits **redundant argument parsing**:
 });
 ```
 
-**Code Reference** (manual re-parsing): [src/commands/ralph.ts:452-534](https://github.com/bastani/atomic/blob/f69ae795e1fca2f53df549f939608f5c0ebe25d4/src/commands/ralph.ts#L452-L534)
+**Code Reference** (manual re-parsing): [src/commands/ralph.ts:452-534](https://github.com/bastani-inc/atomic/blob/f69ae795e1fca2f53df549f939608f5c0ebe25d4/src/commands/ralph.ts#L452-L534)
 
 ```typescript
 // ralph.ts - Manual argument parsing (75+ lines)
@@ -148,7 +148,7 @@ export async function ralphSetup(args: string[]): Promise<number> {
 
 #### Pattern 1: Custom Option Parser (Recommended)
 
-**Code Reference**: [src/cli.ts:183-194](https://github.com/bastani/atomic/blob/f69ae795e1fca2f53df549f939608f5c0ebe25d4/src/cli.ts#L183-L194)
+**Code Reference**: [src/cli.ts:183-194](https://github.com/bastani-inc/atomic/blob/f69ae795e1fca2f53df549f939608f5c0ebe25d4/src/cli.ts#L183-L194)
 
 ```typescript
 function parseIterations(value: string): number {
@@ -166,7 +166,7 @@ function parseIterations(value: string): number {
 
 #### Pattern 2: Manual Validation in Action Handler (Used for agents)
 
-**Code Reference**: [src/cli.ts:119-125](https://github.com/bastani/atomic/blob/f69ae795e1fca2f53df549f939608f5c0ebe25d4/src/cli.ts#L119-L125)
+**Code Reference**: [src/cli.ts:119-125](https://github.com/bastani-inc/atomic/blob/f69ae795e1fca2f53df549f939608f5c0ebe25d4/src/cli.ts#L119-L125)
 
 ```typescript
 if (!isValidAgent(agent)) {
@@ -204,7 +204,7 @@ Error messages consistently include:
 
 ### Test Coverage Analysis
 
-**Code Reference**: [tests/cli-commander.test.ts](https://github.com/bastani/atomic/blob/f69ae795e1fca2f53df549f939608f5c0ebe25d4/tests/cli-commander.test.ts)
+**Code Reference**: [tests/cli-commander.test.ts](https://github.com/bastani-inc/atomic/blob/f69ae795e1fca2f53df549f939608f5c0ebe25d4/tests/cli-commander.test.ts)
 
 Test coverage is comprehensive:
 

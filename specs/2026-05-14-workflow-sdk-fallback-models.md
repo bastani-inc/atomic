@@ -43,20 +43,20 @@ The current gap is that model configuration is single-shot:
 ### 3.1 Functional Goals
 
 - [ ] Add a public `fallbackModels?: readonly string[]` option to workflow SDK model-bearing surfaces:
-  - [ ] `StageOptions` / `ctx.stage(name, options)`;
-  - [ ] `WorkflowTaskOptions` / `ctx.task(name, options)`;
-  - [ ] `WorkflowTaskStep` / `ctx.chain` / `ctx.parallel`;
-  - [ ] `WorkflowDirectTaskItem` / `runTask` / `runParallel` / `runChain`;
-  - [ ] `WorkflowDirectOptions` as an optional default applied to direct tasks that do not set their own fallback list.
+    - [ ] `StageOptions` / `ctx.stage(name, options)`;
+    - [ ] `WorkflowTaskOptions` / `ctx.task(name, options)`;
+    - [ ] `WorkflowTaskStep` / `ctx.chain` / `ctx.parallel`;
+    - [ ] `WorkflowDirectTaskItem` / `runTask` / `runParallel` / `runChain`;
+    - [ ] `WorkflowDirectOptions` as an optional default applied to direct tasks that do not set their own fallback list.
 - [ ] Build ordered, deduplicated model candidate lists from `[model, ...fallbackModels]`, matching pi-subagents behavior where practical.
 - [ ] Add a preflight model-availability validation step before starting any workflow run that uses user-specified `model` or `fallbackModels`; fail fast before store/session/workflow side effects if any requested model cannot be resolved to an available model.
 - [ ] Retry only failures classified as retryable provider/model failures by default, borrowing and adapting pi-subagents' classification patterns.
 - [ ] Append the user's currently selected model as an implicit final fallback candidate after explicit `model` and `fallbackModels` are exhausted, skipping it if already attempted.
 - [ ] Define the canonical fallback behavior without adding backward-compatibility shims or legacy aliases; when `fallbackModels` is omitted, use the normal current/default model path as the canonical no-fallback behavior.
 - [ ] Record model fallback metadata in workflow results and status surfaces:
-  - [ ] selected/effective `model`;
-  - [ ] `attemptedModels`;
-  - [ ] `modelAttempts` with model, success, exit/error, and token/usage data when available.
+    - [ ] selected/effective `model`;
+    - [ ] `attemptedModels`;
+    - [ ] `modelAttempts` with model, success, exit/error, and token/usage data when available.
 - [ ] Ensure fallback attempts work for direct foreground SDK execution and background/named workflow execution because both share `createStageContext` and the foreground executor.
 - [ ] Strip `fallbackModels` before passing options into `createAgentSession()` so the workflow SDK remains compatible with current pi SDK types.
 - [ ] Add `fallbackModels` to the workflow tool schema for direct task, parallel task, and chain step payloads so tool calls can use the same fallback behavior as the SDK.
@@ -126,15 +126,15 @@ This follows pi-subagents' pattern of wrapping execution attempts externally rat
 
 ### 4.3 Key Components
 
-| Component                     | Responsibility                                                                                            | Technology Stack                                             | Justification                                                                                  |
-| ----------------------------- | --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------- |
-| `fallbackModels` public types | Add API surface to stage/task/direct options                                                              | TypeScript interfaces in `src/shared/types.ts`               | The SDK exports shared types from `src/index.ts`, so this is the canonical authoring contract. |
-| Model fallback helper module  | Candidate building, suffix handling, retryable error classification, attempt-note formatting              | New `src/runs/shared/model-fallback.ts`                      | Mirrors pi-subagents helper module and keeps retry logic out of executor boilerplate.          |
-| Model availability preflight  | Validate every user-specified primary and fallback model before execution begins                          | New runtime model catalog port + executor preflight          | Satisfies fail-fast requirement and prevents partial workflow starts for invalid model config. |
-| Stage attempt loop            | Execute `createAgentSession` + `prompt` with candidate models                                             | `src/runs/foreground/stage-runner.ts`                        | All named/background/direct workflow execution eventually uses stage contexts.                 |
-| Direct option propagation     | Apply default `fallbackModels` from direct options to items/steps                                         | `src/runs/foreground/executor.ts`                            | Direct helpers already centralize defaults in `directTaskWithDefaults`.                        |
-| Metadata propagation          | Attach selected model and attempts to task results, details, store snapshots, persistence metadata        | `src/shared/types.ts`, `src/shared/store-types.ts`, executor | Users need to know when fallback happened and which model produced the output.                 |
-| Tool/schema support           | Expose `fallbackModels` through workflow direct tool schemas for single, parallel, and chain execution | `src/extension/index.ts` / schema files                      | Tool calls should have the same fallback semantics as programmatic SDK/direct helper calls.     |
+| Component                     | Responsibility                                                                                         | Technology Stack                                             | Justification                                                                                  |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------- |
+| `fallbackModels` public types | Add API surface to stage/task/direct options                                                           | TypeScript interfaces in `src/shared/types.ts`               | The SDK exports shared types from `src/index.ts`, so this is the canonical authoring contract. |
+| Model fallback helper module  | Candidate building, suffix handling, retryable error classification, attempt-note formatting           | New `src/runs/shared/model-fallback.ts`                      | Mirrors pi-subagents helper module and keeps retry logic out of executor boilerplate.          |
+| Model availability preflight  | Validate every user-specified primary and fallback model before execution begins                       | New runtime model catalog port + executor preflight          | Satisfies fail-fast requirement and prevents partial workflow starts for invalid model config. |
+| Stage attempt loop            | Execute `createAgentSession` + `prompt` with candidate models                                          | `src/runs/foreground/stage-runner.ts`                        | All named/background/direct workflow execution eventually uses stage contexts.                 |
+| Direct option propagation     | Apply default `fallbackModels` from direct options to items/steps                                      | `src/runs/foreground/executor.ts`                            | Direct helpers already centralize defaults in `directTaskWithDefaults`.                        |
+| Metadata propagation          | Attach selected model and attempts to task results, details, store snapshots, persistence metadata     | `src/shared/types.ts`, `src/shared/store-types.ts`, executor | Users need to know when fallback happened and which model produced the output.                 |
+| Tool/schema support           | Expose `fallbackModels` through workflow direct tool schemas for single, parallel, and chain execution | `src/extension/index.ts` / schema files                      | Tool calls should have the same fallback semantics as programmatic SDK/direct helper calls.    |
 
 ## 5. Detailed Design
 
@@ -146,49 +146,50 @@ Add a reusable type:
 
 ```ts
 export interface WorkflowModelAttempt {
-  readonly model: string;
-  readonly success: boolean;
-  readonly error?: string;
-  readonly usage?: {
-    readonly input?: number;
-    readonly output?: number;
-    readonly cacheRead?: number;
-    readonly cacheWrite?: number;
-    readonly cost?: number;
-    readonly turns?: number;
-  };
+    readonly model: string;
+    readonly success: boolean;
+    readonly error?: string;
+    readonly usage?: {
+        readonly input?: number;
+        readonly output?: number;
+        readonly cacheRead?: number;
+        readonly cacheWrite?: number;
+        readonly cost?: number;
+        readonly turns?: number;
+    };
 }
 
 export interface WorkflowModelFallbackFields {
-  /** Ordered model IDs to try after `model` fails for a retryable provider/model reason. */
-  readonly fallbackModels?: readonly string[];
+    /** Ordered model IDs to try after `model` fails for a retryable provider/model reason. */
+    readonly fallbackModels?: readonly string[];
 }
 ```
 
 Extend public option/result surfaces:
 
 ```ts
-export interface StageOptions extends CreateAgentSessionOptions, WorkflowModelFallbackFields {
-  // existing workflow-owned fields...
+export interface StageOptions
+    extends CreateAgentSessionOptions, WorkflowModelFallbackFields {
+    // existing workflow-owned fields...
 }
 
 export interface CompleteStageOpts extends WorkflowModelFallbackFields {
-  model?: string;
-  maxTokens?: number;
+    model?: string;
+    maxTokens?: number;
 }
 
 export interface WorkflowTaskResult extends WorkflowTaskContext {
-  readonly stageName: string;
-  readonly sessionId?: string;
-  readonly sessionFile?: string;
-  readonly artifacts?: WorkflowArtifact[];
-  readonly model?: string;
-  readonly attemptedModels?: readonly string[];
-  readonly modelAttempts?: readonly WorkflowModelAttempt[];
+    readonly stageName: string;
+    readonly sessionId?: string;
+    readonly sessionFile?: string;
+    readonly artifacts?: WorkflowArtifact[];
+    readonly model?: string;
+    readonly attemptedModels?: readonly string[];
+    readonly modelAttempts?: readonly WorkflowModelAttempt[];
 }
 
 export interface WorkflowDirectOptions extends WorkflowModelFallbackFields {
-  // existing direct defaults...
+    // existing direct defaults...
 }
 ```
 
@@ -196,29 +197,32 @@ Because `WorkflowTaskOptions` and `WorkflowDirectTaskItem` already inherit from 
 
 ```ts
 await ctx.task("implementer", {
-  prompt: "Implement the parser fix.",
-  model: "anthropic/claude-sonnet-4",
-  fallbackModels: ["openai/gpt-5-mini", "github-copilot/gpt-5-mini"],
+    prompt: "Implement the parser fix.",
+    model: "anthropic/claude-sonnet-4",
+    fallbackModels: ["openai/gpt-5-mini", "github-copilot/gpt-5-mini"],
 });
 ```
 
 Direct helper usage:
 
 ```ts
-await runParallel([
-  {
-    name: "reviewer-a",
-    prompt: "Review runtime code.",
-    model: "claude-sonnet-4",
-    fallbackModels: ["gpt-5-mini", "claude-haiku-4"],
-  },
-  {
-    name: "reviewer-b",
-    prompt: "Review tests.",
-  },
-], {
-  fallbackModels: ["gpt-5-mini"],
-});
+await runParallel(
+    [
+        {
+            name: "reviewer-a",
+            prompt: "Review runtime code.",
+            model: "claude-sonnet-4",
+            fallbackModels: ["gpt-5-mini", "claude-haiku-4"],
+        },
+        {
+            name: "reviewer-b",
+            prompt: "Review tests.",
+        },
+    ],
+    {
+        fallbackModels: ["gpt-5-mini"],
+    },
+);
 ```
 
 Precedence:
@@ -235,21 +239,21 @@ Add a runtime model-catalog validation seam so the executor can validate model i
 
 ```ts
 export interface WorkflowModelInfo {
-  readonly provider: string;
-  readonly id: string;
-  readonly fullId: string;
+    readonly provider: string;
+    readonly id: string;
+    readonly fullId: string;
 }
 
 export interface WorkflowModelCatalogPort {
-  listModels(): Promise<readonly WorkflowModelInfo[]>;
-  /** Current user-selected model used as the implicit final fallback and as the safe fallback when catalog validation is unavailable. */
-  currentModel?: string;
-  readonly preferredProvider?: string;
+    listModels(): Promise<readonly WorkflowModelInfo[]>;
+    /** Current user-selected model used as the implicit final fallback and as the safe fallback when catalog validation is unavailable. */
+    currentModel?: string;
+    readonly preferredProvider?: string;
 }
 
 export interface RunOpts {
-  // existing fields...
-  readonly models?: WorkflowModelCatalogPort;
+    // existing fields...
+    readonly models?: WorkflowModelCatalogPort;
 }
 ```
 
@@ -270,20 +274,24 @@ Updated scope: implement `fallbackModels` in the workflow tool schema in the sam
 
 ```ts
 workflow({
-  task: {
-    name: "planner",
-    prompt: "Plan the fallbackModels implementation.",
-    model: "anthropic/claude-sonnet-4",
-    fallbackModels: ["openai/gpt-5-mini"]
-  }
-})
+    task: {
+        name: "planner",
+        prompt: "Plan the fallbackModels implementation.",
+        model: "anthropic/claude-sonnet-4",
+        fallbackModels: ["openai/gpt-5-mini"],
+    },
+});
 
 workflow({
-  tasks: [
-    { name: "reviewer", task: "Review design", fallbackModels: ["gpt-5-mini"] }
-  ],
-  fallbackModels: ["claude-haiku-4"]
-})
+    tasks: [
+        {
+            name: "reviewer",
+            task: "Review design",
+            fallbackModels: ["gpt-5-mini"],
+        },
+    ],
+    fallbackModels: ["claude-haiku-4"],
+});
 ```
 
 Schema requirements:
@@ -304,23 +312,23 @@ Create a helper module similar to pi-subagents:
 
 ```ts
 export interface AvailableWorkflowModelInfo {
-  readonly provider: string;
-  readonly id: string;
-  readonly fullId: string;
+    readonly provider: string;
+    readonly id: string;
+    readonly fullId: string;
 }
 
 export interface WorkflowModelAttemptSummary {
-  readonly model: string;
-  readonly success: boolean;
-  readonly error?: string;
-  readonly usage?: WorkflowModelAttempt["usage"];
+    readonly model: string;
+    readonly success: boolean;
+    readonly error?: string;
+    readonly usage?: WorkflowModelAttempt["usage"];
 }
 
 export function buildModelCandidates(input: {
-  readonly primaryModel?: string;
-  readonly fallbackModels?: readonly string[];
-  readonly availableModels?: readonly AvailableWorkflowModelInfo[];
-  readonly preferredProvider?: string;
+    readonly primaryModel?: string;
+    readonly fallbackModels?: readonly string[];
+    readonly availableModels?: readonly AvailableWorkflowModelInfo[];
+    readonly preferredProvider?: string;
 }): string[];
 
 export function isRetryableModelFailure(error: string | undefined): boolean;
@@ -388,20 +396,20 @@ Algorithm:
 1. Build model candidates from `stageOptions.model`, `stageOptions.fallbackModels`, and the runtime `currentModel` as an implicit final fallback.
 2. If no explicit model/fallback was provided, keep the existing no-explicit-model path instead of forcing a redundant current-model attempt.
 3. For `prompt(text, options)`:
-   1. For each candidate:
-      - create a session using `CreateAgentSessionOptions` with `model: candidate` and without `fallbackModels`;
-      - apply pending thinking level and pending listeners;
-      - call `session.prompt(text, sdkOptions)`;
-      - on success, set `session` to the successful candidate session and expose its session metadata;
-      - store `model`, `attemptedModels`, and `modelAttempts` for result/snapshot metadata;
-      - stop.
-   2. On failure:
-      - format the thrown error or assistant/provider error as a string;
-      - record a failed `WorkflowModelAttempt`;
-      - if the error is not retryable or this is the final candidate, rethrow;
-      - if explicit candidates are exhausted and `currentModel` has not been attempted, try `currentModel` once as the final candidate;
-      - dispose the failed session best-effort;
-      - retry with the next candidate.
+    1. For each candidate:
+        - create a session using `CreateAgentSessionOptions` with `model: candidate` and without `fallbackModels`;
+        - apply pending thinking level and pending listeners;
+        - call `session.prompt(text, sdkOptions)`;
+        - on success, set `session` to the successful candidate session and expose its session metadata;
+        - store `model`, `attemptedModels`, and `modelAttempts` for result/snapshot metadata;
+        - stop.
+    2. On failure:
+        - format the thrown error or assistant/provider error as a string;
+        - record a failed `WorkflowModelAttempt`;
+        - if the error is not retryable or this is the final candidate, rethrow;
+        - if explicit candidates are exhausted and `currentModel` has not been attempted, try `currentModel` once as the final candidate;
+        - dispose the failed session best-effort;
+        - retry with the next candidate.
 4. Once a prompt succeeds, later calls on the same `StageContext` should use the successful session/model by default rather than re-running the fallback loop from the primary. This preserves stage continuity.
 
 Recommended default: fallback applies to the first `prompt()` / `complete()` operation that creates work for the stage. After success, the stage is bound to that model/session.
@@ -434,20 +442,20 @@ Recommended metadata shape:
 
 ```json
 {
-  "model": "openai/gpt-5-mini",
-  "attemptedModels": ["anthropic/claude-sonnet-4", "openai/gpt-5-mini"],
-  "modelAttempts": [
-    {
-      "model": "anthropic/claude-sonnet-4",
-      "success": false,
-      "error": "rate limit exceeded"
-    },
-    {
-      "model": "openai/gpt-5-mini",
-      "success": true,
-      "usage": { "input": 1200, "output": 450, "turns": 1 }
-    }
-  ]
+    "model": "openai/gpt-5-mini",
+    "attemptedModels": ["anthropic/claude-sonnet-4", "openai/gpt-5-mini"],
+    "modelAttempts": [
+        {
+            "model": "anthropic/claude-sonnet-4",
+            "success": false,
+            "error": "rate limit exceeded"
+        },
+        {
+            "model": "openai/gpt-5-mini",
+            "success": true,
+            "usage": { "input": 1200, "output": 450, "turns": 1 }
+        }
+    ]
 }
 ```
 
@@ -491,7 +499,7 @@ For `stage.subagent(...)`:
 
 - Add visible attempt metadata to direct helper results and status surfaces.
 - Emit a concise notice when fallback occurs, similar to pi-subagents' `formatModelAttemptNote()`:
-  - `[fallback] anthropic/claude-sonnet-4 failed: rate limit exceeded. Retrying with openai/gpt-5-mini.`
+    - `[fallback] anthropic/claude-sonnet-4 failed: rate limit exceeded. Retrying with openai/gpt-5-mini.`
 - Preserve final stage result text as the successful model's output, not a concatenation of failed attempts.
 - When the implicit current-model fallback succeeds, metadata should make it clear that the selected model was used after explicit fallback exhaustion.
 - Add structured metadata to status writers so CI or parent orchestrators can detect fallback use.
@@ -517,33 +525,33 @@ For `stage.subagent(...)`:
 ### 8.1 Implementation Phases
 
 - [ ] **Phase 1: Types, helper module, and validation seam**
-  - Add `fallbackModels` to shared option types.
-  - Add model candidate, availability-validation, and retryability helper tests based on pi-subagents behavior.
-  - Add a `WorkflowModelCatalogPort` / `RunOpts.models` validation seam.
-  - Add result metadata types.
+    - Add `fallbackModels` to shared option types.
+    - Add model candidate, availability-validation, and retryability helper tests based on pi-subagents behavior.
+    - Add a `WorkflowModelCatalogPort` / `RunOpts.models` validation seam.
+    - Add result metadata types.
 
 - [ ] **Phase 2: Stage runner fallback loop**
-  - Strip fallback fields from pi SDK session options.
-  - Implement candidate session creation/retry/disposal.
-  - Preserve abort/pause behavior.
-  - Record successful model and attempts.
+    - Strip fallback fields from pi SDK session options.
+    - Implement candidate session creation/retry/disposal.
+    - Preserve abort/pause behavior.
+    - Record successful model and attempts.
 
 - [ ] **Phase 3: Executor/direct helper propagation and fail-fast preflight**
-  - Apply direct default fallback models.
-  - Validate all direct helper/tool model inputs before creating worktrees, sessions, output files, or background jobs.
-  - Preserve fallback models through direct single, parallel, and chain helpers.
-  - Attach metadata to `WorkflowTaskResult` and `WorkflowDetails`.
+    - Apply direct default fallback models.
+    - Validate all direct helper/tool model inputs before creating worktrees, sessions, output files, or background jobs.
+    - Preserve fallback models through direct single, parallel, and chain helpers.
+    - Attach metadata to `WorkflowTaskResult` and `WorkflowDetails`.
 
 - [ ] **Phase 4: Extension/tool/schema support**
-  - Add `fallbackModels` to direct workflow tool schemas and renderers.
-  - Ensure `workflow` tool calls can pass task-local and top-level default fallback options.
-  - Run the same model availability preflight for tool-supplied models before dispatch starts.
-  - Update slash/docs only where direct tool syntax is exposed.
+    - Add `fallbackModels` to direct workflow tool schemas and renderers.
+    - Ensure `workflow` tool calls can pass task-local and top-level default fallback options.
+    - Run the same model availability preflight for tool-supplied models before dispatch starts.
+    - Update slash/docs only where direct tool syntax is exposed.
 
 - [ ] **Phase 5: Documentation and examples**
-  - Document SDK usage in README/docs.
-  - Add a small example workflow stage using `fallbackModels`.
-  - Mention privacy/cost considerations.
+    - Document SDK usage in README/docs.
+    - Add a small example workflow stage using `fallbackModels`.
+    - Mention privacy/cost considerations.
 
 ### 8.2 Data Migration Plan
 
@@ -554,80 +562,80 @@ No persistent data migration is required. Existing run snapshots and session ent
 Use Bun commands only.
 
 - **Unit tests**
-  - `test/unit/model-fallback.test.ts` for helper and validation behavior:
-    - explicit provider IDs unchanged;
-    - bare model resolution when unique/preferred;
-    - suffix/modifier preservation if implemented;
-    - deduplication/order preservation;
-    - retryable vs non-retryable error classification;
-    - unavailable, ambiguous, empty, and duplicate model validation failures.
-  - `test/unit/stage-runner.test.ts` for fallback loop:
-    - primary success does not try fallback;
-    - primary retryable failure tries fallback;
-    - non-retryable failure does not try fallback;
-    - failed candidate session is disposed;
-    - abort does not continue to fallback;
-    - metadata records attempts.
-  - `test/unit/executor.test.ts` for propagation and fail-fast behavior:
-    - `ctx.task` returns `modelAttempts`;
-    - `ctx.chain` and `ctx.parallel` preserve task-local fallback lists;
-    - direct options default fallback applies when task-local fallback is absent;
-    - invalid direct models fail before worktree/session/output side effects;
-    - invalid dynamic stage models fail before session creation.
-  - Workflow tool schema/dispatcher tests:
-    - accepts `fallbackModels` on direct single/parallel/chain payloads;
-    - applies top-level direct fallback defaults to child tasks;
-    - rejects invalid `fallbackModels` shapes before dispatch;
-    - fails fast before background run acceptance when tool-supplied models are invalid.
-  - `test/unit/wiring-adapters.test.ts` for option stripping:
-    - `fallbackModels` is not passed to `createAgentSession`;
-    - `model` candidate is passed per attempt.
+    - `test/unit/model-fallback.test.ts` for helper and validation behavior:
+        - explicit provider IDs unchanged;
+        - bare model resolution when unique/preferred;
+        - suffix/modifier preservation if implemented;
+        - deduplication/order preservation;
+        - retryable vs non-retryable error classification;
+        - unavailable, ambiguous, empty, and duplicate model validation failures.
+    - `test/unit/stage-runner.test.ts` for fallback loop:
+        - primary success does not try fallback;
+        - primary retryable failure tries fallback;
+        - non-retryable failure does not try fallback;
+        - failed candidate session is disposed;
+        - abort does not continue to fallback;
+        - metadata records attempts.
+    - `test/unit/executor.test.ts` for propagation and fail-fast behavior:
+        - `ctx.task` returns `modelAttempts`;
+        - `ctx.chain` and `ctx.parallel` preserve task-local fallback lists;
+        - direct options default fallback applies when task-local fallback is absent;
+        - invalid direct models fail before worktree/session/output side effects;
+        - invalid dynamic stage models fail before session creation.
+    - Workflow tool schema/dispatcher tests:
+        - accepts `fallbackModels` on direct single/parallel/chain payloads;
+        - applies top-level direct fallback defaults to child tasks;
+        - rejects invalid `fallbackModels` shapes before dispatch;
+        - fails fast before background run acceptance when tool-supplied models are invalid.
+    - `test/unit/wiring-adapters.test.ts` for option stripping:
+        - `fallbackModels` is not passed to `createAgentSession`;
+        - `model` candidate is passed per attempt.
 
 - **Integration tests**
-  - Direct `runTask` with a stub `AgentSessionAdapter` that fails first candidate and succeeds second.
-  - `runParallel` with one task falling back and another using primary.
-  - Named workflow background run preserving fallback metadata in status/store snapshots.
-  - Background/direct run with unavailable model returns failed status before workflow execution starts.
+    - Direct `runTask` with a stub `AgentSessionAdapter` that fails first candidate and succeeds second.
+    - `runParallel` with one task falling back and another using primary.
+    - Named workflow background run preserving fallback metadata in status/store snapshots.
+    - Background/direct run with unavailable model returns failed status before workflow execution starts.
 
 - **Type/API tests**
-  - Public entrypoint fixture compiles with `fallbackModels` on `ctx.task` and direct helper items.
-  - No `any`/`unknown` regressions; satisfy strict TypeScript and `noUnusedLocals` / `noUnusedParameters`.
+    - Public entrypoint fixture compiles with `fallbackModels` on `ctx.task` and direct helper items.
+    - No `any`/`unknown` regressions; satisfy strict TypeScript and `noUnusedLocals` / `noUnusedParameters`.
 
 - **Validation commands**
-  - `bun test test/unit/model-fallback.test.ts`
-  - `bun test test/unit/stage-runner.test.ts`
-  - `bun test test/unit/executor.test.ts`
-  - `bun run typecheck`
-  - Broader `bun run test:unit` after focused tests pass.
+    - `bun test test/unit/model-fallback.test.ts`
+    - `bun test test/unit/stage-runner.test.ts`
+    - `bun test test/unit/executor.test.ts`
+    - `bun run typecheck`
+    - Broader `bun run test:unit` after focused tests pass.
 
 ## 9. Open Questions / Unresolved Issues
 
 - [x] **Q1: Scope of the first implementation.** Should `fallbackModels` be SDK-only first, or should the same spec require `workflow` tool schema/direct-call support in the same implementation branch?
-  - Updated resolution: include both SDK/direct helper support and workflow tool schema/direct-call support in the same implementation branch.
+    - Updated resolution: include both SDK/direct helper support and workflow tool schema/direct-call support in the same implementation branch.
 
 - [x] **Q2: Session retry semantics.** Should fallback recreate a fresh `AgentSession` per candidate, or attempt `session.setModel(next)` on the same session and retry the prompt?
-  - Resolved: recreate a fresh `AgentSession` per candidate, dispose failed sessions best-effort, and bind the stage to the first successful session.
+    - Resolved: recreate a fresh `AgentSession` per candidate, dispose failed sessions best-effort, and bind the stage to the first successful session.
 
 - [x] **Q3: Retry trigger strictness.** Should fallback use pi-subagents' broad retryable pattern list, a narrower provider-only list, or a caller-configurable policy?
-  - Resolved: retry model/provider failures only, using the pi-subagents-style broad provider failure list for rate limits, quota/auth/provider outages, unavailable models, network/timeout, and 5xx errors. Do not retry ordinary tool/task/code failures.
+    - Resolved: retry model/provider failures only, using the pi-subagents-style broad provider failure list for rate limits, quota/auth/provider outages, unavailable models, network/timeout, and 5xx errors. Do not retry ordinary tool/task/code failures.
 
 - [x] **Q4: Global defaults.** Should `fallbackModels` be configurable globally in workflow runtime config, or only programmatically per stage/task/direct run?
-  - Resolved: programmatic only in MVP. Do not add global runtime defaults in the first implementation.
+    - Resolved: programmatic only in MVP. Do not add global runtime defaults in the first implementation.
 
 - [x] **Q5: Subagent bridge behavior.** Should `ctx.stage(...).subagent({ model, fallbackModels })` wrap repeated `subagent` tool calls, or should fallback remain owned by target `.pi/agents` configs?
-  - Resolved: do not wrap subagent tool calls in MVP. Fallback for subagents remains owned by pi-subagents agent configuration.
+    - Resolved: do not wrap subagent tool calls in MVP. Fallback for subagents remains owned by pi-subagents agent configuration.
 
 - [x] **Q6: Attempt metadata placement.** Should `modelAttempts` be exposed only in `WorkflowTaskResult`/`WorkflowDetails`, or also in `StageSnapshot` and persistence entries?
-  - Resolved: expose fallback metadata in SDK/direct helper results and workflow status snapshots. Do not require persistence/session-entry writes in the first implementation.
+    - Resolved: expose fallback metadata in SDK/direct helper results and workflow status snapshots. Do not require persistence/session-entry writes in the first implementation.
 
 - [x] **Q7: Model catalog availability failure.** If the runtime cannot list available models, should workflows with user-specified `model`/`fallbackModels` fail closed or skip validation?
-  - Resolved: do not fail solely because the catalog is unavailable. Fall back to the user's currently selected model, emit a warning, and only fail fast when the runtime can definitively identify invalid/ambiguous model inputs or when no current model is available.
+    - Resolved: do not fail solely because the catalog is unavailable. Fall back to the user's currently selected model, emit a warning, and only fail fast when the runtime can definitively identify invalid/ambiguous model inputs or when no current model is available.
 
 - [x] **Q8: Final fallback after explicit list exhaustion.** If the primary `model` and explicit `fallbackModels` all fail at runtime, should the workflow fail immediately or try the user's currently selected model?
-  - Resolved: append the user's currently selected model as an implicit final fallback candidate. Skip it if already attempted; if it is unavailable or absent, fail with the last explicit candidate error.
+    - Resolved: append the user's currently selected model as an implicit final fallback candidate. Skip it if already attempted; if it is unavailable or absent, fail with the last explicit candidate error.
 
 - [x] **Q9: Backward compatibility.** Should implementation preserve older workflow tool/direct execution spellings or add aliases for compatibility?
-  - Resolved: no backward compatibility shims. Implement the canonical `fallbackModels` contract only and update tests/docs/examples to the new shape.
+    - Resolved: no backward compatibility shims. Implement the canonical `fallbackModels` contract only and update tests/docs/examples to the new shape.
 
 ## 10. References
 

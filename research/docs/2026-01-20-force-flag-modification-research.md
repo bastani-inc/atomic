@@ -256,33 +256,33 @@ if (!destExists || force) {
 
 ### Core Implementation Files
 
-- [src/commands/init.ts:227-234](https://github.com/bastani/atomic/blob/2fa30637912db42e55f81478cfc0b84af8f3ee46/src/commands/init.ts#L227-L234) - Preservation logic (main change point)
-- [src/commands/init.ts:217-252](https://github.com/bastani/atomic/blob/2fa30637912db42e55f81478cfc0b84af8f3ee46/src/commands/init.ts#L217-L252) - Additional files handling loop
-- [src/commands/init.ts:178](https://github.com/bastani/atomic/blob/2fa30637912db42e55f81478cfc0b84af8f3ee46/src/commands/init.ts#L178) - Force flag extraction
-- [src/commands/init.ts:63-97](https://github.com/bastani/atomic/blob/2fa30637912db42e55f81478cfc0b84af8f3ee46/src/commands/init.ts#L63-L97) - copyDirPreserving function
+- [src/commands/init.ts:227-234](https://github.com/bastani-inc/atomic/blob/2fa30637912db42e55f81478cfc0b84af8f3ee46/src/commands/init.ts#L227-L234) - Preservation logic (main change point)
+- [src/commands/init.ts:217-252](https://github.com/bastani-inc/atomic/blob/2fa30637912db42e55f81478cfc0b84af8f3ee46/src/commands/init.ts#L217-L252) - Additional files handling loop
+- [src/commands/init.ts:178](https://github.com/bastani-inc/atomic/blob/2fa30637912db42e55f81478cfc0b84af8f3ee46/src/commands/init.ts#L178) - Force flag extraction
+- [src/commands/init.ts:63-97](https://github.com/bastani-inc/atomic/blob/2fa30637912db42e55f81478cfc0b84af8f3ee46/src/commands/init.ts#L63-L97) - copyDirPreserving function
 
 ### Configuration
 
-- [src/config.ts:29-70](https://github.com/bastani/atomic/blob/2fa30637912db42e55f81478cfc0b84af8f3ee46/src/config.ts#L29-L70) - AGENT_CONFIG with preserve_files
-- [src/config.ts:38](https://github.com/bastani/atomic/blob/2fa30637912db42e55f81478cfc0b84af8f3ee46/src/config.ts#L38) - Claude preserve_files: ["CLAUDE.md"]
-- [src/config.ts:55](https://github.com/bastani/atomic/blob/2fa30637912db42e55f81478cfc0b84af8f3ee46/src/config.ts#L55) - OpenCode preserve_files: ["AGENTS.md"]
+- [src/config.ts:29-70](https://github.com/bastani-inc/atomic/blob/2fa30637912db42e55f81478cfc0b84af8f3ee46/src/config.ts#L29-L70) - AGENT_CONFIG with preserve_files
+- [src/config.ts:38](https://github.com/bastani-inc/atomic/blob/2fa30637912db42e55f81478cfc0b84af8f3ee46/src/config.ts#L38) - Claude preserve_files: ["CLAUDE.md"]
+- [src/config.ts:55](https://github.com/bastani-inc/atomic/blob/2fa30637912db42e55f81478cfc0b84af8f3ee46/src/config.ts#L55) - OpenCode preserve_files: ["AGENTS.md"]
 
 ### CLI Entry Points
 
-- [src/index.ts:147](https://github.com/bastani/atomic/blob/2fa30637912db42e55f81478cfc0b84af8f3ee46/src/index.ts#L147) - Force flag in parseArgs options
-- [src/index.ts:48](https://github.com/bastani/atomic/blob/2fa30637912db42e55f81478cfc0b84af8f3ee46/src/index.ts#L48) - Help text for -f/--force
-- [src/utils/arg-parser.ts:86-93](https://github.com/bastani/atomic/blob/2fa30637912db42e55f81478cfc0b84af8f3ee46/src/utils/arg-parser.ts#L86-L93) - hasForceFlag() utility
+- [src/index.ts:147](https://github.com/bastani-inc/atomic/blob/2fa30637912db42e55f81478cfc0b84af8f3ee46/src/index.ts#L147) - Force flag in parseArgs options
+- [src/index.ts:48](https://github.com/bastani-inc/atomic/blob/2fa30637912db42e55f81478cfc0b84af8f3ee46/src/index.ts#L48) - Help text for -f/--force
+- [src/utils/arg-parser.ts:86-93](https://github.com/bastani-inc/atomic/blob/2fa30637912db42e55f81478cfc0b84af8f3ee46/src/utils/arg-parser.ts#L86-L93) - hasForceFlag() utility
 
 ### Utility Functions
 
-- [src/utils/copy.ts:189-198](https://github.com/bastani/atomic/blob/2fa30637912db42e55f81478cfc0b84af8f3ee46/src/utils/copy.ts#L189-L198) - pathExists() function
-- [src/utils/copy.ts:43-51](https://github.com/bastani/atomic/blob/2fa30637912db42e55f81478cfc0b84af8f3ee46/src/utils/copy.ts#L43-L51) - copyFile() function
+- [src/utils/copy.ts:189-198](https://github.com/bastani-inc/atomic/blob/2fa30637912db42e55f81478cfc0b84af8f3ee46/src/utils/copy.ts#L189-L198) - pathExists() function
+- [src/utils/copy.ts:43-51](https://github.com/bastani-inc/atomic/blob/2fa30637912db42e55f81478cfc0b84af8f3ee46/src/utils/copy.ts#L43-L51) - copyFile() function
 
 ### Tests
 
-- [tests/init.test.ts:197-215](https://github.com/bastani/atomic/blob/2fa30637912db42e55f81478cfc0b84af8f3ee46/tests/init.test.ts#L197-L215) - Preservation with force test (needs update)
-- [tests/init.test.ts:163-277](https://github.com/bastani/atomic/blob/2fa30637912db42e55f81478cfc0b84af8f3ee46/tests/init.test.ts#L163-L277) - File preservation logic tests
-- [tests/routing.test.ts:449-478](https://github.com/bastani/atomic/blob/2fa30637912db42e55f81478cfc0b84af8f3ee46/tests/routing.test.ts#L449-L478) - hasForceFlag() tests
+- [tests/init.test.ts:197-215](https://github.com/bastani-inc/atomic/blob/2fa30637912db42e55f81478cfc0b84af8f3ee46/tests/init.test.ts#L197-L215) - Preservation with force test (needs update)
+- [tests/init.test.ts:163-277](https://github.com/bastani-inc/atomic/blob/2fa30637912db42e55f81478cfc0b84af8f3ee46/tests/init.test.ts#L163-L277) - File preservation logic tests
+- [tests/routing.test.ts:449-478](https://github.com/bastani-inc/atomic/blob/2fa30637912db42e55f81478cfc0b84af8f3ee46/tests/routing.test.ts#L449-L478) - hasForceFlag() tests
 
 ## Architecture Documentation
 

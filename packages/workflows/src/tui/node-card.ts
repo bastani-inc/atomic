@@ -18,7 +18,7 @@
  * the same ANSI shape Pi's renderer uses for every other styled run.
  *
  * cross-ref:
- *   - github.com/bastani/atomic packages/atomic-sdk/src/components/node-card.tsx
+ *   - github.com/bastani-inc/atomic packages/atomic-sdk/src/components/node-card.tsx
  *   - DESIGN.md §5 "Node Cards (orchestrator graph)"
  *   - src/tui/graph-theme.ts `deriveGraphThemeFromPiTheme` — the
  *     accent/surface tokens used below are sourced from Pi's live

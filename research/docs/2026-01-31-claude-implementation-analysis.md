@@ -74,7 +74,7 @@ The settings.json file defines the following top-level configuration structure:
   "atomic-plugins": {
     "source": {
       "source": "github",
-      "repo": "bastani/atomic"
+      "repo": "bastani-inc/atomic"
     }
   }
 }

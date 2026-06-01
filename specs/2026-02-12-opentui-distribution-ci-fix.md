@@ -31,7 +31,7 @@ The pipeline also manually installs all 6 OpenTUI platform-specific native bindi
 
 ### 2.2 The Problem
 
-**Failed CI Run**: https://github.com/bastani/atomic/actions/runs/21928096164
+**Failed CI Run**: https://github.com/bastani-inc/atomic/actions/runs/21928096164
 
 The workflow fails at `publish.yml:86` with:
 

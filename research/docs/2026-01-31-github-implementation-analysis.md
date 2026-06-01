@@ -467,7 +467,7 @@ The GitHub Copilot integration relies on the hooks system for lifecycle manageme
   "enableAllProjectMcpServers": true,
   "extraKnownMarketplaces": {
     "atomic-plugins": {
-      "source": { "source": "github", "repo": "bastani/atomic" }
+      "source": { "source": "github", "repo": "bastani-inc/atomic" }
     }
   },
   "enabledPlugins": { "ralph@atomic-plugins": true },

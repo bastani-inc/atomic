@@ -340,10 +340,10 @@ export class ChainClarifyComponent implements Component {
 			? rawAgentName.slice(0, maxAgentLen - 1) + "…"
 			: rawAgentName;
 		// Use mode-appropriate terminology
-		const stepLabel = this.mode === 'single' 
-			? agentName 
-			: this.mode === 'parallel' 
-				? `Task ${this.editingStep! + 1}: ${agentName}` 
+		const stepLabel = this.mode === 'single'
+			? agentName
+			: this.mode === 'parallel'
+				? `Task ${this.editingStep! + 1}: ${agentName}`
 				: `Step ${this.editingStep! + 1}: ${agentName}`;
 		const headerText = ` Editing ${fieldName} (${stepLabel}) `;
 		lines.push(this.renderHeader(headerText));
@@ -859,7 +859,7 @@ export class ChainClarifyComponent implements Component {
 		// Check all downstream steps (steps that come after the changed step)
 		for (let i = changedStepIndex + 1; i < this.agentConfigs.length; i++) {
 			const behavior = this.getEffectiveBehavior(i);
-			
+
 			// Skip if reads is disabled or empty
 			if (behavior.reads === false || !behavior.reads || behavior.reads.length === 0) {
 				continue;
@@ -868,7 +868,7 @@ export class ChainClarifyComponent implements Component {
 			// Check if this step reads the old output file
 			const readsArray = behavior.reads;
 			const oldIndex = readsArray.indexOf(oldOutput);
-			
+
 			if (oldIndex !== -1) {
 				// Replace old filename with new filename in reads
 				const newReads = [...readsArray];
@@ -906,10 +906,10 @@ export class ChainClarifyComponent implements Component {
 
 		// Header (mode-aware terminology)
 		const agentName = this.agentConfigs[this.editingStep!]?.name ?? "unknown";
-		const stepLabel = this.mode === 'single' 
-			? agentName 
-			: this.mode === 'parallel' 
-				? `Task ${this.editingStep! + 1}: ${agentName}` 
+		const stepLabel = this.mode === 'single'
+			? agentName
+			: this.mode === 'parallel'
+				? `Task ${this.editingStep! + 1}: ${agentName}`
 				: `Step ${this.editingStep! + 1}: ${agentName}`;
 		const headerText = ` Select Model (${stepLabel}) `;
 		lines.push(this.renderHeader(headerText));
@@ -980,10 +980,10 @@ export class ChainClarifyComponent implements Component {
 		const lines: string[] = [];
 
 		const agentName = this.agentConfigs[this.editingStep!]?.name ?? "unknown";
-		const stepLabel = this.mode === 'single' 
-			? agentName 
-			: this.mode === 'parallel' 
-				? `Task ${this.editingStep! + 1}: ${agentName}` 
+		const stepLabel = this.mode === 'single'
+			? agentName
+			: this.mode === 'parallel'
+				? `Task ${this.editingStep! + 1}: ${agentName}`
 				: `Step ${this.editingStep! + 1}: ${agentName}`;
 		const headerText = ` Thinking Level (${stepLabel}) `;
 		lines.push(this.renderHeader(headerText));
@@ -1301,7 +1301,7 @@ export class ChainClarifyComponent implements Component {
 
 			if (progressEnabled) {
 				const isFirstStep = i === 0;
-				const progressAction = isFirstStep 
+				const progressAction = isFirstStep
 					? th.fg("success", "writes progress.md")
 					: th.fg("accent", "reads progress.md");
 				const progressLabel = th.fg("dim", "progress: ");

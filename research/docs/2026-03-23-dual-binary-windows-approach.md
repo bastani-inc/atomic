@@ -191,7 +191,7 @@ export function getBinaryFilename(): string {
 
 1. `src/commands/cli/update.ts:242` calls `getBinaryFilename()`
 2. Result is passed to `getDownloadUrl(version, binaryFilename)` (line 362-366)
-3. URL is `https://github.com/bastani/atomic/releases/download/v{version}/{filename}`
+3. URL is `https://github.com/bastani-inc/atomic/releases/download/v{version}/{filename}`
 4. Binary is downloaded, checksum-verified, and replaces the current executable
 
 **For dual-binary approach, `getBinaryFilename()` needs baseline awareness:**

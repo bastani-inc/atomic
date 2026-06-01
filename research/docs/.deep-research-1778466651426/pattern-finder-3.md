@@ -372,7 +372,8 @@ async function getVersion(): Promise<string> {
 **What:** Fetches GitHub Releases metadata, downloads assets with progress, verifies sha256.
 
 ```typescript
-const DEFAULT_GITHUB_API_BASE = "https://api.github.com/repos/bastani/atomic";
+const DEFAULT_GITHUB_API_BASE =
+    "https://api.github.com/repos/bastani-inc/atomic";
 
 function buildApiHeaders(): Record<string, string> {
     const headers: Record<string, string> = {

@@ -248,15 +248,15 @@ Every file in this partition is [REMOVE-CANDIDATE].
 
 99. `/home/alilavaee/Documents/projects/atomic-pi-rewrite/packages/atomic-sdk/src/lib/runtime-assets.ts` — `tmuxConfPath`, `materializeRuntimeAsset()`, `runtimeAssetsCacheDir()` — materializes `tmux.conf` from Bun virtual FS to `~/.atomic/runtime/<sdk-version>/tmux.conf` — DEPS: [tmux, fs] [REMOVE-CANDIDATE]
 
-100. `packages/atomic-sdk/src/runtime/tmux.conf` (binary asset) — bundled tmux config defining `C-c` debounce binding via `@atomic-cc-debounce` user option — DEPS: [tmux] [REMOVE-CANDIDATE]
+100.    `packages/atomic-sdk/src/runtime/tmux.conf` (binary asset) — bundled tmux config defining `C-c` debounce binding via `@atomic-cc-debounce` user option — DEPS: [tmux] [REMOVE-CANDIDATE]
 
-101. `/home/alilavaee/Documents/projects/atomic-pi-rewrite/packages/atomic-sdk/src/lib/spawn.ts:1–` — `ensureTmuxInstalled()`, `upgradeGlobalToolPackages()`, `hasRequiredMuxBinary()`, `requiredMuxBinaryCandidatesForPlatform()`, `runCommand()` — installs tmux/psmux from GitHub releases, wraps `Bun.spawn` — DEPS: [tmux, fs] [REMOVE-CANDIDATE tmux install; generic spawn REUSABLE]
+101.    `/home/alilavaee/Documents/projects/atomic-pi-rewrite/packages/atomic-sdk/src/lib/spawn.ts:1–` — `ensureTmuxInstalled()`, `upgradeGlobalToolPackages()`, `hasRequiredMuxBinary()`, `requiredMuxBinaryCandidatesForPlatform()`, `runCommand()` — installs tmux/psmux from GitHub releases, wraps `Bun.spawn` — DEPS: [tmux, fs] [REMOVE-CANDIDATE tmux install; generic spawn REUSABLE]
 
-102. `/home/alilavaee/Documents/projects/atomic-pi-rewrite/packages/atomic-sdk/src/lib/self-exec.ts` — `resolveDispatcher()`, `buildSelfExecCommand()`, `Dispatcher` — resolves the binary/bun+cli for spawning `_orchestrator-entry` / `_cc-debounce` subprocesses in tmux; used by `createSession()` — DEPS: [tmux] [REMOVE-CANDIDATE tmux-spawn usage; generic self-exec concept PORTABLE-TO-EXTENSION]
+102.    `/home/alilavaee/Documents/projects/atomic-pi-rewrite/packages/atomic-sdk/src/lib/self-exec.ts` — `resolveDispatcher()`, `buildSelfExecCommand()`, `Dispatcher` — resolves the binary/bun+cli for spawning `_orchestrator-entry` / `_cc-debounce` subprocesses in tmux; used by `createSession()` — DEPS: [tmux] [REMOVE-CANDIDATE tmux-spawn usage; generic self-exec concept PORTABLE-TO-EXTENSION]
 
-103. `/home/alilavaee/Documents/projects/atomic-pi-rewrite/packages/atomic/src/commands/cli/session.ts` — (entry 10) [REMOVE-CANDIDATE]
+103.    `/home/alilavaee/Documents/projects/atomic-pi-rewrite/packages/atomic/src/commands/cli/session.ts` — (entry 10) [REMOVE-CANDIDATE]
 
-104. `/home/alilavaee/Documents/projects/atomic-pi-rewrite/packages/atomic/src/commands/cli/management-commands.ts` — (entry 11) — but session commands reference tmux [REMOVE-CANDIDATE session subcommands; Commander builder pattern REUSABLE]
+104.    `/home/alilavaee/Documents/projects/atomic-pi-rewrite/packages/atomic/src/commands/cli/management-commands.ts` — (entry 11) — but session commands reference tmux [REMOVE-CANDIDATE session subcommands; Commander builder pattern REUSABLE]
 
 ---
 

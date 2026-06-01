@@ -38,13 +38,13 @@
 - **Role:** Isolated per-agent devcontainer for Claude Code only; uses the published GHCR feature instead of the local path feature.
 - **Key symbols:**
     - `"name"` at line 2: `"Atomic + Claude Code"`
-    - `"features"` at lines 4–9: `common-utils`, `ghcr.io/bastani/atomic/claude:1` (GHCR-published), `github-cli:1`, `docker-in-docker:2`
+    - `"features"` at lines 4–9: `common-utils`, `ghcr.io/bastani-inc/atomic/claude:1` (GHCR-published), `github-cli:1`, `docker-in-docker:2`
     - `"remoteEnv"` at lines 10–13: passes `GH_TOKEN` and `ANTHROPIC_API_KEY` only (no `COPILOT_GITHUB_TOKEN`)
     - `"postCreateCommand"` at line 14: `bun install`
     - `"customizations.vscode.extensions"` at lines 29–33: `oven.bun-vscode`, `shd101wyy.markdown-preview-enhanced`, `Anthropic.claude-code` (no OpenCode extension)
-- **Control flow:** Pulls the published GHCR feature `ghcr.io/bastani/atomic/claude:1` which transitively depends on tmux, bun, and the Claude Code devcontainer feature.
+- **Control flow:** Pulls the published GHCR feature `ghcr.io/bastani-inc/atomic/claude:1` which transitively depends on tmux, bun, and the Claude Code devcontainer feature.
 - **Data flow:** Same SSH/gitconfig bind mounts at lines 15–26 as root manifest. Supplies only Claude-relevant env vars.
-- **Dependencies:** `ghcr.io/bastani/atomic/claude:1` (GHCR), `ghcr.io/anthropics/devcontainer-features/claude-code:1` (transitively via feature's `dependsOn`).
+- **Dependencies:** `ghcr.io/bastani-inc/atomic/claude:1` (GHCR), `ghcr.io/anthropics/devcontainer-features/claude-code:1` (transitively via feature's `dependsOn`).
 
 ---
 
@@ -53,12 +53,12 @@
 - **Role:** Isolated per-agent devcontainer for Copilot CLI only.
 - **Key symbols:**
     - `"name"` at line 2: `"Atomic + Copilot CLI"`
-    - `"features"` at lines 4–9: `common-utils`, `ghcr.io/bastani/atomic/copilot:1`, `github-cli:1`, `docker-in-docker:2`
+    - `"features"` at lines 4–9: `common-utils`, `ghcr.io/bastani-inc/atomic/copilot:1`, `github-cli:1`, `docker-in-docker:2`
     - `"remoteEnv"` at lines 10–13: passes `COPILOT_GITHUB_TOKEN` and `GH_TOKEN` only (no `ANTHROPIC_API_KEY`)
     - `"customizations.vscode.extensions"` at lines 29–32: `oven.bun-vscode`, `shd101wyy.markdown-preview-enhanced` only (no agent-specific extension)
-- **Control flow:** Pulls `ghcr.io/bastani/atomic/copilot:1` which transitively installs `ghcr.io/devcontainers/features/copilot-cli:1`, bun, and tmux.
+- **Control flow:** Pulls `ghcr.io/bastani-inc/atomic/copilot:1` which transitively installs `ghcr.io/devcontainers/features/copilot-cli:1`, bun, and tmux.
 - **Data flow:** No `ANTHROPIC_API_KEY`; Copilot authenticates through GitHub token.
-- **Dependencies:** `ghcr.io/bastani/atomic/copilot:1` (GHCR), `ghcr.io/devcontainers/features/copilot-cli:1` (transitively).
+- **Dependencies:** `ghcr.io/bastani-inc/atomic/copilot:1` (GHCR), `ghcr.io/devcontainers/features/copilot-cli:1` (transitively).
 
 ---
 
@@ -67,12 +67,12 @@
 - **Role:** Isolated per-agent devcontainer for OpenCode only.
 - **Key symbols:**
     - `"name"` at line 2: `"Atomic + OpenCode"`
-    - `"features"` at lines 4–9: `common-utils`, `ghcr.io/bastani/atomic/opencode:1`, `github-cli:1`, `docker-in-docker:2`
+    - `"features"` at lines 4–9: `common-utils`, `ghcr.io/bastani-inc/atomic/opencode:1`, `github-cli:1`, `docker-in-docker:2`
     - `"remoteEnv"` at lines 10–12: passes only `GH_TOKEN`
     - `"customizations.vscode.extensions"` at lines 29–33: `oven.bun-vscode`, `shd101wyy.markdown-preview-enhanced`, `sst-dev.opencode`
-- **Control flow:** Pulls `ghcr.io/bastani/atomic/opencode:1` which transitively installs `ghcr.io/devcontainers-extra/features/opencode:1`, bun, and tmux.
+- **Control flow:** Pulls `ghcr.io/bastani-inc/atomic/opencode:1` which transitively installs `ghcr.io/devcontainers-extra/features/opencode:1`, bun, and tmux.
 - **Data flow:** Minimal env passthrough — only GH_TOKEN. OpenCode's own API key config is not passed here.
-- **Dependencies:** `ghcr.io/bastani/atomic/opencode:1` (GHCR), `ghcr.io/devcontainers-extra/features/opencode:1` (transitively).
+- **Dependencies:** `ghcr.io/bastani-inc/atomic/opencode:1` (GHCR), `ghcr.io/devcontainers-extra/features/opencode:1` (transitively).
 
 ---
 
@@ -159,7 +159,7 @@
 
 #### `.github/workflows/publish-features.yml`
 
-- **Role:** CI workflow that publishes the three GHCR devcontainer features to `ghcr.io/bastani/atomic/{claude,copilot,opencode}` whenever a PR touching `.devcontainer/features/**` is merged to `main`, or on manual dispatch.
+- **Role:** CI workflow that publishes the three GHCR devcontainer features to `ghcr.io/bastani-inc/atomic/{claude,copilot,opencode}` whenever a PR touching `.devcontainer/features/**` is merged to `main`, or on manual dispatch.
 - **Key symbols:**
     - `on.pull_request.types: [closed]` at line 6: triggers only on PR close events for `main` branch when `.devcontainer/features/**` paths change
     - `if` condition at lines 14–16: only runs job when PR was actually merged (`github.event.pull_request.merged == true`) or on `workflow_dispatch`
@@ -168,7 +168,7 @@
     - `publish-features: "true"` at line 27: instructs the action to publish
     - `base-path-to-features: "./.devcontainer/features"` at line 28: scans that directory for all feature subdirectories
     - `GITHUB_TOKEN` at line 30: authenticates to GHCR — no separate NPM or registry token needed
-- **Control flow:** Trigger → merged check → checkout → devcontainers/action reads all `devcontainer-feature.json` manifests under `.devcontainer/features/` → pushes each as an OCI artifact to GHCR under `ghcr.io/bastani/atomic/<id>:<version>`.
+- **Control flow:** Trigger → merged check → checkout → devcontainers/action reads all `devcontainer-feature.json` manifests under `.devcontainer/features/` → pushes each as an OCI artifact to GHCR under `ghcr.io/bastani-inc/atomic/<id>:<version>`.
 - **Data flow:** Feature manifests + install scripts read from disk; OCI artifacts pushed to GHCR. Version tag derived from `"version"` field in each `devcontainer-feature.json`.
 - **Dependencies:** `devcontainers/action@v1`, `actions/checkout@v6`, `GITHUB_TOKEN` with packages write permission.
 
@@ -189,7 +189,7 @@
 
 ### Cross-Cutting Synthesis
 
-The `.devcontainer/` layer implements a two-tier structure. The root manifest (`.devcontainer/devcontainer.json`) composes all three agents in one container for Atomic development, referencing local features via relative paths (`./features/{claude,copilot,opencode}`). The three per-agent manifests (`claude/`, `copilot/`, `opencode/`) each reference the corresponding published GHCR artifact (`ghcr.io/bastani/atomic/<agent>:1`) for isolated end-user usage.
+The `.devcontainer/` layer implements a two-tier structure. The root manifest (`.devcontainer/devcontainer.json`) composes all three agents in one container for Atomic development, referencing local features via relative paths (`./features/{claude,copilot,opencode}`). The three per-agent manifests (`claude/`, `copilot/`, `opencode/`) each reference the corresponding published GHCR artifact (`ghcr.io/bastani-inc/atomic/<agent>:1`) for isolated end-user usage.
 
 Each GHCR feature (version `1.0.15`) declares a `dependsOn` triplet of exactly: tmux (via `tmux-apt-get`), bun, and the agent-specific CLI feature. The agent-specific dependency is the single point of differentiation: `claude-code:1` (Anthropics), `copilot-cli:1` (devcontainers), `opencode:1` (devcontainers-extra).
 

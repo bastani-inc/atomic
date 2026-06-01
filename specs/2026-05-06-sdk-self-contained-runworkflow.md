@@ -4,7 +4,7 @@
 | ---------------------- | ------------------------------------------------------ |
 | Author(s)              | Alex Lavaee                                            |
 | Status                 | Superseded by §11 — implementation diverges from §1–§9 |
-| Team / Owner           | bastani/atomic                                         |
+| Team / Owner           | bastani-inc/atomic                                     |
 | Created / Last Updated | 2026-05-06                                             |
 
 > **Note (2026-05-06 evening):** Sections 1–9 below describe the original

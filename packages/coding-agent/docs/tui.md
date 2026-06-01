@@ -177,7 +177,7 @@ await showMenu();  // First show
 await showMenu();  // "Back" = just call again
 ```
 
-See [overlay-qa-tests.ts](https://github.com/bastani/atomic/blob/main/packages/coding-agent/examples/extensions/overlay-qa-tests.ts) for comprehensive examples covering anchors, margins, stacking, responsive visibility, and animation.
+See [overlay-qa-tests.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/overlay-qa-tests.ts) for comprehensive examples covering anchors, margins, stacking, responsive visibility, and animation.
 
 ## Built-in Components
 
@@ -646,7 +646,7 @@ pi.registerCommand("pick", {
 });
 ```
 
-**Examples:** [preset.ts](https://github.com/bastani/atomic/blob/main/packages/coding-agent/examples/extensions/preset.ts), [tools.ts](https://github.com/bastani/atomic/blob/main/packages/coding-agent/examples/extensions/tools.ts)
+**Examples:** [preset.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/preset.ts), [tools.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/tools.ts)
 
 ### Pattern 2: Async Operation with Cancel (BorderedLoader)
 
@@ -678,7 +678,7 @@ pi.registerCommand("fetch", {
 });
 ```
 
-**Examples:** [qna.ts](https://github.com/bastani/atomic/blob/main/packages/coding-agent/examples/extensions/qna.ts), [handoff.ts](https://github.com/bastani/atomic/blob/main/packages/coding-agent/examples/extensions/handoff.ts)
+**Examples:** [qna.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/qna.ts), [handoff.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/handoff.ts)
 
 ### Pattern 3: Settings/Toggles (SettingsList)
 
@@ -722,7 +722,7 @@ pi.registerCommand("settings", {
 });
 ```
 
-**Examples:** [tools.ts](https://github.com/bastani/atomic/blob/main/packages/coding-agent/examples/extensions/tools.ts)
+**Examples:** [tools.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/tools.ts)
 
 ### Pattern 4: Persistent Status Indicator
 
@@ -736,7 +736,7 @@ ctx.ui.setStatus("my-ext", ctx.ui.theme.fg("accent", "● active"));
 ctx.ui.setStatus("my-ext", undefined);
 ```
 
-**Examples:** [status-line.ts](https://github.com/bastani/atomic/blob/main/packages/coding-agent/examples/extensions/status-line.ts), [plan-mode/index.ts](https://github.com/bastani/atomic/blob/main/packages/coding-agent/examples/extensions/plan-mode/index.ts), [preset.ts](https://github.com/bastani/atomic/blob/main/packages/coding-agent/examples/extensions/preset.ts)
+**Examples:** [status-line.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/status-line.ts), [plan-mode/index.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/plan-mode/index.ts), [preset.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/preset.ts)
 
 ### Pattern 4b: Working Indicator Customization
 
@@ -766,7 +766,7 @@ ctx.ui.setWorkingIndicator();
 
 This only affects the normal streaming working indicator. Compaction and retry loaders keep their built-in styling. Custom frames are rendered verbatim, so extensions must add their own colors when needed.
 
-**Examples:** [working-indicator.ts](https://github.com/bastani/atomic/blob/main/packages/coding-agent/examples/extensions/working-indicator.ts)
+**Examples:** [working-indicator.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/working-indicator.ts)
 
 ### Pattern 5: Widgets Above/Below Editor
 
@@ -796,7 +796,7 @@ ctx.ui.setWidget("my-widget", (_tui, theme) => {
 ctx.ui.setWidget("my-widget", undefined);
 ```
 
-**Examples:** [plan-mode/index.ts](https://github.com/bastani/atomic/blob/main/packages/coding-agent/examples/extensions/plan-mode/index.ts)
+**Examples:** [plan-mode/index.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/plan-mode/index.ts)
 
 ### Pattern 6: Custom Footer
 
@@ -818,7 +818,7 @@ ctx.ui.setFooter(undefined); // restore default
 
 Token stats available via `ctx.sessionManager.getBranch()` and `ctx.model`.
 
-**Examples:** [custom-footer.ts](https://github.com/bastani/atomic/blob/main/packages/coding-agent/examples/extensions/custom-footer.ts)
+**Examples:** [custom-footer.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/custom-footer.ts)
 
 ### Pattern 7: Custom Editor (vim mode, etc.)
 
@@ -894,7 +894,7 @@ export default function (pi: ExtensionAPI) {
 - **Factory pattern**: `setEditorComponent` receives a factory function that gets `tui`, `theme`, and `keybindings`
 - **Pass `undefined`** to restore the default editor: `ctx.ui.setEditorComponent(undefined)`
 
-**Examples:** [modal-editor.ts](https://github.com/bastani/atomic/blob/main/packages/coding-agent/examples/extensions/modal-editor.ts)
+**Examples:** [modal-editor.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/modal-editor.ts)
 
 ## Key Rules
 
@@ -910,12 +910,12 @@ export default function (pi: ExtensionAPI) {
 
 ## Examples
 
-- **Selection UI**: [examples/extensions/preset.ts](https://github.com/bastani/atomic/blob/main/packages/coding-agent/examples/extensions/preset.ts) - SelectList with DynamicBorder framing
-- **Async with cancel**: [examples/extensions/qna.ts](https://github.com/bastani/atomic/blob/main/packages/coding-agent/examples/extensions/qna.ts) - BorderedLoader for LLM calls
-- **Settings toggles**: [examples/extensions/tools.ts](https://github.com/bastani/atomic/blob/main/packages/coding-agent/examples/extensions/tools.ts) - SettingsList for tool enable/disable
-- **Status indicators**: [examples/extensions/plan-mode/index.ts](https://github.com/bastani/atomic/blob/main/packages/coding-agent/examples/extensions/plan-mode/index.ts) - setStatus and setWidget
-- **Working indicator**: [examples/extensions/working-indicator.ts](https://github.com/bastani/atomic/blob/main/packages/coding-agent/examples/extensions/working-indicator.ts) - setWorkingIndicator
-- **Custom footer**: [examples/extensions/custom-footer.ts](https://github.com/bastani/atomic/blob/main/packages/coding-agent/examples/extensions/custom-footer.ts) - setFooter with stats
-- **Custom editor**: [examples/extensions/modal-editor.ts](https://github.com/bastani/atomic/blob/main/packages/coding-agent/examples/extensions/modal-editor.ts) - Vim-like modal editing
-- **Snake game**: [examples/extensions/snake.ts](https://github.com/bastani/atomic/blob/main/packages/coding-agent/examples/extensions/snake.ts) - Full game with keyboard input, game loop
-- **Custom tool rendering**: [examples/extensions/todo.ts](https://github.com/bastani/atomic/blob/main/packages/coding-agent/examples/extensions/todo.ts) - renderCall and renderResult
+- **Selection UI**: [examples/extensions/preset.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/preset.ts) - SelectList with DynamicBorder framing
+- **Async with cancel**: [examples/extensions/qna.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/qna.ts) - BorderedLoader for LLM calls
+- **Settings toggles**: [examples/extensions/tools.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/tools.ts) - SettingsList for tool enable/disable
+- **Status indicators**: [examples/extensions/plan-mode/index.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/plan-mode/index.ts) - setStatus and setWidget
+- **Working indicator**: [examples/extensions/working-indicator.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/working-indicator.ts) - setWorkingIndicator
+- **Custom footer**: [examples/extensions/custom-footer.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/custom-footer.ts) - setFooter with stats
+- **Custom editor**: [examples/extensions/modal-editor.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/modal-editor.ts) - Vim-like modal editing
+- **Snake game**: [examples/extensions/snake.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/snake.ts) - Full game with keyboard input, game loop
+- **Custom tool rendering**: [examples/extensions/todo.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/todo.ts) - renderCall and renderResult

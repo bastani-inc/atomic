@@ -110,10 +110,10 @@ The publish pipeline (`publish.yml`) runs when:
 
 ### Tag Naming
 
-| Tag | npm tag | GitHub Release |
-|-----|---------|----------------|
-| `v<major>.<minor>.<patch>` (e.g. `v0.8.0`) | `latest` | normal release, marked latest |
-| `v<major>.<minor>.<patch>-<prerelease>` (e.g. `v0.8.0-0`) | `next` | prerelease, not marked latest |
+| Tag                                                       | npm tag  | GitHub Release                |
+| --------------------------------------------------------- | -------- | ----------------------------- |
+| `v<major>.<minor>.<patch>` (e.g. `v0.8.0`)                | `latest` | normal release, marked latest |
+| `v<major>.<minor>.<patch>-<prerelease>` (e.g. `v0.8.0-0`) | `next`   | prerelease, not marked latest |
 
 The tag must match `packages/coding-agent/package.json` after removing the leading `v`. All `packages/*` package versions stay in sync via `scripts/bump-version.ts`.
 
@@ -240,13 +240,13 @@ The meaningful pre-publish checks are:
 
 ## Workflow Files Reference
 
-| File | Trigger | Purpose |
-|------|---------|---------|
-| `test.yml` | Push to `main`, PR to `main` | Install, typecheck, validate docs links, build `@bastani/atomic`, unit/integration tests, build native Linux/Windows binaries, and run `atomic --version` archive smoke tests |
-| `publish.yml` | `v*` tag push, manual dispatch with tag input | Smoke test Linux/Windows binaries in parallel, validate docs links before publish metadata checks, build binaries, publish `@bastani/atomic` to npm with OIDC provenance, create GitHub Release with binaries |
-| `code-review.yml` | PR opened/synchronized | Claude-powered code review |
-| `pr-description.yml` | PR opened/synchronized | Claude-powered PR description generation, skipped for Dependabot |
-| `claude.yml` | Issue/PR comments, issues, PR reviews | Interactive Claude assistant gated on `@claude` mentions |
+| File                 | Trigger                                       | Purpose                                                                                                                                                                                                       |
+| -------------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `test.yml`           | Push to `main`, PR to `main`                  | Install, typecheck, validate docs links, build `@bastani/atomic`, unit/integration tests, build native Linux/Windows binaries, and run `atomic --version` archive smoke tests                                 |
+| `publish.yml`        | `v*` tag push, manual dispatch with tag input | Smoke test Linux/Windows binaries in parallel, validate docs links before publish metadata checks, build binaries, publish `@bastani/atomic` to npm with OIDC provenance, create GitHub Release with binaries |
+| `code-review.yml`    | PR opened/synchronized                        | Claude-powered code review                                                                                                                                                                                    |
+| `pr-description.yml` | PR opened/synchronized                        | Claude-powered PR description generation, skipped for Dependabot                                                                                                                                              |
+| `claude.yml`         | Issue/PR comments, issues, PR reviews         | Interactive Claude assistant gated on `@claude` mentions                                                                                                                                                      |
 
 ---
 
@@ -254,41 +254,41 @@ The meaningful pre-publish checks are:
 
 1. Bump versions on `main` (or a short-lived PR branch):
 
-   ```sh
-   bun run scripts/bump-version.ts 0.8.0
-   bun install
-   ```
+    ```sh
+    bun run scripts/bump-version.ts 0.8.0
+    bun install
+    ```
 
 2. Move the `[Unreleased]` section in `packages/coding-agent/CHANGELOG.md` to `## [0.8.0] - <YYYY-MM-DD>`. The publish workflow uses this section as the GitHub Release body.
 
 3. Run local validation:
 
-   ```sh
-   bun run typecheck
-   cd packages/coding-agent && bun run docs:check
-   bun run build
-   cd ../..
-   bun run test:unit
-   bun run test:integration
-   ./scripts/build-binaries.sh --platform linux-x64
-   tmpdir=$(mktemp -d)
-   tar -xzf packages/coding-agent/binaries/atomic-linux-x64.tar.gz -C "$tmpdir"
-   "$tmpdir/atomic/atomic" --version
-   rm -rf "$tmpdir"
-   ```
+    ```sh
+    bun run typecheck
+    cd packages/coding-agent && bun run docs:check
+    bun run build
+    cd ../..
+    bun run test:unit
+    bun run test:integration
+    ./scripts/build-binaries.sh --platform linux-x64
+    tmpdir=$(mktemp -d)
+    tar -xzf packages/coding-agent/binaries/atomic-linux-x64.tar.gz -C "$tmpdir"
+    "$tmpdir/atomic/atomic" --version
+    rm -rf "$tmpdir"
+    ```
 
-   On Windows, substitute `--platform windows-x64`, extract `atomic-windows-x64.zip`, and run `atomic.exe --version`.
+    On Windows, substitute `--platform windows-x64`, extract `atomic-windows-x64.zip`, and run `atomic.exe --version`.
 
 4. Commit and tag:
 
-   ```sh
-   git add packages/*/package.json packages/coding-agent/CHANGELOG.md bun.lock
-   git add packages/*/README.md # only if the version bump script changed README badges
-   git commit -m "chore(release): bump to v0.8.0"
-   git tag v0.8.0
-   git push origin main
-   git push origin v0.8.0
-   ```
+    ```sh
+    git add packages/*/package.json packages/coding-agent/CHANGELOG.md bun.lock
+    git add packages/*/README.md # only if the version bump script changed README badges
+    git commit -m "chore(release): bump to v0.8.0"
+    git tag v0.8.0
+    git push origin main
+    git push origin v0.8.0
+    ```
 
 5. Confirm `publish.yml` runs docs link validation, cross-compiles binaries, publishes `@bastani/atomic` to npm with OIDC provenance, and creates the GitHub Release with binaries attached.
 

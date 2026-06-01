@@ -1,11 +1,11 @@
 # Atomic CLI Update and Uninstall Commands Technical Design Document
 
-| Document Metadata      | Details        |
-| ---------------------- | -------------- |
-| Author(s)              | lavaman131     |
-| Status                 | Draft (WIP)    |
-| Team / Owner           | bastani/atomic |
-| Created / Last Updated | 2026-01-21     |
+| Document Metadata      | Details            |
+| ---------------------- | ------------------ |
+| Author(s)              | lavaman131         |
+| Status                 | Draft (WIP)        |
+| Team / Owner           | bastani-inc/atomic |
+| Created / Last Updated | 2026-01-21         |
 
 ## 1. Executive Summary
 
@@ -380,7 +380,7 @@ export function getBinaryPath(): string {
 ```typescript
 import { join } from "path";
 
-const GITHUB_REPO = "bastani/atomic";
+const GITHUB_REPO = "bastani-inc/atomic";
 
 export interface ReleaseInfo {
     version: string; // e.g., "0.2.0" (without 'v' prefix)
@@ -1219,7 +1219,7 @@ EXAMPLES:
   atomic uninstall            # Remove atomic completely
   atomic uninstall --dry-run  # Preview uninstall
 
-For more information, visit: https://github.com/bastani/atomic
+For more information, visit: https://github.com/bastani-inc/atomic
 `.trim(),
     );
 }

@@ -9,7 +9,7 @@
 
 ## 1. Executive Summary
 
-Windows ARM64 users cannot install or run Atomic CLI due to two issues: (1) `install.ps1` detects ARM64 and requests `atomic-windows-arm64.exe`, which is never built or published -- resulting in a 404 ([#388](https://github.com/bastani/atomic/issues/388)); (2) even if a native ARM64 binary were built, it would crash because `bun:ffi`/TinyCC has no Windows ARM64 backend, breaking OpenTUI's native renderer ([#389](https://github.com/bastani/atomic/issues/389)).
+Windows ARM64 users cannot install or run Atomic CLI due to two issues: (1) `install.ps1` detects ARM64 and requests `atomic-windows-arm64.exe`, which is never built or published -- resulting in a 404 ([#388](https://github.com/bastani-inc/atomic/issues/388)); (2) even if a native ARM64 binary were built, it would crash because `bun:ffi`/TinyCC has no Windows ARM64 backend, breaking OpenTUI's native renderer ([#389](https://github.com/bastani-inc/atomic/issues/389)).
 
 The solution is to ship **two** Windows binaries: a **standard x64** build (with AVX) for the majority of native x64 users, and an **x64-baseline** build (without AVX) for ARM64 users running via Windows 11's Prism x64 emulation. The standard x64 build uses AVX/AVX2 instructions that Prism cannot emulate, but the **`bun-windows-x64-baseline`** compile target (with Bun >= v1.3.11) is guaranteed AVX-free by Bun's static verifier ([PR #27801](https://github.com/oven-sh/bun/pull/27801)). A build-time discriminator flag (`__ATOMIC_BASELINE__`) ensures the baseline binary self-updates to itself, not the standard binary.
 

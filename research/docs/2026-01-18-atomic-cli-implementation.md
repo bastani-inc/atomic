@@ -3,7 +3,7 @@ date: 2026-01-18 19:25:48 PST
 researcher: Claude Opus 4.5
 git_commit: f95c1a67afc46895c97f7b98b1590411e1ee8e9a
 branch: lavaman131/feature/atomic-cli
-repository: bastani/atomic
+repository: bastani-inc/atomic
 topic: "Atomic CLI Implementation - figlet, @clack/prompts, ANSI colors, agent configuration"
 tags: [research, cli, figlet, clack, ansi, bun, typescript]
 status: complete

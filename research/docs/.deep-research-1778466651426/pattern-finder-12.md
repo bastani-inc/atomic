@@ -408,7 +408,7 @@ export function ensureCompletionsSourcedFromRc(
 
 ### Seams for pi-coding-agent Extensions
 
-1. **manifest.json URL**: Parameterize org/repo (currently hardcoded `bastani/atomic`)
+1. **manifest.json URL**: Parameterize org/repo (currently hardcoded `bastani-inc/atomic`)
     - install.ps1:30, install.sh:24, install.cmd:51
     - install.ts: none (binary uses hardcoded URL; move to config)
 

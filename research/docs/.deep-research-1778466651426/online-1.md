@@ -13,15 +13,18 @@ All research was drawn from local `docs/` copies already checked into the reposi
 **Relevant behaviour:**
 
 **`query()` function signature:**
+
 ```typescript
 function query({
   prompt: string | AsyncIterable<SDKUserMessage>,
   options?: Options
 }): Query; // extends AsyncGenerator<SDKMessage, void>
 ```
+
 The `Query` object is an async iterable and also exposes `.setPermissionMode()` for dynamic permission mode switching mid-stream. Used in the SDK as the primary entry point for all Claude Agent SDK stages.
 
 **Hook system — all hooks registered via `options.hooks`:**
+
 - `PreToolUse` — fires before tool execution; can `allow`, `deny`, or inject `systemMessage`. Matcher regex filters by tool name. `hookSpecificOutput.permissionDecision` = `"allow" | "deny" | "ask"`. `updatedInput` modifies tool args (requires `permissionDecision: "allow"`).
 - `PostToolUse` — fires after tool result; can inject `additionalContext`.
 - `Stop` — fires when agent execution stops. Used by the Atomic stop-hook to deliver follow-up prompts and signal session completion.
@@ -33,14 +36,16 @@ The `Query` object is an async iterable and also exposes `.setPermissionMode()` 
 
 **Stop hook integration (Atomic-specific pattern):**
 The stop-hook binary (`atomic _claude-stop-hook`) receives a JSON payload via stdin:
+
 ```typescript
 interface ClaudeStopHookPayload {
-  session_id: string;
-  transcript_path?: string;
-  cwd?: string;
-  stop_hook_active?: boolean;
+    session_id: string;
+    transcript_path?: string;
+    cwd?: string;
+    stop_hook_active?: boolean;
 }
 ```
+
 It returns `{ "decision": "block", "reason": "<next-prompt>" }` to inject the next turn's prompt without tmux send-keys. This is the mechanism documented in `docs/claude-code/agent-sdk/guides/hooks.md` where a `Stop` hook's JSON output `reason` is treated as the next user message.
 
 **In-flight subagent tracking (`claude-inflight-hook`):**
@@ -50,6 +55,7 @@ It returns `{ "decision": "block", "reason": "<next-prompt>" }` to inject the ne
 With `options.includePartialMessages: true`, the query emits `SDKPartialAssistantMessage` (`type: "stream_event"`) containing raw `RawMessageStreamEvent` objects from the Anthropic API. Key event types: `message_start`, `content_block_start`, `content_block_delta` (text: `text_delta`; tool input: `input_json_delta`), `content_block_stop`, `message_delta`, `message_stop`. Without partial messages: stream emits `SDKAssistantMessage`, `SDKResultMessage`, `SDKSystemMessage`, `SDKCompactBoundaryMessage`. Extended thinking disables partial messages.
 
 **Structured output via `outputFormat`:**
+
 ```typescript
 options: {
   outputFormat: {
@@ -58,27 +64,37 @@ options: {
   }
 }
 ```
+
 Result appears in `message.structured_output` on the `ResultMessage` when `message.subtype === "success"`. On retry exhaustion: `subtype === "error_max_structured_output_retries"`. Structured output is incompatible with streaming (no deltas; result only in final `ResultMessage`).
 
 **AskUserQuestion HIL via `canUseTool`:**
+
 ```typescript
 options: {
-  canUseTool: async (toolName, input) => {
-    if (toolName === "AskUserQuestion") {
-      // input.questions: Array<{ question, header, options: Array<{ label, description, preview? }>, multiSelect }>
-      return { behavior: "allow", updatedInput: { questions: input.questions, answers: { [question]: label } } };
-    }
-    return { behavior: "allow", updatedInput: input };
-    // or: return { behavior: "deny", message: "reason" };
-  }
+    canUseTool: async (toolName, input) => {
+        if (toolName === "AskUserQuestion") {
+            // input.questions: Array<{ question, header, options: Array<{ label, description, preview? }>, multiSelect }>
+            return {
+                behavior: "allow",
+                updatedInput: {
+                    questions: input.questions,
+                    answers: { [question]: label },
+                },
+            };
+        }
+        return { behavior: "allow", updatedInput: input };
+        // or: return { behavior: "deny", message: "reason" };
+    };
 }
 ```
+
 `AskUserQuestion` must be listed in `tools` if a restricted tool list is used. Not available in subagents. The `toolConfig.askUserQuestion.previewFormat` option enables HTML/markdown option previews. Live detection: check `toolName === "AskUserQuestion"` in `canUseTool`. Transcript-based detection: find `tool_use` blocks with `name === "AskUserQuestion"` that have no matching `tool_result` in subsequent user messages. The `SDKResultSuccess.deferred_tool_use` field signals that the session ended with a pending (unresolved) tool use.
 
 **Permission modes:**
 `options.permissionMode`: `"default"` | `"dontAsk"` | `"acceptEdits"` | `"bypassPermissions"` | `"plan"` | `"auto"`. Dynamic switch via `query.setPermissionMode(mode)`. `bypassPermissions` is inherited by all subagents and cannot be overridden. `dontAsk` converts any unmatched tool to a hard deny without calling `canUseTool`.
 
 **Subagents via `agents` parameter:**
+
 ```typescript
 options: {
   allowedTools: ["Read", "Grep", "Glob", "Agent"],
@@ -94,25 +110,36 @@ options: {
   }
 }
 ```
+
 Subagents get fresh context windows; only the Agent tool prompt string crosses the boundary. Subagent transcripts stored at `~/.claude/projects/<dir>/<sessionId>/subagents/agent-<agentId>.jsonl`. Resume a subagent by passing `options.resume: sessionId` and including the agent ID in the prompt. Tool was renamed `"Task"` → `"Agent"` in CC v2.1.63; SDK emits `"Agent"` in `tool_use` blocks but `"Task"` in `system:init` tools list.
 
 **Session read functions:**
+
 - `listSessions({ dir?, limit?, includeWorktrees? })` → `SDKSessionInfo[]` sorted by `lastModified` desc
 - `getSessionMessages(sessionId, { dir?, limit?, offset?, includeSystemMessages? })` → `SessionMessage[]` in chronological order via `parentUuid` chain
 - `getSubagentMessages(sessionId, agentId, options?)` → `SessionMessage[]`
 - Session JSONL stored at `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`; encoded-cwd replaces all non-alphanumeric chars with `-`
 
 **`getSessionMessages` and `getSessionInfo` imports:**
+
 ```typescript
-import { getSessionMessages, query as sdkQuery, type SessionMessage, type SDKUserMessage, type Options as SDKOptions } from "@anthropic-ai/claude-agent-sdk";
+import {
+    getSessionMessages,
+    query as sdkQuery,
+    type SessionMessage,
+    type SDKUserMessage,
+    type Options as SDKOptions,
+} from "@anthropic-ai/claude-agent-sdk";
 ```
 
 **Where used in partition:**
+
 - `packages/atomic-sdk/src/providers/claude.ts:26` — imports `getSessionMessages`, `query as sdkQuery`, `SessionMessage`, `SDKUserMessage`, `Options as SDKOptions`
 - `packages/atomic-sdk/src/providers/claude-stop-hook.ts` — implements the Stop hook JSON protocol (`ClaudeStopHookPayload`, block/release/queue polling)
 - `packages/atomic-sdk/src/providers/claude-inflight-hook.ts` — implements SubagentStart/Stop/TeammateIdle hook handlers; `ClaudeInflightHookPayload` carries `session_id`, `agent_id`, `agent_type`
 
 **Dependencies pinning Atomic to Claude Agent SDK:**
+
 - The entire `providers/claude.ts` abstraction (session lifecycle, tmux send-keys automation, JSONL watching for idle detection, stop-hook protocol)
 - `providers/claude-stop-hook.ts` — stop hook binary and queue/release marker directory protocol
 - `providers/claude-inflight-hook.ts` — inflight subagent tracking directory protocol
@@ -130,6 +157,7 @@ import { getSessionMessages, query as sdkQuery, type SessionMessage, type SDKUse
 **Relevant behaviour:**
 
 **Client lifecycle:**
+
 ```typescript
 const client = new CopilotClient({
   cliPath?: string,         // default: COPILOT_CLI_PATH env var or bundled instance
@@ -146,6 +174,7 @@ await client.stop();
 ```
 
 **Session creation (onPermissionRequest required):**
+
 ```typescript
 const session = await client.createSession({
   model?: string,           // required when using custom provider
@@ -161,6 +190,7 @@ const session = await client.createSession({
 ```
 
 **`session.send()` / `session.sendAndWait()`:**
+
 ```typescript
 await session.send({ prompt: string, attachments?, mode?: "enqueue"|"immediate" });
 // sendAndWait blocks until session.idle event fires:
@@ -168,6 +198,7 @@ await session.sendAndWait({ prompt }, timeout?);
 ```
 
 **`defineTool()` with Zod (the custom tool API):**
+
 ```typescript
 import { defineTool } from "@github/copilot-sdk";
 import { z } from "zod";
@@ -181,31 +212,35 @@ defineTool("tool_name", {
 ```
 
 **HIL: `onUserInputRequest` (primary mechanism — RPC handler):**
+
 ```typescript
 onUserInputRequest: async (request, invocation) => {
-  // request.question: string
-  // request.choices?: string[]
-  // request.allowFreeform?: boolean (default true)
-  return { answer: string, wasFreeform: boolean }
-}
+    // request.question: string
+    // request.choices?: string[]
+    // request.allowFreeform?: boolean (default true)
+    return { answer: string, wasFreeform: boolean };
+};
 ```
+
 When provided, sends `requestUserInput: true` in `session.create` RPC, enabling the `ask_user` tool on the CLI. The CLI makes a direct `userInput.request` RPC call that must return the user's answer.
 
 **HIL: passive event observation:**
+
 ```typescript
 session.on("user_input.requested", (event) => {
-  // event.data: { requestId, question, choices?, allowFreeform?, toolCallId? }
-  // ephemeral: true — not persisted to disk
+    // event.data: { requestId, question, choices?, allowFreeform?, toolCallId? }
+    // ephemeral: true — not persisted to disk
 });
 session.on("user_input.completed", (event) => {
-  // event.data: { requestId }
-  // ephemeral: true
+    // event.data: { requestId }
+    // ephemeral: true
 });
 session.on("session.idle", (event) => {
-  // event.data: { backgroundTasks?: { agents, shells }, aborted? }
-  // ephemeral: true — signals turn completion
+    // event.data: { backgroundTasks?: { agents, shells }, aborted? }
+    // ephemeral: true — signals turn completion
 });
 ```
+
 `session.idle` is the canonical "turn done" signal; `sendAndWait` uses it internally.
 
 **Permission handling:**
@@ -215,6 +250,7 @@ session.on("session.idle", (event) => {
 `CopilotClientOptions.cliPath` falls back to `COPILOT_CLI_PATH` env var, then bundled instance. The `isCopilotShim()` function in `providers/copilot.ts` detects Node.js/npm-loader shim files that should not be passed as the CLI executable (checks `.js` extension, `node_modules/.bin/` path, and `#!/usr/bin/env node` shebang in first 256 bytes).
 
 **Session hooks (`SessionHooks`):**
+
 ```typescript
 hooks: {
   onPreToolUse: async (input, invocation) => ({ permissionDecision, modifiedArgs?, additionalContext? }),
@@ -233,10 +269,12 @@ Background compaction at configurable context thresholds. Events: `session.compa
 Three modes: append-only (default), `mode: "customize"` (section-level overrides: `replace | remove | append | prepend`), `mode: "replace"` (full override, removes guardrails). Section IDs: `identity`, `tone`, `tool_efficiency`, `environment_context`, `code_change_rules`, `guidelines`, `safety`, `tool_instructions`, `custom_instructions`, `last_instructions`.
 
 **Where used in partition:**
+
 - `packages/atomic-sdk/src/providers/copilot.ts:13` — imports `CopilotClientOptions`, `SessionConfig as CopilotSessionConfig` from `@github/copilot-sdk`; implements `isCopilotShim()`, `copilotSubprocessEnv()`, and resume adapter
 - All built-in workflow variants under `workflows/builtin/*/copilot/`
 
 **Dependencies pinning Atomic to Copilot SDK:**
+
 - `providers/copilot.ts` — CLI path resolution, shim detection, subprocess env construction, session resume metadata
 - `workflows/builtin/ralph/copilot/`, `workflows/builtin/deep-research-codebase/copilot/`, `workflows/builtin/open-claude-design/copilot/` — provider-specific workflow entry points
 
@@ -249,6 +287,7 @@ Three modes: append-only (default), `mode: "customize"` (section-level overrides
 **Relevant behaviour:**
 
 **Client creation:**
+
 ```typescript
 import { createOpencode } from "@opencode-ai/sdk"
 const { client } = await createOpencode({
@@ -264,6 +303,7 @@ const client = createOpencodeClient({ baseUrl: "http://localhost:4096" })
 ```
 
 **`session.prompt()` with `format` parameter (structured output):**
+
 ```typescript
 const result = await client.session.prompt({
   path: { id: sessionId },
@@ -283,19 +323,23 @@ const result = await client.session.prompt({
 ```
 
 **Permission records:**
+
 ```typescript
 client.postSessionByIdPermissionsByPermissionId({
-  path: { id: sessionId, permissionId: string },
-  body: { /* permission decision */ }
-})
+    path: { id: sessionId, permissionId: string },
+    body: {
+        /* permission decision */
+    },
+});
 ```
 
 **Event subscription (SSE stream):**
+
 ```typescript
-const events = await client.event.subscribe()
+const events = await client.event.subscribe();
 for await (const event of events.stream) {
-  // event is a member of the Event discriminated union
-  console.log(event.type, event.properties)
+    // event is a member of the Event discriminated union
+    console.log(event.type, event.properties);
 }
 ```
 
@@ -306,10 +350,12 @@ for await (const event of events.stream) {
 OpenCode only registers its interactive `question` tool when `OPENCODE_CLIENT` is one of `"app" | "cli" | "desktop"`. Setting `OPENCODE_CLIENT=sdk` (the `HEADLESS_OPENCODE_CLIENT_ID` constant) suppresses the question tool entirely for headless workflow stages. The `withHeadlessOpencodeEnv()` function in `providers/opencode.ts` wraps `createOpencode(...)` calls with reference counting to handle concurrent parallel stages safely.
 
 **Where used in partition:**
+
 - `packages/atomic-sdk/src/providers/opencode.ts:25` — `HEADLESS_OPENCODE_CLIENT_ID = "sdk"`, `withHeadlessOpencodeEnv()`, resume adapter
 - All built-in workflow variants under `workflows/builtin/*/opencode/`
 
 **Dependencies pinning Atomic to OpenCode SDK:**
+
 - `providers/opencode.ts` — `OPENCODE_CLIENT` env management, headless question-tool suppression, session resume metadata
 - `workflows/builtin/ralph/opencode/`, `workflows/builtin/deep-research-codebase/opencode/`, `workflows/builtin/open-claude-design/opencode/`
 
@@ -323,6 +369,7 @@ OpenCode only registers its interactive `question` tool when `OPENCODE_CLIENT` i
 OpenTUI provides a React-compatible reconciler for terminal UIs. The partition exports `./tui` (`src/tui/index.ts`), `./runtime/attached-footer` (`src/runtime/attached-footer.ts`), and `./workflows/components` (`src/components/workflow-picker-panel.tsx`), all of which render TUI panes/layouts via `@opentui/react`. The `SyntaxStyle` resource pattern (from codebase memory) requires `useEffect` cleanup calling `.destroy()` — not cleanup inside `useMemo`. This pattern is load-bearing in any OpenTUI component using syntax highlighting. No external fetch required for this library; behavior is documented via the `opentui` agent skill.
 
 **Where used in partition:**
+
 - `packages/atomic-sdk/src/components/workflow-picker-panel.tsx` — workflow picker UI panel
 - `packages/atomic-sdk/src/runtime/attached-footer.ts` — footer rendering in the orchestrator runtime
 - `packages/atomic-sdk/src/tui/index.ts` and related TUI helpers

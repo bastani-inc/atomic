@@ -35,7 +35,7 @@ The fix is straightforward: in the `updateCommand()` function, before calling `e
 
 ### Current Update Flow (TypeScript - `updateCommand()`)
 
-The update command in [`src/commands/update.ts:153-290`](https://github.com/bastani/atomic/blob/66dcde04b92769bf112cf8dfb24d08b91d60d846/src/commands/update.ts#L153-L290) follows this sequence:
+The update command in [`src/commands/update.ts:153-290`](https://github.com/bastani-inc/atomic/blob/66dcde04b92769bf112cf8dfb24d08b91d60d846/src/commands/update.ts#L153-L290) follows this sequence:
 
 1. Detect installation type (must be "binary")
 2. Fetch latest release info from GitHub API
@@ -61,7 +61,7 @@ s.stop("Config files updated");
 
 ### `extractConfig()` Function
 
-In [`src/commands/update.ts:116-147`](https://github.com/bastani/atomic/blob/66dcde04b92769bf112cf8dfb24d08b91d60d846/src/commands/update.ts#L116-L147):
+In [`src/commands/update.ts:116-147`](https://github.com/bastani-inc/atomic/blob/66dcde04b92769bf112cf8dfb24d08b91d60d846/src/commands/update.ts#L116-L147):
 
 ```typescript
 async function extractConfig(archivePath: string, dataDir: string): Promise<void> {
@@ -82,7 +82,7 @@ Both `tar -xzf` and `Expand-Archive -Force` will **overwrite** files that exist 
 
 ### Data Directory Resolution
 
-In [`src/utils/config-path.ts:54-64`](https://github.com/bastani/atomic/blob/66dcde04b92769bf112cf8dfb24d08b91d60d846/src/utils/config-path.ts#L54-L64):
+In [`src/utils/config-path.ts:54-64`](https://github.com/bastani-inc/atomic/blob/66dcde04b92769bf112cf8dfb24d08b91d60d846/src/utils/config-path.ts#L54-L64):
 
 - **Unix:** `$XDG_DATA_HOME/atomic` or `~/.local/share/atomic`
 - **Windows:** `%LOCALAPPDATA%\atomic`
@@ -142,18 +142,18 @@ If the update fails after removing the data dir but before extraction completes,
 
 ### Test Impact
 
-The E2E test in [`tests/e2e/update-command.test.ts`](https://github.com/bastani/atomic/blob/66dcde04b92769bf112cf8dfb24d08b91d60d846/tests/e2e/update-command.test.ts) only tests error paths and installation type detection (it runs from source, not binary). No existing tests directly test the config extraction step of the update flow, so the change should not break any tests. New tests could be added to verify the data directory is clean after update.
+The E2E test in [`tests/e2e/update-command.test.ts`](https://github.com/bastani-inc/atomic/blob/66dcde04b92769bf112cf8dfb24d08b91d60d846/tests/e2e/update-command.test.ts) only tests error paths and installation type detection (it runs from source, not binary). No existing tests directly test the config extraction step of the update flow, so the change should not break any tests. New tests could be added to verify the data directory is clean after update.
 
 ## Code References
 
-- [`src/commands/update.ts:245-249`](https://github.com/bastani/atomic/blob/66dcde04b92769bf112cf8dfb24d08b91d60d846/src/commands/update.ts#L245-L249) - Config extraction in update (the lines to modify)
-- [`src/commands/update.ts:116-147`](https://github.com/bastani/atomic/blob/66dcde04b92769bf112cf8dfb24d08b91d60d846/src/commands/update.ts#L116-L147) - `extractConfig()` function
-- [`src/commands/update.ts:10`](https://github.com/bastani/atomic/blob/66dcde04b92769bf112cf8dfb24d08b91d60d846/src/commands/update.ts#L10) - `rm` already imported from `fs/promises`
-- [`src/utils/config-path.ts:54-64`](https://github.com/bastani/atomic/blob/66dcde04b92769bf112cf8dfb24d08b91d60d846/src/utils/config-path.ts#L54-L64) - `getBinaryDataDir()` function
-- [`src/utils/config-path.ts:77-94`](https://github.com/bastani/atomic/blob/66dcde04b92769bf112cf8dfb24d08b91d60d846/src/utils/config-path.ts#L77-L94) - `getConfigRoot()` validates data dir exists
-- [`install.sh:167-203`](https://github.com/bastani/atomic/blob/66dcde04b92769bf112cf8dfb24d08b91d60d846/install.sh#L167-L203) - Bash installer data dir setup + extraction
-- [`install.ps1:49-141`](https://github.com/bastani/atomic/blob/66dcde04b92769bf112cf8dfb24d08b91d60d846/install.ps1#L49-L141) - PowerShell installer data dir setup + extraction
-- [`tests/e2e/update-command.test.ts`](https://github.com/bastani/atomic/blob/66dcde04b92769bf112cf8dfb24d08b91d60d846/tests/e2e/update-command.test.ts) - Existing E2E tests (unaffected)
+- [`src/commands/update.ts:245-249`](https://github.com/bastani-inc/atomic/blob/66dcde04b92769bf112cf8dfb24d08b91d60d846/src/commands/update.ts#L245-L249) - Config extraction in update (the lines to modify)
+- [`src/commands/update.ts:116-147`](https://github.com/bastani-inc/atomic/blob/66dcde04b92769bf112cf8dfb24d08b91d60d846/src/commands/update.ts#L116-L147) - `extractConfig()` function
+- [`src/commands/update.ts:10`](https://github.com/bastani-inc/atomic/blob/66dcde04b92769bf112cf8dfb24d08b91d60d846/src/commands/update.ts#L10) - `rm` already imported from `fs/promises`
+- [`src/utils/config-path.ts:54-64`](https://github.com/bastani-inc/atomic/blob/66dcde04b92769bf112cf8dfb24d08b91d60d846/src/utils/config-path.ts#L54-L64) - `getBinaryDataDir()` function
+- [`src/utils/config-path.ts:77-94`](https://github.com/bastani-inc/atomic/blob/66dcde04b92769bf112cf8dfb24d08b91d60d846/src/utils/config-path.ts#L77-L94) - `getConfigRoot()` validates data dir exists
+- [`install.sh:167-203`](https://github.com/bastani-inc/atomic/blob/66dcde04b92769bf112cf8dfb24d08b91d60d846/install.sh#L167-L203) - Bash installer data dir setup + extraction
+- [`install.ps1:49-141`](https://github.com/bastani-inc/atomic/blob/66dcde04b92769bf112cf8dfb24d08b91d60d846/install.ps1#L49-L141) - PowerShell installer data dir setup + extraction
+- [`tests/e2e/update-command.test.ts`](https://github.com/bastani-inc/atomic/blob/66dcde04b92769bf112cf8dfb24d08b91d60d846/tests/e2e/update-command.test.ts) - Existing E2E tests (unaffected)
 
 ## Architecture Documentation
 

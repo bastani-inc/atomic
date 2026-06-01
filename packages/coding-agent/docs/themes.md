@@ -291,9 +291,9 @@ echo $COLORTERM  # Should output "truecolor" or "24bit"
 ## Examples
 
 See the built-in themes:
-- [dark.json](https://github.com/bastani/atomic/blob/main/packages/coding-agent/src/modes/interactive/theme/dark.json)
-- [light.json](https://github.com/bastani/atomic/blob/main/packages/coding-agent/src/modes/interactive/theme/light.json)
-- [catppuccin-frappe.json](https://github.com/bastani/atomic/blob/main/packages/coding-agent/src/modes/interactive/theme/catppuccin-frappe.json)
-- [catppuccin-latte.json](https://github.com/bastani/atomic/blob/main/packages/coding-agent/src/modes/interactive/theme/catppuccin-latte.json)
-- [catppuccin-macchiato.json](https://github.com/bastani/atomic/blob/main/packages/coding-agent/src/modes/interactive/theme/catppuccin-macchiato.json)
-- [catppuccin-mocha.json](https://github.com/bastani/atomic/blob/main/packages/coding-agent/src/modes/interactive/theme/catppuccin-mocha.json)
+- [dark.json](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/modes/interactive/theme/dark.json)
+- [light.json](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/modes/interactive/theme/light.json)
+- [catppuccin-frappe.json](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/modes/interactive/theme/catppuccin-frappe.json)
+- [catppuccin-latte.json](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/modes/interactive/theme/catppuccin-latte.json)
+- [catppuccin-macchiato.json](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/modes/interactive/theme/catppuccin-macchiato.json)
+- [catppuccin-mocha.json](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/modes/interactive/theme/catppuccin-mocha.json)

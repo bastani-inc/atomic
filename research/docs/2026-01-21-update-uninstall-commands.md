@@ -228,13 +228,13 @@ checksums.txt
 
 ```
 # Latest release
-https://api.github.com/repos/bastani/atomic/releases/latest
+https://api.github.com/repos/bastani-inc/atomic/releases/latest
 
 # Specific version
-https://github.com/bastani/atomic/releases/download/v{version}/atomic-{platform}
+https://github.com/bastani-inc/atomic/releases/download/v{version}/atomic-{platform}
 
 # Config files
-https://github.com/bastani/atomic/releases/download/v{version}/atomic-config.tar.gz
+https://github.com/bastani-inc/atomic/releases/download/v{version}/atomic-config.tar.gz
 ```
 
 ### 5. Update Command Implementation
@@ -329,7 +329,7 @@ async function replaceBinaryWindows(newBinary: string, targetPath: string) {
 // Fetch latest version from GitHub API
 async function getLatestVersion(): Promise<string> {
     const response = await fetch(
-        "https://api.github.com/repos/bastani/atomic/releases/latest",
+        "https://api.github.com/repos/bastani-inc/atomic/releases/latest",
     );
     const data = await response.json();
     return data.tag_name; // e.g., "v0.1.0"

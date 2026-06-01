@@ -24,8 +24,8 @@
  *   - select          : vertical choice list, ←/→ cycles choices
  *
  * cross-ref:
- *   - bastani/atomic research/designs/workflow-picker-tui.tsx (PROMPT phase)
- *   - bastani/atomic packages/atomic-sdk/src/components/workflow-picker-panel.tsx
+ *   - bastani-inc/atomic research/designs/workflow-picker-tui.tsx (PROMPT phase)
+ *   - bastani-inc/atomic packages/atomic-sdk/src/components/workflow-picker-panel.tsx
  *   - src/tui/session-picker.ts (sibling overlay; same chrome + key style)
  *   - DESIGN.md §5 Section Labels
  */
