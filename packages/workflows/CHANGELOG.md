@@ -23,6 +23,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Fixed bundled workflow modules so they import the leaf `defineWorkflow` authoring API instead of the public package entrypoint, avoiding an ESM initialization cycle during builtin workflow discovery.
 - Fixed workflow HIL prompts so awaiting-input and answered-prompt notices no longer wake the main chat agent, answer notices stay out of LLM context and explicitly forbid auto-answering later HIL prompts, and stale Enter input from graph/connect focus transitions is quarantined when prompts appear after the attach pane is already open, covering input, confirm, select, and editor prompts ([#1163](https://github.com/bastani-inc/atomic/issues/1163)).
 - Fixed workflow run widgets so store changes and elapsed-time ticks repaint through a long-lived reactive widget instead of waiting for unrelated chat input or remounting the widget ([#1150](https://github.com/bastani-inc/atomic/issues/1150)).
 - Fixed `/workflow reload` and `workflow({ action: "reload" })` so newly added package-manifest workflow entries are rediscovered in-process without requiring top-level `/reload` or restart ([#1155](https://github.com/bastani-inc/atomic/issues/1155)).

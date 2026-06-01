@@ -27,7 +27,7 @@
  * embeds the agreed-upon design alongside the implementation handoff.
  */
 
-import { defineWorkflow } from "../src/index.js";
+import { defineWorkflow } from "../src/workflows/define-workflow.js";
 import type {
   WorkflowTaskResult,
   WorkflowTaskStep,

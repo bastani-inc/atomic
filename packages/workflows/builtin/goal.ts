@@ -10,7 +10,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { defineWorkflow } from "../src/index.js";
+import { defineWorkflow } from "../src/workflows/define-workflow.js";
 import type { WorkflowTaskResult } from "../src/shared/types.js";
 import { WORKER_PREFLIGHT_CONTRACT } from "./shared-prompts.js";
 

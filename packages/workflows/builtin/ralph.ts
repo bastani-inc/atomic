@@ -10,7 +10,7 @@
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { defineWorkflow } from "../src/index.js";
+import { defineWorkflow } from "../src/workflows/define-workflow.js";
 import type {
   WorkflowRunContext,
   WorkflowTaskResult,

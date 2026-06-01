@@ -11,7 +11,7 @@
 import { readFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, extname, isAbsolute, join, relative } from "node:path";
-import { defineWorkflow } from "../src/index.js";
+import { defineWorkflow } from "../src/workflows/define-workflow.js";
 import type {
   WorkflowOutputMode,
   WorkflowRunContext,
