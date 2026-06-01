@@ -17,14 +17,14 @@ jobs:
         strategy:
             matrix:
                 include:
-                    - os: ubuntu-latest
+                    - os: blacksmith-4vcpu-ubuntu-2404
                       binary_platform: linux-x64
                     - os: blacksmith-4vcpu-windows-2025
                       binary_platform: windows-x64
             fail-fast: false
         runs-on: ${{ matrix.os }}
         steps:
-            - uses: actions/checkout@v6
+            - uses: useblacksmith/checkout@v1
             - uses: oven-sh/setup-bun@v2
               with:
                   bun-version: latest

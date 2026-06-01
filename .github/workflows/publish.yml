@@ -31,7 +31,7 @@ jobs:
         runs-on: blacksmith-4vcpu-ubuntu-2404
 
         steps:
-            - uses: actions/checkout@v6
+            - uses: useblacksmith/checkout@v1
               with:
                   ref: ${{ github.event.inputs.tag || github.ref_name }}
                   persist-credentials: false
@@ -97,7 +97,7 @@ jobs:
         runs-on: blacksmith-4vcpu-windows-2025
 
         steps:
-            - uses: actions/checkout@v6
+            - uses: useblacksmith/checkout@v1
               with:
                   ref: ${{ github.event.inputs.tag || github.ref_name }}
                   persist-credentials: false
@@ -193,7 +193,7 @@ jobs:
                   fi
                   echo "ref=$ref" >> "$GITHUB_OUTPUT"
 
-            - uses: actions/checkout@v6
+            - uses: useblacksmith/checkout@v1
               with:
                   ref: ${{ steps.checkout_ref.outputs.ref }}
                   fetch-depth: 0
