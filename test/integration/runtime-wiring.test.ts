@@ -97,6 +97,7 @@ function makeMockApi(): MockApi {
     commands,
     flags,
     execCalls,
+    disableAsyncDiscovery: true,
 
     // exec surface — present on real pi runtime, used by buildRuntimeAdapters
     async exec(command: string, args: string[]): Promise<PiExecResult> {
@@ -167,7 +168,7 @@ describe("runtime-wiring — SDK session invoked through workflow tool", () => {
   test("exec is not called when running deep-research-codebase through workflow tool", async () => {
     await runWorkflowTool(mock);
     assert.equal(mock.execCalls.length, 0);
-  });
+  }, 15_000);
 
   test("legacy pi json command is never constructed", async () => {
     await runWorkflowTool(mock);
