@@ -6,9 +6,6 @@
  * stay consistent.
  */
 
-import { existsSync } from "node:fs";
-import { createRequire } from "node:module";
-import { isBunBinary } from "@bastani/atomic";
 import { createJiti } from "jiti/static";
 import * as workflowsSdkSurface from "../sdk-surface.js";
 import deepResearchCodebase from "../../builtin/deep-research-codebase.js";
@@ -23,7 +20,6 @@ const runWorkflow: RunWorkflowFunction = async (...args) => {
   return actualRunWorkflow(...args);
 };
 
-const require = createRequire(import.meta.url);
 const WORKFLOWS_MODULE_SPECIFIER = "@bastani/workflows";
 const WORKFLOWS_BUILTIN_MODULE_SPECIFIER = `${WORKFLOWS_MODULE_SPECIFIER}/builtin`;
 // Keep this in sync with index.ts through sdk-surface.ts. runWorkflow stays as
@@ -48,36 +44,19 @@ const WORKFLOWS_VIRTUAL_MODULES: Record<string, unknown> = {
   [`${WORKFLOWS_BUILTIN_MODULE_SPECIFIER}/ralph`]: { default: ralph },
 };
 
-function resolveWorkflowPackageSpecifier(specifier: string): string {
-  // Resolve package self-references through package.json exports instead of
-  // pinning loader code to the current source layout.
-  const entry = require.resolve(specifier);
-  if (!existsSync(entry)) {
-    throw new Error(
-      `Unable to resolve ${specifier} entry at ${entry}. ` +
-        "Check the package exports map for the workflows package.",
-    );
-  }
-  return entry;
-}
-
 const workflowModuleLoader = createJiti(import.meta.url, {
   moduleCache: false,
   // Keep workflow-file import semantics deterministic: jiti owns .ts/.js/.mjs/.cjs
   // resolution instead of handing some imports back to native import().
   tryNative: false,
-  ...(isBunBinary
-    ? { virtualModules: WORKFLOWS_VIRTUAL_MODULES }
-    : {
-        alias: {
-          [WORKFLOWS_MODULE_SPECIFIER]: resolveWorkflowPackageSpecifier(WORKFLOWS_MODULE_SPECIFIER),
-          [WORKFLOWS_BUILTIN_MODULE_SPECIFIER]: resolveWorkflowPackageSpecifier(WORKFLOWS_BUILTIN_MODULE_SPECIFIER),
-          [`${WORKFLOWS_BUILTIN_MODULE_SPECIFIER}/deep-research-codebase`]: resolveWorkflowPackageSpecifier(`${WORKFLOWS_BUILTIN_MODULE_SPECIFIER}/deep-research-codebase`),
-          [`${WORKFLOWS_BUILTIN_MODULE_SPECIFIER}/goal`]: resolveWorkflowPackageSpecifier(`${WORKFLOWS_BUILTIN_MODULE_SPECIFIER}/goal`),
-          [`${WORKFLOWS_BUILTIN_MODULE_SPECIFIER}/open-claude-design`]: resolveWorkflowPackageSpecifier(`${WORKFLOWS_BUILTIN_MODULE_SPECIFIER}/open-claude-design`),
-          [`${WORKFLOWS_BUILTIN_MODULE_SPECIFIER}/ralph`]: resolveWorkflowPackageSpecifier(`${WORKFLOWS_BUILTIN_MODULE_SPECIFIER}/ralph`),
-        },
-      }),
+  // Resolve the @bastani/workflows SDK (and its builtin submodules) to in-memory
+  // surfaces in every runtime. This mirrors the compiled bun binary path and
+  // keeps discovery fast: aliasing the SDK to its on-disk package re-evaluated
+  // the entire SDK module graph once per workflow file (moduleCache stays false),
+  // which scaled discovery to multiple seconds on projects with many workflow
+  // files. Workflow files themselves are still evaluated fresh from disk, so
+  // `/workflow reload` continues to observe edits.
+  virtualModules: WORKFLOWS_VIRTUAL_MODULES,
 });
 
 function materializeModuleObject(mod: object): Record<string, unknown> {
