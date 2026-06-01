@@ -327,6 +327,8 @@ Prompt answer replay is live-memory only. `StageSnapshot.promptAnswerState` repo
 
 ### `workflow` tool (LLM-callable)
 
+<!-- Keep the description below in sync with WORKFLOW_TOOL_DESCRIPTION in packages/workflows/src/extension/index.ts; integration tests assert this. -->
+
 ```json
 {
   "name": "workflow",

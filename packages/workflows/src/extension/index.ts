@@ -112,7 +112,7 @@ import type { PiMcpExtensionAPI, PiEventBus } from "./mcp.js";
 import type { StageSessionRuntime } from "../runs/foreground/stage-runner.js";
 import { WORKFLOW_STAGE_SUBAGENT_GUARD_ENV, getEnvValue, type CreateAgentSessionOptions } from "@bastani/atomic";
 
-const WORKFLOW_TOOL_DESCRIPTION =
+export const WORKFLOW_TOOL_DESCRIPTION =
   "Run named workflows or direct one-off task/tasks/chain workflows; " +
   "discover with list/get/inputs, inspect status/stages/stage details/transcripts, " +
   "send prompt answers or steering, pause/resume/interrupt/kill runs, and reload workflow resources.";

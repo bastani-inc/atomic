@@ -39,7 +39,7 @@ Type `/` in the editor to open command completion. Extensions can register custo
 | `/model` | Switch models |
 | `/scoped-models` | Enable/disable models for CTRL+P cycling |
 | `/fast` | Toggle Codex fast mode for chat and workflow stages when `openai/*` or `openai-codex/*` models are available |
-| `/workflow` | List and run workflows; connect to, inspect, pause, interrupt, resume, or kill workflow runs; reload workflow resources |
+| `/workflow` | List/run workflows; manage runs (connect/inspect/pause/interrupt/resume/kill); reload workflow resources |
 | `/settings` | Thinking level, theme, message delivery, transport |
 | `/resume` | Pick from previous sessions |
 | `/new` | Start a new session |

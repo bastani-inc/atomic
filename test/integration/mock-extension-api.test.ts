@@ -13,6 +13,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import factory, {
+  WORKFLOW_TOOL_DESCRIPTION,
   makeExecuteWorkflowTool,
   type ExtensionAPI,
   type PiToolOpts,
@@ -227,10 +228,19 @@ describe("MockExtensionAPI — tool registration", () => {
   test("tool description covers current workflow capabilities", () => {
     const description = mock.tools[0]!.opts.description;
     assert.equal(typeof description, "string");
+    assert.equal(description, WORKFLOW_TOOL_DESCRIPTION);
     assert.ok(!description.includes("defined multi-stage workflow by name"));
     for (const token of EXPECTED_WORKFLOW_DESCRIPTION_TOKENS) {
       assert.ok(description.includes(token), `description mentions ${token}`);
     }
+  });
+
+  test("README workflow tool description stays in sync", () => {
+    const readme = readFileSync(join(process.cwd(), "packages/workflows/README.md"), "utf8");
+    assert.ok(
+      readme.includes(`"description": "${WORKFLOW_TOOL_DESCRIPTION}",`),
+      "README JSON example includes WORKFLOW_TOOL_DESCRIPTION",
+    );
   });
 
   test("tool has parameters schema (TypeBox object)", () => {
