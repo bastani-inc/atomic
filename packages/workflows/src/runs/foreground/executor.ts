@@ -1790,22 +1790,17 @@ function assertWorkflowRunOutputs(
 }
 
 function selectWorkflowOutputs(
-  parentName: string,
-  childName: string,
   child: WorkflowDefinition,
   rawOutput: WorkflowOutputValues | undefined,
 ): WorkflowOutputValues {
   const declarations = child.outputs ?? {};
   const sourceOutput = rawOutput ?? {};
-  assertWorkflowOutputsExplicit(
-    `workflow "${parentName}" child "${childName}"`,
-    sourceOutput,
-    declarations,
-    ` from "${child.name}"`,
-  );
-
-  // Undeclared keys are already rejected above, so a child's exposed outputs are
-  // exactly its declared outputs that were returned.
+  // The child run already validated its return against these declared outputs
+  // (assertWorkflowRunOutputs) before it could complete, so undeclared keys are
+  // impossible here and a second assertWorkflowOutputsExplicit pass could never
+  // fire. Just project the declared outputs the child returned. (An undeclared
+  // key fails the child run itself; the parent surfaces that as a wrapped
+  // "child workflow ... failed" error.)
   const selected: Record<string, WorkflowSerializableValue> = {};
   for (const key of Object.keys(declarations)) {
     const value = sourceOutput[key];
@@ -3328,7 +3323,7 @@ export async function run<TInputs extends WorkflowInputValues>(
           );
         }
 
-        const outputs = selectWorkflowOutputs(erasedDef.name, childName, child, childRun.result);
+        const outputs = selectWorkflowOutputs(child, childRun.result);
         const childResult: WorkflowChildResult = {
           workflow: child.normalizedName,
           runId: childRun.runId,
