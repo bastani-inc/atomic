@@ -180,7 +180,7 @@ export class StageUiBroker {
       this.hideHost(
         previousHost,
         request,
-        new Error(`pi-workflows: stage ${stageId} custom UI host replaced`),
+        new Error(`atomic-workflows: stage ${stageId} custom UI host replaced`),
       );
     }
     this.hosts.set(hostKey, host);
@@ -206,12 +206,12 @@ export class StageUiBroker {
     signal?: AbortSignal,
   ): Promise<T> {
     if (signal?.aborted) {
-      return Promise.reject(signal.reason ?? new Error("pi-workflows: stage UI request aborted"));
+      return Promise.reject(signal.reason ?? new Error("atomic-workflows: stage UI request aborted"));
     }
     const hostKey = key(runId, stageId);
     const existing = this.pending.get(hostKey);
     if (existing) {
-      return Promise.reject(new Error(`pi-workflows: stage ${stageId} already has a pending custom UI request`));
+      return Promise.reject(new Error(`atomic-workflows: stage ${stageId} already has a pending custom UI request`));
     }
 
     let request!: StageCustomUiRequest<T>;
@@ -229,7 +229,7 @@ export class StageUiBroker {
     });
 
     const onAbort = (): void => {
-      this.reject(request, signal?.reason ?? new Error("pi-workflows: stage UI request aborted"));
+      this.reject(request, signal?.reason ?? new Error("atomic-workflows: stage UI request aborted"));
     };
     signal?.addEventListener("abort", onAbort, { once: true });
 

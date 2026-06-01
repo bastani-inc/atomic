@@ -114,8 +114,11 @@ import { WORKFLOW_STAGE_SUBAGENT_GUARD_ENV, getEnvValue, type CreateAgentSession
 
 export const WORKFLOW_TOOL_DESCRIPTION =
   "Run named workflows or direct one-off task/tasks/chain workflows; " +
-  "discover with list/get/inputs, inspect status/stages/stage details/transcripts, " +
-  "send prompt answers or steering, pause/resume/interrupt/kill runs, and reload workflow resources.";
+  "discover with list/get/inputs, inspect status/stages/stage details, " +
+  "send prompt answers or steering, pause/resume/interrupt/kill runs, and reload workflow resources. " +
+  "For transcripts, prefer status/stages/stage to get sessionFile/transcriptPath, " +
+  "quote the exact path without rewriting separators (Windows backslashes are valid), " +
+  "search it with rg/grep, and read small ranges; use transcript with explicit tail or limit only for recent-context checks.";
 
 // ---------------------------------------------------------------------------
 // Minimal ExtensionAPI structural types
@@ -629,6 +632,20 @@ function renderTranscriptToolContent(
   ];
   if (result.sessionId) lines.push(`sessionId: ${result.sessionId}`);
   if (result.sessionFile) lines.push(`sessionFile: ${result.sessionFile}`);
+  if (result.sessionFile) lines.push(`sessionFileJson: ${JSON.stringify(result.sessionFile)}`);
+  if (result.transcriptPath) lines.push(`transcriptPath: ${result.transcriptPath}`);
+  if (result.transcriptPath) lines.push(`transcriptPathJson: ${JSON.stringify(result.transcriptPath)}`);
+  if (result.entryCount !== undefined) lines.push(`availableEntries: ${result.entryCount}`);
+  if (result.entryLimit !== undefined) lines.push(`entryLimit: ${result.entryLimit}`);
+  if (result.entriesOmitted === true) {
+    lines.push("entries: omitted (reference-first default)");
+    lines.push(
+      result.transcriptPath
+        ? "lazyRead: quote the exact transcriptPath/sessionFile value (do not rewrite Windows backslashes), search it with rg or grep for targeted terms, then read only small surrounding ranges; pass tail or limit only for quick recent-context checks."
+        : "lazyRead: no transcript path is available; pass explicit tail or limit to inline recent entries.",
+    );
+    return lines.join("\n");
+  }
   if (result.entries.length === 0) {
     lines.push("entries: none");
     return lines.join("\n");
@@ -672,6 +689,9 @@ function renderStagesToolContent(
     lines.push(`[${index + 1}] ${stage.name} (${stage.id}) ${stage.status}`);
     if (stage.sessionId) lines.push(`sessionId: ${stage.sessionId}`);
     if (stage.sessionFile) lines.push(`sessionFile: ${stage.sessionFile}`);
+    if (stage.sessionFile) lines.push(`sessionFileJson: ${JSON.stringify(stage.sessionFile)}`);
+    if (stage.transcriptPath) lines.push(`transcriptPath: ${stage.transcriptPath}`);
+    if (stage.transcriptPath) lines.push(`transcriptPathJson: ${JSON.stringify(stage.transcriptPath)}`);
     if (stage.error) lines.push(`error: ${stage.error}`);
     if (stage.awaitingInputSince !== undefined) {
       lines.push(`awaitingInputSince: ${stage.awaitingInputSince}`);
@@ -698,6 +718,10 @@ function renderStageToolContent(
   }
   lines.push("stage:");
   lines.push(JSON.stringify(result.stage, null, 2));
+  if (result.stage.sessionFile) {
+    lines.push(`transcriptPath: ${result.stage.sessionFile}`);
+    lines.push(`transcriptPathJson: ${JSON.stringify(result.stage.sessionFile)}`);
+  }
   return lines.join("\n");
 }
 
@@ -780,6 +804,7 @@ type WorkflowStageSummary = {
   status: StageStatus;
   sessionId?: string;
   sessionFile?: string;
+  transcriptPath?: string;
   error?: string;
   awaitingInputSince?: number;
   pendingPrompt?: StageSnapshot["pendingPrompt"];
@@ -804,8 +829,10 @@ type MessageLike = {
   readonly createdAt?: number;
 };
 
-function cloneStage(stage: StageSnapshot): StageSnapshot {
-  return structuredClone(stage);
+function cloneStage(stage: StageSnapshot): StageSnapshot & { transcriptPath?: string } {
+  const cloned = structuredClone(stage) as StageSnapshot & { transcriptPath?: string };
+  if (cloned.sessionFile !== undefined) cloned.transcriptPath = cloned.sessionFile;
+  return cloned;
 }
 
 function summarizeStage(stage: StageSnapshot): WorkflowStageSummary {
@@ -815,6 +842,7 @@ function summarizeStage(stage: StageSnapshot): WorkflowStageSummary {
     status: stage.status,
     sessionId: stage.sessionId,
     sessionFile: stage.sessionFile,
+    transcriptPath: stage.sessionFile,
     error: stage.error,
     awaitingInputSince: stage.awaitingInputSince,
     pendingPrompt: stage.pendingPrompt === undefined
@@ -826,27 +854,69 @@ function summarizeStage(stage: StageSnapshot): WorkflowStageSummary {
   };
 }
 
-const DEFAULT_TRANSCRIPT_LIMIT = 50;
+const DEFAULT_TRANSCRIPT_LIMIT = 0;
 
-function boundedCount(args: WorkflowToolArgs): number {
+type TranscriptEntrySelection = {
+  entries: WorkflowTranscriptEntry[];
+  truncated: boolean;
+  entriesOmitted: boolean;
+  entryCount: number;
+  entryLimit?: number;
+};
+
+function requestedTranscriptEntryLimit(
+  args: WorkflowToolArgs,
+): { count: number; explicit: boolean } {
   const raw = args.tail ?? args.limit;
-  if (raw === undefined) return DEFAULT_TRANSCRIPT_LIMIT;
-  if (!Number.isFinite(raw) || raw <= 0) return 0;
-  return Math.floor(raw);
+  if (raw === undefined) {
+    return { count: DEFAULT_TRANSCRIPT_LIMIT, explicit: false };
+  }
+  if (!Number.isFinite(raw) || raw <= 0) {
+    return { count: 0, explicit: true };
+  }
+  return { count: Math.floor(raw), explicit: true };
 }
 
-function applyEntryLimit<T>(
-  entries: readonly T[],
+function selectTranscriptEntries(
+  entries: readonly WorkflowTranscriptEntry[],
   args: WorkflowToolArgs,
-): { entries: T[]; truncated: boolean } {
-  const count = boundedCount(args);
+  transcriptPath: string | undefined,
+): TranscriptEntrySelection {
+  const { count, explicit } = requestedTranscriptEntryLimit(args);
+  const entryCount = entries.length;
+  if (!explicit) {
+    return {
+      entries: [],
+      truncated: false,
+      entriesOmitted: entryCount > 0 || transcriptPath !== undefined,
+      entryCount,
+    };
+  }
   if (count === 0) {
-    return { entries: [], truncated: false };
+    return {
+      entries: [],
+      truncated: false,
+      entriesOmitted: false,
+      entryCount,
+      entryLimit: count,
+    };
   }
   if (entries.length <= count) {
-    return { entries: [...entries], truncated: false };
+    return {
+      entries: [...entries],
+      truncated: false,
+      entriesOmitted: false,
+      entryCount,
+      entryLimit: count,
+    };
   }
-  return { entries: entries.slice(entries.length - count), truncated: true };
+  return {
+    entries: entries.slice(entries.length - count),
+    truncated: true,
+    entriesOmitted: false,
+    entryCount,
+    entryLimit: count,
+  };
 }
 
 function messageText(content: MessageLike["content"]): string | undefined {
@@ -1410,32 +1480,35 @@ export function makeExecuteWorkflowTool(
         const snapshot = run?.stages.find((s) => s.id === stage.stageId);
         const liveHandle = stageControlRegistry.get(target.runId, stage.stageId);
         if (liveHandle !== undefined) {
-          const limited = applyEntryLimit(
+          const sessionFile = liveHandle.sessionFile ?? snapshot?.sessionFile;
+          const sessionId = liveHandle.sessionId ?? snapshot?.sessionId;
+          const limited = selectTranscriptEntries(
             liveHandle.messages.map((m) => transcriptEntryFromMessage(m as MessageLike)),
             args,
+            sessionFile,
           );
           return {
             action: "transcript",
             runId: target.runId,
             stageId: stage.stageId,
             source: "live",
-            entries: limited.entries,
-            truncated: limited.truncated,
-            sessionId: liveHandle.sessionId,
-            sessionFile: liveHandle.sessionFile,
+            ...limited,
+            sessionId,
+            sessionFile,
+            transcriptPath: sessionFile,
           };
         }
         const fallback = snapshotTranscriptEntries(snapshot, args.includeToolOutput === true);
-        const limited = applyEntryLimit(fallback, args);
+        const limited = selectTranscriptEntries(fallback, args, snapshot?.sessionFile);
         return {
           action: "transcript",
           runId: target.runId,
           stageId: stage.stageId,
           source: "snapshot",
-          entries: limited.entries,
-          truncated: limited.truncated,
+          ...limited,
           sessionId: snapshot?.sessionId,
           sessionFile: snapshot?.sessionFile,
+          transcriptPath: snapshot?.sessionFile,
         };
       }
 

@@ -29,7 +29,7 @@ describe("public entrypoint", () => {
   test("exposes runtime helpers with observable edge-case behavior", () => {
     assert.throws(
       () => resolveInputs({ prompt: { type: "text", required: true } }, {}),
-      { message: 'pi-workflows: required input "prompt" not provided' },
+      { message: 'atomic-workflows: required input "prompt" not provided' },
     );
 
     const tracker = new GraphFrontierTracker();

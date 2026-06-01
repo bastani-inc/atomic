@@ -52,7 +52,7 @@ describe("resolveInputs — Phase C", () => {
   });
 
   test("required field absent — throws with field name", () => {
-    assert.throws(() => resolveInputs({ q: { type: "text", required: true } }, {}), { message: 'pi-workflows: required input "q" not provided', });
+    assert.throws(() => resolveInputs({ q: { type: "text", required: true } }, {}), { message: 'atomic-workflows: required input "q" not provided', });
   });
 
   test("multiple required fields — throws on first missing", () => {
@@ -63,7 +63,7 @@ describe("resolveInputs — Phase C", () => {
           b: { type: "text", required: true },
         },
         { a: "present" },
-      ), { message: 'pi-workflows: required input "b" not provided' });
+      ), { message: 'atomic-workflows: required input "b" not provided' });
   });
 
   test("optional field with no default and not provided — stays undefined", () => {
@@ -249,7 +249,7 @@ describe("executor input resolution — Phase C", () => {
       .run(async (_ctx) => ({}))
       .compile() as WorkflowDefinition;
 
-    await assert.rejects(run(def, {}, { store: createStore() }), { message: 'pi-workflows: required input "query" not provided', });
+    await assert.rejects(run(def, {}, { store: createStore() }), { message: 'atomic-workflows: required input "query" not provided', });
   });
 });
 

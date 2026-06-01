@@ -129,7 +129,7 @@ export function createStatusWriter(
     store.recordNotice({
       id: `status-writer-error-${Date.now()}`,
       level: "warning",
-      message: `pi-workflows: status file write failed (${filePath}): ${msg}`,
+      message: `atomic-workflows: status file write failed (${filePath}): ${msg}`,
       createdAt: Date.now(),
     });
   }

@@ -225,7 +225,7 @@ export function subscribeIntercomControl(
       // Surface errors without breaking the event loop.
       Promise.reject(
         new Error(
-          `pi-workflows intercom callback error (type=${payload.type}): ${err instanceof Error ? err.message : String(err)}`,
+          `atomic-workflows: intercom callback error (type=${payload.type}): ${err instanceof Error ? err.message : String(err)}`,
         ),
       );
     });

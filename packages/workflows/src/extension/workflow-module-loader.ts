@@ -1,9 +1,9 @@
 /**
  * Shared workflow module loading helpers.
  *
- * Discovery and workflow import resolution both load user-authored workflow
- * files through the same jiti instance so TypeScript/ESM/CJS semantics and the
- * @bastani/workflows virtual SDK alias stay consistent.
+ * Discovery loads user-authored workflow files through this jiti instance so
+ * TypeScript/ESM/CJS semantics and the @bastani/workflows virtual SDK alias
+ * stay consistent.
  */
 
 import { existsSync } from "node:fs";

@@ -267,7 +267,7 @@ export function renderNodeCard(stage: StageSnapshot, opts: NodeCardOpts): string
   const top = `${bg}${bc}╭${topMiddle}╮${RESET}`;
   const bottom = `${bg}${bc}╰${"─".repeat(innerWidth)}╯${RESET}`;
 
-  // Interior — compact status + duration. Imported workflow boundary
+  // Interior — compact status + duration. Child workflow boundary
   // stages otherwise look like empty completed nodes, so use the first
   // body row for the child workflow identity and the final row for a
   // terse child-run summary. This keeps the graph dense while making

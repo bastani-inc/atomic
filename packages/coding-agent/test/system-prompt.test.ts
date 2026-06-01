@@ -155,14 +155,21 @@ describe("buildSystemPrompt", () => {
 			});
 
 			expect(prompt).toContain("- **Workflows**:");
-			expect(prompt).toContain("prefer the `workflow` tool");
-			expect(prompt).toContain("create a workflow");
+			expect(prompt).toContain("Use the `workflow` tool");
+			expect(prompt).toContain("direct `task`, `tasks`, or `chain`");
+			expect(prompt).toContain("create or edit a workflow");
+			expect(prompt).toContain("create-spec skill when available");
 			expect(prompt).toContain("clarifying questions");
-			expect(prompt).toContain("implement the workflow directly");
-			expect(prompt).toContain("do not use the `goal` workflow by default");
-			expect(prompt).toContain("Only use the `goal` workflow");
-			expect(prompt).toContain("workflow: \"goal\"");
+			expect(prompt).toContain("implement the workflow from the created spec directly");
+			expect(prompt).toContain("targeted `status`/`stages`/`stage` checks");
+			expect(prompt).toContain("do not micro-manage");
 			expect(prompt).toContain("sleep/status polling loops");
+			expect(prompt).toContain("sessionFile`/`transcriptPath");
+			expect(prompt).toContain("preserve Windows backslashes");
+			expect(prompt).toContain("explicit `tail` or `limit`");
+			expect(prompt).toContain("steer a stage");
+			expect(prompt).toContain("If you run `ralph` or `goal`");
+			expect(prompt).not.toContain("`stage` workflow call");
 		});
 
 		test("omits workflow guidance when the workflow tool is excluded", () => {

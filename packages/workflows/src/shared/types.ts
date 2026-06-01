@@ -127,18 +127,12 @@ export interface WorkflowInteractionMetadata {
 }
 
 // ---------------------------------------------------------------------------
-// Workflow imports and outputs
+// Workflow child composition and outputs
 // ---------------------------------------------------------------------------
 
-export interface WorkflowImportOptions {
-  readonly description?: string;
-  /** Optional parent-local ctx.workflow(alias) name for an imported workflow definition. */
-  readonly as?: string;
-}
-
-export interface WorkflowImportDeclaration {
-  readonly definition: WorkflowDefinition;
-  readonly description?: string;
+export interface WorkflowSourceReference {
+  readonly id: string;
+  readonly filePath?: string;
 }
 
 export type WorkflowOutputType = WorkflowInputType | "object" | "array" | "unknown";
@@ -151,9 +145,7 @@ export interface WorkflowOutputSchema {
 
 export interface WorkflowRunChildOptions {
   readonly inputs?: Record<string, unknown>;
-  /** Select all, a list of child output keys, or a childKey -> parentKey map. */
-  readonly outputs?: readonly string[] | Readonly<Record<string, string>>;
-  /** Parent boundary stage display name. Defaults to import:<alias>. */
+  /** Parent boundary stage display name. Defaults to workflow:<workflow-name>. */
   readonly stageName?: string;
 }
 
@@ -615,8 +607,8 @@ export interface WorkflowRunContext<TInputs extends Record<string, unknown> = Re
   chain(steps: readonly WorkflowTaskStep[], options?: WorkflowChainOptions): Promise<WorkflowTaskResult[]>;
   /** Run tasks in parallel. Missing step tasks use the first available task as a fallback. */
   parallel(steps: readonly WorkflowTaskStep[], options?: WorkflowParallelOptions): Promise<WorkflowTaskResult[]>;
-  /** Execute a workflow declared with defineWorkflow(...).import(...). */
-  workflow(alias: string, options?: WorkflowRunChildOptions): Promise<WorkflowChildResult>;
+  /** Execute a reusable child workflow by compiled workflow definition. */
+  workflow<TChildInputs extends Record<string, unknown>>(definition: WorkflowDefinition<TChildInputs>, options?: WorkflowRunChildOptions): Promise<WorkflowChildResult>;
   /** HIL primitives for user interaction during a run. */
   readonly ui: WorkflowUIContext;
 }
@@ -684,8 +676,6 @@ export interface WorkflowDefinition<TInputs extends Record<string, unknown> = Re
   readonly inputs: Readonly<Record<string, WorkflowInputSchema>>;
   /** Optional output contract used by parent workflows when selecting child outputs. */
   readonly outputs?: Readonly<Record<string, WorkflowOutputSchema>>;
-  /** Optional imports declared for first-class workflow composition. */
-  readonly imports?: Readonly<Record<string, WorkflowImportDeclaration>>;
   /** Optional input-to-runtime defaults declared by the workflow builder. */
   readonly inputBindings?: WorkflowInputBindings;
   /** Declares whether this workflow requires human input during execution. */

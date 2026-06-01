@@ -1158,6 +1158,38 @@ export default defineWorkflow("ralph")
     gitWorktreeDir: "git_worktree_dir",
     baseBranch: "base_branch",
   })
+  .output("result", {
+    type: "text",
+    description: "Final implementation report from the orchestrator stage.",
+  })
+  .output("plan", {
+    type: "text",
+    description: "Latest RFC-style plan text.",
+  })
+  .output("plan_path", {
+    type: "string",
+    description: "Path to the latest generated spec under specs/.",
+  })
+  .output("implementation_notes_path", {
+    type: "string",
+    description: "OS-temp notes file containing decisions, deviations, blockers, and validation notes.",
+  })
+  .output("pr_report", {
+    type: "text",
+    description: "Pull-request preparation report with diff review, PR status, commands, and follow-up steps.",
+  })
+  .output("approved", {
+    type: "boolean",
+    description: "Whether the reviewer loop approved before PR handoff.",
+  })
+  .output("iterations_completed", {
+    type: "number",
+    description: "Number of plan/orchestrate/review loops completed.",
+  })
+  .output("review_report", {
+    type: "text",
+    description: "Markdown report containing the latest reviewer payloads.",
+  })
   .run(async (ctx) => {
     const workflowCtx = ctx as WorkflowRunContext<RalphInputs>;
     const workflowStartCwd = workflowCtx.cwd ?? process.cwd();

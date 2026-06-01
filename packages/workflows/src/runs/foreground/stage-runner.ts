@@ -192,17 +192,17 @@ type AgentSessionConsumer = "prompt" | "complete";
 function missingAdapter(consumer: AgentSessionConsumer): never {
   if (consumer === "complete") {
     throw new Error(
-      "pi-workflows: ctx.complete requires either RunOpts.adapters.complete or RunOpts.adapters.agentSession",
+      "atomic-workflows: ctx.complete requires either RunOpts.adapters.complete or RunOpts.adapters.agentSession",
     );
   }
   throw new Error(
-    "pi-workflows: prompt adapter not configured — provide an AgentSessionAdapter via RunOpts.adapters.agentSession",
+    "atomic-workflows: prompt adapter not configured — provide an AgentSessionAdapter via RunOpts.adapters.agentSession",
   );
 }
 
 function unavailableSync(property: string): never {
   throw new Error(
-    `pi-workflows: stage AgentSession property "${property}" is unavailable until the SDK session has been created`,
+    `atomic-workflows: stage AgentSession property "${property}" is unavailable until the SDK session has been created`,
   );
 }
 
@@ -428,7 +428,7 @@ function splitPromptOptions(options: StagePromptOptions | undefined): {
 function validatePromptOutputOptions(outputOptions: StageOutputOptions): void {
   if (outputOptions.outputMode === "file-only" && (typeof outputOptions.output !== "string" || outputOptions.output.length === 0)) {
     throw new Error(
-      "pi-workflows: prompt sets outputMode: \"file-only\" but does not configure an output file. Set output to a path or use outputMode: \"inline\".",
+      "atomic-workflows: prompt sets outputMode: \"file-only\" but does not configure an output file. Set output to a path or use outputMode: \"inline\".",
     );
   }
 }
@@ -622,7 +622,7 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
   }
 
   async function ensureSession(consumer: AgentSessionConsumer = "prompt"): Promise<StageSessionRuntime> {
-    if (disposed) throw new Error(`pi-workflows: stage "${stageName}" session has been disposed`);
+    if (disposed) throw new Error(`atomic-workflows: stage "${stageName}" session has been disposed`);
     if (!sessionPromise) {
       sessionPromise = (async () => {
         if (!hasExplicitModelFallbackConfig) return createSession(undefined, consumer);
@@ -768,7 +768,7 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
         completeOpts?.fallbackModels !== undefined
       ) {
         throw new Error(
-          "pi-workflows: complete options require a CompleteAdapter via RunOpts.adapters.complete",
+          "atomic-workflows: complete options require a CompleteAdapter via RunOpts.adapters.complete",
         );
       }
       // Intentional fallback: when a CompleteAdapter is not configured,

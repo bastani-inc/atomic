@@ -318,7 +318,7 @@ function makeStageExtensionUiContext(
         const result = await ui.custom(factory as PiCustomOverlayFactory, options ?? { overlay: true });
         return result as T;
       }
-      throw new Error("pi-workflows: ask_user_question UI is unavailable");
+      throw new Error("atomic-workflows: ask_user_question UI is unavailable");
     },
     pasteToEditor: ui.pasteToEditor ?? (() => undefined),
     setEditorText: ui.setEditorText ?? (() => undefined),
@@ -330,7 +330,7 @@ function makeStageExtensionUiContext(
     theme: ui.theme,
     getAllThemes: ui.getAllThemes ?? (() => []),
     getTheme: ui.getTheme ?? (() => undefined),
-    setTheme: ui.setTheme ?? (() => ({ success: false, error: "pi-workflows: theme UI is unavailable" })),
+    setTheme: ui.setTheme ?? (() => ({ success: false, error: "atomic-workflows: theme UI is unavailable" })),
     getToolsExpanded: ui.getToolsExpanded ?? (() => false),
     setToolsExpanded: ui.setToolsExpanded ?? (() => undefined),
     getChatRenderSettings: ui.getChatRenderSettings ?? (() => undefined),

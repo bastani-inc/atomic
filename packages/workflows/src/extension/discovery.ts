@@ -24,7 +24,6 @@ import { readdir, stat } from "node:fs/promises";
 import { join, resolve, extname, isAbsolute } from "node:path";
 import { CONFIG_DIR_NAMES, getProjectConfigPaths } from "@bastani/atomic";
 import type { WorkflowDefinition } from "../shared/types.js";
-import { validateWorkflowImportGraph } from "../workflows/import-resolver.js";
 import { createRegistry } from "../workflows/registry.js";
 import type { WorkflowRegistry } from "../workflows/registry.js";
 import * as bundledManifest from "../../builtin/index.js";
@@ -80,9 +79,8 @@ export type DiagnosticLevel = "error" | "warn";
 
 /**
  * A diagnostic emitted during discovery.
- * Errors indicate a definition was rejected or a registered workflow has an
- * invalid import graph; warnings indicate a recoverable condition (e.g. a
- * duplicate that was skipped).
+ * Errors indicate a definition was rejected; warnings indicate a recoverable
+ * condition (e.g. a duplicate that was skipped).
  *
  * Codes:
  *   INVALID_DEFINITION — failed structural validation
@@ -90,9 +88,6 @@ export type DiagnosticLevel = "error" | "warn";
  *   IMPORT_FAILED      — dynamic import of a workflow file threw
  *   PATH_NOT_FOUND     — a config-specified path does not exist
  *   CONFIG_INVALID     — DiscoveryConfig has an invalid structure
- *   IMPORT_UNRESOLVED  — declared workflow import could not be resolved
- *   IMPORT_CIRCULAR    — declared workflow imports contain a cycle
- *   IMPORT_INVALID     — declared import or imported workflow is invalid
  */
 export interface DiscoveryDiagnostic {
   readonly level: DiagnosticLevel;
@@ -101,10 +96,7 @@ export interface DiscoveryDiagnostic {
     | "DUPLICATE_NAME"
     | "IMPORT_FAILED"
     | "PATH_NOT_FOUND"
-    | "CONFIG_INVALID"
-    | "IMPORT_UNRESOLVED"
-    | "IMPORT_CIRCULAR"
-    | "IMPORT_INVALID";
+    | "CONFIG_INVALID";
   readonly message: string;
   /** Export key, workflow name, or file path associated with this diagnostic. */
   readonly source?: string;
@@ -493,10 +485,6 @@ export async function discoverWorkflows(
     }
   }
 
-  for (const diagnostic of validateWorkflowImportGraph({ registry, cwd, sources })) {
-    diagnostics.push(diagnostic);
-  }
-
   return { registry, sources, errors: diagnostics };
 }
 
@@ -517,10 +505,10 @@ async function defaultHomeDir(): Promise<string> {
  * Duplicate policy: first-seen wins (insertion order of the manifest export).
  */
 export function discoverStartupWorkflowsSync(): DiscoveryResult {
-  return discoverBundledManifest({ validateImports: true });
+  return discoverBundledManifest();
 }
 
-function discoverBundledManifest(options: { validateImports?: boolean } = {}): DiscoveryResult {
+function discoverBundledManifest(): DiscoveryResult {
   const manifest = bundledManifest as Record<string, unknown>;
   const diagnostics: DiscoveryDiagnostic[] = [];
   const sources: DiscoverySource[] = [];
@@ -533,11 +521,6 @@ function discoverBundledManifest(options: { validateImports?: boolean } = {}): D
   }));
 
   registry = applyBatchShapeOnly(candidates, registry, sources, diagnostics);
-  if (options.validateImports === true) {
-    for (const diagnostic of validateWorkflowImportGraph({ registry, sources })) {
-      diagnostics.push(diagnostic);
-    }
-  }
 
   return { registry, sources, errors: diagnostics };
 }

@@ -87,7 +87,7 @@ function ask(
       reject(
         signal.reason instanceof Error
           ? signal.reason
-          : new Error("pi-workflows: HIL aborted"),
+          : new Error("atomic-workflows: HIL aborted"),
       );
     };
     signal.addEventListener("abort", onAbort, { once: true });
@@ -151,7 +151,7 @@ export function buildBackgroundUIAdapter(
       options: readonly T[],
     ): Promise<T> {
       if (options.length === 0) {
-        throw new Error("pi-workflows: ctx.ui.select requires at least one option");
+        throw new Error("atomic-workflows: ctx.ui.select requires at least one option");
       }
       const response = await ask(store, runId, {
         kind: "select",

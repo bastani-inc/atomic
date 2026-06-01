@@ -73,7 +73,7 @@ describe("runtime tunables — maxDepth", () => {
     });
 
     assert.equal(result.status, "failed");
-    assert.equal(result.error, "pi-workflows: maxDepth exceeded (max 3)");
+    assert.equal(result.error, "atomic-workflows: maxDepth exceeded (max 3)");
     assert.equal(result.stages.length, 0);
   });
 
@@ -89,7 +89,7 @@ describe("runtime tunables — maxDepth", () => {
     });
 
     assert.equal(result.status, "failed");
-    assert.equal(result.error, "pi-workflows: maxDepth exceeded (max 2)");
+    assert.equal(result.error, "atomic-workflows: maxDepth exceeded (max 2)");
   });
 
   test("depth < maxDepth executes normally", async () => {
@@ -123,7 +123,7 @@ describe("runtime tunables — maxDepth", () => {
     });
 
     assert.equal(result.status, "failed");
-    assert.equal(result.error, "pi-workflows: maxDepth exceeded (max 4)");
+    assert.equal(result.error, "atomic-workflows: maxDepth exceeded (max 4)");
   });
 
   test("failed result carries non-empty runId", async () => {

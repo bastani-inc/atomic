@@ -427,7 +427,7 @@ export class StageChatView implements Component, Focusable {
       this.mountingRequestId = null;
       this.stageUiBroker.reject(
         request,
-        new Error("pi-workflows: stage custom UI cannot mount without attached TUI host"),
+        new Error("atomic-workflows: stage custom UI cannot mount without attached TUI host"),
       );
       return;
     }

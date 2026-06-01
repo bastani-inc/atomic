@@ -13,7 +13,6 @@ import { store as defaultStore, type Store } from "../shared/store.js";
 import type { CancellationRegistry } from "../runs/background/cancellation-registry.js";
 import { jobTracker as defaultJobTracker, type JobTracker } from "../runs/background/job-tracker.js";
 import { resolveInputs } from "../runs/foreground/executor.js";
-import { formatWorkflowImportDiagnostics, validateWorkflowImportGraph, type WorkflowSourceReference } from "../workflows/import-resolver.js";
 import { runDetached } from "../runs/background/runner.js";
 import type { WorkflowToolResult, WorkflowInputEntry } from "./render-result.js";
 import type { WorkflowToolArgs } from "./index.js";
@@ -24,6 +23,7 @@ import {
   type WorkflowMcpPort,
   type WorkflowRuntimeConfig,
   type WorkflowModelCatalogPort,
+  type WorkflowSourceReference,
 } from "../shared/types.js";
 
 type WorkflowRunResult = Extract<WorkflowToolResult, { action: "run" }>;
@@ -178,23 +178,6 @@ export async function dispatch(
           "",
           err instanceof Error ? err.message : String(err),
         );
-      }
-
-      const importDiagnostics = validateWorkflowImportGraph({
-        registry: opts.registry,
-        cwd: opts.cwd ?? process.cwd(),
-        ...(opts.workflowSources !== undefined ? { sources: opts.workflowSources } : {}),
-        roots: [def],
-      });
-      if (importDiagnostics.length > 0) {
-        return {
-          action: "run",
-          name: def.name,
-          runId: "",
-          status: "failed",
-          error: `Invalid workflow imports for "${def.name}":\n${formatWorkflowImportDiagnostics(importDiagnostics)}`,
-          stages: [],
-        };
       }
 
       const accepted = runDetached(def, inputs, {

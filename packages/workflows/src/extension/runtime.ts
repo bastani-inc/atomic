@@ -24,6 +24,7 @@ import {
   type WorkflowChainStep,
   type WorkflowModelCatalogPort,
   type WorkflowExecutionPolicy,
+  type WorkflowSourceReference,
 } from "../shared/types.js";
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
 import { resolveInputs, runChain, runParallel, runTask, type RunOpts } from "../runs/foreground/executor.js";
@@ -45,7 +46,6 @@ import { validateWorkflowModels } from "../runs/shared/model-fallback.js";
 import { runDetached } from "../runs/background/runner.js";
 import type { JobTracker } from "../runs/background/job-tracker.js";
 import { classifyWorkflowFailure } from "../shared/workflow-failures.js";
-import type { WorkflowSourceReference } from "../workflows/import-resolver.js";
 
 // ---------------------------------------------------------------------------
 // Options

@@ -181,9 +181,11 @@ function makeMockCtx<TInputs extends Record<string, unknown>>(
                           !omitted.has(result.name),
                   );
         },
-        workflow: async (alias: string) => {
+        workflow: async <TChildInputs extends Record<string, unknown>>(
+            target: WorkflowDefinition<TChildInputs>,
+        ) => {
             throw new Error(
-                `ctx.workflow should not be used by builtin workflow ${alias}`,
+                `ctx.workflow should not be used by builtin workflow ${target.normalizedName}`,
             );
         },
         ui,
@@ -206,6 +208,21 @@ function assertWorkflowDefinition(
     assert.equal(typeof d.description, "string");
     assert.equal(typeof d.run, "function");
     assert.equal(typeof d.inputs, "object");
+}
+
+function assertOutputTypes(
+    outputs: WorkflowDefinition["outputs"],
+    expected: Readonly<Record<string, string>>,
+): void {
+    assert.notEqual(outputs, undefined);
+    assert.deepEqual(Object.keys(outputs ?? {}).sort(), Object.keys(expected).sort());
+    for (const [key, type] of Object.entries(expected)) {
+        assert.equal(outputs?.[key]?.type, type, `unexpected output type for ${key}`);
+        assert.ok(
+            (outputs?.[key]?.description ?? "").length > 0,
+            `expected output description for ${key}`,
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -231,6 +248,19 @@ describe("deep-research-codebase", () => {
             throw new Error("expected deep research temp cwd");
         return tempCwd;
     }
+
+    async function withDeepResearchTempCwd<T>(
+        fn: () => Promise<T>,
+    ): Promise<T> {
+        const previousCwd = process.cwd();
+        process.chdir(requireDeepResearchTempCwd());
+        try {
+            return await fn();
+        } finally {
+            process.chdir(previousCwd);
+        }
+    }
+
     test("loads and has correct shape", async () => {
         const mod =
             await import("../../packages/workflows/builtin/deep-research-codebase.js");
@@ -254,13 +284,30 @@ describe("deep-research-codebase", () => {
         assert.equal(d.inputs["max_concurrency"]?.type, "number");
         assert.equal(
             (d.inputs["max_concurrency"] as { default?: number }).default,
-            4,
+            100,
         );
         assert.deepEqual(Object.keys(d.inputs).sort(), [
             "max_concurrency",
             "max_partitions",
             "prompt",
         ]);
+    });
+
+    test("declares child workflow output contract", async () => {
+        const mod =
+            await import("../../packages/workflows/builtin/deep-research-codebase.js");
+        assertOutputTypes(mod.default.outputs, {
+            artifact_dir: "string",
+            explorer_count: "number",
+            findings: "text",
+            result: "text",
+            history: "text",
+            manifest_path: "string",
+            max_concurrency: "number",
+            partitions: "array",
+            research_doc_path: "string",
+            specialist_count: "number",
+        });
     });
 
     test("runs scout/history, specialist waves, and aggregator via task primitives", async () => {
@@ -282,10 +329,7 @@ describe("deep-research-codebase", () => {
             },
         );
 
-        const result = await mod.runDeepResearchCodebaseWorkflow(
-            ctx,
-            requireDeepResearchTempCwd(),
-        );
+        const result = await withDeepResearchTempCwd(() => mod.default.run(ctx));
 
         assert.deepEqual(ctx.calls.stage, []);
         assert.ok(
@@ -355,10 +399,7 @@ describe("deep-research-codebase", () => {
             },
         );
 
-        const result = await mod.runDeepResearchCodebaseWorkflow(
-            ctx,
-            requireDeepResearchTempCwd(),
-        );
+        const result = await withDeepResearchTempCwd(() => mod.default.run(ctx));
         const aggregatorOptions = ctx.calls.taskOptions["aggregator"]?.[0];
         const aggregatorPrompt = ctx.calls.prompts["aggregator"]?.[0] ?? "";
         const normalizedAggregatorPrompt =
@@ -497,10 +538,7 @@ describe("deep-research-codebase", () => {
             },
         );
 
-        const result = await mod.runDeepResearchCodebaseWorkflow(
-            ctx,
-            requireDeepResearchTempCwd(),
-        );
+        const result = await withDeepResearchTempCwd(() => mod.default.run(ctx));
         const aggregatorPrompt = ctx.calls.prompts["aggregator"]?.[0] ?? "";
 
         assert.doesNotMatch(aggregatorPrompt, /Output saved to:/);
@@ -527,10 +565,7 @@ describe("deep-research-codebase", () => {
             },
         );
 
-        await mod.runDeepResearchCodebaseWorkflow(
-            ctx,
-            requireDeepResearchTempCwd(),
-        );
+        await withDeepResearchTempCwd(() => mod.default.run(ctx));
 
         const analyzerOptions = ctx.calls.taskOptions["analyzer-1"]?.[0];
         const onlineOptions = ctx.calls.taskOptions["online-researcher-1"]?.[0];
@@ -593,10 +628,7 @@ describe("deep-research-codebase", () => {
             },
         );
 
-        const result = await mod.runDeepResearchCodebaseWorkflow(
-            ctx,
-            requireDeepResearchTempCwd(),
-        );
+        const result = await withDeepResearchTempCwd(() => mod.default.run(ctx));
 
         assert.equal(result["findings"], "final synthesized findings");
         assert.equal(
@@ -756,10 +788,7 @@ describe("deep-research-codebase", () => {
             },
         );
 
-        const result = await mod.runDeepResearchCodebaseWorkflow(
-            ctx,
-            requireDeepResearchTempCwd(),
-        );
+        const result = await withDeepResearchTempCwd(() => mod.default.run(ctx));
         const researchDocPath = result["research_doc_path"];
 
         assert.equal(readFileSync(existingPath, "utf8"), "existing research");
@@ -798,10 +827,7 @@ describe("deep-research-codebase", () => {
             },
         );
 
-        await mod.runDeepResearchCodebaseWorkflow(
-            ctx,
-            requireDeepResearchTempCwd(),
-        );
+        await withDeepResearchTempCwd(() => mod.default.run(ctx));
 
         assert.equal(
             existsSync(join(requireDeepResearchTempCwd(), "context-build")),
@@ -941,6 +967,23 @@ describe("goal", () => {
             "max_turns",
             "objective",
         ]);
+    });
+
+    test("declares child workflow output contract", async () => {
+        const mod = await import("../../packages/workflows/builtin/goal.js");
+        assertOutputTypes(mod.default.outputs, {
+            approved: "boolean",
+            goal_id: "string",
+            iterations_completed: "number",
+            ledger_path: "string",
+            objective: "text",
+            receipts: "array",
+            remaining_work: "text",
+            result: "text",
+            review_report: "text",
+            status: "select",
+            turns_completed: "number",
+        });
     });
 
     test("renders Codex-style goal continuation context", async () => {
@@ -1923,6 +1966,20 @@ describe("ralph", () => {
         ]);
     });
 
+    test("declares child workflow output contract", async () => {
+        const mod = await import("../../packages/workflows/builtin/ralph.js");
+        assertOutputTypes(mod.default.outputs, {
+            approved: "boolean",
+            implementation_notes_path: "string",
+            iterations_completed: "number",
+            plan: "text",
+            plan_path: "string",
+            pr_report: "text",
+            result: "text",
+            review_report: "text",
+        });
+    });
+
     test("leaves stage cwd unset when git_worktree_dir is not provided", async () => {
         const mod = await import("../../packages/workflows/builtin/ralph.js");
         const ctx = makeMockCtx({
@@ -2058,6 +2115,26 @@ describe("open-claude-design", () => {
             assert.ok(choices.includes(choice), choice);
         }
         assert.equal((schema as { default?: string }).default, "prototype");
+    });
+
+    test("declares child workflow output contract", async () => {
+        const mod =
+            await import("../../packages/workflows/builtin/open-claude-design.js");
+        assertOutputTypes(mod.default.outputs, {
+            approved_for_export: "boolean",
+            artifact: "text",
+            artifact_dir: "string",
+            design_system: "text",
+            handoff: "text",
+            import_context: "text",
+            output_type: "select",
+            preview_file_url: "string",
+            preview_path: "string",
+            refinements_completed: "number",
+            run_id: "string",
+            spec_file_url: "string",
+            spec_path: "string",
+        });
     });
 
     test("runs onboarding, import, generation, refinement, scan, and export", async () => {

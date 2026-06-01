@@ -39,6 +39,7 @@ import type {
   WorkflowChildResult,
   WorkflowOutputSchema,
   WorkflowOutputType,
+  WorkflowSourceReference,
 } from "../../shared/types.js";
 import type { InternalStageContext, StageAdapters } from "./stage-runner.js";
 import type {
@@ -54,7 +55,6 @@ import type {
 } from "../../shared/store-types.js";
 import type { StageControlHandle, StageControlRegistry, AgentSessionEventListener } from "./stage-control-registry.js";
 import type { Store } from "../../shared/store.js";
-import { createRegistry } from "../../workflows/registry.js";
 import type { WorkflowRegistry } from "../../workflows/registry.js";
 import type { CancellationRegistry } from "../background/cancellation-registry.js";
 import { createStageContext } from "./stage-runner.js";
@@ -84,7 +84,6 @@ import { validateInputs, type ValidationError } from "../shared/validate-inputs.
 import type { WorkflowFailure } from "../../shared/workflow-failures.js";
 import { classifyWorkflowFailure } from "../../shared/workflow-failures.js";
 import { selectPromptCallsiteFrame } from "../shared/prompt-callsite.js";
-import type { WorkflowSourceReference } from "../../workflows/import-resolver.js";
 
 export interface ResolvedInputs extends Record<string, unknown> {}
 
@@ -144,7 +143,7 @@ export interface RunOpts {
   config?: WorkflowRuntimeConfig;
   /** Optional model catalog used for fallback validation/resolution. */
   models?: WorkflowModelCatalogPort;
-  /** Registry used to resolve declared workflow imports. */
+  /** Registry metadata forwarded to workflow runs launched from discovery/tooling. */
   registry?: WorkflowRegistry;
   /** Discovery source metadata for workflow resources. */
   workflowSources?: readonly WorkflowSourceReference[];
@@ -203,7 +202,7 @@ export function resolveInputs(
 
   for (const [key, schemaDef] of Object.entries(schema)) {
     if (schemaDef.required === true && resolved[key] === undefined) {
-      throw new TypeError(`pi-workflows: required input "${key}" not provided`);
+      throw new TypeError(`atomic-workflows: required input "${key}" not provided`);
     }
   }
 
@@ -303,12 +302,12 @@ function promptCallsiteHash(): string {
 function hilAbortError(signal: AbortSignal): Error {
   return signal.reason instanceof Error
     ? signal.reason
-    : new Error("pi-workflows: HIL aborted");
+    : new Error("atomic-workflows: HIL aborted");
 }
 
 function makeUnavailableUIContext(): WorkflowUIContext {
   const msg = (primitive: string): string =>
-    `pi-workflows: HIL ctx.ui.${primitive} is unavailable because pi runtime did not provide a UI adapter`;
+    `atomic-workflows: HIL ctx.ui.${primitive} is unavailable because Atomic runtime did not provide a UI adapter`;
   return {
     input: () => Promise.reject(new Error(msg("input"))),
     confirm: () => Promise.reject(new Error(msg("confirm"))),
@@ -516,7 +515,7 @@ function applyTaskContext(prompt: string, previous: WorkflowTaskOptions["previou
 function taskPrompt(options: WorkflowTaskOptions): string {
   const prompt = options.prompt ?? options.task;
   if (prompt === undefined) {
-    throw new Error("pi-workflows: ctx.task requires options.prompt or options.task");
+    throw new Error("atomic-workflows: ctx.task requires options.prompt or options.task");
   }
   return prompt;
 }
@@ -836,7 +835,7 @@ async function mapParallelSteps<T>(
   if (failures.length > 0) {
     throw new AggregateError(
       failures.map((failure) => failure.error),
-      `pi-workflows: ${failures.length} parallel ${failures.length === 1 ? "step" : "steps"} failed`,
+      `atomic-workflows: ${failures.length} parallel ${failures.length === 1 ? "step" : "steps"} failed`,
     );
   }
 
@@ -848,7 +847,7 @@ function expandedParallelTasks(tasks: readonly WorkflowDirectTaskItem[]): Workfl
   for (const task of tasks) {
     const count = task.count ?? 1;
     if (!Number.isInteger(count) || count < 1) {
-      throw new Error(`pi-workflows: direct task "${task.name}" count must be a positive integer`);
+      throw new Error(`atomic-workflows: direct task "${task.name}" count must be a positive integer`);
     }
     for (let index = 0; index < count; index += 1) {
       expanded.push(count === 1 ? task : {
@@ -950,7 +949,7 @@ function prepareDirectWorktrees(
   }
 
   if (typeof options.gitWorktreeDir === "string" || tasks.some((task) => typeof task.gitWorktreeDir === "string")) {
-    throw new Error("pi-workflows: worktree and gitWorktreeDir are mutually exclusive; use gitWorktreeDir for a reusable worktree or worktree:true for temporary isolated worktrees.");
+    throw new Error("atomic-workflows: worktree and gitWorktreeDir are mutually exclusive; use gitWorktreeDir for a reusable worktree or worktree:true for temporary isolated worktrees.");
   }
 
   const sharedCwd = resolveSharedDirectWorktreeCwd(tasks);
@@ -1467,7 +1466,7 @@ function createContinuationReplayIndex(continuation: RunContinuationOpts | undef
   }
   const resumeStage = continuation.source.stages.find((stage) => stage.id === continuation.resumeFromStageId);
   if (resumeStage === undefined) {
-    throw new Error(`pi-workflows: insufficient_state: resume stage ${continuation.resumeFromStageId} was not found in source run ${continuation.source.id}`);
+    throw new Error(`atomic-workflows: insufficient_state: resume stage ${continuation.resumeFromStageId} was not found in source run ${continuation.source.id}`);
   }
 
   const stagesByReplayIdentity = new Map<string, StageSnapshot[]>();
@@ -1489,7 +1488,7 @@ function createContinuationReplayIndex(continuation: RunContinuationOpts | undef
   const replayablePromptContinuationStageIds = new Set<string>();
 
   const failTopology = (displayName: string, replayKey: string, reason: "mismatch" | "ambiguous"): never => {
-    throw new Error(`pi-workflows: insufficient_state: replay topology ${reason} for stage "${displayName}" (replayKey "${replayKey}") in source run ${continuation.source.id}`);
+    throw new Error(`atomic-workflows: insufficient_state: replay topology ${reason} for stage "${displayName}" (replayKey "${replayKey}") in source run ${continuation.source.id}`);
   };
 
   const translateSourceParents = (source: StageSnapshot): string[] | undefined => {
@@ -1667,85 +1666,93 @@ function workflowOutputTypeName(value: unknown): string {
   return typeof value;
 }
 
-interface WorkflowOutputMapping {
-  readonly childKey: string;
-  readonly parentKey: string;
+const IMPLICIT_WORKFLOW_RESULT_OUTPUT = "result";
+const IMPLICIT_WORKFLOW_RESULT_SCHEMA: WorkflowOutputSchema = Object.freeze({
+  type: "string",
+  description:
+    "Implicit workflow result. Defaults to the final completed stage output text when the workflow has not declared its own result output.",
+});
+
+function finalCompletedStageResult(stages: readonly StageSnapshot[]): string {
+  for (let index = stages.length - 1; index >= 0; index -= 1) {
+    const result = stages[index]?.result;
+    if (typeof result === "string") return result;
+  }
+  return "";
 }
 
-function workflowOutputMappings(
-  sourceOutput: Record<string, unknown>,
-  requested: WorkflowRunChildOptions["outputs"],
-): WorkflowOutputMapping[] {
-  if (Array.isArray(requested)) {
-    return requested.map((key) => ({ childKey: key, parentKey: key }));
-  }
-
-  if (requested !== undefined) {
-    return Object.entries(requested).map(([childKey, parentKey]) => ({ childKey, parentKey }));
-  }
-
-  return Object.keys(sourceOutput).map((key) => ({ childKey: key, parentKey: key }));
+function hasOwnWorkflowOutput(record: Record<string, unknown> | Readonly<Record<string, WorkflowOutputSchema>>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(record, key);
 }
 
-function requiredImplicitWorkflowOutputMappings(
-  selectedChildKeys: ReadonlySet<string>,
+function hasDeclaredWorkflowResult(
   declarations: Readonly<Record<string, WorkflowOutputSchema>> | undefined,
-): WorkflowOutputMapping[] {
-  if (declarations === undefined) return [];
+): boolean {
+  return declarations !== undefined && hasOwnWorkflowOutput(declarations, IMPLICIT_WORKFLOW_RESULT_OUTPUT);
+}
 
+function withImplicitWorkflowResult(
+  result: Record<string, unknown>,
+  stages: readonly StageSnapshot[],
+  declarations: Readonly<Record<string, WorkflowOutputSchema>> | undefined,
+): Record<string, unknown> {
+  if (hasDeclaredWorkflowResult(declarations)) return result;
+  return {
+    ...result,
+    [IMPLICIT_WORKFLOW_RESULT_OUTPUT]: finalCompletedStageResult(stages),
+  };
+}
+
+function workflowOutputDeclarations(
+  declarations: Readonly<Record<string, WorkflowOutputSchema>> | undefined,
+): Readonly<Record<string, WorkflowOutputSchema>> {
+  if (declarations === undefined) {
+    return { [IMPLICIT_WORKFLOW_RESULT_OUTPUT]: IMPLICIT_WORKFLOW_RESULT_SCHEMA };
+  }
+  if (hasDeclaredWorkflowResult(declarations)) return declarations;
+  return {
+    ...declarations,
+    [IMPLICIT_WORKFLOW_RESULT_OUTPUT]: IMPLICIT_WORKFLOW_RESULT_SCHEMA,
+  };
+}
+
+function workflowOutputKeys(
+  sourceOutput: Record<string, unknown>,
+  declaredOutputs: Readonly<Record<string, WorkflowOutputSchema>> | undefined,
+  declarations: Readonly<Record<string, WorkflowOutputSchema>>,
+): string[] {
+  if (declaredOutputs === undefined) return Object.keys(sourceOutput);
   return Object.entries(declarations)
-    .filter(([key, schema]) => schema.required === true && !selectedChildKeys.has(key))
-    .map(([key]) => ({ childKey: key, parentKey: key }));
+    .filter(([key, schema]) => key in sourceOutput || schema.required === true)
+    .map(([key]) => key);
 }
 
 function selectWorkflowOutputs(
   parent: WorkflowDefinition,
-  alias: string,
+  childName: string,
   child: WorkflowDefinition,
   rawOutput: Record<string, unknown> | undefined,
-  requested: WorkflowRunChildOptions["outputs"],
+  childStages: readonly StageSnapshot[] = [],
 ): Record<string, unknown> {
-  const sourceOutput = rawOutput ?? {};
-  const declarations = child.outputs;
-  const hasExplicitOutputSelection = requested !== undefined;
+  const declaredOutputs = child.outputs;
+  const sourceOutput = withImplicitWorkflowResult(rawOutput ?? {}, childStages, declaredOutputs);
+  const declarations = workflowOutputDeclarations(declaredOutputs);
   const selected: Record<string, unknown> = {};
 
-  const requestedMappings = workflowOutputMappings(sourceOutput, requested);
-  const selectedChildKeys = new Set(requestedMappings.map((mapping) => mapping.childKey));
-  const mappings = [
-    ...requestedMappings,
-    ...requiredImplicitWorkflowOutputMappings(selectedChildKeys, declarations),
-  ];
-  const selectedParentKeys = new Map<string, string>();
-  for (const { childKey, parentKey } of mappings) {
-    const previousChildKey = selectedParentKeys.get(parentKey);
-    if (previousChildKey !== undefined) {
-      throw new Error(
-        `pi-workflows: workflow "${parent.name}" import "${alias}" maps multiple outputs to parent output "${parentKey}" (${previousChildKey}, ${childKey})`,
-      );
-    }
-    selectedParentKeys.set(parentKey, childKey);
-  }
-
-  for (const { childKey, parentKey } of mappings) {
-    const schema: WorkflowOutputSchema | undefined = declarations?.[childKey];
-    if (hasExplicitOutputSelection && declarations !== undefined && schema === undefined) {
-      throw new Error(
-        `pi-workflows: workflow "${parent.name}" import "${alias}" requested undeclared output "${childKey}" from "${child.name}"`,
-      );
-    }
+  for (const childKey of workflowOutputKeys(sourceOutput, declaredOutputs, declarations)) {
+    const schema: WorkflowOutputSchema | undefined = declarations[childKey];
     if (!(childKey in sourceOutput)) {
       throw new Error(
-        `pi-workflows: workflow "${parent.name}" import "${alias}" missing output "${childKey}" from "${child.name}"`,
+        `atomic-workflows: workflow "${parent.name}" child "${childName}" missing output "${childKey}" from "${child.name}"`,
       );
     }
     const value = sourceOutput[childKey];
     if (!workflowOutputTypeMatches(schema?.type, value)) {
       throw new Error(
-        `pi-workflows: workflow "${parent.name}" import "${alias}" output "${childKey}" expected ${schema?.type ?? "unknown"}, got ${workflowOutputTypeName(value)}`,
+        `atomic-workflows: workflow "${parent.name}" child "${childName}" output "${childKey}" expected ${schema?.type ?? "unknown"}, got ${workflowOutputTypeName(value)}`,
       );
     }
-    selected[parentKey] = value;
+    selected[childKey] = value;
   }
 
   return selected;
@@ -1757,6 +1764,15 @@ function cloneWorkflowChildValue<T>(value: T): T {
 
 function workflowChildSerializationMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+function isWorkflowDefinition(value: unknown): value is WorkflowDefinition {
+  if (value === null || typeof value !== "object") return false;
+  const record = value as Partial<WorkflowDefinition>;
+  return record.__piWorkflow === true &&
+    typeof record.name === "string" && record.name.trim().length > 0 &&
+    typeof record.normalizedName === "string" && record.normalizedName.trim().length > 0 &&
+    typeof record.run === "function";
 }
 
 function cloneWorkflowChildReplaySnapshot(snapshot: WorkflowChildReplaySnapshot): WorkflowChildReplaySnapshot {
@@ -1780,7 +1796,7 @@ function workflowChildReplaySnapshot(
       outputs[key] = cloneWorkflowChildValue(value);
     } catch (err) {
       throw new Error(
-        `pi-workflows: workflow import "${alias}" (${childResult.workflow}) selected output "${key}" is not serializable for continuation replay: ${workflowChildSerializationMessage(err)}`,
+        `atomic-workflows: child workflow "${alias}" (${childResult.workflow}) exposed output "${key}" is not serializable for continuation replay: ${workflowChildSerializationMessage(err)}`,
         { cause: err },
       );
     }
@@ -1813,7 +1829,7 @@ export async function run<TInputs extends Record<string, unknown>>(
   const activeStore = opts.store ?? defaultStore;
   const adapters = opts.adapters ?? {};
   if (opts.usePromptNodesForUi === true && opts.ui !== undefined) {
-    console.warn("pi-workflows: usePromptNodesForUi ignores the provided RunOpts.ui adapter");
+    console.warn("atomic-workflows: usePromptNodesForUi ignores the provided RunOpts.ui adapter");
   }
 
   // 0. maxDepth guard — reject before any store/persistence side effects.
@@ -1824,41 +1840,12 @@ export async function run<TInputs extends Record<string, unknown>>(
     return {
       runId: opts.runId ?? crypto.randomUUID(),
       status: "failed",
-      error: `pi-workflows: maxDepth exceeded (max ${max})`,
+      error: `atomic-workflows: maxDepth exceeded (max ${max})`,
       stages: [],
     };
   }
 
   const erasedDef = def as WorkflowDefinition;
-  const importRegistry = opts.registry ?? createRegistry([erasedDef]);
-  const importResolverOptions = {
-    registry: importRegistry,
-    cwd: opts.cwd ?? process.cwd(),
-    ...(opts.workflowSources !== undefined ? { sources: opts.workflowSources } : {}),
-  };
-  let importResolver: typeof import("../../workflows/import-resolver.js") | undefined;
-  const loadImportResolver = async (): Promise<typeof import("../../workflows/import-resolver.js")> => {
-    // Keep this import lazy: a top-level import forms an ESM cycle through
-    // executor -> workflow-runner -> discovery -> workflow-module-loader -> executor.
-    importResolver ??= await import("../../workflows/import-resolver.js");
-    return importResolver;
-  };
-
-  if (Object.keys(erasedDef.imports ?? {}).length > 0) {
-    const resolver = await loadImportResolver();
-    const importDiagnostics = resolver.validateWorkflowImportGraph({
-      ...importResolverOptions,
-      roots: [erasedDef],
-    });
-    if (importDiagnostics.length > 0) {
-      return {
-        runId: opts.runId ?? crypto.randomUUID(),
-        status: "failed",
-        error: `pi-workflows: invalid workflow imports for "${def.name}":\n${resolver.formatWorkflowImportDiagnostics(importDiagnostics)}`,
-        stages: [],
-      };
-    }
-  }
 
   // 1. Resolve + validate inputs
   const resolvedInputs = resolveInputs(def.inputs, inputs);
@@ -2076,7 +2063,7 @@ export async function run<TInputs extends Record<string, unknown>>(
 
   ownController.signal.addEventListener(
     "abort",
-    () => rejectReleaseBarriers(ownController.signal.reason ?? new Error("pi-workflows: run aborted")),
+    () => rejectReleaseBarriers(ownController.signal.reason ?? new Error("atomic-workflows: run aborted")),
     { once: true },
   );
 
@@ -2383,7 +2370,7 @@ export async function run<TInputs extends Record<string, unknown>>(
       },
       async select<T extends string>(message: string, options: readonly T[]): Promise<T> {
         if (options.length === 0) {
-          throw new Error("pi-workflows: ctx.ui.select requires at least one option");
+          throw new Error("atomic-workflows: ctx.ui.select requires at least one option");
         }
         const response = await ask({ kind: "select", message, choices: options });
         if (typeof response === "string" && (options as readonly string[]).includes(response)) {
@@ -2502,7 +2489,7 @@ export async function run<TInputs extends Record<string, unknown>>(
           return replayResult;
         };
         const rejectReplayMutation = (action: string): never => {
-          throw new Error(`pi-workflows: replayed stage "${name}" cannot ${action}`);
+          throw new Error(`atomic-workflows: replayed stage "${name}" cannot ${action}`);
         };
         const replayContext: InternalStageContext = {
           name,
@@ -2738,7 +2725,7 @@ export async function run<TInputs extends Record<string, unknown>>(
         stageUiBroker.cancelStagePrompt(
           runId,
           stageId,
-          new Error(`pi-workflows: stage ${stageId} completed with pending custom UI`),
+          new Error(`atomic-workflows: stage ${stageId} completed with pending custom UI`),
         );
         opts.onStageEnd?.(runId, stageSnapshot);
 
@@ -2769,7 +2756,7 @@ export async function run<TInputs extends Record<string, unknown>>(
         stageSnapshot.skippedReason = "fail-fast";
       };
       const parallelFailFastError = (): unknown =>
-        stageFailFastScope?.firstFailure ?? new Error("pi-workflows: skipped after parallel fail-fast");
+        stageFailFastScope?.firstFailure ?? new Error("atomic-workflows: skipped after parallel fail-fast");
       const skipForParallelFailFast = (): void => {
         if (isTerminalStage(stageSnapshot)) return;
         markSkippedForParallelFailFast();
@@ -3176,16 +3163,13 @@ export async function run<TInputs extends Record<string, unknown>>(
       });
     },
 
-    async workflow(alias: string, options: WorkflowRunChildOptions = {}): Promise<WorkflowChildResult> {
-      const boundaryName = options.stageName ?? `import:${alias}`;
-      const boundaryReplayKey = nextWorkflowBoundaryReplayKey(boundaryName);
-      const resolver = await loadImportResolver();
-      const resolved = resolver.resolveWorkflowImport(erasedDef, alias, importResolverOptions);
-      if (!resolved.ok) {
-        throw new Error(`pi-workflows: ${resolved.diagnostic.message}`);
+    async workflow(child: WorkflowDefinition, options: WorkflowRunChildOptions = {}): Promise<WorkflowChildResult> {
+      if (!isWorkflowDefinition(child)) {
+        throw new Error("atomic-workflows: ctx.workflow(definition) requires a compiled workflow definition");
       }
-
-      const child = resolved.resolved.definition;
+      const childName = child.normalizedName;
+      const boundaryName = options.stageName ?? `workflow:${childName}`;
+      const boundaryReplayKey = nextWorkflowBoundaryReplayKey(boundaryName);
       const boundary = startWorkflowBoundaryStage(boundaryName, boundaryReplayKey);
       if (boundary.replayedChild !== undefined) {
         // Continuation replay returns the persisted child boundary exactly as
@@ -3203,7 +3187,7 @@ export async function run<TInputs extends Record<string, unknown>>(
         const inputErrors = validateInputs(child.inputs, childInputs);
         if (inputErrors.length > 0) {
           throw new Error(
-            `pi-workflows: invalid inputs for workflow import "${alias}" (${child.name}):\n${formatValidationErrors(inputErrors)}`,
+            `atomic-workflows: invalid inputs for child workflow "${childName}" (${child.name}):\n${formatValidationErrors(inputErrors)}`,
           );
         }
 
@@ -3217,7 +3201,7 @@ export async function run<TInputs extends Record<string, unknown>>(
           ...childBaseOpts,
           cwd: resolveWorkflowCwd(),
           depth: depth + 1,
-          registry: importRegistry,
+          ...(opts.registry !== undefined ? { registry: opts.registry } : {}),
           ...(opts.workflowSources !== undefined ? { workflowSources: opts.workflowSources } : {}),
           signal: ownController.signal,
           deferWorkflowStart: false,
@@ -3226,7 +3210,7 @@ export async function run<TInputs extends Record<string, unknown>>(
         if (childRun.status !== "completed") {
           const failedChildStage = childRun.stages.find((stage) => stage.failureKind !== undefined);
           throw new Error(
-            `pi-workflows: workflow import "${alias}" (${child.name}) failed with status ${childRun.status}${childRun.error !== undefined ? `: ${childRun.error}` : ""}`,
+            `atomic-workflows: child workflow "${childName}" (${child.name}) failed with status ${childRun.status}${childRun.error !== undefined ? `: ${childRun.error}` : ""}`,
             {
               cause: {
                 ...(failedChildStage?.failureKind !== undefined ? { code: failedChildStage.failureKind } : {}),
@@ -3236,7 +3220,7 @@ export async function run<TInputs extends Record<string, unknown>>(
           );
         }
 
-        const outputs = selectWorkflowOutputs(erasedDef, alias, child, childRun.result, options.outputs);
+        const outputs = selectWorkflowOutputs(erasedDef, childName, child, childRun.result, childRun.stages);
         const childResult: WorkflowChildResult = {
           workflow: child.normalizedName,
           runId: childRun.runId,
@@ -3244,7 +3228,7 @@ export async function run<TInputs extends Record<string, unknown>>(
           outputs,
           rawOutput: childRun.result,
         };
-        const workflowChild = workflowChildReplaySnapshot(alias, childResult);
+        const workflowChild = workflowChildReplaySnapshot(childName, childResult);
         const outputKeys = Object.keys(outputs);
         boundary.complete(
           `Workflow "${child.name}" completed (runId: ${childRun.runId}; outputs: ${outputKeys.length > 0 ? outputKeys.join(", ") : "(none)"})`,

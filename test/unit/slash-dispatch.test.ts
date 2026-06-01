@@ -1845,9 +1845,10 @@ export default defineWorkflow("tool-headless-lifecycle")
         assert.deepEqual(completed?.result, { answer: "from workflow tool" });
     });
 
-    test("registered workflow tool content preserves full transcript text and supports JSON format", async () => {
+    test("registered workflow tool content is reference-first by default and supports explicit transcript entries", async () => {
         const runId = `tool-content-transcript-${Date.now()}`;
         const longText = `start-${"x".repeat(180)}-sentinel-end`;
+        const sessionFile = "C:\\Users\\atomic runner\\tool-content.jsonl";
         store.recordRunStart(makeInflightRun(runId));
         store.recordStageStart(runId, {
             id: "stage-tool-content-1",
@@ -1857,7 +1858,7 @@ export default defineWorkflow("tool-headless-lifecycle")
             toolEvents: [],
             result: longText,
             sessionId: "session-tool-content",
-            sessionFile: "/tmp/tool-content.jsonl",
+            sessionFile,
         });
         const tool = await makeRegisteredWorkflowTool();
 
@@ -1871,14 +1872,72 @@ export default defineWorkflow("tool-headless-lifecycle")
         const textBlock = textResult.content[0];
         assert.equal(textBlock?.type, "text");
         const textContent = textBlock.type === "text" ? textBlock.text : "";
-        assert.ok(
+        assert.equal(
             textContent.includes(longText),
-            "plain tool content should include the full transcript entry",
+            false,
+            "default tool content should not inline large transcript entries",
         );
+        assert.ok(textContent.includes(`sessionFile: ${sessionFile}`));
+        assert.ok(textContent.includes(`sessionFileJson: ${JSON.stringify(sessionFile)}`));
+        assert.ok(textContent.includes(`transcriptPath: ${sessionFile}`));
+        assert.ok(textContent.includes(`transcriptPathJson: ${JSON.stringify(sessionFile)}`));
+        assert.ok(textContent.includes("entries: omitted"));
+        assert.ok(textContent.includes("do not rewrite Windows backslashes"));
         assert.equal(
             textContent.includes("╭"),
             false,
             "tool content should not use clipped UI chrome",
+        );
+        const referenceDetails = textResult.details as Extract<
+            WorkflowToolResult,
+            { action: "transcript" }
+        >;
+        assert.equal(referenceDetails.entries.length, 0);
+        assert.equal(referenceDetails.entriesOmitted, true);
+        assert.equal(referenceDetails.entryCount, 1);
+        assert.equal(referenceDetails.transcriptPath, sessionFile);
+
+        const explicitTextResult = await tool.execute(
+            "tool-content-text-tail",
+            { action: "transcript", runId, stageId: "summarize", tail: 1 },
+            undefined,
+            undefined,
+            {} as never,
+        );
+        const explicitTextBlock = explicitTextResult.content[0];
+        assert.equal(explicitTextBlock?.type, "text");
+        const explicitTextContent = explicitTextBlock.type === "text"
+            ? explicitTextBlock.text
+            : "";
+        assert.ok(
+            explicitTextContent.includes(longText),
+            "explicit tail should inline the requested transcript entry",
+        );
+
+        const defaultJsonResult = await tool.execute(
+            "tool-content-json-default",
+            {
+                action: "transcript",
+                runId,
+                stageId: "summarize",
+                format: "json",
+            },
+            undefined,
+            undefined,
+            {} as never,
+        );
+        const defaultJsonBlock = defaultJsonResult.content[0];
+        assert.equal(defaultJsonBlock?.type, "text");
+        const defaultParsed = JSON.parse(
+            defaultJsonBlock.type === "text" ? defaultJsonBlock.text : "{}",
+        );
+        assert.deepEqual(defaultParsed.entries, []);
+        assert.equal(defaultParsed.entriesOmitted, true);
+        assert.equal(defaultParsed.entryCount, 1);
+        assert.equal(defaultParsed.transcriptPath, sessionFile);
+        assert.equal(
+            (defaultJsonBlock.type === "text" ? defaultJsonBlock.text : "").includes(longText),
+            false,
         );
 
         const jsonResult = await tool.execute(
@@ -1887,6 +1946,7 @@ export default defineWorkflow("tool-headless-lifecycle")
                 action: "transcript",
                 runId,
                 stageId: "summarize",
+                tail: 1,
                 format: "json",
             },
             undefined,
@@ -1899,6 +1959,8 @@ export default defineWorkflow("tool-headless-lifecycle")
             jsonBlock.type === "text" ? jsonBlock.text : "{}",
         );
         assert.equal(parsed.entries[0].text, longText);
+        assert.equal(parsed.entriesOmitted, false);
+        assert.equal(parsed.entryLimit, 1);
     });
 
     test("registered workflow tool content elides empty send targets", async () => {
@@ -2102,6 +2164,7 @@ export default defineWorkflow("tool-headless-lifecycle")
             status: "running",
             parentIds: [],
             toolEvents: [],
+            sessionFile: "/tmp/scan-session.jsonl",
         });
         store.recordStageStart(runId, {
             id: "stage-failed-1",
@@ -2110,6 +2173,7 @@ export default defineWorkflow("tool-headless-lifecycle")
             parentIds: [],
             toolEvents: [],
             error: "boom",
+            sessionFile: "/tmp/review-session.jsonl",
         });
         const handler = makeToolHandler();
 
@@ -2120,13 +2184,21 @@ export default defineWorkflow("tool-headless-lifecycle")
         assert.equal(listResult.action, "stages");
         const list = listResult as {
             action: string;
-            stages: Array<{ name: string; status: string; error?: string }>;
+            stages: Array<{
+                name: string;
+                status: string;
+                error?: string;
+                sessionFile?: string;
+                transcriptPath?: string;
+            }>;
         };
         assert.deepEqual(
             list.stages.map((stage) => stage.name),
             ["review"],
         );
         assert.equal(list.stages[0]!.status, "failed");
+        assert.equal(list.stages[0]!.sessionFile, "/tmp/review-session.jsonl");
+        assert.equal(list.stages[0]!.transcriptPath, "/tmp/review-session.jsonl");
 
         const detailResult = await handler(
             { action: "stage", runId, stageId: "scan" },
@@ -2135,10 +2207,18 @@ export default defineWorkflow("tool-headless-lifecycle")
         assert.equal(detailResult.action, "stage");
         const detail = detailResult as {
             action: string;
-            stage?: { id: string; name: string; status: string };
+            stage?: {
+                id: string;
+                name: string;
+                status: string;
+                sessionFile?: string;
+                transcriptPath?: string;
+            };
         };
         assert.equal(detail.stage?.id, "stage-running-1");
         assert.equal(detail.stage?.status, "running");
+        assert.equal(detail.stage?.sessionFile, "/tmp/scan-session.jsonl");
+        assert.equal(detail.stage?.transcriptPath, "/tmp/scan-session.jsonl");
     });
 
     test("makeExecuteWorkflowTool stages clones pending prompts", async () => {
@@ -2316,9 +2396,11 @@ export default defineWorkflow("tool-headless-lifecycle")
             entries: Array<{ role: string; text?: string; output?: string }>;
             truncated: boolean;
             sessionFile?: string;
+            transcriptPath?: string;
         };
         assert.equal(transcript.source, "snapshot");
         assert.equal(transcript.sessionFile, "/tmp/session.jsonl");
+        assert.equal(transcript.transcriptPath, "/tmp/session.jsonl");
         assert.equal(transcript.truncated, true);
         assert.deepEqual(transcript.entries, [
             { role: "assistant", text: "done" },
@@ -2400,6 +2482,8 @@ export default defineWorkflow("tool-headless-lifecycle")
             parentIds: [],
             toolEvents: [],
             result: "snapshot-result",
+            sessionId: "snapshot-session",
+            sessionFile: "/tmp/live-empty-snapshot.jsonl",
         });
         const { dispose } = registerLiveStageHandle(
             runId,
@@ -2419,10 +2503,18 @@ export default defineWorkflow("tool-headless-lifecycle")
                 source: string;
                 entries: unknown[];
                 truncated: boolean;
+                entriesOmitted?: boolean;
+                sessionId?: string;
+                sessionFile?: string;
+                transcriptPath?: string;
             };
             assert.equal(transcript.source, "live");
             assert.equal(transcript.truncated, false);
             assert.deepEqual(transcript.entries, []);
+            assert.equal(transcript.entriesOmitted, true);
+            assert.equal(transcript.sessionId, "snapshot-session");
+            assert.equal(transcript.sessionFile, "/tmp/live-empty-snapshot.jsonl");
+            assert.equal(transcript.transcriptPath, "/tmp/live-empty-snapshot.jsonl");
         } finally {
             dispose();
         }
@@ -2473,7 +2565,7 @@ export default defineWorkflow("tool-headless-lifecycle")
 
         try {
             const result = await handler(
-                { action: "transcript", runId, stageId: "live-empty" },
+                { action: "transcript", runId, stageId: "live-empty", tail: 1 },
                 {} as never,
             );
 
@@ -2522,7 +2614,7 @@ export default defineWorkflow("tool-headless-lifecycle")
 
         try {
             const result = await handler(
-                { action: "transcript", runId, stageId: "live-non-text" },
+                { action: "transcript", runId, stageId: "live-non-text", tail: 1 },
                 {} as never,
             );
 

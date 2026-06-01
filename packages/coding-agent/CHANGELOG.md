@@ -11,10 +11,12 @@
 
 ### Changed
 
-- Documented TypeScript module-style workflow imports and reusable builtin workflow modules in the bundled workflow authoring guide.
+- Documented direct `ctx.workflow(compiledWorkflow, options)` composition, TypeScript module-style child workflow calls, reusable builtin workflow modules, and child workflow output contracts in the bundled workflow authoring guide.
 - Refined the `/fast` selector into a conventional toggle UI with on/off states, clearer scope descriptions, and space/enter toggle support ([#1134](https://github.com/bastani-inc/atomic/issues/1134)).
 - Compressed the `/fast` selector copy, row layout, and per-change status message so the summary, toggles, scopes, and keyboard hints stay readable without duplicate off/standard-tier messaging ([#1134](https://github.com/bastani-inc/atomic/issues/1134)).
 - Clarified workflow-creation guidance so Atomic asks clarifying questions and writes first-time workflows directly, reserving `/goal` for explicitly chosen long-running reviewer-gated implementation.
+- Tightened workflow tool guidance so Atomic monitors long-running workflow runs periodically without micro-managing stages, steers only when appropriate, and inspects transcript paths surgically instead of reading whole session logs.
+- Expanded the workflow authoring docs for composing user-defined workflows and builtin child workflows such as `deep-research-codebase`, `goal`, and `ralph`, including explicit output contracts and the implicit string `result` output fallback.
 - Documented the current workflow tool action surface, lifecycle notices, human-in-the-loop answer notifications, workflow notification config, `/workflow` slash-command discovery, and workflow Codex fast-mode behavior ([#1151](https://github.com/bastani-inc/atomic/issues/1151)).
 
 ### Fixed

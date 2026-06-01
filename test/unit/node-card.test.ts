@@ -301,7 +301,7 @@ describe("renderNodeCard — metadata line", () => {
     assert.match(stripAnsi(lines[3]!), /1 dep/);
   });
 
-  test("imported workflow boundaries show child workflow and run summary", () => {
+  test("child workflow boundaries show child workflow and run summary", () => {
     const lines = renderNodeCard(
       makeStage({
         name: "run-child-by-path-select-summary",
@@ -312,7 +312,7 @@ describe("renderNodeCard — metadata line", () => {
           workflow: "pr1135-import-child",
           runId: "run_1234567890abcdef",
           status: "completed",
-          outputs: { summary: "child:workflow-imports:path:3" },
+          outputs: { summary: "child:workflow:path:3" },
         },
       }),
       { theme },

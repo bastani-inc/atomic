@@ -146,7 +146,7 @@ Atomic will:
 - write a `.atomic/workflows/<name>.ts` definition that uses `defineWorkflow(...).input(...).run(...).compile()`,
 - and run `/workflow reload` so the generated workflow is rediscovered and can be launched with `/workflow <name>`.
 
-The same plain-chat approach works for editing or hardening an existing workflow — ask Atomic to add a stage, switch a model, save artifacts, or wire in a human approval gate. For the full authoring reference, see [Workflows](/workflows).
+The same plain-chat approach works for editing or hardening an existing workflow — ask Atomic to add a stage, switch a model, save artifacts, or wire in a human approval gate. For the full authoring reference, see [Workflows](/workflows). The authoring guide also covers [workflow composition](/workflows#workflow-composition), including calling user-defined workflows or builtin workflows such as `deep-research-codebase`, `goal`, and `ralph` from `@bastani/workflows/builtin`.
 
 ### Default tools and prompts
 

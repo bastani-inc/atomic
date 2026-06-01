@@ -289,46 +289,4 @@ describe("programmatic workflow runner", () => {
         );
     });
 
-    test("fails fast for invalid named workflow import graphs", async () => {
-        const dir = mkdtempSync(join(tmpdir(), "workflow-runner-import-fail-"));
-        try {
-            const workflowDir = join(dir, ".atomic", "workflows");
-            mkdirSync(workflowDir, { recursive: true });
-            writeFileSync(
-                join(workflowDir, "parent.ts"),
-                [
-                    `export default {`,
-                    `  __piWorkflow: true,`,
-                    `  name: "runner-import-parent",`,
-                    `  normalizedName: "runner-import-parent",`,
-                    `  description: "",`,
-                    `  inputs: {},`,
-                    `  imports: { missing: { definition: { not: "a workflow" } } },`,
-                    `  run: async (ctx) => {`,
-                    `    await ctx.task("should-not-run", { prompt: "no" });`,
-                    `    return {};`,
-                    `  },`,
-                    `};`,
-                ].join("\n"),
-                "utf8",
-            );
-            const prompts: string[] = [];
-
-            await assert.rejects(
-                runWorkflow(
-                    { mode: "workflow", workflow: "runner-import-parent" },
-                    {
-                        cwd: dir,
-                        adapterOptions: {
-                            createAgentSession: makeSessionFactory(prompts),
-                        },
-                    },
-                ),
-                /Invalid workflow imports[\s\S]*IMPORT_INVALID[\s\S]*definition must be a compiled workflow definition/,
-            );
-            assert.deepEqual(prompts, []);
-        } finally {
-            rmSync(dir, { recursive: true, force: true });
-        }
-    });
 });

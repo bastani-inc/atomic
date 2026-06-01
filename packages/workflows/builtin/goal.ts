@@ -979,6 +979,50 @@ export default defineWorkflow("goal")
     description:
       "Optional branch reviewers compare the current code delta against (default origin/main).",
   })
+  .output("result", {
+    type: "text",
+    description: "Final report with objective, status, receipts, turns, and remaining work.",
+  })
+  .output("status", {
+    type: "select",
+    description: "Final reducer status: complete, blocked, needs_human, or active if externally interrupted.",
+  })
+  .output("approved", {
+    type: "boolean",
+    description: "Whether the reducer reached complete.",
+  })
+  .output("goal_id", {
+    type: "string",
+    description: "Per-run goal identifier stored in the ledger.",
+  })
+  .output("objective", {
+    type: "text",
+    description: "Normalized goal objective used by the run.",
+  })
+  .output("ledger_path", {
+    type: "string",
+    description: "OS-temp path to goal-ledger.json with receipts, reviewer decisions, blockers, and lifecycle events.",
+  })
+  .output("turns_completed", {
+    type: "number",
+    description: "Worker/review turns completed.",
+  })
+  .output("iterations_completed", {
+    type: "number",
+    description: "Worker/review turns completed, retained for status summaries.",
+  })
+  .output("receipts", {
+    type: "array",
+    description: "Ledger receipt summaries and worker artifact paths.",
+  })
+  .output("remaining_work", {
+    type: "text",
+    description: "Remaining gaps or blockers when incomplete, or none.",
+  })
+  .output("review_report", {
+    type: "text",
+    description: "Markdown report containing the last structured reviewer decision payloads used by the reducer.",
+  })
   .run(async (ctx) => {
     const inputs = ctx.inputs as GoalInputs;
     const objective = (inputs.objective ?? "").trim();

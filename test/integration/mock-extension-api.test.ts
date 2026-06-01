@@ -191,10 +191,14 @@ const EXPECTED_WORKFLOW_DESCRIPTION_TOKENS = [
   "named workflows",
   "direct one-off",
   "discover with list/get/inputs",
-  "status/stages/stage details/transcripts",
+  "status/stages/stage details",
   "prompt answers",
   "pause/resume/interrupt/kill",
   "reload workflow resources",
+  "sessionFile/transcriptPath",
+  "Windows backslashes",
+  "rg/grep",
+  "explicit tail or limit",
 ] as const;
 
 // ---------------------------------------------------------------------------

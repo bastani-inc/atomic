@@ -105,6 +105,20 @@ describe("WorkflowParametersSchema stage options", () => {
       assert.equal(typeof properties[field]?.description, "string", `${field} description`);
       assert.ok((properties[field]?.description ?? "").length > 0, `${field} description`);
     }
+
+    const actionDescription = properties.action?.description ?? "";
+    assert.match(actionDescription, /status\/stages\/stage first/);
+    assert.match(actionDescription, /sessionFile\/transcriptPath/);
+    assert.match(actionDescription, /Windows backslashes/);
+    assert.match(actionDescription, /rg\/grep/);
+
+    const limitDescription = properties.limit?.description ?? "";
+    assert.match(limitDescription, /metadata\/path only/);
+    assert.match(limitDescription, /sessionFile\/transcriptPath/);
+    assert.match(limitDescription, /platform path separators/);
+
+    const tailDescription = properties.tail?.description ?? "";
+    assert.match(tailDescription, /quick recent-context checks/);
   });
 
   test("rejects invalid stage-control enum values and transcript counts", () => {

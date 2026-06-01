@@ -390,7 +390,7 @@ export function createStore(): Store {
       if (stage.replayed !== undefined) existing.replayed = stage.replayed;
       delete existing.awaitingInputSince;
       delete existing.inputRequest;
-      rejectStagePrompt(existing, `pi-workflows: stage ${stage.id} ended before prompt resolved`);
+      rejectStagePrompt(existing, `atomic-workflows: stage ${stage.id} ended before prompt resolved`);
       _version++;
       notify();
     },
@@ -435,9 +435,9 @@ export function createStore(): Store {
       const pending = run.pendingPrompt;
       if (pending) {
         run.pendingPrompt = undefined;
-        rejectPrompt(pending.id, `pi-workflows: run ${runId} ended before prompt resolved`);
+        rejectPrompt(pending.id, `atomic-workflows: run ${runId} ended before prompt resolved`);
       }
-      rejectAllStagePrompts(run, `pi-workflows: run ${runId} ended before prompt resolved`);
+      rejectAllStagePrompts(run, `atomic-workflows: run ${runId} ended before prompt resolved`);
       _version++;
       notify();
       return true;
@@ -449,9 +449,9 @@ export function createStore(): Store {
       const run = _runs[index]!;
       const pending = run.pendingPrompt;
       if (pending) {
-        rejectPrompt(pending.id, `pi-workflows: run ${runId} was removed before prompt resolved`);
+        rejectPrompt(pending.id, `atomic-workflows: run ${runId} was removed before prompt resolved`);
       }
-      rejectAllStagePrompts(run, `pi-workflows: run ${runId} was removed before prompt resolved`);
+      rejectAllStagePrompts(run, `atomic-workflows: run ${runId} was removed before prompt resolved`);
       for (const stage of run.stages) {
         _stagePromptAnswers.delete(stagePromptAnswerKey(runId, stage.id));
       }
@@ -516,14 +516,14 @@ export function createStore(): Store {
       return new Promise<unknown>((resolve, reject) => {
         const run = findRun(runId);
         if (!run) {
-          reject(new Error(`pi-workflows: run "${runId}" not found`));
+          reject(new Error(`atomic-workflows: run "${runId}" not found`));
           return;
         }
         const pending = run.pendingPrompt;
         if (!pending || pending.id !== promptId) {
           reject(
             new Error(
-              `pi-workflows: pending prompt "${promptId}" not registered on run "${runId}"`,
+              `atomic-workflows: pending prompt "${promptId}" not registered on run "${runId}"`,
             ),
           );
           return;
@@ -596,19 +596,19 @@ export function createStore(): Store {
       return new Promise<unknown>((resolve, reject) => {
         const run = findRun(runId);
         if (!run) {
-          reject(new Error(`pi-workflows: run "${runId}" not found`));
+          reject(new Error(`atomic-workflows: run "${runId}" not found`));
           return;
         }
         const stage = findStage(run, stageId);
         if (!stage) {
-          reject(new Error(`pi-workflows: stage "${stageId}" not found on run "${runId}"`));
+          reject(new Error(`atomic-workflows: stage "${stageId}" not found on run "${runId}"`));
           return;
         }
         const pending = stage.pendingPrompt;
         if (!pending || pending.id !== promptId) {
           reject(
             new Error(
-              `pi-workflows: pending prompt "${promptId}" not registered on stage "${stageId}" in run "${runId}"`,
+              `atomic-workflows: pending prompt "${promptId}" not registered on stage "${stageId}" in run "${runId}"`,
             ),
           );
           return;
@@ -866,7 +866,7 @@ export function createStore(): Store {
       // instead of leaking. The error message is intentionally generic — the
       // caller already issued a session boundary, exact cause isn't needed.
       for (const entry of _resolvers.values()) {
-        entry.reject(new Error("pi-workflows: store cleared"));
+        entry.reject(new Error("atomic-workflows: store cleared"));
       }
       _resolvers.clear();
       _stagePromptAnswers.clear();

@@ -195,12 +195,13 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 
   const workflowGuidance = explicitlyExcludedTools.has("workflow")
     ? ""
-    : `- **Workflows**: When the user asks to run a repeatable, multi-stage process, or references an existing workflow by name, prefer the \`workflow\` tool over performing the stages manually.
-  - Use \`action: "list"\` to discover available workflows and \`action: "inputs"\` to see what a workflow expects, then \`action: "run"\` with the workflow name and \`inputs\` to start one.
-  - Use the inspection and run-control actions (\`status\`, \`stages\`, \`stage\`, \`transcript\`, \`send\`, \`pause\`, \`resume\`, \`interrupt\`, \`kill\`) to monitor and steer in-flight runs.
-  - If a user asks to create a workflow, ask detailed clarifying questions about what they want to build until you have a shared understanding of its purpose, inputs, stages, handoffs, validation, and success criteria. Then read the workflow docs/examples and implement the workflow directly; do not use the \`goal\` workflow by default for first-time workflow creation because it can take a long time and use many tokens.
-  - Only use the \`goal\` workflow for workflow creation when the user explicitly asks for that long-running reviewer-gated process or after you explain the tradeoff and they choose it. If you do run \`goal\`, use \`action: "run"\` with \`workflow: "goal"\` and an \`objective\` input that includes tight scope, concrete done criteria, and validation steps; wait for the run via workflow run-control/status UI instead of doing the implementation yourself or creating sleep/status polling loops.
-  - The \`workflow\` tool can also run a one-off tracked task, parallel fan-out, or chain without creating a saved workflow file.`;
+    : `- **Workflows**: Use the \`workflow\` tool for existing named workflows and for repeatable, inspectable, resumable, or multi-stage processes; use direct \`task\`, \`tasks\`, or \`chain\` workflow calls for one-off tracked work when that is useful.
+  - For unfamiliar named workflows, discover with \`action: "list"\`, inspect with \`action: "get"\` or \`action: "inputs"\`, and run with \`action: "run"\`, \`workflow\`, and validated \`inputs\`; do not invent workflow names or input keys.
+  - Monitor long-running workflow runs through lifecycle notices and targeted \`status\`/\`stages\`/\`stage\` checks when you need new information; do not micro-manage every stage or create sleep/status polling loops.
+  - Use run-control and messaging actions (\`send\`, \`pause\`, \`resume\`, \`interrupt\`, \`kill\`) only when needed to answer prompts, steer a stage, resume or interrupt paused work, or respond to user requests/control signals.
+  - For transcripts, avoid reading whole session transcripts at once. Use \`stages\` or \`stage\` to get \`sessionFile\`/\`transcriptPath\`, quote the exact path without rewriting separators (preserve Windows backslashes), search it with \`rg\`/\`grep\`, and read small relevant ranges; use \`transcript\` with explicit \`tail\` or \`limit\` only for quick recent-context checks.
+  - If a user asks to create or edit a workflow, use the create-spec skill when available and ask detailed clarifying questions until you understand its purpose, inputs, stages, handoffs, validation, and success criteria. Then read the workflow docs/examples and implement the workflow from the created spec directly as a TypeScript definition.
+  - If you run \`ralph\` or \`goal\`, define an objective that includes tight scope, concrete and verifiable done criteria, and validation steps; then monitor progress as above instead of doing parallel implementation yourself.`;
 
   let prompt = `You are an expert coding assistant operating named Atomic, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.
 
