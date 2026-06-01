@@ -9,14 +9,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Breaking Changes
 
 - Removed the unshipped `.import(...)` workflow builder API and string-alias child workflow calls. Workflows now compose children by importing compiled workflow definitions with TypeScript imports and passing those definitions directly to `ctx.workflow(workflowDefinition, options)`.
-- Removed parent-side child output selection/renaming from `ctx.workflow(...)`. Parent workflows now receive the child's declared `.output(...)` contract plus the implicit `result` output on `child.outputs`.
+- Removed parent-side child output selection/renaming from `ctx.workflow(...)`. Parent workflows now receive the child's declared `.output(...)` contract as `child.outputs`.
+- Made workflow outputs fully explicit so a workflow's input/output contract is the stable, self-documenting surface other workflows compose against. A workflow now exposes exactly the outputs it declares with `.output(...)`, and a `.run()` return that contains a key the workflow did not declare fails the run with `atomic-workflows: ... returned undeclared output "<key>"`. The implicit string `result` output and the `child.rawOutput` escape hatch were removed: declare `.output("result", schema)` and return `{ result }` if you want a `result` output, and declare every other field a parent should read.
 - Changed default transcript inspection from inlining about 50 recent entries to a reference-first 5-entry preview with `sessionFile`/`transcriptPath`; pass explicit `tail` or `limit` to override the preview size.
 - Removed the obsolete `.humanInTheLoop(...)` workflow builder API and its declaration-time interaction metadata; workflows should use runtime `ctx.ui.*` calls directly when they need human input.
 
 ### Added
 
 - Added TypeScript module-style workflow composition: parent workflows can pass compiled child workflow definitions directly to `ctx.workflow(compiledWorkflow, options)`. The bundled `deep-research-codebase`, `goal`, `ralph`, and `open-claude-design` workflows are reusable from `@bastani/workflows/builtin` or individual builtin module paths.
-- Added an implicit child-workflow `result` output for workflows that do not declare their own `result`, sourced from the workflow `.run()` return object's `result` string and defaulting to `""` when omitted.
 - Added first-class workflow composition: child workflows can declare `.output()` contracts, and `ctx.workflow()` runs compiled child workflow definitions as nested runs with input validation, schema-validated declared outputs, and a visible parent boundary stage ([#1071](https://github.com/bastani-inc/atomic/issues/1071)).
 
 ### Changed

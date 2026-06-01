@@ -33,6 +33,7 @@ import type { DispatcherOpts } from "../../packages/workflows/src/extension/disp
 
 function makeWorkflow(name: string): WorkflowDefinition {
   return defineWorkflow(name)
+    .output("ok", { type: "unknown" })
     .run(async (_ctx) => ({ ok: true }))
     .compile() as WorkflowDefinition;
 }
@@ -161,6 +162,7 @@ describe("dispatch run (always background)", () => {
     const deps = freshDeps();
     let settled = false;
     const wf = defineWorkflow("headless-bg-wait")
+      .output("ok", { type: "unknown" })
       .run(async (ctx) => {
         await new Promise((resolve) => setTimeout(resolve, 25));
         const text = await ctx.stage("done").prompt("finish");
@@ -196,6 +198,7 @@ describe("dispatch run (always background)", () => {
     const deps = freshDeps();
     const wf = defineWorkflow("requires-input")
       .input("prompt", { type: "text", required: true })
+      .output("ok", { type: "unknown" })
       .run(async () => ({ ok: true }))
       .compile() as WorkflowDefinition;
     const registry = createRegistry([wf]);
@@ -245,6 +248,7 @@ describe("dispatch run forwards persistence", () => {
   }
 
   const stageWorkflow = defineWorkflow("dispatch-persist-test")
+    .output("ok", { type: "unknown" })
     .run(async (ctx) => {
       await ctx.stage("s1").prompt("go");
       return { ok: true };

@@ -152,11 +152,11 @@ export default defineWorkflow("research-and-synthesize")
   .compile();
 ```
 
-The child executes as a nested workflow behind a parent boundary stage named `workflow:<workflow-name>` by default, but user-facing status and graph views flatten it into the parent run. In practice it should feel like inlining the child workflow code: child stages, HIL prompt nodes, and deeper imported children appear in one expanded parent graph, while implementation-owned child run ids stay hidden from top-level `/workflow status` lists. The child still has a run id internally so the graph can attach to, pause, interrupt, resume, or kill live child stages correctly. Inputs are strictly validated against the child workflow before it starts: unknown keys, missing required values, type mismatches, and invalid `select` choices fail before the child body runs. The parent receives the child's declared outputs plus the implicit `result` output on `child.outputs` after those outputs pass their declared runtime type checks.
+The child executes as a nested workflow behind a parent boundary stage named `workflow:<workflow-name>` by default, but user-facing status and graph views flatten it into the parent run. In practice it should feel like inlining the child workflow code: child stages, HIL prompt nodes, and deeper imported children appear in one expanded parent graph, while implementation-owned child run ids stay hidden from top-level `/workflow status` lists. The child still has a run id internally so the graph can attach to, pause, interrupt, resume, or kill live child stages correctly. Inputs are strictly validated against the child workflow before it starts: unknown keys, missing required values, type mismatches, and invalid `select` choices fail before the child body runs. The parent receives the child's declared `.output(...)` outputs on `child.outputs` after those outputs pass their declared runtime type checks.
 
 For workflows intended to be called as children, declare `.output(...)` for every non-default field a parent should rely on. `.output(...)` is only the schema/contract: use normal TypeScript in `.run()` to gather values from any stage/task/child workflow and return those keys.
 
-**Return convention:** child outputs are return-object keys. Atomic never infers child workflow outputs from stage names, stage order, or the final assistant message. If a parent should read `child.outputs.summary`, the child workflow's `.run()` must return `{ summary }`. The compatibility `child.outputs.result` follows the same rule: return `{ result: "..." }` from `.run()` to set it, otherwise the implicit undeclared `result` is `""`. The implicit `result` is validated as a string, so `{ result: 42 }` fails unless the workflow explicitly declares `.output("result", { type: "number" })`. Declare `.output("result", schema)` when `result` should be documented, required, or typed differently; the value still comes from the returned `result` key.
+**Return convention:** child outputs are return-object keys. Atomic never infers child workflow outputs from stage names, stage order, or the final assistant message. If a parent should read `child.outputs.summary`, the child workflow's `.run()` must both declare `.output("summary", schema)` and return `{ summary }`. `result` is not special and is never added for you: to expose `result`, declare `.output("result", schema)` and return `{ result }` like any other output. Returning a key that is not declared with `.output(...)` fails the run with `atomic-workflows: workflow "<name>" returned undeclared output "<key>"; declare it with .output("<key>", { type: ... }) or remove it from the .run() return` (the child-call variant reports `... child "<alias>" returned undeclared output "<key>" from "<childName>"`).
 
 A reusable child module can simply default-export a compiled workflow:
 
@@ -183,7 +183,7 @@ import goalWorkflow from "@bastani/workflows/builtin/goal";
 import openClaudeDesignWorkflow from "@bastani/workflows/builtin/open-claude-design";
 ```
 
-Only compiled workflow definitions can be passed to `ctx.workflow(...)`; registry names, strings, and path objects are intentionally not supported for child workflow calls. Missing or invalid module imports fail when the workflow file itself is loaded. A parent receives the child's declared outputs plus the implicit string `result` output from the child `.run()` return object. Missing required outputs, schema type mismatches, and non-JSON-serializable returned child values fail the child call before the parent continues.
+Only compiled workflow definitions can be passed to `ctx.workflow(...)`; registry names, strings, and path objects are intentionally not supported for child workflow calls. Missing or invalid module imports fail when the workflow file itself is loaded. A parent receives the child's declared `.output(...)` outputs from the child `.run()` return object. Missing required outputs, schema type mismatches, returning an undeclared output, and non-JSON-serializable returned child values fail the child call before the parent continues.
 
 ### Reusable Git worktrees
 
@@ -329,7 +329,7 @@ Declare outputs with `.output(key, schema?)` when a workflow result should be pa
 | `array`   | array                                     |
 | `unknown` or omitted | any JSON-serializable value     |
 
-`.run()` must return a JSON-serializable object. Primitives, arrays, `null`, functions, symbols, `undefined` properties, `NaN`, and infinite numbers fail validation. Declared outputs are type-checked before a workflow is marked completed. `required: true` means the returned object must contain that key. Child workflows also expose an implicit compatibility `result` output; when undeclared, it must be a string returned as `{ result: "..." }` or it defaults to `""`. Declare `.output("result", schema)` if `result` should be required, documented, or typed differently. Child output replay still performs a structured-clone safety check after JSON validation so completed child boundaries can be replayed.
+`.run()` must return a JSON-serializable object. Primitives, arrays, `null`, functions, symbols, `undefined` properties, `NaN`, and infinite numbers fail validation. Declared outputs are type-checked before a workflow is marked completed. `required: true` means the returned object must contain that key (a missing required output fails with `missing output "<key>"`, and a type mismatch fails with `output "<key>" expected <type>, got <actual>`). A workflow exposes exactly the outputs it declares with `.output(...)`: there is no automatic `result` output, and returning a key that was not declared fails the run with `atomic-workflows: workflow "<name>" returned undeclared output "<key>"; declare it with .output("<key>", { type: ... }) or remove it from the .run() return`. To expose `result`, declare `.output("result", schema)` and return `{ result }`. Child output replay still performs a structured-clone safety check after JSON validation so completed child boundaries can be replayed.
 
 ---
 
@@ -524,7 +524,7 @@ Design-system onboarding → reference import → generation → refinement → 
 | `design_system`   | `text`   | —        | —           | Existing design-system reference / Design.md path.                   |
 | `max_refinements` | `number` | —        | `3`         | Maximum critique/apply refinement iterations.                        |
 
-Child workflow outputs: `output_type`, `design_system`, `artifact`, `handoff`, `approved_for_export`, `refinements_completed`, `import_context`, `run_id`, `artifact_dir`, `preview_path`, `preview_file_url`, `spec_path`, and `spec_file_url`. The compatibility `result` output is also available; because `open-claude-design` does not declare or return `result` today, it is `""`.
+Child workflow outputs: `output_type`, `design_system`, `artifact`, `handoff`, `approved_for_export`, `refinements_completed`, `import_context`, `run_id`, `artifact_dir`, `preview_path`, `preview_file_url`, `spec_path`, and `spec_file_url`. `open-claude-design` has no `result` output; it exposes only the declared fields listed here.
 
 ---
 

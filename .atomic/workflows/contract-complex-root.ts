@@ -87,7 +87,6 @@ export default defineWorkflow("contract-complex-root")
     const totalScore = numberOrZero(composed.outputs.totalScore);
     const bundle = objectOrEmpty(composed.outputs.bundle);
     const childDigests = arrayOrEmpty(composed.outputs.childDigests);
-    const rawComposedOutput = composed.rawOutput ?? {};
     const importChain = [
       {
         level: 0,
@@ -100,7 +99,6 @@ export default defineWorkflow("contract-complex-root")
         runId: composed.runId,
         role: "imported composed workflow",
         declaredOutputKeys: Object.keys(composed.outputs).sort(),
-        rawOutputKeys: Object.keys(rawComposedOutput).sort(),
       },
       {
         level: 2,
@@ -123,17 +121,12 @@ export default defineWorkflow("contract-complex-root")
           workflow: composed.workflow,
           runId: composed.runId,
           outputs: composed.outputs,
-          rawOutput: rawComposedOutput,
         },
         bundle,
         childDigests,
         checks: {
           composedWorkflowIsImported: true,
           composedWorkflowImportedLeafWorkflow: true,
-          rawOutputIncludesUndeclaredDiagnostic: Object.prototype.hasOwnProperty.call(
-            rawComposedOutput,
-            "rawOnlyCompositionDiagnostic",
-          ),
           allValuesShouldBeJsonSerializable: true,
         },
       },

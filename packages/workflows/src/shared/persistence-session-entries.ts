@@ -66,7 +66,6 @@ export interface WorkflowChildReplayPayload {
   readonly runId: string;
   readonly status: "completed";
   readonly outputs: WorkflowOutputValues;
-  readonly rawOutput?: WorkflowOutputValues;
 }
 
 export interface StageEndPayload {

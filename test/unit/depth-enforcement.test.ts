@@ -24,6 +24,7 @@ import type { WorkflowDefinition } from "../../packages/workflows/src/shared/typ
 
 function makeWf(name = "depth-test-wf"): WorkflowDefinition {
   return defineWorkflow(name)
+    .output("ok", { type: "unknown" })
     .run(async (ctx) => {
       await ctx.task("depth-check", { prompt: "depth check" });
       return { ok: true };

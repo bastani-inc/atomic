@@ -82,6 +82,7 @@ describe("runDetached — HIL never reaches pi.ui adapter", () => {
     const jobs = createJobTracker();
 
     const def = defineWorkflow("hil-headless-bg")
+      .output("unreached", { type: "unknown" })
       .run(async (ctx) => {
         await ctx.ui.confirm("ok?");
         return { unreached: true };
@@ -104,6 +105,7 @@ describe("runDetached — HIL never reaches pi.ui adapter", () => {
     const piUi = makeUISpy();
 
     const def = defineWorkflow("hil-editor-bg")
+      .output("edited", { type: "unknown" })
       .run(async (ctx) => {
         const edited = await ctx.ui.editor("seed text");
         return { edited };
@@ -139,6 +141,8 @@ describe("runDetached — HIL never reaches pi.ui adapter", () => {
     const piUi = makeUISpy();
 
     const def = defineWorkflow("hil-mixed-bg")
+      .output("proceed", { type: "unknown" })
+      .output("name", { type: "unknown" })
       .run(async (ctx) => {
         const proceed = await ctx.ui.confirm("ok?");
         const name = await ctx.ui.input("your name");
@@ -179,6 +183,7 @@ describe("runDetached — HIL never reaches pi.ui adapter", () => {
     const jobs = createJobTracker();
 
     const def = defineWorkflow("hil-killed-bg")
+      .output("unreached", { type: "unknown" })
       .run(async (ctx) => {
         await ctx.ui.input("will be killed");
         return { unreached: true };
@@ -205,6 +210,7 @@ describe("runDetached — HIL never reaches pi.ui adapter", () => {
     const jobs = createJobTracker();
 
     const def = defineWorkflow("hil-parentage-bg")
+      .output("proceed", { type: "unknown" })
       .run(async (ctx) => {
         await ctx.stage("before").prompt("before task");
         const proceed = await ctx.ui.confirm("continue?");

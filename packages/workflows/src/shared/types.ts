@@ -168,7 +168,6 @@ export interface WorkflowChildResult extends WorkflowSerializableObject {
   readonly runId: string;
   readonly status: "completed";
   readonly outputs: WorkflowOutputValues;
-  readonly rawOutput: WorkflowOutputValues | undefined;
 }
 
 // ---------------------------------------------------------------------------

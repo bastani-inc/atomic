@@ -127,6 +127,7 @@ function fakeStageSession(): StageSessionRuntime {
 const helloWorkflow = defineWorkflow("hello-world")
     .description("Simple greeting")
     .input("name", { type: "text", required: true })
+    .output("greeting", { type: "unknown" })
     .run(async (ctx) => {
         const stage = ctx.stage("greet");
         const out = await stage.prompt(`Hello ${String(ctx.inputs["name"])}`);
@@ -139,6 +140,7 @@ const schemaWorkflow = defineWorkflow("schema-test")
     .input("text", { type: "text", default: "hi" })
     .input("count", { type: "number", required: false })
     .input("flag", { type: "boolean", required: true })
+    .output("ok", { type: "unknown" })
     .run(async (_ctx) => ({ ok: true }))
     .compile() as WorkflowDefinition;
 
@@ -751,6 +753,7 @@ describe("WorkflowPersistencePort — runtime persistence forwarding", () => {
 
     const persistWorkflow = defineWorkflow("persist-forwarding-test")
         .description("Tests persistence port forwarding through runtime")
+        .output("done", { type: "unknown" })
         .run(async (ctx) => {
             const stage = ctx.stage("persist-stage");
             await stage.prompt("hello");

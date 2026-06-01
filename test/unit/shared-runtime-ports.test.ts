@@ -193,6 +193,7 @@ describe("ctx.stage with StageOptions", () => {
   test("stage() with no options creates a default stage", async () => {
     const wf = defineWorkflow("default-stage-options-test")
       .description("d")
+      .output("result", { type: "unknown" })
       .run(async (ctx) => {
         const s = ctx.stage("step");
         const result = await s.prompt("hello");

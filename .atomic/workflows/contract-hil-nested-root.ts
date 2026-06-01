@@ -49,7 +49,6 @@ export default defineWorkflow("contract-hil-nested-root")
         workflow: parent.workflow,
         runId: parent.runId,
         outputs: parent.outputs,
-        rawOutputKeys: Object.keys(parent.rawOutput ?? {}).sort(),
       },
     };
   })

@@ -172,11 +172,6 @@ export default defineWorkflow("contract-complex-leaf")
       packet,
       records,
       score: topic.length * (depth + 1) * (variant === "gamma" ? 3 : variant === "beta" ? 2 : 1),
-      rawOnlyLeafDiagnostic: {
-        depth,
-        variant,
-        recordIds: records.map((record) => record.id),
-      },
     };
   })
   .compile();

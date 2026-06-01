@@ -38,10 +38,6 @@ export default defineWorkflow("contract-hil-nested-parent")
         workflow: child.workflow,
         runId: child.runId,
         outputs: child.outputs,
-        rawOutputKeys: Object.keys(child.rawOutput ?? {}).sort(),
-      },
-      rawOnlyParentHilDiagnostic: {
-        nestedLevelsBelow: 1,
       },
     };
   })

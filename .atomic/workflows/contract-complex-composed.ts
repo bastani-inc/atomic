@@ -16,7 +16,6 @@ interface ChildDigest extends WorkflowSerializableObject {
   readonly result: string;
   readonly score: number;
   readonly packet: WorkflowSerializableObject;
-  readonly rawOutputKeys: readonly string[];
 }
 
 interface CompositionBundle extends WorkflowSerializableObject {
@@ -119,7 +118,6 @@ export default defineWorkflow("contract-complex-composed")
         result: stringOrFallback(child.outputs.result, "missing child result"),
         score: numberOrZero(child.outputs.score),
         packet: serializableObjectOrEmpty(child.outputs.packet),
-        rawOutputKeys: Object.keys(child.rawOutput ?? {}).sort(),
       });
     }
 
@@ -135,7 +133,6 @@ export default defineWorkflow("contract-complex-composed")
         pass: digest.pass,
         childRunId: digest.runId,
         declaredPacketKeys: Object.keys(digest.packet).sort(),
-        rawOutputKeys: digest.rawOutputKeys,
       })),
     };
 
@@ -144,10 +141,6 @@ export default defineWorkflow("contract-complex-composed")
       bundle,
       childDigests,
       totalScore,
-      rawOnlyCompositionDiagnostic: {
-        importedWorkflow: "contract-complex-leaf",
-        nestedImportDepth: 1,
-      },
     };
   })
   .compile();

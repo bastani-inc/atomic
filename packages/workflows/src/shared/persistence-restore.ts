@@ -320,14 +320,12 @@ function workflowChildMetadata(payload: Record<string, unknown>): Pick<StageSnap
   const childRunId = workflowChild["runId"];
   const status = workflowChild["status"];
   const outputs = workflowChild["outputs"];
-  const rawOutput = workflowChild["rawOutput"];
   if (
     typeof alias !== "string" ||
     typeof workflow !== "string" ||
     typeof childRunId !== "string" ||
     !isWorkflowChildReplayStatus(status) ||
-    !isRecord(outputs) ||
-    (rawOutput !== undefined && !isRecord(rawOutput))
+    !isRecord(outputs)
   ) {
     return {};
   }
@@ -335,9 +333,8 @@ function workflowChildMetadata(payload: Record<string, unknown>): Pick<StageSnap
   // `structuredClone` detaches the restored snapshot from the parsed JSONL
   // payload with a guaranteed deep copy, independent of how the serializable
   // schema's parse step copies (which can differ across the supported zod
-  // majors). Declared `outputs` are part of the child contract, so a
-  // non-serializable value bails the whole child snapshot; `rawOutput` below
-  // is auxiliary and degrades to absent instead.
+  // majors). Declared `outputs` are the child contract, so a non-serializable
+  // value bails the whole child snapshot.
   let clonedOutputs: WorkflowOutputValues;
   try {
     const serializableOutputs = serializableObject(outputs);
@@ -347,18 +344,6 @@ function workflowChildMetadata(payload: Record<string, unknown>): Pick<StageSnap
     return {};
   }
 
-  let clonedRawOutput: WorkflowOutputValues | undefined;
-  if (rawOutput !== undefined) {
-    try {
-      const serializableRawOutput = serializableObject(rawOutput);
-      clonedRawOutput = serializableRawOutput === undefined
-        ? undefined
-        : structuredClone(serializableRawOutput);
-    } catch {
-      clonedRawOutput = undefined;
-    }
-  }
-
   return {
     workflowChild: {
       alias,
@@ -366,7 +351,6 @@ function workflowChildMetadata(payload: Record<string, unknown>): Pick<StageSnap
       runId: childRunId,
       status,
       outputs: clonedOutputs,
-      ...(clonedRawOutput !== undefined ? { rawOutput: clonedRawOutput } : {}),
     },
   };
 }

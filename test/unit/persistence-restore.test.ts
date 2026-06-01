@@ -258,7 +258,6 @@ describe("restoreOnSessionStart", () => {
             runId: "child-run",
             status: "completed",
             outputs: { summary: "ok" },
-            rawOutput: { summary: "ok", extra: 1 },
           },
         },
       },
@@ -270,39 +269,6 @@ describe("restoreOnSessionStart", () => {
     assert.equal(stage.workflowChild?.runId, "child-run");
     assert.equal(stage.workflowChild?.status, "completed");
     assert.deepEqual(stage.workflowChild?.outputs, { summary: "ok" });
-    assert.deepEqual(stage.workflowChild?.rawOutput, { summary: "ok", extra: 1 });
-  });
-
-  test("restores workflow child metadata while omitting non-cloneable rawOutput", () => {
-    const st = createStore();
-    const entries: SessionEntry[] = [
-      { id: "e1", type: "workflow.run.start", payload: { runId: "r3", name: "wf", inputs: {}, ts: 1 } },
-      { id: "e2", type: "workflow.stage.start", payload: { runId: "r3", stageId: "s-new", name: "import:child", parentIds: [], replayKey: "workflow:import:child", ts: 2 } },
-      {
-        id: "e3",
-        type: "workflow.stage.end",
-        payload: {
-          runId: "r3",
-          stageId: "s-new",
-          status: "completed",
-          summary: "child done",
-          workflowChild: {
-            alias: "child",
-            workflow: "child-wf",
-            runId: "child-run",
-            status: "completed",
-            outputs: { summary: "ok" },
-            rawOutput: { summary: "ok", helper: () => "nope" },
-          },
-        },
-      },
-    ];
-
-    restoreOnSessionStart(makeSessionManager(entries), { resumeInFlight: "never", persistRuns: true }, st);
-
-    const stage = st.runs()[0]!.stages[0]!;
-    assert.deepEqual(stage.workflowChild?.outputs, { summary: "ok" });
-    assert.equal(stage.workflowChild?.rawOutput, undefined);
   });
 
   test("restores malformed and non-terminal stage.end statuses as failed", () => {

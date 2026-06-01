@@ -79,6 +79,7 @@ describe("resolveInputs — Phase C", () => {
 describe("executor single-stage — Phase C", () => {
   test("returns completed status and stage output", async () => {
     const def = defineWorkflow("phaseC-single")
+      .output("out", { type: "unknown" })
       .run(async (ctx) => {
         const out = await ctx.stage("main-stage").prompt("do work");
         return { out };
@@ -122,6 +123,7 @@ describe("executor single-stage — Phase C", () => {
   test("store records run snapshot as completed", async () => {
     const store = createStore();
     const def = defineWorkflow("phaseC-store-run")
+      .output("done", { type: "unknown" })
       .run(async (ctx) => {
         await ctx.stage("step").prompt("task");
         return { done: true };
@@ -215,6 +217,7 @@ describe("executor input resolution — Phase C", () => {
   test("schema default flows into ctx.inputs", async () => {
     const def = defineWorkflow("phaseC-defaults")
       .input("greeting", { type: "text", default: "hi" })
+      .output("greeting", { type: "unknown" })
       .run(async (ctx) => {
         await ctx.stage("read-default").prompt("x");
         return { greeting: ctx.inputs["greeting"] };
@@ -229,6 +232,7 @@ describe("executor input resolution — Phase C", () => {
   test("caller-provided value takes precedence over default", async () => {
     const def = defineWorkflow("phaseC-override")
       .input("name", { type: "text", default: "default-name" })
+      .output("name", { type: "unknown" })
       .run(async (ctx) => {
         await ctx.stage("read-override").prompt("x");
         return { name: ctx.inputs["name"] };
@@ -298,6 +302,7 @@ describe("executor adapter errors — Phase C", () => {
 describe("stage result propagation — Phase C", () => {
   test("adapter response is returned as stage result", async () => {
     const def = defineWorkflow("phaseC-result-prop")
+      .output("answer", { type: "unknown" })
       .run(async (ctx) => {
         const answer = await ctx.stage("qa").prompt("what is 2+2?");
         return { answer };

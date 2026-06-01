@@ -528,6 +528,8 @@ describe("buildGraphOverlayAdapter — open with pi.ui.custom", () => {
     });
 
     const def = defineWorkflow("hil-focus-dummy")
+      .output("edited", { type: "unknown" })
+      .output("approved", { type: "unknown" })
       .run(async (ctx) => {
         await workflowGate;
         const edited = await ctx.ui.editor("draft approval json");
@@ -592,6 +594,7 @@ describe("buildGraphOverlayAdapter — open with pi.ui.custom", () => {
     ].join("\n\n");
 
     const def = defineWorkflow("hil-long-confirm-dummy")
+      .output("approved", { type: "unknown" })
       .run(async (ctx) => {
         await workflowGate;
         const approved = await ctx.ui.confirm(longMessage);
@@ -640,6 +643,7 @@ describe("buildGraphOverlayAdapter — open with pi.ui.custom", () => {
     ).join("\n");
 
     const def = defineWorkflow("hil-long-editor-dummy")
+      .output("editedLength", { type: "unknown" })
       .run(async (ctx) => {
         await workflowGate;
         const edited = await ctx.ui.editor(longDocument);

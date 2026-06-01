@@ -284,7 +284,6 @@ describe("appendStageEnd", () => {
         runId: "child-run",
         status: "completed",
         outputs: { summary: "ok" },
-        rawOutput: { summary: "ok", extra: 1 },
       },
     });
     const p = api._entries[0]!.payload;
@@ -294,7 +293,6 @@ describe("appendStageEnd", () => {
       runId: "child-run",
       status: "completed",
       outputs: { summary: "ok" },
-      rawOutput: { summary: "ok", extra: 1 },
     });
   });
 

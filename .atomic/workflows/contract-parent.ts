@@ -28,11 +28,6 @@ export default defineWorkflow("contract-parent")
     required: true,
     description: "Combined parent object built from child outputs.",
   })
-  .output("rawChildOutputs", {
-    type: "array",
-    required: true,
-    description: "Raw serializable child run outputs, including undeclared child keys.",
-  })
   .run(async (ctx) => {
     const topic = ctx.inputs.topic;
     const multiplier = Math.max(1, Math.min(5, Math.floor(ctx.inputs.multiplier)));
@@ -84,7 +79,6 @@ export default defineWorkflow("contract-parent")
         combinedScore,
         parentSawOnlyDeclaredOutputs: Object.keys(first.outputs).sort(),
       },
-      rawChildOutputs: [first.rawOutput ?? {}, second.rawOutput ?? {}],
     };
   })
   .compile();

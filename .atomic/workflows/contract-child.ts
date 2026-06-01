@@ -59,7 +59,6 @@ export default defineWorkflow("contract-child")
       },
       checklist,
       score: topic.length * multiplier,
-      rawOnlyNote: "This key is intentionally undeclared; the parent can see it only through rawOutput.",
     };
   })
   .compile();

@@ -1126,6 +1126,20 @@ function assertWorkflowCreatedStage(runSnapshot: RunSnapshot): void {
   throw new Error(EMPTY_WORKFLOW_GRAPH_ERROR_MESSAGE);
 }
 
+// Direct (task/parallel/chain) execution synthesizes ephemeral workflows that
+// expose tool-parity outputs. They are declared explicitly like any other
+// workflow so the fully-explicit output contract holds on the direct path too.
+// `unknown` accepts any serializable value, and every key is optional because a
+// given direct mode only returns the subset it produces (e.g. `count` for chain/
+// parallel, `text` for single task, `worktreeSummary` only with worktrees).
+const DIRECT_WORKFLOW_OUTPUTS: Readonly<Record<string, WorkflowOutputSchema>> = Object.freeze({
+  results: { type: "unknown" },
+  text: { type: "unknown" },
+  count: { type: "unknown" },
+  artifacts: { type: "unknown" },
+  worktreeSummary: { type: "unknown" },
+});
+
 function defineDirectWorkflow(
   name: string,
   runFn: WorkflowDefinition["run"],
@@ -1136,6 +1150,7 @@ function defineDirectWorkflow(
     normalizedName: name,
     description: "Direct workflow execution",
     inputs: Object.freeze({}),
+    outputs: DIRECT_WORKFLOW_OUTPUTS,
     run: runFn,
   });
 }
@@ -1689,81 +1704,40 @@ function workflowOutputTypeMatches(type: WorkflowOutputType | undefined, value: 
   }
 }
 
-function workflowOutputTypeName(value: unknown): string {
-  return workflowSerializableTypeName(value);
-}
-
-const IMPLICIT_WORKFLOW_RESULT_OUTPUT = "result";
-const IMPLICIT_WORKFLOW_RESULT_SCHEMA: WorkflowOutputSchema = Object.freeze({
-  type: "string",
-  description:
-    "Implicit workflow result. Defaults to an empty string unless the workflow .run() return object contains a result string.",
-});
-
 function hasOwnWorkflowOutput(record: WorkflowOutputValues | Readonly<Record<string, WorkflowOutputSchema>>, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(record, key);
 }
 
-function hasDeclaredWorkflowResult(
-  declarations: Readonly<Record<string, WorkflowOutputSchema>> | undefined,
-): boolean {
-  return declarations !== undefined && hasOwnWorkflowOutput(declarations, IMPLICIT_WORKFLOW_RESULT_OUTPUT);
-}
-
-function withImplicitWorkflowResult(
-  result: WorkflowOutputValues,
-  declarations: Readonly<Record<string, WorkflowOutputSchema>> | undefined,
-): WorkflowOutputValues {
-  if (hasDeclaredWorkflowResult(declarations)) return result;
-  if (hasOwnWorkflowOutput(result, IMPLICIT_WORKFLOW_RESULT_OUTPUT)) return result;
-  return {
-    ...result,
-    [IMPLICIT_WORKFLOW_RESULT_OUTPUT]: "",
-  };
-}
-
-function workflowOutputDeclarations(
-  declarations: Readonly<Record<string, WorkflowOutputSchema>> | undefined,
-): Readonly<Record<string, WorkflowOutputSchema>> {
-  if (declarations === undefined) {
-    return { [IMPLICIT_WORKFLOW_RESULT_OUTPUT]: IMPLICIT_WORKFLOW_RESULT_SCHEMA };
-  }
-  if (hasDeclaredWorkflowResult(declarations)) return declarations;
-  return {
-    ...declarations,
-    [IMPLICIT_WORKFLOW_RESULT_OUTPUT]: IMPLICIT_WORKFLOW_RESULT_SCHEMA,
-  };
-}
-
-function workflowOutputKeys(
-  sourceOutput: WorkflowOutputValues,
-  declaredOutputs: Readonly<Record<string, WorkflowOutputSchema>> | undefined,
-  declarations: Readonly<Record<string, WorkflowOutputSchema>>,
-): string[] {
-  if (declaredOutputs === undefined) return Object.keys(sourceOutput);
-  return Object.entries(declarations)
-    .filter(([key, schema]) => key in sourceOutput || schema.required === true)
-    .map(([key]) => key);
-}
-
-function assertWorkflowOutputsMatchDeclarations(
+// Workflow outputs are fully explicit: a workflow exposes exactly the outputs it
+// declares with `.output(...)`. There is no implicit `result` fallback, and a
+// `.run()` return that contains a key the workflow did not declare is an error,
+// so authors cannot silently leak undeclared values across a workflow boundary.
+function assertWorkflowOutputsExplicit(
   scope: string,
   sourceOutput: WorkflowOutputValues,
   declarations: Readonly<Record<string, WorkflowOutputSchema>>,
-  keys: readonly string[],
   missingOutputSuffix = "",
 ): void {
-  for (const key of keys) {
-    const schema: WorkflowOutputSchema | undefined = declarations[key];
-    if (!(key in sourceOutput)) {
+  for (const key of Object.keys(sourceOutput)) {
+    if (!hasOwnWorkflowOutput(declarations, key)) {
       throw new Error(
-        `atomic-workflows: ${scope} missing output "${key}"${missingOutputSuffix}`,
+        `atomic-workflows: ${scope} returned undeclared output "${key}"; declare it with .output("${key}", { type: ... }) or remove it from the .run() return`,
       );
     }
+  }
+  for (const [key, schema] of Object.entries(declarations)) {
+    if (!(key in sourceOutput)) {
+      if (schema.required === true) {
+        throw new Error(
+          `atomic-workflows: ${scope} missing output "${key}"${missingOutputSuffix}`,
+        );
+      }
+      continue;
+    }
     const value = sourceOutput[key];
-    if (!workflowOutputTypeMatches(schema?.type, value)) {
+    if (!workflowOutputTypeMatches(schema.type, value)) {
       throw new Error(
-        `atomic-workflows: ${scope} output "${key}" expected ${schema?.type ?? "unknown"}, got ${workflowOutputTypeName(value)}`,
+        `atomic-workflows: ${scope} output "${key}" expected ${schema.type ?? "unknown"}, got ${workflowSerializableTypeName(value)}`,
       );
     }
     const serializableError = workflowSerializableValidationError(
@@ -1790,13 +1764,10 @@ function assertWorkflowRunOutputs(
   result: WorkflowOutputValues | undefined,
   declaredOutputs: Readonly<Record<string, WorkflowOutputSchema>> | undefined,
 ): void {
-  const sourceOutput = result ?? {};
-  const declarations = workflowOutputDeclarations(declaredOutputs);
-  assertWorkflowOutputsMatchDeclarations(
+  assertWorkflowOutputsExplicit(
     `workflow "${workflowName}"`,
-    sourceOutput,
-    declarations,
-    workflowOutputKeys(sourceOutput, declaredOutputs, declarations),
+    result ?? {},
+    declaredOutputs ?? {},
   );
 }
 
@@ -1806,22 +1777,21 @@ function selectWorkflowOutputs(
   child: WorkflowDefinition,
   rawOutput: WorkflowOutputValues | undefined,
 ): WorkflowOutputValues {
-  const declaredOutputs = child.outputs;
-  const sourceOutput = withImplicitWorkflowResult(rawOutput ?? {}, declaredOutputs);
-  const declarations = workflowOutputDeclarations(declaredOutputs);
-  const keys = workflowOutputKeys(sourceOutput, declaredOutputs, declarations);
-  assertWorkflowOutputsMatchDeclarations(
+  const declarations = child.outputs ?? {};
+  const sourceOutput = rawOutput ?? {};
+  assertWorkflowOutputsExplicit(
     `workflow "${parent.name}" child "${childName}"`,
     sourceOutput,
     declarations,
-    keys,
     ` from "${child.name}"`,
   );
 
+  // Undeclared keys are already rejected above, so a child's exposed outputs are
+  // exactly its declared outputs that were returned.
   const selected: Record<string, WorkflowSerializableValue> = {};
-  for (const childKey of keys) {
-    const value = sourceOutput[childKey];
-    if (value !== undefined) selected[childKey] = value;
+  for (const key of Object.keys(declarations)) {
+    const value = sourceOutput[key];
+    if (value !== undefined) selected[key] = value;
   }
 
   return selected;
@@ -1856,7 +1826,6 @@ function cloneWorkflowChildReplaySnapshot(snapshot: WorkflowChildReplaySnapshot)
     runId: snapshot.runId,
     status: snapshot.status,
     outputs: cloneWorkflowChildValue(snapshot.outputs),
-    ...(snapshot.rawOutput !== undefined ? { rawOutput: cloneWorkflowChildValue(snapshot.rawOutput) } : {}),
   };
 }
 
@@ -1877,26 +1846,12 @@ function workflowChildReplaySnapshot(
     }
   }
 
-  // Declared `outputs` above are the child contract: a clone failure throws so
-  // the replay snapshot never silently loses contracted data. `rawOutput` is
-  // best-effort debugging metadata, so a clone failure intentionally drops it
-  // (degrades to absent) rather than failing continuation replay.
-  let rawOutput: WorkflowOutputValues | undefined;
-  if (childResult.rawOutput !== undefined) {
-    try {
-      rawOutput = cloneWorkflowChildValue(childResult.rawOutput);
-    } catch {
-      rawOutput = undefined;
-    }
-  }
-
   return {
     alias,
     workflow: childResult.workflow,
     runId: childResult.runId,
     status: childResult.status,
     outputs,
-    ...(rawOutput !== undefined ? { rawOutput } : {}),
   };
 }
 
@@ -2172,7 +2127,6 @@ export async function run<TInputs extends WorkflowInputValues>(
     runId: snapshot.runId,
     status: snapshot.status,
     outputs: cloneWorkflowChildValue(snapshot.outputs),
-    rawOutput: snapshot.rawOutput !== undefined ? cloneWorkflowChildValue(snapshot.rawOutput) : undefined,
   });
 
   const workflowBoundaryReplayCounts = new Map<string, number>();
@@ -3356,7 +3310,6 @@ export async function run<TInputs extends WorkflowInputValues>(
           runId: childRun.runId,
           status: "completed",
           outputs,
-          rawOutput: childRun.result,
         };
         const workflowChild = workflowChildReplaySnapshot(childName, childResult);
         const outputKeys = Object.keys(outputs);

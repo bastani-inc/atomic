@@ -33,10 +33,6 @@ export default defineWorkflow("contract-hil-nested-child")
         lengths: [topic.length, childNote.length],
         nullable: null,
       },
-      rawOnlyChildHilDiagnostic: {
-        promptCount: 2,
-        serializable: true,
-      },
     };
   })
   .compile();
