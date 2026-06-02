@@ -420,6 +420,86 @@ describe("expanded workflow graph", () => {
 
     assert.deepEqual(after?.parentIds, ["child-run:child-second"]);
   });
+
+  it("flattens the imported workflow: drops the boundary node and inlines child stages", () => {
+    const rootBoundary: StageSnapshot = {
+      ...makeStage("workflow:child"),
+      status: "completed",
+      workflowChild: {
+        alias: "child",
+        workflow: "child-workflow",
+        runId: "child-run",
+        status: "completed",
+        outputs: { result: "ok" },
+      },
+    };
+    const rootAfter = makeStage("parent-after", ["workflow:child"]);
+    const childFirst = makeStage("child-first");
+    const childSecond = makeStage("child-second", ["child-first"]);
+    const snap: StoreSnapshot = {
+      runs: [
+        makeRun([rootBoundary, rootAfter]),
+        {
+          id: "child-run",
+          name: "child-workflow",
+          inputs: {},
+          status: "completed",
+          stages: [childFirst, childSecond],
+          startedAt: Date.now(),
+          endedAt: Date.now(),
+        },
+      ],
+      notices: [],
+      version: 1,
+    };
+
+    const graph = expandWorkflowGraph(snap, "run-1");
+
+    // The boundary "information" node is gone; the nested workflow reads flat.
+    assert.equal(graph.stages.some((stage) => stage.name === "workflow:child"), false);
+    // Child root inherits the boundary's (empty) incoming parents.
+    const first = graph.stages.find((stage) => stage.name === "child-first");
+    assert.deepEqual(first?.parentIds, []);
+    // Exactly the two inlined child stages + the downstream parent stage remain.
+    assert.deepEqual(
+      graph.stages.map((stage) => stage.name).sort(),
+      ["child-first", "child-second", "parent-after"],
+    );
+  });
+
+  it("keeps the boundary node when the imported workflow has no stages of its own", () => {
+    const rootBoundary: StageSnapshot = {
+      ...makeStage("workflow:child"),
+      status: "completed",
+      workflowChild: {
+        alias: "child",
+        workflow: "child-workflow",
+        runId: "child-run",
+        status: "completed",
+        outputs: { result: "ok" },
+      },
+    };
+    const snap: StoreSnapshot = {
+      runs: [
+        makeRun([rootBoundary]),
+        {
+          id: "child-run",
+          name: "child-workflow",
+          inputs: {},
+          status: "completed",
+          stages: [],
+          startedAt: Date.now(),
+          endedAt: Date.now(),
+        },
+      ],
+      notices: [],
+      version: 1,
+    };
+
+    const graph = expandWorkflowGraph(snap, "run-1");
+
+    assert.deepEqual(graph.stages.map((stage) => stage.name), ["workflow:child"]);
+  });
 });
 
 describe("GraphView keyboard navigation", () => {
@@ -472,7 +552,8 @@ describe("GraphView keyboard navigation", () => {
     });
 
     const text = visibleText(view.render(120));
-    assert.match(text, /workflow:child/);
+    // Flattened: the boundary "information" node is not rendered.
+    assert.doesNotMatch(text, /workflow:child/);
     assert.match(text, /child-first/);
     assert.match(text, /child-second/);
     view.dispose();

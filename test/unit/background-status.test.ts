@@ -90,7 +90,7 @@ describe("statusRuns", () => {
         assert.equal(typeof entry.stageCount, "number");
     });
 
-    test("hides nested child workflow runs and counts expanded stages on the parent", () => {
+    test("hides nested child workflow runs and counts flattened child stages on the parent", () => {
         const st = createStore();
         st.recordRunStart(makeRun({
             id: "parent-run",
@@ -118,7 +118,9 @@ describe("statusRuns", () => {
         const result = statusRuns({ store: st });
 
         assert.deepEqual(result.map((entry) => entry.runId), ["parent-run"]);
-        assert.equal(result[0]?.stageCount, 3);
+        // The imported workflow is flattened: the boundary node is dropped and
+        // only the child's two inlined stages are counted on the parent.
+        assert.equal(result[0]?.stageCount, 2);
     });
 });
 

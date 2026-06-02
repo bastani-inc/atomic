@@ -27,6 +27,7 @@ import type {
   RunSnapshot,
 } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
+import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import type { PiTheme } from "./store-widget-installer.js";
 import { renderRoundedBoxLines } from "./chat-surface.js";
 import type { FlatBandBadge } from "./chat-surface.js";
@@ -82,17 +83,36 @@ interface RunCounts {
   awaiting: number;
 }
 
-function countRuns(runs: readonly RunSnapshot[]): RunCounts {
+function runAwaitsInput(run: RunSnapshot): boolean {
+  return (
+    run.endedAt === undefined &&
+    (run.pendingPrompt !== undefined || run.stages.some((s) => s.status === "awaiting_input"))
+  );
+}
+
+/**
+ * A top-level run "needs attention" when it OR any of its nested
+ * `ctx.workflow()` descendants is awaiting human input. Nested child runs are
+ * hidden from the widget, but each carries `rootRunId` pointing at the ultimate
+ * top-level run, so a hidden child's awaiting (HiL) state surfaces on the
+ * visible ancestor instead of vanishing with it.
+ */
+function subtreeAwaitsInput(root: RunSnapshot, allRuns: readonly RunSnapshot[]): boolean {
+  if (runAwaitsInput(root)) return true;
+  return allRuns.some((run) => run.rootRunId === root.id && runAwaitsInput(run));
+}
+
+function countRuns(
+  runs: readonly RunSnapshot[],
+  allRuns: readonly RunSnapshot[] = runs,
+): RunCounts {
   const counts: RunCounts = { active: 0, paused: 0, done: 0, failed: 0, awaiting: 0 };
   for (const r of runs) {
     if (r.endedAt === undefined && r.status === "paused") counts.paused++;
     else if (r.endedAt === undefined) counts.active++;
     else if (r.status === "completed") counts.done++;
     else if (r.status === "failed" || r.status === "killed") counts.failed++;
-    if (
-      r.endedAt === undefined &&
-      (r.pendingPrompt !== undefined || r.stages.some((s) => s.status === "awaiting_input"))
-    ) {
+    if (r.endedAt === undefined && subtreeAwaitsInput(r, allRuns)) {
       counts.awaiting++;
     }
   }
@@ -121,7 +141,12 @@ export function nextWidgetRefreshDelayMs(
 }
 
 function selectDisplayRuns(snap: StoreSnapshot, now: number): RunSnapshot[] {
-  const all = snap.runs as readonly RunSnapshot[];
+  // Only surface top-level workflows. Nested `ctx.workflow()` child runs carry
+  // a `parentRunId`, and they are already represented inline as flattened
+  // stages of their parent's graph, so listing them here would show the same
+  // composition three times (root + parent + child). Matches the visibility
+  // rule `statusRuns`/the `status` action already apply.
+  const all = topLevelWorkflowRuns(snap.runs);
   const active = all.filter((r) => isActive(r));
   const recent = all.filter((r) => recentlyEnded(r, now));
   // Most recently started first within each bucket; active runs precede recent.
@@ -333,7 +358,7 @@ export function buildThemedWidgetLines(
   const display = selectDisplayRuns(snap, now);
   if (display.length === 0) return [];
 
-  const counts = countRuns(snap.runs as readonly RunSnapshot[]);
+  const counts = countRuns(topLevelWorkflowRuns(snap.runs), snap.runs);
   // Active + recently-ended dominate the badge counts so a finished run
   // visually persists for a beat before dropping off.
   const visibleCounts: RunCounts = {

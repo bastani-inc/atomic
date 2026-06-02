@@ -17,7 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - Added TypeScript module-style workflow composition: parent workflows can pass compiled child workflow definitions directly to `ctx.workflow(compiledWorkflow, options)`. The bundled `deep-research-codebase`, `goal`, `ralph`, and `open-claude-design` workflows are reusable from `@bastani/workflows/builtin` or individual builtin module paths.
-- Added first-class workflow composition: child workflows can declare `.output()` contracts, and `ctx.workflow()` runs compiled child workflow definitions as nested runs with input validation, schema-validated declared outputs, and a visible parent boundary stage ([#1071](https://github.com/bastani-inc/atomic/issues/1071)).
+- Added first-class workflow composition: child workflows can declare `.output()` contracts, and `ctx.workflow()` runs compiled child workflow definitions as nested runs with input validation, schema-validated declared outputs, and the nested workflow's stages flattened inline into the parent graph ([#1071](https://github.com/bastani-inc/atomic/issues/1071)).
 
 ### Changed
 
@@ -25,6 +25,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Declared explicit output contracts for the bundled `deep-research-codebase`, `goal`, `ralph`, and `open-claude-design` workflows so parent workflows receive schema-validated child outputs.
 - Renamed workflow runtime error prefixes from `pi-workflows:` to `atomic-workflows:`.
 - Render workflow stage notices, lifecycle notices, and HiL answer notices as compact emoji-free TUI cards instead of plain wrapped rows, matching the debugger warning card treatment.
+- Flatten imported workflows in the expanded run graph so a `ctx.workflow()` import reads as a single flat layout: the child run's stages stand in for the import instead of rendering an extra boundary "information" node above them. The boundary's incoming dependencies become the child roots' dependencies and downstream stages rewire to the child's terminal stages, so a depth-1 composition of single-stage leaves now shows one node per import instead of two. A boundary whose child run produced no stages of its own is still kept as a single node so the import stays visible. Affects the graph overlay, session list, `status` stage counts/details, and attach resolution alike.
 - Updated the registered `workflow` tool description so agent-facing metadata covers named and direct runs, discovery, inspection, prompt answering/steering, run control, and reload ([#1151](https://github.com/bastani-inc/atomic/issues/1151)).
 
 ### Fixed
@@ -37,6 +38,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Fixed workflow run widgets so store changes and elapsed-time ticks repaint through a long-lived reactive widget instead of waiting for unrelated chat input or remounting the widget ([#1150](https://github.com/bastani-inc/atomic/issues/1150)).
 - Fixed `/workflow reload` and `workflow({ action: "reload" })` so newly added package-manifest workflow entries are rediscovered in-process without requiring top-level `/reload` or restart ([#1155](https://github.com/bastani-inc/atomic/issues/1155)).
 - Fixed completed child workflow boundary stages rendering as empty graph nodes by showing the child workflow name, child run id prefix, and output count in the node card.
+- Fixed the background workflow widget (`BACKGROUND` panel) listing nested `ctx.workflow()` child runs as separate top-level entries, so a two-level composition no longer shows the root, parent, and child runs as three separate items with an inflated `N runs` count. The widget now applies the same top-level visibility rule (`run.parentRunId === undefined`) already used by `statusRuns`, the `status` action, and the `/workflow connect` session picker. The "needs attention" (awaiting HiL input) badge still fires for a hidden nested descendant by attributing its awaiting state to the visible top-level ancestor via `rootRunId`, so a HiL prompt waiting inside an imported child workflow stays discoverable.
 - Fixed the bundled deep-research workflow line-count heuristic hanging Windows CI by replacing its POSIX `wc` subprocess with portable in-process line counting.
 - Kept workflow stage model metadata as the raw model id while surfacing Codex fast mode as a separate visible `fast` marker on workflow node cards, including stages that use the default Atomic SDK adapter settings manager.
 - Show workflow Codex fast-mode metadata on running workflow nodes as soon as the stage session starts, including explicit-model stages, catalog-resolved bare model aliases, and custom resource-loader stages whose settings manager is created by the Atomic SDK.

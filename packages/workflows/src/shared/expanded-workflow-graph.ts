@@ -53,6 +53,16 @@ function localTerminalStageIds(stages: readonly StageSnapshot[]): readonly strin
  * runs it references. Child stages are cloned with virtual ids so their local
  * parent ids do not collide with parent-run stage ids; each virtual node keeps
  * a target mapping back to the actual `{ runId, stageId }` for attach/control.
+ *
+ * Imported workflows are flattened: a boundary stage that wraps a child run
+ * with its own stages is NOT emitted as its own node. Instead the child's
+ * stages stand in for it, so a nested workflow reads as a flat layout with no
+ * extra "information" node marking the import boundary. The boundary's incoming
+ * parents become the child roots' parents, and stages downstream of the
+ * boundary rewire to the child's terminal stages. A boundary whose child run
+ * produced no stages of its own is kept as a single node so the import stays
+ * visible. Boundary stages are non-attachable, so dropping them loses no
+ * interactive capability.
  */
 export function expandWorkflowGraph(
   snapshot: StoreSnapshot,
@@ -84,11 +94,31 @@ export function expandWorkflowGraph(
 
     for (const stage of run.stages) {
       const id = virtualStageId(run.id, stage.id, isRootRun);
-      const parentIds = stage.parentIds.length === 0
+      const resolvedParentIds = stage.parentIds.length === 0
         ? [...incomingParentIds]
         : stage.parentIds.flatMap((parentId) =>
             replacementTerminals.get(parentId) ?? [virtualStageId(run.id, parentId, isRootRun)],
           );
+
+      const childRunId = childRunIdFor(stage);
+      const childRun = childRunId === undefined ? undefined : runById.get(childRunId);
+
+      // Flatten the imported workflow in place: when the boundary wraps a child
+      // run that has its own stages, splice those stages in instead of emitting
+      // the boundary node. Child roots inherit the boundary's incoming parents,
+      // and downstream stages rewire to the child's terminals below.
+      if (childRun !== undefined && childRun.stages.length > 0) {
+        const childExpanded = expandRun(childRun, depth + 1, resolvedParentIds);
+        expandedStages.push(...childExpanded.stages);
+        replacementTerminals.set(
+          stage.id,
+          childExpanded.terminalIds.length > 0 ? childExpanded.terminalIds : resolvedParentIds,
+        );
+        continue;
+      }
+
+      // Regular stage, or a boundary whose child produced no stages of its own:
+      // emit it so the import still appears as exactly one node.
       const target: ExpandedWorkflowStageTarget = {
         runId: run.id,
         stageId: stage.id,
@@ -99,20 +129,9 @@ export function expandWorkflowGraph(
       expandedStages.push({
         ...stage,
         id,
-        parentIds: Object.freeze(parentIds),
+        parentIds: Object.freeze(resolvedParentIds),
         workflowGraphTarget: target,
       });
-
-      const childRunId = childRunIdFor(stage);
-      if (childRunId === undefined) continue;
-      const childRun = runById.get(childRunId);
-      if (childRun === undefined) continue;
-      const childExpanded = expandRun(childRun, depth + 1, [id]);
-      expandedStages.push(...childExpanded.stages);
-      replacementTerminals.set(
-        stage.id,
-        childExpanded.terminalIds.length > 0 ? childExpanded.terminalIds : [id],
-      );
     }
 
     const terminalIds = localTerminalStageIds(run.stages).flatMap((stageId) =>

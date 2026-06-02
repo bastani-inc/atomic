@@ -166,6 +166,59 @@ describe("renderWidgetLines — standard form", () => {
     assert.ok(wfTwoIdx < wfOneIdx, "most recently started run renders first");
   });
 
+  test("hides nested child workflow runs, showing only the top-level run", () => {
+    const t = Date.now();
+    const root = makeRun("root1111", "contract-hil-nested-root", "running", [], t - 3000);
+    const parent: RunSnapshot = {
+      ...makeRun("parent22", "contract-hil-nested-parent", "running", [], t - 2000),
+      parentRunId: "root1111",
+      parentStageId: "hil-parent:imported-composition",
+      rootRunId: "root1111",
+    };
+    const child: RunSnapshot = {
+      ...makeRun("child333", "contract-hil-nested-child", "running", [], t - 1000),
+      parentRunId: "parent22",
+      parentStageId: "hil-child:imported",
+      rootRunId: "root1111",
+    };
+    const lines = renderWidgetLines(makeSnap([child, parent, root]), 120).map(stripAnsi);
+    const joined = lines.join("\n");
+    // Only the top-level root is listed; the count reflects one run, not three.
+    assert.ok(lines[0]!.includes("1 run"), `expected "1 run" subtitle, got: ${lines[0]}`);
+    assert.ok(joined.includes("contract-hil-nested-root"));
+    assert.ok(!joined.includes("contract-hil-nested-parent"), "nested parent run must be hidden");
+    assert.ok(!joined.includes("contract-hil-nested-child"), "nested child run must be hidden");
+  });
+
+  test("surfaces a hidden nested child's awaiting-input (HiL) state on the top-level run", () => {
+    const t = Date.now();
+    // Root is running and blocked on its imported composition; the actual HiL
+    // prompt is awaiting in the nested child run, which the widget hides.
+    const root = makeRun("root1111", "contract-hil-nested-root", "running", [], t - 3000);
+    const parent: RunSnapshot = {
+      ...makeRun("parent22", "contract-hil-nested-parent", "running", [], t - 2000),
+      parentRunId: "root1111",
+      rootRunId: "root1111",
+    };
+    const child: RunSnapshot = {
+      ...makeRun("child333", "contract-hil-nested-child", "running", [
+        makeStage("s1", "ask", "awaiting_input"),
+      ], t - 1000),
+      parentRunId: "parent22",
+      rootRunId: "root1111",
+    };
+    const lines = renderWidgetLines(makeSnap([child, parent, root]), 120).map(stripAnsi);
+    const header = lines[0]!;
+    // Only the root is listed, but its hidden descendant's awaiting state still
+    // raises the "needs attention" badge so the HiL prompt is discoverable.
+    assert.ok(header.includes("1 run"), `expected "1 run" subtitle, got: ${header}`);
+    assert.ok(
+      header.includes("↵ 1 needs attention (attach to workflow with `/workflow connect`)"),
+      `expected nested HiL to surface a needs-attention badge, got: ${header}`,
+    );
+    assert.ok(!lines.join("\n").includes("contract-hil-nested-child"), "nested child stays hidden");
+  });
+
   test("count badges include stage-local awaiting input", () => {
     const awaiting = makeRun("r1xxxxxx", "wf-await", "running", [
       makeStage("s1", "ask", "awaiting_input"),
