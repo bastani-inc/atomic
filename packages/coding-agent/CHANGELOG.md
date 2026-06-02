@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed severe flickering in the `ask_user_question` dialog on short terminals by suspending the animated working loader while the blocking question UI is open; the inline dialog no longer pushes the ticking loader above the viewport, which had forced a full-screen clear+replay on every spinner frame.
+
 ## [0.8.22] - 2026-06-01
 
 ### Breaking Changes

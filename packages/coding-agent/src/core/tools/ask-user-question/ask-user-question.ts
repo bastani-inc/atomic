@@ -81,18 +81,37 @@ Preview content is rendered as markdown in a monospace box. Multi-line text with
 
 			const itemsByTab: WrappingSelectItem[][] = typed.questions.map((q) => buildItemsForQuestion(q));
 
-			const result = await ctx.ui.custom<QuestionnaireResult>((tui, theme, _kb, done) => {
-				const session = new QuestionnaireSession({
-					tui,
-					theme,
-					params: typed,
-					itemsByTab,
-					done,
-				});
-				return session.component;
-			}, { signal });
+			// Suspend the animated working loader for the lifetime of the blocking dialog.
+			//
+			// The questionnaire mounts inline, directly below the status/working-loader row.
+			// That loader ticks every ~80ms and calls `requestRender()` on each frame. On a
+			// short terminal the (tall) side-by-side dialog pushes the loader line above the
+			// viewport top, so pi-tui's differential renderer sees `firstChanged < viewportTop`
+			// and falls back to a full clear+replay (`\x1b[2J\x1b[H\x1b[3J`) on every tick. The
+			// transcript is replayed before the dialog each time, which is the flicker. The
+			// loader conveys nothing while we're blocked on human input, so hide it for the
+			// duration and restore it once the dialog closes (on every path).
+			//
+			// Guarded: some hosts (e.g. the workflow stage-UI broker) pass a minimal UI
+			// context that only implements `custom`, so treat a missing loader control as a
+			// no-op rather than throwing.
+			ctx.ui.setWorkingVisible?.(false);
+			try {
+				const result = await ctx.ui.custom<QuestionnaireResult>((tui, theme, _kb, done) => {
+					const session = new QuestionnaireSession({
+						tui,
+						theme,
+						params: typed,
+						itemsByTab,
+						done,
+					});
+					return session.component;
+				}, { signal });
 
-			return buildQuestionnaireResponse(result, typed);
+				return buildQuestionnaireResponse(result, typed);
+			} finally {
+				ctx.ui.setWorkingVisible?.(true);
+			}
 		},
 	};
 }
