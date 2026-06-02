@@ -118,7 +118,7 @@ atomic:
 
 ## Releasing
 
-Atomic mirrors pi's tag-driven release flow: bump versions locally, commit, push a `v<version>` git tag, and CI publishes to npm with OIDC provenance and creates the GitHub Release with cross-compiled binaries attached.
+Atomic mirrors pi's tag-driven release flow: bump versions locally, commit, push a `<version>` git tag (no leading `v`, for example `0.8.24` or `0.8.24-alpha.1`), and CI publishes to npm with OIDC provenance and creates the GitHub Release with cross-compiled binaries attached.
 
 ### Agent publishing requests
 
@@ -126,7 +126,7 @@ If a user asks you to publish the package or create a release/prerelease:
 
 1. Ask the user with the `ask_user_question`/ask-question tool what version to publish if they have not supplied a version.
 2. Ask whether they want a release or prerelease if that cannot be inferred from the supplied version, or if the version is in an incorrect format. Valid formats are `MAJOR.MINOR.PATCH` for releases and `MAJOR.MINOR.PATCH-alpha.REVISION` (revision starts at 1) for prereleases.
-3. Create a branch using the naming convention: `[prerelease | release]/v<version>` where `[prerelease | release]` changes depending on whether the version if a release or prerelease version.
+3. Create a branch using the naming convention: `[prerelease | release]/<version>` (no leading `v`) where `[prerelease | release]` changes depending on whether the version if a release or prerelease version.
 4. Follow the guidance in the "Changelog" section to update the `CHANGELOG.md` files.
 5. Follow the "Bumping Versions" guidance to correctly bump the package version.
 6. Commit all unstaged changes in the current branch.
@@ -134,7 +134,7 @@ If a user asks you to publish the package or create a release/prerelease:
 8. Wait to make sure all of the CI checks pass using the `gh` tool.
 9. Auto-merge when all CI checks pass. If the checks don't pass, ask the user what they want to do using the `ask_user_question` tool.
 10. If/when the branch is merged to main, switch back to main, and pull the latest changes from `origin/main`.
-11. A branch push or PR merge alone does not publish, so if all the steps above succeed, create the new release by creating a git tag with: `git tag v<version>` and push it with `git push origin v<version>`.
+11. A branch push or PR merge alone does not publish, so if all the steps above succeed, create the new release by creating a git tag with: `git tag <version>` and push it with `git push origin <version>`.
 12. Wait for the release to finish and monitor the status of the publish action. If the publish checks don't pass, ask the user what they want to do using the `ask_user_question` tool. Otherwise, provide a summary to the user.
 
 ## Changelog

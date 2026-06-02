@@ -17,8 +17,8 @@
  *
  * The --from-branch flag reads the current git branch and extracts the version
  * from branch names matching:
- *   release/v0.8.0            → 0.8.0
- *   prerelease/v0.8.0-alpha.1 → 0.8.0-alpha.1
+ *   release/0.8.0            → 0.8.0
+ *   prerelease/0.8.0-alpha.1 → 0.8.0-alpha.1
  */
 
 import { $ } from "bun";
@@ -75,8 +75,8 @@ function findRepoRoot(startDir: string): string {
 }
 
 const STRICT_RELEASE_VERSION_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-alpha\.([1-9]\d*))?$/;
-const STABLE_RELEASE_BRANCH_RE = /^(?:release)\/v((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))$/;
-const ALPHA_PRERELEASE_BRANCH_RE = /^(?:prerelease)\/v((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)-alpha\.[1-9]\d*)$/;
+const STABLE_RELEASE_BRANCH_RE = /^(?:release)\/((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))$/;
+const ALPHA_PRERELEASE_BRANCH_RE = /^(?:prerelease)\/((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)-alpha\.[1-9]\d*)$/;
 
 const { rootOverride, positional } = parseArgv();
 
@@ -94,7 +94,7 @@ function parseVersionFromBranch(branch: string): string {
   if (prereleaseMatch) return prereleaseMatch[1] as string;
 
   console.error(
-    `Error: branch "${branch}" does not match release/vMAJOR.MINOR.PATCH or prerelease/vMAJOR.MINOR.PATCH-alpha.REVISION`,
+    `Error: branch "${branch}" does not match release/MAJOR.MINOR.PATCH or prerelease/MAJOR.MINOR.PATCH-alpha.REVISION`,
   );
   process.exit(1);
 }

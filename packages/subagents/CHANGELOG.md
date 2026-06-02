@@ -11,6 +11,7 @@
 - Migrated packaged subagents to encode their reasoning level directly in model and fallback model entries ([#1199](https://github.com/bastani-inc/atomic/issues/1199)).
 - Documented the `model_name:thinking_effort` suffix syntax and `thinking` migration guidance in the subagents docs, package README, and subagent skill ([#1199](https://github.com/bastani-inc/atomic/issues/1199)).
 - Adopted the new `-alpha.N` prerelease version convention (revision starting at 1), replacing the legacy numeric `-N` prerelease suffix in the release tooling (bump script, CI publish validation, and changelog parsing).
+- Dropped the leading `v` from release git tags and `release/`/`prerelease/` branch names; the Publish CI now triggers on and validates bare version tags such as `0.8.24` or `0.8.24-alpha.1`.
 
 ### Deprecated
 
