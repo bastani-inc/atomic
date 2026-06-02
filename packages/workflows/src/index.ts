@@ -11,3 +11,5 @@ export * from "./sdk-surface.js";
 // discovery provides a lazy wrapper instead of importing this entry eagerly.
 export { runWorkflow } from "./runs/shared/workflow-runner.js";
 export type { WorkflowOptions, WorkflowRunOptions } from "./runs/shared/workflow-runner.js";
+
+// Note: `Type` / `Static` / `TSchema` are re-exported via ./sdk-surface.js.

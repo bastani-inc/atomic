@@ -31,7 +31,6 @@ import type {
   StoreSnapshot,
   RunSnapshot,
 } from "../shared/store-types.js";
-import { elapsedStageMs } from "../shared/timing.js";
 import type { GraphTheme } from "./graph-theme.js";
 import type { SwitcherState } from "./switcher.js";
 import type { LayoutNode } from "./layout.js";
@@ -47,7 +46,6 @@ import { renderNodeCard } from "./node-card.js";
 import { renderSwitcher, filterStages } from "./switcher.js";
 import { renderToasts, createToastManager } from "./toast.js";
 import { hexToAnsi, hexBg, RESET, BOLD } from "./color-utils.js";
-import { fmtDuration } from "./status-helpers.js";
 import { GraphCanvas } from "./graph-canvas.js";
 import {
   createPromptCardState,
@@ -819,7 +817,7 @@ export class GraphView implements Component {
     this._clampGraphScroll(totalRows, bodyRows);
   }
 
-  private _focusedGraphRowRange(frameWidth: number): { start: number; end: number } | null {
+  private _focusedGraphRowRange(_frameWidth: number): { start: number; end: number } | null {
     const node = this.cachedLayout[this.focusedIndex];
     if (!node) return null;
     return { start: node.y, end: node.y + NODE_H - 1 };
@@ -1035,36 +1033,6 @@ export class GraphView implements Component {
     const cardW = visibleWidth(cardLine);
     const rightPadLen = Math.max(0, totalWidth - leftPad - cardW);
     return `${bg}${" ".repeat(leftPad)}${RESET}${cardLine}${bg}${" ".repeat(rightPadLen)}${RESET}`;
-  }
-
-  /** Overlay a fixed-width panel on a row while preserving graph cells
-   * outside the panel bounds. Used by the stage switcher so the picker
-   * does not erase nodes to its right. */
-  private _overlayInline(
-    base: string,
-    overlay: string,
-    leftPad: number,
-    totalWidth: number,
-  ): string {
-    const overlayWidth = Math.min(
-      Math.max(0, totalWidth - leftPad),
-      visibleWidth(overlay),
-    );
-    const left = this._sliceColumns(base, 0, leftPad);
-    const panel = truncateToWidth(overlay, overlayWidth, "", true);
-    const right = this._sliceColumns(
-      base,
-      leftPad + overlayWidth,
-      totalWidth,
-    );
-    const merged = `${left}${panel}${right}`;
-    const pad = Math.max(0, totalWidth - visibleWidth(merged));
-    return `${merged}${hexBg(this.graphTheme.bg)}${" ".repeat(pad)}${RESET}`;
-  }
-
-  private _duration(stage: StageSnapshot): string {
-    const elapsed = elapsedStageMs(stage);
-    return elapsed === undefined ? "" : fmtDuration(elapsed);
   }
 
   private _displayStages(run: RunSnapshot): StageSnapshot[] {

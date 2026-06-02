@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Breaking Changes
 
+- Migrated workflow input/output declarations to a TypeBox-native schema system, replacing the legacy `{ type, required, default, choices }` descriptor. Authors now declare inputs/outputs with TypeBox schemas (`.input("prompt", Type.String({ description }))`, `.input("count", Type.Number({ default: 2 }))`, `.input("flavor", Type.Union([Type.Literal("a"), Type.Literal("b")]))`, `.output("packet", Type.Object({ topic: Type.String(), score: Type.Number() }))`). `ctx.inputs`, the `.run()` return, and `ctx.workflow(child).outputs` are precisely typed via `Static<>`, and the runtime validates inputs and outputs with TypeBox `Value`. `Type` is re-exported from `@bastani/workflows` (with types `Static` and `TSchema`) so workflow authors single-import. An optional field is declared with `Type.Optional(...)`; a `default` keeps the key required at the type level. This is a clean break with no legacy descriptor support.
 - Removed the unshipped `.import(...)` workflow builder API and string-alias child workflow calls. Workflows now compose children by importing compiled workflow definitions with TypeScript imports and passing those definitions directly to `ctx.workflow(workflowDefinition, options)`.
 - Removed parent-side child output selection/renaming from `ctx.workflow(...)`. Parent workflows now receive the child's declared `.output(...)` contract as `child.outputs`.
 - Made workflow outputs fully explicit so a workflow's input/output contract is the stable, self-documenting surface other workflows compose against. A workflow now exposes exactly the outputs it declares with `.output(...)`, and a `.run()` return that contains a key the workflow did not declare fails the run with `atomic-workflows: ... returned undeclared output "<key>"`. The implicit string `result` output and the `child.rawOutput` escape hatch were removed: declare `.output("result", schema)` and return `{ result }` if you want a `result` output, and declare every other field a parent should read.
@@ -16,8 +17,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Added TypeBox as the workflow schema engine and re-exported `Type` (plus the `Static` and `TSchema` types) from the `@bastani/workflows` public entry point so authors single-import the authoring surface.
 - Added TypeScript module-style workflow composition: parent workflows can pass compiled child workflow definitions directly to `ctx.workflow(compiledWorkflow, options)`. The bundled `deep-research-codebase`, `goal`, `ralph`, and `open-claude-design` workflows are reusable from `@bastani/workflows/builtin` or individual builtin module paths.
 - Added first-class workflow composition: child workflows can declare `.output()` contracts, and `ctx.workflow()` runs compiled child workflow definitions as nested runs with input validation, schema-validated declared outputs, and the nested workflow's stages flattened inline into the parent graph ([#1071](https://github.com/bastani-inc/atomic/issues/1071)).
+
+### Removed
+
+- Removed the `zod` dependency from `@bastani/workflows`; JSON-serializable validation and input/output validation now run on TypeBox `Value`.
 
 ### Changed
 

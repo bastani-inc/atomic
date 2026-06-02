@@ -38,7 +38,6 @@ import type {
   WorkflowRunChildOptions,
   WorkflowChildResult,
   WorkflowOutputSchema,
-  WorkflowOutputType,
   WorkflowOutputValues,
   WorkflowInputValues,
   WorkflowSerializableValue,
@@ -84,6 +83,9 @@ import {
 } from "../../shared/persistence-session-entries.js";
 import { buildModelCandidatesFromCatalog, validateWorkflowModels, workflowModelId } from "../shared/model-fallback.js";
 import { validateInputs, type ValidationError } from "../shared/validate-inputs.js";
+import { Type, type TSchema } from "typebox";
+import { Value } from "typebox/value";
+import { schemaFieldKind, schemaChoices, schemaIsRequired } from "../../shared/schema-introspection.js";
 import type { WorkflowFailure } from "../../shared/workflow-failures.js";
 import { classifyWorkflowFailure } from "../../shared/workflow-failures.js";
 import { selectPromptCallsiteFrame } from "../shared/prompt-callsite.js";
@@ -209,14 +211,17 @@ export function resolveInputs(
     if (value !== undefined) resolved[key] = value as WorkflowSerializableValue;
   }
 
-  for (const [key, schemaDef] of Object.entries(schema)) {
-    if (resolved[key] === undefined && "default" in schemaDef && schemaDef.default !== undefined) {
-      resolved[key] = schemaDef.default;
-    }
+  // Apply declared TypeBox defaults (top-level and nested) for absent keys.
+  const withDefaults = Value.Default(
+    Type.Object(schema as Record<string, TSchema>, { additionalProperties: true }),
+    resolved,
+  ) as Record<string, WorkflowSerializableValue>;
+  for (const [key, value] of Object.entries(withDefaults)) {
+    if (value !== undefined) resolved[key] = value;
   }
 
   for (const [key, schemaDef] of Object.entries(schema)) {
-    if (schemaDef.required === true && resolved[key] === undefined) {
+    if (schemaIsRequired(schemaDef) && resolved[key] === undefined) {
       throw new TypeError(`atomic-workflows: required input "${key}" not provided`);
     }
   }
@@ -228,7 +233,10 @@ function resolveInputConcurrency(
   schema: Readonly<Record<string, WorkflowInputSchema>>,
   resolvedInputs: ResolvedInputs,
 ): number | undefined {
-  if (schema["max_concurrency"]?.type !== "number") return undefined;
+  const concurrencySchema = schema["max_concurrency"];
+  if (concurrencySchema === undefined || schemaFieldKind(concurrencySchema) !== "number") {
+    return undefined;
+  }
 
   const value = resolvedInputs["max_concurrency"];
   if (typeof value !== "number" || !Number.isFinite(value) || value < 1) return undefined;
@@ -1133,11 +1141,11 @@ function assertWorkflowCreatedStage(runSnapshot: RunSnapshot): void {
 // given direct mode only returns the subset it produces (e.g. `count` for chain/
 // parallel, `text` for single task, `worktreeSummary` only with worktrees).
 const DIRECT_WORKFLOW_OUTPUTS: Readonly<Record<string, WorkflowOutputSchema>> = Object.freeze({
-  results: { type: "unknown" },
-  text: { type: "unknown" },
-  count: { type: "unknown" },
-  artifacts: { type: "unknown" },
-  worktreeSummary: { type: "unknown" },
+  results: Type.Optional(Type.Unknown()),
+  text: Type.Optional(Type.Unknown()),
+  count: Type.Optional(Type.Unknown()),
+  artifacts: Type.Optional(Type.Unknown()),
+  worktreeSummary: Type.Optional(Type.Unknown()),
 });
 
 function defineDirectWorkflow(
@@ -1683,27 +1691,6 @@ export function resolveAndValidateInputs(
   return resolved;
 }
 
-function workflowOutputTypeMatches(type: WorkflowOutputType | undefined, value: unknown): boolean {
-  switch (type) {
-    case undefined:
-    case "unknown":
-      return true;
-    case "text":
-    case "string":
-      return typeof value === "string";
-    case "number":
-      return typeof value === "number" && Number.isFinite(value);
-    case "boolean":
-      return typeof value === "boolean";
-    case "select":
-      return typeof value === "string";
-    case "object":
-      return value !== null && typeof value === "object" && !Array.isArray(value);
-    case "array":
-      return Array.isArray(value);
-  }
-}
-
 function hasOwnWorkflowOutput(record: WorkflowOutputValues | Readonly<Record<string, WorkflowOutputSchema>>, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(record, key);
 }
@@ -1721,13 +1708,13 @@ function assertWorkflowOutputsExplicit(
   for (const key of Object.keys(sourceOutput)) {
     if (!hasOwnWorkflowOutput(declarations, key)) {
       throw new Error(
-        `atomic-workflows: ${scope} returned undeclared output "${key}"; declare it with .output("${key}", { type: ... }) or remove it from the .run() return`,
+        `atomic-workflows: ${scope} returned undeclared output "${key}"; declare it with .output("${key}", Type....) or remove it from the .run() return`,
       );
     }
   }
   for (const [key, schema] of Object.entries(declarations)) {
     if (!(key in sourceOutput)) {
-      if (schema.required === true) {
+      if (schemaIsRequired(schema)) {
         throw new Error(
           `atomic-workflows: ${scope} missing output "${key}"${missingOutputSuffix}`,
         );
@@ -1735,17 +1722,16 @@ function assertWorkflowOutputsExplicit(
       continue;
     }
     const value = sourceOutput[key];
-    if (!workflowOutputTypeMatches(schema.type, value)) {
+    const kind = schemaFieldKind(schema);
+    if (!Value.Check(schema, value)) {
+      const choices = schemaChoices(schema);
+      if (kind === "select" && choices !== undefined && typeof value === "string") {
+        throw new Error(
+          `atomic-workflows: ${scope} output "${key}" must be one of [${choices.join(", ")}], got ${JSON.stringify(value)}`,
+        );
+      }
       throw new Error(
-        `atomic-workflows: ${scope} output "${key}" expected ${schema.type ?? "unknown"}, got ${workflowSerializableTypeName(value)}`,
-      );
-    }
-    // `workflowOutputTypeMatches` already guaranteed a string for a select; when
-    // the declaration lists choices, enforce membership so a typo in the run
-    // body is caught instead of silently passing as a plain string.
-    if (schema.type === "select" && schema.choices !== undefined && !schema.choices.includes(value as string)) {
-      throw new Error(
-        `atomic-workflows: ${scope} output "${key}" must be one of [${schema.choices.join(", ")}], got ${JSON.stringify(value)}`,
+        `atomic-workflows: ${scope} output "${key}" expected ${kind}, got ${workflowSerializableTypeName(value)}`,
       );
     }
     const serializableError = workflowSerializableValidationError(
@@ -1891,8 +1877,6 @@ export async function run<TInputs extends WorkflowInputValues>(
       stages: [],
     };
   }
-
-  const erasedDef = def as WorkflowDefinition;
 
   // 1. Resolve + validate inputs
   const resolvedInputs = resolveAndValidateInputs(
@@ -3229,7 +3213,13 @@ export async function run<TInputs extends WorkflowInputValues>(
       });
     },
 
-    async workflow(child: WorkflowDefinition, options: WorkflowRunChildOptions = {}): Promise<WorkflowChildResult> {
+    async workflow<TChildInputs extends WorkflowInputValues, TChildOutputs extends WorkflowOutputValues>(
+      child: WorkflowDefinition<TChildInputs, TChildOutputs>,
+      options: WorkflowRunChildOptions<TChildInputs> = {},
+    ): Promise<WorkflowChildResult<TChildOutputs>> {
+      // The executor operates on type-erased definitions at runtime; the child's
+      // declared output contract is validated dynamically by the child run and
+      // selectWorkflowOutputs, so the typed result is reconstructed via casts.
       if (!isWorkflowDefinition(child)) {
         throw new Error("atomic-workflows: ctx.workflow(definition) requires a compiled workflow definition");
       }
@@ -3245,7 +3235,7 @@ export async function run<TInputs extends WorkflowInputValues>(
         // spawned in the same turn see the same frontier as the source run.
         await Promise.resolve();
         boundary.finalizeReplay();
-        return boundary.replayedChild;
+        return boundary.replayedChild as WorkflowChildResult<TChildOutputs>;
       }
 
       // Tracked so the finally can detach the parent-abort listener and release
@@ -3324,11 +3314,11 @@ export async function run<TInputs extends WorkflowInputValues>(
         }
 
         const outputs = selectWorkflowOutputs(child, childRun.result);
-        const childResult: WorkflowChildResult = {
+        const childResult: WorkflowChildResult<TChildOutputs> = {
           workflow: child.normalizedName,
           runId: childRun.runId,
           status: "completed",
-          outputs,
+          outputs: outputs as TChildOutputs,
         };
         const workflowChild = workflowChildReplaySnapshot(childName, childResult);
         const outputKeys = Object.keys(outputs);

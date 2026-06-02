@@ -1,6 +1,11 @@
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
+import { Type } from "typebox";
+import {
+  schemaChoices,
+  schemaFieldKind,
+} from "../../packages/workflows/src/shared/schema-introspection.js";
 
 describe("defineWorkflow immutable builder semantics", () => {
   test("description does not mutate previous builder", () => {
@@ -21,8 +26,8 @@ describe("defineWorkflow immutable builder semantics", () => {
 
   test("input does not mutate previous builder", () => {
     const b1 = defineWorkflow("test");
-    const b2 = b1.input("a", { type: "text" });
-    const b3 = b2.input("b", { type: "number" });
+    const b2 = b1.input("a", Type.Optional(Type.String()));
+    const b3 = b2.input("b", Type.Optional(Type.Number()));
 
     assert.notEqual(b2, b3);
 
@@ -54,20 +59,16 @@ describe("defineWorkflow immutable builder semantics", () => {
 describe("defineWorkflow select input", () => {
   test("select schema accepted", () => {
     const def = defineWorkflow("select-test")
-      .input("mode", {
-        type: "select",
-        choices: ["fast", "thorough", "balanced"],
-        description: "analysis mode",
-        required: true,
-      })
+      .input("mode", Type.Union(
+        [Type.Literal("fast"), Type.Literal("thorough"), Type.Literal("balanced")],
+        { description: "analysis mode" },
+      ))
       .run(async () => ({}))
       .compile();
 
     const schema = def.inputs["mode"];
-    assert.equal(schema.type, "select");
-    if (schema.type === "select") {
-      assert.deepEqual(schema.choices, ["fast", "thorough", "balanced"]);
-    }
+    assert.equal(schemaFieldKind(schema), "select");
+    assert.deepEqual(schemaChoices(schema), ["fast", "thorough", "balanced"]);
   });
 });
 
@@ -93,7 +94,7 @@ describe("defineWorkflow normalizedName", () => {
 describe("WorkflowDefinition deep freeze", () => {
   test("inputs map is frozen", () => {
     const def = defineWorkflow("freeze-inputs")
-      .input("x", { type: "text" })
+      .input("x", Type.Optional(Type.String()))
       .run(async () => ({}))
       .compile();
 
@@ -101,7 +102,7 @@ describe("WorkflowDefinition deep freeze", () => {
 
     assert.throws(() => {
       // @ts-expect-error intentionally mutating frozen object
-      def.inputs["y"] = { type: "text" };
+      def.inputs["y"] = Type.String();
     });
   });
 

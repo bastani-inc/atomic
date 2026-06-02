@@ -184,7 +184,7 @@ function makePi(): ExecutorDepsForTest["pi"] {
 	return pi as ExecutorDepsForTest["pi"];
 }
 
-function makeExecutor(cwd: string, agents: MinimalAgentConfig[]) {
+function makeExecutor(_cwd: string, agents: MinimalAgentConfig[]) {
 	const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-subagent-guard-"));
 	const deps = {
 		pi: makePi(),

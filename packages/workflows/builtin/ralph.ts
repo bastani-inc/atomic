@@ -11,6 +11,7 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { defineWorkflow } from "../src/workflows/define-workflow.js";
+import { Type } from "typebox";
 import type {
   WorkflowRunContext,
   WorkflowTaskResult,
@@ -322,7 +323,6 @@ function reviewApproved(text: string): boolean {
 }
 
 function reviewerErrorResult(
-  iteration: number,
   error: string,
 ): WorkflowTaskResult {
   const decision: ReviewDecision = {
@@ -1041,7 +1041,7 @@ async function runRalphWorkflow(
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      reviews = [reviewerErrorResult(iteration, message)];
+      reviews = [reviewerErrorResult(message)];
     }
 
     approved =
@@ -1132,69 +1132,37 @@ export default defineWorkflow("ralph")
   .description(
     "Plan → orchestrate → simplify → parallel review loop with bounded iteration.",
   )
-  .input("prompt", {
-    type: "text",
-    required: true,
-    description: "The task or goal to plan, execute, and refine.",
-  })
-  .input("max_loops", {
-    type: "number",
+  .input("prompt", Type.String({ description: "The task or goal to plan, execute, and refine." }))
+  .input("max_loops", Type.Number({
     default: DEFAULT_MAX_LOOPS,
     description: `Maximum plan/orchestrate/review iterations (default ${DEFAULT_MAX_LOOPS}).`,
-  })
-  .input("base_branch", {
-    type: "string",
+  }))
+  .input("base_branch", Type.String({
     default: "origin/main",
-    description:
-      "Branch reviewers compare the current code delta against (default origin/main).",
-  })
-  .input("git_worktree_dir", {
-    type: "string",
+    description: "Branch reviewers compare the current code delta against (default origin/main).",
+  }))
+  .input("git_worktree_dir", Type.String({
     default: "",
     description:
       "Optional Git worktree path. Ralph must start inside a Git repo; absolute paths are used as-is, relative paths resolve from the repo root, existing Git worktrees from the invoking repository are reused/shared as-is, and missing paths are created from base_branch.",
-  })
+  }))
   .worktreeFromInputs({
     gitWorktreeDir: "git_worktree_dir",
     baseBranch: "base_branch",
   })
-  .output("result", {
-    type: "text",
-    description: "Final implementation report from the orchestrator stage.",
-  })
-  .output("plan", {
-    type: "text",
-    description: "Latest RFC-style plan text.",
-  })
-  .output("plan_path", {
-    type: "string",
-    description: "Path to the latest generated spec under specs/.",
-  })
-  .output("implementation_notes_path", {
-    type: "string",
-    description: "OS-temp notes file containing decisions, deviations, blockers, and validation notes.",
-  })
-  .output("pr_report", {
-    type: "text",
-    description: "Pull-request preparation report with diff review, PR status, commands, and follow-up steps.",
-  })
-  .output("approved", {
-    type: "boolean",
-    description: "Whether the reviewer loop approved before PR handoff.",
-  })
-  .output("iterations_completed", {
-    type: "number",
-    description: "Number of plan/orchestrate/review loops completed.",
-  })
-  .output("review_report", {
-    type: "text",
-    description: "Markdown report containing the latest reviewer payloads.",
-  })
+  .output("result", Type.Optional(Type.String({ description: "Final implementation report from the orchestrator stage." })))
+  .output("plan", Type.Optional(Type.String({ description: "Latest RFC-style plan text." })))
+  .output("plan_path", Type.Optional(Type.String({ description: "Path to the latest generated spec under specs/." })))
+  .output("implementation_notes_path", Type.Optional(Type.String({ description: "OS-temp notes file containing decisions, deviations, blockers, and validation notes." })))
+  .output("pr_report", Type.Optional(Type.String({ description: "Pull-request preparation report with diff review, PR status, commands, and follow-up steps." })))
+  .output("approved", Type.Optional(Type.Boolean({ description: "Whether the reviewer loop approved before PR handoff." })))
+  .output("iterations_completed", Type.Optional(Type.Number({ description: "Number of plan/orchestrate/review loops completed." })))
+  .output("review_report", Type.Optional(Type.String({ description: "Markdown report containing the latest reviewer payloads." })))
   .run(async (ctx) => {
-    const workflowCtx = ctx as WorkflowRunContext<RalphInputs>;
+    const workflowCtx = ctx;
     const workflowStartCwd = workflowCtx.cwd ?? process.cwd();
     const inputs = workflowCtx.inputs;
-    const prompt = inputs.prompt ?? "";
+    const prompt = inputs.prompt;
     const maxLoops = positiveInteger(inputs.max_loops, DEFAULT_MAX_LOOPS);
     const comparisonBaseBranch = normalizeBranchInput(
       inputs.base_branch,

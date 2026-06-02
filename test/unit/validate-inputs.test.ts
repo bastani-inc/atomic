@@ -5,6 +5,7 @@
 
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
+import { Type } from "typebox";
 import { validateInputs } from "../../packages/workflows/src/runs/shared/validate-inputs.js";
 import type { WorkflowInputSchema } from "../../packages/workflows/src/shared/types.js";
 
@@ -14,8 +15,8 @@ describe("validateInputs", () => {
   test("no errors for well-formed inputs", () => {
     const errors = validateInputs(
       schema({
-        prompt: { type: "text", required: true },
-        count: { type: "number", default: 3 },
+        prompt: Type.String(),
+        count: Type.Number({ default: 3 }),
       }),
       { prompt: "hi", count: 5 },
     );
@@ -24,7 +25,7 @@ describe("validateInputs", () => {
 
   test("rejects wrong type: number", () => {
     const errors = validateInputs(
-      schema({ count: { type: "number" } }),
+      schema({ count: Type.Optional(Type.Number()) }),
       { count: "three" },
     );
     assert.equal(errors.length, 1);
@@ -34,7 +35,7 @@ describe("validateInputs", () => {
 
   test("rejects wrong type: boolean", () => {
     const errors = validateInputs(
-      schema({ dry: { type: "boolean" } }),
+      schema({ dry: Type.Optional(Type.Boolean()) }),
       { dry: "true" },
     );
     assert.equal(errors.length, 1);
@@ -44,7 +45,7 @@ describe("validateInputs", () => {
 
   test("rejects wrong type: text/string", () => {
     const errors = validateInputs(
-      schema({ prompt: { type: "text" } }),
+      schema({ prompt: Type.Optional(Type.String()) }),
       { prompt: 42 },
     );
     assert.equal(errors.length, 1);
@@ -53,7 +54,7 @@ describe("validateInputs", () => {
 
   test("rejects select value not in choices", () => {
     const errors = validateInputs(
-      schema({ mode: { type: "select", choices: ["a", "b"] } }),
+      schema({ mode: Type.Optional(Type.Union([Type.Literal("a"), Type.Literal("b")])) }),
       { mode: "c" },
     );
     assert.equal(errors.length, 1);
@@ -63,7 +64,7 @@ describe("validateInputs", () => {
 
   test("accepts select value when in choices", () => {
     const errors = validateInputs(
-      schema({ mode: { type: "select", choices: ["a", "b"] } }),
+      schema({ mode: Type.Optional(Type.Union([Type.Literal("a"), Type.Literal("b")])) }),
       { mode: "a" },
     );
     assert.deepEqual(errors, []);
@@ -71,7 +72,7 @@ describe("validateInputs", () => {
 
   test("rejects unknown input keys (catches typos)", () => {
     const errors = validateInputs(
-      schema({ prompt: { type: "text" } }),
+      schema({ prompt: Type.Optional(Type.String()) }),
       { prompt: "hi", propmt: "typo" },
     );
     assert.equal(errors.length, 1);
@@ -81,7 +82,7 @@ describe("validateInputs", () => {
 
   test("reports missing required inputs", () => {
     const errors = validateInputs(
-      schema({ prompt: { type: "text", required: true } }),
+      schema({ prompt: Type.String() }),
       {},
     );
     assert.equal(errors.length, 1);
@@ -91,7 +92,7 @@ describe("validateInputs", () => {
 
   test("does NOT report missing optional inputs", () => {
     const errors = validateInputs(
-      schema({ count: { type: "number" } }),
+      schema({ count: Type.Optional(Type.Number()) }),
       {},
     );
     assert.deepEqual(errors, []);
@@ -100,8 +101,8 @@ describe("validateInputs", () => {
   test("collects multiple errors", () => {
     const errors = validateInputs(
       schema({
-        prompt: { type: "text", required: true },
-        count: { type: "number" },
+        prompt: Type.String(),
+        count: Type.Optional(Type.Number()),
       }),
       { count: "x", unknown: 1 },
     );
@@ -111,7 +112,7 @@ describe("validateInputs", () => {
 
   test("NaN rejected as non-serializable number", () => {
     const errors = validateInputs(
-      schema({ count: { type: "number" } }),
+      schema({ count: Type.Optional(Type.Number()) }),
       { count: Number.NaN },
     );
     assert.equal(errors.length, 1);
@@ -121,7 +122,7 @@ describe("validateInputs", () => {
 
   test("Infinity rejected as non-serializable number", () => {
     const errors = validateInputs(
-      schema({ count: { type: "number" } }),
+      schema({ count: Type.Optional(Type.Number()) }),
       { count: Number.POSITIVE_INFINITY },
     );
     assert.equal(errors.length, 1);

@@ -4,6 +4,8 @@
         "module": "ESNext",
         "moduleResolution": "bundler",
         "strict": true,
+        "noUnusedLocals": true,
+        "noUnusedParameters": true,
         "esModuleInterop": true,
         "skipLibCheck": true,
         "types": ["bun"],
@@ -31,7 +33,12 @@
             "@bastani/intercom/*": ["./packages/intercom/*"]
         }
     },
-    "include": ["packages/workflows/**/*", "test/**/*", "examples/**/*"],
+    "include": [
+        "packages/workflows/**/*",
+        "test/**/*",
+        "examples/**/*",
+        ".atomic/workflows/**/*"
+    ],
     "exclude": [
         "node_modules",
         "packages/coding-agent",

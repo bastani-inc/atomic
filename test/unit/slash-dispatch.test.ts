@@ -37,6 +37,7 @@ import type {
 } from "../../packages/workflows/src/extension/index.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
+import { Type } from "typebox";
 import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
 import {
     createExtensionRuntime,
@@ -348,8 +349,8 @@ async function runFactory(pi: ExtensionAPI): Promise<void> {
 describe("slash /workflow <name> dispatch", () => {
     test("/workflow <known-name> dispatches run, not unknown subcommand", async () => {
         const wf = defineWorkflow("test-wf")
-            .input("prompt", { type: "text" })
-            .output("done", { type: "unknown" })
+            .input("prompt", Type.Optional(Type.String()))
+            .output("done", Type.Optional(Type.Any()))
             .run(async (_ctx) => ({ done: true }))
             .compile() as WorkflowDefinition;
 
@@ -1546,12 +1547,12 @@ describe("tool run-control actions", () => {
     test("registered workflow tool suppresses lifecycle notices while awaiting a headless run", async () => {
         const resource = await makeRegisteredWorkflowToolWithResource(
             "tool-headless-lifecycle.ts",
-            `import { defineWorkflow } from "@bastani/workflows";
+            `import { defineWorkflow, Type } from "@bastani/workflows";
 
 export default defineWorkflow("tool-headless-lifecycle")
   .description("Completes under the registered workflow tool")
-  .output("ok", { type: "unknown" })
-  .output("source", { type: "unknown" })
+  .output("ok", Type.Optional(Type.Any()))
+  .output("source", Type.Optional(Type.Any()))
   .run(async (ctx) => {
     await ctx.stage("terminal-stage").prompt("finish");
     return { ok: true, source: "tool" };
@@ -1754,7 +1755,7 @@ export default defineWorkflow("tool-headless-lifecycle")
 
     test("workflow tool answers ctx.ui.input prompts on running workflows", async () => {
         const def = defineWorkflow("tool-answers-ctx-ui-input")
-            .output("answer", { type: "unknown" })
+            .output("answer", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 const answer = await ctx.ui.input("Value?");
                 return { answer };
@@ -3637,8 +3638,8 @@ export default defineWorkflow("tool-headless-lifecycle")
     test("makeExecuteWorkflowTool resume starts linked continuation for failed resumable workflow", async () => {
         const sourceRunId = `resume-tool-source-${Date.now()}`;
         const def = defineWorkflow("tool-resume-wf")
-            .output("first", { type: "unknown" })
-            .output("second", { type: "unknown" })
+            .output("first", Type.Optional(Type.Any()))
+            .output("second", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 const first = await ctx.stage("first").prompt("first");
                 const second = await ctx
@@ -4293,12 +4294,12 @@ export default defineWorkflow("terminal-failure")
     test("issue #1156: headless /workflow success emits a printable terminal detail summary", async () => {
         const resource = await registerWorkflowCommandWithResource(
             "headless-terminal-success.ts",
-            `import { defineWorkflow } from "@bastani/workflows";
+            `import { defineWorkflow, Type } from "@bastani/workflows";
 
 export default defineWorkflow("headless-terminal-success")
   .description("Completes without user input")
-  .output("ok", { type: "unknown" })
-  .output("value", { type: "unknown" })
+  .output("ok", Type.Optional(Type.Any()))
+  .output("value", Type.Optional(Type.Any()))
   .run(async (ctx) => {
     await ctx.stage("terminal-stage").prompt("finish");
     return { ok: true, value: "terminal" };

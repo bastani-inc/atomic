@@ -1,4 +1,4 @@
-import { defineWorkflow } from "@bastani/workflows";
+import { defineWorkflow, Type } from "@bastani/workflows";
 
 const DEFAULT_LONG_LINES = 80;
 
@@ -50,11 +50,13 @@ function buildLongEditorText(lineCount: number): string {
 
 export default defineWorkflow("hil-dummy")
   .description("Tiny workflow for manually testing ctx.ui.editor and ctx.ui.confirm HIL prompt nodes, including long-text scrolling.")
-  .input("long_lines", {
-    type: "number",
-    default: DEFAULT_LONG_LINES,
-    description: "Number of lines to generate for the long confirm/editor HIL prompts. Defaults to 80.",
-  })
+  .input(
+    "long_lines",
+    Type.Number({
+      default: DEFAULT_LONG_LINES,
+      description: "Number of lines to generate for the long confirm/editor HIL prompts. Defaults to 80.",
+    }),
+  )
   .run(async (ctx) => {
     const longLines = normalizeLongLines(ctx.inputs.long_lines);
 

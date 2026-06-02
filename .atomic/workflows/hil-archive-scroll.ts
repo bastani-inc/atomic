@@ -1,4 +1,4 @@
-import { defineWorkflow } from "@bastani/workflows";
+import { defineWorkflow, Type } from "@bastani/workflows";
 
 const DEFAULT_LINE_COUNT = 72;
 
@@ -57,11 +57,13 @@ function editorInitial(lineCount: number): string {
 
 export default defineWorkflow("hil-archive-scroll")
   .description("Manual workflow: creates long ctx.ui input/confirm/select/editor prompt nodes so completed HIL archives can be reattached and scrolled with keyboard and mouse wheel.")
-  .input("line_count", {
-    type: "number",
-    default: DEFAULT_LINE_COUNT,
-    description: "Number of filler lines generated for each long HIL prompt. Defaults to 72.",
-  })
+  .input(
+    "line_count",
+    Type.Number({
+      default: DEFAULT_LINE_COUNT,
+      description: "Number of filler lines generated for each long HIL prompt. Defaults to 72.",
+    }),
+  )
   .run(async (ctx) => {
     const lineCount = normalizeLineCount(ctx.inputs.line_count);
 

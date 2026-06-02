@@ -6,6 +6,7 @@ import type {
   WorkflowToolResult,
 } from "./render-result.js";
 import { renderInputsSchema } from "../shared/render-inputs-schema.js";
+import { deriveInputFields, schemaIsRequired, schemaChoices, schemaFieldKind, schemaDescription } from "../shared/schema-introspection.js";
 import { WorkflowParametersSchema } from "./workflow-schema.js";
 import { renderRunBanner, renderRunSummary } from "./renderers.js";
 import type { RunEndPayload, RunStartPayload } from "./renderers.js";
@@ -170,10 +171,6 @@ export type PiMessageRenderer = (
   options?: PiMessageRenderOptions,
   theme?: unknown,
 ) => PiMessageRendererResult;
-
-function textRenderComponent(text: string): PiRenderComponent {
-  return dynamicTextRenderComponent(() => text);
-}
 
 function dynamicTextRenderComponent(renderText: (width: number) => string): PiRenderComponent {
   return {
@@ -767,14 +764,7 @@ function workflowGetResult(
       error: `Workflow not found: "${workflow}"`,
     };
   }
-  const inputs = Object.entries(def.inputs).map(([name, schema]) => ({
-    name,
-    type: schema.type,
-    description: schema.description,
-    required: schema.required,
-    default: "default" in schema ? schema.default : undefined,
-    choices: schema.type === "select" ? schema.choices : undefined,
-  }));
+  const inputs = deriveInputFields(def.inputs);
   return {
     action: "get",
     workflow: def.normalizedName,
@@ -786,7 +776,7 @@ function workflowGetResult(
         workflow: def.normalizedName,
         name: def.name,
         description: def.description,
-        inputs,
+        inputs: inputs as unknown as WorkflowSerializableValue[],
       },
       progress: { completed: 0, total: 0 },
     },
@@ -2047,14 +2037,6 @@ type ToolStageTarget =
   | { ok: true; runId?: string; stageId?: string }
   | { ok: false; message: string };
 
-function stageMatchesIdentifier(stage: { readonly id: string; readonly name: string }, target: string): boolean {
-  return stage.id === target || stage.name === target || stage.id.startsWith(target);
-}
-
-function stageMatchLabel(stage: { readonly id: string; readonly name: string }): string {
-  return `${stage.name} (${stage.id.slice(0, 12)})`;
-}
-
 function resolveStageTarget(runId: string, stageTarget?: string): ToolStageTarget {
   const target = stageTarget?.trim();
   if (!target) return { ok: true, runId };
@@ -3275,7 +3257,7 @@ function factory(pi: ExtensionAPI): void {
             description: def.description,
             inputs: Object.entries(def.inputs).map(([iname, schema]) => ({
               name: iname,
-              required: schema.required === true,
+              required: schemaIsRequired(schema),
             })),
           }));
           emitChatSurface(pi, { kind: "list", entries: items });
@@ -3714,17 +3696,19 @@ function factory(pi: ExtensionAPI): void {
         if (equalsIndex > 0) {
           const inputName = token.slice(0, equalsIndex);
           const schema = workflow.inputs[inputName];
-          if (schema?.type === "select") {
+          const schemaChoiceValues = schema === undefined ? undefined : schemaChoices(schema);
+          const schemaKind = schema === undefined ? undefined : schemaFieldKind(schema);
+          if (schemaChoiceValues !== undefined) {
             return completeToken(
               partial,
-              schema.choices.map((choice) => ({
+              schemaChoiceValues.map((choice) => ({
                 value: `${inputName}=${choice} `,
                 label: choice,
                 description: inputName,
               })),
             );
           }
-          if (schema?.type === "boolean") {
+          if (schemaKind === "boolean") {
             return completeToken(partial, [
               {
                 value: `${inputName}=true `,
@@ -3746,7 +3730,7 @@ function factory(pi: ExtensionAPI): void {
         ).map(([name, schema]) => ({
           value: `${name}=`,
           label: name,
-          description: schema.description,
+          description: schemaDescription(schema),
         }));
         return completeToken(partial, [
           {

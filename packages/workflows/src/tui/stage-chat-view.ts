@@ -172,7 +172,6 @@ interface NoticeEntry {
   readonly meta?: string;
 }
 type TranscriptEntry = NoticeEntry | ChatMessageEntry;
-type AgentSnapshotMessage = AgentSession["messages"][number];
 
 // ---------------------------------------------------------------------------
 // Frame budget
@@ -228,10 +227,6 @@ export class StageChatView implements Component, Focusable {
   private promptEditorSubmitFromEnter = false;
   private promptScrollOffset = 0;
   private promptMaxScroll = 0;
-  private getChatRenderSettings?: () =>
-    | Partial<Omit<ChatMessageRenderOptions, "ui" | "cwd">>
-    | undefined;
-  private footerData?: ReadonlyFooterDataProvider;
 
   /** True while a pending pause request is in flight (between ctrl+p and resolve). */
   private localPaused = false;
@@ -276,8 +271,6 @@ export class StageChatView implements Component, Focusable {
     this.piTheme = opts.piTheme;
     this.piKeybindings = opts.piKeybindings;
     this.piEditorFactory = opts.piEditorFactory;
-    this.getChatRenderSettings = opts.getChatRenderSettings;
-    this.footerData = opts.footerData;
     this.stageUiBroker = opts.stageUiBroker ?? stageUiBroker;
     this.canSubmitPrompt = opts.canSubmitPrompt;
     this.chatHost = new ChatSessionHost<NoticeEntry>({

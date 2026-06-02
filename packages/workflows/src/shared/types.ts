@@ -11,6 +11,9 @@ import type {
   ModelCycleResult,
   PromptOptions,
 } from "@bastani/atomic";
+import type { TSchema } from "typebox";
+
+export type { TSchema };
 
 export type { AgentSessionEvent, CompactionResult, ModelCycleResult, PromptOptions };
 
@@ -78,45 +81,22 @@ export type WorkflowOutputValues = WorkflowSerializableObject;
 export type WorkflowRunOutput = WorkflowOutputValues;
 
 // ---------------------------------------------------------------------------
-// Workflow input schema
+// Workflow input / output schemas
 // ---------------------------------------------------------------------------
 
-/** Discriminated union of supported input kinds. */
-export type WorkflowInputType = "text" | "string" | "number" | "boolean" | "select";
+/**
+ * Inputs and outputs are declared with TypeBox schemas. Authors use
+ * `.input(key, Type.String({ ... }))` / `.output(key, Type.Object({ ... }))`;
+ * the builder threads the precise `Static<>` types and the runtime validates
+ * via TypeBox `Value`.
+ */
+export type WorkflowInputSchemaMap = Readonly<Record<string, TSchema>>;
+export type WorkflowOutputSchemaMap = Readonly<Record<string, TSchema>>;
 
-interface BaseInputSchema {
-  description?: string;
-  required?: boolean;
-}
-
-export interface TextInputSchema extends BaseInputSchema {
-  type: "text" | "string";
-  default?: string;
-}
-
-export interface NumberInputSchema extends BaseInputSchema {
-  type: "number";
-  default?: number;
-}
-
-export interface BooleanInputSchema extends BaseInputSchema {
-  type: "boolean";
-  default?: boolean;
-}
-
-export interface SelectInputSchema extends BaseInputSchema {
-  type: "select";
-  /** Non-empty array of valid string choices. */
-  choices: readonly string[];
-  default?: string;
-}
-
-/** Union of all concrete input schema shapes. */
-export type WorkflowInputSchema =
-  | TextInputSchema
-  | NumberInputSchema
-  | BooleanInputSchema
-  | SelectInputSchema;
+/** A single declared input schema is just a TypeBox schema. */
+export type WorkflowInputSchema = TSchema;
+/** A single declared output schema is just a TypeBox schema. */
+export type WorkflowOutputSchema = TSchema;
 
 // ---------------------------------------------------------------------------
 // Workflow execution policy
@@ -149,27 +129,20 @@ export const NON_INTERACTIVE_WORKFLOW_POLICY: WorkflowExecutionPolicy = Object.f
 // Workflow child composition and outputs
 // ---------------------------------------------------------------------------
 
-export type WorkflowOutputType = WorkflowInputType | "object" | "array" | "unknown";
-
-export interface WorkflowOutputSchema {
-  readonly type?: WorkflowOutputType;
-  readonly description?: string;
-  readonly required?: boolean;
-  /** Allowed string values when `type` is `"select"`; ignored for other types. */
-  readonly choices?: readonly string[];
-}
-
-export interface WorkflowRunChildOptions {
-  readonly inputs?: WorkflowInputValues;
+export interface WorkflowRunChildOptions<TInputs extends WorkflowInputValues = WorkflowInputValues> {
+  /** Inputs forwarded to the child workflow, typed against its input contract. */
+  readonly inputs?: TInputs;
   /** Parent boundary stage display name. Defaults to workflow:<workflow-name>. */
   readonly stageName?: string;
 }
 
-export interface WorkflowChildResult extends WorkflowSerializableObject {
+export interface WorkflowChildResult<TOutputs extends WorkflowOutputValues = WorkflowOutputValues>
+  extends WorkflowSerializableObject {
   readonly workflow: string;
   readonly runId: string;
   readonly status: "completed";
-  readonly outputs: WorkflowOutputValues;
+  /** Child outputs, typed from the child workflow's declared `.output(...)` contract. */
+  readonly outputs: TOutputs;
 }
 
 // ---------------------------------------------------------------------------
@@ -623,7 +596,10 @@ export interface WorkflowRunContext<TInputs extends WorkflowInputValues = Workfl
   /** Run tasks in parallel. Missing step tasks use the first available task as a fallback. */
   parallel(steps: readonly WorkflowTaskStep[], options?: WorkflowParallelOptions): Promise<WorkflowTaskResult[]>;
   /** Execute a reusable child workflow by compiled workflow definition. */
-  workflow<TChildInputs extends WorkflowInputValues>(definition: WorkflowDefinition<TChildInputs>, options?: WorkflowRunChildOptions): Promise<WorkflowChildResult>;
+  workflow<TChildInputs extends WorkflowInputValues, TChildOutputs extends WorkflowOutputValues>(
+    definition: WorkflowDefinition<TChildInputs, TChildOutputs>,
+    options?: WorkflowRunChildOptions<TChildInputs>,
+  ): Promise<WorkflowChildResult<TChildOutputs>>;
   /** HIL primitives for user interaction during a run. */
   readonly ui: WorkflowUIContext;
 }
@@ -664,9 +640,10 @@ export interface WorkflowRuntimeConfig {
 // Workflow run function
 // ---------------------------------------------------------------------------
 
-export type WorkflowRunFn<TInputs extends WorkflowInputValues = WorkflowInputValues> = (
-  ctx: WorkflowRunContext<TInputs>,
-) => Promise<WorkflowRunOutput>;
+export type WorkflowRunFn<
+  TInputs extends WorkflowInputValues = WorkflowInputValues,
+  TOutputs extends WorkflowOutputValues = WorkflowOutputValues,
+> = (ctx: WorkflowRunContext<TInputs>) => Promise<TOutputs>;
 
 // ---------------------------------------------------------------------------
 // Compiled workflow definition
@@ -681,17 +658,20 @@ export interface WorkflowInputBindings {
   readonly worktree?: WorkflowWorktreeInputBinding;
 }
 
-export interface WorkflowDefinition<TInputs extends WorkflowInputValues = WorkflowInputValues> {
+export interface WorkflowDefinition<
+  TInputs extends WorkflowInputValues = WorkflowInputValues,
+  TOutputs extends WorkflowOutputValues = WorkflowOutputValues,
+> {
   /** Sentinel consumed by the registry loader to validate the export. */
   readonly __piWorkflow: true;
   readonly name: string;
   /** Normalised name (lowercase, hyphens) used as the registry key. */
   readonly normalizedName: string;
   readonly description: string;
-  readonly inputs: Readonly<Record<string, WorkflowInputSchema>>;
+  readonly inputs: WorkflowInputSchemaMap;
   /** Optional output contract used by parent workflows when selecting child outputs. */
-  readonly outputs?: Readonly<Record<string, WorkflowOutputSchema>>;
+  readonly outputs?: WorkflowOutputSchemaMap;
   /** Optional input-to-runtime defaults declared by the workflow builder. */
   readonly inputBindings?: WorkflowInputBindings;
-  readonly run: WorkflowRunFn<TInputs>;
+  readonly run: WorkflowRunFn<TInputs, TOutputs>;
 }

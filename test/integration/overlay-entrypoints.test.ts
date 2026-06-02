@@ -42,6 +42,7 @@ import { runDetached } from "../../packages/workflows/src/runs/background/runner
 import { createCancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.js";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
+import { Type } from "typebox";
 import factory from "../../packages/workflows/src/extension/index.js";
 import type {
   ExtensionAPI,
@@ -528,8 +529,8 @@ describe("buildGraphOverlayAdapter — open with pi.ui.custom", () => {
     });
 
     const def = defineWorkflow("hil-focus-dummy")
-      .output("edited", { type: "unknown" })
-      .output("approved", { type: "unknown" })
+      .output("edited", Type.Optional(Type.Any()))
+      .output("approved", Type.Optional(Type.Any()))
       .run(async (ctx) => {
         await workflowGate;
         const edited = await ctx.ui.editor("draft approval json");
@@ -594,7 +595,7 @@ describe("buildGraphOverlayAdapter — open with pi.ui.custom", () => {
     ].join("\n\n");
 
     const def = defineWorkflow("hil-long-confirm-dummy")
-      .output("approved", { type: "unknown" })
+      .output("approved", Type.Optional(Type.Any()))
       .run(async (ctx) => {
         await workflowGate;
         const approved = await ctx.ui.confirm(longMessage);
@@ -643,7 +644,7 @@ describe("buildGraphOverlayAdapter — open with pi.ui.custom", () => {
     ).join("\n");
 
     const def = defineWorkflow("hil-long-editor-dummy")
-      .output("editedLength", { type: "unknown" })
+      .output("editedLength", Type.Optional(Type.Any()))
       .run(async (ctx) => {
         await workflowGate;
         const edited = await ctx.ui.editor(longDocument);

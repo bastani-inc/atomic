@@ -11,6 +11,7 @@ import { buildRuntimeAdapters, type RuntimeAdapterBuildOptions, type RuntimeWiri
 import { discoverWorkflows } from "../../extension/discovery.js";
 import { createStore } from "../../shared/store.js";
 import { renderInputsSchema } from "../../shared/render-inputs-schema.js";
+import { deriveInputFields } from "../../shared/schema-introspection.js";
 import { validateInputs, type ValidationError } from "./validate-inputs.js";
 import type { CreateAgentSessionOptions } from "@bastani/atomic";
 import type { StageSessionRuntime } from "../foreground/stage-runner.js";
@@ -260,8 +261,9 @@ function withResolvedDefaults(
     if (value !== undefined) resolved[key] = value;
   }
   for (const [key, def] of Object.entries(schema)) {
-    if (resolved[key] === undefined && "default" in def && def.default !== undefined) {
-      resolved[key] = def.default;
+    const declaredDefault = (def as { default?: unknown }).default;
+    if (resolved[key] === undefined && declaredDefault !== undefined) {
+      resolved[key] = declaredDefault as WorkflowInputValues[string];
     }
   }
   return resolved;
@@ -272,13 +274,7 @@ function formatWorkflowValidationFailure(
   schema: Readonly<Record<string, WorkflowInputSchema>>,
   errors: ValidationError[],
 ): string {
-  const entries = Object.entries(schema).map(([name, definition]) => ({
-    name,
-    type: definition.type,
-    description: definition.description,
-    required: definition.required,
-    default: "default" in definition ? definition.default : undefined,
-  }));
+  const entries = deriveInputFields(schema);
   const lines = errors.map((error) => `  - ${error.key}: ${error.reason}`);
   return `Invalid inputs for "${workflowName}":\n${lines.join("\n")}\n\n${renderInputsSchema(workflowName, entries)}`;
 }

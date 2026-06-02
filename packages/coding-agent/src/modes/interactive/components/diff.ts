@@ -12,7 +12,6 @@ function parseDiffLine(line: string): { prefix: string; lineNum: string; content
 
 	let cursor = 1;
 	while (cursor < line.length && line[cursor] === " ") cursor++;
-	const digitsStart = cursor;
 	while (cursor < line.length) {
 		const code = line.charCodeAt(cursor);
 		if (code < 48 || code > 57) break;

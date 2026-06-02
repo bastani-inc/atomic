@@ -11,6 +11,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defineWorkflow } from "../src/workflows/define-workflow.js";
+import { Type } from "typebox";
 import type { WorkflowTaskResult } from "../src/shared/types.js";
 import { WORKER_PREFLIGHT_CONTRACT } from "./shared-prompts.js";
 
@@ -125,12 +126,6 @@ type ReducerOutcome = {
   readonly status: GoalStatus;
   readonly decision: ReducerDecision;
   readonly blockerObservation?: BlockerObservation;
-};
-
-type GoalInputs = {
-  readonly objective?: string;
-  readonly max_turns?: number;
-  readonly base_branch?: string;
 };
 
 function positiveInteger(value: number | undefined, fallback: number): number {
@@ -962,71 +957,45 @@ export default defineWorkflow("goal")
   .description(
     "Goal Runner workflow with bounded LM turns, ledger artifacts, parallel reviewers, and reducer-gated completion.",
   )
-  .input("objective", {
-    type: "text",
-    required: true,
-    description: "The objective for the Goal Runner workflow.",
-  })
-  .input("max_turns", {
-    type: "number",
+  .input("objective", Type.String({ description: "The objective for the Goal Runner workflow." }))
+  .input("max_turns", Type.Number({
     default: DEFAULT_MAX_TURNS,
-    description:
-      "Maximum worker/review turns before Goal Runner stops as needs_human.",
-  })
-  .input("base_branch", {
-    type: "string",
+    description: "Maximum worker/review turns before Goal Runner stops as needs_human.",
+  }))
+  .input("base_branch", Type.String({
     default: "origin/main",
-    description:
-      "Optional branch reviewers compare the current code delta against (default origin/main).",
-  })
-  .output("result", {
-    type: "text",
-    description: "Final report with objective, status, receipts, turns, and remaining work.",
-  })
-  .output("status", {
-    type: "select",
-    choices: ["complete", "blocked", "needs_human", "active"],
-    description: "Final reducer status: complete, blocked, needs_human, or active if externally interrupted.",
-  })
-  .output("approved", {
-    type: "boolean",
-    description: "Whether the reducer reached complete.",
-  })
-  .output("goal_id", {
-    type: "string",
-    description: "Per-run goal identifier stored in the ledger.",
-  })
-  .output("objective", {
-    type: "text",
-    description: "Normalized goal objective used by the run.",
-  })
-  .output("ledger_path", {
-    type: "string",
-    description: "OS-temp path to goal-ledger.json with receipts, reviewer decisions, blockers, and lifecycle events.",
-  })
-  .output("turns_completed", {
-    type: "number",
-    description: "Worker/review turns completed.",
-  })
-  .output("iterations_completed", {
-    type: "number",
-    description: "Worker/review turns completed, retained for status summaries.",
-  })
-  .output("receipts", {
-    type: "array",
-    description: "Ledger receipt summaries and worker artifact paths.",
-  })
-  .output("remaining_work", {
-    type: "text",
-    description: "Remaining gaps or blockers when incomplete, or none.",
-  })
-  .output("review_report", {
-    type: "text",
-    description: "Markdown report containing the last structured reviewer decision payloads used by the reducer.",
-  })
+    description: "Optional branch reviewers compare the current code delta against (default origin/main).",
+  }))
+  .output("result", Type.Optional(Type.String({ description: "Final report with objective, status, receipts, turns, and remaining work." })))
+  .output("status", Type.Optional(Type.Union(
+    [Type.Literal("complete"), Type.Literal("blocked"), Type.Literal("needs_human"), Type.Literal("active")],
+    { description: "Final reducer status: complete, blocked, needs_human, or active if externally interrupted." },
+  )))
+  .output("approved", Type.Optional(Type.Boolean({ description: "Whether the reducer reached complete." })))
+  .output("goal_id", Type.Optional(Type.String({ description: "Per-run goal identifier stored in the ledger." })))
+  .output("objective", Type.Optional(Type.String({ description: "Normalized goal objective used by the run." })))
+  .output("ledger_path", Type.Optional(Type.String({ description: "OS-temp path to goal-ledger.json with receipts, reviewer decisions, blockers, and lifecycle events." })))
+  .output("turns_completed", Type.Optional(Type.Number({ description: "Worker/review turns completed." })))
+  .output("iterations_completed", Type.Optional(Type.Number({ description: "Worker/review turns completed, retained for status summaries." })))
+  .output(
+    "receipts",
+    Type.Optional(
+      Type.Array(
+        Type.Object({
+          turn: Type.Number(),
+          stage: Type.String(),
+          artifact_path: Type.String(),
+          summary: Type.String(),
+        }),
+        { description: "Ledger receipt summaries and worker artifact paths." },
+      ),
+    ),
+  )
+  .output("remaining_work", Type.Optional(Type.String({ description: "Remaining gaps or blockers when incomplete, or none." })))
+  .output("review_report", Type.Optional(Type.String({ description: "Markdown report containing the last structured reviewer decision payloads used by the reducer." })))
   .run(async (ctx) => {
-    const inputs = ctx.inputs as GoalInputs;
-    const objective = (inputs.objective ?? "").trim();
+    const inputs = ctx.inputs;
+    const objective = inputs.objective.trim();
     if (!objective) {
       throw new Error("goal requires an objective input.");
     }

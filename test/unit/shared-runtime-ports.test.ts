@@ -17,6 +17,7 @@ import type { RunOpts } from "../../packages/workflows/src/runs/foreground/execu
 import type { CancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.js";
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
+import { Type } from "typebox";
 
 // ---------------------------------------------------------------------------
 // StageOptions — structural type tests
@@ -193,7 +194,7 @@ describe("ctx.stage with StageOptions", () => {
   test("stage() with no options creates a default stage", async () => {
     const wf = defineWorkflow("default-stage-options-test")
       .description("d")
-      .output("result", { type: "unknown" })
+      .output("result", Type.Optional(Type.Any()))
       .run(async (ctx) => {
         const s = ctx.stage("step");
         const result = await s.prompt("hello");

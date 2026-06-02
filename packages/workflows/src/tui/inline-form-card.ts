@@ -283,7 +283,7 @@ function renderCaretLine(
   raw: string,
   caret: number,
   usable: number,
-  theme: GraphTheme,
+  _theme: GraphTheme,
   color: string,
 ): string {
   const safe = clampGraphemeOffset(raw, caret);

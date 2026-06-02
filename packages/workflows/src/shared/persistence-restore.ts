@@ -10,6 +10,7 @@ import type { Store } from "./store.js";
 import type { RunSnapshot, StageSnapshot, StageStatus, WorkflowChildReplaySnapshot } from "./store-types.js";
 import type { WorkflowInputValues, WorkflowOutputValues } from "./types.js";
 import { workflowSerializableObjectSchema } from "./serializable.js";
+import { Value } from "typebox/value";
 import { isWorkflowFailureKind } from "./workflow-failures.js";
 
 // ---------------------------------------------------------------------------
@@ -300,8 +301,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function serializableObject(value: unknown): WorkflowOutputValues | undefined {
-  const parsed = workflowSerializableObjectSchema.safeParse(value);
-  return parsed.success ? parsed.data : undefined;
+  return Value.Check(workflowSerializableObjectSchema, value)
+    ? (value as WorkflowOutputValues)
+    : undefined;
 }
 
 function serializableObjectOrEmpty(value: unknown): WorkflowOutputValues {
@@ -331,10 +333,9 @@ function workflowChildMetadata(payload: Record<string, unknown>): Pick<StageSnap
   }
 
   // `structuredClone` detaches the restored snapshot from the parsed JSONL
-  // payload with a guaranteed deep copy, independent of how the serializable
-  // schema's parse step copies (which can differ across the supported zod
-  // majors). Declared `outputs` are the child contract, so a non-serializable
-  // value bails the whole child snapshot.
+  // payload with a guaranteed deep copy, independent of the TypeBox
+  // serializable check. Declared `outputs` are the child contract, so a
+  // non-serializable value bails the whole child snapshot.
   let clonedOutputs: WorkflowOutputValues;
   try {
     const serializableOutputs = serializableObject(outputs);

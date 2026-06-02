@@ -141,7 +141,7 @@
       "version": "0.8.21",
       "dependencies": {
         "jiti": "^2.7.0",
-        "zod": "^3.25.0 || ^4.0.0",
+        "typebox": "^1.1.24",
       },
       "peerDependencies": {
         "@bastani/atomic": "*",

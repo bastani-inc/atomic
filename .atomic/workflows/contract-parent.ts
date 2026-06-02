@@ -1,33 +1,37 @@
-import { defineWorkflow } from "@bastani/workflows";
+import { defineWorkflow, Type } from "@bastani/workflows";
+import type { WorkflowSerializableObject } from "@bastani/workflows";
 import contractChild from "./contract-child.js";
 
 export default defineWorkflow("contract-parent")
   .description("Manual nesting validation workflow: calls contract-child twice and combines its declared child outputs.")
-  .input("topic", {
-    type: "text",
-    required: true,
-    description: "Topic passed into nested child workflows.",
-  })
-  .input("multiplier", {
-    type: "number",
-    default: 2,
-    description: "Finite number forwarded into the first child workflow.",
-  })
-  .output("result", {
-    type: "text",
-    required: true,
-    description: "Parent summary string.",
-  })
-  .output("children", {
-    type: "array",
-    required: true,
-    description: "Declared outputs from nested child workflow calls.",
-  })
-  .output("combined", {
-    type: "object",
-    required: true,
-    description: "Combined parent object built from child outputs.",
-  })
+  .input("topic", Type.String({ description: "Topic passed into nested child workflows." }))
+  .input("multiplier", Type.Number({ default: 2, description: "Finite number forwarded into the first child workflow." }))
+  .output("result", Type.String({ description: "Parent summary string." }))
+  .output(
+    "children",
+    Type.Array(
+      Type.Object({
+        workflow: Type.String(),
+        runId: Type.String(),
+        outputs: Type.Unsafe<WorkflowSerializableObject>(Type.Object({}, { additionalProperties: true })),
+      }),
+      { description: "Declared outputs from nested child workflow calls." },
+    ),
+  )
+  .output(
+    "combined",
+    Type.Object(
+      {
+        topic: Type.String(),
+        multiplier: Type.Number(),
+        firstResult: Type.String(),
+        secondResult: Type.String(),
+        combinedScore: Type.Number(),
+        parentSawOnlyDeclaredOutputs: Type.Array(Type.String()),
+      },
+      { description: "Combined parent object built from child outputs." },
+    ),
+  )
   .run(async (ctx) => {
     const topic = ctx.inputs.topic;
     const multiplier = Math.max(1, Math.min(5, Math.floor(ctx.inputs.multiplier)));

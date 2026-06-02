@@ -13,18 +13,6 @@ import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provi
 import { theme } from "../theme/theme.ts";
 
 /**
- * Sanitize text for display in a single-line status.
- * Removes newlines, tabs, carriage returns, and other control characters.
- */
-function sanitizeStatusText(text: string): string {
-  // Replace newlines, tabs, carriage returns with space, then collapse multiple spaces
-  return text
-    .replace(/[\r\n\t]/g, " ")
-    .replace(/ +/g, " ")
-    .trim();
-}
-
-/**
  * Format token counts (similar to web-ui)
  */
 function formatTokens(count: number): string {

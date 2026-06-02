@@ -15,6 +15,7 @@ import { jobTracker as defaultJobTracker, type JobTracker } from "../runs/backgr
 import { resolveAndValidateInputs } from "../runs/foreground/executor.js";
 import { runDetached } from "../runs/background/runner.js";
 import type { WorkflowToolResult, WorkflowInputEntry } from "./render-result.js";
+import { deriveInputFields, schemaIsRequired } from "../shared/schema-introspection.js";
 import type { WorkflowToolArgs } from "./index.js";
 import {
   INTERACTIVE_WORKFLOW_POLICY,
@@ -99,7 +100,7 @@ export async function dispatch(
         description: def.description,
         inputs: Object.entries(def.inputs).map(([iname, schema]) => ({
           name: iname,
-          required: schema.required === true,
+          required: schemaIsRequired(schema),
         })),
       }));
       return { action: "list", items };
@@ -118,16 +119,7 @@ export async function dispatch(
           error: `Workflow not found: "${name}"`,
         };
       }
-      const inputSchema: WorkflowInputEntry[] = Object.entries(def.inputs).map(
-        ([iname, schema]) => ({
-          name: iname,
-          type: schema.type,
-          description: schema.description,
-          required: schema.required,
-          default: "default" in schema ? schema.default : undefined,
-          choices: schema.type === "select" ? schema.choices : undefined,
-        }),
-      );
+      const inputSchema: WorkflowInputEntry[] = deriveInputFields(def.inputs);
       return { action: "inputs", name, inputs: inputSchema };
     }
 

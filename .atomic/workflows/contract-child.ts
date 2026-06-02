@@ -1,37 +1,14 @@
-import { defineWorkflow } from "@bastani/workflows";
+import { defineWorkflow, Type } from "@bastani/workflows";
+import type { WorkflowSerializableObject } from "@bastani/workflows";
 
 export default defineWorkflow("contract-child")
   .description("Child workflow for manual nesting validation. Returns declared serializable outputs for a parent workflow to consume.")
-  .input("topic", {
-    type: "text",
-    required: true,
-    description: "Topic the child workflow summarizes.",
-  })
-  .input("multiplier", {
-    type: "number",
-    default: 1,
-    description: "Finite number used to calculate child score.",
-  })
-  .output("result", {
-    type: "text",
-    required: true,
-    description: "Child summary string.",
-  })
-  .output("metadata", {
-    type: "object",
-    required: true,
-    description: "Structured child metadata.",
-  })
-  .output("checklist", {
-    type: "array",
-    required: true,
-    description: "Array output used by the parent nesting example.",
-  })
-  .output("score", {
-    type: "number",
-    required: true,
-    description: "Finite numeric child output.",
-  })
+  .input("topic", Type.String({ description: "Topic the child workflow summarizes." }))
+  .input("multiplier", Type.Number({ default: 1, description: "Finite number used to calculate child score." }))
+  .output("result", Type.String({ description: "Child summary string." }))
+  .output("metadata", Type.Unsafe<WorkflowSerializableObject>(Type.Object({}, { additionalProperties: true, description: "Structured child metadata." })))
+  .output("checklist", Type.Unsafe<readonly WorkflowSerializableObject[]>(Type.Array(Type.Unknown(), { description: "Array output used by the parent nesting example." })))
+  .output("score", Type.Number({ description: "Finite numeric child output." }))
   .run(async (ctx) => {
     const topic = ctx.inputs.topic;
     const multiplier = Math.max(1, Math.min(5, Math.floor(ctx.inputs.multiplier)));

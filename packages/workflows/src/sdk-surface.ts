@@ -7,6 +7,11 @@
  */
 
 export { defineWorkflow } from "./workflows/define-workflow.js";
+
+// TypeBox authoring surface so jiti-loaded workflows can `import { Type } from
+// "@bastani/workflows"` (the virtual module is built from this file).
+export { Type } from "typebox";
+export type { Static, TSchema } from "typebox";
 export { createRegistry } from "./workflows/registry.js";
 export { normalizeWorkflowName, workflowNamesEqual } from "./workflows/identity.js";
 export type * from "./shared/types.js";

@@ -294,17 +294,12 @@ describe("programmatic workflow runner", () => {
         mkdirSync(join(dir, ".atomic", "workflows"), { recursive: true });
         writeFileSync(
             join(dir, ".atomic", "workflows", "required-default-input.ts"),
-            `import { defineWorkflow } from "@bastani/workflows";
+            `import { defineWorkflow, Type } from "@bastani/workflows";
 
 export default defineWorkflow("required-default-input")
   .description("Required input that also declares a default; omitting it must use the default.")
-  .input("label", {
-    type: "text",
-    required: true,
-    default: "fallback-label",
-    description: "Required but defaulted text input.",
-  })
-  .output("result", { type: "text", required: true, description: "Echoes the resolved label." })
+  .input("label", Type.String({ default: "fallback-label", description: "Required but defaulted text input." }))
+  .output("result", Type.String({ description: "Echoes the resolved label." }))
   .run(async (ctx) => {
     await ctx.stage("marker", { noTools: "all" }).prompt("Reply exactly: OK");
     return { result: \`label=\${ctx.inputs.label}\` };

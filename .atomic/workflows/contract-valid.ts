@@ -1,60 +1,46 @@
-import { defineWorkflow } from "@bastani/workflows";
-
-const FLAVORS = ["vanilla", "chocolate", "strawberry"] as const;
+import { defineWorkflow, Type } from "@bastani/workflows";
 
 export default defineWorkflow("contract-valid")
   .description("Manual validation workflow: returns declared JSON-serializable outputs for input/output contract testing.")
-  .input("message", {
-    type: "text",
-    required: true,
-    description: "Message to echo into serializable outputs.",
-  })
-  .input("count", {
-    type: "number",
-    default: 2,
-    description: "Number of serializable checklist items to generate.",
-  })
-  .input("enabled", {
-    type: "boolean",
-    default: true,
-    description: "Boolean value echoed into output metadata.",
-  })
-  .input("flavor", {
-    type: "select",
-    choices: FLAVORS,
-    default: "vanilla",
-    description: "Select input used to verify select typing and validation.",
-  })
-  .output("result", {
-    type: "text",
-    required: true,
-    description: "Human-readable summary.",
-  })
-  .output("echo", {
-    type: "object",
-    required: true,
-    description: "Serializable object echoing typed inputs.",
-  })
-  .output("items", {
-    type: "array",
-    required: true,
-    description: "Serializable array generated from the count input.",
-  })
-  .output("count", {
-    type: "number",
-    required: true,
-    description: "Finite numeric output.",
-  })
-  .output("enabled", {
-    type: "boolean",
-    required: true,
-    description: "Boolean output.",
-  })
-  .output("flavor", {
-    type: "string",
-    required: true,
-    description: "Selected flavor output.",
-  })
+  .input("message", Type.String({ description: "Message to echo into serializable outputs." }))
+  .input("count", Type.Number({ default: 2, description: "Number of serializable checklist items to generate." }))
+  .input("enabled", Type.Boolean({ default: true, description: "Boolean value echoed into output metadata." }))
+  .input(
+    "flavor",
+    Type.Union([Type.Literal("vanilla"), Type.Literal("chocolate"), Type.Literal("strawberry")], {
+      default: "vanilla",
+      description: "Select input used to verify select typing and validation.",
+    }),
+  )
+  .output("result", Type.String({ description: "Human-readable summary." }))
+  .output(
+    "echo",
+    Type.Object(
+      {
+        message: Type.String(),
+        count: Type.Number(),
+        enabled: Type.Boolean(),
+        flavor: Type.String(),
+        nested: Type.Object({ ok: Type.Boolean(), tags: Type.Array(Type.String()) }),
+      },
+      { description: "Serializable object echoing typed inputs." },
+    ),
+  )
+  .output(
+    "items",
+    Type.Array(
+      Type.Object({
+        index: Type.Number(),
+        label: Type.String(),
+        message: Type.String(),
+        enabled: Type.Boolean(),
+      }),
+      { description: "Serializable array generated from the count input." },
+    ),
+  )
+  .output("count", Type.Number({ description: "Finite numeric output." }))
+  .output("enabled", Type.Boolean({ description: "Boolean output." }))
+  .output("flavor", Type.String({ description: "Selected flavor output." }))
   .run(async (ctx) => {
     const message = ctx.inputs.message;
     const count = Math.max(0, Math.min(10, Math.floor(ctx.inputs.count)));

@@ -42,7 +42,6 @@
 import type { GraphTheme } from "../tui/graph-theme.js";
 import { paint } from "../tui/color-utils.js";
 import { renderRoundedBox, chatWidth } from "../tui/chat-surface.js";
-import { truncateToWidth } from "../tui/text-helpers.js";
 import type { WorkflowInputEntry } from "../extension/render-result.js";
 
 export interface RenderInputsSchemaOptions {

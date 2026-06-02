@@ -1,8 +1,5 @@
-import { defineWorkflow } from "@bastani/workflows";
-import type {
-  WorkflowSerializableObject,
-  WorkflowSerializableValue,
-} from "@bastani/workflows";
+import { defineWorkflow, Type } from "@bastani/workflows";
+import type { WorkflowSerializableObject } from "@bastani/workflows";
 import complexLeaf from "./contract-complex-leaf.js";
 
 const VARIANTS = ["alpha", "beta", "gamma"] as const;
@@ -36,64 +33,22 @@ function clampPasses(value: number): number {
   return Math.max(1, Math.min(3, Math.floor(value)));
 }
 
-function serializableObjectOrEmpty(
-  value: WorkflowSerializableValue | undefined,
-): WorkflowSerializableObject {
-  if (value !== null && typeof value === "object" && !Array.isArray(value)) return value;
-  return {};
-}
-
-function stringOrFallback(value: WorkflowSerializableValue | undefined, fallback: string): string {
-  return typeof value === "string" ? value : fallback;
-}
-
-function numberOrZero(value: WorkflowSerializableValue | undefined): number {
-  return typeof value === "number" ? value : 0;
-}
-
 export default defineWorkflow("contract-complex-composed")
   .description("Composed workflow for nested-import validation. Imports contract-complex-leaf and calls it multiple times.")
-  .input("topic", {
-    type: "text",
-    required: true,
-    description: "Topic forwarded into imported leaf workflows.",
-  })
-  .input("depth", {
-    type: "number",
-    default: 2,
-    description: "Tree depth forwarded into the leaf workflows. Clamped to 0..3.",
-  })
-  .input("variant", {
-    type: "select",
-    choices: VARIANTS,
-    default: "alpha",
-    description: "Variant forwarded into the leaf workflows.",
-  })
-  .input("passes", {
-    type: "number",
-    default: 2,
-    description: "Number of imported leaf workflow calls. Clamped to 1..3.",
-  })
-  .output("result", {
-    type: "text",
-    required: true,
-    description: "Composition summary string.",
-  })
-  .output("bundle", {
-    type: "object",
-    required: true,
-    description: "Deeply nested composition object built from child workflow outputs.",
-  })
-  .output("childDigests", {
-    type: "array",
-    required: true,
-    description: "Per-child digest array.",
-  })
-  .output("totalScore", {
-    type: "number",
-    required: true,
-    description: "Finite sum of child scores.",
-  })
+  .input("topic", Type.String({ description: "Topic forwarded into imported leaf workflows." }))
+  .input("depth", Type.Number({ default: 2, description: "Tree depth forwarded into the leaf workflows. Clamped to 0..3." }))
+  .input(
+    "variant",
+    Type.Union([Type.Literal("alpha"), Type.Literal("beta"), Type.Literal("gamma")], {
+      default: "alpha",
+      description: "Variant forwarded into the leaf workflows.",
+    }),
+  )
+  .input("passes", Type.Number({ default: 2, description: "Number of imported leaf workflow calls. Clamped to 1..3." }))
+  .output("result", Type.String({ description: "Composition summary string." }))
+  .output("bundle", Type.Unsafe<CompositionBundle>(Type.Object({}, { additionalProperties: true, description: "Deeply nested composition object built from child workflow outputs." })))
+  .output("childDigests", Type.Unsafe<readonly ChildDigest[]>(Type.Array(Type.Unknown(), { description: "Per-child digest array." })))
+  .output("totalScore", Type.Number({ description: "Finite sum of child scores." }))
   .run(async (ctx) => {
     const topic = ctx.inputs.topic;
     const depth = clampDepth(ctx.inputs.depth);
@@ -111,13 +66,15 @@ export default defineWorkflow("contract-complex-composed")
         },
       });
 
+      // child.outputs is typed from contract-complex-leaf's declared output
+      // contract, so these are read directly without defensive narrowing.
       childDigests.push({
         pass,
         workflow: child.workflow,
         runId: child.runId,
-        result: stringOrFallback(child.outputs.result, "missing child result"),
-        score: numberOrZero(child.outputs.score),
-        packet: serializableObjectOrEmpty(child.outputs.packet),
+        result: child.outputs.result,
+        score: child.outputs.score,
+        packet: child.outputs.packet,
       });
     }
 

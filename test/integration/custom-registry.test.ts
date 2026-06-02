@@ -47,14 +47,15 @@ const USER_WF_NAME = "User Global Integration Workflow";
 /** Minimal valid WorkflowDefinition as a .js source string. */
 function makeWorkflowSource(normalizedName: string, name: string): string {
   return `
+import { Type } from "@bastani/workflows";
 export default {
   __piWorkflow: true,
   name: ${JSON.stringify(name)},
   normalizedName: ${JSON.stringify(normalizedName)},
   description: "Integration test custom workflow",
   inputs: {
-    message: { type: "string", required: true, description: "Test message" },
-    count: { type: "number", default: 1 },
+    message: Type.String({ description: "Test message" }),
+    count: Type.Number({ default: 1 }),
   },
   run: async (ctx) => {
     await ctx.task("validation-smoke", { prompt: "validation smoke" });
@@ -476,7 +477,8 @@ describe("shared registry invariant — extension consumers see same workflows",
     const inputsByName = Object.fromEntries(r.inputs.map((i) => [i.name, i]));
 
     assert.notEqual(inputsByName["message"], undefined);
-    assert.equal(inputsByName["message"]!.type, "string");
+    // TString normalizes to the "text" descriptor kind via schema-introspection.
+    assert.equal(inputsByName["message"]!.type, "text");
     assert.notEqual(inputsByName["count"], undefined);
     assert.equal(inputsByName["count"]!.type, "number");
   });

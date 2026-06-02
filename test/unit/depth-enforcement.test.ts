@@ -15,6 +15,7 @@ import assert from "node:assert/strict";
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
+import { Type } from "typebox";
 import type { WorkflowRuntimeConfig } from "../../packages/workflows/src/shared/types.js";
 import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
 
@@ -24,7 +25,7 @@ import type { WorkflowDefinition } from "../../packages/workflows/src/shared/typ
 
 function makeWf(name = "depth-test-wf"): WorkflowDefinition {
   return defineWorkflow(name)
-    .output("ok", { type: "unknown" })
+    .output("ok", Type.Optional(Type.Any()))
     .run(async (ctx) => {
       await ctx.task("depth-check", { prompt: "depth check" });
       return { ok: true };

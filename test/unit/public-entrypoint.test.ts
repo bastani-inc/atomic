@@ -6,6 +6,7 @@ import {
   defineWorkflow,
   normalizeWorkflowName,
   resolveInputs,
+  Type,
   workflowNamesEqual,
 } from "../../packages/workflows/src/index.js";
 
@@ -13,7 +14,7 @@ describe("public entrypoint", () => {
   test("supports authoring and registry lookup through exported APIs", async () => {
     const workflow = defineWorkflow("Example Task")
       .description("Exercises the package entrypoint")
-      .input("prompt", { type: "text", required: true })
+      .input("prompt", Type.String())
       .run(async (ctx) => ({ echoed: ctx.inputs.prompt }))
       .compile();
 
@@ -28,7 +29,7 @@ describe("public entrypoint", () => {
 
   test("exposes runtime helpers with observable edge-case behavior", () => {
     assert.throws(
-      () => resolveInputs({ prompt: { type: "text", required: true } }, {}),
+      () => resolveInputs({ prompt: Type.String() }, {}),
       { message: 'atomic-workflows: required input "prompt" not provided' },
     );
 

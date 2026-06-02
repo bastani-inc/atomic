@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, test } from "bun:test";
+import { Type } from "typebox";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -89,8 +90,8 @@ describe("resolveInputs", () => {
     test("applies defaults for missing optional inputs", () => {
         const result = resolveInputs(
             {
-                foo: { type: "text", default: "bar" },
-                count: { type: "number", default: 42 },
+                foo: Type.String({ default: "bar" }),
+                count: Type.Number({ default: 42 }),
             },
             {},
         );
@@ -100,7 +101,7 @@ describe("resolveInputs", () => {
 
     test("passes through provided values", () => {
         const result = resolveInputs(
-            { foo: { type: "text", default: "bar" } },
+            { foo: Type.String({ default: "bar" }) },
             { foo: "override" },
         );
         assert.equal(result["foo"], "override");
@@ -108,7 +109,7 @@ describe("resolveInputs", () => {
 
     test("does not override provided value with default", () => {
         const result = resolveInputs(
-            { flag: { type: "boolean", default: false } },
+            { flag: Type.Boolean({ default: false }) },
             { flag: true },
         );
         assert.equal(result["flag"], true);
@@ -117,14 +118,14 @@ describe("resolveInputs", () => {
     test("throws for missing required input", () => {
         assert.throws(
             () =>
-                resolveInputs({ prompt: { type: "text", required: true } }, {}),
+                resolveInputs({ prompt: Type.String() }, {}),
             { message: 'atomic-workflows: required input "prompt" not provided' },
         );
     });
 
     test("does not throw when required input is provided", () => {
         const result = resolveInputs(
-            { prompt: { type: "text", required: true } },
+            { prompt: Type.String() },
             { prompt: "hello" },
         );
         assert.equal(result["prompt"], "hello");
@@ -138,7 +139,7 @@ describe("resolveInputs", () => {
 describe("executor.run", () => {
     test("runs single-stage workflow with prompt adapter", async () => {
         const def = defineWorkflow("test-wf")
-            .output("result", { type: "unknown" })
+            .output("result", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 const result = await ctx
                     .stage("stage-one")
@@ -169,7 +170,7 @@ describe("executor.run", () => {
         const st = createStore();
         let started = false;
         const def = defineWorkflow("typed-input-wf")
-            .input("count", { type: "number", required: true })
+            .input("count", Type.Number())
             .run(async (ctx) => {
                 started = true;
                 await ctx.stage("stage").prompt(String(ctx.inputs.count));
@@ -195,7 +196,7 @@ describe("executor.run", () => {
 
     test("validates declared output types before completing", async () => {
         const def = defineWorkflow("typed-output-wf")
-            .output("count", { type: "number", required: true })
+            .output("count", Type.Number())
             .run(async (ctx) => {
                 await ctx.stage("stage").prompt("stage");
                 return { count: "not-a-number" } as never;
@@ -221,7 +222,7 @@ describe("executor.run", () => {
 
     test("validates declared output values are JSON-serializable", async () => {
         const def = defineWorkflow("serializable-output-wf")
-            .output("payload", { type: "object", required: true })
+            .output("payload", Type.Record(Type.String(), Type.Any()))
             .run(async (ctx) => {
                 await ctx.stage("stage").prompt("stage");
                 return {
@@ -246,7 +247,7 @@ describe("executor.run", () => {
 
     test("rejects Date output values before completing", async () => {
         const def = defineWorkflow("date-output-wf")
-            .output("result", { required: true })
+            .output("result", Type.Any())
             .run(async (ctx) => {
                 await ctx.stage("stage").prompt("stage");
                 return { result: new Date() } as never;
@@ -269,7 +270,7 @@ describe("executor.run", () => {
 
     test("fails completed workflows that create no stages", async () => {
         const def = defineWorkflow("empty-graph-wf")
-            .output("ok", { type: "unknown" })
+            .output("ok", Type.Optional(Type.Any()))
             .run(async () => ({ ok: true }))
             .compile();
 
@@ -286,8 +287,8 @@ describe("executor.run", () => {
     test("ctx.task creates a tracked stage and returns reusable previous output", async () => {
         const seenPrompts: string[] = [];
         const def = defineWorkflow("task-wf")
-            .output("scout", { type: "unknown" })
-            .output("planner", { type: "unknown" })
+            .output("scout", Type.Optional(Type.Any()))
+            .output("planner", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 const scout = await ctx.task("scout", { prompt: "scout repo" });
                 const planner = await ctx.task("planner", {
@@ -332,7 +333,7 @@ describe("executor.run", () => {
     test("ctx.task appends named previous output when no placeholder is present", async () => {
         const seenPrompts: string[] = [];
         const def = defineWorkflow("task-context-wf")
-            .output("done", { type: "unknown" })
+            .output("done", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 const first = await ctx.task("first", { prompt: "first" });
                 await ctx.task("second", {
@@ -371,9 +372,9 @@ describe("executor.run", () => {
         const seenPrompts: string[] = [];
         const st = createStore();
         const child = defineWorkflow("research-child")
-            .input("topic", { type: "text", required: true })
-            .output("summary", { type: "text", required: true })
-            .output("extra", { type: "unknown" })
+            .input("topic", Type.String())
+            .output("summary", Type.String())
+            .output("extra", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 const result = await ctx.task("child-research", {
                     prompt: `child:${String(ctx.inputs.topic)}`,
@@ -382,9 +383,9 @@ describe("executor.run", () => {
             })
             .compile();
         const parent = defineWorkflow("research-parent")
-            .input("topic", { type: "text", required: true })
-            .output("final", { type: "unknown" })
-            .output("childRunId", { type: "unknown" })
+            .input("topic", Type.String())
+            .output("final", Type.Optional(Type.Any()))
+            .output("childRunId", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 const childResult = await ctx.workflow(child, {
                     inputs: { topic: ctx.inputs.topic },
@@ -395,9 +396,12 @@ describe("executor.run", () => {
                 return { final: final.text, childRunId: childResult.runId };
             })
             .compile();
+        // Erase the precise input/output contracts to store the heterogeneous
+        // definitions together (the run member is contravariant, so a specific
+        // definition is not directly assignable to the erased registry type).
         const registry = createRegistry([
-            parent as WorkflowDefinition,
-            child as WorkflowDefinition,
+            parent as unknown as WorkflowDefinition,
+            child as unknown as WorkflowDefinition,
         ]);
 
         const wfResult = await run(
@@ -438,14 +442,14 @@ describe("executor.run", () => {
         const st = createStore();
         const gate = Promise.withResolvers<string>();
         const child = defineWorkflow("live-link-child")
-            .output("summary", { type: "text", required: true })
+            .output("summary", Type.String())
             .run(async (ctx) => {
                 const result = await ctx.stage("child-wait").prompt("child-wait");
                 return { summary: result };
             })
             .compile();
         const parent = defineWorkflow("live-link-parent")
-            .output("result", { type: "unknown" })
+            .output("result", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 const childResult = await ctx.workflow(child);
                 return { result: childResult.outputs.summary };
@@ -495,7 +499,7 @@ describe("executor.run", () => {
         const st = createStore();
         const cancellation = createCancellationRegistry();
         const child = defineWorkflow("killable-child")
-            .output("summary", { type: "text", required: true })
+            .output("summary", Type.String())
             .run(async (ctx) => {
                 await ctx.stage("child-marker").prompt("child-marker");
                 await new Promise((resolve) => setTimeout(resolve, 200));
@@ -544,8 +548,8 @@ describe("executor.run", () => {
     test("ctx.workflow executes a compiled workflow definition directly", async () => {
         const seenPrompts: string[] = [];
         const child = defineWorkflow("direct-child")
-            .input("topic", { type: "text", required: true })
-            .output("summary", { type: "text", required: true })
+            .input("topic", Type.String())
+            .output("summary", Type.String())
             .run(async (ctx) => {
                 const result = await ctx.task("child", {
                     prompt: `direct:${String(ctx.inputs.topic)}`,
@@ -554,9 +558,9 @@ describe("executor.run", () => {
             })
             .compile();
         const parent = defineWorkflow("direct-parent")
-            .input("topic", { type: "text", required: true })
-            .output("final", { type: "unknown" })
-            .output("childRunId", { type: "unknown" })
+            .input("topic", Type.String())
+            .output("final", Type.Optional(Type.Any()))
+            .output("childRunId", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 const childResult = await ctx.workflow(child, {
                     inputs: { topic: ctx.inputs.topic },
@@ -600,7 +604,7 @@ describe("executor.run", () => {
 
     test("ctx.workflow fails when unexposed child raw output is not serializable", async () => {
         const child = defineWorkflow("uncloneable-raw-child")
-            .output("summary", { type: "text", required: true })
+            .output("summary", Type.String())
             .run(async (ctx) => {
                 await ctx.stage("child").prompt("child");
                 return { summary: "ok", helper: () => "nope" } as never;
@@ -643,7 +647,7 @@ describe("executor.run", () => {
     test("ctx.workflow reports a serialization error for non-cloneable declared output", async () => {
         const seenPrompts: string[] = [];
         const child = defineWorkflow("uncloneable-selected-child")
-            .output("bad", { type: "unknown" })
+            .output("bad", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 await ctx.stage("child").prompt("child");
                 return { bad: () => "nope" } as never;
@@ -688,12 +692,8 @@ describe("executor.run", () => {
         const seenPrompts: string[] = [];
         const st = createStore();
         const child = defineWorkflow("default-input-child")
-            .input("topic", {
-                type: "text",
-                required: true,
-                default: "fallback-topic",
-            })
-            .output("summary", { type: "unknown" })
+            .input("topic", Type.String({ default: "fallback-topic" }))
+            .output("summary", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 const result = await ctx.task("child-default", {
                     prompt: `topic:${String(ctx.inputs.topic)}`,
@@ -702,7 +702,7 @@ describe("executor.run", () => {
             })
             .compile();
         const parent = defineWorkflow("default-input-parent")
-            .output("summary", { type: "unknown" })
+            .output("summary", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 const childResult = await ctx.workflow(child);
                 return { summary: childResult.outputs.summary };
@@ -737,14 +737,14 @@ describe("executor.run", () => {
 
     test("ctx.workflow exposes exactly the child's declared outputs", async () => {
         const child = defineWorkflow("declared-output-child")
-            .output("summary", { type: "text", required: true })
+            .output("summary", Type.String())
             .run(async (ctx) => {
                 const result = await ctx.task("child", { prompt: "child" });
                 return { summary: result.text };
             })
             .compile();
         const parent = defineWorkflow("declared-output-parent")
-            .output("childOutputs", { type: "object", required: true })
+            .output("childOutputs", Type.Record(Type.String(), Type.Any()))
             .run(async (ctx) => {
                 const childResult = await ctx.workflow(child);
                 return { childOutputs: childResult.outputs };
@@ -853,7 +853,7 @@ describe("executor.run", () => {
 
     test("run rejects a select output whose value is not a declared choice", async () => {
         const wf = defineWorkflow("select-output-wf")
-            .output("status", { type: "select", choices: ["complete", "blocked"], required: true })
+            .output("status", Type.Union([Type.Literal("complete"), Type.Literal("blocked")]))
             .run(async (ctx) => {
                 await ctx.task("only", { prompt: "go" });
                 return { status: "in-progress" } as never;
@@ -879,8 +879,8 @@ describe("executor.run", () => {
 
     test("run drops top-level undefined outputs instead of failing serialization", async () => {
         const wf = defineWorkflow("undefined-output-wf")
-            .output("kept", { type: "text", required: true })
-            .output("maybe", { type: "text" })
+            .output("kept", Type.String())
+            .output("maybe", Type.Optional(Type.String()))
             .run(async (ctx) => {
                 await ctx.task("only", { prompt: "go" });
                 return { kept: "value", maybe: undefined } as never;
@@ -909,7 +909,7 @@ describe("executor.run", () => {
             })
             .compile();
         const parent = defineWorkflow("no-output-parent")
-            .output("childOutputs", { type: "object", required: true })
+            .output("childOutputs", Type.Record(Type.String(), Type.Any()))
             .run(async (ctx) => {
                 const childResult = await ctx.workflow(child);
                 return { childOutputs: childResult.outputs };
@@ -936,14 +936,14 @@ describe("executor.run", () => {
     test("ctx.workflow exposes a declared result output", async () => {
         const declaredResult = { ok: true };
         const child = defineWorkflow("declared-result-child")
-            .output("result", { type: "object", required: true })
+            .output("result", Type.Record(Type.String(), Type.Any()))
             .run(async (ctx) => {
                 await ctx.task("final", { prompt: "final" });
                 return { result: declaredResult };
             })
             .compile();
         const parent = defineWorkflow("declared-result-parent")
-            .output("childResult", { type: "object", required: true })
+            .output("childResult", Type.Record(Type.String(), Type.Any()))
             .run(async (ctx) => {
                 const childResult = await ctx.workflow(child);
                 return { childResult: childResult.outputs.result };
@@ -970,10 +970,12 @@ describe("executor.run", () => {
     test("ctx.workflow fails when declared required output is missing", async () => {
         const seenPrompts: string[] = [];
         const child = defineWorkflow("missing-output-child")
-            .output("summary", { type: "text", required: true })
+            .output("summary", Type.String())
             .run(async (ctx) => {
                 await ctx.task("child", { prompt: "child" });
-                return {};
+                // Intentionally omit the required `summary` output to exercise the
+                // runtime missing-output guard; bypass the static contract here.
+                return {} as { readonly summary: string };
             })
             .compile();
         const parent = defineWorkflow("missing-output-parent")
@@ -1018,7 +1020,7 @@ describe("executor.run", () => {
         const seenPrompts: string[] = [];
         const st = createStore();
         const child = defineWorkflow("input-child")
-            .input("topic", { type: "text", required: true })
+            .input("topic", Type.String())
             .run(async (ctx) => {
                 await ctx.task("child", { prompt: String(ctx.inputs.topic) });
                 return {};
@@ -1026,7 +1028,9 @@ describe("executor.run", () => {
             .compile();
         const parent = defineWorkflow("input-parent")
             .run(async (ctx) => {
-                await ctx.workflow(child, { inputs: { topic: 123 } });
+                // Intentionally pass a wrong-typed input to exercise the runtime
+                // input validation guard; bypass the static contract here.
+                await ctx.workflow(child, { inputs: { topic: 123 as unknown as string } });
                 return {};
             })
             .compile();
@@ -1062,7 +1066,7 @@ describe("executor.run", () => {
     test("ctx.chain follows direct workflow previous defaults", async () => {
         const seenPrompts: string[] = [];
         const def = defineWorkflow("task-chain-wf")
-            .output("final", { type: "unknown" })
+            .output("final", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 const results = await ctx.chain(
                     [
@@ -1104,7 +1108,7 @@ describe("executor.run", () => {
     test("ctx.parallel follows direct workflow shared task fallback", async () => {
         const seenPrompts: string[] = [];
         const def = defineWorkflow("task-parallel-wf")
-            .output("count", { type: "unknown" })
+            .output("count", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 const results = await ctx.parallel([
                     { name: "frontend", task: "audit UI" },
@@ -1138,7 +1142,7 @@ describe("executor.run", () => {
     test("ctx.task forwards createAgentSession options to the SDK session", async () => {
         const calls: CreateAgentSessionOptions[] = [];
         const def = defineWorkflow("task-session-options-wf")
-            .output("text", { type: "unknown" })
+            .output("text", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 const result = await ctx.task("scout", {
                     task: "inspect",
@@ -1176,7 +1180,7 @@ describe("executor.run", () => {
 
     test("ctx.task applies maxOutput truncation to reusable task output", async () => {
         const def = defineWorkflow("task-max-output-wf")
-            .output("text", { type: "unknown" })
+            .output("text", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 const result = await ctx.task("summarizer", {
                     task: "summarize",
@@ -1210,7 +1214,7 @@ describe("executor.run", () => {
         const seenPrompts: string[] = [];
         const dir = mkdtempSync(join(tmpdir(), "workflow-task-reads-"));
         const def = defineWorkflow("task-reads-wf")
-            .output("done", { type: "unknown" })
+            .output("done", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 await ctx.chain([{ name: "reader", task: "summarize docs" }], {
                     reads: ["notes.md", join(dir, "absolute.md")],
@@ -1250,7 +1254,7 @@ describe("executor.run", () => {
         const dir = mkdtempSync(join(tmpdir(), "workflow-task-output-"));
         const output = join(dir, "summary.md");
         const def = defineWorkflow("task-output-wf")
-            .output("text", { type: "unknown" })
+            .output("text", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 const result = await ctx.task("writer", {
                     task: "write",
@@ -1283,7 +1287,7 @@ describe("executor.run", () => {
         const dir = mkdtempSync(join(tmpdir(), "workflow-parallel-output-"));
         const output = join(dir, "parallel.md");
         const def = defineWorkflow("parallel-output-wf")
-            .output("text", { type: "unknown" })
+            .output("text", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 const [result] = await ctx.parallel([
                     {
@@ -1317,9 +1321,9 @@ describe("executor.run", () => {
 
     test("runs parallel stages", async () => {
         const def = defineWorkflow("parallel-wf")
-            .output("a", { type: "unknown" })
-            .output("b", { type: "unknown" })
-            .output("c", { type: "unknown" })
+            .output("a", Type.Optional(Type.Any()))
+            .output("b", Type.Optional(Type.Any()))
+            .output("c", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 const [a, b] = await Promise.all([
                     ctx.stage("stage-a").prompt("a"),
@@ -1350,7 +1354,7 @@ describe("executor.run", () => {
 
     test("records lifecycle callbacks", async () => {
         const def = defineWorkflow("lifecycle-wf")
-            .output("done", { type: "unknown" })
+            .output("done", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 await ctx.stage("my-stage").prompt("x");
                 return { done: true };
@@ -1410,9 +1414,9 @@ describe("executor.run", () => {
     test("continuation replays completed stages and resumes at failed stage", async () => {
         const st = createStore();
         const def = defineWorkflow("resume-failed-wf")
-            .output("first", { type: "unknown" })
-            .output("second", { type: "unknown" })
-            .output("third", { type: "unknown" })
+            .output("first", Type.Optional(Type.Any()))
+            .output("second", Type.Optional(Type.Any()))
+            .output("third", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 const first = await ctx.stage("first").prompt("first");
                 const second = await ctx
@@ -1496,14 +1500,14 @@ describe("executor.run", () => {
     test("continuation replays completed ctx.workflow boundary without rerunning child", async () => {
         const st = createStore();
         const child = defineWorkflow("resume-import-child")
-            .output("value", { type: "unknown" })
+            .output("value", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 const value = await ctx.stage("child").prompt("child");
                 return { value };
             })
             .compile();
         const parent = defineWorkflow("resume-import-parent")
-            .output("after", { type: "unknown" })
+            .output("after", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 const childResult = await ctx.workflow(child);
                 const after = await ctx
@@ -1583,14 +1587,14 @@ describe("executor.run", () => {
     test("continuation deep-clones replayed ctx.workflow metadata", async () => {
         const st = createStore();
         const child = defineWorkflow("resume-import-clone-child")
-            .output("value", { type: "unknown" })
+            .output("value", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 await ctx.stage("child").prompt("child");
                 return { value: { nested: "child-ok" } };
             })
             .compile();
         const parent = defineWorkflow("resume-import-clone-parent")
-            .output("after", { type: "unknown" })
+            .output("after", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 const childResult = await ctx.workflow(child);
                 const value = childResult.outputs["value"] as {
@@ -1668,15 +1672,15 @@ describe("executor.run", () => {
     test("continuation replays workflow boundary with serializable raw output", async () => {
         const st = createStore();
         const child = defineWorkflow("resume-uncloneable-raw-child")
-            .output("value", { type: "text", required: true })
-            .output("helper", { type: "unknown" })
+            .output("value", Type.String())
+            .output("helper", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 await ctx.stage("child").prompt("child");
                 return { value: "child-ok", helper: "serializable-extra" };
             })
             .compile();
         const parent = defineWorkflow("resume-uncloneable-raw-parent")
-            .output("after", { type: "unknown" })
+            .output("after", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 const childResult = await ctx.workflow(child);
                 const after = await ctx
@@ -1789,14 +1793,14 @@ describe("executor.run", () => {
     test("continuation replays repeated concurrent ctx.workflow boundaries for the same alias", async () => {
         const st = createStore();
         const child = defineWorkflow("resume-import-repeated-child")
-            .output("value", { type: "unknown" })
+            .output("value", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 const value = await ctx.stage("child").prompt("child");
                 return { value };
             })
             .compile();
         const parent = defineWorkflow("resume-import-repeated-parent")
-            .output("after", { type: "unknown" })
+            .output("after", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 const [first, second] = await Promise.all([
                     ctx.workflow(child),
@@ -1896,14 +1900,14 @@ describe("executor.run", () => {
     test("continuation maps legacy ctx.workflow boundary and reruns child when replay metadata is absent", async () => {
         const st = createStore();
         const child = defineWorkflow("resume-import-legacy-child")
-            .output("value", { type: "unknown" })
+            .output("value", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 const value = await ctx.stage("child").prompt("child");
                 return { value };
             })
             .compile();
         const parent = defineWorkflow("resume-import-legacy-parent")
-            .output("after", { type: "unknown" })
+            .output("after", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 const childResult = await ctx.workflow(child);
                 const after = await ctx
@@ -2069,7 +2073,7 @@ describe("executor.run", () => {
     test("caught parallel fail-fast failure does not skip later normal task", async () => {
         const st = createStore();
         const def = defineWorkflow("parallel-fail-fast-catch-then-task-wf")
-            .output("after", { type: "unknown" })
+            .output("after", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 try {
                     await ctx.parallel(
@@ -2179,7 +2183,7 @@ describe("executor.run", () => {
     test("ctx.ui prompt node settles into the graph before the stage that consumes its answer", async () => {
         const st = createStore();
         const def = defineWorkflow("prompt-node-answer-flow-wf")
-            .output("color", { type: "unknown" })
+            .output("color", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 const capture = ctx.stage("capture favorite color");
                 const color = await ctx.ui.input(
@@ -2354,7 +2358,7 @@ describe("executor.run", () => {
     test("continuation maps replayed ctx.ui prompt nodes before downstream stages", async () => {
         const st = createStore();
         const def = defineWorkflow("resume-prompt-node-parent-wf")
-            .output("proceed", { type: "unknown" })
+            .output("proceed", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 await ctx.stage("before").prompt("before");
                 const proceed = await ctx.ui.confirm("continue?");
@@ -2445,7 +2449,7 @@ describe("executor.run", () => {
     test("continuation re-prompts completed ctx.ui prompt nodes when prior answer is unavailable", async () => {
         const st = createStore();
         const def = defineWorkflow("resume-prompt-node-missing-answer-wf")
-            .output("proceed", { type: "unknown" })
+            .output("proceed", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 await ctx.stage("before").prompt("before");
                 const proceed = await ctx.ui.confirm("continue?");
@@ -2534,7 +2538,7 @@ describe("executor.run", () => {
     test("deep prompt call stacks still preserve distinct replay keys", async () => {
         const st = createStore();
         const def = defineWorkflow("deep-prompt-callsite-wf")
-            .output("answers", { type: "unknown" })
+            .output("answers", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 const left = callThroughStack(14, () =>
                     ctx.ui.confirm("same?"),
@@ -2580,8 +2584,8 @@ describe("executor.run", () => {
     test("continuation disambiguates parallel ctx.ui prompt nodes by replayKey", async () => {
         const st = createStore();
         const def = defineWorkflow("resume-parallel-prompt-replay-key-wf")
-            .output("left", { type: "unknown" })
-            .output("right", { type: "unknown" })
+            .output("left", Type.Optional(Type.Any()))
+            .output("right", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 const [left, right] = await Promise.all([
                     ctx.ui.confirm("left branch?"),
@@ -2668,7 +2672,7 @@ describe("executor.run", () => {
     test("continuation preserves concurrent prompt topology before settlement", async () => {
         const st = createStore();
         const def = defineWorkflow("resume-concurrent-prompt-topology-wf")
-            .output("answers", { type: "unknown" })
+            .output("answers", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 const first = ctx.ui.confirm("same?");
                 await new Promise((resolve) => setTimeout(resolve, 10));
@@ -2761,8 +2765,8 @@ describe("executor.run", () => {
     test("continuation re-prompts ambiguous duplicate same-callsite prompts", async () => {
         const st = createStore();
         const def = defineWorkflow("resume-ambiguous-same-callsite-prompt-wf")
-            .output("left", { type: "unknown" })
-            .output("right", { type: "unknown" })
+            .output("left", Type.Optional(Type.Any()))
+            .output("right", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 const askSame = () => ctx.ui.confirm("same?");
                 const [left, right] = await Promise.all(
@@ -3290,7 +3294,7 @@ describe("executor.run", () => {
         const st = createStore();
         let failOnce = true;
         const def = defineWorkflow("resume-parallel-sibling-wf")
-            .output("results", { type: "unknown" })
+            .output("results", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 const results = await ctx.parallel(
                     [
@@ -3575,7 +3579,7 @@ describe("executor.run", () => {
     test("prompt adapter stages do not eagerly create SDK sessions for fast metadata", async () => {
         const st = createStore();
         const def = defineWorkflow("prompt-adapter-no-eager-session")
-            .output("text", { type: "unknown" })
+            .output("text", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 const text = await ctx.stage("scout").prompt("inspect");
                 return { text };
@@ -3696,7 +3700,7 @@ describe("executor.run", () => {
     test("workflow fallback clears fast metadata when final model is not eligible", async () => {
         const st = createStore();
         const def = defineWorkflow("fallback-clears-fast-metadata")
-            .output("ok", { type: "unknown" })
+            .output("ok", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 await ctx
                     .stage("scout", {
@@ -3898,8 +3902,8 @@ describe("executor.run", () => {
 
     test("resolves inputs with schema defaults", async () => {
         const def = defineWorkflow("inputs-wf")
-            .input("greeting", { type: "text", default: "hello" })
-            .output("out", { type: "unknown" })
+            .input("greeting", Type.String({ default: "hello" }))
+            .output("out", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 const greeting = ctx
                     .stage("greet")
@@ -3923,7 +3927,7 @@ describe("executor.run", () => {
 
     test("throws for missing required input before run starts", async () => {
         const def = defineWorkflow("required-wf")
-            .input("query", { type: "text", required: true })
+            .input("query", Type.String())
             .run(async (_ctx) => ({}))
             .compile();
 
@@ -3941,7 +3945,7 @@ describe("executor.run", () => {
     test("store receives correct snapshots", async () => {
         const testStore = createStore();
         const def = defineWorkflow("store-wf")
-            .output("ok", { type: "unknown" })
+            .output("ok", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 await ctx.stage("step-one").prompt("go");
                 return { ok: true };
@@ -4457,7 +4461,7 @@ describe("executor.run — HIL adapter injection", () => {
         };
 
         const def = defineWorkflow("hil-input-wf")
-            .output("value", { type: "unknown" })
+            .output("value", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 const value = await ctx.ui.input("What is your name?");
                 await ctx.task("after-input", { prompt: "record input" });
@@ -4492,7 +4496,7 @@ describe("executor.run — HIL adapter injection", () => {
         };
 
         const def = defineWorkflow("hil-confirm-wf")
-            .output("ok", { type: "unknown" })
+            .output("ok", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 const ok = await ctx.ui.confirm("Continue?");
                 await ctx.task("after-confirm", { prompt: "record confirm" });
@@ -4526,7 +4530,7 @@ describe("executor.run — HIL adapter injection", () => {
         };
 
         const def = defineWorkflow("hil-select-wf")
-            .output("choice", { type: "unknown" })
+            .output("choice", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 const choice = await ctx.ui.select("Pick one", [
                     "a",
@@ -4564,7 +4568,7 @@ describe("executor.run — HIL adapter injection", () => {
         };
 
         const def = defineWorkflow("hil-editor-wf")
-            .output("content", { type: "unknown" })
+            .output("content", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 const content = await ctx.ui.editor("draft");
                 await ctx.task("after-editor", { prompt: "record editor" });
@@ -4656,7 +4660,7 @@ describe("executor.run — HIL adapter injection", () => {
 
     test("no HIL: existing run behavior unchanged when no HIL used", async () => {
         const def = defineWorkflow("no-hil-wf")
-            .output("r", { type: "unknown" })
+            .output("r", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 const r = await ctx.stage("s").prompt("go");
                 return { r };
@@ -4702,7 +4706,7 @@ describe("executor.run — lifecycle persistence", () => {
         const { persistence, calls } = makePersistence();
 
         const def = defineWorkflow("persist-wf")
-            .output("ok", { type: "unknown" })
+            .output("ok", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 await ctx.stage("s1").prompt("go");
                 return { ok: true };
@@ -4734,7 +4738,7 @@ describe("executor.run — lifecycle persistence", () => {
         const { persistence, calls } = makePersistence();
 
         const def = defineWorkflow("payload-wf")
-            .input("x", { type: "number" })
+            .input("x", Type.Optional(Type.Number()))
             .run(async (ctx) => {
                 await ctx.task("payload-smoke", { prompt: "go" });
                 return {};
@@ -4814,7 +4818,7 @@ describe("executor.run — lifecycle persistence", () => {
         const { persistence, calls } = makePersistence();
 
         const def = defineWorkflow("run-end-wf")
-            .output("x", { type: "unknown" })
+            .output("x", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 await ctx.task("run-end-smoke", { prompt: "go" });
                 return { x: 1 };
@@ -4840,7 +4844,7 @@ describe("executor.run — lifecycle persistence", () => {
         const { persistence, calls } = makePersistence();
 
         const def = defineWorkflow("empty-persist-wf")
-            .output("ok", { type: "unknown" })
+            .output("ok", Type.Optional(Type.Any()))
             .run(async () => ({ ok: true }))
             .compile();
 
@@ -5366,8 +5370,8 @@ describe("executor.run — concurrency limiter", () => {
         let maxActive = 0;
 
         const def = defineWorkflow("conc-serial-wf")
-            .output("a", { type: "unknown" })
-            .output("b", { type: "unknown" })
+            .output("a", Type.Optional(Type.Any()))
+            .output("b", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 const task = async (name: string): Promise<string> => {
                     return ctx.stage(name).prompt(name);
@@ -5413,9 +5417,9 @@ describe("executor.run — concurrency limiter", () => {
         let maxActive = 0;
 
         const def = defineWorkflow("conc-2-wf")
-            .output("a", { type: "unknown" })
-            .output("b", { type: "unknown" })
-            .output("c", { type: "unknown" })
+            .output("a", Type.Optional(Type.Any()))
+            .output("b", Type.Optional(Type.Any()))
+            .output("c", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 const [a, b, c] = await Promise.all([
                     ctx.stage("s1").prompt("s1"),
@@ -5663,7 +5667,7 @@ describe("executor — stage-control registry integration", () => {
         let sawStageResolved = false;
         const promptCalls: string[] = [];
         const def = defineWorkflow("pending-pause-wf")
-            .output("text", { type: "unknown" })
+            .output("text", Type.Optional(Type.Any()))
             .run(async (ctx) => {
                 const stage = ctx.stage("pending-before-prompt");
                 await releasePrompt.promise;

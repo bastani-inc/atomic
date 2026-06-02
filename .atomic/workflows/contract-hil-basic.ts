@@ -1,15 +1,32 @@
-import { defineWorkflow } from "@bastani/workflows";
+import { defineWorkflow, Type } from "@bastani/workflows";
 
 export default defineWorkflow("contract-hil-basic")
   .description("Manual no-import HIL smoke test: one normal stage plus input/confirm/select/editor prompts and serializable outputs.")
-  .input("seed", {
-    type: "text",
-    default: "basic-hil",
-    description: "Seed text echoed through HIL prompts and output.",
-  })
-  .output("result", { type: "text", required: true })
-  .output("hil", { type: "object", required: true })
-  .output("events", { type: "array", required: true })
+  .input("seed", Type.String({ default: "basic-hil", description: "Seed text echoed through HIL prompts and output." }))
+  .output("result", Type.String())
+  .output(
+    "hil",
+    Type.Object({
+      seed: Type.String(),
+      name: Type.String(),
+      confirmed: Type.Boolean(),
+      choice: Type.Union([Type.Literal("alpha"), Type.Literal("beta"), Type.Literal("gamma")]),
+      editedLength: Type.Number(),
+      editedPreview: Type.String(),
+    }),
+  )
+  .output(
+    "events",
+    Type.Array(
+      Type.Union([
+        Type.Object({ kind: Type.Literal("stage"), name: Type.String() }),
+        Type.Object({ kind: Type.Literal("input"), valueLength: Type.Number() }),
+        Type.Object({ kind: Type.Literal("confirm"), value: Type.Boolean() }),
+        Type.Object({ kind: Type.Literal("select"), value: Type.String() }),
+        Type.Object({ kind: Type.Literal("editor"), valueLength: Type.Number() }),
+      ]),
+    ),
+  )
   .run(async (ctx) => {
     const seed = ctx.inputs.seed;
     await ctx.stage("basic-marker", { noTools: "all" }).prompt(

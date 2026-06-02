@@ -21,6 +21,7 @@ import { NON_INTERACTIVE_WORKFLOW_POLICY } from "../../packages/workflows/src/sh
 import type { WorkflowDefinition, WorkflowPersistencePort } from "../../packages/workflows/src/shared/types.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
+import { Type } from "typebox";
 import { dispatch } from "../../packages/workflows/src/extension/dispatcher.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { createCancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.js";
@@ -33,7 +34,7 @@ import type { DispatcherOpts } from "../../packages/workflows/src/extension/disp
 
 function makeWorkflow(name: string): WorkflowDefinition {
   return defineWorkflow(name)
-    .output("ok", { type: "unknown" })
+    .output("ok", Type.Optional(Type.Any()))
     .run(async (_ctx) => ({ ok: true }))
     .compile() as WorkflowDefinition;
 }
@@ -162,7 +163,7 @@ describe("dispatch run (always background)", () => {
     const deps = freshDeps();
     let settled = false;
     const wf = defineWorkflow("headless-bg-wait")
-      .output("ok", { type: "unknown" })
+      .output("ok", Type.Optional(Type.Any()))
       .run(async (ctx) => {
         await new Promise((resolve) => setTimeout(resolve, 25));
         const text = await ctx.stage("done").prompt("finish");
@@ -197,8 +198,8 @@ describe("dispatch run (always background)", () => {
   test("missing required inputs fail before non-interactive dispatch starts a job", async () => {
     const deps = freshDeps();
     const wf = defineWorkflow("requires-input")
-      .input("prompt", { type: "text", required: true })
-      .output("ok", { type: "unknown" })
+      .input("prompt", Type.String())
+      .output("ok", Type.Optional(Type.Any()))
       .run(async () => ({ ok: true }))
       .compile() as WorkflowDefinition;
     const registry = createRegistry([wf]);
@@ -248,7 +249,7 @@ describe("dispatch run forwards persistence", () => {
   }
 
   const stageWorkflow = defineWorkflow("dispatch-persist-test")
-    .output("ok", { type: "unknown" })
+    .output("ok", Type.Optional(Type.Any()))
     .run(async (ctx) => {
       await ctx.stage("s1").prompt("go");
       return { ok: true };

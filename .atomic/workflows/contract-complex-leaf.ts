@@ -1,4 +1,4 @@
-import { defineWorkflow } from "@bastani/workflows";
+import { defineWorkflow, Type } from "@bastani/workflows";
 import type { WorkflowSerializableObject } from "@bastani/workflows";
 
 const VARIANTS = ["alpha", "beta", "gamma"] as const;
@@ -106,42 +106,19 @@ function buildMatrix(size: number): readonly (readonly number[])[] {
 
 export default defineWorkflow("contract-complex-leaf")
   .description("Leaf workflow for complex nested-import validation. Returns a deeply nested JSON-serializable object graph.")
-  .input("topic", {
-    type: "text",
-    required: true,
-    description: "Topic used to generate the complex packet.",
-  })
-  .input("depth", {
-    type: "number",
-    default: 2,
-    description: "Tree depth for the complex packet. Clamped to 0..3.",
-  })
-  .input("variant", {
-    type: "select",
-    choices: VARIANTS,
-    default: "alpha",
-    description: "Variant used in nested records and tree nodes.",
-  })
-  .output("result", {
-    type: "text",
-    required: true,
-    description: "Leaf summary string.",
-  })
-  .output("packet", {
-    type: "object",
-    required: true,
-    description: "Deeply nested JSON-serializable packet.",
-  })
-  .output("records", {
-    type: "array",
-    required: true,
-    description: "Array of complex serializable records.",
-  })
-  .output("score", {
-    type: "number",
-    required: true,
-    description: "Finite numeric score derived from the complex packet.",
-  })
+  .input("topic", Type.String({ description: "Topic used to generate the complex packet." }))
+  .input("depth", Type.Number({ default: 2, description: "Tree depth for the complex packet. Clamped to 0..3." }))
+  .input(
+    "variant",
+    Type.Union([Type.Literal("alpha"), Type.Literal("beta"), Type.Literal("gamma")], {
+      default: "alpha",
+      description: "Variant used in nested records and tree nodes.",
+    }),
+  )
+  .output("result", Type.String({ description: "Leaf summary string." }))
+  .output("packet", Type.Unsafe<ComplexPacket>(Type.Object({}, { additionalProperties: true, description: "Deeply nested JSON-serializable packet." })))
+  .output("records", Type.Unsafe<readonly ComplexRecord[]>(Type.Array(Type.Unknown(), { description: "Array of complex serializable records." })))
+  .output("score", Type.Number({ description: "Finite numeric score derived from the complex packet." }))
   .run(async (ctx) => {
     const topic = ctx.inputs.topic;
     const depth = clampDepth(ctx.inputs.depth);

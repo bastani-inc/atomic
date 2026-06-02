@@ -26,6 +26,7 @@ import { createStageControlRegistry } from "../../packages/workflows/src/runs/fo
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { createStatusWriter } from "../../packages/workflows/src/extension/status-writer.js";
 import { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
+import { Type } from "typebox";
 import type { WorkflowRuntimeConfig } from "../../packages/workflows/src/shared/types.js";
 
 // ---------------------------------------------------------------------------
@@ -63,7 +64,7 @@ async function flushMicrotasks(): Promise<void> {
 describe("runtime tunables — maxDepth", () => {
   test("depth === maxDepth returns failed with exact message", async () => {
     const wf = defineWorkflow("rt-max-depth-eq")
-      .output("ok", { type: "unknown" })
+      .output("ok", Type.Optional(Type.Any()))
       .run(async () => ({ ok: true }))
       .compile();
 
@@ -80,7 +81,7 @@ describe("runtime tunables — maxDepth", () => {
 
   test("depth > maxDepth returns failed with max in message", async () => {
     const wf = defineWorkflow("rt-max-depth-gt")
-      .output("ok", { type: "unknown" })
+      .output("ok", Type.Optional(Type.Any()))
       .run(async () => ({ ok: true }))
       .compile();
 
@@ -96,7 +97,7 @@ describe("runtime tunables — maxDepth", () => {
 
   test("depth < maxDepth executes normally", async () => {
     const wf = defineWorkflow("rt-below-max-depth")
-      .output("ran", { type: "unknown" })
+      .output("ran", Type.Optional(Type.Any()))
       .run(async (ctx) => {
         await ctx.task("depth-check", { prompt: "depth check" });
         return { ran: true };
@@ -116,7 +117,7 @@ describe("runtime tunables — maxDepth", () => {
 
   test("no config uses default maxDepth", async () => {
     const wf = defineWorkflow("rt-no-config")
-      .output("ok", { type: "unknown" })
+      .output("ok", Type.Optional(Type.Any()))
       .run(async () => ({ ok: true }))
       .compile();
 
@@ -174,9 +175,9 @@ describe("runtime tunables — defaultConcurrency", () => {
     let maxActive = 0;
 
     const wf = defineWorkflow("rt-conc-serial")
-      .output("a", { type: "unknown" })
-      .output("b", { type: "unknown" })
-      .output("c", { type: "unknown" })
+      .output("a", Type.Optional(Type.Any()))
+      .output("b", Type.Optional(Type.Any()))
+      .output("c", Type.Optional(Type.Any()))
       .run(async (ctx) => {
         const [a, b, c] = await Promise.all([
           ctx.stage("s1").prompt("s1"),
@@ -212,7 +213,7 @@ describe("runtime tunables — defaultConcurrency", () => {
     const completed: string[] = [];
 
     const wf = defineWorkflow("rt-conc-serial-all")
-      .output("count", { type: "unknown" })
+      .output("count", Type.Optional(Type.Any()))
       .run(async (ctx) => {
         await Promise.all([
           ctx.stage("alpha").prompt("alpha"),
@@ -280,11 +281,10 @@ describe("runtime tunables — defaultConcurrency", () => {
     let maxActive = 0;
 
     const wf = defineWorkflow("rt-input-max-concurrency")
-      .input("max_concurrency", {
-        type: "number",
+      .input("max_concurrency", Type.Number({
         default: 4,
         description: "Maximum number of stages to run concurrently.",
-      })
+      }))
       .run(async (ctx) => {
         await Promise.all(
           ["s1", "s2", "s3", "s4", "s5"].map((n) => ctx.stage(n).prompt(n)),
@@ -389,8 +389,8 @@ describe("runtime tunables — defaultConcurrency", () => {
     const promptCalls: string[] = [];
 
     const wf = defineWorkflow("rt-conc-queued-pause")
-      .output("first", { type: "unknown" })
-      .output("second", { type: "unknown" })
+      .output("first", Type.Optional(Type.Any()))
+      .output("second", Type.Optional(Type.Any()))
       .run(async (ctx) => {
         const [first, second] = await Promise.all([
           ctx.stage("first").prompt("first"),

@@ -1,12 +1,13 @@
-import { defineWorkflow } from "@bastani/workflows";
+import { defineWorkflow, Type } from "@bastani/workflows";
+import type { WorkflowSerializableObject } from "@bastani/workflows";
 import hilNestedChild from "./contract-hil-nested-child.js";
 
 export default defineWorkflow("contract-hil-nested-parent")
   .description("Nested HIL parent workflow. Imports the HIL child, then asks its own HIL confirm/editor prompts.")
-  .input("topic", { type: "text", required: true })
-  .output("result", { type: "text", required: true })
-  .output("parentHil", { type: "object", required: true })
-  .output("child", { type: "object", required: true })
+  .input("topic", Type.String())
+  .output("result", Type.String())
+  .output("parentHil", Type.Unsafe<WorkflowSerializableObject>(Type.Object({}, { additionalProperties: true })))
+  .output("child", Type.Unsafe<WorkflowSerializableObject>(Type.Object({}, { additionalProperties: true })))
   .run(async (ctx) => {
     const topic = ctx.inputs.topic;
     const child = await ctx.workflow(hilNestedChild, {

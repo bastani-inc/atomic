@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import { run, resolveInputs } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
+import { Type } from "typebox";
 import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
 
 // ---------------------------------------------------------------------------
@@ -27,47 +28,47 @@ function promptAdapter(fn: (text: string) => Promise<string> | string = (t) => `
 
 describe("resolveInputs — Phase C", () => {
   test("applies default when key absent", () => {
-    const r = resolveInputs({ msg: { type: "text", default: "hello" } }, {});
+    const r = resolveInputs({ msg: Type.String({ default: "hello" }) }, {});
     assert.equal(r["msg"], "hello");
   });
 
   test("provided value overrides default", () => {
-    const r = resolveInputs({ msg: { type: "text", default: "hello" } }, { msg: "world" });
+    const r = resolveInputs({ msg: Type.String({ default: "hello" }) }, { msg: "world" });
     assert.equal(r["msg"], "world");
   });
 
   test("boolean false is preserved and not overridden by default", () => {
-    const r = resolveInputs({ flag: { type: "boolean", default: true } }, { flag: false });
+    const r = resolveInputs({ flag: Type.Boolean({ default: true }) }, { flag: false });
     assert.equal(r["flag"], false);
   });
 
   test("number default applied", () => {
-    const r = resolveInputs({ count: { type: "number", default: 7 } }, {});
+    const r = resolveInputs({ count: Type.Number({ default: 7 }) }, {});
     assert.equal(r["count"], 7);
   });
 
   test("required field present — no throw", () => {
-    const r = resolveInputs({ q: { type: "text", required: true } }, { q: "value" });
+    const r = resolveInputs({ q: Type.String() }, { q: "value" });
     assert.equal(r["q"], "value");
   });
 
   test("required field absent — throws with field name", () => {
-    assert.throws(() => resolveInputs({ q: { type: "text", required: true } }, {}), { message: 'atomic-workflows: required input "q" not provided', });
+    assert.throws(() => resolveInputs({ q: Type.String() }, {}), { message: 'atomic-workflows: required input "q" not provided', });
   });
 
   test("multiple required fields — throws on first missing", () => {
     assert.throws(() =>
       resolveInputs(
         {
-          a: { type: "text", required: true },
-          b: { type: "text", required: true },
+          a: Type.String(),
+          b: Type.String(),
         },
         { a: "present" },
       ), { message: 'atomic-workflows: required input "b" not provided' });
   });
 
   test("optional field with no default and not provided — stays undefined", () => {
-    const r = resolveInputs({ x: { type: "text" } }, {});
+    const r = resolveInputs({ x: Type.Optional(Type.String()) }, {});
     assert.equal(r["x"], undefined);
   });
 });
@@ -79,7 +80,7 @@ describe("resolveInputs — Phase C", () => {
 describe("executor single-stage — Phase C", () => {
   test("returns completed status and stage output", async () => {
     const def = defineWorkflow("phaseC-single")
-      .output("out", { type: "unknown" })
+      .output("out", Type.Optional(Type.Any()))
       .run(async (ctx) => {
         const out = await ctx.stage("main-stage").prompt("do work");
         return { out };
@@ -123,7 +124,7 @@ describe("executor single-stage — Phase C", () => {
   test("store records run snapshot as completed", async () => {
     const store = createStore();
     const def = defineWorkflow("phaseC-store-run")
-      .output("done", { type: "unknown" })
+      .output("done", Type.Optional(Type.Any()))
       .run(async (ctx) => {
         await ctx.stage("step").prompt("task");
         return { done: true };
@@ -216,8 +217,8 @@ describe("executor single-stage — Phase C", () => {
 describe("executor input resolution — Phase C", () => {
   test("schema default flows into ctx.inputs", async () => {
     const def = defineWorkflow("phaseC-defaults")
-      .input("greeting", { type: "text", default: "hi" })
-      .output("greeting", { type: "unknown" })
+      .input("greeting", Type.String({ default: "hi" }))
+      .output("greeting", Type.Optional(Type.Any()))
       .run(async (ctx) => {
         await ctx.stage("read-default").prompt("x");
         return { greeting: ctx.inputs["greeting"] };
@@ -231,8 +232,8 @@ describe("executor input resolution — Phase C", () => {
 
   test("caller-provided value takes precedence over default", async () => {
     const def = defineWorkflow("phaseC-override")
-      .input("name", { type: "text", default: "default-name" })
-      .output("name", { type: "unknown" })
+      .input("name", Type.String({ default: "default-name" }))
+      .output("name", Type.Optional(Type.Any()))
       .run(async (ctx) => {
         await ctx.stage("read-override").prompt("x");
         return { name: ctx.inputs["name"] };
@@ -249,7 +250,7 @@ describe("executor input resolution — Phase C", () => {
 
   test("missing required input rejects before run starts", async () => {
     const def = defineWorkflow("phaseC-required")
-      .input("query", { type: "text", required: true })
+      .input("query", Type.String())
       .run(async (_ctx) => ({}))
       .compile() as WorkflowDefinition;
 
@@ -302,7 +303,7 @@ describe("executor adapter errors — Phase C", () => {
 describe("stage result propagation — Phase C", () => {
   test("adapter response is returned as stage result", async () => {
     const def = defineWorkflow("phaseC-result-prop")
-      .output("answer", { type: "unknown" })
+      .output("answer", Type.Optional(Type.Any()))
       .run(async (ctx) => {
         const answer = await ctx.stage("qa").prompt("what is 2+2?");
         return { answer };
