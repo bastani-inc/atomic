@@ -732,3 +732,9 @@ subagent({ action: "doctor" })
 ```typescript
 // Inspect `subagent({ action: "status", id: "..." })`, artifact metadata/output logs, and run doctor. Extension loader errors usually appear in child output logs.
 ```
+
+## Suffix-first reasoning levels
+
+Prefer encoding reasoning levels directly in model strings: `model: claude-sonnet-4:high` and `fallbackModels: [claude-sonnet-4:medium, gpt-5:low, claude-haiku-4:off]`. Valid suffixes are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh`. The separate `thinking` field is deprecated but still works as a legacy default when a candidate has no suffix; suffixes take precedence.
+
+`fallbackThinkingLevels` is an optional compatibility helper aligned positionally with `fallbackModels`. It only applies to fallback entries without their own suffix and should not be preferred over suffix-first entries.

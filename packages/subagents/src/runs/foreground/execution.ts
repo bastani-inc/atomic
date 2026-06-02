@@ -69,6 +69,7 @@ import {
 	resolveSubagentCodexFastModeScope,
 	resolveSubagentModelFastMode,
 } from "../../shared/fast-mode.ts";
+import { resolveEffectiveThinking } from "../../shared/model-info.ts";
 
 const artifactOutputByResult = new WeakMap<SingleResult, string>();
 
@@ -814,6 +815,7 @@ export async function runSync(
 		options.availableModels,
 		options.preferredModelProvider,
 		options.currentModel,
+		agent.fallbackThinkingLevels,
 	);
 	const fastModeCwd = options.cwd ?? runtimeCwd;
 	const fastModeSettings = getSubagentCodexFastModeSettings(fastModeCwd);
@@ -861,8 +863,10 @@ export async function runSync(
 		totalToolCount += result.progressSummary?.toolCount ?? 0;
 		totalDurationMs += result.progressSummary?.durationMs ?? 0;
 		const attemptSucceeded = result.exitCode === 0 && !result.error;
+		const attemptModel = result.model ?? applyThinkingSuffix(candidate, agent.thinking) ?? agent.model ?? "default";
 		const attempt: ModelAttempt = {
-			model: candidate ?? result.model ?? agent.model ?? "default",
+			model: attemptModel,
+			reasoningLevel: resolveEffectiveThinking(attemptModel, agent.thinking),
 			success: attemptSucceeded,
 			exitCode: result.exitCode,
 			error: result.error,

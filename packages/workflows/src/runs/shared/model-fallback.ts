@@ -3,11 +3,34 @@ import type {
   WorkflowModelCatalogPort,
   WorkflowModelInfo,
   WorkflowModelValue,
+  WorkflowThinkingLevel,
 } from "../../shared/types.js";
 
 export interface WorkflowResolvedModelCandidate {
   readonly id: string;
   readonly value: WorkflowModelValue;
+  readonly reasoningLevel?: WorkflowThinkingLevel;
+}
+
+
+const WORKFLOW_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const satisfies readonly WorkflowThinkingLevel[];
+const WORKFLOW_THINKING_LEVEL_SET: ReadonlySet<string> = new Set(WORKFLOW_THINKING_LEVELS);
+
+export function splitReasoningSuffix(model: string): { readonly baseModel: string; readonly level?: WorkflowThinkingLevel } {
+  const index = model.lastIndexOf(":");
+  if (index < 0) return { baseModel: model };
+  const suffix = model.slice(index + 1);
+  if (WORKFLOW_THINKING_LEVEL_SET.has(suffix)) {
+    return { baseModel: model.slice(0, index), level: suffix as WorkflowThinkingLevel };
+  }
+  if (/^[A-Za-z][A-Za-z0-9_-]*$/.test(suffix)) {
+    throw new WorkflowModelValidationError([{ input: model, reason: `invalid reasoning level suffix "${suffix}"; expected one of ${WORKFLOW_THINKING_LEVELS.join(", ")}` }]);
+  }
+  return { baseModel: model };
+}
+
+function candidateKey(candidate: WorkflowResolvedModelCandidate): string {
+  return `${candidate.id}::${candidate.reasoningLevel ?? ""}`;
 }
 
 interface ModelResolutionFailure {
@@ -72,35 +95,43 @@ function resolveStringModel(
 ): WorkflowResolvedModelCandidate | ModelResolutionFailure {
   const input = rawInput.trim();
   if (!input) return { input: rawInput, reason: "empty model id" };
+  let split: ReturnType<typeof splitReasoningSuffix>;
+  try {
+    split = splitReasoningSuffix(input);
+  } catch (err) {
+    if (err instanceof WorkflowModelValidationError) return err.failures[0]!;
+    throw err;
+  }
+  const { baseModel, level } = split;
 
   if (availableModels === undefined) {
-    return { id: input, value: input };
+    return { id: baseModel, value: baseModel, ...(level !== undefined ? { reasoningLevel: level } : {}) };
   }
 
   const models = uniqueByFullId(availableModels);
-  const explicit = models.find((model) => model.fullId === input);
+  const explicit = models.find((model) => model.fullId === baseModel);
   if (explicit !== undefined) {
-    return { id: explicit.fullId, value: explicit.model ?? explicit.fullId };
+    return { id: explicit.fullId, value: explicit.model ?? explicit.fullId, ...(level !== undefined ? { reasoningLevel: level } : {}) };
   }
 
-  if (input.includes("/")) {
+  if (baseModel.includes("/")) {
     return { input, reason: "not available" };
   }
 
-  const byBareId = models.filter((model) => model.id === input);
+  const byBareId = models.filter((model) => model.id === baseModel);
   if (byBareId.length === 0) {
     return { input, reason: "not available" };
   }
   if (byBareId.length === 1) {
     const only = byBareId[0]!;
-    return { id: only.fullId, value: only.model ?? only.fullId };
+    return { id: only.fullId, value: only.model ?? only.fullId, ...(level !== undefined ? { reasoningLevel: level } : {}) };
   }
 
   const preferred = preferredProvider === undefined
     ? undefined
     : byBareId.find((model) => model.provider === preferredProvider);
   if (preferred !== undefined) {
-    return { id: preferred.fullId, value: preferred.model ?? preferred.fullId };
+    return { id: preferred.fullId, value: preferred.model ?? preferred.fullId, ...(level !== undefined ? { reasoningLevel: level } : {}) };
   }
 
   return {
@@ -127,13 +158,25 @@ function isFailure(value: WorkflowResolvedModelCandidate | ModelResolutionFailur
 export function buildModelCandidates(input: {
   readonly primaryModel?: WorkflowModelValue;
   readonly fallbackModels?: readonly string[];
+  readonly fallbackThinkingLevels?: readonly string[];
   readonly currentModel?: WorkflowModelValue;
   readonly availableModels?: readonly WorkflowModelInfo[];
   readonly preferredProvider?: string;
 }): WorkflowResolvedModelCandidate[] {
   const rawValues: WorkflowModelValue[] = [];
   if (input.primaryModel !== undefined) rawValues.push(input.primaryModel);
-  rawValues.push(...(input.fallbackModels ?? []));
+  for (const [index, fallback] of (input.fallbackModels ?? []).entries()) {
+    const split = splitReasoningSuffix(fallback.trim());
+    const compatLevel = input.fallbackThinkingLevels?.[index];
+    if (split.level === undefined && compatLevel !== undefined) {
+      if (!WORKFLOW_THINKING_LEVEL_SET.has(compatLevel)) {
+        throw new WorkflowModelValidationError([{ input: fallback, reason: `invalid fallbackThinkingLevels[${index}] "${compatLevel}"; expected one of ${WORKFLOW_THINKING_LEVELS.join(", ")}` }]);
+      }
+      rawValues.push(`${fallback}:${compatLevel}`);
+    } else {
+      rawValues.push(fallback);
+    }
+  }
   if (input.currentModel !== undefined) rawValues.push(input.currentModel);
 
   const failures: ModelResolutionFailure[] = [];
@@ -145,8 +188,9 @@ export function buildModelCandidates(input: {
       failures.push(resolved);
       continue;
     }
-    if (seen.has(resolved.id)) continue;
-    seen.add(resolved.id);
+    const key = candidateKey(resolved);
+    if (seen.has(key)) continue;
+    seen.add(key);
     candidates.push(resolved);
   }
 
@@ -165,6 +209,7 @@ function catalogUnavailableWarning(): string {
 export async function buildModelCandidatesFromCatalog(input: {
   readonly primaryModel?: WorkflowModelValue;
   readonly fallbackModels?: readonly string[];
+  readonly fallbackThinkingLevels?: readonly string[];
   readonly catalog?: WorkflowModelCatalogPort;
 }): Promise<WorkflowResolvedModelCandidate[]> {
   const hasExplicitModel = input.primaryModel !== undefined || (input.fallbackModels?.length ?? 0) > 0;
@@ -174,6 +219,7 @@ export async function buildModelCandidatesFromCatalog(input: {
     return buildModelCandidates({
       primaryModel: input.primaryModel,
       fallbackModels: input.fallbackModels,
+      fallbackThinkingLevels: input.fallbackThinkingLevels,
     });
   }
 
@@ -182,6 +228,7 @@ export async function buildModelCandidatesFromCatalog(input: {
     return buildModelCandidates({
       primaryModel: input.primaryModel,
       fallbackModels: input.fallbackModels,
+      fallbackThinkingLevels: input.fallbackThinkingLevels,
       currentModel: input.catalog.currentModel,
       availableModels,
       preferredProvider: input.catalog.preferredProvider,
@@ -199,6 +246,7 @@ export async function validateWorkflowModels(input: {
   readonly requests: readonly {
     readonly model?: WorkflowModelValue;
     readonly fallbackModels?: readonly string[];
+    readonly fallbackThinkingLevels?: readonly string[];
   }[];
   readonly catalog?: WorkflowModelCatalogPort;
 }): Promise<readonly string[]> {
@@ -230,6 +278,7 @@ export async function validateWorkflowModels(input: {
       buildModelCandidates({
         primaryModel: request.model,
         fallbackModels: request.fallbackModels,
+        fallbackThinkingLevels: request.fallbackThinkingLevels,
         currentModel: input.catalog?.currentModel,
         availableModels,
         preferredProvider: input.catalog?.preferredProvider,

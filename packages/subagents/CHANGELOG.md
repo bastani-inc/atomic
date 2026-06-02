@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added suffix-first reasoning levels for subagent `model` and `fallbackModels` values plus `fallbackThinkingLevels` compatibility metadata and per-attempt `reasoningLevel` reporting ([#1199](https://github.com/bastani-inc/atomic/issues/1199)).
+
+### Changed
+
+- Migrated packaged subagents to encode their reasoning level directly in model and fallback model entries ([#1199](https://github.com/bastani-inc/atomic/issues/1199)).
+
+### Deprecated
+
+- Deprecated separate subagent `thinking` configuration in favor of `model: <model>:<level>` and suffixed `fallbackModels` entries; removal is deferred to a later breaking release ([#1199](https://github.com/bastani-inc/atomic/issues/1199)).
+
 ## [0.8.23] - 2026-06-02
 
 ### Changed

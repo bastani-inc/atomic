@@ -1,4 +1,4 @@
-import type { ModelInfo as AvailableModelInfo } from "../../shared/model-info.ts";
+import { THINKING_LEVELS, type ModelInfo as AvailableModelInfo } from "../../shared/model-info.ts";
 import type { Usage } from "../../shared/types.ts";
 
 export type { AvailableModelInfo };
@@ -14,10 +14,20 @@ interface ModelAttemptSummary {
 export function splitThinkingSuffix(model: string): { baseModel: string; thinkingSuffix: string } {
 	const colonIdx = model.lastIndexOf(":");
 	if (colonIdx === -1) return { baseModel: model, thinkingSuffix: "" };
+	const suffix = model.substring(colonIdx + 1);
+	if (!THINKING_LEVELS.some((level) => level === suffix)) {
+		return { baseModel: model, thinkingSuffix: "" };
+	}
 	return {
 		baseModel: model.substring(0, colonIdx),
-		thinkingSuffix: model.substring(colonIdx),
+		thinkingSuffix: `:${suffix}`,
 	};
+}
+
+function applyFallbackThinkingLevel(model: string, thinkingLevel: string | undefined): string {
+	if (!thinkingLevel || !THINKING_LEVELS.some((level) => level === thinkingLevel)) return model;
+	const { thinkingSuffix } = splitThinkingSuffix(model);
+	return thinkingSuffix ? model : `${model}:${thinkingLevel}`;
 }
 
 export function resolveModelCandidate(
@@ -45,10 +55,12 @@ export function buildModelCandidates(
 	availableModels: AvailableModelInfo[] | undefined,
 	preferredProvider?: string,
 	currentModel?: string,
+	fallbackThinkingLevels?: string[],
 ): string[] {
 	const seen = new Set<string>();
 	const candidates: string[] = [];
-	for (const raw of [primaryModel, ...(fallbackModels ?? []), currentModel]) {
+	const fallbackEntries = (fallbackModels ?? []).map((model, index) => applyFallbackThinkingLevel(model, fallbackThinkingLevels?.[index]));
+	for (const raw of [primaryModel, ...fallbackEntries, currentModel]) {
 		if (!raw) continue;
 		const normalized = resolveModelCandidate(raw.trim(), availableModels, preferredProvider);
 		if (!normalized || seen.has(normalized)) continue;

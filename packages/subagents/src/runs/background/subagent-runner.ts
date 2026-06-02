@@ -702,8 +702,10 @@ async function runSingleStep(
 					? `${hiddenError.errorType} failed (exit ${effectiveExitCode}): ${hiddenError.details}`
 					: `${hiddenError.errorType} failed with exit code ${effectiveExitCode}`
 				: run.error || (run.exitCode !== 0 && run.stderr.trim() ? run.stderr.trim() : undefined));
+		const attemptModel = candidate ?? run.model ?? step.model ?? "default";
 		const attempt: ModelAttempt = {
-			model: candidate ?? run.model ?? step.model ?? "default",
+			model: attemptModel,
+			reasoningLevel: resolveEffectiveThinking(attemptModel, step.thinking),
 			success: effectiveExitCode === 0 && !error,
 			exitCode: effectiveExitCode,
 			error,

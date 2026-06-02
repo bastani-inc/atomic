@@ -36,6 +36,7 @@ export function defaultInheritSkills(): boolean {
 export interface BuiltinAgentOverrideBase {
 	model?: string;
 	fallbackModels?: string[];
+	fallbackThinkingLevels?: string[];
 	thinking?: string;
 	systemPromptMode: SystemPromptMode;
 	inheritProjectContext: boolean;
@@ -52,6 +53,7 @@ export interface BuiltinAgentOverrideBase {
 interface BuiltinAgentOverrideConfig {
 	model?: string | false;
 	fallbackModels?: string[] | false;
+	fallbackThinkingLevels?: string[] | false;
 	thinking?: string | false;
 	systemPromptMode?: SystemPromptMode;
 	inheritProjectContext?: boolean;
@@ -79,6 +81,7 @@ export interface AgentConfig {
 	mcpDirectTools?: string[];
 	model?: string;
 	fallbackModels?: string[];
+	fallbackThinkingLevels?: string[];
 	thinking?: string;
 	systemPromptMode: SystemPromptMode;
 	inheritProjectContext: boolean;
@@ -184,6 +187,7 @@ function cloneOverrideBase(agent: AgentConfig): BuiltinAgentOverrideBase {
 	return {
 		model: agent.model,
 		fallbackModels: agent.fallbackModels ? [...agent.fallbackModels] : undefined,
+		fallbackThinkingLevels: agent.fallbackThinkingLevels ? [...agent.fallbackThinkingLevels] : undefined,
 		thinking: agent.thinking,
 		systemPromptMode: agent.systemPromptMode,
 		inheritProjectContext: agent.inheritProjectContext,
@@ -203,6 +207,9 @@ function cloneOverrideValue(override: BuiltinAgentOverrideConfig): BuiltinAgentO
 		...(override.model !== undefined ? { model: override.model } : {}),
 		...(override.fallbackModels !== undefined
 			? { fallbackModels: override.fallbackModels === false ? false : [...override.fallbackModels] }
+			: {}),
+		...(override.fallbackThinkingLevels !== undefined
+			? { fallbackThinkingLevels: override.fallbackThinkingLevels === false ? false : [...override.fallbackThinkingLevels] }
 			: {}),
 		...(override.thinking !== undefined ? { thinking: override.thinking } : {}),
 		...(override.systemPromptMode !== undefined ? { systemPromptMode: override.systemPromptMode } : {}),
@@ -375,6 +382,9 @@ function parseBuiltinOverrideEntry(
 	const fallbackModels = parseOverrideStringArrayOrFalse(input.fallbackModels, { filePath, name, field: "fallbackModels" });
 	if (fallbackModels !== undefined) override.fallbackModels = fallbackModels;
 
+	const fallbackThinkingLevels = parseOverrideStringArrayOrFalse(input.fallbackThinkingLevels, { filePath, name, field: "fallbackThinkingLevels" });
+	if (fallbackThinkingLevels !== undefined) override.fallbackThinkingLevels = fallbackThinkingLevels;
+
 	const skills = parseOverrideStringArrayOrFalse(input.skills, { filePath, name, field: "skills" });
 	if (skills !== undefined) override.skills = skills;
 
@@ -442,6 +452,9 @@ function applyBuiltinOverride(
 	if (override.fallbackModels !== undefined) {
 		next.fallbackModels = override.fallbackModels === false ? undefined : [...override.fallbackModels];
 	}
+	if (override.fallbackThinkingLevels !== undefined) {
+		next.fallbackThinkingLevels = override.fallbackThinkingLevels === false ? undefined : [...override.fallbackThinkingLevels];
+	}
 	if (override.thinking !== undefined) next.thinking = override.thinking === false ? undefined : override.thinking;
 	if (override.systemPromptMode !== undefined) next.systemPromptMode = override.systemPromptMode;
 	if (override.inheritProjectContext !== undefined) next.inheritProjectContext = override.inheritProjectContext;
@@ -495,12 +508,13 @@ function applyBuiltinOverrides(
 
 export function buildBuiltinOverrideConfig(
 	base: BuiltinAgentOverrideBase,
-	draft: Pick<AgentConfig, "model" | "fallbackModels" | "thinking" | "systemPromptMode" | "inheritProjectContext" | "inheritSkills" | "defaultContext" | "disabled" | "systemPrompt" | "skills" | "tools" | "mcpDirectTools" | "completionGuard">,
+	draft: Pick<AgentConfig, "model" | "fallbackModels" | "fallbackThinkingLevels" | "thinking" | "systemPromptMode" | "inheritProjectContext" | "inheritSkills" | "defaultContext" | "disabled" | "systemPrompt" | "skills" | "tools" | "mcpDirectTools" | "completionGuard">,
 ): BuiltinAgentOverrideConfig | undefined {
 	const override: BuiltinAgentOverrideConfig = {};
 
 	if (draft.model !== base.model) override.model = draft.model ?? false;
 	if (!arraysEqual(draft.fallbackModels, base.fallbackModels)) override.fallbackModels = draft.fallbackModels ? [...draft.fallbackModels] : false;
+	if (!arraysEqual(draft.fallbackThinkingLevels, base.fallbackThinkingLevels)) override.fallbackThinkingLevels = draft.fallbackThinkingLevels ? [...draft.fallbackThinkingLevels] : false;
 	if (draft.thinking !== base.thinking) override.thinking = draft.thinking ?? false;
 	if (draft.systemPromptMode !== base.systemPromptMode) override.systemPromptMode = draft.systemPromptMode;
 	if (draft.inheritProjectContext !== base.inheritProjectContext) override.inheritProjectContext = draft.inheritProjectContext;
@@ -646,6 +660,10 @@ function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig[] {
 			?.split(",")
 			.map((model) => model.trim())
 			.filter(Boolean);
+		const fallbackThinkingLevels = frontmatter.fallbackThinkingLevels
+			?.split(",")
+			.map((level) => level.trim())
+			.filter(Boolean);
 		const systemPromptMode = frontmatter.systemPromptMode === "replace"
 			? "replace"
 			: frontmatter.systemPromptMode === "append"
@@ -696,6 +714,7 @@ function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig[] {
 			mcpDirectTools: mcpDirectTools.length > 0 ? mcpDirectTools : undefined,
 			model: frontmatter.model,
 			fallbackModels: fallbackModels && fallbackModels.length > 0 ? fallbackModels : undefined,
+			fallbackThinkingLevels: fallbackThinkingLevels && fallbackThinkingLevels.length > 0 ? fallbackThinkingLevels : undefined,
 			thinking: frontmatter.thinking,
 			systemPromptMode,
 			inheritProjectContext,

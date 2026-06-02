@@ -25,6 +25,7 @@ export type WorkflowModelValue = NonNullable<CreateAgentSessionOptions["model"]>
 export type WorkflowModelUsage = AuthoringContract.WorkflowModelUsage;
 export type WorkflowModelAttempt = AuthoringContract.WorkflowModelAttempt;
 export type WorkflowModelFallbackFields = AuthoringContract.WorkflowModelFallbackFields;
+export type WorkflowThinkingLevel = AuthoringContract.WorkflowThinkingLevel;
 
 export interface WorkflowModelInfo extends Omit<AuthoringContract.WorkflowModelInfo, "model"> {
   readonly model?: NonNullable<CreateAgentSessionOptions["model"]>;

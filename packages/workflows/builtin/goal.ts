@@ -1026,26 +1026,24 @@ export default defineWorkflow("goal")
     const { ledger, ledgerPath, artifactDir } = await createGoalLedger(objective);
 
     const workerModelConfig = {
-      model: "openai/gpt-5.5",
+      model: "openai/gpt-5.5:low",
       fallbackModels: [
-        "openai-codex/gpt-5.5",
-        "github-copilot/gpt-5.5",
-        "anthropic/claude-sonnet-4-7",
-        "github-copilot/claude-sonnet-4.7",
+        "openai-codex/gpt-5.5:low",
+        "github-copilot/gpt-5.5:low",
+        "anthropic/claude-sonnet-4-7:low",
+        "github-copilot/claude-sonnet-4.7:low",
       ],
-      thinkingLevel: "low" as const,
       tools: goalRunnerTools,
     };
 
     const reviewerModelConfig = {
-      model: "openai/gpt-5.5",
+      model: "openai/gpt-5.5:high",
       fallbackModels: [
-        "openai-codex/gpt-5.5",
-        "github-copilot/gpt-5.5",
-        "anthropic/claude-sonnet-4-7",
-        "github-copilot/claude-sonnet-4.7",
+        "openai-codex/gpt-5.5:high",
+        "github-copilot/gpt-5.5:high",
+        "anthropic/claude-sonnet-4-7:high",
+        "github-copilot/claude-sonnet-4.7:high",
       ],
-      thinkingLevel: "high" as const,
       tools: [...goalRunnerTools, reviewDecisionTool.name],
       customTools: [reviewDecisionTool],
     };

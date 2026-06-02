@@ -43,8 +43,10 @@ export type WorkflowDetailsStatus = "accepted" | "running" | "completed" | "fail
 export type WorkflowAction = "list" | "get" | "inputs" | "run" | "status" | "interrupt" | "resume";
 
 export interface WorkflowModelFallbackFields {
-  /** Ordered model IDs to try after `model` fails for a retryable provider/model reason. */
+  /** Ordered model IDs to try after `model` fails; entries may use `:off|minimal|low|medium|high|xhigh` reasoning suffixes. */
   readonly fallbackModels?: readonly string[];
+  /** Optional deprecated compatibility helper aligned to `fallbackModels`; ignored for entries with a reasoning suffix. */
+  readonly fallbackThinkingLevels?: readonly string[];
 }
 
 export type WorkflowModelValue = string | object;
@@ -61,6 +63,7 @@ export interface WorkflowModelUsage extends WorkflowSerializableObject {
 export interface WorkflowModelAttempt extends WorkflowSerializableObject {
   readonly model: string;
   readonly success: boolean;
+  readonly reasoningLevel?: WorkflowThinkingLevel;
   readonly error?: string;
   readonly usage?: WorkflowModelUsage;
 }
@@ -115,6 +118,7 @@ export interface WorkflowCustomToolDefinition<TParams extends TSchema = TSchema,
 
 export interface WorkflowScopedModel {
   readonly model: WorkflowModelValue;
+  /** @deprecated Prefer suffixing model/fallbackModels entries with `:level`; removal is deferred. */
   readonly thinkingLevel?: WorkflowThinkingLevel;
 }
 
@@ -144,6 +148,7 @@ export interface StageOptions extends WorkflowModelFallbackFields {
   readonly gitWorktreeDir?: string;
   readonly baseBranch?: string;
   readonly sessionDir?: string;
+  /** @deprecated Prefer suffixing model/fallbackModels entries with `:level`; removal is deferred. */
   readonly thinkingLevel?: WorkflowThinkingLevel;
 }
 

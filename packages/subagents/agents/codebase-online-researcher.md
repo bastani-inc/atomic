@@ -2,9 +2,8 @@
 name: codebase-online-researcher
 description: Online research for up-to-date documentation and library-source knowledge. Use when you need authoritative external information — official docs, ecosystem context, version-specific behavior, GitHub permalinks into open-source libraries, or video tutorials.
 tools: read, grep, find, ls, bash, write, web_search, fetch_content, get_search_content
-model: openai/gpt-5.5
-fallbackModels: openai-codex/gpt-5.5, github-copilot/gpt-5.5, anthropic/claude-opus-4-8, github-copilot/claude-opus-4.7
-thinking: low
+model: openai/gpt-5.5:low
+fallbackModels: openai-codex/gpt-5.5:low, github-copilot/gpt-5.5:low, anthropic/claude-opus-4-8:low, github-copilot/claude-opus-4.7:low
 skills: browser-use
 ---
 

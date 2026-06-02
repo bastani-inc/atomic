@@ -64,7 +64,7 @@ export interface StageSessionRuntime {
   getLastAssistantText?: () => string | undefined;
 }
 
-export type StageSessionCreateOptions = CreateAgentSessionOptions & Pick<StageOptions, "mcp" | "fallbackModels">;
+export type StageSessionCreateOptions = CreateAgentSessionOptions & Pick<StageOptions, "mcp" | "fallbackModels" | "fallbackThinkingLevels">;
 
 type WorkflowFastModeSettings = {
   readonly chat: boolean;
@@ -169,6 +169,7 @@ function stripWorkflowOnlyOptions(options: StageOptions | undefined): CreateAgen
   const {
     mcp: _mcp,
     fallbackModels: _fallbackModels,
+    fallbackThinkingLevels: _fallbackThinkingLevels,
     context,
     forkFromSessionFile,
     sessionDir,
@@ -549,6 +550,7 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
       candidatesPromise = buildModelCandidatesFromCatalog({
         primaryModel: stageOptions?.model,
         fallbackModels: stageOptions?.fallbackModels,
+        fallbackThinkingLevels: stageOptions?.fallbackThinkingLevels,
         catalog: modelCatalog,
       });
     }
@@ -557,7 +559,13 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 
   function stageOptionsForCandidate(candidate: WorkflowResolvedModelCandidate | undefined): StageOptions | undefined {
     if (candidate === undefined) return stageOptions;
-    return { ...(stageOptions ?? {}), model: candidate.value, fallbackModels: undefined };
+    return {
+      ...(stageOptions ?? {}),
+      model: candidate.value,
+      ...(candidate.reasoningLevel !== undefined ? { thinkingLevel: candidate.reasoningLevel } : {}),
+      fallbackModels: undefined,
+      fallbackThinkingLevels: undefined,
+    };
   }
 
   let sessionSettingsManager: WorkflowFastModeSettingsManager | undefined;
@@ -591,6 +599,21 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
     return { session: created };
   }
 
+  function effectiveCandidateReasoning(candidate: WorkflowResolvedModelCandidate): StageOptions["thinkingLevel"] | undefined {
+    return candidate.reasoningLevel ?? stageOptions?.thinkingLevel;
+  }
+
+  function modelAttemptReasoning(candidate: WorkflowResolvedModelCandidate): Pick<WorkflowModelAttempt, "reasoningLevel"> {
+    const reasoningLevel = effectiveCandidateReasoning(candidate);
+    return reasoningLevel !== undefined ? { reasoningLevel } : {};
+  }
+
+  function applyCandidateThinking(candidate: WorkflowResolvedModelCandidate | undefined): void {
+    pendingThinkingLevel = candidate === undefined
+      ? stageOptions?.thinkingLevel
+      : effectiveCandidateReasoning(candidate);
+  }
+
   function attachSession(created: StageSessionRuntime | StageSessionCreateResult): StageSessionRuntime {
     const result = normalizeSessionCreateResult(created);
     session = result.session;
@@ -612,6 +635,7 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
     candidate: WorkflowResolvedModelCandidate | undefined,
     consumer: AgentSessionConsumer,
   ): Promise<StageSessionRuntime> {
+    applyCandidateThinking(candidate);
     const created = adapters.agentSession
       ? await adapters.agentSession.create(stripWorkflowOnlyOptions(stageOptionsForCandidate(candidate)) as StageSessionCreateOptions, {
         ...meta,
@@ -716,16 +740,16 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
       notifyModelFallbackMetaChange();
       try {
         await promptWithPauseResume(activeSession, text, sdkOptions);
-        modelAttempts.push({ model: candidate.id, success: true });
+        modelAttempts.push({ model: candidate.id, success: true, ...modelAttemptReasoning(candidate) });
         return;
       } catch (err) {
         const message = errorMessage(err);
-        modelAttempts.push({ model: candidate.id, success: false, error: message });
+        modelAttempts.push({ model: candidate.id, success: false, ...modelAttemptReasoning(candidate), error: message });
         if (signal?.aborted || !isRetryableModelFailure(message) || index === candidates.length - 1) {
           throw err;
         }
         const nextCandidate = candidates[index + 1]!;
-        modelWarnings.push(`[fallback] ${candidate.id} failed: ${message}. Retrying with ${nextCandidate.id}.`);
+        modelWarnings.push(`[fallback] ${candidate.id}${candidate.reasoningLevel !== undefined ? `:${candidate.reasoningLevel}` : ""} failed: ${message}. Retrying with ${nextCandidate.id}${nextCandidate.reasoningLevel !== undefined ? `:${nextCandidate.reasoningLevel}` : ""}.`);
         await disposeCurrentSession();
         index += 1;
       }
