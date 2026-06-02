@@ -82,6 +82,8 @@ See [Providers & Models](./packages/coding-agent/README.md#providers--models) fo
 
 > ⚠️ Workflows run with agent permission checks **disabled** so pipelines don't block on prompts. Run autonomous workflows inside a devcontainer, VM, or remote dev machine — not your host machine.
 
+> ⚠️ **Temporary workflow migration note:** Recent workflow authoring changes may require updates to custom workflows, especially workflows that import other workflows by registered name or path object. Workflow imports now use normal TypeScript module imports and pass compiled workflow definitions to `.import(workflow, { as? })`. If an existing workflow no longer loads, ask Atomic or your coding agent to update it using the [workflow import guidance](./packages/workflows/README.md#example-4--compose-workflows-with-imports).
+
 <details>
 <summary><b>Prerequisites, devcontainer</b></summary>
 
