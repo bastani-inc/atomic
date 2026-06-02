@@ -6,6 +6,10 @@
 
 - Removed the bundled workflows package's imperative `runWorkflow` object-form API; workflow packages must export branded `defineWorkflow(...).compile()` definitions while direct `workflow` tool task/tasks/chain modes remain available.
 
+### Fixed
+
+- Fixed workflow node chat rendering a bare tool-name marker (e.g. `read …`) instead of tool output for parallel tool calls; `LiveChatEntriesController` now pairs concurrent same-named tool calls strictly by `toolCallId` ([#1198](https://github.com/bastani-inc/atomic/issues/1198)).
+
 ## [0.8.23] - 2026-06-02
 
 ### Changed

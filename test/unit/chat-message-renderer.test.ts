@@ -85,6 +85,58 @@ describe("chat message renderer utilities", () => {
     assert.deepEqual(live.pendingToolIds(), []);
   });
 
+  test("renders distinct rows and output for parallel same-name tool calls (live events)", () => {
+    const entries = [] as ReturnType<typeof chatEntriesFromAgentMessages>;
+    const live = new LiveChatEntriesController(entries);
+
+    // A single assistant snapshot announcing TWO parallel `read` tool calls.
+    live.applyEvent({
+      type: "message_update",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "toolCall", id: "A", name: "read", arguments: { path: "a.ts" } },
+          { type: "toolCall", id: "B", name: "read", arguments: { path: "b.ts" } },
+        ],
+      },
+    });
+
+    live.applyEvent({ type: "tool_execution_start", toolCallId: "A", toolName: "read", args: { path: "a.ts" } });
+    live.applyEvent({ type: "tool_execution_start", toolCallId: "B", toolName: "read", args: { path: "b.ts" } });
+    live.applyEvent({
+      type: "tool_execution_end",
+      toolCallId: "A",
+      toolName: "read",
+      result: { content: [{ type: "text", text: "OUTPUT_A" }] },
+      isError: false,
+    });
+    live.applyEvent({
+      type: "tool_execution_end",
+      toolCallId: "B",
+      toolName: "read",
+      result: { content: [{ type: "text", text: "OUTPUT_B" }] },
+      isError: false,
+    });
+
+    // Two distinct concrete toolCallIds must keep two distinct transcript rows.
+    const tools = entries.filter((e) => e.kind === "tool");
+    assert.equal(tools.length, 2);
+    assert.deepEqual(tools.map((tool) => tool.toolCallId), ["A", "B"]);
+
+    // Neither row may be left as a bare result-less tool marker (the #1198 bug).
+    for (const tool of tools) {
+      assert.notEqual(tool.result, undefined);
+      assert.equal(tool.isPartial, false);
+    }
+
+    const aBlock = tools[0]?.result?.content[0];
+    assert.equal(aBlock?.type === "text" ? aBlock.text : undefined, "OUTPUT_A");
+    const bBlock = tools[1]?.result?.content[0];
+    assert.equal(bBlock?.type === "text" ? bBlock.text : undefined, "OUTPUT_B");
+
+    assert.deepEqual(live.pendingToolIds(), []);
+  });
+
   test("scrollable viewport defaults to sticky bottom and handles PageUp/PageDown", () => {
     const viewport = new ScrollableComponentViewport();
     viewport.setVisibleRows(3);
