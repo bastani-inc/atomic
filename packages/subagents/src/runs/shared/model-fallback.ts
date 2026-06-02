@@ -1,4 +1,4 @@
-import { THINKING_LEVELS, type ModelInfo as AvailableModelInfo } from "../../shared/model-info.ts";
+import { THINKING_LEVELS, splitKnownThinkingSuffix, type ModelInfo as AvailableModelInfo } from "../../shared/model-info.ts";
 import type { Usage } from "../../shared/types.ts";
 
 export type { AvailableModelInfo };
@@ -11,22 +11,9 @@ interface ModelAttemptSummary {
 	usage?: Usage;
 }
 
-export function splitThinkingSuffix(model: string): { baseModel: string; thinkingSuffix: string } {
-	const colonIdx = model.lastIndexOf(":");
-	if (colonIdx === -1) return { baseModel: model, thinkingSuffix: "" };
-	const suffix = model.substring(colonIdx + 1);
-	if (!THINKING_LEVELS.some((level) => level === suffix)) {
-		return { baseModel: model, thinkingSuffix: "" };
-	}
-	return {
-		baseModel: model.substring(0, colonIdx),
-		thinkingSuffix: `:${suffix}`,
-	};
-}
-
 function applyFallbackThinkingLevel(model: string, thinkingLevel: string | undefined): string {
 	if (!thinkingLevel || !THINKING_LEVELS.some((level) => level === thinkingLevel)) return model;
-	const { thinkingSuffix } = splitThinkingSuffix(model);
+	const { thinkingSuffix } = splitKnownThinkingSuffix(model);
 	return thinkingSuffix ? model : `${model}:${thinkingLevel}`;
 }
 
@@ -39,7 +26,7 @@ export function resolveModelCandidate(
 	if (model.includes("/")) return model;
 	if (!availableModels || availableModels.length === 0) return model;
 
-	const { baseModel, thinkingSuffix } = splitThinkingSuffix(model);
+	const { baseModel, thinkingSuffix } = splitKnownThinkingSuffix(model);
 	const matches = availableModels.filter((entry) => entry.id === baseModel);
 	if (preferredProvider) {
 		const preferredMatch = matches.find((entry) => entry.provider === preferredProvider);

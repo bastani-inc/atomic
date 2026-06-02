@@ -1,8 +1,8 @@
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
-import { buildModelCandidates, splitThinkingSuffix } from "../../packages/subagents/src/runs/shared/model-fallback.js";
+import { buildModelCandidates } from "../../packages/subagents/src/runs/shared/model-fallback.js";
 import { applyThinkingSuffix } from "../../packages/subagents/src/runs/shared/pi-args.js";
-import { resolveEffectiveThinking } from "../../packages/subagents/src/shared/model-info.js";
+import { resolveEffectiveThinking, splitKnownThinkingSuffix } from "../../packages/subagents/src/shared/model-info.js";
 import type { AvailableModelInfo } from "../../packages/subagents/src/runs/shared/model-fallback.js";
 
 const models: AvailableModelInfo[] = [
@@ -12,11 +12,11 @@ const models: AvailableModelInfo[] = [
 ];
 
 describe("subagent suffix-first reasoning helpers", () => {
-  test("splitThinkingSuffix only recognizes canonical levels", () => {
-    assert.deepEqual(splitThinkingSuffix("claude-sonnet-4:high"), { baseModel: "claude-sonnet-4", thinkingSuffix: ":high" });
-    assert.deepEqual(splitThinkingSuffix("claude-sonnet-4"), { baseModel: "claude-sonnet-4", thinkingSuffix: "" });
-    assert.deepEqual(splitThinkingSuffix("provider:model:ultra"), { baseModel: "provider:model:ultra", thinkingSuffix: "" });
-    assert.deepEqual(splitThinkingSuffix("provider:with-colon/model:off"), { baseModel: "provider:with-colon/model", thinkingSuffix: ":off" });
+  test("splitKnownThinkingSuffix only recognizes canonical levels", () => {
+    assert.deepEqual(splitKnownThinkingSuffix("claude-sonnet-4:high"), { baseModel: "claude-sonnet-4", thinkingSuffix: ":high" });
+    assert.deepEqual(splitKnownThinkingSuffix("claude-sonnet-4"), { baseModel: "claude-sonnet-4", thinkingSuffix: "" });
+    assert.deepEqual(splitKnownThinkingSuffix("provider:model:ultra"), { baseModel: "provider:model:ultra", thinkingSuffix: "" });
+    assert.deepEqual(splitKnownThinkingSuffix("provider:with-colon/model:off"), { baseModel: "provider:with-colon/model", thinkingSuffix: ":off" });
   });
 
   test("applyThinkingSuffix preserves valid suffix over legacy thinking", () => {

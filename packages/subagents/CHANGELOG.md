@@ -18,6 +18,7 @@
 ### Fixed
 
 - Fixed foreground subagent attempt metadata to report the per-candidate reasoning level derived from the model suffix even when the legacy `thinking` option is unset, matching the background run path ([#1199](https://github.com/bastani-inc/atomic/issues/1199)).
+- Fixed the subagent chain clarification TUI to strip only canonical reasoning-level suffixes when editing a step's level, so colon-tagged model ids such as `ollama/llama3:latest` are no longer mis-split; consolidated the duplicate thinking-suffix split helpers onto the single `splitKnownThinkingSuffix` so the parsing rules cannot drift apart ([#1199](https://github.com/bastani-inc/atomic/issues/1199)).
 
 ## [0.8.23] - 2026-06-02
 
