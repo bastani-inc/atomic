@@ -232,7 +232,7 @@ export default defineWorkflow("open-claude-design")
         "anthropic/claude-sonnet-4-6:high",
         "github-copilot/claude-sonnet-4.6:high",
       ],
-      };
+    };
 
     let designSystem: string;
     let onboarding: readonly WorkflowTaskResult[] = [];
