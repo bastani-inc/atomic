@@ -125,7 +125,7 @@ Atomic mirrors pi's tag-driven release flow: bump versions locally, commit, push
 If a user asks you to publish the package or create a release/prerelease:
 
 1. Ask the user with the `ask_user_question`/ask-question tool what version to publish if they have not supplied a version.
-2. Ask whether they want a release or prerelease if that cannot be inferred from the supplied version, or if the version is in an incorrect format. Valid formats are `MAJOR.MINOR.PATCH` for releases and `MAJOR.MINOR.PATCH-NUMBER` for prereleases.
+2. Ask whether they want a release or prerelease if that cannot be inferred from the supplied version, or if the version is in an incorrect format. Valid formats are `MAJOR.MINOR.PATCH` for releases and `MAJOR.MINOR.PATCH-alpha.REVISION` (revision starts at 1) for prereleases.
 3. Create a branch using the naming convention: `[prerelease | release]/v<version>` where `[prerelease | release]` changes depending on whether the version if a release or prerelease version.
 4. Follow the guidance in the "Changelog" section to update the `CHANGELOG.md` files.
 5. Follow the "Bumping Versions" guidance to correctly bump the package version.
@@ -171,7 +171,7 @@ Use the top-level `scripts/bump-version.ts` script to update every `packages/*/p
 ```sh
 # Explicit version
 bun run scripts/bump-version.ts 0.1.0
-bun run scripts/bump-version.ts 0.1.0-0
+bun run scripts/bump-version.ts 0.1.0-alpha.1
 ```
 
 Run `bun install` afterward to refresh `bun.lock`.

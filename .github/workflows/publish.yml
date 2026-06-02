@@ -187,9 +187,9 @@ jobs:
                   else
                     ref="${GITHUB_REF#refs/tags/}"
                   fi
-                  release_version_re='(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*))?'
+                  release_version_re='(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-alpha\.[1-9][0-9]*)?'
                   if [[ ! "$ref" =~ ^v$release_version_re$ ]]; then
-                    echo "Unexpected tag format: $ref (expected vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-NUMBER, e.g. v0.8.0 or v0.8.0-0)" >&2
+                    echo "Unexpected tag format: $ref (expected vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-alpha.REVISION, e.g. v0.8.0 or v0.8.0-alpha.1)" >&2
                     exit 1
                   fi
                   echo "ref=$ref" >> "$GITHUB_OUTPUT"
@@ -229,7 +229,7 @@ jobs:
               run: |
                   set -euo pipefail
 
-                  release_version_re='(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*))?'
+                  release_version_re='(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-alpha\.[1-9][0-9]*)?'
 
                   root_name=$(bun --eval 'import pkg from "./package.json" with { type: "json" }; console.log(pkg.name);')
                   if [ "$root_name" != "atomic-monorepo" ]; then
@@ -249,7 +249,7 @@ jobs:
                   fi
 
                   if [[ ! "$version" =~ ^$release_version_re$ ]]; then
-                    echo "$PACKAGE_DIR/package.json version $version is invalid (expected MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH-NUMBER, e.g. 0.8.0 or 0.8.0-0)." >&2
+                    echo "$PACKAGE_DIR/package.json version $version is invalid (expected MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH-alpha.REVISION, e.g. 0.8.0 or 0.8.0-alpha.1)." >&2
                     exit 1
                   fi
 
@@ -262,7 +262,7 @@ jobs:
 
                   while IFS=$'\t' read -r manifest_path manifest_name manifest_version manifest_private; do
                     if [[ ! "$manifest_version" =~ ^$release_version_re$ ]]; then
-                      echo "$manifest_path version $manifest_version is invalid (expected MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH-NUMBER)." >&2
+                      echo "$manifest_path version $manifest_version is invalid (expected MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH-alpha.REVISION)." >&2
                       exit 1
                     fi
 

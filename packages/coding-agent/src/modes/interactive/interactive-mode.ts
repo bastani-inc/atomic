@@ -717,7 +717,7 @@ export class InteractiveMode {
     this.chatContainer.addChild(new DynamicBorder());
     if (this.settingsManager.getCollapseChangelog()) {
       const versionMatch = this.changelogMarkdown.match(
-        /##\s+\[?((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:0|[1-9]\d*))?)\]?/,
+        /##\s+\[?((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:alpha\.)?(?:0|[1-9]\d*))?)\]?/,
       );
       const latestVersion = versionMatch ? versionMatch[1] : this.version;
       const condensedText = `Updated to v${latestVersion}. Use ${theme.bold("/changelog")} to view full changelog.`;

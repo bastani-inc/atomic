@@ -244,7 +244,7 @@ Atomic uses a tag-driven release flow: push a `v<version>` git tag and CI cross-
 
 ### Workflow
 
-1. Run `bun run scripts/bump-version.ts <version>` (e.g. `0.8.0` or `0.8.0-0`), then `bun install`.
+1. Run `bun run scripts/bump-version.ts <version>` (e.g. `0.8.0` or `0.8.0-alpha.1`), then `bun install`.
 2. Move the `[Unreleased]` section in `packages/coding-agent/CHANGELOG.md` to a new `## [<version>] - <YYYY-MM-DD>` section. CI extracts release notes from this section.
 3. Run `bun run typecheck`, `cd packages/coding-agent && bun run build`, and `bun run test:all`.
 4. Commit `packages/*/package.json`, `packages/*/README.md`, `packages/coding-agent/CHANGELOG.md`, and `bun.lock` with `chore(release): bump to v<version>`.

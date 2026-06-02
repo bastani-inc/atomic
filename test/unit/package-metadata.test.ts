@@ -10,7 +10,7 @@ import webAccessPackageJson from "../../packages/web-access/package.json" with {
 import workflowsPackageJson from "../../packages/workflows/package.json" with { type: "json" };
 
 const STRICT_RELEASE_VERSION_RE =
-    /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(0|[1-9]\d*))?$/;
+    /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-alpha\.([1-9]\d*))?$/;
 
 type DependencySectionName =
     | "dependencies"

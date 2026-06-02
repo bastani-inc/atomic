@@ -12,37 +12,46 @@ export interface ChangelogEntry extends VersionParts {
 	content: string;
 }
 
-const RELEASE_VERSION_RE = /^(?:v)?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(0|[1-9]\d*))?$/;
-const CHANGELOG_VERSION_HEADER_RE = /^##\s+\[?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(0|[1-9]\d*))?\]?/;
+// The prerelease group accepts BOTH the legacy numeric form (`-N`) and the new
+// `-alpha.N` convention while capturing the numeric revision. The outer capture
+// group preserves the raw version substring so each entry's `version` round-trips
+// faithfully (a `0.8.1-0` header stays `0.8.1-0`; a `0.8.2-alpha.1` header stays
+// `0.8.2-alpha.1`).
+const RELEASE_VERSION_RE = /^(?:v)?((0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:alpha\.)?(0|[1-9]\d*))?)$/;
+const CHANGELOG_VERSION_HEADER_RE =
+	/^##\s+\[?((0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:alpha\.)?(0|[1-9]\d*))?)\]?/;
 
-function formatVersion(parts: VersionParts): string {
-	const base = `${parts.major}.${parts.minor}.${parts.patch}`;
-	return parts.prerelease === null ? base : `${base}-${parts.prerelease}`;
+interface ParsedVersion extends VersionParts {
+	version: string;
 }
 
-function partsFromMatch(match: RegExpMatchArray): VersionParts {
+function parsedVersionFromMatch(match: RegExpMatchArray): ParsedVersion {
 	return {
-		major: Number.parseInt(match[1] as string, 10),
-		minor: Number.parseInt(match[2] as string, 10),
-		patch: Number.parseInt(match[3] as string, 10),
-		prerelease: match[4] === undefined ? null : Number.parseInt(match[4], 10),
+		version: match[1] as string,
+		major: Number.parseInt(match[2] as string, 10),
+		minor: Number.parseInt(match[3] as string, 10),
+		patch: Number.parseInt(match[4] as string, 10),
+		prerelease: match[5] === undefined ? null : Number.parseInt(match[5], 10),
 	};
 }
 
 function parseVersion(version: string): VersionParts | null {
 	const match = version.trim().match(RELEASE_VERSION_RE);
-	return match ? partsFromMatch(match) : null;
+	return match ? parsedVersionFromMatch(match) : null;
 }
 
-function parseVersionHeader(line: string): VersionParts | null {
+function parseVersionHeader(line: string): ParsedVersion | null {
 	const match = line.match(CHANGELOG_VERSION_HEADER_RE);
-	return match ? partsFromMatch(match) : null;
+	return match ? parsedVersionFromMatch(match) : null;
 }
 
-function createChangelogEntry(version: VersionParts, lines: string[]): ChangelogEntry {
+function createChangelogEntry(version: ParsedVersion, lines: string[]): ChangelogEntry {
 	return {
-		...version,
-		version: formatVersion(version),
+		major: version.major,
+		minor: version.minor,
+		patch: version.patch,
+		prerelease: version.prerelease,
+		version: version.version,
 		content: lines.join("\n").trim(),
 	};
 }
@@ -62,7 +71,7 @@ export function parseChangelog(changelogPath: string): ChangelogEntry[] {
 		const entries: ChangelogEntry[] = [];
 
 		let currentLines: string[] = [];
-		let currentVersion: VersionParts | null = null;
+		let currentVersion: ParsedVersion | null = null;
 
 		for (const line of lines) {
 			// Check if this is a version header (## [x.y.z] ...)
@@ -116,7 +125,9 @@ export function compareVersions(v1: VersionParts, v2: VersionParts): number {
 /**
  * Get entries newer than lastVersion, optionally bounded by currentVersion.
  *
- * Atomic uses numeric prereleases (for example, 0.8.1-0) and started its own
+ * Atomic uses alpha prereleases (for example, 0.8.2-alpha.1, with the revision
+ * starting at 1) while legacy numeric prerelease entries (for example, 0.8.1-0)
+ * remain parseable, and started its own
  * version line above the upstream Pi changelog history. When currentVersion is
  * provided, changelog order wins over semantic version filtering so historical
  * upstream entries like 0.74.0 or an old 0.10.0 section are not treated as

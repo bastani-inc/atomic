@@ -113,7 +113,7 @@ The publish pipeline (`publish.yml`) runs when:
 | Tag                                                       | npm tag  | GitHub Release                |
 | --------------------------------------------------------- | -------- | ----------------------------- |
 | `v<major>.<minor>.<patch>` (e.g. `v0.8.0`)                | `latest` | normal release, marked latest |
-| `v<major>.<minor>.<patch>-<prerelease>` (e.g. `v0.8.0-0`) | `next`   | prerelease, not marked latest |
+| `v<major>.<minor>.<patch>-<prerelease>` (e.g. `v0.8.0-alpha.1`) | `next`   | prerelease, not marked latest |
 
 The tag must match `packages/coding-agent/package.json` after removing the leading `v`. All `packages/*` package versions stay in sync via `scripts/bump-version.ts`.
 
@@ -123,7 +123,7 @@ Use the top-level script:
 
 ```sh
 bun run scripts/bump-version.ts 0.8.0
-bun run scripts/bump-version.ts 0.8.0-0
+bun run scripts/bump-version.ts 0.8.0-alpha.1
 bun install
 ```
 
@@ -295,4 +295,4 @@ The meaningful pre-publish checks are:
 
 5. Confirm `publish.yml` runs docs link validation, cross-compiles binaries, publishes `@bastani/atomic` to npm with OIDC provenance, and creates the GitHub Release with binaries attached.
 
-For prereleases, substitute `0.8.0-0` and tag `v0.8.0-0`.
+For prereleases, substitute `0.8.0-alpha.1` and tag `v0.8.0-alpha.1`.
