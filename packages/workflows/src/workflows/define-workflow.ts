@@ -19,9 +19,11 @@ import type {
 } from "../shared/types.js";
 import { normalizeWorkflowName } from "./identity.js";
 
-const WORKFLOW_DEFINITION_BRAND: unique symbol = Symbol("@bastani/workflows definition");
 const BRANDED_WORKFLOW_DEFINITIONS = new WeakSet<object>();
 
+// Package-internal runtime brand. It deliberately is not exported through the
+// public SDK surface; only defineWorkflow(...).compile() and executor-created
+// direct workflows can mint discoverable definitions.
 export function stampWorkflowDefinition<
   TInputs extends WorkflowInputValues,
   TOutputs extends WorkflowOutputValues,
@@ -29,12 +31,6 @@ export function stampWorkflowDefinition<
   definition: WorkflowDefinition<TInputs, TOutputs>,
 ): WorkflowDefinition<TInputs, TOutputs> {
   BRANDED_WORKFLOW_DEFINITIONS.add(definition);
-  Object.defineProperty(definition, WORKFLOW_DEFINITION_BRAND, {
-    value: true,
-    enumerable: false,
-    configurable: false,
-    writable: false,
-  });
   return definition;
 }
 
@@ -240,6 +236,7 @@ function makeBuilder<
         run: state.runFn as unknown as WorkflowRunFn<Simplify<TInputs>, SimplifyWorkflowOutputs<TOutputs>>,
       };
 
+      // Stamp before freezing so the WeakSet brand can be attached.
       stampWorkflowDefinition(definition);
       return Object.freeze(definition) as WorkflowDefinition<Simplify<TInputs>, SimplifyWorkflowOutputs<TOutputs>>;
     },

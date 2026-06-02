@@ -372,11 +372,7 @@ export class ScrollableChatTranscriptComponent<TEntry extends ChatTranscriptEntr
     entries: readonly TEntry[],
     renderEntry: ChatTranscriptRenderer<TEntry>,
   ) {
-    this.transcript = new ChatTranscriptComponent(
-      entries,
-      renderEntry,
-      (entry, index) => `${index}:${entry.role}`,
-    );
+    this.transcript = new ChatTranscriptComponent(entries, renderEntry);
     this.viewport.setComponents([this.transcript]);
   }
 

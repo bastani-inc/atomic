@@ -87,7 +87,6 @@ import type {
   WorkflowTaskSessionOptions,
   WorkflowUIAdapter,
 } from "@bastani/workflows";
-// @ts-expect-error runWorkflow was removed from the public package surface.
 import { runWorkflow } from "@bastani/workflows";
 // @ts-expect-error WorkflowOptions was removed with the object-form runWorkflow API.
 import type { WorkflowOptions } from "@bastani/workflows";
@@ -243,7 +242,8 @@ void catalog;
 void taskSession;
 void forgedWorkflow;
 run(workflow, { message: "hello", pickedNoDefault: { enabled: true }, omittedNoDefault: { enabled: true } }, { adapters, ui, signal: new AbortController().signal, config: runtimeConfig, models: catalog, mcp, persistence, cancellation: cancellationRegistry });
-void runWorkflow;
+// @ts-expect-error runWorkflow is a removed runtime stub and must not be called.
+runWorkflow();
 type RemovedWorkflowOptions = WorkflowOptions;
 type RemovedWorkflowRunOptions = WorkflowRunOptions;
 

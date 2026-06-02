@@ -518,6 +518,8 @@ export interface WorkflowInputBindings {
   readonly worktree?: WorkflowWorktreeInputBinding;
 }
 
+// Type-only nominal brand for standalone package typings. Runtime discovery uses
+// the package-internal WeakSet in define-workflow.ts rather than a symbol field.
 declare const workflowDefinitionBrand: unique symbol;
 
 export interface WorkflowDefinition<
@@ -720,6 +722,11 @@ export interface WorkflowRegistry {
   all(): AnyWorkflowDefinition[];
 }
 
+/**
+ * @deprecated Removed imperative workflow API. This runtime value only throws
+ * a migration error; author workflows with defineWorkflow(...).compile().
+ */
+export declare const runWorkflow: never;
 export declare function defineWorkflow(name: string): WorkflowBuilder;
 export declare function createRegistry<TDefinitions extends readonly AnyWorkflowDefinition[] = readonly AnyWorkflowDefinition[]>(
   initial?: TDefinitions,

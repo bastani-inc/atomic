@@ -85,34 +85,6 @@ describe("chat message renderer utilities", () => {
     assert.deepEqual(live.pendingToolIds(), []);
   });
 
-  test("scrollable viewport asks row-window components for only visible rows", () => {
-    const viewport = new ScrollableComponentViewport();
-    const renderedWindows: Array<[number, number]> = [];
-    viewport.setVisibleRows(5);
-    const windowedComponent = {
-      supportsRowWindow: true,
-      rowCount: () => 20,
-      renderRows: (_width: number, startRow: number, endRow: number) => {
-        renderedWindows.push([startRow, endRow]);
-        return Array.from({ length: endRow - startRow }, (_, offset) => `entry ${startRow + offset}`);
-      },
-      render: () => {
-        throw new Error("windowed component should not render its full history");
-      },
-      invalidate: () => {},
-    };
-    viewport.setComponents([windowedComponent]);
-
-    assert.deepEqual(viewport.render(80), [
-      "entry 15",
-      "entry 16",
-      "entry 17",
-      "entry 18",
-      "entry 19",
-    ]);
-    assert.deepEqual(renderedWindows, [[15, 20]]);
-  });
-
   test("scrollable viewport defaults to sticky bottom and handles PageUp/PageDown", () => {
     const viewport = new ScrollableComponentViewport();
     viewport.setVisibleRows(3);

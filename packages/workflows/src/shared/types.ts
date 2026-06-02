@@ -175,6 +175,8 @@ export type WorkflowUIAdapter = WorkflowUIContext;
 // ---------------------------------------------------------------------------
 // StageOptions — per-stage configuration + pi SDK session options
 // ---------------------------------------------------------------------------
+// Mirrored by packages/workflows/src/authoring.ts for standalone package
+// typings; update both surfaces when this runtime type changes.
 
 /**
  * MCP server gating options for a single stage.
@@ -658,6 +660,8 @@ export interface WorkflowInputBindings {
   readonly worktree?: WorkflowWorktreeInputBinding;
 }
 
+// Mirrored by packages/workflows/src/authoring.ts for standalone package
+// typings; update both surfaces when this runtime type changes.
 export interface WorkflowDefinition<
   TInputs extends WorkflowInputValues = WorkflowInputValues,
   TOutputs extends WorkflowOutputValues = WorkflowOutputValues,

@@ -12,8 +12,12 @@ import {
 } from "../../packages/workflows/src/index.js";
 
 describe("public entrypoint", () => {
-  test("does not export the imperative runWorkflow object-form API", () => {
-    assert.equal("runWorkflow" in workflows, false);
+  test("exports removed runWorkflow as a throwing migration stub", () => {
+    assert.equal("runWorkflow" in workflows, true);
+    assert.throws(
+      () => (workflows.runWorkflow as () => never)(),
+      /@bastani\/workflows no longer exports runWorkflow; author workflows with defineWorkflow\(\.\.\.\)\.compile\(\)/,
+    );
     assert.equal("WorkflowOptions" in workflows, false);
     assert.equal("WorkflowRunOptions" in workflows, false);
   });

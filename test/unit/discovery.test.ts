@@ -707,37 +707,6 @@ describe("discoverWorkflows — INVALID_DEFINITION diagnostics", () => {
     assert.match(inv[0]!.message, /hand-rolled __piWorkflow objects are not supported/);
   });
 
-  test("copied workflow brand symbol does not make forged object discoverable", async () => {
-    const cwd = makeTempDir("forged-copied-brand");
-    const wfDir = join(cwd, ".atomic", "workflows");
-    mkdirSync(wfDir, { recursive: true });
-    writeFileSync(
-      join(wfDir, "forged-copied-brand.js"),
-      [
-        `import { defineWorkflow } from "@bastani/workflows";`,
-        `const genuine = defineWorkflow("genuine-brand-source").run(async () => ({})).compile();`,
-        `const brand = Object.getOwnPropertySymbols(genuine)[0];`,
-        `const forged = {`,
-        `  __piWorkflow: true,`,
-        `  name: "forged-copied-brand",`,
-        `  normalizedName: "forged-copied-brand",`,
-        `  description: "forged copied brand",`,
-        `  inputs: {},`,
-        `  run: async () => ({}),`,
-        `};`,
-        `Object.defineProperty(forged, brand, { value: true });`,
-        `export default forged;`,
-      ].join("\n"),
-      "utf-8",
-    );
-
-    const { registry, errors } = await discoverWorkflows({ cwd, homeDir: makeTempDir("empty-forged-brand"), includeBundled: false });
-    assert.equal(registry.has("forged-copied-brand"), false);
-    const inv = errors.filter((e) => e.code === "INVALID_DEFINITION");
-    assert.ok(inv.length > 0);
-    assert.match(inv[0]!.message, /not produced by defineWorkflow\(\.\.\.\)\.compile\(\)/);
-  });
-
   test("INVALID_DEFINITION does not register a workflow", async () => {
     const cwd = makeTempDir("invalid-no-reg");
     const wfDir = join(cwd, ".atomic", "workflows");

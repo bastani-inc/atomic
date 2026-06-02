@@ -60,7 +60,7 @@ describe("coding-agent builtin resources", () => {
     }
   });
 
-  test("keeps extensions working when a dummy package declares workflows", async () => {
+  test("loads compiled workflow resources from package directories", async () => {
     const cwd = tempDir("atomic-workflow-package-cwd-");
     const agentDir = tempDir("atomic-workflow-package-agent-");
     const packageDir = join(cwd, "workflow-package");

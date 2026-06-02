@@ -103,6 +103,8 @@ export interface RunContinuationOpts {
   readonly resumeFromStageId: string;
 }
 
+// Mirrored by packages/workflows/src/authoring.ts for standalone package
+// typings; update both surfaces when these runtime options change.
 export interface RunOpts {
   adapters?: StageAdapters;
   /** Invocation working directory exposed to workflow definitions as ctx.cwd. */
@@ -1162,6 +1164,7 @@ function defineDirectWorkflow(
     outputs: DIRECT_WORKFLOW_OUTPUTS,
     run: runFn,
   };
+  // Stamp before freezing so the WeakSet brand can be attached.
   stampWorkflowDefinition(definition);
   return Object.freeze(definition);
 }
@@ -1818,6 +1821,8 @@ function isWorkflowDefinition(value: unknown): value is WorkflowDefinition {
 }
 
 function workflowDefinitionRequirementMessage(callSite: string, value: unknown): string {
+  // isWorkflowDefinition already failed; this extra sentinel check narrows the
+  // diagnostic for forged legacy literals versus unrelated values.
   if (value !== null && typeof value === "object" && (value as { __piWorkflow?: unknown }).__piWorkflow === true) {
     return `atomic-workflows: ${callSite} requires a compiled workflow definition produced by defineWorkflow(...).compile(); hand-rolled __piWorkflow objects are not supported`;
   }
