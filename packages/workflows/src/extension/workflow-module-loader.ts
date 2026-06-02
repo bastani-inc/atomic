@@ -352,12 +352,34 @@ function collectWorkflowModuleNamespaceBinding(
   namespaceBindings: Set<string>,
 ): boolean {
   if (!isIdentifier(tokens, index) || !["const", "let", "var"].includes(tokens[index]!.value)) return false;
-  const nameIndex = index + 1;
-  const assignmentIndex = assignmentOperatorIndexAfterBinding(tokens, nameIndex);
-  if (assignmentIndex === undefined) return false;
-  if (workflowModuleExpressionCloseAt(tokens, assignmentIndex + 1) === undefined) return false;
-  namespaceBindings.add(tokens[nameIndex]!.value);
-  return true;
+
+  let found = false;
+  let depth = 0;
+  for (let cursor = index + 1; cursor < tokens.length; cursor += 1) {
+    const value = tokenValue(tokens, cursor);
+    if (depth === 0 && value === ";") break;
+    if (depth === 0 && isIdentifier(tokens, cursor)) {
+      const assignmentIndex = assignmentOperatorIndexAfterBinding(tokens, cursor);
+      if (assignmentIndex !== undefined) {
+        const expressionClose = workflowModuleExpressionCloseAt(tokens, assignmentIndex + 1);
+        if (expressionClose !== undefined) {
+          namespaceBindings.add(tokens[cursor]!.value);
+          found = true;
+          cursor = expressionClose;
+          continue;
+        }
+      }
+    }
+
+    if (value === "(" || value === "{" || value === "[" || value === "<") {
+      depth += 1;
+      continue;
+    }
+    if (value === ")" || value === "}" || value === "]" || value === ">") {
+      depth = Math.max(0, depth - 1);
+    }
+  }
+  return found;
 }
 
 function staticExportReferencesRemovedRunWorkflow(

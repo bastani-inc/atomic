@@ -12,6 +12,8 @@ import type {
   TArrayOptions,
   TBoolean,
   TInteger,
+  TLiteral,
+  TLiteralValue,
   TNumber,
   TNumberOptions,
   TObject,
@@ -27,13 +29,15 @@ import type {
 
 type PreserveOptions<T extends TSchema, O extends TSchemaOptions> = T & O;
 
-export declare const Type: Omit<typeof TypeboxType, "Array" | "Boolean" | "Integer" | "Number" | "Object" | "String" | "Union"> & {
+export declare const Type: Omit<typeof TypeboxType, "Array" | "Boolean" | "Integer" | "Literal" | "Number" | "Object" | "String" | "Union"> & {
   Array<Type extends TSchema, const O extends TArrayOptions>(items: Type, options: O): PreserveOptions<TArray<Type>, O>;
   Array<Type extends TSchema>(items: Type): TArray<Type>;
   Boolean<const O extends TSchemaOptions>(options: O): PreserveOptions<TBoolean, O>;
   Boolean(): TBoolean;
   Integer<const O extends TNumberOptions>(options: O): PreserveOptions<TInteger, O>;
   Integer(): TInteger;
+  Literal<const Value extends TLiteralValue, const O extends TSchemaOptions>(value: Value, options: O): PreserveOptions<TLiteral<Value>, O>;
+  Literal<const Value extends TLiteralValue>(value: Value): TLiteral<Value>;
   Number<const O extends TNumberOptions>(options: O): PreserveOptions<TNumber, O>;
   Number(): TNumber;
   Object<Properties extends Record<PropertyKey, TSchema>, const O extends TObjectOptions>(properties: Properties, options: O): PreserveOptions<TObject<Properties>, O>;
@@ -116,6 +120,66 @@ export interface PromptOptions extends WorkflowModelFallbackFields {
 }
 
 export type StagePromptOptions = PromptOptions & StageOutputOptions;
+
+export interface StageSessionRuntime {
+  prompt(text: string, options?: PromptOptions): Promise<string | void>;
+  steer(text: string): Promise<void>;
+  followUp(text: string): Promise<void>;
+  subscribe(listener: (event: WorkflowSerializableValue) => void): () => void;
+  readonly sessionFile: string | undefined;
+  readonly sessionId: string;
+  setModel(model: WorkflowSerializableValue): Promise<void>;
+  setThinkingLevel(level: string): void;
+  cycleModel(): WorkflowSerializableValue;
+  cycleThinkingLevel(): WorkflowSerializableValue;
+  readonly agent: WorkflowSerializableValue;
+  readonly model: WorkflowSerializableValue;
+  readonly thinkingLevel: string | undefined;
+  readonly messages: readonly WorkflowSerializableValue[];
+  readonly isStreaming: boolean;
+  readonly pendingMessageCount?: number;
+  readonly settingsManager?: WorkflowSerializableObject;
+  navigateTree: WorkflowSerializableValue;
+  compact: WorkflowSerializableValue;
+  abortCompaction(): void;
+  abort(): Promise<void>;
+  dispose(): void | Promise<void>;
+  getLastAssistantText?: () => string | undefined;
+}
+
+export type StageSessionCreateOptions = StageOptions & WorkflowSerializableObject;
+
+export interface StageSessionCreateResult {
+  readonly session: StageSessionRuntime;
+  readonly settingsManager?: WorkflowSerializableObject;
+}
+
+export interface StageExecutionMeta {
+  readonly runId: string;
+  readonly stageId: string;
+  readonly stageName: string;
+  readonly stageOptions?: StageOptions;
+  readonly signal?: AbortSignal;
+  readonly executionMode?: WorkflowExecutionMode;
+}
+
+export interface AgentSessionAdapter {
+  create(options: StageSessionCreateOptions, meta?: StageExecutionMeta): Promise<StageSessionRuntime | StageSessionCreateResult>;
+}
+
+export interface PromptAdapter {
+  prompt(text: string, meta?: StageExecutionMeta): Promise<string>;
+}
+
+export interface CompleteAdapter {
+  complete(text: string, opts?: CompleteStageOpts, meta?: StageExecutionMeta): Promise<string>;
+}
+
+export interface StageAdapters {
+  readonly agentSession?: AgentSessionAdapter;
+  readonly prompt?: PromptAdapter;
+  readonly complete?: CompleteAdapter;
+}
 
 export interface StageContext {
   readonly name: string;

@@ -67,10 +67,12 @@ describe("standalone workflow package typing", () => {
   run,
   Type,
 } from "@bastani/workflows";
+import type { AgentSessionAdapter, StageAdapters } from "@bastani/workflows";
 
 const workflow = defineWorkflow("Standalone Typing Fixture")
   .description("Verifies package export types without declare module shims")
   .input("message", Type.String())
+  .input("mode", Type.Literal("fast", { default: "fast" }))
   .input("count", Type.Number({ default: 1 }))
   .input("enabled", Type.Boolean({ default: true }))
   .input("nickname", Type.Optional(Type.String()))
@@ -78,6 +80,7 @@ const workflow = defineWorkflow("Standalone Typing Fixture")
   .output("maybe", Type.Optional(Type.String()))
   .run(async (ctx) => {
     const message: string = ctx.inputs.message;
+    const mode: "fast" = ctx.inputs.mode;
     const count: number = ctx.inputs.count;
     const enabled: boolean = ctx.inputs.enabled;
     const nickname: string | undefined = ctx.inputs.nickname;
@@ -87,7 +90,8 @@ const workflow = defineWorkflow("Standalone Typing Fixture")
     const chained = await ctx.chain([
       { name: "first", prompt: message },
       { name: "second", prompt: String(count) },
-      { name: "third", prompt: String(enabled) },
+      { name: "third", prompt: mode },
+      { name: "fourth", prompt: String(enabled) },
     ]);
     return { summary: chained.at(-1)?.text ?? "", maybe: nickname };
   })
@@ -104,7 +108,7 @@ const undeclaredOutputWorkflow = defineWorkflow("Undeclared Output Fixture")
   .compile();
 
 run(workflow, { message: "hello" }, { executionMode: "non_interactive" });
-run(workflow, { message: "hello", count: 2, enabled: false }, { executionMode: "interactive" });
+run(workflow, { message: "hello", mode: "fast", count: 2, enabled: false }, { executionMode: "interactive" });
 // @ts-expect-error detached is not a runtime executionMode literal.
 run(workflow, { message: "hello" }, { executionMode: "detached" });
 // @ts-expect-error message has no default and remains required.
@@ -114,10 +118,13 @@ run(optionalOutputWorkflow, {});
 const frontier = new GraphFrontierTracker();
 const store = createStore();
 const cancellationRegistry = createCancellationRegistry();
+const adapter: AgentSessionAdapter | undefined = undefined;
+const adapters: StageAdapters = { agentSession: adapter };
 void undeclaredOutputWorkflow;
 void frontier;
 void store;
 void cancellationRegistry;
+void adapters;
 
 export default workflow;
 `,
