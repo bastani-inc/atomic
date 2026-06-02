@@ -2,9 +2,9 @@
  * Builtin workflow: ralph
  *
  * Re-implements the Atomic SDK Ralph design with the local workflow task
- * primitives: bounded plan → orchestrate → simplify → discover → review
- * iterations. Reviewer and discovery passes fan out with ctx.parallel(); each
- * iteration feeds review findings into the next planner with ctx.task().
+ * primitives: bounded plan → orchestrate → simplify → review iterations.
+ * Reviewer passes fan out with ctx.parallel(); each iteration feeds review
+ * findings into the next planner with ctx.task().
  */
 
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
@@ -311,9 +311,7 @@ function parseReviewDecision(text: string): ReviewDecision | undefined {
   }
 }
 
-function reviewApproved(text: string): boolean {
-  const decision = parseReviewDecision(text);
-  if (decision === undefined) return false;
+function reviewDecisionApproved(decision: ReviewDecision): boolean {
   return (
     decision.stop_review_loop === true &&
     decision.overall_correctness === "patch is correct" &&
@@ -322,10 +320,8 @@ function reviewApproved(text: string): boolean {
   );
 }
 
-function reviewerErrorResult(
-  error: string,
-): WorkflowTaskResult {
-  const decision: ReviewDecision = {
+function reviewerErrorDecision(error: string): ReviewDecision {
+  return {
     findings: [],
     overall_correctness: "patch is incorrect",
     overall_explanation:
@@ -339,33 +335,54 @@ function reviewerErrorResult(
         "Model fallbacks were configured for the reviewer stage; continuing the bounded loop without approval.",
     },
   };
+}
+
+function reviewerErrorResult(
+  error: string,
+): WorkflowTaskResult {
   return {
     name: "reviewer-error",
     stageName: "reviewer-error",
-    text: JSON.stringify(decision, null, 2),
+    text: JSON.stringify(reviewerErrorDecision(error), null, 2),
   };
 }
 
-function discoveryContextLabel(name: string | undefined): string {
-  if (name?.startsWith("infra-locate-")) return "Infrastructure locator";
-  if (name?.startsWith("infra-analyze-")) return "Infrastructure analyzer";
-  if (name?.startsWith("infra-patterns-"))
-    return "Infrastructure pattern finder";
-  return "Infrastructure discovery";
+function artifactSafeName(value: string): string {
+  const safe = value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return safe.length > 0 ? safe : "artifact";
 }
 
-function formatDiscovery(results: readonly WorkflowTaskResult[]): string {
-  return results
-    .map(
-      (result) => `### ${discoveryContextLabel(result.name)}\n\n${result.text}`,
-    )
-    .join("\n\n---\n\n");
+type ReviewArtifact = {
+  readonly iteration: number;
+  readonly reviewer: string;
+  readonly decision: ReviewDecision;
+  readonly raw_text: string;
+};
+
+type ReviewRoundArtifact = {
+  readonly iteration: number;
+  readonly reviews: readonly {
+    readonly reviewer: string;
+    readonly artifact_path: string;
+    readonly decision: ReviewDecision;
+  }[];
+};
+
+async function writeJsonArtifact(path: string, content: ReviewArtifact | ReviewRoundArtifact): Promise<string> {
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, `${JSON.stringify(content, null, 2)}\n`, {
+    encoding: "utf8",
+  });
+  return path;
 }
 
-function formatReview(results: readonly WorkflowTaskResult[]): string {
-  return results
-    .map((result) => `### ${result.name}\n\n${result.text}`)
-    .join("\n\n---\n\n");
+function compactReviewReport(path: string | undefined): string {
+  return path === undefined
+    ? "No reviewer artifact was produced."
+    : `Latest review round artifact: ${path}`;
 }
 
 type RalphInputs = {
@@ -391,6 +408,7 @@ type RalphWorkflowResult = {
   readonly approved: boolean;
   readonly iterations_completed: number;
   readonly review_report: string;
+  readonly review_report_path?: string;
 };
 
 async function runRalphWorkflow(
@@ -399,7 +417,7 @@ async function runRalphWorkflow(
 ): Promise<RalphWorkflowResult> {
   const { prompt, maxLoops, comparisonBaseBranch, workflowStartCwd } = options;
 
-  let reviewReport = "";
+  let latestReviewReportPath: string | undefined;
   let finalPlan = "";
   let finalPlanPath = "";
   let finalResult = "";
@@ -409,6 +427,7 @@ async function runRalphWorkflow(
   // worktree cwd so specs and stage writes land in the same checkout.
   const workflowSpecPath = resolve(workflowStartCwd, defaultSpecPath(prompt));
   const implementationNotesPath = await createImplementationNotesFile(prompt);
+  const artifactDir = await mkdtemp(join(tmpdir(), "atomic-ralph-run-"));
   let approved = false;
   let iterationsCompleted = 0;
 
@@ -461,18 +480,6 @@ async function runRalphWorkflow(
     customTools: [reviewDecisionTool],
   };
 
-  const explorerModelConfig = {
-    model: "openai/gpt-5.4-mini",
-    fallbackModels: [
-      "openai-codex/gpt-5.4-mini",
-      "github-copilot/gpt-5.4-mini",
-      "anthropic/claude-haiku-4-5",
-      "github-copilot/claude-haiku-4.5",
-    ],
-    thinkingLevel: "low" as const,
-    excludedTools: ["ask_user_question"],
-  };
-
   for (let iteration = 1; iteration <= maxLoops; iteration += 1) {
     iterationsCompleted = iteration;
 
@@ -495,10 +502,14 @@ async function runRalphWorkflow(
           `Plan iteration ${iteration}/${maxLoops} for this user specification:\n${prompt}`,
         ],
         [
-          "previous_review_findings",
-          reviewReport
-            ? "Previous review findings:\n{previous}"
-            : "No prior review findings; this is the first iteration.",
+          "latest_review_artifact",
+          latestReviewReportPath === undefined
+            ? "No prior review artifact; this is the first iteration."
+            : [
+                `Latest review round artifact: ${latestReviewReportPath}`,
+                "Read this JSON artifact incrementally and address only unresolved findings from the latest review round.",
+                "Do not rely on an injected review transcript or older review history unless the latest artifact explicitly points you there.",
+              ].join("\n"),
         ],
         [
           "spec_revision_target",
@@ -568,15 +579,18 @@ async function runRalphWorkflow(
         ],
         ["rfc_template", PLANNER_RFC_TEMPLATE],
       ]),
-      ...(reviewReport
-        ? { previous: { name: "review-report", text: reviewReport } }
-        : {}),
-      ...(iteration > 1 ? { reads: [workflowSpecPath] } : {}),
+      reads: [
+        ...(iteration > 1 ? [workflowSpecPath] : []),
+        ...(latestReviewReportPath === undefined ? [] : [latestReviewReportPath]),
+      ],
       ...plannerModelConfig,
     });
     finalPlan = planner.text;
     const specPath = await writeSpecFile(workflowSpecPath, planner.text);
     finalPlanPath = specPath;
+
+    const orchestratorReportPath = join(artifactDir, `orchestrator-${iteration}.md`);
+    const simplifierReportPath = join(artifactDir, `code-simplifier-${iteration}.md`);
 
     const orchestrator = await ctx.task(`orchestrator-${iteration}`, {
       prompt: taggedPrompt([
@@ -670,9 +684,11 @@ async function runRalphWorkflow(
         ],
       ]),
       reads: [specPath, implementationNotesPath],
+      output: orchestratorReportPath,
+      outputMode: "file-only",
       ...orchestratorModelConfig,
     });
-    finalResult = orchestrator.text;
+    finalResult = orchestrator.text || `Orchestrator report artifact: ${orchestratorReportPath}`;
 
     await ctx.task(`code-simplifier-${iteration}`, {
       prompt: taggedPrompt([
@@ -688,7 +704,15 @@ async function runRalphWorkflow(
           "objective",
           `Refine recently modified code for this task while preserving exact behavior: ${prompt}`,
         ],
-        ["current_iteration_context", "{previous}"],
+        [
+          "artifact_handoff",
+          [
+            `Spec artifact: ${specPath}`,
+            `Implementation notes artifact: ${implementationNotesPath}`,
+            `Orchestrator report artifact: ${orchestratorReportPath}`,
+            "Read these artifacts incrementally only when needed to identify recently modified files and intent; do not depend on an injected planner/orchestrator transcript tail.",
+          ].join("\n"),
+        ],
         [
           "functionality_preservation",
           [
@@ -767,131 +791,12 @@ async function runRalphWorkflow(
           ].join("\n"),
         ],
       ]),
-      previous: [planner, orchestrator],
+      reads: [specPath, implementationNotesPath, orchestratorReportPath],
+      output: simplifierReportPath,
+      outputMode: "file-only",
       ...simplifierModelConfig,
     });
 
-    const discovery = await ctx.parallel(
-      [
-        {
-          name: `infra-locate-${iteration}`,
-          task: taggedPrompt([
-            [
-              "role",
-              "You locate project infrastructure needed for patch review.",
-            ],
-            [
-              "objective",
-              `Find review-relevant infrastructure for the task: ${prompt}`,
-            ],
-            [
-              "stage_contract",
-              [
-                "This is a repository-discovery stage. Do not answer from assumptions or common project layouts.",
-                "Before output, inspect the repository for each infrastructure category: package scripts, test configs, CI workflows, generated artifacts, lint/typecheck setup, and release gates.",
-                "The table is a compact handoff after discovery, not a substitute for discovery.",
-              ].join("\n"),
-            ],
-            [
-              "instructions",
-              [
-                "Locate package scripts, test configs, CI workflows, generated artifacts, lint/typecheck setup, and release gates.",
-                "Search/read relevant files such as package manifests, CI workflow directories, test configs, lint/typecheck configs, build scripts, release configs, and generated-artifact markers.",
-                "Prefer exact file paths and commands.",
-                "Explain how each item should influence review or validation.",
-                "If a category does not exist, report `not found` and briefly name the paths or patterns checked.",
-              ].join("\n"),
-            ],
-            [
-              "output_format",
-              "Markdown table: Area | Path/command | Why it matters | Confidence.",
-            ],
-          ]),
-          ...explorerModelConfig,
-        },
-        {
-          name: `infra-analyze-${iteration}`,
-          task: taggedPrompt([
-            [
-              "role",
-              "You analyze integration risks in project infrastructure.",
-            ],
-            [
-              "objective",
-              `Assess infrastructure and changed-code risks for the task: ${prompt}`,
-            ],
-            [
-              "stage_contract",
-              [
-                "This stage analyzes actual repository coupling, not generic integration risks.",
-                "Before output, inspect the changed-code context plus relevant infrastructure/configuration files discovered or inferable from the repo.",
-                "Classify a risk as confirmed only when repository evidence shows the coupling; otherwise mark it speculative.",
-              ].join("\n"),
-            ],
-            [
-              "instructions",
-              [
-                "Identify hidden coupling with build, tests, linting, runtime config, release automation, or generated files.",
-                "Name the exact validations that would most efficiently detect regressions.",
-                "Separate confirmed risks from speculative risks.",
-                "Do not repeat generic review advice; ground findings in repository evidence.",
-                "Copy validation commands from actual repository scripts/configs when available; do not invent commands that are not supported by the repo.",
-              ].join("\n"),
-            ],
-            [
-              "evidence_expectations",
-              "Each confirmed risk must include concrete evidence: path, command, symbol, config key, script name, or file relationship.",
-            ],
-            [
-              "output_format",
-              "Markdown with sections: Confirmed risks, Speculative risks, Validation commands, Evidence.",
-            ],
-          ]),
-          ...explorerModelConfig,
-        },
-        {
-          name: `infra-patterns-${iteration}`,
-          task: taggedPrompt([
-            ["role", "You find repository patterns that a patch must follow."],
-            [
-              "objective",
-              `Extract conventions relevant to reviewing this task: ${prompt}`,
-            ],
-            [
-              "stage_contract",
-              [
-                "This is an evidence-gathering stage for repository conventions. Do not describe generic best practices.",
-                "Before output, find concrete examples in the repository that demonstrate conventions relevant to this task.",
-                "Read enough of each example to understand the convention before reporting it.",
-              ].join("\n"),
-            ],
-            [
-              "instructions",
-              [
-                "Find examples of build/test/style/release/architecture patterns the patch should mirror.",
-                "Search for nearby or analogous implementations, tests, configs, scripts, and docs.",
-                "Use concrete paths, commands, or symbols as evidence.",
-                "Highlight conventions that commonly cause subtle review failures.",
-                "If examples conflict, describe the conflict instead of forcing a single rule.",
-                "If no relevant example exists, state what was searched and that no pattern was found.",
-              ].join("\n"),
-            ],
-            [
-              "handoff_expectations",
-              "For every required convention or useful example, include the supporting path, command, symbol, or file relationship so reviewers can verify it quickly.",
-            ],
-            [
-              "output_format",
-              "Markdown with sections: Required conventions, Useful examples, Exceptions, Review implications.",
-            ],
-          ]),
-          ...explorerModelConfig,
-        },
-      ],
-      { task: prompt },
-    );
-
-    const discoveryContext = formatDiscovery(discovery);
     const reviewPrompt = taggedPrompt([
       [
         "role",
@@ -910,7 +815,16 @@ async function runRalphWorkflow(
           `Start with \`git status --short\`, then use working-tree-aware commands such as \`git diff ${comparisonBaseBranch}\` and \`git diff --cached ${comparisonBaseBranch}\` to identify changed tracked files; inspect untracked files from status directly.`,
         ].join("\n"),
       ],
-      ["infrastructure_discovery", discoveryContext],
+      [
+        "review_context_files",
+        [
+          `Spec artifact: ${specPath}`,
+          `Implementation notes artifact: ${implementationNotesPath}`,
+          `Orchestrator report artifact: ${orchestratorReportPath}`,
+          `Simplifier report artifact: ${simplifierReportPath}`,
+          "Read the files above incrementally when they help explain intent or recent changes, but verify the actual repository state directly before approving.",
+        ].join("\n"),
+      ],
       [
         "project_guidance",
         [
@@ -998,26 +912,7 @@ async function runRalphWorkflow(
           "The review loop decides whether to stop only by parsing the JSON object returned by this tool; invalid JSON, missing fields, reviewer_error, or stop_review_loop=false are treated as not approved for safety.",
           "Set stop_review_loop=true only when findings is empty, overall_correctness is patch is correct, and reviewer_error is null/omitted.",
           "If you hit a reviewer/tool/validation error, still return the object with stop_review_loop=false and reviewer_error populated instead of pretending the patch is approved.",
-          "The JSON must match this schema exactly:",
-          "{",
-          '  "findings": [',
-          "    {",
-          '      "title": "<≤ 80 chars, imperative, starts with [P0]/[P1]/[P2]/[P3]>",',
-          '      "body": "<one paragraph of valid Markdown explaining why this is a problem; cite files/lines/functions>",',
-          '      "confidence_score": <float 0.0-1.0>,',
-          '      "priority": <int 0-3 or null>,',
-          '      "code_location": {',
-          '        "absolute_file_path": "<absolute file path>",',
-          '        "line_range": {"start": <int>, "end": <int>}',
-          "      }",
-          "    }",
-          "  ],",
-          '  "overall_correctness": "patch is correct" | "patch is incorrect",',
-          '  "overall_explanation": "<1-3 sentence explanation justifying the verdict>",',
-          '  "overall_confidence_score": <float 0.0-1.0>,',
-          '  "stop_review_loop": <boolean>,',
-          '  "reviewer_error": null | {"kind": "validation_unavailable" | "dependency_unavailable" | "tool_failure" | "reviewer_failure", "message": "<what failed>", "attempted_recovery": "<what you tried>"}',
-          "}",
+          "The review_decision tool schema is authoritative; do not copy a hand-written JSON schema into the final response.",
         ].join("\n"),
       ],
     ]);
@@ -1029,11 +924,23 @@ async function runRalphWorkflow(
           {
             name: "reviewer-a",
             task: reviewPrompt,
+            reads: [
+              specPath,
+              implementationNotesPath,
+              orchestratorReportPath,
+              simplifierReportPath,
+            ],
             ...reviewerModelConfig,
           },
           {
             name: "reviewer-b",
             task: reviewPrompt,
+            reads: [
+              specPath,
+              implementationNotesPath,
+              orchestratorReportPath,
+              simplifierReportPath,
+            ],
             ...reviewerModelConfig,
           },
         ],
@@ -1044,10 +951,29 @@ async function runRalphWorkflow(
       reviews = [reviewerErrorResult(message)];
     }
 
+    const reviewEntries = await Promise.all(reviews.map(async (review) => {
+      const reviewer = review.name ?? review.stageName;
+      const decision = parseReviewDecision(review.text) ??
+        reviewerErrorDecision(`Reviewer ${reviewer} returned invalid structured JSON.`);
+      const artifactPath = join(
+        artifactDir,
+        `review-${iteration}-${artifactSafeName(reviewer)}.json`,
+      );
+      await writeJsonArtifact(artifactPath, {
+        iteration,
+        reviewer,
+        decision,
+        raw_text: review.text,
+      });
+      return { reviewer, artifact_path: artifactPath, decision };
+    }));
     approved =
-      reviews.length > 0 &&
-      reviews.every((review) => reviewApproved(review.text));
-    reviewReport = formatReview(reviews);
+      reviewEntries.length > 0 &&
+      reviewEntries.every((review) => reviewDecisionApproved(review.decision));
+    latestReviewReportPath = await writeJsonArtifact(
+      join(artifactDir, `review-round-${iteration}.json`),
+      { iteration, reviews: reviewEntries },
+    );
     if (approved) break;
   }
 
@@ -1070,6 +996,9 @@ async function runRalphWorkflow(
             ? `Planner spec path: ${finalPlanPath}`
             : "Planner spec path: unavailable",
           `Implementation notes path: ${implementationNotesPath}`,
+          latestReviewReportPath === undefined
+            ? "Latest review artifact: unavailable"
+            : `Latest review artifact: ${latestReviewReportPath}`,
         ].join("\n"),
       ],
       [
@@ -1109,9 +1038,11 @@ async function runRalphWorkflow(
         ].join("\n"),
       ],
     ]),
-    reads: finalPlanPath
-      ? [finalPlanPath, implementationNotesPath]
-      : [implementationNotesPath],
+    reads: [
+      ...(finalPlanPath ? [finalPlanPath] : []),
+      implementationNotesPath,
+      ...(latestReviewReportPath === undefined ? [] : [latestReviewReportPath]),
+    ],
     ...orchestratorModelConfig,
   });
   finalPrReport = prResult.text;
@@ -1124,7 +1055,8 @@ async function runRalphWorkflow(
     pr_report: finalPrReport,
     approved,
     iterations_completed: iterationsCompleted,
-    review_report: reviewReport,
+    review_report: compactReviewReport(latestReviewReportPath),
+    ...(latestReviewReportPath === undefined ? {} : { review_report_path: latestReviewReportPath }),
   };
 }
 
@@ -1157,7 +1089,8 @@ export default defineWorkflow("ralph")
   .output("pr_report", Type.Optional(Type.String({ description: "Pull-request preparation report with diff review, PR status, commands, and follow-up steps." })))
   .output("approved", Type.Optional(Type.Boolean({ description: "Whether the reviewer loop approved before PR handoff." })))
   .output("iterations_completed", Type.Optional(Type.Number({ description: "Number of plan/orchestrate/review loops completed." })))
-  .output("review_report", Type.Optional(Type.String({ description: "Markdown report containing the latest reviewer payloads." })))
+  .output("review_report", Type.Optional(Type.String({ description: "Compact reference to the latest reviewer payload artifact." })))
+  .output("review_report_path", Type.Optional(Type.String({ description: "JSON artifact path for the latest Ralph review round." })))
   .run(async (ctx) => {
     const workflowCtx = ctx;
     const workflowStartCwd = workflowCtx.cwd ?? process.cwd();

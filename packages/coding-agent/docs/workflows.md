@@ -152,7 +152,7 @@ For the builtin result tables below, `deep-research-codebase`, `goal`, and `ralp
 |---|---|---|
 | `deep-research-codebase` | Scout + research-history chain → parallel specialist waves → aggregator. Indexes the whole repo and synthesizes findings. | Broad or cross-cutting research before you decide what to change. Prefer `/skill:research-codebase` for one subsystem. |
 | `goal` | Persisted goal ledger → bounded worker turns → receipts → three-reviewer gate → deterministic reducer → final report. | Small-to-medium scope changes when you can identify the work surface, state the exact outcome, and name the validation that proves it is done — for example tests, lint/typecheck, docs builds, or observable behavior. |
-| `ralph` | RFC planning → sub-agent orchestration → simplification → infrastructure discovery → parallel review → PR handoff. | Larger migrations, broad refactors, multi-package changes, and spec-to-PR work where you want Atomic to plan the approach, delegate implementation through sub-agents, simplify, review, iterate, and prepare a pull-request report. |
+| `ralph` | RFC planning → sub-agent orchestration → simplification → parallel review → PR handoff. | Larger migrations, broad refactors, multi-package changes, and spec-to-PR work where you want Atomic to plan the approach, delegate implementation through sub-agents, simplify, review, iterate, and prepare a pull-request report. |
 | `open-claude-design` | Design-system onboarding → reference import → HTML generation → impeccable-driven refinement → quality gate → rich HTML handoff. Renders a live `preview.html` you can iterate against (opens through `browser-use` when available). | UI, page, component, theme, or design-token work that benefits from generation + critique loops. |
 
 ### `deep-research-codebase`
@@ -260,7 +260,7 @@ Run examples:
 /workflow ralph prompt="Safely implement the API refactor" git_worktree_dir=../atomic-ralph-api-wt base_branch=main
 ```
 
-Each `ralph` iteration writes an RFC-style technical design document under `specs/`, initializes an OS-temp implementation notes file, delegates implementation through sub-agents, runs a behavior-preserving code simplifier, discovers review infrastructure, and asks two reviewers to inspect the patch against `base_branch`. The loop stops when every reviewer approves or `max_loops` is reached, then runs a pull-request preparation stage.
+Each `ralph` iteration writes an RFC-style technical design document under `specs/`, initializes an OS-temp implementation notes file, delegates implementation through sub-agents, runs a behavior-preserving code simplifier, and asks two reviewers to inspect the patch directly against `base_branch`. Reviewers discover any needed repository infrastructure themselves while inspecting the actual diff; Ralph no longer runs separate `infra-*` discovery stages. The loop stops when every reviewer approves or `max_loops` is reached, then runs a pull-request preparation stage.
 
 Set `git_worktree_dir` when you want Ralph's worker stages isolated in a reusable Git worktree. Relative paths resolve from the invoking repository root, existing same-repository worktree roots are reused, and missing paths are created from `base_branch`. Ralph preserves the invoking repo-relative cwd inside the worktree, so launching from `repo/packages/api` with `git_worktree_dir=../repo-wt` runs stages from `../repo-wt/packages/api`.
 
@@ -275,7 +275,8 @@ Result fields:
 | `pr_report` | Pull-request preparation report: diff review, PR status, commands, and follow-up steps. |
 | `approved` | Whether the reviewer loop approved before PR handoff. |
 | `iterations_completed` | Number of plan/orchestrate/review loops completed. |
-| `review_report` | Markdown report containing the latest reviewer payloads. |
+| `review_report` | Compact reference to the latest reviewer payload artifact. |
+| `review_report_path` | JSON artifact path for the latest Ralph review round. |
 
 A typical end-to-end flow is `/skill:research-codebase` → `/skill:create-spec` → `/workflow goal objective="Implement the researched rate-limit behavior, run the focused tests, and finish when the documented burst behavior is validated"` when you can identify the work surface, state the exact outcome, and name the validation that proves it is done. Keep using `/workflow ralph` for larger migrations, broad refactors, multi-package changes, and spec-to-PR work where you want Atomic to plan, delegate through sub-agents, simplify, review, iterate, and prepare a pull-request report.
 
@@ -780,22 +781,46 @@ export default defineWorkflow("my-workflow")
   .run(async (ctx) => {
     const prompt = String(ctx.inputs.prompt);
 
-    const scout = await ctx.task("scout", {
+    const scoutPath = ".atomic/workflows/runs/my-workflow/scout.md";
+    const reviewPaths = {
+      quality: ".atomic/workflows/runs/my-workflow/quality.md",
+      runtime: ".atomic/workflows/runs/my-workflow/runtime.md",
+    } as const;
+
+    await ctx.task("scout", {
       prompt: `Map the relevant context for: ${prompt}`,
       context: "fresh",
+      output: scoutPath,
+      outputMode: "file-only",
     });
 
     const reviews = await ctx.parallel(
       [
-        { name: "quality", prompt: "Inspect quality risks using this context: {previous}", previous: scout },
-        { name: "runtime", prompt: "Inspect runtime concerns using this context: {previous}", previous: scout },
+        {
+          name: "quality",
+          prompt: `Scout artifact: ${scoutPath}\nRead the file at ${scoutPath} and inspect only sections needed for this quality review.`,
+          reads: [scoutPath],
+          output: reviewPaths.quality,
+          outputMode: "file-only",
+        },
+        {
+          name: "runtime",
+          prompt: `Scout artifact: ${scoutPath}\nRead the file at ${scoutPath} and inspect only sections needed for this runtime review.`,
+          reads: [scoutPath],
+          output: reviewPaths.runtime,
+          outputMode: "file-only",
+        },
       ],
       { concurrency: 2 },
     );
 
     const final = await ctx.task("synthesis", {
-      prompt: "Synthesize findings and recommend next steps.",
-      previous: reviews,
+      prompt: [
+        `Quality review: ${reviewPaths.quality}`,
+        `Runtime review: ${reviewPaths.runtime}`,
+        "Read the files at the paths above incrementally, then synthesize findings and recommend next steps.",
+      ].join("\n"),
+      reads: Object.values(reviewPaths),
     });
 
     return { summary: final.text, reviewer_count: reviews.length };
@@ -846,17 +871,22 @@ Workflow outputs are runtime contracts for completed workflow runs and for paren
 
 ```ts
 export default defineWorkflow("review-with-summary")
-  .output("research_summary", Type.String())
+  .output("research_artifact", Type.String())
   .output("review", Type.String())
   .run(async (ctx) => {
-    const research = await ctx.task("research", { prompt: "Research the target." });
+    const researchPath = ".atomic/workflows/runs/review-with-summary/research.md";
+    await ctx.task("research", {
+      prompt: "Research the target.",
+      output: researchPath,
+      outputMode: "file-only",
+    });
     const review = await ctx.task("review", {
-      prompt: "Review using this research:\n\n{previous}",
-      previous: research,
+      prompt: `Research artifact: ${researchPath}\nRead the file at ${researchPath} incrementally and summarize risks.`,
+      reads: [researchPath],
     });
 
     return {
-      research_summary: research.text,
+      research_artifact: researchPath,
       review: review.text,
     };
   })
@@ -1124,13 +1154,13 @@ Prefer high-level primitives because they create tracked graph nodes, provide co
 | Pure deterministic computation, parsing, or file I/O | Plain TypeScript in `.run()` or helpers |
 | Fine-grained session control | `ctx.stage(name, options?)` |
 
-Use `previous` and `{previous}` for context handoff. If no placeholder is present, the runtime appends context. Chain defaults are:
+Use `previous` and `{previous}` for compact handoffs only. If no placeholder is present, the runtime appends context, so a large `previous` payload can silently bloat the next model prompt. Chain defaults are:
 
 - first missing task uses `{task}` from chain options or the root direct task
 - later missing tasks use `{previous}`
 - missing tasks in chain-parallel groups use `{previous}`
 
-For large handoffs, save artifacts and pass file references instead of full transcripts.
+For large handoffs, write artifacts to files, pass their paths with `reads`, and tell downstream stages to read those files incrementally. Put the instruction in the downstream prompt explicitly, e.g. `Read the file at ${artifactPath} and use only the sections needed for this stage.` Prefer `outputMode: "file-only"` when the parent only needs the artifact path.
 
 ### Fine-Grained Stages
 
@@ -1149,7 +1179,7 @@ Use `ctx.stage(name, options?)` when `ctx.task` is too coarse and you need direc
 Common task/stage options include:
 
 - `prompt` or `task`
-- `previous` for handoff context
+- `previous` for small handoff context; use artifact paths plus `reads` for large outputs, logs, research bundles, or reviewer payloads
 - `context: "fresh" | "fork"`, `forkFromSessionFile`
 - `model`, `fallbackModels`, `thinkingLevel`, `scopedModels`, `modelRegistry`
 - `tools`, `noTools`, `customTools`, `mcp: { allow?: string[], deny?: string[] }`
@@ -1272,7 +1302,24 @@ A good compressed handoff includes:
 - rejected alternatives when they matter
 - next action expected from the downstream stage
 
-Use `output`, `outputMode: "file-only"`, `reads`, and `chainDir` for large research bundles, logs, or reviewer outputs. Keep summaries compact and let downstream stages read full artifacts only when needed.
+Use `output`, `outputMode: "file-only"`, `reads`, and `chainDir` for large research bundles, logs, or reviewer outputs. Keep summaries compact and let downstream stages read full artifacts only when needed. In the downstream stage prompt, explicitly say something like `Read the file at ${artifactPath} before continuing.` Do not inject full session tails, all previous stage outputs, or every prior review round into later prompts by default; pass the latest relevant artifact paths and make older history discoverable from a ledger or index file.
+
+```ts
+const researchPath = ".atomic/workflows/runs/context-demo/research.md";
+await ctx.task("researcher", {
+  task: "Map the subsystem and save the report.",
+  output: researchPath,
+  outputMode: "file-only",
+});
+
+const review = await ctx.task("reviewer", {
+  task: [
+    `Research artifact: ${researchPath}`,
+    `Read the file at ${researchPath} incrementally and inspect only the sections needed for this review.`,
+  ].join("\n"),
+  reads: [researchPath],
+});
+```
 
 ### Multi-Agent and Parallel Patterns
 
@@ -1305,6 +1352,8 @@ Recommended patterns:
 
 - write large tool outputs to files and return concise references
 - store plans, state, and reviewer findings in structured markdown or JSON
+- pass artifact paths via `reads`; prompt agents with `Read the file at <path>...` rather than pasting artifacts into `{previous}`
+- for review loops, pass the latest review-round artifact first and let a ledger/index point to older rounds only when needed
 - give parallel branches separate output paths to avoid write conflicts
 - use `grep`, globbing, and line-range reads instead of loading entire logs
 - clean scratch files or keep them under run-specific directories

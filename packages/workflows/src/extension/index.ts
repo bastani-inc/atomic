@@ -125,6 +125,7 @@ export const WORKFLOW_TOOL_DESCRIPTION =
   "Run named workflows or direct one-off task/tasks/chain workflows; " +
   "discover with list/get/inputs, inspect status/stages/stage details, " +
   "send prompt answers or steering, pause/resume/interrupt/kill runs, and reload workflow resources. " +
+  "For large stage handoffs, write context to files/artifacts, pass paths via reads, and prompt downstream agents to 'Read the file at <path>...' instead of injecting large previous text. " +
   "For transcripts, prefer status/stages/stage to get sessionFile/transcriptPath, " +
   "quote the exact path without rewriting separators (Windows backslashes are valid), " +
   "search it with rg/grep, and read small ranges; transcript defaults to at most 5 recent entries and explicit tail/limit overrides that preview.";

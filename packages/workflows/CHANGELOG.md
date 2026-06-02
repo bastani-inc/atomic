@@ -10,6 +10,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Added a workflow node chat Ctrl+D hint that shares the bottom footer line with model/cwd metadata and appears in the bottom-right corner of stage-local ctx.ui widgets.
 
+### Changed
+
+- Changed bundled Goal and Ralph workflows to save reviewer feedback as JSON artifacts and hand only latest review artifact paths to downstream agents instead of injecting full review histories or session tails.
+- Removed Ralph's separate `infra-locate-*`, `infra-analyze-*`, and `infra-patterns-*` discovery stages; Ralph reviewers now inspect repository infrastructure directly as needed during review.
+- Documented artifact-path handoffs, `outputMode: "file-only"`, `reads`, and explicit `Read the file at <path>...` downstream prompts as the preferred pattern for large workflow context.
+- Updated the workflow tool description to tell agents to hand off large stage context through files/artifacts instead of injected previous text.
+
 ### Fixed
 
 - Fixed paused workflow stage chats so Ctrl+D returns to the orchestrator graph instead of closing back to the main chat.

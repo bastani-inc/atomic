@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Documented workflow artifact-path handoffs and `Read the file at <path>...` downstream prompts as the preferred alternative to injecting large `previous` payloads, review histories, or session tails.
+- Updated the Ralph workflow docs to reflect the simplified plan/orchestrate/simplify/review loop without separate `infra-*` discovery stages.
+- Updated the default workflow system-prompt guidance to prefer file/artifact handoffs with explicit downstream read instructions for large stage-to-stage context.
+
 ### Fixed
 
 - Fixed severe flickering in the `ask_user_question` dialog on short terminals by suspending the animated working loader while the blocking question UI is open; the inline dialog no longer pushes the ticking loader above the viewport, which had forced a full-screen clear+replay on every spinner frame.

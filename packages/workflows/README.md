@@ -80,15 +80,27 @@ export default defineWorkflow("parallel-research")
   .run(async (ctx) => {
     const topic = ctx.inputs.topic;
 
-    const reports = await ctx.parallel([
-      { name: "auth-specialist", task: `Research authentication patterns for: ${topic}` },
-      { name: "db-specialist", task: `Research database layer for: ${topic}` },
-      { name: "api-specialist", task: `Research API surface for: ${topic}` },
+    const reportPaths = {
+      auth: ".atomic/workflows/runs/parallel-research/auth.md",
+      db: ".atomic/workflows/runs/parallel-research/db.md",
+      api: ".atomic/workflows/runs/parallel-research/api.md",
+    } as const;
+
+    await ctx.parallel([
+      { name: "auth-specialist", task: `Research authentication patterns for: ${topic}`, output: reportPaths.auth, outputMode: "file-only" },
+      { name: "db-specialist", task: `Research database layer for: ${topic}`, output: reportPaths.db, outputMode: "file-only" },
+      { name: "api-specialist", task: `Research API surface for: ${topic}`, output: reportPaths.api, outputMode: "file-only" },
     ], { concurrency: 2, failFast: false });
 
     const summary = await ctx.task("aggregator", {
-      prompt: "Synthesize these specialist reports:\n\n{previous}",
-      previous: reports,
+      prompt: [
+        "Synthesize the specialist reports.",
+        `Auth report: ${reportPaths.auth}`,
+        `Database report: ${reportPaths.db}`,
+        `API report: ${reportPaths.api}`,
+        "Read the files at the paths above incrementally and only expand sections needed for the synthesis.",
+      ].join("\n"),
+      reads: Object.values(reportPaths),
     });
     return { summary: summary.text };
   })
@@ -106,16 +118,21 @@ export default defineWorkflow("review-and-merge")
   .output("status", Type.Optional(Type.String({ description: "Set to \"cancelled\" when the human rejects the plan." })))
   .output("result", Type.Optional(Type.String({ description: "Implementation result when the plan is approved." })))
   .run(async (ctx) => {
+    const planPath = ".atomic/workflows/runs/review-and-merge/plan.md";
     const plan = await ctx.task("planner", {
       prompt: `Create a concise implementation plan for: ${String(ctx.inputs.task)}`,
+      output: planPath,
     });
 
     const approved = await ctx.ui.confirm(`Proceed with this plan?\n\n${plan.text}`);
     if (!approved) return { status: "cancelled" };
 
     const result = await ctx.task("implementer", {
-      prompt: "Execute this plan exactly:\n\n{previous}",
-      previous: plan,
+      prompt: [
+        `Plan artifact: ${planPath}`,
+        `Read the file at ${planPath} incrementally, then execute it exactly.`,
+      ].join("\n"),
+      reads: [planPath],
     });
     return { result: result.text };
   })
@@ -454,7 +471,7 @@ Prompt answer replay is live-memory only. `StageSnapshot.promptAnswerState` repo
 ```json
 {
   "name": "workflow",
-  "description": "Run named workflows or direct one-off task/tasks/chain workflows; discover with list/get/inputs, inspect status/stages/stage details, send prompt answers or steering, pause/resume/interrupt/kill runs, and reload workflow resources. For transcripts, prefer status/stages/stage to get sessionFile/transcriptPath, quote the exact path without rewriting separators (Windows backslashes are valid), search it with rg/grep, and read small ranges; transcript defaults to at most 5 recent entries and explicit tail/limit overrides that preview.",
+  "description": "Run named workflows or direct one-off task/tasks/chain workflows; discover with list/get/inputs, inspect status/stages/stage details, send prompt answers or steering, pause/resume/interrupt/kill runs, and reload workflow resources. For large stage handoffs, write context to files/artifacts, pass paths via reads, and prompt downstream agents to 'Read the file at <path>...' instead of injecting large previous text. For transcripts, prefer status/stages/stage to get sessionFile/transcriptPath, quote the exact path without rewriting separators (Windows backslashes are valid), search it with rg/grep, and read small ranges; transcript defaults to at most 5 recent entries and explicit tail/limit overrides that preview.",
   "parameters": {
     "workflow": "string (optional) — workflow ID or normalized name",
     "inputs": "object (optional) — key/value map of workflow inputs",
@@ -525,7 +542,7 @@ await runWorkflow({
   concurrency: 2,
   reads: ["research/context.md"],
   output: "research/auth-audit.md",
-  outputMode: "inline",
+  outputMode: "file-only",
   worktree: false,
   maxOutput: { lines: 2000 },
   artifacts: true,
@@ -533,6 +550,8 @@ await runWorkflow({
 ```
 
 The programmatic definition object mirrors the workflow tool: named workflow runs, single-task runs, parallel `tasks`, and mixed `chain` runs accept the same direct options (`reads`, `output`, `outputMode`, `worktree`, `gitWorktreeDir`, `baseBranch`, `maxOutput`, `artifacts`, `concurrency`, `failFast`, and stage/session options such as `cwd`, `agentDir`, `model`, `tools`, `context`, and `sessionDir`). `chainDir` is chain-only: it provides the shared artifact directory for chain reads, outputs, and worktree diffs.
+
+For large handoffs, prefer artifact paths over prompt injection: write stage output to `output`, set `outputMode: "file-only"` when the parent only needs the path, pass paths with `reads`, and instruct downstream agents explicitly with wording like `Read the file at <path>...`. Reserve `previous`/`{previous}` for compact summaries; avoid passing full session histories, all prior stage outputs, or every review round directly into the next model prompt. In review loops, save JSON review artifacts and pass only the latest review-round artifact, with a ledger or index file linking older rounds when needed.
 
 Workflow stage sessions follow Atomic SDK directory defaults: `DefaultResourceLoader` is initialized with the project `cwd` and the Atomic default `~/.atomic/agent` directory, while legacy `.pi` paths remain readable where the SDK supports multiple config directories. A stage-supplied `agentDir` is treated as an explicit user override; a stage-supplied `resourceLoader` owns discovery, with `cwd`/`agentDir` left for session naming and tool path resolution.
 
@@ -580,7 +599,7 @@ Child workflow outputs: `result`, `status`, `approved`, `goal_id`, `objective`, 
 
 ### `ralph`
 
-Plan → orchestrate → simplify → discover → review → PR-handoff workflow: write an RFC-style technical design document under `specs/`, delegate implementation through sub-agents, simplify recent changes, discover review infrastructure, run parallel reviewers, iterate until approval or the loop limit, then prepare a pull-request report.
+Plan → orchestrate → simplify → review → PR-handoff workflow: write an RFC-style technical design document under `specs/`, delegate implementation through sub-agents, simplify recent changes, run parallel reviewers, iterate until approval or the loop limit, then prepare a pull-request report. Reviewers inspect repository infrastructure directly as needed; Ralph no longer runs separate `infra-*` discovery stages.
 
 ```text
 /workflow ralph prompt="Plan and migrate the database layer to Drizzle ORM" max_loops=3 base_branch=develop
@@ -593,7 +612,7 @@ Plan → orchestrate → simplify → discover → review → PR-handoff workflo
 | `base_branch`      | `string` | —        | `origin/main` | Branch reviewers and PR-prep compare the current delta with; also used to create a missing worktree. |
 | `git_worktree_dir` | `string` | —        | `""`          | Optional reusable Git worktree root. Empty runs in the invoking checkout; non-empty values run Ralph stages in the created/reused worktree. |
 
-Child workflow outputs: `result`, `plan`, `plan_path`, `implementation_notes_path`, `pr_report`, `approved`, `iterations_completed`, and `review_report`.
+Child workflow outputs: `result`, `plan`, `plan_path`, `implementation_notes_path`, `pr_report`, `approved`, `iterations_completed`, `review_report`, and `review_report_path`.
 
 ### `open-claude-design`
 
