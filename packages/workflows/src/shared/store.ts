@@ -317,6 +317,10 @@ export function createStore(): Store {
           return run.id;
         }
       }
+      // Fallback for the degraded "orphaned-nested-only" state: a child run is in
+      // flight but no top-level run is. This normally cannot happen (a parent
+      // stays in flight while awaiting `ctx.workflow(...)`), so callers that rely
+      // on a top-level id should treat a returned nested id as best-effort.
       for (let i = _runs.length - 1; i >= 0; i--) {
         const run = _runs[i];
         if (run && run.endedAt === undefined) {

@@ -70,6 +70,16 @@ describe("defineWorkflow builder", () => {
     });
   });
 
+  test("input() records immutable workflow input metadata", () => {
+    const def = defineWorkflow("child")
+      .input("topic", { type: "text", required: true, description: "Topic" })
+      .run(async () => ({}))
+      .compile();
+
+    assert.equal(Object.isFrozen(def.inputs), true);
+    assert.equal(Object.isFrozen(def.inputs["topic"]), true);
+  });
+
   test("output() records immutable workflow output metadata", () => {
     const def = defineWorkflow("child")
       .output("summary", { type: "text", required: true, description: "Summary" })

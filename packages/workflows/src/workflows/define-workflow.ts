@@ -113,6 +113,17 @@ function freezeOutputs(
   ));
 }
 
+// Symmetric with freezeOutputs: freeze the map AND each schema object so a
+// compiled definition is a tamper-proof contract. Without this, mutating
+// `def.inputs.someKey.required` after compile would silently change validation.
+function freezeInputs(
+  inputs: Readonly<Record<string, WorkflowInputSchema>>,
+): Readonly<Record<string, WorkflowInputSchema>> {
+  return Object.freeze(Object.fromEntries(
+    Object.entries(inputs).map(([key, schema]) => [key, Object.freeze({ ...schema })]),
+  ));
+}
+
 function makeBuilder<TInputs extends WorkflowInputValues>(
   state: BuilderState<TInputs>,
 ): WorkflowBuilder<TInputs> & CompletedWorkflowBuilder<TInputs> {
@@ -160,7 +171,7 @@ function makeBuilder<TInputs extends WorkflowInputValues>(
       const normalizedName = normalizeWorkflowName(state.name);
 
       // Deep-freeze nested maps first, then the top-level definition.
-      const frozenInputs = Object.freeze({ ...state.inputs });
+      const frozenInputs = freezeInputs(state.inputs);
       const frozenOutputs = freezeOutputs(state.outputs);
       const inputBindings = Object.freeze({
         ...state.inputBindings,
