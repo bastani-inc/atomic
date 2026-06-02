@@ -27,6 +27,7 @@ import type {
   TObject,
   TObjectOptions,
   TOptional,
+  TPartial,
   TRecord,
   TSchema,
   TSchemaOptions,
@@ -58,6 +59,7 @@ export declare const Type: Omit<
   | "Never"
   | "Null"
   | "Number"
+  | "Partial"
   | "Object"
   | "Record"
   | "String"
@@ -91,6 +93,8 @@ export declare const Type: Omit<
   Null(): TNull;
   Number<const O extends TNumberOptions>(options: O): PreserveOptions<TNumber, O>;
   Number(): TNumber;
+  Partial<Type extends TSchema, const O extends TSchemaOptions>(type: Type, options: O): PreserveOptions<TPartial<Type>, O>;
+  Partial<Type extends TSchema>(type: Type): TPartial<Type>;
   Object<Properties extends Record<PropertyKey, TSchema>, const O extends TObjectOptions>(properties: Properties, options: O): PreserveOptions<TObject<Properties>, O>;
   Object<Properties extends Record<PropertyKey, TSchema>>(properties: Properties): TObject<Properties>;
   Record<Key extends TSchema, Value extends TSchema, const O extends TObjectOptions>(key: Key, value: Value, options: O): PreserveOptions<TRecord<string, Value>, O>;
@@ -174,9 +178,18 @@ export interface StageMcpOptions {
   readonly deny?: readonly string[];
 }
 
+export interface WorkflowCustomToolDefinition extends WorkflowSerializableObject {
+  readonly name: string;
+  readonly description?: string;
+}
+
 export interface StageOptions extends WorkflowModelFallbackFields {
   readonly model?: string;
   readonly mcp?: StageMcpOptions;
+  readonly tools?: readonly string[];
+  readonly noTools?: "all" | "builtin";
+  readonly excludedTools?: readonly string[];
+  readonly customTools?: readonly WorkflowCustomToolDefinition[];
   readonly cwd?: string;
   readonly context?: WorkflowContextMode;
   readonly forkFromSessionFile?: string;
@@ -488,12 +501,15 @@ export interface WorkflowInputBindings {
   readonly worktree?: WorkflowWorktreeInputBinding;
 }
 
+declare const workflowDefinitionBrand: unique symbol;
+
 export interface WorkflowDefinition<
   TInputs extends WorkflowInputValues = WorkflowInputValues,
   TOutputs extends WorkflowOutputValues = WorkflowOutputValues,
   TRunInputs extends WorkflowInputValues = TInputs,
 > {
   readonly __piWorkflow: true;
+  readonly [workflowDefinitionBrand]: true;
   readonly __runInputs?: TRunInputs;
   readonly name: string;
   readonly normalizedName: string;

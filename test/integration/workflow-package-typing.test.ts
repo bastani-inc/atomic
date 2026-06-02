@@ -71,6 +71,7 @@ import type {
   AgentSessionAdapter,
   StageAdapters,
   WorkflowExecutionPolicy,
+  WorkflowDefinition,
   WorkflowInputBindings,
   WorkflowInputSchemaMap,
   WorkflowMcpPort,
@@ -101,6 +102,7 @@ const workflow = defineWorkflow("Standalone Typing Fixture")
   .input("alias", Type.String({ default: "anon" }))
   .input("tags", Type.Array(Type.String(), { default: [] }))
   .input("settings", Type.Object({ enabled: Type.Boolean() }, { default: { enabled: true } }))
+  .input("partialConfig", Type.Partial(Type.Object({ enabled: Type.Boolean() }), { default: {} }))
   .input("variant", Type.Union([Type.Literal("a"), Type.Literal("b")], { default: "a" }))
   .input("labels", Type.Record(Type.String(), Type.String(), { default: {} }))
   .input("tuple", Type.Tuple([Type.String(), Type.Number()], { default: ["x", 1] }))
@@ -118,6 +120,7 @@ const workflow = defineWorkflow("Standalone Typing Fixture")
     const alias: string = ctx.inputs.alias;
     const tags: string[] = ctx.inputs.tags;
     const settings: { enabled: boolean } = ctx.inputs.settings;
+    const partialConfig: { enabled?: boolean } = ctx.inputs.partialConfig;
     const variant: "a" | "b" = ctx.inputs.variant;
     const labels: Record<string, string> = ctx.inputs.labels;
     const tuple: [string, number] = ctx.inputs.tuple;
@@ -135,6 +138,7 @@ const workflow = defineWorkflow("Standalone Typing Fixture")
       { name: "seventh", prompt: alias },
       { name: "eighth", prompt: tags.join(",") },
       { name: "ninth", prompt: String(settings.enabled) },
+      { name: "partial", prompt: String(partialConfig.enabled ?? "unset") },
       { name: "tenth", prompt: variant },
       { name: "eleventh", prompt: Object.keys(labels).join(",") },
       { name: "twelfth", prompt: tuple.join(":") },
@@ -162,6 +166,8 @@ run(workflow, { message: "hello" }, { executionMode: "detached" });
 run(workflow, {});
 
 run(optionalOutputWorkflow, {});
+// @ts-expect-error WorkflowDefinition is non-structural; only compile() can produce it.
+const forgedWorkflow: WorkflowDefinition = { __piWorkflow: true, name: "forged", normalizedName: "forged", description: "forged", inputs: {}, run: () => ({}) };
 const frontier = new GraphFrontierTracker();
 const store = createStore();
 const cancellationRegistry = createCancellationRegistry();
@@ -177,7 +183,7 @@ const ui: WorkflowUIAdapter | undefined = undefined;
 const mcp: WorkflowMcpPort | undefined = undefined;
 const persistence: WorkflowPersistencePort | undefined = undefined;
 const catalog: WorkflowModelCatalogPort | undefined = undefined;
-const taskSession: WorkflowTaskSessionOptions = { prompt: "hello" };
+const taskSession: WorkflowTaskSessionOptions = { prompt: "hello", tools: ["bash"], noTools: "builtin", customTools: [{ name: "custom", description: "Custom tool" }] };
 void undeclaredOutputWorkflow;
 void frontier;
 void store;
@@ -194,6 +200,7 @@ void mcp;
 void persistence;
 void catalog;
 void taskSession;
+void forgedWorkflow;
 void runWorkflow;
 type RemovedWorkflowOptions = WorkflowOptions;
 type RemovedWorkflowRunOptions = WorkflowRunOptions;
