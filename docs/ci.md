@@ -18,7 +18,7 @@ Pull request / push
   ├─ bun run test:integration
   └─ scripts/build-binaries.sh --platform <native-x64> + atomic --version smoke test
 
-v<version> tag pushed
+<version> tag pushed
   ├─ smoke test Linux x64 release archive in a dedicated job
   ├─ smoke test Windows x64 release archive in a dedicated job
   └─ publish after both smoke jobs pass
@@ -105,17 +105,17 @@ Responds to `@claude` mentions in issue comments, pull request review comments, 
 
 The publish pipeline (`publish.yml`) runs when:
 
-- a `v<version>` tag is pushed (matches pi's `build-binaries.yml` trigger)
-- `workflow_dispatch` is run with an explicit tag input such as `v0.8.0`
+- a `<version>` tag is pushed (no leading `v`, for example `0.8.0` or `0.8.0-alpha.1`)
+- `workflow_dispatch` is run with an explicit tag input such as `0.8.0`
 
 ### Tag Naming
 
 | Tag                                                       | npm tag  | GitHub Release                |
 | --------------------------------------------------------- | -------- | ----------------------------- |
-| `v<major>.<minor>.<patch>` (e.g. `v0.8.0`)                | `latest` | normal release, marked latest |
-| `v<major>.<minor>.<patch>-<prerelease>` (e.g. `v0.8.0-alpha.1`) | `next`   | prerelease, not marked latest |
+| `<major>.<minor>.<patch>` (e.g. `0.8.0`)                  | `latest` | normal release, marked latest |
+| `<major>.<minor>.<patch>-<prerelease>` (e.g. `0.8.0-alpha.1`) | `next`   | prerelease, not marked latest |
 
-The tag must match `packages/coding-agent/package.json` after removing the leading `v`. All `packages/*` package versions stay in sync via `scripts/bump-version.ts`.
+The tag must match `packages/coding-agent/package.json` exactly (no leading `v`). All `packages/*` package versions stay in sync via `scripts/bump-version.ts`.
 
 ### Version Bump
 
@@ -132,7 +132,7 @@ The script updates every `packages/*/package.json` version and any package READM
 ### Publish Flow
 
 ```text
-git push origin v0.8.0
+git push origin 0.8.0
        │
        ├─ Smoke Linux binary
        │    · build linux-x64
@@ -287,12 +287,12 @@ The meaningful pre-publish checks are:
     ```sh
     git add packages/*/package.json packages/coding-agent/CHANGELOG.md bun.lock
     git add packages/*/README.md # only if the version bump script changed README badges
-    git commit -m "chore(release): bump to v0.8.0"
-    git tag v0.8.0
+    git commit -m "chore(release): bump to 0.8.0"
+    git tag 0.8.0
     git push origin main
-    git push origin v0.8.0
+    git push origin 0.8.0
     ```
 
 5. Confirm `publish.yml` runs docs link validation, cross-compiles binaries, publishes `@bastani/atomic` to npm with OIDC provenance, and creates the GitHub Release with binaries attached.
 
-For prereleases, substitute `0.8.0-alpha.1` and tag `v0.8.0-alpha.1`.
+For prereleases, substitute `0.8.0-alpha.1` and tag `0.8.0-alpha.1`.
