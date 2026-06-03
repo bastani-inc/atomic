@@ -158,6 +158,13 @@ describe("buildSystemPrompt", () => {
 			expect(prompt).toContain("Use the `workflow` tool");
 			expect(prompt).toContain("direct `task`, `tasks`, or `chain`");
 			expect(prompt).toContain("create or edit a workflow");
+			expect(prompt).toContain("Workflow Starter Patterns");
+			expect(prompt).toContain("Classify-and-act");
+			expect(prompt).toContain("Fan-out-and-synthesize");
+			expect(prompt).toContain("Adversarial verification");
+			expect(prompt).toContain("Generate-and-filter");
+			expect(prompt).toContain("Tournament");
+			expect(prompt).toContain("Loop until done");
 			expect(prompt).toContain("create-spec skill when available");
 			expect(prompt).toContain("clarifying questions");
 			expect(prompt).toContain("implement the workflow from the created spec directly");
