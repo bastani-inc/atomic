@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.8.24-alpha.2] - 2026-06-03
+
 ### Added
 
 - The `@bastani/workflows` authoring SDK types are now externally resolvable in installed packages through `@bastani/atomic`'s new `./workflows` exports and ambient bridge, so workflow files type-check `import { defineWorkflow, Type } from "@bastani/workflows"` (and `@bastani/workflows/builtin/*`) under `tsc` (NodeNext) without a hand-authored `.d.ts`, `declare module` shim, or `paths` alias. Workflow packages declare `@bastani/atomic` and `typebox` as peer dependencies; the package continues to distribute raw TypeScript with no build step, and the runtime virtual-module loader is unchanged ([#1208](https://github.com/bastani-inc/atomic/issues/1208)).

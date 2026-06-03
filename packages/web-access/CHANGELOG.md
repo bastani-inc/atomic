@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.8.24-alpha.2] - 2026-06-03
+
+### Changed
+
+- Bumped package version for the Atomic 0.8.24-alpha.2 prerelease.
+
 ## [0.8.24-alpha.1] - 2026-06-02
 
 ### Changed
