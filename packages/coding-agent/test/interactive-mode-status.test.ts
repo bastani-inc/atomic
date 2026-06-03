@@ -240,6 +240,53 @@ describe("InteractiveMode.setupAutocompleteProvider", () => {
 	});
 });
 
+describe("InteractiveMode submit routing", () => {
+	function installSubmitHandler(options: { onInput?: (text: string) => void } = {}) {
+		const defaultEditor: { onSubmit?: (text: string) => Promise<void> } = {};
+		const fakeThis: any = {
+			defaultEditor,
+			editor: {
+				setText: vi.fn(),
+				addToHistory: vi.fn(),
+			},
+			shutdown: vi.fn(async () => {}),
+			session: {
+				isBashRunning: false,
+				isCompacting: false,
+				isStreaming: false,
+			},
+			isExtensionCommand: vi.fn(() => false),
+			flushPendingBashComponents: vi.fn(),
+			onInputCallback: options.onInput,
+		};
+
+		(InteractiveMode as any).prototype.setupEditorSubmitHandler.call(fakeThis);
+		return { fakeThis, submit: defaultEditor.onSubmit! };
+	}
+
+	test("routes exact /exit and /quit to graceful shutdown", async () => {
+		for (const command of ["/exit", "/quit"]) {
+			const { fakeThis, submit } = installSubmitHandler();
+
+			await submit(command);
+
+			expect(fakeThis.editor.setText).toHaveBeenCalledWith("");
+			expect(fakeThis.shutdown).toHaveBeenCalledTimes(1);
+		}
+	});
+
+	test("does not treat /exit with arguments as the exit command", async () => {
+		const onInput = vi.fn();
+		const { fakeThis, submit } = installSubmitHandler({ onInput });
+
+		await submit("/exit now");
+
+		expect(fakeThis.shutdown).not.toHaveBeenCalled();
+		expect(onInput).toHaveBeenCalledWith("/exit now");
+		expect(fakeThis.editor.addToHistory).toHaveBeenCalledWith("/exit now");
+	});
+});
+
 describe("InteractiveMode /fast autocomplete", () => {
 	function createModel(provider: string, id = `${provider}-model`): Model<Api> {
 		return {
@@ -357,6 +404,22 @@ describe("InteractiveMode /fast autocomplete", () => {
 
 		expect(labels).not.toContain("fast");
 		expect(labels).toContain("faster");
+	});
+
+	test("shows built-in /exit for /ex and hides conflicting extension /exit", async () => {
+		const labels = await slashLabels(
+			createProvider([createModel("openai")], [], {
+				extensionCommands: [
+					{ name: "exit", description: "Extension exit command" },
+					{ name: "explain", description: "Non-conflicting extension command" },
+				],
+			}),
+			"/ex",
+		);
+
+		expect(labels).toContain("exit");
+		expect(labels.filter((label) => label === "exit")).toHaveLength(1);
+		expect(labels).toContain("explain");
 	});
 });
 

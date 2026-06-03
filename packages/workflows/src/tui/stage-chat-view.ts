@@ -642,7 +642,6 @@ export class StageChatView implements Component, Focusable {
         return true;
       }
       case "/quit":
-      case "/exit":
         this.onClose();
         return true;
       default:

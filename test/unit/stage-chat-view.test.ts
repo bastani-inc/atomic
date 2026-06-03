@@ -150,6 +150,29 @@ async function flush(): Promise<void> {
     return new Promise<void>((resolve) => queueMicrotask(resolve));
 }
 
+function submitStageChatText(view: StageChatView, text: string): void {
+    for (const ch of text) view.handleInput(ch);
+    view.handleInput("\r");
+}
+
+function makeStageChatViewForSlashCommand(callbacks: {
+    onClose?: () => void;
+} = {}): StageChatView {
+    const store = createStore();
+    setupRun(store, "run-1", "stage-a");
+    const { handle } = makeHandle();
+    return new StageChatView({
+        store,
+        graphTheme: deriveGraphTheme({}),
+        runId: "run-1",
+        stageId: "stage-a",
+        workflowName: "test-wf",
+        handle,
+        onDetach: () => {},
+        onClose: callbacks.onClose ?? (() => {}),
+    });
+}
+
 function fakeFooterAgentSession(isStreaming = false): AgentSession {
     return {
         state: {
@@ -1926,6 +1949,51 @@ describe("StageChatView", () => {
 
         assert.deepEqual(compactCalls, ["keep recent context"]);
         assert.deepEqual(state.promptCalls, []);
+        view.dispose();
+    });
+
+    test("stage chat /exit is not a local workflow slash command", async () => {
+        for (const input of ["/exit", "/exit now", "/exit 1"]) {
+            const store = createStore();
+            setupRun(store, "run-1", "stage-a");
+            const { handle, state } = makeHandle();
+            let closeCalls = 0;
+            const view = new StageChatView({
+                store,
+                graphTheme: deriveGraphTheme({}),
+                runId: "run-1",
+                stageId: "stage-a",
+                workflowName: "test-wf",
+                handle,
+                onDetach: () => {},
+                onClose: () => {
+                    closeCalls += 1;
+                },
+            });
+
+            submitStageChatText(view, input);
+            await flush();
+            await flush();
+
+            assert.equal(closeCalls, 0, `${input} should not close the overlay`);
+            assert.deepEqual(state.promptCalls, [input]);
+            view.dispose();
+        }
+    });
+
+    test("stage chat /quit still closes only the overlay", async () => {
+        let closeCalls = 0;
+        const view = makeStageChatViewForSlashCommand({
+            onClose: () => {
+                closeCalls += 1;
+            },
+        });
+
+        submitStageChatText(view, "/quit");
+        await flush();
+        await flush();
+
+        assert.equal(closeCalls, 1);
         view.dispose();
     });
 
