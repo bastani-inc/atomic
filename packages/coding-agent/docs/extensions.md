@@ -274,14 +274,14 @@ This pattern makes the fetched models available during normal startup and to `at
 }
 ```
 
-The manifest key is the app name from `package.json` (`atomic` here); the legacy `pi` key is still accepted as a compatibility shim. Run `npm install`, `bun install`, or `pnpm install` in the extension directory, then imports from `node_modules/` work automatically.
+The manifest key is the configured Atomic app name (`atomic` here, from the running Atomic package/config), not the extension package's own `"name"` field. The legacy `pi` key is still accepted as a compatibility shim. Run `npm install`, `bun install`, or `pnpm install` in the extension directory, then imports from `node_modules/` work automatically.
 
 ## Events
 
 ### Lifecycle Overview
 
 ```
-pi starts
+Atomic starts
   │
   ├─► session_start { reason: "startup" }
   └─► resources_discover { reason: "startup" }

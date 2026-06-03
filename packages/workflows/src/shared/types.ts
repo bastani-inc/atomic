@@ -10,75 +10,43 @@ import type {
   CreateAgentSessionOptions,
   ModelCycleResult,
   PromptOptions,
+  SessionManager,
+  SettingsManager,
+  ToolDefinition,
 } from "@bastani/atomic";
 import type { TSchema } from "typebox";
+import type * as AuthoringContract from "./authoring-contract.js";
 
 export type { TSchema };
 
 export type { AgentSessionEvent, CompactionResult, ModelCycleResult, PromptOptions };
 
 export type WorkflowModelValue = NonNullable<CreateAgentSessionOptions["model"]> | string;
+export type WorkflowModelUsage = AuthoringContract.WorkflowModelUsage;
+export type WorkflowModelAttempt = AuthoringContract.WorkflowModelAttempt;
+export type WorkflowModelFallbackFields = AuthoringContract.WorkflowModelFallbackFields;
+export type WorkflowThinkingLevel = AuthoringContract.WorkflowThinkingLevel;
 
-export interface WorkflowModelUsage extends WorkflowSerializableObject {
-  readonly input?: number;
-  readonly output?: number;
-  readonly cacheRead?: number;
-  readonly cacheWrite?: number;
-  readonly cost?: number;
-  readonly turns?: number;
-}
-
-export interface WorkflowModelAttempt extends WorkflowSerializableObject {
-  readonly model: string;
-  readonly success: boolean;
-  readonly error?: string;
-  readonly usage?: WorkflowModelUsage;
-}
-
-export interface WorkflowModelFallbackFields {
-  /** Ordered model IDs to try after `model` fails for a retryable provider/model reason. */
-  readonly fallbackModels?: readonly string[];
-}
-
-export interface WorkflowModelInfo {
-  readonly provider: string;
-  readonly id: string;
-  readonly fullId: string;
+export interface WorkflowModelInfo extends Omit<AuthoringContract.WorkflowModelInfo, "model"> {
   readonly model?: NonNullable<CreateAgentSessionOptions["model"]>;
 }
 
-export interface WorkflowModelCatalogPort {
+export interface WorkflowModelCatalogPort extends Omit<AuthoringContract.WorkflowModelCatalogPort, "listModels" | "currentModel"> {
   listModels(): Promise<readonly WorkflowModelInfo[]>;
   /** Current user-selected model used as the implicit final fallback. */
   readonly currentModel?: WorkflowModelValue;
-  readonly preferredProvider?: string;
-  /** Optional warning sink for degraded catalog validation/fallback behavior. */
-  recordWarning?: (warning: string) => void;
 }
 
 // ---------------------------------------------------------------------------
 // Workflow serializable values
 // ---------------------------------------------------------------------------
 
-export type WorkflowSerializablePrimitive = string | number | boolean | null;
-
-export interface WorkflowSerializableObject {
-  /**
-   * Optional properties use `undefined` at the type level for ergonomic
-   * intellisense, but workflow runtime validation rejects actual `undefined`
-   * values in returned/input objects. Omit optional keys instead.
-   */
-  readonly [key: string]: WorkflowSerializableValue | undefined;
-}
-
-export type WorkflowSerializableValue =
-  | WorkflowSerializablePrimitive
-  | readonly WorkflowSerializableValue[]
-  | WorkflowSerializableObject;
-
-export type WorkflowInputValues = WorkflowSerializableObject;
-export type WorkflowOutputValues = WorkflowSerializableObject;
-export type WorkflowRunOutput = WorkflowOutputValues;
+export type WorkflowSerializablePrimitive = AuthoringContract.WorkflowSerializablePrimitive;
+export type WorkflowSerializableObject = AuthoringContract.WorkflowSerializableObject;
+export type WorkflowSerializableValue = AuthoringContract.WorkflowSerializableValue;
+export type WorkflowInputValues = AuthoringContract.WorkflowInputValues;
+export type WorkflowOutputValues = AuthoringContract.WorkflowOutputValues;
+export type WorkflowRunOutput = AuthoringContract.WorkflowRunOutput;
 
 // ---------------------------------------------------------------------------
 // Workflow input / output schemas
@@ -90,26 +58,20 @@ export type WorkflowRunOutput = WorkflowOutputValues;
  * the builder threads the precise `Static<>` types and the runtime validates
  * via TypeBox `Value`.
  */
-export type WorkflowInputSchemaMap = Readonly<Record<string, TSchema>>;
-export type WorkflowOutputSchemaMap = Readonly<Record<string, TSchema>>;
+export type WorkflowInputSchemaMap = AuthoringContract.WorkflowInputSchemaMap;
+export type WorkflowOutputSchemaMap = AuthoringContract.WorkflowOutputSchemaMap;
 
 /** A single declared input schema is just a TypeBox schema. */
-export type WorkflowInputSchema = TSchema;
+export type WorkflowInputSchema = AuthoringContract.WorkflowInputSchema;
 /** A single declared output schema is just a TypeBox schema. */
-export type WorkflowOutputSchema = TSchema;
+export type WorkflowOutputSchema = AuthoringContract.WorkflowOutputSchema;
 
 // ---------------------------------------------------------------------------
 // Workflow execution policy
 // ---------------------------------------------------------------------------
 
-export type WorkflowExecutionMode = "interactive" | "non_interactive";
-
-export interface WorkflowExecutionPolicy {
-  readonly mode: WorkflowExecutionMode;
-  readonly allowHumanInput: boolean;
-  readonly awaitTerminalRun: boolean;
-  readonly allowInputPicker: boolean;
-}
+export type WorkflowExecutionMode = AuthoringContract.WorkflowExecutionMode;
+export type WorkflowExecutionPolicy = AuthoringContract.WorkflowExecutionPolicy;
 
 export const INTERACTIVE_WORKFLOW_POLICY: WorkflowExecutionPolicy = Object.freeze({
   mode: "interactive",
@@ -154,23 +116,14 @@ export interface WorkflowChildResult<TOutputs extends WorkflowOutputValues = Wor
  * Each primitive suspends the current stage until the user responds.
  * Mirrors pi ctx.ui.input / confirm / select / editor methods.
  */
-export interface WorkflowUIContext {
-  /** Ask the user for a free-text value. */
-  input(prompt: string): Promise<string>;
-  /** Ask the user a yes/no question. */
-  confirm(message: string): Promise<boolean>;
-  /** Ask the user to pick from a fixed list of options. */
-  select<T extends string>(message: string, options: readonly T[]): Promise<T>;
-  /** Open a text editor; resolves with the user's final content. */
-  editor(initial?: string): Promise<string>;
-}
+export type WorkflowUIContext = AuthoringContract.WorkflowUIContext;
 
 /**
  * Adapter supplied by the pi runtime (or test harness) to back the HIL
  * primitives.  Must implement the same surface as WorkflowUIContext so that
  * the executor can delegate directly.
  */
-export type WorkflowUIAdapter = WorkflowUIContext;
+export type WorkflowUIAdapter = AuthoringContract.WorkflowUIAdapter;
 
 // ---------------------------------------------------------------------------
 // StageOptions — per-stage configuration + pi SDK session options
@@ -181,10 +134,10 @@ export type WorkflowUIAdapter = WorkflowUIContext;
  * When provided, the executor forwards these to the WorkflowMcpPort
  * before the stage starts and clears them after it settles.
  */
-export interface StageMcpOptions {
-  /** Allow only these server IDs during this stage (all others implicitly denied). */
+type Mutable<T> = { -readonly [K in keyof T]: T[K] };
+
+export interface StageMcpOptions extends AuthoringContract.StageMcpOptions {
   allow?: string[];
-  /** Deny these server IDs during this stage (applied after allow when both set). */
   deny?: string[];
 }
 
@@ -193,29 +146,17 @@ export interface StageMcpOptions {
  * All pi SDK createAgentSession options are forwarded to the stage session;
  * workflow-owned options such as `mcp` and `gitWorktreeDir` are stripped before SDK session creation.
  */
-export interface StageOptions extends Omit<CreateAgentSessionOptions, "model">, WorkflowModelFallbackFields {
+export interface StageOptions
+  extends Omit<CreateAgentSessionOptions, "model" | keyof AuthoringContract.StageOptions>,
+    Omit<Mutable<AuthoringContract.StageOptions>, "sessionManager" | "settingsManager"> {
   /** Model id or pi SDK model object used as the primary stage model. */
   model?: WorkflowModelValue;
   /** Per-stage MCP server gating. No-op when no WorkflowMcpPort is configured. */
   mcp?: StageMcpOptions;
-  /** Reusable Git worktree root. Defaults this stage cwd to the corresponding worktree cwd unless cwd is explicitly provided. */
-  gitWorktreeDir?: string;
-  /** Git ref used when creating gitWorktreeDir. Defaults to HEAD. */
-  baseBranch?: string;
-  /**
-   * Override the session log directory for this stage.
-   * Converted to a pi SessionManager before createAgentSession() is called.
-   */
-  sessionDir?: string;
-  /**
-   * Requested context mode for direct/task orchestration.
-   * "fork" is recorded as workflow intent; the current pi SDK session is
-   * created from forkFromSessionFile when the host supplies one, or fresh
-   * unless a caller supplies a forked sessionManager.
-   */
-  context?: "fresh" | "fork";
-  /** Parent session file used to materialize context:"fork". */
-  forkFromSessionFile?: string;
+  customTools?: ToolDefinition[];
+  scopedModels?: CreateAgentSessionOptions["scopedModels"];
+  sessionManager?: SessionManager;
+  settingsManager?: SettingsManager;
 }
 
 // ---------------------------------------------------------------------------
@@ -280,27 +221,9 @@ export interface WorkflowPersistencePort {
  * `{previous}` handoffs as a typed SDK primitive instead of requiring authors
  * to manually concatenate prior output into every prompt.
  */
-export interface WorkflowTaskContext extends WorkflowSerializableObject {
-  /** Optional display label used when rendering the context block. */
-  readonly name?: string;
-  /** Textual context made available to the next task. */
-  readonly text: string;
-}
-
-export type WorkflowTaskContextInput = string | WorkflowTaskContext | WorkflowTaskResult;
-
-export interface WorkflowTaskResult extends WorkflowTaskContext {
-  /** Stage/session metadata for UI and explicit downstream handoffs. */
-  readonly stageName: string;
-  readonly sessionId?: string;
-  readonly sessionFile?: string;
-  readonly artifacts?: WorkflowArtifact[];
-  readonly model?: string;
-  readonly fastMode?: boolean;
-  readonly attemptedModels?: readonly string[];
-  readonly modelAttempts?: readonly WorkflowModelAttempt[];
-  readonly warnings?: readonly string[];
-}
+export type WorkflowTaskContext = AuthoringContract.WorkflowTaskContext;
+export type WorkflowTaskContextInput = AuthoringContract.WorkflowTaskContextInput;
+export type WorkflowTaskResult = AuthoringContract.WorkflowTaskResult;
 
 /**
  * Higher-level task API: create a tracked stage, optionally inject prior task
@@ -308,209 +231,33 @@ export interface WorkflowTaskResult extends WorkflowTaskContext {
  *
  * `{previous}` means prior step output.
  */
-export interface WorkflowTaskOptions extends StageOptions, WorkflowTaskSessionFields {
-  /** Prompt/task text. Supports `{previous}` placeholders. */
-  prompt?: string;
-  /** Alias for `prompt`, used by direct workflow orchestration helpers. */
-  task?: string;
-  /** Prior task output/context. If placeholders are absent, it is appended. */
-  previous?: WorkflowTaskContextInput | readonly WorkflowTaskContextInput[];
-}
+export interface WorkflowTaskOptions extends StageOptions, Omit<Mutable<AuthoringContract.WorkflowTaskOptions>, keyof AuthoringContract.StageOptions> {}
+export interface WorkflowTaskStep extends WorkflowTaskOptions, Omit<Mutable<AuthoringContract.WorkflowTaskStep>, keyof AuthoringContract.WorkflowTaskOptions> {}
+export interface WorkflowSharedTaskDefaults extends StageOptions, Omit<Mutable<AuthoringContract.WorkflowSharedTaskDefaults>, keyof AuthoringContract.StageOptions> {}
+export interface WorkflowChainOptions extends WorkflowSharedTaskDefaults, Omit<Mutable<AuthoringContract.WorkflowChainOptions>, keyof AuthoringContract.WorkflowSharedTaskDefaults> {}
+export interface WorkflowParallelOptions extends WorkflowSharedTaskDefaults, Omit<Mutable<AuthoringContract.WorkflowParallelOptions>, keyof AuthoringContract.WorkflowSharedTaskDefaults> {}
 
-export interface WorkflowTaskStep extends WorkflowTaskOptions {
-  /** Stage/task name. */
-  name: string;
-}
-
-export interface WorkflowSharedTaskDefaults extends StageOptions {
-  /** Optional default output artifact path for steps that do not set one. */
-  output?: string | false;
-  /** Default output mode for steps that do not set one. */
-  outputMode?: WorkflowOutputMode;
-  /** Files the task should read before responding; relative paths resolve via chainDir for chains, otherwise cwd. */
-  reads?: readonly string[] | false;
-  /** Workflow-owned temporary isolation flag; not forwarded to createAgentSession(). */
-  worktree?: boolean;
-  /** Reusable Git worktree root. Defaults cwd to the corresponding worktree cwd unless cwd is explicitly provided. */
-  gitWorktreeDir?: string;
-  /** Git ref used when creating gitWorktreeDir. Defaults to HEAD. */
-  baseBranch?: string;
-  /** Default output truncation limits for steps that do not set one. */
-  maxOutput?: WorkflowMaxOutput;
-  /** Whether to include debug artifacts such as sessions and worktree diffs. */
-  artifacts?: boolean;
-}
-
-export interface WorkflowChainOptions extends WorkflowSharedTaskDefaults {
-  /** Shared/root task used for `{task}` in chain steps. */
-  task?: string;
-  /** Shared artifact directory for relative reads, outputs, and worktree diffs. */
-  chainDir?: string;
-}
-
-export interface WorkflowParallelOptions extends WorkflowSharedTaskDefaults {
-  /** Shared fallback task for parallel steps without their own task. */
-  task?: string;
-  /** Maximum number of parallel steps to schedule concurrently. */
-  concurrency?: number;
-  /** Stop scheduling additional steps after the first failure. Default: true. */
-  failFast?: boolean;
-}
-
-export type WorkflowOutputMode = "inline" | "file-only";
-
-export interface WorkflowMaxOutput {
-  /** Maximum UTF-8 bytes returned inline. Default: 204800. */
-  readonly bytes?: number;
-  /** Maximum lines returned inline. Default: 5000. */
-  readonly lines?: number;
-}
-
-export interface StageOutputOptions {
-  /** Optional output artifact path, or false to disable file output. */
-  output?: string | false;
-  /** Return saved output inline or as a concise saved-file reference. */
-  outputMode?: WorkflowOutputMode;
-  /** Accepted for parity with direct task options; stage creation options remain authoritative. */
-  context?: "fresh" | "fork";
-  /** Override working directory for output path resolution. */
-  cwd?: string;
-  /** Final output truncation limits. */
-  maxOutput?: WorkflowMaxOutput;
-  /** Whether to include debug artifacts. */
-  artifacts?: boolean;
-  /** Override session log directory. */
-  sessionDir?: string;
-}
-
+export type WorkflowOutputMode = AuthoringContract.WorkflowOutputMode;
+export type WorkflowMaxOutput = AuthoringContract.WorkflowMaxOutput;
+export type StageOutputOptions = Mutable<AuthoringContract.StageOutputOptions>;
 export type StagePromptOptions = PromptOptions & StageOutputOptions;
 
-export interface WorkflowArtifact extends WorkflowSerializableObject {
-  readonly kind: "output" | "session" | "diff" | "patch";
-  readonly path: string;
-  readonly taskName?: string;
-  readonly branch?: string;
-  readonly diffStat?: string;
-  readonly filesChanged?: number;
-  readonly insertions?: number;
-  readonly deletions?: number;
-}
-
-export interface WorkflowProgressSummary {
-  readonly completed: number;
-  readonly total: number;
-}
-
-export interface WorkflowControlEvent {
-  readonly type: "notify" | "needs_attention" | "interrupted" | "resumed";
-  readonly message: string;
-}
-
-export interface WorkflowIntercomSummary {
-  readonly enabled: boolean;
-  readonly delivery?: "off" | "notify" | "result" | "control-and-result";
-  readonly parentSession?: string;
-}
-
-export type WorkflowDetailsMode =
-  | "named"
-  | "single"
-  | "parallel"
-  | "chain"
-  | "inspection"
-  | "control";
-
-export type WorkflowDetailsStatus =
-  | "accepted"
-  | "running"
-  | "completed"
-  | "failed"
-  | "killed"
-  | "noop";
-
-export type WorkflowAction =
-  | "list"
-  | "get"
-  | "inputs"
-  | "run"
-  | "status"
-  | "interrupt"
-  | "resume";
-
-export interface WorkflowDetails {
-  readonly mode: WorkflowDetailsMode;
-  readonly action?: WorkflowAction;
-  readonly runId?: string;
-  readonly status: WorkflowDetailsStatus;
-  readonly context?: "fresh" | "fork";
-  readonly results?: WorkflowTaskResult[];
-  readonly output?: WorkflowOutputValues;
-  readonly progress?: WorkflowProgressSummary;
-  readonly artifacts?: WorkflowArtifact[];
-  readonly controlEvents?: WorkflowControlEvent[];
-  readonly intercom?: WorkflowIntercomSummary;
-  readonly warnings?: string[];
-  readonly error?: string;
-}
-
-export interface WorkflowTaskSessionFields {
-  /** Prompt text for direct single-task calls. */
-  prompt?: string;
-  /** Task text for parallel/chain calls. */
-  task?: string;
-  /** Optional output artifact path, or false to disable file output. */
-  output?: string | false;
-  outputMode?: WorkflowOutputMode;
-  reads?: readonly string[] | false;
-  /** Workflow-owned temporary isolation flag; not forwarded to createAgentSession(). */
-  worktree?: boolean;
-  /** Reusable Git worktree root. Defaults cwd to the corresponding worktree cwd unless cwd is explicitly provided. */
-  gitWorktreeDir?: string;
-  /** Git ref used when creating gitWorktreeDir. Defaults to HEAD. */
-  baseBranch?: string;
-  maxOutput?: WorkflowMaxOutput;
-  /** Whether to include debug artifacts such as sessions and worktree diffs. */
-  artifacts?: boolean;
-}
-
+export type WorkflowArtifact = AuthoringContract.WorkflowArtifact;
+export type WorkflowProgressSummary = AuthoringContract.WorkflowProgressSummary;
+export type WorkflowControlEvent = AuthoringContract.WorkflowControlEvent;
+export type WorkflowIntercomSummary = AuthoringContract.WorkflowIntercomSummary;
+export type WorkflowDetailsMode = AuthoringContract.WorkflowDetailsMode;
+export type WorkflowDetailsStatus = AuthoringContract.WorkflowDetailsStatus;
+export type WorkflowAction = AuthoringContract.WorkflowAction;
+export type WorkflowDetails = Mutable<AuthoringContract.WorkflowDetails>;
+export type WorkflowTaskSessionFields = Mutable<AuthoringContract.WorkflowTaskSessionFields>;
 export type WorkflowTaskSessionOptions = StageOptions & WorkflowTaskSessionFields;
-
-export interface WorkflowDirectTaskItem extends WorkflowTaskOptions {
-  /** Task/stage label passed to ctx.task(name, ...). */
-  name: string;
-  /** Repeat count for direct parallel expansion. */
-  count?: number;
-}
-
-export interface WorkflowParallelChainStep {
+export interface WorkflowDirectTaskItem extends WorkflowTaskOptions, Omit<Mutable<AuthoringContract.WorkflowDirectTaskItem>, keyof AuthoringContract.WorkflowTaskOptions> {}
+export interface WorkflowParallelChainStep extends Omit<AuthoringContract.WorkflowParallelChainStep, "parallel"> {
   readonly parallel: readonly WorkflowDirectTaskItem[];
-  readonly concurrency?: number;
-  readonly failFast?: boolean;
-  readonly worktree?: boolean;
-  readonly gitWorktreeDir?: string;
-  readonly baseBranch?: string;
 }
-
 export type WorkflowChainStep = WorkflowDirectTaskItem | WorkflowParallelChainStep;
-
-export interface WorkflowDirectOptions extends StageOptions {
-  /** Shared/root task used for `{task}` in direct parallel or chain steps. */
-  task?: string;
-  /** Optional named chain identifier for status/artifact grouping. */
-  chainName?: string;
-  concurrency?: number;
-  failFast?: boolean;
-  /** Chain-only shared artifact directory for relative reads, outputs, and worktree diffs. */
-  chainDir?: string;
-  reads?: readonly string[] | false;
-  output?: string | false;
-  outputMode?: WorkflowOutputMode;
-  worktree?: boolean;
-  gitWorktreeDir?: string;
-  baseBranch?: string;
-  maxOutput?: WorkflowMaxOutput;
-  artifacts?: boolean;
-}
+export interface WorkflowDirectOptions extends StageOptions, Omit<Mutable<AuthoringContract.WorkflowDirectOptions>, keyof AuthoringContract.StageOptions> {}
 
 // ---------------------------------------------------------------------------
 // Stage context (provided to ctx.stage() calls)
@@ -617,24 +364,7 @@ export interface WorkflowRunContext<TInputs extends WorkflowInputValues = Workfl
  * statusFile writer. This type is the port — values flow through but are not
  * acted on until those tasks land.
  */
-export interface WorkflowRuntimeConfig {
-  /** Maximum workflow recursion/nesting depth. Default: 4. */
-  readonly maxDepth: number;
-  /** Default stage concurrency limit. Default: 4. */
-  readonly defaultConcurrency: number;
-  /** Persist runs via pi.appendEntry. Default: true. */
-  readonly persistRuns: boolean;
-  /** Emit derived status file for CI polling. Default: false. */
-  readonly statusFile: boolean;
-  /**
-   * Filesystem path for the emitted status file.
-   * Only meaningful when statusFile is true.
-   * Absence means the writer should choose a default path.
-   */
-  readonly statusFilePath?: string;
-  /** Behaviour on session_start for in-flight runs. Default: "ask". */
-  readonly resumeInFlight: "ask" | "auto" | "never";
-}
+export type WorkflowRuntimeConfig = AuthoringContract.WorkflowRuntimeConfig;
 
 // ---------------------------------------------------------------------------
 // Workflow run function
@@ -643,35 +373,20 @@ export interface WorkflowRuntimeConfig {
 export type WorkflowRunFn<
   TInputs extends WorkflowInputValues = WorkflowInputValues,
   TOutputs extends WorkflowOutputValues = WorkflowOutputValues,
-> = (ctx: WorkflowRunContext<TInputs>) => Promise<TOutputs>;
+> = (ctx: WorkflowRunContext<TInputs>) => ReturnType<AuthoringContract.WorkflowRunFn<TInputs, TOutputs>>;
 
 // ---------------------------------------------------------------------------
 // Compiled workflow definition
 // ---------------------------------------------------------------------------
 
-export interface WorkflowWorktreeInputBinding {
-  readonly gitWorktreeDir: string;
-  readonly baseBranch?: string;
-}
-
-export interface WorkflowInputBindings {
-  readonly worktree?: WorkflowWorktreeInputBinding;
-}
+export type WorkflowWorktreeInputBinding = AuthoringContract.WorkflowWorktreeInputBinding;
+export type WorkflowInputBindings = AuthoringContract.WorkflowInputBindings;
+declare const workflowDefinitionBrand: unique symbol;
+export type WorkflowDefinitionBrand = { readonly [workflowDefinitionBrand]: true };
 
 export interface WorkflowDefinition<
   TInputs extends WorkflowInputValues = WorkflowInputValues,
   TOutputs extends WorkflowOutputValues = WorkflowOutputValues,
-> {
-  /** Sentinel consumed by the registry loader to validate the export. */
-  readonly __piWorkflow: true;
-  readonly name: string;
-  /** Normalised name (lowercase, hyphens) used as the registry key. */
-  readonly normalizedName: string;
-  readonly description: string;
-  readonly inputs: WorkflowInputSchemaMap;
-  /** Optional output contract used by parent workflows when selecting child outputs. */
-  readonly outputs?: WorkflowOutputSchemaMap;
-  /** Optional input-to-runtime defaults declared by the workflow builder. */
-  readonly inputBindings?: WorkflowInputBindings;
+> extends Omit<AuthoringContract.WorkflowDefinition<TInputs, TOutputs, TInputs, WorkflowDefinitionBrand>, "run" | "__runInputs">, WorkflowDefinitionBrand {
   readonly run: WorkflowRunFn<TInputs, TOutputs>;
 }

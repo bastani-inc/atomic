@@ -2,11 +2,21 @@
  * Non-cyclic public SDK surface for @bastani/workflows.
  *
  * Keep public runtime exports here when they are safe to load during workflow
- * discovery. The package root re-exports this module and adds runWorkflow,
- * which is intentionally excluded because workflow-runner imports discovery.ts.
+ * discovery. The package root re-exports this module directly.
  */
 
 export { defineWorkflow } from "./workflows/define-workflow.js";
+
+const REMOVED_RUN_WORKFLOW_MESSAGE =
+  "@bastani/workflows no longer exports runWorkflow; author workflows with defineWorkflow(...).compile()";
+
+/**
+ * @deprecated Removed imperative workflow API. Kept as a runtime migration
+ * stub so older workflow modules fail at the call site with a clear message.
+ */
+export const runWorkflow: never = (() => {
+  throw new Error(REMOVED_RUN_WORKFLOW_MESSAGE);
+}) as never;
 
 // TypeBox authoring surface so jiti-loaded workflows can `import { Type } from
 // "@bastani/workflows"` (the virtual module is built from this file).

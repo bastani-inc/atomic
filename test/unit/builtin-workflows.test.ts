@@ -279,7 +279,7 @@ describe("deep-research-codebase", () => {
     }
 
     async function withDeepResearchTempCwd<T>(
-        fn: () => Promise<T>,
+        fn: () => Promise<T> | T,
     ): Promise<T> {
         const previousCwd = process.cwd();
         process.chdir(requireDeepResearchTempCwd());

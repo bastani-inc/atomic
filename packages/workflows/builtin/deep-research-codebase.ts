@@ -15,7 +15,6 @@ import { defineWorkflow } from "../src/workflows/define-workflow.js";
 import { Type } from "typebox";
 import type {
   WorkflowOutputMode,
-  WorkflowOutputValues,
   WorkflowTaskResult,
   WorkflowTaskStep,
 } from "../src/shared/types.js";
@@ -30,7 +29,7 @@ const GIT_LS_FILES_TIMEOUT_MS = 2_000;
 
 type PromptSection = readonly [tag: string, content: string];
 
-interface DeepResearchCodebaseResult extends WorkflowOutputValues {
+interface DeepResearchCodebaseResult {
   readonly result: string;
   readonly findings: string;
   readonly research_doc_path: string;
@@ -413,26 +412,24 @@ export default defineWorkflow("deep-research-codebase")
     );
 
     const plannerModelConfig = {
-      model: "openai/gpt-5.5",
+      model: "openai/gpt-5.5:xhigh",
       fallbackModels: [
-        "openai-codex/gpt-5.5",
-        "github-copilot/gpt-5.5",
-        "anthropic/claude-opus-4-8",
-        "github-copilot/claude-opus-4.7",
+        "openai-codex/gpt-5.5:xhigh",
+        "github-copilot/gpt-5.5:xhigh",
+        "anthropic/claude-opus-4-8:xhigh",
+        "github-copilot/claude-opus-4.8:medium",
       ],
-      thinkingLevel: "high" as const,
       excludedTools: ["ask_user_question"],
     };
 
     const explorerModelConfig = {
-      model: "openai/gpt-5.4-mini",
+      model: "openai/gpt-5.4-mini:low",
       fallbackModels: [
-        "openai-codex/gpt-5.4-mini",
-        "github-copilot/gpt-5.4-mini",
-        "anthropic/claude-haiku-4-5",
-        "github-copilot/claude-haiku-4.5",
+        "openai-codex/gpt-5.4-mini:low",
+        "github-copilot/gpt-5.4-mini:low",
+        "anthropic/claude-haiku-4-5:low",
+        "github-copilot/claude-haiku-4.5:low",
       ],
-      thinkingLevel: "low" as const,
       excludedTools: ["ask_user_question"],
     };
 

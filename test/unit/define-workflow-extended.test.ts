@@ -44,7 +44,7 @@ describe("defineWorkflow immutable builder semantics", () => {
     const fn1 = async () => ({ from: "fn1" });
     const fn2 = async () => ({ from: "fn2" });
 
-    const b = defineWorkflow("test");
+    const b = defineWorkflow("test").output("from", Type.String());
     const c1 = b.run(fn1);
     const c2 = b.run(fn2);
 

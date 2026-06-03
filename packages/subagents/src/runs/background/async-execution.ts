@@ -334,7 +334,7 @@ export function executeAsyncChain(
 
 		const primaryModel = resolveModelCandidate(behavior.model ?? a.model, availableModels, ctx.currentModelProvider);
 		const model = applyThinkingSuffix(primaryModel, a.thinking);
-		const modelCandidates = buildModelCandidates(behavior.model ?? a.model, a.fallbackModels, availableModels, ctx.currentModelProvider, ctx.currentModel)
+		const modelCandidates = buildModelCandidates(behavior.model ?? a.model, a.fallbackModels, availableModels, ctx.currentModelProvider, ctx.currentModel, a.fallbackThinkingLevels)
 			.map((candidate) => applyThinkingSuffix(candidate, a.thinking))
 			.filter((candidate): candidate is string => typeof candidate === "string");
 		const fastModeSettings = getSubagentCodexFastModeSettings(stepCwd);

@@ -378,7 +378,7 @@ If the task is only deterministic TypeScript with no LLM/session stage, use a sc
 | Run, inspect, attach to, pause, interrupt, resume, or check status for an existing workflow | `/workflow ...` or `workflow({ action: ... })` |
 | Implement a small-to-medium scope change with an identifiable work surface, exact outcome, and named validation | `/workflow goal objective="..."` so Atomic keeps the run bounded, captures receipts in a goal ledger, gates completion through reviewers, and stops as `complete`, `blocked`, or `needs_human` |
 | Plan and execute a larger migration, broad refactor, multi-package change, or spec-to-PR effort | `/workflow ralph prompt="..."` so Atomic can plan the approach, delegate implementation through sub-agents, simplify, review, iterate, and prepare a pull-request report |
-| Create or edit reusable automation | a TypeScript workflow definition with `defineWorkflow(...).run(...).compile()` |
+| Create or edit reusable automation | a TypeScript workflow definition exported from `defineWorkflow(...).compile()` |
 | Track one-off work without saving a workflow file | direct `workflow({ task })`, `workflow({ tasks })`, or `workflow({ chain })` calls |
 | Make a workflow robust | design the stage graph, context handoffs, artifacts, validation gates, model fallbacks, and human approval points before coding |
 
@@ -482,7 +482,7 @@ Atomic packages can ship workflows through package metadata or conventional dire
 
 Paths are relative to the package root and may use glob patterns. Include `atomic-package` for Atomic package discovery and `pi-package` when you want compatibility with existing package-gallery tooling.
 
-For new Atomic package examples, prefer `atomic.workflows` and `atomic.extensions`. `pi.workflows` and `pi.extensions` remain supported for compatibility with existing packages. If no manifest declares workflows, a conventional `workflows/` directory is auto-discovered. Singular `workflow/` is accepted as an alias. App-level config prefers `atomicConfig` where available; legacy `piConfig` is still read as a shim.
+For new Atomic package examples, prefer `atomic.workflows` and `atomic.extensions`. `pi.workflows` and `pi.extensions` remain supported for compatibility with existing packages. Workflows can be declared with `atomic.workflows` or discovered from conventional `workflows/` / `workflow/` directories. Unlike other resource types, package workflows still fall back to conventional directories when a package manifest exists but omits the workflow key. App-level config prefers `atomicConfig` where available; legacy `piConfig` is still read as a shim.
 
 Convention directory example:
 
@@ -841,11 +841,11 @@ Builder basics:
 
 `prompt` and `task` are aliases for task text. Prefer `prompt` inside authored workflow files because it mirrors lower-level `stage.prompt(...)`; `task` remains useful in direct tool calls and chain examples.
 
-A valid workflow must create at least one tracked stage by calling `ctx.task()`, `ctx.chain()`, `ctx.parallel()`, `ctx.stage()`, or `ctx.workflow()` in its run body. A no-stage workflow is skipped during discovery because it has no graph node to inspect, attach to, interrupt, resume, or render.
+Author workflows to create at least one tracked stage by calling `ctx.task()`, `ctx.chain()`, `ctx.parallel()`, `ctx.stage()`, or `ctx.workflow()` in the run body so each run has graph nodes to inspect, attach to, interrupt, resume, and render.
 
 ### Inputs
 
-Inputs are declared with TypeBox `Type.*` schemas passed to `.input(key, schema)`. `Type` is re-exported from `@bastani/workflows` (along with the `Static` and `TSchema` type helpers), so you can author and type schemas without adding a separate `typebox` dependency. Common input schemas map to picker kinds and accepted runtime values:
+Inputs are declared with TypeBox `Type.*` schemas passed to `.input(key, schema)`. `Type` is re-exported from `@bastani/workflows` (along with the `Static` and `TSchema` type helpers), so you do not import from `typebox` directly in workflow files. Workflow packages still declare `typebox` as a peer dependency so the SDK's shipped types resolve under `tsc` — see [Programmatic Usage](#programmatic-usage). Common input schemas map to picker kinds and accepted runtime values:
 
 | TypeBox schema | Picker kind | Accepted runtime value |
 |---|---|---|
@@ -1181,7 +1181,7 @@ Common task/stage options include:
 - `prompt` or `task`
 - `previous` for small handoff context; use artifact paths plus `reads` for large outputs, logs, research bundles, or reviewer payloads
 - `context: "fresh" | "fork"`, `forkFromSessionFile`
-- `model`, `fallbackModels`, `thinkingLevel`, `scopedModels`, `modelRegistry`
+- `model`, `fallbackModels`, `thinkingLevel`, `scopedModels`, `modelRegistry` — `model` and each `fallbackModels` entry accept a `model_name:thinking_effort` reasoning suffix; the standalone `thinkingLevel` is deprecated (see [Reasoning levels](#reasoning-levels))
 - `tools`, `noTools`, `customTools`, `mcp: { allow?: string[], deny?: string[] }`
 - `output`, `outputMode`, `reads`, `worktree`, `gitWorktreeDir`, `baseBranch`, `maxOutput`, `artifacts`, `sessionDir`, `cwd`, `agentDir`
 - advanced host-supplied SDK seams: `authStorage`, `resourceLoader`, `sessionManager`, `settingsManager`, `sessionStartEvent`
@@ -1208,6 +1208,30 @@ For lower-level integrations, `@bastani/workflows` also exports `setupGitWorktre
 
 `fallbackModels` retries transient provider/model failures with the primary `model` first, then each fallback, then the current Atomic-selected model when available. It is for rate limits, quota/auth/provider outages, unavailable models, network timeouts, and 5xx errors — not workflow-code errors, tool failures, validation failures, or cancellations.
 
+### Reasoning levels
+
+Each `model` and `fallbackModels` entry accepts a `model_name:thinking_effort` suffix that sets the reasoning effort for that candidate (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`). The effort travels with the model string, so a single fallback chain can mix efforts — for example a high-effort primary that degrades to lower-effort, cheaper fallbacks:
+
+```ts
+await ctx.task("review", {
+  task: "Review the diff",
+  model: "anthropic/claude-sonnet-4:high",
+  fallbackModels: ["openai/gpt-5:medium", "anthropic/claude-haiku-4-5:off"],
+});
+```
+
+The standalone `thinkingLevel` stage option is deprecated. It still applies as a default to any candidate without a suffix, and when both are present the suffix wins, but new workflows should fold the effort into the model strings:
+
+```diff
+-  model: "openai/gpt-5.5",
+-  fallbackModels: ["anthropic/claude-opus-4-8"],
+-  thinkingLevel: "high",
++  model: "openai/gpt-5.5:high",
++  fallbackModels: ["anthropic/claude-opus-4-8:high"],
+```
+
+This applies everywhere a stage accepts a model: direct `ctx.task`/`ctx.chain`/`ctx.parallel` options, `ctx.stage` options, builtin workflow stage definitions, and workflow parameters. `fallbackThinkingLevels` is an optional compatibility helper aligned by index to `fallbackModels`; it applies only to fallback entries that do not already carry a suffix. Each `WorkflowModelAttempt` reports the resolved model and the effective reasoning effort used for that attempt.
+
 ## Programmatic Usage
 
 `@bastani/workflows` is an Atomic package extension. It registers:
@@ -1215,29 +1239,46 @@ For lower-level integrations, `@bastani/workflows` also exports `setupGitWorktre
 - `/workflow <name> key=value ...` for interactive named runs
 - `/workflow connect|attach|pause|interrupt|resume|status|inputs|reload` for live control, inspection, and rediscovery
 - the `workflow` tool for agent-initiated orchestration and direct one-off runs
-- `runWorkflow(definition)` for explicit library or script usage
+Workflow definition files must export definitions produced by `defineWorkflow(...).compile()`. The former imperative object-form runner is not part of the public SDK, and authored workflow files cannot import `runWorkflow` from `@bastani/workflows`.
 
-Programmatic runner example:
+Standalone TypeScript workflow packages type-check the SDK import with no hand-authored `.d.ts`, no `declare module` shim, and no `tsconfig` `paths` alias. The SDK types ship with `@bastani/atomic`, so a workflow package depends only on `@bastani/atomic` (plus a `typebox` peer):
 
 ```ts
-import { runWorkflow, type WorkflowOptions } from "@bastani/workflows";
+import { defineWorkflow, Type } from "@bastani/workflows";
 
-const definition = {
-  mode: "workflow",
-  workflow: "deep-research-codebase",
-  inputs: {
-    prompt: "map workflow sdk",
-    max_partitions: 1,
-    max_concurrency: 4,
-  },
-} as const;
-
-const options: WorkflowOptions = {};
-
-await runWorkflow(definition, options);
+export default defineWorkflow("map-workflow-sdk")
+  .input("prompt", Type.String({ default: "map workflow sdk" }))
+  .run(async (ctx) => {
+    await ctx.task("map", { prompt: ctx.inputs.prompt });
+    return {};
+  })
+  .compile();
 ```
 
-The programmatic definition object mirrors the workflow tool for named runs (`mode: "workflow"` / `"named"`), direct single-task runs (`"single"`), parallel runs (`"parallel"`), and chain runs (`"chain"`). Direct chains support `chainName` for status/artifact grouping and `chainDir` as a shared directory for relative reads, outputs, and worktree diffs.
+How those types resolve depends on what else the package imports:
+
+- A package that imports `@bastani/atomic` anywhere (for example, an extension shipped in the same package) picks the workflow SDK types up automatically. `@bastani/atomic`'s root declarations reference the ambient bridge, so no extra configuration is needed.
+- A pure workflow-only package — one that imports nothing but `@bastani/workflows` — adds a single opt-in so TypeScript loads the ambient bridge. Set it once for the project in `tsconfig.json`:
+
+  ```jsonc
+  {
+    "compilerOptions": {
+      "module": "NodeNext",
+      "moduleResolution": "NodeNext",
+      "types": ["@bastani/atomic/workflows/ambient"]
+    }
+  }
+  ```
+
+  or add a single reference directive at the top of one workflow file:
+
+  ```ts
+  /// <reference types="@bastani/atomic/workflows/ambient" />
+  ```
+
+Either form makes `import { defineWorkflow, Type } from "@bastani/workflows"` and the `@bastani/workflows/builtin/*` composition imports resolve under `tsc` (`moduleResolution: NodeNext`) with no hand-authored `.d.ts`, no `declare module` shim, and no `paths` alias. `@bastani/workflows` is not a separate npm package — its types ship with `@bastani/atomic` — so list both `@bastani/atomic` and `typebox` (the SDK's emitted types reference TypeBox) in `peerDependencies`. Runtime discovery and loading via `atomic.workflows` are unchanged: Atomic's loader still supplies the SDK when workflow files execute.
+
+The `workflow` tool still supports direct one-off `task`, `tasks`, and `chain` modes. Direct chains support `chainName` for status/artifact grouping and `chainDir` as a shared directory for relative reads, outputs, and worktree diffs.
 
 Use `createRegistry()` when code needs to group definitions explicitly:
 

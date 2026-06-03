@@ -10,8 +10,8 @@ import type { Component, TUI } from "@earendil-works/pi-tui";
 import { matchesKey, visibleWidth, truncateToWidth } from "@earendil-works/pi-tui";
 import type { AgentConfig } from "../../agents/agents.ts";
 import type { ResolvedStepBehavior } from "../../shared/settings.ts";
-import { resolveModelCandidate, splitThinkingSuffix } from "../shared/model-fallback.ts";
-import { findModelInfo, getSupportedThinkingLevels, type ModelInfo, type ThinkingLevel } from "../../shared/model-info.ts";
+import { resolveModelCandidate } from "../shared/model-fallback.ts";
+import { findModelInfo, getSupportedThinkingLevels, splitKnownThinkingSuffix, type ModelInfo, type ThinkingLevel } from "../../shared/model-info.ts";
 
 type ClarifyMode = 'single' | 'parallel' | 'chain';
 
@@ -549,7 +549,7 @@ export class ChainClarifyComponent implements Component {
 		this.modelSearchQuery = "";
 		this.modelSelectedIndex = 0;
 		this.filteredModels = [...this.availableModels];
-		const currentModel = splitThinkingSuffix(this.getEffectiveModel(this.selectedStep)).baseModel;
+		const currentModel = splitKnownThinkingSuffix(this.getEffectiveModel(this.selectedStep)).baseModel;
 		const currentIndex = this.filteredModels.findIndex((m) => m.fullId === currentModel || m.id === currentModel);
 		if (currentIndex >= 0) {
 			this.modelSelectedIndex = currentIndex;
@@ -582,7 +582,7 @@ export class ChainClarifyComponent implements Component {
 		if (matchesKey(data, "return")) {
 			const selected = this.filteredModels[this.modelSelectedIndex];
 			if (selected) {
-				const { thinkingSuffix } = splitThinkingSuffix(this.getEffectiveModel(this.editingStep!));
+				const { thinkingSuffix } = splitKnownThinkingSuffix(this.getEffectiveModel(this.editingStep!));
 				const requestedLevel = thinkingSuffix.slice(1);
 				const selectedModel = findModelInfo(selected.fullId, this.availableModels, this.preferredProvider);
 				const suffix = getSupportedThinkingLevels(selectedModel).some((level) => level === requestedLevel) ? thinkingSuffix : "";
@@ -643,7 +643,7 @@ export class ChainClarifyComponent implements Component {
 		this.editMode = "thinking";
 
 		const levels = this.getAvailableThinkingLevels(this.selectedStep);
-		const { thinkingSuffix } = splitThinkingSuffix(this.getEffectiveModel(this.selectedStep));
+		const { thinkingSuffix } = splitKnownThinkingSuffix(this.getEffectiveModel(this.selectedStep));
 		const suffix = thinkingSuffix.slice(1);
 		const levelIdx = levels.findIndex((level) => level === suffix);
 		this.thinkingSelectedIndex = levelIdx >= 0 ? levelIdx : Math.max(0, levels.indexOf("off"));
@@ -690,7 +690,7 @@ export class ChainClarifyComponent implements Component {
 		const currentModel = this.getEffectiveBehavior(stepIndex).model;
 		if (!currentModel) return;
 
-		const { baseModel } = splitThinkingSuffix(currentModel);
+		const { baseModel } = splitKnownThinkingSuffix(currentModel);
 		const newModel = level === "off" ? baseModel : `${baseModel}:${level}`;
 		this.updateBehavior(stepIndex, "model", newModel);
 	}
@@ -922,7 +922,7 @@ export class ChainClarifyComponent implements Component {
 		lines.push(this.row(""));
 
 		const currentModel = this.getEffectiveModel(this.editingStep!);
-		const currentModelBase = splitThinkingSuffix(currentModel).baseModel;
+		const currentModelBase = splitKnownThinkingSuffix(currentModel).baseModel;
 		const currentLabel = th.fg("dim", "Current: ");
 		lines.push(this.row(` ${currentLabel}${th.fg("warning", currentModel)}`));
 		lines.push(this.row(""));

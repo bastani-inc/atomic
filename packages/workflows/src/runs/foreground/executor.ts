@@ -7,6 +7,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { CONFIG_DIR_NAME, createAskUserQuestionToolDefinition, isCodexFastModeCandidateModelId } from "@bastani/atomic";
 import { stageUiBroker } from "../../shared/stage-ui-broker.js";
+import { isBrandedWorkflowDefinition, stampWorkflowDefinition } from "../../workflows/define-workflow.js";
 import { buildStagePromptAdapter } from "../../shared/stage-prompt.js";
 import type {
   WorkflowDefinition,
@@ -43,6 +44,7 @@ import type {
   WorkflowSerializableValue,
 } from "../../shared/types.js";
 import type { InternalStageContext, StageAdapters } from "./stage-runner.js";
+import type * as AuthoringContract from "../../shared/authoring-contract.js";
 import type {
   RunStatus,
   StageNotice,
@@ -102,7 +104,7 @@ export interface RunContinuationOpts {
   readonly resumeFromStageId: string;
 }
 
-export interface RunOpts {
+export interface RunOpts extends Omit<AuthoringContract.RunOpts, "adapters" | "store" | "cancellation" | "overlay" | "registry" | "stageControlRegistry" | "continuation" | "onRunStart" | "onStageStart" | "onStageEnd" | "onRunEnd"> {
   adapters?: StageAdapters;
   /** Invocation working directory exposed to workflow definitions as ctx.cwd. */
   cwd?: string;
@@ -1152,7 +1154,7 @@ function defineDirectWorkflow(
   name: string,
   runFn: WorkflowDefinition["run"],
 ): WorkflowDefinition {
-  return Object.freeze({
+  const definition = {
     __piWorkflow: true,
     name,
     normalizedName: name,
@@ -1160,7 +1162,10 @@ function defineDirectWorkflow(
     inputs: Object.freeze({}),
     outputs: DIRECT_WORKFLOW_OUTPUTS,
     run: runFn,
-  });
+  } as WorkflowDefinition;
+  // Stamp before freezing so the WeakSet brand can be attached.
+  stampWorkflowDefinition(definition);
+  return Object.freeze(definition);
 }
 
 /**
@@ -1805,17 +1810,22 @@ function workflowChildSerializationMessage(err: unknown): string {
 }
 
 function isWorkflowDefinition(value: unknown): value is WorkflowDefinition {
-  if (value === null || typeof value !== "object") return false;
+  if (!isBrandedWorkflowDefinition(value)) return false;
   const record = value as Partial<WorkflowDefinition>;
   return record.__piWorkflow === true &&
     typeof record.name === "string" && record.name.trim().length > 0 &&
     typeof record.normalizedName === "string" && record.normalizedName.trim().length > 0 &&
     typeof record.run === "function" &&
-    // Compiled definitions always set `inputs: {}`; guard it so a handcrafted
-    // object that passes the sentinel still fails here with the clear "requires
-    // a compiled workflow definition" error rather than crashing later inside
-    // resolveAndValidateInputs(child.inputs, ...) on `Object.entries(undefined)`.
     typeof record.inputs === "object" && record.inputs !== null;
+}
+
+function workflowDefinitionRequirementMessage(callSite: string, value: unknown): string {
+  // isWorkflowDefinition already failed; this extra sentinel check narrows the
+  // diagnostic for forged legacy literals versus unrelated values.
+  if (value !== null && typeof value === "object" && (value as { __piWorkflow?: unknown }).__piWorkflow === true) {
+    return `atomic-workflows: ${callSite} requires a compiled workflow definition produced by defineWorkflow(...).compile(); hand-rolled __piWorkflow objects are not supported`;
+  }
+  return `atomic-workflows: ${callSite} requires a compiled workflow definition`;
 }
 
 function cloneWorkflowChildReplaySnapshot(snapshot: WorkflowChildReplaySnapshot): WorkflowChildReplaySnapshot {
@@ -1859,6 +1869,10 @@ export async function run<TInputs extends WorkflowInputValues>(
   inputs: Readonly<Record<string, unknown>>,
   opts: RunOpts = {},
 ): Promise<RunResult> {
+  if (!isWorkflowDefinition(def)) {
+    throw new Error(workflowDefinitionRequirementMessage("run(definition, inputs)", def));
+  }
+
   const activeStore = opts.store ?? defaultStore;
   const adapters = opts.adapters ?? {};
   if (opts.usePromptNodesForUi === true && opts.ui !== undefined) {
@@ -3221,7 +3235,7 @@ export async function run<TInputs extends WorkflowInputValues>(
       // declared output contract is validated dynamically by the child run and
       // selectWorkflowOutputs, so the typed result is reconstructed via casts.
       if (!isWorkflowDefinition(child)) {
-        throw new Error("atomic-workflows: ctx.workflow(definition) requires a compiled workflow definition");
+        throw new Error(workflowDefinitionRequirementMessage("ctx.workflow(definition)", child));
       }
       const childName = child.normalizedName;
       const boundaryName = options.stageName ?? `workflow:${childName}`;

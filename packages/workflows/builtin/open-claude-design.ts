@@ -226,13 +226,12 @@ export default defineWorkflow("open-claude-design")
     const specFileUrl = `file://${specPath}`;
 
     const designModelConfig = {
-      model: "anthropic/claude-opus-4-8",
+      model: "anthropic/claude-opus-4-8:xhigh",
       fallbackModels: [
-        "github-copilot/claude-opus-4.7",
-        "anthropic/claude-sonnet-4-6",
-        "github-copilot/claude-sonnet-4.6",
+        "github-copilot/claude-opus-4.8:medium",
+        "anthropic/claude-sonnet-4-6:xhigh",
+        "github-copilot/claude-sonnet-4.6:medium",
       ],
-      thinkingLevel: "high" as const,
     };
 
     let designSystem: string;
@@ -243,7 +242,7 @@ export default defineWorkflow("open-claude-design")
         prompt: taggedPrompt([
           [
             "role",
-            "You are an impeccable design-system analyst. Apply the impeccable `document` sub-skill (https://github.com/pbakaus/impeccable/blob/main/site/content/skills/document.md) to read an existing DESIGN.md / PRODUCT.md (or equivalent) and re-emit it in the six-section Google Stitch DESIGN.md format so the rest of this workflow can rely on it.",
+            "You are an impeccable design-system analyst. Apply the impeccable `document` sub-skill to read an existing DESIGN.md / PRODUCT.md (or equivalent) and re-emit it in the six-section Google Stitch DESIGN.md format so the rest of this workflow can rely on it.",
           ],
           [
             "objective",
@@ -289,7 +288,7 @@ export default defineWorkflow("open-claude-design")
             task: taggedPrompt([
               [
                 "role",
-                "You are an impeccable design-system locator. Apply the impeccable `extract` sub-skill (https://github.com/pbakaus/impeccable/blob/main/site/content/skills/extract.md) to find design-system evidence already living in this codebase.",
+                "You are an impeccable design-system locator. Apply the impeccable `extract` sub-skill to find design-system evidence already living in this codebase.",
               ],
               [
                 "objective",
@@ -320,7 +319,7 @@ export default defineWorkflow("open-claude-design")
             task: taggedPrompt([
               [
                 "role",
-                "You are an impeccable UI architecture auditor. Apply the impeccable `audit` sub-skill (https://github.com/pbakaus/impeccable/blob/main/site/content/skills/audit.md) to score the project's UI implementation across five dimensions.",
+                "You are an impeccable UI architecture auditor. Apply the impeccable `audit` sub-skill to score the project's UI implementation across five dimensions.",
               ],
               [
                 "objective",
@@ -360,7 +359,7 @@ export default defineWorkflow("open-claude-design")
             task: taggedPrompt([
               [
                 "role",
-                "You are an impeccable pattern miner. Apply the impeccable `extract` sub-skill (https://github.com/pbakaus/impeccable/blob/main/site/content/skills/extract.md) to harvest reusable design and component patterns, plus the anti-patterns to avoid.",
+                "You are an impeccable pattern miner. Apply the impeccable `extract` sub-skill to harvest reusable design and component patterns, plus the anti-patterns to avoid.",
               ],
               [
                 "objective",
@@ -394,7 +393,7 @@ export default defineWorkflow("open-claude-design")
         prompt: taggedPrompt([
           [
             "role",
-            "You are an impeccable design-system author. Apply the impeccable `document` sub-skill (https://github.com/pbakaus/impeccable/blob/main/site/content/skills/document.md) to synthesize a project-specific DESIGN.md in the six-section Google Stitch format from the three onboarding analyses.",
+            "You are an impeccable design-system author. Apply the impeccable `document` sub-skill to synthesize a project-specific DESIGN.md in the six-section Google Stitch format from the three onboarding analyses.",
           ],
           [
             "objective",
@@ -442,7 +441,7 @@ export default defineWorkflow("open-claude-design")
         task: taggedPrompt([
           [
             "role",
-            "You are an impeccable reference extractor for live web pages. Apply the impeccable `extract` sub-skill (https://github.com/pbakaus/impeccable/blob/main/site/content/skills/extract.md) to pull only the design traits that should transfer into the project — never just clone the source.",
+            "You are an impeccable reference extractor for live web pages. Apply the impeccable `extract` sub-skill to pull only the design traits that should transfer into the project — never just clone the source.",
           ],
           [
             "objective",
@@ -478,7 +477,7 @@ export default defineWorkflow("open-claude-design")
         task: taggedPrompt([
           [
             "role",
-            "You are an impeccable reference parser for local design files. Apply the impeccable `extract` sub-skill (https://github.com/pbakaus/impeccable/blob/main/site/content/skills/extract.md) to lift concrete, citable requirements out of supplied references.",
+            "You are an impeccable reference parser for local design files. Apply the impeccable `extract` sub-skill to lift concrete, citable requirements out of supplied references.",
           ],
           [
             "objective",
@@ -520,7 +519,7 @@ export default defineWorkflow("open-claude-design")
       prompt: taggedPrompt([
         [
           "role",
-          "You are an impeccable design-and-build engineer. Apply the impeccable `craft` sub-skill (https://github.com/pbakaus/impeccable/blob/main/site/content/skills/craft.md) to ship a production-quality HTML artifact that traces back to the synthesized DESIGN.md.",
+          "You are an impeccable design-and-build engineer. Apply the impeccable `craft` sub-skill to ship a production-quality HTML artifact that traces back to the synthesized DESIGN.md.",
         ],
         [
           "objective",
@@ -609,7 +608,7 @@ export default defineWorkflow("open-claude-design")
         prompt: taggedPrompt([
           [
             "role",
-            "You are an impeccable design reviewer collecting actionable refinement feedback from the user about the rendered HTML preview. Apply the impeccable `critique` sub-skill (https://github.com/pbakaus/impeccable/blob/main/site/content/skills/critique.md) to decide whether the artifact is ready.",
+            "You are an impeccable design reviewer collecting actionable refinement feedback from the user about the rendered HTML preview. Apply the impeccable `critique` sub-skill to decide whether the artifact is ready.",
           ],
           [
             "objective",
@@ -653,7 +652,7 @@ export default defineWorkflow("open-claude-design")
             task: taggedPrompt([
               [
                 "role",
-                "You are an impeccable design critic. Apply the impeccable `critique` sub-skill (https://github.com/pbakaus/impeccable/blob/main/site/content/skills/critique.md) to run the formal two-pass review against the live HTML preview.",
+                "You are an impeccable design critic. Apply the impeccable `critique` sub-skill to run the formal two-pass review against the live HTML preview.",
               ],
               [
                 "objective",
@@ -696,7 +695,7 @@ export default defineWorkflow("open-claude-design")
             task: taggedPrompt([
               [
                 "role",
-                "You are an impeccable visual QA specialist for the rendered HTML preview. Apply the impeccable `audit` (https://github.com/pbakaus/impeccable/blob/main/site/content/skills/audit.md) plus `live` (https://github.com/pbakaus/impeccable/blob/main/site/content/skills/live.md) sub-skills to validate the rendered output against breakpoints, states, and accessibility.",
+                "You are an impeccable visual QA specialist for the rendered HTML preview. Apply the impeccable `audit` plus `live` sub-skills to validate the rendered output against breakpoints, states, and accessibility.",
               ],
               [
                 "objective",
@@ -742,7 +741,7 @@ export default defineWorkflow("open-claude-design")
         prompt: taggedPrompt([
           [
             "role",
-            "You are an impeccable design polisher. Apply the impeccable `polish` sub-skill (https://github.com/pbakaus/impeccable/blob/main/site/content/skills/polish.md) — the meticulous final pass between good and great — to revise the HTML preview in place.",
+            "You are an impeccable design polisher. Apply the impeccable `polish` — the meticulous final pass between good and great — to revise the HTML preview in place.",
           ],
           [
             "objective",
@@ -828,7 +827,7 @@ export default defineWorkflow("open-claude-design")
       prompt: taggedPrompt([
         [
           "role",
-          "You are an impeccable pre-release gate. Apply the impeccable `audit` sub-skill (https://github.com/pbakaus/impeccable/blob/main/site/content/skills/audit.md) one final time to block export only for concrete, evidence-backed issues.",
+          "You are an impeccable pre-release gate. Apply the impeccable `audit` sub-skill one final time to block export only for concrete, evidence-backed issues.",
         ],
         [
           "objective",
@@ -864,7 +863,7 @@ export default defineWorkflow("open-claude-design")
         prompt: taggedPrompt([
           [
             "role",
-            "You are an impeccable production-readiness hardener. Apply the impeccable `harden` sub-skill (https://github.com/pbakaus/impeccable/blob/main/site/content/skills/harden.md) to remove blocking findings without redesigning.",
+            "You are an impeccable production-readiness hardener. Apply the impeccable `harden` sub-skill to remove blocking findings without redesigning.",
           ],
           [
             "objective",
@@ -903,7 +902,7 @@ export default defineWorkflow("open-claude-design")
       prompt: taggedPrompt([
         [
           "role",
-          "You are an impeccable design documenter. Apply the impeccable `document` sub-skill (https://github.com/pbakaus/impeccable/blob/main/site/content/skills/document.md) to produce a RICH HTML SPEC that bundles the approved preview together with implementation guidance for Claude Code / frontend engineers.",
+          "You are an impeccable design documenter. Apply the impeccable `document` sub-skill to produce a RICH HTML SPEC that bundles the approved preview together with implementation guidance for a design/frontend engineer.",
         ],
         [
           "objective",

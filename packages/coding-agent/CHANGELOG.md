@@ -6,6 +6,32 @@
 
 - Added `/exit` as a built-in interactive slash command alias for graceful app shutdown from the main chat.
 
+## [0.8.24-alpha.2] - 2026-06-03
+
+### Added
+
+- Shipped externally-resolvable TypeScript types for the `@bastani/workflows` SDK through `@bastani/atomic`. New `./workflows`, `./workflows/builtin`, `./workflows/builtin/*`, and `./workflows/ambient` package exports resolve to declarations emitted from the lean authoring surface during the build, and a generated ambient bridge maps the documented bare `@bastani/workflows` specifier (and its `builtin/*` submodules) onto those exports. Installed packages now type-check `import { defineWorkflow, Type } from "@bastani/workflows"` and `@bastani/workflows/builtin/*` composition imports under `tsc` (`moduleResolution: NodeNext`) with no hand-authored `.d.ts`, no `declare module` shim, and no `paths` alias: packages that import `@bastani/atomic` pick the types up automatically, while pure workflow-only packages add one `compilerOptions.types: ["@bastani/atomic/workflows/ambient"]` (or `/// <reference types="@bastani/atomic/workflows/ambient" />`) opt-in. The runtime workflow loader, jiti virtual modules, and `atomic.workflows` discovery are unchanged ([#1208](https://github.com/bastani-inc/atomic/issues/1208)).
+- Added a `verify:workflow-types` script that packs `@bastani/atomic` and type-checks throwaway external consumer fixtures (workflow-only opt-in, reference directive, auto-include, and a negative control) so the issue #1208 acceptance test is repeatable ([#1208](https://github.com/bastani-inc/atomic/issues/1208)).
+
+### Changed
+
+- Documented the workflow SDK typing model in `docs/packages.md` and `docs/workflows.md`: the single ambient opt-in for pure workflow-only packages, automatic pickup for packages that import `@bastani/atomic`, and the requirement to list `@bastani/atomic` and `typebox` as peer dependencies ([#1208](https://github.com/bastani-inc/atomic/issues/1208)).
+
+## [0.8.24-alpha.1] - 2026-06-02
+
+### Breaking Changes
+
+- Removed the bundled workflows package's imperative `runWorkflow` object-form API; workflow packages must export branded `defineWorkflow(...).compile()` definitions while direct `workflow` tool task/tasks/chain modes remain available.
+
+### Changed
+
+- Adopted the new `-alpha.N` prerelease version convention (revision starting at 1), replacing the legacy numeric `-N` prerelease suffix in the release tooling (bump script, CI publish validation, and changelog parsing).
+- Dropped the leading `v` from release git tags and `release/`/`prerelease/` branch names; the Publish CI now triggers on and validates bare version tags such as `0.8.24` or `0.8.24-alpha.1`.
+
+### Fixed
+
+- Fixed workflow node chat rendering a bare tool-name marker (e.g. `read …`) instead of tool output for parallel tool calls; `LiveChatEntriesController` now pairs concurrent same-named tool calls strictly by `toolCallId` ([#1198](https://github.com/bastani-inc/atomic/issues/1198)).
+
 ## [0.8.23] - 2026-06-02
 
 ### Changed

@@ -6,6 +6,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.8.24-alpha.2] - 2026-06-03
+
+### Added
+
+- The `@bastani/workflows` authoring SDK types are now externally resolvable in installed packages through `@bastani/atomic`'s new `./workflows` exports and ambient bridge, so workflow files type-check `import { defineWorkflow, Type } from "@bastani/workflows"` (and `@bastani/workflows/builtin/*`) under `tsc` (NodeNext) without a hand-authored `.d.ts`, `declare module` shim, or `paths` alias. Workflow packages declare `@bastani/atomic` and `typebox` as peer dependencies; the package continues to distribute raw TypeScript with no build step, and the runtime virtual-module loader is unchanged ([#1208](https://github.com/bastani-inc/atomic/issues/1208)).
+
+### Fixed
+
+- Fixed builtin (and any) workflows falling back to the user's currently selected model instead of the stage's defined model. A fully-qualified `provider/model` id that the live model catalog did not list was treated as a hard "not available" failure; because candidate validation throws on any failure and the catalog resolver catches that throw and collapses the whole ordered candidate list down to the user's `currentModel`, a single absent cross-provider fallback discarded the defined primary plus every fallback. Provider-qualified ids are now trusted (passed through with the reasoning suffix split off the last colon), mirroring the subagent resolver, so the defined primary is used and only genuinely failing candidates fall through at runtime. Regressed when bundled workflow model lists were refreshed onto newer multi-provider ids alongside suffix-first reasoning levels ([#1199](https://github.com/bastani-inc/atomic/issues/1199)).
+
+## [0.8.24-alpha.1] - 2026-06-02
+
+### Breaking Changes
+
+- Removed the imperative `runWorkflow` object-form API from `@bastani/workflows`; workflow authors must export definitions produced by `defineWorkflow(...).compile()`, and forged `__piWorkflow: true` objects are rejected by discovery and composition.
+
+### Added
+
+- Added suffix-first workflow reasoning levels for `model` and `fallbackModels` entries such as `openai/gpt-5:high`, plus `WorkflowModelAttempt.reasoningLevel` metadata and optional `fallbackThinkingLevels` compatibility mapping ([#1199](https://github.com/bastani-inc/atomic/issues/1199)).
+
+### Changed
+
+- Changed bundled workflows to encode their existing reasoning levels directly on model and fallback model strings ([#1199](https://github.com/bastani-inc/atomic/issues/1199)).
+- Documented the `model_name:thinking_effort` suffix syntax and `thinkingLevel` migration guidance in the workflows docs and package README ([#1199](https://github.com/bastani-inc/atomic/issues/1199)).
+- Adopted the new `-alpha.N` prerelease version convention (revision starting at 1), replacing the legacy numeric `-N` prerelease suffix in the release tooling (bump script, CI publish validation, and changelog parsing).
+- Dropped the leading `v` from release git tags and `release/`/`prerelease/` branch names; the Publish CI now triggers on and validates bare version tags such as `0.8.24` or `0.8.24-alpha.1`.
+
+### Deprecated
+
+- Deprecated workflow `thinkingLevel` stage options in favor of per-candidate `:off|minimal|low|medium|high|xhigh` model suffixes; removal is deferred ([#1199](https://github.com/bastani-inc/atomic/issues/1199)).
+
+### Fixed
+
+- Made workflow reasoning-suffix parsing lenient so it no longer rejects legitimate colon-tagged model ids (for example OpenRouter `:free`/`:exacto` variants and Ollama `llama3:latest`); only canonical `:off|minimal|low|medium|high|xhigh` suffixes are stripped as reasoning levels, and unknown ids still surface the generic catalog "not available" error ([#1199](https://github.com/bastani-inc/atomic/issues/1199)).
+
 ## [0.8.23] - 2026-06-02
 
 ### Changed

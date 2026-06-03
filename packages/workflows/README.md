@@ -2,7 +2,7 @@
 
 <p align="center">
   <b>Turn coding agents into reliable engineering workflows.</b><br>
-  An open-source pi extension: install it, author workflows in TypeScript, run them from chat.
+  An open-source Atomic workflow extension: install it, author workflows in TypeScript, run them from chat.
 </p>
 
 <p align="center">
@@ -507,49 +507,28 @@ Press **F2** while a workflow is running to open the DAG overlay for the active 
 
 ### Execution model
 
-`@bastani/workflows` follows pi's package/extension model: pi loads `src/extension/index.ts` from the package `pi.extensions` manifest, then the extension registers the `workflow` tool, `/workflow` slash command, renderers, widget, and lifecycle hooks in-process.
+`@bastani/workflows` follows Atomic's package/extension model: Atomic loads `src/extension/index.ts` from the package `atomic.extensions` manifest, with legacy `pi.extensions` still supported, then the extension registers the `workflow` tool, `/workflow` slash command, renderers, widget, and lifecycle hooks in-process.
 
 For interactive use, run workflows through `/workflow <name> [key=value ...]` or let the LLM call the `workflow` tool. In non-interactive (`-p` / `--print` / `--mode json`) sessions, `/workflow <name> key=value` and LLM calls to the `workflow` tool remain available for deterministic workflows. The input picker and graph picker are disabled, top-level `ctx.ui.*` is unavailable, and stage child sessions exclude `ask_user_question`. Named workflow dispatch waits for the terminal run snapshot before returning.
 
 Because human input is runtime-only and workflows no longer carry a declaration-time HIL marker, headless dispatch does not reject a workflow just because its source contains `ctx.ui.*`. If you copy the HIL example above into a non-interactive session, it can pass dispatch and then fail when execution reaches the prompt with an error such as `atomic-workflows: HIL ctx.ui.confirm is unavailable because Atomic runtime did not provide a UI adapter` (the primitive name varies). Run those workflows interactively, or guard/remove runtime `ctx.ui.*` calls before using headless mode.
 
-For library or scripted use, you can also call the explicit programmatic runner:
+For library or package authoring, define reusable workflows with the builder and export the compiled definition. Hand-written objects with `__piWorkflow: true` are rejected by discovery and composition; `defineWorkflow(...).compile()` is the public authoring surface. Standalone TypeScript workflow packages can import `defineWorkflow` and `Type` from `@bastani/workflows` directly with no local `.d.ts` file or `declare module` shim. The former imperative `runWorkflow` object-form API is removed; use compiled workflow definitions with the exported `run()` / registry helpers for programmatic execution.
 
 ```ts
-import { runWorkflow, type WorkflowOptions } from "@bastani/workflows";
+import { defineWorkflow, Type } from "@bastani/workflows";
 
-const definition = {
-  mode: "workflow",
-  workflow: "deep-research-codebase",
-  inputs: {
-    prompt: "Investigate the auth module",
-    max_partitions: 6,
-    max_concurrency: 4,
-  },
-} as const;
-
-const options: WorkflowOptions = {};
-
-await runWorkflow(definition, options);
-
-await runWorkflow({
-  mode: "parallel",
-  task: "Audit auth changes",
-  tasks: [
-    { name: "security", task: "Review security risks" },
-    { name: "runtime", task: "Review runtime risks" },
-  ],
-  concurrency: 2,
-  reads: ["research/context.md"],
-  output: "research/auth-audit.md",
-  outputMode: "file-only",
-  worktree: false,
-  maxOutput: { lines: 2000 },
-  artifacts: true,
-});
+export default defineWorkflow("audit-auth")
+  .input("prompt", Type.String({ default: "Investigate the auth module" }))
+  .output("summary", Type.String())
+  .run(async (ctx) => {
+    const result = await ctx.task("audit", { prompt: ctx.inputs.prompt });
+    return { summary: result.text };
+  })
+  .compile();
 ```
 
-The programmatic definition object mirrors the workflow tool: named workflow runs, single-task runs, parallel `tasks`, and mixed `chain` runs accept the same direct options (`reads`, `output`, `outputMode`, `worktree`, `gitWorktreeDir`, `baseBranch`, `maxOutput`, `artifacts`, `concurrency`, `failFast`, and stage/session options such as `cwd`, `agentDir`, `model`, `tools`, `context`, and `sessionDir`). `chainDir` is chain-only: it provides the shared artifact directory for chain reads, outputs, and worktree diffs.
+The `workflow` tool still supports direct one-off `task`, `tasks`, and `chain` modes for agent-initiated orchestration. Those direct modes are runtime tool inputs, not workflow definition files.
 
 For large handoffs, prefer artifact paths over prompt injection: write stage output to `output`, set `outputMode: "file-only"` when the parent only needs the path, pass paths with `reads`, and instruct downstream agents explicitly with wording like `Read the file at <path>...`. Reserve `previous`/`{previous}` for compact summaries; avoid passing full session histories, all prior stage outputs, or every review round directly into the next model prompt. In review loops, save JSON review artifacts and pass only the latest review-round artifact, with a ledger or index file linking older rounds when needed.
 
@@ -636,13 +615,15 @@ Child workflow outputs: `output_type`, `design_system`, `artifact`, `handoff`, `
 
 ## Custom workflow discovery
 
-`@bastani/workflows` automatically discovers workflow files from three locations:
+`@bastani/workflows` discovers workflow files from project-local paths, user-global paths, configured workflow paths, installed Atomic package resources, and bundled workflows:
 
-| Location                          | Scope      | Example path                               |
-| --------------------------------- | ---------- | ------------------------------------------ |
-| `.atomic/workflows/*.ts`          | Project    | `.atomic/workflows/my-workflow.ts`         |
-| `~/.atomic/agent/workflows/*.ts`  | User       | `~/.atomic/agent/workflows/my-workflow.ts` |
-| `workflows.<name>.path` in config | Configured | see config example below                   |
+| Location                           | Scope      | Example path                                                                           |
+| ---------------------------------- | ---------- | -------------------------------------------------------------------------------------- |
+| `.atomic/workflows/*.ts`           | Project    | `.atomic/workflows/my-workflow.ts`                                                     |
+| `~/.atomic/agent/workflows/*.ts`   | User       | `~/.atomic/agent/workflows/my-workflow.ts`                                             |
+| `workflows.<name>.path` in config  | Configured | see config example below                                                               |
+| Installed Atomic package workflows | Package    | `atomic.workflows`, legacy `pi.workflows`, or `workflows/` / `workflow/` directories   |
+| Bundled workflows                  | Built-in   | shipped with `@bastani/workflows`                                                      |
 
 Config-based discovery (`~/.atomic/agent/extensions/workflow/config.json` or `.atomic/extensions/workflow/config.json`):
 
@@ -667,3 +648,19 @@ MIT — see [LICENSE](LICENSE).
 ---
 
 **Development:** see [DEV_SETUP.md](../../DEV_SETUP.md) for setup, testing, layout, and the local-extension dev loop.
+
+## Model reasoning levels
+
+Workflow stage `model` and `fallbackModels` strings support suffix-first reasoning levels using the `model_name:thinking_effort` syntax: append `:off`, `:minimal`, `:low`, `:medium`, `:high`, or `:xhigh` to the model id (for example `openai/gpt-5:high` or `anthropic/claude-haiku-4-5:off`). A suffix on a fallback candidate controls only that retry attempt, so fallback chains can mix reasoning levels.
+
+The older `thinkingLevel` stage option remains accepted as a deprecated default for candidates without a suffix. If both are present, the model suffix wins. Migrate legacy `thinkingLevel` stages by folding the effort into the model strings:
+
+```diff
+-  model: "openai/gpt-5.5",
+-  fallbackModels: ["anthropic/claude-opus-4-8"],
+-  thinkingLevel: "high",
++  model: "openai/gpt-5.5:high",
++  fallbackModels: ["anthropic/claude-opus-4-8:high"],
+```
+
+`fallbackThinkingLevels` is an optional compatibility helper aligned by index to `fallbackModels`; it is used only for fallback entries that do not already include a suffix.

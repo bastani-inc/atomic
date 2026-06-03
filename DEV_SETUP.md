@@ -240,19 +240,19 @@ Examples import the workspace package `@bastani/workflows`.
 
 ## Releasing
 
-Atomic uses a tag-driven release flow: push a `v<version>` git tag and CI cross-compiles binaries, publishes to npm with OIDC provenance, and creates the GitHub Release with binaries attached.
+Atomic uses a tag-driven release flow: push a `<version>` git tag (no leading `v`, for example `0.8.24` or `0.8.24-alpha.1`) and CI cross-compiles binaries, publishes to npm with OIDC provenance, and creates the GitHub Release with binaries attached.
 
 ### Workflow
 
-1. Run `bun run scripts/bump-version.ts <version>` (e.g. `0.8.0` or `0.8.0-0`), then `bun install`.
+1. Run `bun run scripts/bump-version.ts <version>` (e.g. `0.8.0` or `0.8.0-alpha.1`), then `bun install`.
 2. Move the `[Unreleased]` section in `packages/coding-agent/CHANGELOG.md` to a new `## [<version>] - <YYYY-MM-DD>` section. CI extracts release notes from this section.
 3. Run `bun run typecheck`, `cd packages/coding-agent && bun run build`, and `bun run test:all`.
-4. Commit `packages/*/package.json`, `packages/*/README.md`, `packages/coding-agent/CHANGELOG.md`, and `bun.lock` with `chore(release): bump to v<version>`.
+4. Commit `packages/*/package.json`, `packages/*/README.md`, `packages/coding-agent/CHANGELOG.md`, and `bun.lock` with `chore(release): bump to <version>`.
 5. Tag and push:
     ```sh
-    git tag v<version>
+    git tag <version>
     git push origin main
-    git push origin v<version>
+    git push origin <version>
     ```
 6. The tag push triggers `.github/workflows/publish.yml`, which publishes `@bastani/atomic` to npm with OIDC provenance and creates the GitHub Release with six binary archives attached (darwin/linux/windows × arm64/x64).
 

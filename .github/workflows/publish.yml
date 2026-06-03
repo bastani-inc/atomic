@@ -3,11 +3,11 @@ name: Publish
 on:
     push:
         tags:
-            - "v*"
+            - "[0-9]*.[0-9]*.[0-9]*"
     workflow_dispatch:
         inputs:
             tag:
-                description: "Tag to publish (e.g., v0.8.0)"
+                description: "Tag to publish (e.g., 0.8.0 or 0.8.0-alpha.1)"
                 required: true
                 type: string
 
@@ -187,9 +187,9 @@ jobs:
                   else
                     ref="${GITHUB_REF#refs/tags/}"
                   fi
-                  release_version_re='(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*))?'
-                  if [[ ! "$ref" =~ ^v$release_version_re$ ]]; then
-                    echo "Unexpected tag format: $ref (expected vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-NUMBER, e.g. v0.8.0 or v0.8.0-0)" >&2
+                  release_version_re='(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-alpha\.[1-9][0-9]*)?'
+                  if [[ ! "$ref" =~ ^$release_version_re$ ]]; then
+                    echo "Unexpected tag format: $ref (expected MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH-alpha.REVISION, e.g. 0.8.0 or 0.8.0-alpha.1)" >&2
                     exit 1
                   fi
                   echo "ref=$ref" >> "$GITHUB_OUTPUT"
@@ -229,7 +229,7 @@ jobs:
               run: |
                   set -euo pipefail
 
-                  release_version_re='(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*))?'
+                  release_version_re='(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-alpha\.[1-9][0-9]*)?'
 
                   root_name=$(bun --eval 'import pkg from "./package.json" with { type: "json" }; console.log(pkg.name);')
                   if [ "$root_name" != "atomic-monorepo" ]; then
@@ -241,7 +241,7 @@ jobs:
 
                   name=$(bun --eval 'import pkg from "./package.json" with { type: "json" }; console.log(pkg.name);')
                   version=$(bun --eval 'import pkg from "./package.json" with { type: "json" }; console.log(pkg.version);')
-                  expected_tag="v$version"
+                  expected_tag="$version"
 
                   if [ "$name" != "$PACKAGE_NAME" ]; then
                     echo "Only $PACKAGE_NAME may be published by this workflow; found $name in $PACKAGE_DIR/package.json." >&2
@@ -249,7 +249,7 @@ jobs:
                   fi
 
                   if [[ ! "$version" =~ ^$release_version_re$ ]]; then
-                    echo "$PACKAGE_DIR/package.json version $version is invalid (expected MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH-NUMBER, e.g. 0.8.0 or 0.8.0-0)." >&2
+                    echo "$PACKAGE_DIR/package.json version $version is invalid (expected MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH-alpha.REVISION, e.g. 0.8.0 or 0.8.0-alpha.1)." >&2
                     exit 1
                   fi
 
@@ -262,7 +262,7 @@ jobs:
 
                   while IFS=$'\t' read -r manifest_path manifest_name manifest_version manifest_private; do
                     if [[ ! "$manifest_version" =~ ^$release_version_re$ ]]; then
-                      echo "$manifest_path version $manifest_version is invalid (expected MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH-NUMBER)." >&2
+                      echo "$manifest_path version $manifest_version is invalid (expected MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH-alpha.REVISION)." >&2
                       exit 1
                     fi
 

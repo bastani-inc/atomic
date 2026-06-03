@@ -996,3 +996,19 @@ The main runtime files are:
 | `src/intercom/intercom-bridge.ts` | Runtime intercom bridge instructions and diagnostics. |
 | `src/extension/schemas.ts` / `src/shared/types.ts` | Tool schemas, shared types, and event constants. |
 | `test/unit/` / `test/integration/` | Unit and loader-based integration tests. |
+
+### Suffix-first reasoning levels
+
+Reasoning levels are configured suffix-first using the `model_name:thinking_effort` syntax on `model` and each `fallbackModels` entry: `model: claude-sonnet-4:high` and `fallbackModels: claude-sonnet-4:medium, gpt-5:low, claude-haiku-4:off`. Canonical efforts are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh`. The older `thinking` field is deprecated; it remains supported as a legacy default only when a model candidate has no suffix, and a suffix always wins.
+
+Migrate legacy `thinking` frontmatter by folding the effort into `model` and `fallbackModels`:
+
+```diff
+-model: openai/gpt-5.5
+-fallbackModels: anthropic/claude-opus-4-8
+-thinking: xhigh
++model: openai/gpt-5.5:xhigh
++fallbackModels: anthropic/claude-opus-4-8:xhigh
+```
+
+`fallbackThinkingLevels` is available only as an optional compatibility helper. It is positionally aligned with `fallbackModels` and supplies a fallback candidate's level only when that fallback model entry has no suffix; prefer suffixed model strings for new configuration.

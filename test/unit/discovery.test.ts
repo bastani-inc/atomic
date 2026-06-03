@@ -18,6 +18,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
+import { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
 import {
   discoverStartupWorkflowsSync,
   discoverWorkflows,
@@ -34,15 +35,13 @@ function makeValidDef(
   normalizedName: string,
   overrides: Partial<WorkflowDefinition> = {},
 ): WorkflowDefinition {
-  return {
-    __piWorkflow: true,
-    name,
-    normalizedName,
-    description: `${name} description`,
-    inputs: {},
-    run: async () => ({}),
-    ...overrides,
-  };
+  const definition = defineWorkflow(name)
+    .description(`${name} description`)
+    .run(async () => ({}))
+    .compile();
+  assert.equal(definition.normalizedName, normalizedName);
+  assert.deepEqual(overrides, {});
+  return definition;
 }
 
 // ---------------------------------------------------------------------------
@@ -289,14 +288,13 @@ function writeWorkflowJs(
   writeFileSync(
     filePath,
     [
-      `export default {`,
-      `  __piWorkflow: true,`,
-      `  name: "${name}",`,
-      `  normalizedName: "${normalizedName}",`,
-      `  description: "${name} description",`,
-      `  inputs: {},`,
-      `  run: async (ctx) => { await ctx.task("validation-smoke", { prompt: "validation smoke" }); return {}; },`,
-      `};`,
+      `import { defineWorkflow } from "@bastani/workflows";`,
+      `const workflow = defineWorkflow(${JSON.stringify(normalizedName)})`,
+      `  .description(${JSON.stringify(`${name} description`)})`,
+      `  .run(async (ctx) => { await ctx.task("validation-smoke", { prompt: "validation smoke" }); return {}; })`,
+      `  .compile();`,
+      `if (workflow.normalizedName !== ${JSON.stringify(normalizedName)}) throw new Error("unexpected normalized name");`,
+      `export default workflow;`,
     ].join("\n"),
     "utf-8",
   );
@@ -316,14 +314,11 @@ function writeNoStageWorkflowJs(dir: string, filename: string): string {
   writeFileSync(
     filePath,
     [
-      `export default {`,
-      `  __piWorkflow: true,`,
-      `  name: "No Stage Workflow",`,
-      `  normalizedName: "no-stage-workflow",`,
-      `  description: "Discovery rejects this because it creates no stages",`,
-      `  inputs: {},`,
-      `  run: async () => ({ ok: true }),`,
-      `};`,
+      `import { defineWorkflow } from "@bastani/workflows";`,
+      `export default defineWorkflow("No Stage Workflow")`,
+      `  .description("Discovery rejects this because it creates no stages")`,
+      `  .run(async () => ({}))`,
+      `  .compile();`,
     ].join("\n"),
     "utf-8",
   );
@@ -389,12 +384,12 @@ describe("discoverWorkflows — project-local", () => {
     const cwd = makeTempDir("proj-local-shape");
     const wfDir = join(cwd, ".atomic", "workflows");
     mkdirSync(wfDir, { recursive: true });
-    const fp = writeWorkflowJs(wfDir, "shape.js", "Shape Workflow", "shape-workflow");
+    const fp = writeWorkflowJs(wfDir, "shape.js", "shape-workflow", "shape-workflow");
 
     const { sources } = await discoverWorkflows({ cwd, homeDir: makeTempDir("empty-home3"), includeBundled: false });
     const src = sources.find((s) => s.id === "shape-workflow");
     assert.notEqual(src, undefined);
-    assert.equal(src!.name, "Shape Workflow");
+    assert.equal(src!.name, "shape-workflow");
     assert.equal(src!.filePath, fp);
   });
 
@@ -682,6 +677,34 @@ describe("discoverWorkflows — INVALID_DEFINITION diagnostics", () => {
     const inv = errors.filter((e) => e.code === "INVALID_DEFINITION");
     assert.ok(inv.length > 0);
     assert.match(inv[0]!.message, /missing or incorrect __piWorkflow sentinel/);
+    assert.match(inv[0]!.message, /defineWorkflow\(\.\.\.\)\.compile\(\)/);
+  });
+
+  test("forged __piWorkflow object emits defineWorkflow compile diagnostic", async () => {
+    const cwd = makeTempDir("forged-sentinel");
+    const wfDir = join(cwd, ".atomic", "workflows");
+    mkdirSync(wfDir, { recursive: true });
+    writeFileSync(
+      join(wfDir, "forged.js"),
+      [
+        `export default {`,
+        `  __piWorkflow: true,`,
+        `  name: "forged",`,
+        `  normalizedName: "forged",`,
+        `  description: "forged",`,
+        `  inputs: {},`,
+        `  run: async () => ({}),`,
+        `};`,
+      ].join("\n"),
+      "utf-8",
+    );
+
+    const { registry, errors } = await discoverWorkflows({ cwd, homeDir: makeTempDir("empty-forged"), includeBundled: false });
+    assert.equal(registry.has("forged"), false);
+    const inv = errors.filter((e) => e.code === "INVALID_DEFINITION");
+    assert.ok(inv.length > 0);
+    assert.match(inv[0]!.message, /not produced by defineWorkflow\(\.\.\.\)\.compile\(\)/);
+    assert.match(inv[0]!.message, /hand-rolled __piWorkflow objects are not supported/);
   });
 
   test("INVALID_DEFINITION does not register a workflow", async () => {
@@ -715,14 +738,11 @@ describe("discoverWorkflows — INVALID_DEFINITION diagnostics", () => {
       join(wfDir, "side-effect.js"),
       [
         `import { writeFileSync } from "node:fs";`,
-        `export default {`,
-        `  __piWorkflow: true,`,
-        `  name: "Side Effect Workflow",`,
-        `  normalizedName: "side-effect-workflow",`,
-        `  description: "Would write during run if discovery invoked it",`,
-        `  inputs: {},`,
-        `  run: async () => { writeFileSync(new URL("../../side-effect.txt", import.meta.url), "ran"); return {}; },`,
-        `};`,
+        `import { defineWorkflow } from "@bastani/workflows";`,
+        `export default defineWorkflow("Side Effect Workflow")`,
+        `  .description("Would write during run if discovery invoked it")`,
+        `  .run(async () => { writeFileSync(new URL("../../side-effect.txt", import.meta.url), "ran"); return {}; })`,
+        `  .compile();`,
       ].join("\n"),
       "utf-8",
     );
@@ -741,14 +761,11 @@ describe("discoverWorkflows — INVALID_DEFINITION diagnostics", () => {
     writeFileSync(
       join(wfDir, "aliased.js"),
       [
-        `export default {`,
-        `  __piWorkflow: true,`,
-        `  name: "Aliased Stage Workflow",`,
-        `  normalizedName: "aliased-stage-workflow",`,
-        `  description: "Uses an aliased task primitive",`,
-        `  inputs: {},`,
-        `  run: async (ctx) => { const { task } = ctx; await task("validation-smoke", { prompt: "validation smoke" }); return {}; },`,
-        `};`,
+        `import { defineWorkflow } from "@bastani/workflows";`,
+        `export default defineWorkflow("Aliased Stage Workflow")`,
+        `  .description("Uses an aliased task primitive")`,
+        `  .run(async (ctx) => { const { task } = ctx; await task("validation-smoke", { prompt: "validation smoke" }); return {}; })`,
+        `  .compile();`,
       ].join("\n"),
       "utf-8",
     );
@@ -798,7 +815,7 @@ describe("discoverWorkflows — DUPLICATE_NAME precedence", () => {
     const cwd = makeTempDir("dup-sp-vs-pl");
     // settings-project: highest precedence
     const spDir = makeTempDir("sp-files");
-    const spPath = writeWorkflowJs(spDir, "sp.js", "SP Version", "dup-wf");
+    const spPath = writeWorkflowJs(spDir, "sp.js", "dup-wf", "dup-wf");
     // project-local: lower precedence
     const wfDir = join(cwd, ".atomic", "workflows");
     mkdirSync(wfDir, { recursive: true });
@@ -813,7 +830,7 @@ describe("discoverWorkflows — DUPLICATE_NAME precedence", () => {
 
     // settings-project wins
     const def = registry.get("dup-wf");
-    assert.equal(def?.name, "SP Version");
+    assert.equal(def?.name, "dup-wf");
 
     // project-local entry emits DUPLICATE_NAME
     const dupes = errors.filter((e) => e.code === "DUPLICATE_NAME");
@@ -831,7 +848,7 @@ describe("discoverWorkflows — DUPLICATE_NAME precedence", () => {
     // project-local
     const wfDir = join(cwd, ".atomic", "workflows");
     mkdirSync(wfDir, { recursive: true });
-    writeWorkflowJs(wfDir, "pl.js", "PL Winner", "dup-sg-wf");
+    writeWorkflowJs(wfDir, "pl.js", "dup-sg-wf", "dup-sg-wf");
     // settings-global
     const sgDir = makeTempDir("sg-files");
     const sgPath = writeWorkflowJs(sgDir, "sg.js", "SG Loser", "dup-sg-wf");
@@ -843,7 +860,7 @@ describe("discoverWorkflows — DUPLICATE_NAME precedence", () => {
       config: { globalWorkflows: [sgPath] },
     });
 
-    assert.equal(registry.get("dup-sg-wf")?.name, "PL Winner");
+    assert.equal(registry.get("dup-sg-wf")?.name, "dup-sg-wf");
     const dupes = errors.filter((e) => e.code === "DUPLICATE_NAME");
     assert.equal(dupes.length, 1);
     assert.equal(dupes[0]!.level, "warn");
@@ -858,7 +875,7 @@ describe("discoverWorkflows — DUPLICATE_NAME precedence", () => {
     // project-local
     const wfDir = join(cwd, ".atomic", "workflows");
     mkdirSync(wfDir, { recursive: true });
-    writeWorkflowJs(wfDir, "pl.js", "PL Winner UG", "dup-ug-wf");
+    writeWorkflowJs(wfDir, "pl.js", "dup-ug-wf", "dup-ug-wf");
     // user-global
     const homeDir = makeTempDir("home-ug");
     const ugDir = join(homeDir, ".atomic", "agent", "workflows");
@@ -867,7 +884,7 @@ describe("discoverWorkflows — DUPLICATE_NAME precedence", () => {
 
     const { registry, sources, errors } = await discoverWorkflows({ cwd, homeDir, includeBundled: false });
 
-    assert.equal(registry.get("dup-ug-wf")?.name, "PL Winner UG");
+    assert.equal(registry.get("dup-ug-wf")?.name, "dup-ug-wf");
     const dupes = errors.filter((e) => e.code === "DUPLICATE_NAME");
     assert.equal(dupes.length, 1);
 
@@ -881,7 +898,7 @@ describe("discoverWorkflows — DUPLICATE_NAME precedence", () => {
     const wfDir = join(cwd, ".atomic", "workflows");
     mkdirSync(wfDir, { recursive: true });
     // Use same normalizedName as bundled "ralph"
-    writeWorkflowJs(wfDir, "override-ralph.js", "Custom Ralph", "ralph");
+    writeWorkflowJs(wfDir, "override-ralph.js", "ralph", "ralph");
 
     const { registry, sources, errors } = await discoverWorkflows({
       cwd,
@@ -890,7 +907,7 @@ describe("discoverWorkflows — DUPLICATE_NAME precedence", () => {
     });
 
     // Custom wins
-    assert.equal(registry.get("ralph")?.name, "Custom Ralph");
+    assert.equal(registry.get("ralph")?.name, "ralph");
 
     // Bundled ralph emits DUPLICATE_NAME
     const dupes = errors.filter((e) => e.code === "DUPLICATE_NAME" && e.source === "ralph");
@@ -910,7 +927,7 @@ describe("discoverWorkflows — DUPLICATE_NAME precedence", () => {
     writeWorkflowJs(ugDir, "ug.js", "UG Loser SG", "dup-sgug-wf");
 
     const sgDir = makeTempDir("sg-vs-ug");
-    const sgPath = writeWorkflowJs(sgDir, "sg.js", "SG Winner UG", "dup-sgug-wf");
+    const sgPath = writeWorkflowJs(sgDir, "sg.js", "dup-sgug-wf", "dup-sgug-wf");
     const cwd = makeTempDir("proj-sg-ug");
 
     const { registry, sources, errors } = await discoverWorkflows({
@@ -920,7 +937,7 @@ describe("discoverWorkflows — DUPLICATE_NAME precedence", () => {
       config: { globalWorkflows: [sgPath] },
     });
 
-    assert.equal(registry.get("dup-sgug-wf")?.name, "SG Winner UG");
+    assert.equal(registry.get("dup-sgug-wf")?.name, "dup-sgug-wf");
     const dupes = errors.filter((e) => e.code === "DUPLICATE_NAME");
     assert.equal(dupes.length, 1);
 
@@ -932,7 +949,7 @@ describe("discoverWorkflows — DUPLICATE_NAME precedence", () => {
     const homeDir = makeTempDir("home-ug-bundled");
     const ugDir = join(homeDir, ".atomic", "agent", "workflows");
     mkdirSync(ugDir, { recursive: true });
-    writeWorkflowJs(ugDir, "override-drc.js", "Custom DRC", "deep-research-codebase");
+    writeWorkflowJs(ugDir, "override-drc.js", "deep-research-codebase", "deep-research-codebase");
     const cwd = makeTempDir("proj-ug-bundled");
 
     const { registry, sources, errors } = await discoverWorkflows({
@@ -941,7 +958,7 @@ describe("discoverWorkflows — DUPLICATE_NAME precedence", () => {
       includeBundled: true,
     });
 
-    assert.equal(registry.get("deep-research-codebase")?.name, "Custom DRC");
+    assert.equal(registry.get("deep-research-codebase")?.name, "deep-research-codebase");
     const dupes = errors.filter((e) => e.code === "DUPLICATE_NAME" && e.source === "deep-research-codebase");
     assert.equal(dupes.length, 1);
 

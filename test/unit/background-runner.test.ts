@@ -16,6 +16,7 @@ import { statusRuns, killRun } from "../../packages/workflows/src/runs/backgroun
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { createCancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.js";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
+import { Type } from "typebox";
 import { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
 import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
 import type { PromptAdapter } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
@@ -50,6 +51,7 @@ function makeDeferredAdapter(): DeferredAdapter {
 
 function makeDelayedWorkflow(name: string): WorkflowDefinition {
   return defineWorkflow(name)
+    .output("done", Type.Boolean())
     .run(async (ctx) => {
       await ctx.stage("delayed-stage").prompt("waiting for input");
       return { done: true };
@@ -130,6 +132,7 @@ describe("runDetached — returns immediately", () => {
     const jobs = createJobTracker();
     let bodyStarted = false;
     const def = defineWorkflow("sync-prefix-wf")
+      .output("done", Type.Boolean())
       .run(async () => {
         bodyStarted = true;
         busyWait(100);
@@ -160,6 +163,7 @@ describe("runDetached — returns immediately", () => {
     const jobs = createJobTracker();
     let bodyStarted = false;
     const def = defineWorkflow("killed-before-start-wf")
+      .output("unreached", Type.Boolean())
       .run(async () => {
         bodyStarted = true;
         return { unreached: true };
@@ -218,6 +222,7 @@ describe("statusRuns — lists detached run during active stage", () => {
     const cancellation = createCancellationRegistry();
     const jobs = createJobTracker();
     const def = defineWorkflow("completes-quickly-wf")
+      .output("done", Type.Boolean())
       .run(async () => ({ done: true }))
       .compile() as WorkflowDefinition;
 

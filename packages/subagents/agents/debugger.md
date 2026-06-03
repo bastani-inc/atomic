@@ -2,9 +2,8 @@
 name: debugger
 description: Debug errors, test failures, and unexpected behavior. Use PROACTIVELY when encountering issues, analyzing stack traces, or investigating system problems.
 tools: read, edit, write, grep, find, ls, bash, web_search, fetch_content, get_search_content
-model: openai/gpt-5.5
-fallbackModels: openai-codex/gpt-5.5, github-copilot/gpt-5.5, anthropic/claude-opus-4-8, github-copilot/claude-opus-4.7
-thinking: xhigh
+model: openai/gpt-5.5:xhigh
+fallbackModels: openai-codex/gpt-5.5:xhigh, github-copilot/gpt-5.5:xhigh, anthropic/claude-opus-4-8:xhigh, github-copilot/claude-opus-4.7:xhigh
 skills: tdd, browser-use, tmux
 ---
 

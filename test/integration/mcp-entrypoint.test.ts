@@ -22,6 +22,7 @@ import {
   type PiExecuteContext,
 } from "../../packages/workflows/src/extension/index.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
+import { Type } from "typebox";
 import { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
 import type { McpScopeSetPayload } from "../../packages/workflows/src/extension/mcp.js";
 import type { StageAdapters } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
@@ -34,6 +35,7 @@ import type { WorkflowToolResult } from "../../packages/workflows/src/extension/
 
 const mcpRestrictedWorkflow = defineWorkflow("mcp-restricted")
   .description("Workflow with MCP-scoped restricted stage")
+  .output("done", Type.Boolean())
   .run(async (ctx) => {
     const stage = ctx.stage("restricted", {
       mcp: { allow: ["github"], deny: ["filesystem"] },

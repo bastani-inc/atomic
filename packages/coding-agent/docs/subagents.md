@@ -150,6 +150,36 @@ Agents can define ordered `fallbackModels` for retryable provider or model failu
 
 Fallbacks do not retry ordinary task failures, validation failures, tool failures, cancellations, or workflow-code errors. Because a fallback may send the same prompt and context to a different provider, choose models that match your cost, privacy, and data-handling requirements.
 
+Each candidate can also carry its own reasoning effort — see [Reasoning levels](#reasoning-levels).
+
+## Reasoning levels
+
+Set the reasoning (thinking) effort for each model candidate with a `model_name:thinking_effort` suffix on `model` and on every `fallbackModels` entry. Valid efforts are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh` — the same shorthand used by `atomic --model sonnet:high`.
+
+```markdown
+---
+name: deep-reviewer
+description: Adversarial reviewer for risky diffs
+tools: read, grep, bash
+model: anthropic/claude-sonnet-4:high
+fallbackModels: openai/gpt-5:medium, anthropic/claude-haiku-4-5:off
+---
+```
+
+Because the effort travels with each model string, every primary and fallback candidate is self-contained: a fallback can run at a different effort than the primary, so a high-effort primary degrades gracefully to a cheaper, lower-effort fallback.
+
+**Migrate off the legacy `thinking` field.** The separate `thinking:` frontmatter field is deprecated. It still works as a default for any candidate that has no suffix, and a suffix always wins, but new agents should encode the effort directly on `model` and `fallbackModels`:
+
+```diff
+-model: openai/gpt-5.5
+-fallbackModels: anthropic/claude-opus-4-8
+-thinking: xhigh
++model: openai/gpt-5.5:xhigh
++fallbackModels: anthropic/claude-opus-4-8:xhigh
+```
+
+`fallbackThinkingLevels` exists only as an optional compatibility helper: it is aligned by index to `fallbackModels` and supplies a fallback candidate's effort only when that fallback entry has no suffix. Prefer suffixed model strings instead. Attempt metadata reports the resolved model and the effective reasoning effort used for each attempt.
+
 ## Related docs
 
 - [Workflows](/workflows) for multi-stage reusable automation.

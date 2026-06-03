@@ -256,6 +256,48 @@ describe("executor input resolution — Phase C", () => {
 
     await assert.rejects(run(def, {}, { store: createStore() }), { message: 'atomic-workflows: required input "query" not provided', });
   });
+
+  test("run rejects hand-rolled workflow literals", async () => {
+    const forged = {
+      __piWorkflow: true,
+      name: "forged",
+      normalizedName: "forged",
+      description: "forged workflow literal",
+      inputs: {},
+      outputs: {},
+      run: async () => ({}),
+    } as unknown as WorkflowDefinition;
+
+    await assert.rejects(
+      run(forged, {}, { store: createStore() }),
+      /run\(definition, inputs\) requires a compiled workflow definition produced by defineWorkflow\(\.\.\.\)\.compile\(\); hand-rolled __piWorkflow objects are not supported/,
+    );
+  });
+
+  test("ctx.workflow rejects hand-rolled child workflow literals with authoring guidance", async () => {
+    const forgedChild = {
+      __piWorkflow: true,
+      name: "forged-child",
+      normalizedName: "forged-child",
+      description: "forged child workflow literal",
+      inputs: {},
+      outputs: {},
+      run: async () => ({}),
+    } as unknown as WorkflowDefinition;
+    const parent = defineWorkflow("phaseC-forged-child")
+      .run(async (ctx) => {
+        await ctx.workflow(forgedChild);
+        return {};
+      })
+      .compile();
+
+    const result = await run(parent, {}, { store: createStore() });
+    assert.equal(result.status, "failed");
+    assert.match(
+      result.error ?? "",
+      /ctx\.workflow\(definition\) requires a compiled workflow definition produced by defineWorkflow\(\.\.\.\)\.compile\(\); hand-rolled __piWorkflow objects are not supported/,
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

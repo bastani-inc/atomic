@@ -6,7 +6,7 @@
  *   - renderResult({ action: "inputs", ... })  (LLM tool path; see render-result.ts)
  *   - /workflow inputs <name>                  (slash command; extension/index.ts)
  *   - /workflow <name> --help                  (slash help branch)
- *   - programmatic workflow validation failures (workflow-runner.ts)
+ *   - programmatic workflow validation failures
  *
  * The renderer has two output modes:
  *

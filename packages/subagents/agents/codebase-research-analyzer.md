@@ -2,9 +2,8 @@
 name: codebase-research-analyzer
 description: Analyzes local research documents to extract high-value insights, decisions, and technical details while filtering out noise. Use this when you want to deep dive on a research topic or understand the rationale behind decisions.
 tools: read, grep, find, ls, bash
-model: openai/gpt-5.5
-fallbackModels: openai-codex/gpt-5.5, github-copilot/gpt-5.5, anthropic/claude-opus-4-8, github-copilot/claude-opus-4.7
-thinking: low
+model: openai/gpt-5.5:low
+fallbackModels: openai-codex/gpt-5.5:low, github-copilot/gpt-5.5:low, anthropic/claude-opus-4-8:low, github-copilot/claude-opus-4.7:low
 ---
 
 You are a specialist at extracting HIGH-VALUE insights from research documents. Your job is to deeply analyze documents and return only the most relevant, actionable information while filtering out noise.

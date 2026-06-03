@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+## [0.8.24-alpha.2] - 2026-06-03
+
+### Changed
+
+- Bumped package version for the Atomic 0.8.24-alpha.2 prerelease.
+
+## [0.8.24-alpha.1] - 2026-06-02
+
+### Added
+
+- Added suffix-first reasoning levels for subagent `model` and `fallbackModels` values plus `fallbackThinkingLevels` compatibility metadata and per-attempt `reasoningLevel` reporting ([#1199](https://github.com/bastani-inc/atomic/issues/1199)).
+
+### Changed
+
+- Migrated packaged subagents to encode their reasoning level directly in model and fallback model entries ([#1199](https://github.com/bastani-inc/atomic/issues/1199)).
+- Documented the `model_name:thinking_effort` suffix syntax and `thinking` migration guidance in the subagents docs, package README, and subagent skill ([#1199](https://github.com/bastani-inc/atomic/issues/1199)).
+- Adopted the new `-alpha.N` prerelease version convention (revision starting at 1), replacing the legacy numeric `-N` prerelease suffix in the release tooling (bump script, CI publish validation, and changelog parsing).
+- Dropped the leading `v` from release git tags and `release/`/`prerelease/` branch names; the Publish CI now triggers on and validates bare version tags such as `0.8.24` or `0.8.24-alpha.1`.
+
+### Deprecated
+
+- Deprecated separate subagent `thinking` configuration in favor of `model: <model>:<level>` and suffixed `fallbackModels` entries; removal is deferred to a later breaking release ([#1199](https://github.com/bastani-inc/atomic/issues/1199)).
+
+### Fixed
+
+- Fixed foreground subagent attempt metadata to report the per-candidate reasoning level derived from the model suffix even when the legacy `thinking` option is unset, matching the background run path ([#1199](https://github.com/bastani-inc/atomic/issues/1199)).
+- Fixed the subagent chain clarification TUI to strip only canonical reasoning-level suffixes when editing a step's level, so colon-tagged model ids such as `ollama/llama3:latest` are no longer mis-split; consolidated the duplicate thinking-suffix split helpers onto the single `splitKnownThinkingSuffix` so the parsing rules cannot drift apart ([#1199](https://github.com/bastani-inc/atomic/issues/1199)).
+
 ## [0.8.23] - 2026-06-02
 
 ### Changed

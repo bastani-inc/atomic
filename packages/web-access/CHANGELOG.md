@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.8.24-alpha.2] - 2026-06-03
+
+### Changed
+
+- Bumped package version for the Atomic 0.8.24-alpha.2 prerelease.
+
+## [0.8.24-alpha.1] - 2026-06-02
+
+### Changed
+
+- Adopted the new `-alpha.N` prerelease version convention (revision starting at 1), replacing the legacy numeric `-N` prerelease suffix in the release tooling (bump script, CI publish validation, and changelog parsing).
+- Dropped the leading `v` from release git tags and `release/`/`prerelease/` branch names; the Publish CI now triggers on and validates bare version tags such as `0.8.24` or `0.8.24-alpha.1`.
+
 ## [0.8.23] - 2026-06-02
 
 ### Changed

@@ -87,14 +87,10 @@ async function writeWorkflowFixture(
     const encodedName = JSON.stringify(name);
     await writeFile(
         filePath,
-        `export default Object.freeze({
-  __piWorkflow: true,
-  name: ${encodedName},
-  normalizedName: ${encodedName},
-  async run() {
-    return { ok: true };
-  },
-});
+        `import { defineWorkflow } from "@bastani/workflows";
+export default defineWorkflow(${encodedName})
+  .run(async () => ({}))
+  .compile();
 `,
         "utf8",
     );

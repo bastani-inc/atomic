@@ -3,11 +3,38 @@ import type {
   WorkflowModelCatalogPort,
   WorkflowModelInfo,
   WorkflowModelValue,
+  WorkflowThinkingLevel,
 } from "../../shared/types.js";
 
 export interface WorkflowResolvedModelCandidate {
   readonly id: string;
   readonly value: WorkflowModelValue;
+  readonly reasoningLevel?: WorkflowThinkingLevel;
+}
+
+function makeCandidate(
+  id: string,
+  value: WorkflowModelValue,
+  level: WorkflowThinkingLevel | undefined,
+): WorkflowResolvedModelCandidate {
+  return level !== undefined ? { id, value, reasoningLevel: level } : { id, value };
+}
+
+const WORKFLOW_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const satisfies readonly WorkflowThinkingLevel[];
+const WORKFLOW_THINKING_LEVEL_SET: ReadonlySet<string> = new Set(WORKFLOW_THINKING_LEVELS);
+
+export function splitReasoningSuffix(model: string): { readonly baseModel: string; readonly level?: WorkflowThinkingLevel } {
+  const index = model.lastIndexOf(":");
+  if (index < 0) return { baseModel: model };
+  const suffix = model.slice(index + 1);
+  if (WORKFLOW_THINKING_LEVEL_SET.has(suffix)) {
+    return { baseModel: model.slice(0, index), level: suffix as WorkflowThinkingLevel };
+  }
+  return { baseModel: model };
+}
+
+function candidateKey(candidate: WorkflowResolvedModelCandidate): string {
+  return `${candidate.id}::${candidate.reasoningLevel ?? ""}`;
 }
 
 interface ModelResolutionFailure {
@@ -72,35 +99,46 @@ function resolveStringModel(
 ): WorkflowResolvedModelCandidate | ModelResolutionFailure {
   const input = rawInput.trim();
   if (!input) return { input: rawInput, reason: "empty model id" };
+  const { baseModel, level } = splitReasoningSuffix(input);
 
   if (availableModels === undefined) {
-    return { id: input, value: input };
+    return makeCandidate(baseModel, baseModel, level);
   }
 
   const models = uniqueByFullId(availableModels);
-  const explicit = models.find((model) => model.fullId === input);
+  const explicit = models.find((model) => model.fullId === baseModel);
   if (explicit !== undefined) {
-    return { id: explicit.fullId, value: explicit.model ?? explicit.fullId };
+    return makeCandidate(explicit.fullId, explicit.model ?? explicit.fullId, level);
   }
 
-  if (input.includes("/")) {
-    return { input, reason: "not available" };
+  if (baseModel.includes("/")) {
+    // Trust an explicit provider/model id even when the live catalog does not
+    // list it, mirroring the subagent resolver (resolveModelCandidate's
+    // `if (model.includes("/")) return model;`). The workflow catalog
+    // (ctx.modelRegistry.getAvailable()) can legitimately be a partial view
+    // (auth/provider gating, freshly added models), so treating an absent
+    // fully-qualified id as a hard failure made buildModelCandidates throw and
+    // collapse the whole ordered candidate list down to just the user's
+    // currentModel — discarding the workflow's defined primary and fallbacks.
+    // Pass it through with the reasoning suffix split off; the runtime fallback
+    // loop skips it only if the SDK genuinely cannot create a session for it.
+    return makeCandidate(baseModel, baseModel, level);
   }
 
-  const byBareId = models.filter((model) => model.id === input);
+  const byBareId = models.filter((model) => model.id === baseModel);
   if (byBareId.length === 0) {
     return { input, reason: "not available" };
   }
   if (byBareId.length === 1) {
     const only = byBareId[0]!;
-    return { id: only.fullId, value: only.model ?? only.fullId };
+    return makeCandidate(only.fullId, only.model ?? only.fullId, level);
   }
 
   const preferred = preferredProvider === undefined
     ? undefined
     : byBareId.find((model) => model.provider === preferredProvider);
   if (preferred !== undefined) {
-    return { id: preferred.fullId, value: preferred.model ?? preferred.fullId };
+    return makeCandidate(preferred.fullId, preferred.model ?? preferred.fullId, level);
   }
 
   return {
@@ -127,13 +165,30 @@ function isFailure(value: WorkflowResolvedModelCandidate | ModelResolutionFailur
 export function buildModelCandidates(input: {
   readonly primaryModel?: WorkflowModelValue;
   readonly fallbackModels?: readonly string[];
+  readonly fallbackThinkingLevels?: readonly string[];
   readonly currentModel?: WorkflowModelValue;
   readonly availableModels?: readonly WorkflowModelInfo[];
   readonly preferredProvider?: string;
 }): WorkflowResolvedModelCandidate[] {
   const rawValues: WorkflowModelValue[] = [];
   if (input.primaryModel !== undefined) rawValues.push(input.primaryModel);
-  rawValues.push(...(input.fallbackModels ?? []));
+  for (const [index, fallback] of (input.fallbackModels ?? []).entries()) {
+    // Trim once up front so the suffix split, the validation error input, and the
+    // compat concatenation all operate on the same value. Concatenating the raw
+    // (untrimmed) fallback would push trailing whitespace into the interior of
+    // `id:level`, which `resolveStringModel` can no longer trim away.
+    const trimmedFallback = fallback.trim();
+    const split = splitReasoningSuffix(trimmedFallback);
+    const compatLevel = input.fallbackThinkingLevels?.[index];
+    if (split.level === undefined && compatLevel !== undefined) {
+      if (!WORKFLOW_THINKING_LEVEL_SET.has(compatLevel)) {
+        throw new WorkflowModelValidationError([{ input: trimmedFallback, reason: `invalid fallbackThinkingLevels[${index}] "${compatLevel}"; expected one of ${WORKFLOW_THINKING_LEVELS.join(", ")}` }]);
+      }
+      rawValues.push(`${trimmedFallback}:${compatLevel}`);
+    } else {
+      rawValues.push(trimmedFallback);
+    }
+  }
   if (input.currentModel !== undefined) rawValues.push(input.currentModel);
 
   const failures: ModelResolutionFailure[] = [];
@@ -145,8 +200,9 @@ export function buildModelCandidates(input: {
       failures.push(resolved);
       continue;
     }
-    if (seen.has(resolved.id)) continue;
-    seen.add(resolved.id);
+    const key = candidateKey(resolved);
+    if (seen.has(key)) continue;
+    seen.add(key);
     candidates.push(resolved);
   }
 
@@ -165,6 +221,7 @@ function catalogUnavailableWarning(): string {
 export async function buildModelCandidatesFromCatalog(input: {
   readonly primaryModel?: WorkflowModelValue;
   readonly fallbackModels?: readonly string[];
+  readonly fallbackThinkingLevels?: readonly string[];
   readonly catalog?: WorkflowModelCatalogPort;
 }): Promise<WorkflowResolvedModelCandidate[]> {
   const hasExplicitModel = input.primaryModel !== undefined || (input.fallbackModels?.length ?? 0) > 0;
@@ -174,6 +231,7 @@ export async function buildModelCandidatesFromCatalog(input: {
     return buildModelCandidates({
       primaryModel: input.primaryModel,
       fallbackModels: input.fallbackModels,
+      fallbackThinkingLevels: input.fallbackThinkingLevels,
     });
   }
 
@@ -182,6 +240,7 @@ export async function buildModelCandidatesFromCatalog(input: {
     return buildModelCandidates({
       primaryModel: input.primaryModel,
       fallbackModels: input.fallbackModels,
+      fallbackThinkingLevels: input.fallbackThinkingLevels,
       currentModel: input.catalog.currentModel,
       availableModels,
       preferredProvider: input.catalog.preferredProvider,
@@ -199,6 +258,7 @@ export async function validateWorkflowModels(input: {
   readonly requests: readonly {
     readonly model?: WorkflowModelValue;
     readonly fallbackModels?: readonly string[];
+    readonly fallbackThinkingLevels?: readonly string[];
   }[];
   readonly catalog?: WorkflowModelCatalogPort;
 }): Promise<readonly string[]> {
@@ -230,6 +290,7 @@ export async function validateWorkflowModels(input: {
       buildModelCandidates({
         primaryModel: request.model,
         fallbackModels: request.fallbackModels,
+        fallbackThinkingLevels: request.fallbackThinkingLevels,
         currentModel: input.catalog?.currentModel,
         availableModels,
         preferredProvider: input.catalog?.preferredProvider,

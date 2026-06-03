@@ -359,11 +359,26 @@ export class LiveChatEntriesController {
     return true;
   }
 
+  private isSyntheticToolCallId(toolCallId: string): boolean {
+    return toolCallId.startsWith("live-");
+  }
+
   private findToolEntryIndex(toolCallId: string, toolName?: string): number {
     for (let i = this.entries.length - 1; i >= 0; i--) {
       const entry = this.entries[i];
       if (!this.isToolEntry(entry)) continue;
-      if (entry.toolCallId === toolCallId || (toolName && entry.toolName === toolName && entry.isPartial !== false)) return i;
+      if (entry.toolCallId === toolCallId) return i;
+      // Legacy reconciliation ONLY: a synthetic `live-<name>` id may pair with a
+      // row for the same in-flight tool name (or vice versa). Never collapse two
+      // distinct concrete toolCallIds — that merges parallel tool calls (#1198).
+      if (
+        toolName &&
+        entry.toolName === toolName &&
+        entry.isPartial !== false &&
+        (this.isSyntheticToolCallId(toolCallId) || this.isSyntheticToolCallId(entry.toolCallId))
+      ) {
+        return i;
+      }
     }
     return -1;
   }

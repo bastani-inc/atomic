@@ -57,6 +57,11 @@ export default defineWorkflow("hil-dummy")
       description: "Number of lines to generate for the long confirm/editor HIL prompts. Defaults to 80.",
     }),
   )
+  .output("shortConfirmed", Type.Boolean())
+  .output("longConfirmed", Type.Boolean())
+  .output("editedApprovalJsonLength", Type.Number())
+  .output("longEditedDocumentLength", Type.Number())
+  .output("longLines", Type.Number())
   .run(async (ctx) => {
     const longLines = normalizeLongLines(ctx.inputs.long_lines);
 

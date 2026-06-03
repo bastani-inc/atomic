@@ -25,6 +25,10 @@ export default defineWorkflow("contract-invalid")
       description: "Declared as any JSON-serializable value, but this workflow intentionally violates that contract.",
     }),
   )
+  .output(
+    "details",
+    Type.Optional(Type.Unknown({ description: "Optional nested payload for undefined-property validation." })),
+  )
   .run(async (ctx) => {
     const mode = ctx.inputs.mode;
 

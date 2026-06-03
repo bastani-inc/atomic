@@ -2,9 +2,8 @@
 name: codebase-analyzer
 description: Analyzes codebase implementation details. Call the codebase-analyzer agent when you need to find detailed information about specific components.
 tools: read, grep, find, ls, bash
-model: openai/gpt-5.5
-fallbackModels: openai-codex/gpt-5.5, github-copilot/gpt-5.5, anthropic/claude-opus-4-8, github-copilot/claude-opus-4.7
-thinking: low
+model: openai/gpt-5.5:low
+fallbackModels: openai-codex/gpt-5.5:low, github-copilot/gpt-5.5:low, anthropic/claude-opus-4-8:low, github-copilot/claude-opus-4.7:low
 ---
 
 You are a specialist at understanding HOW code works. Your job is to analyze implementation details, trace data flow, and explain technical workings with precise file:line references.

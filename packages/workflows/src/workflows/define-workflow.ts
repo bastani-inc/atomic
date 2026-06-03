@@ -9,15 +9,39 @@
  */
 
 import type { Static, TOptional, TSchema } from "typebox";
+import type * as AuthoringContract from "../shared/authoring-contract.js";
 import type {
   WorkflowDefinition,
   WorkflowInputBindings,
   WorkflowInputValues,
   WorkflowOutputValues,
+  WorkflowRunContext,
+  WorkflowSerializableValue,
   WorkflowRunFn,
   WorkflowWorktreeInputBinding,
 } from "../shared/types.js";
 import { normalizeWorkflowName } from "./identity.js";
+
+const BRANDED_WORKFLOW_DEFINITIONS = new WeakSet<object>();
+
+// Package-internal runtime brand. It deliberately is not exported through the
+// public SDK surface; only defineWorkflow(...).compile() and executor-created
+// direct workflows can mint discoverable definitions.
+export function stampWorkflowDefinition<
+  TInputs extends WorkflowInputValues,
+  TOutputs extends WorkflowOutputValues,
+>(
+  definition: WorkflowDefinition<TInputs, TOutputs>,
+): WorkflowDefinition<TInputs, TOutputs> {
+  BRANDED_WORKFLOW_DEFINITIONS.add(definition);
+  return definition;
+}
+
+export function isBrandedWorkflowDefinition(value: unknown): value is WorkflowDefinition {
+  return value !== null &&
+    typeof value === "object" &&
+    BRANDED_WORKFLOW_DEFINITIONS.has(value);
+}
 
 // ---------------------------------------------------------------------------
 // Type inference helpers (TypeBox Static<> mapping)
@@ -39,6 +63,16 @@ type DeclaredEntry<K extends string, S extends TSchema> =
 type Simplify<T> = { [K in keyof T]: T[K] } & {};
 
 type SimplifyWorkflowOutputs<T> = Simplify<T>;
+type DeclaredOutputEntry<K extends string, S extends TSchema> =
+  S extends TOptional<TSchema>
+    ? { readonly [P in K]?: Static<S> & WorkflowSerializableValue }
+    : { readonly [P in K]: Static<S> & WorkflowSerializableValue };
+
+type AccumulateWorkflowOutput<TOutputs, K extends string, S extends TSchema> = Simplify<
+  string extends keyof TOutputs
+    ? DeclaredOutputEntry<K, S>
+    : TOutputs & DeclaredOutputEntry<K, S>
+>;
 
 interface BuilderState<TInputs extends WorkflowInputValues> {
   readonly name: string;
@@ -66,34 +100,18 @@ interface BuilderState<TInputs extends WorkflowInputValues> {
  * compatible with the type-erased registry without casts.
  */
 export interface WorkflowBuilder<
-  TInputs extends WorkflowInputValues = WorkflowInputValues,
+  TInputs extends WorkflowInputValues = {},
   TOutputs extends WorkflowOutputValues = {},
+> extends Omit<
+  AuthoringContract.WorkflowBuilder<TInputs, TOutputs>,
+  "description" | "input" | "output" | "worktreeFromInputs" | "run"
 > {
-  /** Set (or replace) the human-readable description. Returns a new builder. */
   description(text: string): WorkflowBuilder<TInputs, TOutputs>;
-  /**
-   * Declare a typed input.  Returns a new builder whose TInputs grows with
-   * the new key (typed as the schema's default value type).
-   */
-  input<K extends string, S extends TSchema>(
-    key: K,
-    schema: S,
-  ): WorkflowBuilder<TInputs & DeclaredEntry<K, S>, TOutputs>;
-  /**
-   * Declare a typed output.  Returns a new builder whose TOutputs grows with
-   * the new key (optional when the schema is `Type.Optional(...)`, otherwise
-   * required), so the `.run()` return is statically checked against the
-   * declared contract.
-   */
-  output<K extends string, S extends TSchema>(
-    key: K,
-    schema: S,
-  ): WorkflowBuilder<TInputs, TOutputs & DeclaredEntry<K, S>>;
-  /** Bind workflow inputs to reusable git worktree runtime defaults. */
+  input<K extends string, S extends TSchema>(key: K, schema: S): WorkflowBuilder<TInputs & DeclaredEntry<K, S>, TOutputs>;
+  output<K extends string, S extends TSchema>(key: K, schema: S): WorkflowBuilder<TInputs, AccumulateWorkflowOutput<TOutputs, K, S>>;
   worktreeFromInputs(binding: WorkflowWorktreeInputBinding): WorkflowBuilder<TInputs, TOutputs>;
-  /** Seal the run function.  Returns a builder on which .compile() is available. */
-  run(
-    fn: WorkflowRunFn<Simplify<TInputs>, SimplifyWorkflowOutputs<TOutputs>>,
+  run<TActualOutputs extends SimplifyWorkflowOutputs<TOutputs>>(
+    fn: (ctx: WorkflowRunContext<Simplify<TInputs>>) => Promise<AuthoringContract.NoExtraOutputs<SimplifyWorkflowOutputs<TOutputs>, TActualOutputs>> | AuthoringContract.NoExtraOutputs<SimplifyWorkflowOutputs<TOutputs>, TActualOutputs>,
   ): CompletedWorkflowBuilder<TInputs, TOutputs>;
 }
 
@@ -104,21 +122,17 @@ export interface WorkflowBuilder<
 export interface CompletedWorkflowBuilder<
   TInputs extends WorkflowInputValues,
   TOutputs extends WorkflowOutputValues,
+> extends Omit<
+  AuthoringContract.CompletedWorkflowBuilder<TInputs, TOutputs>,
+  "description" | "input" | "output" | "worktreeFromInputs" | "run" | "compile"
 > {
   description(text: string): CompletedWorkflowBuilder<TInputs, TOutputs>;
-  input<K extends string, S extends TSchema>(
-    key: K,
-    schema: S,
-  ): CompletedWorkflowBuilder<TInputs & DeclaredEntry<K, S>, TOutputs>;
-  output<K extends string, S extends TSchema>(
-    key: K,
-    schema: S,
-  ): CompletedWorkflowBuilder<TInputs, TOutputs & DeclaredEntry<K, S>>;
+  input<K extends string, S extends TSchema>(key: K, schema: S): CompletedWorkflowBuilder<TInputs & DeclaredEntry<K, S>, TOutputs>;
+  output<K extends string, S extends TSchema>(key: K, schema: S): CompletedWorkflowBuilder<TInputs, AccumulateWorkflowOutput<TOutputs, K, S>>;
   worktreeFromInputs(binding: WorkflowWorktreeInputBinding): CompletedWorkflowBuilder<TInputs, TOutputs>;
-  run(
-    fn: WorkflowRunFn<Simplify<TInputs>, SimplifyWorkflowOutputs<TOutputs>>,
+  run<TActualOutputs extends SimplifyWorkflowOutputs<TOutputs>>(
+    fn: (ctx: WorkflowRunContext<Simplify<TInputs>>) => Promise<AuthoringContract.NoExtraOutputs<SimplifyWorkflowOutputs<TOutputs>, TActualOutputs>> | AuthoringContract.NoExtraOutputs<SimplifyWorkflowOutputs<TOutputs>, TActualOutputs>,
   ): CompletedWorkflowBuilder<TInputs, TOutputs>;
-  /** Freeze and return the completed WorkflowDefinition. */
   compile(): WorkflowDefinition<Simplify<TInputs>, SimplifyWorkflowOutputs<TOutputs>>;
 }
 
@@ -162,7 +176,7 @@ function makeBuilder<
 
     output<K extends string, S extends TSchema>(key: K, schema: S) {
       requireNonEmptyString(key, "output key");
-      return makeBuilder<TInputs, TOutputs & DeclaredEntry<K, S>>({
+      return makeBuilder<TInputs, AccumulateWorkflowOutput<TOutputs, K, S>>({
         ...state,
         outputs: { ...state.outputs, [key]: schema },
       });
@@ -178,7 +192,9 @@ function makeBuilder<
       });
     },
 
-    run(fn: WorkflowRunFn<Simplify<TInputs>, SimplifyWorkflowOutputs<TOutputs>>) {
+    run<TActualOutputs extends SimplifyWorkflowOutputs<TOutputs>>(
+      fn: (ctx: WorkflowRunContext<Simplify<TInputs>>) => Promise<AuthoringContract.NoExtraOutputs<SimplifyWorkflowOutputs<TOutputs>, TActualOutputs>> | AuthoringContract.NoExtraOutputs<SimplifyWorkflowOutputs<TOutputs>, TActualOutputs>,
+    ) {
       return makeBuilder<TInputs, TOutputs>({
         ...state,
         runFn: fn as unknown as WorkflowRunFn<TInputs, WorkflowOutputValues>,
@@ -204,7 +220,7 @@ function makeBuilder<
           : {}),
       });
 
-      const definition: WorkflowDefinition<Simplify<TInputs>, SimplifyWorkflowOutputs<TOutputs>> = {
+      const definition = {
         __piWorkflow: true,
         name: state.name,
         normalizedName,
@@ -213,8 +229,10 @@ function makeBuilder<
         ...(Object.keys(frozenOutputs).length > 0 ? { outputs: frozenOutputs } : {}),
         ...(Object.keys(inputBindings).length > 0 ? { inputBindings } : {}),
         run: state.runFn as unknown as WorkflowRunFn<Simplify<TInputs>, SimplifyWorkflowOutputs<TOutputs>>,
-      };
+      } as WorkflowDefinition<Simplify<TInputs>, SimplifyWorkflowOutputs<TOutputs>>;
 
+      // Stamp before freezing so the WeakSet brand can be attached.
+      stampWorkflowDefinition(definition);
       return Object.freeze(definition) as WorkflowDefinition<Simplify<TInputs>, SimplifyWorkflowOutputs<TOutputs>>;
     },
   };
@@ -246,7 +264,7 @@ export function defineWorkflow(name: string): WorkflowBuilder {
     throw new TypeError("defineWorkflow: name must be a non-empty string");
   }
 
-  const initialState: BuilderState<WorkflowInputValues> = {
+  const initialState: BuilderState<{}> = {
     name,
     description: "",
     inputs: {},
@@ -255,8 +273,5 @@ export function defineWorkflow(name: string): WorkflowBuilder {
     runFn: undefined,
   };
 
-  // Start with an empty output map so excess-property checks engage as soon as
-  // the first `.output(...)` is declared; a workflow with no declared outputs
-  // must return `{}` (the executor rejects any undeclared key).
-  return makeBuilder<WorkflowInputValues, {}>(initialState);
+  return makeBuilder<{}, {}>(initialState);
 }

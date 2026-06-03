@@ -1,6 +1,6 @@
 {
   "name": "@bastani/workflows",
-  "version": "0.8.23",
+  "version": "0.8.24-alpha.2",
   "private": true,
   "description": "Atomic extension for multi-stage workflow authoring and execution.",
   "contributors": [
@@ -13,11 +13,20 @@
     "bun": ">=1.3.14"
   },
   "main": "./src/index.ts",
-  "types": "./src/index.ts",
+  "types": "./src/authoring.ts",
   "exports": {
-    ".": "./src/index.ts",
-    "./builtin": "./builtin/index.ts",
-    "./builtin/*": "./builtin/*.ts"
+    ".": {
+      "types": "./src/authoring.ts",
+      "default": "./src/index.ts"
+    },
+    "./builtin": {
+      "types": "./builtin/index.d.ts",
+      "default": "./builtin/index.ts"
+    },
+    "./builtin/*": {
+      "types": "./builtin/*.d.ts",
+      "default": "./builtin/*.ts"
+    }
   },
   "repository": {
     "type": "git",
@@ -39,6 +48,7 @@
   "files": [
     "src/**/*.ts",
     "builtin/**/*.ts",
+    "builtin/**/*.d.ts",
     "skills/**/*",
     "prompts/**/*",
     "themes/*.json",

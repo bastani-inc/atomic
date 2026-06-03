@@ -42,7 +42,7 @@ const StageSessionOptionProperties = {
   agentDir: Type.Optional(Type.String()),
   authStorage: Type.Optional(SdkSessionOptionSchema("authStorage")),
   modelRegistry: Type.Optional(SdkSessionOptionSchema("modelRegistry")),
-  model: Type.Optional(Type.Unsafe<WorkflowModelValue>({})),
+  model: Type.Optional(Type.Unsafe<WorkflowModelValue>({ description: "Primary model id or SDK model object. String ids may include a reasoning suffix, e.g. openai/gpt-5:high; valid levels: off|minimal|low|medium|high|xhigh." })),
   thinkingLevel: Type.Optional(SdkSessionOptionSchema("thinkingLevel")),
   scopedModels: Type.Optional(Type.Array(SdkSessionOptionArrayElementSchema("scopedModels"))),
   noTools: Type.Optional(Type.Unsafe<NonNullable<CreateAgentSessionOptions["noTools"]>>({
@@ -54,7 +54,8 @@ const StageSessionOptionProperties = {
   sessionManager: Type.Optional(SdkSessionOptionSchema("sessionManager")),
   settingsManager: Type.Optional(SdkSessionOptionSchema("settingsManager")),
   sessionStartEvent: Type.Optional(SdkSessionOptionSchema("sessionStartEvent")),
-  fallbackModels: Type.Optional(Type.Array(Type.String())),
+  fallbackModels: Type.Optional(Type.Array(Type.String({ description: "Fallback model id; may include a reasoning suffix like :low or :off." }))),
+  fallbackThinkingLevels: Type.Optional(Type.Array(Type.String({ description: "Deprecated compatibility helper aligned to fallbackModels; ignored when the fallback model has a :level suffix." }))),
   mcp: Type.Optional(McpOptionsSchema),
   sessionDir: Type.Optional(Type.String()),
   context: Type.Optional(Type.Union([Type.Literal("fresh"), Type.Literal("fork")])),

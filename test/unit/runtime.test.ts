@@ -267,12 +267,14 @@ describe("runtime.runDirect — workflow intercom", () => {
             task: {
                 name: "solo",
                 task: "inspect solo",
-                model: "missing/model",
+                // Bare unresolvable id (no provider prefix) is still a hard config
+                // error; provider-qualified ids are now trusted/passed through.
+                model: "missing-model",
             },
         });
 
         assert.equal(result.status, "failed");
-        assert.match(result.error ?? "", /missing\/model \(not available\)/);
+        assert.match(result.error ?? "", /missing-model \(not available\)/);
         assert.equal(activeStore.runs().length, 0);
     });
 

@@ -507,6 +507,7 @@ describe("executor.run", () => {
             })
             .compile();
         const parent = defineWorkflow("killable-parent")
+            .output("result", Type.String())
             .run(async (ctx) => {
                 const childResult = await ctx.workflow(child);
                 return { result: childResult.outputs.summary };
@@ -611,6 +612,7 @@ describe("executor.run", () => {
             })
             .compile();
         const parent = defineWorkflow("uncloneable-raw-parent")
+            .output("final", Type.String())
             .run(async (ctx) => {
                 const childResult = await ctx.workflow(child);
                 const final = await ctx
@@ -3377,6 +3379,7 @@ describe("executor.run", () => {
 
     test("failed fallback attempts are recorded on the stage snapshot", async () => {
         const def = defineWorkflow("failed-fallback-metadata")
+            .output("ok", Type.Boolean())
             .run(async (ctx) => {
                 await ctx.task("scout", {
                     prompt: "inspect",
@@ -3431,6 +3434,7 @@ describe("executor.run", () => {
         const promptGate = deferred<string | void>();
         const st = createStore();
         const def = defineWorkflow("explicit-model-running-fast-metadata")
+            .output("ok", Type.Boolean())
             .run(async (ctx) => {
                 await ctx
                     .stage("scout", { model: "openai/gpt-5.1-codex" })
@@ -3499,6 +3503,7 @@ describe("executor.run", () => {
         const promptGate = deferred<string | void>();
         const st = createStore();
         const def = defineWorkflow("bare-explicit-model-running-fast-metadata")
+            .output("ok", Type.Boolean())
             .run(async (ctx) => {
                 await ctx
                     .stage("scout", { model: "gpt-5.1-codex" })
@@ -3614,6 +3619,7 @@ describe("executor.run", () => {
         const fallbackGate = deferred<string | void>();
         const st = createStore();
         const def = defineWorkflow("fallback-running-fast-metadata")
+            .output("ok", Type.Boolean())
             .run(async (ctx) => {
                 await ctx
                     .stage("scout", {
@@ -3767,11 +3773,15 @@ describe("executor.run", () => {
 
     test("invalid dynamic stage model fails before SDK session creation", async () => {
         let creates = 0;
+        // A bare id that cannot be resolved against the catalog is still a hard
+        // configuration error (it is neither provider-qualified nor uniquely
+        // matched), so the run must fail before any SDK session is created.
         const def = defineWorkflow("invalid-stage-model")
+            .output("ok", Type.Boolean())
             .run(async (ctx) => {
                 await ctx.task("scout", {
                     prompt: "inspect",
-                    model: "missing/model",
+                    model: "missing-model",
                 });
                 return { ok: true };
             })
@@ -3803,9 +3813,55 @@ describe("executor.run", () => {
         );
 
         assert.equal(result.status, "failed");
-        assert.match(result.error ?? "", /missing\/model \(not available\)/);
+        assert.match(result.error ?? "", /missing-model \(not available\)/);
         assert.equal(creates, 0);
         assert.equal(result.stages[0]?.status, "failed");
+    });
+
+    test("provider-qualified stage model absent from the catalog is trusted and creates a session", async () => {
+        // Regression: a fully-qualified provider/model id that the catalog does
+        // not list must be trusted (passed through), not collapsed to the user's
+        // current model or rejected up front, so the workflow's defined model is
+        // what actually drives the stage session.
+        let createdModel: unknown;
+        let creates = 0;
+        const def = defineWorkflow("trusted-stage-model")
+            .output("ok", Type.Boolean())
+            .run(async (ctx) => {
+                await ctx.task("scout", {
+                    prompt: "inspect",
+                    model: "some-provider/brand-new:high",
+                });
+                return { ok: true };
+            })
+            .compile();
+
+        const result = await run(
+            def,
+            {},
+            {
+                models: {
+                    listModels: async () => [
+                        { provider: "openai", id: "fallback", fullId: "openai/fallback" },
+                    ],
+                },
+                adapters: {
+                    agentSession: {
+                        async create(options: CreateAgentSessionOptions) {
+                            creates += 1;
+                            createdModel = options.model;
+                            return mockSession();
+                        },
+                    },
+                },
+                store: createStore(),
+            },
+        );
+
+        assert.equal(result.status, "completed");
+        assert.equal(creates, 1);
+        assert.equal(createdModel, "some-provider/brand-new");
+        assert.equal(result.stages[0]?.status, "completed");
     });
 
     test("stage snapshot records failed status when stage throws", async () => {
@@ -3840,6 +3896,7 @@ describe("executor.run", () => {
     test("ctx.task aggregator adapter failure marks run, stage, and store failed", async () => {
         const testStore = createStore();
         const def = defineWorkflow("fail-aggregator-task-wf")
+            .output("ok", Type.Boolean())
             .run(async (ctx) => {
                 await ctx.task("aggregator", { prompt: "aggregate findings" });
                 return { ok: true };
@@ -4187,7 +4244,7 @@ describe("direct SDK helpers", () => {
             {
                 name: "scout",
                 prompt: "inspect repo",
-                model: "missing/model",
+                model: "missing-model",
                 output,
             },
             {},
@@ -4214,7 +4271,7 @@ describe("direct SDK helpers", () => {
         );
 
         assert.equal(details.status, "failed");
-        assert.match(details.error ?? "", /missing\/model \(not available\)/);
+        assert.match(details.error ?? "", /missing-model \(not available\)/);
         assert.equal(creates, 0);
         assert.throws(() => readFileSync(output, "utf8"));
     });
@@ -5617,6 +5674,7 @@ describe("executor — stage-control registry integration", () => {
         const registry = createStageControlRegistry();
         let observedHandleCount = 0;
         const def = defineWorkflow("handle-wf")
+            .output("ok", Type.Boolean())
             .run(async (ctx) => {
                 const stage = ctx.stage("first");
                 // The handle is registered at ctx.stage() time, before prompt().
@@ -5764,6 +5822,7 @@ describe("executor — stage-control registry integration", () => {
             },
         };
         const def = defineWorkflow("pending-attached-stream-pause-wf")
+            .output("ok", Type.Boolean())
             .run(async (ctx) => {
                 const stage = ctx.stage("pending-live");
                 await releaseWorkflowPrompt.promise;
@@ -5836,6 +5895,7 @@ describe("executor — stage-control registry integration", () => {
         const sawStage = deferred<{ runId: string; stageId: string }>();
         let sawStageResolved = false;
         const def = defineWorkflow("pending-pause-kill-wf")
+            .output("ok", Type.Boolean())
             .run(async (ctx) => {
                 const stage = ctx.stage("pending-before-kill");
                 await releasePrompt.promise;

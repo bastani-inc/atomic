@@ -14,6 +14,7 @@ describe("defineWorkflow builder", () => {
     const def = defineWorkflow("my-workflow")
       .description("test workflow")
       .input("prompt", Type.String({ description: "task" }))
+      .output("result", Type.String())
       .run(async (ctx) => {
         const prompt: string = ctx.inputs.prompt;
         const result = await ctx.stage("step1").prompt(prompt);
@@ -31,6 +32,21 @@ describe("defineWorkflow builder", () => {
       description: "task",
     });
     assert.equal(typeof def.run, "function");
+  });
+
+  test("rejects undeclared outputs after an output contract is declared", () => {
+    defineWorkflow("strict-output-contract")
+      .output("summary", Type.String())
+      // @ts-expect-error run outputs must be declared on the runtime source surface.
+      .run(() => ({ summary: "ok", extra: "not declared" }))
+      .compile();
+  });
+
+  test("rejects outputs when no output contract is declared", () => {
+    defineWorkflow("strict-no-output-contract")
+      // @ts-expect-error workflows with no .output(...) declarations must return no outputs.
+      .run(() => ({ summary: "not declared" }))
+      .compile();
   });
 
   test("compile throws if .run() not called", () => {
@@ -57,6 +73,8 @@ describe("defineWorkflow builder", () => {
     const def = defineWorkflow("multi-input")
       .input("a", Type.Optional(Type.String()))
       .input("b", Type.Number({ default: 4 }))
+      .output("a", Type.String())
+      .output("b", Type.Number())
       .run(async (ctx) => {
         const a: string | undefined = ctx.inputs.a;
         const b: number = ctx.inputs.b;

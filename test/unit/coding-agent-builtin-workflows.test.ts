@@ -60,20 +60,28 @@ describe("coding-agent builtin resources", () => {
     }
   });
 
-  test("exposes package workflow resources to extensions", async () => {
+  test("loads compiled workflow resources from package directories", async () => {
     const cwd = tempDir("atomic-workflow-package-cwd-");
     const agentDir = tempDir("atomic-workflow-package-agent-");
     const packageDir = join(cwd, "workflow-package");
-    const workflowsDir = join(packageDir, "workflow");
+    const workflowsDir = join(packageDir, "workflows");
+    const workflowPath = join(workflowsDir, "custom.ts");
     mkdirSync(workflowsDir, { recursive: true });
     writeFileSync(
       join(packageDir, "package.json"),
-      JSON.stringify({ name: "workflow-package", atomic: { extensions: ["./index.ts"] } }),
+      JSON.stringify({
+        name: "workflow-package",
+        keywords: ["atomic-package"],
+        atomic: {
+          extensions: ["./index.ts"],
+          workflows: ["./workflows/custom.ts"],
+        },
+      }),
       "utf-8",
     );
     writeFileSync(
-      join(workflowsDir, "custom.ts"),
-      "export default { __piWorkflow: true, name: 'Custom', normalizedName: 'custom', inputs: {}, run: async (ctx) => { await ctx.task('validation-smoke', { prompt: 'validation smoke' }); return {}; } };\n",
+      workflowPath,
+      "import { defineWorkflow, Type } from '@bastani/workflows';\nexport default defineWorkflow('Custom').input('prompt', Type.String({ default: 'validation smoke' })).run(async (ctx) => { await ctx.task('validation-smoke', { prompt: ctx.inputs.prompt }); return {}; }).compile();\n",
       "utf-8",
     );
     writeFileSync(
@@ -96,6 +104,7 @@ describe("coding-agent builtin resources", () => {
 
     await loader.reload();
 
+    assert.deepEqual(loader.getWorkflowResources().map((resource) => resource.path), [workflowPath]);
     const extensions = loader.getExtensions();
     assert.deepEqual(extensions.errors, []);
     const command = extensions.extensions[0]?.commands.get("workflow-resource-count");

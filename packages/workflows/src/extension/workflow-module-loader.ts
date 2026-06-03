@@ -8,26 +8,17 @@
 
 import { createJiti } from "jiti/static";
 import * as workflowsSdkSurface from "../sdk-surface.js";
+import { isBrandedWorkflowDefinition } from "../workflows/define-workflow.js";
 import deepResearchCodebase from "../../builtin/deep-research-codebase.js";
 import goal from "../../builtin/goal.js";
 import openClaudeDesign from "../../builtin/open-claude-design.js";
 import ralph from "../../builtin/ralph.js";
 
-type RunWorkflowFunction = typeof import("../runs/shared/workflow-runner.js").runWorkflow;
-
-const runWorkflow: RunWorkflowFunction = async (...args) => {
-  const { runWorkflow: actualRunWorkflow } = await import("../runs/shared/workflow-runner.js");
-  return actualRunWorkflow(...args);
-};
-
 const WORKFLOWS_MODULE_SPECIFIER = "@bastani/workflows";
 const WORKFLOWS_BUILTIN_MODULE_SPECIFIER = `${WORKFLOWS_MODULE_SPECIFIER}/builtin`;
-// Keep this in sync with index.ts through sdk-surface.ts. runWorkflow stays as
-// a lazy wrapper because the public re-export comes from workflow-runner.ts,
-// which imports discovery.ts and would otherwise reintroduce a cycle.
+// Keep this in sync with index.ts through sdk-surface.ts.
 const WORKFLOWS_SDK_MODULE: Record<string, unknown> = {
   ...workflowsSdkSurface,
-  runWorkflow,
 };
 const WORKFLOWS_BUILTIN_MODULE: Record<string, unknown> = {
   deepResearchCodebase,
@@ -104,7 +95,10 @@ export function validateWorkflowDefinitionShape(value: unknown): string | null {
   const d = value as Record<string, unknown>;
 
   if (d["__piWorkflow"] !== true) {
-    return "missing or incorrect __piWorkflow sentinel (expected true)";
+    return "missing or incorrect __piWorkflow sentinel (expected true); export a workflow from defineWorkflow(...).compile()";
+  }
+  if (!isBrandedWorkflowDefinition(value)) {
+    return "workflow definition is not produced by defineWorkflow(...).compile(); hand-rolled __piWorkflow objects are not supported";
   }
   if (typeof d["name"] !== "string" || (d["name"] as string).trim().length === 0) {
     return "name must be a non-empty string";

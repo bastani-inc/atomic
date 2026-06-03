@@ -47,21 +47,18 @@ const USER_WF_NAME = "User Global Integration Workflow";
 /** Minimal valid WorkflowDefinition as a .js source string. */
 function makeWorkflowSource(normalizedName: string, name: string): string {
   return `
-import { Type } from "@bastani/workflows";
-export default {
-  __piWorkflow: true,
-  name: ${JSON.stringify(name)},
-  normalizedName: ${JSON.stringify(normalizedName)},
-  description: "Integration test custom workflow",
-  inputs: {
-    message: Type.String({ description: "Test message" }),
-    count: Type.Number({ default: 1 }),
-  },
-  run: async (ctx) => {
+import { defineWorkflow, Type } from "@bastani/workflows";
+const workflow = defineWorkflow(${JSON.stringify(name)})
+  .description("Integration test custom workflow")
+  .input("message", Type.String({ description: "Test message" }))
+  .input("count", Type.Number({ default: 1 }))
+  .run(async (ctx) => {
     await ctx.task("validation-smoke", { prompt: "validation smoke" });
-    return { output: "test-done" };
-  },
-};
+    return {};
+  })
+  .compile();
+if (workflow.normalizedName !== ${JSON.stringify(normalizedName)}) throw new Error("unexpected normalized name");
+export default workflow;
 `.trim();
 }
 

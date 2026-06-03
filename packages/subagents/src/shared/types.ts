@@ -195,6 +195,7 @@ interface ProgressSummary {
 
 export interface ModelAttempt {
 	model: string;
+	reasoningLevel?: string;
 	success: boolean;
 	exitCode?: number | null;
 	error?: string;

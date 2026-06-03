@@ -64,6 +64,12 @@ export default defineWorkflow("hil-archive-scroll")
       description: "Number of filler lines generated for each long HIL prompt. Defaults to 72.",
     }),
   )
+  .output("lineCount", Type.Number())
+  .output("inputResponseLength", Type.Number())
+  .output("confirmed", Type.Boolean())
+  .output("selected", Type.String())
+  .output("editedLength", Type.Number())
+  .output("manualVerification", Type.Array(Type.String()))
   .run(async (ctx) => {
     const lineCount = normalizeLineCount(ctx.inputs.line_count);
 

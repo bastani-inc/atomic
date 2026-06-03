@@ -8,6 +8,7 @@ export const KNOWN_FIELDS = new Set([
 	"tools",
 	"model",
 	"fallbackModels",
+	"fallbackThinkingLevels",
 	"thinking",
 	"systemPromptMode",
 	"inheritProjectContext",
@@ -46,6 +47,8 @@ export function serializeAgent(config: AgentConfig): string {
 	if (config.model) lines.push(`model: ${config.model}`);
 	const fallbackModelsValue = joinComma(config.fallbackModels);
 	if (fallbackModelsValue) lines.push(`fallbackModels: ${fallbackModelsValue}`);
+	const fallbackThinkingLevelsValue = joinComma(config.fallbackThinkingLevels);
+	if (fallbackThinkingLevelsValue) lines.push(`fallbackThinkingLevels: ${fallbackThinkingLevelsValue}`);
 	if (config.thinking && config.thinking !== "off") lines.push(`thinking: ${config.thinking}`);
 	lines.push(`systemPromptMode: ${config.systemPromptMode}`);
 	lines.push(`inheritProjectContext: ${config.inheritProjectContext ? "true" : "false"}`);

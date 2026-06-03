@@ -432,50 +432,46 @@ async function runRalphWorkflow(
   let iterationsCompleted = 0;
 
   const plannerModelConfig = {
-    model: "openai/gpt-5.5",
+    model: "openai/gpt-5.5:xhigh",
     fallbackModels: [
-      "openai-codex/gpt-5.5",
-      "github-copilot/gpt-5.5",
-      "anthropic/claude-opus-4-8",
-      "github-copilot/claude-opus-4.7",
+      "openai-codex/gpt-5.5:xhigh",
+      "github-copilot/gpt-5.5:xhigh",
+      "anthropic/claude-opus-4-8:xhigh",
+      "github-copilot/claude-opus-4.8:medium",
     ],
-    thinkingLevel: "high" as const,
     excludedTools: ["ask_user_question"],
   };
 
   const orchestratorModelConfig = {
-    model: "openai/gpt-5.5",
+    model: "openai/gpt-5.5:medium",
     fallbackModels: [
-      "openai-codex/gpt-5.5",
-      "github-copilot/gpt-5.5",
-      "anthropic/claude-sonnet-4-6",
-      "github-copilot/claude-sonnet-4.6",
+      "openai-codex/gpt-5.5:medium",
+      "github-copilot/gpt-5.5:medium",
+      "anthropic/claude-sonnet-4-6:medium",
+      "github-copilot/claude-sonnet-4.6:medium",
     ],
-    thinkingLevel: "medium" as const,
     excludedTools: ["ask_user_question"],
   };
 
   const simplifierModelConfig = {
-    model: "openai/gpt-5.5",
+    model: "openai/gpt-5.5:medium",
     fallbackModels: [
-      "openai-codex/gpt-5.5",
-      "github-copilot/gpt-5.5",
-      "anthropic/claude-sonnet-4-6",
-      "github-copilot/claude-sonnet-4.6",
+      "openai-codex/gpt-5.5:medium",
+      "github-copilot/gpt-5.5:medium",
+      "anthropic/claude-sonnet-4-6:medium",
+      "github-copilot/claude-sonnet-4.6:medium",
     ],
-    thinkingLevel: "medium" as const,
     excludedTools: ["ask_user_question"],
   };
 
   const reviewerModelConfig = {
-    model: "openai/gpt-5.5",
+    model: "openai/gpt-5.5:xhigh",
     fallbackModels: [
-      "openai-codex/gpt-5.5",
-      "github-copilot/gpt-5.5",
-      "anthropic/claude-opus-4-8",
-      "github-copilot/claude-opus-4.7",
+      "openai-codex/gpt-5.5:xhigh",
+      "github-copilot/gpt-5.5:xhigh",
+      "anthropic/claude-opus-4-8:xhigh",
+      "github-copilot/claude-opus-4.8:medium",
     ],
-    thinkingLevel: "high" as const,
     excludedTools: ["ask_user_question"],
     customTools: [reviewDecisionTool],
   };
