@@ -194,7 +194,7 @@ jobs:
                   fi
                   echo "ref=$ref" >> "$GITHUB_OUTPUT"
 
-            - uses: actions/checkout@v6.0.2
+            - uses: actions/checkout@v6.0.3
               with:
                   ref: ${{ steps.checkout_ref.outputs.ref }}
                   fetch-depth: 0
