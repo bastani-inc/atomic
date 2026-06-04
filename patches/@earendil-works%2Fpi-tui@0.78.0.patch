@@ -48,8 +48,8 @@ index b521ceb3..145e6fac 100644
              this.hardwareCursorRow = this.cursorRow;
 -            // Reset max lines when clearing, otherwise track growth
 -            if (clear) {
-+            // Reset max lines only when scrollback is wiped; otherwise track growth.
-+            if (clear === "scrollback") {
++            // Reset max lines after any viewport clear; otherwise track growth.
++            if (clear === true || clear === "scrollback") {
                  this.maxLinesRendered = newLines.length;
              }
              else {

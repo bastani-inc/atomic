@@ -60,11 +60,15 @@ class MutableLines implements Component {
 	setLine(index: number, value: string): void {
 		this.lines[index] = value;
 	}
+
+	replaceLines(lines: string[]): void {
+		this.lines.splice(0, this.lines.length, ...lines);
+	}
 }
 
 type RenderBaseline = {
 	fullRedraws: number;
-	writeStart: number;
+	writeCount: number;
 };
 
 const activeTuis: TUI[] = [];
@@ -100,12 +104,12 @@ async function startTui(component: Component, terminal = new FakeTerminal()): Pr
 function captureRenderBaseline(tui: TUI, terminal: FakeTerminal): RenderBaseline {
 	return {
 		fullRedraws: tui.fullRedraws,
-		writeStart: terminal.writes.length,
+		writeCount: terminal.writes.length,
 	};
 }
 
-function writesAfter(terminal: FakeTerminal, baseline: RenderBaseline): string {
-	return terminal.writes.slice(baseline.writeStart).join("");
+function outputAfter(terminal: FakeTerminal, baseline: RenderBaseline): string {
+	return terminal.writes.slice(baseline.writeCount).join("");
 }
 
 describe("pi-tui off-viewport redraw behavior", () => {
@@ -117,11 +121,12 @@ describe("pi-tui off-viewport redraw behavior", () => {
 		component.setLine(55, OFFSCREEN_UPDATE);
 		await requestRenderAndWait(tui);
 
-		const mutationWrites = writesAfter(terminal, baseline);
+		const renderOutput = outputAfter(terminal, baseline);
 		expect(tui.fullRedraws).toBe(baseline.fullRedraws);
-		expect(mutationWrites).toBe("");
-		expect(mutationWrites).not.toContain(VIEWPORT_CLEAR_SEQUENCE);
-		expect(mutationWrites).not.toContain(SCROLLBACK_CLEAR_SEQUENCE);
+		expect(terminal.writes).toHaveLength(baseline.writeCount);
+		expect(renderOutput).toBe("");
+		expect(renderOutput).not.toContain(VIEWPORT_CLEAR_SEQUENCE);
+		expect(renderOutput).not.toContain(SCROLLBACK_CLEAR_SEQUENCE);
 	});
 
 	it("preserves scrollback for content-driven full redraws", async () => {
@@ -133,11 +138,11 @@ describe("pi-tui off-viewport redraw behavior", () => {
 		component.setLine(75, VISIBLE_UPDATE);
 		await requestRenderAndWait(tui);
 
-		const mutationWrites = writesAfter(terminal, baseline);
+		const renderOutput = outputAfter(terminal, baseline);
 		expect(tui.fullRedraws).toBe(baseline.fullRedraws + 1);
-		expect(mutationWrites).toContain(VIEWPORT_CLEAR_SEQUENCE);
-		expect(mutationWrites).not.toContain(SCROLLBACK_CLEAR_SEQUENCE);
-		expect(mutationWrites).toContain(VISIBLE_UPDATE);
+		expect(renderOutput).toContain(VIEWPORT_CLEAR_SEQUENCE);
+		expect(renderOutput).not.toContain(SCROLLBACK_CLEAR_SEQUENCE);
+		expect(renderOutput).toContain(VISIBLE_UPDATE);
 	});
 
 	it("wipes scrollback for terminal width changes", async () => {
@@ -148,9 +153,9 @@ describe("pi-tui off-viewport redraw behavior", () => {
 		terminal.columns = 100;
 		await requestRenderAndWait(tui);
 
-		const mutationWrites = writesAfter(terminal, baseline);
+		const renderOutput = outputAfter(terminal, baseline);
 		expect(tui.fullRedraws).toBe(baseline.fullRedraws + 1);
-		expect(mutationWrites).toContain(VIEWPORT_AND_SCROLLBACK_CLEAR_SEQUENCE);
+		expect(renderOutput).toContain(VIEWPORT_AND_SCROLLBACK_CLEAR_SEQUENCE);
 	});
 
 	it("keeps pure visible changes on the differential path", async () => {
@@ -161,10 +166,33 @@ describe("pi-tui off-viewport redraw behavior", () => {
 		component.setLine(75, VISIBLE_UPDATE);
 		await requestRenderAndWait(tui);
 
-		const mutationWrites = writesAfter(terminal, baseline);
+		const renderOutput = outputAfter(terminal, baseline);
 		expect(tui.fullRedraws).toBe(baseline.fullRedraws);
-		expect(mutationWrites).toContain(VISIBLE_UPDATE);
-		expect(mutationWrites).not.toContain(VIEWPORT_CLEAR_SEQUENCE);
-		expect(mutationWrites).not.toContain(SCROLLBACK_CLEAR_SEQUENCE);
+		expect(renderOutput).toContain(VISIBLE_UPDATE);
+		expect(renderOutput).not.toContain(VIEWPORT_CLEAR_SEQUENCE);
+		expect(renderOutput).not.toContain(SCROLLBACK_CLEAR_SEQUENCE);
+	});
+
+	it("does not repeatedly clear after clearOnShrink handles a shorter render", async () => {
+		const component = new MutableLines(createLines(20));
+		const { terminal, tui } = await startTui(component);
+		tui.setClearOnShrink(true);
+		const shrinkBaseline = captureRenderBaseline(tui, terminal);
+
+		component.replaceLines(createLines(5));
+		await requestRenderAndWait(tui);
+
+		const shrinkOutput = outputAfter(terminal, shrinkBaseline);
+		expect(tui.fullRedraws).toBe(shrinkBaseline.fullRedraws + 1);
+		expect(shrinkOutput).toContain(VIEWPORT_CLEAR_SEQUENCE);
+		expect(shrinkOutput).not.toContain(SCROLLBACK_CLEAR_SEQUENCE);
+
+		const noopBaseline = captureRenderBaseline(tui, terminal);
+		await requestRenderAndWait(tui);
+
+		const noopOutput = outputAfter(terminal, noopBaseline);
+		expect(tui.fullRedraws).toBe(noopBaseline.fullRedraws);
+		expect(noopOutput).not.toContain(VIEWPORT_CLEAR_SEQUENCE);
+		expect(noopOutput).not.toContain(SCROLLBACK_CLEAR_SEQUENCE);
 	});
 });
