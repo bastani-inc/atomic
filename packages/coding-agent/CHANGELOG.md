@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Improved Windows cold startup by lazily loading heavy bundled web-access/intercom/MCP implementation modules, moving fd/rg readiness checks after the first interactive frame, and adding detailed startup timing spans ([#1223](https://github.com/bastani-inc/atomic/issues/1223)).
+
 ## [0.8.25] - 2026-06-04
 
 ### Changed

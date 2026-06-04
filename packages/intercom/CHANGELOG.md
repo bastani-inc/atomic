@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Changed
+
+- Deferred broker client/spawn and overlay UI modules until intercom connects or the overlay opens, reducing default CLI startup cost ([#1223](https://github.com/bastani-inc/atomic/issues/1223)).
+
 ## [0.8.25] - 2026-06-04
 
 ### Changed

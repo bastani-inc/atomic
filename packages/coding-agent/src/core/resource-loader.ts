@@ -23,6 +23,7 @@ import { SettingsManager } from "./settings-manager.ts";
 import type { Skill } from "./skills.ts";
 import { loadSkills } from "./skills.ts";
 import { createSourceInfo, type SourceInfo } from "./source-info.ts";
+import { endTimingSpan, startTimingSpan } from "./timings.ts";
 
 export interface ResourceExtensionPaths {
 	skillPaths?: Array<{ path: string; metadata: PathMetadata }>;
@@ -349,7 +350,9 @@ export class DefaultResourceLoader implements ResourceLoader {
 	}
 
 	async reload(): Promise<void> {
+		const resolveSpan = startTimingSpan("DefaultResourceLoader.reload.resolvePackageResourcePaths");
 		const { resolvedPaths, cliExtensionPaths, builtinPackagePaths } = await this.resolvePackageResourcePaths();
+		endTimingSpan(resolveSpan);
 		const metadataByPath = new Map<string, PathMetadata>();
 
 		this.extensionSkillSourceInfos = new Map();
@@ -436,8 +439,12 @@ export class DefaultResourceLoader implements ResourceLoader {
 			? cliEnabledExtensions
 			: this.mergePaths(cliEnabledExtensions, [...enabledExtensions, ...builtinEnabledExtensions]);
 
+		const loadExtensionsSpan = startTimingSpan("DefaultResourceLoader.reload.loadExtensions");
 		const extensionsResult = await loadExtensions(extensionPaths, this.cwd, this.eventBus, workflowResourceProvider);
+		endTimingSpan(loadExtensionsSpan);
+		const inlineExtensionsSpan = startTimingSpan("DefaultResourceLoader.reload.loadInlineExtensionFactories");
 		const inlineExtensions = await this.loadExtensionFactories(extensionsResult.runtime, workflowResourceProvider);
+		endTimingSpan(inlineExtensionsSpan);
 		extensionsResult.extensions.push(...inlineExtensions.extensions);
 		extensionsResult.errors.push(...inlineExtensions.errors);
 
@@ -467,7 +474,9 @@ export class DefaultResourceLoader implements ResourceLoader {
 				);
 
 		this.lastSkillPaths = skillPaths;
+		const skillsSpan = startTimingSpan("DefaultResourceLoader.reload.updateSkillsFromPaths");
 		this.updateSkillsFromPaths(skillPaths, metadataByPath);
+		endTimingSpan(skillsSpan);
 		for (const p of this.additionalSkillPaths) {
 			if (isLocalPath(p)) {
 				const resolved = this.resolveResourcePath(p);
@@ -485,7 +494,9 @@ export class DefaultResourceLoader implements ResourceLoader {
 				);
 
 		this.lastPromptPaths = promptPaths;
+		const promptsSpan = startTimingSpan("DefaultResourceLoader.reload.updatePromptsFromPaths");
 		this.updatePromptsFromPaths(promptPaths, metadataByPath);
+		endTimingSpan(promptsSpan);
 		for (const p of this.additionalPromptTemplatePaths) {
 			if (isLocalPath(p)) {
 				const resolved = this.resolveResourcePath(p);
@@ -507,7 +518,9 @@ export class DefaultResourceLoader implements ResourceLoader {
 				);
 
 		this.lastThemePaths = themePaths;
+		const themesSpan = startTimingSpan("DefaultResourceLoader.reload.updateThemesFromPaths");
 		this.updateThemesFromPaths(themePaths, metadataByPath);
+		endTimingSpan(themesSpan);
 		for (const p of this.additionalThemePaths) {
 			const resolved = this.resolveResourcePath(p);
 			if (!existsSync(resolved) && !this.themeDiagnostics.some((d) => d.path === resolved)) {
@@ -515,12 +528,15 @@ export class DefaultResourceLoader implements ResourceLoader {
 			}
 		}
 
+		const contextFilesSpan = startTimingSpan("DefaultResourceLoader.reload.loadProjectContextFiles");
 		const agentsFiles = {
 			agentsFiles: this.noContextFiles ? [] : loadProjectContextFiles({ cwd: this.cwd, agentDir: this.agentDir }),
 		};
+		endTimingSpan(contextFilesSpan);
 		const resolvedAgentsFiles = this.agentsFilesOverride ? this.agentsFilesOverride(agentsFiles) : agentsFiles;
 		this.agentsFiles = resolvedAgentsFiles.agentsFiles;
 
+		const promptFilesSpan = startTimingSpan("DefaultResourceLoader.reload.resolvePromptFiles");
 		const baseSystemPrompt = resolvePromptInput(
 			this.systemPromptSource ?? this.discoverSystemPromptFile(),
 			"system prompt",
@@ -536,6 +552,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.appendSystemPrompt = this.appendSystemPromptOverride
 			? this.appendSystemPromptOverride(baseAppend)
 			: baseAppend;
+		endTimingSpan(promptFilesSpan);
 	}
 
 	private emptyResolvedPaths(): ResolvedPaths {

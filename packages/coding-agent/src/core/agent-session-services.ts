@@ -10,6 +10,7 @@ import { DefaultResourceLoader, type DefaultResourceLoaderOptions, type Resource
 import { type CreateAgentSessionOptions, type CreateAgentSessionResult, createAgentSession } from "./sdk.ts";
 import type { SessionManager } from "./session-manager.ts";
 import { SettingsManager } from "./settings-manager.ts";
+import { endTimingSpan, startTimingSpan } from "./timings.ts";
 
 /**
  * Non-fatal issues collected while creating services or sessions.
@@ -133,18 +134,27 @@ export async function createAgentSessionServices(
 ): Promise<AgentSessionServices> {
 	const cwd = resolvePath(options.cwd);
 	const agentDir = options.agentDir ? resolvePath(options.agentDir) : getAgentDir();
+	const authStorageSpan = startTimingSpan("createAgentSessionServices.authStorage");
 	const authStorage = options.authStorage ?? AuthStorage.create(join(agentDir, "auth.json"));
+	endTimingSpan(authStorageSpan);
+	const settingsSpan = startTimingSpan("createAgentSessionServices.settingsManager");
 	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
+	endTimingSpan(settingsSpan);
+	const modelRegistrySpan = startTimingSpan("createAgentSessionServices.modelRegistry");
 	const modelRegistry = options.modelRegistry ?? ModelRegistry.create(authStorage, join(agentDir, "models.json"));
+	endTimingSpan(modelRegistrySpan);
 	const resourceLoader = new DefaultResourceLoader({
 		...(options.resourceLoaderOptions ?? {}),
 		cwd,
 		agentDir,
 		settingsManager,
 	});
+	const reloadSpan = startTimingSpan("createAgentSessionServices.resourceLoader.reload");
 	await resourceLoader.reload();
+	endTimingSpan(reloadSpan);
 
 	const diagnostics: AgentSessionRuntimeDiagnostic[] = [];
+	const providerSpan = startTimingSpan("createAgentSessionServices.providerRegistrations");
 	const extensionsResult = resourceLoader.getExtensions();
 	for (const { name, config, extensionPath } of extensionsResult.runtime.pendingProviderRegistrations) {
 		try {
@@ -158,7 +168,10 @@ export async function createAgentSessionServices(
 		}
 	}
 	extensionsResult.runtime.pendingProviderRegistrations = [];
+	endTimingSpan(providerSpan);
+	const flagSpan = startTimingSpan("createAgentSessionServices.extensionFlagValidation");
 	diagnostics.push(...applyExtensionFlagValues(resourceLoader, options.extensionFlagValues));
+	endTimingSpan(flagSpan);
 
 	return {
 		cwd,

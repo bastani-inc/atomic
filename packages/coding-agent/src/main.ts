@@ -50,7 +50,7 @@ import {
 } from "./core/session-cwd.ts";
 import { SessionManager } from "./core/session-manager.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
-import { printTimings, resetTimings, time } from "./core/timings.ts";
+import { endTimingSpan, printTimings, resetTimings, startTimingSpan, time } from "./core/timings.ts";
 import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
 import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
 import { ExtensionSelectorComponent } from "./modes/interactive/components/extension-selector.ts";
@@ -635,12 +635,14 @@ export async function main(args: string[], options?: MainOptions) {
 			diagnostics,
 		};
 	};
-	time("createRuntime");
+	time("createRuntimeFactory");
+	const runtimeCreationSpan = startTimingSpan("createAgentSessionRuntime");
 	const runtime = await createAgentSessionRuntime(createRuntime, {
 		cwd: sessionManager.getCwd(),
 		agentDir,
 		sessionManager,
 	});
+	endTimingSpan(runtimeCreationSpan);
 	const { services, session, modelFallbackMessage } = runtime;
 	const { settingsManager, modelRegistry, resourceLoader } = services;
 	configureHttpDispatcher(settingsManager.getHttpIdleTimeoutMs());

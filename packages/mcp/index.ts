@@ -1,20 +1,67 @@
 import type { AgentToolUpdateCallback, ExtensionAPI, ExtensionContext, ToolInfo } from "@bastani/atomic";
 import type { McpExtensionState } from "./state.ts";
+import type { McpConfig } from "./types.ts";
+import type { MetadataCache } from "./metadata-cache.ts";
 import { Type } from "typebox";
-import { showStatus, showTools, reconnectServers, authenticateServer, logoutServer, openMcpAuthPanel, openMcpPanel, openMcpSetup } from "./commands.ts";
 import { loadMcpConfig } from "./config.ts";
-import { buildProxyDescription, createDirectToolExecutor, getMissingConfiguredDirectToolServers, resolveDirectTools } from "./direct-tools.ts";
-import { flushMetadataCache, initializeMcp, updateStatusBar } from "./init.ts";
-import { loadMetadataCache } from "./metadata-cache.ts";
-import { executeCall, executeConnect, executeDescribe, executeList, executeSearch, executeStatus, executeUiMessages } from "./proxy-modes.ts";
-import { getConfigPathFromArgv, truncateAtWord } from "./utils.ts";
-import { shutdownOAuth } from "./mcp-auth-flow.ts";
+import { getConfigPathFromArgv } from "./utils.ts";
 import { renderMcpToolResult } from "./tool-result-renderer.ts";
 
 export default function mcpAdapter(pi: ExtensionAPI) {
   let state: McpExtensionState | null = null;
   let initPromise: Promise<McpExtensionState> | null = null;
   let lifecycleGeneration = 0;
+  let registeredDirectToolNames = new Set<string>();
+  let registeredProxyTool = false;
+
+  async function registerDirectToolsFromConfig(
+    config: McpConfig,
+    cache: MetadataCache | null,
+  ): Promise<{ directToolCount: number; missingConfiguredDirectToolServers: string[] }> {
+    const [{ resolveDirectTools, createDirectToolExecutor, getMissingConfiguredDirectToolServers }, { truncateAtWord }] = await Promise.all([
+      import("./direct-tools.ts"),
+      import("./utils.ts"),
+    ]);
+    const prefix = config.settings?.toolPrefix ?? "server";
+    const envRaw = process.env.MCP_DIRECT_TOOLS;
+    const directSpecs = envRaw === "__none__"
+      ? []
+      : resolveDirectTools(
+          config,
+          cache,
+          prefix,
+          envRaw?.split(",").map(s => s.trim()).filter(Boolean),
+        );
+    for (const spec of directSpecs) {
+      if (registeredDirectToolNames.has(spec.prefixedName)) continue;
+      registeredDirectToolNames.add(spec.prefixedName);
+      (pi.registerTool as (tool: unknown) => unknown)({
+        name: spec.prefixedName,
+        label: `MCP: ${spec.originalName}`,
+        description: spec.description || "(no description)",
+        promptSnippet: truncateAtWord(spec.description, 100) || `MCP tool from ${spec.serverName}`,
+        parameters: Type.Unsafe((spec.inputSchema || { type: "object", properties: {} }) as never),
+        execute: createDirectToolExecutor(() => state, () => initPromise, spec),
+        renderResult: renderMcpToolResult,
+      });
+    }
+    const refreshTools = (pi as { refreshTools?: () => void }).refreshTools;
+    refreshTools?.();
+    return {
+      directToolCount: directSpecs.length,
+      missingConfiguredDirectToolServers: getMissingConfiguredDirectToolServers(config, cache),
+    };
+  }
+
+  async function registerDirectTools(nextState: McpExtensionState): Promise<{ directToolCount: number; missingConfiguredDirectToolServers: string[] }> {
+    const { loadMetadataCache } = await import("./metadata-cache.ts");
+    return registerDirectToolsFromConfig(nextState.config, loadMetadataCache());
+  }
+
+  async function shutdownOAuthFlow(): Promise<void> {
+    const { shutdownOAuth } = await import("./mcp-auth-flow.ts");
+    await shutdownOAuth();
+  }
 
   async function shutdownState(currentState: McpExtensionState | null, reason: string): Promise<void> {
     if (!currentState) return;
@@ -26,6 +73,7 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 
     let flushError: unknown;
     try {
+      const { flushMetadataCache } = await import("./init.ts");
       flushMetadataCache(currentState);
     } catch (error) {
       flushError = error;
@@ -47,36 +95,6 @@ export default function mcpAdapter(pi: ExtensionAPI) {
   }
 
   const earlyConfigPath = getConfigPathFromArgv();
-  const earlyConfig = loadMcpConfig(earlyConfigPath);
-  const earlyCache = loadMetadataCache();
-  const prefix = earlyConfig.settings?.toolPrefix ?? "server";
-
-  const envRaw = process.env.MCP_DIRECT_TOOLS;
-  const directSpecs = envRaw === "__none__"
-    ? []
-    : resolveDirectTools(
-        earlyConfig,
-        earlyCache,
-        prefix,
-        envRaw?.split(",").map(s => s.trim()).filter(Boolean),
-      );
-  const missingConfiguredDirectToolServers = getMissingConfiguredDirectToolServers(earlyConfig, earlyCache);
-  const shouldRegisterProxyTool =
-    earlyConfig.settings?.disableProxyTool !== true
-    || directSpecs.length === 0
-    || missingConfiguredDirectToolServers.length > 0;
-
-  for (const spec of directSpecs) {
-    (pi.registerTool as (tool: unknown) => unknown)({
-      name: spec.prefixedName,
-      label: `MCP: ${spec.originalName}`,
-      description: spec.description || "(no description)",
-      promptSnippet: truncateAtWord(spec.description, 100) || `MCP tool from ${spec.serverName}`,
-      parameters: Type.Unsafe((spec.inputSchema || { type: "object", properties: {} }) as never),
-      execute: createDirectToolExecutor(() => state, () => initPromise, spec),
-      renderResult: renderMcpToolResult,
-    });
-  }
 
   const getPiTools = (): ToolInfo[] => pi.getAllTools();
 
@@ -90,45 +108,85 @@ export default function mcpAdapter(pi: ExtensionAPI) {
     const previousState = state;
     state = null;
     initPromise = null;
+    registeredDirectToolNames = new Set<string>();
 
     try {
-      await Promise.all([
-        shutdownState(previousState, "session_restart"),
-        shutdownOAuth(),
-      ]);
+      const config = loadMcpConfig(earlyConfigPath, ctx.cwd);
+      const { loadMetadataCache } = await import("./metadata-cache.ts");
+      const directToolState = await registerDirectToolsFromConfig(config, loadMetadataCache());
+      if (
+        config.settings?.disableProxyTool !== true
+        || directToolState.directToolCount === 0
+        || directToolState.missingConfiguredDirectToolServers.length > 0
+      ) {
+        registerProxyTool();
+      }
     } catch (error) {
-      console.error("MCP: failed to shut down previous session state", error);
+      console.error("MCP: failed to register cached startup tools; enabling MCP proxy fallback", error);
+      registerProxyTool();
     }
 
-    if (generation !== lifecycleGeneration) {
-      return;
-    }
+    const promiseRef: { current: Promise<McpExtensionState> | null } = { current: null };
+    const promise = (async () => {
+      try {
+        await Promise.all([
+          shutdownState(previousState, "session_restart"),
+          shutdownOAuthFlow(),
+        ]);
+      } catch (error) {
+        console.error("MCP: failed to shut down previous session state", error);
+      }
 
-    const promise = initializeMcp(pi, ctx);
-    initPromise = promise;
+      if (generation !== lifecycleGeneration) {
+        throw new Error("Stale MCP session initialization cancelled before startup");
+      }
 
-    promise.then(async (nextState) => {
-      if (generation !== lifecycleGeneration || initPromise !== promise) {
+      const { initializeMcp, updateStatusBar } = await import("./init.ts");
+      if (generation !== lifecycleGeneration) {
+        throw new Error("Stale MCP session initialization cancelled before startup");
+      }
+
+      const nextState = await initializeMcp(pi, ctx);
+      if (generation !== lifecycleGeneration || initPromise !== promiseRef.current) {
         try {
           await shutdownState(nextState, "stale_session_start");
         } catch (error) {
           console.error("MCP: failed to clean stale session state", error);
         }
-        return;
+        throw new Error("Stale MCP session initialization cancelled after startup");
       }
 
       state = nextState;
       updateStatusBar(nextState);
-      initPromise = null;
-    }).catch(err => {
+      const directToolState = await registerDirectTools(nextState);
+      if (
+        nextState.config.settings?.disableProxyTool !== true
+        || directToolState.directToolCount === 0
+        || directToolState.missingConfiguredDirectToolServers.length > 0
+      ) {
+        registerProxyTool();
+      }
+      if (initPromise === promiseRef.current) {
+        initPromise = null;
+      }
+      return nextState;
+    })();
+    promiseRef.current = promise;
+    initPromise = promise;
+    promise.catch((err) => {
       if (generation !== lifecycleGeneration) {
         return;
       }
       if (initPromise !== promise && initPromise !== null) {
         return;
       }
-      console.error("MCP initialization failed:", err);
-      initPromise = null;
+      const message = err instanceof Error ? err.message : String(err);
+      if (!message.startsWith("Stale MCP session initialization cancelled")) {
+        console.error("MCP initialization failed:", err);
+      }
+      if (initPromise === promise) {
+        initPromise = null;
+      }
     });
   });
 
@@ -137,11 +195,12 @@ export default function mcpAdapter(pi: ExtensionAPI) {
     const currentState = state;
     state = null;
     initPromise = null;
+    registeredDirectToolNames = new Set<string>();
 
     try {
       await Promise.all([
         shutdownState(currentState, "session_shutdown"),
-        shutdownOAuth(),
+        shutdownOAuthFlow(),
       ]);
     } catch (error) {
       console.error("MCP: session shutdown cleanup failed", error);
@@ -165,6 +224,7 @@ export default function mcpAdapter(pi: ExtensionAPI) {
         return;
       }
 
+      const { showStatus, showTools, reconnectServers, logoutServer, openMcpPanel, openMcpSetup } = await import("./commands.ts");
       const parts = args?.trim()?.split(/\s+/) ?? [];
       const subcommand = parts[0] ?? "";
       const targetServer = parts[1];
@@ -233,6 +293,7 @@ export default function mcpAdapter(pi: ExtensionAPI) {
         return;
       }
 
+      const { authenticateServer, openMcpAuthPanel } = await import("./commands.ts");
       if (!serverName) {
         await openMcpAuthPanel(state, pi, ctx, earlyConfigPath);
         return;
@@ -242,11 +303,13 @@ export default function mcpAdapter(pi: ExtensionAPI) {
     },
   });
 
-  if (shouldRegisterProxyTool) {
+  function registerProxyTool(): void {
+    if (registeredProxyTool) return;
+    registeredProxyTool = true;
     (pi.registerTool as (tool: unknown) => unknown)({
       name: "mcp",
       label: "MCP",
-      description: buildProxyDescription(earlyConfig, earlyCache, directSpecs),
+      description: "MCP gateway for connecting to configured MCP servers, searching tools, describing schemas, and calling tools lazily after MCP initialization.",
       promptSnippet: "MCP gateway - connect to MCP servers and call their tools",
       parameters: Type.Object({
         tool: Type.Optional(Type.String({ description: "Tool name to call (e.g., 'xcodebuild_list_sims')" })),
@@ -305,6 +368,7 @@ export default function mcpAdapter(pi: ExtensionAPI) {
           };
         }
 
+        const { executeCall, executeConnect, executeDescribe, executeList, executeSearch, executeStatus, executeUiMessages } = await import("./proxy-modes.ts");
         if (params.action === "ui-messages") {
           return executeUiMessages(state);
         }

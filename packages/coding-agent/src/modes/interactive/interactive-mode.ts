@@ -133,6 +133,7 @@ import { parseGitUrl } from "../../utils/git.ts";
 import { getCwdRelativePath } from "../../utils/paths.ts";
 import { getPiUserAgent } from "../../utils/pi-user-agent.ts";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
+import { recordTimeSinceReset } from "../../core/timings.ts";
 import { ensureTool } from "../../utils/tools-manager.ts";
 import { checkForNewPiVersion } from "../../utils/version-check.ts";
 import { ArminComponent } from "./components/armin.ts";
@@ -748,11 +749,6 @@ export class InteractiveMode {
     // Load changelog (only show new entries, skip for resumed sessions)
     this.changelogMarkdown = this.getChangelogForDisplay();
 
-    // Ensure fd and rg are available (downloads if missing, adds to PATH via getBinDir)
-    // Both are needed: fd for autocomplete, rg for grep tool and bash commands
-    const [fdPath] = await Promise.all([ensureTool("fd"), ensureTool("rg")]);
-    this.fdPath = fdPath;
-
     // Add header container as first child
     this.ui.addChild(this.headerContainer);
 
@@ -799,9 +795,22 @@ export class InteractiveMode {
     this.setupKeyHandlers();
     this.setupEditorSubmitHandler();
 
-    // Start the UI before initializing extensions so session_start handlers can use interactive dialogs
+    // Start the UI before initializing extensions so session_start handlers can use interactive dialogs.
+    // fd/rg readiness is intentionally checked after first paint because ensureTool may spawn
+    // or download tools on cold machines.
     this.ui.start();
+    recordTimeSinceReset("time-to-first-frame");
     this.isInitialized = true;
+
+    void Promise.all([ensureTool("fd"), ensureTool("rg")])
+      .then(([fdPath]) => {
+        this.fdPath = fdPath;
+        this.setupAutocompleteProvider();
+      })
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`Tool readiness check failed: ${message}`);
+      });
 
     // Initialize extensions first so resources are shown before messages
     await this.rebindCurrentSession();
@@ -821,8 +830,11 @@ export class InteractiveMode {
       this.ui.requestRender();
     });
 
-    // Initialize available provider count for footer display
-    await this.updateAvailableProviderCount();
+    // Initialize available provider count for footer display without delaying first-frame startup.
+    void this.updateAvailableProviderCount().catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Failed to update provider count: ${message}`);
+    });
   }
 
   /**

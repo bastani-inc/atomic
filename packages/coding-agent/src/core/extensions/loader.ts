@@ -35,6 +35,7 @@ import type { ExecOptions } from "../exec.ts";
 import type { ResolvedResource } from "../package-manager.ts";
 import { execCommand } from "../exec.ts";
 import { createSyntheticSourceInfo } from "../source-info.ts";
+import { endTimingSpan, startTimingSpan } from "../timings.ts";
 import type {
   Extension,
   ExtensionAPI,
@@ -464,7 +465,9 @@ async function loadExtension(
   const resolvedPath = resolvePath(extensionPath, cwd, { normalizeUnicodeSpaces: true });
 
   try {
+    const moduleSpan = startTimingSpan(`loadExtensions.${extensionPath}.module`);
     const factory = await loadExtensionModule(resolvedPath);
+    endTimingSpan(moduleSpan);
     if (!factory) {
       return {
         extension: null,
@@ -480,7 +483,9 @@ async function loadExtension(
       eventBus,
       workflowResourceProvider,
     );
+    const factorySpan = startTimingSpan(`loadExtensions.${extensionPath}.factory`);
     await factory(api);
+    endTimingSpan(factorySpan);
 
     return { extension, error: null };
   } catch (err) {
@@ -529,6 +534,7 @@ export async function loadExtensions(
   const runtime = createExtensionRuntime();
 
   for (const extPath of paths) {
+    const extensionSpan = startTimingSpan(`loadExtensions.${extPath}.total`);
     const { extension, error } = await loadExtension(
       extPath,
       resolvedCwd,
@@ -536,6 +542,7 @@ export async function loadExtensions(
       runtime,
       workflowResourceProvider,
     );
+    endTimingSpan(extensionSpan);
 
     if (error) {
       errors.push({ path: extPath, error });
