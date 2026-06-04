@@ -4,6 +4,12 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.8.25-alpha.1] - 2026-06-04
+
+### Changed
+
+- Bumped package version for the Atomic 0.8.25-alpha.1 prerelease.
+
 ## [0.8.24] - 2026-06-04
 
 ### Changed

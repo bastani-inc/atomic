@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.8.25-alpha.1] - 2026-06-04
+
 ### Fixed
 
 - Fixed the interactive workflow inputs selector so it hides the working loader while replacing the editor, keeping the picker pinned to the bottom like `ask_user_question` without wedged host chrome ([#1224](https://github.com/bastani-inc/atomic/issues/1224)).
