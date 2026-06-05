@@ -157,6 +157,14 @@ export interface StageOptions
   scopedModels?: CreateAgentSessionOptions["scopedModels"];
   sessionManager?: SessionManager;
   settingsManager?: SettingsManager;
+  /** Internal: originating chat session for workflow provenance. */
+  workflowOriginSessionFile?: string;
+  /** Internal: workflow run identity stamped onto child session headers. */
+  workflowRunId?: string;
+  workflowName?: string;
+  /** Internal: workflow stage identity stamped onto child session headers. */
+  workflowStageId?: string;
+  workflowStageName?: string;
 }
 
 // ---------------------------------------------------------------------------

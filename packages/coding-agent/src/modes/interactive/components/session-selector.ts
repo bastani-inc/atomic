@@ -190,6 +190,8 @@ class SessionSelectorHeader implements Component {
 interface SessionTreeNode {
 	session: SessionInfo;
 	children: SessionTreeNode[];
+	selectable: boolean;
+	displayLabel?: string;
 }
 
 /** Flattened node for display with tree structure info */
@@ -197,30 +199,135 @@ interface FlatSessionNode {
 	session: SessionInfo;
 	depth: number;
 	isLast: boolean;
+	selectable: boolean;
+	displayLabel?: string;
 	/** For each ancestor level, whether there are more siblings after it */
 	ancestorContinues: boolean[];
 }
 
+function sessionForkSourceLabel(session: SessionInfo): string {
+	return session.name ?? session.workflowStageName ?? session.firstMessage;
+}
+
+function canonicalPathOrOriginal(path: string): string {
+	return canonicalizePath(path) ?? path;
+}
+
+function canonicalSessionPath(session: SessionInfo): string {
+	return canonicalPathOrOriginal(session.path);
+}
+
+function sessionDisplayLabel(session: SessionInfo): string {
+	if (session.workflowStageId !== undefined || session.workflowStageName !== undefined) {
+		return `⚙ ${session.name ?? session.workflowStageName ?? session.firstMessage}`;
+	}
+	return session.name ?? session.firstMessage;
+}
+
+function forkSourcePath(session: SessionInfo): string | undefined {
+	return session.forkedFromSessionPath ?? session.parentSessionPath;
+}
+
+const ROOT_WORKFLOW_ORIGIN = "<root>";
+
+function workflowRunKey(originPath: string | undefined, runId: string): string {
+	return `${originPath ?? ROOT_WORKFLOW_ORIGIN}\u0000${runId}`;
+}
+
+function fallbackWorkflowRunLabel(runId: string): string {
+	return runId.length > 0 ? runId : "workflow";
+}
+
+function buildSessionsByCanonicalPath(sessions: SessionInfo[]): Map<string, SessionInfo> {
+	return new Map(sessions.map((session) => [canonicalSessionPath(session), session]));
+}
+
+function createVirtualWorkflowRunNode(
+	originPath: string | undefined,
+	runId: string,
+	workflowName: string | undefined,
+	stage: SessionInfo,
+): SessionTreeNode {
+	const label = `⚙ ${workflowName ?? fallbackWorkflowRunLabel(runId)} (run)`;
+	return {
+		session: {
+			path: `virtual:workflow-run:${encodeURIComponent(originPath ?? ROOT_WORKFLOW_ORIGIN)}:${encodeURIComponent(runId)}`,
+			id: `workflow-run:${runId}`,
+			cwd: stage.cwd,
+			name: label,
+			originSessionPath: originPath,
+			workflowRunId: runId,
+			workflowName,
+			created: stage.created,
+			modified: stage.modified,
+			messageCount: 0,
+			firstMessage: label,
+			allMessagesText: label,
+		},
+		children: [],
+		selectable: false,
+		displayLabel: label,
+	};
+}
+
 /**
- * Build a tree structure from sessions based on parentSessionPath.
+ * Build a tree structure from sessions using workflow provenance for workflow
+ * stages and legacy parentSessionPath for standalone forks.
  * Returns root nodes sorted by modified date (descending).
  */
 function buildSessionTree(sessions: SessionInfo[]): SessionTreeNode[] {
 	const byPath = new Map<string, SessionTreeNode>();
+	const roots: SessionTreeNode[] = [];
+	const workflowRuns = new Map<string, SessionTreeNode>();
+	const attached = new Set<SessionTreeNode>();
 
 	for (const session of sessions) {
-		const sessionPath = canonicalizePath(session.path) ?? session.path;
-		byPath.set(sessionPath, { session, children: [] });
+		const sessionPath = canonicalSessionPath(session);
+		byPath.set(sessionPath, {
+			session,
+			children: [],
+			selectable: true,
+			displayLabel: sessionDisplayLabel(session),
+		});
 	}
 
-	const roots: SessionTreeNode[] = [];
+	for (const session of sessions) {
+		if (session.workflowRunId === undefined) continue;
+		const originPath = canonicalizePath(session.originSessionPath);
+		const key = workflowRunKey(originPath, session.workflowRunId);
+		let runNode = workflowRuns.get(key);
+		if (runNode === undefined) {
+			runNode = createVirtualWorkflowRunNode(originPath, session.workflowRunId, session.workflowName, session);
+			workflowRuns.set(key, runNode);
+		}
+		if (session.modified.getTime() > runNode.session.modified.getTime()) {
+			runNode.session.modified = session.modified;
+		}
+		const sessionPath = canonicalSessionPath(session);
+		const stageNode = byPath.get(sessionPath);
+		if (stageNode !== undefined) {
+			runNode.children.push(stageNode);
+			attached.add(stageNode);
+		}
+	}
+
+	for (const runNode of workflowRuns.values()) {
+		const originPath = canonicalizePath(runNode.session.originSessionPath);
+		if (originPath !== undefined && byPath.has(originPath)) {
+			byPath.get(originPath)!.children.push(runNode);
+		} else {
+			roots.push(runNode);
+		}
+		attached.add(runNode);
+	}
 
 	for (const session of sessions) {
-		const sessionPath = canonicalizePath(session.path) ?? session.path;
+		const sessionPath = canonicalSessionPath(session);
 		const node = byPath.get(sessionPath)!;
-		const parentPath = canonicalizePath(session.parentSessionPath);
+		if (attached.has(node)) continue;
 
-		if (parentPath && byPath.has(parentPath)) {
+		const parentPath = canonicalizePath(session.originSessionPath ?? session.parentSessionPath);
+		if (parentPath && parentPath !== sessionPath && byPath.has(parentPath)) {
 			byPath.get(parentPath)!.children.push(node);
 		} else {
 			roots.push(node);
@@ -246,7 +353,14 @@ function flattenSessionTree(roots: SessionTreeNode[]): FlatSessionNode[] {
 	const result: FlatSessionNode[] = [];
 
 	const walk = (node: SessionTreeNode, depth: number, ancestorContinues: boolean[], isLast: boolean): void => {
-		result.push({ session: node.session, depth, isLast, ancestorContinues });
+		result.push({
+			session: node.session,
+			depth,
+			isLast,
+			selectable: node.selectable,
+			displayLabel: node.displayLabel,
+			ancestorContinues,
+		});
 
 		for (let i = 0; i < node.children.length; i++) {
 			const childIsLast = i === node.children.length - 1;
@@ -268,10 +382,10 @@ function flattenSessionTree(roots: SessionTreeNode[]): FlatSessionNode[] {
  */
 class SessionList implements Component, Focusable {
 	public getSelectedSessionPath(): string | undefined {
-		const selected = this.filteredSessions[this.selectedIndex];
-		return selected?.session.path;
+		return this.selectedSelectableSessionPath();
 	}
 	private allSessions: SessionInfo[] = [];
+	private sessionsByCanonicalPath = new Map<string, SessionInfo>();
 	private filteredSessions: FlatSessionNode[] = [];
 	private selectedIndex: number = 0;
 	private searchInput: Input;
@@ -314,6 +428,7 @@ class SessionList implements Component, Focusable {
 		currentSessionFilePath?: string,
 	) {
 		this.allSessions = sessions;
+		this.sessionsByCanonicalPath = buildSessionsByCanonicalPath(sessions);
 		this.filteredSessions = [];
 		this.searchInput = new Input();
 		this.showCwd = showCwd;
@@ -325,12 +440,7 @@ class SessionList implements Component, Focusable {
 
 		// Handle Enter in search input - select current item
 		this.searchInput.onSubmit = () => {
-			if (this.filteredSessions[this.selectedIndex]) {
-				const selected = this.filteredSessions[this.selectedIndex];
-				if (this.onSelect) {
-					this.onSelect(selected.session.path);
-				}
-			}
+			this.selectCurrentSession();
 		};
 	}
 
@@ -346,6 +456,7 @@ class SessionList implements Component, Focusable {
 
 	setSessions(sessions: SessionInfo[], showCwd: boolean): void {
 		this.allSessions = sessions;
+		this.sessionsByCanonicalPath = buildSessionsByCanonicalPath(sessions);
 		this.showCwd = showCwd;
 		this.filterSessions(this.searchInput.getValue());
 	}
@@ -366,10 +477,55 @@ class SessionList implements Component, Focusable {
 				session,
 				depth: 0,
 				isLast: true,
+				selectable: true,
+				displayLabel: sessionDisplayLabel(session),
 				ancestorContinues: [],
 			}));
 		}
 		this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.filteredSessions.length - 1));
+		this.ensureSelectableSelection();
+	}
+
+	private selectedSelectableSessionNode(): FlatSessionNode | undefined {
+		const selected = this.filteredSessions[this.selectedIndex];
+		return selected?.selectable === true ? selected : undefined;
+	}
+
+	private selectedSelectableSessionPath(): string | undefined {
+		return this.selectedSelectableSessionNode()?.session.path;
+	}
+
+	private selectCurrentSession(): void {
+		const selectedPath = this.selectedSelectableSessionPath();
+		if (selectedPath !== undefined) {
+			this.onSelect?.(selectedPath);
+		}
+	}
+
+	private isSelectableIndex(index: number): boolean {
+		return this.filteredSessions[index]?.selectable === true;
+	}
+
+	private findSelectableIndex(start: number, direction: 1 | -1): number | undefined {
+		for (let index = start; index >= 0 && index < this.filteredSessions.length; index += direction) {
+			if (this.isSelectableIndex(index)) return index;
+		}
+		return undefined;
+	}
+
+	private ensureSelectableSelection(): void {
+		if (this.filteredSessions.length === 0 || this.isSelectableIndex(this.selectedIndex)) return;
+		const next = this.findSelectableIndex(this.selectedIndex + 1, 1) ?? this.findSelectableIndex(this.selectedIndex - 1, -1);
+		this.selectedIndex = next ?? 0;
+	}
+
+	private moveSelectionBy(delta: number): void {
+		if (this.filteredSessions.length === 0) return;
+		const direction: 1 | -1 = delta >= 0 ? 1 : -1;
+		const start = Math.max(0, Math.min(this.filteredSessions.length - 1, this.selectedIndex + delta));
+		const reverseDirection: 1 | -1 = direction === 1 ? -1 : 1;
+		const next = this.findSelectableIndex(start, direction) ?? this.findSelectableIndex(start - direction, reverseDirection);
+		if (next !== undefined) this.selectedIndex = next;
 	}
 
 	private setConfirmingDeletePath(path: string | null): void {
@@ -378,8 +534,8 @@ class SessionList implements Component, Focusable {
 	}
 
 	private startDeleteConfirmationForSelectedSession(): void {
-		const selected = this.filteredSessions[this.selectedIndex];
-		if (!selected) return;
+		const selected = this.selectedSelectableSessionNode();
+		if (selected === undefined) return;
 
 		// Prevent deleting current session
 		if (this.isCurrentSessionPath(selected.session.path)) {
@@ -392,7 +548,12 @@ class SessionList implements Component, Focusable {
 
 	private isCurrentSessionPath(path: string): boolean {
 		if (!this.currentSessionCanonicalPath) return false;
-		return (canonicalizePath(path) ?? path) === this.currentSessionCanonicalPath;
+		return canonicalPathOrOriginal(path) === this.currentSessionCanonicalPath;
+	}
+
+	private forkSourceLabel(path: string): string {
+		const source = this.sessionsByCanonicalPath.get(canonicalPathOrOriginal(path));
+		return source ? sessionForkSourceLabel(source) : shortenPath(path);
 	}
 
 	invalidate(): void {}
@@ -442,10 +603,12 @@ class SessionList implements Component, Focusable {
 			// Build tree prefix
 			const prefix = this.buildTreePrefix(node);
 
-			// Session display text (name or first message)
-			const hasName = !!session.name;
-			const displayText = session.name ?? session.firstMessage;
-			const normalizedMessage = displayText.replace(/[\x00-\x1f\x7f]/g, " ").trim();
+			// Session display text (name, first message, or workflow label)
+			const hasName = !!session.name && node.selectable;
+			const displayText = node.displayLabel ?? sessionDisplayLabel(session);
+			const forkPath = node.selectable ? forkSourcePath(session) : undefined;
+			const forkAnnotation = forkPath ? `  ⑂ from ${this.forkSourceLabel(forkPath)}` : "";
+			const normalizedMessage = `${displayText}${forkAnnotation}`.replace(/[\x00-\x1f\x7f]/g, " ").trim();
 
 			// Right side: message count and age
 			const age = formatSessionDate(session.modified);
@@ -566,8 +729,8 @@ class SessionList implements Component, Focusable {
 
 		// Rename selected session
 		if (kb.matches(keyData, "app.session.rename")) {
-			const selected = this.filteredSessions[this.selectedIndex];
-			if (selected) {
+			const selected = this.selectedSelectableSessionNode();
+			if (selected !== undefined) {
 				this.onRenameSession?.(selected.session.path);
 			}
 			return;
@@ -588,26 +751,23 @@ class SessionList implements Component, Focusable {
 
 		// Up arrow
 		if (kb.matches(keyData, "tui.select.up")) {
-			this.selectedIndex = Math.max(0, this.selectedIndex - 1);
+			this.moveSelectionBy(-1);
 		}
 		// Down arrow
 		else if (kb.matches(keyData, "tui.select.down")) {
-			this.selectedIndex = Math.min(this.filteredSessions.length - 1, this.selectedIndex + 1);
+			this.moveSelectionBy(1);
 		}
 		// Page up - jump up by maxVisible items
 		else if (kb.matches(keyData, "tui.select.pageUp")) {
-			this.selectedIndex = Math.max(0, this.selectedIndex - this.maxVisible);
+			this.moveSelectionBy(-this.maxVisible);
 		}
 		// Page down - jump down by maxVisible items
 		else if (kb.matches(keyData, "tui.select.pageDown")) {
-			this.selectedIndex = Math.min(this.filteredSessions.length - 1, this.selectedIndex + this.maxVisible);
+			this.moveSelectionBy(this.maxVisible);
 		}
 		// Enter
 		else if (kb.matches(keyData, "tui.select.confirm")) {
-			const selected = this.filteredSessions[this.selectedIndex];
-			if (selected && this.onSelect) {
-				this.onSelect(selected.session.path);
-			}
+			this.selectCurrentSession();
 		}
 		// Escape - cancel
 		else if (kb.matches(keyData, "tui.select.cancel")) {

@@ -33,12 +33,29 @@ export interface SessionHeader {
 	id: string;
 	timestamp: string;
 	cwd: string;
+	/** Legacy relationship field; retained for compatibility. */
 	parentSession?: string;
+	/** Ownership/provenance parent used by threaded session views. */
+	originSession?: string;
+	/** Context lineage source used for fork annotations. */
+	forkedFromSession?: string;
+	/** Workflow run grouping identity for workflow-spawned sessions. */
+	workflowRunId?: string;
+	workflowName?: string;
+	/** Workflow stage identity for real stage session rows. */
+	workflowStageId?: string;
+	workflowStageName?: string;
 }
 
 export interface NewSessionOptions {
 	id?: string;
 	parentSession?: string;
+	originSession?: string;
+	forkedFromSession?: string;
+	workflowRunId?: string;
+	workflowName?: string;
+	workflowStageId?: string;
+	workflowStageName?: string;
 }
 
 export interface SessionEntryBase {
@@ -175,6 +192,14 @@ export interface SessionInfo {
 	name?: string;
 	/** Path to the parent session (if this session was forked). */
 	parentSessionPath?: string;
+	/** Path to the owning/origin session for provenance-based grouping. */
+	originSessionPath?: string;
+	/** Path to the source session this session copied context from. */
+	forkedFromSessionPath?: string;
+	workflowRunId?: string;
+	workflowName?: string;
+	workflowStageId?: string;
+	workflowStageName?: string;
 	created: Date;
 	modified: Date;
 	messageCount: number;
@@ -575,6 +600,30 @@ function getSessionModifiedDate(entries: FileEntry[], header: SessionHeader, sta
 	return !Number.isNaN(headerTime) ? new Date(headerTime) : statsMtime;
 }
 
+function isWorkflowStageFork(options: NewSessionOptions | undefined): boolean {
+	return options?.workflowStageId !== undefined || options?.workflowStageName !== undefined;
+}
+
+function effectiveSessionName(entries: readonly FileEntry[]): string | undefined {
+	let name: string | undefined;
+	for (const entry of entries) {
+		if (entry.type === "session_info") {
+			name = entry.name?.trim() || undefined;
+		}
+	}
+	return name;
+}
+
+function latestCopiedEntryId(entries: readonly FileEntry[]): string | null {
+	for (let i = entries.length - 1; i >= 0; i--) {
+		const entry = entries[i]!;
+		if (entry.type !== "session") {
+			return entry.id;
+		}
+	}
+	return null;
+}
+
 async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 	try {
 		const content = await readFile(filePath, "utf8");
@@ -598,15 +647,9 @@ async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 		let messageCount = 0;
 		let firstMessage = "";
 		const allMessages: string[] = [];
-		let name: string | undefined;
+		const name = effectiveSessionName(entries);
 
 		for (const entry of entries) {
-			// Extract session name (use latest, including explicit clears)
-			if (entry.type === "session_info") {
-				const infoEntry = entry as SessionInfoEntry;
-				name = infoEntry.name?.trim() || undefined;
-			}
-
 			if (entry.type !== "message") continue;
 			messageCount++;
 
@@ -623,18 +666,27 @@ async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 			}
 		}
 
-		const cwd = typeof (header as SessionHeader).cwd === "string" ? (header as SessionHeader).cwd : "";
-		const parentSessionPath = (header as SessionHeader).parentSession;
+		const sessionHeader = header as SessionHeader;
+		const cwd = typeof sessionHeader.cwd === "string" ? sessionHeader.cwd : "";
+		const parentSessionPath = sessionHeader.parentSession;
+		const originSessionPath = sessionHeader.originSession;
+		const forkedFromSessionPath = sessionHeader.forkedFromSession;
 
-		const modified = getSessionModifiedDate(entries, header as SessionHeader, stats.mtime);
+		const modified = getSessionModifiedDate(entries, sessionHeader, stats.mtime);
 
 		return {
 			path: filePath,
-			id: (header as SessionHeader).id,
+			id: sessionHeader.id,
 			cwd,
 			name,
 			parentSessionPath,
-			created: new Date((header as SessionHeader).timestamp),
+			originSessionPath,
+			forkedFromSessionPath,
+			workflowRunId: sessionHeader.workflowRunId,
+			workflowName: sessionHeader.workflowName,
+			workflowStageId: sessionHeader.workflowStageId,
+			workflowStageName: sessionHeader.workflowStageName,
+			created: new Date(sessionHeader.timestamp),
 			modified,
 			messageCount,
 			firstMessage: firstMessage || "(no messages)",
@@ -708,7 +760,13 @@ export class SessionManager {
 	private labelTimestampsById: Map<string, string> = new Map();
 	private leafId: string | null = null;
 
-	private constructor(cwd: string, sessionDir: string, sessionFile: string | undefined, persist: boolean) {
+	private constructor(
+		cwd: string,
+		sessionDir: string,
+		sessionFile: string | undefined,
+		persist: boolean,
+		newSessionOptions?: NewSessionOptions,
+	) {
 		this.cwd = resolvePath(cwd);
 		this.sessionDir = normalizePath(sessionDir);
 		this.persist = persist;
@@ -719,7 +777,7 @@ export class SessionManager {
 		if (sessionFile) {
 			this.setSessionFile(sessionFile);
 		} else {
-			this.newSession();
+			this.newSession(newSessionOptions);
 		}
 	}
 
@@ -766,6 +824,12 @@ export class SessionManager {
 			timestamp,
 			cwd: this.cwd,
 			parentSession: options?.parentSession,
+			originSession: options?.originSession,
+			forkedFromSession: options?.forkedFromSession,
+			workflowRunId: options?.workflowRunId,
+			workflowName: options?.workflowName,
+			workflowStageId: options?.workflowStageId,
+			workflowStageName: options?.workflowStageName,
 		};
 		this.fileEntries = [header];
 		this.byId.clear();
@@ -1297,10 +1361,11 @@ export class SessionManager {
 	 * Create a new session.
 	 * @param cwd Working directory (stored in session header)
 	 * @param sessionDir Optional session directory. If omitted, uses default (~/.atomic/agent/sessions/<encoded-cwd>/).
+	 * @param options Optional metadata to stamp onto the new session header.
 	 */
-	static create(cwd: string, sessionDir?: string): SessionManager {
+	static create(cwd: string, sessionDir?: string, options?: NewSessionOptions): SessionManager {
 		const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(cwd);
-		return new SessionManager(cwd, dir, undefined, true);
+		return new SessionManager(cwd, dir, undefined, true, options);
 	}
 
 	/**
@@ -1345,8 +1410,9 @@ export class SessionManager {
 	 * @param sourcePath Path to the source session file
 	 * @param targetCwd Target working directory (where the new session will be stored)
 	 * @param sessionDir Optional session directory. If omitted, uses default for targetCwd.
+	 * @param options Optional metadata to stamp onto the forked session header.
 	 */
-	static forkFrom(sourcePath: string, targetCwd: string, sessionDir?: string): SessionManager {
+	static forkFrom(sourcePath: string, targetCwd: string, sessionDir?: string, options?: NewSessionOptions): SessionManager {
 		const resolvedSourcePath = resolvePath(sourcePath);
 		const resolvedTargetCwd = resolvePath(targetCwd);
 		const sourceEntries = loadEntriesFromFile(resolvedSourcePath);
@@ -1365,7 +1431,7 @@ export class SessionManager {
 		}
 
 		// Create new session file with new ID but forked content
-		const newSessionId = createSessionId();
+		const newSessionId = options?.id ?? createSessionId();
 		const timestamp = new Date().toISOString();
 		const fileTimestamp = timestamp.replace(/[:.]/g, "-");
 		const newSessionFile = join(dir, `${fileTimestamp}_${newSessionId}.jsonl`);
@@ -1378,6 +1444,12 @@ export class SessionManager {
 			timestamp,
 			cwd: resolvedTargetCwd,
 			parentSession: resolvedSourcePath,
+			originSession: options?.originSession,
+			forkedFromSession: options?.forkedFromSession ?? resolvedSourcePath,
+			workflowRunId: options?.workflowRunId,
+			workflowName: options?.workflowName,
+			workflowStageId: options?.workflowStageId,
+			workflowStageName: options?.workflowStageName,
 		};
 		appendFileSync(newSessionFile, `${JSON.stringify(newHeader)}\n`);
 
@@ -1386,6 +1458,18 @@ export class SessionManager {
 			if (entry.type !== "session") {
 				appendFileSync(newSessionFile, `${JSON.stringify(entry)}\n`);
 			}
+		}
+
+		if (isWorkflowStageFork(options) && effectiveSessionName(sourceEntries) !== undefined) {
+			const existingIds = new Set([...sourceEntries.map((entry) => entry.id), newSessionId]);
+			const clearInheritedNameEntry: SessionInfoEntry = {
+				type: "session_info",
+				id: generateId(existingIds),
+				parentId: latestCopiedEntryId(sourceEntries),
+				timestamp: new Date().toISOString(),
+				name: "",
+			};
+			appendFileSync(newSessionFile, `${JSON.stringify(clearInheritedNameEntry)}\n`);
 		}
 
 		return new SessionManager(resolvedTargetCwd, dir, newSessionFile, true);

@@ -11,7 +11,6 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import {
   shouldApplyCodexFastModeForScope,
-  SessionManager,
   type AgentSession,
   type CreateAgentSessionOptions,
   type PromptOptions,
@@ -170,21 +169,18 @@ function stripWorkflowOnlyOptions(options: StageOptions | undefined): CreateAgen
     mcp: _mcp,
     fallbackModels: _fallbackModels,
     fallbackThinkingLevels: _fallbackThinkingLevels,
-    context,
-    forkFromSessionFile,
-    sessionDir,
+    context: _context,
+    forkFromSessionFile: _forkFromSessionFile,
+    sessionDir: _sessionDir,
     gitWorktreeDir: _gitWorktreeDir,
     baseBranch: _baseBranch,
+    workflowOriginSessionFile: _workflowOriginSessionFile,
+    workflowRunId: _workflowRunId,
+    workflowName: _workflowName,
+    workflowStageId: _workflowStageId,
+    workflowStageName: _workflowStageName,
     ...sessionOptions
   } = options;
-  if (sessionOptions.sessionManager === undefined) {
-    const cwd = sessionOptions.cwd ?? process.cwd();
-    if (context === "fork" && forkFromSessionFile !== undefined) {
-      sessionOptions.sessionManager = SessionManager.forkFrom(forkFromSessionFile, cwd, sessionDir);
-    } else if (sessionDir !== undefined) {
-      sessionOptions.sessionManager = SessionManager.create(cwd, sessionDir);
-    }
-  }
   return sessionOptions as CreateAgentSessionOptions;
 }
 

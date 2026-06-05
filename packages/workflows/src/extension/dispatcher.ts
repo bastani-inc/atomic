@@ -69,6 +69,8 @@ export interface DispatcherOpts {
   policy?: WorkflowExecutionPolicy;
   /** Invocation cwd used for workflow execution. */
   cwd?: string;
+  /** Internal: originating chat session file stamped onto workflow stage sessions. */
+  workflowOriginSessionFile?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -173,6 +175,7 @@ export async function dispatch(
         models: opts.models,
         executionMode: policy.mode,
         cwd: opts.cwd,
+        workflowOriginSessionFile: opts.workflowOriginSessionFile,
       });
       if (policy.awaitTerminalRun === true) {
         const tracker = opts.jobs ?? defaultJobTracker;

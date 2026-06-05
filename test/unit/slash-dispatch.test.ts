@@ -1540,6 +1540,55 @@ describe("tool run-control actions", () => {
         }
     });
 
+    test("makeExecuteWorkflowTool forwards current session file as workflow origin for direct and named runs", async () => {
+        const origins: string[] = [];
+        const runtime = {
+            async runDirect(_args: WorkflowToolArgs, options?: Parameters<ExtensionRuntime["runDirect"]>[1]) {
+                origins.push(`direct:${options?.workflowOriginSessionFile ?? ""}`);
+                return {
+                    mode: "single",
+                    runId: "direct-run",
+                    status: "completed",
+                    progress: { completed: 1, total: 1 },
+                };
+            },
+            async dispatch(_args: WorkflowToolArgs, options?: Parameters<ExtensionRuntime["dispatch"]>[1]) {
+                origins.push(`named:${options?.workflowOriginSessionFile ?? ""}`);
+                return {
+                    action: "run",
+                    name: "named",
+                    runId: "named-run",
+                    status: "running",
+                    stages: [],
+                };
+            },
+        } as unknown as ExtensionRuntime;
+        const handler = makeExecuteWorkflowTool(
+            runtime,
+            () => undefined,
+            () => undefined,
+        );
+        const ctx = {
+            sessionManager: {
+                getSessionFile: () => "/tmp/chat.jsonl",
+            },
+        } as never;
+
+        await handler(
+            { task: { name: "solo", task: "inspect" } },
+            ctx,
+        );
+        await handler(
+            { workflow: "named", inputs: {}, action: "run" },
+            ctx,
+        );
+
+        assert.deepEqual(origins, [
+            "direct:/tmp/chat.jsonl",
+            "named:/tmp/chat.jsonl",
+        ]);
+    });
+
     test("registered workflow tool suppresses lifecycle notices while awaiting a headless run", async () => {
         const resource = await makeRegisteredWorkflowToolWithResource(
             "tool-headless-lifecycle.ts",

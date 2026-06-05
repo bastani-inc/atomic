@@ -117,6 +117,7 @@ export interface ExtensionRuntime {
 
 export interface RuntimeDispatchOptions {
   readonly policy?: WorkflowExecutionPolicy;
+  readonly workflowOriginSessionFile?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -149,7 +150,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
   const jobs = opts.jobs;
   const runtimeCwd = opts.cwd ?? process.cwd();
 
-  function runOptions(args: WorkflowToolArgs, policy?: WorkflowExecutionPolicy): RunOpts {
+  function runOptions(args: WorkflowToolArgs, policy?: WorkflowExecutionPolicy, workflowOriginSessionFile?: string): RunOpts {
     const argConcurrency =
       typeof args.concurrency === "number" && Number.isFinite(args.concurrency)
         ? Math.max(1, Math.floor(args.concurrency))
@@ -176,6 +177,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
       ...(policy !== undefined ? { executionMode: policy.mode } : {}),
       registry,
       cwd: runtimeCwd,
+      ...(workflowOriginSessionFile !== undefined ? { workflowOriginSessionFile } : {}),
     };
   }
 
@@ -208,6 +210,11 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
       worktree,
       gitWorktreeDir,
       baseBranch,
+      workflowOriginSessionFile: _workflowOriginSessionFile,
+      workflowRunId: _workflowRunId,
+      workflowName: _workflowName,
+      workflowStageId: _workflowStageId,
+      workflowStageName: _workflowStageName,
       ...stageOptions
     } = args;
 
@@ -329,9 +336,10 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
     args: WorkflowToolArgs,
     runId?: string,
     policy?: WorkflowExecutionPolicy,
+    workflowOriginSessionFile?: string,
   ): Promise<WorkflowDetails> {
     const directRunOptions = directOptions(args);
-    const baseRunOptions = runOptions(args, policy);
+    const baseRunOptions = runOptions(args, policy, workflowOriginSessionFile);
     const effectiveRunOptions = runId === undefined
       ? baseRunOptions
       : { ...baseRunOptions, runId };
@@ -412,7 +420,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
       return { ok: false, reason: "insufficient_state", message: `insufficient_state: ${err instanceof Error ? err.message : String(err)}` };
     }
     const accepted = runDetached(def, sourceInputs, {
-      ...runOptions({ workflow: def.name, inputs: sourceInputs }, options?.policy),
+      ...runOptions({ workflow: def.name, inputs: sourceInputs }, options?.policy, options?.workflowOriginSessionFile),
       continuation: { source, resumeFromStageId: resolvedStage.stageId },
     });
     return {
@@ -424,7 +432,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
     };
   }
 
-  async function runDirectAsync(args: WorkflowToolArgs, policy?: WorkflowExecutionPolicy): Promise<WorkflowDetails> {
+  async function runDirectAsync(args: WorkflowToolArgs, policy?: WorkflowExecutionPolicy, workflowOriginSessionFile?: string): Promise<WorkflowDetails> {
     const runId = crypto.randomUUID();
     const mode = directMode(args);
     const delivery = effectiveIntercomDelivery(args, mode);
@@ -445,7 +453,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
         error: classifyWorkflowFailure(error).userMessage,
       }, delivery, parentSession);
     }
-    const background = runDirectForeground(args, runId, policy);
+    const background = runDirectForeground(args, runId, policy, workflowOriginSessionFile);
     void background.then(
       (details) => {
         emitDirectIntercom(details, delivery, parentSession);
@@ -489,6 +497,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
         config,
         models,
         policy: options?.policy,
+        workflowOriginSessionFile: options?.workflowOriginSessionFile,
         cwd: runtimeCwd,
       });
     },
@@ -496,12 +505,12 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
     runDirect(args: WorkflowToolArgs, options?: RuntimeDispatchOptions): Promise<WorkflowDetails> {
       const policy = options?.policy ?? INTERACTIVE_WORKFLOW_POLICY;
       if (args.async === true && policy.awaitTerminalRun !== true) {
-        return runDirectAsync(args, policy);
+        return runDirectAsync(args, policy, options?.workflowOriginSessionFile);
       }
       const mode = directMode(args);
       const delivery = effectiveIntercomDelivery(args, mode);
       const parentSession = intercomParentSession(args);
-      return runDirectForeground(args, undefined, policy).then((details) => {
+      return runDirectForeground(args, undefined, policy, options?.workflowOriginSessionFile).then((details) => {
         const summarized = withIntercomSummary(details, delivery, parentSession);
         emitDirectIntercom(summarized, delivery, parentSession);
         return summarized;

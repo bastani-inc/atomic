@@ -236,6 +236,9 @@ export interface PiCommandContext extends PiModelContext {
   ui: {
     notify: (message: string, type?: "info" | "warning" | "error") => void;
   } & PiUISurface;
+  sessionManager?: SessionManager & {
+    getSessionFile?: () => string | undefined;
+  };
   /**
    * False when the host bound a no-op UI surface (print/JSON `-p` modes).
    * Absent on older hosts and unit-test stubs; treat absence as interactive.
@@ -446,7 +449,7 @@ export interface ExtensionAPI {
   // -------------------------------------------------------------------------
   // Session manager (§5.6 restore)
   // -------------------------------------------------------------------------
-  sessionManager?: SessionManager;
+  sessionManager?: SessionManager & SessionFileProvider;
   ui?: {
     setWidget?: (
       key: string,
@@ -580,14 +583,34 @@ function directRequestsFork(args: WorkflowToolArgs): boolean {
   );
 }
 
+type SessionFileProvider = {
+  readonly getSessionFile?: () => string | undefined;
+};
+
+type SessionFileContext = {
+  readonly sessionManager?: SessionFileProvider;
+};
+
+function sessionFileFromManager(manager: SessionFileProvider | undefined): string | undefined {
+  const sessionFile = manager?.getSessionFile?.();
+  return typeof sessionFile === "string" && sessionFile.length > 0 ? sessionFile : undefined;
+}
+
+function currentSessionFileFromContext(
+  ctx: SessionFileContext | undefined,
+  fallback?: SessionFileContext,
+): string | undefined {
+  return sessionFileFromManager(ctx?.sessionManager) ?? sessionFileFromManager(fallback?.sessionManager);
+}
+
 function withForkParentSession(
   args: WorkflowToolArgs,
   ctx: PiExecuteContext,
 ): WorkflowToolArgs {
   if (!directRequestsFork(args) || args.forkFromSessionFile !== undefined)
     return args;
-  const sessionFile = ctx.sessionManager?.getSessionFile?.();
-  return typeof sessionFile === "string" && sessionFile.length > 0
+  const sessionFile = currentSessionFileFromContext(ctx);
+  return sessionFile !== undefined
     ? { ...args, forkFromSessionFile: sessionFile }
     : args;
 }
@@ -1270,6 +1293,7 @@ export function makeExecuteWorkflowTool(
     const activeRuntime =
       typeof runtime === "function" ? runtime(ctx) : runtime;
     const policy = workflowPolicyFromContext(ctx);
+    const workflowOriginSessionFile = currentSessionFileFromContext(ctx);
 
     switch (action) {
       case "get":
@@ -1288,13 +1312,13 @@ export function makeExecuteWorkflowTool(
           }
           const details = await activeRuntime.runDirect(
             withForkParentSession(args, ctx),
-            { policy },
+            { policy, workflowOriginSessionFile },
           );
           return workflowRunResultFromDetails(details);
         }
         // Delegate to registry-backed dispatcher.
         // Real errors propagate — no broad catch.
-        return activeRuntime.dispatch(args, { policy });
+        return activeRuntime.dispatch(args, { policy, workflowOriginSessionFile });
 
       case "status": {
         // Detail mode — single-run lookup via id.
@@ -1796,7 +1820,7 @@ export function makeExecuteWorkflowTool(
           run?.status === "paused" ||
           (run?.stages.some((s) => s.status === "paused") ?? false);
         if (!isPaused && run?.status === "failed" && run.endedAt !== undefined && run.resumable !== false) {
-          const continuation = activeRuntime.resumeFailedRun(stageRunId, stage.stageId, { policy });
+          const continuation = activeRuntime.resumeFailedRun(stageRunId, stage.stageId, { policy, workflowOriginSessionFile });
           return {
             action: "resume",
             runId: continuation.ok ? continuation.runId : stageRunId,
@@ -2675,6 +2699,7 @@ function factory(pi: ExtensionAPI): void {
     reporter: WorkflowCommandReporter = createWorkflowCommandReporter(ctx),
   ): Promise<boolean> {
     const policy = workflowPolicyFromContext(ctx);
+    const workflowOriginSessionFile = currentSessionFileFromContext(ctx, pi);
     const print = (msg: string): void => reporter.info(msg);
     const fail = (msg: string): void => reporter.error(msg);
     const canOpenPicker = (ui: PiCommandContext["ui"] | undefined): boolean =>
@@ -3134,7 +3159,7 @@ function factory(pi: ExtensionAPI): void {
         run?.status === "paused" ||
         (run?.stages.some((s) => s.status === "paused") ?? false);
       if (!isPaused && run?.status === "failed" && run.endedAt !== undefined && run.resumable !== false) {
-        const continuation = runtimeForContext(ctx).resumeFailedRun(stageRunId, stageId, { policy });
+        const continuation = runtimeForContext(ctx).resumeFailedRun(stageRunId, stageId, { policy, workflowOriginSessionFile });
         if (continuation.ok) {
           print(continuation.message);
         } else {
@@ -3182,6 +3207,7 @@ function factory(pi: ExtensionAPI): void {
         "Run or inspect Atomic workflows. Usage: /workflow <name> [key=value…] | /workflow [list|status|connect|attach|interrupt|kill|pause|resume|inputs|reload] [args]",
       handler: async (args: string, ctx: PiCommandContext) => {
         const policy = workflowPolicyFromContext(ctx);
+        const workflowOriginSessionFile = currentSessionFileFromContext(ctx, pi);
         const reporter = createWorkflowCommandReporter(ctx, policy, pi);
         const print = (msg: string): void => reporter.info(msg);
         const fail = (msg: string): void => reporter.error(msg);
@@ -3485,7 +3511,7 @@ function factory(pi: ExtensionAPI): void {
             workflow: workflowName,
             inputs: mergedInputs,
             action: "run",
-          }, { policy }),
+          }, { policy, workflowOriginSessionFile }),
         );
         if (result.action === "run" && "runId" in result) {
           const r = result as Extract<

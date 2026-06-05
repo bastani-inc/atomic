@@ -16,7 +16,7 @@ import { WORKFLOW_AUTH_FAILURE_MESSAGE } from "../../packages/workflows/src/shar
 import { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import type { AgentSession, CreateAgentSessionOptions } from "@bastani/atomic";
-import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
+import type { StageExecutionMeta, WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
 import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 
 async function waitForExecutorStagePendingPrompt(
@@ -4276,8 +4276,9 @@ describe("direct SDK helpers", () => {
         assert.throws(() => readFileSync(output, "utf8"));
     });
 
-    test("runTask direct options expose context and sessionDir", async () => {
+    test("runTask direct options expose context and sessionDir through stage metadata", async () => {
         const calls: CreateAgentSessionOptions[] = [];
+        const metas: StageExecutionMeta[] = [];
         const sessionDir = mkdtempSync(
             join(tmpdir(), "atomic-workflow-session-dir-"),
         );
@@ -4287,8 +4288,9 @@ describe("direct SDK helpers", () => {
             {
                 adapters: {
                     agentSession: {
-                        async create(options) {
+                        async create(options, meta) {
                             calls.push(options);
+                            metas.push(meta!);
                             return mockSession();
                         },
                     },
@@ -4298,7 +4300,10 @@ describe("direct SDK helpers", () => {
         );
 
         assert.equal(details.context, "fork");
-        assert.notEqual(calls[0]?.sessionManager, undefined);
+        assert.equal(calls[0]?.sessionManager, undefined);
+        assert.equal(Object.prototype.hasOwnProperty.call(calls[0], "sessionDir"), false);
+        assert.equal(metas[0]?.stageOptions?.context, "fork");
+        assert.equal(metas[0]?.stageOptions?.sessionDir, sessionDir);
     });
 
     test("runTask writes output artifacts and records them in WorkflowDetails", async () => {

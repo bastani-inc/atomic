@@ -178,6 +178,8 @@ export interface RunOpts extends Omit<AuthoringContract.RunOpts, "adapters" | "s
    * the runId before starting the background promise.
    */
   runId?: string;
+  /** Internal: originating chat session file stamped onto workflow stage sessions. */
+  workflowOriginSessionFile?: string;
   /** Replay completed stages from a failed source run, then resume at this stage. */
   continuation?: RunContinuationOpts;
   /** Internal parent linkage for nested ctx.workflow(...) runs. */
@@ -944,6 +946,26 @@ function stageOptionsWithGitWorktree<T extends StageOptions>(options: T | undefi
   return { ...options, gitWorktreeDir: undefined, baseBranch: undefined, cwd: explicitCwd ?? setup.cwd };
 }
 
+function stageOptionsWithWorkflowMetadata(
+  options: StageOptions | undefined,
+  metadata: {
+    readonly originSessionFile?: string;
+    readonly runId: string;
+    readonly workflowName: string;
+    readonly stageId: string;
+    readonly stageName: string;
+  },
+): StageOptions {
+  return {
+    ...(options ?? {}),
+    ...(metadata.originSessionFile !== undefined ? { workflowOriginSessionFile: metadata.originSessionFile } : {}),
+    workflowRunId: metadata.runId,
+    workflowName: metadata.workflowName,
+    workflowStageId: metadata.stageId,
+    workflowStageName: metadata.stageName,
+  };
+}
+
 function workflowCwdWithInputWorktree(inputDefaults: Partial<StageOptions>, workflowInvocationCwd: string): string {
   if (typeof inputDefaults.gitWorktreeDir !== "string" || inputDefaults.gitWorktreeDir.trim().length === 0) {
     return workflowInvocationCwd;
@@ -1040,6 +1062,7 @@ function isRunOpts(value: WorkflowDirectOptions | RunOpts | undefined): value is
     "depth" in value ||
     "stageControlRegistry" in value ||
     "runId" in value ||
+    "workflowOriginSessionFile" in value ||
     "onRunStart" in value ||
     "onStageStart" in value ||
     "onStageEnd" in value ||
@@ -2462,9 +2485,16 @@ export async function run<TInputs extends WorkflowInputValues>(
     ui: opts.usePromptNodesForUi === true ? buildPromptNodeUiAdapter() : opts.ui ?? makeUnavailableUIContext(),
 
     stage(name: string, options?: StageOptions, stageFailFastScope?: ParallelFailFastScope) {
-      options = stageOptionsWithGitWorktree(stageOptionsWithInputDefaults(options, inputRuntimeDefaults), workflowInvocationCwd);
+      const baseStageOptions = stageOptionsWithGitWorktree(stageOptionsWithInputDefaults(options, inputRuntimeDefaults), workflowInvocationCwd);
       // a. Generate stageId
       const stageId = crypto.randomUUID();
+      options = stageOptionsWithWorkflowMetadata(baseStageOptions, {
+        originSessionFile: opts.workflowOriginSessionFile,
+        runId,
+        workflowName: def.name,
+        stageId,
+        stageName: name,
+      });
 
       // b. tracker.onSpawn → provisional parentIds
       const provisionalParentIds = tracker.onSpawn(stageId, name);

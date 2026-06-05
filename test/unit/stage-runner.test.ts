@@ -295,6 +295,122 @@ describe("createStageContext — prompt metadata propagation", () => {
             await rm(dir, { recursive: true, force: true });
         }
     });
+
+    test("custom adapters receive sanitized options and full workflow metadata without Atomic session materialization", async () => {
+        const dir = await mkdtemp(join(tmpdir(), "pi-workflows-stage-metadata-"));
+        try {
+            const agentDir = join(dir, "agent");
+            const received: CreateAgentSessionOptions[] = [];
+            const metas: StageExecutionMeta[] = [];
+            const { session } = makeMockSession({
+                async prompt() {},
+                getLastAssistantText() {
+                    return "ok";
+                },
+            });
+            const agentSession: AgentSessionAdapter = {
+                async create(options, meta) {
+                    received.push(options);
+                    metas.push(meta!);
+                    return session;
+                },
+            };
+            const ctx = createStageContext(
+                makeOpts({
+                    adapters: { agentSession },
+                    stageOptions: {
+                        cwd: dir,
+                        agentDir,
+                        sessionDir: dir,
+                        workflowOriginSessionFile: "/tmp/chat.jsonl",
+                        workflowRunId: "run-1",
+                        workflowName: "workflow-name",
+                        workflowStageId: "stage-1",
+                        workflowStageName: "analyze",
+                    },
+                }),
+            ) as InternalStageContext;
+
+            await ctx.prompt("go");
+
+            const options = received[0]!;
+            assert.equal(options.cwd, dir);
+            assert.equal(options.agentDir, agentDir);
+            assert.equal(options.sessionManager, undefined);
+            for (const key of [
+                "sessionDir",
+                "workflowOriginSessionFile",
+                "workflowRunId",
+                "workflowName",
+                "workflowStageId",
+                "workflowStageName",
+            ]) {
+                assert.equal(Object.prototype.hasOwnProperty.call(options, key), false, key);
+            }
+            const source = metas[0]?.stageOptions;
+            assert.equal(source?.sessionDir, dir);
+            assert.equal(source?.workflowOriginSessionFile, "/tmp/chat.jsonl");
+            assert.equal(source?.workflowRunId, "run-1");
+            assert.equal(source?.workflowName, "workflow-name");
+            assert.equal(source?.workflowStageId, "stage-1");
+            assert.equal(source?.workflowStageName, "analyze");
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("forked custom-adapter stages keep fork provenance in meta only", async () => {
+        const dir = await mkdtemp(join(tmpdir(), "pi-workflows-stage-fork-"));
+        try {
+            const source = join(dir, "source.jsonl");
+            const received: CreateAgentSessionOptions[] = [];
+            const metas: StageExecutionMeta[] = [];
+            const { session } = makeMockSession({
+                async prompt() {},
+                getLastAssistantText() {
+                    return "ok";
+                },
+            });
+            const agentSession: AgentSessionAdapter = {
+                async create(options, meta) {
+                    received.push(options);
+                    metas.push(meta!);
+                    return session;
+                },
+            };
+            const ctx = createStageContext(
+                makeOpts({
+                    adapters: { agentSession },
+                    stageOptions: {
+                        cwd: dir,
+                        sessionDir: dir,
+                        context: "fork",
+                        forkFromSessionFile: source,
+                        workflowOriginSessionFile: "/tmp/chat.jsonl",
+                        workflowRunId: "run-2",
+                        workflowName: "workflow-name",
+                        workflowStageId: "stage-2",
+                        workflowStageName: "plan",
+                    },
+                }),
+            ) as InternalStageContext;
+
+            await ctx.prompt("go");
+
+            const options = received[0]!;
+            assert.equal(options.sessionManager, undefined);
+            assert.equal(Object.prototype.hasOwnProperty.call(options, "forkFromSessionFile"), false);
+            assert.equal(Object.prototype.hasOwnProperty.call(options, "workflowStageName"), false);
+            const sourceOptions = metas[0]?.stageOptions;
+            assert.equal(sourceOptions?.context, "fork");
+            assert.equal(sourceOptions?.forkFromSessionFile, source);
+            assert.equal(sourceOptions?.workflowOriginSessionFile, "/tmp/chat.jsonl");
+            assert.equal(sourceOptions?.workflowRunId, "run-2");
+            assert.equal(sourceOptions?.workflowStageName, "plan");
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
 });
 
 // ---------------------------------------------------------------------------
@@ -480,7 +596,7 @@ import type {
     AgentSessionAdapter,
     StageSessionRuntime,
 } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
-import type { AgentSession } from "@bastani/atomic";
+import { type AgentSession, type CreateAgentSessionOptions } from "@bastani/atomic";
 
 function makeMockSession(overrides: Partial<StageSessionRuntime> = {}): {
     session: StageSessionRuntime;

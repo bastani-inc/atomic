@@ -22,7 +22,13 @@
  */
 
 import { basename } from "node:path";
-import type { ChatMessageRenderOptions, CreateAgentSessionOptions } from "@bastani/atomic";
+import {
+  getDefaultSessionDir,
+  SessionManager,
+  type ChatMessageRenderOptions,
+  type CreateAgentSessionOptions,
+  type NewSessionOptions,
+} from "@bastani/atomic";
 import type { StageAdapters, StageSessionCreateResult, StageSessionRuntime } from "../runs/foreground/stage-runner.js";
 import type { StageExecutionMeta, StageOptions } from "../shared/types.js";
 import { stageUiBroker, type StageUiBroker } from "../shared/stage-ui-broker.js";
@@ -241,8 +247,81 @@ async function createTestAgentSession(_options?: CreateAgentSessionOptions): Pro
 function stripWorkflowOnlyOptions(options: (StageOptions | CreateAgentSessionOptions) | undefined): CreateAgentSessionOptions | undefined {
   if (!options) return options;
   const maybeWorkflowOptions = options as StageOptions;
-  const { mcp: _mcp, fallbackModels: _fallbackModels, ...sessionOptions } = maybeWorkflowOptions;
+  const {
+    mcp: _mcp,
+    fallbackModels: _fallbackModels,
+    fallbackThinkingLevels: _fallbackThinkingLevels,
+    context: _context,
+    forkFromSessionFile: _forkFromSessionFile,
+    sessionDir: _sessionDir,
+    gitWorktreeDir: _gitWorktreeDir,
+    baseBranch: _baseBranch,
+    workflowOriginSessionFile: _workflowOriginSessionFile,
+    workflowRunId: _workflowRunId,
+    workflowName: _workflowName,
+    workflowStageId: _workflowStageId,
+    workflowStageName: _workflowStageName,
+    ...sessionOptions
+  } = maybeWorkflowOptions;
   return sessionOptions as CreateAgentSessionOptions;
+}
+
+function workflowSessionMetadata(options: Pick<
+  StageOptions,
+  "workflowOriginSessionFile" | "workflowRunId" | "workflowName" | "workflowStageId" | "workflowStageName"
+>): NewSessionOptions {
+  return {
+    ...(options.workflowOriginSessionFile !== undefined ? { originSession: options.workflowOriginSessionFile } : {}),
+    ...(options.workflowRunId !== undefined ? { workflowRunId: options.workflowRunId } : {}),
+    ...(options.workflowName !== undefined ? { workflowName: options.workflowName } : {}),
+    ...(options.workflowStageId !== undefined ? { workflowStageId: options.workflowStageId } : {}),
+    ...(options.workflowStageName !== undefined ? { workflowStageName: options.workflowStageName } : {}),
+  };
+}
+
+function hasWorkflowSessionMetadata(metadata: NewSessionOptions): boolean {
+  return Object.keys(metadata).length > 0;
+}
+
+function atomicSessionDir(
+  options: CreateAgentSessionOptions,
+  source: StageOptions,
+): string | undefined {
+  if (source.sessionDir !== undefined) return source.sessionDir;
+  const cwd = options.cwd ?? source.cwd ?? process.cwd();
+  const agentDir = options.agentDir ?? source.agentDir;
+  return agentDir !== undefined ? getDefaultSessionDir(cwd, agentDir) : undefined;
+}
+
+function withAtomicWorkflowSessionManager(
+  options: CreateAgentSessionOptions,
+  meta: StageExecutionMeta | undefined,
+): CreateAgentSessionOptions {
+  const source = meta?.stageOptions;
+  if (source === undefined || options.sessionManager !== undefined) return options;
+
+  const metadata = workflowSessionMetadata(source);
+  const cwd = options.cwd ?? source.cwd ?? process.cwd();
+  const sessionDir = atomicSessionDir(options, source);
+
+  if (source.context === "fork" && source.forkFromSessionFile !== undefined) {
+    return {
+      ...options,
+      sessionManager: SessionManager.forkFrom(source.forkFromSessionFile, cwd, sessionDir, {
+        ...metadata,
+        forkedFromSession: source.forkFromSessionFile,
+      }),
+    };
+  }
+
+  if (source.sessionDir !== undefined || hasWorkflowSessionMetadata(metadata)) {
+    return {
+      ...options,
+      sessionManager: SessionManager.create(cwd, sessionDir, metadata),
+    };
+  }
+
+  return options;
 }
 
 function makeWorkflowStageOrchestrationContext(meta: StageExecutionMeta): NonNullable<CreateAgentSessionOptions["orchestrationContext"]> {
@@ -372,10 +451,9 @@ export function buildRuntimeAdapters(
         // extensions, tools, prompts, and skills as the parent chat. Callers
         // can still opt into a custom resource set by passing `resourceLoader`
         // through `stage(name, options)`.
-        const sessionOptions = withWorkflowStageSessionOptions(
-          stripWorkflowOnlyOptions(stageOptions) ?? {},
-          meta,
-        );
+        const agentOptions = stripWorkflowOnlyOptions(stageOptions) ?? {};
+        const stageSessionOptions = withWorkflowStageSessionOptions(agentOptions, meta);
+        const sessionOptions = withAtomicWorkflowSessionManager(stageSessionOptions, meta);
         const result = await createSession(sessionOptions);
         const bindable = result.session as BindableStageSession;
         if (shouldBindStageUiContext(pi, meta) && typeof bindable.bindExtensions === "function") {

@@ -15,8 +15,12 @@
 
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { dispatch } from "../../packages/workflows/src/extension/dispatcher.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
+import { buildRuntimeAdapters } from "../../packages/workflows/src/extension/wiring.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
 import { Type } from "typebox";
@@ -383,33 +387,66 @@ describe("runtime.runDirect — workflow intercom", () => {
     });
 
     test("foreground direct single forwards top-level createAgentSession options", async () => {
-        const calls: CreateAgentSessionOptions[] = [];
-        const runtime = createExtensionRuntime({
-            adapters: {
-                agentSession: {
-                    async create(options) {
-                        calls.push(options);
-                        return fakeStageSession();
+        const agentDir = await mkdtemp(join(tmpdir(), "atomic-workflow-agent-"));
+        try {
+            const calls: CreateAgentSessionOptions[] = [];
+            const runtime = createExtensionRuntime({
+                adapters: {
+                    agentSession: {
+                        async create(options) {
+                            calls.push(options);
+                            return fakeStageSession();
+                        },
                     },
                 },
-            },
+            });
+
+            const result = await runtime.runDirect({
+                task: { name: "solo", task: "inspect solo" },
+                cwd: "/repo",
+                agentDir,
+                tools: ["read", "todo"],
+                noTools: "builtin",
+                thinkingLevel: "high",
+            });
+
+            assert.equal(result.status, "completed");
+            assert.equal(calls[0]?.cwd, "/repo");
+            assert.equal(calls[0]?.agentDir, agentDir);
+            assert.deepEqual(calls[0]?.tools, ["read", "todo"]);
+            assert.equal(calls[0]?.noTools, "builtin");
+            assert.equal(calls[0]?.thinkingLevel, "high");
+        } finally {
+            await rm(agentDir, { recursive: true, force: true });
+        }
+    });
+
+    test("foreground direct single stamps workflow provenance through the default Atomic adapter", async () => {
+        const calls: CreateAgentSessionOptions[] = [];
+        const runtime = createExtensionRuntime({
+            adapters: buildRuntimeAdapters(
+                {},
+                {
+                    createAgentSession: async (options) => {
+                        if (options !== undefined) calls.push(options);
+                        return { session: fakeStageSession() };
+                    },
+                },
+            ),
         });
 
-        const result = await runtime.runDirect({
-            task: { name: "solo", task: "inspect solo" },
-            cwd: "/repo",
-            agentDir: "/agent",
-            tools: ["read", "todo"],
-            noTools: "builtin",
-            thinkingLevel: "high",
-        });
+        const result = await runtime.runDirect(
+            { task: { name: "solo", task: "inspect solo" } },
+            { workflowOriginSessionFile: "/tmp/chat.jsonl" },
+        );
 
         assert.equal(result.status, "completed");
-        assert.equal(calls[0]?.cwd, "/repo");
-        assert.equal(calls[0]?.agentDir, "/agent");
-        assert.deepEqual(calls[0]?.tools, ["read", "todo"]);
-        assert.equal(calls[0]?.noTools, "builtin");
-        assert.equal(calls[0]?.thinkingLevel, "high");
+        const header = calls[0]?.sessionManager?.getHeader();
+        assert.equal(header?.originSession, "/tmp/chat.jsonl");
+        assert.equal(header?.workflowRunId, result.runId);
+        assert.equal(header?.workflowName, "direct-task");
+        assert.equal(header?.workflowStageId, calls[0]?.orchestrationContext?.workflowStageId);
+        assert.equal(header?.workflowStageName, "solo");
     });
 
     test("foreground direct single runs keep intercom off unless requested", async () => {
@@ -510,6 +547,41 @@ describe("dispatch — run", () => {
         assert.ok(
             typeof greeting === "string" && greeting.includes("Hello Alice"),
         );
+    });
+
+    test("named dispatch propagates workflow origin through the default Atomic adapter", async () => {
+        const registry = createRegistry([helloWorkflow]);
+        const activeStore = createStore();
+        const calls: CreateAgentSessionOptions[] = [];
+        const result = await dispatch(
+            {
+                workflow: "hello-world",
+                inputs: { name: "Alice" },
+                action: "run",
+            },
+            {
+                registry,
+                store: activeStore,
+                policy: NON_INTERACTIVE_WORKFLOW_POLICY,
+                workflowOriginSessionFile: "/tmp/chat.jsonl",
+                adapters: buildRuntimeAdapters(
+                    {},
+                    {
+                        createAgentSession: async (options) => {
+                            if (options !== undefined) calls.push(options);
+                            return { session: fakeStageSession() };
+                        },
+                    },
+                ),
+            },
+        );
+        const completed = asRun(result);
+        assert.equal(completed.status, "completed");
+        const header = calls[0]?.sessionManager?.getHeader();
+        assert.equal(header?.originSession, "/tmp/chat.jsonl");
+        assert.equal(header?.workflowRunId, completed.runId);
+        assert.equal(header?.workflowName, "hello-world");
+        assert.equal(header?.workflowStageName, "greet");
     });
 
     test("background run lands as `failed` when the workflow body throws", async () => {

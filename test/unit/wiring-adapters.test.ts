@@ -8,6 +8,8 @@
 
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
     buildRuntimeAdapters,
@@ -15,14 +17,29 @@ import {
 } from "../../packages/workflows/src/extension/wiring.js";
 import { StageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
-import type { CreateAgentSessionOptions } from "@bastani/atomic";
+import { SessionManager, type CreateAgentSessionOptions, type SessionHeader } from "@bastani/atomic";
 import type {
     PiCodingAgentSdk,
     PiSdkResourceLoader,
     PiSdkSettingsManager,
 } from "../../packages/workflows/src/extension/wiring.js";
-import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
-import type { StageExecutionMeta } from "../../packages/workflows/src/shared/types.js";
+import type { StageSessionCreateOptions, StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
+import type { StageExecutionMeta, StageOptions } from "../../packages/workflows/src/shared/types.js";
+
+async function writeSessionHeader(path: string, cwd: string): Promise<void> {
+    const timestamp = new Date().toISOString();
+    await writeFile(
+        path,
+        `${JSON.stringify({
+            type: "session",
+            version: 3,
+            id: "source-session",
+            timestamp,
+            cwd,
+        })}\n`,
+        "utf8",
+    );
+}
 
 function fakeSession(): StageSessionRuntime {
     let last = "";
@@ -458,6 +475,181 @@ describe("buildRuntimeAdapters — SDK AgentSession adapter", () => {
             false,
         );
         assert.equal(calls[0]?.cwd, "/tmp/project");
+    });
+
+    test("strips workflow provenance internals before calling createAgentSession", async () => {
+        const calls: Array<CreateAgentSessionOptions | undefined> = [];
+        const adapters = buildRuntimeAdapters(
+            {},
+            {
+                createAgentSession: async (options) => {
+                    calls.push(options);
+                    return { session: fakeSession() };
+                },
+            },
+        );
+        const stageOptions: StageOptions = {
+            cwd: "/tmp/project",
+            context: "fork",
+            forkFromSessionFile: "/tmp/source.jsonl",
+            sessionDir: "/tmp/sessions",
+            gitWorktreeDir: "/tmp/worktree",
+            baseBranch: "main",
+            fallbackThinkingLevels: ["low"],
+            workflowOriginSessionFile: "/tmp/chat.jsonl",
+            workflowRunId: "run-1",
+            workflowName: "workflow",
+            workflowStageId: "stage-1",
+            workflowStageName: "plan",
+        };
+        await adapters.agentSession!.create(stageOptions as StageSessionCreateOptions);
+        const forwarded = calls[0]!;
+        for (const key of [
+            "context",
+            "forkFromSessionFile",
+            "sessionDir",
+            "gitWorktreeDir",
+            "baseBranch",
+            "fallbackThinkingLevels",
+            "workflowOriginSessionFile",
+            "workflowRunId",
+            "workflowName",
+            "workflowStageId",
+            "workflowStageName",
+        ]) {
+            assert.equal(Object.prototype.hasOwnProperty.call(forwarded, key), false, key);
+        }
+        assert.equal(forwarded.cwd, "/tmp/project");
+    });
+
+    test("default adapter creates Atomic session manager with workflow metadata from meta.stageOptions", async () => {
+        const dir = await mkdtemp(join(tmpdir(), "pi-workflows-wiring-metadata-"));
+        try {
+            const calls: Array<CreateAgentSessionOptions | undefined> = [];
+            const adapters = buildRuntimeAdapters(
+                {},
+                {
+                    createAgentSession: async (options) => {
+                        calls.push(options);
+                        return { session: fakeSession() };
+                    },
+                },
+            );
+            const meta: StageExecutionMeta = {
+                runId: "run-1",
+                stageId: "stage-1",
+                stageName: "analyze",
+                stageOptions: {
+                    cwd: dir,
+                    sessionDir: dir,
+                    workflowOriginSessionFile: "/tmp/chat.jsonl",
+                    workflowRunId: "run-1",
+                    workflowName: "workflow-name",
+                    workflowStageId: "stage-1",
+                    workflowStageName: "analyze",
+                },
+            };
+
+            await adapters.agentSession!.create({ cwd: dir }, meta);
+
+            const forwarded = calls[0]!;
+            const header = forwarded.sessionManager?.getHeader() as SessionHeader | undefined;
+            assert.equal(header?.cwd, dir);
+            assert.equal(header?.originSession, "/tmp/chat.jsonl");
+            assert.equal(header?.workflowRunId, "run-1");
+            assert.equal(header?.workflowName, "workflow-name");
+            assert.equal(header?.workflowStageId, "stage-1");
+            assert.equal(header?.workflowStageName, "analyze");
+            assert.equal(Object.prototype.hasOwnProperty.call(forwarded, "workflowRunId"), false);
+            assert.equal(Object.prototype.hasOwnProperty.call(forwarded, "sessionDir"), false);
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("default adapter preserves explicit session managers instead of replacing them", async () => {
+        const dir = await mkdtemp(join(tmpdir(), "pi-workflows-wiring-explicit-"));
+        try {
+            const explicitSessionManager = SessionManager.create(dir, dir);
+            const calls: Array<CreateAgentSessionOptions | undefined> = [];
+            const adapters = buildRuntimeAdapters(
+                {},
+                {
+                    createAgentSession: async (options) => {
+                        calls.push(options);
+                        return { session: fakeSession() };
+                    },
+                },
+            );
+            const meta: StageExecutionMeta = {
+                runId: "run-1",
+                stageId: "stage-1",
+                stageName: "analyze",
+                stageOptions: {
+                    cwd: dir,
+                    sessionDir: join(dir, "ignored-sessions"),
+                    workflowRunId: "run-1",
+                    workflowStageId: "stage-1",
+                    workflowStageName: "analyze",
+                },
+            };
+
+            await adapters.agentSession!.create(
+                { cwd: dir, sessionManager: explicitSessionManager },
+                meta,
+            );
+
+            assert.equal(calls[0]?.sessionManager, explicitSessionManager);
+            const header = explicitSessionManager.getHeader() as SessionHeader;
+            assert.equal(header.workflowRunId, undefined);
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("default adapter forks Atomic session manager and writes fork provenance from meta.stageOptions", async () => {
+        const dir = await mkdtemp(join(tmpdir(), "pi-workflows-wiring-fork-"));
+        try {
+            const source = join(dir, "source.jsonl");
+            await writeSessionHeader(source, dir);
+            const calls: Array<CreateAgentSessionOptions | undefined> = [];
+            const adapters = buildRuntimeAdapters(
+                {},
+                {
+                    createAgentSession: async (options) => {
+                        calls.push(options);
+                        return { session: fakeSession() };
+                    },
+                },
+            );
+            const meta: StageExecutionMeta = {
+                runId: "run-2",
+                stageId: "stage-2",
+                stageName: "plan",
+                stageOptions: {
+                    cwd: dir,
+                    sessionDir: dir,
+                    context: "fork",
+                    forkFromSessionFile: source,
+                    workflowOriginSessionFile: "/tmp/chat.jsonl",
+                    workflowRunId: "run-2",
+                    workflowName: "workflow-name",
+                    workflowStageId: "stage-2",
+                    workflowStageName: "plan",
+                },
+            };
+
+            await adapters.agentSession!.create({ cwd: dir }, meta);
+
+            const header = calls[0]?.sessionManager?.getHeader() as SessionHeader | undefined;
+            assert.equal(header?.parentSession, source);
+            assert.equal(header?.forkedFromSession, source);
+            assert.equal(header?.originSession, "/tmp/chat.jsonl");
+            assert.equal(header?.workflowRunId, "run-2");
+            assert.equal(header?.workflowStageName, "plan");
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
     });
 
     test("binds a broker-backed UI context even when the parent pi surface has no ui", async () => {

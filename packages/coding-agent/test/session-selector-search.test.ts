@@ -10,12 +10,39 @@ function makeSession(
 		id: overrides.id,
 		cwd: overrides.cwd ?? "",
 		name: overrides.name,
+		workflowRunId: overrides.workflowRunId,
+		workflowName: overrides.workflowName,
+		workflowStageName: overrides.workflowStageName,
 		created: overrides.created ?? new Date(0),
 		modified: overrides.modified,
 		messageCount: overrides.messageCount ?? 1,
 		firstMessage: overrides.firstMessage ?? "(no messages)",
 		allMessagesText: overrides.allMessagesText,
 	};
+}
+
+function makeWorkflowSearchSessions(
+	workflowFields: Partial<Pick<SessionInfo, "workflowName" | "workflowRunId">>,
+): SessionInfo[] {
+	return [
+		makeSession({
+			id: "stage-alpha",
+			name: "Visible Stage",
+			...workflowFields,
+			workflowStageName: "analyze",
+			modified: new Date("2026-01-02T00:00:00.000Z"),
+			allMessagesText: "alpha beta",
+			cwd: "/tmp/plain",
+		}),
+		makeSession({
+			id: "plain-alpha",
+			name: "Visible Stage",
+			workflowStageName: "analyze",
+			modified: new Date("2026-01-03T00:00:00.000Z"),
+			allMessagesText: "alpha beta",
+			cwd: "/tmp/plain",
+		}),
+	];
 }
 
 describe("session selector search", () => {
@@ -53,6 +80,20 @@ describe("session selector search", () => {
 
 		const result = filterAndSortSessions(sessions, "re:\\bbrave\\b", "recent");
 		expect(result.map((s) => s.id)).toEqual(["a"]);
+	});
+
+	it("matches workflowName when absent from other searchable fields", () => {
+		const sessions = makeWorkflowSearchSessions({ workflowName: "rootless" });
+
+		const result = filterAndSortSessions(sessions, "rootless", "recent");
+		expect(result.map((s) => s.id)).toEqual(["stage-alpha"]);
+	});
+
+	it("matches workflowRunId when absent from other searchable fields", () => {
+		const sessions = makeWorkflowSearchSessions({ workflowRunId: "run-root" });
+
+		const result = filterAndSortSessions(sessions, "run-root", "recent");
+		expect(result.map((s) => s.id)).toEqual(["stage-alpha"]);
 	});
 
 	it("recent sort preserves input order", () => {

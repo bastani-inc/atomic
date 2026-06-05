@@ -24,16 +24,19 @@ function normalizeWhitespaceLower(text: string): string {
 }
 
 function getSessionSearchText(session: SessionInfo): string {
-	return `${session.id} ${session.name ?? ""} ${session.allMessagesText} ${session.cwd}`;
+	return [
+		session.id,
+		session.name ?? "",
+		session.workflowStageName ?? "",
+		session.allMessagesText,
+		session.cwd,
+		session.workflowName ?? "",
+		session.workflowRunId ?? "",
+	].join(" ");
 }
 
 export function hasSessionName(session: SessionInfo): boolean {
 	return Boolean(session.name?.trim());
-}
-
-function matchesNameFilter(session: SessionInfo, filter: NameFilter): boolean {
-	if (filter === "all") return true;
-	return hasSessionName(session);
 }
 
 export function parseSearchQuery(query: string): ParsedSearchQuery {
@@ -159,8 +162,7 @@ export function filterAndSortSessions(
 	sortMode: SortMode,
 	nameFilter: NameFilter = "all",
 ): SessionInfo[] {
-	const nameFiltered =
-		nameFilter === "all" ? sessions : sessions.filter((session) => matchesNameFilter(session, nameFilter));
+	const nameFiltered = nameFilter === "all" ? sessions : sessions.filter(hasSessionName);
 	const trimmed = query.trim();
 	if (!trimmed) return nameFiltered;
 
