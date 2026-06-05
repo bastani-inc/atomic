@@ -13,6 +13,7 @@ import {
 	resolveEffectiveAcceptance,
 	validateAcceptanceInput,
 } from "../../packages/subagents/src/runs/shared/acceptance.js";
+import { createGitEnvironment } from "../../packages/coding-agent/src/utils/git-env.js";
 
 function report(overrides: Record<string, unknown> = {}): string {
 	return [
@@ -238,9 +239,13 @@ describe("acceptance gates", () => {
 			GIT_INDEX_FILE: process.env.GIT_INDEX_FILE,
 		};
 		try {
-			spawnSync("git", ["init"], { cwd: ambientRepo, stdio: "ignore" });
+			// Sanitize the Git environment so this setup runs against `ambientRepo`
+			// and never inherits ambient GIT_DIR/GIT_WORK_TREE from a hook runner
+			// (e.g. prek): otherwise `git init` would target the real repo and write
+			// core.worktree into the shared config (see git-env.ts).
+			spawnSync("git", ["init"], { cwd: ambientRepo, stdio: "ignore", env: createGitEnvironment() });
 			fs.writeFileSync(path.join(ambientRepo, "staged.txt"), "staged\n", "utf-8");
-			spawnSync("git", ["add", "staged.txt"], { cwd: ambientRepo, stdio: "ignore" });
+			spawnSync("git", ["add", "staged.txt"], { cwd: ambientRepo, stdio: "ignore", env: createGitEnvironment() });
 			process.env.GIT_DIR = path.join(ambientRepo, ".git");
 			process.env.GIT_WORK_TREE = ambientRepo;
 			process.env.GIT_INDEX_FILE = path.join(ambientRepo, ".git", "index");
