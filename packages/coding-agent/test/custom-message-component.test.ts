@@ -16,10 +16,10 @@ describe("CustomMessageComponent renderer guard (issue #1236)", () => {
 	});
 
 	test("does not crash when a custom renderer returns a non-Component string", () => {
-		// Reproduces the /resume crash: the workflows inline-form renderer returns a
-		// bare string on its "snapshot lost" path. Before the guard this string was
-		// added as a child and Container.render() threw
-		// "child.render is not a function".
+		// Guard against a renderer that returns a bare string (a non-Component,
+		// non-null value). Before the guard such a string was added as a child and
+		// Container.render() threw "child.render is not a function"; it now falls
+		// through to the default boxed rendering instead.
 		const stringRenderer: MessageRenderer = () =>
 			"  stack-workflow-test  ·  (snapshot lost)" as unknown as Component;
 		const component = new CustomMessageComponent(makeMessage(), stringRenderer);
@@ -35,7 +35,9 @@ describe("CustomMessageComponent renderer guard (issue #1236)", () => {
 	});
 
 	test("ignores other non-Component return shapes and falls back to default", () => {
-		for (const bad of [42, true, { not: "a component" }, [], null]) {
+		// `null` is intentionally excluded here: it now means "render nothing"
+		// (covered by the dedicated test below), not "fall back to default".
+		for (const bad of [42, true, { not: "a component" }, []]) {
 			const renderer: MessageRenderer = () => bad as unknown as Component;
 			const component = new CustomMessageComponent(makeMessage("my-type", "body text"), renderer);
 			let rendered = "";
@@ -44,6 +46,21 @@ describe("CustomMessageComponent renderer guard (issue #1236)", () => {
 			}).not.toThrow();
 			expect(rendered).toContain("[my-type]");
 		}
+	});
+
+	test("renders nothing (no spacer, no default box) when the renderer returns null", () => {
+		// `null` = "handled; render nothing". The workflows inline-form renderer
+		// returns null for a rehydrated input-form card on /resume so the input
+		// widget must not reappear in chat. The entry must occupy zero rows — not
+		// even the leading spacer the default rendering path adds.
+		const renderer: MessageRenderer = () => null;
+		const component = new CustomMessageComponent(makeMessage("my-type", "body text"), renderer);
+		let rendered = "";
+		expect(() => {
+			rendered = stripAnsi(component.render(80).join("\n"));
+		}).not.toThrow();
+		expect(rendered.trim()).toBe("");
+		expect(rendered).not.toContain("[my-type]");
 	});
 
 	test("mounts a valid Component returned by the custom renderer", () => {

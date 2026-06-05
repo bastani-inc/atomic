@@ -1110,11 +1110,23 @@ export interface MessageRenderOptions {
 	expanded: boolean;
 }
 
+/**
+ * Custom message renderer.
+ *
+ * Return value semantics:
+ * - `Component`: mount this component (the renderer owns its styling).
+ * - `null`: the renderer handled the message but wants to render nothing —
+ *   the entry occupies zero rows (no leading spacer, no default box). Use this
+ *   to suppress a rehydrated entry whose backing state is gone (e.g. the
+ *   workflows input form on `/resume`).
+ * - `undefined`: the renderer did not handle the message; fall back to the
+ *   default boxed `[customType]` rendering.
+ */
 export type MessageRenderer<T = unknown> = (
 	message: CustomMessage<T>,
 	options: MessageRenderOptions,
 	theme: Theme,
-) => Component | undefined;
+) => Component | null | undefined;
 
 // ============================================================================
 // Command Registration

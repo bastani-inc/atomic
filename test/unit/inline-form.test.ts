@@ -15,6 +15,7 @@ import { test } from "bun:test";
 import assert from "node:assert/strict";
 import {
   _resetForms,
+  clearForms,
   createForm,
   finalizeForm,
   getForm,
@@ -621,10 +622,19 @@ test("editor: handleInput on a finalized form is a no-op", () => {
 // ── overlay (orchestration) ───────────────────────────────────────────────
 
 interface FakePiSurface {
-  sentMessages: Array<{ customType: string; details?: { formId?: string } }>;
+  sentMessages: Array<{
+    customType: string;
+    content?: string;
+    display?: boolean;
+    details?: { formId?: string };
+    options?: { excludeFromContext?: boolean };
+  }>;
   renderers: Map<string, (payload: unknown) => unknown>;
   pi: {
-    sendMessage: (m: { customType: string; content?: string; display?: boolean; details?: { formId?: string } }) => void;
+    sendMessage: (
+      m: { customType: string; content?: string; display?: boolean; details?: { formId?: string } },
+      options?: { excludeFromContext?: boolean },
+    ) => void;
     registerMessageRenderer: (event: string, r: (payload: unknown) => unknown) => void;
   };
 }
@@ -636,7 +646,8 @@ function makeFakePi(): FakePiSurface {
     sentMessages,
     renderers,
     pi: {
-      sendMessage: (m) => { sentMessages.push(m); },
+      // Capture the options arg so tests can assert context exclusion.
+      sendMessage: (m, options) => { sentMessages.push({ ...m, options }); },
       registerMessageRenderer: (event, r) => { renderers.set(event, r); },
     },
   };
@@ -681,6 +692,9 @@ test("overlay: openInlineInputsForm emits a custom message and swaps editor", as
   // The message was emitted synchronously.
   assert.equal(sentMessages.length, 1);
   assert.equal(sentMessages[0]!.customType, "workflows:input-form");
+  // The input form is transient UI and must be kept out of LLM context, so
+  // spawning the picker and exiting never leaks the form into the model.
+  assert.deepEqual(sentMessages[0]!.options, { excludeFromContext: true });
   const formId = sentMessages[0]!.details!.formId!;
   assert.match(formId, /^wf-/);
 
@@ -952,12 +966,11 @@ test("overlay: registerInlineFormRenderer preserves class-backed pi method bindi
   assert.notEqual(replacementPi.renderers.get("workflows:input-form"), undefined);
 });
 
-test("overlay: renderer tombstones a lost snapshot into a renderable component (resume)", () => {
-  // Regression for issue #1236: on /resume the process restarts with an empty
-  // form store, so a rehydrated `workflows:input-form` message has no live
-  // state. The renderer must return a real component (with `render`) — not a
-  // bare string — or the host's Container.render() crashes with
-  // "child.render is not a function".
+test("overlay: renderer returns null (render nothing) for a lost snapshot on resume", () => {
+  // On /resume the form store is cleared on session_start, so a rehydrated
+  // `workflows:input-form` message has no live state. The renderer returns
+  // null so CustomMessageComponent renders nothing — the input widget must not
+  // reappear in chat (no stale form, no "snapshot lost" placeholder, no gap).
   _resetForms();
   const { pi, renderers } = makeFakePi();
   registerInlineFormRenderer(pi as never, deriveGraphTheme({}));
@@ -972,14 +985,29 @@ test("overlay: renderer tombstones a lost snapshot into a renderable component (
     details: { formId: "wf-missing" },
     timestamp: 0,
   };
-  const result = render!(message) as { render(width: number): string[] };
+  const result = render!(message);
 
-  assert.equal(typeof result, "object");
-  assert.notEqual(result, null);
-  assert.equal(typeof result.render, "function");
-  const txt = plain(result.render(80));
-  assert.match(txt, /stack-workflow-test/);
-  assert.match(txt, /snapshot lost/);
+  assert.equal(result, null);
+});
+
+test("store: clearForms empties the registry so resumed sessions have no live forms", () => {
+  _resetForms();
+  createForm({
+    formId: "wf-clear",
+    workflowName: "ralph",
+    fields: FIELDS,
+    rawText: { prompt: "hi" },
+    focusedIdx: 0,
+    submitChoiceIdx: 0,
+    caret: 0,
+    status: "editing",
+  });
+  assert.notEqual(getForm("wf-clear"), undefined);
+
+  // session_start calls clearForms(); afterwards a rehydrated card's renderer
+  // finds no state and suppresses output.
+  clearForms();
+  assert.equal(getForm("wf-clear"), undefined);
 });
 
 test("overlay: renderer returns undefined (not a string) when the formId is absent", () => {

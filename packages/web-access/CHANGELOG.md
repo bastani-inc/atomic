@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.8.26-alpha.1] - 2026-06-05
+
 ### Changed
 
 - Deferred heavy search, fetch, curator, summary, provider-probing, and code-search modules until the relevant web-access tool or command is invoked, reducing default CLI startup cost ([#1223](https://github.com/bastani-inc/atomic/issues/1223)).

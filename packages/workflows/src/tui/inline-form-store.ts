@@ -12,11 +12,12 @@
  *   `finalizeForm(id, "submit")` → status = "submitted", values frozen
  *   `finalizeForm(id, "cancel")` → status = "cancelled"
  *
- * After finalize the state stays in the map forever (module-lifetime). The
- * renderer reads it to display the historical card. If the process restarts,
- * the map is empty and the renderer falls back to a "form (snapshot lost)"
- * placeholder — acceptable because frozen cards are decorative, not
- * functional.
+ * After finalize the state stays in the map for the lifetime of the session.
+ * The renderer reads it to display the historical card. On a session boundary
+ * (`session_start`: new/resume/fork/reload) the store is cleared via
+ * {@link clearForms}, so a rehydrated `workflows:input-form` message has no
+ * backing state and its renderer suppresses output (returns null) — the input
+ * widget never reappears in chat after `/resume`.
  *
  * Why a global registry instead of closure capture: the message renderer is
  * registered ONCE at factory time and called many times for any number of
@@ -73,7 +74,17 @@ export function finalizeForm(formId: string, outcome: "submit" | "cancel"): void
   touch(s);
 }
 
+/**
+ * Clear all inline form state. Called on `session_start` so a resumed or
+ * replaced session never renders a stale live form, and so a rehydrated
+ * `workflows:input-form` message resolves to no backing state (its renderer
+ * then returns null and the host renders nothing).
+ */
+export function clearForms(): void {
+  FORMS.clear();
+}
+
 /** Test helper — clear the registry between tests. */
 export function _resetForms(): void {
-  FORMS.clear();
+  clearForms();
 }

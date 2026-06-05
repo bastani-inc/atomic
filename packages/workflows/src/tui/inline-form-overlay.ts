@@ -79,22 +79,7 @@ interface CardComponent {
   invalidate?(): void;
 }
 
-/**
- * Wrap static text in the renderer's component contract. Used by the
- * "snapshot lost" tombstone path so /resume rehydration never hands the host a
- * bare string — the host adds the renderer result directly as a TUI child and a
- * string crashes `Container.render()` with "child.render is not a function".
- */
-function staticCard(text: string): CardComponent {
-  return {
-    render: () => [text],
-    invalidate: () => {
-      /* immutable fallback; nothing to recompute */
-    },
-  };
-}
-
-type RawRenderer = (payload: unknown) => CardComponent | undefined;
+type RawRenderer = (payload: unknown) => CardComponent | null | undefined;
 
 /**
  * Wire the message renderer once per live ExtensionAPI host. pi creates a new
@@ -121,9 +106,11 @@ export function registerInlineFormRenderer(pi: ExtensionAPI, theme: GraphTheme):
     if (!formId) return undefined;
     const state = getForm(formId);
     if (!state) {
-      // Process restart / map evicted — tombstone the entry. Return a real
-      // component (not a bare string) so resume rehydration stays renderable.
-      return staticCard(`  ${message.content ?? "workflow form"}  ·  (snapshot lost)`);
+      // No backing state — the session was resumed/replaced (the store is
+      // cleared on session_start) or the map was evicted. Return null so the
+      // host renders nothing: the input widget must not reappear in chat after
+      // /resume rather than showing a stale or "snapshot lost" placeholder.
+      return null;
     }
     return {
       // The card is fully reactive: read fresh state on every render call,
@@ -307,11 +294,17 @@ export async function openInlineInputsForm(
           display?: boolean;
           details?: FormMessageDetails;
         },
+        options?: { excludeFromContext?: boolean },
       ) => void).call(pi, {
         customType: CUSTOM_TYPE,
         content: opts.workflowName,
         display: true,
         details: { formId },
+      }, {
+        // The input form is a transient UI surface, not conversation. Keep it
+        // out of LLM context so spawning the picker and exiting without
+        // running the workflow never leaks the form into the model.
+        excludeFromContext: true,
       });
     } catch {
       activeEditor?.dispose?.();

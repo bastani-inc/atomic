@@ -165,7 +165,7 @@ function getRenderer(
 }
 
 function rendererOutputText(output: PiMessageRendererResult): string {
-  if (output === undefined) {
+  if (output === undefined || output === null) {
     throw new Error("Expected renderer to return output");
   }
   // Lifecycle banners are wrapped in a render component (the host adds a

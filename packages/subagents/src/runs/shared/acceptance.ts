@@ -39,6 +39,18 @@ const VALID_EVIDENCE = new Set<AcceptanceEvidenceKind>([
 	"manual-notes",
 ]);
 
+const LOCAL_GIT_ENV_VARS = new Set([
+	"GIT_ALTERNATE_OBJECT_DIRECTORIES",
+	"GIT_COMMON_DIR",
+	"GIT_DIR",
+	"GIT_INDEX_FILE",
+	"GIT_NAMESPACE",
+	"GIT_OBJECT_DIRECTORY",
+	"GIT_PREFIX",
+	"GIT_QUARANTINE_PATH",
+	"GIT_WORK_TREE",
+]);
+
 function normalizeLevel(level: AcceptanceLevel | undefined): Exclude<AcceptanceLevel, "auto"> | "auto" {
 	return level ?? "auto";
 }
@@ -398,8 +410,14 @@ function reportEvidencePresent(report: AcceptanceReport, kind: AcceptanceEvidenc
 	}
 }
 
+function gitEnvForCwd(): NodeJS.ProcessEnv {
+	const env: NodeJS.ProcessEnv = { ...process.env };
+	for (const key of LOCAL_GIT_ENV_VARS) delete env[key];
+	return env;
+}
+
 function checkNoStagedFiles(cwd: string): AcceptanceRuntimeCheck {
-	const result = spawnSync("git", ["status", "--short"], { cwd, encoding: "utf-8" });
+	const result = spawnSync("git", ["status", "--short"], { cwd, encoding: "utf-8", env: gitEnvForCwd() });
 	if (result.status !== 0) {
 		return { id: "no-staged-files", status: "not-applicable", message: "git status unavailable; no staged-files check skipped" };
 	}

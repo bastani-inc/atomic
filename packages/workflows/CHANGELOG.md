@@ -6,10 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.8.26-alpha.1] - 2026-06-05
+
 ### Fixed
 
 - Suppressed expected missing-API-key fallback warnings when workflow stages recover by retrying with a GitHub Copilot model, while preserving attempt diagnostics and other fallback warnings ([#1221](https://github.com/bastani-inc/atomic/issues/1221)).
 - Fixed the inline-form "snapshot lost" renderer and the `workflow.run.start`/`workflow.run.end` banner renderers returning bare strings, which crashed the host TUI with `child.render is not a function` when resuming a session containing persisted workflow custom messages. These renderers now return proper render components ([#1236](https://github.com/bastani-inc/atomic/issues/1236)).
+- Fixed the workflow input form (the `/workflow <name>` argument selector) leaking into model context: spawning the picker and exiting without running the workflow no longer sends the form to the LLM. The input-form card is now emitted with `excludeFromContext` since it is transient UI, not conversation.
+- Fixed the workflow input widget re-rendering in chat after `/resume`. Inline-form state is now cleared on `session_start`, and a rehydrated `workflows:input-form` card whose backing state is gone now renders nothing (returns `null`) instead of a stale form or "snapshot lost" placeholder.
 - Stage sessions now emit `session_shutdown` before `dispose()` (mirroring the host `AgentSessionRuntime` teardown) so bound extensions receive a graceful shutdown signal instead of being silently invalidated. This stops disposed stage sessions from leaking child MCP servers and from triggering spurious stale-context "MCP initialization failed" errors when an extension's deferred `session_start` work races with stage disposal.
 
 ## [0.8.25] - 2026-06-04

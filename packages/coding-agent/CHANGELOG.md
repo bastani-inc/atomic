@@ -2,9 +2,12 @@
 
 ## [Unreleased]
 
+## [0.8.26-alpha.1] - 2026-06-05
+
 ### Fixed
 
 - Fixed an uncaught `TypeError: child.render is not a function` that crashed the TUI on `/resume` when an extension's custom-message renderer returned a non-`Component` value (such as a string). `CustomMessageComponent` now validates the renderer result exposes a `render()` method and falls back to the default boxed rendering otherwise ([#1236](https://github.com/bastani-inc/atomic/issues/1236)).
+- Custom-message renderers can now return `null` to render nothing: `CustomMessageComponent` skips its default box and the leading spacer for a `null` result so the entry occupies zero rows. This lets extensions suppress a rehydrated entry whose backing state is gone (e.g. the workflows input form on `/resume`) without leaving a blank line.
 
 ### Changed
 

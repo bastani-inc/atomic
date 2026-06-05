@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.26-alpha.1] - 2026-06-05
+
 ### Changed
 
 - Kept MCP startup registration cheap by lazily importing the heavy MCP command, initialization, proxy-mode, and OAuth/auth-flow modules (and deferring config/cache-backed direct-tool discovery) instead of loading them on the cold extension factory path, while keeping the result renderer synchronous so restored MCP tool results still render ([#1223](https://github.com/bastani-inc/atomic/issues/1223)).

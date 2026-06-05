@@ -54,6 +54,7 @@ import {
   openInlineInputsForm,
   registerInlineFormRenderer,
 } from "../tui/inline-form-overlay.js";
+import { clearForms } from "../tui/inline-form-store.js";
 import {
   registerChatSurfaceRenderer,
   emitChatSurface,
@@ -166,7 +167,7 @@ export interface PiMessageRenderOptions {
   expanded: boolean;
 }
 
-export type PiMessageRendererResult = string | PiMessageRenderComponent | undefined;
+export type PiMessageRendererResult = string | PiMessageRenderComponent | null | undefined;
 export type PiMessageRenderer = (
   payload: unknown,
   options?: PiMessageRenderOptions,
@@ -3837,6 +3838,12 @@ function factory(pi: ExtensionAPI): void {
         persistence: persistenceRef.current,
       });
       store.clear();
+      // Drop any inline input-form state from a previous session in this pi
+      // process. A resumed/replaced session must not render a stale live form,
+      // and rehydrated `workflows:input-form` cards then resolve to no backing
+      // state so their renderer suppresses output (input widget hidden after
+      // /resume).
+      clearForms();
       resetWorkflowLifecycleNotificationState(lifecycleNotificationState);
       resetWorkflowHilAnswerNotificationState(hilAnswerNotificationState);
       stageControlRegistry.clear();
