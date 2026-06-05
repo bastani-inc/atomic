@@ -533,40 +533,51 @@ describe("installToolExecutionHooks", () => {
     assert.equal(extensionHandlers.has("tool_result"), true);
   });
 
-  test("tool_execution_start records tool on active stage (fallback heuristic)", () => {
+  test("tool_execution_start ignores unscoped events instead of using active-stage fallback", () => {
     const { pi, eventHandlers } = makeMockPi();
     installToolExecutionHooks(pi, storeInstance);
 
     const handler = eventHandlers.get("tool_execution_start")!;
     handler({ toolName: "bash", input: { cmd: "ls" }, ts: Date.now() });
 
-    const snap = storeInstance.snapshot();
-    const run = snap.runs.find((r) => r.id === "r1")!;
-    const stage = run.stages.find((s) => s.id === "s1")!;
-    assert.equal(stage.toolEvents.length, 1);
-    assert.equal(stage.toolEvents[0]!.name, "bash");
+    const stage = storeInstance.snapshot().runs[0]!.stages[0]!;
+    assert.equal(stage.toolEvents.length, 0);
+    assert.equal(stage.status, "running");
+    assert.equal(stage.awaitingInputSince, undefined);
   });
 
-  test("tool_execution_start preserves SDK args for orchestrator tool UI", () => {
+  test("tool_execution_start preserves SDK args for scoped orchestrator tool UI", () => {
     const { pi, eventHandlers } = makeMockPi();
     installToolExecutionHooks(pi, storeInstance);
 
     const handler = eventHandlers.get("tool_execution_start")!;
-    handler({ toolName: "bash", args: { command: "echo hi" }, ts: Date.now() });
+    handler({
+      toolName: "bash",
+      runId: "r1",
+      stageId: "s1",
+      toolCallId: "bash-args",
+      args: { command: "echo hi" },
+      ts: Date.now(),
+    });
 
     const stage = storeInstance.snapshot().runs[0]!.stages[0]!;
     assert.deepEqual(stage.toolEvents[0]!.input, { command: "echo hi" });
   });
 
   test("tool_execution_start with explicit runId+stageId routes correctly", () => {
-    // Add a second stage
     storeInstance.recordStageStart("r1", makeStage("s2", "specialist"));
 
     const { pi, eventHandlers } = makeMockPi();
     installToolExecutionHooks(pi, storeInstance);
 
     const handler = eventHandlers.get("tool_execution_start")!;
-    handler({ toolName: "grep", runId: "r1", stageId: "s2", ts: Date.now() });
+    handler({
+      toolName: "grep",
+      runId: "r1",
+      stageId: "s2",
+      toolCallId: "grep-1",
+      ts: Date.now(),
+    });
 
     const snap = storeInstance.snapshot();
     const run = snap.runs.find((r) => r.id === "r1")!;
@@ -577,61 +588,209 @@ describe("installToolExecutionHooks", () => {
     assert.equal(s1.toolEvents.length, 0);
   });
 
-  test("tool_execution_end records tool end", () => {
+  test("tool_execution_update is attach-only and cannot create a stage tool event", () => {
+    const { pi, eventHandlers } = makeMockPi();
+    installToolExecutionHooks(pi, storeInstance);
+
+    eventHandlers.get("tool_execution_update")!({
+      toolName: "bash",
+      runId: "r1",
+      stageId: "s1",
+      toolCallId: "missing-call",
+      ts: Date.now(),
+    });
+
+    const stage = storeInstance.snapshot().runs[0]!.stages[0]!;
+    assert.equal(stage.toolEvents.length, 0);
+    assert.equal(stage.status, "running");
+    assert.equal(stage.awaitingInputSince, undefined);
+  });
+
+  test("tool_execution_end records tool end for the exact scoped active call", () => {
     const { pi, eventHandlers } = makeMockPi();
     installToolExecutionHooks(pi, storeInstance);
 
     const startTs = Date.now() - 500;
     const startHandler = eventHandlers.get("tool_execution_start")!;
-    startHandler({ toolName: "bash", ts: startTs });
+    startHandler({
+      toolName: "bash",
+      runId: "r1",
+      stageId: "s1",
+      toolCallId: "bash-1",
+      ts: startTs,
+    });
 
     const endHandler = eventHandlers.get("tool_execution_end")!;
-    endHandler({ toolName: "bash", ts: startTs, endedAt: Date.now(), output: "ok" });
+    endHandler({
+      toolName: "renamed-in-end-payload",
+      runId: "r1",
+      stageId: "s1",
+      toolCallId: "bash-1",
+      ts: startTs + 123,
+      endedAt: Date.now(),
+      output: "ok",
+    });
 
     const snap = storeInstance.snapshot();
     const run = snap.runs.find((r) => r.id === "r1")!;
     const stage = run.stages.find((s) => s.id === "s1")!;
     const evt = stage.toolEvents.find((e) => e.name === "bash");
     assert.notEqual(evt, undefined);
+    assert.equal(evt!.startedAt, startTs);
     assert.equal(evt!.output, "ok");
     assert.notEqual(evt!.endedAt, undefined);
   });
 
-  test("ask_user_question start marks the active stage awaiting input", () => {
-    const { pi, eventHandlers } = makeMockPi();
-    installToolExecutionHooks(pi, storeInstance);
+  test("unscoped parent ask_user_question start/update is ignored across parallel stages", () => {
+    storeInstance.recordStageStart("r1", makeStage("s2", "reviewer-b"));
 
-    const startHandler = eventHandlers.get("tool_execution_start")!;
-    startHandler({ toolName: "ask_user_question", toolCallId: "ask-1", ts: 123 });
-
-    const stage = storeInstance.snapshot().runs[0]!.stages[0]!;
-    assert.equal(stage.status, "awaiting_input");
-    assert.equal(stage.awaitingInputSince, 123);
-  });
-
-  test("ask_user_question end clears awaiting input even after no stage is running", () => {
     const { pi, eventHandlers } = makeMockPi();
     installToolExecutionHooks(pi, storeInstance);
 
     eventHandlers.get("tool_execution_start")!({
       toolName: "ask_user_question",
-      toolCallId: "ask-1",
+      toolCallId: "parent-ask",
+      input: { questions: [{ question: "Parent prompt?" }] },
       ts: 123,
     });
-    assert.equal(storeInstance.snapshot().runs[0]!.stages[0]!.status, "awaiting_input");
+    eventHandlers.get("tool_execution_update")!({
+      toolName: "ask_user_question",
+      toolCallId: "parent-ask",
+      input: { questions: [{ question: "Parent prompt?" }] },
+      ts: 124,
+    });
 
+    const run = storeInstance.snapshot().runs[0]!;
+    for (const stage of run.stages) {
+      assert.equal(stage.toolEvents.length, 0, `${stage.id} should not receive parent ask telemetry`);
+      assert.equal(stage.status, "running", `${stage.id} should remain running`);
+      assert.equal(stage.awaitingInputSince, undefined, `${stage.id} should not be awaiting input`);
+    }
+  });
+
+  test("scoped ask_user_question records only own stage telemetry without awaiting input", () => {
+    storeInstance.recordStageStart("r1", makeStage("s2", "reviewer-b"));
+
+    const { pi, eventHandlers } = makeMockPi();
+    installToolExecutionHooks(pi, storeInstance);
+
+    eventHandlers.get("tool_execution_start")!({
+      toolName: "ask_user_question",
+      runId: "r1",
+      stageId: "s2",
+      toolCallId: "stage-ask",
+      input: { questions: [{ question: "Stage prompt?" }] },
+      ts: 123,
+    });
+
+    const run = storeInstance.snapshot().runs[0]!;
+    const s1 = run.stages.find((s) => s.id === "s1")!;
+    const s2 = run.stages.find((s) => s.id === "s2")!;
+    assert.equal(s1.toolEvents.length, 0);
+    assert.equal(s2.toolEvents.length, 1);
+    assert.equal(s2.toolEvents[0]!.name, "ask_user_question");
+    assert.equal(s1.status, "running");
+    assert.equal(s2.status, "running");
+    assert.equal(s1.awaitingInputSince, undefined);
+    assert.equal(s2.awaitingInputSince, undefined);
+  });
+
+  test("duplicate start/update cannot migrate a scoped call to a sibling stage", () => {
+    storeInstance.recordStageStart("r1", makeStage("s2", "reviewer-b"));
+
+    const { pi, eventHandlers } = makeMockPi();
+    installToolExecutionHooks(pi, storeInstance);
+
+    eventHandlers.get("tool_execution_start")!({
+      toolName: "bash",
+      runId: "r1",
+      stageId: "s1",
+      toolCallId: "call-1",
+      input: { cmd: "first" },
+      ts: 100,
+    });
+    eventHandlers.get("tool_execution_start")!({
+      toolName: "bash",
+      runId: "r1",
+      stageId: "s1",
+      toolCallId: "call-1",
+      input: { cmd: "duplicate" },
+      ts: 101,
+    });
+    eventHandlers.get("tool_execution_update")!({
+      toolName: "bash",
+      runId: "r1",
+      stageId: "s1",
+      toolCallId: "call-1",
+      input: { cmd: "attached-update" },
+      ts: 102,
+    });
+    eventHandlers.get("tool_execution_update")!({
+      toolName: "bash",
+      runId: "r1",
+      stageId: "s2",
+      toolCallId: "call-1",
+      input: { cmd: "must-not-migrate" },
+      ts: 103,
+    });
+    eventHandlers.get("tool_execution_update")!({
+      toolName: "bash",
+      toolCallId: "call-1",
+      input: { cmd: "unscoped-duplicate" },
+      ts: 104,
+    });
+
+    const run = storeInstance.snapshot().runs[0]!;
+    const s1 = run.stages.find((s) => s.id === "s1")!;
+    const s2 = run.stages.find((s) => s.id === "s2")!;
+    assert.equal(s1.toolEvents.length, 1);
+    assert.equal(s1.toolEvents[0]!.startedAt, 100);
+    assert.deepEqual(s1.toolEvents[0]!.input, { cmd: "first" });
+    assert.equal(s2.toolEvents.length, 0);
+    assert.equal(s1.status, "running");
+    assert.equal(s2.status, "running");
+  });
+
+  test("active tracking is pruned when a stage ends before late update/end events", () => {
+    const { pi, eventHandlers } = makeMockPi();
+    installToolExecutionHooks(pi, storeInstance);
+
+    eventHandlers.get("tool_execution_start")!({
+      toolName: "bash",
+      runId: "r1",
+      stageId: "s1",
+      toolCallId: "call-1",
+      ts: 100,
+    });
+    storeInstance.recordStageEnd("r1", {
+      ...makeStage("s1", "scout"),
+      status: "completed",
+      endedAt: 200,
+    });
+    eventHandlers.get("tool_execution_update")!({
+      toolName: "bash",
+      runId: "r1",
+      stageId: "s1",
+      toolCallId: "call-1",
+      ts: 201,
+    });
     eventHandlers.get("tool_execution_end")!({
-      toolCallId: "ask-1",
-      endedAt: 456,
-      output: "answered",
+      toolName: "bash",
+      runId: "r1",
+      stageId: "s1",
+      toolCallId: "call-1",
+      endedAt: 202,
+      output: "late",
     });
 
     const stage = storeInstance.snapshot().runs[0]!.stages[0]!;
-    assert.equal(stage.status, "running");
-    assert.equal(stage.awaitingInputSince, undefined);
+    assert.equal(stage.status, "completed");
+    assert.equal(stage.toolEvents.length, 1);
+    assert.equal(stage.toolEvents[0]!.endedAt, undefined);
+    assert.equal(stage.toolEvents[0]!.output, undefined);
   });
 
-  test("ask_user_question tool_call/tool_result extension events update awaiting input", () => {
+  test("unscoped ask_user_question tool_call/tool_result extension events do not update awaiting input", () => {
     const { pi, extensionHandlers } = makeMockPi();
     installToolExecutionHooks(pi, storeInstance);
 
@@ -641,8 +800,6 @@ describe("installToolExecutionHooks", () => {
       toolCallId: "ask-2",
       input: { questions: [] },
     });
-    assert.equal(storeInstance.snapshot().runs[0]!.stages[0]!.status, "awaiting_input");
-
     extensionHandlers.get("tool_result")!({
       type: "tool_result",
       toolName: "ask_user_question",
@@ -655,6 +812,7 @@ describe("installToolExecutionHooks", () => {
     const stage = storeInstance.snapshot().runs[0]!.stages[0]!;
     assert.equal(stage.status, "running");
     assert.equal(stage.awaitingInputSince, undefined);
+    assert.equal(stage.toolEvents.length, 0);
   });
 
   test("unmatched main-chat ask_user_question result does not clear a workflow HIL prompt node", () => {
@@ -702,7 +860,13 @@ describe("installToolExecutionHooks", () => {
     installToolExecutionHooks(pi, emptyStore);
 
     const handler = eventHandlers.get("tool_execution_start")!;
-    assert.doesNotThrow(() => handler({ toolName: "bash", ts: Date.now() }));
+    assert.doesNotThrow(() => handler({
+      toolName: "bash",
+      runId: "missing-run",
+      stageId: "missing-stage",
+      toolCallId: "call-1",
+      ts: Date.now(),
+    }));
     const snap = emptyStore.snapshot();
     assert.equal(snap.runs.length, 0);
   });

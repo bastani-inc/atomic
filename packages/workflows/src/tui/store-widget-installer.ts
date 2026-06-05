@@ -160,121 +160,124 @@ export function installToolExecutionHooks(pi: LiveWidgetAPI, storeInstance: Stor
   const extensionOn = pi.on;
   if (typeof eventBusOn !== "function" && typeof extensionOn !== "function") return;
 
-  const activeAskUserQuestionCalls = new Map<string, { runId: string; stageId: string; callId: string }>();
+  interface StageScope {
+    readonly runId: string;
+    readonly stageId: string;
+  }
 
-  function resolveIds(payload: ToolExecutionStartPayload, includeAwaitingInput = false): { runId: string; stageId: string } | null {
-    const runId = payload.runId ?? payload.run_id ?? storeInstance.activeRunId();
-    if (!runId) return null;
+  interface ActiveToolCall extends StageScope {
+    readonly callId: string;
+    readonly name: string;
+    readonly startedAt: number;
+  }
 
-    const stageId = payload.stageId ?? payload.stage_id;
-    if (stageId) return { runId, stageId };
+  const terminalRunStatuses = new Set(["completed", "failed", "killed"]);
+  const terminalStageStatuses = new Set(["completed", "failed", "skipped"]);
+  const activeToolCalls = new Map<string, ActiveToolCall>();
 
-    const run = storeInstance.runs().find((candidate) => candidate.id === runId);
-    const runningStage = run?.stages.find((s) => s.status === "running");
-    if (runningStage) return { runId, stageId: runningStage.id };
+  function activeCallKey(runId: string, stageId: string, callId: string): string {
+    return `${runId}\0${stageId}\0${callId}`;
+  }
 
-    if (includeAwaitingInput) {
-      const awaitingStage = run?.stages.find((s) => s.status === "awaiting_input");
-      if (awaitingStage) return { runId, stageId: awaitingStage.id };
+  function firstNonEmptyString(...values: readonly unknown[]): string | null {
+    for (const value of values) {
+      if (typeof value === "string" && value.length > 0) return value;
     }
-
     return null;
   }
 
-  function activeCallKey(runId: string, stageId: string, callId: string): string {
-    return `${runId}:${stageId}:${callId}`;
+  function resolveExplicitStageScope(payload: ToolExecutionStartPayload): StageScope | null {
+    const runId = firstNonEmptyString(payload.runId, payload.run_id);
+    const stageId = firstNonEmptyString(payload.stageId, payload.stage_id);
+    if (runId === null || stageId === null) return null;
+    return { runId, stageId };
   }
 
-  function findActiveAskCall(payload: ToolExecutionStartPayload): { runId: string; stageId: string; callId: string } | undefined {
-    const runId = payload.runId ?? payload.run_id;
-    const stageId = payload.stageId ?? payload.stage_id;
-    const callId = toolCallId(payload);
-
-    if (runId !== undefined && stageId !== undefined) {
-      return activeAskUserQuestionCalls.get(activeCallKey(runId, stageId, callId));
-    }
-
-    const matches = [...activeAskUserQuestionCalls.values()].filter((entry) => {
-      if (entry.callId !== callId) return false;
-      if (runId !== undefined && entry.runId !== runId) return false;
-      if (stageId !== undefined && entry.stageId !== stageId) return false;
-      return true;
-    });
-    return matches.length === 1 ? matches[0] : undefined;
+  function hasLiveStageScope(scope: StageScope, snap: StoreSnapshot): boolean {
+    const run = snap.runs.find((candidate) => candidate.id === scope.runId);
+    if (!run || run.endedAt !== undefined || terminalRunStatuses.has(run.status)) return false;
+    const stage = run.stages.find((candidate) => candidate.id === scope.stageId);
+    return stage !== undefined && !terminalStageStatuses.has(stage.status);
   }
 
-  function stageHasActiveAskCall(runId: string, stageId: string): boolean {
-    return [...activeAskUserQuestionCalls.values()].some(
-      (entry) => entry.runId === runId && entry.stageId === stageId,
-    );
-  }
-
-  function recordAskUserQuestionStart(payload: ToolExecutionStartPayload, ids: { runId: string; stageId: string }): void {
-    if (!isAskUserQuestionToolName(toolName(payload))) return;
-    const callId = toolCallId(payload);
-    activeAskUserQuestionCalls.set(activeCallKey(ids.runId, ids.stageId, callId), {
-      ...ids,
-      callId,
-    });
-    storeInstance.recordStageAwaitingInput(ids.runId, ids.stageId, true, payload.ts);
-  }
-
-  function recordAskUserQuestionEnd(payload: ToolExecutionStartPayload, ids: { runId: string; stageId: string } | null): void {
-    const activeCall = findActiveAskCall(payload);
-    const resolvedIds = activeCall ?? ids;
-    if (resolvedIds === null || resolvedIds === undefined) return;
-
-    const shouldClear = activeCall !== undefined || isAskUserQuestionToolName(toolName(payload));
-    if (!shouldClear) return;
-
-    activeAskUserQuestionCalls.delete(activeCallKey(resolvedIds.runId, resolvedIds.stageId, toolCallId(payload)));
-    if (!stageHasActiveAskCall(resolvedIds.runId, resolvedIds.stageId)) {
-      storeInstance.recordStageAwaitingInput(resolvedIds.runId, resolvedIds.stageId, false);
+  function pruneActiveToolCalls(snap: StoreSnapshot): void {
+    for (const [key, call] of activeToolCalls) {
+      if (!hasLiveStageScope(call, snap)) activeToolCalls.delete(key);
     }
   }
+
+  storeInstance.subscribe(pruneActiveToolCalls);
 
   function recordToolStart(payload: unknown): void {
     if (!isToolExecutionPayload(payload)) return;
 
-    const ids = resolveIds(payload);
-    if (!ids) return;
+    const snap = storeInstance.snapshot();
+    pruneActiveToolCalls(snap);
 
-    storeInstance.recordToolStart(ids.runId, ids.stageId, {
-      name: toolName(payload),
+    const scope = resolveExplicitStageScope(payload);
+    if (!scope || !hasLiveStageScope(scope, snap)) return;
+
+    const callId = toolCallId(payload);
+    const key = activeCallKey(scope.runId, scope.stageId, callId);
+    if (activeToolCalls.has(key)) return;
+
+    const name = toolName(payload);
+    const startedAt = payload.ts ?? Date.now();
+    activeToolCalls.set(key, { ...scope, callId, name, startedAt });
+    storeInstance.recordToolStart(scope.runId, scope.stageId, {
+      name,
       input: toolInput(payload),
-      startedAt: payload.ts ?? Date.now(),
+      startedAt,
     });
-    recordAskUserQuestionStart(payload, ids);
+  }
+
+  function recordToolUpdate(payload: unknown): void {
+    if (!isToolExecutionPayload(payload)) return;
+
+    pruneActiveToolCalls(storeInstance.snapshot());
+
+    const scope = resolveExplicitStageScope(payload);
+    if (!scope) return;
+
+    const key = activeCallKey(scope.runId, scope.stageId, toolCallId(payload));
+    if (!activeToolCalls.has(key)) return;
+    // Updates are attach-only until the store has an explicit update API.
   }
 
   function recordToolEnd(payload: unknown): void {
     if (!isToolExecutionPayload(payload)) return;
 
-    const activeAskCall = findActiveAskCall(payload);
-    const ids = activeAskCall ?? resolveIds(payload, false);
-    if (!ids) return;
+    pruneActiveToolCalls(storeInstance.snapshot());
 
-    storeInstance.recordToolEnd(ids.runId, ids.stageId, {
-      name: toolName(payload),
+    const scope = resolveExplicitStageScope(payload);
+    if (!scope) return;
+
+    const key = activeCallKey(scope.runId, scope.stageId, toolCallId(payload));
+    const activeCall = activeToolCalls.get(key);
+    if (!activeCall) return;
+
+    storeInstance.recordToolEnd(activeCall.runId, activeCall.stageId, {
+      name: activeCall.name,
       input: toolInput(payload),
-      startedAt: payload.ts ?? Date.now(),
+      startedAt: activeCall.startedAt,
       endedAt: payload.endedAt ?? payload.ended_at ?? Date.now(),
       output: payload.output,
     });
-    recordAskUserQuestionEnd(payload, activeAskCall ?? ids);
+    activeToolCalls.delete(key);
   }
 
   const safeStart = safelyHandle(recordToolStart);
+  const safeUpdate = safelyHandle(recordToolUpdate);
   const safeEnd = safelyHandle(recordToolEnd);
 
   if (typeof eventBusOn === "function") {
     eventBusOn.call(pi.events, "tool_execution_start", safeStart);
-    eventBusOn.call(pi.events, "tool_execution_update", safeStart);
+    eventBusOn.call(pi.events, "tool_execution_update", safeUpdate);
     eventBusOn.call(pi.events, "tool_execution_end", safeEnd);
   }
   if (typeof extensionOn === "function") {
     extensionOn.call(pi, "tool_execution_start", safeStart);
-    extensionOn.call(pi, "tool_execution_update", safeStart);
+    extensionOn.call(pi, "tool_execution_update", safeUpdate);
     extensionOn.call(pi, "tool_execution_end", safeEnd);
     extensionOn.call(pi, "tool_call", safeStart);
     extensionOn.call(pi, "tool_result", safeEnd);
@@ -305,8 +308,4 @@ function toolCallId(payload: ToolExecutionStartPayload): string {
 
 function toolInput(payload: ToolExecutionStartPayload): Record<string, unknown> | undefined {
   return payload.input ?? payload.args;
-}
-
-function isAskUserQuestionToolName(name: string): boolean {
-  return name.toLowerCase().replace(/[^a-z0-9]/g, "") === "askuserquestion";
 }
