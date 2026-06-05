@@ -2023,20 +2023,7 @@ describe("ralph", () => {
         }
     }
 
-    function expectedSkippedPullRequestReport(): string {
-        return [
-            "## PR status",
-            "",
-            "Pull request creation skipped because `create_pr` was not set to `true`.",
-            "No `pull-request` stage was started, and no GitHub PR was created or attempted.",
-            "",
-            "## Commands run",
-            "",
-            "None.",
-        ].join("\n");
-    }
-
-    function prePullRequestPolicyTexts(
+    function preFinalStageTexts(
         ctx: { readonly calls: MockCalls },
     ): readonly { readonly label: string; readonly text: string }[] {
         return [
@@ -2067,15 +2054,12 @@ describe("ralph", () => {
         ];
     }
 
-    function assertPolicyTextsMatch(
+    function assertNoFinalHandoffMentions(
         entries: readonly { readonly label: string; readonly text: string }[],
-        expectedPatterns: readonly RegExp[],
     ): void {
         for (const { label, text } of entries) {
-            assert.match(text, /<pull_request_policy>/, label);
-            for (const pattern of expectedPatterns) {
-                assert.match(text, pattern, label);
-            }
+            assert.doesNotMatch(text, /pull[- ]requests?/i, label);
+            assert.doesNotMatch(text, /\bPRs?\b/, label);
         }
     }
 
@@ -2184,7 +2168,7 @@ describe("ralph", () => {
         });
 
         assert.equal(ctx.calls.task.includes("pull-request"), false);
-        assert.equal(result["pr_report"], expectedSkippedPullRequestReport());
+        assert.equal(Object.hasOwn(result, "pr_report"), false);
     });
 
     test("skips pull-request stage when create_pr is false", async () => {
@@ -2203,16 +2187,13 @@ describe("ralph", () => {
         });
 
         assert.equal(ctx.calls.task.includes("pull-request"), false);
-        assert.match(
-            String(result["pr_report"]),
-            /Pull request creation skipped because `create_pr` was not set to `true`\./,
-        );
+        assert.equal(Object.hasOwn(result, "pr_report"), false);
     });
 
-    test("propagates disabled pull-request policy to all pre-PR Ralph stages", async () => {
+    test("omits final handoff language from earlier stages when create_pr is false", async () => {
         const mod = await import("../../packages/workflows/builtin/ralph.js");
         const ctx = makeMockCtx({
-            prompt: "Add a small feature and create a pull request",
+            prompt: "Add a small feature, make a PR, and open the pull request",
             max_loops: 1,
             base_branch: "main",
             git_worktree_dir: "",
@@ -2225,33 +2206,31 @@ describe("ralph", () => {
         });
 
         assert.equal(ctx.calls.task.includes("pull-request"), false);
-        assert.equal(result["pr_report"], expectedSkippedPullRequestReport());
-        assertPolicyTextsMatch(prePullRequestPolicyTexts(ctx), [
-            /create_pr is not true/,
-            /PR creation\/open\/update\/commenting\/PR handoff, PR credential checks, pushes, and delegation are out of scope/,
-            /Do not create, open, update, comment on, or otherwise mutate GitHub pull requests/,
-            /Do not check GitHub credentials for PR creation or PR handoff/,
-            /Do not push branches or tags solely for PR handoff/,
-            /Do not delegate PR creation, PR updating\/commenting, PR credential checks, branch pushes, or PR handoff to subagents/,
-            /The final PR stage is skipped/,
+        assert.equal(Object.hasOwn(result, "pr_report"), false);
+        assertNoFinalHandoffMentions(preFinalStageTexts(ctx));
+        assertNoFinalHandoffMentions([
+            {
+                label: "implementation notes",
+                text: readFileSync(
+                    String(result["implementation_notes_path"]),
+                    "utf8",
+                ),
+            },
         ]);
 
         const orchestratorPrompt =
             ctx.calls.prompts["orchestrator-1"]?.[0] ?? "";
+        assert.doesNotMatch(orchestratorPrompt, /pull_request_policy/);
         assert.match(
             orchestratorPrompt,
-            /Pass the full pull_request_policy section verbatim to every delegated subagent/,
-        );
-        assert.match(
-            orchestratorPrompt,
-            /Pass each subagent .* the full pull_request_policy section/,
+            /Keep delegated work focused on implementation, tests, docs, validation evidence, and implementation notes\./,
         );
     });
 
-    test("propagates enabled policy while reserving PR work for the final stage", async () => {
+    test("omits final handoff language from earlier stages when create_pr is true", async () => {
         const mod = await import("../../packages/workflows/builtin/ralph.js");
         const ctx = makeMockCtx({
-            prompt: "Add a small feature and create a pull request",
+            prompt: "Add a small feature, make a PR, and open the pull request",
             max_loops: 1,
             base_branch: "main",
             git_worktree_dir: "",
@@ -2265,17 +2244,23 @@ describe("ralph", () => {
 
         assert.equal(ctx.calls.task.includes("pull-request"), true);
         assert.match(String(result["pr_report"]), /\[mock-task:pull-request\]/);
-        assertPolicyTextsMatch(prePullRequestPolicyTexts(ctx), [
-            /create_pr is true/,
-            /Only the final pull-request stage is authorized/,
-            /Planner, orchestrator, delegated subagents, simplifier, and reviewer stages must not create, open, update, comment on, or otherwise mutate GitHub pull requests/,
-            /Earlier stages must not check GitHub credentials for PR creation, push branches solely for PR handoff, or delegate PR creation\/PR handoff/,
-            /Earlier stages prepare code, tests, docs, validation evidence, and implementation notes only/,
-            /Leave all PR creation\/open\/update\/commenting and implementation-notes PR comments to the final pull-request stage/,
+        assertNoFinalHandoffMentions(preFinalStageTexts(ctx));
+        assertNoFinalHandoffMentions([
+            {
+                label: "implementation notes",
+                text: readFileSync(
+                    String(result["implementation_notes_path"]),
+                    "utf8",
+                ),
+            },
         ]);
-        for (const { label, text } of prePullRequestPolicyTexts(ctx)) {
-            assert.doesNotMatch(text, /create_pr is not true/, label);
-        }
+
+        const finalPrompt = ctx.calls.prompts["pull-request"]?.[0] ?? "";
+        assert.match(finalPrompt, /make a PR/i);
+        assert.match(
+            finalPrompt,
+            /Original task: Add a small feature, make a PR, and open the pull request/,
+        );
     });
 
     test("runs pull-request stage only when create_pr is true", async () => {

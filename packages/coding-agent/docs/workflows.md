@@ -248,21 +248,21 @@ Inputs:
 
 | Input | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `prompt` | text | yes | — | Task, feature request, issue summary, or spec path to plan, execute, refine, review, and optionally prepare for PR. |
-| `max_loops` | number | no | `10` | Maximum plan/orchestrate/review iterations before the workflow completes or, when enabled, proceeds to PR handoff without reviewer approval. |
-| `base_branch` | string | no | `origin/main` | Branch reviewers and the optional PR-prep stage compare the current code delta against; also used to create a missing worktree. |
+| `prompt` | text | yes | — | Task, feature request, issue summary, or spec path to plan, execute, refine, and review. |
+| `max_loops` | number | no | `10` | Maximum plan/orchestrate/review iterations before the workflow completes or, when enabled, proceeds to final handoff without reviewer approval. |
+| `base_branch` | string | no | `origin/main` | Branch reviewers and the optional final stage compare the current code delta against; also used to create a missing worktree. |
 | `git_worktree_dir` | string | no | `""` | Optional reusable Git worktree root. Empty runs in the invoking checkout; non-empty values run Ralph stages in the created/reused worktree. |
-| `create_pr` | boolean | no | `false` | Safe-by-default PR creation flag. Omitted or `false` skips the final `pull-request` stage and returns a deterministic skipped `pr_report`; prompt text alone does not opt in, and only strict `true` authorizes the final `pull-request` stage to attempt GitHub PR creation. |
+| `create_pr` | boolean | no | `false` | Safe-by-default PR creation flag. Omitted or `false` skips the final `pull-request` stage and omits `pr_report`; prompt text alone does not opt in, and only strict `true` authorizes the final `pull-request` stage to attempt GitHub PR creation. |
 
 Run examples:
 
 ```text
 /workflow ralph prompt="Plan and migrate the database layer to Drizzle" max_loops=3 base_branch=develop
-/workflow ralph prompt="Refactor authentication across the API, CLI, and web UI, then prepare the PR" create_pr=true
+/workflow ralph prompt="Refactor authentication across the API, CLI, and web UI" create_pr=true
 /workflow ralph prompt="Safely implement the API refactor" git_worktree_dir=../atomic-ralph-api-wt base_branch=main
 ```
 
-Each `ralph` iteration writes an RFC-style technical design document under `specs/`, initializes an OS-temp implementation notes file, delegates implementation through sub-agents, runs a behavior-preserving code simplifier, and asks two reviewers to inspect the patch directly against `base_branch`. Reviewers discover any needed repository infrastructure themselves while inspecting the actual diff; Ralph no longer runs separate `infra-*` discovery stages. The loop stops when every reviewer approves or `max_loops` is reached. By default Ralph does not start the final `pull-request` stage; prompt text such as "prepare the PR" does not opt in. When `create_pr` is omitted or `false`, all pre-PR stages treat PR creation/open/update/commenting, PR handoff, PR credential checks, and branch pushes for PR handoff as out of scope, and `pr_report` deterministically records that PR creation was skipped. Pass `create_pr=true` only when you explicitly want the final `pull-request` stage to inspect GitHub credentials and attempt PR creation; earlier stages still prepare code, tests, docs, validation evidence, and notes only.
+Each `ralph` iteration writes an RFC-style technical design document under `specs/`, initializes an OS-temp implementation notes file, delegates implementation through sub-agents, runs a behavior-preserving code simplifier, and asks two reviewers to inspect the patch directly against `base_branch`. Reviewers discover any needed repository infrastructure themselves while inspecting the actual diff; Ralph no longer runs separate `infra-*` discovery stages. The loop stops when every reviewer approves or `max_loops` is reached. By default Ralph does not start the final `pull-request` stage, and `pr_report` is omitted. Prompt text alone does not opt in. Pass `create_pr=true` only when you explicitly want the final `pull-request` stage to inspect GitHub credentials and attempt PR creation; earlier stages receive implementation-focused prompt text only, with final-stage handoff language omitted until that last step.
 
 Set `git_worktree_dir` when you want Ralph's worker stages isolated in a reusable Git worktree. Relative paths resolve from the invoking repository root, existing same-repository worktree roots are reused, and missing paths are created from `base_branch`. Ralph preserves the invoking repo-relative cwd inside the worktree, so launching from `repo/packages/api` with `git_worktree_dir=../repo-wt` runs stages from `../repo-wt/packages/api`.
 
@@ -274,8 +274,8 @@ Result fields:
 | `plan` | Latest RFC-style plan text. |
 | `plan_path` | Path to the latest generated spec under `specs/`. |
 | `implementation_notes_path` | OS-temp notes file containing decisions, deviations, blockers, and validation notes. |
-| `pr_report` | Pull-request report when `create_pr=true`; otherwise a deterministic skipped report confirming no `pull-request` stage or GitHub PR attempt ran. |
-| `approved` | Whether the reviewer loop approved before completion or optional PR handoff. |
+| `pr_report` | Pull-request report emitted only when `create_pr=true` and the final `pull-request` stage runs. |
+| `approved` | Whether the reviewer loop approved before completion or optional final handoff. |
 | `iterations_completed` | Number of plan/orchestrate/review loops completed. |
 | `review_report` | Compact reference to the latest reviewer payload artifact. |
 | `review_report_path` | JSON artifact path for the latest Ralph review round. |
@@ -335,7 +335,7 @@ Use the goal workflow to implement specs/2026-03-rate-limit.md, run the focused 
 ```
 
 ```text
-Use the ralph workflow to plan a database-layer migration, implement it, review it, and prepare a PR with `create_pr=true`.
+Use the ralph workflow to plan a database-layer migration, implement it, review it, and set `create_pr=true` for final-stage PR handoff.
 ```
 
 ```text
@@ -379,7 +379,7 @@ If the task is only deterministic TypeScript with no LLM/session stage, use a sc
 |-----------|-----|
 | Run, inspect, attach to, pause, interrupt, resume, or check status for an existing workflow | `/workflow ...` or `workflow({ action: ... })` |
 | Implement a small-to-medium scope change with an identifiable work surface, exact outcome, and named validation | `/workflow goal objective="..."` so Atomic keeps the run bounded, captures receipts in a goal ledger, gates completion through reviewers, and stops as `complete`, `blocked`, or `needs_human` |
-| Plan and execute a larger migration, broad refactor, multi-package change, or spec-to-reviewed-change effort | `/workflow ralph prompt="..."` so Atomic can plan the approach, delegate implementation through sub-agents, simplify, review, iterate, and return a `pr_report`; prompt text alone does not opt in to PR creation, so add `create_pr=true` only when you want the final `pull-request` stage to run |
+| Plan and execute a larger migration, broad refactor, multi-package change, or spec-to-reviewed-change effort | `/workflow ralph prompt="..."` so Atomic can plan the approach, delegate implementation through sub-agents, simplify, review, and iterate; prompt text alone does not opt in to PR creation, so add `create_pr=true` only when you want the final `pull-request` stage and `pr_report` |
 | Create or edit reusable automation | a TypeScript workflow definition exported from `defineWorkflow(...).compile()` |
 | Track one-off work without saving a workflow file | direct `workflow({ task })`, `workflow({ tasks })`, or `workflow({ chain })` calls |
 | Make a workflow robust | design the stage graph, context handoffs, artifacts, validation gates, model fallbacks, and human approval points before coding |
@@ -1254,7 +1254,7 @@ export default defineWorkflow("research-then-implement")
     if (String(ctx.inputs.runner) === "ralph") {
       const implementation = await ctx.workflow(ralph, {
         inputs: {
-          prompt: `Use the research document at ${String(research.outputs.research_doc_path)} to plan, implement, review, and prepare a PR for: ${topic}`,
+          prompt: `Use the research document at ${String(research.outputs.research_doc_path)} to plan, implement, and review: ${topic}`,
           create_pr: true,
         },
         stageName: "ralph implementation",

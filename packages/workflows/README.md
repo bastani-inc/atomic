@@ -587,22 +587,22 @@ Child workflow outputs: `result`, `status`, `approved`, `goal_id`, `objective`, 
 
 ### `ralph`
 
-Plan → orchestrate → simplify → review workflow with optional PR handoff: write an RFC-style technical design document under `specs/`, delegate implementation through sub-agents, simplify recent changes, run parallel reviewers, iterate until approval or the loop limit, then return a `pr_report`. Ralph skips PR creation by default; prompt text alone does not opt in. Pass `create_pr=true` to authorize only the final `pull-request` stage to inspect GitHub credentials and attempt GitHub PR creation; earlier stages still prepare code, tests, docs, validation evidence, and notes only. Reviewers inspect repository infrastructure directly as needed; Ralph no longer runs separate `infra-*` discovery stages.
+Plan → orchestrate → simplify → review workflow with optional final-stage PR handoff: write an RFC-style technical design document under `specs/`, delegate implementation through sub-agents, simplify recent changes, run parallel reviewers, and iterate until approval or the loop limit. Ralph skips PR creation by default; prompt text alone does not opt in. Pass `create_pr=true` to authorize only the final `pull-request` stage to inspect GitHub credentials and attempt GitHub PR creation. Earlier stages receive implementation-focused prompt text only; final-stage handoff language is omitted until that last stage. Reviewers inspect repository infrastructure directly as needed; Ralph no longer runs separate `infra-*` discovery stages.
 
 ```text
 /workflow ralph prompt="Plan and migrate the database layer to Drizzle ORM" max_loops=3 base_branch=develop
-/workflow ralph prompt="Plan and migrate the database layer to Drizzle ORM, then prepare the PR" max_loops=3 base_branch=develop create_pr=true
+/workflow ralph prompt="Plan and migrate the database layer to Drizzle ORM" max_loops=3 base_branch=develop create_pr=true
 ```
 
 | Input              | Type      | Required | Default       | Description                                                   |
 | ------------------ | --------- | -------- | ------------- | ------------------------------------------------------------- |
-| `prompt`           | `text`    | ✓        | —             | Task, feature request, issue summary, or spec path to plan, execute, refine, review, and optionally prepare for PR. |
-| `max_loops`        | `number`  | —        | `10`          | Maximum plan/orchestrate/review iterations before completion or optional PR handoff. |
-| `base_branch`      | `string`  | —        | `origin/main` | Branch reviewers and the optional PR-prep stage compare the current delta with; also used to create a missing worktree. |
+| `prompt`           | `text`    | ✓        | —             | Task, feature request, issue summary, or spec path to plan, execute, refine, and review. |
+| `max_loops`        | `number`  | —        | `10`          | Maximum plan/orchestrate/review iterations before completion or optional final handoff. |
+| `base_branch`      | `string`  | —        | `origin/main` | Branch reviewers and the optional final stage compare the current delta with; also used to create a missing worktree. |
 | `git_worktree_dir` | `string`  | —        | `""`          | Optional reusable Git worktree root. Empty runs in the invoking checkout; non-empty values run Ralph stages in the created/reused worktree. |
-| `create_pr`        | `boolean` | —        | `false`       | Safe-by-default PR creation flag. Omitted or `false` skips the final `pull-request` stage and returns a deterministic skipped `pr_report`; prompt text alone does not opt in, and only strict `true` authorizes the final `pull-request` stage to attempt GitHub PR creation. |
+| `create_pr`        | `boolean` | —        | `false`       | Safe-by-default PR creation flag. Omitted or `false` skips the final `pull-request` stage and omits `pr_report`; prompt text alone does not opt in, and only strict `true` authorizes the final `pull-request` stage to attempt GitHub PR creation. |
 
-Child workflow outputs: `result`, `plan`, `plan_path`, `implementation_notes_path`, `pr_report`, `approved`, `iterations_completed`, `review_report`, and `review_report_path`. When `create_pr` is omitted or `false`, `pr_report` deterministically reports that no `pull-request` stage or GitHub PR attempt ran, even if the prompt asked for a PR.
+Child workflow outputs: `result`, `plan`, `plan_path`, `implementation_notes_path`, `approved`, `iterations_completed`, `review_report`, and `review_report_path`. `pr_report` is included only when `create_pr=true` and the final `pull-request` stage runs.
 
 ### `open-claude-design`
 

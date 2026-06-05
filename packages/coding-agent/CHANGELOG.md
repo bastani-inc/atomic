@@ -4,7 +4,7 @@
 
 ### Changed
 
-- Documented the builtin `ralph` workflow's safe default for PR creation and the `create_pr=true` opt-in examples ([#1255](https://github.com/bastani-inc/atomic/issues/1255)).
+- Documented the builtin `ralph` workflow's safe default for PR creation, `create_pr=true` opt-in examples, omitted disabled `pr_report`, and final-stage-only handoff language ([#1255](https://github.com/bastani-inc/atomic/issues/1255)).
 
 ## [0.8.26-alpha.2] - 2026-06-05
 

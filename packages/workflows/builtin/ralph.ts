@@ -230,33 +230,42 @@ function taggedPrompt(sections: readonly PromptSection[]): string {
     .join("\n\n");
 }
 
-const DISABLED_PULL_REQUEST_POLICY = [
-  "create_pr is not true. Pull request creation is not authorized for this Ralph run, even if the user prompt asks for it.",
-  "PR creation/open/update/commenting/PR handoff, PR credential checks, pushes, and delegation are out of scope for all pre-PR stages.",
-  "Do not create, open, update, comment on, or otherwise mutate GitHub pull requests.",
-  "Do not check GitHub credentials for PR creation or PR handoff.",
-  "Do not push branches or tags solely for PR handoff.",
-  "Do not delegate PR creation, PR updating/commenting, PR credential checks, branch pushes, or PR handoff to subagents.",
-  "The final PR stage is skipped; the final pull-request stage will not run, and Ralph returns the deterministic skipped pr_report instead.",
-].join("\n");
+const FINAL_STEP_REQUEST_VERB =
+  "create|open|prepare|prep|submit|update|make|file|raise|draft|publish|send|put up|comment on|post(?:\\s+comments?\\s+on)?";
+const FINAL_STEP_REQUEST_TARGET = "(?:github\\s+)?(?:pull[- ]requests?|PRs?)";
 
-const ENABLED_PULL_REQUEST_POLICY = [
-  "create_pr is true. Only the final pull-request stage is authorized to attempt GitHub PR creation, opening, updating, commenting, or PR handoff.",
-  "Planner, orchestrator, delegated subagents, simplifier, and reviewer stages must not create, open, update, comment on, or otherwise mutate GitHub pull requests.",
-  "Earlier stages must not check GitHub credentials for PR creation, push branches solely for PR handoff, or delegate PR creation/PR handoff.",
-  "Earlier stages prepare code, tests, docs, validation evidence, and implementation notes only.",
-  "Leave all PR creation/open/update/commenting and implementation-notes PR comments to the final pull-request stage.",
-].join("\n");
+const FINAL_STEP_REQUEST_PATTERNS: readonly RegExp[] = [
+  new RegExp(
+    `\\b(?:and|then|,|;)\\s*(?:then\\s*)?(?:${FINAL_STEP_REQUEST_VERB})\\s+(?:(?:a|the|this|new)\\s+)?${FINAL_STEP_REQUEST_TARGET}\\b[^.!?;]*`,
+    "gi",
+  ),
+  new RegExp(
+    `\\b(?:${FINAL_STEP_REQUEST_VERB})\\s+(?:(?:a|the|this|new)\\s+)?${FINAL_STEP_REQUEST_TARGET}\\b[^.!?;]*`,
+    "gi",
+  ),
+  new RegExp(
+    `\\b${FINAL_STEP_REQUEST_TARGET}\\s+(?:creation|handoff|preparation|prep|commenting|comments?|updates?|opening)\\b[^.!?;]*`,
+    "gi",
+  ),
+];
 
-function buildPullRequestPolicy(createPr: boolean): string {
-  return createPr ? ENABLED_PULL_REQUEST_POLICY : DISABLED_PULL_REQUEST_POLICY;
-}
+function promptBeforeFinalStage(prompt: string): string {
+  let sanitized = prompt;
+  for (const pattern of FINAL_STEP_REQUEST_PATTERNS) {
+    sanitized = sanitized.replace(pattern, "");
+  }
 
-function policyAwareTaskPrompt(prompt: string, pullRequestPolicy: string): string {
-  return taggedPrompt([
-    ["task", prompt],
-    ["pull_request_policy", pullRequestPolicy],
-  ]);
+  const normalized = sanitized
+    .replace(/\s+([,.;:!?])/g, "$1")
+    .replace(/(?:,\s*){2,}/g, ", ")
+    .replace(/\s{2,}/g, " ")
+    .replace(/^(?:and|then)\s+/i, "")
+    .replace(/(?:\s+(?:and|then)|[,;])$/i, "")
+    .trim();
+
+  return normalized.length > 0
+    ? normalized
+    : "Complete the requested implementation task.";
 }
 
 function positiveInteger(value: number | undefined, fallback: number): number {
@@ -435,23 +444,12 @@ type RalphWorkflowResult = {
   readonly plan: string;
   readonly plan_path: string;
   readonly implementation_notes_path: string;
-  readonly pr_report: string;
+  readonly pr_report?: string;
   readonly approved: boolean;
   readonly iterations_completed: number;
   readonly review_report: string;
   readonly review_report_path?: string;
 };
-
-const SKIPPED_PULL_REQUEST_REPORT = [
-  "## PR status",
-  "",
-  "Pull request creation skipped because `create_pr` was not set to `true`.",
-  "No `pull-request` stage was started, and no GitHub PR was created or attempted.",
-  "",
-  "## Commands run",
-  "",
-  "None.",
-].join("\n");
 
 async function runRalphWorkflow(
   ctx: WorkflowRunContext<RalphInputs>,
@@ -464,18 +462,18 @@ async function runRalphWorkflow(
     workflowStartCwd,
     createPr,
   } = options;
-  const pullRequestPolicy = buildPullRequestPolicy(createPr);
+  const stagePrompt = promptBeforeFinalStage(prompt);
 
   let latestReviewReportPath: string | undefined;
   let finalPlan = "";
   let finalPlanPath = "";
   let finalResult = "";
-  let finalPrReport = "";
+  let finalPrReport: string | undefined;
   // Keep generated specs under the workflow runtime cwd. When Ralph is invoked
   // with git_worktree_dir, the executor defaults ctx.cwd to the matching
   // worktree cwd so specs and stage writes land in the same checkout.
-  const workflowSpecPath = resolve(workflowStartCwd, defaultSpecPath(prompt));
-  const implementationNotesPath = await createImplementationNotesFile(prompt);
+  const workflowSpecPath = resolve(workflowStartCwd, defaultSpecPath(stagePrompt));
+  const implementationNotesPath = await createImplementationNotesFile(stagePrompt);
   const artifactDir = await mkdtemp(join(tmpdir(), "atomic-ralph-run-"));
   let approved = false;
   let iterationsCompleted = 0;
@@ -544,9 +542,8 @@ async function runRalphWorkflow(
         ],
         [
           "task",
-          `Plan iteration ${iteration}/${maxLoops} for this user specification:\n${prompt}`,
+          `Plan iteration ${iteration}/${maxLoops} for this user specification:\n${stagePrompt}`,
         ],
-        ["pull_request_policy", pullRequestPolicy],
         [
           "latest_review_artifact",
           latestReviewReportPath === undefined
@@ -646,9 +643,8 @@ async function runRalphWorkflow(
         ],
         [
           "objective",
-          `Implement iteration ${iteration}/${maxLoops} for the task: ${prompt}`,
+          `Implement iteration ${iteration}/${maxLoops} for the task: ${stagePrompt}`,
         ],
-        ["pull_request_policy", pullRequestPolicy],
         [
           "spec_file",
           [
@@ -677,8 +673,7 @@ async function runRalphWorkflow(
             "Delegate codebase understanding, impact analysis, and implementation research to codebase-locator, codebase-analyzer, and pattern-finder style subagents when available.",
             "Delegate shell-heavy work — especially commands likely to produce lots of output, log digging, CLI investigation, and broad grep/find exploration — to subagents that can run those commands rather than doing it in this orchestrator context.",
             "Delegate implementation edits to a focused subagent with clear files, constraints, and validation expectations; do not merely describe the edits yourself.",
-            "Pass the full pull_request_policy section verbatim to every delegated subagent before any task-specific instructions, and require each subagent to follow it over raw user prompt text.",
-            "Do not delegate or imply PR creation, PR updates/comments, PR credential checks, branch pushes for PR handoff, or PR handoff except as explicitly authorized by pull_request_policy.",
+            "Keep delegated work focused on implementation, tests, docs, validation evidence, and implementation notes.",
             "Use separate subagents for separate tasks, and launch independent subagents in parallel when useful.",
             "Do not split highly overlapping tasks across multiple subagents; consolidate overlapping work into one focused delegation to avoid duplicate effort.",
             "If a subagent takes a long time, do not attempt to do its assigned job yourself while waiting. Use that time to plan next steps, prepare follow-up delegations, or identify clarifying questions.",
@@ -709,7 +704,7 @@ async function runRalphWorkflow(
             `Start by reading the spec file at ${specPath}.`,
             "Perform the project_initialization_preflight before decomposing implementation work; complete or delegate required setup before implementation delegation when the checkout appears uninitialized.",
             "Decompose the work into delegated subagent tasks based on that spec file.",
-            "Pass each subagent the relevant task, constraints, files, validation expectations, the full pull_request_policy section, any prior review findings from the spec, and instructions to report implementation-note-worthy decisions or tradeoffs.",
+            "Pass each subagent the relevant task, constraints, files, validation expectations, any prior review findings from the spec, and instructions to report implementation-note-worthy decisions or tradeoffs.",
             "Coordinate subagent results into the smallest coherent set of changes that satisfies the spec.",
             "Preserve existing architecture and repository conventions unless the spec explicitly justifies a change.",
             "Run or delegate the most relevant validation commands available in the repository.",
@@ -751,9 +746,8 @@ async function runRalphWorkflow(
         ],
         [
           "objective",
-          `Refine recently modified code for this task while preserving exact behavior: ${prompt}`,
+          `Refine recently modified code for this task while preserving exact behavior: ${stagePrompt}`,
         ],
-        ["pull_request_policy", pullRequestPolicy],
         [
           "artifact_handoff",
           [
@@ -856,8 +850,7 @@ async function runRalphWorkflow(
           "Be terse, concrete, and technically fair. Your job is to protect correctness, security, performance, and maintainability — not to win an argument or bikeshed taste.",
         ].join("\n"),
       ],
-      ["objective", `Review the current code delta for the task: ${prompt}`],
-      ["pull_request_policy", pullRequestPolicy],
+      ["objective", `Review the current code delta for the task: ${stagePrompt}`],
       [
         "comparison_baseline",
         [
@@ -919,7 +912,7 @@ async function runRalphWorkflow(
           "Use a matter-of-fact, non-accusatory tone. Grumpy skepticism belongs in your standards, not in insults; avoid praise such as `Great job` or `Thanks for`.",
           "Keep code_location ranges as short as possible, ideally one line and never longer than 5-10 lines unless unavoidable.",
           "The code_location must overlap the diff/change under review.",
-          "Use one finding per distinct issue. Do not generate a PR fix.",
+          "Use one finding per distinct issue. Do not generate or apply a fix patch.",
           "Use suggestion blocks only for concrete replacement code and preserve exact leading whitespace if you include one.",
         ].join("\n"),
       ],
@@ -1018,7 +1011,7 @@ async function runRalphWorkflow(
           },
         ],
         {
-          task: policyAwareTaskPrompt(prompt, pullRequestPolicy),
+          task: stagePrompt,
           failFast: false,
         },
       );
@@ -1123,8 +1116,6 @@ async function runRalphWorkflow(
       ...orchestratorModelConfig,
     });
     finalPrReport = prResult.text;
-  } else {
-    finalPrReport = SKIPPED_PULL_REQUEST_REPORT;
   }
 
   return {
@@ -1132,7 +1123,7 @@ async function runRalphWorkflow(
     plan: finalPlan,
     plan_path: finalPlanPath,
     implementation_notes_path: implementationNotesPath,
-    pr_report: finalPrReport,
+    ...(finalPrReport === undefined ? {} : { pr_report: finalPrReport }),
     approved,
     iterations_completed: iterationsCompleted,
     review_report: compactReviewReport(latestReviewReportPath),
@@ -1171,8 +1162,8 @@ export default defineWorkflow("ralph")
   .output("plan", Type.Optional(Type.String({ description: "Latest RFC-style plan text." })))
   .output("plan_path", Type.Optional(Type.String({ description: "Path to the latest generated spec under specs/." })))
   .output("implementation_notes_path", Type.Optional(Type.String({ description: "OS-temp notes file containing decisions, deviations, blockers, and validation notes." })))
-  .output("pr_report", Type.Optional(Type.String({ description: "Pull-request report when create_pr=true, or a deterministic skipped report when PR creation is disabled." })))
-  .output("approved", Type.Optional(Type.Boolean({ description: "Whether the reviewer loop approved before completion or optional PR handoff." })))
+  .output("pr_report", Type.Optional(Type.String({ description: "Pull-request report emitted only when create_pr=true and the final pull-request stage runs." })))
+  .output("approved", Type.Optional(Type.Boolean({ description: "Whether the reviewer loop approved before completion or optional final handoff." })))
   .output("iterations_completed", Type.Optional(Type.Number({ description: "Number of plan/orchestrate/review loops completed." })))
   .output("review_report", Type.Optional(Type.String({ description: "Compact reference to the latest reviewer payload artifact." })))
   .output("review_report_path", Type.Optional(Type.String({ description: "JSON artifact path for the latest Ralph review round." })))
