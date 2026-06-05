@@ -102,7 +102,7 @@ function getUsageLine(
       ? `?/${formatTokens(contextWindow)}${autoIndicator}`
       : `${contextPercent}%/${formatTokens(contextWindow)}${autoIndicator}`;
   if (contextPercentValue > 90) {
-    usageParts.push(theme.fg(autoCompactEnabled ? "warning" : "error", contextPercentDisplay));
+    usageParts.push(theme.fg("error", contextPercentDisplay));
   } else if (contextPercentValue > 70) {
     usageParts.push(theme.fg("warning", contextPercentDisplay));
   } else {

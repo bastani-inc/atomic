@@ -13,10 +13,6 @@
 
 - Improved Windows cold startup by lazily loading heavy bundled web-access/intercom/MCP implementation modules, moving fd/rg readiness checks after the first interactive frame, and adding detailed startup timing spans ([#1223](https://github.com/bastani-inc/atomic/issues/1223)).
 
-### Fixed
-
-- Context-window overflow errors now render as a yellow recovery warning instead of a red error, and the footer context meter reflects auto-compaction state ([#1226](https://github.com/bastani-inc/atomic/issues/1226)).
-
 ## [0.8.25] - 2026-06-04
 
 ### Changed

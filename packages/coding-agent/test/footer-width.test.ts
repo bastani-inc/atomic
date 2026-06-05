@@ -2,8 +2,8 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.ts";
 import type { ReadonlyFooterDataProvider } from "../src/core/footer-data-provider.ts";
-import { FooterComponent, formatCwdForFooter, UsageMeterComponent } from "../src/modes/interactive/components/footer.ts";
-import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
+import { FooterComponent, formatCwdForFooter } from "../src/modes/interactive/components/footer.ts";
+import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 
 type AssistantUsage = {
 	input: number;
@@ -20,7 +20,6 @@ function createSession(options: {
 	reasoning?: boolean;
 	thinkingLevel?: string;
 	usage?: AssistantUsage;
-	contextPercent?: number;
 }): AgentSession {
 	const usage = options.usage;
 	const entries =
@@ -51,15 +50,10 @@ function createSession(options: {
 			getSessionName: () => options.sessionName,
 			getCwd: () => "/tmp/project",
 		},
-		getContextUsage: () => ({ contextWindow: 200_000, percent: options.contextPercent ?? 12.3 }),
+		getContextUsage: () => ({ contextWindow: 200_000, percent: 12.3 }),
 		modelRegistry: {
 			isUsingOAuth: () => false,
 		},
-		settingsManager: {
-			getCodexFastModeSettings: () => ({ chat: false, workflow: false }),
-		},
-		orchestrationContext: undefined,
-		isStreaming: false,
 	};
 
 	return session as unknown as AgentSession;
@@ -128,28 +122,5 @@ describe("FooterComponent width handling", () => {
 		for (const line of lines) {
 			expect(visibleWidth(line)).toBeLessThanOrEqual(width);
 		}
-	});
-
-	it("renders over-budget context usage as warning when auto-compaction is enabled", () => {
-		const session = createSession({ sessionName: "", contextPercent: 138.7 });
-		const usageMeter = new UsageMeterComponent(session);
-
-		const rendered = usageMeter.render(120).join("\n");
-
-		expect(rendered).toContain(theme.getFgAnsi("warning"));
-		expect(rendered).not.toContain(theme.getFgAnsi("error"));
-		expect(rendered).toContain("138.7%/200k (auto)");
-	});
-
-	it("keeps over-budget context usage red when auto-compaction is disabled", () => {
-		const session = createSession({ sessionName: "", contextPercent: 138.7 });
-		const usageMeter = new UsageMeterComponent(session);
-		usageMeter.setAutoCompactEnabled(false);
-
-		const rendered = usageMeter.render(120).join("\n");
-
-		expect(rendered).toContain(theme.getFgAnsi("error"));
-		expect(rendered).toContain("138.7%/200k");
-		expect(rendered).not.toContain("(auto)");
 	});
 });

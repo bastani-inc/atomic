@@ -48,7 +48,7 @@ import { outputEntryFromAsyncResult, resolveOutputReferences } from "../shared/c
 import { createStructuredOutputRuntime, readStructuredOutput } from "../shared/structured-output.ts";
 import { collectDynamicResults, DynamicFanoutError, materializeDynamicParallelStep, validateDynamicCollection } from "../shared/dynamic-fanout.ts";
 import { nestedSummaryFromAsyncStatus, writeNestedEvent } from "../shared/nested-events.ts";
-import { formatModelAttemptNote, isRetryableModelFailure } from "../shared/model-fallback.ts";
+import { formatModelAttemptNote, isRetryableModelFailure, shouldSuppressExpectedAuthFallbackWarning } from "../shared/model-fallback.ts";
 import { attachPostExitStdioGuard, trySignalChild } from "../../shared/post-exit-stdio-guard.ts";
 import { detectSubagentError, extractTextFromContent, extractToolArgsPreview, getFinalOutput } from "../../shared/utils.ts";
 import { evaluateCompletionMutationGuard } from "../shared/completion-guard.ts";
@@ -650,6 +650,7 @@ async function runSingleStep(
 	const attemptedModels: string[] = [];
 	const modelAttempts: ModelAttempt[] = [];
 	const attemptNotes: string[] = [];
+	const fallbackAttemptNotes: { note: string; suppressWhenFallbackSucceeds: boolean }[] = [];
 	const eventsPath = path.join(path.dirname(ctx.outputFile), "events.jsonl");
 	let finalResult: RunPiStreamingResult | undefined;
 	let finalFastMode: boolean | undefined;
@@ -770,9 +771,19 @@ async function runSingleStep(
 		finalResult = { ...run, exitCode: effectiveExitCode, model: candidate ?? run.model, error, structuredOutput } as RunPiStreamingResult & { structuredOutput?: unknown };
 		if (attempt.success || completionGuardTriggered) break;
 		if (!isRetryableModelFailure(error) || index === candidates.length - 1) break;
-		attemptNotes.push(formatModelAttemptNote(attempt, candidates[index + 1]));
+		const nextModel = candidates[index + 1];
+		fallbackAttemptNotes.push({
+			note: formatModelAttemptNote(attempt, nextModel),
+			suppressWhenFallbackSucceeds: shouldSuppressExpectedAuthFallbackWarning(error, attempt.model, nextModel),
+		});
 	}
 
+	const fallbackSucceeded = finalResult?.exitCode === 0 && !finalResult.error;
+	attemptNotes.push(
+		...fallbackAttemptNotes
+			.filter((note) => !(fallbackSucceeded && note.suppressWhenFallbackSucceeds))
+			.map((note) => note.note),
+	);
 	const rawOutput = finalResult?.finalOutput ?? "";
 	const outputForPersistence = stripAcceptanceReport(rawOutput);
 	const resolvedOutput = step.outputPath && finalResult?.exitCode === 0

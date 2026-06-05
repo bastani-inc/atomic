@@ -95,9 +95,33 @@ const RETRYABLE_MODEL_FAILURE_PATTERNS = [
 	/\b504\b/,
 ];
 
+const EXPECTED_MISSING_AUTH_FALLBACK_PATTERNS = [
+	/\bno\s+api\s+key\b/i,
+	/\bmissing\s+(?:an?\s+)?api\s+key\b/i,
+	/\bapi\s+key\s+(?:is\s+)?(?:missing|not\s+found|not\s+configured|required)\b/i,
+	/\bauth(?:entication)?\s+(?:is\s+)?(?:missing|not\s+configured|required)\b/i,
+	/\bcredentials?\s+(?:are\s+)?(?:missing|not\s+configured|required)\b/i,
+	/\b(?:not\s+logged\s+in|login\s+required)\b/i,
+];
+
 export function isRetryableModelFailure(error: string | undefined): boolean {
 	if (!error) return false;
 	return RETRYABLE_MODEL_FAILURE_PATTERNS.some((pattern) => pattern.test(error));
+}
+
+export function shouldSuppressExpectedAuthFallbackWarning(
+	error: string | undefined,
+	failedModel: string | undefined,
+	nextModel: string | undefined,
+): boolean {
+	if (!error || !failedModel || !nextModel) return false;
+	const failedBaseModel = splitKnownThinkingSuffix(failedModel.trim()).baseModel;
+	const nextBaseModel = splitKnownThinkingSuffix(nextModel.trim()).baseModel;
+	if (!failedBaseModel.includes("/") || !nextBaseModel.includes("/")) return false;
+	const failedProvider = failedBaseModel.split("/", 1)[0];
+	const nextProvider = nextBaseModel.split("/", 1)[0];
+	if (!failedProvider || !nextProvider || failedProvider === nextProvider) return false;
+	return EXPECTED_MISSING_AUTH_FALLBACK_PATTERNS.some((pattern) => pattern.test(error));
 }
 
 export function formatModelAttemptNote(attempt: ModelAttemptSummary, nextModel?: string): string {

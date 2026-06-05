@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -139,6 +140,37 @@ describe("acceptance gates", () => {
 			assert.match(acceptanceFailureMessage(ledger) ?? "", /Required criterion 'regression' was reported as not-satisfied/);
 		} finally {
 			fs.rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	test("no-staged-files ignores inherited Git hook environment", async () => {
+		const cwd = tempRepo();
+		const hookRepo = tempRepo();
+		const previousGitDir = process.env.GIT_DIR;
+		const previousGitWorkTree = process.env.GIT_WORK_TREE;
+		try {
+			spawnSync("git", ["init"], { cwd: hookRepo, stdio: "ignore" });
+			fs.writeFileSync(path.join(hookRepo, "staged.txt"), "staged\n", "utf-8");
+			spawnSync("git", ["add", "staged.txt"], { cwd: hookRepo, stdio: "ignore" });
+			process.env.GIT_DIR = path.join(hookRepo, ".git");
+			process.env.GIT_WORK_TREE = hookRepo;
+
+			const acceptance = resolveEffectiveAcceptance({
+				agentName: "worker",
+				task: "Implement a fix",
+				explicit: { level: "checked" },
+			});
+			const ledger = await evaluateAcceptance({ acceptance, output: report(), cwd });
+
+			assert.equal(ledger.status, "checked");
+			assert.doesNotMatch(acceptanceFailureMessage(ledger) ?? "", /Staged files present/);
+		} finally {
+			if (previousGitDir === undefined) delete process.env.GIT_DIR;
+			else process.env.GIT_DIR = previousGitDir;
+			if (previousGitWorkTree === undefined) delete process.env.GIT_WORK_TREE;
+			else process.env.GIT_WORK_TREE = previousGitWorkTree;
+			fs.rmSync(cwd, { recursive: true, force: true });
+			fs.rmSync(hookRepo, { recursive: true, force: true });
 		}
 	});
 

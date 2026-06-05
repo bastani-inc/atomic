@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Suppressed expected missing-API-key fallback warnings when workflow stages recover by retrying with another provider, while preserving attempt diagnostics and surfacing the warnings if all fallbacks fail ([#1221](https://github.com/bastani-inc/atomic/issues/1221)).
+
 ## [0.8.26-alpha.1] - 2026-06-05
 
 ### Fixed

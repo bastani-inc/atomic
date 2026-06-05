@@ -72,39 +72,6 @@ describe("AssistantMessageComponent", () => {
 		expect(rendered).not.toContain(theme.getFgAnsi("thinkingText"));
 	});
 
-	test("renders context overflow assistant errors as yellow warnings", () => {
-		initTheme("dark");
-		const component = new AssistantMessageComponent(
-			createAssistantMessage([], {
-				stopReason: "error",
-				errorMessage:
-					'Codex error: {"type":"error","error":{"type":"invalid_request_error","code":"context_length_exceeded","message":"Your input exceeds the context window of this model. Please adjust your input and try again.","param":"input"}}',
-			}),
-		);
-
-		const rendered = component.render(120).join("\n");
-
-		expect(rendered).toContain(theme.getFgAnsi("warning"));
-		expect(rendered).not.toContain(theme.getFgAnsi("error"));
-		expect(rendered).toContain("Warning: Context window exceeded.");
-		expect(rendered).not.toContain("Error:");
-	});
-
-	test("keeps non-overflow assistant errors red", () => {
-		initTheme("dark");
-		const component = new AssistantMessageComponent(
-			createAssistantMessage([], {
-				stopReason: "error",
-				errorMessage: "Service unavailable: upstream failed",
-			}),
-		);
-
-		const rendered = component.render(120).join("\n");
-
-		expect(rendered).toContain(theme.getFgAnsi("error"));
-		expect(rendered).toContain("Error: Service unavailable: upstream failed");
-	});
-
 	test("wraps long aborted assistant messages to the render width", () => {
 		initTheme("dark");
 		const width = 48;

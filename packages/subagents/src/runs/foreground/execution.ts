@@ -53,6 +53,7 @@ import {
 	buildModelCandidates,
 	formatModelAttemptNote,
 	isRetryableModelFailure,
+	shouldSuppressExpectedAuthFallbackWarning,
 } from "../shared/model-fallback.ts";
 import {
 	createMutatingFailureState,
@@ -875,6 +876,7 @@ export async function runSync(
 	const modelAttempts: ModelAttempt[] = [];
 	const aggregateUsage = emptyUsage();
 	const attemptNotes: string[] = [];
+	const fallbackAttemptNotes: { note: string; suppressWhenFallbackSucceeds: boolean }[] = [];
 	let totalToolCount = 0;
 	let totalDurationMs = 0;
 
@@ -931,7 +933,11 @@ export async function runSync(
 		if (!isRetryableModelFailure(result.error) || i === modelsToTry.length - 1) {
 			break;
 		}
-		attemptNotes.push(formatModelAttemptNote(attempt, modelsToTry[i + 1]));
+		const nextModel = modelsToTry[i + 1];
+		fallbackAttemptNotes.push({
+			note: formatModelAttemptNote(attempt, nextModel),
+			suppressWhenFallbackSucceeds: shouldSuppressExpectedAuthFallbackWarning(result.error, attempt.model, nextModel),
+		});
 	}
 
 	const result = lastResult ?? {
@@ -943,6 +949,12 @@ export async function runSync(
 		error: "Subagent did not produce a result.",
 	} satisfies SingleResult;
 
+	const fallbackSucceeded = result.exitCode === 0 && !result.error;
+	attemptNotes.push(
+		...fallbackAttemptNotes
+			.filter((note) => !(fallbackSucceeded && note.suppressWhenFallbackSucceeds))
+			.map((note) => note.note),
+	);
 	result.usage = aggregateUsage;
 	result.attemptedModels = attemptedModels.length > 0 ? attemptedModels : undefined;
 	result.modelAttempts = modelAttempts.length > 0 ? modelAttempts : undefined;

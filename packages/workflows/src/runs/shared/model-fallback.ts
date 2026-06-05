@@ -342,6 +342,15 @@ const NON_RETRYABLE_FAILURE_PATTERNS: readonly RegExp[] = [
   /interrupted/i,
 ];
 
+const EXPECTED_MISSING_AUTH_FALLBACK_PATTERNS: readonly RegExp[] = [
+  /\bno\s+api\s+key\b/i,
+  /\bmissing\s+(?:an?\s+)?api\s+key\b/i,
+  /\bapi\s+key\s+(?:is\s+)?(?:missing|not\s+found|not\s+configured|required)\b/i,
+  /\bauth(?:entication)?\s+(?:is\s+)?(?:missing|not\s+configured|required)\b/i,
+  /\bcredentials?\s+(?:are\s+)?(?:missing|not\s+configured|required)\b/i,
+  /\b(?:not\s+logged\s+in|login\s+required)\b/i,
+];
+
 export function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   return String(error);
@@ -353,4 +362,21 @@ export function isRetryableModelFailure(error: string | Error | undefined): bool
   if (!message.trim()) return false;
   if (NON_RETRYABLE_FAILURE_PATTERNS.some((pattern) => pattern.test(message))) return false;
   return RETRYABLE_MODEL_FAILURE_PATTERNS.some((pattern) => pattern.test(message));
+}
+
+export function shouldSuppressExpectedAuthFallbackWarning(
+  error: string | Error | undefined,
+  failedModel: string | undefined,
+  nextModel: string | undefined,
+): boolean {
+  if (error === undefined || failedModel === undefined || nextModel === undefined) return false;
+  const message = typeof error === "string" ? error : error.message;
+  if (!message.trim()) return false;
+  const failedBaseModel = splitReasoningSuffix(failedModel.trim()).baseModel;
+  const nextBaseModel = splitReasoningSuffix(nextModel.trim()).baseModel;
+  if (!failedBaseModel.includes("/") || !nextBaseModel.includes("/")) return false;
+  const failedProvider = failedBaseModel.split("/", 1)[0];
+  const nextProvider = nextBaseModel.split("/", 1)[0];
+  if (!failedProvider || !nextProvider || failedProvider === nextProvider) return false;
+  return EXPECTED_MISSING_AUTH_FALLBACK_PATTERNS.some((pattern) => pattern.test(message));
 }
