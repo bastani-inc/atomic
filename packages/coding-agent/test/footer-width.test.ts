@@ -111,6 +111,20 @@ describe("UsageMeterComponent context color", () => {
 		expect(line).not.toContain(theme.fg("error", "101.2%/200k (auto)"));
 	});
 
+	it("renders near-limit auto-compacted context usage as a warning", () => {
+		const session = createSession({
+			sessionName: "",
+			contextPercent: 95.4,
+			contextWindow: 200_000,
+		});
+		const usageMeter = new UsageMeterComponent(session);
+
+		const [line] = usageMeter.render(120);
+
+		expect(line).toContain(theme.fg("warning", "95.4%/200k (auto)"));
+		expect(line).not.toContain(theme.fg("error", "95.4%/200k (auto)"));
+	});
+
 	it("keeps over-limit context usage red when auto-compaction is disabled", () => {
 		const session = createSession({
 			sessionName: "",
