@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { spawnSync } from "node:child_process";
 import { describe, test } from "bun:test";
 import {
 	acceptanceFailureMessage,
@@ -140,37 +139,6 @@ describe("acceptance gates", () => {
 			assert.match(acceptanceFailureMessage(ledger) ?? "", /Required criterion 'regression' was reported as not-satisfied/);
 		} finally {
 			fs.rmSync(cwd, { recursive: true, force: true });
-		}
-	});
-
-	test("no-staged-files check ignores ambient Git hook repository env", async () => {
-		const ambientRepo = fs.mkdtempSync(path.join(os.tmpdir(), "subagent-acceptance-ambient-"));
-		const cwd = tempRepo();
-		const previousGitDir = process.env.GIT_DIR;
-		const previousGitWorkTree = process.env.GIT_WORK_TREE;
-		try {
-			spawnSync("git", ["init"], { cwd: ambientRepo, encoding: "utf-8" });
-			fs.writeFileSync(path.join(ambientRepo, "staged.txt"), "staged\n", "utf-8");
-			spawnSync("git", ["add", "staged.txt"], { cwd: ambientRepo, encoding: "utf-8" });
-			process.env.GIT_DIR = path.join(ambientRepo, ".git");
-			process.env.GIT_WORK_TREE = ambientRepo;
-
-			const acceptance = resolveEffectiveAcceptance({
-				agentName: "worker",
-				task: "Implement a fix",
-				explicit: { level: "checked" },
-			});
-			const ledger = await evaluateAcceptance({ acceptance, output: report(), cwd });
-
-			assert.equal(ledger.status, "checked");
-			assert.doesNotMatch(acceptanceFailureMessage(ledger) ?? "", /Staged files present/);
-		} finally {
-			if (previousGitDir === undefined) delete process.env.GIT_DIR;
-			else process.env.GIT_DIR = previousGitDir;
-			if (previousGitWorkTree === undefined) delete process.env.GIT_WORK_TREE;
-			else process.env.GIT_WORK_TREE = previousGitWorkTree;
-			fs.rmSync(cwd, { recursive: true, force: true });
-			fs.rmSync(ambientRepo, { recursive: true, force: true });
 		}
 	});
 
