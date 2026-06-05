@@ -11,6 +11,8 @@ const models: AvailableModelInfo[] = [
   { provider: "anthropic", id: "claude-sonnet-4", fullId: "anthropic/claude-sonnet-4" },
   { provider: "github-copilot", id: "claude-sonnet-4", fullId: "github-copilot/claude-sonnet-4" },
   { provider: "openai", id: "gpt-5-mini", fullId: "openai/gpt-5-mini" },
+  { provider: "openai-codex", id: "gpt-5.5", fullId: "openai-codex/gpt-5.5" },
+  { provider: "local", id: "fallback", fullId: "local/fallback" },
 ];
 
 describe("subagent model fallback helpers", () => {
@@ -47,7 +49,7 @@ describe("subagent model fallback helpers", () => {
     );
   });
 
-  test("shouldSuppressExpectedAuthFallbackWarning only suppresses expected missing-auth noise before Copilot", () => {
+  test("shouldSuppressExpectedAuthFallbackWarning suppresses expected missing-auth noise across providers", () => {
     assert.equal(
       shouldSuppressExpectedAuthFallbackWarning(
         "No API key found for openai.",
@@ -68,9 +70,17 @@ describe("subagent model fallback helpers", () => {
       shouldSuppressExpectedAuthFallbackWarning(
         "No API key found for openai.",
         "openai/gpt-5.5",
-        "anthropic/claude-sonnet-4",
+        "openai-codex/gpt-5.5",
       ),
-      false,
+      true,
+    );
+    assert.equal(
+      shouldSuppressExpectedAuthFallbackWarning(
+        "Credentials are missing for anthropic.",
+        "anthropic/claude-sonnet-4",
+        "local/fallback",
+      ),
+      true,
     );
     assert.equal(
       shouldSuppressExpectedAuthFallbackWarning(

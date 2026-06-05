@@ -650,6 +650,7 @@ async function runSingleStep(
 	const attemptedModels: string[] = [];
 	const modelAttempts: ModelAttempt[] = [];
 	const attemptNotes: string[] = [];
+	const fallbackAttemptNotes: { note: string; suppressWhenFallbackSucceeds: boolean }[] = [];
 	const eventsPath = path.join(path.dirname(ctx.outputFile), "events.jsonl");
 	let finalResult: RunPiStreamingResult | undefined;
 	let finalFastMode: boolean | undefined;
@@ -771,11 +772,18 @@ async function runSingleStep(
 		if (attempt.success || completionGuardTriggered) break;
 		if (!isRetryableModelFailure(error) || index === candidates.length - 1) break;
 		const nextModel = candidates[index + 1];
-		if (!shouldSuppressExpectedAuthFallbackWarning(error, attempt.model, nextModel)) {
-			attemptNotes.push(formatModelAttemptNote(attempt, nextModel));
-		}
+		fallbackAttemptNotes.push({
+			note: formatModelAttemptNote(attempt, nextModel),
+			suppressWhenFallbackSucceeds: shouldSuppressExpectedAuthFallbackWarning(error, attempt.model, nextModel),
+		});
 	}
 
+	const fallbackSucceeded = finalResult?.exitCode === 0 && !finalResult.error;
+	attemptNotes.push(
+		...fallbackAttemptNotes
+			.filter((note) => !(fallbackSucceeded && note.suppressWhenFallbackSucceeds))
+			.map((note) => note.note),
+	);
 	const rawOutput = finalResult?.finalOutput ?? "";
 	const outputForPersistence = stripAcceptanceReport(rawOutput);
 	const resolvedOutput = step.outputPath && finalResult?.exitCode === 0

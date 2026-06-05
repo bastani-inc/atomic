@@ -785,6 +785,15 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
       return;
     }
 
+    const fallbackWarnings: { warning: string; suppressWhenFallbackSucceeds: boolean }[] = [];
+    const flushFallbackWarnings = (fallbackSucceeded: boolean): void => {
+      modelWarnings.push(
+        ...fallbackWarnings
+          .filter((entry) => !(fallbackSucceeded && entry.suppressWhenFallbackSucceeds))
+          .map((entry) => entry.warning),
+      );
+    };
+
     let index = activeCandidateIndex ?? 0;
     while (index < candidates.length) {
       const candidate = candidates[index]!;
@@ -797,17 +806,20 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
       try {
         await promptWithPauseResume(activeSession, text, sdkOptions);
         modelAttempts.push({ model: candidate.id, success: true, ...modelAttemptReasoning(candidate) });
+        flushFallbackWarnings(true);
         return;
       } catch (err) {
         const message = errorMessage(err);
         modelAttempts.push({ model: candidate.id, success: false, ...modelAttemptReasoning(candidate), error: message });
         if (signal?.aborted || !isRetryableModelFailure(message) || index === candidates.length - 1) {
+          flushFallbackWarnings(false);
           throw err;
         }
         const nextCandidate = candidates[index + 1]!;
-        if (!shouldSuppressExpectedAuthFallbackWarning(message, candidate.id, nextCandidate.id)) {
-          modelWarnings.push(`[fallback] ${candidateLabel(candidate)} failed: ${message}. Retrying with ${candidateLabel(nextCandidate)}.`);
-        }
+        fallbackWarnings.push({
+          warning: `[fallback] ${candidateLabel(candidate)} failed: ${message}. Retrying with ${candidateLabel(nextCandidate)}.`,
+          suppressWhenFallbackSucceeds: shouldSuppressExpectedAuthFallbackWarning(message, candidate.id, nextCandidate.id),
+        });
         await disposeCurrentSession();
         index += 1;
       }

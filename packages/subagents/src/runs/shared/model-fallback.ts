@@ -116,9 +116,11 @@ export function shouldSuppressExpectedAuthFallbackWarning(
 ): boolean {
 	if (!error || !failedModel || !nextModel) return false;
 	const failedBaseModel = splitKnownThinkingSuffix(failedModel.trim()).baseModel;
-	if (failedBaseModel.startsWith("github-copilot/")) return false;
 	const nextBaseModel = splitKnownThinkingSuffix(nextModel.trim()).baseModel;
-	if (!nextBaseModel.startsWith("github-copilot/")) return false;
+	if (!failedBaseModel.includes("/") || !nextBaseModel.includes("/")) return false;
+	const failedProvider = failedBaseModel.split("/", 1)[0];
+	const nextProvider = nextBaseModel.split("/", 1)[0];
+	if (!failedProvider || !nextProvider || failedProvider === nextProvider) return false;
 	return EXPECTED_MISSING_AUTH_FALLBACK_PATTERNS.some((pattern) => pattern.test(error));
 }
 

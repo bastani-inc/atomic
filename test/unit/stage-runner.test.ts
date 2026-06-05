@@ -607,6 +607,9 @@ describe("createStageContext — model fallback", () => {
                 .modelAttempts?.map((attempt) => attempt.success),
             [false, true],
         );
+        assert.deepEqual(ctx.__modelFallbackMeta().warnings, [
+            "[fallback] anthropic/primary failed: 429 rate limit exceeded. Retrying with openai/fallback.",
+        ]);
     });
 
     test("workflow fast mode keeps raw model metadata with a structured fast flag", async () => {
@@ -1380,7 +1383,7 @@ describe("createStageContext — reasoning suffix retry behavior", () => {
         );
     });
 
-    test("suppresses expected missing API key fallback warnings before Copilot", async () => {
+    test("suppresses expected missing API key fallback warnings after a non-Copilot fallback succeeds", async () => {
         const calls: string[] = [];
         const agentSession: AgentSessionAdapter = {
             async create(options) {
@@ -1391,7 +1394,7 @@ describe("createStageContext — reasoning suffix retry behavior", () => {
                         if (model === "openai/primary") throw new Error("No API key found for openai.");
                     },
                     getLastAssistantText() {
-                        return model === "github-copilot/fallback" ? "copilot answer" : undefined;
+                        return model === "openai-codex/fallback" ? "codex answer" : undefined;
                     },
                 });
                 return session;
@@ -1402,19 +1405,55 @@ describe("createStageContext — reasoning suffix retry behavior", () => {
                 adapters: { agentSession },
                 stageOptions: {
                     model: "openai/primary",
-                    fallbackModels: ["github-copilot/fallback:medium"],
+                    fallbackModels: ["openai-codex/fallback:medium"],
                 },
             }),
         ) as InternalStageContext;
 
-        assert.equal(await ctx.prompt("go"), "copilot answer");
-        assert.deepEqual(calls, ["openai/primary", "github-copilot/fallback"]);
+        assert.equal(await ctx.prompt("go"), "codex answer");
+        assert.deepEqual(calls, ["openai/primary", "openai-codex/fallback"]);
         assert.equal(ctx.__modelFallbackMeta().warnings, undefined);
         assert.deepEqual(
             ctx.__modelFallbackMeta().modelAttempts?.map((attempt) => ({ model: attempt.model, success: attempt.success })),
             [
                 { model: "openai/primary", success: false },
-                { model: "github-copilot/fallback", success: true },
+                { model: "openai-codex/fallback", success: true },
+            ],
+        );
+    });
+
+    test("surfaces expected missing API key warnings when all fallbacks fail", async () => {
+        const agentSession: AgentSessionAdapter = {
+            async create(options) {
+                const model = typeof options.model === "string" ? String(options.model) : "object-model";
+                const { session } = makeMockSession({
+                    async prompt() {
+                        if (model === "openai/primary") throw new Error("No API key found for openai.");
+                        throw new Error("503 service unavailable");
+                    },
+                });
+                return session;
+            },
+        };
+        const ctx = createStageContext(
+            makeOpts({
+                adapters: { agentSession },
+                stageOptions: {
+                    model: "openai/primary",
+                    fallbackModels: ["anthropic/fallback"],
+                },
+            }),
+        ) as InternalStageContext;
+
+        await assert.rejects(ctx.prompt("go"), /503 service unavailable/);
+        assert.deepEqual(ctx.__modelFallbackMeta().warnings, [
+            "[fallback] openai/primary failed: No API key found for openai.. Retrying with anthropic/fallback.",
+        ]);
+        assert.deepEqual(
+            ctx.__modelFallbackMeta().modelAttempts?.map((attempt) => ({ model: attempt.model, success: attempt.success })),
+            [
+                { model: "openai/primary", success: false },
+                { model: "anthropic/fallback", success: false },
             ],
         );
     });

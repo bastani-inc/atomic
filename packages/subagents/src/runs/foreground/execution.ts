@@ -876,6 +876,7 @@ export async function runSync(
 	const modelAttempts: ModelAttempt[] = [];
 	const aggregateUsage = emptyUsage();
 	const attemptNotes: string[] = [];
+	const fallbackAttemptNotes: { note: string; suppressWhenFallbackSucceeds: boolean }[] = [];
 	let totalToolCount = 0;
 	let totalDurationMs = 0;
 
@@ -933,9 +934,10 @@ export async function runSync(
 			break;
 		}
 		const nextModel = modelsToTry[i + 1];
-		if (!shouldSuppressExpectedAuthFallbackWarning(result.error, attempt.model, nextModel)) {
-			attemptNotes.push(formatModelAttemptNote(attempt, nextModel));
-		}
+		fallbackAttemptNotes.push({
+			note: formatModelAttemptNote(attempt, nextModel),
+			suppressWhenFallbackSucceeds: shouldSuppressExpectedAuthFallbackWarning(result.error, attempt.model, nextModel),
+		});
 	}
 
 	const result = lastResult ?? {
@@ -947,6 +949,12 @@ export async function runSync(
 		error: "Subagent did not produce a result.",
 	} satisfies SingleResult;
 
+	const fallbackSucceeded = result.exitCode === 0 && !result.error;
+	attemptNotes.push(
+		...fallbackAttemptNotes
+			.filter((note) => !(fallbackSucceeded && note.suppressWhenFallbackSucceeds))
+			.map((note) => note.note),
+	);
 	result.usage = aggregateUsage;
 	result.attemptedModels = attemptedModels.length > 0 ? attemptedModels : undefined;
 	result.modelAttempts = modelAttempts.length > 0 ? modelAttempts : undefined;
