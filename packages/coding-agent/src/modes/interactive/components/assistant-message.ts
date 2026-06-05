@@ -6,7 +6,7 @@ const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
 const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
 
-const CONTEXT_OVERFLOW_WARNING = "Warning: Context window exceeded. Atomic is compacting the session to recover.";
+const CONTEXT_OVERFLOW_WARNING = "Warning: Context window exceeded.";
 
 /**
  * Component that renders a complete assistant message
