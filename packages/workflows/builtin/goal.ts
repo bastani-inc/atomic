@@ -1030,8 +1030,8 @@ export default defineWorkflow("goal")
       fallbackModels: [
         "openai-codex/gpt-5.5:medium",
         "github-copilot/gpt-5.5:medium",
-        "anthropic/claude-sonnet-4-8:medium",
-        "github-copilot/claude-sonnet-4.8:medium",
+        "anthropic/claude-opus-4-8:medium",
+        "github-copilot/claude-opus-4.8:medium",
       ],
       tools: goalRunnerTools,
     };
@@ -1041,8 +1041,8 @@ export default defineWorkflow("goal")
       fallbackModels: [
         "openai-codex/gpt-5.5:xhigh",
         "github-copilot/gpt-5.5:xhigh",
-        "anthropic/claude-sonnet-4-8:xhigh",
-        "github-copilot/claude-sonnet-4.8:medium",
+        "anthropic/claude-opus-4-8:xhigh",
+        "github-copilot/claude-opus-4.8:xhigh",
       ],
       tools: [...goalRunnerTools, reviewDecisionTool.name],
       customTools: [reviewDecisionTool],

@@ -620,7 +620,7 @@ async function runRalphWorkflow(
       "openai-codex/gpt-5.5:xhigh",
       "github-copilot/gpt-5.5:xhigh",
       "anthropic/claude-opus-4-8:xhigh",
-      "github-copilot/claude-opus-4.8:medium",
+      "github-copilot/claude-opus-4.8:xhigh",
     ],
     excludedTools: ["ask_user_question"],
   };
@@ -630,8 +630,8 @@ async function runRalphWorkflow(
     fallbackModels: [
       "openai-codex/gpt-5.5:medium",
       "github-copilot/gpt-5.5:medium",
-      "anthropic/claude-sonnet-4-6:medium",
-      "github-copilot/claude-sonnet-4.6:medium",
+      "anthropic/claude-opus-4-8:medium",
+      "github-copilot/claude-opus-4.8:medium",
     ],
     excludedTools: ["ask_user_question"],
   };
@@ -641,8 +641,8 @@ async function runRalphWorkflow(
     fallbackModels: [
       "openai-codex/gpt-5.5:medium",
       "github-copilot/gpt-5.5:medium",
-      "anthropic/claude-sonnet-4-6:medium",
-      "github-copilot/claude-sonnet-4.6:medium",
+      "anthropic/claude-opus-4-8:medium",
+      "github-copilot/claude-opus-4.8:medium",
     ],
     excludedTools: ["ask_user_question"],
   };
@@ -653,7 +653,7 @@ async function runRalphWorkflow(
       "openai-codex/gpt-5.5:xhigh",
       "github-copilot/gpt-5.5:xhigh",
       "anthropic/claude-opus-4-8:xhigh",
-      "github-copilot/claude-opus-4.8:medium",
+      "github-copilot/claude-opus-4.8:xhigh",
     ],
     excludedTools: ["ask_user_question"],
     customTools: [reviewDecisionTool],
