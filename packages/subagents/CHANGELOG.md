@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.8.26-alpha.2] - 2026-06-05
+
 ### Fixed
 
 - Fixed the `no-staged-files` acceptance runtime check and subagent worktree Git commands to ignore ambient Git repository environment variables, so subagents inspect the intended working tree instead of a parent hook or unrelated worktree.

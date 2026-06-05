@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.8.26-alpha.2] - 2026-06-05
+
 ### Changed
 
 - Updated the `research-codebase` skill to capture a `breaking_changes_allowed` compatibility posture before research fanout, carry it through sub-agent prompts, and record it in research documents so downstream specs and workflows do not preserve legacy APIs by default when breaking changes are allowed ([#1225](https://github.com/bastani-inc/atomic/issues/1225)).

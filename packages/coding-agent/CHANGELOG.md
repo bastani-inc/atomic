@@ -2,8 +2,11 @@
 
 ## [Unreleased]
 
+## [0.8.26-alpha.2] - 2026-06-05
+
 ### Fixed
 
+- Clarified overflow auto-compaction warnings in the TUI footer so automatic transcript compaction is reported distinctly from user-triggered compaction ([#1250](https://github.com/bastani-inc/atomic/issues/1250)).
 - Fixed internal Git subprocesses to strip ambient repository-local Git environment variables before package-manager and footer branch lookups inspect a targeted working tree.
 
 ## [0.8.26-alpha.1] - 2026-06-05
