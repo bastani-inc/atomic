@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Changed the builtin `ralph` workflow to skip pull-request creation by default unless `create_pr=true`, with a deterministic skipped `pr_report` when disabled ([#1255](https://github.com/bastani-inc/atomic/issues/1255)).
+
 ## [0.8.26-alpha.2] - 2026-06-05
 
 ### Changed

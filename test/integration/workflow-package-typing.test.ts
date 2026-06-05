@@ -69,15 +69,17 @@ describe("standalone workflow package typing", () => {
   run,
   Type,
 } from "@bastani/workflows";
-import { goal, openClaudeDesign } from "@bastani/workflows/builtin";
+import { goal, openClaudeDesign, ralph } from "@bastani/workflows/builtin";
 import goalDefault from "@bastani/workflows/builtin/goal";
 import openClaudeDesignDefault from "@bastani/workflows/builtin/open-claude-design";
+import ralphDefault from "@bastani/workflows/builtin/ralph";
 import type {
   DeepResearchCodebaseWorkflowOutputs,
   GoalWorkflowOutputs,
   GoalWorkflowStatus,
   OpenClaudeDesignWorkflowOutputs,
   RalphWorkflowOutputs,
+  RalphWorkflowRunInputs,
 } from "@bastani/workflows/builtin";
 import type {
   AgentSessionAdapter,
@@ -248,6 +250,9 @@ run(optionalOutputWorkflow, {});
 run(postRunEditedWorkflow, {});
 run(goal, { objective: "x" });
 run(goalDefault, { objective: "x" });
+run(ralph, { prompt: "x" });
+run(ralph, { prompt: "x", create_pr: true });
+run(ralphDefault, { prompt: "x", create_pr: false });
 run(openClaudeDesign, { prompt: "x", output_type: "prototype" });
 run(openClaudeDesignDefault, { prompt: "x", output_type: "tokens" });
 run(goal, { objective: "x" }).then((runResult) => {
@@ -260,14 +265,18 @@ const typedGoalOutputs: GoalWorkflowOutputs = { status: "complete", approved: tr
 const typedDesignOutputs: OpenClaudeDesignWorkflowOutputs = { approved_for_export: true, preview_path: "preview.html", refinements_completed: 1 };
 const typedDeepResearchOutputs: DeepResearchCodebaseWorkflowOutputs = { partitions: ["core"], explorer_count: 1, research_doc_path: "research.md" };
 const typedRalphOutputs: RalphWorkflowOutputs = { approved: true, iterations_completed: 1, plan_path: "spec.md" };
+const typedRalphRunInputs: RalphWorkflowRunInputs = { prompt: "x", create_pr: true };
 void typedGoalOutputs;
 void typedDesignOutputs;
 void typedDeepResearchOutputs;
 void typedRalphOutputs;
+void typedRalphRunInputs;
 // @ts-expect-error builtin goal status is a declared literal union.
 const invalidGoalOutputs: GoalWorkflowOutputs = { status: "done" };
 // @ts-expect-error builtin open-claude-design only accepts runtime-declared output_type values.
 run(openClaudeDesign, { prompt: "x", output_type: "flow" });
+// @ts-expect-error builtin ralph create_pr must be boolean.
+run(ralph, { prompt: "x", create_pr: "true" });
 // @ts-expect-error builtin goal requires an objective input.
 run(goal, {});
 // @ts-expect-error builtin goal default export requires an objective input.

@@ -70,12 +70,14 @@ export type RalphWorkflowInputs = WorkflowInputValues & {
   readonly max_loops: number;
   readonly base_branch: string;
   readonly git_worktree_dir: string;
+  readonly create_pr: boolean;
 };
 export type RalphWorkflowRunInputs = WorkflowInputValues & {
   readonly prompt: string;
   readonly max_loops?: number;
   readonly base_branch?: string;
   readonly git_worktree_dir?: string;
+  readonly create_pr?: boolean;
 };
 export type RalphWorkflowOutputs = WorkflowOutputValues & {
   readonly result?: string;

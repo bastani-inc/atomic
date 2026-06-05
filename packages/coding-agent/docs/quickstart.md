@@ -73,12 +73,12 @@ Atomic ships with four workflows you can run immediately. Use `/workflow list` t
 |---|---|---|
 | `deep-research-codebase` | Broad, cross-cutting research before you decide what to change. Scout → research-history → parallel specialist waves → aggregator. | `/workflow deep-research-codebase prompt="How do payment retries work end to end?"` |
 | `goal` | Small-to-medium scope changes when you can identify the work surface, state the exact outcome, and name the validation that proves it is done — for example tests, lint/typecheck, docs builds, or observable behavior. Keeps the run bounded with a goal ledger, reviewer gates, and final status `complete`, `blocked`, or `needs_human`. | `/workflow goal objective="Implement specs/2026-03-rate-limit.md, run the focused tests, and finish when burst traffic returns 429"` |
-| `ralph` | Larger migrations, broad refactors, multi-package changes, and spec-to-PR work where you want Atomic to plan the approach, delegate implementation through sub-agents, simplify, review, iterate, and prepare a pull-request report. | `/workflow ralph prompt="Plan the database migration, implement it, review it, and prepare a PR"` |
+| `ralph` | Larger migrations, broad refactors, multi-package changes, and spec-to-reviewed-change work where you want Atomic to plan the approach, delegate implementation through sub-agents, simplify, review, iterate, and optionally let only the final stage attempt PR creation with `create_pr=true`. | `/workflow ralph prompt="Plan the database migration, implement it, review it, and prepare a PR" create_pr=true` |
 | `open-claude-design` | UI and design-system work with generation, critique, and refinement loops; renders a live `preview.html` you can iterate against. | `/workflow open-claude-design prompt="Refresh the settings page hierarchy" output_type=page` |
 
 <p align="center"><img src="images/workflow-list.png" alt="Workflow List" width="600" /></p>
 
-Inputs are bare `key=value` tokens. Values are JSON-parsed when possible, so `count=5`, `flag=true`, and `objective="multi word value"` preserve useful types. Some workflows expose reusable worktree inputs; for example, add `git_worktree_dir=../atomic-ralph-wt` to `ralph` to run its stages in a created/reused Git worktree while preserving your current repo-relative cwd. If you call `/workflow <name>` without required inputs, the TUI opens an inline picker; pass `--no-picker` to skip it.
+Inputs are bare `key=value` tokens. Values are JSON-parsed when possible, so `count=5`, `flag=true`, and `objective="multi word value"` preserve useful types. Some workflows expose reusable worktree inputs; for example, add `git_worktree_dir=../atomic-ralph-wt` to `ralph` to run its stages in a created/reused Git worktree while preserving your current repo-relative cwd. Ralph skips PR creation by default; prompt text alone, even a request to "prepare a PR", does not opt in. Add `create_pr=true` only when you want its final `pull-request` stage to inspect GitHub credentials and attempt a PR; earlier Ralph stages still prepare code, tests, docs, validation evidence, and notes only. If you call `/workflow <name>` without required inputs, the TUI opens an inline picker; pass `--no-picker` to skip it.
 
 You can also launch workflows with **natural language** — just describe the task in chat and ask Atomic to run the matching workflow:
 
@@ -94,7 +94,7 @@ Atomic picks the workflow, fills in inputs from the request, and confirms before
 
 Use `goal` for small-to-medium scope changes when you can identify the work surface, state the exact outcome you want, and name the validation that proves it is done — for example specific tests, lint/typecheck commands, docs builds, or observable behavior. It keeps the run bounded, captures receipts in a goal ledger, gates completion through reviewers, and stops as `complete`, `blocked`, or `needs_human`.
 
-Keep using `ralph` for larger migrations, broad refactors, multi-package changes, and spec-to-PR work where you want Atomic to plan the approach, delegate implementation through sub-agents, simplify, review, iterate, and prepare a pull-request report.
+Keep using `ralph` for larger migrations, broad refactors, multi-package changes, and spec-to-reviewed-change work where you want Atomic to plan the approach, delegate implementation through sub-agents, simplify, review, iterate, and optionally allow only the final `pull-request` stage to attempt PR creation with `create_pr=true`.
 
 ### Monitor and steer a run
 
@@ -125,7 +125,7 @@ Skills are reusable expert instructions. Trigger one with `/skill:<name>` follow
 | `tdd` | Test-first feature or bug work. | `/skill:tdd` |
 | `impeccable` | Critique or refine frontend and product UI. | `/skill:impeccable` |
 
-Use `/skill:research-codebase` for a focused area and `/workflow deep-research-codebase` when the answer spans the whole repo. A typical focused flow is `/skill:research-codebase` → `/skill:create-spec` → `/workflow goal` with an objective that identifies the work surface, states the exact outcome, and names the validation that proves it is done. Keep using `/workflow ralph` for larger migrations, broad refactors, multi-package changes, and spec-to-PR work where you want Atomic to plan, delegate through sub-agents, simplify, review, iterate, and prepare a pull-request report.
+Use `/skill:research-codebase` for a focused area and `/workflow deep-research-codebase` when the answer spans the whole repo. A typical focused flow is `/skill:research-codebase` → `/skill:create-spec` → `/workflow goal` with an objective that identifies the work surface, states the exact outcome, and names the validation that proves it is done. Keep using `/workflow ralph` for larger migrations, broad refactors, multi-package changes, and spec-to-reviewed-change work where you want Atomic to plan, delegate through sub-agents, simplify, review, iterate, and optionally allow only the final `pull-request` stage to attempt PR creation with `create_pr=true`.
 
 ### Create your own workflow in natural language
 

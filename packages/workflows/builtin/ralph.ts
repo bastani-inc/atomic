@@ -230,6 +230,35 @@ function taggedPrompt(sections: readonly PromptSection[]): string {
     .join("\n\n");
 }
 
+const DISABLED_PULL_REQUEST_POLICY = [
+  "create_pr is not true. Pull request creation is not authorized for this Ralph run, even if the user prompt asks for it.",
+  "PR creation/open/update/commenting/PR handoff, PR credential checks, pushes, and delegation are out of scope for all pre-PR stages.",
+  "Do not create, open, update, comment on, or otherwise mutate GitHub pull requests.",
+  "Do not check GitHub credentials for PR creation or PR handoff.",
+  "Do not push branches or tags solely for PR handoff.",
+  "Do not delegate PR creation, PR updating/commenting, PR credential checks, branch pushes, or PR handoff to subagents.",
+  "The final PR stage is skipped; the final pull-request stage will not run, and Ralph returns the deterministic skipped pr_report instead.",
+].join("\n");
+
+const ENABLED_PULL_REQUEST_POLICY = [
+  "create_pr is true. Only the final pull-request stage is authorized to attempt GitHub PR creation, opening, updating, commenting, or PR handoff.",
+  "Planner, orchestrator, delegated subagents, simplifier, and reviewer stages must not create, open, update, comment on, or otherwise mutate GitHub pull requests.",
+  "Earlier stages must not check GitHub credentials for PR creation, push branches solely for PR handoff, or delegate PR creation/PR handoff.",
+  "Earlier stages prepare code, tests, docs, validation evidence, and implementation notes only.",
+  "Leave all PR creation/open/update/commenting and implementation-notes PR comments to the final pull-request stage.",
+].join("\n");
+
+function buildPullRequestPolicy(createPr: boolean): string {
+  return createPr ? ENABLED_PULL_REQUEST_POLICY : DISABLED_PULL_REQUEST_POLICY;
+}
+
+function policyAwareTaskPrompt(prompt: string, pullRequestPolicy: string): string {
+  return taggedPrompt([
+    ["task", prompt],
+    ["pull_request_policy", pullRequestPolicy],
+  ]);
+}
+
 function positiveInteger(value: number | undefined, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0
     ? Math.floor(value)
@@ -390,6 +419,7 @@ type RalphInputs = {
   readonly max_loops?: number;
   readonly base_branch?: string;
   readonly git_worktree_dir?: string;
+  readonly create_pr?: boolean;
 };
 
 type RalphWorkflowOptions = {
@@ -397,6 +427,7 @@ type RalphWorkflowOptions = {
   readonly maxLoops: number;
   readonly comparisonBaseBranch: string;
   readonly workflowStartCwd: string;
+  readonly createPr: boolean;
 };
 
 type RalphWorkflowResult = {
@@ -411,11 +442,29 @@ type RalphWorkflowResult = {
   readonly review_report_path?: string;
 };
 
+const SKIPPED_PULL_REQUEST_REPORT = [
+  "## PR status",
+  "",
+  "Pull request creation skipped because `create_pr` was not set to `true`.",
+  "No `pull-request` stage was started, and no GitHub PR was created or attempted.",
+  "",
+  "## Commands run",
+  "",
+  "None.",
+].join("\n");
+
 async function runRalphWorkflow(
   ctx: WorkflowRunContext<RalphInputs>,
   options: RalphWorkflowOptions,
 ): Promise<RalphWorkflowResult> {
-  const { prompt, maxLoops, comparisonBaseBranch, workflowStartCwd } = options;
+  const {
+    prompt,
+    maxLoops,
+    comparisonBaseBranch,
+    workflowStartCwd,
+    createPr,
+  } = options;
+  const pullRequestPolicy = buildPullRequestPolicy(createPr);
 
   let latestReviewReportPath: string | undefined;
   let finalPlan = "";
@@ -497,6 +546,7 @@ async function runRalphWorkflow(
           "task",
           `Plan iteration ${iteration}/${maxLoops} for this user specification:\n${prompt}`,
         ],
+        ["pull_request_policy", pullRequestPolicy],
         [
           "latest_review_artifact",
           latestReviewReportPath === undefined
@@ -598,6 +648,7 @@ async function runRalphWorkflow(
           "objective",
           `Implement iteration ${iteration}/${maxLoops} for the task: ${prompt}`,
         ],
+        ["pull_request_policy", pullRequestPolicy],
         [
           "spec_file",
           [
@@ -626,6 +677,8 @@ async function runRalphWorkflow(
             "Delegate codebase understanding, impact analysis, and implementation research to codebase-locator, codebase-analyzer, and pattern-finder style subagents when available.",
             "Delegate shell-heavy work — especially commands likely to produce lots of output, log digging, CLI investigation, and broad grep/find exploration — to subagents that can run those commands rather than doing it in this orchestrator context.",
             "Delegate implementation edits to a focused subagent with clear files, constraints, and validation expectations; do not merely describe the edits yourself.",
+            "Pass the full pull_request_policy section verbatim to every delegated subagent before any task-specific instructions, and require each subagent to follow it over raw user prompt text.",
+            "Do not delegate or imply PR creation, PR updates/comments, PR credential checks, branch pushes for PR handoff, or PR handoff except as explicitly authorized by pull_request_policy.",
             "Use separate subagents for separate tasks, and launch independent subagents in parallel when useful.",
             "Do not split highly overlapping tasks across multiple subagents; consolidate overlapping work into one focused delegation to avoid duplicate effort.",
             "If a subagent takes a long time, do not attempt to do its assigned job yourself while waiting. Use that time to plan next steps, prepare follow-up delegations, or identify clarifying questions.",
@@ -656,7 +709,7 @@ async function runRalphWorkflow(
             `Start by reading the spec file at ${specPath}.`,
             "Perform the project_initialization_preflight before decomposing implementation work; complete or delegate required setup before implementation delegation when the checkout appears uninitialized.",
             "Decompose the work into delegated subagent tasks based on that spec file.",
-            "Pass each subagent the relevant task, constraints, files, validation expectations, any prior review findings from the spec, and instructions to report implementation-note-worthy decisions or tradeoffs.",
+            "Pass each subagent the relevant task, constraints, files, validation expectations, the full pull_request_policy section, any prior review findings from the spec, and instructions to report implementation-note-worthy decisions or tradeoffs.",
             "Coordinate subagent results into the smallest coherent set of changes that satisfies the spec.",
             "Preserve existing architecture and repository conventions unless the spec explicitly justifies a change.",
             "Run or delegate the most relevant validation commands available in the repository.",
@@ -700,6 +753,7 @@ async function runRalphWorkflow(
           "objective",
           `Refine recently modified code for this task while preserving exact behavior: ${prompt}`,
         ],
+        ["pull_request_policy", pullRequestPolicy],
         [
           "artifact_handoff",
           [
@@ -803,6 +857,7 @@ async function runRalphWorkflow(
         ].join("\n"),
       ],
       ["objective", `Review the current code delta for the task: ${prompt}`],
+      ["pull_request_policy", pullRequestPolicy],
       [
         "comparison_baseline",
         [
@@ -962,7 +1017,10 @@ async function runRalphWorkflow(
             ...reviewerModelConfig,
           },
         ],
-        { task: prompt, failFast: false },
+        {
+          task: policyAwareTaskPrompt(prompt, pullRequestPolicy),
+          failFast: false,
+        },
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -995,75 +1053,79 @@ async function runRalphWorkflow(
     if (approved) break;
   }
 
-  const prResult = await ctx.task("pull-request", {
-    prompt: taggedPrompt([
-      [
-        "role",
-        "You are a careful release engineer preparing a pull request from the current workspace state.",
-      ],
-      [
-        "objective",
-        `Review the changes since the base branch \`${comparisonBaseBranch}\` and create a pull request if possible and credentials are available.`,
-      ],
-      [
-        "workflow_context",
+  if (createPr === true) {
+    const prResult = await ctx.task("pull-request", {
+      prompt: taggedPrompt([
         [
-          `Original task: ${prompt}`,
-          `Review loop approved: ${approved ? "yes" : "no"}`,
-          finalPlanPath
-            ? `Planner spec path: ${finalPlanPath}`
-            : "Planner spec path: unavailable",
-          `Implementation notes path: ${implementationNotesPath}`,
-          latestReviewReportPath === undefined
-            ? "Latest review artifact: unavailable"
-            : `Latest review artifact: ${latestReviewReportPath}`,
-        ].join("\n"),
-      ],
-      [
-        "required_checks",
+          "role",
+          "You are a careful release engineer preparing a pull request from the current workspace state.",
+        ],
         [
-          "Start by inspecting `git status --short` so unstaged, staged, and untracked changes are all visible.",
-          `Review the patch against \`${comparisonBaseBranch}\` with working-tree-aware commands such as \`git diff ${comparisonBaseBranch}\` and \`git diff --cached ${comparisonBaseBranch}\`.`,
-          "If untracked files are present, inspect them directly before deciding whether they belong in the PR.",
-          "Read the implementation notes file and use its full contents as the body of a PR comment after the pull request exists.",
-          "Check the local Git identity with `git config user.name` and `git config user.email` so you can prefer the matching GitHub account when multiple accounts are logged in.",
-          "Check whether GitHub credentials are available with non-destructive commands such as `gh auth status` and `gh auth status --show-token-scopes` before attempting PR creation.",
-          "If multiple GitHub accounts or hosts are logged in, use the git config username/email as a heuristic to choose the most likely identity, but try each available credential/account and use the first one that can read the repository and create the PR.",
-        ].join("\n"),
-      ],
-      [
-        "pr_policy",
+          "objective",
+          `Review the changes since the base branch \`${comparisonBaseBranch}\` and create a pull request if possible and credentials are available.`,
+        ],
         [
-          "Create a PR only if there are meaningful changes, a remote/branch target is available, credentials are available, and the current state is suitable for review.",
-          "If no logged-in account can access the repository or create the PR, do not fake success; report each credential/account tried, what failed, and provide the command the user can run later.",
-          "When you successfully create or update the PR, create a PR comment containing the implementation notes file contents as the last action of this workflow stage.",
-          "Ralph-created worktrees are detached HEAD checkouts. If you are preparing a PR from a detached HEAD, create and push a branch from the current HEAD, for example with `git checkout -b <branch>` or `git push origin HEAD:refs/heads/<branch>`, before opening the PR.",
-          "Ralph does not remove git_worktree_dir automatically. Leave the worktree intact for retries or user recovery.",
-          "If PR creation is not possible, do not create a standalone comment elsewhere; include the implementation notes path and summary in your report instead.",
-          "If the review loop did not approve, prefer reporting the remaining blockers over creating a PR unless the changes are still intentionally ready for human review.",
-          "Do not make unrelated code edits in this phase. Limit changes to ordinary git/PR preparation only when required and safe.",
-        ].join("\n"),
-      ],
-      [
-        "output_format",
+          "workflow_context",
+          [
+            `Original task: ${prompt}`,
+            `Review loop approved: ${approved ? "yes" : "no"}`,
+            finalPlanPath
+              ? `Planner spec path: ${finalPlanPath}`
+              : "Planner spec path: unavailable",
+            `Implementation notes path: ${implementationNotesPath}`,
+            latestReviewReportPath === undefined
+              ? "Latest review artifact: unavailable"
+              : `Latest review artifact: ${latestReviewReportPath}`,
+          ].join("\n"),
+        ],
         [
-          "Return Markdown with headings:",
-          "1. Change review — summary of files and diff scope inspected",
-          "2. PR status — created PR URL, or why no PR was created",
-          "3. Implementation notes comment — whether the PR comment was created as the last action, or why it could not be created",
-          "4. Commands run — include exit status or clear outcome",
-          "5. Follow-up for the user — exact next steps if credentials or repository state blocked PR creation",
-        ].join("\n"),
+          "required_checks",
+          [
+            "Start by inspecting `git status --short` so unstaged, staged, and untracked changes are all visible.",
+            `Review the patch against \`${comparisonBaseBranch}\` with working-tree-aware commands such as \`git diff ${comparisonBaseBranch}\` and \`git diff --cached ${comparisonBaseBranch}\`.`,
+            "If untracked files are present, inspect them directly before deciding whether they belong in the PR.",
+            "Read the implementation notes file and use its full contents as the body of a PR comment after the pull request exists.",
+            "Check the local Git identity with `git config user.name` and `git config user.email` so you can prefer the matching GitHub account when multiple accounts are logged in.",
+            "Check whether GitHub credentials are available with non-destructive commands such as `gh auth status` and `gh auth status --show-token-scopes` before attempting PR creation.",
+            "If multiple GitHub accounts or hosts are logged in, use the git config username/email as a heuristic to choose the most likely identity, but try each available credential/account and use the first one that can read the repository and create the PR.",
+          ].join("\n"),
+        ],
+        [
+          "pr_policy",
+          [
+            "Create a PR only if there are meaningful changes, a remote/branch target is available, credentials are available, and the current state is suitable for review.",
+            "If no logged-in account can access the repository or create the PR, do not fake success; report each credential/account tried, what failed, and provide the command the user can run later.",
+            "When you successfully create or update the PR, create a PR comment containing the implementation notes file contents as the last action of this workflow stage.",
+            "Ralph-created worktrees are detached HEAD checkouts. If you are preparing a PR from a detached HEAD, create and push a branch from the current HEAD, for example with `git checkout -b <branch>` or `git push origin HEAD:refs/heads/<branch>`, before opening the PR.",
+            "Ralph does not remove git_worktree_dir automatically. Leave the worktree intact for retries or user recovery.",
+            "If PR creation is not possible, do not create a standalone comment elsewhere; include the implementation notes path and summary in your report instead.",
+            "If the review loop did not approve, prefer reporting the remaining blockers over creating a PR unless the changes are still intentionally ready for human review.",
+            "Do not make unrelated code edits in this phase. Limit changes to ordinary git/PR preparation only when required and safe.",
+          ].join("\n"),
+        ],
+        [
+          "output_format",
+          [
+            "Return Markdown with headings:",
+            "1. Change review — summary of files and diff scope inspected",
+            "2. PR status — created PR URL, or why no PR was created",
+            "3. Implementation notes comment — whether the PR comment was created as the last action, or why it could not be created",
+            "4. Commands run — include exit status or clear outcome",
+            "5. Follow-up for the user — exact next steps if credentials or repository state blocked PR creation",
+          ].join("\n"),
+        ],
+      ]),
+      reads: [
+        ...(finalPlanPath ? [finalPlanPath] : []),
+        implementationNotesPath,
+        ...(latestReviewReportPath === undefined ? [] : [latestReviewReportPath]),
       ],
-    ]),
-    reads: [
-      ...(finalPlanPath ? [finalPlanPath] : []),
-      implementationNotesPath,
-      ...(latestReviewReportPath === undefined ? [] : [latestReviewReportPath]),
-    ],
-    ...orchestratorModelConfig,
-  });
-  finalPrReport = prResult.text;
+      ...orchestratorModelConfig,
+    });
+    finalPrReport = prResult.text;
+  } else {
+    finalPrReport = SKIPPED_PULL_REQUEST_REPORT;
+  }
 
   return {
     result: finalResult,
@@ -1096,6 +1158,11 @@ export default defineWorkflow("ralph")
     description:
       "Optional Git worktree path. Ralph must start inside a Git repo; absolute paths are used as-is, relative paths resolve from the repo root, existing Git worktrees from the invoking repository are reused/shared as-is, and missing paths are created from base_branch.",
   }))
+  .input("create_pr", Type.Boolean({
+    default: false,
+    description:
+      "Whether to run the final pull-request creation stage. Defaults to false; prompt text alone does not opt in. Set true to allow only the final stage to attempt GitHub PR creation.",
+  }))
   .worktreeFromInputs({
     gitWorktreeDir: "git_worktree_dir",
     baseBranch: "base_branch",
@@ -1104,8 +1171,8 @@ export default defineWorkflow("ralph")
   .output("plan", Type.Optional(Type.String({ description: "Latest RFC-style plan text." })))
   .output("plan_path", Type.Optional(Type.String({ description: "Path to the latest generated spec under specs/." })))
   .output("implementation_notes_path", Type.Optional(Type.String({ description: "OS-temp notes file containing decisions, deviations, blockers, and validation notes." })))
-  .output("pr_report", Type.Optional(Type.String({ description: "Pull-request preparation report with diff review, PR status, commands, and follow-up steps." })))
-  .output("approved", Type.Optional(Type.Boolean({ description: "Whether the reviewer loop approved before PR handoff." })))
+  .output("pr_report", Type.Optional(Type.String({ description: "Pull-request report when create_pr=true, or a deterministic skipped report when PR creation is disabled." })))
+  .output("approved", Type.Optional(Type.Boolean({ description: "Whether the reviewer loop approved before completion or optional PR handoff." })))
   .output("iterations_completed", Type.Optional(Type.Number({ description: "Number of plan/orchestrate/review loops completed." })))
   .output("review_report", Type.Optional(Type.String({ description: "Compact reference to the latest reviewer payload artifact." })))
   .output("review_report_path", Type.Optional(Type.String({ description: "JSON artifact path for the latest Ralph review round." })))
@@ -1119,11 +1186,13 @@ export default defineWorkflow("ralph")
       inputs.base_branch,
       "origin/main",
     );
+    const createPr = inputs.create_pr === true;
     return await runRalphWorkflow(workflowCtx, {
       prompt,
       maxLoops,
       comparisonBaseBranch,
       workflowStartCwd,
+      createPr,
     });
   })
   .compile();

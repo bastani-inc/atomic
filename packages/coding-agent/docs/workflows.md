@@ -153,7 +153,7 @@ For the builtin result tables below, `deep-research-codebase`, `goal`, and `ralp
 |---|---|---|
 | `deep-research-codebase` | Scout + research-history chain → parallel specialist waves → aggregator. Indexes the whole repo and synthesizes findings. | Broad or cross-cutting research before you decide what to change. Prefer `/skill:research-codebase` for one subsystem. |
 | `goal` | Persisted goal ledger → bounded worker turns → receipts → three-reviewer gate → deterministic reducer → final report. | Small-to-medium scope changes when you can identify the work surface, state the exact outcome, and name the validation that proves it is done — for example tests, lint/typecheck, docs builds, or observable behavior. |
-| `ralph` | RFC planning → sub-agent orchestration → simplification → parallel review → PR handoff. | Larger migrations, broad refactors, multi-package changes, and spec-to-PR work where you want Atomic to plan the approach, delegate implementation through sub-agents, simplify, review, iterate, and prepare a pull-request report. |
+| `ralph` | RFC planning → sub-agent orchestration → simplification → parallel review → optional final-stage PR handoff. | Larger migrations, broad refactors, multi-package changes, and spec-to-reviewed-change work where you want Atomic to plan the approach, delegate implementation through sub-agents, simplify, review, iterate, and optionally allow only the final `pull-request` stage to attempt PR creation with `create_pr=true`. |
 | `open-claude-design` | Design-system onboarding → reference import → HTML generation → impeccable-driven refinement → quality gate → rich HTML handoff. Renders a live `preview.html` you can iterate against (opens through `browser-use` when available). | UI, page, component, theme, or design-token work that benefits from generation + critique loops. |
 
 ### `deep-research-codebase`
@@ -248,20 +248,21 @@ Inputs:
 
 | Input | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `prompt` | text | yes | — | Task, feature request, issue summary, or spec path to plan, execute, refine, review, and prepare for PR. |
-| `max_loops` | number | no | `10` | Maximum plan/orchestrate/review iterations before the workflow proceeds to PR handoff without reviewer approval. |
-| `base_branch` | string | no | `origin/main` | Branch reviewers and the PR-prep stage compare the current code delta against; also used to create a missing worktree. |
+| `prompt` | text | yes | — | Task, feature request, issue summary, or spec path to plan, execute, refine, review, and optionally prepare for PR. |
+| `max_loops` | number | no | `10` | Maximum plan/orchestrate/review iterations before the workflow completes or, when enabled, proceeds to PR handoff without reviewer approval. |
+| `base_branch` | string | no | `origin/main` | Branch reviewers and the optional PR-prep stage compare the current code delta against; also used to create a missing worktree. |
 | `git_worktree_dir` | string | no | `""` | Optional reusable Git worktree root. Empty runs in the invoking checkout; non-empty values run Ralph stages in the created/reused worktree. |
+| `create_pr` | boolean | no | `false` | Safe-by-default PR creation flag. Omitted or `false` skips the final `pull-request` stage and returns a deterministic skipped `pr_report`; prompt text alone does not opt in, and only strict `true` authorizes the final `pull-request` stage to attempt GitHub PR creation. |
 
 Run examples:
 
 ```text
 /workflow ralph prompt="Plan and migrate the database layer to Drizzle" max_loops=3 base_branch=develop
-/workflow ralph prompt="Refactor authentication across the API, CLI, and web UI, then prepare the PR"
+/workflow ralph prompt="Refactor authentication across the API, CLI, and web UI, then prepare the PR" create_pr=true
 /workflow ralph prompt="Safely implement the API refactor" git_worktree_dir=../atomic-ralph-api-wt base_branch=main
 ```
 
-Each `ralph` iteration writes an RFC-style technical design document under `specs/`, initializes an OS-temp implementation notes file, delegates implementation through sub-agents, runs a behavior-preserving code simplifier, and asks two reviewers to inspect the patch directly against `base_branch`. Reviewers discover any needed repository infrastructure themselves while inspecting the actual diff; Ralph no longer runs separate `infra-*` discovery stages. The loop stops when every reviewer approves or `max_loops` is reached, then runs a pull-request preparation stage.
+Each `ralph` iteration writes an RFC-style technical design document under `specs/`, initializes an OS-temp implementation notes file, delegates implementation through sub-agents, runs a behavior-preserving code simplifier, and asks two reviewers to inspect the patch directly against `base_branch`. Reviewers discover any needed repository infrastructure themselves while inspecting the actual diff; Ralph no longer runs separate `infra-*` discovery stages. The loop stops when every reviewer approves or `max_loops` is reached. By default Ralph does not start the final `pull-request` stage; prompt text such as "prepare the PR" does not opt in. When `create_pr` is omitted or `false`, all pre-PR stages treat PR creation/open/update/commenting, PR handoff, PR credential checks, and branch pushes for PR handoff as out of scope, and `pr_report` deterministically records that PR creation was skipped. Pass `create_pr=true` only when you explicitly want the final `pull-request` stage to inspect GitHub credentials and attempt PR creation; earlier stages still prepare code, tests, docs, validation evidence, and notes only.
 
 Set `git_worktree_dir` when you want Ralph's worker stages isolated in a reusable Git worktree. Relative paths resolve from the invoking repository root, existing same-repository worktree roots are reused, and missing paths are created from `base_branch`. Ralph preserves the invoking repo-relative cwd inside the worktree, so launching from `repo/packages/api` with `git_worktree_dir=../repo-wt` runs stages from `../repo-wt/packages/api`.
 
@@ -273,13 +274,13 @@ Result fields:
 | `plan` | Latest RFC-style plan text. |
 | `plan_path` | Path to the latest generated spec under `specs/`. |
 | `implementation_notes_path` | OS-temp notes file containing decisions, deviations, blockers, and validation notes. |
-| `pr_report` | Pull-request preparation report: diff review, PR status, commands, and follow-up steps. |
-| `approved` | Whether the reviewer loop approved before PR handoff. |
+| `pr_report` | Pull-request report when `create_pr=true`; otherwise a deterministic skipped report confirming no `pull-request` stage or GitHub PR attempt ran. |
+| `approved` | Whether the reviewer loop approved before completion or optional PR handoff. |
 | `iterations_completed` | Number of plan/orchestrate/review loops completed. |
 | `review_report` | Compact reference to the latest reviewer payload artifact. |
 | `review_report_path` | JSON artifact path for the latest Ralph review round. |
 
-A typical end-to-end flow is `/skill:research-codebase` → `/skill:create-spec` → `/workflow goal objective="Implement the researched rate-limit behavior, run the focused tests, and finish when the documented burst behavior is validated"` when you can identify the work surface, state the exact outcome, and name the validation that proves it is done. Keep using `/workflow ralph` for larger migrations, broad refactors, multi-package changes, and spec-to-PR work where you want Atomic to plan, delegate through sub-agents, simplify, review, iterate, and prepare a pull-request report.
+A typical end-to-end flow is `/skill:research-codebase` → `/skill:create-spec` → `/workflow goal objective="Implement the researched rate-limit behavior, run the focused tests, and finish when the documented burst behavior is validated"` when you can identify the work surface, state the exact outcome, and name the validation that proves it is done. Keep using `/workflow ralph` for larger migrations, broad refactors, multi-package changes, and spec-to-reviewed-change work where you want Atomic to plan, delegate through sub-agents, simplify, review, iterate, and optionally allow only the final `pull-request` stage to attempt PR creation with `create_pr=true`.
 
 ### `open-claude-design`
 
@@ -334,7 +335,7 @@ Use the goal workflow to implement specs/2026-03-rate-limit.md, run the focused 
 ```
 
 ```text
-Use the ralph workflow to plan a database-layer migration, implement it, review it, and prepare a PR.
+Use the ralph workflow to plan a database-layer migration, implement it, review it, and prepare a PR with `create_pr=true`.
 ```
 
 ```text
@@ -378,7 +379,7 @@ If the task is only deterministic TypeScript with no LLM/session stage, use a sc
 |-----------|-----|
 | Run, inspect, attach to, pause, interrupt, resume, or check status for an existing workflow | `/workflow ...` or `workflow({ action: ... })` |
 | Implement a small-to-medium scope change with an identifiable work surface, exact outcome, and named validation | `/workflow goal objective="..."` so Atomic keeps the run bounded, captures receipts in a goal ledger, gates completion through reviewers, and stops as `complete`, `blocked`, or `needs_human` |
-| Plan and execute a larger migration, broad refactor, multi-package change, or spec-to-PR effort | `/workflow ralph prompt="..."` so Atomic can plan the approach, delegate implementation through sub-agents, simplify, review, iterate, and prepare a pull-request report |
+| Plan and execute a larger migration, broad refactor, multi-package change, or spec-to-reviewed-change effort | `/workflow ralph prompt="..."` so Atomic can plan the approach, delegate implementation through sub-agents, simplify, review, iterate, and return a `pr_report`; prompt text alone does not opt in to PR creation, so add `create_pr=true` only when you want the final `pull-request` stage to run |
 | Create or edit reusable automation | a TypeScript workflow definition exported from `defineWorkflow(...).compile()` |
 | Track one-off work without saving a workflow file | direct `workflow({ task })`, `workflow({ tasks })`, or `workflow({ chain })` calls |
 | Make a workflow robust | design the stage graph, context handoffs, artifacts, validation gates, model fallbacks, and human approval points before coding |
@@ -1219,7 +1220,7 @@ Common builtin import targets:
 |---|---|---|---|
 | `deep-research-codebase` | `deepResearchCodebase` | `@bastani/workflows/builtin/deep-research-codebase` | Gather broad repo research before planning, synthesis, or implementation. |
 | `goal` | `goal` | `@bastani/workflows/builtin/goal` | Run a bounded implementation/check loop with receipts and reviewer-gated completion. |
-| `ralph` | `ralph` | `@bastani/workflows/builtin/ralph` | Delegate a larger migration/refactor/spec-to-PR effort to Ralph's plan/orchestrate/review loop. |
+| `ralph` | `ralph` | `@bastani/workflows/builtin/ralph` | Delegate a larger migration/refactor/spec-to-reviewed-change effort to Ralph's plan/orchestrate/review loop; pass `create_pr=true` to authorize only the final PR-creation stage. |
 | `open-claude-design` | `openClaudeDesign` | `@bastani/workflows/builtin/open-claude-design` | Generate and refine a UI/design artifact and handoff spec. |
 
 Example parent workflow that runs builtin deep research, then chooses either `goal` or `ralph` as the nested implementation runner:
@@ -1234,7 +1235,7 @@ export default defineWorkflow("research-then-implement")
     "runner",
     Type.Union([Type.Literal("goal"), Type.Literal("ralph")], {
       default: "goal",
-      description: "Use goal for bounded changes or Ralph for broad spec-to-PR work.",
+      description: "Use goal for bounded changes or Ralph for broad spec-to-reviewed-change work.",
     }),
   )
   .output("research_doc_path", Type.Optional(Type.String({ description: "Path to the deep-research document used for implementation." })))
@@ -1254,6 +1255,7 @@ export default defineWorkflow("research-then-implement")
       const implementation = await ctx.workflow(ralph, {
         inputs: {
           prompt: `Use the research document at ${String(research.outputs.research_doc_path)} to plan, implement, review, and prepare a PR for: ${topic}`,
+          create_pr: true,
         },
         stageName: "ralph implementation",
       });
