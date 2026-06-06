@@ -20,6 +20,16 @@ const COLOR_ARGS = {
   ],
 };
 
+const MULTI_COLOR_ARGS = {
+  questions: [
+    {
+      question: "Pick colors",
+      multiSelect: true,
+      options: [{ label: "Red" }, { label: "Green" }, { label: "Blue" }],
+    },
+  ],
+};
+
 type BuiltResult = {
   answers: Array<{
     questionIndex: number;
@@ -330,20 +340,7 @@ describe("buildStagePromptAdapter — 'Chat about this' sentinel", () => {
   });
 
   test("multiSelect text matching 'Chat about this' → kind chat", () => {
-    const adapter = buildStagePromptAdapter(
-      "p",
-      "ask_user_question",
-      {
-        questions: [
-          {
-            question: "Pick colors",
-            multiSelect: true,
-            options: [{ label: "Red" }, { label: "Green" }, { label: "Blue" }],
-          },
-        ],
-      },
-      1,
-    )!;
+    const adapter = buildStagePromptAdapter("p", "ask_user_question", MULTI_COLOR_ARGS, 1)!;
     for (const text of ["Chat about this", "  chat ABOUT this  "]) {
       const result = adapter.buildResult({ text }) as BuiltResult;
       assert.equal(result.cancelled, false);
@@ -354,20 +351,7 @@ describe("buildStagePromptAdapter — 'Chat about this' sentinel", () => {
   });
 
   test("multiSelect optionLabels containing 'Chat about this' → kind chat", () => {
-    const adapter = buildStagePromptAdapter(
-      "p",
-      "ask_user_question",
-      {
-        questions: [
-          {
-            question: "Pick colors",
-            multiSelect: true,
-            options: [{ label: "Red" }, { label: "Green" }, { label: "Blue" }],
-          },
-        ],
-      },
-      1,
-    )!;
+    const adapter = buildStagePromptAdapter("p", "ask_user_question", MULTI_COLOR_ARGS, 1)!;
     const result = adapter.buildResult({ optionLabels: ["Red", " Chat about this "] }) as BuiltResult;
     assert.equal(result.answers[0]!.kind, "chat");
     assert.equal(result.answers[0]!.answer, "Chat about this");
@@ -375,20 +359,7 @@ describe("buildStagePromptAdapter — 'Chat about this' sentinel", () => {
   });
 
   test("multiSelect comma-split candidate containing 'Chat about this' → kind chat", () => {
-    const adapter = buildStagePromptAdapter(
-      "p",
-      "ask_user_question",
-      {
-        questions: [
-          {
-            question: "Pick colors",
-            multiSelect: true,
-            options: [{ label: "Red" }, { label: "Green" }, { label: "Blue" }],
-          },
-        ],
-      },
-      1,
-    )!;
+    const adapter = buildStagePromptAdapter("p", "ask_user_question", MULTI_COLOR_ARGS, 1)!;
     const result = adapter.buildResult({ text: "Red, Chat about this" }) as BuiltResult;
     assert.equal(result.answers[0]!.kind, "chat");
     assert.equal(result.answers[0]!.answer, "Chat about this");

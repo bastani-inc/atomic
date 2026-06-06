@@ -4,6 +4,8 @@ import type { QuestionAnswer, QuestionnaireResult, QuestionParams } from "./type
 export const DECLINE_MESSAGE = "User declined to answer questions";
 export const ENVELOPE_PREFIX = "User has answered your questions:";
 export const ENVELOPE_SUFFIX = "You can now continue with the user's answers in mind.";
+const CHAT_TERMINATION_DIRECTIVE =
+	"User wants to chat about this before choosing. Stop the current task flow and wait for the user's next message.";
 
 /**
  * True when any answer in the result carries `kind: "chat"`.
@@ -37,9 +39,7 @@ export function buildQuestionnaireResponse(result: QuestionnaireResult | null | 
 	}
 	if (containsChatAnswer) {
 		const answerSegments = segments.length > 0 ? ` ${segments.join(" ")}` : "";
-		const chatDirective =
-			"User wants to chat about this before choosing. Stop the current task flow and wait for the user's next message.";
-		return buildToolResult(`${chatDirective}${answerSegments}`, result, { terminate: true });
+		return buildToolResult(`${CHAT_TERMINATION_DIRECTIVE}${answerSegments}`, result, { terminate: true });
 	}
 	if (segments.length === 0) {
 		return buildToolResult(DECLINE_MESSAGE, { answers: result.answers, cancelled: true });
