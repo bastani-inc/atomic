@@ -412,23 +412,23 @@ export default defineWorkflow("deep-research-codebase")
     );
 
     const plannerModelConfig = {
-      model: "openai/gpt-5.5:xhigh",
+      model: "openai-codex/gpt-5.5:xhigh",
       fallbackModels: [
-        "openai-codex/gpt-5.5:xhigh",
         "github-copilot/gpt-5.5:xhigh",
-        "anthropic/claude-opus-4-8:xhigh",
+        "openai/gpt-5.5:xhigh",
         "github-copilot/claude-opus-4.8:xhigh",
+        "anthropic/claude-opus-4-8:xhigh"
       ],
       excludedTools: ["ask_user_question"],
     };
 
     const explorerModelConfig = {
-      model: "openai/gpt-5.4-mini:low",
+      model: "openai-codex/gpt-5.4-mini:low",
       fallbackModels: [
-        "openai-codex/gpt-5.4-mini:low",
         "github-copilot/gpt-5.4-mini:low",
-        "anthropic/claude-haiku-4-5:low",
+        "openai/gpt-5.4-mini:low",
         "github-copilot/claude-haiku-4.5:low",
+        "anthropic/claude-haiku-4-5:low",
       ],
       excludedTools: ["ask_user_question"],
     };

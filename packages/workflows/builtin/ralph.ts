@@ -615,45 +615,45 @@ async function runRalphWorkflow(
   let iterationsCompleted = 0;
 
   const plannerModelConfig = {
-    model: "openai/gpt-5.5:xhigh",
+    model: "openai-codex/gpt-5.5:xhigh",
     fallbackModels: [
-      "openai-codex/gpt-5.5:xhigh",
-      "github-copilot/gpt-5.5:xhigh",
-      "anthropic/claude-opus-4-8:xhigh",
-      "github-copilot/claude-opus-4.8:xhigh",
+        "github-copilot/gpt-5.5:xhigh",
+        "openai/gpt-5.5:xhigh",
+        "github-copilot/claude-opus-4.8:xhigh",
+        "anthropic/claude-opus-4-8:xhigh",
     ],
     excludedTools: ["ask_user_question"],
   };
 
   const orchestratorModelConfig = {
-    model: "openai/gpt-5.5:medium",
+    model: "openai-codex/gpt-5.5:medium",
     fallbackModels: [
-      "openai-codex/gpt-5.5:medium",
-      "github-copilot/gpt-5.5:medium",
-      "anthropic/claude-opus-4-8:medium",
-      "github-copilot/claude-opus-4.8:medium",
+        "github-copilot/gpt-5.5:medium",
+        "openai/gpt-5.5:medium",
+        "github-copilot/claude-opus-4.8:medium",
+        "anthropic/claude-opus-4-8:medium",
     ],
     excludedTools: ["ask_user_question"],
   };
 
   const simplifierModelConfig = {
-    model: "openai/gpt-5.5:medium",
+    model: "openai-codex/gpt-5.5:medium",
     fallbackModels: [
-      "openai-codex/gpt-5.5:medium",
       "github-copilot/gpt-5.5:medium",
-      "anthropic/claude-opus-4-8:medium",
+      "openai/gpt-5.5:medium",
       "github-copilot/claude-opus-4.8:medium",
+      "anthropic/claude-opus-4-8:medium",
     ],
     excludedTools: ["ask_user_question"],
   };
 
   const reviewerModelConfig = {
-    model: "openai/gpt-5.5:xhigh",
+    model: "openai-codex/gpt-5.5:xhigh",
     fallbackModels: [
-      "openai-codex/gpt-5.5:xhigh",
       "github-copilot/gpt-5.5:xhigh",
-      "anthropic/claude-opus-4-8:xhigh",
+      "openai/gpt-5.5:xhigh",
       "github-copilot/claude-opus-4.8:xhigh",
+      "anthropic/claude-opus-4-8:xhigh"
     ],
     excludedTools: ["ask_user_question"],
     customTools: [reviewDecisionTool],
