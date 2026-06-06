@@ -107,6 +107,40 @@ describe("classifyWorkflowFailure", () => {
     assert.equal(failure.userMessage, WORKFLOW_MISSING_API_KEY_FAILURE_MESSAGE);
   });
 
+  test("uses missing API key diagnostics before generic wrapper code 401 defaults", () => {
+    for (const code of [401, "401"] as const) {
+      const failure = classifyWorkflowFailure({
+        code,
+        message: "provider request failed",
+        diagnostics: [{ error: { code: "missing_api_key", message: "No API key found" } }],
+      });
+
+      assert.equal(failure.kind, "auth");
+      assert.equal(failure.code, "missing_api_key");
+      assert.equal(failure.recoverability, "recoverable");
+      assert.equal(failure.disposition, "active_blocked");
+      assert.equal(failure.resumable, true);
+      assert.equal(failure.message, "No API key found");
+      assert.equal(failure.userMessage, WORKFLOW_MISSING_API_KEY_FAILURE_MESSAGE);
+    }
+  });
+
+  test("keeps generic wrapper code 401 without stronger diagnostics as invalid provider credentials", () => {
+    for (const code of [401, "401"] as const) {
+      const failure = classifyWorkflowFailure({
+        code,
+        message: "provider request failed",
+      });
+
+      assert.equal(failure.kind, "auth");
+      assert.equal(failure.code, "invalid_api_key");
+      assert.equal(failure.recoverability, "non_recoverable");
+      assert.equal(failure.disposition, "terminal_killed");
+      assert.equal(failure.resumable, false);
+      assert.equal(failure.userMessage, WORKFLOW_INVALID_PROVIDER_CREDENTIALS_MESSAGE);
+    }
+  });
+
   test("uses structured codes and causes before message fallback", () => {
     const auth = classifyWorkflowFailure({ message: "provider error", code: "AUTH_REQUIRED" });
     assert.equal(auth.kind, "auth");

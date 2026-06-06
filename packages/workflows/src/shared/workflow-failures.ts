@@ -254,6 +254,31 @@ function normalizeCode(value: string | number | undefined): string | undefined {
   return String(value).trim().toLowerCase().replaceAll("-", "_").replaceAll(" ", "_");
 }
 
+type StructuredCodeEvidence =
+  | { readonly kind: "semantic_code"; readonly normalized: string }
+  | { readonly kind: "wrapper_http_status"; readonly status: number };
+
+function httpStatusFromCode(value: string | number | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === "number") {
+    return Number.isInteger(value) && value >= 100 && value <= 599 ? value : undefined;
+  }
+  const trimmed = value.trim();
+  if (!/^\d{3}$/.test(trimmed)) return undefined;
+  const parsed = Number(trimmed);
+  return parsed >= 100 && parsed <= 599 ? parsed : undefined;
+}
+
+function codeEvidenceFrom(value: string | number | undefined): StructuredCodeEvidence | undefined {
+  const status = httpStatusFromCode(value);
+  if (status !== undefined) return { kind: "wrapper_http_status", status };
+
+  const normalized = normalizeCode(value);
+  return normalized !== undefined && normalized.length > 0
+    ? { kind: "semantic_code", normalized }
+    : undefined;
+}
+
 type TokenMatch = readonly string[];
 
 function tokenize(value: string): readonly string[] {
@@ -787,9 +812,12 @@ function structuredClassification(
   const retryAfterMs = signal.retryAfterMs;
   let weakClassification: WorkflowFailureClassification | undefined;
 
-  const codeClassification = classificationFromNormalizedCode(normalizeCode(signal.code), retryAfterMs, source, signalMessage);
-  if (codeClassification.strong !== undefined) return codeClassification.strong;
-  weakClassification = codeClassification.weak ?? weakClassification;
+  const codeEvidence = codeEvidenceFrom(signal.code);
+  if (codeEvidence?.kind === "semantic_code") {
+    const codeClassification = classificationFromNormalizedCode(codeEvidence.normalized, retryAfterMs, source, signalMessage);
+    if (codeClassification.strong !== undefined) return codeClassification.strong;
+    weakClassification = codeClassification.weak ?? weakClassification;
+  }
 
   const nameClassification = classificationFromNormalizedCode(normalizeCode(signal.name), retryAfterMs, source, signalMessage);
   if (nameClassification.strong !== undefined) return nameClassification.strong;
@@ -803,14 +831,16 @@ function structuredClassification(
   }
 
   const relatedClassification = relatedStructuredClassification(error, seen);
-  const statusDecision = decisionFromStatus(signal);
+  const effectiveStatus = signal.status ?? (codeEvidence?.kind === "wrapper_http_status" ? codeEvidence.status : undefined);
+  const statusSignal: StructuredSignal = effectiveStatus !== undefined ? { ...signal, status: effectiveStatus } : signal;
+  const statusDecision = decisionFromStatus(statusSignal);
   if (statusDecision !== undefined) {
     if (relatedClassification !== undefined && canUseRelatedClassificationBeforeStatus(relatedClassification)) {
       return relatedClassification;
     }
     if (
       signalMessage !== undefined &&
-      (signal.status === 401 || signal.status === 403) &&
+      (effectiveStatus === 401 || effectiveStatus === 403) &&
       messageDecision !== undefined &&
       canRefineStatusDecisionWithMessage(messageDecision)
     ) {
