@@ -328,4 +328,70 @@ describe("buildStagePromptAdapter — 'Chat about this' sentinel", () => {
     assert.equal(result.answers[0]!.kind, "chat");
     assert.equal(result.answers[0]!.answer, "Chat about this");
   });
+
+  test("multiSelect text matching 'Chat about this' → kind chat", () => {
+    const adapter = buildStagePromptAdapter(
+      "p",
+      "ask_user_question",
+      {
+        questions: [
+          {
+            question: "Pick colors",
+            multiSelect: true,
+            options: [{ label: "Red" }, { label: "Green" }, { label: "Blue" }],
+          },
+        ],
+      },
+      1,
+    )!;
+    for (const text of ["Chat about this", "  chat ABOUT this  "]) {
+      const result = adapter.buildResult({ text }) as BuiltResult;
+      assert.equal(result.cancelled, false);
+      assert.deepEqual(result.answers, [
+        { questionIndex: 0, question: "Pick colors", kind: "chat", answer: "Chat about this" },
+      ]);
+    }
+  });
+
+  test("multiSelect optionLabels containing 'Chat about this' → kind chat", () => {
+    const adapter = buildStagePromptAdapter(
+      "p",
+      "ask_user_question",
+      {
+        questions: [
+          {
+            question: "Pick colors",
+            multiSelect: true,
+            options: [{ label: "Red" }, { label: "Green" }, { label: "Blue" }],
+          },
+        ],
+      },
+      1,
+    )!;
+    const result = adapter.buildResult({ optionLabels: ["Red", " Chat about this "] }) as BuiltResult;
+    assert.equal(result.answers[0]!.kind, "chat");
+    assert.equal(result.answers[0]!.answer, "Chat about this");
+    assert.equal(result.answers[0]!.selected, undefined);
+  });
+
+  test("multiSelect comma-split candidate containing 'Chat about this' → kind chat", () => {
+    const adapter = buildStagePromptAdapter(
+      "p",
+      "ask_user_question",
+      {
+        questions: [
+          {
+            question: "Pick colors",
+            multiSelect: true,
+            options: [{ label: "Red" }, { label: "Green" }, { label: "Blue" }],
+          },
+        ],
+      },
+      1,
+    )!;
+    const result = adapter.buildResult({ text: "Red, Chat about this" }) as BuiltResult;
+    assert.equal(result.answers[0]!.kind, "chat");
+    assert.equal(result.answers[0]!.answer, "Chat about this");
+    assert.equal(result.answers[0]!.selected, undefined);
+  });
 });
