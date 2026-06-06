@@ -53,7 +53,10 @@ type PromptSection = readonly [tag: string, content: string];
 
 function taggedPrompt(sections: readonly PromptSection[]): string {
   return sections
-    .map(([tag, content]) => `<${tag}>\n${content.trim()}\n</${tag}>`)
+    .map(([tag, content]) => {
+      const trimmed = content.trim();
+      return `<${tag}>\n${trimmed}\n</${tag}>`;
+    })
     .join("\n\n");
 }
 
@@ -79,28 +82,135 @@ function isFileLike(value: string): boolean {
   return trimmed.length > 0 && !isUrl(trimmed);
 }
 
-function refinementComplete(text: string): boolean {
-  const normalized = text.toLowerCase();
-  return (
-    normalized.includes("refinement complete") ||
-    normalized.includes("approved for export") ||
-    normalized.trim() === "done"
-  );
+type RefinementDecision = {
+  readonly ready_for_export: boolean;
+  readonly rationale: string;
+  readonly required_changes: readonly string[];
+};
+
+type ExportGateFinding = {
+  readonly finding: string;
+  readonly evidence: string;
+  readonly why_blocking: string;
+  readonly must_fix_action: string;
+  readonly severity: "P0";
+};
+
+type ExportGateDecision = {
+  readonly has_blocking_findings: boolean;
+  readonly rationale: string;
+  readonly blocking_findings: readonly ExportGateFinding[];
+};
+
+const refinementDecisionSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["ready_for_export", "rationale", "required_changes"],
+  properties: {
+    ready_for_export: { type: "boolean" },
+    rationale: { type: "string" },
+    required_changes: { type: "array", items: { type: "string" } },
+  },
+} as const;
+
+const refinementDecisionTool = {
+  name: "refinement_decision",
+  label: "Refinement Decision",
+  description: "Emit the structured design refinement decision.",
+  promptSnippet: "Emit the final refinement decision as structured data",
+  promptGuidelines: [
+    "Call refinement_decision after inspecting the preview and deciding whether another refinement iteration is needed.",
+    "This is a terminating structured-output tool; do not emit another assistant response after calling it.",
+  ],
+  parameters: refinementDecisionSchema,
+  async execute(_toolCallId: string, params: RefinementDecision) {
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(params, null, 2) }],
+      details: params,
+      terminate: true,
+    };
+  },
+};
+
+const exportGateDecisionSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["has_blocking_findings", "rationale", "blocking_findings"],
+  properties: {
+    has_blocking_findings: { type: "boolean" },
+    rationale: { type: "string" },
+    blocking_findings: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["finding", "evidence", "why_blocking", "must_fix_action", "severity"],
+        properties: {
+          finding: { type: "string" },
+          evidence: { type: "string" },
+          why_blocking: { type: "string" },
+          must_fix_action: { type: "string" },
+          severity: { type: "string", enum: ["P0"] },
+        },
+      },
+    },
+  },
+} as const;
+
+const exportGateDecisionTool = {
+  name: "export_gate_decision",
+  label: "Export Gate Decision",
+  description: "Emit the structured pre-export gate decision.",
+  promptSnippet: "Emit the final export gate decision as structured data",
+  promptGuidelines: [
+    "Call export_gate_decision after auditing the preview for blocking findings.",
+    "This is a terminating structured-output tool; do not emit another assistant response after calling it.",
+  ],
+  parameters: exportGateDecisionSchema,
+  async execute(_toolCallId: string, params: ExportGateDecision) {
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(params, null, 2) }],
+      details: params,
+      terminate: true,
+    };
+  },
+};
+
+function parseRefinementDecision(text: string): RefinementDecision {
+  const parsed = JSON.parse(text) as Partial<RefinementDecision>;
+  if (typeof parsed.ready_for_export !== "boolean") {
+    throw new Error("open-claude-design refinement decision missing ready_for_export.");
+  }
+  return {
+    ready_for_export: parsed.ready_for_export,
+    rationale: typeof parsed.rationale === "string" ? parsed.rationale : "",
+    required_changes: Array.isArray(parsed.required_changes)
+      ? parsed.required_changes.filter((item): item is string => typeof item === "string")
+      : [],
+  };
 }
 
-function hasBlockingFindings(text: string): boolean {
-  const normalized = text.toLowerCase();
-  if (
-    normalized.includes("no blocking findings") ||
-    normalized.includes("no banned anti-patterns")
-  ) {
-    return false;
+function parseExportGateDecision(text: string): ExportGateDecision {
+  const parsed = JSON.parse(text) as Partial<ExportGateDecision>;
+  if (typeof parsed.has_blocking_findings !== "boolean") {
+    throw new Error("open-claude-design export gate decision missing has_blocking_findings.");
   }
-  return (
-    normalized.includes("blocking") ||
-    normalized.includes("banned anti-pattern") ||
-    normalized.includes("must fix")
-  );
+  return {
+    has_blocking_findings: parsed.has_blocking_findings,
+    rationale: typeof parsed.rationale === "string" ? parsed.rationale : "",
+    blocking_findings: Array.isArray(parsed.blocking_findings)
+      ? parsed.blocking_findings.filter(
+          (item): item is ExportGateFinding =>
+            typeof item === "object" &&
+            item !== null &&
+            "finding" in item &&
+            "evidence" in item &&
+            "why_blocking" in item &&
+            "must_fix_action" in item &&
+            "severity" in item,
+        )
+      : [],
+  };
 }
 
 function joinResults(results: readonly WorkflowTaskResult[]): string {
@@ -151,7 +261,7 @@ function prepareArtifactDir(cwd = process.cwd()): {
 }
 
 const HTML_PREVIEW_RULES = [
-  "Produce a single self-contained HTML5 document. Inline all CSS in a <style> block and inline any JS in a <script> block; no external network requests except Google Fonts when explicitly required.",
+  "Produce a single self-contained HTML document. Inline all CSS in a <style> block and inline any JS in a <script> block; no external network requests except Google Fonts when explicitly required.",
   "Embed realistic content that respects the design brief — no Lorem ipsum, no obvious placeholders.",
   "Implement responsive behavior with sensible breakpoints (use container queries or media queries) so the file renders well from 360px up to 1440px.",
   "Cover at minimum: default state, hover/focus state for every interactive element, empty state if relevant, loading state if relevant, error state if relevant.",
@@ -233,6 +343,16 @@ export default defineWorkflow("open-claude-design")
           "anthropic/claude-sonnet-4-6:high",
       ],
     };
+    const refinementDecisionConfig = {
+      ...designModelConfig,
+      tools: [refinementDecisionTool.name],
+      customTools: [refinementDecisionTool],
+    };
+    const exportGateDecisionConfig = {
+      ...designModelConfig,
+      tools: [exportGateDecisionTool.name],
+      customTools: [exportGateDecisionTool],
+    };
 
     let designSystem: string;
     let onboarding: readonly WorkflowTaskResult[] = [];
@@ -242,17 +362,13 @@ export default defineWorkflow("open-claude-design")
         prompt: taggedPrompt([
           [
             "role",
-            "You are an impeccable design-system analyst. Apply the impeccable `document` sub-skill to read an existing DESIGN.md / PRODUCT.md (or equivalent) and re-emit it in the six-section Google Stitch DESIGN.md format so the rest of this workflow can rely on it.",
+            "You are an opinionated staff design engineer.",
           ],
           [
             "objective",
-            `Prepare a six-section DESIGN.md-shaped brief that will steer generation of: ${prompt}`,
+            `Prepare a six-section DESIGN.md-shaped brief that will steer generation of: ${prompt}. Apply the impeccable \`document\` sub-skill to read an existing DESIGN.md / PRODUCT.md (or equivalent).`,
           ],
           ["design_system_reference", designSystemInput],
-          [
-            "impeccable_skill",
-            "document — generate a spec-compliant DESIGN.md (Overview, Colors, Typography, Elevation, Components, Do's and Don'ts) in fixed order with fixed names. Headers must be parseable by downstream tools.",
-          ],
           [
             "instructions",
             [
@@ -288,15 +404,11 @@ export default defineWorkflow("open-claude-design")
             task: taggedPrompt([
               [
                 "role",
-                "You are an impeccable design-system locator. Apply the impeccable `extract` sub-skill to find design-system evidence already living in this codebase.",
+                "You are an opinionated staff design engineer.",
               ],
               [
                 "objective",
-                `Find UI/design-system sources for this request: ${prompt}`,
-              ],
-              [
-                "impeccable_skill",
-                "extract — only flag patterns used three or more times with the same intent. Two usages are not a pattern. Identify tokens, components, composition patterns, type styles, and motion patterns.",
+                `Find UI/design-system sources for this request: ${prompt}. Apply the impeccable \`extract\` sub-skill to find design-system evidence already living in this codebase.`,
               ],
               [
                 "instructions",
@@ -319,11 +431,11 @@ export default defineWorkflow("open-claude-design")
             task: taggedPrompt([
               [
                 "role",
-                "You are an impeccable UI architecture auditor. Apply the impeccable `audit` sub-skill to score the project's UI implementation across five dimensions.",
+                "You are an opinionated staff design engineer.",
               ],
               [
                 "objective",
-                `Audit the project UI constraints that must shape: ${prompt}`,
+                `Audit the project UI constraints that must shape: ${prompt}. Apply the impeccable \`audit\` sub-skill to evaluate the located design-system evidence against impeccable's six dimensions of design quality and produce a detailed report with actionable insights for generation.`,
               ],
               [
                 "impeccable_skill",
@@ -359,15 +471,11 @@ export default defineWorkflow("open-claude-design")
             task: taggedPrompt([
               [
                 "role",
-                "You are an impeccable pattern miner. Apply the impeccable `extract` sub-skill to harvest reusable design and component patterns, plus the anti-patterns to avoid.",
+                "You are an opinionated staff design engineer.",
               ],
               [
                 "objective",
-                `Extract reusable patterns and anti-patterns for: ${prompt}`,
-              ],
-              [
-                "impeccable_skill",
-                "extract — only extract things used 3+ times with the same intent. Never extract speculatively. Always note migration implications.",
+                `Extract reusable patterns and anti-patterns for: ${prompt}. Apply the impeccable \`extract\` sub-skill to find design patterns that should be reused and anti-patterns that must be avoided in generation.`,
               ],
               [
                 "instructions",
@@ -393,15 +501,11 @@ export default defineWorkflow("open-claude-design")
         prompt: taggedPrompt([
           [
             "role",
-            "You are an impeccable design-system author. Apply the impeccable `document` sub-skill to synthesize a project-specific DESIGN.md in the six-section Google Stitch format from the three onboarding analyses.",
+            "You are a staff design enginer.",
           ],
           [
             "objective",
-            `Build the project DESIGN.md that will steer generation for: ${prompt}`,
-          ],
-          [
-            "impeccable_skill",
-            "document — output the six fixed sections in fixed order: Overview, Colors, Typography, Elevation, Components, Do's and Don'ts. Pick a single named Creative North Star metaphor; use descriptive color names; commit to non-default fonts when justified.",
+            `Build the project DESIGN.md that will steer generation for: ${prompt}. Apply the impeccable \`document\` sub-skill to synthesize a coherent design system spec from the located evidence, audit findings, and pattern analysis. This is the most critical step for generation quality; use impeccable's design knowledge to make smart calls when evidence conflicts or is incomplete.`,
           ],
           ["onboarding_analysis", "{previous}"],
           [
@@ -441,18 +545,14 @@ export default defineWorkflow("open-claude-design")
         task: taggedPrompt([
           [
             "role",
-            "You are an impeccable reference extractor for live web pages. Apply the impeccable `extract` sub-skill to pull only the design traits that should transfer into the project — never just clone the source.",
+            "You are a staff QA engineer with design expertise.",
           ],
           [
             "objective",
-            `Capture transferable design intent from this reference for: ${prompt}`,
+            `Capture transferable design intent from this reference for: ${prompt}. Apply the impeccable \`extract\` sub-skill to lift concrete, citable design traits from the reference URL. Use browser/screenshot tooling if available; never guess about visual traits without observable evidence.`,
           ],
           ["reference_url", reference],
-          [
-            "impeccable_skill",
-            "extract — separate one-off styling from repeated, intentional patterns. Only carry forward what is used 3+ times or what is structurally load-bearing.",
-          ],
-          ["browser_use_bootstrap", BROWSER_USE_BOOTSTRAP_RULES],
+          ["browser_use_guidelines", BROWSER_USE_BOOTSTRAP_RULES],
           [
             "instructions",
             [
@@ -477,17 +577,13 @@ export default defineWorkflow("open-claude-design")
         task: taggedPrompt([
           [
             "role",
-            "You are an impeccable reference parser for local design files. Apply the impeccable `extract` sub-skill to lift concrete, citable requirements out of supplied references.",
+            "You are an opinionated staff design engineer.",
           ],
           [
             "objective",
-            `Extract actionable design requirements for: ${prompt}`,
+            `Extract actionable design requirements for: ${prompt}. Apply the impeccable \`extract\` sub-skill to pull out concrete, citable design requirements from this reference file or doc. The reference might be a design file, a screenshot, a code file, or a design doc; adapt your extraction approach accordingly but never guess about traits that are not explicitly observable in the source.`,
           ],
           ["reference", reference],
-          [
-            "impeccable_skill",
-            "extract — quote or cite concrete sections/paths; never hallucinate content that is not in the source.",
-          ],
           [
             "instructions",
             [
@@ -519,21 +615,17 @@ export default defineWorkflow("open-claude-design")
       prompt: taggedPrompt([
         [
           "role",
-          "You are an impeccable design-and-build engineer. Apply the impeccable `craft` sub-skill to ship a production-quality HTML artifact that traces back to the synthesized DESIGN.md.",
+          "You are an opinionated staff design engineer.",
         ],
         [
           "objective",
-          `Generate the first revision of a production-ready ${outputType} for: ${prompt}. Write it to disk as an interactive HTML preview the user can open in a browser.`,
-        ],
-        [
-          "impeccable_skill",
-          "craft — four phases: (1) read the brief, (2) load relevant references, (3) build with deliberate ordering (structure → spacing/hierarchy → type/color → states → motion → responsive), (4) iterate visually. Every decision must trace back to the brief.",
+          `Generate the first revision of a production-ready ${outputType} for: ${prompt}. Write it to disk as an interactive HTML preview the user can open in a browser. Apply the impeccable \`craft\` sub-skill to build the design with deliberate ordering and impeccable attention to detail. Every design decision must trace back to the brief, and every visual trait must be justified by the design system or reference context.`,
         ],
         ["design_system", designSystem],
         ["reference_context", importContext],
         ["preview_artifact_path", previewPath],
         ["html_rules", HTML_PREVIEW_RULES],
-        ["anti_slop_rules", ANTI_SLOP_RULES],
+        ["anti_design_slop_rules", ANTI_SLOP_RULES],
         [
           "instructions",
           [
@@ -572,15 +664,15 @@ export default defineWorkflow("open-claude-design")
         prompt: taggedPrompt([
           [
             "role",
-            "You are a preview presenter. Your job is to make the just-generated HTML artifact visible to the user so they can give feedback.",
+            "You are an opinionated staff design engineer.",
           ],
           [
             "objective",
-            "Open the HTML preview file in a browser using browser-use and prompt the user for annotated feedback. Gracefully degrade if browser-use is unavailable.",
+            "Your job is to make the just-generated HTML artifact visible to the user so they can give feedback. Open the HTML preview file in a browser using browser-use and prompt the user for annotated feedback. Gracefully degrade if browser-use is unavailable.",
           ],
           ["preview_path", previewPath],
           ["preview_file_url", previewFileUrl],
-          ["browser_use_bootstrap", BROWSER_USE_BOOTSTRAP_RULES],
+          ["browser_use_guidelines", BROWSER_USE_BOOTSTRAP_RULES],
           [
             "instructions",
             [
@@ -608,15 +700,11 @@ export default defineWorkflow("open-claude-design")
         prompt: taggedPrompt([
           [
             "role",
-            "You are an impeccable design reviewer collecting actionable refinement feedback from the user about the rendered HTML preview. Apply the impeccable `critique` sub-skill to decide whether the artifact is ready.",
+            "You are a staff product manager with deep design and engineering empathy collecting actionable refinement feedback from the user about the rendered HTML preview. You call out bs because the user is your partner, not your boss; you want to get to a great design together, and that means being honest about what you don't like and what the user won't like. You are user-experience-obsessed.",
           ],
           [
             "objective",
-            `Decide whether refinement is needed for iteration ${iteration}/${maxRefinements} of: ${prompt}.`,
-          ],
-          [
-            "impeccable_skill",
-            "critique — score Nielsen's 10 heuristics 0–4, cognitive-load count 0–8, persona-based passes, cross-check the 25 anti-pattern detector. Produce a prioritized list, not free-form prose.",
+            `Decide whether refinement is needed for iteration ${iteration}/${maxRefinements} of: ${prompt}. Apply the impeccable \`critique\` sub-skill to decide whether the artifact is ready. Score Nielsen's 10 heuristics 0–4, cognitive-load count 0–8, persona-based passes, cross-check the 25 anti-pattern detector. Produce a prioritized list, not free-form prose.`,
           ],
           ["preview_path", previewPath],
           ["preview_file_url", previewFileUrl],
@@ -626,21 +714,26 @@ export default defineWorkflow("open-claude-design")
             [
               "1. If a previous `preview-display-*` step captured annotated user feedback or notes, honor them as the primary signal.",
               "2. Otherwise, you may inspect the HTML file at preview_path directly (read it from disk) and run an impeccable `critique` against it.",
-              "3. If the current design is ready for export, reply with the exact phrase `refinement complete — <reason>`.",
-              "4. Otherwise, list specific changes needed, ordered by user value and implementation risk. Prefer concrete fixes over subjective taste notes.",
+              "3. Decide whether the current design is ready for export using the refinement_decision structured-output tool.",
+              "4. If refinement is still needed, put specific changes in required_changes ordered by user value and implementation risk.",
               "5. Never request changes that contradict DESIGN.md unless you explicitly identify and explain the conflict.",
             ].join("\n"),
           ],
           [
             "output_format",
-            "Either the literal phrase `refinement complete — <reason>`, OR markdown bullets grouped under `Priority 1`, `Priority 2`, `Priority 3` headings.",
+            [
+              "Call the refinement_decision tool after your inspection.",
+              "Set ready_for_export=true only when the current preview needs no further refinement before export.",
+              "Set ready_for_export=false and populate required_changes when another polish iteration is needed.",
+            ].join("\n"),
           ],
         ]),
         previous: { name: "current-design", text: latestDesign },
-        ...designModelConfig,
+        ...refinementDecisionConfig,
       });
 
-      if (refinementComplete(feedback.text)) {
+      const feedbackDecision = parseRefinementDecision(feedback.text);
+      if (feedbackDecision.ready_for_export) {
         approvedForExport = true;
         break;
       }
@@ -652,15 +745,11 @@ export default defineWorkflow("open-claude-design")
             task: taggedPrompt([
               [
                 "role",
-                "You are an impeccable design critic. Apply the impeccable `critique` sub-skill to run the formal two-pass review against the live HTML preview.",
+                "You are a staff product manager with deep design and engineering empathy collecting actionable refinement feedback from the user about the rendered HTML preview. You call out bs because the user is your partner, not your boss; you want to get to a great design together, and that means being honest about what you don't like and what the user won't like. You are user-experience-obsessed.",
               ],
               [
                 "objective",
-                `Critique the current ${outputType} for: ${prompt}. Produce the formal impeccable critique report.`,
-              ],
-              [
-                "impeccable_skill",
-                "critique — two parallel passes: (a) LLM design review with Nielsen heuristic scores (0–4), cognitive-load failure count (0–8), persona scoring, and AI-slop verdict; (b) deterministic detector for the 25 anti-patterns (gradient text, purple palettes, side-tab borders, nested cards, line-length issues, etc.).",
+                `Critique the current ${outputType} for: ${prompt}. Produce the formal impeccable critique report. Apply the impeccable \`critique\` sub-skill to run the formal two-pass review against the live HTML preview.`,
               ],
               ["preview_path", previewPath],
               ["current_design_and_feedback", "{previous}"],
@@ -695,21 +784,17 @@ export default defineWorkflow("open-claude-design")
             task: taggedPrompt([
               [
                 "role",
-                "You are an impeccable visual QA specialist for the rendered HTML preview. Apply the impeccable `audit` plus `live` sub-skills to validate the rendered output against breakpoints, states, and accessibility.",
+                "You are a staff QA engineer with design expertise.",
               ],
               [
                 "objective",
-                `Validate visual implementation risks for: ${prompt}.`,
-              ],
-              [
-                "impeccable_skill",
-                "audit + live — `audit` covers contrast, performance, theming, responsive, anti-patterns with P0–P3 severities; `live` validates against the actual rendered page in a real browser, not the source.",
+                `Validate visual implementation risks for: ${prompt}. Apply the impeccable \`audit + live\` sub-skills to run a live audit against the rendered HTML preview, validating or invalidating every visual risk with evidence from the actual rendered page in a real browser, not just the source code.`,
               ],
               ["preview_path", previewPath],
               ["preview_file_url", previewFileUrl],
               ["current_design_and_feedback", "{previous}"],
               [
-                "browser_use_bootstrap",
+                "browser_use_guidelines",
                 BROWSER_USE_BOOTSTRAP_RULES,
               ],
               [
@@ -741,15 +826,11 @@ export default defineWorkflow("open-claude-design")
         prompt: taggedPrompt([
           [
             "role",
-            "You are an impeccable design polisher. Apply the impeccable `polish` — the meticulous final pass between good and great — to revise the HTML preview in place.",
+            "You are an opinionated staff design engineer.",
           ],
           [
             "objective",
-            `Produce the next ${outputType} revision for: ${prompt}. Update the HTML file in place; do not branch the artifact.`,
-          ],
-          [
-            "impeccable_skill",
-            "polish — work methodically across six dimensions: (1) visual alignment/spacing, (2) typography, (3) color/contrast, (4) interaction states, (5) transitions/motion, (6) copy. Refine; do not redesign.",
+            `Produce the next ${outputType} revision for: ${prompt}. Update the HTML file in place; do not branch the artifact. Apply the impeccable \`polish\` sub-skill to methodically apply the required changes, addressing every critique finding and screenshot-validated issue with surgical precision. This is not a redesign; it's a focused polish iteration to get from the current design to an export-ready state in one step.`,
           ],
           ["design_system", designSystem],
           ["preview_artifact_path", previewPath],
@@ -791,7 +872,7 @@ export default defineWorkflow("open-claude-design")
           prompt: taggedPrompt([
             [
               "role",
-              "You are a preview presenter. Re-open the revised HTML preview so the user can review the latest iteration.",
+              "You are a staff product manager with expertise in design. Re-open the revised HTML preview so the user can review the latest iteration.",
             ],
             [
               "objective",
@@ -827,15 +908,11 @@ export default defineWorkflow("open-claude-design")
       prompt: taggedPrompt([
         [
           "role",
-          "You are an impeccable pre-release gate. Apply the impeccable `audit` sub-skill one final time to block export only for concrete, evidence-backed issues.",
+          "You are a staff product manager with deep design and engineering empathy collecting actionable refinement feedback from the user about the rendered HTML preview. You call out bs because the user is your partner, not your boss; you want to get to a great design together, and that means being honest about what you don't like and what the user won't like. You are user-experience-obsessed.",
         ],
         [
           "objective",
-          `Final quality gate for this ${outputType}: ${prompt}. Decide whether the HTML preview at preview_path is safe to export.`,
-        ],
-        [
-          "impeccable_skill",
-          "audit — score Accessibility, Performance, Theming, Responsive, Anti-patterns 0–4. Only P0 (blocks release) findings should be marked blocking here.",
+          `Final quality gate for this ${outputType}: ${prompt}. Decide whether the HTML preview at preview_path is safe to export. Apply the impeccable \`audit\` sub-skill one final time to block export only for concrete, evidence-backed issues.`,
         ],
         ["preview_path", previewPath],
         ["final_design_summary", "{previous}"],
@@ -845,25 +922,30 @@ export default defineWorkflow("open-claude-design")
             "1. Read the HTML at preview_path and score it across all five audit dimensions.",
             "2. Scan for banned anti-patterns, accessibility blockers, severe visual regressions, missing critical states, and handoff gaps.",
             "3. Only mark findings as blocking when they would materially harm implementation or user experience (impeccable P0 severity).",
-            "4. If safe to export, use the exact phrase `no blocking findings`.",
+            "4. Decide whether export is blocked using the export_gate_decision structured-output tool.",
             "5. Every blocking finding must include selector-level evidence and a must-fix action.",
           ].join("\n"),
         ],
         [
           "output_format",
-          "Either the literal phrase `no blocking findings`, OR a markdown table: Finding | Evidence (selector/line) | Why blocking | Must-fix action | Severity (P0).",
+          [
+            "Call the export_gate_decision tool after the audit.",
+            "Set has_blocking_findings=true only when one or more P0 findings block export.",
+            "Populate blocking_findings with every blocking P0 issue; leave it empty when export is safe.",
+          ].join("\n"),
         ],
       ]),
       previous: { name: "final-design", text: latestDesign },
-      ...designModelConfig,
+      ...exportGateDecisionConfig,
     });
 
-    if (hasBlockingFindings(preExport.text)) {
+    const exportGateDecision = parseExportGateDecision(preExport.text);
+    if (exportGateDecision.has_blocking_findings) {
       const forcedFix = await ctx.task("forced-fix", {
         prompt: taggedPrompt([
           [
             "role",
-            "You are an impeccable production-readiness hardener. Apply the impeccable `harden` sub-skill to remove blocking findings without redesigning.",
+            "You are an opinionated staff design engineer. Apply the impeccable `harden` sub-skill to remove blocking findings without redesigning.",
           ],
           [
             "objective",
@@ -902,15 +984,11 @@ export default defineWorkflow("open-claude-design")
       prompt: taggedPrompt([
         [
           "role",
-          "You are an impeccable design documenter. Apply the impeccable `document` sub-skill to produce a RICH HTML SPEC that bundles the approved preview together with implementation guidance for a design/frontend engineer.",
+          "You are an opinionated staff design engineer.",
         ],
         [
           "objective",
-          `Export the final ${outputType} for "${prompt}" as a rich HTML spec the engineering team can read directly in a browser. The spec must embed or link the approved preview so reviewers see exactly what is being implemented.`,
-        ],
-        [
-          "impeccable_skill",
-          "document — the spec must mirror the six-section DESIGN.md structure (Overview, Colors, Typography, Elevation, Components, Do's and Don'ts), plus implementation-handoff sections specific to this artifact.",
+          `Export the final ${outputType} for "${prompt}" as a rich HTML spec the engineering team can read directly in a browser. The spec must embed or link the approved preview so reviewers see exactly what is being implemented. Apply the impeccable \`document\` sub-skill to produce a rich HTML spec that bundles the approved preview together with implementation guidance for another design/frontend engineer to implement.`,
         ],
         ["design_system", designSystem],
         ["preview_artifact_path", previewPath],
@@ -930,7 +1008,7 @@ export default defineWorkflow("open-claude-design")
           ].join("\n"),
         ],
         ["html_rules", HTML_PREVIEW_RULES],
-        ["anti_slop_rules", ANTI_SLOP_RULES],
+        ["anti_design_slop_rules", ANTI_SLOP_RULES],
         [
           "output_format",
           [
@@ -957,17 +1035,17 @@ export default defineWorkflow("open-claude-design")
         prompt: taggedPrompt([
           [
             "role",
-            "You are a final-spec presenter. Make the rich HTML spec visible to the user.",
+            "You are an opinionated staff design engineer.",
           ],
           [
             "objective",
-            "Open the final spec.html in a browser via browser-use so the user can review the agreed design and implementation handoff. Degrade gracefully if browser-use is unavailable.",
+            "Make the rich HTML spec visible to the user. Open the final spec.html in a browser via browser-use so the user can review the agreed design and implementation handoff. Degrade gracefully if browser-use is unavailable.",
           ],
           ["spec_path", specPath],
           ["spec_file_url", specFileUrl],
           ["preview_path", previewPath],
           ["preview_file_url", previewFileUrl],
-          ["browser_use_bootstrap", BROWSER_USE_BOOTSTRAP_RULES],
+          ["browser_use_guidelines", BROWSER_USE_BOOTSTRAP_RULES],
           [
             "instructions",
             [

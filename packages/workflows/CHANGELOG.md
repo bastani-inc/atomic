@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Refined bundled workflow prompts to keep natural instructions inside meaningful XML sections while removing redundant wrapper noise.
+
+### Fixed
+
+- Fixed the builtin `goal` and `ralph` workflows to fork looped worker/orchestrator-stage sessions from their matching prior iteration, preserving accumulated context while keeping reviewer stages independent ([#1275](https://github.com/bastani-inc/atomic/issues/1275)).
+- Fixed workflow completion gates to rely on structured decision fields instead of manual text/regex heuristics in `goal` and `open-claude-design`.
+
 ## [0.8.26-alpha.6] - 2026-06-06
 
 ### Changed

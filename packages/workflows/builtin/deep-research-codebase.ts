@@ -67,7 +67,10 @@ function codebaseSkillGuidance(
 
 function taggedPrompt(sections: readonly PromptSection[]): string {
   return sections
-    .map(([tag, content]) => `<${tag}>\n${content.trim()}\n</${tag}>`)
+    .map(([tag, content]) => {
+      const trimmed = content.trim();
+      return `<${tag}>\n${trimmed}\n</${tag}>`;
+    })
     .join("\n\n");
 }
 

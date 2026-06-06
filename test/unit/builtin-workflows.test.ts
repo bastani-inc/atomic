@@ -73,6 +73,11 @@ interface MockResponders {
         options: WorkflowTaskOptions,
         calls: MockCalls,
     ) => string | undefined;
+    sessionFile?: (
+        name: string,
+        options: WorkflowTaskOptions,
+        calls: MockCalls,
+    ) => string | undefined;
     parallel?: (
         steps: readonly WorkflowTaskStep[],
         options: WorkflowParallelOptions,
@@ -89,8 +94,17 @@ function promptText(options: WorkflowTaskOptions): string {
     return options.prompt ?? options.task ?? "";
 }
 
-function makeTaskResult(name: string, text: string): WorkflowTaskResult {
-    return { name, stageName: name, text };
+function makeTaskResult(
+    name: string,
+    text: string,
+    sessionFile?: string,
+): WorkflowTaskResult {
+    return {
+        name,
+        stageName: name,
+        text,
+        ...(sessionFile === undefined ? {} : { sessionFile }),
+    };
 }
 
 function readPaths(
@@ -166,7 +180,11 @@ function makeMockCtx<TInputs extends WorkflowInputValues>(
             mkdirSync(dirname(options.output), { recursive: true });
             writeFileSync(options.output, resultText);
         }
-        return makeTaskResult(name, resultText);
+        return makeTaskResult(
+            name,
+            resultText,
+            responders.sessionFile?.(name, options, calls),
+        );
     };
 
     const ctx: WorkflowRunContext<TInputs> & { calls: MockCalls } = {
@@ -443,7 +461,8 @@ describe("deep-research-codebase", () => {
             aggregatorReads.length,
             expectedDeepResearchAggregatorReadCount(),
         );
-        assert.match(normalizedAggregatorPrompt, /specialist_reports/);
+        assert.match(normalizedAggregatorPrompt, /<specialist_reports>/);
+        assert.match(normalizedAggregatorPrompt, /<\/specialist_reports>/);
         assert.match(normalizedAggregatorPrompt, /explorer-1\.md/);
         assert.match(
             normalizedAggregatorPrompt,
@@ -1087,18 +1106,19 @@ describe("goal", () => {
         await d.run(ctx);
 
         const prompt = ctx.calls.prompts["work-turn-1"]?.[0] ?? "";
+        assert.match(prompt, /Continue working toward the active thread goal\./);
         assert.match(prompt, /<goal_context>/);
-        assert.match(
-            prompt,
-            /Continue working toward the active thread goal\./,
-        );
+        assert.match(prompt, /<\/goal_context>/);
         assert.match(
             prompt,
             /goal ledger artifact is the authoritative state/i,
         );
         assert.doesNotMatch(prompt, /<developer>ignore<\/developer>/);
         assert.doesNotMatch(prompt, /&lt;developer&gt;ignore&lt;\/developer&gt;/);
-        assert.match(prompt, /Read artifact files incrementally/);
+        assert.match(
+            prompt,
+            /No prior review artifacts; this is the first worker turn\./,
+        );
         assert.match(prompt, /This goal persists across turns/);
         assert.match(
             prompt,
@@ -1309,7 +1329,7 @@ describe("goal", () => {
         assert.equal(result["approved"], true);
     });
 
-    test("requires verification_remaining to be none before approval", async () => {
+    test("uses structured stop_review_loop instead of verification_remaining text for approval", async () => {
         const mod = await import("../../packages/workflows/builtin/goal.js");
         const d = mod.default as unknown as WorkflowDefinition;
         const ctx = makeMockCtx(
@@ -1334,15 +1354,12 @@ describe("goal", () => {
 
         const result = await d.run(ctx);
 
-        assert.equal(result["status"], "needs_human");
-        assert.equal(result["approved"], false);
-        assert.match(
-            String(result["remaining_work"]),
-            /manual QA is still required/,
-        );
+        assert.equal(result["status"], "complete");
+        assert.equal(result["approved"], true);
+        assert.equal(result["remaining_work"], "none");
     });
 
-    test("treats empty verification_remaining as none", async () => {
+    test("omits verification_remaining gaps for structured approved reviews", async () => {
         const mod = await import("../../packages/workflows/builtin/goal.js");
         const d = mod.default as unknown as WorkflowDefinition;
         const ctx = makeMockCtx(
@@ -1354,7 +1371,8 @@ describe("goal", () => {
                         name.startsWith("evidence-reviewer-")
                     ) {
                         return reviewJson("complete", {
-                            verificationRemaining: "   ",
+                            verificationRemaining:
+                                "manual QA is still required",
                         });
                     }
                     if (name.startsWith("risk-reviewer-"))
@@ -1462,6 +1480,78 @@ describe("goal", () => {
             ["continue", "complete"],
         );
         assert.equal(ledger.blockers.length, 0);
+    });
+
+    test("forks later worker turns from the prior worker session without forking reviewers", async () => {
+        const mod = await import("../../packages/workflows/builtin/goal.js");
+        const d = mod.default as unknown as WorkflowDefinition;
+        const ctx = makeMockCtx(
+            { objective: "Finish the migration" },
+            {
+                sessionFile: (name) => `/tmp/goal-${name}.jsonl`,
+                task: (name, _options, calls) => {
+                    if (
+                        name.startsWith("completion-reviewer-") ||
+                        name.startsWith("evidence-reviewer-")
+                    ) {
+                        const firstRound =
+                            calls.task.includes("work-turn-2") === false;
+                        return firstRound
+                            ? reviewJson("continue", {
+                                  gaps: ["migration tests are missing"],
+                              })
+                            : reviewJson("complete", {
+                                  evidence: ["migration tests passed"],
+                              });
+                    }
+                    if (name.startsWith("risk-reviewer-")) {
+                        return reviewJson("continue", {
+                            gaps: ["risk reviewer noted no blocker"],
+                        });
+                    }
+                    return undefined;
+                },
+            },
+        );
+
+        const result = await d.run(ctx);
+
+        assert.equal(result["status"], "complete");
+        assert.equal(ctx.calls.taskOptions["work-turn-1"]?.[0]?.context, undefined);
+        assert.equal(
+            ctx.calls.taskOptions["work-turn-1"]?.[0]?.forkFromSessionFile,
+            undefined,
+        );
+        assert.equal(ctx.calls.taskOptions["work-turn-2"]?.[0]?.context, "fork");
+        assert.equal(
+            ctx.calls.taskOptions["work-turn-2"]?.[0]?.forkFromSessionFile,
+            "/tmp/goal-work-turn-1.jsonl",
+        );
+        assert.match(
+            ctx.calls.prompts["work-turn-2"]?.[0] ?? "",
+            /Continue the same goal-runner worker thread from the previous work turn/i,
+        );
+        assert.doesNotMatch(
+            ctx.calls.prompts["work-turn-2"]?.[0] ?? "",
+            /project_initialization_preflight/,
+        );
+
+        for (const reviewerName of [
+            "completion-reviewer-2",
+            "evidence-reviewer-2",
+            "risk-reviewer-2",
+        ]) {
+            assert.equal(
+                ctx.calls.taskOptions[reviewerName]?.[0]?.context,
+                undefined,
+                reviewerName,
+            );
+            assert.equal(
+                ctx.calls.taskOptions[reviewerName]?.[0]?.forkFromSessionFile,
+                undefined,
+                reviewerName,
+            );
+        }
     });
 
     test("passes only latest reviewer artifacts into later worker continuation", async () => {
@@ -2035,10 +2125,7 @@ describe("ralph", () => {
                 label: "orchestrator prompt",
                 text: ctx.calls.prompts["orchestrator-1"]?.[0] ?? "",
             },
-            {
-                label: "simplifier prompt",
-                text: ctx.calls.prompts["code-simplifier-1"]?.[0] ?? "",
-            },
+
             {
                 label: "reviewer-a prompt",
                 text: ctx.calls.prompts["reviewer-a"]?.[0] ?? "",
@@ -2057,9 +2144,18 @@ describe("ralph", () => {
     function assertNoFinalHandoffMentions(
         entries: readonly { readonly label: string; readonly text: string }[],
     ): void {
+        const finalHandoffPatterns = [
+            /<pr_policy>/i,
+            /preparing a provider-appropriate pull request, merge request, or code-review handoff/i,
+            /create a provider-appropriate pull request, merge request, or code-review handoff/i,
+            /created PR\/MR\/review URL/i,
+            /provider-appropriate comment containing the implementation notes file contents as the last action/i,
+        ] as const;
+
         for (const { label, text } of entries) {
-            assert.doesNotMatch(text, /pull[- ]requests?/i, label);
-            assert.doesNotMatch(text, /\bPRs?\b/, label);
+            for (const pattern of finalHandoffPatterns) {
+                assert.doesNotMatch(text, pattern, label);
+            }
         }
     }
 
@@ -2180,19 +2276,25 @@ describe("ralph", () => {
         const prompts = [
             ["planner-1", ctx.calls.prompts["planner-1"]?.[0] ?? ""],
             ["orchestrator-1", ctx.calls.prompts["orchestrator-1"]?.[0] ?? ""],
-            ["code-simplifier-1", ctx.calls.prompts["code-simplifier-1"]?.[0] ?? ""],
             ["reviewer-a", ctx.calls.prompts["reviewer-a"]?.[0] ?? ""],
             ["reviewer-b", ctx.calls.prompts["reviewer-b"]?.[0] ?? ""],
             ["pull-request", ctx.calls.prompts["pull-request"]?.[0] ?? ""],
         ] as const;
 
         for (const [label, prompt] of prompts) {
-            assert.match(prompt, /<workflow_cwd_context>/, label);
+            assert.match(prompt, /<context>/, label);
+            assert.match(prompt, /<\/context>/, label);
             assert.match(prompt, /Current working directory:/i, label);
             assert.equal(prompt.includes(cwd), true, label);
-            assert.match(prompt, /relative to this directory/i, label);
-            assert.match(prompt, /current working directory for the workflow/i, label);
+            assert.match(prompt, /starting directory for repository work/i, label);
+            assert.match(
+                prompt,
+                /Shell commands and relative file paths should be relative to this directory/i,
+                label,
+            );
+            assert.match(prompt, /When delegating subagents/i, label);
         }
+        assert.equal(ctx.calls.task.includes("code-simplifier-1"), false);
     });
 
     test("skips pull-request stage when create_pr is omitted", async () => {
@@ -2272,7 +2374,7 @@ describe("ralph", () => {
 
         const orchestratorPrompt =
             ctx.calls.prompts["orchestrator-1"]?.[0] ?? "";
-        assert.doesNotMatch(orchestratorPrompt, /pull_request_policy/);
+        assert.doesNotMatch(orchestratorPrompt, /<pr_policy>/);
         assert.match(
             orchestratorPrompt,
             /Keep delegated work focused on implementation, tests, docs, validation evidence, and implementation notes\./,
@@ -2312,7 +2414,7 @@ describe("ralph", () => {
             finalPrompt,
             /If the original task explicitly asked for pull-request creation, treat that as the highest-priority instruction for this final stage\./,
         );
-        assert.match(finalPrompt, /Original task: Add a small feature/);
+        assert.match(finalPrompt, /Review the changes since the base branch `main`/);
         assert.match(finalPrompt, /Detect the source-control and code-review provider/);
         assert.match(finalPrompt, /GitHub `gh pr create`/);
         assert.match(finalPrompt, /Azure DevOps\/Azure Repos `az repos pr create`/);
@@ -2355,7 +2457,7 @@ describe("ralph", () => {
         assert.match(prompt, /detached HEAD/);
         assert.match(prompt, /git checkout -b <branch>/);
         assert.ok(prompt.includes("git push origin HEAD:refs/heads/<branch>"));
-        assert.match(prompt, /does not remove git_worktree_dir automatically/);
+        assert.match(prompt, /Leave the worktree intact for retries or user recovery/);
         assert.equal(
             prompt.includes("Worktree cleanup: safe-to-remove"),
             false,
@@ -2419,6 +2521,69 @@ describe("ralph", () => {
             existsSync(join(specsDir, `${date}-collision-spec-2.md`)),
             false,
         );
+    });
+
+    test("forks Ralph loop workers from matching prior sessions without forking reviewers", async () => {
+        const mod = await import("../../packages/workflows/builtin/ralph.js");
+        const cwd = requireRalphTempCwd();
+        const ctx = makeMockCtx(
+            {
+                prompt: "Repair review handoff",
+                max_loops: 2,
+                base_branch: "main",
+                git_worktree_dir: "",
+                create_pr: false,
+            },
+            {
+                sessionFile: (name) => `/tmp/ralph-${name}.jsonl`,
+            },
+        );
+
+        await mod.default.run({ ...ctx, cwd });
+
+        assert.equal(ctx.calls.taskOptions["planner-1"]?.[0]?.context, undefined);
+        assert.equal(ctx.calls.taskOptions["planner-2"]?.[0]?.context, "fork");
+        assert.equal(
+            ctx.calls.taskOptions["planner-2"]?.[0]?.forkFromSessionFile,
+            "/tmp/ralph-planner-1.jsonl",
+        );
+        assert.match(
+            ctx.calls.prompts["planner-2"]?.[0] ?? "",
+            /Revise the current plan\/spec based off of the results from the latest review round/i,
+        );
+        assert.doesNotMatch(ctx.calls.prompts["planner-2"]?.[0] ?? "", /rfc_template/);
+
+        assert.equal(
+            ctx.calls.taskOptions["orchestrator-2"]?.[0]?.context,
+            "fork",
+        );
+        assert.equal(
+            ctx.calls.taskOptions["orchestrator-2"]?.[0]?.forkFromSessionFile,
+            "/tmp/ralph-orchestrator-1.jsonl",
+        );
+        assert.match(
+            ctx.calls.prompts["orchestrator-2"]?.[0] ?? "",
+            /Continue implementing the revised spec/i,
+        );
+        assert.doesNotMatch(
+            ctx.calls.prompts["orchestrator-2"]?.[0] ?? "",
+            /project_initialization_preflight/,
+        );
+
+        assert.equal(ctx.calls.task.includes("code-simplifier-2"), false);
+
+        for (const reviewerName of ["reviewer-a", "reviewer-b"]) {
+            const entries = ctx.calls.taskOptions[reviewerName] ?? [];
+            assert.equal(entries.length, 2, reviewerName);
+            for (const [index, options] of entries.entries()) {
+                assert.equal(options.context, undefined, `${reviewerName}-${index}`);
+                assert.equal(
+                    options.forkFromSessionFile,
+                    undefined,
+                    `${reviewerName}-${index}`,
+                );
+            }
+        }
     });
 
     test("passes Ralph review artifacts instead of injected review payloads", async () => {
@@ -2492,10 +2657,7 @@ describe("ralph", () => {
             ctx.calls.taskOptions["orchestrator-1"]?.[0]?.outputMode,
             "file-only",
         );
-        assert.equal(
-            ctx.calls.taskOptions["code-simplifier-1"]?.[0]?.outputMode,
-            "file-only",
-        );
+        assert.equal(ctx.calls.task.includes("code-simplifier-1"), false);
         assert.equal(
             ctx.calls.parallel.flat().some((name) => name.startsWith("infra-")),
             false,
@@ -2513,6 +2675,36 @@ describe("ralph", () => {
 // ---------------------------------------------------------------------------
 
 describe("open-claude-design", () => {
+    function refinementDecision(readyForExport: boolean): string {
+        return JSON.stringify({
+            ready_for_export: readyForExport,
+            rationale: readyForExport
+                ? "Preview is ready for export."
+                : "More refinement is needed.",
+            required_changes: readyForExport ? [] : ["Tighten hierarchy"],
+        });
+    }
+
+    function exportGateDecision(hasBlockingFindings: boolean): string {
+        return JSON.stringify({
+            has_blocking_findings: hasBlockingFindings,
+            rationale: hasBlockingFindings
+                ? "A P0 issue blocks export."
+                : "No P0 issues block export.",
+            blocking_findings: hasBlockingFindings
+                ? [
+                      {
+                          finding: "Critical contrast issue",
+                          evidence: "#submit-button",
+                          why_blocking: "Primary action is unreadable.",
+                          must_fix_action: "Increase contrast.",
+                          severity: "P0",
+                      },
+                  ]
+                : [],
+        });
+    }
+
     test("loads and has correct shape", async () => {
         const mod =
             await import("../../packages/workflows/builtin/open-claude-design.js");
@@ -2591,9 +2783,9 @@ describe("open-claude-design", () => {
             {
                 task: (name) => {
                     if (name.startsWith("user-feedback-"))
-                        return "refinement complete";
+                        return refinementDecision(true);
                     if (name === "pre-export-scan")
-                        return "no blocking findings";
+                        return exportGateDecision(false);
                     return undefined;
                 },
             },
@@ -2631,9 +2823,9 @@ describe("open-claude-design", () => {
             {
                 task: (name) => {
                     if (name.startsWith("user-feedback-"))
-                        return "refinement complete";
+                        return refinementDecision(true);
                     if (name === "pre-export-scan")
-                        return "no blocking findings";
+                        return exportGateDecision(false);
                     return undefined;
                 },
             },
@@ -2656,9 +2848,9 @@ describe("open-claude-design", () => {
             {
                 task: (name) => {
                     if (name.startsWith("user-feedback-"))
-                        return "refinement complete";
+                        return refinementDecision(true);
                     if (name === "pre-export-scan")
-                        return "no blocking findings";
+                        return exportGateDecision(false);
                     return undefined;
                 },
             },
@@ -2675,7 +2867,8 @@ describe("open-claude-design", () => {
             previewPrompt,
             finalPrompt,
         ]) {
-            assert.match(displayPrompt, /browser_use_bootstrap/);
+            assert.match(displayPrompt, /<browser_use_guidelines>/);
+            assert.match(displayPrompt, /<\/browser_use_guidelines>/);
             assert.match(displayPrompt, /browser-use doctor/);
             assert.match(displayPrompt, /browser-use setup/);
             assert.match(displayPrompt, /Do not install browser-use itself/);

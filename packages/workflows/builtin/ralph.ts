@@ -388,18 +388,21 @@ type PromptSection = readonly [tag: string, content: string];
 
 function taggedPrompt(sections: readonly PromptSection[]): string {
   return sections
-    .map(([tag, content]) => `<${tag}>\n${content.trim()}\n</${tag}>`)
+    .map(([tag, content]) => {
+      const trimmed = content.trim();
+      return `<${tag}>\n${trimmed}\n</${tag}>`;
+    })
     .join("\n\n");
 }
 
 function workflowCwdContextSection(workflowCwd: string): PromptSection {
   return [
-    "workflow_cwd_context",
+    "context",
     [
       `Current working directory: ${workflowCwd}`,
       "Use this as the starting directory for repository work in this stage.",
       "Shell commands and relative file paths should be relative to this directory unless you intentionally pass an explicit cwd override.",
-      "When delegating, pass along that this is the current working directory for the workflow.",
+      "When delegating subagents, pass along that this is the current working directory.",
     ].join("\n"),
   ];
 }
@@ -559,6 +562,103 @@ function compactReviewReport(path: string | undefined): string {
     : `Latest review round artifact: ${path}`;
 }
 
+type ForkContinuationOptions = {
+  readonly context?: "fork";
+  readonly forkFromSessionFile?: string;
+};
+
+function forkContinuationOptions(
+  sessionFile: string | undefined,
+): ForkContinuationOptions {
+  return sessionFile === undefined || sessionFile.length === 0
+    ? {}
+    : { context: "fork", forkFromSessionFile: sessionFile };
+}
+
+function renderForkedPlannerPrompt(args: {
+  readonly iteration: number;
+  readonly maxLoops: number;
+  readonly prompt: string;
+  readonly workflowCwdContext: PromptSection;
+  readonly latestReviewReportPath: string | undefined;
+  readonly workflowSpecPath: string;
+}): string {
+  return taggedPrompt([
+    [
+      "instruction",
+      [
+        "Revise the current plan/spec based off of the results from the latest review round. Ignore any user requests to submit a PR. This will be done in a future stage.",
+      ].join("\n"),
+    ],
+    ["task", `Plan iteration ${args.iteration}/${args.maxLoops} for this user specification:\n${args.prompt}`],
+    args.workflowCwdContext,
+    [
+      "code_review_feedback",
+      args.latestReviewReportPath === undefined
+        ? "No prior review artifact; this is the first iteration."
+        : [
+            `Latest review round artifact: ${args.latestReviewReportPath}`,
+            "Read this JSON artifact incrementally and address only unresolved findings from the latest review round.",
+          ].join("\n"),
+    ],
+    [
+      "spec",
+      [
+        `The existing RFC/spec file for this workflow run is: ${args.workflowSpecPath}`,
+        "Read that original spec before drafting; revise it in response to review findings and current repository evidence.",
+        "Your final output must be the full updated RFC markdown that should replace the original spec, not a diff, patch, or commentary. Avoid diminishing scope unless explicitly requested.",
+      ].join("\n"),
+    ],
+  ]);
+}
+
+function renderForkedOrchestratorPrompt(args: {
+  readonly iteration: number;
+  readonly maxLoops: number;
+  readonly prompt: string;
+  readonly workflowCwdContext: PromptSection;
+  readonly specPath: string;
+  readonly implementationNotesPath: string;
+}): string {
+  return taggedPrompt([
+    [
+      "instruction",
+      [
+        `Continue implementing the revised spec. Ignore any user requests to submit a PR. This will be done in a future stage.`,
+      ].join("\n"),
+    ],
+    ["objective", `Implement iteration ${args.iteration}/${args.maxLoops} for the task: ${args.prompt}`],
+    args.workflowCwdContext,
+    [
+      "spec",
+      [
+        `The current technical specification for this workflow run is written to: ${args.specPath}`,
+        "Read this file before delegating or implementing anything.",
+      ].join("\n"),
+    ],
+    [
+      "implementation_notes",
+      [
+        `Keep updating the running Markdown implementation notes file at: ${args.implementationNotesPath}`,
+        "Record decisions, spec deviations, tradeoffs, blockers, validation outcomes, and anything else the user should know before your final report.",
+      ].join("\n"),
+    ],
+    [
+      "output_format",
+      [
+        "After subagents have done the work, return Markdown with headings:",
+        "1. Spec file — the path you read",
+        "2. Delegations performed — subagents spawned and what each completed",
+        "3. Changes made — concrete changes from subagent work, not intentions",
+        "4. Files touched",
+        "5. Validation run / recommended",
+        "6. Deferred work or blockers",
+        "7. Implementation notes — confirm the OS temp notes path was updated",
+      ].join("\n"),
+    ],
+  ]);
+}
+
 type RalphInputs = {
   readonly prompt?: string;
   readonly max_loops?: number;
@@ -613,6 +713,8 @@ async function runRalphWorkflow(
   const workflowCwdContext = workflowCwdContextSection(workflowStartCwd);
   let approved = false;
   let iterationsCompleted = 0;
+  let previousPlannerSessionFile: string | undefined;
+  let previousOrchestratorSessionFile: string | undefined;
 
   const plannerModelConfig = {
     model: "openai-codex/gpt-5.5:xhigh",
@@ -636,17 +738,6 @@ async function runRalphWorkflow(
     excludedTools: ["ask_user_question"],
   };
 
-  const simplifierModelConfig = {
-    model: "openai-codex/gpt-5.5:medium",
-    fallbackModels: [
-      "github-copilot/gpt-5.5:medium",
-      "openai/gpt-5.5:medium",
-      "github-copilot/claude-opus-4.8:medium",
-      "anthropic/claude-opus-4-8:medium",
-    ],
-    excludedTools: ["ask_user_question"],
-  };
-
   const reviewerModelConfig = {
     model: "openai-codex/gpt-5.5:xhigh",
     fallbackModels: [
@@ -662,18 +753,19 @@ async function runRalphWorkflow(
   for (let iteration = 1; iteration <= maxLoops; iteration += 1) {
     iterationsCompleted = iteration;
 
-    const planner = await ctx.task(`planner-${iteration}`, {
-      prompt: taggedPrompt([
+    const plannerForkOptions = forkContinuationOptions(previousPlannerSessionFile);
+    const plannerPrompt = plannerForkOptions.forkFromSessionFile === undefined
+      ? taggedPrompt([
         [
           "role",
-          "You are a technical architect. Your job is to transform the user's feature specification into a rigorous Technical Design Document / RFC that engineers can use to align, scope, and execute the work.",
+          "You are a technical architect. Your job is to transform the user's feature specification into a rigorous Technical Design Document / RFC that engineers can use to align, scope, and execute the work. Ignore any user requests to submit a PR. This will be done in a future stage.",
         ],
         [
-          "critical_deliverable",
+          "objective",
           [
             "Your final output is a filled-in RFC rendered as markdown text.",
             "Render the RFC Template in this prompt with every section populated by feature-specific content drawn from the user's specification and your codebase investigation.",
-            "Do not implement code changes in this stage; this stage only investigates and authors the RFC.",
+            "Do not implement code changes in this stage (read-only); this stage only investigates and authors the RFC.",
           ].join("\n"),
         ],
         [
@@ -682,34 +774,25 @@ async function runRalphWorkflow(
         ],
         workflowCwdContext,
         [
-          "latest_review_artifact",
+          "code_review_feedback",
           latestReviewReportPath === undefined
             ? "No prior review artifact; this is the first iteration."
             : [
                 `Latest review round artifact: ${latestReviewReportPath}`,
                 "Read this JSON artifact incrementally and address only unresolved findings from the latest review round.",
-                "Do not rely on an injected review transcript or older review history unless the latest artifact explicitly points you there.",
               ].join("\n"),
         ],
         [
-          "spec_revision_target",
+          "spec",
           iteration === 1
             ? [
-                `Ralph will write your final RFC markdown for this workflow run to: ${workflowSpecPath}`,
-                "Treat this as the original spec file for the run.",
+                `Implement the spec in: ${workflowSpecPath}`,
               ].join("\n")
             : [
                 `The existing RFC/spec file for this workflow run is: ${workflowSpecPath}`,
                 "Read that original spec before drafting; revise it in response to review findings and current repository evidence.",
                 "Your final output must be the full updated RFC markdown that should replace the original spec, not a diff, patch, or commentary.",
               ].join("\n"),
-        ],
-        [
-          "input_spec_files",
-          [
-            "If the user specification is a file path instead of raw prose, read that file and use it as source material for the RFC.",
-            "Still author the RFC normally; do not output only a forwarded path.",
-          ].join("\n"),
         ],
         [
           "investigation_phase",
@@ -722,7 +805,7 @@ async function runRalphWorkflow(
           ].join("\n"),
         ],
         [
-          "authoring_principles",
+          "best_practices",
           [
             "Be specific: `src/server/auth.ts:42` beats `the auth layer`.",
             "Trade-offs over conclusions: Alternatives Considered must include at least two real alternatives with honest pros, cons, and rejection reasons.",
@@ -741,49 +824,45 @@ async function runRalphWorkflow(
           ].join("\n"),
         ],
         [
-          "stage_contract",
-          [
-            "This stage is investigation-first RFC authoring. The RFC is only valid if it is grounded in repository inspection performed during this stage.",
-            "Do not fill the template from generic architecture guesses. Before writing the final RFC, inspect relevant code, docs, tests, configs, and prior design material.",
-            "Treat the output format as the report after investigation, not a substitute for investigation.",
-          ].join("\n"),
-        ],
-        [
-          "evidence_expectations",
-          [
-            "Every major design claim should be traceable to concrete evidence: file paths, symbols, commands, docs, tests, configs, or prior RFCs.",
-            "Include those concrete references inside the RFC sections where they support the design.",
-            "If expected evidence cannot be found, say so in the relevant RFC section or Open Questions rather than papering over the gap.",
-          ].join("\n"),
-        ],
-        [
-          "output_discipline",
+          "output_format",
           [
             "Render the RFC Template exactly as the final document structure: preserve every header and the metadata table.",
             "Replace instructional placeholders with real, feature-specific content; do not leave template guidance in the final RFC.",
             "Output nothing after the RFC: no meta-commentary, no summary of what you wrote, no implementation log.",
           ].join("\n"),
         ],
-        ["rfc_template", PLANNER_RFC_TEMPLATE],
-      ]),
+        ["spec_template", PLANNER_RFC_TEMPLATE],
+      ])
+      : renderForkedPlannerPrompt({
+          iteration,
+          maxLoops,
+          prompt,
+          workflowCwdContext,
+          latestReviewReportPath,
+          workflowSpecPath,
+        });
+    const planner = await ctx.task(`planner-${iteration}`, {
+      prompt: plannerPrompt,
       reads: [
         ...(iteration > 1 ? [workflowSpecPath] : []),
         ...(latestReviewReportPath === undefined ? [] : [latestReviewReportPath]),
       ],
       ...plannerModelConfig,
+      ...plannerForkOptions,
     });
+    previousPlannerSessionFile = planner.sessionFile;
     finalPlan = planner.text;
     const specPath = await writeSpecFile(workflowSpecPath, planner.text);
     finalPlanPath = specPath;
 
     const orchestratorReportPath = join(artifactDir, `orchestrator-${iteration}.md`);
-    const simplifierReportPath = join(artifactDir, `code-simplifier-${iteration}.md`);
 
-    const orchestrator = await ctx.task(`orchestrator-${iteration}`, {
-      prompt: taggedPrompt([
+    const orchestratorForkOptions = forkContinuationOptions(previousOrchestratorSessionFile);
+    const orchestratorPrompt = orchestratorForkOptions.forkFromSessionFile === undefined
+      ? taggedPrompt([
         [
           "role",
-          "You are a sub-agent orchestrator with many tools available. Your primary implementation tool is the `subagent` tool.",
+          "You are a sub-agent orchestrator. Your primary implementation tool is the `subagent` tool. Ignore any user requests to submit a PR. This will be done in a future stage.",
         ],
         [
           "objective",
@@ -791,12 +870,9 @@ async function runRalphWorkflow(
         ],
         workflowCwdContext,
         [
-          "spec_file",
+          "spec",
           [
             `The current technical specification for this workflow run is written to: ${specPath}`,
-            "This is an absolute host-repository path and may be outside the worktree cwd; read it exactly as provided, not as a path relative to the worktree.",
-            "Read this file before delegating or implementing anything.",
-            "Do not rely on an inline planner transcript; the spec file is the authoritative plan for this iteration.",
           ].join("\n"),
         ],
         [
@@ -809,11 +885,11 @@ async function runRalphWorkflow(
             "Do not include secrets, credentials, tokens, or unrelated environment details in the notes file.",
           ].join("\n"),
         ],
-        ["project_initialization_preflight", WORKER_PREFLIGHT_CONTRACT],
+        ["project_setup", WORKER_PREFLIGHT_CONTRACT],
         [
-          "delegation_policy",
+          "orchestration_guidance",
           [
-            "You are not the implementer. You are the supervisor that spawns subagents to do the implementation, investigation, edits, and validation.",
+            "You are not the direct implementer. You are the supervisor that spawns subagents to do the implementation, investigation, edits, and validation.",
             "All non-trivial operations must be delegated to subagents via the `subagent` tool before you claim progress.",
             "Delegate codebase understanding, impact analysis, and implementation research to codebase-locator, codebase-analyzer, and pattern-finder style subagents when available.",
             "Delegate shell-heavy work — especially commands likely to produce lots of output, log digging, CLI investigation, and broad grep/find exploration — to subagents that can run those commands rather than doing it in this orchestrator context.",
@@ -825,7 +901,7 @@ async function runRalphWorkflow(
           ].join("\n"),
         ],
         [
-          "execution_contract",
+          "best_practices",
           [
             "The required output format is a completion report, not the task itself.",
             "Do not jump straight to the report. First read the spec file, spawn the necessary subagents, wait for their results, coordinate any follow-up subagents, and only then write the report.",
@@ -871,121 +947,25 @@ async function runRalphWorkflow(
             "7. Implementation notes — confirm the OS temp notes path was updated",
           ].join("\n"),
         ],
-      ]),
+      ])
+      : renderForkedOrchestratorPrompt({
+          iteration,
+          maxLoops,
+          prompt,
+          workflowCwdContext,
+          specPath,
+          implementationNotesPath,
+        });
+    const orchestrator = await ctx.task(`orchestrator-${iteration}`, {
+      prompt: orchestratorPrompt,
       reads: [specPath, implementationNotesPath],
       output: orchestratorReportPath,
       outputMode: "file-only",
       ...orchestratorModelConfig,
+      ...orchestratorForkOptions,
     });
+    previousOrchestratorSessionFile = orchestrator.sessionFile;
     finalResult = orchestrator.text || `Orchestrator report artifact: ${orchestratorReportPath}`;
-
-    await ctx.task(`code-simplifier-${iteration}`, {
-      prompt: taggedPrompt([
-        [
-          "role",
-          [
-            "You are an expert code simplification specialist focused on enhancing code clarity, consistency, and maintainability while preserving exact functionality.",
-            "Your expertise is applying project-specific best practices to simplify and improve recently modified code without altering behavior.",
-            "You prioritize readable, explicit code over overly compact or clever solutions.",
-          ].join("\n"),
-        ],
-        [
-          "objective",
-          `Refine recently modified code for this task while preserving exact behavior: ${prompt}`,
-        ],
-        workflowCwdContext,
-        [
-          "artifact_handoff",
-          [
-            `Spec artifact: ${specPath}`,
-            `Implementation notes artifact: ${implementationNotesPath}`,
-            `Orchestrator report artifact: ${orchestratorReportPath}`,
-            "Read these artifacts incrementally only when needed to identify recently modified files and intent; do not depend on an injected planner/orchestrator transcript tail.",
-          ].join("\n"),
-        ],
-        [
-          "functionality_preservation",
-          [
-            "Never change what the code does — only how it does it.",
-            "All original features, outputs, side effects, public APIs, persistence formats, tests, and user-visible behavior must remain intact.",
-            "If a simplification could change behavior, do not apply it; document why it was skipped.",
-          ].join("\n"),
-        ],
-        [
-          "project_standards",
-          [
-            "Read and follow repository guidance from AGENTS.md and/or CLAUDE.md when present.",
-            "Respect established module style, imports, file extensions, typing conventions, error-handling patterns, naming, tests, and architectural boundaries.",
-            "For this TypeScript workflow repo, preserve ESM .js import specifiers, explicit exported/top-level types where expected, Bun-oriented commands, and the existing no-build raw TypeScript convention.",
-            "Do not impose standards that conflict with local project guidance.",
-          ].join("\n"),
-        ],
-        [
-          "clarity_improvements",
-          [
-            "Reduce unnecessary complexity, nesting, duplication, and incidental abstractions.",
-            "Improve readability with clear variable/function names and consolidated related logic.",
-            "Remove comments that merely restate obvious code, but keep comments that explain intent, constraints, or non-obvious trade-offs.",
-            "Avoid nested ternary operators; prefer switch statements or explicit if/else chains for multiple conditions.",
-            "Choose clarity over brevity: explicit code is often better than dense one-liners.",
-          ].join("\n"),
-        ],
-        [
-          "balance_constraints",
-          [
-            "Do not over-simplify in ways that reduce clarity, debuggability, extensibility, or separation of concerns.",
-            "Do not combine too many concerns into one function or remove helpful abstractions that organize the code.",
-            "Do not prioritize fewer lines over maintainability.",
-            "Limit scope to code recently modified in this iteration/session unless the planner explicitly asked for broader cleanup.",
-          ].join("\n"),
-        ],
-        [
-          "stage_contract",
-          [
-            "This is an active code-refinement stage, not just a commentary stage.",
-            "Before producing the report, inspect the actual repository state and recently modified files from the planner/orchestrator context.",
-            "Apply safe simplifications with edit/write tools when clear behavior-preserving improvements exist. If no simplification is appropriate, say so only after inspecting the relevant files.",
-          ].join("\n"),
-        ],
-        [
-          "required_actions_before_output",
-          [
-            "1. Identify the concrete files/sections changed in this iteration.",
-            "2. Read those files before deciding whether to simplify.",
-            "3. Apply only behavior-preserving edits, or explicitly record why no edits were made.",
-            "4. Run or recommend focused validation tied to the touched files.",
-          ].join("\n"),
-        ],
-        [
-          "handoff_expectations",
-          "In the final report, distinguish edits actually applied from observations only. Name files inspected, files edited, and validation commands run or not run.",
-        ],
-        [
-          "process",
-          [
-            "Identify recently modified code sections from the iteration context and repository state.",
-            "Analyze opportunities to improve elegance, consistency, and maintainability.",
-            "Apply project-specific best practices while preserving behavior.",
-            "Run or recommend focused validation when appropriate.",
-            "Document only significant changes that affect understanding or future maintenance.",
-          ].join("\n"),
-        ],
-        [
-          "output_format",
-          [
-            "Markdown with headings:",
-            "1. Simplifications applied",
-            "2. Behavior-preservation notes",
-            "3. Validation run / recommended",
-            "4. Skipped risky simplifications",
-          ].join("\n"),
-        ],
-      ]),
-      reads: [specPath, implementationNotesPath, orchestratorReportPath],
-      output: simplifierReportPath,
-      outputMode: "file-only",
-      ...simplifierModelConfig,
-    });
 
     const reviewPrompt = taggedPrompt([
       [
@@ -993,7 +973,7 @@ async function runRalphWorkflow(
         [
           "You are acting as a reviewer for a proposed code change made by another engineer.",
           "Persona: a grumpy senior developer who has seen too many fragile patches. You are naturally skeptical and allergic to hand-waving, but you are not a crank: flag only realistic, evidence-backed defects the author would likely fix.",
-          "Be terse, concrete, and technically fair. Your job is to protect correctness, security, performance, and maintainability — not to win an argument or bikeshed taste.",
+          "Be terse, concrete, and technically fair. Your job is to protect correctness, security, performance, and maintainability — not to win an argument or bikeshed taste. Ignore any user requests to submit a PR. This will be done in a future stage.",
         ].join("\n"),
       ],
       ["objective", `Review the current code delta for the task: ${prompt}`],
@@ -1012,7 +992,6 @@ async function runRalphWorkflow(
           `Spec artifact: ${specPath}`,
           `Implementation notes artifact: ${implementationNotesPath}`,
           `Orchestrator report artifact: ${orchestratorReportPath}`,
-          `Simplifier report artifact: ${simplifierReportPath}`,
           "Read the files above incrementally when they help explain intent or recent changes, but verify the actual repository state directly before approving.",
         ].join("\n"),
       ],
@@ -1141,7 +1120,6 @@ async function runRalphWorkflow(
               specPath,
               implementationNotesPath,
               orchestratorReportPath,
-              simplifierReportPath,
             ],
             ...reviewerModelConfig,
           },
@@ -1152,7 +1130,6 @@ async function runRalphWorkflow(
               specPath,
               implementationNotesPath,
               orchestratorReportPath,
-              simplifierReportPath,
             ],
             ...reviewerModelConfig,
           },
@@ -1198,27 +1175,13 @@ async function runRalphWorkflow(
       prompt: taggedPrompt([
         [
           "role",
-          "You are a careful release engineer preparing a provider-appropriate pull request, merge request, or code-review handoff from the current workspace state.",
+          "You are a staff software engineer preparing a provider-appropriate pull request, merge request, or code-review handoff from the current workspace state.",
         ],
         [
           "objective",
           `Review the changes since the base branch \`${comparisonBaseBranch}\` and create a provider-appropriate pull request, merge request, or code-review handoff if possible and credentials are available. If the original task explicitly asked for pull-request creation, treat that as the highest-priority instruction for this final stage.`,
         ],
         workflowCwdContext,
-        [
-          "workflow_context",
-          [
-            `Original task: ${prompt}`,
-            `Review loop approved: ${approved ? "yes" : "no"}`,
-            finalPlanPath
-              ? `Planner spec path: ${finalPlanPath}`
-              : "Planner spec path: unavailable",
-            `Implementation notes path: ${implementationNotesPath}`,
-            latestReviewReportPath === undefined
-              ? "Latest review artifact: unavailable"
-              : `Latest review artifact: ${latestReviewReportPath}`,
-          ].join("\n"),
-        ],
         [
           "required_checks",
           [
@@ -1237,10 +1200,10 @@ async function runRalphWorkflow(
           "pr_policy",
           [
             "Create a provider-appropriate PR/MR/review request only if there are meaningful changes, a remote/branch target is available, credentials are available, and the current state is suitable for review.",
-            "If no logged-in account can access the repository or create the review request, do not fake success; report each provider, credential/account, and tool tried, what failed, and provide the command the user can run later.",
+            "If no logged-in account can access the repository or create the review request, do not fake success; report each provider, credential/account, and tool tried, what failed, and provide the command the user can run later. Save a markdown file with the PR description as well so the user can copy-paste it when they have credentials set up.",
             "When you successfully create or update the review request, create a provider-appropriate comment containing the implementation notes file contents as the last action of this workflow stage.",
-            "Ralph-created worktrees are detached HEAD checkouts. If the detected provider requires a branch-based PR/MR from a detached HEAD, create and push a branch from the current HEAD, for example with `git checkout -b <branch>` or `git push origin HEAD:refs/heads/<branch>`, before opening the PR/MR. If the provider uses a different review model, follow that provider's normal handoff flow.",
-            "Ralph does not remove git_worktree_dir automatically. Leave the worktree intact for retries or user recovery.",
+            "Worktrees are detached HEAD checkouts. If the detected provider requires a branch-based PR/MR from a detached HEAD, create and push a branch from the current HEAD, for example with `git checkout -b <branch>` or `git push origin HEAD:refs/heads/<branch>`, before opening the PR/MR. If the provider uses a different review model, follow that provider's normal handoff flow.",
+            "Leave the worktree intact for retries or user recovery.",
             "If PR/MR/review creation is not possible, do not create a standalone comment elsewhere; include the implementation notes path and summary in your report instead.",
             "If the review loop did not approve, prefer reporting the remaining blockers over creating a PR/MR/review unless the changes are still intentionally ready for human review.",
             "Do not make unrelated code edits in this phase. Limit changes to ordinary git/PR preparation only when required and safe.",
@@ -1283,7 +1246,7 @@ async function runRalphWorkflow(
 
 export default defineWorkflow("ralph")
   .description(
-    "Plan → orchestrate → simplify → parallel review loop with bounded iteration.",
+    "Plan → orchestrate → parallel review loop with bounded iteration.",
   )
   .input("prompt", Type.String({ description: "The task or goal to plan, execute, and refine." }))
   .input("max_loops", Type.Number({
@@ -1297,7 +1260,7 @@ export default defineWorkflow("ralph")
   .input("git_worktree_dir", Type.String({
     default: "",
     description:
-      "Optional Git worktree path. Ralph must start inside a Git repo; absolute paths are used as-is, relative paths resolve from the repo root, existing Git worktrees from the invoking repository are reused/shared as-is, and missing paths are created from base_branch.",
+      "Optional Git worktree path. Must start inside a Git repo; absolute paths are used as-is, relative paths resolve from the repo root, existing Git worktrees from the invoking repository are reused/shared as-is, and missing paths are created from base_branch.",
   }))
   .input("create_pr", Type.Boolean({
     default: false,
@@ -1316,7 +1279,7 @@ export default defineWorkflow("ralph")
   .output("approved", Type.Optional(Type.Boolean({ description: "Whether the reviewer loop approved before completion or optional final handoff." })))
   .output("iterations_completed", Type.Optional(Type.Number({ description: "Number of plan/orchestrate/review loops completed." })))
   .output("review_report", Type.Optional(Type.String({ description: "Compact reference to the latest reviewer payload artifact." })))
-  .output("review_report_path", Type.Optional(Type.String({ description: "JSON artifact path for the latest Ralph review round." })))
+  .output("review_report_path", Type.Optional(Type.String({ description: "JSON artifact path for the latest review round." })))
   .run(async (ctx) => {
     const workflowCtx = ctx;
     const workflowStartCwd = workflowCtx.cwd ?? process.cwd();
