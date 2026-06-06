@@ -91,6 +91,22 @@ describe("classifyWorkflowFailure", () => {
     }
   });
 
+  test("uses missing API key diagnostics before generic wrapper 401 defaults", () => {
+    const failure = classifyWorkflowFailure({
+      status: 401,
+      message: "provider request failed",
+      diagnostics: [{ error: { code: "missing_api_key", message: "No API key found" } }],
+    });
+
+    assert.equal(failure.kind, "auth");
+    assert.equal(failure.code, "missing_api_key");
+    assert.equal(failure.recoverability, "recoverable");
+    assert.equal(failure.disposition, "active_blocked");
+    assert.equal(failure.resumable, true);
+    assert.equal(failure.message, "No API key found");
+    assert.equal(failure.userMessage, WORKFLOW_MISSING_API_KEY_FAILURE_MESSAGE);
+  });
+
   test("uses structured codes and causes before message fallback", () => {
     const auth = classifyWorkflowFailure({ message: "provider error", code: "AUTH_REQUIRED" });
     assert.equal(auth.kind, "auth");

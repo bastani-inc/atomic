@@ -160,9 +160,12 @@ type WorkflowFailureClassificationSource =
   | "cause"
   | "aggregate";
 
+type WorkflowFailureEvidence = "strong_signal" | "weak_signal" | "message" | "status";
+
 type WorkflowFailureClassification = {
   readonly decision: WorkflowFailureDecision;
   readonly source: WorkflowFailureClassificationSource;
+  readonly evidence: WorkflowFailureEvidence;
   readonly message?: string;
 };
 
@@ -613,10 +616,12 @@ function classificationForDecision(
   decision: WorkflowFailureDecision,
   source: WorkflowFailureClassificationSource,
   message: string | undefined,
+  evidence: WorkflowFailureEvidence = "message",
 ): WorkflowFailureClassification {
   return {
     decision,
     source,
+    evidence,
     ...(message !== undefined ? { message } : {}),
   };
 }
@@ -670,12 +675,30 @@ const BROAD_AUTH_MESSAGE_REFINEMENT_CODES: ReadonlySet<WorkflowFailureCode> = ne
   "missing_api_key",
 ]);
 
+const STATUS_RELATED_MESSAGE_REFINEMENT_CODES: ReadonlySet<WorkflowFailureCode> = new Set([
+  "invalid_api_key",
+  "missing_api_key",
+  "unknown_model",
+  "forbidden_config",
+  "rate_limited",
+  "quota_limited",
+  "cancelled",
+]);
+
 function canRefineStatusDecisionWithMessage(decision: WorkflowFailureDecision): boolean {
   return STATUS_MESSAGE_REFINEMENT_CODES.has(decision.code);
 }
 
 function canRefineWeakAuthDecisionWithMessage(decision: WorkflowFailureDecision): boolean {
   return BROAD_AUTH_MESSAGE_REFINEMENT_CODES.has(decision.code);
+}
+
+function canUseRelatedClassificationBeforeStatus(classification: WorkflowFailureClassification): boolean {
+  if (classification.evidence === "weak_signal") return false;
+  if (classification.evidence === "message") {
+    return STATUS_RELATED_MESSAGE_REFINEMENT_CODES.has(classification.decision.code);
+  }
+  return classification.decision.code !== "login_required";
 }
 
 function classificationFromNormalizedCode(
@@ -686,11 +709,11 @@ function classificationFromNormalizedCode(
 ): { readonly strong?: WorkflowFailureClassification; readonly weak?: WorkflowFailureClassification } {
   const strong = strongDecisionFromNormalizedCode(normalized, retryAfterMs);
   if (strong !== undefined) {
-    return { strong: classificationForDecision(strong, source, message) };
+    return { strong: classificationForDecision(strong, source, message, "strong_signal") };
   }
   const weak = weakLoginDecisionFromNormalizedCode(normalized);
   return weak !== undefined
-    ? { weak: classificationForDecision(weak, source, message) }
+    ? { weak: classificationForDecision(weak, source, message, "weak_signal") }
     : {};
 }
 
@@ -729,6 +752,24 @@ function aggregateClassification(error: unknown, seen: Set<unknown>): WorkflowFa
   return selected;
 }
 
+function relatedStructuredClassification(error: unknown, seen: Set<unknown>): WorkflowFailureClassification | undefined {
+  for (const diagnosticError of diagnosticErrors(error)) {
+    const diagnosticClassification = structuredClassification(diagnosticError, "diagnostic", seen);
+    if (diagnosticClassification !== undefined) return diagnosticClassification;
+  }
+
+  const nested = nestedProviderError(error);
+  if (nested !== undefined && nested !== error) {
+    const nestedClassification = structuredClassification(nested, "nested", seen);
+    if (nestedClassification !== undefined) return nestedClassification;
+  }
+
+  const causeClassification = structuredClassification(causeOf(error), "cause", seen);
+  if (causeClassification !== undefined) return causeClassification;
+
+  return aggregateClassification(error, seen);
+}
+
 function structuredClassification(
   error: unknown,
   source: WorkflowFailureClassificationSource = "top_level",
@@ -740,7 +781,7 @@ function structuredClassification(
   const signal = structuredSignal(error);
   const signalMessage = signal.message ?? (typeof error === "string" ? error : undefined);
   if (signal.stopReason?.toLowerCase() === "aborted") {
-    return classificationForDecision(cancelledDecision(), source, signalMessage);
+    return classificationForDecision(cancelledDecision(), source, signalMessage, "strong_signal");
   }
 
   const retryAfterMs = signal.retryAfterMs;
@@ -761,38 +802,28 @@ function structuredClassification(
     return classificationForDecision(messageDecision, source, signalMessage);
   }
 
+  const relatedClassification = relatedStructuredClassification(error, seen);
   const statusDecision = decisionFromStatus(signal);
   if (statusDecision !== undefined) {
-    if (signalMessage !== undefined && (signal.status === 401 || signal.status === 403)) {
-      const statusMessageDecision = messageDecision
-        ?? decisionFromMessageTokens(tokenize(signalMessage), signal.name, retryAfterMs);
-      if (statusMessageDecision !== undefined && canRefineStatusDecisionWithMessage(statusMessageDecision)) {
-        return classificationForDecision(statusMessageDecision, source, signalMessage);
-      }
+    if (relatedClassification !== undefined && canUseRelatedClassificationBeforeStatus(relatedClassification)) {
+      return relatedClassification;
     }
-    return classificationForDecision(statusDecision, source, signalMessage);
+    if (
+      signalMessage !== undefined &&
+      (signal.status === 401 || signal.status === 403) &&
+      messageDecision !== undefined &&
+      canRefineStatusDecisionWithMessage(messageDecision)
+    ) {
+      return classificationForDecision(messageDecision, source, signalMessage);
+    }
+    return classificationForDecision(statusDecision, source, signalMessage, "status");
   }
 
   if (source !== "top_level" && messageDecision !== undefined) {
     return classificationForDecision(messageDecision, source, signalMessage);
   }
 
-  for (const diagnosticError of diagnosticErrors(error)) {
-    const diagnosticClassification = structuredClassification(diagnosticError, "diagnostic", seen);
-    if (diagnosticClassification !== undefined) return diagnosticClassification;
-  }
-
-  const nested = nestedProviderError(error);
-  if (nested !== undefined && nested !== error) {
-    const nestedClassification = structuredClassification(nested, "nested", seen);
-    if (nestedClassification !== undefined) return nestedClassification;
-  }
-
-  const causeClassification = structuredClassification(causeOf(error), "cause", seen);
-  if (causeClassification !== undefined) return causeClassification;
-
-  const aggregateInnerClassification = aggregateClassification(error, seen);
-  if (aggregateInnerClassification !== undefined) return aggregateInnerClassification;
+  if (relatedClassification !== undefined) return relatedClassification;
 
   return weakClassification;
 }

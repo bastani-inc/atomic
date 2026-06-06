@@ -2167,6 +2167,57 @@ describe("executor.run", () => {
         assert.equal(limitedStage.failureDisposition, "active_blocked");
     });
 
+    test("non-fail-fast parallel ordinary failures beat recoverable blocked failures", async () => {
+        const st = createStore();
+        const def = defineWorkflow("parallel-mixed-ordinary-failures-wf")
+            .run(async (ctx) => {
+                await ctx.parallel(
+                    [
+                        { name: "limited", prompt: "limited" },
+                        { name: "domain", prompt: "domain" },
+                    ],
+                    { concurrency: 2, failFast: false },
+                );
+                return {};
+            })
+            .compile();
+
+        const wfResult = await run(
+            def,
+            {},
+            {
+                adapters: {
+                    prompt: {
+                        prompt: async (text) => {
+                            if (text === "limited") {
+                                throw { status: 429, message: "too many requests" };
+                            }
+                            throw new Error("domain model validation failed");
+                        },
+                    },
+                },
+                store: st,
+            },
+        );
+
+        const storedRun = st.runs()[0]!;
+        const domainStage = storedRun.stages.find((stage) => stage.name === "domain")!;
+        const limitedStage = storedRun.stages.find((stage) => stage.name === "limited")!;
+        assert.equal(wfResult.status, "failed");
+        assert.equal(storedRun.status, "failed");
+        assert.notEqual(storedRun.endedAt, undefined);
+        assert.equal(storedRun.blockedAt, undefined);
+        assert.equal(storedRun.failureKind, "unknown");
+        assert.equal(storedRun.failureCode, "unknown");
+        assert.equal(storedRun.failureDisposition, "terminal_failed");
+        assert.equal(storedRun.failedStageId, domainStage.id);
+        assert.equal(storedRun.resumable, true);
+        assert.equal(domainStage.failureDisposition, "terminal_failed");
+        assert.equal(domainStage.failureMessage, "domain model validation failed");
+        assert.equal(limitedStage.failureCode, "rate_limited");
+        assert.equal(limitedStage.failureDisposition, "active_blocked");
+    });
+
     test("parallel fail-fast marks slow sibling skipped instead of completed", async () => {
         const st = createStore();
         const def = defineWorkflow("parallel-fail-fast-skip-wf")

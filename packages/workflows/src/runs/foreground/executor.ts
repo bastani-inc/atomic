@@ -1554,6 +1554,63 @@ function aggregateInnerFailures(
   return executorAggregateErrorItems(error).map((innerError) => classifyFailure(innerError));
 }
 
+type StageFailureCandidate = {
+  readonly source: "stage";
+  readonly stage: StageSnapshot;
+  readonly disposition: WorkflowFailureDisposition;
+  readonly recoverability: WorkflowFailureRecoverability;
+};
+
+type AggregateFailureCandidate = {
+  readonly source: "aggregate";
+  readonly failure: WorkflowFailure;
+  readonly disposition: WorkflowFailureDisposition;
+  readonly recoverability: WorkflowFailureRecoverability;
+};
+
+type FailureCandidate = StageFailureCandidate | AggregateFailureCandidate;
+
+function stageFailureCandidate(stage: StageSnapshot): StageFailureCandidate {
+  return {
+    source: "stage",
+    stage,
+    disposition: stage.failureDisposition ?? "terminal_failed",
+    recoverability: stage.failureRecoverability ?? "unknown",
+  };
+}
+
+function aggregateFailureCandidate(failure: WorkflowFailure): AggregateFailureCandidate {
+  return {
+    source: "aggregate",
+    failure,
+    disposition: failure.disposition,
+    recoverability: failure.recoverability,
+  };
+}
+
+function isRecoverableActiveBlockedCandidate(candidate: FailureCandidate): boolean {
+  return candidate.disposition === "active_blocked" && candidate.recoverability === "recoverable";
+}
+
+function runFailureMetadataFromCandidate(
+  fallbackFailure: WorkflowFailure,
+  candidate: FailureCandidate,
+  firstFailedStage: StageSnapshot | undefined,
+): RunFailureMetadata {
+  if (candidate.source === "stage") return runFailureMetadataFromStage(fallbackFailure, candidate.stage);
+  return runFailureMetadataFromFailure(candidate.failure, firstFailedStage);
+}
+
+function failedStageIdsForCandidate(
+  candidate: FailureCandidate,
+  failedStages: readonly StageSnapshot[],
+): readonly string[] {
+  if (candidate.source === "aggregate") return failedStages.map((stage) => stage.id);
+  return failedStages
+    .filter((stage) => (stage.failureDisposition ?? "terminal_failed") === candidate.disposition)
+    .map((stage) => stage.id);
+}
+
 function selectedMetadata(
   metadata: RunFailureMetadata,
   failedStageIds: readonly string[],
@@ -1572,51 +1629,37 @@ function selectRunFailureDisposition(input: {
 }): SelectedRunFailureMetadata {
   const failedStages = input.stages.filter((stage) => stage.status === "failed");
   const failedStageIds = failedStages.map((stage) => stage.id);
-  const terminalStage = failedStages.find((stage) => stage.failureDisposition === "terminal_killed");
-  if (terminalStage !== undefined) {
-    const terminalStageIds = failedStages
-      .filter((stage) => stage.failureDisposition === "terminal_killed")
-      .map((stage) => stage.id);
-    return selectedMetadata(
-      runFailureMetadataFromStage(input.outerFailure, terminalStage),
-      terminalStageIds,
-    );
-  }
-
-  const recoverableBlockedStage = failedStages.find((stage) => (
-    stage.failureDisposition === "active_blocked" &&
-    stage.failureRecoverability === "recoverable"
-  ));
-  if (recoverableBlockedStage !== undefined) {
-    const recoverableBlockedStageIds = failedStages
-      .filter((stage) => (
-        stage.failureDisposition === "active_blocked" &&
-        stage.failureRecoverability === "recoverable"
-      ))
-      .map((stage) => stage.id);
-    return selectedMetadata(
-      runFailureMetadataFromStage(input.outerFailure, recoverableBlockedStage),
-      recoverableBlockedStageIds,
-    );
-  }
-
   const aggregateFailures = aggregateInnerFailures(input.thrownError, input.classifyFailure);
+  const candidates: readonly FailureCandidate[] = [
+    ...failedStages.map(stageFailureCandidate),
+    ...aggregateFailures.map(aggregateFailureCandidate),
+  ];
   const firstFailedStage = failedStages[0];
-  const terminalAggregateFailure = aggregateFailures.find((failure) => failure.disposition === "terminal_killed");
-  if (terminalAggregateFailure !== undefined) {
+
+  const terminalKilledCandidate = candidates.find((candidate) => candidate.disposition === "terminal_killed");
+  if (terminalKilledCandidate !== undefined) {
     return selectedMetadata(
-      runFailureMetadataFromFailure(terminalAggregateFailure, firstFailedStage),
-      failedStageIds,
+      runFailureMetadataFromCandidate(input.outerFailure, terminalKilledCandidate, firstFailedStage),
+      failedStageIdsForCandidate(terminalKilledCandidate, failedStages),
     );
   }
 
-  const recoverableAggregateFailure = aggregateFailures.find((failure) => (
-    failure.disposition === "active_blocked" &&
-    failure.recoverability === "recoverable"
-  ));
-  if (recoverableAggregateFailure !== undefined) {
+  const terminalFailedCandidate = candidates.find((candidate) => candidate.disposition === "terminal_failed");
+  if (terminalFailedCandidate !== undefined) {
     return selectedMetadata(
-      runFailureMetadataFromFailure(recoverableAggregateFailure, firstFailedStage),
+      runFailureMetadataFromCandidate(input.outerFailure, terminalFailedCandidate, firstFailedStage),
+      failedStageIdsForCandidate(terminalFailedCandidate, failedStages),
+    );
+  }
+
+  const recoverableBlockedCandidate = candidates.find(isRecoverableActiveBlockedCandidate);
+  if (
+    recoverableBlockedCandidate !== undefined &&
+    candidates.length > 0 &&
+    candidates.every(isRecoverableActiveBlockedCandidate)
+  ) {
+    return selectedMetadata(
+      runFailureMetadataFromCandidate(input.outerFailure, recoverableBlockedCandidate, firstFailedStage),
       failedStageIds,
     );
   }
