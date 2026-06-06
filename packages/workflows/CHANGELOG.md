@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed the workflow global tool-event hook ignoring unscoped parent-session prompts instead of attributing them to running stages, preventing false `awaiting_input` / "needs attention" states from unrelated `ask_user_question` calls ([#1261](https://github.com/bastani-inc/atomic/issues/1261)).
+
 ## [0.8.26-alpha.4] - 2026-06-05
 
 ### Changed
