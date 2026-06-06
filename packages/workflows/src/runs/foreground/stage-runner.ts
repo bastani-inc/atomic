@@ -267,28 +267,21 @@ function assistantErrorMessage(message: AgentSession["messages"][number]): strin
     : undefined;
 }
 
-type TerminalAssistantOutcome =
-  | { readonly kind: "failure"; readonly message: AgentSession["messages"][number] }
-  | { readonly kind: "recovered" }
-  | { readonly kind: "none" };
-
-function terminalAssistantOutcomeSince(
+function latestTerminalAssistantFailureSince(
   messages: AgentSession["messages"],
   startIndex: number,
-): TerminalAssistantOutcome {
+): AgentSession["messages"][number] | undefined {
   for (let index = messages.length - 1; index >= startIndex; index -= 1) {
     const message = messages[index];
     if (!message || message.role !== "assistant") continue;
     const stopReason = messageStopReason(message);
-    if (isTerminalAssistantFailureStopReason(stopReason)) {
-      return { kind: "failure", message };
-    }
-    if (isCleanAssistantStopReason(stopReason)) return { kind: "recovered" };
+    if (isTerminalAssistantFailureStopReason(stopReason)) return message;
+    if (isCleanAssistantStopReason(stopReason)) return undefined;
     if (assistantErrorMessage(message) === undefined && extractMessageText(message).trim().length > 0) {
-      return { kind: "recovered" };
+      return undefined;
     }
   }
-  return { kind: "none" };
+  return undefined;
 }
 
 class WorkflowPromptModelFailure extends Error {
@@ -860,9 +853,9 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
       notifyModelFallbackMetaChange();
       try {
         const { terminalScanStartIndex } = await promptWithPauseResume(activeSession, text, sdkOptions);
-        const terminalOutcome = terminalAssistantOutcomeSince(activeSession.messages, terminalScanStartIndex);
-        if (terminalOutcome.kind === "failure") {
-          throw new WorkflowPromptModelFailure(terminalOutcome.message);
+        const terminalFailure = latestTerminalAssistantFailureSince(activeSession.messages, terminalScanStartIndex);
+        if (terminalFailure !== undefined) {
+          throw new WorkflowPromptModelFailure(terminalFailure);
         }
         modelAttempts.push({ model: candidate.id, success: true, ...modelAttemptReasoning(candidate) });
         pendingFallbackWarnings.length = 0;
