@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.26-alpha.5] - 2026-06-06
+
+### Changed
+
+- Bumped package version for the Atomic 0.8.26-alpha.5 prerelease.
+
 ## [0.8.26-alpha.4] - 2026-06-05
 
 ### Changed
