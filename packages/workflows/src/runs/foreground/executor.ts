@@ -437,6 +437,22 @@ export function readinessResultMeansAdvance(result: unknown): boolean {
   );
 }
 
+/**
+ * True when a raw tool-result record from an `ask_user_question` call carries a
+ * `details.answers[].kind === "chat"` entry. Used by the readiness-gate watcher
+ * to skip `confirmReadiness` and return control directly to the stage composer.
+ */
+export function toolResultHasChatAnswer(result: unknown): boolean {
+  if (result === null || typeof result !== "object") return false;
+  const details = (result as Record<string, unknown>)["details"];
+  if (details === null || typeof details !== "object") return false;
+  const answers = (details as Record<string, unknown>)["answers"];
+  if (!Array.isArray(answers)) return false;
+  return answers.some(
+    (a) => a !== null && typeof a === "object" && (a as Record<string, unknown>)["kind"] === "chat",
+  );
+}
+
 let cachedReadinessGateTool: ReturnType<typeof createAskUserQuestionToolDefinition> | undefined;
 function readinessGateTool(): ReturnType<typeof createAskUserQuestionToolDefinition> {
   return (cachedReadinessGateTool ??= createAskUserQuestionToolDefinition());
@@ -2636,6 +2652,10 @@ export async function run<TInputs extends WorkflowInputValues>(
       // after a turn that asked the user a question ends, the workflow must
       // confirm readiness before completing/advancing the stage.
       let askUserQuestionObservedThisTurn = false;
+      // Set when the completed ask_user_question call carried a chat answer.
+      // When true the readiness gate is bypassed — the stage stays in the
+      // composer without showing an extra confirmation UI (#1264).
+      let chatAnswerObservedThisTurn = false;
       const hasActiveAskUserQuestion = (): boolean =>
         activeAskUserQuestionCalls.size > 0 || activeAskUserQuestionAnonymousCalls > 0;
       const unsubscribeAskUserQuestionWatcher = innerCtx.subscribe((event) => {
@@ -2665,6 +2685,12 @@ export async function run<TInputs extends WorkflowInputValues>(
           activeAskUserQuestionAnonymousCalls = Math.max(0, activeAskUserQuestionAnonymousCalls - 1);
         } else {
           return;
+        }
+
+        // If the completed call carried a chat answer, remember it so the
+        // readiness gate can bypass confirmReadiness for this turn (#1264).
+        if (toolResultHasChatAnswer((event as Record<string, unknown>)["result"])) {
+          chatAnswerObservedThisTurn = true;
         }
 
         if (!hasActiveAskUserQuestion()) {
@@ -2964,6 +2990,7 @@ export async function run<TInputs extends WorkflowInputValues>(
           try {
             // Run the stage's initial agent turn.
             askUserQuestionObservedThisTurn = false;
+            chatAnswerObservedThisTurn = false;
             result = await raceAbort(call(), ownController.signal);
 
             // Per-turn readiness gate (#1099). When an agent turn ENDS (control
@@ -2986,11 +3013,17 @@ export async function run<TInputs extends WorkflowInputValues>(
               });
               try {
                 while (askUserQuestionObservedThisTurn) {
-                  if ((await confirmReadiness()) === "advance") break;
+                  // Chat answer: bypass the confirmation UI and stay in the composer
+                  // without asking again (#1264).
+                  const decision = chatAnswerObservedThisTurn
+                    ? "stay"
+                    : await confirmReadiness();
+                  if (decision === "advance") break;
                   if (ownController.signal.aborted) break;
                   // Stay: return control to the user and await their next
                   // composer-driven turn end before re-checking.
                   askUserQuestionObservedThisTurn = false;
+                  chatAnswerObservedThisTurn = false;
                   await raceAbort(
                     new Promise<void>((resolve) => {
                       resolveNextTurnEnd = resolve;

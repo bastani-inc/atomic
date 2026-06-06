@@ -6,6 +6,7 @@ import {
   READINESS_GATE_ADVANCE_LABEL,
   READINESS_GATE_QUESTION_PARAMS,
   readinessResultMeansAdvance,
+  toolResultHasChatAnswer,
 } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { stageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
 import {
@@ -176,5 +177,71 @@ describe("askReadinessViaStageBroker (real broker + tool resolution)", () => {
     assert.equal(await decideViaBroker("2"), "stay");
     assert.equal(await decideViaBroker({ answer: EXPLORE_LABEL }), "stay");
     assert.equal(await decideViaBroker({}), "stay");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// toolResultHasChatAnswer — readiness gate bypass helper (#1264)
+// ---------------------------------------------------------------------------
+
+describe("toolResultHasChatAnswer", () => {
+  test("tool result with kind:chat answer → true", () => {
+    const result = {
+      content: [{ type: "text", text: "..." }],
+      details: {
+        answers: [{ questionIndex: 0, question: "Continue?", kind: "chat", answer: "Chat about this" }],
+        cancelled: false,
+      },
+      terminate: true,
+    };
+    assert.equal(toolResultHasChatAnswer(result), true);
+  });
+
+  test("tool result with kind:option answer → false", () => {
+    const result = {
+      content: [{ type: "text", text: "..." }],
+      details: {
+        answers: [{ questionIndex: 0, question: "Continue?", kind: "option", answer: "Yes" }],
+        cancelled: false,
+      },
+    };
+    assert.equal(toolResultHasChatAnswer(result), false);
+  });
+
+  test("tool result with kind:custom answer → false", () => {
+    const result = {
+      content: [{ type: "text", text: "..." }],
+      details: {
+        answers: [{ questionIndex: 0, question: "Continue?", kind: "custom", answer: "maybe" }],
+        cancelled: false,
+      },
+    };
+    assert.equal(toolResultHasChatAnswer(result), false);
+  });
+
+  test("null / undefined / non-object → false", () => {
+    assert.equal(toolResultHasChatAnswer(null), false);
+    assert.equal(toolResultHasChatAnswer(undefined), false);
+    assert.equal(toolResultHasChatAnswer("string"), false);
+    assert.equal(toolResultHasChatAnswer(42), false);
+  });
+
+  test("missing details → false", () => {
+    assert.equal(toolResultHasChatAnswer({ content: [] }), false);
+  });
+
+  test("empty answers → false", () => {
+    assert.equal(toolResultHasChatAnswer({ details: { answers: [], cancelled: false } }), false);
+  });
+
+  test("cancelled result with chat kind → still true (kind check only)", () => {
+    const result = {
+      details: {
+        answers: [{ kind: "chat", answer: "Chat about this" }],
+        cancelled: true,
+      },
+    };
+    // The function checks kind only; cancelled is for the envelope layer.
+    assert.equal(toolResultHasChatAnswer(result), true);
   });
 });

@@ -6496,6 +6496,117 @@ describe("executor — stage-control registry integration", () => {
         );
     });
 
+    test("readiness gate bypasses confirmation for a chat answer and waits for the user's next turn", async () => {
+        const events: string[] = [];
+        const gateStages: string[] = [];
+        const registry = createStageControlRegistry();
+        const store = createStore();
+        let activeStage: { runId: string; stageId: string } | undefined;
+        const def = defineWorkflow("readiness-gate-chat-bypass-wf")
+            .run(async (ctx) => {
+                await ctx.stage("first").prompt("ask the user");
+                await ctx.stage("second").prompt("second work");
+                return {};
+            })
+            .compile();
+        const session = (): StageSessionRuntime => {
+            const listeners = new Set<
+                (e: { type: string; [k: string]: unknown }) => void
+            >();
+            const emit = (e: { type: string; [k: string]: unknown }): void => {
+                for (const l of [...listeners]) l(e);
+            };
+            return {
+                ...mockSession(),
+                async prompt(text: string) {
+                    if (text.includes("ask the user")) {
+                        events.push("ask:chat");
+                        emit({
+                            type: "tool_execution_start",
+                            toolCallId: "c",
+                            toolName: "ask_user_question",
+                        });
+                        emit({
+                            type: "tool_execution_end",
+                            toolCallId: "c",
+                            toolName: "ask_user_question",
+                            result: {
+                                content: [{ type: "text", text: "chat" }],
+                                details: {
+                                    answers: [
+                                        {
+                                            questionIndex: 0,
+                                            question: "Continue?",
+                                            kind: "chat",
+                                            answer: "Chat about this",
+                                        },
+                                    ],
+                                    cancelled: false,
+                                },
+                                terminate: true,
+                            },
+                        });
+                        emit({ type: "agent_end", messages: [] });
+                        setTimeout(() => {
+                            if (activeStage) {
+                                void registry
+                                    .get(activeStage.runId, activeStage.stageId)
+                                    ?.prompt("follow-up");
+                            }
+                        }, 0);
+                    } else {
+                        events.push(`turn:${text}`);
+                        emit({ type: "agent_end", messages: [] });
+                    }
+                },
+                subscribe(listener) {
+                    listeners.add(
+                        listener as (e: {
+                            type: string;
+                            [k: string]: unknown;
+                        }) => void,
+                    );
+                    return () =>
+                        listeners.delete(
+                            listener as (e: {
+                                type: string;
+                                [k: string]: unknown;
+                            }) => void,
+                        );
+                },
+            };
+        };
+
+        const result = await run(
+            def,
+            {},
+            {
+                adapters: {
+                    agentSession: {
+                        async create() {
+                            return session();
+                        },
+                    },
+                },
+                store,
+                stageControlRegistry: registry,
+                onStageStart: (runId, stage) => {
+                    if (stage.name === "first") {
+                        activeStage = { runId, stageId: stage.id };
+                    }
+                },
+                confirmStageReadiness: async ({ stageName }) => {
+                    gateStages.push(stageName);
+                    return true;
+                },
+            },
+        );
+
+        assert.equal(result.status, "completed");
+        assert.deepEqual(gateStages, []);
+        assert.deepEqual(events, ["ask:chat", "turn:follow-up", "turn:second work"]);
+    });
+
     test("readiness gate returns control to the user on stay and re-checks after their turn", async () => {
         const events: string[] = [];
         const gateStages: string[] = [];

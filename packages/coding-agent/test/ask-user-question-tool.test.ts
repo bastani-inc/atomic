@@ -139,3 +139,99 @@ describe("ask_user_question tool", () => {
 		expect(result).toBeDefined();
 	});
 });
+
+// ---------------------------------------------------------------------------
+// buildQuestionnaireResponse — chat sentinel behavior (#1264)
+// ---------------------------------------------------------------------------
+
+import {
+	buildQuestionnaireResponse,
+	ENVELOPE_SUFFIX,
+} from "../src/core/tools/ask-user-question/tool/response-envelope.ts";
+import type { QuestionnaireResult, QuestionParams } from "../src/core/tools/ask-user-question/tool/types.ts";
+
+const BASE_PARAMS: QuestionParams = {
+	questions: [
+		{
+			question: "Continue?",
+			header: "Continue",
+			options: [
+				{ label: "Yes", description: "Continue now." },
+				{ label: "No", description: "Stop here." },
+			],
+		},
+	],
+};
+
+describe("buildQuestionnaireResponse — chat answer", () => {
+	const chatResult: QuestionnaireResult = {
+		answers: [{ questionIndex: 0, question: "Continue?", kind: "chat", answer: "Chat about this" }],
+		cancelled: false,
+	};
+
+	it("returns terminate: true for a chat answer", () => {
+		const res = buildQuestionnaireResponse(chatResult, BASE_PARAMS);
+		expect((res as { terminate?: boolean }).terminate).toBe(true);
+	});
+
+	it("does not include ENVELOPE_SUFFIX in the content for a chat answer", () => {
+		const res = buildQuestionnaireResponse(chatResult, BASE_PARAMS);
+		const text = (res.content as Array<{ type: string; text: string }>)[0]!.text;
+		expect(text).not.toContain(ENVELOPE_SUFFIX);
+	});
+
+	it("includes stop/wait directive in the chat answer content", () => {
+		const res = buildQuestionnaireResponse(chatResult, BASE_PARAMS);
+		const text = (res.content as Array<{ type: string; text: string }>)[0]!.text;
+		expect(text.toLowerCase()).toContain("stop");
+		expect(text.toLowerCase()).toContain("wait");
+	});
+
+	it("preserves result details for chat answer", () => {
+		const res = buildQuestionnaireResponse(chatResult, BASE_PARAMS);
+		expect(res.details).toEqual(chatResult);
+	});
+
+	it("terminates even when a raw chat answer does not match a current question index", () => {
+		const unmatchedChatResult: QuestionnaireResult = {
+			answers: [{ questionIndex: 99, question: "Continue?", kind: "chat", answer: "Chat about this" }],
+			cancelled: false,
+		};
+		const res = buildQuestionnaireResponse(unmatchedChatResult, BASE_PARAMS);
+		expect((res as { terminate?: boolean }).terminate).toBe(true);
+		expect(res.details).toEqual(unmatchedChatResult);
+	});
+});
+
+describe("buildQuestionnaireResponse — non-chat answers do not terminate", () => {
+	const optionResult: QuestionnaireResult = {
+		answers: [{ questionIndex: 0, question: "Continue?", kind: "option", answer: "Yes" }],
+		cancelled: false,
+	};
+	const customResult: QuestionnaireResult = {
+		answers: [{ questionIndex: 0, question: "Continue?", kind: "custom", answer: "maybe" }],
+		cancelled: false,
+	};
+	const cancelledResult: QuestionnaireResult = { answers: [], cancelled: true };
+
+	it("option answer has no terminate field", () => {
+		const res = buildQuestionnaireResponse(optionResult, BASE_PARAMS);
+		expect((res as { terminate?: boolean }).terminate).toBeUndefined();
+	});
+
+	it("custom answer has no terminate field", () => {
+		const res = buildQuestionnaireResponse(customResult, BASE_PARAMS);
+		expect((res as { terminate?: boolean }).terminate).toBeUndefined();
+	});
+
+	it("cancelled result has no terminate field", () => {
+		const res = buildQuestionnaireResponse(cancelledResult, BASE_PARAMS);
+		expect((res as { terminate?: boolean }).terminate).toBeUndefined();
+	});
+
+	it("option answer still includes ENVELOPE_SUFFIX", () => {
+		const res = buildQuestionnaireResponse(optionResult, BASE_PARAMS);
+		const text = (res.content as Array<{ type: string; text: string }>)[0]!.text;
+		expect(text).toContain(ENVELOPE_SUFFIX);
+	});
+});

@@ -289,3 +289,43 @@ describe("coerceStageInputAnswer", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Chat sentinel mapping (#1264)
+// ---------------------------------------------------------------------------
+
+describe("buildStagePromptAdapter — 'Chat about this' sentinel", () => {
+  test("exact 'Chat about this' text → kind chat", () => {
+    const adapter = buildStagePromptAdapter("p", "ask_user_question", COLOR_ARGS, 1)!;
+    const result = adapter.buildResult({ text: "Chat about this" }) as BuiltResult;
+    assert.equal(result.cancelled, false);
+    assert.equal(result.answers[0]!.kind, "chat");
+    assert.equal(result.answers[0]!.answer, "Chat about this");
+  });
+
+  test("lowercase 'chat about this' → kind chat (case insensitive)", () => {
+    const adapter = buildStagePromptAdapter("p", "ask_user_question", COLOR_ARGS, 1)!;
+    const result = adapter.buildResult({ text: "chat about this" }) as BuiltResult;
+    assert.equal(result.answers[0]!.kind, "chat");
+    assert.equal(result.answers[0]!.answer, "Chat about this");
+  });
+
+  test("leading/trailing whitespace → kind chat (whitespace tolerant)", () => {
+    const adapter = buildStagePromptAdapter("p", "ask_user_question", COLOR_ARGS, 1)!;
+    const result = adapter.buildResult({ text: "  Chat about this  " }) as BuiltResult;
+    assert.equal(result.answers[0]!.kind, "chat");
+  });
+
+  test("non-sentinel text still maps to kind custom", () => {
+    const adapter = buildStagePromptAdapter("p", "ask_user_question", COLOR_ARGS, 1)!;
+    const result = adapter.buildResult({ text: "something else" }) as BuiltResult;
+    assert.equal(result.answers[0]!.kind, "custom");
+  });
+
+  test("optionLabels matching 'Chat about this' → kind chat", () => {
+    const adapter = buildStagePromptAdapter("p", "ask_user_question", COLOR_ARGS, 1)!;
+    const result = adapter.buildResult({ optionLabels: ["Chat about this"] }) as BuiltResult;
+    assert.equal(result.answers[0]!.kind, "chat");
+    assert.equal(result.answers[0]!.answer, "Chat about this");
+  });
+});
