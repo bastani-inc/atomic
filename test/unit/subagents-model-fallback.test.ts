@@ -157,6 +157,52 @@ describe("subagent model fallback helpers", () => {
     }
   });
 
+  test("retry classifier refuses provider content filters and refusal signals", () => {
+    const refusalCases: ReadonlyArray<{
+      label: string;
+      failure: unknown;
+      expectedSource?: "diagnostic";
+    }> = [
+      {
+        label: "assistant content_filter message",
+        failure: { role: "assistant", stopReason: "error", errorMessage: "content_filter" },
+      },
+      {
+        label: "assistant finish_reason content_filter field",
+        failure: { role: "assistant", stopReason: "error", finish_reason: "content_filter" },
+      },
+      {
+        label: "diagnostic content_filter code",
+        failure: {
+          role: "assistant",
+          stopReason: "error",
+          errorMessage: "localized provider error",
+          diagnostics: [{ error: { code: "content_filter", message: "blocked by provider" } }],
+        },
+        expectedSource: "diagnostic",
+      },
+      {
+        label: "safety policy refusal",
+        failure: { role: "assistant", stopReason: "error", errorMessage: "request blocked by safety policy" },
+      },
+      {
+        label: "tool refusal",
+        failure: { role: "assistant", stopReason: "error", errorMessage: "tool call refused by provider" },
+      },
+      {
+        label: "provider refusal",
+        failure: { role: "assistant", stopReason: "error", errorMessage: "provider refused this request" },
+      },
+    ];
+
+    for (const { label, failure, expectedSource } of refusalCases) {
+      const signal = normalizeModelFailureSignal(failure);
+      assert.equal(signal.kind, "task_failure", label);
+      if (expectedSource !== undefined) assert.equal(signal.source, expectedSource, label);
+      assert.equal(isRetryableModelFailure(failure), false, label);
+    }
+  });
+
   test("assistant stopReason error without an errorMessage is fallbackable", () => {
     const failure = { role: "assistant", stopReason: "error", diagnostics: [] };
 

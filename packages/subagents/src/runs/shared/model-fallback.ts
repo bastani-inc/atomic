@@ -192,6 +192,10 @@ function stopReasonFrom(value: unknown): string | undefined {
 	return stringField(value, "stopReason");
 }
 
+function finishReasonFrom(value: unknown): string | undefined {
+	return stringField(value, "finish_reason") ?? stringField(value, "finishReason");
+}
+
 function causeOf(value: unknown): unknown {
 	return value instanceof Error ? value.cause : field(value, "cause");
 }
@@ -234,9 +238,32 @@ function kindFromStatus(status: number | undefined): ModelFallbackFailureKind | 
 	}
 }
 
+function refusalKindFromCode(code: string | number | undefined): ModelFallbackFailureKind | undefined {
+	const normalizedCode = normalizeCode(code);
+	if (normalizedCode === undefined) return undefined;
+	if (normalizedCode.includes("content_filter") || normalizedCode.includes("contentfilter")) return "task_failure";
+	if (normalizedCode.includes("safety") || normalizedCode.includes("policy")) return "task_failure";
+	switch (normalizedCode) {
+		case "blocked":
+		case "blocked_by_provider":
+		case "blocked_by_safety":
+		case "blocked_by_policy":
+		case "provider_refusal":
+		case "refusal":
+		case "tool_refusal":
+		case "tool_call_refusal":
+		case "tool_use_refusal":
+			return "task_failure";
+		default:
+			return undefined;
+	}
+}
+
 function kindFromCode(code: string | number | undefined): ModelFallbackFailureKind | undefined {
 	const normalizedCode = normalizeCode(code);
 	if (normalizedCode === undefined) return undefined;
+	const refusalKind = refusalKindFromCode(code);
+	if (refusalKind !== undefined) return refusalKind;
 	const httpStatusKind = kindFromStatus(integerFrom(code));
 	if (httpStatusKind !== undefined) return httpStatusKind;
 
@@ -287,9 +314,22 @@ function kindFromCode(code: string | number | undefined): ModelFallbackFailureKi
 	}
 }
 
+const PROVIDER_REFUSAL_FAILURE_PATTERNS: readonly RegExp[] = [
+	/\bfinish[_\s-]?reason\b[^\n]*\bcontent[_\s-]?filter\b/i,
+	/\bcontent[_\s-]?filter(?:ed|ing)?\b/i,
+	/\b(?:safety|policy)\b[^\n]*\b(?:refus(?:e|al|ed|es|ing)?|block(?:ed|ing)?|filter(?:ed|ing)?|violat(?:e|ion|ed|ing)?|disallow(?:ed|ing)?|reject(?:ed|ion|ing)?)\b/i,
+	/\b(?:refus(?:e|al|ed|es|ing)?|block(?:ed|ing)?|filter(?:ed|ing)?|violat(?:e|ion|ed|ing)?|disallow(?:ed|ing)?|reject(?:ed|ion|ing)?)\b[^\n]*\b(?:safety|policy)\b/i,
+	/\btool[_\s-]?(?:call|use)?[_\s-]?refus(?:e|al|ed|es|ing)?\b/i,
+	/\btool(?:\s+call|\s+use)?\b[^\n]*\brefus(?:e|al|ed|es|ing)?\b/i,
+	/\brefus(?:e|al|ed|es|ing)?\b[^\n]*\btool(?:\s+call|\s+use)?\b/i,
+	/\bprovider[_\s-]?refus(?:e|al|ed|es|ing)?\b/i,
+	/\bprovider\b[^\n]*\brefus(?:e|al|ed|es|ing)?\b[^\n]*\b(?:prompt|request|content|policy|safety)\b/i,
+];
+
 function refusalKindFromMessage(message: string): ModelFallbackFailureKind | undefined {
 	if (CANCELLED_FAILURE_PATTERNS.some((pattern) => pattern.test(message))) return "cancelled";
 	if (NON_RETRYABLE_FAILURE_PATTERNS.some((pattern) => pattern.test(message))) return "task_failure";
+	if (PROVIDER_REFUSAL_FAILURE_PATTERNS.some((pattern) => pattern.test(message))) return "task_failure";
 	return undefined;
 }
 
@@ -343,6 +383,19 @@ function fallbackSignalFromMessage(
 	return kind === undefined ? undefined : makeSignal(kind, value, source);
 }
 
+function classifyAssistantRefusalSignal(
+	value: unknown,
+	source: ModelFallbackFailureSource | undefined,
+): ModelFallbackFailureSignal | undefined {
+	const codeRefusalKind = refusalKindFromCode(codeFrom(value))
+		?? refusalKindFromCode(errorName(value))
+		?? refusalKindFromCode(finishReasonFrom(value));
+	if (codeRefusalKind !== undefined) return makeSignal(codeRefusalKind, value, source);
+
+	const messageRefusalKind = refusalKindFromMessage(directMessageFrom(value) ?? "");
+	return messageRefusalKind === undefined ? undefined : makeSignal(messageRefusalKind, value, source);
+}
+
 function isRefusalSignal(signal: ModelFallbackFailureSignal): boolean {
 	return signal.kind === "cancelled" || signal.kind === "task_failure";
 }
@@ -358,20 +411,21 @@ function structuredSignal(
 	const stopReason = stopReasonFrom(value)?.toLowerCase();
 	if (stopReason === "aborted") return makeSignal("cancelled", value, source);
 
+	const directRefusalSignal = classifyAssistantRefusalSignal(value, source);
+	if (directRefusalSignal !== undefined) return directRefusalSignal;
+
 	const codeKind = kindFromCode(codeFrom(value));
 	const nameKind = kindFromCode(errorName(value));
 	if (codeKind === "cancelled" || nameKind === "cancelled") return makeSignal("cancelled", value, source);
-	const directRefusalKind = refusalKindFromMessage(directMessageFrom(value) ?? "");
-	if (directRefusalKind !== undefined) return makeSignal(directRefusalKind, value, source);
 
-	const nestedSignals: ModelFallbackFailureSignal[] = [];
+	let firstNestedFallbackSignal: ModelFallbackFailureSignal | undefined;
 	const nestedSeen = new Set(seen);
 	for (const diagnosticError of diagnosticErrors(value)) {
 		const diagnosticSignal = structuredSignal(diagnosticError, nestedSeen, "diagnostic")
 			?? fallbackSignalFromMessage(diagnosticError, "diagnostic");
 		if (diagnosticSignal === undefined) continue;
 		if (isRefusalSignal(diagnosticSignal)) return diagnosticSignal;
-		nestedSignals.push(diagnosticSignal);
+		firstNestedFallbackSignal ??= diagnosticSignal;
 	}
 
 	const cause = causeOf(value);
@@ -379,7 +433,7 @@ function structuredSignal(
 		?? fallbackSignalFromMessage(cause, source);
 	if (causeSignal !== undefined) {
 		if (isRefusalSignal(causeSignal)) return causeSignal;
-		nestedSignals.push(causeSignal);
+		firstNestedFallbackSignal ??= causeSignal;
 	}
 
 	const statusKind = kindFromStatus(statusFrom(value));
@@ -387,8 +441,7 @@ function structuredSignal(
 	if (codeKind !== undefined) return makeSignal(codeKind, value, source);
 	if (nameKind !== undefined) return makeSignal(nameKind, value, source);
 
-	const nestedSignal = nestedSignals[0];
-	if (nestedSignal !== undefined) return nestedSignal;
+	if (firstNestedFallbackSignal !== undefined) return firstNestedFallbackSignal;
 
 	if (stopReason === "error") return makeSignal("provider_unavailable", value, source);
 
@@ -416,6 +469,8 @@ function messageFromUnknown(value: unknown, seen: Set<unknown>): string | undefi
 
 	const stopReason = stopReasonFrom(value);
 	if (stopReason !== undefined) return `Assistant message ended with stopReason:${stopReason}`;
+	const finishReason = finishReasonFrom(value);
+	if (finishReason !== undefined) return `Model request finished with finish_reason:${finishReason}`;
 	const status = statusFrom(value);
 	if (status !== undefined) return `Model request failed with status ${status}`;
 	const code = codeFrom(value);

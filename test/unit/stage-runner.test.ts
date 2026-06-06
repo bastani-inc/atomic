@@ -681,6 +681,68 @@ describe("createStageContext — model fallback", () => {
         assert.equal(meta.warnings, undefined);
     });
 
+    test("recovered non-throwing assistant failure in the same prompt does not try fallback", async () => {
+        const calls: string[] = [];
+        const disposed: string[] = [];
+        const agentSession: AgentSessionAdapter = {
+            async create(options) {
+                const modelValue = options.model as unknown;
+                const model = typeof modelValue === "string"
+                    ? modelValue
+                    : "object-model";
+                calls.push(model);
+                const messages: AgentSession["messages"] = [];
+                const { session } = makeMockSession({
+                    messages,
+                    async prompt() {
+                        messages.push({
+                            role: "assistant",
+                            content: [],
+                            stopReason: "error",
+                            errorMessage: "429 rate limit exceeded",
+                            diagnostics: [{ error: { code: 429, message: "rate limit" } }],
+                        } as unknown as AgentSession["messages"][number]);
+                        messages.push({
+                            role: "assistant",
+                            content: [{ type: "text", text: "primary recovered answer" }],
+                            stopReason: "stop",
+                        } as unknown as AgentSession["messages"][number]);
+                    },
+                    dispose() {
+                        disposed.push(model);
+                    },
+                    getLastAssistantText() {
+                        return "primary recovered answer";
+                    },
+                });
+                return session;
+            },
+        };
+
+        const ctx = createStageContext(
+            makeOpts({
+                adapters: { agentSession },
+                stageOptions: {
+                    model: "anthropic/primary",
+                    fallbackModels: ["openai/fallback"],
+                },
+            }),
+        ) as InternalStageContext;
+
+        const text = await ctx.prompt("go");
+
+        assert.equal(text, "primary recovered answer");
+        assert.deepEqual(calls, ["anthropic/primary"]);
+        assert.deepEqual(disposed, []);
+        const meta = ctx.__modelFallbackMeta();
+        assert.deepEqual(meta.attemptedModels, ["anthropic/primary"]);
+        assert.deepEqual(
+            meta.modelAttempts?.map((attempt) => ({ model: attempt.model, success: attempt.success })),
+            [{ model: "anthropic/primary", success: true }],
+        );
+        assert.equal(meta.warnings, undefined);
+    });
+
     test("non-throwing assistant stopReason aborted does not try fallback", async () => {
         const calls: string[] = [];
         const agentSession: AgentSessionAdapter = {

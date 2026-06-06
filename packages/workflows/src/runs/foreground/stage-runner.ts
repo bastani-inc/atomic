@@ -246,21 +246,49 @@ function messageStopReason(message: AgentSession["messages"][number]): string | 
   return typeof record.stopReason === "string" ? record.stopReason : undefined;
 }
 
-function isTerminalAssistantFailureStopReason(stopReason: string | undefined): boolean {
-  return stopReason === "error" || stopReason === "aborted";
+function normalizedStopReason(stopReason: string | undefined): string | undefined {
+  return stopReason?.toLowerCase().replace(/[_-]+/g, "");
 }
 
-function terminalAssistantFailureSince(
+function isTerminalAssistantFailureStopReason(stopReason: string | undefined): boolean {
+  const normalized = normalizedStopReason(stopReason);
+  return normalized === "error" || normalized === "aborted";
+}
+
+function isCleanAssistantStopReason(stopReason: string | undefined): boolean {
+  const normalized = normalizedStopReason(stopReason);
+  return normalized === "stop" || normalized === "tooluse" || normalized === "length";
+}
+
+function assistantErrorMessage(message: AgentSession["messages"][number]): string | undefined {
+  const record = message as { readonly errorMessage?: unknown };
+  return typeof record.errorMessage === "string" && record.errorMessage.trim().length > 0
+    ? record.errorMessage
+    : undefined;
+}
+
+type TerminalAssistantOutcome =
+  | { readonly kind: "failure"; readonly message: AgentSession["messages"][number] }
+  | { readonly kind: "recovered" }
+  | { readonly kind: "none" };
+
+function terminalAssistantOutcomeSince(
   messages: AgentSession["messages"],
   startIndex: number,
-): AgentSession["messages"][number] | undefined {
+): TerminalAssistantOutcome {
   for (let index = messages.length - 1; index >= startIndex; index -= 1) {
     const message = messages[index];
     if (!message || message.role !== "assistant") continue;
     const stopReason = messageStopReason(message);
-    if (isTerminalAssistantFailureStopReason(stopReason)) return message;
+    if (isTerminalAssistantFailureStopReason(stopReason)) {
+      return { kind: "failure", message };
+    }
+    if (isCleanAssistantStopReason(stopReason)) return { kind: "recovered" };
+    if (assistantErrorMessage(message) === undefined && extractMessageText(message).trim().length > 0) {
+      return { kind: "recovered" };
+    }
   }
-  return undefined;
+  return { kind: "none" };
 }
 
 class WorkflowPromptModelFailure extends Error {
@@ -832,9 +860,9 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
       notifyModelFallbackMetaChange();
       try {
         const { terminalScanStartIndex } = await promptWithPauseResume(activeSession, text, sdkOptions);
-        const terminalFailure = terminalAssistantFailureSince(activeSession.messages, terminalScanStartIndex);
-        if (terminalFailure !== undefined) {
-          throw new WorkflowPromptModelFailure(terminalFailure);
+        const terminalOutcome = terminalAssistantOutcomeSince(activeSession.messages, terminalScanStartIndex);
+        if (terminalOutcome.kind === "failure") {
+          throw new WorkflowPromptModelFailure(terminalOutcome.message);
         }
         modelAttempts.push({ model: candidate.id, success: true, ...modelAttemptReasoning(candidate) });
         pendingFallbackWarnings.length = 0;
