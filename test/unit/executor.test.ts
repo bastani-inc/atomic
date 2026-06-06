@@ -13,6 +13,7 @@ import {
 } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import {
+    WORKFLOW_AUTH_FAILURE_MESSAGE,
     WORKFLOW_INVALID_PROVIDER_CREDENTIALS_MESSAGE,
     WORKFLOW_MISSING_API_KEY_FAILURE_MESSAGE,
     WORKFLOW_UNKNOWN_MODEL_MESSAGE,
@@ -2033,6 +2034,50 @@ describe("executor.run", () => {
         assert.equal(typeof storedRun.blockedAt, "number");
     });
 
+    test("local login wrapper 401 stage failures leave the run active-blocked and resumable", async () => {
+        const st = createStore();
+        const def = defineWorkflow("local-login-401-wf")
+            .run(async (ctx) => {
+                await ctx.stage("needs-login").prompt("x");
+                return {};
+            })
+            .compile();
+
+        const wfResult = await run(
+            def,
+            {},
+            {
+                adapters: {
+                    prompt: {
+                        prompt: async () => {
+                            throw { status: 401, message: "Please log in to continue" };
+                        },
+                    },
+                },
+                store: st,
+            },
+        );
+
+        assert.equal(wfResult.status, "running");
+        assert.equal(wfResult.error, WORKFLOW_AUTH_FAILURE_MESSAGE);
+        const storedRun = st.runs()[0]!;
+        const stage = storedRun.stages[0]!;
+        assert.equal(storedRun.status, "running");
+        assert.equal(storedRun.endedAt, undefined);
+        assert.equal(storedRun.resumable, true);
+        assert.equal(storedRun.failureKind, "auth");
+        assert.equal(storedRun.failureCode, "login_required");
+        assert.equal(storedRun.failureRecoverability, "recoverable");
+        assert.equal(storedRun.failureDisposition, "active_blocked");
+        assert.equal(storedRun.failureMessage, "Please log in to continue");
+        assert.equal(storedRun.failedStageId, stage.id);
+        assert.equal(typeof storedRun.blockedAt, "number");
+        assert.equal(stage.status, "failed");
+        assert.equal(stage.error, WORKFLOW_AUTH_FAILURE_MESSAGE);
+        assert.equal(stage.failureCode, "login_required");
+        assert.equal(stage.failureDisposition, "active_blocked");
+    });
+
     test("invalid provider credential stage failures kill the run and refuse resume", async () => {
         const st = createStore();
         const def = defineWorkflow("invalid-key-fail-wf")
@@ -2119,6 +2164,119 @@ describe("executor.run", () => {
         assert.equal(storedRun.failureCode, "invalid_api_key");
         assert.equal(storedRun.failureRecoverability, "non_recoverable");
         assert.equal(storedRun.failureDisposition, "terminal_killed");
+        assert.equal(storedRun.failedStageId, undefined);
+        assert.equal(stage.status, "failed");
+        assert.equal(stage.failureCode, "rate_limited");
+        assert.equal(stage.failureRecoverability, "recoverable");
+        assert.equal(stage.failureDisposition, "active_blocked");
+    });
+
+    test("aggregate invalid credentials after a caught rate-limited stage use aggregate metadata", async () => {
+        const st = createStore();
+        const calls: Array<{ type: string; payload: Record<string, unknown> }> = [];
+        const persistence = {
+            appendEntry(type: string, payload: Record<string, unknown>): string {
+                calls.push({ type, payload });
+                return `entry-${calls.length}`;
+            },
+            setLabel(_entryId: string, _label: string): void {},
+        };
+        const rawSecret = "sk-testsecret1234567890";
+        const def = defineWorkflow("caught-rate-limit-aggregate-invalid-key-wf")
+            .run(async (ctx) => {
+                try {
+                    await ctx.stage("limited").prompt("limited");
+                } catch {
+                    // Continue to the aggregate provider credential failure.
+                }
+                throw new AggregateError([
+                    { status: 401, message: `Incorrect API key provided: ${rawSecret}` },
+                ], "atomic-workflows: 1 parallel step failed");
+            })
+            .compile();
+
+        const wfResult = await run(
+            def,
+            {},
+            {
+                adapters: {
+                    prompt: {
+                        prompt: async () => {
+                            throw { status: 429, message: "stage rate limited" };
+                        },
+                    },
+                },
+                store: st,
+                persistence,
+            },
+        );
+
+        assert.equal(wfResult.status, "killed");
+        assert.equal(wfResult.error, WORKFLOW_INVALID_PROVIDER_CREDENTIALS_MESSAGE);
+        const storedRun = st.runs()[0]!;
+        const stage = storedRun.stages[0]!;
+        assert.equal(storedRun.status, "killed");
+        assert.equal(storedRun.failureKind, "auth");
+        assert.equal(storedRun.failureCode, "invalid_api_key");
+        assert.equal(storedRun.failureRecoverability, "non_recoverable");
+        assert.equal(storedRun.failureDisposition, "terminal_killed");
+        assert.equal(storedRun.failedStageId, undefined);
+        assert.match(storedRun.failureMessage ?? "", /Incorrect API key/);
+        assert.equal(storedRun.failureMessage?.includes(rawSecret), false);
+        assert.notEqual(storedRun.failureMessage, stage.failureMessage);
+        assert.equal(stage.status, "failed");
+        assert.equal(stage.failureCode, "rate_limited");
+        assert.equal(stage.failureDisposition, "active_blocked");
+
+        const runEnd = calls.find((call) => call.type === "workflow.run.end")!;
+        assert.equal(runEnd.payload["failedStageId"], undefined);
+        assert.equal(runEnd.payload["failureCode"], "invalid_api_key");
+        assert.equal(String(runEnd.payload["failureMessage"] ?? "").includes(rawSecret), false);
+        assert.equal(JSON.stringify({ wfResult, runs: st.runs(), calls }).includes(rawSecret), false);
+    });
+
+    test("aggregate ordinary errors after a caught rate-limited stage do not inherit stale rate-limit metadata", async () => {
+        const st = createStore();
+        const def = defineWorkflow("caught-rate-limit-aggregate-error-wf")
+            .run(async (ctx) => {
+                try {
+                    await ctx.stage("limited").prompt("limited");
+                } catch {
+                    // Continue to an aggregate domain failure.
+                }
+                throw new AggregateError([
+                    new Error("aggregate domain terminal"),
+                ], "atomic-workflows: 1 parallel step failed");
+            })
+            .compile();
+
+        const wfResult = await run(
+            def,
+            {},
+            {
+                adapters: {
+                    prompt: {
+                        prompt: async () => {
+                            throw { status: 429, message: "stage rate limited" };
+                        },
+                    },
+                },
+                store: st,
+            },
+        );
+
+        assert.equal(wfResult.status, "failed");
+        assert.match(wfResult.error ?? "", /atomic-workflows: 1 parallel step failed/);
+        const storedRun = st.runs()[0]!;
+        const stage = storedRun.stages[0]!;
+        assert.equal(storedRun.status, "failed");
+        assert.equal(storedRun.blockedAt, undefined);
+        assert.equal(storedRun.failureKind, "unknown");
+        assert.equal(storedRun.failureCode, "unknown");
+        assert.equal(storedRun.failureDisposition, "terminal_failed");
+        assert.notEqual(storedRun.failureDisposition, "active_blocked");
+        assert.equal(storedRun.failureMessage, "aggregate domain terminal");
+        assert.notEqual(storedRun.failureMessage, "stage rate limited");
         assert.equal(storedRun.failedStageId, undefined);
         assert.equal(stage.status, "failed");
         assert.equal(stage.failureCode, "rate_limited");

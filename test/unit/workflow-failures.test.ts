@@ -104,9 +104,73 @@ describe("classifyWorkflowFailure", () => {
     assert.equal(provider.retryable, true);
   });
 
+  test("lets structured local login codes beat wrapper 401 defaults", () => {
+    for (const code of ["login_required", "auth_required", "authentication_required", "not_logged_in"] as const) {
+      const failure = classifyWorkflowFailure({ status: 401, code, message: "wrapper 401" });
+      assert.equal(failure.kind, "auth");
+      assert.equal(failure.code, "login_required");
+      assert.equal(failure.recoverability, "recoverable");
+      assert.equal(failure.disposition, "active_blocked");
+      assert.equal(failure.resumable, true);
+      assert.equal(failure.userMessage, WORKFLOW_AUTH_FAILURE_MESSAGE);
+    }
+  });
+
+  test("uses auth-required diagnostics before generic wrapper 401 defaults", () => {
+    const failure = classifyWorkflowFailure({
+      status: 401,
+      message: "provider request failed",
+      diagnostics: [{ error: { code: "auth_required", message: "Please log in to continue" } }],
+    });
+
+    assert.equal(failure.kind, "auth");
+    assert.equal(failure.code, "login_required");
+    assert.equal(failure.recoverability, "recoverable");
+    assert.equal(failure.disposition, "active_blocked");
+    assert.equal(failure.resumable, true);
+    assert.equal(failure.message, "Please log in to continue");
+    assert.equal(failure.userMessage, WORKFLOW_AUTH_FAILURE_MESSAGE);
+  });
+
+  test("uses clear local login wrapper-401 messages before provider credential defaults", () => {
+    for (const message of ["Please log in to continue", "not logged in", "login required", "Run /login to continue"] as const) {
+      const failure = classifyWorkflowFailure({ status: 401, message });
+      assert.equal(failure.kind, "auth");
+      assert.equal(failure.code, "login_required");
+      assert.equal(failure.recoverability, "recoverable");
+      assert.equal(failure.disposition, "active_blocked");
+      assert.equal(failure.resumable, true);
+      assert.equal(failure.userMessage, WORKFLOW_AUTH_FAILURE_MESSAGE);
+    }
+  });
+
   test("keeps provider 401 auth text classified as invalid provider credentials", () => {
     for (const message of ["Unauthorized", "authentication required"]) {
       const failure = classifyWorkflowFailure({ status: 401, message });
+      assert.equal(failure.kind, "auth");
+      assert.equal(failure.code, "invalid_api_key");
+      assert.equal(failure.recoverability, "non_recoverable");
+      assert.equal(failure.disposition, "terminal_killed");
+      assert.equal(failure.userMessage, WORKFLOW_INVALID_PROVIDER_CREDENTIALS_MESSAGE);
+    }
+  });
+
+  test("provider credential messages and causes override broad auth wrapper codes", () => {
+    const failures = [
+      classifyWorkflowFailure({
+        status: 401,
+        code: "auth_required",
+        message: "Incorrect API key provided",
+      }),
+      classifyWorkflowFailure({
+        status: 401,
+        code: "auth_required",
+        message: "wrapper 401",
+        cause: { code: "invalid_api_key", message: "Incorrect API key provided" },
+      }),
+    ];
+
+    for (const failure of failures) {
       assert.equal(failure.kind, "auth");
       assert.equal(failure.code, "invalid_api_key");
       assert.equal(failure.recoverability, "non_recoverable");
@@ -332,6 +396,29 @@ describe("classifyWorkflowFailure", () => {
     assert.equal(failure.kind, "rate_limit");
     assert.equal(failure.code, "rate_limited");
     assert.equal(failure.disposition, "active_blocked");
+  });
+
+  test("redacts top-level structured invalid provider credential messages", () => {
+    for (const secret of [
+      "sk-testsecret1234567890",
+      "api_key=super-secret-value",
+      "token=super-secret-value",
+      "credential=super-secret-value",
+      "secret=super-secret-value",
+    ] as const) {
+      const failure = classifyWorkflowFailure({
+        status: 401,
+        code: "invalid_api_key",
+        message: `Incorrect API key provided: ${secret}`,
+      });
+
+      assert.equal(failure.kind, "auth");
+      assert.equal(failure.code, "invalid_api_key");
+      assert.equal(failure.userMessage, WORKFLOW_INVALID_PROVIDER_CREDENTIALS_MESSAGE);
+      assert.equal(failure.message.includes(secret), false);
+      assert.equal(failure.userMessage.includes(secret), false);
+      assert.match(failure.message, /\[redacted\]/);
+    }
   });
 
   test("redacts sensitive fallback user messages", () => {

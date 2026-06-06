@@ -414,6 +414,14 @@ const LOGIN_REQUIRED_PHRASES: readonly TokenMatch[] = [
   ["unauthorized"],
 ];
 
+const LOCAL_LOGIN_REQUIRED_PHRASES: readonly TokenMatch[] = [
+  ["not", "logged", "in"],
+  ["login", "required"],
+  ["please", "login"],
+  ["please", "log", "in"],
+  ["log", "in", "to", "continue"],
+];
+
 const MISSING_API_KEY_PHRASES: readonly TokenMatch[] = [
   ["no", "api", "key"],
   ["api", "key", "not", "found"],
@@ -725,6 +733,21 @@ function canUseRelatedClassificationBeforeStatus(classification: WorkflowFailure
   return classification.decision.code !== "login_required";
 }
 
+function isClearLocalLoginMessage(message: string): boolean {
+  if (message.toLowerCase().includes("/login")) return true;
+  return hasAnyPhrase(tokenize(message), LOCAL_LOGIN_REQUIRED_PHRASES);
+}
+
+function canUseLoginClassificationBeforeWrapperStatus(
+  classification: WorkflowFailureClassification | undefined,
+  status: number | undefined,
+): classification is WorkflowFailureClassification {
+  if (status !== 401 || classification === undefined || classification.decision.code !== "login_required") return false;
+  return classification.evidence === "weak_signal"
+    || classification.evidence === "strong_signal"
+    || (classification.message !== undefined && isClearLocalLoginMessage(classification.message));
+}
+
 function classificationFromNormalizedCode(
   normalized: string | undefined,
   retryAfterMs: number | undefined,
@@ -846,6 +869,17 @@ function structuredClassification(
     ) {
       return classificationForDecision(messageDecision, source, signalMessage);
     }
+    if (effectiveStatus === 401) {
+      if (canUseLoginClassificationBeforeWrapperStatus(relatedClassification, effectiveStatus)) {
+        return relatedClassification;
+      }
+      if (canUseLoginClassificationBeforeWrapperStatus(weakClassification, effectiveStatus)) {
+        return weakClassification;
+      }
+      if (signalMessage !== undefined && isClearLocalLoginMessage(signalMessage)) {
+        return classificationForDecision(authDecision("login_required"), source, signalMessage);
+      }
+    }
     return classificationForDecision(statusDecision, source, signalMessage, "status");
   }
 
@@ -880,8 +914,8 @@ export function classifyWorkflowFailure(error: unknown): WorkflowFailure {
   const structured = structuredClassification(error);
   if (structured !== undefined) {
     const structuredMessage = structured.message !== undefined
-      ? (structured.source === "top_level" ? structured.message : redactSensitiveText(structured.message))
-      : message;
+      ? redactSensitiveText(structured.message)
+      : redactSensitiveText(message);
     return failureForDecision(structured.decision, structuredMessage, error);
   }
 

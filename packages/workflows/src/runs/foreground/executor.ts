@@ -1615,14 +1615,20 @@ function isRecoverableActiveBlockedCandidate(candidate: FailureCandidate): boole
 function runFailureMetadataFromCandidate(
   fallbackFailure: WorkflowFailure,
   candidate: FailureCandidate,
-  firstFailedStage: StageSnapshot | undefined,
   thrownError: unknown,
 ): RunFailureMetadata {
-  const metadata = candidate.source === "stage"
-    ? runFailureMetadataFromStage(fallbackFailure, candidate.stage)
-    : candidate.source === "aggregate"
-      ? runFailureMetadataFromFailure(candidate.failure, firstFailedStage)
-      : runFailureMetadataFromFailure(candidate.failure, undefined);
+  let metadata: RunFailureMetadata;
+  switch (candidate.source) {
+    case "stage":
+      metadata = runFailureMetadataFromStage(fallbackFailure, candidate.stage);
+      break;
+    case "aggregate":
+      metadata = runFailureMetadataFromFailure(candidate.failure, undefined);
+      break;
+    case "outer":
+      metadata = runFailureMetadataFromFailure(candidate.failure, undefined);
+      break;
+  }
 
   if (candidate.disposition === "terminal_failed" && isAggregateWrapper(thrownError)) {
     return { ...metadata, errorMessage: fallbackFailure.userMessage };
@@ -1635,11 +1641,16 @@ function failedStageIdsForCandidate(
   candidate: FailureCandidate,
   failedStages: readonly StageSnapshot[],
 ): readonly string[] {
-  if (candidate.source === "aggregate") return failedStages.map((stage) => stage.id);
-  if (candidate.source === "outer") return [];
-  return failedStages
-    .filter((stage) => (stage.failureDisposition ?? "terminal_failed") === candidate.disposition)
-    .map((stage) => stage.id);
+  switch (candidate.source) {
+    case "aggregate":
+      return failedStages.map((stage) => stage.id);
+    case "outer":
+      return [];
+    case "stage":
+      return failedStages
+        .filter((stage) => (stage.failureDisposition ?? "terminal_failed") === candidate.disposition)
+        .map((stage) => stage.id);
+  }
 }
 
 function selectedMetadata(
@@ -1666,12 +1677,10 @@ function selectRunFailureDisposition(input: {
     ...aggregateFailures.map(aggregateFailureCandidate),
     outerFailureCandidate(input.outerFailure),
   ];
-  const firstFailedStage = failedStages[0];
-
   const terminalKilledCandidate = candidates.find((candidate) => candidate.disposition === "terminal_killed");
   if (terminalKilledCandidate !== undefined) {
     return selectedMetadata(
-      runFailureMetadataFromCandidate(input.outerFailure, terminalKilledCandidate, firstFailedStage, input.thrownError),
+      runFailureMetadataFromCandidate(input.outerFailure, terminalKilledCandidate, input.thrownError),
       failedStageIdsForCandidate(terminalKilledCandidate, failedStages),
     );
   }
@@ -1679,7 +1688,7 @@ function selectRunFailureDisposition(input: {
   const terminalFailedCandidate = candidates.find((candidate) => candidate.disposition === "terminal_failed");
   if (terminalFailedCandidate !== undefined) {
     return selectedMetadata(
-      runFailureMetadataFromCandidate(input.outerFailure, terminalFailedCandidate, firstFailedStage, input.thrownError),
+      runFailureMetadataFromCandidate(input.outerFailure, terminalFailedCandidate, input.thrownError),
       failedStageIdsForCandidate(terminalFailedCandidate, failedStages),
     );
   }
@@ -1690,7 +1699,7 @@ function selectRunFailureDisposition(input: {
     candidates.every(isRecoverableActiveBlockedCandidate)
   ) {
     return selectedMetadata(
-      runFailureMetadataFromCandidate(input.outerFailure, recoverableBlockedCandidate, firstFailedStage, input.thrownError),
+      runFailureMetadataFromCandidate(input.outerFailure, recoverableBlockedCandidate, input.thrownError),
       failedStageIds,
     );
   }
