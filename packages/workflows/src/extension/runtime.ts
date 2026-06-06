@@ -44,6 +44,7 @@ import {
 import { validateWorkflowModels } from "../runs/shared/model-fallback.js";
 import { runDetached } from "../runs/background/runner.js";
 import type { JobTracker } from "../runs/background/job-tracker.js";
+import { appendRunEnd } from "../shared/persistence-session-entries.js";
 import { classifyWorkflowFailure } from "../shared/workflow-failures.js";
 
 // ---------------------------------------------------------------------------
@@ -389,6 +390,30 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
     return { ok: true, stageId: failedStageId };
   }
 
+  function finalizeResumedActiveBlockedSourceRun(source: RunSnapshot, continuationRunId: string): void {
+    const errorMessage = source.error ?? source.failureMessage ?? `workflow resumed in new run ${continuationRunId}`;
+    const metadata = {
+      ...(source.failureKind !== undefined ? { failureKind: source.failureKind } : {}),
+      ...(source.failureCode !== undefined ? { failureCode: source.failureCode } : {}),
+      failureRecoverability: "non_recoverable",
+      failureDisposition: "terminal_killed",
+      ...(source.failureMessage !== undefined ? { failureMessage: source.failureMessage } : {}),
+      ...(source.failedStageId !== undefined ? { failedStageId: source.failedStageId } : {}),
+      resumable: false,
+      ...(source.retryAfterMs !== undefined ? { retryAfterMs: source.retryAfterMs } : {}),
+    } as const;
+    const recorded = activeStore.recordRunEnd(source.id, "killed", undefined, errorMessage, metadata);
+    if (recorded && persistence !== undefined) {
+      appendRunEnd(persistence, {
+        runId: source.id,
+        status: "killed",
+        error: errorMessage,
+        ...metadata,
+        ts: Date.now(),
+      });
+    }
+  }
+
   function resumeFailedRun(sourceRunId: string, stageId?: string, options?: RuntimeDispatchOptions): ResumeFailedRunResult {
     const source = activeStore.runs().find((run) => run.id === sourceRunId);
     if (source === undefined) {
@@ -417,6 +442,9 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
       ...runOptions({ workflow: def.name, inputs: sourceInputs }, options?.policy),
       continuation: { source, resumeFromStageId: resolvedStage.stageId },
     });
+    if (isActiveBlockedResumable) {
+      finalizeResumedActiveBlockedSourceRun(source, accepted.runId);
+    }
     return {
       ok: true,
       runId: accepted.runId,

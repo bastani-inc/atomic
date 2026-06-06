@@ -192,6 +192,15 @@ function retryAfterHeaderMs(value: unknown): number | undefined {
   return Math.max(0, dateMs - Date.now());
 }
 
+function retryAfterFieldMs(value: unknown): number | undefined {
+  const numeric = numberFrom(value);
+  if (numeric !== undefined && numeric >= 0) return Math.round(numeric);
+  if (typeof value !== "string" || value.trim().length === 0) return undefined;
+  const dateMs = Date.parse(value);
+  if (!Number.isFinite(dateMs)) return undefined;
+  return Math.max(0, dateMs - Date.now());
+}
+
 function retryAfterMsFrom(error: unknown): number | undefined {
   const directMs = numberFrom(field(error, "retryAfterMs"));
   if (directMs !== undefined && directMs >= 0) return Math.round(directMs);
@@ -199,9 +208,11 @@ function retryAfterMsFrom(error: unknown): number | undefined {
   const seconds = numberFrom(field(error, "retryAfterSeconds"));
   if (seconds !== undefined && seconds >= 0) return Math.round(seconds * 1000);
 
-  const retryAfter = retryAfterHeaderMs(field(error, "retryAfter"))
-    ?? retryAfterHeaderMs(field(error, "retry-after"));
+  const retryAfter = retryAfterFieldMs(field(error, "retryAfter"));
   if (retryAfter !== undefined) return retryAfter;
+
+  const retryAfterHeader = retryAfterHeaderMs(field(error, "retry-after"));
+  if (retryAfterHeader !== undefined) return retryAfterHeader;
 
   const headers = field(error, "headers");
   const headerRecord = asRecord(headers);
@@ -534,6 +545,8 @@ function redactedSecretReplacement(prefix: string): string {
 function redactSensitiveText(value: string): string {
   return value
     .replace(/(sk-[A-Za-z0-9_-]{8})[A-Za-z0-9_-]+/g, redactedSecretReplacement("$1"))
+    .replace(/\b(authorization\s*:\s*bearer\s+)[^\s,;]+/gi, "$1[redacted]")
+    .replace(/\b(bearer\s+)[A-Za-z0-9._~+/-]{8,}=*/gi, "$1[redacted]")
     .replace(/((?:api[_-]?key|token|credential|secret)\s*[:=]\s*)[^\s,;]+/gi, "$1[redacted]");
 }
 

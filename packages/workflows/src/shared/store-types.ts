@@ -146,7 +146,7 @@ export interface StageSnapshot {
   failureRecoverability?: WorkflowFailureRecoverability;
   /** Executor lifecycle disposition chosen for the failed stage. */
   failureDisposition?: WorkflowFailureDisposition;
-  /** Optional provider retry hint in milliseconds. */
+  /** Optional provider retry hint in milliseconds. Informational; blocked stages resume only via explicit user action. */
   retryAfterMs?: number;
   /** Original unsanitized error text when different from `error`. */
   failureMessage?: string;
@@ -245,7 +245,7 @@ export interface RunSnapshot {
   failureRecoverability?: WorkflowFailureRecoverability;
   /** Executor lifecycle disposition chosen for this failure. */
   failureDisposition?: WorkflowFailureDisposition;
-  /** Optional provider retry hint in milliseconds. */
+  /** Optional provider retry hint in milliseconds. Informational; blocked runs resume only via explicit user action. */
   retryAfterMs?: number;
   /** Timestamp when an active run was blocked by a recoverable workflow failure. */
   blockedAt?: number;

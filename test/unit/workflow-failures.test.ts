@@ -512,6 +512,24 @@ describe("classifyWorkflowFailure", () => {
     assert.equal(failure.retryAfterMs, 3000);
   });
 
+  test("treats bare retryAfter as milliseconds while retry-after header remains seconds", () => {
+    const direct = classifyWorkflowFailure({
+      message: "slow down",
+      status: 429,
+      retryAfter: 2500,
+    });
+    assert.equal(direct.kind, "rate_limit");
+    assert.equal(direct.retryAfterMs, 2500);
+
+    const header = classifyWorkflowFailure({
+      message: "slow down",
+      status: 429,
+      "retry-after": "3",
+    });
+    assert.equal(header.kind, "rate_limit");
+    assert.equal(header.retryAfterMs, 3000);
+  });
+
   test("structured 429 wins over misleading auth text", () => {
     const failure = classifyWorkflowFailure({
       message: "Incorrect API key mentioned in provider retry body",
@@ -529,6 +547,8 @@ describe("classifyWorkflowFailure", () => {
       "token=super-secret-value",
       "credential=super-secret-value",
       "secret=super-secret-value",
+      "Authorization: Bearer secret-token-value",
+      "Bearer secret-token-value",
     ] as const) {
       const failure = classifyWorkflowFailure({
         status: 401,
@@ -562,6 +582,8 @@ describe("classifyWorkflowFailure", () => {
       "token=super-secret-value",
       "credential=super-secret-value",
       "secret=super-secret-value",
+      "Authorization: Bearer secret-token-value",
+      "Bearer secret-token-value",
     ] as const) {
       const failure = classifyWorkflowFailure(new Error(`tool failed with ${secret}`));
       assert.equal(failure.kind, "unknown");

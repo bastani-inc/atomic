@@ -38,7 +38,10 @@ import type {
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
 import { Type } from "typebox";
-import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
+import type {
+    WorkflowDefinition,
+    WorkflowPersistencePort,
+} from "../../packages/workflows/src/shared/types.js";
 import {
     createExtensionRuntime,
     type ExtensionRuntime,
@@ -3811,9 +3814,20 @@ export default defineWorkflow("tool-headless-lifecycle")
         });
 
         const calls: string[] = [];
+        const persistenceCalls: Array<{
+            readonly type: string;
+            readonly payload: Record<string, unknown>;
+        }> = [];
+        const persistence: WorkflowPersistencePort = {
+            appendEntry(type, payload) {
+                persistenceCalls.push({ type, payload });
+                return `entry-${persistenceCalls.length}`;
+            },
+        };
         const runtime = createExtensionRuntime({
             registry: createRegistry([def]),
             store,
+            persistence,
             adapters: {
                 prompt: {
                     prompt: async (text) => {
@@ -3850,10 +3864,28 @@ export default defineWorkflow("tool-headless-lifecycle")
         assert.equal(continued.status, "completed");
         assert.equal(continued.resumedFromRunId, sourceRunId);
         assert.equal(continued.stages[0]!.replayed, true);
-        assert.equal(
-            store.runs().find((run) => run.id === sourceRunId)!.status,
-            "running",
+        const source = store.runs().find((run) => run.id === sourceRunId)!;
+        assert.equal(source.status, "killed");
+        assert.equal(source.endedAt !== undefined, true);
+        assert.equal(source.blockedAt, undefined);
+        assert.equal(source.resumable, false);
+        assert.equal(source.failureKind, "rate_limit");
+        assert.equal(source.failureCode, "rate_limited");
+        assert.equal(source.failureRecoverability, "non_recoverable");
+        assert.equal(source.failureDisposition, "terminal_killed");
+        assert.equal(source.failureMessage, "HTTP 429");
+        assert.equal(source.failedStageId, "blocked-second");
+
+        const sourceRunEnd = persistenceCalls.find(
+            (call) =>
+                call.type === "workflow.run.end" &&
+                call.payload["runId"] === sourceRunId,
         );
+        assert.ok(sourceRunEnd);
+        assert.equal(sourceRunEnd.payload["status"], "killed");
+        assert.equal(sourceRunEnd.payload["resumable"], false);
+        assert.equal(sourceRunEnd.payload["failureRecoverability"], "non_recoverable");
+        assert.equal(sourceRunEnd.payload["failureDisposition"], "terminal_killed");
     });
 
     test("makeExecuteWorkflowTool resume surfaces workflow_not_found for failed resumable run without registry definition", async () => {
