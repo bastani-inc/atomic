@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.8.26-alpha.7] - 2026-06-07
+
+### Added
+
+- Replaced the bundled browser-use subagent integration with the first-party `browser` skill for web interaction workflows.
+
 ## [0.8.26-alpha.6] - 2026-06-06
 
 ### Changed

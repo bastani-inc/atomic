@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.8.26-alpha.7] - 2026-06-07
+
 ### Added
 
 - Added `/context-compact`, a fixed no-argument deletion-only compaction command that validates model-proposed logical deletion targets, preserves retained transcript content verbatim, and records `context_compaction` session entries.

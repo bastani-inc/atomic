@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.8.26-alpha.7] - 2026-06-07
+
 ### Changed
 
 - Refined bundled workflow prompts to keep natural instructions inside meaningful XML sections while removing redundant wrapper noise.
