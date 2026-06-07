@@ -1020,6 +1020,25 @@ Builder basics:
 
 Author workflows to create at least one tracked stage by calling `ctx.task()`, `ctx.chain()`, `ctx.parallel()`, `ctx.stage()`, or `ctx.workflow()` in the run body so each run has graph nodes to inspect, attach to, interrupt, resume, and render.
 
+### Guiding Principles
+
+- Stage prompts should be locally scoped: describe only the current stage's objective, inputs, expected outputs, and success criteria.
+- Avoid references to other stages unless the current stage explicitly receives and needs that information.
+- Avoid workflow-specific or stage-specific vocabulary that is not explained inside the current prompt.
+- Use clear software engineering terminology in self-described prompts.
+- Avoid hard-coded regular expressions for condition matching when gating reviews or model outputs.
+- Prefer structured output schemas for review/gate decisions whenever model output needs to be evaluated.
+- Treat atomic workflow units as language model stages, not deterministic tools.
+- When deterministic gates are needed, create small dedicated stages that instruct a model to run a specific tool or perform a specific check. This keeps gates adaptive to the current codebase while preserving explicit workflow structure.
+
+### Context engineering guidance
+
+Workflow guidance should also cover the context passed between stages:
+
+- Prefer creating files or artifacts for substantial handoffs, then instruct the next stage to read the file, instead of dumping large text output directly into the next stage prompt or context.
+- Prefer forked context for non-reviewer stages so long-running implementation work can preserve coherency and continuity.
+- Prefer a clean context window for reviewer stages so earlier implementation stages do not bias the reviewer. Reviewers should evaluate the supplied artifacts, changed files, tests, and explicit criteria as independently as possible.
+
 ### Inputs
 
 Inputs are declared with TypeBox `Type.*` schemas passed to `.input(key, schema)`. `Type` is re-exported from `@bastani/workflows` (along with the `Static` and `TSchema` type helpers), so you do not import from `typebox` directly in workflow files. Workflow packages still declare `typebox` as a peer dependency so the SDK's shipped types resolve under `tsc` — see [Programmatic Usage](#programmatic-usage). Common input schemas map to picker kinds and accepted runtime values:
@@ -1480,6 +1499,20 @@ registry.get("alpha");
 
 A workflow is an information-flow system, not just a list of prompts. Most workflow failures come from missing, stale, oversized, or poorly-routed context. Design every stage boundary deliberately.
 
+### Locally Scoped Stage Prompts
+
+Stage prompts should be local contracts, not miniature descriptions of the entire workflow runtime. Write prompts as if the stage could be executed independently from a fresh session with only the listed inputs. Include:
+
+- the stage's current objective and what is out of scope for this stage
+- the exact files, artifacts, child outputs, or user inputs it may use
+- the expected output format or structured-output tool/schema it must return
+- the checks, tools, or deterministic commands it should run when relevant
+- the success criteria that let this stage stop
+
+Avoid unrelated workflow internals such as reducer algorithms, future PR stages, sibling reviewer names, loop implementation details, or project-specific nicknames unless they are explicitly part of the current stage contract. If a term such as a gate name, ledger field, or workflow nickname is necessary, define it in the prompt before using it.
+
+Choose context mode deliberately. Use `context: "fork"` or `forkFromSessionFile` for coherent long-running implementation stages that need continuity from their own earlier work. Use `context: "fresh"` for unbiased reviewer, evaluator, and gate stages so they inspect the current files and explicit artifacts rather than inheriting the implementer's assumptions. When continuity is needed across fresh stages, pass it explicitly through files, declared outputs, and `reads`.
+
 ### Context Fundamentals
 
 Treat context as a finite attention budget. Include only information needed for the current decision, place critical constraints near the beginning or end of prompts, and use progressive disclosure instead of loading every possible reference up front.
@@ -1522,6 +1555,8 @@ A good compressed handoff includes:
 - next action expected from the downstream stage
 
 Use `output`, `outputMode: "file-only"`, `reads`, and `chainDir` for large research bundles, logs, or reviewer outputs. Keep summaries compact and let downstream stages read full artifacts only when needed. In the downstream stage prompt, explicitly say something like `Read the file at ${artifactPath} before continuing.` Do not inject full session tails, all previous stage outputs, or every prior review round into later prompts by default; pass the latest relevant artifact paths and make older history discoverable from a ledger or index file.
+
+Substantial handoffs should travel through files or durable artifacts instead of hidden transcript assumptions. This keeps stage prompts small, makes review/audit possible, and lets later stages reread the authoritative material without depending on what a previous model happened to summarize.
 
 ```ts
 const researchPath = ".atomic/workflows/runs/context-demo/research.md";
@@ -1586,6 +1621,10 @@ Build validation into the workflow instead of waiting for a final manual check. 
 - reviewer stages: fresh-context reviewers that inspect artifacts and current files
 - LLM-as-judge stages: direct scoring, pairwise comparison, or rubric-based grading for subjective outputs
 
+Prefer structured output schemas or structured-output tools for model review and gate decisions. Do not make correctness depend on brittle regular-expression matching against free-form prose such as “looks good”, “approved”, or “PASS”. A schema with explicit booleans/enums, findings arrays, confidence, evidence fields, and error reporting is easier to validate, replay, and safely default to “not approved” when malformed.
+
+Use small dedicated model stages for adaptive gates when deterministic code alone cannot decide what to check. For example, a stage can read an artifact, inspect the repo, run a named tool or command, and then emit a structured decision. Keep that stage's prompt narrow: tell it the specific check to perform, the files/tools it may use, and the structured decision it must return.
+
 When using LLM judges, mitigate bias by defining score anchors, asking for evidence, calibrating against examples, and keeping length/order effects in mind. Track pass rates and failures over time for reusable workflows.
 
 ### Tools, MCP, Memory, and Hosted Execution
@@ -1618,12 +1657,13 @@ Before implementing or shipping a non-trivial workflow, answer these questions:
 - **Inputs:** Which values should be declared as inputs? What is the narrowest schema type? Which defaults are safe?
 - **Starter pattern:** Which [workflow starter pattern](#workflow-starter-patterns) best matches the task, and where does the actual design intentionally diverge?
 - **Stage decomposition:** For each stage, what question does it answer, what context does it need, what output should it return, and what model/tool/MCP requirements does it have?
+- **Local stage contract:** Can this stage prompt stand alone with its current objective, inputs/artifacts, expected outputs, tools/checks, and success criteria, without unexplained workflow internals or future-stage assumptions?
 - **Information flow:** For every edge between stages, is `previous` enough, or should the handoff use structured returns, files, `reads`, `output`, or `outputMode`?
 - **Output contract:** Which outputs should be declared with `.output(...)`, which stage/task/child results should `.run()` return for those keys, and what runtime type must each value have? If another workflow may call this workflow as a child, which non-default outputs should the parent rely on?
 - **Context size:** Can downstream stages succeed from the handoff alone? Should large transcripts, logs, or research bundles be summarized or saved as artifacts?
 - **Control flow:** Should the workflow use `ctx.chain`, `ctx.parallel`, `ctx.ui`, bounded loops, `failFast`, or `fallbackModels`?
 - **User experience:** Are stage names readable in status and graph views? Is the final output compact? Are important artifacts saved with stable paths?
-- **Validation:** What success criteria, review gates, deterministic checks, or evaluator stages prove the workflow did the right thing?
+- **Validation:** What success criteria, review gates, deterministic checks, or evaluator stages prove the workflow did the right thing? Are model gates schema-backed instead of regex/prose-matched, and do adaptive gates run as focused model stages with explicit tool/check instructions?
 
 Good workflows are information-flow systems, not just prompt sequences. Keep stage prompts focused, preserve evidence with file paths or artifacts, and pass only the context each downstream stage needs.
 
@@ -1639,4 +1679,6 @@ Good workflows are information-flow systems, not just prompt sequences. Keep sta
 - Do not expect named workflow runs to block the chat turn; they are background tasks.
 - Do not call `kill` when the user asks to interrupt or pause resumably.
 - Keep stage names readable because they appear in workflow status and UI.
+- Do not write stage prompts that depend on hidden workflow-wide awareness; make each model stage locally scoped and self-described.
+- Do not parse model gate decisions from ad-hoc prose with regular expressions; use structured output schemas/tools or a focused checking stage that returns a structured decision.
 - Return compact structured output and save large artifacts to files.
