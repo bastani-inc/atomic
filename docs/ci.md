@@ -16,7 +16,8 @@ Pull request / push
   ├─ cd packages/coding-agent && bun run build
   ├─ bun run test:unit
   ├─ bun run test:integration
-  └─ scripts/build-binaries.sh --platform <native-x64> + atomic --version smoke test
+  └─ scripts/build-binaries.sh --platform <native-x64>
+     └─ extract archive, verify bundled paths, run --version and --no-session smoke tests
 
 <version> tag pushed
   ├─ smoke test Linux x64 release archive in a dedicated job
@@ -69,8 +70,8 @@ Runs on pushes to `main` and PRs targeting `main`.
 
 Matrix:
 
-- `ubuntu-latest` with native `linux-x64` binary smoke coverage
-- `windows-latest` with native `windows-x64` binary smoke coverage
+- `blacksmith-4vcpu-ubuntu-2404` with native `linux-x64` binary smoke coverage
+- `blacksmith-4vcpu-windows-2025` with native `windows-x64` binary smoke coverage
 
 Steps:
 
@@ -83,7 +84,7 @@ Steps:
 7. Run `bun run test:unit`.
 8. Run `bun run test:integration`.
 9. Build the native release binary with `scripts/build-binaries.sh --platform <native-x64>`.
-10. Extract the generated release archive and run `atomic --version` from the extracted binary. The PR/push smoke tests do not run the longer `--no-session` runtime smoke; that coverage is reserved for the release smoke jobs.
+10. Extract the generated release archive, verify required bundled `builtin/*` and selected `node_modules/*` paths are present, run `atomic --version`, and run `atomic --no-session` far enough to catch extension-load diagnostics while allowing the expected no-models exit in CI.
 
 ### Code Review (`code-review.yml`)
 
@@ -245,8 +246,8 @@ The meaningful pre-publish checks are:
 
 | File                 | Trigger                                       | Purpose                                                                                                                                                                                                       |
 | -------------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `test.yml`           | Push to `main`, PR to `main`                  | Install, typecheck, validate docs links, build `@bastani/atomic`, unit/integration tests, build native Linux/Windows binaries, and run `atomic --version` archive smoke tests                                 |
-| `publish.yml`        | `v*` tag push, manual dispatch with tag input | Smoke test Linux/Windows binaries in parallel, validate docs links before publish metadata checks, build binaries on a GitHub-hosted runner for npm provenance, publish `@bastani/atomic`, create GitHub Release with binaries |
+| `test.yml`           | Push to `main`, PR to `main`                  | Install, typecheck, validate docs links, build `@bastani/atomic`, unit/integration tests, build native Linux/Windows binaries, verify archive contents, and run `atomic --version` / `atomic --no-session` archive smoke tests |
+| `publish.yml`        | `<version>` tag push, manual dispatch with tag input | Smoke test Linux/Windows binaries in parallel on Blacksmith runners, validate docs links before publish metadata checks, build binaries on a GitHub-hosted runner for npm provenance, publish `@bastani/atomic`, create GitHub Release with binaries |
 | `code-review.yml`    | PR opened/synchronized                        | Claude-powered code review                                                                                                                                                                                    |
 | `pr-description.yml` | PR opened/synchronized                        | Claude-powered PR description generation, skipped for Dependabot                                                                                                                                              |
 | `claude.yml`         | Issue/PR comments, issues, PR reviews         | Interactive Claude assistant gated on `@claude` mentions                                                                                                                                                      |
@@ -277,10 +278,21 @@ The meaningful pre-publish checks are:
     tmpdir=$(mktemp -d)
     tar -xzf packages/coding-agent/binaries/atomic-linux-x64.tar.gz -C "$tmpdir"
     "$tmpdir/atomic/atomic" --version
+    set +e
+    output=$(printf '' | "$tmpdir/atomic/atomic" --no-session 2>&1)
+    status=$?
+    set -e
+    echo "$output"
+    if grep -q 'Failed to load extension' <<<"$output"; then
+      exit 1
+    fi
+    if [ "$status" -ne 0 ] && ! grep -Eq 'No models available|No model selected|No API key found' <<<"$output"; then
+      exit "$status"
+    fi
     rm -rf "$tmpdir"
     ```
 
-    On Windows, substitute `--platform windows-x64`, extract `atomic-windows-x64.zip`, and run `atomic.exe --version`.
+    On Windows, substitute `--platform windows-x64`, extract `atomic-windows-x64.zip`, and run `atomic.exe --version` plus the equivalent `atomic.exe --no-session` smoke.
 
 4. Commit and tag:
 
