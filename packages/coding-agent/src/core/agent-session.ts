@@ -2101,7 +2101,7 @@ export class AgentSession {
 	 *
 	 * Two cases:
 	 * 1. Overflow: LLM returned context overflow error, remove error message from agent state, compact, auto-retry
-	 * 2. Threshold: Context over threshold, compact, NO auto-retry (user continues manually)
+	 * 2. Threshold: Context over threshold, compact, resume queued active-turn work if present; otherwise wait for user
 	 *
 	 * @param assistantMessage The assistant message to check
 	 * @param skipAbortedCheck If false, include aborted messages (for pre-prompt check). Default: true
@@ -2184,6 +2184,49 @@ export class AgentSession {
 		if (shouldCompact(contextTokens, contextWindow, settings)) {
 			await this._runAutoCompaction("threshold", false);
 		}
+	}
+
+	/**
+	 * Internal: remove the trailing overflow error from retry context if it is still present.
+	 */
+	private _dropTrailingOverflowAssistantErrorIfPresent(): void {
+		const messages = this.agent.state.messages;
+		const lastMsg = messages[messages.length - 1];
+		if (lastMsg?.role === "assistant" && (lastMsg as AssistantMessage).stopReason === "error") {
+			this.agent.state.messages = messages.slice(0, -1);
+		}
+	}
+
+	/**
+	 * Internal: schedule a live post-event continuation probe after compaction_end listeners can flush queues.
+	 */
+	private _schedulePostAutoCompactionContinuationProbe(
+		reason: "overflow" | "threshold",
+		willRetry: boolean,
+	): void {
+		setTimeout(() => {
+			if (this.isCompacting || this.isStreaming) {
+				return;
+			}
+
+			if (reason === "overflow" && willRetry) {
+				this._resumeAfterAutoCompaction();
+				return;
+			}
+
+			if (!this.agent.hasQueuedMessages()) {
+				return;
+			}
+
+			this._resumeAfterAutoCompaction();
+		}, 100);
+	}
+
+	/**
+	 * Internal: resume generation after successful auto-compaction only when active work remains.
+	 */
+	private _resumeAfterAutoCompaction(): void {
+		this.agent.continue().catch(() => {});
 	}
 
 	/**
@@ -2306,6 +2349,9 @@ export class AgentSession {
 			const newEntries = this.sessionManager.getEntries();
 			const sessionContext = this.sessionManager.buildSessionContext();
 			this.agent.state.messages = sessionContext.messages;
+			if (reason === "overflow" && willRetry) {
+				this._dropTrailingOverflowAssistantErrorIfPresent();
+			}
 
 			// Get the saved compaction entry for the extension event
 			const savedCompactionEntry = newEntries.find((e) => e.type === "compaction" && e.summary === summary) as
@@ -2328,23 +2374,7 @@ export class AgentSession {
 			};
 			this._emit({ type: "compaction_end", reason, result, aborted: false, willRetry });
 
-			if (willRetry) {
-				const messages = this.agent.state.messages;
-				const lastMsg = messages[messages.length - 1];
-				if (lastMsg?.role === "assistant" && (lastMsg as AssistantMessage).stopReason === "error") {
-					this.agent.state.messages = messages.slice(0, -1);
-				}
-
-				setTimeout(() => {
-					this.agent.continue().catch(() => {});
-				}, 100);
-			} else if (this.agent.hasQueuedMessages()) {
-				// Auto-compaction can complete while follow-up/steering/custom messages are waiting.
-				// Kick the loop so queued messages are actually delivered.
-				setTimeout(() => {
-					this.agent.continue().catch(() => {});
-				}, 100);
-			}
+			this._schedulePostAutoCompactionContinuationProbe(reason, willRetry);
 		} catch (error) {
 			const errorMessage = error instanceof Error ? error.message : "compaction failed";
 			this._emit({
