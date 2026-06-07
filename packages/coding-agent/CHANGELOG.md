@@ -6,9 +6,17 @@
 
 - Added `/context-compact`, a fixed no-argument deletion-only compaction command that validates model-proposed logical deletion targets, preserves retained transcript content verbatim, and records `context_compaction` session entries.
 
+### Changed
+
+- Bumped the `@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, and `@earendil-works/pi-tui` dependencies to 0.78.1.
+
 ### Fixed
 
 - Fixed auto-compaction so queued in-progress work resumes without requiring a manual follow-up prompt ([#1280](https://github.com/bastani-inc/atomic/issues/1280)).
+
+### Removed
+
+- Removed the temporary manual `@earendil-works/pi-tui` patch, patched-dependency configuration, and bundled patched TUI packaging fallback.
 
 ## [0.8.26-alpha.6] - 2026-06-06
 

@@ -63,16 +63,13 @@
     "copy-builtin-workflows": "bun run copy-builtin-packages",
     "docs:check": "bun run scripts/validate-docs-links.ts",
     "verify:workflow-types": "bun run scripts/verify-workflow-sdk-types.ts",
-    "verify:bundled-pi-tui": "bun run scripts/verify-bundled-pi-tui-install.ts",
     "test": "vitest --run",
-    "prepack": "bun run scripts/materialize-bundled-pi-tui.ts",
-    "postpack": "bun run scripts/materialize-bundled-pi-tui.ts --clean",
     "prepublishOnly": "bun run clean && bun run build"
   },
   "dependencies": {
-    "@earendil-works/pi-agent-core": "^0.78.0",
-    "@earendil-works/pi-ai": "^0.78.0",
-    "@earendil-works/pi-tui": "^0.78.0",
+    "@earendil-works/pi-agent-core": "^0.78.1",
+    "@earendil-works/pi-ai": "^0.78.1",
+    "@earendil-works/pi-tui": "^0.78.1",
     "@modelcontextprotocol/ext-apps": "^1.7.2",
     "@modelcontextprotocol/sdk": "^1.25.1",
     "@mozilla/readability": "^0.6.0",
@@ -97,11 +94,6 @@
     "yaml": "^2.9.0",
     "zod": "^3.25.0 || ^4.0.0"
   },
-  "bundleDependencies": [
-    "@earendil-works/pi-tui",
-    "get-east-asian-width",
-    "marked"
-  ],
   "overrides": {
     "rimraf": "6.1.2",
     "gaxios": {

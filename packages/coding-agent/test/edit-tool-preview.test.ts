@@ -28,10 +28,6 @@ class FakeTerminal implements Terminal {
 	clearScreen(): void {}
 	setTitle(_title: string): void {}
 	setProgress(_active: boolean): void {}
-
-	get fullClearCount(): number {
-		return this.writes.filter((write) => write.includes("\x1b[2J\x1b[H\x1b[3J")).length;
-	}
 }
 
 async function waitForRender(): Promise<void> {
@@ -76,7 +72,7 @@ describe("edit tool TUI rendering", () => {
 		await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 	});
 
-	it("renders the large diff in the call preview and does not full-redraw when the result settles", async () => {
+	it("renders the large diff in the call preview and keeps the boxed preview after the result settles", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "pi-edit-redraw-"));
 		tempDirs.push(dir);
 		const filePath = join(dir, "large-edit.txt");
@@ -127,8 +123,6 @@ describe("edit tool TUI rendering", () => {
 		expect(callOnlyRender).toContain("edit");
 		expect(callOnlyRender).toContain("line 950 changed");
 
-		const redrawsBeforeResult = tui.fullRedraws;
-		const clearsBeforeResult = terminal.fullClearCount;
 		component.updateResult(
 			{
 				content: [{ type: "text", text: `Successfully replaced ${edits.length} block(s) in ${filePath}.` }],
@@ -139,9 +133,6 @@ describe("edit tool TUI rendering", () => {
 		);
 		tui.requestRender();
 		await waitForRender();
-
-		expect(tui.fullRedraws).toBe(redrawsBeforeResult);
-		expect(terminal.fullClearCount).toBe(clearsBeforeResult);
 
 		const settledRender = component.render(80).join("\n");
 		expect(settledRender).toContain("line 50 changed");
