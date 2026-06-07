@@ -84,34 +84,30 @@ You MUST NOT summarize.
 You MUST NOT paraphrase.
 You MUST NOT generate replacement context.
 You MUST NOT mutate retained transcript objects or content.
-Atomic will apply deletions locally. Return only deletion targets by stable ID.
+Another step will apply deletions locally. Return only deletion targets by stable ID.
 
-Safe to delete aggressively:
+What Gets Deleted:
 - Redundant tool outputs: file reads already acted on, grep/search results already processed, passing test output no longer needed.
 - Exploratory dead ends: irrelevant files read, unhelpful or empty searches.
-- Verbose boilerplate: license headers, import blocks, configuration dumps read only for reference.
-- Superseded information: earlier file versions since edited, old fixed error messages.
+- Verbose boilerplate: license headers, import blocks the agent isn't modifying, configuration files read for reference.
+- Superseded information: earlier versions of files that have since been edited, old error messages from bugs already fixed.
 
-Delete/compress carefully:
-- Reasoning traces and decision records.
-- Why one approach was chosen over another.
-- Medium-token/high-information-density context.
+What Survives:
+- Active file paths and line numbers: Any reference the agent might need to navigate.
+- Current error messages: Unresolved bugss and their exact text.
+- Reasoning decisions: Why the agent chose approach A over B. An agent's chain of thought (why it chose this file, what pattern it noticed, what fix it decided on) carries more information-per-token than the raw grep output or file content that informed those decisions.
+- Recent tool calls and their results: The last 3-5 operations.
+- User instructions: The original task and any clarifications.
 
-Never delete:
-- User instructions, original task, clarifications.
-- Active/current file paths and line numbers.
-- Current unresolved error messages and exact text.
-- Pending task state/current plan.
-- Recent tool calls and their results, roughly the last 3-5 operations.
-- Session metadata needed for model/tool/extension correctness.
-
+<output_format>
 Return JSON only in this exact shape:
 { "deletions": [{ "kind": "entry", "entryId": "..." }] }
 
 For content-block deletions, use:
 { "kind": "content_block", "entryId": "...", "blockIndex": 0 }
 
-Do not include prose outside the JSON object.`;
+Do not include prose outside the JSON object.
+</output_format>`;
 
 function getMessageFromEntry(entry: SessionEntry): AgentMessage | undefined {
 	if (entry.type === "message") {
