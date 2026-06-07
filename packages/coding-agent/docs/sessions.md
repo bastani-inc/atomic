@@ -29,8 +29,7 @@ For the JSONL file format and SessionManager API, see [Session Format](/session-
 | `/tree` | Navigate the current session tree |
 | `/fork` | Create a new session from a previous user message |
 | `/clone` | Duplicate the current active branch into a new session |
-| `/compact [prompt]` | Summarize older context; see [Compaction](/compaction) |
-| `/context-compact` | Apply validated deletion-only logical compaction; no arguments |
+| `/compact` | Apply Verbatim Compaction with validated logical deletions; see [Compaction](/compaction) |
 | `/export [file]` | Export session to HTML |
 | `/share` | Upload as private GitHub gist with shareable HTML link |
 
@@ -129,7 +128,7 @@ When prompted, choose one of:
 2. summarize with the default prompt
 3. summarize with custom focus instructions
 
-See [Compaction](/compaction) for branch summarization internals and extension hooks.
+See [Compaction](/compaction) for Verbatim Compaction, branch summarization internals, and extension hooks.
 
 ## Session Format
 

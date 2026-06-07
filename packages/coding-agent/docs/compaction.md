@@ -1,30 +1,32 @@
 # Compaction & Branch Summarization
 
-LLMs have limited context windows. When conversations grow too long, Atomic uses compaction to summarize older content while preserving recent work. This page covers both auto-compaction and branch summarization.
+LLMs have limited context windows. When conversations grow too long, Atomic uses a deletion-only form of Context Compaction called **Verbatim Compaction**: it deletes safe older transcript objects while preserving every retained object byte-for-byte. This page covers auto-compaction, manual compaction, and branch summarization.
+
+Atomic's default compaction design and terminology are informed by Morph's Context Compaction work: [Morph's Context Compaction](https://www.morphllm.com/context-compaction). In particular, Atomic follows the same core idea that coding agents benefit from deleting low-signal context instead of rewriting high-signal details like file paths, line numbers, and error strings into a lossy summary.
 
 **Source files** ([atomic](https://github.com/bastani-inc/atomic)):
 - [`packages/coding-agent/src/core/compaction/compaction.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/core/compaction/compaction.ts) - Summary compaction logic
-- [`packages/coding-agent/src/core/compaction/context-compaction.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/core/compaction/context-compaction.ts) - Deletion-only context compaction
+- [`packages/coding-agent/src/core/compaction/context-compaction.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/core/compaction/context-compaction.ts) - Verbatim context compaction
 - [`packages/coding-agent/src/core/compaction/branch-summarization.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/core/compaction/branch-summarization.ts) - Branch summarization
 - [`packages/coding-agent/src/core/compaction/utils.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/core/compaction/utils.ts) - Shared utilities (file tracking, serialization)
-- [`packages/coding-agent/src/core/session-manager.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/core/session-manager.ts) - Entry types (`CompactionEntry`, `BranchSummaryEntry`)
+- [`packages/coding-agent/src/core/session-manager.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/core/session-manager.ts) - Entry types (`ContextCompactionEntry`, `CompactionEntry`, `BranchSummaryEntry`)
 - [`packages/coding-agent/src/core/extensions/types.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/core/extensions/types.ts) - Extension event types
 
 For TypeScript definitions in your project, inspect `node_modules/@bastani/atomic/dist/`.
 
 ## Overview
 
-Atomic has two compaction/summarization mechanisms:
+Atomic has three compaction/summarization mechanisms:
 
 | Mechanism | Trigger | Purpose |
 |-----------|---------|---------|
-| Summary compaction | Context exceeds threshold, or `/compact [instructions]` | Summarize old messages to free up context |
-| Context compaction | `/context-compact` | Delete safe old transcript objects while retaining surviving content verbatim |
+| Default context compaction (Verbatim Compaction) | Context exceeds threshold, context overflow, or `/compact` | Delete safe old transcript objects while retaining surviving content verbatim |
+| Summary compaction internals | Core APIs and legacy extension hooks | Summarize old messages into replacement context |
 | Branch summarization | `/tree` navigation | Preserve context when switching branches |
 
-Summary compaction and branch summarization use the same structured summary format and track file operations cumulatively. `/context-compact` is separate: it has no user-facing arguments, uses a fixed internal prompt, validates model-proposed deletion targets locally, and stores logical deletions in a `context_compaction` entry.
+`/compact` has no user-facing arguments. It uses a fixed internal prompt, validates model-proposed deletion targets locally, and stores logical deletions in a `context_compaction` entry. Auto-compaction uses the same deletion-only path.
 
-## Compaction
+## Default Context Compaction (Verbatim Compaction)
 
 ### When It Triggers
 
@@ -36,18 +38,66 @@ contextTokens > contextWindow - reserveTokens
 
 By default, `reserveTokens` is 16384 tokens. Configure it in `~/.atomic/agent/settings.json` or `<project-dir>/.atomic/settings.json`; legacy `.pi` paths are also supported. This leaves room for the LLM's response.
 
-You can also trigger manually with `/compact [instructions]`, where optional instructions focus the summary.
+You can also trigger manually with `/compact`. Custom summary instructions are no longer accepted because retained transcript content stays verbatim.
 
 ### How It Works
 
-1. **Find cut point**: Walk backwards from newest message, accumulating token estimates until `keepRecentTokens` is reached. The default is 20k tokens; configure it in `~/.atomic/agent/settings.json` or `<project-dir>/.atomic/settings.json`. Legacy `.pi` paths are also supported.
-2. **Extract messages**: Collect messages from the previous kept boundary (or session start) up to the cut point
-3. **Generate summary**: Call LLM to summarize with structured format, passing the previous summary as iterative context when present
-4. **Append entry**: Save `CompactionEntry` with summary and `firstKeptEntryId`
-5. **Reload**: Session reloads, using summary + messages from `firstKeptEntryId` onwards
+1. Build a compactable transcript for the active branch with stable entry IDs and content-block indexes.
+2. Ask the selected model, with a fixed internal prompt, for JSON deletion targets only.
+3. Validate the plan locally: unknown IDs, protected user messages, recent operations, unresolved errors, and tool-call/tool-result orphaning fail closed.
+4. Write a backup snapshot for persisted sessions.
+5. Append a `context_compaction` entry containing validated logical deletion targets and stats.
+6. Rebuild active LLM context by filtering those targets. Retained entries/content blocks are reused unchanged.
+
+Tradeoff: compaction performs logical deletion during session rebuild instead of physically rewriting JSONL. The full raw history remains in the session file and backup, while the active LLM context is reduced.
+
+### Verbatim Compaction Diagram
+
+Unlike legacy summary compaction, Verbatim Compaction does not add a generated summary or rewrite retained messages. It appends a `context_compaction` entry that records exactly which older transcript objects should be hidden from future active context rebuilds.
 
 ```
-Before compaction:
+Before verbatim compaction:
+
+  entry:  0     1     2      3      4     5      6      7
+        ┌─────┬─────┬─────┬──────┬─────┬──────┬──────┬─────┐
+        │ hdr │ usr │ ass │ tool │ usr │ ass  │ tool │ ass │
+        └─────┴─────┴─────┴──────┴─────┴──────┴──────┴─────┘
+                    │      │            │      │
+                    └──────┴────────────┴──────┘
+                    planner may mark low-signal old objects
+
+Validated deletion plan:
+
+  delete entry 2        (older assistant text)
+  delete entry 3        (superseded tool output)
+  keep   entries 0,1,4,5,6,7 unchanged
+
+After compaction (new entry appended; JSONL remains append-only):
+
+  entry:  0     1     2      3      4     5      6      7      8
+        ┌─────┬─────┬─────┬──────┬─────┬──────┬──────┬─────┬─────┐
+        │ hdr │ usr │ ass │ tool │ usr │ ass  │ tool │ ass │ ctx │
+        └─────┴─────┴─────┴──────┴─────┴──────┴──────┴─────┴─────┘
+                    ╳      ╳                                      ↑
+             logical deletions                       context_compaction entry
+
+What the LLM sees after rebuild:
+
+  ┌────────┬─────┬─────┬──────┬──────┬─────┐
+  │ system │ usr │ usr │ ass  │ tool │ ass │
+  └────────┴─────┴─────┴──────┴──────┴─────┘
+            entry 1 entry 4 entry 5 entry 6 entry 7
+
+No generated summary is inserted. Every surviving entry/content block is reused
+verbatim; deleted objects are simply omitted from the active LLM context.
+```
+
+## Summary Compaction Internals
+
+The older summarization pipeline still exists in the core compaction module and for legacy extension hook types, but `/compact` and auto-compaction no longer use it by default.
+
+```
+Before summary compaction:
 
   entry:  0     1     2     3      4     5     6      7      8     9
         ┌─────┬─────┬─────┬─────┬──────┬─────┬─────┬──────┬──────┬─────┐
@@ -79,23 +129,6 @@ What the LLM sees:
 ```
 
 On repeated compactions, the summarized span starts at the previous compaction's kept boundary (`firstKeptEntryId`), not at the compaction entry itself, falling back to the entry after the previous compaction if that kept entry cannot be found in the path. This preserves messages that survived the earlier compaction by including them in the next summarization pass as well. Atomic also recalculates `tokensBefore` from the rebuilt session context before writing the new `CompactionEntry`, so the token count reflects the actual pre-compaction context being replaced.
-
-## Context Compaction (`/context-compact`)
-
-`/context-compact` is a fixed no-argument command for deletion-only compaction. Unlike `/compact [prompt]`, it never accepts custom instructions and never asks the model to write replacement context.
-
-How it works in this first iteration:
-
-1. Build a compactable transcript for the active branch with stable entry IDs and content-block indexes.
-2. Ask the selected model, with a fixed internal prompt, for JSON deletion targets only.
-3. Validate the plan locally: unknown IDs, protected user messages, recent operations, unresolved errors, and tool-call/tool-result orphaning fail closed.
-4. Write a backup snapshot for persisted sessions.
-5. Append a `context_compaction` entry containing validated logical deletion targets and stats.
-6. Rebuild active LLM context by filtering those targets. Retained entries/content blocks are reused unchanged.
-
-`/context-compact anything` is invalid in the main interactive UI and trailing text is not treated as a prompt. Workflow-stage chat consumes extra text without invoking compaction so it is not sent to the model.
-
-Tradeoff: this iteration performs logical deletion during session rebuild instead of physically rewriting JSONL. The full raw history remains in the session file and backup, while the active LLM context is reduced.
 
 ### Split Turns
 
@@ -152,14 +185,14 @@ interface CompactionEntry<T = unknown> {
   details?: T;         // implementation-specific data
 }
 
-// Default compaction uses this for details (from compaction.ts):
+// Legacy summary compaction uses this for details (from compaction.ts):
 interface CompactionDetails {
   readFiles: string[];
   modifiedFiles: string[];
 }
 ```
 
-Extensions can store any JSON-serializable data in `details`. The default compaction tracks file operations, but custom extension implementations can use their own structure.
+Extensions can store any JSON-serializable data in `details`. The legacy summary compaction pipeline tracks file operations, but custom extension implementations can use their own structure.
 
 See [`prepareCompaction()`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/core/compaction/compaction.ts) and [`compact()`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/core/compaction/compaction.ts) for the implementation.
 
@@ -287,11 +320,11 @@ Tool results are truncated to 2000 characters during serialization. Content beyo
 
 ## Custom Summarization via Extensions
 
-Extensions can intercept and customize both compaction and branch summarization. See [`extensions/types.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/core/extensions/types.ts) for event type definitions.
+Extensions can still customize the legacy summary compaction pipeline and branch summarization. Default `/compact` and auto-compaction use deletion-only context compaction and do not call summary customization hooks. See [`extensions/types.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/core/extensions/types.ts) for event type definitions.
 
 ### session_before_compact
 
-Fired before auto-compaction or `/compact`. Can cancel or provide custom summary. See `SessionBeforeCompactEvent` and `CompactionPreparation` in the types file.
+Fired before legacy summary compaction. Can cancel or provide custom summary. See `SessionBeforeCompactEvent` and `CompactionPreparation` in the types file.
 
 ```typescript
 pi.on("session_before_compact", async (event, ctx) => {
@@ -406,8 +439,8 @@ Configure compaction in `~/.atomic/agent/settings.json` or `<project-dir>/.atomi
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `enabled` | `true` | Enable auto-compaction |
+| `enabled` | `true` | Enable automatic Verbatim Compaction |
 | `reserveTokens` | `16384` | Tokens to reserve for LLM response |
-| `keepRecentTokens` | `20000` | Recent tokens to keep (not summarized) |
+| `keepRecentTokens` | `20000` | Recent tokens to protect from deletion |
 
 Disable auto-compaction with `"enabled": false`. You can still compact manually with `/compact`.

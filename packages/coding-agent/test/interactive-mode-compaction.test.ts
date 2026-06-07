@@ -3,52 +3,7 @@ import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
 
 describe("InteractiveMode compaction events", () => {
-	test("routes exact /context-compact to contextCompact and rejects trailing text", async () => {
-		const submitHost = {
-			defaultEditor: {} as { onSubmit?: (text: string) => Promise<void> },
-			editor: { setText: vi.fn() },
-			sessionManager: {
-				getEntries: () => [
-					{ type: "message", message: { role: "user", content: "task" } },
-					{ type: "message", message: { role: "assistant", content: [] } },
-				],
-			},
-			session: {
-				contextCompact: vi.fn().mockResolvedValue({}),
-				compact: vi.fn().mockResolvedValue({}),
-				prompt: vi.fn(),
-				isCompacting: false,
-				isStreaming: false,
-				isBashRunning: false,
-			},
-			statusContainer: { clear: vi.fn() },
-			isBashMode: false,
-			onInputCallback: undefined,
-			flushPendingBashComponents: vi.fn(),
-			updateEditorBorderColor: vi.fn(),
-			showWarning: vi.fn(),
-			handleContextCompactCommand: Reflect.get(InteractiveMode.prototype, "handleContextCompactCommand"),
-			handleCompactCommand: vi.fn(),
-		};
-		const setupEditorSubmitHandler = Reflect.get(InteractiveMode.prototype, "setupEditorSubmitHandler") as (
-			this: typeof submitHost,
-		) => void;
-		setupEditorSubmitHandler.call(submitHost);
-
-		await submitHost.defaultEditor.onSubmit?.("/context-compact keep this");
-		expect(submitHost.session.contextCompact).not.toHaveBeenCalled();
-		expect(submitHost.showWarning).toHaveBeenCalledWith("Usage: /context-compact");
-
-		await submitHost.defaultEditor.onSubmit?.("/context-compact\tkeep this");
-		expect(submitHost.session.contextCompact).not.toHaveBeenCalled();
-		expect(submitHost.showWarning).toHaveBeenCalledWith("Usage: /context-compact");
-
-		await submitHost.defaultEditor.onSubmit?.("/context-compact");
-		expect(submitHost.session.contextCompact).toHaveBeenCalledTimes(1);
-		expect(submitHost.session.compact).not.toHaveBeenCalled();
-	});
-
-	test("keeps /compact custom instructions routing unchanged", async () => {
+	test("routes exact /compact and rejects trailing text", async () => {
 		const submitHost = {
 			defaultEditor: {} as { onSubmit?: (text: string) => Promise<void> },
 			editor: { setText: vi.fn() },
@@ -57,6 +12,7 @@ describe("InteractiveMode compaction events", () => {
 			onInputCallback: undefined,
 			flushPendingBashComponents: vi.fn(),
 			updateEditorBorderColor: vi.fn(),
+			showWarning: vi.fn(),
 			handleCompactCommand: vi.fn().mockResolvedValue(undefined),
 		};
 		const setupEditorSubmitHandler = Reflect.get(InteractiveMode.prototype, "setupEditorSubmitHandler") as (
@@ -65,8 +21,16 @@ describe("InteractiveMode compaction events", () => {
 		setupEditorSubmitHandler.call(submitHost);
 
 		await submitHost.defaultEditor.onSubmit?.("/compact preserve exact stack traces");
+		expect(submitHost.handleCompactCommand).not.toHaveBeenCalled();
+		expect(submitHost.showWarning).toHaveBeenCalledWith("Usage: /compact");
 
-		expect(submitHost.handleCompactCommand).toHaveBeenCalledWith("preserve exact stack traces");
+		await submitHost.defaultEditor.onSubmit?.("/compact\tkeep this");
+		expect(submitHost.handleCompactCommand).not.toHaveBeenCalled();
+		expect(submitHost.showWarning).toHaveBeenCalledWith("Usage: /compact");
+
+		await submitHost.defaultEditor.onSubmit?.("/compact");
+		expect(submitHost.handleCompactCommand).toHaveBeenCalledTimes(1);
+		expect(submitHost.handleCompactCommand).toHaveBeenCalledWith();
 	});
 
 	test("shows overflow auto-compaction as a yellow warning", async () => {
@@ -111,7 +75,7 @@ describe("InteractiveMode compaction events", () => {
 		loader.stop();
 	});
 
-	test("rebuilds chat and appends a synthetic compaction summary at the bottom", async () => {
+	test("rebuilds chat and appends a context compaction summary card at the bottom", async () => {
 		const fakeThis = {
 			isInitialized: true,
 			footer: { invalidate: vi.fn() },
@@ -121,6 +85,7 @@ describe("InteractiveMode compaction events", () => {
 			statusContainer: { clear: vi.fn() },
 			chatContainer: { clear: vi.fn() },
 			rebuildChatFromMessages: vi.fn(),
+			addContextCompactionSummaryToChat: vi.fn(),
 			addMessageToChat: vi.fn(),
 			showError: vi.fn(),
 			showStatus: vi.fn(),
@@ -129,12 +94,26 @@ describe("InteractiveMode compaction events", () => {
 			ui: { requestRender: vi.fn(), terminal: { setProgress: vi.fn() } },
 		};
 
+		const result = {
+			deletedTargets: [{ kind: "entry" as const, entryId: "entry-1" }],
+			protectedEntryIds: ["entry-2"],
+			stats: {
+				objectsBefore: 2,
+				objectsAfter: 1,
+				objectsDeleted: 1,
+				tokensBefore: 123,
+				tokensAfter: 45,
+				percentReduction: 63.4,
+			},
+			promptVersion: 1 as const,
+		};
+
 		const handleEvent = Reflect.get(InteractiveMode.prototype, "handleEvent") as (
 			this: typeof fakeThis,
 			event: {
 				type: "compaction_end";
 				reason: "manual" | "threshold" | "overflow";
-				result: { tokensBefore: number; summary: string } | undefined;
+				result: typeof result | undefined;
 				aborted: boolean;
 				willRetry: boolean;
 				errorMessage?: string;
@@ -144,24 +123,16 @@ describe("InteractiveMode compaction events", () => {
 		await handleEvent.call(fakeThis, {
 			type: "compaction_end",
 			reason: "manual",
-			result: {
-				tokensBefore: 123,
-				summary: "summary",
-			},
+			result,
 			aborted: false,
 			willRetry: false,
 		});
 
 		expect(fakeThis.chatContainer.clear).toHaveBeenCalledTimes(1);
 		expect(fakeThis.rebuildChatFromMessages).toHaveBeenCalledTimes(1);
-		expect(fakeThis.addMessageToChat).toHaveBeenCalledTimes(1);
-		expect(fakeThis.addMessageToChat).toHaveBeenCalledWith(
-			expect.objectContaining({
-				role: "compactionSummary",
-				tokensBefore: 123,
-				summary: "summary",
-			}),
-		);
+		expect(fakeThis.addContextCompactionSummaryToChat).toHaveBeenCalledWith(result);
+		expect(fakeThis.addMessageToChat).not.toHaveBeenCalled();
+		expect(fakeThis.showStatus).not.toHaveBeenCalled();
 		expect(fakeThis.flushCompactionQueue).toHaveBeenCalledWith({ willRetry: false });
 	});
 });

@@ -90,9 +90,9 @@ Set `ATOMIC_SKIP_VERSION_CHECK=1` to disable the Atomic version update check. Us
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
-| `compaction.enabled` | boolean | `true` | Enable auto-compaction |
+| `compaction.enabled` | boolean | `true` | Enable automatic Verbatim Compaction |
 | `compaction.reserveTokens` | number | `16384` | Tokens reserved for LLM response |
-| `compaction.keepRecentTokens` | number | `20000` | Recent tokens to keep (not summarized) |
+| `compaction.keepRecentTokens` | number | `20000` | Recent tokens to protect from deletion |
 
 ```json
 {

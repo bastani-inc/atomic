@@ -51,11 +51,9 @@ import {
 	type ContextCompactionResult,
 	calculateContextTokens,
 	collectEntriesForBranchSummary,
-	compact,
 	contextCompact as runContextCompact,
 	estimateContextTokens,
 	generateBranchSummary,
-	prepareCompaction,
 	prepareContextCompaction,
 	shouldCompact,
 } from "./compaction/index.ts";
@@ -75,7 +73,6 @@ import {
 	type OrchestrationContext,
 	type ReplacedSessionContext,
 	type SendMessageOptions,
-	type SessionBeforeCompactResult,
 	type SessionBeforeTreeResult,
 	type SessionStartEvent,
 	type ShutdownHandler,
@@ -96,7 +93,7 @@ import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts
 import { RewindCoordinator, type RewindCoordinatorStatus } from "./rewind/rewind-coordinator.ts";
 import type { CheckpointMetadata, DiffPreview, RestoredFiles, Result } from "./rewind/types.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
-import type { BranchSummaryEntry, CompactionEntry, SessionManager } from "./session-manager.ts";
+import type { BranchSummaryEntry, SessionManager } from "./session-manager.ts";
 import { CURRENT_SESSION_VERSION, getLatestCompactionBoundaryEntry, type SessionHeader } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
@@ -174,7 +171,7 @@ export type AgentSessionEvent =
 	| {
 			type: "compaction_end";
 			reason: "manual" | "threshold" | "overflow";
-			result: CompactionResult | undefined;
+			result: CompactionResult | ContextCompactionResult | undefined;
 			aborted: boolean;
 			willRetry: boolean;
 			errorMessage?: string;
@@ -2043,11 +2040,65 @@ export class AgentSession {
 	// =========================================================================
 
 	/**
-	 * Manually compact the session context.
-	 * Aborts current agent operation first.
-	 * @param customInstructions Optional instructions for the compaction summary
+	 * Apply validated logical deletions and rebuild active agent context.
+	 * Retained transcript entries/content blocks stay verbatim.
 	 */
-	async compact(customInstructions?: string): Promise<CompactionResult> {
+	private async _applyContextVerbatimCompaction(options: {
+		apiKey: string;
+		headers?: Record<string, string>;
+		abortController: AbortController;
+		backupLabel: string;
+	}): Promise<ContextCompactionResult | undefined> {
+		if (!this.model) {
+			throw new Error(formatNoModelSelectedMessage());
+		}
+
+		const pathEntries = this.sessionManager.getBranch();
+		const settings = this.settingsManager.getCompactionSettings();
+		const preparation = prepareContextCompaction(pathEntries, settings);
+		if (!preparation) {
+			return undefined;
+		}
+
+		const validated = await runContextCompact(
+			preparation,
+			this.model,
+			options.apiKey,
+			options.headers,
+			options.abortController.signal,
+			this.thinkingLevel,
+		);
+
+		if (options.abortController.signal.aborted) {
+			throw new Error("Compaction cancelled");
+		}
+
+		const backupPath = this.sessionManager.writeBackupSnapshot(options.backupLabel);
+		this.sessionManager.appendContextCompaction(
+			validated.deletedTargets,
+			validated.protectedEntryIds,
+			validated.stats,
+			backupPath,
+		);
+		const sessionContext = this.sessionManager.buildSessionContext();
+		this.agent.state.messages = sessionContext.messages;
+
+		return {
+			...validated,
+			promptVersion: 1,
+			...(backupPath ? { backupPath } : {}),
+		};
+	}
+
+	/**
+	 * Manually compact the session context using deletion-only verbatim context compaction.
+	 * Aborts current agent operation first. Custom summary instructions are not accepted.
+	 */
+	async compact(customInstructions?: string): Promise<ContextCompactionResult> {
+		if (customInstructions?.trim()) {
+			throw new Error("Custom compaction instructions are not supported; use /compact without arguments");
+		}
+
 		this._disconnectFromAgent();
 		await this.abort();
 		this._compactionAbortController = new AbortController();
@@ -2059,106 +2110,24 @@ export class AgentSession {
 			}
 
 			const { apiKey, headers } = await this._getRequiredRequestAuth(this.model);
-
-			const pathEntries = this.sessionManager.getBranch();
-			const settings = this.settingsManager.getCompactionSettings();
-
-			const preparation = prepareCompaction(pathEntries, settings);
-			if (!preparation) {
-				// Check why we can't compact
-				const lastEntry = pathEntries[pathEntries.length - 1];
-				if (lastEntry?.type === "compaction") {
-					throw new Error("Already compacted");
-				}
+			const result = await this._applyContextVerbatimCompaction({
+				apiKey,
+				headers,
+				abortController: this._compactionAbortController,
+				backupLabel: "compact",
+			});
+			if (!result) {
 				throw new Error("Nothing to compact (session too small)");
 			}
 
-			let extensionCompaction: CompactionResult | undefined;
-			let fromExtension = false;
-
-			if (this._extensionRunner.hasHandlers("session_before_compact")) {
-				const result = (await this._extensionRunner.emit({
-					type: "session_before_compact",
-					preparation,
-					branchEntries: pathEntries,
-					customInstructions,
-					signal: this._compactionAbortController.signal,
-				})) as SessionBeforeCompactResult | undefined;
-
-				if (result?.cancel) {
-					throw new Error("Compaction cancelled");
-				}
-
-				if (result?.compaction) {
-					extensionCompaction = result.compaction;
-					fromExtension = true;
-				}
-			}
-
-			let summary: string;
-			let firstKeptEntryId: string;
-			let tokensBefore: number;
-			let details: unknown;
-
-			if (extensionCompaction) {
-				// Extension provided compaction content
-				summary = extensionCompaction.summary;
-				firstKeptEntryId = extensionCompaction.firstKeptEntryId;
-				tokensBefore = extensionCompaction.tokensBefore;
-				details = extensionCompaction.details;
-			} else {
-				// Generate compaction result
-				const result = await compact(
-					preparation,
-					this.model,
-					apiKey,
-					headers,
-					customInstructions,
-					this._compactionAbortController.signal,
-					this.thinkingLevel,
-				);
-				summary = result.summary;
-				firstKeptEntryId = result.firstKeptEntryId;
-				tokensBefore = result.tokensBefore;
-				details = result.details;
-			}
-
-			if (this._compactionAbortController.signal.aborted) {
-				throw new Error("Compaction cancelled");
-			}
-
-			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension);
-			const newEntries = this.sessionManager.getEntries();
-			const sessionContext = this.sessionManager.buildSessionContext();
-			this.agent.state.messages = sessionContext.messages;
-
-			// Get the saved compaction entry for the extension event
-			const savedCompactionEntry = newEntries.find((e) => e.type === "compaction" && e.summary === summary) as
-				| CompactionEntry
-				| undefined;
-
-			if (this._extensionRunner && savedCompactionEntry) {
-				await this._extensionRunner.emit({
-					type: "session_compact",
-					compactionEntry: savedCompactionEntry,
-					fromExtension,
-				});
-			}
-
-			const compactionResult = {
-				summary,
-				firstKeptEntryId,
-				tokensBefore,
-				details,
-			};
 			this._emit({
 				type: "compaction_end",
 				reason: "manual",
-				result: compactionResult,
+				result,
 				aborted: false,
 				willRetry: false,
 			});
-			return compactionResult;
+			return result;
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			const aborted = message === "Compaction cancelled" || (error instanceof Error && error.name === "AbortError");
@@ -2193,41 +2162,16 @@ export class AgentSession {
 			}
 
 			const { apiKey, headers } = await this._getRequiredRequestAuth(this.model);
-			const pathEntries = this.sessionManager.getBranch();
-			const settings = this.settingsManager.getCompactionSettings();
-			const preparation = prepareContextCompaction(pathEntries, settings);
-			if (!preparation) {
+			const result = await this._applyContextVerbatimCompaction({
+				apiKey,
+				headers,
+				abortController: this._compactionAbortController,
+				backupLabel: "context-compact",
+			});
+			if (!result) {
 				throw new Error("Nothing to context-compact (session too small)");
 			}
 
-			const validated = await runContextCompact(
-				preparation,
-				this.model,
-				apiKey,
-				headers,
-				this._compactionAbortController.signal,
-				this.thinkingLevel,
-			);
-
-			if (this._compactionAbortController.signal.aborted) {
-				throw new Error("Compaction cancelled");
-			}
-
-			const backupPath = this.sessionManager.writeBackupSnapshot("context-compact");
-			this.sessionManager.appendContextCompaction(
-				validated.deletedTargets,
-				validated.protectedEntryIds,
-				validated.stats,
-				backupPath,
-			);
-			const sessionContext = this.sessionManager.buildSessionContext();
-			this.agent.state.messages = sessionContext.messages;
-
-			const result: ContextCompactionResult = {
-				...validated,
-				promptVersion: 1,
-				backupPath,
-			};
 			this._emit({
 				type: "context_compaction_end",
 				reason: "manual",
@@ -2408,8 +2352,6 @@ export class AgentSession {
 	 * Internal: Run auto-compaction with events.
 	 */
 	private async _runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<void> {
-		const settings = this.settingsManager.getCompactionSettings();
-
 		this._emit({ type: "compaction_start", reason });
 		this._autoCompactionAbortController = new AbortController();
 
@@ -2436,12 +2378,14 @@ export class AgentSession {
 				});
 				return;
 			}
-			const { apiKey, headers } = authResult;
 
-			const pathEntries = this.sessionManager.getBranch();
-
-			const preparation = prepareCompaction(pathEntries, settings);
-			if (!preparation) {
+			const result = await this._applyContextVerbatimCompaction({
+				apiKey: authResult.apiKey,
+				headers: authResult.headers,
+				abortController: this._autoCompactionAbortController,
+				backupLabel: reason === "overflow" ? "overflow-auto-compact" : "auto-compact",
+			});
+			if (!result) {
 				this._emit({
 					type: "compaction_end",
 					reason,
@@ -2452,114 +2396,24 @@ export class AgentSession {
 				return;
 			}
 
-			let extensionCompaction: CompactionResult | undefined;
-			let fromExtension = false;
-
-			if (this._extensionRunner.hasHandlers("session_before_compact")) {
-				const extensionResult = (await this._extensionRunner.emit({
-					type: "session_before_compact",
-					preparation,
-					branchEntries: pathEntries,
-					customInstructions: undefined,
-					signal: this._autoCompactionAbortController.signal,
-				})) as SessionBeforeCompactResult | undefined;
-
-				if (extensionResult?.cancel) {
-					this._emit({
-						type: "compaction_end",
-						reason,
-						result: undefined,
-						aborted: true,
-						willRetry: false,
-					});
-					return;
-				}
-
-				if (extensionResult?.compaction) {
-					extensionCompaction = extensionResult.compaction;
-					fromExtension = true;
-				}
-			}
-
-			let summary: string;
-			let firstKeptEntryId: string;
-			let tokensBefore: number;
-			let details: unknown;
-
-			if (extensionCompaction) {
-				// Extension provided compaction content
-				summary = extensionCompaction.summary;
-				firstKeptEntryId = extensionCompaction.firstKeptEntryId;
-				tokensBefore = extensionCompaction.tokensBefore;
-				details = extensionCompaction.details;
-			} else {
-				// Generate compaction result
-				const compactResult = await compact(
-					preparation,
-					this.model,
-					apiKey,
-					headers,
-					undefined,
-					this._autoCompactionAbortController.signal,
-					this.thinkingLevel,
-				);
-				summary = compactResult.summary;
-				firstKeptEntryId = compactResult.firstKeptEntryId;
-				tokensBefore = compactResult.tokensBefore;
-				details = compactResult.details;
-			}
-
-			if (this._autoCompactionAbortController.signal.aborted) {
-				this._emit({
-					type: "compaction_end",
-					reason,
-					result: undefined,
-					aborted: true,
-					willRetry: false,
-				});
-				return;
-			}
-
-			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension);
-			const newEntries = this.sessionManager.getEntries();
-			const sessionContext = this.sessionManager.buildSessionContext();
-			this.agent.state.messages = sessionContext.messages;
 			if (reason === "overflow" && willRetry) {
 				this._dropTrailingOverflowAssistantErrorIfPresent();
 			}
 
-			// Get the saved compaction entry for the extension event
-			const savedCompactionEntry = newEntries.find((e) => e.type === "compaction" && e.summary === summary) as
-				| CompactionEntry
-				| undefined;
-
-			if (this._extensionRunner && savedCompactionEntry) {
-				await this._extensionRunner.emit({
-					type: "session_compact",
-					compactionEntry: savedCompactionEntry,
-					fromExtension,
-				});
-			}
-
-			const result: CompactionResult = {
-				summary,
-				firstKeptEntryId,
-				tokensBefore,
-				details,
-			};
 			this._emit({ type: "compaction_end", reason, result, aborted: false, willRetry });
-
 			this._schedulePostAutoCompactionContinuationProbe(reason, willRetry);
 		} catch (error) {
 			const errorMessage = error instanceof Error ? error.message : "compaction failed";
+			const aborted = errorMessage === "Compaction cancelled" || (error instanceof Error && error.name === "AbortError");
 			this._emit({
 				type: "compaction_end",
 				reason,
 				result: undefined,
-				aborted: false,
+				aborted,
 				willRetry: false,
-				errorMessage:
-					reason === "overflow"
+				errorMessage: aborted
+					? undefined
+					: reason === "overflow"
 						? `Context overflow recovery failed: ${errorMessage}`
 						: `Auto-compaction failed: ${errorMessage}`,
 			});

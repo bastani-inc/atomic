@@ -221,6 +221,12 @@ jobs:
               working-directory: ${{ env.PACKAGE_DIR }}
               run: bun run docs:check
 
+            - name: Mintlify docs validation
+              working-directory: ${{ env.PACKAGE_DIR }}/docs
+              run: |
+                  bunx --bun mintlify@latest validate
+                  bunx --bun mintlify@latest broken-links
+
             - name: Validate single publish target and package metadata
               id: package
               shell: bash

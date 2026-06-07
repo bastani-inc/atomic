@@ -6,7 +6,7 @@
 import type {
   AgentSession,
   AgentSessionEvent,
-  CompactionResult,
+  ContextCompactionResult,
   CreateAgentSessionOptions,
   ModelCycleResult,
   PromptOptions,
@@ -19,7 +19,7 @@ import type * as AuthoringContract from "./authoring-contract.js";
 
 export type { TSchema };
 
-export type { AgentSessionEvent, CompactionResult, ModelCycleResult, PromptOptions };
+export type { AgentSessionEvent, ContextCompactionResult, ModelCycleResult, PromptOptions };
 
 export type WorkflowModelValue = NonNullable<CreateAgentSessionOptions["model"]> | string;
 export type WorkflowModelUsage = AuthoringContract.WorkflowModelUsage;
@@ -308,7 +308,7 @@ export interface StageContext {
   ): Promise<{ editorText?: string; cancelled: boolean }>;
 
   /** Compaction. */
-  compact(customInstructions?: string): Promise<CompactionResult>;
+  compact(): Promise<ContextCompactionResult>;
   abortCompaction(): void;
 
   /** Abort current operation. */

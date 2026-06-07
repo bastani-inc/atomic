@@ -192,8 +192,9 @@ describe.skipIf(!API_KEY)("Compaction extensions", () => {
 		await session.agent.waitForIdle();
 
 		const result = await session.compact();
+		const legacyResult = result as unknown as { summary: string };
 
-		expect(result.summary).toBe(customSummary);
+		expect(legacyResult.summary).toBe(customSummary);
 
 		const compactEvents = capturedEvents.filter((e) => e.type === "session_compact");
 		expect(compactEvents.length).toBe(1);
@@ -264,9 +265,10 @@ describe.skipIf(!API_KEY)("Compaction extensions", () => {
 		await session.agent.waitForIdle();
 
 		const result = await session.compact();
+		const legacyResult = result as unknown as { summary: string };
 
-		expect(result.summary).toBeDefined();
-		expect(result.summary.length).toBeGreaterThan(0);
+		expect(legacyResult.summary).toBeDefined();
+		expect(legacyResult.summary.length).toBeGreaterThan(0);
 
 		const compactEvents = capturedEvents.filter((e): e is SessionCompactEvent => e.type === "session_compact");
 		expect(compactEvents.length).toBe(1);
@@ -408,8 +410,9 @@ describe.skipIf(!API_KEY)("Compaction extensions", () => {
 		await session.agent.waitForIdle();
 
 		const result = await session.compact();
+		const legacyResult = result as unknown as { summary: string; tokensBefore: number };
 
-		expect(result.summary).toBe(customSummary);
-		expect(result.tokensBefore).toBe(999);
+		expect(legacyResult.summary).toBe(customSummary);
+		expect(legacyResult.tokensBefore).toBe(999);
 	}, 120000);
 });

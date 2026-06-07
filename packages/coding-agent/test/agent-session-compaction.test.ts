@@ -93,17 +93,12 @@ describe.skipIf(!API_KEY)("AgentSession compaction e2e", () => {
 		// Manually compact
 		const result = await session.compact();
 
-		expect(result.summary).toBeDefined();
-		expect(result.summary.length).toBeGreaterThan(0);
-		expect(result.tokensBefore).toBeGreaterThan(0);
+		expect(result.stats.tokensBefore).toBeGreaterThan(0);
+		expect(result.stats.tokensAfter).toBeLessThanOrEqual(result.stats.tokensBefore);
 
-		// Verify messages were compacted (should have summary + recent)
+		// Verify messages were compacted with retained content rebuilt from logical deletions.
 		const messages = session.messages;
 		expect(messages.length).toBeGreaterThan(0);
-
-		// First message should be the summary (a user message with summary content)
-		const firstMsg = messages[0];
-		expect(firstMsg.role).toBe("compactionSummary");
 	}, 120000);
 
 	it("should maintain valid session state after compaction", async () => {
@@ -146,16 +141,15 @@ describe.skipIf(!API_KEY)("AgentSession compaction e2e", () => {
 		// Load entries from session manager
 		const entries = sessionManager.getEntries();
 
-		// Should have a compaction entry
-		const compactionEntries = entries.filter((e) => e.type === "compaction");
+		// Should have a context compaction entry.
+		const compactionEntries = entries.filter((e) => e.type === "context_compaction");
 		expect(compactionEntries.length).toBe(1);
 
 		const compaction = compactionEntries[0];
-		expect(compaction.type).toBe("compaction");
-		if (compaction.type === "compaction") {
-			expect(compaction.summary.length).toBeGreaterThan(0);
-			expect(typeof compaction.firstKeptEntryId).toBe("string");
-			expect(compaction.tokensBefore).toBeGreaterThan(0);
+		expect(compaction.type).toBe("context_compaction");
+		if (compaction.type === "context_compaction") {
+			expect(compaction.stats.tokensBefore).toBeGreaterThan(0);
+			expect(compaction.deletedTargets.length).toBeGreaterThan(0);
 		}
 	}, 120000);
 
@@ -172,12 +166,11 @@ describe.skipIf(!API_KEY)("AgentSession compaction e2e", () => {
 		// Compact should work even without file persistence
 		const result = await session.compact();
 
-		expect(result.summary).toBeDefined();
-		expect(result.summary.length).toBeGreaterThan(0);
+		expect(result.stats.tokensBefore).toBeGreaterThan(0);
 
 		// In-memory entries should have the compaction
 		const entries = sessionManager.getEntries();
-		const compactionEntries = entries.filter((e) => e.type === "compaction");
+		const compactionEntries = entries.filter((e) => e.type === "context_compaction");
 		expect(compactionEntries.length).toBe(1);
 	}, 120000);
 

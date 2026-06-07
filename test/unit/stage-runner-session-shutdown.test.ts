@@ -66,7 +66,19 @@ function makeFakeStageSession(options: FakeSessionOptions): StageSessionRuntime 
       return { cancelled: true };
     },
     async compact() {
-      return { summary: "", firstKeptEntryId: "", tokensBefore: 0 };
+      return {
+        promptVersion: 1,
+        deletedTargets: [],
+        protectedEntryIds: [],
+        stats: {
+          objectsBefore: 0,
+          objectsAfter: 0,
+          objectsDeleted: 0,
+          tokensBefore: 0,
+          tokensAfter: 0,
+          percentReduction: 0,
+        },
+      };
     },
     abortCompaction() {},
     async abort() {},

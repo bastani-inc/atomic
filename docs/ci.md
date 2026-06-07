@@ -13,6 +13,8 @@ Pull request / push
   ├─ bun install --frozen-lockfile
   ├─ bun run typecheck
   ├─ cd packages/coding-agent && bun run docs:check
+  ├─ cd packages/coding-agent/docs && bunx --bun mintlify@latest validate
+  ├─ cd packages/coding-agent/docs && bunx --bun mintlify@latest broken-links
   ├─ cd packages/coding-agent && bun run build
   ├─ bun run test:unit
   ├─ bun run test:integration
@@ -27,6 +29,8 @@ Pull request / push
      ├─ bun install --frozen-lockfile
      ├─ bun run typecheck && bun run test:all
      ├─ cd packages/coding-agent && bun run docs:check
+     ├─ cd packages/coding-agent/docs && bunx --bun mintlify@latest validate
+     ├─ cd packages/coding-agent/docs && bunx --bun mintlify@latest broken-links
      ├─ validate package metadata, synced versions, and private bundled packages
      ├─ scripts/build-binaries.sh (regular build + cross-compile 6 targets)
      ├─ validate dist/builtin contains all bundled extensions
@@ -80,11 +84,13 @@ Steps:
 3. Install dependencies with `bun install --frozen-lockfile`.
 4. Run `bun run typecheck`.
 5. Validate hosted-docs routes and internal links with `cd packages/coding-agent && bun run docs:check`.
-6. Build `@bastani/atomic` with `cd packages/coding-agent && bun run build`.
-7. Run `bun run test:unit`.
-8. Run `bun run test:integration`.
-9. Build the native release binary with `scripts/build-binaries.sh --platform <native-x64>`.
-10. Extract the generated release archive, verify required bundled `builtin/*` and selected `node_modules/*` paths are present, run `atomic --version`, and run `atomic --no-session` far enough to catch extension-load diagnostics while allowing the expected no-models exit in CI.
+6. Validate Mintlify MDX/page syntax with `cd packages/coding-agent/docs && bunx --bun mintlify@latest validate`.
+7. Check Mintlify broken links with `cd packages/coding-agent/docs && bunx --bun mintlify@latest broken-links`.
+8. Build `@bastani/atomic` with `cd packages/coding-agent && bun run build`.
+9. Run `bun run test:unit`.
+10. Run `bun run test:integration`.
+11. Build the native release binary with `scripts/build-binaries.sh --platform <native-x64>`.
+12. Extract the generated release archive, verify required bundled `builtin/*` and selected `node_modules/*` paths are present, run `atomic --version`, and run `atomic --no-session` far enough to catch extension-load diagnostics while allowing the expected no-models exit in CI.
 
 ### Code Review (`code-review.yml`)
 
@@ -155,6 +161,8 @@ Publish @bastani/atomic
   · bun install --frozen-lockfile
   · bun run typecheck && bun run test:all
   · cd packages/coding-agent && bun run docs:check
+  · cd packages/coding-agent/docs && bunx --bun mintlify@latest validate
+  · cd packages/coding-agent/docs && bunx --bun mintlify@latest broken-links
   · validate tag matches packages/coding-agent/package.json
   · validate every package manifest has a synced version
   · validate bundled packages remain private and are not independently publishable
@@ -236,6 +244,8 @@ The meaningful pre-publish checks are:
 - TypeScript typechecking
 - unit and integration tests
 - docs route/internal-link validation with `cd packages/coding-agent && bun run docs:check`
+- Mintlify MDX/page syntax validation with `cd packages/coding-agent/docs && bunx --bun mintlify@latest validate`
+- Mintlify broken-link validation with `cd packages/coding-agent/docs && bunx --bun mintlify@latest broken-links`
 - `@bastani/atomic` build output validation
 - builtin extension/resource validation under `dist/builtin/`
 - `bun pm pack --dry-run` from `packages/coding-agent`
@@ -246,8 +256,8 @@ The meaningful pre-publish checks are:
 
 | File                 | Trigger                                       | Purpose                                                                                                                                                                                                       |
 | -------------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `test.yml`           | Push to `main`, PR to `main`                  | Install, typecheck, validate docs links, build `@bastani/atomic`, unit/integration tests, build native Linux/Windows binaries, verify archive contents, and run `atomic --version` / `atomic --no-session` archive smoke tests |
-| `publish.yml`        | `<version>` tag push, manual dispatch with tag input | Smoke test Linux/Windows binaries in parallel on Blacksmith runners, validate docs links before publish metadata checks, build binaries on a GitHub-hosted runner for npm provenance, publish `@bastani/atomic`, create GitHub Release with binaries |
+| `test.yml`           | Push to `main`, PR to `main`                  | Install, typecheck, validate docs links plus Mintlify MDX/page syntax and broken links, build `@bastani/atomic`, unit/integration tests, build native Linux/Windows binaries, verify archive contents, and run `atomic --version` / `atomic --no-session` archive smoke tests |
+| `publish.yml`        | `<version>` tag push, manual dispatch with tag input | Smoke test Linux/Windows binaries in parallel on Blacksmith runners, validate docs links plus Mintlify MDX/page syntax and broken links before publish metadata checks, build binaries on a GitHub-hosted runner for npm provenance, publish `@bastani/atomic`, create GitHub Release with binaries |
 | `code-review.yml`    | PR opened/synchronized                        | Claude-powered code review                                                                                                                                                                                    |
 | `pr-description.yml` | PR opened/synchronized                        | Claude-powered PR description generation, skipped for Dependabot                                                                                                                                              |
 | `claude.yml`         | Issue/PR comments, issues, PR reviews         | Interactive Claude assistant gated on `@claude` mentions                                                                                                                                                      |
@@ -270,6 +280,9 @@ The meaningful pre-publish checks are:
     ```sh
     bun run typecheck
     cd packages/coding-agent && bun run docs:check
+    cd docs && bunx --bun mintlify@latest validate
+    bunx --bun mintlify@latest broken-links
+    cd ..
     bun run build
     cd ../..
     bun run test:unit
@@ -305,6 +318,6 @@ The meaningful pre-publish checks are:
     git push origin 0.8.0
     ```
 
-5. Confirm `publish.yml` runs docs link validation, cross-compiles binaries, publishes `@bastani/atomic` to npm with OIDC provenance, and creates the GitHub Release with binaries attached.
+5. Confirm `publish.yml` runs docs link validation plus Mintlify syntax and broken-link checks, cross-compiles binaries, publishes `@bastani/atomic` to npm with OIDC provenance, and creates the GitHub Release with binaries attached.
 
 For prereleases, substitute `0.8.0-alpha.1` and tag `0.8.0-alpha.1`.

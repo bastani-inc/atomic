@@ -35,6 +35,12 @@ jobs:
             - name: Docs link validation
               working-directory: packages/coding-agent
               run: bun run docs:check
+            - name: Mintlify docs validation
+              if: github.event_name == 'pull_request'
+              working-directory: packages/coding-agent/docs
+              run: |
+                  bunx --bun mintlify@latest validate
+                  bunx --bun mintlify@latest broken-links
             - name: Build @bastani/atomic package
               working-directory: packages/coding-agent
               run: bun run build

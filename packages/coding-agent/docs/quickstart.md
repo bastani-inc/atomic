@@ -4,16 +4,30 @@ This page gets you from install to a useful first Atomic session.
 
 ## Prerequisites
 
-- **Node.js 20.6 or newer** — required when running Atomic from the published npm package. Check with `node --version`.
-- **Bun 1.3.14 or newer** — use Bun for installation, Atomic repository development, validation commands, and workflow-authoring examples.
+- **Node.js 24 LTS or newer** — Atomic requires the latest Node LTS runtime. Check with `node --version`.
+- **A package manager** — use npm (included with Node), pnpm, Yarn, or Bun. Use Bun 1.3.14+ for Bun installs or workflow-authoring examples.
 - **Model-provider access** — Use `/login` after startup. Supports provider subscriptions and APIs.
 
 ## Install
 
-Install the published package with Bun:
+Install the published package globally with npm, pnpm, or Bun:
+
+With npm:
 
 ```bash
-bun install -g @bastani/atomic
+npm install -g @bastani/atomic
+```
+
+With pnpm:
+
+```bash
+pnpm add -g @bastani/atomic
+```
+
+With Bun:
+
+```bash
+bun add -g @bastani/atomic
 ```
 
 Atomic does not require package install scripts. If you want to disable dependency lifecycle scripts during the Atomic install, you can add `--ignore-scripts` to the install command.

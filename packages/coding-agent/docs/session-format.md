@@ -223,7 +223,7 @@ Emitted when the user changes the thinking/reasoning level.
 
 ### CompactionEntry
 
-Created when context is compacted. Stores a summary of earlier messages.
+Legacy summary-compaction entry. Stores a generated summary of earlier messages for older APIs and extension hooks. Default `/compact` and auto-compaction now create `ContextCompactionEntry` records instead.
 
 ```json
 {"type":"compaction","id":"f6g7h8i9","parentId":"e5f6g7h8","timestamp":"2024-12-03T14:10:00.000Z","summary":"User discussed X, Y, Z...","firstKeptEntryId":"c3d4e5f6","tokensBefore":50000}
@@ -235,10 +235,10 @@ Optional fields:
 
 ### ContextCompactionEntry
 
-Created by `/context-compact`. Stores validated logical deletion targets, not replacement text. During `buildSessionContext()`, matching entries/content blocks are filtered from active LLM context while retained content remains verbatim.
+Created by `/compact` and auto-compaction. Stores Atomic's default **Verbatim Compaction** data: validated logical deletion targets, not replacement text. During `buildSessionContext()`, matching entries/content blocks are filtered from active LLM context while retained content remains verbatim. This deletion-only Context Compaction approach is informed by Morph's write-up at [Morph's Context Compaction](https://www.morphllm.com/context-compaction).
 
 ```json
-{"type":"context_compaction","id":"ctx12345","parentId":"f6g7h8i9","timestamp":"2024-12-03T14:12:00.000Z","promptVersion":1,"deletedTargets":[{"kind":"entry","entryId":"b2c3d4e5"}],"protectedEntryIds":["a1b2c3d4"],"stats":{"objectsBefore":20,"objectsAfter":19,"objectsDeleted":1,"tokensBefore":50000,"tokensAfter":43000,"percentReduction":14},"backupPath":"/path/session.jsonl.2024-12-03T14-12-00-000Z.context-compact.bak"}
+{"type":"context_compaction","id":"ctx12345","parentId":"f6g7h8i9","timestamp":"2024-12-03T14:12:00.000Z","promptVersion":1,"deletedTargets":[{"kind":"entry","entryId":"b2c3d4e5"}],"protectedEntryIds":["a1b2c3d4"],"stats":{"objectsBefore":20,"objectsAfter":19,"objectsDeleted":1,"tokensBefore":50000,"tokensAfter":43000,"percentReduction":14},"backupPath":"/path/session.jsonl.2024-12-03T14-12-00-000Z.compact.bak"}
 ```
 
 `deletedTargets` entries are either whole entries (`{ kind: "entry", entryId }`) or content blocks (`{ kind: "content_block", entryId, blockIndex }`). The JSONL file remains append-only; this is logical deletion for active context rebuild.

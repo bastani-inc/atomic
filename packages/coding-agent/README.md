@@ -179,8 +179,7 @@ Type `/` in the editor to trigger commands. [Extensions](#extensions) can regist
 | `/tree` | Jump to any point in the session and continue from there |
 | `/fork` | Create a new session from a previous user message |
 | `/clone` | Duplicate the current active branch into a new session |
-| `/compact [prompt]` | Manually compact context, optional custom instructions |
-| `/context-compact` | Delete safe older transcript objects verbatim; no arguments |
+| `/compact` | Delete safe older transcript objects verbatim |
 | `/copy` | Copy last assistant message to clipboard |
 | `/export [file]` | Export session to HTML file |
 | `/share` | Upload as private GitHub gist with shareable HTML link |
@@ -259,15 +258,13 @@ Use `/session` in interactive mode to see the current session ID before reusing 
 
 ### Compaction
 
-Long sessions can exhaust context windows. Summary compaction summarizes older messages while keeping recent ones.
+Long sessions can exhaust context windows. Compaction now uses deletion-only context compaction by default: the selected model proposes safe deletion targets, Atomic validates them locally, and retained transcript content stays verbatim.
 
-**Manual summary:** `/compact` or `/compact <custom instructions>`
+**Manual:** `/compact` has no prompt arguments.
 
-**Manual verbatim deletion:** `/context-compact` asks the selected model for deletion targets using a fixed internal prompt, validates the plan locally, and applies logical deletions only. It has no prompt arguments; `/context-compact anything` is invalid/ignored rather than treated as instructions.
+**Automatic:** Enabled by default. Triggers on context overflow (recovers and retries) or when approaching the limit (proactive). Configure via `/settings` or `settings.json`. Automatic compaction uses the same verbatim deletion path.
 
-**Automatic:** Enabled by default. Triggers on context overflow (recovers and retries) or when approaching the limit (proactive). Configure via `/settings` or `settings.json`. Automatic compaction remains summary-based.
-
-Summary compaction is lossy. `/context-compact` preserves retained transcript content verbatim, but the full history still remains in the JSONL file; use `/tree` to revisit. Customize summary compaction behavior via [extensions](#extensions). See [docs/compaction.md](docs/compaction.md) for internals.
+The full history still remains in the JSONL file; use `/tree` to revisit. See [docs/compaction.md](docs/compaction.md) for internals.
 
 ---
 

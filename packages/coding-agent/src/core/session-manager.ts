@@ -1092,7 +1092,7 @@ export class SessionManager {
 	}
 
 	/** Write a recoverable snapshot of the current session entries without mutating the active JSONL. */
-	writeBackupSnapshot(label = "context-compact"): string | undefined {
+	writeBackupSnapshot(label = "compact"): string | undefined {
 		if (!this.persist || !this.sessionFile) return undefined;
 		const safeLabel = label.replace(/[^a-z0-9_-]/gi, "-").replace(/-+/g, "-").replace(/^-|-$/g, "") || "backup";
 		const timestamp = new Date().toISOString().replace(/[:.]/g, "-");

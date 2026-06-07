@@ -90,6 +90,7 @@ import {
   type AppKeybinding,
   KeybindingsManager,
 } from "../../core/keybindings.ts";
+import type { ContextCompactionResult } from "../../core/compaction/index.ts";
 import { createCompactionSummaryMessage } from "../../core/messages.ts";
 import {
   defaultModelPerProvider,
@@ -150,6 +151,7 @@ import {
 } from "./components/chat-message-renderer.ts";
 import { addChatTranscriptEntry } from "./components/chat-transcript.ts";
 import { CompactionSummaryMessageComponent } from "./components/compaction-summary-message.ts";
+import { ContextCompactionSummaryMessageComponent } from "./components/context-compaction-summary-message.ts";
 import { CountdownTimer } from "./components/countdown-timer.ts";
 import { CustomEditor } from "./components/custom-editor.ts";
 import { CustomMessageComponent } from "./components/custom-message.ts";
@@ -242,6 +244,16 @@ class ExpandableText extends Text implements Expandable {
   refresh(): void {
     this.setText(this.expanded ? this.getExpandedText() : this.getCollapsedText());
   }
+}
+
+function isContextCompactionResult(result: unknown): result is ContextCompactionResult {
+  return (
+    typeof result === "object" &&
+    result !== null &&
+    "stats" in result &&
+    "deletedTargets" in result &&
+    "protectedEntryIds" in result
+  );
 }
 
 type CompactionQueuedMessage = {
@@ -3286,21 +3298,13 @@ export class InteractiveMode {
         await this.handleClearCommand();
         return;
       }
-      if (/^\/context-compact(?:\s|$)/.test(text)) {
+      if (/^\/compact(?:\s|$)/.test(text)) {
         this.editor.setText("");
-        if (text !== "/context-compact") {
-          this.showWarning("Usage: /context-compact");
+        if (text !== "/compact") {
+          this.showWarning("Usage: /compact");
           return;
         }
-        await this.handleContextCompactCommand();
-        return;
-      }
-      if (text === "/compact" || text.startsWith("/compact ")) {
-        const customInstructions = text.startsWith("/compact ")
-          ? text.slice(9).trim()
-          : undefined;
-        this.editor.setText("");
-        await this.handleCompactCommand(customInstructions);
+        await this.handleCompactCommand();
         return;
       }
       if (text === "/reload") {
@@ -3689,13 +3693,17 @@ export class InteractiveMode {
         } else if (event.result) {
           this.chatContainer.clear();
           this.rebuildChatFromMessages();
-          this.addMessageToChat(
-            createCompactionSummaryMessage(
-              event.result.summary,
-              event.result.tokensBefore,
-              new Date().toISOString(),
-            ),
-          );
+          if (isContextCompactionResult(event.result)) {
+            this.addContextCompactionSummaryToChat(event.result);
+          } else {
+            this.addMessageToChat(
+              createCompactionSummaryMessage(
+                event.result.summary,
+                event.result.tokensBefore,
+                new Date().toISOString(),
+              ),
+            );
+          }
           this.footer.invalidate();
         } else if (event.errorMessage) {
           if (event.reason === "manual") {
@@ -3726,7 +3734,7 @@ export class InteractiveMode {
           this.ui,
           (spinner) => theme.fg("accent", spinner),
           (text) => theme.fg("muted", text),
-          `Context-compacting... ${cancelHint}`,
+          `Compacting context... ${cancelHint}`,
         );
         this.statusContainer.addChild(this.autoCompactionLoader);
         this.ui.requestRender();
@@ -3751,11 +3759,7 @@ export class InteractiveMode {
         } else if (event.result) {
           this.chatContainer.clear();
           this.rebuildChatFromMessages();
-          const stats = event.result.stats;
-          const backup = event.result.backupPath ? ` Backup: ${event.result.backupPath}` : "";
-          this.showStatus(
-            `Context-compacted ${stats.objectsDeleted} object${stats.objectsDeleted === 1 ? "" : "s"} (${stats.tokensBefore} → ${stats.tokensAfter} tokens, ${stats.percentReduction}% reduction).${backup}`,
-          );
+          this.addContextCompactionSummaryToChat(event.result);
           this.footer.invalidate();
         } else if (event.errorMessage) {
           this.showError(event.errorMessage);
@@ -3888,6 +3892,16 @@ export class InteractiveMode {
     const component = renderChatMessageEntry(entry, this.chatMessageRenderOptions());
     addChatTranscriptEntry(this.chatContainer, component, entry.role);
     return component;
+  }
+
+  private addContextCompactionSummaryToChat(result: ContextCompactionResult): void {
+    this.chatContainer.addChild(new Spacer(1));
+    const component = new ContextCompactionSummaryMessageComponent(
+      result,
+      this.getMarkdownThemeWithSettings(),
+    );
+    component.setExpanded(this.toolOutputExpanded);
+    this.chatContainer.addChild(component);
   }
 
   private addMessageToChat(
@@ -6890,9 +6904,7 @@ export class InteractiveMode {
     this.ui.requestRender();
   }
 
-  private async handleCompactCommand(
-    customInstructions?: string,
-  ): Promise<void> {
+  private async handleCompactCommand(): Promise<void> {
     const entries = this.sessionManager.getEntries();
     const messageCount = entries.filter((e) => e.type === "message").length;
 
@@ -6908,29 +6920,7 @@ export class InteractiveMode {
     this.statusContainer.clear();
 
     try {
-      await this.session.compact(customInstructions);
-    } catch {
-      // Ignore, will be emitted as an event
-    }
-  }
-
-  private async handleContextCompactCommand(): Promise<void> {
-    const entries = this.sessionManager.getEntries();
-    const messageCount = entries.filter((e) => e.type === "message").length;
-
-    if (messageCount < 2) {
-      this.showWarning("Nothing to context-compact (no messages yet)");
-      return;
-    }
-
-    if (this.loadingAnimation) {
-      this.loadingAnimation.stop();
-      this.loadingAnimation = undefined;
-    }
-    this.statusContainer.clear();
-
-    try {
-      await this.session.contextCompact();
+      await this.session.compact();
     } catch {
       // Ignore, will be emitted as an event
     }

@@ -37,6 +37,11 @@ vi.mock("../src/core/compaction/index.js", () => ({
 		tokensBefore: 100,
 		details: {},
 	}),
+	contextCompact: async () => ({
+		deletedTargets: [{ kind: "entry", entryId: "entry-1" }],
+		protectedEntryIds: [],
+		stats: createContextCompactionStats(100, 50),
+	}),
 	estimateContextTokens: (
 		messages: Array<{
 			role: string;
@@ -57,6 +62,7 @@ vi.mock("../src/core/compaction/index.js", () => ({
 	},
 	generateBranchSummary: async () => ({ summary: "", aborted: false, readFiles: [], modifiedFiles: [] }),
 	prepareCompaction: () => ({ dummy: true }),
+	prepareContextCompaction: () => ({ dummy: true }),
 	shouldCompact: (
 		contextTokens: number,
 		contextWindow: number,

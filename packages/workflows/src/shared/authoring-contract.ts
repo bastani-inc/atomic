@@ -222,7 +222,7 @@ export interface StageSessionRuntime {
     targetId: string,
     options?: { readonly summarize?: boolean; readonly customInstructions?: string; readonly replaceInstructions?: boolean; readonly label?: string },
   ): Promise<{ readonly editorText?: string; readonly cancelled: boolean }>;
-  compact(customInstructions?: string): Promise<object>;
+  compact(): Promise<object>;
   abortCompaction(): void;
   abort(): Promise<void>;
   dispose(): void | Promise<void>;
@@ -285,7 +285,7 @@ export interface StageContext {
     targetId: string,
     options?: { readonly summarize?: boolean; readonly customInstructions?: string; readonly replaceInstructions?: boolean; readonly label?: string },
   ): Promise<{ readonly editorText?: string; readonly cancelled: boolean }>;
-  compact(customInstructions?: string): Promise<object>;
+  compact(): Promise<object>;
   abortCompaction(): void;
   abort(): Promise<void>;
 }

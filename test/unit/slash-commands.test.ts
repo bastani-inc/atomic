@@ -11,11 +11,13 @@ describe("built-in slash commands", () => {
     assert.equal(command.description, `Exit ${APP_NAME}`);
   });
 
-  test("lists /context-compact as a no-argument built-in command", () => {
-    const command = BUILTIN_SLASH_COMMANDS.find((item) => item.name === "context-compact");
+  test("removes /context-compact and keeps /compact as the compaction command", () => {
+    const contextCommand = BUILTIN_SLASH_COMMANDS.find((item) => item.name === "context-compact");
+    const compactCommand = BUILTIN_SLASH_COMMANDS.find((item) => item.name === "compact");
 
-    assert.ok(command, "expected /context-compact to be listed as a built-in command");
-    assert.match(command.description, /no arguments/i);
-    assert.equal(command.getArgumentCompletions, undefined);
+    assert.equal(contextCommand, undefined);
+    assert.ok(compactCommand, "expected /compact to be listed as a built-in command");
+    assert.match(compactCommand.description, /verbatim/i);
+    assert.equal(compactCommand.getArgumentCompletions, undefined);
   });
 });

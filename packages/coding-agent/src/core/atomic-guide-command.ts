@@ -19,7 +19,7 @@ Atomic turns one-off prompts into developer workflows: on-call debugging, repo r
 | \`/settings\` | thinking level, theme, message delivery, transport |
 | \`/new\`, \`/resume\` | start or resume sessions |
 | \`/tree\`, \`/fork\`, \`/clone\` | branch or navigate session history |
-| \`/compact\` | summarize older context |
+| \`/compact\` | delete safe older context verbatim |
 | \`/hotkeys\`, \`/changelog\` | local help and release notes |
 
 ## Examples of using Atomic

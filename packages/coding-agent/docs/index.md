@@ -9,10 +9,24 @@ Atomic is a minimal terminal coding harness. It is designed to stay small at the
 
 ## Quick start
 
-Install Atomic with Bun:
+Install Atomic globally with npm, pnpm, or Bun:
+
+With npm:
 
 ```bash
-bun install -g @bastani/atomic
+npm install -g @bastani/atomic
+```
+
+With pnpm:
+
+```bash
+pnpm add -g @bastani/atomic
+```
+
+With Bun:
+
+```bash
+bun add -g @bastani/atomic
 ```
 
 Atomic does not require package install scripts. If you want to disable dependency lifecycle scripts during the Atomic install, you can add `--ignore-scripts` to the install command.
@@ -37,7 +51,7 @@ For the full first-run flow, see [Quickstart](/quickstart).
 - [Settings](/settings) - global and project settings.
 - [Keybindings](/keybindings) - default shortcuts and custom keybindings.
 - [Sessions](/sessions) - session management, branching, and tree navigation.
-- [Compaction](/compaction) - context compaction and branch summarization.
+- [Compaction](/compaction) - Verbatim Compaction, context management, and branch summarization.
 
 ## Customization
 

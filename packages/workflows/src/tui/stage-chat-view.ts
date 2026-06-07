@@ -665,20 +665,12 @@ export class StageChatView implements Component, Focusable {
     const [command, ...rest] = text.trim().split(/\s+/);
     switch (command) {
       case "/compact": {
-        const handle = this._liveHandle();
-        if (!handle) return false;
-        await handle.ensureAttached();
-        if (!handle.agentSession) return false;
-        await handle.agentSession.compact(rest.join(" ") || undefined);
-        return true;
-      }
-      case "/context-compact": {
         if (rest.length > 0) return true;
         const handle = this._liveHandle();
         if (!handle) return false;
         await handle.ensureAttached();
         if (!handle.agentSession) return false;
-        await handle.agentSession.contextCompact();
+        await handle.agentSession.compact();
         return true;
       }
       case "/quit":

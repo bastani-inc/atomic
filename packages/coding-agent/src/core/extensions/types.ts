@@ -43,7 +43,7 @@ import type { Static, TSchema } from "typebox";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import type { ResolvedResource } from "../package-manager.ts";
 import type { BashResult } from "../bash-executor.ts";
-import type { CompactionPreparation, CompactionResult } from "../compaction/index.ts";
+import type { CompactionPreparation, CompactionResult, ContextCompactionResult } from "../compaction/index.ts";
 import type { EventBus } from "../event-bus.ts";
 import type { ExecOptions, ExecResult } from "../exec.ts";
 import type { ReadonlyFooterDataProvider } from "../footer-data-provider.ts";
@@ -325,8 +325,9 @@ export interface ContextUsage {
 }
 
 export interface CompactOptions {
+	/** @deprecated Default compaction is deletion-only and does not accept custom instructions. */
 	customInstructions?: string;
-	onComplete?: (result: CompactionResult) => void;
+	onComplete?: (result: ContextCompactionResult) => void;
 	onError?: (error: Error) => void;
 }
 

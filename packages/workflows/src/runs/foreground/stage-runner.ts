@@ -1017,8 +1017,8 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
       return (await ensureSession()).navigateTree(targetId, options);
     },
 
-    async compact(customInstructions) {
-      return (await ensureSession()).compact(customInstructions);
+    async compact() {
+      return (await ensureSession()).compact();
     },
 
     abortCompaction() {

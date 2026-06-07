@@ -3467,9 +3467,15 @@ export async function run<TInputs extends WorkflowInputValues>(
 
       const compactionMeta = (result: unknown): string | undefined => {
         if (result === undefined || result === null || typeof result !== "object") return undefined;
-        const compaction = result as { tokensBefore?: unknown; tokensAfter?: unknown; tokensKept?: unknown };
-        const before = typeof compaction.tokensBefore === "number" ? compaction.tokensBefore : undefined;
-        const keptRaw = compaction.tokensKept ?? compaction.tokensAfter;
+        const compaction = result as {
+          stats?: { tokensBefore?: unknown; tokensAfter?: unknown };
+          tokensBefore?: unknown;
+          tokensAfter?: unknown;
+          tokensKept?: unknown;
+        };
+        const beforeRaw = compaction.stats?.tokensBefore ?? compaction.tokensBefore;
+        const keptRaw = compaction.stats?.tokensAfter ?? compaction.tokensKept ?? compaction.tokensAfter;
+        const before = typeof beforeRaw === "number" ? beforeRaw : undefined;
         const kept = typeof keptRaw === "number" ? keptRaw : undefined;
         if (before === undefined || kept === undefined) return undefined;
         return `${(before / 1000).toFixed(1)}k → ${(kept / 1000).toFixed(1)}k`;
@@ -3514,9 +3520,9 @@ export async function run<TInputs extends WorkflowInputValues>(
           recordStageNotice({ kind: "tree", to: targetId });
           return innerCtx.navigateTree(targetId, treeOptions);
         },
-        compact: async (customInstructions) => {
-          const result = await innerCtx.compact(customInstructions);
-          recordStageNotice({ kind: "compaction", to: "summarized", meta: compactionMeta(result) });
+        compact: async () => {
+          const result = await innerCtx.compact();
+          recordStageNotice({ kind: "compaction", to: "compacted", meta: compactionMeta(result) });
           return result;
         },
         abortCompaction: () => innerCtx.abortCompaction(),

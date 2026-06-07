@@ -2013,11 +2013,11 @@ describe("StageChatView", () => {
         view.dispose();
     });
 
-    test("stage chat handles /compact through the live AgentSession", async () => {
-        const compactCalls: Array<string | undefined> = [];
+    test("stage chat handles no-args /compact through the live AgentSession", async () => {
+        let compactCalls = 0;
         const agentSession = {
-            compact: async (instructions?: string) => {
-                compactCalls.push(instructions);
+            compact: async () => {
+                compactCalls += 1;
                 return {};
             },
         } as unknown as AgentSession;
@@ -2044,18 +2044,22 @@ describe("StageChatView", () => {
         view.handleInput("\r");
         await flush();
         await flush();
+        assert.equal(compactCalls, 0);
+        assert.deepEqual(state.promptCalls, []);
 
-        assert.deepEqual(compactCalls, ["keep recent context"]);
+        for (const ch of "/compact") view.handleInput(ch);
+        view.handleInput("\r");
+        await flush();
+        await flush();
+        assert.equal(compactCalls, 1);
         assert.deepEqual(state.promptCalls, []);
         view.dispose();
     });
 
-    test("stage chat handles no-args /context-compact and consumes extra args", async () => {
-        let contextCompactCalls = 0;
+    test("stage chat no longer handles /context-compact as a workflow slash command", async () => {
         const agentSession = {
             contextCompact: async () => {
-                contextCompactCalls += 1;
-                return {};
+                throw new Error("contextCompact should not be called");
             },
         } as unknown as AgentSession;
         const store = createStore();
@@ -2077,19 +2081,11 @@ describe("StageChatView", () => {
             onClose: () => {},
         });
 
-        for (const ch of "/context-compact extra") view.handleInput(ch);
-        view.handleInput("\r");
-        await flush();
-        await flush();
-        assert.equal(contextCompactCalls, 0);
-        assert.deepEqual(state.promptCalls, []);
-
         for (const ch of "/context-compact") view.handleInput(ch);
         view.handleInput("\r");
         await flush();
         await flush();
-        assert.equal(contextCompactCalls, 1);
-        assert.deepEqual(state.promptCalls, []);
+        assert.deepEqual(state.promptCalls, ["/context-compact"]);
         view.dispose();
     });
 

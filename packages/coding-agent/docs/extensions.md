@@ -322,6 +322,9 @@ user sends another prompt ◄─────────────────
   └─► resources_discover { reason: "startup" }
 
 /compact or auto-compaction
+  └─► compaction_start / compaction_end (deletion-only context compaction)
+
+legacy summary compaction APIs
   ├─► session_before_compact (can cancel or customize)
   └─► session_compact
 
@@ -413,7 +416,7 @@ Do cleanup work in `session_shutdown`, then reestablish any in-memory state in `
 
 #### session_before_compact / session_compact
 
-Fired on compaction. See [Compaction](/compaction) for details.
+Fired by the legacy summary compaction pipeline. `/compact` and auto-compaction now use deletion-only context compaction by default, so extensions should not rely on these events for default compaction. See [Compaction](/compaction) for details.
 
 ```typescript
 pi.on("session_before_compact", async (event, ctx) => {
@@ -947,19 +950,20 @@ if (usage && usage.tokens > 100_000) {
 
 ### ctx.compact()
 
-Trigger compaction without awaiting completion. Use `onComplete` and `onError` for follow-up actions.
+Trigger Atomic's default Verbatim Compaction without awaiting completion. This is deletion-only Context Compaction: retained transcript content stays unchanged, and older low-signal objects are omitted by validated logical deletion. The approach is informed by Morph's Context Compaction write-up: [Morph's Context Compaction](https://www.morphllm.com/context-compaction). Use `onComplete` and `onError` for follow-up actions.
 
 ```typescript
 ctx.compact({
-  customInstructions: "Focus on recent changes",
   onComplete: (result) => {
-    ctx.ui.notify("Compaction completed", "info");
+    ctx.ui.notify(`Compaction deleted ${result.stats.objectsDeleted} objects`, "info");
   },
   onError: (error) => {
     ctx.ui.notify(`Compaction failed: ${error.message}`, "error");
   },
 });
 ```
+
+`customInstructions` is deprecated and ignored for default compaction because Verbatim Compaction never asks the model to write a custom summary.
 
 ### ctx.getSystemPrompt()
 
@@ -2568,7 +2572,7 @@ All examples in [examples/extensions/](https://github.com/bastani-inc/atomic/tre
 | `prompt-customizer.ts` | Add context-aware tool guidance using `systemPromptOptions` | `on("before_agent_start")`, `BuildSystemPromptOptions` |
 | `file-trigger.ts` | File watcher triggers messages | `sendMessage` |
 | **Compaction & Sessions** |||
-| `custom-compaction.ts` | Custom compaction summary | `on("session_before_compact")` |
+| `custom-compaction.ts` | Legacy custom compaction summary | `on("session_before_compact")` |
 | `trigger-compact.ts` | Trigger compaction manually | `compact()` |
 | `git-checkpoint.ts` | Git stash on turns | `on("turn_start")`, `on("session_before_fork")`, `exec` |
 | `auto-commit-on-exit.ts` | Commit on shutdown | `on("session_shutdown")`, `exec` |

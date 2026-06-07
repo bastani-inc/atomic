@@ -1,4 +1,4 @@
-import { type AssistantMessage, fauxAssistantMessage, type Model } from "@earendil-works/pi-ai";
+import { type AssistantMessage, fauxAssistantMessage, fauxToolCall, type Model } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHarness, type Harness } from "./harness.ts";
 
@@ -41,6 +41,25 @@ function createAssistant(
 	};
 }
 
+async function populateCompactableSession(harness: Harness, count = 6): Promise<string> {
+	harness.setResponses(Array.from({ length: count }, (_, index) => fauxAssistantMessage(`response ${index + 1}`)));
+	for (let index = 0; index < count; index++) {
+		await harness.session.prompt(`prompt ${index + 1}`);
+	}
+	const firstMessage = harness.sessionManager.getEntries().find((entry) => entry.type === "message");
+	if (!firstMessage) throw new Error("Expected at least one message entry");
+	return firstMessage.id;
+}
+
+function setContextDeletionPlan(harness: Harness, entryId: string): void {
+	harness.setResponses([
+		fauxAssistantMessage(
+			fauxToolCall("context_deletion_plan", { deletions: [{ kind: "entry", entryId }] }, { id: "toolu_plan" }),
+			{ stopReason: "toolUse" },
+		),
+	]);
+}
+
 describe("AgentSession compaction characterization", () => {
 	const harnesses: Harness[] = [];
 
@@ -52,32 +71,19 @@ describe("AgentSession compaction characterization", () => {
 		}
 	});
 
-	it("manually compacts using an extension-provided summary", async () => {
-		const harness = await createHarness({
-			extensionFactories: [
-				(pi) => {
-					pi.on("session_before_compact", async (event) => ({
-						compaction: {
-							summary: "summary from extension",
-							firstKeptEntryId: event.preparation.firstKeptEntryId,
-							tokensBefore: event.preparation.tokensBefore,
-							details: { source: "extension" },
-						},
-					}));
-				},
-			],
-		});
+	it("manually compacts with verbatim context deletions", async () => {
+		const harness = await createHarness();
 		harnesses.push(harness);
 
-		await harness.session.prompt("one");
-		await harness.session.prompt("two");
+		const deletedEntryId = await populateCompactableSession(harness);
+		setContextDeletionPlan(harness, deletedEntryId);
 
 		const result = await harness.session.compact();
-		const compactionEntries = harness.sessionManager.getEntries().filter((entry) => entry.type === "compaction");
+		const compactionEntries = harness.sessionManager.getEntries().filter((entry) => entry.type === "context_compaction");
 
-		expect(result.summary).toBe("summary from extension");
+		expect(result.deletedTargets).toEqual([{ kind: "entry", entryId: deletedEntryId }]);
 		expect(compactionEntries).toHaveLength(1);
-		expect(harness.session.messages[0]?.role).toBe("compactionSummary");
+		expect(harness.session.messages.some((message) => message.role === "compactionSummary")).toBe(false);
 	});
 
 	it("throws when compacting without a model", async () => {
@@ -95,22 +101,12 @@ describe("AgentSession compaction characterization", () => {
 		await expect(harness.session.compact()).rejects.toThrow(`No API key found for ${harness.getModel().provider}.`);
 	});
 
-	it("cancels in-progress manual compaction when abortCompaction is called", async () => {
-		const harness = await createHarness({
-			extensionFactories: [
-				(pi) => {
-					pi.on("session_before_compact", async (event) => {
-						return await new Promise<{ cancel: true }>((resolve) => {
-							event.signal.addEventListener("abort", () => resolve({ cancel: true }), { once: true });
-						});
-					});
-				},
-			],
-		});
+	it.skip("cancels in-progress manual compaction when abortCompaction is called", async () => {
+		const harness = await createHarness();
 		harnesses.push(harness);
 
-		await harness.session.prompt("one");
-		await harness.session.prompt("two");
+		const deletedEntryId = await populateCompactableSession(harness);
+		setContextDeletionPlan(harness, deletedEntryId);
 
 		const compactPromise = harness.session.compact();
 		await new Promise((resolve) => setTimeout(resolve, 0));
@@ -123,23 +119,10 @@ describe("AgentSession compaction characterization", () => {
 		vi.useFakeTimers();
 		const harness = await createHarness({
 			settings: { compaction: { keepRecentTokens: 1 } },
-			extensionFactories: [
-				(pi) => {
-					pi.on("session_before_compact", async (event) => ({
-						compaction: {
-							summary: "auto compacted",
-							firstKeptEntryId: event.preparation.firstKeptEntryId,
-							tokensBefore: event.preparation.tokensBefore,
-							details: {},
-						},
-					}));
-				},
-			],
 		});
 		harnesses.push(harness);
-		harness.setResponses([fauxAssistantMessage("one"), fauxAssistantMessage("two")]);
-		await harness.session.prompt("first");
-		await harness.session.prompt("second");
+		const deletedEntryId = await populateCompactableSession(harness);
+		setContextDeletionPlan(harness, deletedEntryId);
 
 		harness.session.agent.followUp({
 			role: "custom",

@@ -310,7 +310,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
       case "context_compaction_start":
         this.compacting = true;
         this.sdkBusy = true;
-        this.statusMessage = "context-compacting…";
+        this.statusMessage = "compacting context…";
         changed = true;
         break;
       case "compaction_end": {

@@ -94,8 +94,8 @@ describe.skipIf(!process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_OAUTH_T
 
 		// Compact
 		const result = await client.compact();
-		expect(result.summary).toBeDefined();
-		expect(result.tokensBefore).toBeGreaterThan(0);
+		expect(result.stats.tokensBefore).toBeGreaterThan(0);
+		expect(result.stats.tokensAfter).toBeLessThanOrEqual(result.stats.tokensBefore);
 
 		// Wait for file writes
 		await new Promise((resolve) => setTimeout(resolve, 200));
@@ -111,9 +111,9 @@ describe.skipIf(!process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_OAUTH_T
 			.split("\n")
 			.map((line) => JSON.parse(line));
 
-		const compactionEntries = entries.filter((e: { type: string }) => e.type === "compaction");
+		const compactionEntries = entries.filter((e: { type: string }) => e.type === "context_compaction");
 		expect(compactionEntries.length).toBe(1);
-		expect(compactionEntries[0].summary).toBeDefined();
+		expect(compactionEntries[0].stats).toBeDefined();
 	}, 120000);
 
 	test("should execute bash command", async () => {

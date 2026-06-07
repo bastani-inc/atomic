@@ -20,7 +20,7 @@ pkg install nodejs termux-api git
 npm install -g @bastani/atomic
 
 # If you have installed Bun separately in Termux, you can use Bun instead:
-# bun install -g @bastani/atomic
+# bun add -g @bastani/atomic
 
 # Create config directory
 mkdir -p ~/.atomic/agent
