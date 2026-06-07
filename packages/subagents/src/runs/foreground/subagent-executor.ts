@@ -1003,6 +1003,54 @@ function withForkContext(
 	};
 }
 
+interface SafeSubagentUpdateForwarder {
+	forward: (result: SubagentToolResult) => void;
+	close: () => void;
+}
+
+function isStaleParentUpdateError(error: unknown): boolean {
+	return error instanceof Error && error.message === "Agent listener invoked outside active run";
+}
+
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+	return typeof (value as { then?: unknown } | null)?.then === "function";
+}
+
+function createSafeSubagentUpdateForwarder(
+	onUpdate: ((result: SubagentToolResult) => void) | undefined,
+	context: SubagentParamsLike["context"],
+): SafeSubagentUpdateForwarder {
+	let active = onUpdate !== undefined;
+	const close = () => {
+		active = false;
+	};
+	return {
+		forward: (result) => {
+			if (!active || !onUpdate) return;
+			let forwarded: unknown;
+			try {
+				forwarded = onUpdate(withForkContext(result, context));
+			} catch (error) {
+				if (isStaleParentUpdateError(error)) {
+					close();
+					return;
+				}
+				throw error;
+			}
+			if (isPromiseLike(forwarded)) {
+				void Promise.resolve(forwarded).catch((error) => {
+					if (isStaleParentUpdateError(error)) {
+						close();
+						return;
+					}
+					throw error;
+				});
+			}
+		},
+		close,
+	};
+}
+
 function toExecutionErrorResult(params: SubagentParamsLike, error: unknown): SubagentToolResult {
 	const message = error instanceof Error ? error.message : String(error);
 	return withForkContext(
@@ -2484,9 +2532,8 @@ export function createSubagentExecutor(rawDeps: ExecutorDeps): {
 		const childSessionFileForIndex = (idx?: number) =>
 			sessionFileForIndex(idx) ?? path.join(sessionDirForIndex(idx), "session.jsonl");
 
-		const onUpdateWithContext = onUpdate
-			? (r: SubagentToolResult) => onUpdate(withForkContext(r, effectiveParams.context))
-			: undefined;
+		const updateForwarder = createSafeSubagentUpdateForwarder(onUpdate, effectiveParams.context);
+		const onUpdateWithContext = onUpdate ? updateForwarder.forward : undefined;
 
 		const execData: ExecutionContextData = {
 			params: effectiveParams,
@@ -2615,6 +2662,7 @@ export function createSubagentExecutor(rawDeps: ExecutorDeps): {
 			if (nestedForegroundStarted) writeNestedForegroundEvent("subagent.nested.completed", errorResult);
 			return errorResult;
 		} finally {
+			updateForwarder.close();
 			if (foregroundControl) {
 				clearPendingForegroundControlNotices(deps.state, runId);
 				deps.state.foregroundControls.delete(runId);

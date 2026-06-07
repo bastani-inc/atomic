@@ -4,11 +4,12 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
-import { WORKFLOW_STAGE_SUBAGENT_GUARD_ENV } from "../../packages/subagents/src/shared/types.js";
+import { WORKFLOW_STAGE_SUBAGENT_GUARD_ENV, type SubagentToolResult } from "../../packages/subagents/src/shared/types.js";
 
 interface MinimalRunSyncOptions {
 	maxSubagentDepth?: number;
 	workflowStageSubagentGuard?: boolean;
+	onUpdate?: (update: SubagentToolResult) => void;
 }
 
 interface MinimalAsyncChainParams {
@@ -60,6 +61,28 @@ const asyncSingleCalls: CapturedAsyncSingleCall[] = [];
 
 const emptyUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
 
+function makeProgressUpdate(agent: string, task: string): SubagentToolResult {
+	const progress = {
+		index: 0,
+		agent,
+		status: "running" as const,
+		task,
+		recentTools: [],
+		recentOutput: [],
+		toolCount: 0,
+		tokens: 0,
+		durationMs: 1,
+	};
+	return {
+		content: [{ type: "text", text: "running" }],
+		details: {
+			mode: "single",
+			results: [],
+			progress: [progress],
+		},
+	};
+}
+
 const runSyncMock = mock(async (
 	_cwd: string,
 	_agents: MinimalAgentConfig[],
@@ -68,6 +91,13 @@ const runSyncMock = mock(async (
 	options: MinimalRunSyncOptions,
 ) => {
 	runSyncCalls.push({ agentName, options });
+	if (task.includes("throw stale parent")) {
+		options.onUpdate?.(makeProgressUpdate(agentName, task));
+		options.onUpdate?.(makeProgressUpdate(agentName, task));
+	}
+	if (task === "late update") {
+		setTimeout(() => options.onUpdate?.(makeProgressUpdate(agentName, task)), 0);
+	}
 	return {
 		agent: agentName,
 		task,
@@ -340,5 +370,75 @@ describe("foreground workflow-stage subagent guard propagation", () => {
 		assert.equal(asyncSingleCalls.length, 1);
 		assert.equal(asyncSingleCalls[0]!.params.maxSubagentDepth, 1);
 		assert.equal(asyncSingleCalls[0]!.params.workflowStageSubagentGuard, true);
+	});
+
+	test("suppresses stale parent update throws and preserves fork context on forwarded progress", async () => {
+		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-stale-parent-update-"));
+		const agents = [makeAgent("alpha")];
+		const executor = makeExecutor(cwd, agents);
+		let parentUpdateCalls = 0;
+		let forwardedContext: string | undefined;
+
+		const ctx = makeWorkflowStageContext(cwd);
+		const parentSessionFile = path.join(cwd, "parent-session.jsonl");
+		fs.writeFileSync(parentSessionFile, "");
+		ctx.sessionManager = {
+			...ctx.sessionManager,
+			getSessionFile: () => parentSessionFile,
+			getLeafId: () => "leaf-1",
+			getSessionDir: () => cwd,
+			openSession: () => ({
+				createBranchedSession: () => {
+					const forkedSessionFile = path.join(cwd, "forked-session.jsonl");
+					fs.writeFileSync(forkedSessionFile, "");
+					return forkedSessionFile;
+				},
+			}),
+		} as ExecutorContextForTest["sessionManager"];
+		const result = await executor.execute(
+			"subagent",
+			{
+				agent: "alpha",
+				task: "throw stale parent",
+				context: "fork",
+				clarify: false,
+			},
+			new AbortController().signal,
+			(update) => {
+				parentUpdateCalls++;
+				forwardedContext = update.details.context;
+				throw new Error("Agent listener invoked outside active run");
+			},
+			ctx,
+		);
+
+		assertNoErrorFlag(result);
+		assert.equal(parentUpdateCalls, 1);
+		assert.equal(forwardedContext, "fork");
+	});
+
+	test("drops late subagent progress after executor lifecycle closes", async () => {
+		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-late-parent-update-"));
+		const agents = [makeAgent("alpha")];
+		const executor = makeExecutor(cwd, agents);
+		let parentUpdateCalls = 0;
+
+		const result = await executor.execute(
+			"subagent",
+			{
+				agent: "alpha",
+				task: "late update",
+				clarify: false,
+			},
+			new AbortController().signal,
+			() => {
+				parentUpdateCalls++;
+			},
+			makeWorkflowStageContext(cwd),
+		);
+		await new Promise((resolve) => setTimeout(resolve, 5));
+
+		assertNoErrorFlag(result);
+		assert.equal(parentUpdateCalls, 0);
 	});
 });

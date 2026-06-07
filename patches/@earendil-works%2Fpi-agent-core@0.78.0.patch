@@ -1,0 +1,89 @@
+diff --git a/dist/agent.js b/dist/agent.js
+index 0000000..0000000 100644
+--- a/dist/agent.js
++++ b/dist/agent.js
+@@ -392,6 +392,9 @@
+         }
+         const signal = this.activeRun?.abortController.signal;
+         if (!signal) {
++            if (event.type === "tool_execution_update") {
++                return;
++            }
+             throw new Error("Agent listener invoked outside active run");
+         }
+         for (const listener of this.listeners) {
+diff --git a/dist/agent-loop.js b/dist/agent-loop.js
+index 0000000..0000000 100644
+--- a/dist/agent-loop.js
++++ b/dist/agent-loop.js
+@@ -412,29 +412,58 @@
+             isError: true,
+         };
+     }
++}
++function isStaleAgentListenerError(error) {
++    return error instanceof Error && error.message === "Agent listener invoked outside active run";
+ }
+ async function executePreparedToolCall(prepared, signal, emit) {
+     const updateEvents = [];
+-    try {
+-        const result = await prepared.tool.execute(prepared.toolCall.id, prepared.args, signal, (partialResult) => {
+-            updateEvents.push(Promise.resolve(emit({
+-                type: "tool_execution_update",
+-                toolCallId: prepared.toolCall.id,
+-                toolName: prepared.toolCall.name,
+-                args: prepared.toolCall.arguments,
+-                partialResult,
+-            })));
+-        });
+-        await Promise.all(updateEvents);
+-        return { result, isError: false };
++    let acceptingUpdates = true;
++    const onUpdate = (partialResult) => {
++        if (!acceptingUpdates || signal?.aborted) {
++            return;
++        }
++        const updateEvent = Promise.resolve(emit({
++            type: "tool_execution_update",
++            toolCallId: prepared.toolCall.id,
++            toolName: prepared.toolCall.name,
++            args: prepared.toolCall.arguments,
++            partialResult,
++        })).catch((error) => {
++            if (isStaleAgentListenerError(error)) {
++                acceptingUpdates = false;
++                return;
++            }
++            throw error;
++        });
++        updateEvents.push(updateEvent);
++    };
++    let result;
++    let executionError;
++    try {
++        result = await prepared.tool.execute(prepared.toolCall.id, prepared.args, signal, onUpdate);
+     }
+     catch (error) {
++        executionError = error;
++    }
++    finally {
++        acceptingUpdates = false;
++    }
++    let updateError;
++    try {
+         await Promise.all(updateEvents);
++    }
++    catch (error) {
++        updateError = error;
++    }
++    const error = executionError ?? updateError;
++    if (error) {
+         return {
+             result: createErrorToolResult(error instanceof Error ? error.message : String(error)),
+             isError: true,
+         };
+     }
++    return { result, isError: false };
+ }
+ async function finalizeExecutedToolCall(currentContext, assistantMessage, prepared, executed, config, signal) {
+     let result = executed.result;

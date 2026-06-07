@@ -38,14 +38,14 @@ jobs:
             - name: Build @bastani/atomic package
               working-directory: packages/coding-agent
               run: bun run build
-            # Gate the temporary #1222 bundled pi-tui closure on a single Linux matrix entry: a
-            # broken dependency closure is OS-independent, so running it once avoids multiplying the
+            # Gate the temporary bundled patched Pi packages on a single Linux matrix entry: a broken
+            # dependency closure is OS-independent, so running it once avoids multiplying the
             # pack/install fixture across every OS. SKIP_BUILD=1 reuses the dist built just above.
-            - name: Verify bundled pi-tui closure
+            - name: Verify bundled patched Pi packages
               if: runner.os == 'Linux'
               env:
                   SKIP_BUILD: "1"
-              run: bun run --cwd packages/coding-agent verify:bundled-pi-tui
+              run: bun run --cwd packages/coding-agent verify:bundled-patched-pi
             - name: Unit tests
               run: bun run test:unit
             - name: Integration tests

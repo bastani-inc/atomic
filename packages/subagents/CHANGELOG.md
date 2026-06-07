@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Guarded foreground subagent progress forwarding so stale child, timer, or final progress updates are dropped once the parent listener closes ([#1273](https://github.com/bastani-inc/atomic/issues/1273)).
+
 ## [0.8.26-alpha.6] - 2026-06-06
 
 ### Changed

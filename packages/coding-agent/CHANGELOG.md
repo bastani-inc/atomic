@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Dropped stale tool progress updates after a tool or agent run has settled to avoid late `onUpdate` callbacks crashing active-run listeners ([#1273](https://github.com/bastani-inc/atomic/issues/1273)).
+- Bundled the patched `@earendil-works/pi-agent-core` package into `@bastani/atomic` tarballs and expanded the packed-consumer verifier so npm installs use the fixed late-`onUpdate` lifecycle guard ([#1273](https://github.com/bastani-inc/atomic/issues/1273)).
+
 ## [0.8.26-alpha.6] - 2026-06-06
 
 ### Changed

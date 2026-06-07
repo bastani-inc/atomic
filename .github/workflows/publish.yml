@@ -416,16 +416,16 @@ jobs:
               working-directory: ${{ env.PACKAGE_DIR }}
               run: bun pm pack --dry-run
 
-            # Gate publishing on the temporary #1222 bundled pi-tui closure: pack the tarball,
-            # confirm it ships the patched pi-tui plus its full runtime dependency closure, and
-            # install/import it from an isolated consumer. A broken closure must fail here rather
+            # Gate publishing on the temporary bundled patched Pi packages: pack the tarball,
+            # confirm it ships patched pi-tui plus patched pi-agent-core, and verify an isolated
+            # consumer resolves and smokes the bundled core. A broken bundle must fail here rather
             # than silently ship. SKIP_BUILD=1 reuses the dist built earlier in this job.
-            - name: Verify bundled pi-tui closure ships in tarball
+            - name: Verify bundled patched Pi packages ship in tarball
               if: steps.registry.outputs.exists != 'true'
               working-directory: ${{ env.PACKAGE_DIR }}
               env:
                   SKIP_BUILD: "1"
-              run: bun run verify:bundled-pi-tui
+              run: bun run verify:bundled-patched-pi
 
             - name: Publish to npm
               if: steps.registry.outputs.exists != 'true'

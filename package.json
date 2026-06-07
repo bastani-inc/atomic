@@ -30,6 +30,7 @@
     "typescript": "^6.0.3"
   },
   "patchedDependencies": {
+    "@earendil-works/pi-agent-core@0.78.0": "patches/@earendil-works%2Fpi-agent-core@0.78.0.patch",
     "@earendil-works/pi-tui@0.78.0": "patches/@earendil-works%2Fpi-tui@0.78.0.patch"
   }
 }
