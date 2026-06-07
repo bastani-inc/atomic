@@ -95,6 +95,10 @@ See [Programmatic Usage](./packages/coding-agent/README.md#programmatic-usage) f
 
 </details>
 
+### Migrating from another coding agent
+
+Atomic publishes an agent-readable **[`llms.txt`](https://docs.bastani.ai/llms.txt)**. Ask your current coding agent to “install and set up Atomic by following https://docs.bastani.ai/llms.txt”.
+
 ---
 
 ## Spec-driven development
