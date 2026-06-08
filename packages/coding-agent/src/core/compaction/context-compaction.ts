@@ -1,6 +1,6 @@
-import { Agent, type AgentMessage, type AgentTool, type ThinkingLevel } from "@earendil-works/pi-agent-core";
+import { Agent, type AgentMessage, type AgentTool, type AgentToolResult, type ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model, ToolCall } from "@earendil-works/pi-ai";
-import { streamSimple, StringEnum } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, streamSimple, StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import {
 	createBranchSummaryMessage,
@@ -76,6 +76,10 @@ export interface ContextCompactionResult extends ValidatedContextDeletionPlan {
 
 const CONTEXT_DELETION_PLAN_TOOL_NAME = "context_deletion_plan";
 const CONTEXT_GREP_DELETE_TOOL_NAME = "context_grep_delete";
+export const CONTEXT_COMPACTION_PLANNER_MAX_TURNS = 8 as const;
+const CONTEXT_GREP_DELETE_DEFAULT_MAX_MATCHES = 50;
+const CONTEXT_GREP_DELETE_MAX_REGEX_PATTERN_CHARS = 512;
+const CONTEXT_GREP_DELETE_MAX_REGEX_SCAN_CHARS = 250_000;
 
 const ContextDeletionPlanToolParameters = Type.Object(
 	{
@@ -145,6 +149,7 @@ export interface ContextDeletionPlannerToolDetails {
 	deletedTargets: ContextDeletionTarget[];
 	stats: ContextCompactionStats;
 	callCount: number;
+	error?: string;
 }
 
 export interface ContextGrepDeletionMatch {
@@ -175,8 +180,9 @@ export interface ContextGrepDeletionToolDetails {
 	matches: ContextGrepDeletionMatch[];
 	skipped: ContextGrepDeletionSkipped[];
 	deletedTargets: ContextDeletionTarget[];
-	stats?: ContextCompactionStats;
+	stats: ContextCompactionStats;
 	callCount: number;
+	error?: string;
 }
 
 export interface ContextDeletionPlannerToolController {
@@ -715,6 +721,12 @@ function reconcileToolDependencies(
 		}
 	}
 
+	if (changed) {
+		console.warn(
+			"Context compaction tool dependency reconciliation did not converge within the bounded pass limit; validation will continue with the last reconciled target set.",
+		);
+	}
+
 	return targets;
 }
 
@@ -909,8 +921,44 @@ function escapeRegExpLiteral(text: string): string {
 	return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function formatErrorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
+function createPlannerToolResult<TDetails>(text: string, details: TDetails): AgentToolResult<TDetails> {
+	return { content: [{ type: "text", text }], details, terminate: false };
+}
+
 function createGrepMatcher(pattern: string, regex: boolean, caseSensitive: boolean): RegExp {
-	return new RegExp(regex ? pattern : escapeRegExpLiteral(pattern), caseSensitive ? "u" : "iu");
+	if (regex && pattern.length > CONTEXT_GREP_DELETE_MAX_REGEX_PATTERN_CHARS) {
+		throw new Error(
+			`Regex pattern is too long (${pattern.length} characters); maximum is ${CONTEXT_GREP_DELETE_MAX_REGEX_PATTERN_CHARS}`,
+		);
+	}
+
+	try {
+		return new RegExp(regex ? pattern : escapeRegExpLiteral(pattern), caseSensitive ? "u" : "iu");
+	} catch (error) {
+		throw new Error(`Invalid grep ${regex ? "regex" : "pattern"}: ${formatErrorMessage(error)}`);
+	}
+}
+
+function getGrepScanTextLength(transcript: CompactableTranscript, target: "entry" | "content_block"): number {
+	if (target === "entry") {
+		return transcript.entries.reduce((total, entry) => total + entry.text.length, 0);
+	}
+	return transcript.entries.reduce(
+		(total, entry) => total + entry.contentBlocks.reduce((entryTotal, block) => entryTotal + block.text.length, 0),
+		0,
+	);
+}
+
+function assertSafeRegexScan(transcript: CompactableTranscript, target: "entry" | "content_block"): void {
+	const scanChars = getGrepScanTextLength(transcript, target);
+	if (scanChars <= CONTEXT_GREP_DELETE_MAX_REGEX_SCAN_CHARS) return;
+	throw new Error(
+		`Regex grep would scan ${scanChars} characters; maximum is ${CONTEXT_GREP_DELETE_MAX_REGEX_SCAN_CHARS}. Use a literal pattern or exact deletion targets instead.`,
+	);
 }
 
 function currentTargetDeleted(targets: readonly ContextDeletionTarget[], target: ContextDeletionTarget): boolean {
@@ -948,24 +996,43 @@ export function createContextDeletionPlannerTool(
 		return validatedPlan;
 	}
 
+	function currentStats(): ContextCompactionStats {
+		return validatedPlan?.stats ?? computeContextCompactionStats(transcript, deletedTargets);
+	}
+
 	const tool: AgentTool<typeof ContextDeletionPlanToolParameters, ContextDeletionPlannerToolDetails> = {
 		...CONTEXT_DELETION_PLAN_TOOL,
 		label: "context deletion plan",
 		executionMode: "sequential",
 		async execute(_toolCallId, params) {
-			const incomingPlan = rawContextDeletionPlanFromObject(params, `${CONTEXT_DELETION_PLAN_TOOL_NAME} arguments`);
-			const incomingValidated = validateContextDeletionPlan(incomingPlan, transcript);
-			const applied = applyValidatedTargets(incomingValidated.deletedTargets);
 			callCount += 1;
+			try {
+				const incomingPlan = rawContextDeletionPlanFromObject(params, `${CONTEXT_DELETION_PLAN_TOOL_NAME} arguments`);
+				const incomingValidated = validateContextDeletionPlan(incomingPlan, transcript);
+				const applied = applyValidatedTargets(incomingValidated.deletedTargets);
 
-			const details: ContextDeletionPlannerToolDetails = {
-				deletions: planFromTargets(deletedTargets).deletions,
-				deletedTargets,
-				stats: applied.stats,
-				callCount,
-			};
-			const text = `Recorded ${incomingValidated.deletedTargets.length} deletion target(s); ${deletedTargets.length} total validated deletion target(s) are selected. Continue calling ${CONTEXT_DELETION_PLAN_TOOL_NAME} or ${CONTEXT_GREP_DELETE_TOOL_NAME} for additional deletions, or respond done when finished.`;
-			return { content: [{ type: "text", text }], details, terminate: false };
+				const details: ContextDeletionPlannerToolDetails = {
+					deletions: planFromTargets(deletedTargets).deletions,
+					deletedTargets,
+					stats: applied.stats,
+					callCount,
+				};
+				const text = `Recorded ${incomingValidated.deletedTargets.length} deletion target(s); ${deletedTargets.length} total validated deletion target(s) are selected. Continue calling ${CONTEXT_DELETION_PLAN_TOOL_NAME} or ${CONTEXT_GREP_DELETE_TOOL_NAME} for additional deletions, or respond done when finished.`;
+				return createPlannerToolResult(text, details);
+			} catch (error) {
+				const message = formatErrorMessage(error);
+				const details: ContextDeletionPlannerToolDetails = {
+					deletions: planFromTargets(deletedTargets).deletions,
+					deletedTargets,
+					stats: currentStats(),
+					callCount,
+					error: message,
+				};
+				return createPlannerToolResult(
+					`Error recording context deletion targets: ${message}. No new deletion targets were applied; continue with a corrected tool call.`,
+					details,
+				);
+			}
 		},
 	};
 
@@ -974,105 +1041,129 @@ export function createContextDeletionPlannerTool(
 		label: "context grep delete",
 		executionMode: "sequential",
 		async execute(_toolCallId, params) {
+			callCount += 1;
 			const pattern = params.pattern;
 			const regex = params.regex === true;
 			const caseSensitive = params.caseSensitive === true;
 			const target = params.target ?? "entry";
-			const maxMatches = params.maxMatches ?? 50;
-			const matcher = createGrepMatcher(pattern, regex, caseSensitive);
+			const maxMatches = params.maxMatches ?? CONTEXT_GREP_DELETE_DEFAULT_MAX_MATCHES;
 			const candidates: ContextDeletionTarget[] = [];
 			const matches: ContextGrepDeletionMatch[] = [];
 			const skipped: ContextGrepDeletionSkipped[] = [];
 			const seenTargets = new Set<string>();
 
-			for (const entry of transcript.entries) {
-				if (target === "entry") {
-					if (!matcher.test(entry.text)) continue;
-					if (entry.protected) {
-						skipped.push({ entryId: entry.entryId, target, reason: "protected_entry", text: entry.text });
+			try {
+				if (regex) {
+					assertSafeRegexScan(transcript, target);
+				}
+				const matcher = createGrepMatcher(pattern, regex, caseSensitive);
+
+				for (const entry of transcript.entries) {
+					if (target === "entry") {
+						if (!matcher.test(entry.text)) continue;
+						if (entry.protected) {
+							skipped.push({ entryId: entry.entryId, target, reason: "protected_entry", text: entry.text });
+							continue;
+						}
+						const candidate: ContextDeletionTarget = { kind: "entry", entryId: entry.entryId };
+						if (currentTargetDeleted(deletedTargets, candidate)) {
+							skipped.push({ entryId: entry.entryId, target, reason: "already_deleted", text: entry.text });
+							continue;
+						}
+						addGrepCandidate(candidates, matches, seenTargets, candidate, {
+							entryId: entry.entryId,
+							target,
+							text: entry.text,
+						});
 						continue;
 					}
-					const candidate: ContextDeletionTarget = { kind: "entry", entryId: entry.entryId };
-					if (currentTargetDeleted(deletedTargets, candidate)) {
-						skipped.push({ entryId: entry.entryId, target, reason: "already_deleted", text: entry.text });
-						continue;
+
+					for (const block of entry.contentBlocks) {
+						if (!matcher.test(block.text)) continue;
+						if (entry.protected) {
+							skipped.push({
+								entryId: entry.entryId,
+								target,
+								blockIndex: block.blockIndex,
+								reason: "protected_entry",
+								text: block.text,
+							});
+							continue;
+						}
+						if (block.protected) {
+							skipped.push({
+								entryId: entry.entryId,
+								target,
+								blockIndex: block.blockIndex,
+								reason: "protected_block",
+								text: block.text,
+							});
+							continue;
+						}
+						const candidate: ContextDeletionTarget =
+							entry.contentBlocks.length <= 1
+								? { kind: "entry", entryId: entry.entryId }
+								: { kind: "content_block", entryId: entry.entryId, blockIndex: block.blockIndex };
+						if (currentTargetDeleted(deletedTargets, candidate)) {
+							skipped.push({
+								entryId: entry.entryId,
+								target: candidate.kind,
+								...(candidate.kind === "content_block" ? { blockIndex: candidate.blockIndex } : {}),
+								reason: "already_deleted",
+								text: block.text,
+							});
+							continue;
+						}
+						addGrepCandidate(candidates, matches, seenTargets, candidate, {
+							entryId: entry.entryId,
+							target: candidate.kind,
+							...(candidate.kind === "content_block" ? { blockIndex: candidate.blockIndex } : {}),
+							text: block.text,
+						});
 					}
-					addGrepCandidate(candidates, matches, seenTargets, candidate, {
-						entryId: entry.entryId,
-						target,
-						text: entry.text,
-					});
-					continue;
 				}
 
-				for (const block of entry.contentBlocks) {
-					if (!matcher.test(block.text)) continue;
-					if (entry.protected) {
-						skipped.push({
-							entryId: entry.entryId,
-							target,
-							blockIndex: block.blockIndex,
-							reason: "protected_entry",
-							text: block.text,
-						});
-						continue;
-					}
-					if (block.protected) {
-						skipped.push({
-							entryId: entry.entryId,
-							target,
-							blockIndex: block.blockIndex,
-							reason: "protected_block",
-							text: block.text,
-						});
-						continue;
-					}
-					const candidate: ContextDeletionTarget =
-						entry.contentBlocks.length <= 1
-							? { kind: "entry", entryId: entry.entryId }
-							: { kind: "content_block", entryId: entry.entryId, blockIndex: block.blockIndex };
-					if (currentTargetDeleted(deletedTargets, candidate)) {
-						skipped.push({
-							entryId: entry.entryId,
-							target,
-							blockIndex: block.blockIndex,
-							reason: "already_deleted",
-							text: block.text,
-						});
-						continue;
-					}
-					addGrepCandidate(candidates, matches, seenTargets, candidate, {
-						entryId: entry.entryId,
-						target: candidate.kind,
-						...(candidate.kind === "content_block" ? { blockIndex: candidate.blockIndex } : {}),
-						text: block.text,
-					});
+				let applied: ValidatedContextDeletionPlan | undefined;
+				if (params.expectedMatchCount !== undefined && candidates.length !== params.expectedMatchCount) {
+					skipped.push({ reason: "expected_match_count_mismatch" });
+				} else if (candidates.length > maxMatches) {
+					skipped.push({ reason: "max_matches_exceeded" });
+				} else if (candidates.length > 0) {
+					applied = applyValidatedTargets(candidates);
 				}
-			}
 
-			let applied: ValidatedContextDeletionPlan | undefined;
-			if (params.expectedMatchCount !== undefined && candidates.length !== params.expectedMatchCount) {
-				skipped.push({ reason: "expected_match_count_mismatch" });
-			} else if (candidates.length > maxMatches) {
-				skipped.push({ reason: "max_matches_exceeded" });
-			} else if (candidates.length > 0) {
-				applied = applyValidatedTargets(candidates);
+				const details: ContextGrepDeletionToolDetails = {
+					pattern,
+					regex,
+					caseSensitive,
+					target,
+					matches,
+					skipped,
+					deletedTargets,
+					stats: applied?.stats ?? currentStats(),
+					callCount,
+				};
+				const text = `Matched ${matches.length} unprotected target(s), skipped ${skipped.length}, and ${applied ? "applied" : "did not apply"} grep deletion for pattern ${JSON.stringify(pattern)}. Total validated deletion target(s): ${deletedTargets.length}.`;
+				return createPlannerToolResult(text, details);
+			} catch (error) {
+				const message = formatErrorMessage(error);
+				const details: ContextGrepDeletionToolDetails = {
+					pattern,
+					regex,
+					caseSensitive,
+					target,
+					matches,
+					skipped,
+					deletedTargets,
+					stats: currentStats(),
+					callCount,
+					error: message,
+				};
+				return createPlannerToolResult(
+					`Error applying grep deletion for pattern ${JSON.stringify(pattern)}: ${message}. No new deletion targets were applied; continue with a corrected tool call.`,
+					details,
+				);
 			}
-			callCount += 1;
-
-			const details: ContextGrepDeletionToolDetails = {
-				pattern,
-				regex,
-				caseSensitive,
-				target,
-				matches,
-				skipped,
-				deletedTargets,
-				...(applied ? { stats: applied.stats } : {}),
-				callCount,
-			};
-			const text = `Matched ${matches.length} unprotected target(s), skipped ${skipped.length}, and ${applied ? "applied" : "did not apply"} grep deletion for pattern ${JSON.stringify(pattern)}. Total validated deletion target(s): ${deletedTargets.length}.`;
-			return { content: [{ type: "text", text }], details, terminate: false };
 		},
 	};
 
@@ -1155,14 +1246,46 @@ export function buildContextCompactionPrompt(transcript: CompactableTranscript):
 	return `${CONTEXT_COMPACTION_FIXED_PROMPT}\n\n<transcript-json>\n${JSON.stringify(plannerTranscriptPayload(transcript), null, 2)}\n</transcript-json>`;
 }
 
-export async function planContextDeletions(
+function createContextCompactionPlannerErrorStream(model: Model<Api>, errorMessage: string) {
+	const stream = createAssistantMessageEventStream();
+	queueMicrotask(() => {
+		const message: AssistantMessage = {
+			role: "assistant",
+			content: [],
+			api: model.api,
+			provider: model.provider,
+			model: model.id,
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "error",
+			errorMessage,
+			timestamp: Date.now(),
+		};
+		stream.push({ type: "error", reason: "error", error: message });
+		stream.end(message);
+	});
+	return stream;
+}
+
+interface ContextDeletionPlanningRun {
+	plan: RawContextDeletionPlan;
+	validatedPlan: ValidatedContextDeletionPlan | undefined;
+}
+
+async function runContextDeletionPlanner(
 	transcript: CompactableTranscript,
 	model: Model<Api>,
 	apiKey: string,
 	headers?: Record<string, string>,
 	signal?: AbortSignal,
 	thinkingLevel?: ThinkingLevel,
-): Promise<RawContextDeletionPlan> {
+): Promise<ContextDeletionPlanningRun> {
 	const maxTokens = Math.min(4096, model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY);
 	const promptMessage: AgentMessage = {
 		role: "user",
@@ -1171,6 +1294,7 @@ export async function planContextDeletions(
 	};
 	const plannerTool = createContextDeletionPlannerTool(transcript);
 	const effectiveThinkingLevel = model.reasoning && thinkingLevel && thinkingLevel !== "off" ? thinkingLevel : "off";
+	let plannerTurnCount = 0;
 	const agent = new Agent({
 		initialState: {
 			systemPrompt: CONTEXT_COMPACTION_SYSTEM_PROMPT,
@@ -1179,13 +1303,21 @@ export async function planContextDeletions(
 			tools: plannerTool.tools,
 		},
 		toolExecution: "sequential",
-		streamFn: async (requestModel, context, streamOptions) =>
-			streamSimple(requestModel, context, {
+		streamFn: async (requestModel, context, streamOptions) => {
+			plannerTurnCount += 1;
+			if (plannerTurnCount > CONTEXT_COMPACTION_PLANNER_MAX_TURNS) {
+				return createContextCompactionPlannerErrorStream(
+					requestModel,
+					`planner exceeded ${CONTEXT_COMPACTION_PLANNER_MAX_TURNS} turns without finishing`,
+				);
+			}
+			return streamSimple(requestModel, context, {
 				...streamOptions,
 				maxTokens,
 				apiKey,
 				headers: headers ?? streamOptions?.headers,
-			}),
+			});
+		},
 	});
 
 	if (signal?.aborted) {
@@ -1199,13 +1331,27 @@ export async function planContextDeletions(
 		signal?.removeEventListener("abort", abortOnSignal);
 	}
 
+	if (signal?.aborted) {
+		throw new Error("Context compaction planning failed: Request was aborted");
+	}
 	if (agent.state.errorMessage) {
 		throw new Error(`Context compaction planning failed: ${agent.state.errorMessage}`);
 	}
 	if (plannerTool.getCallCount() === 0) {
 		throw new Error(`Context compaction planner did not call ${CONTEXT_DELETION_PLAN_TOOL_NAME} or ${CONTEXT_GREP_DELETE_TOOL_NAME}`);
 	}
-	return plannerTool.getPlan();
+	return { plan: plannerTool.getPlan(), validatedPlan: plannerTool.getValidatedPlan() };
+}
+
+export async function planContextDeletions(
+	transcript: CompactableTranscript,
+	model: Model<Api>,
+	apiKey: string,
+	headers?: Record<string, string>,
+	signal?: AbortSignal,
+	thinkingLevel?: ThinkingLevel,
+): Promise<RawContextDeletionPlan> {
+	return (await runContextDeletionPlanner(transcript, model, apiKey, headers, signal, thinkingLevel)).plan;
 }
 
 export async function contextCompact(
@@ -1216,10 +1362,16 @@ export async function contextCompact(
 	signal?: AbortSignal,
 	thinkingLevel?: ThinkingLevel,
 ): Promise<ValidatedContextDeletionPlan> {
-	const plan = await planContextDeletions(preparation.transcript, model, apiKey, headers, signal, thinkingLevel);
-	const validated = validateContextDeletionPlan(plan, preparation.transcript);
-	if (validated.deletedTargets.length === 0) {
+	const { validatedPlan } = await runContextDeletionPlanner(
+		preparation.transcript,
+		model,
+		apiKey,
+		headers,
+		signal,
+		thinkingLevel,
+	);
+	if (!validatedPlan || validatedPlan.deletedTargets.length === 0) {
 		throw new Error("No safe context deletions proposed");
 	}
-	return validated;
+	return validatedPlan;
 }
