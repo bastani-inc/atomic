@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.8.26-alpha.11] - 2026-06-08
+
+### Changed
+
+- Updated maintainer release guidance to require prerelease and stable changelog entries to summarize concrete user-facing changes instead of placeholder version-bump notes.
+
 ## [0.8.26-alpha.10] - 2026-06-08
 
 ### Changed

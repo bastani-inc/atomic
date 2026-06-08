@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.26-alpha.11] - 2026-06-08
+
+### Changed
+
+- Published a synchronized Atomic 0.8.26-alpha.11 prerelease alongside the subagent codebase-agent tool restriction changes; no functional changes were made in the MCP extension.
+
 ## [0.8.26-alpha.10] - 2026-06-08
 
 ### Changed

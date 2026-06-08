@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.8.26-alpha.11] - 2026-06-08
+
+### Changed
+
+- Restricted the bundled codebase locator, analyzer, pattern-finder, research locator, and research analyzer agent tool allowlists to read/search/directory tools only, preventing these read-only helpers from invoking `bash` while they locate or analyze code.
+
 ## [0.8.26-alpha.10] - 2026-06-08
 
 ### Changed
