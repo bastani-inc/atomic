@@ -312,6 +312,18 @@ describe("AgentSession prompt characterization", () => {
 		await expect(harness.session.prompt("hi")).rejects.toThrow("No model selected.");
 	});
 
+	it("throws a clear 'unknown model' error when the model has no provider", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		// Simulate an unknown/unresolved model id reaching the prompt path as a
+		// bare string (no `.provider`) — the shape that previously surfaced as the
+		// confusing "No API key found for undefined".
+		harness.session.agent.state.model = "openai/ghost" as unknown as Model<any>;
+
+		await expect(harness.session.prompt("hi")).rejects.toThrow('Unknown model: "openai/ghost"');
+		await expect(harness.session.prompt("hi")).rejects.not.toThrow("No API key found for undefined");
+	});
+
 	it("throws when prompting without configured auth", async () => {
 		const harness = await createHarness({ withConfiguredAuth: false });
 		harnesses.push(harness);

@@ -44,7 +44,11 @@ import {
 	isAtomicGuideHelpChoice,
 	normalizeAtomicGuideMode,
 } from "./atomic-guide-command.ts";
-import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.ts";
+import {
+	formatNoApiKeyFoundMessage,
+	formatNoModelSelectedMessage,
+	formatUnresolvedModelMessage,
+} from "./auth-guidance.ts";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.ts";
 import {
 	type CompactionResult,
@@ -1202,6 +1206,16 @@ export class AgentSession {
 			// Validate model
 			if (!this.model) {
 				throw new Error(formatNoModelSelectedMessage());
+			}
+
+			// Defensive guard: a model that never resolved to a real provider
+			// (for example an unknown/unresolved model id that reached this path
+			// as a bare string) has no `provider`, which would otherwise fail deep
+			// in auth resolution as the confusing "No API key found for undefined".
+			// Surface a clear, accurate "unknown model" error instead.
+			const resolvedProvider = (this.model as { provider?: unknown }).provider;
+			if (typeof resolvedProvider !== "string" || resolvedProvider.length === 0) {
+				throw new Error(formatUnresolvedModelMessage(this.model));
 			}
 
 			if (!this._modelRegistry.hasConfiguredAuth(this.model)) {
