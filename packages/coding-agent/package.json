@@ -79,7 +79,7 @@
     "diff": "^8.0.2",
     "glob": "^13.0.1",
     "highlight.js": "^11.11.1",
-    "hosted-git-info": "^9.0.2",
+    "hosted-git-info": "^10.1.1",
     "ignore": "^7.0.5",
     "jiti": "^2.7.0",
     "linkedom": "^0.18.12",
