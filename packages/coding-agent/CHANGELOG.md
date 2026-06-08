@@ -2,6 +2,35 @@
 
 ## [Unreleased]
 
+## [0.8.26] - 2026-06-08
+
+### Added
+
+- Added deletion-only transcript compaction as the default `/compact` behavior, preserving retained transcript content verbatim while validating model-proposed logical deletion targets.
+- Added session entries and expandable summary-card rendering for completed context compaction results.
+
+### Changed
+
+- Improved Windows cold startup by lazily loading bundled web-access, intercom, and MCP implementation modules, deferring readiness checks until after the first interactive frame, and adding detailed startup timing spans ([#1223](https://github.com/bastani-inc/atomic/issues/1223)).
+- Updated automatic compaction and manual `/compact` documentation to describe transcript-bound Verbatim Compaction, validated logical deletion targets, critical overflow behavior, and legacy summary-compaction settings.
+- Documented npm and pnpm installation options in Atomic docs and limited Mintlify validation to pull requests ([#1294](https://github.com/bastani-inc/atomic/pull/1294)).
+- Updated builtin `ralph` workflow docs to describe the safe default for PR creation, `create_pr=true` opt-in examples, omitted disabled `pr_report`, and final-stage-only provider-aware PR/MR/review creation instructions ([#1255](https://github.com/bastani-inc/atomic/issues/1255)).
+- Updated maintainer release guidance so prerelease and stable changelog entries summarize concrete user-facing changes instead of placeholder version-bump notes.
+- Bumped the `@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, and `@earendil-works/pi-tui` dependencies to 0.78.1.
+
+### Fixed
+
+- Fixed an uncaught `TypeError: child.render is not a function` crash on `/resume` when an extension custom-message renderer returned a non-`Component` value, and allowed custom-message renderers to return `null` to render nothing ([#1236](https://github.com/bastani-inc/atomic/issues/1236)).
+- Fixed auto-compaction so queued in-progress work resumes without requiring a manual follow-up prompt ([#1280](https://github.com/bastani-inc/atomic/issues/1280)).
+- Clarified overflow auto-compaction warnings in the TUI footer so automatic transcript compaction is reported distinctly from user-triggered compaction ([#1250](https://github.com/bastani-inc/atomic/issues/1250)).
+- Fixed internal Git subprocesses to strip ambient repository-local Git environment variables before package-manager and footer branch lookups inspect a targeted working tree.
+- Fixed Mintlify MDX autolinks in package docs so documentation validation passes ([#1293](https://github.com/bastani-inc/atomic/pull/1293)).
+
+### Removed
+
+- Removed the `/context-compact` interactive and workflow-stage slash command; use `/compact` instead.
+- Removed the temporary manual `@earendil-works/pi-tui` patch, patched-dependency configuration, and bundled patched TUI packaging fallback.
+
 ## [0.8.26-alpha.11] - 2026-06-08
 
 ### Changed

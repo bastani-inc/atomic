@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.8.26] - 2026-06-08
+
+### Changed
+
+- Updated workflow-stage chat so `/compact` is the no-argument compaction command and `/context-compact` is no longer handled locally.
+- Refined bundled workflow prompts to keep natural instructions inside meaningful XML sections while removing redundant wrapper noise.
+- Upgraded builtin workflow fallback model tiers so degraded runs land on stronger models across `deep-research-codebase`, `goal`, `ralph`, and `open-claude-design` ([#1259](https://github.com/bastani-inc/atomic/issues/1259)).
+- Changed the builtin `ralph` workflow to include the workflow current working directory in every stage prompt and to skip pull-request creation by default unless `create_pr=true`, omitting `pr_report` when disabled while keeping provider-aware PR/MR/review creation instructions in the final stage ([#1255](https://github.com/bastani-inc/atomic/issues/1255)).
+- Updated the `research-codebase` skill to capture and carry a `breaking_changes_allowed` compatibility posture through research fanout and downstream research documents ([#1225](https://github.com/bastani-inc/atomic/issues/1225)).
+
+### Fixed
+
+- Fixed workflow custom-message renderers for inline forms and workflow run banners so persisted workflow messages no longer crash the host TUI with `child.render is not a function` on `/resume` ([#1236](https://github.com/bastani-inc/atomic/issues/1236)).
+- Fixed the workflow input form so transient `/workflow <name>` argument selectors do not leak into model context and rehydrated stale input-form cards render nothing after `/resume`.
+- Made stage sessions emit `session_shutdown` before `dispose()`, giving bound extensions graceful shutdown and preventing leaked child MCP servers or stale-context MCP initialization noise.
+- Fixed stage-local workflow HIL `input` and `editor` prompts losing draft text across Ctrl+D detach/reattach; drafts are kept live-only in memory and cleared when the prompt or run/stage exits ([#1179](https://github.com/bastani-inc/atomic/issues/1179)).
+- Fixed workflow worktree Git commands to strip ambient repository-local Git environment variables before inspecting or creating targeted worktrees.
+- Suppressed intermediate model fallback failure warnings from successful workflow stages while preserving final failures and raw per-attempt diagnostics ([#1226](https://github.com/bastani-inc/atomic/issues/1226)).
+- Fixed the workflow global tool-event hook ignoring unscoped parent-session prompts instead of attributing them to running stages, preventing false `awaiting_input` / "needs attention" states from unrelated `ask_user_question` calls ([#1261](https://github.com/bastani-inc/atomic/issues/1261)).
+- Fixed the builtin `goal` and `ralph` workflows to fork looped worker/orchestrator-stage sessions from their matching prior iteration, preserving accumulated context while keeping reviewer stages independent ([#1275](https://github.com/bastani-inc/atomic/issues/1275)).
+- Fixed workflow completion gates to rely on structured decision fields instead of manual text/regex heuristics in `goal` and `open-claude-design`.
+
 ## [0.8.26-alpha.11] - 2026-06-08
 
 ### Changed
