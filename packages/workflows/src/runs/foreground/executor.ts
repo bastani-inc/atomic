@@ -1400,8 +1400,19 @@ export async function runChain(
   return workflowDetailsFromRun("chain", runResult, results, options, validationWarnings);
 }
 
-function raceAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+export function raceAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   if (signal.aborted) {
+    // Callers invoke `raceAbort(call(), signal)`, so `call()` is evaluated —
+    // and the underlying work (e.g. a stage prompt) is already in flight —
+    // before this function observes an already-aborted signal. Attach a no-op
+    // rejection handler so that in-flight promise can never surface as an
+    // unhandled rejection. Without this, killing a workflow mid-prompt orphans
+    // the prompt promise; its eventual rejection (commonly
+    // "No API key found for ...") escapes every workflow error boundary and is
+    // raised as a process-level uncaught exception that crashes the whole CLI.
+    // The run is being aborted, so the orphaned settlement is intentionally
+    // discarded here.
+    void promise.catch(() => {});
     return Promise.reject(signal.reason ?? new DOMException("workflow killed", "AbortError"));
   }
   return new Promise<T>((resolve, reject) => {

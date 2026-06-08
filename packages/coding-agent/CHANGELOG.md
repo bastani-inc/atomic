@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed `AgentSession.prompt` surfacing the confusing `No API key found for undefined` error when a model never resolved to a real provider (for example an unknown/unresolved model id reaching the prompt path as a bare string). The prompt path now fails fast with a clear `Unknown model: "<id>" did not resolve to an available provider` message, and `No API key found` guidance no longer renders a literal `undefined` provider.
+
 ## [0.8.27] - 2026-06-08
 
 ### Fixed

@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Changed workflow transcript introspection to return `sessionFile`/`transcriptPath` metadata with a lazy-read prompt by default when a transcript path exists, while keeping bounded inline previews behind explicit `tail`/`limit` requests and falling back to a small preview when no path is available ([#1314](https://github.com/bastani-inc/atomic/issues/1314)).
 
+### Fixed
+
+- Fixed a workflow kill/abort race that could crash the entire CLI with a process-level uncaught exception (for example `No API key found for ...`). When a workflow was killed mid-prompt, the executor's `raceAbort` left the already-in-flight stage prompt promise unobserved; its later rejection escaped every workflow error boundary and became an unhandled rejection. `raceAbort` now always observes the in-flight promise in the already-aborted branch so a killed run can no longer orphan a rejecting prompt.
+
 ## [0.8.27] - 2026-06-08
 
 ### Changed
