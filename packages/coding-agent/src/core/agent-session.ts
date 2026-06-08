@@ -1984,7 +1984,7 @@ export class AgentSession {
 			options.apiKey,
 			options.headers,
 			options.abortController.signal,
-			undefined,
+			this.thinkingLevel,
 			mode,
 		);
 

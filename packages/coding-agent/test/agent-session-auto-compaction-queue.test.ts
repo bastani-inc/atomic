@@ -22,6 +22,21 @@ function createContextCompactionStats(tokensBefore: number, tokensAfter: number)
 	};
 }
 
+const compactionMocks = vi.hoisted(() => ({
+	contextCompact: vi.fn(async (..._args: unknown[]) => ({
+		deletedTargets: [{ kind: "entry", entryId: "entry-1" }],
+		protectedEntryIds: [],
+		stats: {
+			objectsBefore: 1,
+			objectsAfter: 1,
+			objectsDeleted: 0,
+			tokensBefore: 100,
+			tokensAfter: 50,
+			percentReduction: 50,
+		},
+	})),
+}));
+
 vi.mock("../src/core/compaction/index.js", () => ({
 	calculateContextTokens: (usage: {
 		input: number;
@@ -37,11 +52,7 @@ vi.mock("../src/core/compaction/index.js", () => ({
 		tokensBefore: 100,
 		details: {},
 	}),
-	contextCompact: async () => ({
-		deletedTargets: [{ kind: "entry", entryId: "entry-1" }],
-		protectedEntryIds: [],
-		stats: createContextCompactionStats(100, 50),
-	}),
+	contextCompact: compactionMocks.contextCompact,
 	estimateContextTokens: (
 		messages: Array<{
 			role: string;
@@ -76,6 +87,7 @@ describe("AgentSession auto-compaction queue resume", () => {
 	let tempDir: string;
 
 	beforeEach(() => {
+		compactionMocks.contextCompact.mockClear();
 		tempDir = join(tmpdir(), `pi-auto-compaction-queue-${Date.now()}`);
 		mkdirSync(tempDir, { recursive: true });
 		vi.useFakeTimers();
@@ -112,6 +124,20 @@ describe("AgentSession auto-compaction queue resume", () => {
 		if (tempDir && existsSync(tempDir)) {
 			rmSync(tempDir, { recursive: true });
 		}
+	});
+
+	it("passes the current thinking level to auto context compaction", async () => {
+		session.agent.state.thinkingLevel = "high";
+		const runAutoCompaction = (
+			session as unknown as {
+				_runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void>;
+			}
+		)._runAutoCompaction.bind(session);
+
+		await runAutoCompaction("threshold", false);
+
+		expect(compactionMocks.contextCompact).toHaveBeenCalledTimes(1);
+		expect(compactionMocks.contextCompact.mock.calls[0]?.[5]).toBe("high");
 	});
 
 	it("should resume after threshold compaction when only agent-level queued messages exist", async () => {

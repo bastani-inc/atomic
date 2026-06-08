@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed `/compact` and auto-compaction regressions by removing the native `better-sqlite3` dependency from transcript-bound deletion tools and preserving the currently selected reasoning level for the compaction planner ([#1310](https://github.com/bastani-inc/atomic/issues/1310)).
+
 ## [0.8.26] - 2026-06-08
 
 ### Added

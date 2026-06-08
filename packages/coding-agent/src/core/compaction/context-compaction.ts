@@ -2,13 +2,11 @@ import { Agent, type AgentMessage, type AgentTool, type AgentToolResult, type Th
 import type { Api, AssistantMessage, Model, ToolCall } from "@earendil-works/pi-ai";
 import {
 	createAssistantMessageEventStream,
-	getSupportedThinkingLevels,
 	isContextOverflow,
 	streamSimple,
 	StringEnum,
 } from "@earendil-works/pi-ai";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Type } from "typebox";
@@ -28,8 +26,6 @@ import type { CompactionSettings } from "./compaction.ts";
 import { estimateTokens } from "./compaction.ts";
 
 export const CONTEXT_COMPACTION_PROMPT_VERSION = 1 as const;
-
-const CONTEXT_COMPACTION_THINKING_LEVEL_ORDER: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
 
 export type ContextCompactionMode = "standard" | "critical_overflow";
 
@@ -1187,96 +1183,7 @@ function addGrepCandidate(
 	matches.push(match);
 }
 
-type SqliteValue = string | number | bigint | null;
-type SqliteRow = Record<string, SqliteValue>;
-
-interface SqliteStatementLike {
-	all(...params: SqliteValue[]): SqliteRow[];
-	get(...params: SqliteValue[]): SqliteRow | undefined;
-	run(...params: SqliteValue[]): unknown;
-}
-
-interface SqliteDatabaseLike {
-	exec(sql: string): void;
-	prepare(sql: string): SqliteStatementLike;
-	close(): unknown;
-}
-
-interface SqliteConstructorLike {
-	new (filename: string): SqliteDatabaseLike;
-}
-
-interface BunSqliteModule {
-	Database: SqliteConstructorLike;
-}
-
-const moduleRequire = createRequire(import.meta.url);
-
-function createTransientSqliteDatabase(): SqliteDatabaseLike {
-	// better-sqlite3 is the portable/package dependency for Node-based Atomic installs.
-	// Bun cannot dlopen better-sqlite3 yet, so Bun runtime/tests use the API-compatible builtin.
-	if (process.versions.bun) {
-		const sqlite = moduleRequire("bun:sqlite") as BunSqliteModule;
-		return new sqlite.Database(":memory:");
-	}
-
-	const BetterSqliteDatabase = moduleRequire("better-sqlite3") as SqliteConstructorLike;
-	return new BetterSqliteDatabase(":memory:");
-}
-
-class SqliteAdapter {
-	private readonly db: SqliteDatabaseLike;
-
-	constructor(db: SqliteDatabaseLike) {
-		this.db = db;
-	}
-
-	static createTransient(): SqliteAdapter {
-		return new SqliteAdapter(createTransientSqliteDatabase());
-	}
-
-	exec(sql: string): void {
-		this.db.exec(sql);
-	}
-
-	run(sql: string, ...params: SqliteValue[]): void {
-		this.db.prepare(sql).run(...params);
-	}
-
-	all<TRow extends SqliteRow>(sql: string, ...params: SqliteValue[]): TRow[] {
-		return this.db.prepare(sql).all(...params) as TRow[];
-	}
-
-	get<TRow extends SqliteRow>(sql: string, ...params: SqliteValue[]): TRow | undefined {
-		return this.db.prepare(sql).get(...params) as TRow | undefined;
-	}
-
-	transaction<T>(operation: () => T): T {
-		this.exec("BEGIN IMMEDIATE");
-		try {
-			const result = operation();
-			this.exec("COMMIT");
-			return result;
-		} catch (error) {
-			try {
-				this.exec("ROLLBACK");
-			} catch {}
-			throw error;
-		}
-	}
-
-	close(): void {
-		this.db.close();
-	}
-}
-
-interface DeletionTargetRow extends SqliteRow {
-	kind: "entry" | "content_block";
-	entry_id: string;
-	block_index: number | null;
-}
-
-interface EntryTextRow extends SqliteRow {
+interface EntryTextRow {
 	entry_id: string;
 	text: string;
 	is_protected: number;
@@ -1287,7 +1194,7 @@ interface EntryReadRow extends EntryTextRow {
 	token_estimate: number;
 }
 
-interface ContentBlockTextRow extends SqliteRow {
+interface ContentBlockTextRow {
 	entry_id: string;
 	block_index: number;
 	text: string;
@@ -1301,211 +1208,198 @@ interface ContentBlockReadRow extends ContentBlockTextRow {
 	token_estimate: number;
 }
 
-class ContextDeletionSqliteStore {
-	private readonly sqlite: SqliteAdapter;
+interface StoredTranscriptEntry {
+	entryId: string;
+	role: AgentMessage["role"];
+	protected: boolean;
+	tokenEstimate: number;
+	text: string;
+}
 
-	constructor(sqlite: SqliteAdapter) {
-		this.sqlite = sqlite;
-	}
+interface StoredContentBlock {
+	entryPosition: number;
+	entryId: string;
+	blockIndex: number;
+	type: string;
+	protected: boolean;
+	tokenEstimate: number;
+	text: string;
+}
 
-	initialize(transcript: CompactableTranscript): void {
-		this.sqlite.transaction(() => {
-			this.sqlite.exec(`
-				PRAGMA foreign_keys = ON;
-				CREATE TABLE transcript_entries (
-					position INTEGER PRIMARY KEY,
-					entry_id TEXT NOT NULL UNIQUE,
-					role TEXT NOT NULL,
-					is_protected INTEGER NOT NULL,
-					token_estimate INTEGER NOT NULL,
-					text TEXT NOT NULL,
-					tool_result_for TEXT
-				);
-				CREATE TABLE transcript_content_blocks (
-					entry_id TEXT NOT NULL,
-					block_index INTEGER NOT NULL,
-					type TEXT NOT NULL,
-					is_protected INTEGER NOT NULL,
-					token_estimate INTEGER NOT NULL,
-					text TEXT NOT NULL,
-					tool_call_id TEXT,
-					PRIMARY KEY (entry_id, block_index),
-					FOREIGN KEY (entry_id) REFERENCES transcript_entries(entry_id) ON DELETE CASCADE
-				);
-				CREATE TABLE deletion_targets (
-					position INTEGER PRIMARY KEY AUTOINCREMENT,
-					target_key TEXT NOT NULL UNIQUE,
-					kind TEXT NOT NULL CHECK (kind IN ('entry', 'content_block')),
-					entry_id TEXT NOT NULL,
-					block_index INTEGER
-				);
-				CREATE TABLE context_compaction_state (
-					key TEXT PRIMARY KEY,
-					value TEXT NOT NULL
-				);
-				INSERT INTO context_compaction_state (key, value) VALUES ('call_count', '0');
-			`);
+interface ContextDeletionMemorySnapshot {
+	deletionTargets: ContextDeletionTarget[];
+	callCount: number;
+	lastError?: string;
+}
 
-			for (const [position, entry] of transcript.entries.entries()) {
-				this.sqlite.run(
-					"INSERT INTO transcript_entries (position, entry_id, role, is_protected, token_estimate, text, tool_result_for) VALUES (?, ?, ?, ?, ?, ?, ?)",
-					position,
-					entry.entryId,
-					entry.role,
-					entry.protected ? 1 : 0,
-					entry.tokenEstimate,
-					entry.text,
-					entry.toolResultFor ?? null,
-				);
-				for (const block of entry.contentBlocks) {
-					this.sqlite.run(
-						"INSERT INTO transcript_content_blocks (entry_id, block_index, type, is_protected, token_estimate, text, tool_call_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
-						block.entryId,
-						block.blockIndex,
-						block.type,
-						block.protected ? 1 : 0,
-						block.tokenEstimate,
-						block.text,
-						block.toolCallId ?? null,
-					);
-				}
+function copyDeletionTarget(target: ContextDeletionTarget): ContextDeletionTarget {
+	return target.kind === "entry"
+		? { kind: "entry", entryId: target.entryId }
+		: { kind: "content_block", entryId: target.entryId, blockIndex: target.blockIndex };
+}
+
+class ContextDeletionMemoryStore {
+	private readonly entries: StoredTranscriptEntry[];
+	private readonly entriesById: Map<string, StoredTranscriptEntry>;
+	private readonly contentBlocks: StoredContentBlock[];
+	private readonly contentBlockCountByEntryId: Map<string, number>;
+	private deletionTargets: ContextDeletionTarget[] = [];
+	private callCount = 0;
+	private lastError: string | undefined;
+
+	constructor(transcript: CompactableTranscript) {
+		const entryIds = new Set<string>();
+		const blockKeys = new Set<string>();
+		this.entries = transcript.entries.map((entry) => {
+			if (entryIds.has(entry.entryId)) {
+				throw new Error(`Duplicate transcript entry id: ${entry.entryId}`);
 			}
+			entryIds.add(entry.entryId);
+			return {
+				entryId: entry.entryId,
+				role: entry.role,
+				protected: entry.protected,
+				tokenEstimate: entry.tokenEstimate,
+				text: entry.text,
+			};
 		});
-	}
-
-	transaction<T>(operation: () => T): T {
-		return this.sqlite.transaction(operation);
-	}
-
-	readTargets(): ContextDeletionTarget[] {
-		return this.sqlite
-			.all<DeletionTargetRow>("SELECT kind, entry_id, block_index FROM deletion_targets ORDER BY position")
-			.map((row) =>
-				row.kind === "entry"
-					? { kind: "entry", entryId: row.entry_id }
-					: { kind: "content_block", entryId: row.entry_id, blockIndex: row.block_index as number },
-			);
-	}
-
-	replaceTargets(targets: readonly ContextDeletionTarget[]): void {
-		this.sqlite.run("DELETE FROM deletion_targets");
-		for (const target of targets) {
-			this.sqlite.run(
-				"INSERT INTO deletion_targets (target_key, kind, entry_id, block_index) VALUES (?, ?, ?, ?)",
-				targetKey(target),
-				target.kind,
-				target.entryId,
-				target.kind === "content_block" ? target.blockIndex : null,
-			);
+		this.entriesById = new Map<string, StoredTranscriptEntry>(this.entries.map((entry) => [entry.entryId, entry] as const));
+		this.contentBlocks = transcript.entries.flatMap((entry, entryPosition) =>
+			entry.contentBlocks.map((block) => {
+				if (block.entryId !== entry.entryId) {
+					throw new Error(`Transcript content block ${block.entryId}:${block.blockIndex} does not belong to entry ${entry.entryId}`);
+				}
+				const blockKey = `${block.entryId}:${block.blockIndex}`;
+				if (blockKeys.has(blockKey)) {
+					throw new Error(`Duplicate transcript content block: ${blockKey}`);
+				}
+				blockKeys.add(blockKey);
+				return {
+					entryPosition,
+					entryId: block.entryId,
+					blockIndex: block.blockIndex,
+					type: block.type,
+					protected: block.protected,
+					tokenEstimate: block.tokenEstimate,
+					text: block.text,
+				};
+			}),
+		);
+		this.contentBlockCountByEntryId = new Map();
+		for (const block of this.contentBlocks) {
+			this.contentBlockCountByEntryId.set(block.entryId, (this.contentBlockCountByEntryId.get(block.entryId) ?? 0) + 1);
 		}
 	}
 
+	transaction<T>(operation: () => T): T {
+		const snapshot = this.snapshot();
+		try {
+			return operation();
+		} catch (error) {
+			this.restore(snapshot);
+			throw error;
+		}
+	}
+
+	readTargets(): ContextDeletionTarget[] {
+		return this.deletionTargets.map(copyDeletionTarget);
+	}
+
+	replaceTargets(targets: readonly ContextDeletionTarget[]): void {
+		this.deletionTargets = targets.map(copyDeletionTarget);
+	}
+
 	listEntriesForGrep(): EntryTextRow[] {
-		return this.sqlite.all<EntryTextRow>(
-			"SELECT entry_id, text, is_protected FROM transcript_entries ORDER BY position",
-		);
+		return this.entries.map((entry) => ({
+			entry_id: entry.entryId,
+			text: entry.text,
+			is_protected: entry.protected ? 1 : 0,
+		}));
 	}
 
 	listContentBlocksForGrep(): ContentBlockTextRow[] {
-		return this.sqlite.all<ContentBlockTextRow>(`
-			SELECT
-				blocks.entry_id,
-				blocks.block_index,
-				blocks.text,
-				entries.is_protected AS entry_protected,
-				blocks.is_protected AS block_protected,
-				(
-					SELECT COUNT(*)
-					FROM transcript_content_blocks sibling
-					WHERE sibling.entry_id = blocks.entry_id
-				) AS block_count
-			FROM transcript_content_blocks blocks
-			JOIN transcript_entries entries ON entries.entry_id = blocks.entry_id
-			ORDER BY entries.position, blocks.block_index
-		`);
+		return [...this.contentBlocks]
+			.sort((a, b) => a.entryPosition - b.entryPosition || a.blockIndex - b.blockIndex)
+			.map((block) => ({
+				entry_id: block.entryId,
+				block_index: block.blockIndex,
+				text: block.text,
+				entry_protected: this.entriesById.get(block.entryId)?.protected ? 1 : 0,
+				block_protected: block.protected ? 1 : 0,
+				block_count: this.contentBlockCountByEntryId.get(block.entryId) ?? 0,
+			}));
 	}
 
 	getEntryForRead(entryId: string): EntryReadRow | undefined {
-		return this.sqlite.get<EntryReadRow>(
-			"SELECT entry_id, role, is_protected, token_estimate, text FROM transcript_entries WHERE entry_id = ?",
-			entryId,
-		);
+		const entry = this.entriesById.get(entryId);
+		if (!entry) return undefined;
+		return {
+			entry_id: entry.entryId,
+			role: entry.role,
+			is_protected: entry.protected ? 1 : 0,
+			token_estimate: entry.tokenEstimate,
+			text: entry.text,
+		};
 	}
 
 	getContentBlockForRead(entryId: string, blockIndex: number): ContentBlockReadRow | undefined {
-		return this.sqlite.get<ContentBlockReadRow>(
-			`
-				SELECT
-					blocks.entry_id,
-					blocks.block_index,
-					blocks.type,
-					blocks.token_estimate,
-					blocks.text,
-					entries.is_protected AS entry_protected,
-					blocks.is_protected AS block_protected,
-					(
-						SELECT COUNT(*)
-						FROM transcript_content_blocks sibling
-						WHERE sibling.entry_id = blocks.entry_id
-					) AS block_count
-				FROM transcript_content_blocks blocks
-				JOIN transcript_entries entries ON entries.entry_id = blocks.entry_id
-				WHERE blocks.entry_id = ? AND blocks.block_index = ?
-			`,
-			entryId,
-			blockIndex,
-		);
+		const block = this.contentBlocks.find((candidate) => candidate.entryId === entryId && candidate.blockIndex === blockIndex);
+		if (!block) return undefined;
+		return {
+			entry_id: block.entryId,
+			block_index: block.blockIndex,
+			type: block.type,
+			token_estimate: block.tokenEstimate,
+			text: block.text,
+			entry_protected: this.entriesById.get(block.entryId)?.protected ? 1 : 0,
+			block_protected: block.protected ? 1 : 0,
+			block_count: this.contentBlockCountByEntryId.get(block.entryId) ?? 0,
+		};
 	}
 
 	getGrepScanTextLength(target: "entry" | "content_block"): number {
-		const table = target === "entry" ? "transcript_entries" : "transcript_content_blocks";
-		const row = this.sqlite.get<{ scan_chars: number | null }>(`SELECT SUM(LENGTH(text)) AS scan_chars FROM ${table}`);
-		return row?.scan_chars ?? 0;
+		const texts = target === "entry" ? this.entries : this.contentBlocks;
+		return texts.reduce((sum, item) => sum + item.text.length, 0);
 	}
 
 	incrementCallCount(): number {
-		const next = this.getCallCount() + 1;
-		this.setState("call_count", String(next));
-		return next;
+		this.callCount += 1;
+		return this.callCount;
 	}
 
 	getCallCount(): number {
-		return Number(this.getState("call_count") ?? "0");
+		return this.callCount;
 	}
 
 	setLastError(message: string): void {
-		this.setState("last_error", message);
+		this.lastError = message;
 	}
 
 	clearLastError(): void {
-		this.sqlite.run("DELETE FROM context_compaction_state WHERE key = ?", "last_error");
+		this.lastError = undefined;
 	}
 
 	getLastError(): string | undefined {
-		return this.getState("last_error");
+		return this.lastError;
 	}
 
-	private getState(key: string): string | undefined {
-		return this.sqlite.get<{ value: string }>("SELECT value FROM context_compaction_state WHERE key = ?", key)?.value;
+	private snapshot(): ContextDeletionMemorySnapshot {
+		return {
+			deletionTargets: this.readTargets(),
+			callCount: this.callCount,
+			...(this.lastError === undefined ? {} : { lastError: this.lastError }),
+		};
 	}
 
-	private setState(key: string, value: string): void {
-		this.sqlite.run(
-			"INSERT INTO context_compaction_state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-			key,
-			value,
-		);
-	}
-
-	close(): void {
-		this.sqlite.close();
+	private restore(snapshot: ContextDeletionMemorySnapshot): void {
+		this.deletionTargets = snapshot.deletionTargets.map(copyDeletionTarget);
+		this.callCount = snapshot.callCount;
+		this.lastError = snapshot.lastError;
 	}
 }
 
-function createContextDeletionSqliteStore(transcript: CompactableTranscript): ContextDeletionSqliteStore {
-	const store = new ContextDeletionSqliteStore(SqliteAdapter.createTransient());
-	store.initialize(transcript);
-	return store;
+function createContextDeletionStore(transcript: CompactableTranscript): ContextDeletionMemoryStore {
+	return new ContextDeletionMemoryStore(transcript);
 }
 
 export function createContextDeletionTool(
@@ -1513,7 +1407,7 @@ export function createContextDeletionTool(
 	options: ContextCompactionRunOptions = {},
 ): ContextDeletionToolController {
 	const mode = options.mode ?? "standard";
-	const store = createContextDeletionSqliteStore(transcript);
+	const store = createContextDeletionStore(transcript);
 	let validatedResult: ValidatedContextDeletionResult | undefined;
 
 	function readTargets(): ContextDeletionTarget[] {
@@ -2073,14 +1967,6 @@ function isContextCompactionOverflowError(model: Model<Api>, errorMessage: strin
 	);
 }
 
-export function getLowestContextCompactionThinkingLevel(model: Model<Api>): ThinkingLevel {
-	const supportedLevels = getSupportedThinkingLevels(model) as ThinkingLevel[];
-	for (const level of CONTEXT_COMPACTION_THINKING_LEVEL_ORDER) {
-		if (supportedLevels.includes(level)) return level;
-	}
-	return "off";
-}
-
 interface ContextDeletionRun {
 	validatedResult: ValidatedContextDeletionResult | undefined;
 	lastToolError: string | undefined;
@@ -2092,9 +1978,10 @@ async function runContextDeletionAssistant(
 	apiKey: string,
 	headers?: Record<string, string>,
 	signal?: AbortSignal,
+	thinkingLevel: ThinkingLevel = "off",
 	mode: ContextCompactionMode = "standard",
 ): Promise<ContextDeletionRun> {
-	const maxTokens = Math.min(4096, model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY);
+	const maxTokens = model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY;
 	if (signal?.aborted) {
 		throw new Error("Context compaction failed: Request was aborted");
 	}
@@ -2105,13 +1992,12 @@ async function runContextDeletionAssistant(
 		timestamp: Date.now(),
 	};
 	const deletionTool = createContextDeletionTool(transcript, { mode });
-	const effectiveThinkingLevel = getLowestContextCompactionThinkingLevel(model);
 	let compactionTurnCount = 0;
 	const agent = new Agent({
 		initialState: {
 			systemPrompt: CONTEXT_COMPACTION_SYSTEM_PROMPT,
 			model,
-			thinkingLevel: effectiveThinkingLevel,
+			thinkingLevel,
 			tools: deletionTool.tools,
 		},
 		toolExecution: "parallel",
@@ -2170,7 +2056,7 @@ export async function contextCompact(
 	apiKey: string,
 	headers?: Record<string, string>,
 	signal?: AbortSignal,
-	_thinkingLevel?: ThinkingLevel,
+	thinkingLevel: ThinkingLevel = "off",
 	mode: ContextCompactionMode = preparation.mode ?? "standard",
 ): Promise<ValidatedContextDeletionResult> {
 	const { validatedResult, lastToolError } = await runContextDeletionAssistant(
@@ -2179,6 +2065,7 @@ export async function contextCompact(
 		apiKey,
 		headers,
 		signal,
+		thinkingLevel,
 		mode,
 	);
 	if (!validatedResult || validatedResult.deletedTargets.length === 0) {

@@ -673,7 +673,7 @@ describe("context compaction deletion tools", () => {
 		).rejects.toThrow(/Context compaction failed: 529 overloaded/);
 	});
 
-	it("uses the lowest supported thinking level for context compaction", async () => {
+	it("uses the selected thinking level for context compaction", async () => {
 		let capturedReasoning: string | undefined;
 		const faux = registerFauxProvider({ models: [{ id: "faux-reasoning", reasoning: true }] });
 		cleanups.push(() => faux.unregister());
@@ -694,10 +694,10 @@ describe("context compaction deletion tools", () => {
 
 		await contextCompact({ transcript: createTranscript(), branchEntries: [] }, faux.getModel(), "test-key", undefined, undefined, "high");
 
-		expect(capturedReasoning).toBeUndefined();
+		expect(capturedReasoning).toBe("high");
 	});
 
-	it("uses minimal thinking for context compaction when off is unsupported", async () => {
+	it("does not downgrade the selected thinking level when off is unsupported", async () => {
 		let capturedReasoning: string | undefined;
 		const faux = registerFauxProvider({ models: [{ id: "faux-reasoning-minimal", reasoning: true }] });
 		cleanups.push(() => faux.unregister());
@@ -719,7 +719,7 @@ describe("context compaction deletion tools", () => {
 
 		await contextCompact({ transcript: createTranscript(), branchEntries: [] }, model, "test-key", undefined, undefined, "high");
 
-		expect(capturedReasoning).toBe("minimal");
+		expect(capturedReasoning).toBe("high");
 	});
 
 	it("surfaces the last deletion tool error when context compaction has no safe deletions", async () => {
