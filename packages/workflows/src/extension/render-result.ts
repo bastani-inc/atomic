@@ -115,7 +115,7 @@ type StageListResult = { action: "stages"; runId: string; filter: string; stages
 type StageDetailItem = StageSnapshot & { transcriptPath?: string };
 type StageDetailResult = { action: "stage"; runId: string; stage?: StageDetailItem; error?: string };
 type TranscriptEntry = { role: string; text?: string; toolName?: string; output?: string; timestamp?: number };
-type TranscriptInlineMode = "path_only" | "preview" | "fallback_preview" | "notice";
+type TranscriptInlineMode = "path_only" | "preview" | "fallback_preview";
 type TranscriptResult = {
   action: "transcript";
   runId: string;

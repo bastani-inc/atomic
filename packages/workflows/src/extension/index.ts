@@ -907,39 +907,54 @@ function transcriptFallbackNote(limit: number): string {
   return `No transcript file path is available for this stage; falling back to a bounded inline preview of up to ${limit} recent ${limit === 1 ? "entry" : "entries"}.`;
 }
 
+/**
+ * Shape a transcript tool result, keeping the context-safe path-only default
+ * the cheap hot path for the large runs #1314 protects against.
+ *
+ * `buildEntries` is a thunk so the default case (a transcript file path exists
+ * and no explicit `tail`/`limit` was requested) never materializes entry bodies
+ * just to discard them. Only the caller-provided `entryCount` is needed for the
+ * advisory count, which matches what `buildEntries()` would yield. The thunk is
+ * invoked solely for the explicit-preview and no-path fallback branches.
+ */
 function shapeTranscriptResult(input: {
   runId: string;
   stageId: string;
   source: "live" | "snapshot";
-  entries: readonly WorkflowTranscriptEntry[];
+  entryCount: number;
+  buildEntries: () => readonly WorkflowTranscriptEntry[];
   args: WorkflowToolArgs;
   sessionId?: string | undefined;
   sessionFile?: string | undefined;
   transcriptPath?: string | undefined;
 }): WorkflowTranscriptResult {
+  // `transcriptPath` already falls back to `sessionFile`, so it is the single
+  // resolved path the agent should lazily read.
   const transcriptPath = input.transcriptPath ?? input.sessionFile;
-  const pathForLazyRead = transcriptPath ?? input.sessionFile;
-  if (pathForLazyRead !== undefined && !isTranscriptPreviewExplicit(input.args)) {
-    const entryCount = input.entries.length;
+  if (transcriptPath !== undefined && !isTranscriptPreviewExplicit(input.args)) {
     const result: WorkflowTranscriptResult = {
       action: "transcript",
       runId: input.runId,
       stageId: input.stageId,
       source: input.source,
       entries: [],
-      truncated: entryCount > 0,
-      entryCount,
+      // `truncated` here means "more transcript exists on disk than was inlined"
+      // (everything, since the default inlines nothing), not "an explicit limit
+      // clipped results". It only drives the cosmetic "(truncated)" notice
+      // suffix; no consumer re-fetches on it.
+      truncated: input.entryCount > 0,
+      entryCount: input.entryCount,
       entryLimit: 0,
-      lazyReadPrompt: transcriptLazyReadPrompt(pathForLazyRead),
+      lazyReadPrompt: transcriptLazyReadPrompt(transcriptPath),
       inlineMode: "path_only",
     };
     if (input.sessionId !== undefined) result.sessionId = input.sessionId;
     if (input.sessionFile !== undefined) result.sessionFile = input.sessionFile;
-    if (transcriptPath !== undefined) result.transcriptPath = transcriptPath;
+    result.transcriptPath = transcriptPath;
     return result;
   }
 
-  const limited = selectTranscriptEntries(input.entries, input.args);
+  const limited = selectTranscriptEntries(input.buildEntries(), input.args);
   const result: WorkflowTranscriptResult = {
     action: "transcript",
     runId: input.runId,
@@ -949,12 +964,12 @@ function shapeTranscriptResult(input: {
     truncated: limited.truncated,
     entryCount: limited.entryCount,
     entryLimit: limited.entryLimit,
-    inlineMode: pathForLazyRead === undefined ? "fallback_preview" : "preview",
+    inlineMode: transcriptPath === undefined ? "fallback_preview" : "preview",
   };
   if (input.sessionId !== undefined) result.sessionId = input.sessionId;
   if (input.sessionFile !== undefined) result.sessionFile = input.sessionFile;
   if (transcriptPath !== undefined) result.transcriptPath = transcriptPath;
-  if (pathForLazyRead === undefined) result.fallbackNote = transcriptFallbackNote(limited.entryLimit ?? DEFAULT_TRANSCRIPT_LIMIT);
+  if (transcriptPath === undefined) result.fallbackNote = transcriptFallbackNote(limited.entryLimit ?? DEFAULT_TRANSCRIPT_LIMIT);
   return result;
 }
 
@@ -1534,7 +1549,9 @@ export function makeExecuteWorkflowTool(
             runId: stageRunId,
             stageId: stage.stageId,
             source: "live",
-            entries: liveHandle.messages.map((m) => transcriptEntryFromMessage(m as MessageLike)),
+            entryCount: liveHandle.messages.length,
+            buildEntries: () =>
+              liveHandle.messages.map((m) => transcriptEntryFromMessage(m as MessageLike)),
             args,
             sessionId,
             sessionFile,
@@ -1545,11 +1562,18 @@ export function makeExecuteWorkflowTool(
         const includeSnapshotOutput = args.includeToolOutput === true && (
           isTranscriptPreviewExplicit(args) || snapshotSessionFile === undefined
         );
+        // Cheap count matches `snapshotTranscriptEntries(...).length` (one entry
+        // per tool event plus the optional terminal result/error entries)
+        // without building bodies for the path-only default.
+        const snapshotEntryCount = (snapshot?.toolEvents?.length ?? 0)
+          + (snapshot?.result !== undefined ? 1 : 0)
+          + (snapshot?.error !== undefined ? 1 : 0);
         return shapeTranscriptResult({
           runId: stageRunId,
           stageId: stage.stageId,
           source: "snapshot",
-          entries: snapshotTranscriptEntries(snapshot, includeSnapshotOutput),
+          entryCount: snapshotEntryCount,
+          buildEntries: () => snapshotTranscriptEntries(snapshot, includeSnapshotOutput),
           args,
           sessionId: snapshot?.sessionId,
           sessionFile: snapshotSessionFile,
