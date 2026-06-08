@@ -46,17 +46,20 @@ async function populateCompactableSession(harness: Harness, count = 6): Promise<
 	for (let index = 0; index < count; index++) {
 		await harness.session.prompt(`prompt ${index + 1}`);
 	}
-	const firstMessage = harness.sessionManager.getEntries().find((entry) => entry.type === "message");
-	if (!firstMessage) throw new Error("Expected at least one message entry");
-	return firstMessage.id;
+	const firstDeletableMessage = harness.sessionManager
+		.getEntries()
+		.find((entry) => entry.type === "message" && entry.message.role === "assistant");
+	if (!firstDeletableMessage) throw new Error("Expected at least one deletable assistant message entry");
+	return firstDeletableMessage.id;
 }
 
-function setContextDeletionPlan(harness: Harness, entryId: string): void {
+function setContextDeletionRequest(harness: Harness, entryId: string): void {
 	harness.setResponses([
 		fauxAssistantMessage(
-			fauxToolCall("context_deletion_plan", { deletions: [{ kind: "entry", entryId }] }, { id: "toolu_plan" }),
+			fauxToolCall("context_delete", { deletions: [{ kind: "entry", entryId }] }, { id: "toolu_delete" }),
 			{ stopReason: "toolUse" },
 		),
+		fauxAssistantMessage("Done recording deletion targets."),
 	]);
 }
 
@@ -76,7 +79,7 @@ describe("AgentSession compaction characterization", () => {
 		harnesses.push(harness);
 
 		const deletedEntryId = await populateCompactableSession(harness);
-		setContextDeletionPlan(harness, deletedEntryId);
+		setContextDeletionRequest(harness, deletedEntryId);
 
 		const result = await harness.session.compact();
 		const compactionEntries = harness.sessionManager.getEntries().filter((entry) => entry.type === "context_compaction");
@@ -106,7 +109,7 @@ describe("AgentSession compaction characterization", () => {
 		harnesses.push(harness);
 
 		const deletedEntryId = await populateCompactableSession(harness);
-		setContextDeletionPlan(harness, deletedEntryId);
+		setContextDeletionRequest(harness, deletedEntryId);
 
 		const compactPromise = harness.session.compact();
 		await new Promise((resolve) => setTimeout(resolve, 0));
@@ -122,7 +125,7 @@ describe("AgentSession compaction characterization", () => {
 		});
 		harnesses.push(harness);
 		const deletedEntryId = await populateCompactableSession(harness);
-		setContextDeletionPlan(harness, deletedEntryId);
+		setContextDeletionRequest(harness, deletedEntryId);
 
 		harness.session.agent.followUp({
 			role: "custom",

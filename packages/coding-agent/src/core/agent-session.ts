@@ -48,6 +48,7 @@ import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth
 import { type BashResult, executeBashWithOperations } from "./bash-executor.ts";
 import {
 	type CompactionResult,
+	type ContextCompactionMode,
 	type ContextCompactionResult,
 	calculateContextTokens,
 	collectEntriesForBranchSummary,
@@ -1963,6 +1964,7 @@ export class AgentSession {
 		headers?: Record<string, string>;
 		abortController: AbortController;
 		backupLabel: string;
+		mode?: ContextCompactionMode;
 	}): Promise<ContextCompactionResult | undefined> {
 		if (!this.model) {
 			throw new Error(formatNoModelSelectedMessage());
@@ -1970,7 +1972,8 @@ export class AgentSession {
 
 		const pathEntries = this.sessionManager.getBranch();
 		const settings = this.settingsManager.getCompactionSettings();
-		const preparation = prepareContextCompaction(pathEntries, settings);
+		const mode = options.mode ?? "standard";
+		const preparation = prepareContextCompaction(pathEntries, settings, { mode });
 		if (!preparation) {
 			return undefined;
 		}
@@ -1981,7 +1984,8 @@ export class AgentSession {
 			options.apiKey,
 			options.headers,
 			options.abortController.signal,
-			this.thinkingLevel,
+			undefined,
+			mode,
 		);
 
 		if (options.abortController.signal.aborted) {
@@ -2299,6 +2303,7 @@ export class AgentSession {
 				headers: authResult.headers,
 				abortController: this._autoCompactionAbortController,
 				backupLabel: reason === "overflow" ? "overflow-auto-compact" : "auto-compact",
+				mode: reason === "overflow" ? "critical_overflow" : "standard",
 			});
 			if (!result) {
 				this._emit({

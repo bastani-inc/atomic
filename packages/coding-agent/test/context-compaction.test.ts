@@ -6,10 +6,10 @@ import {
 	DEFAULT_COMPACTION_SETTINGS,
 	estimateContextTokens,
 	estimateTokens,
-	parseContextDeletionPlan,
-	parseContextDeletionPlanResponse,
+	parseContextDeletionRequest,
+	parseContextDeletionResponse,
 	prepareContextCompaction,
-	validateContextDeletionPlan,
+	validateContextDeletionRequest,
 } from "../src/core/compaction/index.ts";
 import { createCompactionSummaryMessage } from "../src/core/messages.ts";
 import {
@@ -205,31 +205,31 @@ function compactionEntry(summary: string, firstKeptEntryId: string, tokensBefore
 }
 
 describe("context compaction", () => {
-	it("parses fenced deletion-plan JSON", () => {
-		const parsed = parseContextDeletionPlan('```json\n{ "deletions": [{ "kind": "entry", "entryId": "abc" }] }\n```');
+	it("parses fenced deletion-request JSON", () => {
+		const parsed = parseContextDeletionRequest('```json\n{ "deletions": [{ "kind": "entry", "entryId": "abc" }] }\n```');
 		expect(parsed.deletions).toEqual([{ kind: "entry", entryId: "abc" }]);
 	});
 
-	it("reads deletion plans from structured planner tool calls", () => {
+	it("reads deletion requests from structured deletion tool calls", () => {
 		const response: AssistantMessage = {
 			...assistantText(""),
 			content: [
 				{
 					type: "toolCall",
-					id: "toolu_plan",
-					name: "context_deletion_plan",
+					id: "toolu_delete",
+					name: "context_delete",
 					arguments: { deletions: [{ kind: "content_block", entryId: "abc", blockIndex: 1 }] },
 				},
 			],
 			stopReason: "toolUse",
 		};
 
-		const parsed = parseContextDeletionPlanResponse(response);
+		const parsed = parseContextDeletionResponse(response);
 
 		expect(parsed.deletions).toEqual([{ kind: "content_block", entryId: "abc", blockIndex: 1 }]);
 	});
 
-	it("excludes excludeFromContext entries from planner transcript, prompt, recency, and stats", () => {
+	it("excludes excludeFromContext entries from context compaction transcript, prompt, recency, and stats", () => {
 		resetIds();
 		const bashSentinel = "ITER4_EXCLUDED_BASH_SENTINEL";
 		const customSentinel = "ITER4_EXCLUDED_CUSTOM_SENTINEL";
@@ -291,7 +291,7 @@ describe("context compaction", () => {
 		expect(transcript.tokensBefore).toBe(estimateContextTokens(eligibleContextMessages).tokens);
 		expect(transcript.tokensBefore).toBeLessThan(estimateContextTokens(rawContextMessages).tokens);
 
-		const validated = validateContextDeletionPlan(
+		const validated = validateContextDeletionRequest(
 			{ deletions: [{ kind: "entry", entryId: oldEligible.id }] },
 			transcript,
 		);
@@ -346,16 +346,16 @@ describe("context compaction", () => {
 		expect(transcriptJson).not.toContain(excludedSentinel);
 
 		expect(() =>
-			validateContextDeletionPlan({ deletions: [{ kind: "entry", entryId: failedBash.id }] }, transcript),
+			validateContextDeletionRequest({ deletions: [{ kind: "entry", entryId: failedBash.id }] }, transcript),
 		).toThrow(/protected/);
 		expect(() =>
-			validateContextDeletionPlan(
+			validateContextDeletionRequest(
 				{ deletions: [{ kind: "content_block", entryId: failedBash.id, blockIndex: 0 }] },
 				transcript,
 			),
 		).toThrow(/protected/);
 
-		const validated = validateContextDeletionPlan(
+		const validated = validateContextDeletionRequest(
 			{ deletions: [{ kind: "entry", entryId: oldDeletable.id }] },
 			transcript,
 		);
@@ -401,7 +401,7 @@ describe("context compaction", () => {
 
 		const deletableTranscriptEntry = transcript.entries.find((item) => item.entryId === deletable.id);
 		expect(deletableTranscriptEntry).toBeDefined();
-		const validated = validateContextDeletionPlan(
+		const validated = validateContextDeletionRequest(
 			{ deletions: [{ kind: "entry", entryId: deletable.id }] },
 			transcript,
 		);
@@ -430,7 +430,7 @@ describe("context compaction", () => {
 
 		const preparation = prepareContextCompaction(entries, DEFAULT_COMPACTION_SETTINGS);
 		expect(preparation).toBeDefined();
-		const validated = validateContextDeletionPlan(
+		const validated = validateContextDeletionRequest(
 			{ deletions: [{ kind: "entry", entryId: call.id }, { kind: "entry", entryId: result.id }] },
 			preparation!.transcript,
 		);
@@ -466,11 +466,11 @@ describe("context compaction", () => {
 		const preparation = prepareContextCompaction(entries, DEFAULT_COMPACTION_SETTINGS)!;
 
 		expect(() =>
-			validateContextDeletionPlan({ deletions: [{ kind: "entry", entryId: u1.id }] }, preparation.transcript),
+			validateContextDeletionRequest({ deletions: [{ kind: "entry", entryId: u1.id }] }, preparation.transcript),
 		).toThrow(/protected/);
 	});
 
-	it("repairs deletion plans that would orphan tool calls or results", () => {
+	it("repairs deletion requests that would orphan tool calls or results", () => {
 		resetIds();
 		const combinedToolCallId = "call_7SZEC0NytS60tNYbfx3iV93P|fc_0f290ffb56102ac9016a262e88c10c819aa3fe84e1e79aa20f";
 		const entries: SessionEntry[] = [
@@ -487,7 +487,7 @@ describe("context compaction", () => {
 		const resultEntry = entries[2] as SessionMessageEntry;
 		const preparation = prepareContextCompaction(entries, DEFAULT_COMPACTION_SETTINGS)!;
 
-		const callValidated = validateContextDeletionPlan(
+		const callValidated = validateContextDeletionRequest(
 			{ deletions: [{ kind: "entry", entryId: callEntry.id }] },
 			preparation.transcript,
 		);
@@ -496,7 +496,7 @@ describe("context compaction", () => {
 			{ kind: "entry", entryId: resultEntry.id },
 		]);
 
-		const resultValidated = validateContextDeletionPlan(
+		const resultValidated = validateContextDeletionRequest(
 			{ deletions: [{ kind: "entry", entryId: resultEntry.id }] },
 			preparation.transcript,
 		);
@@ -506,7 +506,7 @@ describe("context compaction", () => {
 		]);
 	});
 
-	it("rejects content-block plans that would remove every block from an entry", () => {
+	it("rejects content-block deletion requests that would remove every block from an entry", () => {
 		resetIds();
 		const multi = entry({
 			...assistantText(""),
@@ -528,7 +528,7 @@ describe("context compaction", () => {
 		const preparation = prepareContextCompaction(entries, DEFAULT_COMPACTION_SETTINGS)!;
 
 		expect(() =>
-			validateContextDeletionPlan(
+			validateContextDeletionRequest(
 				{
 					deletions: [
 						{ kind: "content_block", entryId: multi.id, blockIndex: 0 },
@@ -565,7 +565,7 @@ describe("context compaction", () => {
 		];
 		const preparation = prepareContextCompaction(entries, DEFAULT_COMPACTION_SETTINGS)!;
 
-		const validated = validateContextDeletionPlan(
+		const validated = validateContextDeletionRequest(
 			{ deletions: [{ kind: "content_block", entryId: assistantWithCall.id, blockIndex: 1 }] },
 			preparation.transcript,
 		);
@@ -600,7 +600,7 @@ describe("context compaction", () => {
 		];
 		const preparation = prepareContextCompaction(entries, DEFAULT_COMPACTION_SETTINGS)!;
 
-		const validated = validateContextDeletionPlan(
+		const validated = validateContextDeletionRequest(
 			{
 				deletions: [
 					{ kind: "entry", entryId: call.id },
@@ -641,7 +641,7 @@ describe("context compaction", () => {
 		];
 		const preparation = prepareContextCompaction(entries, DEFAULT_COMPACTION_SETTINGS)!;
 
-		const validated = validateContextDeletionPlan(
+		const validated = validateContextDeletionRequest(
 			{
 				deletions: [
 					{ kind: "content_block", entryId: assistantWithCall.id, blockIndex: 0 },
@@ -682,11 +682,11 @@ describe("context compaction", () => {
 		];
 		const preparation = prepareContextCompaction(entries, DEFAULT_COMPACTION_SETTINGS)!;
 
-		const firstValidated = validateContextDeletionPlan(
+		const firstValidated = validateContextDeletionRequest(
 			{ deletions: [{ kind: "content_block", entryId: assistantWithCall.id, blockIndex: 1 }] },
 			preparation.transcript,
 		);
-		const accumulatedValidated = validateContextDeletionPlan(
+		const accumulatedValidated = validateContextDeletionRequest(
 			{
 				deletions: [
 					...firstValidated.deletedTargets,
@@ -730,7 +730,7 @@ describe("context compaction", () => {
 		];
 		const preparation = prepareContextCompaction(entries, DEFAULT_COMPACTION_SETTINGS)!;
 
-		const validated = validateContextDeletionPlan(
+		const validated = validateContextDeletionRequest(
 			{
 				deletions: [
 					{ kind: "entry", entryId: firstResult.id },
@@ -767,7 +767,7 @@ describe("context compaction", () => {
 			entry(assistantText("recent 6")),
 		];
 		const preparation = prepareContextCompaction(entries, DEFAULT_COMPACTION_SETTINGS)!;
-		const validated = validateContextDeletionPlan(
+		const validated = validateContextDeletionRequest(
 			{ deletions: [{ kind: "content_block", entryId: multi.id, blockIndex: 0 }] },
 			preparation.transcript,
 		);
@@ -810,7 +810,7 @@ describe("context compaction", () => {
 		expect(imageBlock!.tokenEstimate).toBe(imageTokenEstimate);
 		expect(imageBlock!.tokenEstimate).toBeGreaterThan(placeholderTokenEstimate);
 
-		const validated = validateContextDeletionPlan(
+		const validated = validateContextDeletionRequest(
 			{ deletions: [{ kind: "content_block", entryId: imageResult.id, blockIndex: 1 }] },
 			preparation.transcript,
 		);
@@ -821,10 +821,10 @@ describe("context compaction", () => {
 		expect(validated.stats.tokensBefore - validated.stats.tokensAfter).toBe(imageTokenEstimate);
 	});
 
-	it("derives repeated planner text and token estimates from retained blocks", () => {
+	it("derives repeated compaction text and token estimates from retained blocks", () => {
 		resetIds();
-		const deletedText = "obsolete repeated planner block ".repeat(20);
-		const retainedText = "keep repeated planner block packages/coding-agent/src/core/session-manager.ts";
+		const deletedText = "obsolete repeated compaction block ".repeat(20);
+		const retainedText = "keep repeated compaction block packages/coding-agent/src/core/session-manager.ts";
 		const task = entry(user("Task"));
 		const multi = entry({
 			...assistantText(""),
@@ -862,7 +862,7 @@ describe("context compaction", () => {
 		expect(repeatedEntry!.tokenEstimate).toBeLessThan(estimateTokens(multi.message));
 	});
 
-	it("includes active /compact summary first in planner transcript and stats", () => {
+	it("includes active /compact summary first in context compaction transcript and stats", () => {
 		resetIds();
 		const staleSummary = "stale /compact summary that must not be active";
 		const activeSummary =
@@ -935,7 +935,7 @@ describe("context compaction", () => {
 		const rawTranscriptEntries = transcript.entries.slice(1);
 		const rawObjectCount = rawTranscriptEntries.reduce((total, item) => total + 1 + item.contentBlocks.length, 0);
 		const rawTokenCount = rawTranscriptEntries.reduce((total, item) => total + item.tokenEstimate, 0);
-		const validated = validateContextDeletionPlan({ deletions: [] }, transcript);
+		const validated = validateContextDeletionRequest({ deletions: [] }, transcript);
 
 		expect(transcript.tokensBefore).toBe(rawTokenCount + summaryTokens);
 		expect(validated.stats.objectsBefore).toBe(rawObjectCount + 2);
@@ -943,10 +943,10 @@ describe("context compaction", () => {
 		expect(validated.stats.objectsAfter).toBe(validated.stats.objectsBefore);
 		expect(validated.stats.tokensAfter).toBe(validated.stats.tokensBefore);
 		expect(() =>
-			validateContextDeletionPlan({ deletions: [{ kind: "entry", entryId: activeCompaction.id }] }, transcript),
+			validateContextDeletionRequest({ deletions: [{ kind: "entry", entryId: activeCompaction.id }] }, transcript),
 		).toThrow(/protected/);
 		expect(() =>
-			validateContextDeletionPlan(
+			validateContextDeletionRequest(
 				{ deletions: [{ kind: "content_block", entryId: activeCompaction.id, blockIndex: 0 }] },
 				transcript,
 			),
@@ -987,7 +987,7 @@ describe("context compaction", () => {
 		);
 		expect(transcript.entries.find((item) => item.entryId === oldDeletableAssistant.id)?.protected).toBe(false);
 
-		const validated = validateContextDeletionPlan(
+		const validated = validateContextDeletionRequest(
 			{ deletions: [{ kind: "entry", entryId: oldDeletableAssistant.id }] },
 			transcript,
 		);

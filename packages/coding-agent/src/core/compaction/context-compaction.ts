@@ -1,6 +1,12 @@
 import { Agent, type AgentMessage, type AgentTool, type AgentToolResult, type ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model, ToolCall } from "@earendil-works/pi-ai";
-import { createAssistantMessageEventStream, streamSimple, StringEnum } from "@earendil-works/pi-ai";
+import {
+	createAssistantMessageEventStream,
+	getSupportedThinkingLevels,
+	isContextOverflow,
+	streamSimple,
+	StringEnum,
+} from "@earendil-works/pi-ai";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -23,7 +29,11 @@ import { estimateTokens } from "./compaction.ts";
 
 export const CONTEXT_COMPACTION_PROMPT_VERSION = 1 as const;
 
-export interface RawContextDeletionPlan {
+const CONTEXT_COMPACTION_THINKING_LEVEL_ORDER: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
+
+export type ContextCompactionMode = "standard" | "critical_overflow";
+
+export interface ContextDeletionRequest {
 	deletions: Array<{
 		kind: "entry" | "content_block";
 		entryId: string;
@@ -65,29 +75,31 @@ export interface CompactableTranscript {
 export interface ContextCompactionPreparation {
 	transcript: CompactableTranscript;
 	branchEntries: SessionEntry[];
+	mode?: ContextCompactionMode;
 }
 
-export interface ValidatedContextDeletionPlan {
+export interface ValidatedContextDeletionResult {
 	deletedTargets: ContextDeletionTarget[];
 	protectedEntryIds: string[];
 	stats: ContextCompactionStats;
 }
 
-export interface ContextCompactionResult extends ValidatedContextDeletionPlan {
+export interface ContextCompactionResult extends ValidatedContextDeletionResult {
 	promptVersion: typeof CONTEXT_COMPACTION_PROMPT_VERSION;
 	backupPath?: string;
 }
 
-const CONTEXT_DELETION_PLAN_TOOL_NAME = "context_deletion_plan";
+const CONTEXT_DELETE_TOOL_NAME = "context_delete";
 const CONTEXT_GREP_DELETE_TOOL_NAME = "context_grep_delete";
 const CONTEXT_SEARCH_TRANSCRIPT_TOOL_NAME = "context_search_transcript";
 const CONTEXT_READ_ENTRY_TOOL_NAME = "context_read_entry";
-export const CONTEXT_COMPACTION_PLANNER_MAX_TURNS = 8 as const;
+export const CONTEXT_COMPACTION_MAX_TURNS = 50 as const;
 const CONTEXT_GREP_DELETE_DEFAULT_MAX_MATCHES = 50;
 const CONTEXT_GREP_DELETE_MAX_REGEX_PATTERN_CHARS = 512;
 const CONTEXT_GREP_DELETE_MAX_REGEX_SCAN_CHARS = 250_000;
 const CONTEXT_MANIFEST_MAX_ENTRIES = 80;
 const CONTEXT_MANIFEST_PREVIEW_CHARS = 240;
+const CONTEXT_CRITICAL_OVERFLOW_RECENT_ENTRY_COUNT = 5;
 const CONTEXT_READ_ENTRY_DEFAULT_MAX_CHARS = 4000;
 const CONTEXT_READ_ENTRY_MAX_CHARS = 12_000;
 const CONTEXT_SEARCH_DEFAULT_MAX_MATCHES = 20;
@@ -95,7 +107,7 @@ const CONTEXT_SEARCH_MAX_MATCHES = 100;
 const CONTEXT_SEARCH_DEFAULT_CONTEXT_CHARS = 160;
 const CONTEXT_SEARCH_MAX_CONTEXT_CHARS = 500;
 
-const ContextDeletionPlanToolParameters = Type.Object(
+const ContextDeleteToolParameters = Type.Object(
 	{
 		deletions: Type.Array(
 			Type.Object(
@@ -189,10 +201,10 @@ const ContextReadEntryToolParameters = Type.Object(
 	{ additionalProperties: false },
 );
 
-const CONTEXT_DELETION_PLAN_TOOL = {
-	name: CONTEXT_DELETION_PLAN_TOOL_NAME,
+const CONTEXT_DELETE_TOOL = {
+	name: CONTEXT_DELETE_TOOL_NAME,
 	description: "Record context compaction deletion targets directly against the transcript.",
-	parameters: ContextDeletionPlanToolParameters,
+	parameters: ContextDeleteToolParameters,
 } as const;
 
 const CONTEXT_GREP_DELETE_TOOL = {
@@ -213,8 +225,8 @@ const CONTEXT_READ_ENTRY_TOOL = {
 	parameters: ContextReadEntryToolParameters,
 } as const;
 
-export interface ContextDeletionPlannerToolDetails {
-	deletions: RawContextDeletionPlan["deletions"];
+export interface ContextDeletionToolDetails {
+	deletions: ContextDeletionRequest["deletions"];
 	deletedTargets: ContextDeletionTarget[];
 	stats: ContextCompactionStats;
 	callCount: number;
@@ -287,30 +299,33 @@ export interface ContextReadEntryToolDetails {
 	error?: string;
 }
 
-export interface ContextDeletionPlannerToolController {
-	tool: AgentTool<typeof ContextDeletionPlanToolParameters, ContextDeletionPlannerToolDetails>;
+export interface ContextDeletionToolController {
+	tool: AgentTool<typeof ContextDeleteToolParameters, ContextDeletionToolDetails>;
 	grepTool: AgentTool<typeof ContextGrepDeleteToolParameters, ContextGrepDeletionToolDetails>;
 	searchTool: AgentTool<typeof ContextSearchTranscriptToolParameters, ContextTranscriptSearchToolDetails>;
 	readEntryTool: AgentTool<typeof ContextReadEntryToolParameters, ContextReadEntryToolDetails>;
 	tools: AgentTool[];
-	getPlan(): RawContextDeletionPlan;
-	getValidatedPlan(): ValidatedContextDeletionPlan | undefined;
+	getDeletionRequest(): ContextDeletionRequest;
+	getValidatedResult(): ValidatedContextDeletionResult | undefined;
 	getLastError(): string | undefined;
 	getCallCount(): number;
 }
 
-const CONTEXT_COMPACTION_SYSTEM_PROMPT =
-	"You are a context compaction planner for an AI coding assistant transcript. Use the transcript search/read tools for small inspections, then use context_deletion_plan or context_grep_delete for deletions; do not write deletion JSON in prose.";
+export interface ContextCompactionRunOptions {
+	mode?: ContextCompactionMode;
+}
 
-const CONTEXT_COMPACTION_FIXED_PROMPT = `You are a context compaction planner for an AI coding assistant transcript.
+const CONTEXT_COMPACTION_SYSTEM_PROMPT = `You are a context compaction assistant.
 
-Your task is deletion-only verbatim compaction.
+Your task is to read relevant parts of a conversation between a user and an AI assistant provided via a transcript file, then run a series of tools to apply deletion-only verbatim compaction using the exact context_delete or context_grep_delete format specified.`;
+
+const CONTEXT_COMPACTION_FIXED_PROMPT = `Reference the provided transcript file transcript and use your search/read tools for small inspections, then use context_delete or context_grep_delete for deletions.
 
 You MUST NOT summarize.
 You MUST NOT paraphrase.
 You MUST NOT generate replacement context.
 You MUST NOT mutate retained transcript objects or content.
-Another step will apply deletions locally. Return only deletion targets by stable ID.
+Deletion tool calls are the compaction action; record only deletion targets by stable ID.
 
 What Gets Deleted:
 - Redundant tool outputs: file reads already acted on, grep/search results already processed, passing test output no longer needed.
@@ -326,7 +341,7 @@ What Survives:
 - User instructions: The original task and any clarifications.
 
 <output_format>
-Call the context_deletion_plan tool one or more times with deletion targets in this shape:
+Call the context_delete tool one or more times with deletion targets in this shape:
 { "deletions": [{ "kind": "entry", "entryId": "..." }] }
 
 For content-block deletions, use:
@@ -545,6 +560,7 @@ function isProtectedEntry(
 export function prepareContextCompaction(
 	pathEntries: SessionEntry[],
 	settings: CompactionSettings,
+	options: ContextCompactionRunOptions = {},
 ): ContextCompactionPreparation | undefined {
 	if (pathEntries.length === 0) return undefined;
 
@@ -557,7 +573,7 @@ export function prepareContextCompaction(
 		.map((index) => filteredEntryById.get(pathEntries[index].id))
 		.filter((entry): entry is SessionEntry => entry !== undefined && getContextEligibleMessageFromEntry(entry) !== undefined)
 		.map((entry) => entry.id);
-	const recentEntryIds = new Set(messageEntryIds.slice(-5));
+	const recentEntryIds = new Set(messageEntryIds.slice(-CONTEXT_CRITICAL_OVERFLOW_RECENT_ENTRY_COUNT));
 	const protectedEntryIds = new Set<string>();
 	const entries: CompactableTranscriptEntry[] = [];
 
@@ -621,6 +637,7 @@ export function prepareContextCompaction(
 
 	return {
 		branchEntries: pathEntries,
+		mode: options.mode ?? "standard",
 		transcript: {
 			entries,
 			protectedEntryIds: [...protectedEntryIds],
@@ -634,21 +651,21 @@ function targetKey(target: ContextDeletionTarget): string {
 	return target.kind === "entry" ? `entry:${target.entryId}` : `content_block:${target.entryId}:${target.blockIndex}`;
 }
 
-function rawTargetKey(target: RawContextDeletionPlan["deletions"][number]): string {
+function rawTargetKey(target: ContextDeletionRequest["deletions"][number]): string {
 	return target.kind === "entry" ? `entry:${target.entryId}` : `content_block:${target.entryId}:${target.blockIndex}`;
 }
 
-function normalizeRawTarget(target: RawContextDeletionPlan["deletions"][number]): ContextDeletionTarget {
+function normalizeRawTarget(target: ContextDeletionRequest["deletions"][number]): ContextDeletionTarget {
 	if (target.kind === "entry") return { kind: "entry", entryId: target.entryId };
 	return { kind: "content_block", entryId: target.entryId, blockIndex: target.blockIndex as number };
 }
 
-function rawDeletionFromTarget(target: ContextDeletionTarget): RawContextDeletionPlan["deletions"][number] {
+function rawDeletionFromTarget(target: ContextDeletionTarget): ContextDeletionRequest["deletions"][number] {
 	if (target.kind === "entry") return { kind: "entry", entryId: target.entryId };
 	return { kind: "content_block", entryId: target.entryId, blockIndex: target.blockIndex };
 }
 
-function planFromTargets(targets: readonly ContextDeletionTarget[]): RawContextDeletionPlan {
+function deletionRequestFromTargets(targets: readonly ContextDeletionTarget[]): ContextDeletionRequest {
 	return { deletions: targets.map(rawDeletionFromTarget) };
 }
 
@@ -734,7 +751,7 @@ function canonicalizeEntryTargets(targets: ContextDeletionTarget[], entry: Compa
 	const deletedBlocks = getDeletedContentBlocks(targets).get(entry.entryId);
 	if (!deletedBlocks || !entry.contentBlocks.every((block) => deletedBlocks.has(block.blockIndex))) return false;
 	// Only repair/promote when dependency reconciliation reaches this entry. Non-tool entries that
-	// request every block individually stay invalid so the planner must choose explicit entry deletion.
+	// request every block individually stay invalid so the assistant must choose explicit entry deletion.
 	return deleteEntryTarget(targets, entry.entryId);
 }
 
@@ -923,19 +940,59 @@ function computeContextCompactionStats(
 	};
 }
 
-export function validateContextDeletionPlan(
-	plan: RawContextDeletionPlan,
+interface ContextDeletionValidationOptions {
+	mode?: ContextCompactionMode;
+}
+
+function isCriticalOverflowProtectedEntryDeletable(
+	entry: CompactableTranscriptEntry,
 	transcript: CompactableTranscript,
-): ValidatedContextDeletionPlan {
-	if (!plan || typeof plan !== "object" || !Array.isArray(plan.deletions)) {
-		throw new Error("Context deletion plan must be an object with a deletions array");
+): boolean {
+	if (!entry.protected) return true;
+	const entryIndex = transcript.entries.findIndex((candidate) => candidate.entryId === entry.entryId);
+	if (entryIndex < 0) return false;
+	const recentBoundary = Math.max(0, transcript.entries.length - CONTEXT_CRITICAL_OVERFLOW_RECENT_ENTRY_COUNT);
+	if (entryIndex >= recentBoundary) return false;
+	if (hasAssistantError(entry.message) || hasToolResultError(entry.message) || hasFailedBashExecution(entry.message)) {
+		return false;
+	}
+	return (
+		entry.role === "user" ||
+		entry.role === "custom" ||
+		entry.role === "branchSummary" ||
+		entry.role === "compactionSummary" ||
+		entry.entryType === "branch_summary"
+	);
+}
+
+function canDeleteProtectedTargetInMode(
+	transcript: CompactableTranscript,
+	target: ContextDeletionTarget,
+	mode: ContextCompactionMode,
+): boolean {
+	if (mode !== "critical_overflow") return false;
+	const entry = transcript.entries.find((candidate) => candidate.entryId === target.entryId);
+	if (!entry || !isCriticalOverflowProtectedEntryDeletable(entry, transcript)) return false;
+	if (target.kind === "entry") return true;
+	const block = entry.contentBlocks.find((candidate) => candidate.blockIndex === target.blockIndex);
+	return block !== undefined;
+}
+
+export function validateContextDeletionRequest(
+	request: ContextDeletionRequest,
+	transcript: CompactableTranscript,
+	options: ContextDeletionValidationOptions = {},
+): ValidatedContextDeletionResult {
+	const mode = options.mode ?? "standard";
+	if (!request || typeof request !== "object" || !Array.isArray(request.deletions)) {
+		throw new Error("Context deletion request must be an object with a deletions array");
 	}
 
 	const entryById = new Map(transcript.entries.map((entry) => [entry.entryId, entry]));
 	const seen = new Set<string>();
 	const deletedTargets: ContextDeletionTarget[] = [];
 
-	for (const deletion of plan.deletions) {
+	for (const deletion of request.deletions) {
 		if (!deletion || typeof deletion !== "object") {
 			throw new Error("Deletion target must be an object");
 		}
@@ -949,7 +1006,7 @@ export function validateContextDeletionPlan(
 		if (!entry) {
 			throw new Error(`Unknown deletion target entryId: ${deletion.entryId}`);
 		}
-		if (entry.protected) {
+		if (entry.protected && !canDeleteProtectedTargetInMode(transcript, normalizeRawTarget(deletion), mode)) {
 			throw new Error(`Deletion target ${deletion.entryId} is protected`);
 		}
 
@@ -961,7 +1018,7 @@ export function validateContextDeletionPlan(
 			if (!block) {
 				throw new Error(`Unknown content block ${deletion.blockIndex} for entry ${deletion.entryId}`);
 			}
-			if (block.protected) {
+			if (block.protected && !canDeleteProtectedTargetInMode(transcript, normalizeRawTarget(deletion), mode)) {
 				throw new Error(`Content block ${deletion.entryId}:${deletion.blockIndex} is protected`);
 			}
 			if (entry.contentBlocks.length <= 1) {
@@ -999,13 +1056,13 @@ export function validateContextDeletionPlan(
 
 	const remainingEntries = transcript.entries.filter((entry) => !reconciledDeletedEntryIds.has(entry.entryId));
 	if (remainingEntries.length === 0) {
-		throw new Error("Deletion plan would remove all context entries");
+		throw new Error("Deletion request would remove all context entries");
 	}
 	const hasTaskBearingContext = remainingEntries.some(
 		(entry) => entry.role === "user" || (entry.role === "compactionSummary" && entry.protected),
 	);
 	if (!hasTaskBearingContext) {
-		throw new Error("Deletion plan would leave no user task in context");
+		throw new Error("Deletion request would leave no user task in context");
 	}
 
 	return {
@@ -1028,11 +1085,11 @@ function stripJsonFence(text: string): string {
 	return trimmed.slice(firstLineEnd + 1, -3).trim();
 }
 
-function rawContextDeletionPlanFromObject(value: unknown, source: string): RawContextDeletionPlan {
+function contextDeletionRequestFromObject(value: unknown, source: string): ContextDeletionRequest {
 	if (!value || typeof value !== "object" || !Array.isArray((value as { deletions?: unknown }).deletions)) {
 		throw new Error(`${source} must contain a deletions array`);
 	}
-	return value as RawContextDeletionPlan;
+	return value as ContextDeletionRequest;
 }
 
 function escapeRegExpLiteral(text: string): string {
@@ -1043,7 +1100,7 @@ function formatErrorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
-function createPlannerToolResult<TDetails>(text: string, details: TDetails): AgentToolResult<TDetails> {
+function createContextDeletionToolResult<TDetails>(text: string, details: TDetails): AgentToolResult<TDetails> {
 	return { content: [{ type: "text", text }], details, terminate: false };
 }
 
@@ -1282,11 +1339,11 @@ class ContextDeletionSqliteStore {
 					entry_id TEXT NOT NULL,
 					block_index INTEGER
 				);
-				CREATE TABLE planner_state (
+				CREATE TABLE context_compaction_state (
 					key TEXT PRIMARY KEY,
 					value TEXT NOT NULL
 				);
-				INSERT INTO planner_state (key, value) VALUES ('call_count', '0');
+				INSERT INTO context_compaction_state (key, value) VALUES ('call_count', '0');
 			`);
 
 			for (const [position, entry] of transcript.entries.entries()) {
@@ -1421,7 +1478,7 @@ class ContextDeletionSqliteStore {
 	}
 
 	clearLastError(): void {
-		this.sqlite.run("DELETE FROM planner_state WHERE key = ?", "last_error");
+		this.sqlite.run("DELETE FROM context_compaction_state WHERE key = ?", "last_error");
 	}
 
 	getLastError(): string | undefined {
@@ -1429,12 +1486,12 @@ class ContextDeletionSqliteStore {
 	}
 
 	private getState(key: string): string | undefined {
-		return this.sqlite.get<{ value: string }>("SELECT value FROM planner_state WHERE key = ?", key)?.value;
+		return this.sqlite.get<{ value: string }>("SELECT value FROM context_compaction_state WHERE key = ?", key)?.value;
 	}
 
 	private setState(key: string, value: string): void {
 		this.sqlite.run(
-			"INSERT INTO planner_state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+			"INSERT INTO context_compaction_state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
 			key,
 			value,
 		);
@@ -1451,61 +1508,67 @@ function createContextDeletionSqliteStore(transcript: CompactableTranscript): Co
 	return store;
 }
 
-export function createContextDeletionPlannerTool(
+export function createContextDeletionTool(
 	transcript: CompactableTranscript,
-): ContextDeletionPlannerToolController {
+	options: ContextCompactionRunOptions = {},
+): ContextDeletionToolController {
+	const mode = options.mode ?? "standard";
 	const store = createContextDeletionSqliteStore(transcript);
-	let validatedPlan: ValidatedContextDeletionPlan | undefined;
+	let validatedResult: ValidatedContextDeletionResult | undefined;
 
 	function readTargets(): ContextDeletionTarget[] {
 		return store.readTargets();
 	}
 
-	function applyValidatedTargets(additionalTargets: readonly ContextDeletionTarget[]): ValidatedContextDeletionPlan {
+	function applyValidatedTargets(additionalTargets: readonly ContextDeletionTarget[]): ValidatedContextDeletionResult {
 		const mergedTargets = mergeContextDeletionTargets(readTargets(), additionalTargets);
-		validatedPlan = validateContextDeletionPlan(planFromTargets(mergedTargets), transcript);
-		store.replaceTargets(validatedPlan.deletedTargets);
-		return validatedPlan;
+		validatedResult = validateContextDeletionRequest(deletionRequestFromTargets(mergedTargets), transcript, { mode });
+		store.replaceTargets(validatedResult.deletedTargets);
+		return validatedResult;
 	}
 
 	function currentStats(): ContextCompactionStats {
-		return validatedPlan?.stats ?? computeContextCompactionStats(transcript, readTargets());
+		return validatedResult?.stats ?? computeContextCompactionStats(transcript, readTargets());
 	}
 
-	const tool: AgentTool<typeof ContextDeletionPlanToolParameters, ContextDeletionPlannerToolDetails> = {
-		...CONTEXT_DELETION_PLAN_TOOL,
-		label: "context deletion plan",
+	function canDeleteProtectedTarget(target: ContextDeletionTarget): boolean {
+		return canDeleteProtectedTargetInMode(transcript, target, mode);
+	}
+
+	const tool: AgentTool<typeof ContextDeleteToolParameters, ContextDeletionToolDetails> = {
+		...CONTEXT_DELETE_TOOL,
+		label: "context deletion request",
 		executionMode: "parallel",
 		async execute(_toolCallId, params) {
 			return store.transaction(() => {
 				const callCount = store.incrementCallCount();
 				try {
-					const incomingPlan = rawContextDeletionPlanFromObject(params, `${CONTEXT_DELETION_PLAN_TOOL_NAME} arguments`);
-					const incomingValidated = validateContextDeletionPlan(incomingPlan, transcript);
+					const incomingRequest = contextDeletionRequestFromObject(params, `${CONTEXT_DELETE_TOOL_NAME} arguments`);
+					const incomingValidated = validateContextDeletionRequest(incomingRequest, transcript, { mode });
 					const applied = applyValidatedTargets(incomingValidated.deletedTargets);
 					store.clearLastError();
 					const deletedTargets = readTargets();
 
-					const details: ContextDeletionPlannerToolDetails = {
-						deletions: planFromTargets(deletedTargets).deletions,
+					const details: ContextDeletionToolDetails = {
+						deletions: deletionRequestFromTargets(deletedTargets).deletions,
 						deletedTargets,
 						stats: applied.stats,
 						callCount,
 					};
-					const text = `Recorded ${incomingValidated.deletedTargets.length} deletion target(s); ${deletedTargets.length} total validated deletion target(s) are selected. Continue calling ${CONTEXT_DELETION_PLAN_TOOL_NAME} or ${CONTEXT_GREP_DELETE_TOOL_NAME} for additional deletions, or respond done when finished.`;
-					return createPlannerToolResult(text, details);
+					const text = `Recorded ${incomingValidated.deletedTargets.length} deletion target(s); ${deletedTargets.length} total validated deletion target(s) are selected. Continue calling ${CONTEXT_DELETE_TOOL_NAME} or ${CONTEXT_GREP_DELETE_TOOL_NAME} for additional deletions, or respond done when finished.`;
+					return createContextDeletionToolResult(text, details);
 				} catch (error) {
 					const message = formatErrorMessage(error);
 					store.setLastError(message);
 					const deletedTargets = readTargets();
-					const details: ContextDeletionPlannerToolDetails = {
-						deletions: planFromTargets(deletedTargets).deletions,
+					const details: ContextDeletionToolDetails = {
+						deletions: deletionRequestFromTargets(deletedTargets).deletions,
 						deletedTargets,
 						stats: currentStats(),
 						callCount,
 						error: message,
 					};
-					return createPlannerToolResult(
+					return createContextDeletionToolResult(
 						`Error recording context deletion targets: ${message}. No new deletion targets were applied; continue with a corrected tool call.`,
 						details,
 					);
@@ -1541,11 +1604,11 @@ export function createContextDeletionPlannerTool(
 					if (target === "entry") {
 						for (const entry of store.listEntriesForGrep()) {
 							if (!matcher.test(entry.text)) continue;
-							if (entry.is_protected === 1) {
+							const candidate: ContextDeletionTarget = { kind: "entry", entryId: entry.entry_id };
+							if (entry.is_protected === 1 && !canDeleteProtectedTarget(candidate)) {
 								skipped.push({ entryId: entry.entry_id, target, reason: "protected_entry", text: entry.text });
 								continue;
 							}
-							const candidate: ContextDeletionTarget = { kind: "entry", entryId: entry.entry_id };
 							if (currentTargetDeleted(currentTargets, candidate)) {
 								skipped.push({ entryId: entry.entry_id, target, reason: "already_deleted", text: entry.text });
 								continue;
@@ -1559,7 +1622,11 @@ export function createContextDeletionPlannerTool(
 					} else {
 						for (const block of store.listContentBlocksForGrep()) {
 							if (!matcher.test(block.text)) continue;
-							if (block.entry_protected === 1) {
+							const candidate: ContextDeletionTarget =
+								block.block_count <= 1
+									? { kind: "entry", entryId: block.entry_id }
+									: { kind: "content_block", entryId: block.entry_id, blockIndex: block.block_index };
+							if (block.entry_protected === 1 && !canDeleteProtectedTarget(candidate)) {
 								skipped.push({
 									entryId: block.entry_id,
 									target,
@@ -1569,7 +1636,7 @@ export function createContextDeletionPlannerTool(
 								});
 								continue;
 							}
-							if (block.block_protected === 1) {
+							if (block.block_protected === 1 && !canDeleteProtectedTarget(candidate)) {
 								skipped.push({
 									entryId: block.entry_id,
 									target,
@@ -1579,10 +1646,6 @@ export function createContextDeletionPlannerTool(
 								});
 								continue;
 							}
-							const candidate: ContextDeletionTarget =
-								block.block_count <= 1
-									? { kind: "entry", entryId: block.entry_id }
-									: { kind: "content_block", entryId: block.entry_id, blockIndex: block.block_index };
 							if (currentTargetDeleted(currentTargets, candidate)) {
 								skipped.push({
 									entryId: block.entry_id,
@@ -1602,7 +1665,7 @@ export function createContextDeletionPlannerTool(
 						}
 					}
 
-					let applied: ValidatedContextDeletionPlan | undefined;
+					let applied: ValidatedContextDeletionResult | undefined;
 					if (params.expectedMatchCount !== undefined && candidates.length !== params.expectedMatchCount) {
 						skipped.push({ reason: "expected_match_count_mismatch" });
 					} else if (candidates.length > maxMatches) {
@@ -1624,8 +1687,8 @@ export function createContextDeletionPlannerTool(
 						stats: applied?.stats ?? currentStats(),
 						callCount,
 					};
-					const text = `Matched ${matches.length} unprotected target(s), skipped ${skipped.length}, and ${applied ? "applied" : "did not apply"} grep deletion for pattern ${JSON.stringify(pattern)}. Total validated deletion target(s): ${deletedTargets.length}.`;
-					return createPlannerToolResult(text, details);
+					const text = `Matched ${matches.length} deletion target(s), skipped ${skipped.length}, and ${applied ? "applied" : "did not apply"} grep deletion for pattern ${JSON.stringify(pattern)}. Total validated deletion target(s): ${deletedTargets.length}.`;
+					return createContextDeletionToolResult(text, details);
 				} catch (error) {
 					const message = formatErrorMessage(error);
 					store.setLastError(message);
@@ -1642,7 +1705,7 @@ export function createContextDeletionPlannerTool(
 						callCount,
 						error: message,
 					};
-					return createPlannerToolResult(
+					return createContextDeletionToolResult(
 						`Error applying grep deletion for pattern ${JSON.stringify(pattern)}: ${message}. No new deletion targets were applied; continue with a corrected tool call.`,
 						details,
 					);
@@ -1722,7 +1785,7 @@ export function createContextDeletionPlannerTool(
 						callCount,
 					};
 					const text = `Found ${matches.length}${truncated ? "+" : ""} ${target} match(es) for ${JSON.stringify(pattern)}. Use ${CONTEXT_READ_ENTRY_TOOL_NAME} with small maxChars to inspect exact content before deleting.`;
-					return createPlannerToolResult(text, details);
+					return createContextDeletionToolResult(text, details);
 				} catch (error) {
 					const message = formatErrorMessage(error);
 					store.setLastError(message);
@@ -1736,7 +1799,7 @@ export function createContextDeletionPlannerTool(
 						callCount,
 						error: message,
 					};
-					return createPlannerToolResult(
+					return createContextDeletionToolResult(
 						`Error searching transcript for ${JSON.stringify(pattern)}: ${message}. Try a literal pattern or narrower query.`,
 						details,
 					);
@@ -1786,7 +1849,7 @@ export function createContextDeletionPlannerTool(
 						callCount,
 					};
 					const textResult = `Read ${slice.length} of ${text.length} characters from ${params.blockIndex === undefined ? params.entryId : `${params.entryId}:${params.blockIndex}`}. Keep reads small; increase offset for the next slice if needed.`;
-					return createPlannerToolResult(textResult, details);
+					return createContextDeletionToolResult(textResult, details);
 				} catch (error) {
 					const message = formatErrorMessage(error);
 					store.setLastError(message);
@@ -1802,7 +1865,7 @@ export function createContextDeletionPlannerTool(
 						callCount,
 						error: message,
 					};
-					return createPlannerToolResult(`Error reading transcript entry: ${message}`, details);
+					return createContextDeletionToolResult(`Error reading transcript entry: ${message}`, details);
 				}
 			});
 		},
@@ -1814,26 +1877,26 @@ export function createContextDeletionPlannerTool(
 		searchTool,
 		readEntryTool,
 		tools: [tool, grepTool, searchTool, readEntryTool],
-		getPlan: () => planFromTargets(readTargets()),
-		getValidatedPlan: () => validatedPlan,
+		getDeletionRequest: () => deletionRequestFromTargets(readTargets()),
+		getValidatedResult: () => validatedResult,
 		getLastError: () => store.getLastError(),
 		getCallCount: () => store.getCallCount(),
 	};
 }
 
-export function parseContextDeletionPlan(text: string): RawContextDeletionPlan {
+export function parseContextDeletionRequest(text: string): ContextDeletionRequest {
 	const stripped = stripJsonFence(text);
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(stripped);
 	} catch (error) {
-		throw new Error(`Failed to parse context deletion plan JSON: ${error instanceof Error ? error.message : String(error)}`);
+		throw new Error(`Failed to parse context deletion request JSON: ${error instanceof Error ? error.message : String(error)}`);
 	}
-	return rawContextDeletionPlanFromObject(parsed, "Context deletion plan JSON");
+	return contextDeletionRequestFromObject(parsed, "Context deletion request JSON");
 }
 
-function isContextDeletionPlanToolCall(content: AssistantMessage["content"][number]): content is ToolCall {
-	return content.type === "toolCall" && content.name === CONTEXT_DELETION_PLAN_TOOL_NAME;
+function isContextDeleteToolCall(content: AssistantMessage["content"][number]): content is ToolCall {
+	return content.type === "toolCall" && content.name === CONTEXT_DELETE_TOOL_NAME;
 }
 
 function textContentFromResponse(response: AssistantMessage): string {
@@ -1843,26 +1906,26 @@ function textContentFromResponse(response: AssistantMessage): string {
 		.join("\n");
 }
 
-export function parseContextDeletionPlanResponse(response: AssistantMessage): RawContextDeletionPlan {
-	const toolCalls = response.content.filter(isContextDeletionPlanToolCall);
+export function parseContextDeletionResponse(response: AssistantMessage): ContextDeletionRequest {
+	const toolCalls = response.content.filter(isContextDeleteToolCall);
 	if (toolCalls.length > 1) {
-		throw new Error(`Context compaction planner called ${CONTEXT_DELETION_PLAN_TOOL_NAME} more than once`);
+		throw new Error(`Context compaction assistant called ${CONTEXT_DELETE_TOOL_NAME} more than once`);
 	}
 	const toolCall = toolCalls[0];
 	if (toolCall) {
-		return rawContextDeletionPlanFromObject(toolCall.arguments, `${CONTEXT_DELETION_PLAN_TOOL_NAME} arguments`);
+		return contextDeletionRequestFromObject(toolCall.arguments, `${CONTEXT_DELETE_TOOL_NAME} arguments`);
 	}
 
 	const textContent = textContentFromResponse(response);
 	if (textContent.trim().length === 0) {
-		throw new Error(`Context compaction planner did not call ${CONTEXT_DELETION_PLAN_TOOL_NAME}`);
+		throw new Error(`Context compaction assistant did not call ${CONTEXT_DELETE_TOOL_NAME}`);
 	}
-	return parseContextDeletionPlan(textContent);
+	return parseContextDeletionRequest(textContent);
 }
 
 function truncateForPrompt(text: string, maxChars: number): string {
 	if (text.length <= maxChars) return text;
-	return `${text.slice(0, maxChars)}\n[... ${text.length - maxChars} more characters omitted from planner prompt]`;
+	return `${text.slice(0, maxChars)}\n[... ${text.length - maxChars} more characters omitted from context compaction prompt]`;
 }
 
 function transcriptEntryFilePayload(entry: CompactableTranscriptEntry): unknown {
@@ -1886,12 +1949,12 @@ function transcriptEntryFilePayload(entry: CompactableTranscriptEntry): unknown 
 	};
 }
 
-interface PlannerTranscriptFile {
+interface ContextCompactionTranscriptFile {
 	path: string;
 	cleanup(): void;
 }
 
-function writePlannerTranscriptFile(transcript: CompactableTranscript): PlannerTranscriptFile {
+function writeContextCompactionTranscriptFile(transcript: CompactableTranscript): ContextCompactionTranscriptFile {
 	const directory = mkdtempSync(join(tmpdir(), "atomic-context-transcript-"));
 	const path = join(directory, "transcript.jsonl");
 	const lines = transcript.entries
@@ -1904,7 +1967,7 @@ function writePlannerTranscriptFile(transcript: CompactableTranscript): PlannerT
 	};
 }
 
-function plannerTranscriptManifest(transcript: CompactableTranscript, transcriptFilePath: string): unknown {
+function contextCompactionTranscriptManifest(transcript: CompactableTranscript, transcriptFilePath: string): unknown {
 	const eligibleEntries = transcript.entries.filter((entry) => !isExcludedFromLlmContext(entry.message));
 	const selectedEntryIds = new Set<string>();
 	const selectedEntries: CompactableTranscriptEntry[] = [];
@@ -1952,81 +2015,112 @@ function plannerTranscriptManifest(transcript: CompactableTranscript, transcript
 	};
 }
 
-export function buildContextCompactionPrompt(
-	transcript: CompactableTranscript,
-	transcriptFilePath = "<transcript file will be written during compaction planning>",
-): string {
-	return `${CONTEXT_COMPACTION_FIXED_PROMPT}\n\n<transcript-file>\n${transcriptFilePath}\n</transcript-file>\n\n<context-manifest>\n${JSON.stringify(plannerTranscriptManifest(transcript, transcriptFilePath), null, 2)}\n</context-manifest>`;
+function contextCompactionModePrompt(mode: ContextCompactionMode): string {
+	if (mode === "critical_overflow") {
+		return `\n<critical-overflow-mode>\nThe previous model request overflowed its context window. This is a critical LRU-style compaction pass. First delete stale unprotected context. If that is not enough, you may also delete the earliest protected entries or protected content shown in the manifest, especially old user/custom/summary context, while preserving recent entries, unresolved errors, failed commands, and enough task-bearing context for the assistant to continue.\n</critical-overflow-mode>`;
+	}
+	return `\n<standard-mode>\nDo not delete entries or content blocks marked protected. Protected context is only eligible during critical overflow recovery, not during standard compaction.\n</standard-mode>`;
 }
 
-function createContextCompactionPlannerErrorStream(model: Model<Api>, errorMessage: string) {
+export function buildContextCompactionPrompt(
+	transcript: CompactableTranscript,
+	transcriptFilePath = "<transcript file will be written during context compaction>",
+	mode: ContextCompactionMode = "standard",
+): string {
+	return `${CONTEXT_COMPACTION_FIXED_PROMPT}${contextCompactionModePrompt(mode)}\n\n<transcript-file>\n${transcriptFilePath}\n</transcript-file>\n\n<context-manifest>\n${JSON.stringify(contextCompactionTranscriptManifest(transcript, transcriptFilePath), null, 2)}\n</context-manifest>`;
+}
+
+function createContextCompactionAssistantMessage(
+	model: Model<Api>,
+	content: AssistantMessage["content"],
+	stopReason: AssistantMessage["stopReason"],
+	errorMessage?: string,
+): AssistantMessage {
+	return {
+		role: "assistant",
+		content,
+		api: model.api,
+		provider: model.provider,
+		model: model.id,
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason,
+		...(errorMessage !== undefined ? { errorMessage } : {}),
+		timestamp: Date.now(),
+	};
+}
+
+function createContextCompactionStopStream(model: Model<Api>, text: string) {
 	const stream = createAssistantMessageEventStream();
 	queueMicrotask(() => {
-		const message: AssistantMessage = {
-			role: "assistant",
-			content: [],
-			api: model.api,
-			provider: model.provider,
-			model: model.id,
-			usage: {
-				input: 0,
-				output: 0,
-				cacheRead: 0,
-				cacheWrite: 0,
-				totalTokens: 0,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-			},
-			stopReason: "error",
-			errorMessage,
-			timestamp: Date.now(),
-		};
-		stream.push({ type: "error", reason: "error", error: message });
+		const message = createContextCompactionAssistantMessage(model, [{ type: "text", text }], "stop");
+		stream.push({ type: "done", reason: "stop", message });
 		stream.end(message);
 	});
 	return stream;
 }
 
-interface ContextDeletionPlanningRun {
-	plan: RawContextDeletionPlan;
-	validatedPlan: ValidatedContextDeletionPlan | undefined;
+function isContextCompactionOverflowError(model: Model<Api>, errorMessage: string): boolean {
+	return isContextOverflow(
+		createContextCompactionAssistantMessage(model, [], "error", errorMessage),
+		model.contextWindow,
+	);
+}
+
+export function getLowestContextCompactionThinkingLevel(model: Model<Api>): ThinkingLevel {
+	const supportedLevels = getSupportedThinkingLevels(model) as ThinkingLevel[];
+	for (const level of CONTEXT_COMPACTION_THINKING_LEVEL_ORDER) {
+		if (supportedLevels.includes(level)) return level;
+	}
+	return "off";
+}
+
+interface ContextDeletionRun {
+	validatedResult: ValidatedContextDeletionResult | undefined;
 	lastToolError: string | undefined;
 }
 
-async function runContextDeletionPlanner(
+async function runContextDeletionAssistant(
 	transcript: CompactableTranscript,
 	model: Model<Api>,
 	apiKey: string,
 	headers?: Record<string, string>,
 	signal?: AbortSignal,
-	thinkingLevel?: ThinkingLevel,
-): Promise<ContextDeletionPlanningRun> {
+	mode: ContextCompactionMode = "standard",
+): Promise<ContextDeletionRun> {
 	const maxTokens = Math.min(4096, model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY);
 	if (signal?.aborted) {
-		throw new Error("Context compaction planning failed: Request was aborted");
+		throw new Error("Context compaction failed: Request was aborted");
 	}
-	const transcriptFile = writePlannerTranscriptFile(transcript);
+	const transcriptFile = writeContextCompactionTranscriptFile(transcript);
 	const promptMessage: AgentMessage = {
 		role: "user",
-		content: [{ type: "text", text: buildContextCompactionPrompt(transcript, transcriptFile.path) }],
+		content: [{ type: "text", text: buildContextCompactionPrompt(transcript, transcriptFile.path, mode) }],
 		timestamp: Date.now(),
 	};
-	const plannerTool = createContextDeletionPlannerTool(transcript);
-	const effectiveThinkingLevel = model.reasoning && thinkingLevel && thinkingLevel !== "off" ? thinkingLevel : "off";
-	let plannerTurnCount = 0;
+	const deletionTool = createContextDeletionTool(transcript, { mode });
+	const effectiveThinkingLevel = getLowestContextCompactionThinkingLevel(model);
+	let compactionTurnCount = 0;
 	const agent = new Agent({
 		initialState: {
 			systemPrompt: CONTEXT_COMPACTION_SYSTEM_PROMPT,
 			model,
 			thinkingLevel: effectiveThinkingLevel,
-			tools: plannerTool.tools,
+			tools: deletionTool.tools,
 		},
 		toolExecution: "parallel",
 		streamFn: async (requestModel, context, streamOptions) => {
-			plannerTurnCount += 1;
-			if (plannerTurnCount > CONTEXT_COMPACTION_PLANNER_MAX_TURNS) {
-				return createContextCompactionPlannerErrorStream(
+			compactionTurnCount += 1;
+			if (compactionTurnCount > CONTEXT_COMPACTION_MAX_TURNS) {
+				return createContextCompactionStopStream(
 					requestModel,
-					`planner exceeded ${CONTEXT_COMPACTION_PLANNER_MAX_TURNS} turns without finishing`,
+					`Reached the context compaction turn cap (${CONTEXT_COMPACTION_MAX_TURNS}); using the deletions recorded so far.`,
 				);
 			}
 			return streamSimple(requestModel, context, {
@@ -2048,36 +2142,26 @@ async function runContextDeletionPlanner(
 	}
 
 	if (signal?.aborted) {
-		throw new Error("Context compaction planning failed: Request was aborted");
+		throw new Error("Context compaction failed: Request was aborted");
 	}
 	if (agent.state.errorMessage) {
-		throw new Error(`Context compaction planning failed: ${agent.state.errorMessage}`);
+		if (isContextCompactionOverflowError(model, agent.state.errorMessage)) {
+			return {
+				validatedResult: deletionTool.getValidatedResult(),
+				lastToolError: deletionTool.getLastError(),
+			};
+		}
+		throw new Error(`Context compaction failed: ${agent.state.errorMessage}`);
 	}
-	if (plannerTool.getCallCount() === 0) {
+	if (deletionTool.getCallCount() === 0) {
 		throw new Error(
-			`Context compaction planner did not call any transcript inspection or deletion tools (${CONTEXT_SEARCH_TRANSCRIPT_TOOL_NAME}, ${CONTEXT_READ_ENTRY_TOOL_NAME}, ${CONTEXT_DELETION_PLAN_TOOL_NAME}, or ${CONTEXT_GREP_DELETE_TOOL_NAME})`,
+			`Context compaction did not call any transcript inspection or deletion tools (${CONTEXT_SEARCH_TRANSCRIPT_TOOL_NAME}, ${CONTEXT_READ_ENTRY_TOOL_NAME}, ${CONTEXT_DELETE_TOOL_NAME}, or ${CONTEXT_GREP_DELETE_TOOL_NAME})`,
 		);
 	}
 	return {
-		plan: plannerTool.getPlan(),
-		validatedPlan: plannerTool.getValidatedPlan(),
-		lastToolError: plannerTool.getLastError(),
+		validatedResult: deletionTool.getValidatedResult(),
+		lastToolError: deletionTool.getLastError(),
 	};
-}
-
-/**
- * Runs the transcript-bound planner and returns only raw deletion targets. Callers that need the
- * validated plan should call contextCompact() instead; calling both independently re-runs planning.
- */
-export async function planContextDeletions(
-	transcript: CompactableTranscript,
-	model: Model<Api>,
-	apiKey: string,
-	headers?: Record<string, string>,
-	signal?: AbortSignal,
-	thinkingLevel?: ThinkingLevel,
-): Promise<RawContextDeletionPlan> {
-	return (await runContextDeletionPlanner(transcript, model, apiKey, headers, signal, thinkingLevel)).plan;
 }
 
 export async function contextCompact(
@@ -2086,20 +2170,21 @@ export async function contextCompact(
 	apiKey: string,
 	headers?: Record<string, string>,
 	signal?: AbortSignal,
-	thinkingLevel?: ThinkingLevel,
-): Promise<ValidatedContextDeletionPlan> {
-	const { validatedPlan, lastToolError } = await runContextDeletionPlanner(
+	_thinkingLevel?: ThinkingLevel,
+	mode: ContextCompactionMode = preparation.mode ?? "standard",
+): Promise<ValidatedContextDeletionResult> {
+	const { validatedResult, lastToolError } = await runContextDeletionAssistant(
 		preparation.transcript,
 		model,
 		apiKey,
 		headers,
 		signal,
-		thinkingLevel,
+		mode,
 	);
-	if (!validatedPlan || validatedPlan.deletedTargets.length === 0) {
+	if (!validatedResult || validatedResult.deletedTargets.length === 0) {
 		throw new Error(
-			lastToolError ? `No safe context deletions proposed; last planner tool error: ${lastToolError}` : "No safe context deletions proposed",
+			lastToolError ? `No safe context deletions proposed; last deletion tool error: ${lastToolError}` : "No safe context deletions proposed",
 		);
 	}
-	return validatedPlan;
+	return validatedResult;
 }
