@@ -1,7 +1,10 @@
 import { Agent, type AgentMessage, type AgentTool, type AgentToolResult, type ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model, ToolCall } from "@earendil-works/pi-ai";
 import { createAssistantMessageEventStream, streamSimple, StringEnum } from "@earendil-works/pi-ai";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Type } from "typebox";
 import {
 	createBranchSummaryMessage,
@@ -77,10 +80,20 @@ export interface ContextCompactionResult extends ValidatedContextDeletionPlan {
 
 const CONTEXT_DELETION_PLAN_TOOL_NAME = "context_deletion_plan";
 const CONTEXT_GREP_DELETE_TOOL_NAME = "context_grep_delete";
+const CONTEXT_SEARCH_TRANSCRIPT_TOOL_NAME = "context_search_transcript";
+const CONTEXT_READ_ENTRY_TOOL_NAME = "context_read_entry";
 export const CONTEXT_COMPACTION_PLANNER_MAX_TURNS = 8 as const;
 const CONTEXT_GREP_DELETE_DEFAULT_MAX_MATCHES = 50;
 const CONTEXT_GREP_DELETE_MAX_REGEX_PATTERN_CHARS = 512;
 const CONTEXT_GREP_DELETE_MAX_REGEX_SCAN_CHARS = 250_000;
+const CONTEXT_MANIFEST_MAX_ENTRIES = 80;
+const CONTEXT_MANIFEST_PREVIEW_CHARS = 240;
+const CONTEXT_READ_ENTRY_DEFAULT_MAX_CHARS = 4000;
+const CONTEXT_READ_ENTRY_MAX_CHARS = 12_000;
+const CONTEXT_SEARCH_DEFAULT_MAX_MATCHES = 20;
+const CONTEXT_SEARCH_MAX_MATCHES = 100;
+const CONTEXT_SEARCH_DEFAULT_CONTEXT_CHARS = 160;
+const CONTEXT_SEARCH_MAX_CONTEXT_CHARS = 500;
 
 const ContextDeletionPlanToolParameters = Type.Object(
 	{
@@ -134,6 +147,48 @@ const ContextGrepDeleteToolParameters = Type.Object(
 	{ additionalProperties: false },
 );
 
+const ContextSearchTranscriptToolParameters = Type.Object(
+	{
+		pattern: Type.String({ minLength: 1, description: "Literal text or regular expression to search for." }),
+		regex: Type.Optional(Type.Boolean({ description: "Treat pattern as a JavaScript regular expression. Defaults to false." })),
+		caseSensitive: Type.Optional(Type.Boolean({ description: "Use case-sensitive matching. Defaults to false." })),
+		target: Type.Optional(
+			StringEnum(["entry", "content_block"] as const, {
+				description: "Search whole entry text or individual content-block text. Defaults to entry.",
+			}),
+		),
+		maxMatches: Type.Optional(
+			Type.Integer({ minimum: 1, maximum: CONTEXT_SEARCH_MAX_MATCHES, description: "Maximum matches to return. Defaults to 20." }),
+		),
+		contextChars: Type.Optional(
+			Type.Integer({
+				minimum: 0,
+				maximum: CONTEXT_SEARCH_MAX_CONTEXT_CHARS,
+				description: "Characters of context to include before and after each match. Defaults to 160.",
+			}),
+		),
+	},
+	{ additionalProperties: false },
+);
+
+const ContextReadEntryToolParameters = Type.Object(
+	{
+		entryId: Type.String({ minLength: 1, description: "Stable transcript entry id to read." }),
+		blockIndex: Type.Optional(
+			Type.Integer({ minimum: 0, description: "Optional content block index to read instead of the whole entry text." }),
+		),
+		offset: Type.Optional(Type.Integer({ minimum: 0, description: "Character offset to begin reading. Defaults to 0." })),
+		maxChars: Type.Optional(
+			Type.Integer({
+				minimum: 1,
+				maximum: CONTEXT_READ_ENTRY_MAX_CHARS,
+				description: "Maximum characters to return. Defaults to 4000; keep reads small to avoid overflowing context.",
+			}),
+		),
+	},
+	{ additionalProperties: false },
+);
+
 const CONTEXT_DELETION_PLAN_TOOL = {
 	name: CONTEXT_DELETION_PLAN_TOOL_NAME,
 	description: "Record context compaction deletion targets directly against the transcript.",
@@ -144,6 +199,18 @@ const CONTEXT_GREP_DELETE_TOOL = {
 	name: CONTEXT_GREP_DELETE_TOOL_NAME,
 	description: "Bulk-delete transcript entries or content blocks matching a guarded grep/regex query.",
 	parameters: ContextGrepDeleteToolParameters,
+} as const;
+
+const CONTEXT_SEARCH_TRANSCRIPT_TOOL = {
+	name: CONTEXT_SEARCH_TRANSCRIPT_TOOL_NAME,
+	description: "Search the full transcript working copy and return small snippets without mutating deletion state.",
+	parameters: ContextSearchTranscriptToolParameters,
+} as const;
+
+const CONTEXT_READ_ENTRY_TOOL = {
+	name: CONTEXT_READ_ENTRY_TOOL_NAME,
+	description: "Read a small slice of one transcript entry or content block from the full transcript working copy.",
+	parameters: ContextReadEntryToolParameters,
 } as const;
 
 export interface ContextDeletionPlannerToolDetails {
@@ -187,9 +254,44 @@ export interface ContextGrepDeletionToolDetails {
 	error?: string;
 }
 
+export interface ContextTranscriptSearchMatch {
+	entryId: string;
+	target: "entry" | "content_block";
+	blockIndex?: number;
+	matchIndex: number;
+	snippet: string;
+	protected: boolean;
+}
+
+export interface ContextTranscriptSearchToolDetails {
+	pattern: string;
+	regex: boolean;
+	caseSensitive: boolean;
+	target: "entry" | "content_block";
+	matches: ContextTranscriptSearchMatch[];
+	truncated: boolean;
+	callCount: number;
+	error?: string;
+}
+
+export interface ContextReadEntryToolDetails {
+	entryId: string;
+	blockIndex?: number;
+	offset: number;
+	maxChars: number;
+	totalChars: number;
+	text: string;
+	truncatedBefore: boolean;
+	truncatedAfter: boolean;
+	callCount: number;
+	error?: string;
+}
+
 export interface ContextDeletionPlannerToolController {
 	tool: AgentTool<typeof ContextDeletionPlanToolParameters, ContextDeletionPlannerToolDetails>;
 	grepTool: AgentTool<typeof ContextGrepDeleteToolParameters, ContextGrepDeletionToolDetails>;
+	searchTool: AgentTool<typeof ContextSearchTranscriptToolParameters, ContextTranscriptSearchToolDetails>;
+	readEntryTool: AgentTool<typeof ContextReadEntryToolParameters, ContextReadEntryToolDetails>;
 	tools: AgentTool[];
 	getPlan(): RawContextDeletionPlan;
 	getValidatedPlan(): ValidatedContextDeletionPlan | undefined;
@@ -198,7 +300,7 @@ export interface ContextDeletionPlannerToolController {
 }
 
 const CONTEXT_COMPACTION_SYSTEM_PROMPT =
-	"You are a context compaction planner for an AI coding assistant transcript. Use context_deletion_plan for exact deletions and context_grep_delete for guarded bulk deletion; do not write deletion JSON in prose.";
+	"You are a context compaction planner for an AI coding assistant transcript. Use the transcript search/read tools for small inspections, then use context_deletion_plan or context_grep_delete for deletions; do not write deletion JSON in prose.";
 
 const CONTEXT_COMPACTION_FIXED_PROMPT = `You are a context compaction planner for an AI coding assistant transcript.
 
@@ -233,6 +335,8 @@ For content-block deletions, use:
 The tool applies and validates deletion targets immediately. You can continue calling it for additional deletions if useful.
 
 For guarded bulk deletion by text match, call context_grep_delete with a literal pattern or regex. It skips protected context, enforces maxMatches and expectedMatchCount, and validates through the same tool-call/tool-result safety rules.
+
+The full transcript is available as a JSONL file path in the prompt, but do NOT try to load the whole file into context. Use context_search_transcript to find candidate entry IDs and context_read_entry to read only small slices (for example maxChars 1000-4000) before deleting.
 
 When you are done, reply with a brief plain-text completion message. Do not write deletion JSON or deletion target IDs outside tool calls.
 </output_format>`;
@@ -982,6 +1086,29 @@ function assertSafeRegexScan(scanChars: number): void {
 	);
 }
 
+function clampInteger(value: number | undefined, defaultValue: number, minimum: number, maximum: number): number {
+	if (value === undefined) return defaultValue;
+	return Math.max(minimum, Math.min(maximum, value));
+}
+
+function textSlice(text: string, offset: number, maxChars: number): string {
+	return text.slice(offset, Math.min(text.length, offset + maxChars));
+}
+
+function findMatchIndex(matcher: RegExp, text: string): number {
+	const match = matcher.exec(text);
+	matcher.lastIndex = 0;
+	return match?.index ?? -1;
+}
+
+function snippetForMatch(text: string, matchIndex: number, contextChars: number): string {
+	const start = Math.max(0, matchIndex - contextChars);
+	const end = Math.min(text.length, matchIndex + contextChars);
+	const prefix = start > 0 ? "…" : "";
+	const suffix = end < text.length ? "…" : "";
+	return `${prefix}${text.slice(start, end)}${suffix}`;
+}
+
 function currentTargetDeleted(targets: readonly ContextDeletionTarget[], target: ContextDeletionTarget): boolean {
 	const deletedEntryIds = getDeletedEntryIds(targets);
 	if (deletedEntryIds.has(target.entryId)) return true;
@@ -1098,6 +1225,11 @@ interface EntryTextRow extends SqliteRow {
 	is_protected: number;
 }
 
+interface EntryReadRow extends EntryTextRow {
+	role: string;
+	token_estimate: number;
+}
+
 interface ContentBlockTextRow extends SqliteRow {
 	entry_id: string;
 	block_index: number;
@@ -1105,6 +1237,11 @@ interface ContentBlockTextRow extends SqliteRow {
 	entry_protected: number;
 	block_protected: number;
 	block_count: number;
+}
+
+interface ContentBlockReadRow extends ContentBlockTextRow {
+	type: string;
+	token_estimate: number;
 }
 
 class ContextDeletionSqliteStore {
@@ -1229,6 +1366,38 @@ class ContextDeletionSqliteStore {
 			JOIN transcript_entries entries ON entries.entry_id = blocks.entry_id
 			ORDER BY entries.position, blocks.block_index
 		`);
+	}
+
+	getEntryForRead(entryId: string): EntryReadRow | undefined {
+		return this.sqlite.get<EntryReadRow>(
+			"SELECT entry_id, role, is_protected, token_estimate, text FROM transcript_entries WHERE entry_id = ?",
+			entryId,
+		);
+	}
+
+	getContentBlockForRead(entryId: string, blockIndex: number): ContentBlockReadRow | undefined {
+		return this.sqlite.get<ContentBlockReadRow>(
+			`
+				SELECT
+					blocks.entry_id,
+					blocks.block_index,
+					blocks.type,
+					blocks.token_estimate,
+					blocks.text,
+					entries.is_protected AS entry_protected,
+					blocks.is_protected AS block_protected,
+					(
+						SELECT COUNT(*)
+						FROM transcript_content_blocks sibling
+						WHERE sibling.entry_id = blocks.entry_id
+					) AS block_count
+				FROM transcript_content_blocks blocks
+				JOIN transcript_entries entries ON entries.entry_id = blocks.entry_id
+				WHERE blocks.entry_id = ? AND blocks.block_index = ?
+			`,
+			entryId,
+			blockIndex,
+		);
 	}
 
 	getGrepScanTextLength(target: "entry" | "content_block"): number {
@@ -1482,10 +1651,169 @@ export function createContextDeletionPlannerTool(
 		},
 	};
 
+	const searchTool: AgentTool<typeof ContextSearchTranscriptToolParameters, ContextTranscriptSearchToolDetails> = {
+		...CONTEXT_SEARCH_TRANSCRIPT_TOOL,
+		label: "context transcript search",
+		executionMode: "parallel",
+		async execute(_toolCallId, params) {
+			return store.transaction(() => {
+				const callCount = store.incrementCallCount();
+				const pattern = params.pattern;
+				const regex = params.regex === true;
+				const caseSensitive = params.caseSensitive === true;
+				const target = params.target ?? "entry";
+				const maxMatches = clampInteger(params.maxMatches, CONTEXT_SEARCH_DEFAULT_MAX_MATCHES, 1, CONTEXT_SEARCH_MAX_MATCHES);
+				const contextChars = clampInteger(
+					params.contextChars,
+					CONTEXT_SEARCH_DEFAULT_CONTEXT_CHARS,
+					0,
+					CONTEXT_SEARCH_MAX_CONTEXT_CHARS,
+				);
+				const matches: ContextTranscriptSearchMatch[] = [];
+				let truncated = false;
+
+				try {
+					if (regex) {
+						assertSafeRegexScan(store.getGrepScanTextLength(target));
+					}
+					const matcher = createGrepMatcher(pattern, regex, caseSensitive);
+					if (target === "entry") {
+						for (const entry of store.listEntriesForGrep()) {
+							const matchIndex = findMatchIndex(matcher, entry.text);
+							if (matchIndex < 0) continue;
+							if (matches.length >= maxMatches) {
+								truncated = true;
+								break;
+							}
+							matches.push({
+								entryId: entry.entry_id,
+								target,
+								matchIndex,
+								snippet: snippetForMatch(entry.text, matchIndex, contextChars),
+								protected: entry.is_protected === 1,
+							});
+						}
+					} else {
+						for (const block of store.listContentBlocksForGrep()) {
+							const matchIndex = findMatchIndex(matcher, block.text);
+							if (matchIndex < 0) continue;
+							if (matches.length >= maxMatches) {
+								truncated = true;
+								break;
+							}
+							matches.push({
+								entryId: block.entry_id,
+								target,
+								blockIndex: block.block_index,
+								matchIndex,
+								snippet: snippetForMatch(block.text, matchIndex, contextChars),
+								protected: block.entry_protected === 1 || block.block_protected === 1,
+							});
+						}
+					}
+					store.clearLastError();
+					const details: ContextTranscriptSearchToolDetails = {
+						pattern,
+						regex,
+						caseSensitive,
+						target,
+						matches,
+						truncated,
+						callCount,
+					};
+					const text = `Found ${matches.length}${truncated ? "+" : ""} ${target} match(es) for ${JSON.stringify(pattern)}. Use ${CONTEXT_READ_ENTRY_TOOL_NAME} with small maxChars to inspect exact content before deleting.`;
+					return createPlannerToolResult(text, details);
+				} catch (error) {
+					const message = formatErrorMessage(error);
+					store.setLastError(message);
+					const details: ContextTranscriptSearchToolDetails = {
+						pattern,
+						regex,
+						caseSensitive,
+						target,
+						matches,
+						truncated,
+						callCount,
+						error: message,
+					};
+					return createPlannerToolResult(
+						`Error searching transcript for ${JSON.stringify(pattern)}: ${message}. Try a literal pattern or narrower query.`,
+						details,
+					);
+				}
+			});
+		},
+	};
+
+	const readEntryTool: AgentTool<typeof ContextReadEntryToolParameters, ContextReadEntryToolDetails> = {
+		...CONTEXT_READ_ENTRY_TOOL,
+		label: "context read entry",
+		executionMode: "parallel",
+		async execute(_toolCallId, params) {
+			return store.transaction(() => {
+				const callCount = store.incrementCallCount();
+				const offset = clampInteger(params.offset, 0, 0, Number.MAX_SAFE_INTEGER);
+				const maxChars = clampInteger(
+					params.maxChars,
+					CONTEXT_READ_ENTRY_DEFAULT_MAX_CHARS,
+					1,
+					CONTEXT_READ_ENTRY_MAX_CHARS,
+				);
+				try {
+					const row =
+						params.blockIndex === undefined
+							? store.getEntryForRead(params.entryId)
+							: store.getContentBlockForRead(params.entryId, params.blockIndex);
+					if (!row) {
+						throw new Error(
+							params.blockIndex === undefined
+								? `Unknown transcript entry: ${params.entryId}`
+								: `Unknown transcript content block: ${params.entryId}:${params.blockIndex}`,
+						);
+					}
+					const text = row.text;
+					const slice = textSlice(text, offset, maxChars);
+					store.clearLastError();
+					const details: ContextReadEntryToolDetails = {
+						entryId: params.entryId,
+						...(params.blockIndex === undefined ? {} : { blockIndex: params.blockIndex }),
+						offset,
+						maxChars,
+						totalChars: text.length,
+						text: slice,
+						truncatedBefore: offset > 0,
+						truncatedAfter: offset + maxChars < text.length,
+						callCount,
+					};
+					const textResult = `Read ${slice.length} of ${text.length} characters from ${params.blockIndex === undefined ? params.entryId : `${params.entryId}:${params.blockIndex}`}. Keep reads small; increase offset for the next slice if needed.`;
+					return createPlannerToolResult(textResult, details);
+				} catch (error) {
+					const message = formatErrorMessage(error);
+					store.setLastError(message);
+					const details: ContextReadEntryToolDetails = {
+						entryId: params.entryId,
+						...(params.blockIndex === undefined ? {} : { blockIndex: params.blockIndex }),
+						offset,
+						maxChars,
+						totalChars: 0,
+						text: "",
+						truncatedBefore: false,
+						truncatedAfter: false,
+						callCount,
+						error: message,
+					};
+					return createPlannerToolResult(`Error reading transcript entry: ${message}`, details);
+				}
+			});
+		},
+	};
+
 	return {
 		tool,
 		grepTool,
-		tools: [tool, grepTool],
+		searchTool,
+		readEntryTool,
+		tools: [tool, grepTool, searchTool, readEntryTool],
 		getPlan: () => planFromTargets(readTargets()),
 		getValidatedPlan: () => validatedPlan,
 		getLastError: () => store.getLastError(),
@@ -1537,29 +1865,98 @@ function truncateForPrompt(text: string, maxChars: number): string {
 	return `${text.slice(0, maxChars)}\n[... ${text.length - maxChars} more characters omitted from planner prompt]`;
 }
 
-function plannerTranscriptPayload(transcript: CompactableTranscript): unknown {
-	return transcript.entries
+function transcriptEntryFilePayload(entry: CompactableTranscriptEntry): unknown {
+	return {
+		entryId: entry.entryId,
+		entryType: entry.entryType,
+		role: entry.role,
+		protected: entry.protected,
+		tokenEstimate: entry.tokenEstimate,
+		toolCallIds: entry.toolCallIds,
+		toolResultFor: entry.toolResultFor,
+		text: entry.text,
+		contentBlocks: entry.contentBlocks.map((block) => ({
+			blockIndex: block.blockIndex,
+			type: block.type,
+			protected: block.protected,
+			toolCallId: block.toolCallId,
+			tokenEstimate: block.tokenEstimate,
+			text: block.text,
+		})),
+	};
+}
+
+interface PlannerTranscriptFile {
+	path: string;
+	cleanup(): void;
+}
+
+function writePlannerTranscriptFile(transcript: CompactableTranscript): PlannerTranscriptFile {
+	const directory = mkdtempSync(join(tmpdir(), "atomic-context-transcript-"));
+	const path = join(directory, "transcript.jsonl");
+	const lines = transcript.entries
 		.filter((entry) => !isExcludedFromLlmContext(entry.message))
-		.map((entry) => ({
+		.map((entry) => JSON.stringify(transcriptEntryFilePayload(entry)));
+	writeFileSync(path, `${lines.join("\n")}\n`, "utf8");
+	return {
+		path,
+		cleanup: () => rmSync(directory, { recursive: true, force: true }),
+	};
+}
+
+function plannerTranscriptManifest(transcript: CompactableTranscript, transcriptFilePath: string): unknown {
+	const eligibleEntries = transcript.entries.filter((entry) => !isExcludedFromLlmContext(entry.message));
+	const selectedEntryIds = new Set<string>();
+	const selectedEntries: CompactableTranscriptEntry[] = [];
+	const addEntry = (entry: CompactableTranscriptEntry): void => {
+		if (selectedEntryIds.has(entry.entryId) || selectedEntries.length >= CONTEXT_MANIFEST_MAX_ENTRIES) return;
+		selectedEntryIds.add(entry.entryId);
+		selectedEntries.push(entry);
+	};
+
+	for (const entry of eligibleEntries.filter((entry) => entry.protected)) {
+		addEntry(entry);
+	}
+	for (const entry of [...eligibleEntries]
+		.filter((entry) => !entry.protected)
+		.sort((left, right) => right.tokenEstimate - left.tokenEstimate)) {
+		addEntry(entry);
+	}
+	selectedEntries.sort((left, right) => eligibleEntries.indexOf(left) - eligibleEntries.indexOf(right));
+
+	return {
+		transcriptFilePath,
+		transcriptFileFormat: "jsonl: one compactable transcript entry per line with full text and contentBlocks text",
+		totalEntries: eligibleEntries.length,
+		manifestEntries: selectedEntries.length,
+		omittedEntries: Math.max(0, eligibleEntries.length - selectedEntries.length),
+		tokensBefore: transcript.tokensBefore,
+		protectedEntryIds: transcript.protectedEntryIds,
+		entries: selectedEntries.map((entry) => ({
 			entryId: entry.entryId,
 			role: entry.role,
 			protected: entry.protected,
 			tokenEstimate: entry.tokenEstimate,
 			toolCallIds: entry.toolCallIds,
 			toolResultFor: entry.toolResultFor,
+			contentBlockCount: entry.contentBlocks.length,
 			contentBlocks: entry.contentBlocks.map((block) => ({
 				blockIndex: block.blockIndex,
 				type: block.type,
 				protected: block.protected,
 				toolCallId: block.toolCallId,
-				text: truncateForPrompt(block.text, 2000),
+				tokenEstimate: block.tokenEstimate,
 			})),
-			text: truncateForPrompt(entry.text, 4000),
-		}));
+			preview: truncateForPrompt(entry.text, CONTEXT_MANIFEST_PREVIEW_CHARS),
+		})),
+	};
 }
 
-export function buildContextCompactionPrompt(transcript: CompactableTranscript): string {
-	return `${CONTEXT_COMPACTION_FIXED_PROMPT}\n\n<transcript-json>\n${JSON.stringify(plannerTranscriptPayload(transcript), null, 2)}\n</transcript-json>`;
+export function buildContextCompactionPrompt(
+	transcript: CompactableTranscript,
+	transcriptFilePath = "<transcript file will be written during compaction planning>",
+): string {
+	return `${CONTEXT_COMPACTION_FIXED_PROMPT}\n\n<transcript-file>\n${transcriptFilePath}\n</transcript-file>\n\n<context-manifest>\n${JSON.stringify(plannerTranscriptManifest(transcript, transcriptFilePath), null, 2)}\n</context-manifest>`;
 }
 
 function createContextCompactionPlannerErrorStream(model: Model<Api>, errorMessage: string) {
@@ -1604,9 +2001,13 @@ async function runContextDeletionPlanner(
 	thinkingLevel?: ThinkingLevel,
 ): Promise<ContextDeletionPlanningRun> {
 	const maxTokens = Math.min(4096, model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY);
+	if (signal?.aborted) {
+		throw new Error("Context compaction planning failed: Request was aborted");
+	}
+	const transcriptFile = writePlannerTranscriptFile(transcript);
 	const promptMessage: AgentMessage = {
 		role: "user",
-		content: [{ type: "text", text: buildContextCompactionPrompt(transcript) }],
+		content: [{ type: "text", text: buildContextCompactionPrompt(transcript, transcriptFile.path) }],
 		timestamp: Date.now(),
 	};
 	const plannerTool = createContextDeletionPlannerTool(transcript);
@@ -1637,15 +2038,13 @@ async function runContextDeletionPlanner(
 		},
 	});
 
-	if (signal?.aborted) {
-		throw new Error("Context compaction planning failed: Request was aborted");
-	}
 	const abortOnSignal = () => agent.abort();
 	signal?.addEventListener("abort", abortOnSignal, { once: true });
 	try {
 		await agent.prompt(promptMessage);
 	} finally {
 		signal?.removeEventListener("abort", abortOnSignal);
+		transcriptFile.cleanup();
 	}
 
 	if (signal?.aborted) {
@@ -1655,7 +2054,9 @@ async function runContextDeletionPlanner(
 		throw new Error(`Context compaction planning failed: ${agent.state.errorMessage}`);
 	}
 	if (plannerTool.getCallCount() === 0) {
-		throw new Error(`Context compaction planner did not call ${CONTEXT_DELETION_PLAN_TOOL_NAME} or ${CONTEXT_GREP_DELETE_TOOL_NAME}`);
+		throw new Error(
+			`Context compaction planner did not call any transcript inspection or deletion tools (${CONTEXT_SEARCH_TRANSCRIPT_TOOL_NAME}, ${CONTEXT_READ_ENTRY_TOOL_NAME}, ${CONTEXT_DELETION_PLAN_TOOL_NAME}, or ${CONTEXT_GREP_DELETE_TOOL_NAME})`,
+		);
 	}
 	return {
 		plan: plannerTool.getPlan(),

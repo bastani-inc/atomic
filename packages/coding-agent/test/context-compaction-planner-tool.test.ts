@@ -3,6 +3,7 @@ import type { Context, StreamOptions } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, fauxToolCall, registerFauxProvider } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+	buildContextCompactionPrompt,
 	CONTEXT_COMPACTION_PLANNER_MAX_TURNS,
 	contextCompact,
 	createContextDeletionPlannerTool,
@@ -208,6 +209,8 @@ describe("context compaction planner structured tool", () => {
 			tools: expect.arrayContaining([
 				expect.objectContaining({ name: "context_deletion_plan", executionMode: "parallel" }),
 				expect.objectContaining({ name: "context_grep_delete", executionMode: "parallel" }),
+				expect.objectContaining({ name: "context_search_transcript", executionMode: "parallel" }),
+				expect.objectContaining({ name: "context_read_entry", executionMode: "parallel" }),
 			]),
 		});
 		expect(continuationContext?.messages).toEqual(
@@ -230,11 +233,62 @@ describe("context compaction planner structured tool", () => {
 		expect(controller.getCallCount()).toBe(1);
 	});
 
+	it("builds a bounded prompt with a transcript file path instead of full transcript text", () => {
+		const transcript = createTranscript();
+		for (let index = 0; index < 120; index++) {
+			const message = assistantMessage(`Large omitted preview ${index} ${"x".repeat(1000)} SENTINEL_FULL_TEXT_${index}`);
+			transcript.entries.push({
+				entryId: `entry-large-${index}`,
+				entryType: "message",
+				role: "assistant",
+				text: `Large omitted preview ${index} ${"x".repeat(1000)} SENTINEL_FULL_TEXT_${index}`,
+				tokenEstimate: 400,
+				protected: false,
+				contentBlocks: [],
+				message,
+				toolCallIds: [],
+			});
+		}
+
+		const prompt = buildContextCompactionPrompt(transcript, "/tmp/full-transcript.jsonl");
+
+		expect(prompt).toContain("/tmp/full-transcript.jsonl");
+		expect(prompt).toContain("context_search_transcript");
+		expect(prompt.length).toBeLessThan(80_000);
+		expect(prompt).not.toContain("SENTINEL_FULL_TEXT_119");
+		expect(prompt).not.toContain("x".repeat(1000));
+	});
+
+	it("searches and reads transcript slices without mutating deletion state", async () => {
+		const controller = createContextDeletionPlannerTool(createTranscript());
+
+		const search = await controller.searchTool.execute("toolu_search", {
+			pattern: "Old",
+			target: "entry",
+			maxMatches: 5,
+			contextChars: 20,
+		});
+		const read = await controller.readEntryTool.execute("toolu_read", {
+			entryId: "entry-old-1",
+			offset: 0,
+			maxChars: 8,
+		});
+
+		expect(search.terminate).toBe(false);
+		expect(search.details.matches.map((match) => match.entryId)).toEqual(["entry-old-1", "entry-old-2"]);
+		expect(read.terminate).toBe(false);
+		expect(read.details.text).toBe("Old sear");
+		expect(read.details.truncatedAfter).toBe(true);
+		expect(controller.getPlan().deletions).toEqual([]);
+	});
+
 	it("allows parallel tool execution while serializing shared planner state", async () => {
 		const controller = createContextDeletionPlannerTool(createTranscript());
 
 		expect(controller.tool.executionMode).toBe("parallel");
 		expect(controller.grepTool.executionMode).toBe("parallel");
+		expect(controller.searchTool.executionMode).toBe("parallel");
+		expect(controller.readEntryTool.executionMode).toBe("parallel");
 
 		const [first, second] = await Promise.all([
 			controller.tool.execute("toolu_plan_1", {
