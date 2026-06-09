@@ -1856,7 +1856,7 @@ function contextCompactionTranscriptManifest(transcript: CompactableTranscript, 
 
 function contextCompactionModePrompt(mode: ContextCompactionMode): string {
 	if (mode === "critical_overflow") {
-		return `\n<critical-overflow-mode>\nThe previous model request overflowed its context window. This is a critical LRU-style compaction pass. First delete stale unprotected context. If that is not enough, you may also delete the earliest protected entries or protected content shown in the manifest, especially old user/custom/summary context, while preserving recent entries, unresolved errors, failed commands, and enough task-bearing context for the assistant to continue.\n</critical-overflow-mode>`;
+		return `\n<critical-overflow-mode>\nThe previous model request overflowed its context window. This is a critical LRU-style compaction pass. First delete stale unprotected context. If that is not enough, you may also delete the earliest protected entries or protected content shown in the manifest. Evict in priority order: remove old reasoning traces first, then old user/custom/summary context, while preserving recent entries, unresolved errors, failed commands, and enough task-bearing context for the assistant to continue.\n</critical-overflow-mode>`;
 	}
 	return `\n<standard-mode>\nDo not delete entries or content blocks marked protected. Protected context is only eligible during critical overflow recovery, not during standard compaction.\n</standard-mode>`;
 }

@@ -308,6 +308,9 @@ describe("context compaction deletion tools", () => {
 		expect(prompt).toContain("Do not delete entries or content blocks marked protected");
 		expect(overflowPrompt).toContain("critical LRU-style compaction pass");
 		expect(overflowPrompt).toContain("earliest protected entries");
+		// Overflow eviction must prioritize reasoning traces before user/custom/summary context (#1308).
+		expect(overflowPrompt).toContain("reasoning traces first");
+		expect(overflowPrompt.indexOf("reasoning traces")).toBeLessThan(overflowPrompt.indexOf("user/custom/summary context"));
 		expect(prompt.length).toBeLessThan(80_000);
 		expect(prompt).not.toContain("SENTINEL_FULL_TEXT_119");
 		expect(prompt).not.toContain("x".repeat(1000));

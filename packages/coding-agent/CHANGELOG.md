@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Changed the verbatim compaction critical-overflow recovery prompt to evict in an explicit priority order when context still exceeds the token budget after compaction: removable reasoning traces are evicted first, then removable user/custom/summary context. Existing safety/retention rules (recent entries, unresolved errors, failed commands, and at least one task-bearing entry) are preserved ([#1308](https://github.com/bastani-inc/atomic/issues/1308)).
+
 ## [0.8.28-alpha.1] - 2026-06-08
 
 ### Changed
