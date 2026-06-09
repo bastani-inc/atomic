@@ -36,8 +36,10 @@ import type {
 } from "../shared/store-types.js";
 import type { WorkflowUIAdapter } from "../shared/types.js";
 
+type BackgroundPromptKind = Exclude<PromptKind, "custom">;
+
 interface PromptDescriptor {
-  readonly kind: PromptKind;
+  readonly kind: BackgroundPromptKind;
   readonly message: string;
   readonly choices?: readonly string[];
   readonly initial?: string;

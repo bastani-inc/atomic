@@ -272,8 +272,8 @@ export class RpcClient {
 	/**
 	 * Compact session context with deletion-only verbatim context compaction.
 	 */
-	async compact(customInstructions?: string): Promise<ContextCompactionResult> {
-		const response = await this.send({ type: "compact", customInstructions });
+	async compact(): Promise<ContextCompactionResult> {
+		const response = await this.send({ type: "compact" });
 		return this.getData(response);
 	}
 

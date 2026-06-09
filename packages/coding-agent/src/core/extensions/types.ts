@@ -43,7 +43,12 @@ import type { Static, TSchema } from "typebox";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import type { ResolvedResource } from "../package-manager.ts";
 import type { BashResult } from "../bash-executor.ts";
-import type { CompactionPreparation, CompactionResult, ContextCompactionResult } from "../compaction/index.ts";
+import type {
+	ContextCompactionMode,
+	ContextCompactionPreparation,
+	ContextCompactionResult,
+	ContextDeletionRequest,
+} from "../compaction/index.ts";
 import type { EventBus } from "../event-bus.ts";
 import type { ExecOptions, ExecResult } from "../exec.ts";
 import type { ReadonlyFooterDataProvider } from "../footer-data-provider.ts";
@@ -52,7 +57,7 @@ import type { CustomMessage } from "../messages.ts";
 import type { ModelRegistry } from "../model-registry.ts";
 import type {
 	BranchSummaryEntry,
-	CompactionEntry,
+	ContextCompactionEntry,
 	ReadonlySessionManager,
 	SessionEntry,
 	SessionManager,
@@ -325,8 +330,6 @@ export interface ContextUsage {
 }
 
 export interface CompactOptions {
-	/** @deprecated Default compaction is deletion-only and does not accept custom instructions. */
-	customInstructions?: string;
 	onComplete?: (result: ContextCompactionResult) => void;
 	onError?: (error: Error) => void;
 }
@@ -598,16 +601,20 @@ export interface SessionBeforeForkEvent {
 /** Fired before context compaction (can be cancelled or customized) */
 export interface SessionBeforeCompactEvent {
 	type: "session_before_compact";
-	preparation: CompactionPreparation;
+	reason: "manual" | "threshold" | "overflow";
+	mode: ContextCompactionMode;
+	preparation: ContextCompactionPreparation;
 	branchEntries: SessionEntry[];
-	customInstructions?: string;
 	signal: AbortSignal;
 }
 
 /** Fired after context compaction */
 export interface SessionCompactEvent {
 	type: "session_compact";
-	compactionEntry: CompactionEntry;
+	reason: "manual" | "threshold" | "overflow";
+	mode: ContextCompactionMode;
+	result: ContextCompactionResult;
+	contextCompactionEntry: ContextCompactionEntry;
 	fromExtension: boolean;
 }
 
@@ -1086,7 +1093,7 @@ export interface SessionBeforeForkResult {
 
 export interface SessionBeforeCompactResult {
 	cancel?: boolean;
-	compaction?: CompactionResult;
+	deletionRequest?: ContextDeletionRequest;
 }
 
 export interface SessionBeforeTreeResult {

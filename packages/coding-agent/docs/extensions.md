@@ -8,7 +8,7 @@ Extensions are TypeScript modules that extend Atomic's behavior. They can subscr
 
 **Key capabilities:**
 - **Custom tools** - Register tools the LLM can call via `pi.registerTool()`
-- **Event interception** - Block or modify tool calls, inject context, customize legacy summary compaction and branch summaries
+- **Event interception** - Block or modify tool calls, inject context, observe/cancel deletion-only compaction, and customize branch summaries
 - **User interaction** - Prompt users via `ctx.ui` (select, confirm, input, notify)
 - **Custom UI components** - Full TUI components with keyboard input via `ctx.ui.custom()` for complex interactions
 - **Custom commands** - Register commands like `/mycommand` via `pi.registerCommand()`
@@ -19,7 +19,7 @@ Extensions are TypeScript modules that extend Atomic's behavior. They can subscr
 - Permission gates (confirm before `rm -rf`, `sudo`, etc.)
 - Git checkpointing (stash at each turn, restore on branch)
 - Path protection (block writes to `.env`, `node_modules/`)
-- Legacy custom summary compaction (summarize older context your way)
+- Compaction policies (cancel compaction or provide exact deletion targets)
 - Conversation summaries (see `summarize.ts` example)
 - Interactive tools (questions, wizards, custom dialogs)
 - Stateful tools (todo lists, connection pools)
@@ -322,11 +322,9 @@ user sends another prompt ◄─────────────────
   └─► resources_discover { reason: "startup" }
 
 /compact or auto-compaction
-  └─► compaction_start / compaction_end (deletion-only context compaction)
-
-legacy summary compaction APIs
-  ├─► session_before_compact (can cancel or customize)
-  └─► session_compact
+  ├─► compaction_start / compaction_end (deletion-only context compaction status)
+  ├─► session_before_compact (can cancel or provide a deletion request)
+  └─► session_compact (after the context_compaction entry is persisted)
 
 /tree navigation
   ├─► session_before_tree (can cancel or customize)
@@ -416,28 +414,41 @@ Do cleanup work in `session_shutdown`, then reestablish any in-memory state in `
 
 #### session_before_compact / session_compact
 
-Fired by the legacy summary compaction pipeline. `/compact` and auto-compaction now use deletion-only context compaction by default, so extensions should not rely on these events for default compaction. See [Compaction](/compaction) for details.
+Fired by `/compact` and auto-compaction. Compaction is deletion-only: extensions can cancel the run or return exact entry/content-block deletion targets for Atomic to validate locally. Extensions cannot return generated summaries.
 
 ```typescript
 pi.on("session_before_compact", async (event, ctx) => {
-  const { preparation, branchEntries, customInstructions, signal } = event;
+  const { preparation, branchEntries, reason, mode, signal } = event;
+  const { transcript } = preparation;
 
-  // Cancel:
+  // transcript.entries - compactable entries on the active branch
+  // transcript.protectedEntryIds - entries protected from standard compaction
+  // transcript.tokensBefore - token estimate before compaction
+  // branchEntries - raw session entries on the current branch
+  // reason - "manual" | "threshold" | "overflow"
+  // mode - "standard" | "critical_overflow"
+
+  if (signal.aborted) return { cancel: true };
+
+  // Cancel compaction:
   return { cancel: true };
 
-  // Custom summary:
+  // Or provide a deletion request. Atomic validates IDs, protected targets,
+  // tool-call/tool-result pairing, and non-empty remaining context before saving.
   return {
-    compaction: {
-      summary: "...",
-      firstKeptEntryId: preparation.firstKeptEntryId,
-      tokensBefore: preparation.tokensBefore,
-    }
+    deletionRequest: {
+      deletions: [
+        { kind: "entry", entryId: "abc123", rationale: "Old successful command output" },
+        { kind: "content_block", entryId: "def456", blockIndex: 2, rationale: "Verbose obsolete log" },
+      ],
+    },
   };
 });
 
 pi.on("session_compact", async (event, ctx) => {
-  // event.compactionEntry - the saved compaction
-  // event.fromExtension - whether extension provided it
+  // event.result - ContextCompactionResult with deletedTargets/protectedEntryIds/stats
+  // event.contextCompactionEntry - the saved context_compaction entry
+  // event.fromExtension - true if session_before_compact provided deletionRequest
 });
 ```
 
@@ -963,7 +974,7 @@ ctx.compact({
 });
 ```
 
-`customInstructions` is deprecated. Passing a non-empty value to default compaction fails because Verbatim Compaction does not accept custom summary instructions.
+Verbatim Compaction uses a fixed internal prompt; no custom summary text can be injected.
 
 ### ctx.getSystemPrompt()
 
@@ -2572,7 +2583,7 @@ All examples in [examples/extensions/](https://github.com/bastani-inc/atomic/tre
 | `prompt-customizer.ts` | Add context-aware tool guidance using `systemPromptOptions` | `on("before_agent_start")`, `BuildSystemPromptOptions` |
 | `file-trigger.ts` | File watcher triggers messages | `sendMessage` |
 | **Compaction & Sessions** |||
-| `custom-compaction.ts` | Legacy custom compaction summary | `on("session_before_compact")` |
+| `custom-compaction.ts` | Custom deletion-request compaction policy | `on("session_before_compact")` |
 | `trigger-compact.ts` | Trigger compaction manually | `compact()` |
 | `git-checkpoint.ts` | Git stash on turns | `on("turn_start")`, `on("session_before_fork")`, `exec` |
 | `auto-commit-on-exit.ts` | Commit on shutdown | `on("session_shutdown")`, `exec` |

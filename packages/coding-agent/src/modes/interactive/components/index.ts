@@ -29,7 +29,6 @@ export {
   type ChatTranscriptRole,
 } from "./chat-transcript.ts";
 export { BranchSummaryMessageComponent } from "./branch-summary-message.ts";
-export { CompactionSummaryMessageComponent } from "./compaction-summary-message.ts";
 export { ContextCompactionSummaryMessageComponent } from "./context-compaction-summary-message.ts";
 export { CustomEditor } from "./custom-editor.ts";
 export { CustomMessageComponent } from "./custom-message.ts";

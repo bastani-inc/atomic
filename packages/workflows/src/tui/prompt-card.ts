@@ -130,6 +130,8 @@ export function handlePromptCardInput(
       return handleInput(data, state, keybindings);
     case "editor":
       return handleEditor(data, state, keybindings);
+    case "custom":
+      return { kind: "noop" };
   }
 }
 
@@ -436,6 +438,8 @@ export function defaultResponseFor(prompt: PendingPrompt): unknown {
       return false;
     case "select":
       return prompt.choices?.[0] ?? "";
+    case "custom":
+      return undefined;
   }
 }
 
@@ -669,6 +673,8 @@ function renderResponseField(
       return [renderInputRow(state, theme, usable, cursorOn)];
     case "editor":
       return renderEditorRows(state, theme, usable, cursorOn);
+    case "custom":
+      return [padToUsable("", usable)];
   }
 }
 

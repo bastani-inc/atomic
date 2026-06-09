@@ -14,6 +14,8 @@ import type {
   WorkflowRunContext,
   WorkflowUIContext,
   WorkflowUIAdapter,
+  WorkflowCustomUiFactory,
+  WorkflowCustomUiOptions,
   WorkflowInputSchema,
   StageContext,
   StageOptions,
@@ -56,7 +58,7 @@ import type {
   WorkflowFailureRecoverability,
   WorkflowFailureDisposition,
   PendingPrompt,
-  PromptKind,
+  CustomPromptIdentitySource,
   WorkflowChildReplaySnapshot,
   WorkflowChildRunRef,
 } from "../../shared/store-types.js";
@@ -108,7 +110,7 @@ export interface RunContinuationOpts {
   readonly resumeFromStageId: string;
 }
 
-export interface RunOpts extends Omit<AuthoringContract.RunOpts, "adapters" | "store" | "cancellation" | "overlay" | "registry" | "stageControlRegistry" | "continuation" | "onRunStart" | "onStageStart" | "onStageEnd" | "onRunEnd"> {
+export interface RunOpts extends Omit<AuthoringContract.RunOpts, "adapters" | "store" | "cancellation" | "overlay" | "registry" | "stageControlRegistry" | "continuation" | "onRunStart" | "onStageStart" | "onStageEnd" | "onRunEnd" | "ui"> {
   adapters?: StageAdapters;
   /** Invocation working directory exposed to workflow definitions as ctx.cwd. */
   cwd?: string;
@@ -271,14 +273,28 @@ function resolveInputRuntimeDefaults(
 // HIL unavailable fallback — rejects with precise per-primitive error
 // ---------------------------------------------------------------------------
 
-interface PromptDescriptor {
-  readonly kind: PromptKind;
+type PrimitivePromptDescriptor =
+  | { readonly kind: "input"; readonly message: string; readonly initial?: string }
+  | { readonly kind: "confirm"; readonly message: string }
+  | { readonly kind: "select"; readonly message: string; readonly choices: readonly string[] }
+  | { readonly kind: "editor"; readonly message: string; readonly initial?: string };
+
+interface CustomPromptDescriptor<T> {
+  readonly kind: "custom";
   readonly message: string;
-  readonly choices?: readonly string[];
-  readonly initial?: string;
+  readonly factory: WorkflowCustomUiFactory<T>;
+  readonly options?: WorkflowCustomUiOptions;
+  readonly customIdentityHash: string;
+  readonly customIdentitySource: CustomPromptIdentitySource;
 }
 
-function fallbackForPromptDescriptor(descriptor: PromptDescriptor): unknown {
+type PromptDescriptor<T = unknown> = PrimitivePromptDescriptor | CustomPromptDescriptor<T>;
+
+function isCustomPromptDescriptor<T>(descriptor: PromptDescriptor<T>): descriptor is CustomPromptDescriptor<T> {
+  return descriptor.kind === "custom";
+}
+
+function fallbackForPromptDescriptor(descriptor: PrimitivePromptDescriptor): unknown {
   switch (descriptor.kind) {
     case "input":
     case "editor":
@@ -286,7 +302,7 @@ function fallbackForPromptDescriptor(descriptor: PromptDescriptor): unknown {
     case "confirm":
       return false;
     case "select":
-      return descriptor.choices?.[0] ?? "";
+      return descriptor.choices[0] ?? "";
   }
 }
 
@@ -295,8 +311,12 @@ function makePrompt(descriptor: PromptDescriptor): PendingPrompt {
     id: `hil-${crypto.randomUUID()}`,
     kind: descriptor.kind,
     message: descriptor.message,
-    ...(descriptor.choices !== undefined ? { choices: descriptor.choices } : {}),
-    ...(descriptor.initial !== undefined ? { initial: descriptor.initial } : {}),
+    ...(!isCustomPromptDescriptor(descriptor) && descriptor.kind === "select" ? { choices: descriptor.choices } : {}),
+    ...(!isCustomPromptDescriptor(descriptor) && (descriptor.kind === "input" || descriptor.kind === "editor") && descriptor.initial !== undefined ? { initial: descriptor.initial } : {}),
+    ...(isCustomPromptDescriptor(descriptor) ? {
+      customIdentityHash: descriptor.customIdentityHash,
+      customIdentitySource: descriptor.customIdentitySource,
+    } : {}),
     createdAt: Date.now(),
   };
 }
@@ -307,13 +327,19 @@ function stableHash(value: unknown): string {
 }
 
 function promptDescriptorHash(descriptor: PromptDescriptor): string {
+  if (isCustomPromptDescriptor(descriptor)) {
+    return stableHash({
+      kind: "custom",
+      customIdentityHash: descriptor.customIdentityHash,
+    });
+  }
   return stableHash({
     kind: descriptor.kind,
     message: descriptor.message,
-    choices: descriptor.choices ?? [],
+    choices: descriptor.kind === "select" ? descriptor.choices : [],
     // Include input/editor initial text because it is visible prompt context;
     // changing it should not replay a stale answer from the same callsite.
-    initial: descriptor.initial ?? null,
+    initial: descriptor.kind === "input" || descriptor.kind === "editor" ? descriptor.initial ?? null : null,
   });
 }
 
@@ -334,6 +360,80 @@ function hilAbortError(signal: AbortSignal): Error {
     : new Error("atomic-workflows: HIL aborted");
 }
 
+function resolveCustomPromptIdentity<T>(
+  factory: WorkflowCustomUiFactory<T>,
+  options: WorkflowCustomUiOptions | undefined,
+): Pick<CustomPromptDescriptor<T>, "customIdentityHash" | "customIdentitySource"> {
+  const replayIdentity = options?.replayIdentity?.trim();
+  if (replayIdentity !== undefined && replayIdentity.length > 0) {
+    return {
+      customIdentityHash: stableHash({ source: "caller", value: replayIdentity }),
+      customIdentitySource: "caller",
+    };
+  }
+  if (factory.name.trim().length > 0) {
+    return {
+      customIdentityHash: stableHash({ source: "factory", value: factory.name }),
+      customIdentitySource: "factory",
+    };
+  }
+  try {
+    const source = Function.prototype.toString.call(factory);
+    if (source.trim().length > 0) {
+      return {
+        customIdentityHash: stableHash({ source: "factory", value: source }),
+        customIdentitySource: "factory",
+      };
+    }
+  } catch {
+    // Fall through to callsite-only identity below.
+  }
+  return {
+    customIdentityHash: stableHash({ source: "callsite" }),
+    customIdentitySource: "callsite",
+  };
+}
+
+function customPromptDescriptor<T>(
+  factory: WorkflowCustomUiFactory<T>,
+  options: WorkflowCustomUiOptions | undefined,
+): CustomPromptDescriptor<T> {
+  const label = options?.label?.trim();
+  return {
+    kind: "custom",
+    message: label && label.length > 0 ? label : "Custom TUI prompt",
+    factory,
+    ...(options !== undefined ? { options } : {}),
+    ...resolveCustomPromptIdentity(factory, options),
+  };
+}
+
+interface MergedHilSignal {
+  readonly signal: AbortSignal;
+  readonly dispose: () => void;
+}
+
+function mergeHilSignals(primary: AbortSignal, secondary: AbortSignal | undefined): MergedHilSignal {
+  if (secondary === undefined) return { signal: primary, dispose: () => undefined };
+  const controller = new AbortController();
+  const abortFrom = (source: AbortSignal): void => {
+    if (!controller.signal.aborted) controller.abort(source.reason);
+  };
+  const onPrimaryAbort = (): void => abortFrom(primary);
+  const onSecondaryAbort = (): void => abortFrom(secondary);
+  primary.addEventListener("abort", onPrimaryAbort, { once: true });
+  secondary.addEventListener("abort", onSecondaryAbort, { once: true });
+  if (primary.aborted) abortFrom(primary);
+  else if (secondary.aborted) abortFrom(secondary);
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      primary.removeEventListener("abort", onPrimaryAbort);
+      secondary.removeEventListener("abort", onSecondaryAbort);
+    },
+  };
+}
+
 function makeUnavailableUIContext(): WorkflowUIContext {
   const msg = (primitive: string): string =>
     `atomic-workflows: HIL ctx.ui.${primitive} is unavailable because Atomic runtime did not provide a UI adapter`;
@@ -342,6 +442,31 @@ function makeUnavailableUIContext(): WorkflowUIContext {
     confirm: () => Promise.reject(new Error(msg("confirm"))),
     select: () => Promise.reject(new Error(msg("select"))),
     editor: () => Promise.reject(new Error(msg("editor"))),
+    custom: () => Promise.reject(new Error(msg("custom"))),
+  };
+}
+
+function normalizeUIContext(adapter: WorkflowUIAdapter | undefined): WorkflowUIContext {
+  const unavailable = makeUnavailableUIContext();
+  if (adapter === undefined) return unavailable;
+  return {
+    input(prompt) {
+      return adapter.input.call(adapter, prompt);
+    },
+    confirm(message) {
+      return adapter.confirm.call(adapter, message);
+    },
+    select<T extends string>(message: string, options: readonly T[]): Promise<T> {
+      return adapter.select.call(adapter, message, options) as Promise<T>;
+    },
+    editor(initial) {
+      return adapter.editor.call(adapter, initial);
+    },
+    custom<T>(factory: WorkflowCustomUiFactory<T>, options?: WorkflowCustomUiOptions): Promise<T> {
+      return adapter.custom !== undefined
+        ? adapter.custom.call(adapter, factory, options) as Promise<T>
+        : unavailable.custom(factory, options);
+    },
   };
 }
 
@@ -2651,10 +2776,15 @@ export async function run<TInputs extends WorkflowInputValues>(
     };
   };
 
-  const buildPromptNodeUiAdapter = (): WorkflowUIAdapter => {
-    const ask = async (descriptor: PromptDescriptor): Promise<unknown> => {
+  const buildPromptNodeUiAdapter = (): WorkflowUIContext => {
+    const ask = async <T>(descriptor: PromptDescriptor<T>): Promise<unknown> => {
+      const isCustom = isCustomPromptDescriptor(descriptor);
       if (ownController.signal.aborted) {
+        if (isCustom) throw hilAbortError(ownController.signal);
         return fallbackForPromptDescriptor(descriptor);
+      }
+      if (isCustom && descriptor.options?.signal?.aborted) {
+        throw hilAbortError(descriptor.options.signal);
       }
 
       const prompt = makePrompt(descriptor);
@@ -2752,6 +2882,55 @@ export async function run<TInputs extends WorkflowInputValues>(
         finalizePromptStage("completed");
         return replayAnswer.value;
       }
+
+      if (isCustom) {
+        if (descriptor.options?.overlay === true) {
+          const error = new Error("atomic-workflows: ctx.ui.custom overlay mode is unavailable in the workflow graph viewer");
+          applyFailureToStage(stageSnapshot, classifyExecutorFailure(error));
+          finalizePromptStage("failed");
+          throw error;
+        }
+
+        const mergedSignal = mergeHilSignals(ownController.signal, descriptor.options?.signal);
+        try {
+          if (mergedSignal.signal.aborted) throw hilAbortError(mergedSignal.signal);
+          const accepted = activeStore.recordStageAwaitingInput(runId, stageId, true, prompt.createdAt);
+          if (!accepted) {
+            const error = new Error("atomic-workflows: ctx.ui.custom prompt node is unavailable");
+            stageSnapshot.skippedReason = "prompt-unavailable";
+            finalizePromptStage("skipped");
+            throw error;
+          }
+          const response = await stageUiBroker.requestCustomUi(
+            runId,
+            stageId,
+            descriptor.factory as unknown as Parameters<typeof stageUiBroker.requestCustomUi>[2],
+            descriptor.options as Parameters<typeof stageUiBroker.requestCustomUi>[3],
+            mergedSignal.signal,
+          );
+          activeStore.recordStagePromptAnswer(runId, stageId, prompt, response, {
+            answerSource: "workflow_ui",
+          });
+          finalizePromptStage("completed");
+          return response;
+        } catch (err) {
+          activeStore.recordStageAwaitingInput(runId, stageId, false);
+          stageUiBroker.cancelStagePrompt(runId, stageId, err);
+          if (mergedSignal.signal.aborted) {
+            stageSnapshot.skippedReason = ownController.signal.aborted ? "run-aborted" : "prompt-aborted";
+            finalizePromptStage("skipped");
+            throw hilAbortError(mergedSignal.signal);
+          }
+          if (!finalized) {
+            applyFailureToStage(stageSnapshot, classifyExecutorFailure(err));
+            finalizePromptStage("failed");
+          }
+          throw err;
+        } finally {
+          mergedSignal.dispose();
+        }
+      }
+
       const accepted = activeStore.recordStagePendingPrompt(runId, stageId, prompt);
       if (!accepted) {
         stageSnapshot.skippedReason = "prompt-unavailable";
@@ -2829,6 +3008,10 @@ export async function run<TInputs extends WorkflowInputValues>(
         });
         return typeof response === "string" ? response : initial ?? "";
       },
+      async custom<T>(factory: WorkflowCustomUiFactory<T>, options?: WorkflowCustomUiOptions): Promise<T> {
+        const response = await ask(customPromptDescriptor(factory, options));
+        return response as T;
+      },
     };
   };
 
@@ -2838,7 +3021,7 @@ export async function run<TInputs extends WorkflowInputValues>(
     get cwd() { return resolveWorkflowCwd(); },
     // Prompt nodes and caller-provided UI adapters are mutually exclusive;
     // executor-owned prompt nodes intentionally take precedence when enabled.
-    ui: opts.usePromptNodesForUi === true ? buildPromptNodeUiAdapter() : opts.ui ?? makeUnavailableUIContext(),
+    ui: opts.usePromptNodesForUi === true ? buildPromptNodeUiAdapter() : normalizeUIContext(opts.ui),
 
     stage(name: string, options?: StageOptions, stageFailFastScope?: ParallelFailFastScope) {
       options = stageOptionsWithGitWorktree(stageOptionsWithInputDefaults(options, inputRuntimeDefaults), workflowInvocationCwd);

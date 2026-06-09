@@ -160,6 +160,9 @@ function makeMockCtx<TInputs extends WorkflowInputValues>(
             options: readonly T[],
         ) => options[0]!,
         editor: async (initial?: string) => initial ?? "mock-editor-content",
+        custom: async () => {
+            throw new Error("mock custom UI unavailable");
+        },
     };
 
     const runTask = async (

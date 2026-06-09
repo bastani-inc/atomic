@@ -97,9 +97,15 @@ describe("AgentSession compaction characterization", () => {
 		await expect(harness.session.compact()).rejects.toThrow("No model selected");
 	});
 
-	it("throws when compacting without configured auth", async () => {
+	it("throws when planner fallback needs auth without configured credentials", async () => {
 		const harness = await createHarness({ withConfiguredAuth: false });
 		harnesses.push(harness);
+		const now = Date.now();
+		harness.sessionManager.appendMessage({ role: "user", content: [{ type: "text", text: "compact this" }], timestamp: now });
+		for (let index = 0; index < 8; index++) {
+			harness.sessionManager.appendMessage(createAssistant(harness, { timestamp: now + index + 1 }));
+		}
+		harness.session.agent.state.messages = harness.sessionManager.buildSessionContext().messages;
 
 		await expect(harness.session.compact()).rejects.toThrow(`No API key found for ${harness.getModel().provider}.`);
 	});
@@ -120,9 +126,7 @@ describe("AgentSession compaction characterization", () => {
 
 	it("resumes after threshold compaction when only agent-level queued messages exist", async () => {
 		vi.useFakeTimers();
-		const harness = await createHarness({
-			settings: { compaction: { keepRecentTokens: 1 } },
-		});
+		const harness = await createHarness();
 		harnesses.push(harness);
 		const deletedEntryId = await populateCompactableSession(harness);
 		setContextDeletionRequest(harness, deletedEntryId);
@@ -139,7 +143,8 @@ describe("AgentSession compaction characterization", () => {
 		const sessionInternals = harness.session as unknown as SessionWithCompactionInternals;
 
 		await sessionInternals._runAutoCompaction("threshold", false);
-		await vi.advanceTimersByTimeAsync(100);
+		vi.advanceTimersByTime(100);
+		await Promise.resolve();
 
 		expect(continueSpy).toHaveBeenCalledTimes(1);
 	});
@@ -187,13 +192,17 @@ describe("AgentSession compaction characterization", () => {
 			timestamp: staleTimestamp - 1000,
 		});
 		harness.sessionManager.appendMessage(staleAssistant);
-		const firstKeptEntryId = harness.sessionManager.getEntries()[0]!.id;
-		harness.sessionManager.appendCompaction(
-			"summary",
-			firstKeptEntryId,
-			staleAssistant.usage.totalTokens,
-			undefined,
-			false,
+		harness.sessionManager.appendContextCompaction(
+			[{ kind: "entry", entryId: harness.sessionManager.getEntries()[0]!.id }],
+			[],
+			{
+				objectsBefore: 2,
+				objectsAfter: 1,
+				objectsDeleted: 1,
+				tokensBefore: staleAssistant.usage.totalTokens,
+				tokensAfter: 1,
+				percentReduction: 99,
+			},
 		);
 		harness.sessionManager.appendMessage({
 			role: "user",
@@ -274,13 +283,17 @@ describe("AgentSession compaction characterization", () => {
 			timestamp: preCompactionTimestamp - 1000,
 		});
 		harness.sessionManager.appendMessage(keptAssistant);
-		const firstKeptEntryId = harness.sessionManager.getEntries()[0]!.id;
-		harness.sessionManager.appendCompaction(
-			"summary",
-			firstKeptEntryId,
-			keptAssistant.usage.totalTokens,
-			undefined,
-			false,
+		harness.sessionManager.appendContextCompaction(
+			[],
+			[],
+			{
+				objectsBefore: 2,
+				objectsAfter: 2,
+				objectsDeleted: 0,
+				tokensBefore: keptAssistant.usage.totalTokens,
+				tokensAfter: keptAssistant.usage.totalTokens,
+				percentReduction: 0,
+			},
 		);
 
 		const errorAssistant = createAssistant(harness, {

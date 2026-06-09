@@ -135,6 +135,7 @@ function makeStore(snap: StoreSnapshot): Store {
     recordStagePendingPrompt: () => false,
     resolveStagePendingPrompt: () => false,
     awaitStagePendingPrompt: () => Promise.reject(new Error("test stub")),
+    recordStagePromptAnswer: () => false,
     recordStagePromptDraft: () => false,
     getStagePromptDraft: () => undefined,
     clearStagePromptDraft: () => false,

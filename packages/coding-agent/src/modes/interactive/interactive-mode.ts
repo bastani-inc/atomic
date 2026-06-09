@@ -91,7 +91,6 @@ import {
   KeybindingsManager,
 } from "../../core/keybindings.ts";
 import type { ContextCompactionResult } from "../../core/compaction/index.ts";
-import { createCompactionSummaryMessage } from "../../core/messages.ts";
 import {
   defaultModelPerProvider,
   findExactModelReferenceMatch,
@@ -149,7 +148,6 @@ import {
   type ChatMessageRenderOptions,
 } from "./components/chat-message-renderer.ts";
 import { addChatTranscriptEntry } from "./components/chat-transcript.ts";
-import { CompactionSummaryMessageComponent } from "./components/compaction-summary-message.ts";
 import { ContextCompactionSummaryMessageComponent } from "./components/context-compaction-summary-message.ts";
 import { CountdownTimer } from "./components/countdown-timer.ts";
 import { CustomEditor } from "./components/custom-editor.ts";
@@ -243,16 +241,6 @@ class ExpandableText extends Text implements Expandable {
   refresh(): void {
     this.setText(this.expanded ? this.getExpandedText() : this.getCollapsedText());
   }
-}
-
-function isContextCompactionResult(result: unknown): result is ContextCompactionResult {
-  return (
-    typeof result === "object" &&
-    result !== null &&
-    "stats" in result &&
-    "deletedTargets" in result &&
-    "protectedEntryIds" in result
-  );
 }
 
 type CompactionQueuedMessage = {
@@ -2124,9 +2112,7 @@ export class InteractiveMode {
       compact: (options) => {
         void (async () => {
           try {
-            const result = await this.session.compact(
-              options?.customInstructions,
-            );
+            const result = await this.session.compact();
             options?.onComplete?.(result);
           } catch (error) {
             const err =
@@ -3598,17 +3584,7 @@ export class InteractiveMode {
         } else if (event.result) {
           this.chatContainer.clear();
           this.rebuildChatFromMessages();
-          if (isContextCompactionResult(event.result)) {
-            this.addContextCompactionSummaryToChat(event.result);
-          } else {
-            this.addMessageToChat(
-              createCompactionSummaryMessage(
-                event.result.summary,
-                event.result.tokensBefore,
-                new Date().toISOString(),
-              ),
-            );
-          }
+          this.addContextCompactionSummaryToChat(event.result as ContextCompactionResult);
           this.footer.invalidate();
         } else if (event.errorMessage) {
           if (event.reason === "manual") {
@@ -3849,16 +3825,6 @@ export class InteractiveMode {
         }
         break;
       }
-      case "compactionSummary": {
-        this.chatContainer.addChild(new Spacer(1));
-        const component = new CompactionSummaryMessageComponent(
-          message,
-          this.getMarkdownThemeWithSettings(),
-        );
-        component.setExpanded(this.toolOutputExpanded);
-        this.chatContainer.addChild(component);
-        break;
-      }
       case "branchSummary": {
         this.chatContainer.addChild(new Spacer(1));
         const component = new BranchSummaryMessageComponent(
@@ -3919,10 +3885,8 @@ export class InteractiveMode {
         // Tool results are rendered inline with tool calls, handled separately
         break;
       }
-      default: {
-        const _exhaustive: never = message;
-        void _exhaustive;
-      }
+      default:
+        break;
     }
   }
 

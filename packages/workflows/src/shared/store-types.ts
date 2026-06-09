@@ -32,10 +32,12 @@ export type WorkflowFailureCode =
   | "unknown";
 
 /**
- * Human-in-the-loop prompt kind. Mirrors the four `WorkflowUIContext` methods.
+ * Human-in-the-loop prompt kind. Mirrors the `WorkflowUIContext` methods.
  * cross-ref: src/shared/types.ts WorkflowUIContext
  */
-export type PromptKind = "input" | "confirm" | "select" | "editor";
+export type PromptKind = "input" | "confirm" | "select" | "editor" | "custom";
+
+export type CustomPromptIdentitySource = "caller" | "factory" | "callsite";
 
 /**
  * A pending HIL prompt awaiting user response. Surfaced through the graph
@@ -53,6 +55,10 @@ export interface PendingPrompt {
   readonly choices?: readonly string[];
   /** Initial value for `kind: "input"` and `kind: "editor"`. */
   readonly initial?: string;
+  /** Hash of caller-supplied or derived replay identity for `kind: "custom"`. */
+  readonly customIdentityHash?: string;
+  /** Explains how a custom prompt replay identity was derived without storing the raw identity. */
+  readonly customIdentitySource?: CustomPromptIdentitySource;
   /** Issue timestamp (ms since epoch). */
   readonly createdAt: number;
 }

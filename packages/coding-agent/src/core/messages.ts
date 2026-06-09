@@ -8,14 +8,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ImageContent, Message, TextContent } from "@earendil-works/pi-ai";
 
-export const COMPACTION_SUMMARY_PREFIX = `The conversation history before this point was compacted into the following summary:
-
-<summary>
-`;
-
-export const COMPACTION_SUMMARY_SUFFIX = `
-</summary>`;
-
 export const BRANCH_SUMMARY_PREFIX = `The following is a summary of a branch that this conversation came back from:
 
 <summary>
@@ -59,20 +51,12 @@ export interface BranchSummaryMessage {
 	timestamp: number;
 }
 
-export interface CompactionSummaryMessage {
-	role: "compactionSummary";
-	summary: string;
-	tokensBefore: number;
-	timestamp: number;
-}
-
 // Extend CustomAgentMessages via declaration merging
 declare module "@earendil-works/pi-agent-core" {
 	interface CustomAgentMessages {
 		bashExecution: BashExecutionMessage;
 		custom: CustomMessage;
 		branchSummary: BranchSummaryMessage;
-		compactionSummary: CompactionSummaryMessage;
 	}
 }
 
@@ -106,19 +90,6 @@ export function createBranchSummaryMessage(summary: string, fromId: string, time
 	};
 }
 
-export function createCompactionSummaryMessage(
-	summary: string,
-	tokensBefore: number,
-	timestamp: string,
-): CompactionSummaryMessage {
-	return {
-		role: "compactionSummary",
-		summary: summary,
-		tokensBefore,
-		timestamp: new Date(timestamp).getTime(),
-	};
-}
-
 /** Convert CustomMessageEntry to AgentMessage format */
 export function createCustomMessage(
 	customType: string,
@@ -145,7 +116,7 @@ export function createCustomMessage(
  *
  * This is used by:
  * - Agent's transormToLlm option (for prompt calls and queued messages)
- * - Compaction's generateSummary (for summarization)
+ * - Branch summarization (for summarizing abandoned branches)
  * - Custom extensions and tools
  */
 export function convertToLlm(messages: AgentMessage[]): Message[] {
@@ -177,23 +148,22 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
 						content: [{ type: "text" as const, text: BRANCH_SUMMARY_PREFIX + m.summary + BRANCH_SUMMARY_SUFFIX }],
 						timestamp: m.timestamp,
 					};
-				case "compactionSummary":
-					return {
-						role: "user",
-						content: [
-							{ type: "text" as const, text: COMPACTION_SUMMARY_PREFIX + m.summary + COMPACTION_SUMMARY_SUFFIX },
-						],
-						timestamp: m.timestamp,
-					};
 				case "user":
 				case "assistant":
 				case "toolResult":
 					return m;
-				default:
-					// biome-ignore lint/correctness/noSwitchDeclarations: fine
+				case "compactionSummary":
+					// Legacy summary-compaction message type retained in the upstream AgentMessage
+					// union. Summary compaction was removed; these archival entries are inert and are
+					// never injected into active LLM context.
+					return undefined;
+				default: {
+					// Exhaustiveness guard: adding a new AgentMessage role must fail the build here
+					// instead of silently mapping to undefined and dropping the message from context.
 					const _exhaustiveCheck: never = m;
 					void _exhaustiveCheck;
 					return undefined;
+				}
 			}
 		})
 		.filter((m) => m !== undefined);

@@ -172,6 +172,36 @@ describe("store.recordStagePendingPrompt", () => {
     assert.equal(s.getStagePromptAnswer("r1", "s1"), undefined);
   });
 
+  test("records custom prompt answers without requiring stage.pendingPrompt", () => {
+    const s = createStore();
+    s.recordRunStart(makeRun("r1"));
+    s.recordStageStart("r1", {
+      ...makeStage("custom-stage"),
+      status: "awaiting_input",
+      awaitingInputSince: Date.now(),
+    });
+    const prompt = makePrompt("p-custom", {
+      kind: "custom",
+      message: "Pick a release channel",
+      customIdentityHash: "identity-hash",
+      customIdentitySource: "caller",
+    });
+
+    assert.equal(
+      s.recordStagePromptAnswer("r1", "custom-stage", prompt, "private-custom-answer"),
+      true,
+    );
+
+    const stage = getRun(s, "r1").stages[0]!;
+    assert.equal(stage.pendingPrompt, undefined);
+    assert.equal(stage.status, "running");
+    assert.equal(stage.promptAnswerState, "available");
+    assert.equal(stage.promptFootprint?.kind, "custom");
+    assert.equal(stage.promptFootprint?.customIdentityHash, "identity-hash");
+    assert.equal(s.getStagePromptAnswer("r1", "custom-stage")?.value, "private-custom-answer");
+    assert.equal(JSON.stringify(s.snapshot()).includes("private-custom-answer"), false);
+  });
+
   test("records independent prompts on multiple stages in the same run", async () => {
     const s = createStore();
     s.recordRunStart(makeRun("r1"));

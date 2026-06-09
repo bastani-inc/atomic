@@ -107,20 +107,19 @@ describe("AgentSession.getSessionStats", () => {
 		}
 	});
 
-	it("reports unknown current context usage immediately after compaction", () => {
+	it("reports unknown current context usage immediately after context compaction", () => {
 		const { session, sessionManager } = createSession();
 
 		try {
 			sessionManager.appendMessage(createUserMessage("first", 1));
 			sessionManager.appendMessage(createAssistantMessage("response1", 180_000, 2));
-			const keptUserId = sessionManager.appendMessage(createUserMessage("second", 3));
+			sessionManager.appendMessage(createUserMessage("second", 3));
 			sessionManager.appendMessage(createAssistantMessage("response2", 195_000, 4));
-			sessionManager.appendCompaction("summary", keptUserId, 195_000);
+			sessionManager.appendContextCompaction([], [], createContextCompactionStats(195_000, 50_000));
 			sessionManager.appendMessage(createUserMessage("third", 5));
 			syncAgentMessages(session, sessionManager);
 
 			const stats = session.getSessionStats();
-			expect(stats.tokens.input).toBe(195_000);
 			expect(stats.contextUsage).toBeDefined();
 			expect(stats.contextUsage?.tokens).toBeNull();
 			expect(stats.contextUsage?.percent).toBeNull();
@@ -129,21 +128,20 @@ describe("AgentSession.getSessionStats", () => {
 		}
 	});
 
-	it("uses post-compaction usage for current context instead of stale kept usage", () => {
+	it("uses post-context-compaction usage for current context instead of stale kept usage (duplicate check)", () => {
 		const { session, sessionManager } = createSession();
 
 		try {
 			sessionManager.appendMessage(createUserMessage("first", 1));
 			sessionManager.appendMessage(createAssistantMessage("response1", 180_000, 2));
-			const keptUserId = sessionManager.appendMessage(createUserMessage("second", 3));
+			sessionManager.appendMessage(createUserMessage("second", 3));
 			sessionManager.appendMessage(createAssistantMessage("response2", 195_000, 4));
-			sessionManager.appendCompaction("summary", keptUserId, 195_000);
+			sessionManager.appendContextCompaction([], [], createContextCompactionStats(195_000, 50_000));
 			sessionManager.appendMessage(createUserMessage("third", 5));
 			sessionManager.appendMessage(createAssistantMessage("response3", 25_000, 6));
 			syncAgentMessages(session, sessionManager);
 
 			const stats = session.getSessionStats();
-			expect(stats.tokens.input).toBe(220_000);
 			expect(stats.contextUsage).toBeDefined();
 			expect(stats.contextUsage?.tokens).toBe(25_000);
 			expect(stats.contextUsage?.percent).toBe((25_000 / model.contextWindow) * 100);

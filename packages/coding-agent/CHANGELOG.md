@@ -2,11 +2,28 @@
 
 ## [Unreleased]
 
+## [0.8.28-alpha.1] - 2026-06-08
+
+### Changed
+
+- Changed Atomic compaction to be verbatim-only across manual `/compact`, automatic threshold/overflow compaction, SDK/RPC compaction, and extension-triggered compaction. All compaction now records validated `context_compaction` deletion targets and rebuilds active context with retained transcript content verbatim and unchanged. Retained file paths, exact commands, error strings, and line numbers are never paraphrased or rewritten.
+- Changed compaction extension hooks (`session_before_compact`, `session_compact`) to receive verbatim context-compaction preparations/results and allow cancellation or locally validated deletion requests instead of custom generated summaries. The before-compact hook now yields `ContextCompactionPreparation` and accepts `{ cancel: true }` or `{ deletionRequest }` returns; the after-compact hook now receives `ContextCompactionResult` and `contextCompactionEntry`.
+
 ### Fixed
 
 - Fixed `AgentSession.prompt` surfacing the confusing `No API key found for undefined` error when a model never resolved to a real provider (for example an unknown/unresolved model id reaching the prompt path as a bare string). The prompt path now fails fast with a clear `Unknown model: "<id>" did not resolve to an available provider` message, and `No API key found` guidance no longer renders a literal `undefined` provider.
 
+### Removed
+
+- Removed the legacy summary-compaction runtime path, summary prompts, `CompactionEntry` active-context injection, `CompactionSummaryMessage` active message type, custom compaction instructions (`CompactOptions.customInstructions`, RPC `compact.customInstructions`, `/compact [instructions]`), `compaction.keepRecentTokens` setting, summary-compaction public exports (`CompactionResult`, `CompactionPreparation`, `appendCompaction()`, `prepareCompaction()`, `generateSummary()`, summary `compact()`), and summary-compaction docs and examples. Historical `type:"compaction"` JSONL lines on disk are inert and are not injected into active LLM context.
+
 ## [0.8.27] - 2026-06-08
+
+### Fixed
+
+- Fixed `/compact` and auto-compaction regressions by removing the native `better-sqlite3` dependency from transcript-bound deletion tools and preserving the currently selected reasoning level for the compaction planner ([#1310](https://github.com/bastani-inc/atomic/issues/1310)).
+
+## [0.8.27-alpha.1] - 2026-06-08
 
 ### Fixed
 

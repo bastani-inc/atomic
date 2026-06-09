@@ -76,7 +76,6 @@ export function installWorkflowHilAnswerNotifications(
   if (typeof send !== "function") return () => undefined;
 
   const state = options.state ?? createWorkflowHilAnswerNotificationState();
-  let previousSnapshot = options.store.snapshot();
 
   const emitOnce = (details: WorkflowHilAnswerNoticeDetails): void => {
     const key = answerNoticeKey(details.runId, details.stageId, details.promptId, details.promptKind);
@@ -86,23 +85,21 @@ export function installWorkflowHilAnswerNotifications(
     sendHilAnswerNotice(send, details);
   };
 
-  const inspectSimplePromptAnswers = (snapshot: StoreSnapshot): void => {
-    for (const previousRun of previousSnapshot.runs) {
-      const currentRun = snapshot.runs.find((run) => run.id === previousRun.id);
-      if (currentRun === undefined) continue;
-
-      for (const previousStage of previousRun.stages) {
-        const answeredPrompt = simplePromptAnswer(previousStage, currentRun);
-        if (answeredPrompt === undefined) continue;
-        const answerRecord = options.store.getStagePromptAnswer(currentRun.id, answeredPrompt.stage.id);
-        if (answerRecord?.answerSource === "workflow_tool") continue;
-        emitOnce(makeSimplePromptAnswerNotice(currentRun, answeredPrompt.stage, answeredPrompt.prompt, answerRecord?.value));
+  const inspectWorkflowPromptAnswers = (snapshot: StoreSnapshot): void => {
+    for (const currentRun of snapshot.runs) {
+      for (const currentStage of currentRun.stages) {
+        const prompt = workflowPromptAnswerCandidate(currentStage);
+        if (prompt === undefined) continue;
+        const answerRecord = options.store.getStagePromptAnswer(currentRun.id, currentStage.id);
+        if (answerRecord === undefined) continue;
+        if (answerRecord.promptId !== prompt.id) continue;
+        if (answerRecord.answerSource === "workflow_tool") continue;
+        emitOnce(makeSimplePromptAnswerNotice(currentRun, currentStage, prompt, answerRecord.value, answerRecord.answeredAt));
       }
     }
-    previousSnapshot = snapshot;
   };
 
-  const unsubscribeStore = options.store.subscribe(inspectSimplePromptAnswers);
+  const unsubscribeStore = options.store.subscribe(inspectWorkflowPromptAnswers);
   const unsubscribeBroker = options.stageUiBroker?.onStagePromptResolved((event) => {
     if (event.answerSource === "workflow_tool") return;
     const answeredStage = findStageSnapshot(options.store.snapshot(), event.runId, event.stageId);
@@ -180,17 +177,11 @@ function sendHilAnswerNotice(
   }
 }
 
-function simplePromptAnswer(
-  previousStage: StageSnapshot,
-  currentRun: RunSnapshot,
-): { stage: StageSnapshot; prompt: PendingPrompt } | undefined {
-  const prompt = previousStage.pendingPrompt;
+function workflowPromptAnswerCandidate(stage: StageSnapshot): PendingPrompt | undefined {
+  const prompt = stage.promptFootprint;
   if (prompt === undefined) return undefined;
-  const currentStage = currentRun.stages.find((stage) => stage.id === previousStage.id);
-  if (currentStage === undefined) return undefined;
-  if (currentStage.pendingPrompt !== undefined) return undefined;
-  if (currentStage.promptAnswerState !== "available") return undefined;
-  return { stage: currentStage, prompt };
+  if (stage.promptAnswerState !== "available") return undefined;
+  return prompt;
 }
 
 function findStageSnapshot(
@@ -215,6 +206,7 @@ function makeSimplePromptAnswerNotice(
   stage: StageSnapshot,
   prompt: PendingPrompt,
   answer: unknown,
+  answeredAt: number,
 ): WorkflowHilAnswerNoticeDetails {
   return {
     kind: "hil_answered",
@@ -226,7 +218,7 @@ function makeSimplePromptAnswerNotice(
     promptId: prompt.id,
     promptKind: prompt.kind,
     promptMessage: truncateAnswerSnippet(prompt.message),
-    answeredAt: Date.now(),
+    answeredAt,
     answerAvailable: true,
     answerIncluded: true,
     answerSummary: formatAnswerSummary(answer),

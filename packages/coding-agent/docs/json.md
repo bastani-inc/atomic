@@ -53,10 +53,9 @@ Base messages come from `@earendil-works/pi-ai` (installed as an Atomic dependen
 - `ToolResultMessage`
 
 Extended messages from [`packages/coding-agent/src/core/messages.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/core/messages.ts#L29):
-- `BashExecutionMessage` (line 29)
-- `CustomMessage` (line 46)
-- `BranchSummaryMessage` (line 55)
-- `CompactionSummaryMessage` (line 62)
+- `BashExecutionMessage`
+- `CustomMessage`
+- `BranchSummaryMessage`
 
 ## Output Format
 

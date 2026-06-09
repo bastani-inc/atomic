@@ -51,9 +51,11 @@ import {
 } from "./auth-guidance.ts";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.ts";
 import {
-	type CompactionResult,
 	type ContextCompactionMode,
+	type ContextCompactionPreparation,
 	type ContextCompactionResult,
+	type ContextDeletionRequest,
+	type ValidatedContextDeletionResult,
 	calculateContextTokens,
 	collectEntriesForBranchSummary,
 	contextCompact as runContextCompact,
@@ -61,6 +63,7 @@ import {
 	generateBranchSummary,
 	prepareContextCompaction,
 	shouldCompact,
+	validateContextDeletionRequest,
 } from "./compaction/index.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.ts";
@@ -78,7 +81,10 @@ import {
 	type OrchestrationContext,
 	type ReplacedSessionContext,
 	type SendMessageOptions,
+	type SessionBeforeCompactEvent,
+	type SessionBeforeCompactResult,
 	type SessionBeforeTreeResult,
+	type SessionCompactEvent,
 	type SessionStartEvent,
 	type ShutdownHandler,
 	type ToolDefinition,
@@ -96,7 +102,7 @@ import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import type { ModelRegistry } from "./model-registry.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
-import type { BranchSummaryEntry, SessionManager } from "./session-manager.ts";
+import type { BranchSummaryEntry, ContextCompactionEntry, SessionManager } from "./session-manager.ts";
 import { CURRENT_SESSION_VERSION, getLatestCompactionBoundaryEntry, type SessionHeader } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
@@ -105,6 +111,16 @@ import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-promp
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
 import { createAllToolDefinitions, defaultToolNames } from "./tools/index.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
+
+function deepFreeze<T>(value: T): T {
+	if (value && typeof value === "object") {
+		Object.freeze(value);
+		for (const nested of Object.values(value)) {
+			deepFreeze(nested);
+		}
+	}
+	return value;
+}
 
 // ============================================================================
 // Skill Block Parsing
@@ -174,7 +190,7 @@ export type AgentSessionEvent =
 	| {
 			type: "compaction_end";
 			reason: "manual" | "threshold" | "overflow";
-			result: CompactionResult | ContextCompactionResult | undefined;
+			result: ContextCompactionResult | undefined;
 			aborted: boolean;
 			willRetry: boolean;
 			errorMessage?: string;
@@ -685,7 +701,7 @@ export class AgentSession {
 				// Regular LLM message - persist as SessionMessageEntry
 				this.sessionManager.appendMessage(event.message);
 			}
-			// Other message types (bashExecution, compactionSummary, branchSummary) are persisted elsewhere
+			// Other message types (bashExecution, branchSummary) are persisted elsewhere
 
 			// Track assistant message for auto-compaction (checked on agent_end)
 			if (event.message.role === "assistant") {
@@ -1974,15 +1990,23 @@ export class AgentSession {
 	 * Retained transcript entries/content blocks stay verbatim.
 	 */
 	private async _applyContextVerbatimCompaction(options: {
-		apiKey: string;
-		headers?: Record<string, string>;
+		/**
+		 * Called only when the internal planner fallback is needed (i.e. no extension
+		 * provided a deletionRequest). Manual-mode resolvers should throw on missing auth;
+		 * auto-mode resolvers should return undefined so compaction silently no-ops.
+		 */
+		resolvePlannerAuth: () => Promise<{ apiKey: string; headers?: Record<string, string> } | undefined>;
 		abortController: AbortController;
 		backupLabel: string;
 		mode?: ContextCompactionMode;
+		reason: "manual" | "threshold" | "overflow";
 	}): Promise<ContextCompactionResult | undefined> {
 		if (!this.model) {
 			throw new Error(formatNoModelSelectedMessage());
 		}
+		// Capture the narrowed model now (control-flow narrowing holds immediately after the
+		// guard) so the lazy planner-fallback closure below can use a non-undefined model.
+		const model = this.model;
 
 		const pathEntries = this.sessionManager.getBranch();
 		const settings = this.settingsManager.getCompactionSettings();
@@ -1992,22 +2016,99 @@ export class AgentSession {
 			return undefined;
 		}
 
-		const validated = await runContextCompact(
-			preparation,
-			this.model,
-			options.apiKey,
-			options.headers,
-			options.abortController.signal,
-			this.thinkingLevel,
-			mode,
-		);
+		// Planner fallback used when no extension supplies a deletionRequest. Auth is resolved
+		// lazily here so extension-provided deletion requests keep working offline. Returns
+		// undefined when auth is unavailable (auto-mode resolvers), signaling a no-op compaction.
+		const runPlanner = async (): Promise<ValidatedContextDeletionResult | undefined> => {
+			const auth = await options.resolvePlannerAuth();
+			if (!auth) return undefined;
+			return runContextCompact(
+				preparation,
+				model,
+				auth.apiKey,
+				auth.headers,
+				options.abortController.signal,
+				this.thinkingLevel,
+				mode,
+			);
+		};
+
+		// Emit session_before_compact to allow extensions to cancel or provide a deletion request.
+		// This happens BEFORE any auth resolution so local extension deletion requests work
+		// without configured API credentials.
+		let fromExtension = false;
+		let validated: ValidatedContextDeletionResult | undefined;
+
+		if (this._extensionRunner.hasHandlers("session_before_compact")) {
+			// Deep-clone the preparation only when a before-compact handler actually exists. Extensions
+			// receive an isolated, frozen snapshot so they cannot mutate protection metadata
+			// (protectedEntryIds, entry .protected flags, etc.) on the internal preparation used for
+			// validation. Building it lazily avoids deep-cloning the transcript — largest exactly when
+			// compaction fires — on the common no-extension path.
+			let extensionPreparation: ContextCompactionPreparation;
+			try {
+				extensionPreparation = deepFreeze(structuredClone(preparation));
+			} catch (error) {
+				// structuredClone only throws if an entry carries a non-cloneable value (a function or a
+				// class instance). Transcript entries are plain data today, so this guards a latent
+				// invariant: surface a clear error instead of letting a raw DataCloneError abort an
+				// otherwise-viable compaction.
+				throw new Error(
+					`Failed to snapshot transcript for compaction extensions: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+
+			const hookResult = (await this._extensionRunner.emit({
+				type: "session_before_compact",
+				reason: options.reason,
+				mode,
+				preparation: extensionPreparation,
+				branchEntries: pathEntries,
+				signal: options.abortController.signal,
+			} satisfies SessionBeforeCompactEvent)) as SessionBeforeCompactResult | undefined;
+
+			if (hookResult?.cancel) {
+				throw new Error("Compaction cancelled");
+			}
+
+			if (hookResult?.deletionRequest) {
+				const extensionDeletionRequest = hookResult.deletionRequest as ContextDeletionRequest;
+				// Reject empty deletion requests before any side effects (backup, append, rebuild).
+				if (!Array.isArray(extensionDeletionRequest.deletions) || extensionDeletionRequest.deletions.length === 0) {
+					throw new Error("No safe context deletions proposed by extension");
+				}
+				// Validate against the internal transcript snapshot, not the extension-facing clone.
+				// Auth is NOT resolved here — local extension deletion requests work offline.
+				validated = validateContextDeletionRequest(
+					extensionDeletionRequest,
+					preparation.transcript,
+					{ mode },
+				);
+				// Reject if reconciliation reduced deletions to zero.
+				if (validated.deletedTargets.length === 0) {
+					throw new Error("No safe context deletions proposed by extension");
+				}
+				fromExtension = true;
+			}
+		}
+
+		// Planner fallback shared by both paths: no before-compact handler at all, or a handler that
+		// observed without supplying a deletionRequest. Resolves auth lazily; undefined means auth is
+		// unavailable (auto-mode resolvers), so compaction is a no-op.
+		if (!validated) {
+			const plannerResult = await runPlanner();
+			if (!plannerResult) {
+				return undefined;
+			}
+			validated = plannerResult;
+		}
 
 		if (options.abortController.signal.aborted) {
 			throw new Error("Compaction cancelled");
 		}
 
 		const backupPath = this.sessionManager.writeBackupSnapshot(options.backupLabel);
-		this.sessionManager.appendContextCompaction(
+		const compactionEntryId = this.sessionManager.appendContextCompaction(
 			validated.deletedTargets,
 			validated.protectedEntryIds,
 			validated.stats,
@@ -2016,22 +2117,45 @@ export class AgentSession {
 		const sessionContext = this.sessionManager.buildSessionContext();
 		this.agent.state.messages = sessionContext.messages;
 
-		return {
+		const result: ContextCompactionResult = {
 			...validated,
 			promptVersion: 1,
 			...(backupPath ? { backupPath } : {}),
 		};
+
+		// Emit session_compact so extensions can observe the validated result. This is a pure
+		// observation hook fired AFTER the compaction has been committed (backup written,
+		// context_compaction entry persisted, active context rebuilt). A misbehaving observer must
+		// never turn a successful, already-persisted compaction into a reported failure, so any
+		// throw is routed to the non-fatal extension-error channel and compaction still reports
+		// success.
+		const contextCompactionEntry = this.sessionManager.getEntry(compactionEntryId) as ContextCompactionEntry;
+		try {
+			await this._extensionRunner.emit({
+				type: "session_compact",
+				reason: options.reason,
+				mode,
+				result,
+				contextCompactionEntry,
+				fromExtension,
+			} satisfies SessionCompactEvent);
+		} catch (error) {
+			this._extensionRunner.emitError({
+				extensionPath: "<session_compact>",
+				event: "session_compact",
+				error: error instanceof Error ? error.message : String(error),
+				stack: error instanceof Error ? error.stack : undefined,
+			});
+		}
+
+		return result;
 	}
 
 	/**
 	 * Manually compact the session context using deletion-only verbatim context compaction.
-	 * Aborts current agent operation first. Custom summary instructions are not accepted.
+	 * Aborts current agent operation first.
 	 */
-	async compact(customInstructions?: string): Promise<ContextCompactionResult> {
-		if (customInstructions?.trim()) {
-			throw new Error("Custom compaction instructions are not supported; use /compact without arguments");
-		}
-
+	async compact(): Promise<ContextCompactionResult> {
 		this._disconnectFromAgent();
 		await this.abort();
 		this._compactionAbortController = new AbortController();
@@ -2042,12 +2166,14 @@ export class AgentSession {
 				throw new Error(formatNoModelSelectedMessage());
 			}
 
-			const { apiKey, headers } = await this._getRequiredRequestAuth(this.model);
+			// Auth is resolved lazily: only called when the planner fallback is needed.
+			// Extensions that provide a deletionRequest work without configured credentials.
+			const model = this.model;
 			const result = await this._applyContextVerbatimCompaction({
-				apiKey,
-				headers,
+				resolvePlannerAuth: () => this._getRequiredRequestAuth(model),
 				abortController: this._compactionAbortController,
 				backupLabel: "compact",
+				reason: "manual",
 			});
 			if (!result) {
 				throw new Error("Nothing to compact (session too small)");
@@ -2094,12 +2220,14 @@ export class AgentSession {
 				throw new Error(formatNoModelSelectedMessage());
 			}
 
-			const { apiKey, headers } = await this._getRequiredRequestAuth(this.model);
+			// Auth is resolved lazily: only called when the planner fallback is needed.
+			// Extensions that provide a deletionRequest work without configured credentials.
+			const model = this.model;
 			const result = await this._applyContextVerbatimCompaction({
-				apiKey,
-				headers,
+				resolvePlannerAuth: () => this._getRequiredRequestAuth(model),
 				abortController: this._compactionAbortController,
 				backupLabel: "context-compact",
+				reason: "manual",
 			});
 			if (!result) {
 				throw new Error("Nothing to context-compact (session too small)");
@@ -2300,24 +2428,24 @@ export class AgentSession {
 				return;
 			}
 
-			const authResult = await this._modelRegistry.getApiKeyAndHeaders(this.model);
-			if (!authResult.ok || !authResult.apiKey) {
-				this._emit({
-					type: "compaction_end",
-					reason,
-					result: undefined,
-					aborted: false,
-					willRetry: false,
-				});
-				return;
-			}
-
+			// Auth is resolved lazily: only called when the planner fallback is needed.
+			// This allows extension-provided deletion requests to run before auth is checked,
+			// enabling local extension compaction even when API credentials are unavailable.
+			// Auto-mode resolver returns undefined (rather than throwing) when auth is missing,
+			// so compaction silently no-ops if the planner would be needed but credentials are absent.
+			const model = this.model;
 			const result = await this._applyContextVerbatimCompaction({
-				apiKey: authResult.apiKey,
-				headers: authResult.headers,
+				resolvePlannerAuth: async () => {
+					const authResult = await this._modelRegistry.getApiKeyAndHeaders(model);
+					if (!authResult.ok || !authResult.apiKey) {
+						return undefined;
+					}
+					return { apiKey: authResult.apiKey, headers: authResult.headers };
+				},
 				abortController: this._autoCompactionAbortController,
 				backupLabel: reason === "overflow" ? "overflow-auto-compact" : "auto-compact",
 				mode: reason === "overflow" ? "critical_overflow" : "standard",
+				reason,
 			});
 			if (!result) {
 				this._emit({
@@ -2549,7 +2677,7 @@ export class AgentSession {
 				compact: (options) => {
 					void (async () => {
 						try {
-							const result = await this.compact(options?.customInstructions);
+							const result = await this.compact();
 							options?.onComplete?.(result);
 						} catch (error) {
 							const err = error instanceof Error ? error : new Error(String(error));

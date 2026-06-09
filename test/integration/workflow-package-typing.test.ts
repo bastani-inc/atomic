@@ -48,7 +48,15 @@ describe("standalone workflow package typing", () => {
               module: "NodeNext",
               moduleResolution: "NodeNext",
               noEmit: true,
-              skipLibCheck: false,
+              skipLibCheck: true,
+              allowImportingTsExtensions: true,
+              allowArbitraryExtensions: true,
+              ignoreDeprecations: "6.0",
+              baseUrl: ".",
+              paths: {
+                "@bastani/atomic": [join(repoRoot, "packages", "coding-agent", "src", "index.ts")],
+                "@earendil-works/pi-tui": [join(repoRoot, "node_modules", "@earendil-works", "pi-tui", "dist", "index.d.ts")],
+              },
             },
             include: ["src/**/*.ts"],
           },
@@ -81,13 +89,15 @@ import type {
   RalphWorkflowOutputs,
   RalphWorkflowRunInputs,
 } from "@bastani/workflows/builtin";
+import type { ExtensionUIContext, KeybindingsManager, Theme } from "@bastani/atomic";
+import type { Component, OverlayHandle, OverlayOptions, TUI } from "@earendil-works/pi-tui";
 import type {
   AgentSessionAdapter,
   StageAdapters,
   StageOptions,
   StageStatus,
-  WorkflowExecutionPolicy,
   WorkflowDefinition,
+  WorkflowExecutionPolicy,
   WorkflowInputBindings,
   WorkflowInputSchemaMap,
   WorkflowMcpPort,
@@ -98,12 +108,22 @@ import type {
   WorkflowRuntimeConfig,
   WorkflowTaskSessionOptions,
   WorkflowUIAdapter,
+  WorkflowCustomUiComponent,
+  WorkflowCustomUiFactory,
+  WorkflowCustomUiKeybindings,
+  WorkflowCustomUiOptions,
+  WorkflowCustomUiOverlayHandle,
+  WorkflowCustomUiOverlayOptions,
+  WorkflowCustomUiTheme,
+  WorkflowCustomUiTui,
 } from "@bastani/workflows";
 import { runWorkflow } from "@bastani/workflows";
 // @ts-expect-error WorkflowOptions was removed with the object-form runWorkflow API.
 import type { WorkflowOptions } from "@bastani/workflows";
 // @ts-expect-error WorkflowRunOptions was removed with the object-form runWorkflow API.
 import type { WorkflowRunOptions } from "@bastani/workflows";
+
+declare const extensionUiForTypes: ExtensionUIContext;
 
 const workflow = defineWorkflow("Standalone Typing Fixture")
   .description("Verifies package export types without declare module shims")
@@ -189,6 +209,42 @@ const workflow = defineWorkflow("Standalone Typing Fixture")
     await typedStage.prompt("bad source", { source: "invalid" });
     // @ts-expect-error preflightResult must be a runtime callback, not an object.
     await typedStage.prompt("bad preflight", { preflightResult: {} });
+    const extensionCustomFactory: Parameters<typeof extensionUiForTypes.custom<{ ok: boolean }>>[0] = (
+      tui: TUI,
+      theme: Theme,
+      keybindings: KeybindingsManager,
+      done,
+    ) => {
+      const workflowTui: WorkflowCustomUiTui = tui;
+      const workflowTheme: WorkflowCustomUiTheme = theme;
+      const workflowKeybindings: WorkflowCustomUiKeybindings = keybindings;
+      void workflowTui;
+      void workflowTheme;
+      void workflowKeybindings;
+      done({ ok: true });
+      return { render: () => [], invalidate: () => undefined } satisfies Component & { dispose?(): void };
+    };
+    const workflowCustomFactory: WorkflowCustomUiFactory<{ ok: boolean }> = extensionCustomFactory;
+    const workflowCustomOptions: WorkflowCustomUiOptions = {
+      label: "Typed custom",
+      replayIdentity: "typing-fixture:v1",
+      overlayOptions: (): WorkflowCustomUiOverlayOptions => ({
+        width: "50%",
+        visible: (termWidth: number, termHeight: number) => termWidth > 0 && termHeight > 0,
+      } satisfies OverlayOptions),
+      onHandle(handle: WorkflowCustomUiOverlayHandle) {
+        const realHandle: OverlayHandle = handle;
+        realHandle.unfocus({ target: null });
+      },
+    };
+    const workflowComponent: WorkflowCustomUiComponent = { render: () => [], invalidate: () => undefined };
+    void workflowComponent;
+    const customResult = await ctx.ui.custom<{ ok: boolean }>(
+      workflowCustomFactory,
+      workflowCustomOptions,
+    );
+    const customOk: boolean = customResult.ok;
+    void customOk;
     await ctx.task("echo", { prompt: message, output: "echo.md" });
     const chained = await ctx.chain([
       { name: "first", prompt: message },

@@ -116,14 +116,24 @@ export interface WorkflowChildResult<TOutputs extends WorkflowOutputValues = Wor
  * Each primitive suspends the current stage until the user responds.
  * Mirrors pi ctx.ui.input / confirm / select / editor methods.
  */
-export type WorkflowUIContext = AuthoringContract.WorkflowUIContext;
+export type WorkflowCustomUiComponent = AuthoringContract.WorkflowCustomUiComponent;
+export type WorkflowCustomUiTui = AuthoringContract.WorkflowCustomUiTui;
+export type WorkflowCustomUiTheme = AuthoringContract.WorkflowCustomUiTheme;
+export type WorkflowCustomUiKeybindings = AuthoringContract.WorkflowCustomUiKeybindings;
+export type WorkflowCustomUiOverlayOptions = AuthoringContract.WorkflowCustomUiOverlayOptions;
+export type WorkflowCustomUiOverlayHandle = AuthoringContract.WorkflowCustomUiOverlayHandle;
+export type WorkflowCustomUiFactory<T> = AuthoringContract.WorkflowCustomUiFactory<T>;
+export type WorkflowCustomUiOptions = AuthoringContract.WorkflowCustomUiOptions;
+
+export interface WorkflowUIContext extends AuthoringContract.WorkflowUIContext {}
 
 /**
  * Adapter supplied by the pi runtime (or test harness) to back the HIL
- * primitives.  Must implement the same surface as WorkflowUIContext so that
- * the executor can delegate directly.
+ * primitives.  The custom-widget method is optional for compatibility with
+ * existing primitive-only adapters; the executor normalizes a missing custom
+ * method to the same unavailable-UI rejection used in headless mode.
  */
-export type WorkflowUIAdapter = AuthoringContract.WorkflowUIAdapter;
+export interface WorkflowUIAdapter extends AuthoringContract.WorkflowUIAdapter {}
 
 // ---------------------------------------------------------------------------
 // StageOptions — per-stage configuration + pi SDK session options

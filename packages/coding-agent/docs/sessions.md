@@ -128,10 +128,12 @@ When prompted, choose one of:
 2. summarize with the default prompt
 3. summarize with custom focus instructions
 
+Branch summaries are separate from `/compact`: branch navigation can generate summary prose (optionally with focus instructions), while Verbatim Compaction records validated deletion targets and does not accept summary instructions.
+
 See [Compaction](/compaction) for Verbatim Compaction, branch summarization internals, and extension hooks.
 
 ## Session Format
 
-Session files are JSONL and contain message entries, model changes, thinking-level changes, labels, summary compactions, context compactions, branch summaries, and extension entries.
+Session files are JSONL and contain message entries, model changes, thinking-level changes, labels, context compactions, branch summaries, extension entries, and retired legacy `type:"compaction"` records from older sessions.
 
 For parsers, extensions, SDK usage, and the full SessionManager API, see [Session Format](/session-format).

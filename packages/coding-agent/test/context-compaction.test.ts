@@ -3,6 +3,7 @@ import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai"
 import { describe, expect, it } from "vitest";
 import {
 	buildContextCompactionPrompt,
+	type CompactableTranscript,
 	DEFAULT_COMPACTION_SETTINGS,
 	estimateContextTokens,
 	estimateTokens,
@@ -11,14 +12,12 @@ import {
 	prepareContextCompaction,
 	validateContextDeletionRequest,
 } from "../src/core/compaction/index.ts";
-import { createCompactionSummaryMessage } from "../src/core/messages.ts";
 import {
 	buildSessionContext,
 	type CompactionEntry,
 	type ContextCompactionEntry,
 	type CustomMessageEntry,
 	getLatestCompactionBoundaryEntry,
-	getLatestCompactionEntry,
 	type SessionEntry,
 	type SessionMessageEntry,
 } from "../src/core/session-manager.ts";
@@ -470,6 +469,90 @@ describe("context compaction", () => {
 		).toThrow(/protected/);
 	});
 
+	describe("critical overflow task-bearing context", () => {
+		function branchSummaryMessage(summary: string): AgentMessage {
+			return { role: "branchSummary", summary, fromId: "branch-1", timestamp: Date.now() } as AgentMessage;
+		}
+
+		// A transcript large enough that the old user + branch-summary entries sit outside the
+		// recent-entry boundary, so critical_overflow may evict the protected user message.
+		function criticalOverflowTranscript(): CompactableTranscript {
+			const entries = [
+				{
+					entryId: "entry-user",
+					entryType: "message" as const,
+					role: "user" as const,
+					text: "Original user task to be evicted under overflow.",
+					tokenEstimate: 12,
+					protected: true,
+					contentBlocks: [],
+					message: user("Original user task to be evicted under overflow."),
+					toolCallIds: [],
+				},
+				{
+					entryId: "entry-branch-summary",
+					entryType: "branch_summary" as const,
+					role: "branchSummary" as const,
+					text: "Recap of the prior branch's task and decisions.",
+					tokenEstimate: 10,
+					protected: true,
+					contentBlocks: [],
+					message: branchSummaryMessage("Recap of the prior branch's task and decisions."),
+					toolCallIds: [],
+				},
+				...Array.from({ length: 6 }, (_unused, index) => ({
+					entryId: `entry-assistant-${index}`,
+					entryType: "message" as const,
+					role: "assistant" as const,
+					text: `assistant context ${index}`,
+					tokenEstimate: 4,
+					protected: false,
+					contentBlocks: [],
+					message: assistantText(`assistant context ${index}`),
+					toolCallIds: [],
+				})),
+			];
+			return {
+				entries,
+				protectedEntryIds: ["entry-user", "entry-branch-summary"],
+				tokensBefore: entries.reduce((total, item) => total + item.tokenEstimate, 0),
+				settings: DEFAULT_COMPACTION_SETTINGS,
+			};
+		}
+
+		it("allows deleting every user message when a branch summary still bears the task", () => {
+			const validated = validateContextDeletionRequest(
+				{ deletions: [{ kind: "entry", entryId: "entry-user" }] },
+				criticalOverflowTranscript(),
+				{ mode: "critical_overflow" },
+			);
+			// The protected user message is evicted, and the surviving branch summary satisfies the
+			// task-bearing guarantee, so validation succeeds.
+			expect(validated.deletedTargets).toContainEqual({ kind: "entry", entryId: "entry-user" });
+		});
+
+		it("rejects deleting every task-bearing entry (user and branch summary)", () => {
+			expect(() =>
+				validateContextDeletionRequest(
+					{
+						deletions: [
+							{ kind: "entry", entryId: "entry-user" },
+							{ kind: "entry", entryId: "entry-branch-summary" },
+						],
+					},
+					criticalOverflowTranscript(),
+					{ mode: "critical_overflow" },
+				),
+			).toThrow(/leave no user task/);
+		});
+
+		it("still protects the user message outside critical overflow", () => {
+			expect(() =>
+				validateContextDeletionRequest({ deletions: [{ kind: "entry", entryId: "entry-user" }] }, criticalOverflowTranscript()),
+			).toThrow(/protected/);
+		});
+	});
+
 	it("repairs deletion requests that would orphan tool calls or results", () => {
 		resetIds();
 		const combinedToolCallId = "call_7SZEC0NytS60tNYbfx3iV93P|fc_0f290ffb56102ac9016a262e88c10c819aa3fe84e1e79aa20f";
@@ -862,7 +945,7 @@ describe("context compaction", () => {
 		expect(repeatedEntry!.tokenEstimate).toBeLessThan(estimateTokens(multi.message));
 	});
 
-	it("includes active /compact summary first in context compaction transcript and stats", () => {
+	it("ignores historical /compact summaries in context compaction transcript and stats", () => {
 		resetIds();
 		const staleSummary = "stale /compact summary that must not be active";
 		const activeSummary =
@@ -890,73 +973,41 @@ describe("context compaction", () => {
 
 		expect(preparation).toBeDefined();
 		const transcript = preparation!.transcript;
-		const firstTranscriptEntry = transcript.entries[0];
-		const expectedSummaryMessage = createCompactionSummaryMessage(
-			activeSummary,
-			activeCompaction.tokensBefore,
-			activeCompaction.timestamp,
-		);
-		const summaryTokens = estimateTokens(expectedSummaryMessage);
-
-		expect(firstTranscriptEntry).toEqual(
-			expect.objectContaining({
-				entryId: activeCompaction.id,
-				entryType: "compaction",
-				role: "compactionSummary",
-				protected: true,
-				text: activeSummary,
-				tokenEstimate: summaryTokens,
-				message: expectedSummaryMessage,
-			}),
-		);
-		expect(firstTranscriptEntry.contentBlocks).toEqual([
-			expect.objectContaining({
-				entryId: activeCompaction.id,
-				blockIndex: 0,
-				type: "summary",
-				protected: true,
-				text: activeSummary,
-				tokenEstimate: summaryTokens,
-			}),
-		]);
-		expect(transcript.protectedEntryIds).toContain(activeCompaction.id);
-		expect(buildContextCompactionPrompt(transcript)).toContain(activeSummary);
-		expect(buildContextCompactionPrompt(transcript)).not.toContain(staleSummary);
-
-		const rebuilt = buildSessionContext(entries);
-		expect(transcript.entries.map((item) => item.message)).toEqual(rebuilt.messages);
-		expect(transcript.entries.slice(1).map((item) => item.entryId)).toEqual([
+		const prompt = buildContextCompactionPrompt(transcript);
+		expect(transcript.entries.map((item) => item.entryId)).toEqual([
+			preStale.id,
+			summarizedBetween.id,
 			firstKept.id,
 			retainedBeforeCompact.id,
 			retainedAfterUser.id,
 			retainedAfterAssistant.id,
 		]);
+		expect(transcript.entries.some((item) => item.entryType === "compaction")).toBe(false);
+		expect(transcript.protectedEntryIds).not.toContain(activeCompaction.id);
+		expect(prompt).not.toContain(activeSummary);
+		expect(prompt).not.toContain(staleSummary);
 
-		const rawTranscriptEntries = transcript.entries.slice(1);
-		const rawObjectCount = rawTranscriptEntries.reduce((total, item) => total + 1 + item.contentBlocks.length, 0);
-		const rawTokenCount = rawTranscriptEntries.reduce((total, item) => total + item.tokenEstimate, 0);
+		const rebuilt = buildSessionContext(entries);
+		expect(transcript.entries.map((item) => item.message)).toEqual(rebuilt.messages);
+
+		const rawObjectCount = transcript.entries.reduce((total, item) => total + 1 + item.contentBlocks.length, 0);
+		const rawTokenCount = transcript.entries.reduce((total, item) => total + item.tokenEstimate, 0);
 		const validated = validateContextDeletionRequest({ deletions: [] }, transcript);
 
-		expect(transcript.tokensBefore).toBe(rawTokenCount + summaryTokens);
-		expect(validated.stats.objectsBefore).toBe(rawObjectCount + 2);
-		expect(validated.stats.tokensBefore).toBe(rawTokenCount + summaryTokens);
+		expect(transcript.tokensBefore).toBe(rawTokenCount);
+		expect(validated.stats.objectsBefore).toBe(rawObjectCount);
+		expect(validated.stats.tokensBefore).toBe(rawTokenCount);
 		expect(validated.stats.objectsAfter).toBe(validated.stats.objectsBefore);
 		expect(validated.stats.tokensAfter).toBe(validated.stats.tokensBefore);
 		expect(() =>
 			validateContextDeletionRequest({ deletions: [{ kind: "entry", entryId: activeCompaction.id }] }, transcript),
-		).toThrow(/protected/);
-		expect(() =>
-			validateContextDeletionRequest(
-				{ deletions: [{ kind: "content_block", entryId: activeCompaction.id, blockIndex: 0 }] },
-				transcript,
-			),
-		).toThrow(/protected/);
+		).toThrow(/Unknown deletion target/);
 	});
 
-	it("accepts protected active /compact summary as task-bearing context when no raw user message remains", () => {
+	it("requires raw task-bearing context because historical /compact summaries are inert", () => {
 		resetIds();
 		const activeSummary = "Active /compact summary preserving the user's summarized task and constraints";
-		const preCompactUser = entry(user("raw task summarized away by /compact"));
+		const preCompactUser = entry(user("raw task retained because legacy summaries are inert"));
 		const firstKeptAssistant = entry(assistantTextWithoutUsage("assistant context kept by summary compaction"));
 		const activeCompaction = compactionEntry(activeSummary, firstKeptAssistant.id, 2048);
 		const oldDeletableAssistant = entry(assistantTextWithoutUsage("old non-user assistant context safe to delete"));
@@ -976,15 +1027,8 @@ describe("context compaction", () => {
 
 		expect(preparation).toBeDefined();
 		const transcript = preparation!.transcript;
-		expect(transcript.entries.some((item) => item.role === "user")).toBe(false);
-		expect(transcript.entries[0]).toEqual(
-			expect.objectContaining({
-				entryId: activeCompaction.id,
-				role: "compactionSummary",
-				protected: true,
-				text: activeSummary,
-			}),
-		);
+		expect(transcript.entries.some((item) => item.role === "user")).toBe(true);
+		expect(transcript.entries.some((item) => item.entryId === activeCompaction.id)).toBe(false);
 		expect(transcript.entries.find((item) => item.entryId === oldDeletableAssistant.id)?.protected).toBe(false);
 
 		const validated = validateContextDeletionRequest(
@@ -993,52 +1037,34 @@ describe("context compaction", () => {
 		);
 
 		expect(validated.deletedTargets).toEqual([{ kind: "entry", entryId: oldDeletableAssistant.id }]);
-		expect(validated.protectedEntryIds).toContain(activeCompaction.id);
+		expect(validated.protectedEntryIds).not.toContain(activeCompaction.id);
 		expect(validated.stats.objectsDeleted).toBe(2);
 	});
 
-	it("treats context compaction as a boundary without changing summary lookup", () => {
+	it("treats only context compaction entries as compaction boundaries", () => {
 		resetIds();
 		const u1 = entry(user("task"));
-		const compaction = {
-			type: "compaction" as const,
-			id: `entry-${counter++}`,
-			parentId: lastId,
-			timestamp: new Date().toISOString(),
-			summary: "Existing /compact summary",
-			firstKeptEntryId: u1.id,
-			tokensBefore: 1234,
-		};
-		lastId = compaction.id;
+		const compaction = compactionEntry("Existing /compact summary", u1.id, 1234);
 		const logicalDeletion = contextEntry([]);
 		const entries: SessionEntry[] = [u1, compaction, logicalDeletion];
 
-		expect(getLatestCompactionEntry(entries)).toBe(compaction);
 		expect(getLatestCompactionBoundaryEntry(entries)).toBe(logicalDeletion);
 	});
 
-	it("preserves summary /compact rebuild semantics when context_compaction entries are present", () => {
+	it("treats historical summary /compact entries as inert when context_compaction entries are present", () => {
 		resetIds();
 		const u1 = entry(user("summarized task"));
 		const a1 = entry(assistantText("summarized answer"));
 		const u2 = entry(user("kept task"));
 		const a2 = entry(assistantText("kept answer"));
 		const logicalDeletion = contextEntry([{ kind: "entry", entryId: a2.id }]);
-		const compaction = {
-			type: "compaction" as const,
-			id: `entry-${counter++}`,
-			parentId: lastId,
-			timestamp: new Date().toISOString(),
-			summary: "Existing /compact summary",
-			firstKeptEntryId: u2.id,
-			tokensBefore: 1234,
-		};
-		lastId = compaction.id;
+		const compaction = compactionEntry("Existing /compact summary", u2.id, 1234);
 
 		const rebuilt = buildSessionContext([u1, a1, u2, a2, logicalDeletion, compaction]);
 
-		expect(rebuilt.messages[0]?.role).toBe("compactionSummary");
-		expect((rebuilt.messages[0] as { summary?: string }).summary).toContain("Existing /compact summary");
+		expect(rebuilt.messages.map((message) => message.role)).not.toContain("compactionSummary");
+		expect(rebuilt.messages).toContain(u1.message);
+		expect(rebuilt.messages).toContain(a1.message);
 		expect(rebuilt.messages).toContain(u2.message);
 		expect(rebuilt.messages).not.toContain(a2.message);
 	});

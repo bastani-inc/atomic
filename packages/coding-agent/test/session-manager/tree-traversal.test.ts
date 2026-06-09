@@ -66,23 +66,31 @@ describe("SessionManager append and tree traversal", () => {
 			expect(entries[2].parentId).toBe(modelId);
 		});
 
-		it("appendCompaction integrates into tree", () => {
+		it("appendContextCompaction integrates into tree", () => {
 			const session = SessionManager.inMemory();
 
 			const id1 = session.appendMessage(userMsg("1"));
 			const id2 = session.appendMessage(assistantMsg("2"));
-			const compactionId = session.appendCompaction("summary", id1, 1000);
+			const stats = {
+				objectsBefore: 2,
+				objectsAfter: 1,
+				objectsDeleted: 1,
+				tokensBefore: 1000,
+				tokensAfter: 500,
+				percentReduction: 50,
+			};
+			const compactionId = session.appendContextCompaction([{ kind: "entry", entryId: id1 }], [], stats);
 			const _id3 = session.appendMessage(userMsg("3"));
 
 			const entries = session.getEntries();
-			const compactionEntry = entries.find((e) => e.type === "compaction");
+			const compactionEntry = entries.find((e) => e.type === "context_compaction");
 			expect(compactionEntry).toBeDefined();
 			expect(compactionEntry?.id).toBe(compactionId);
 			expect(compactionEntry?.parentId).toBe(id2);
-			if (compactionEntry?.type === "compaction") {
-				expect(compactionEntry.summary).toBe("summary");
-				expect(compactionEntry.firstKeptEntryId).toBe(id1);
-				expect(compactionEntry.tokensBefore).toBe(1000);
+			if (compactionEntry?.type === "context_compaction") {
+				expect(compactionEntry.deletedTargets).toEqual([{ kind: "entry", entryId: id1 }]);
+				expect(compactionEntry.stats.tokensBefore).toBe(1000);
+				expect(compactionEntry.stats.objectsDeleted).toBe(1);
 			}
 
 			expect(entries[3].parentId).toBe(compactionId);

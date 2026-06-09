@@ -704,6 +704,10 @@ function renderStagesToolContent(
       lines.push("inputRequest:");
       lines.push(JSON.stringify(stage.inputRequest, null, 2));
     }
+    if (stage.promptFootprint !== undefined) {
+      lines.push("promptFootprint:");
+      lines.push(JSON.stringify(stage.promptFootprint, null, 2));
+    }
   });
   return lines.join("\n");
 }
@@ -802,6 +806,7 @@ type WorkflowStageSummary = {
   awaitingInputSince?: number;
   pendingPrompt?: StageSnapshot["pendingPrompt"];
   inputRequest?: StageSnapshot["inputRequest"];
+  promptFootprint?: StageSnapshot["promptFootprint"];
 };
 
 type WorkflowTranscriptEntry = {
@@ -844,6 +849,9 @@ function summarizeStage(stage: StageSnapshot): WorkflowStageSummary {
     inputRequest: stage.inputRequest === undefined
       ? undefined
       : structuredClone(stage.inputRequest),
+    promptFootprint: stage.promptFootprint === undefined
+      ? undefined
+      : structuredClone(stage.promptFootprint),
   };
 }
 
@@ -1630,6 +1638,24 @@ export function makeExecuteWorkflowTool(
             "answer",
             ok ? "ok" : "noop",
             ok ? `Answered input request ${brokerPrompt.id}.` : `No matching pending input request ${brokerPrompt.id}.`,
+          );
+        }
+        const customPrompt = snapshot?.status === "awaiting_input" && snapshot.promptFootprint?.kind === "custom"
+          ? snapshot.promptFootprint
+          : undefined;
+        const targetsCustomPrompt =
+          customPrompt !== undefined &&
+          (args.promptId === undefined || args.promptId === customPrompt.id) &&
+          (requestedDelivery === "answer" ||
+            args.promptId !== undefined ||
+            requestedDelivery === "auto");
+        if (targetsCustomPrompt && customPrompt !== undefined) {
+          return workflowSendResult(
+            stageRunId,
+            stage.stageId,
+            "answer",
+            "noop",
+            `Custom UI prompt ${customPrompt.id} requires the interactive workflow graph; arbitrary ctx.ui.custom<T> results cannot be answered through workflow send.`,
           );
         }
         const targetsPrompt =

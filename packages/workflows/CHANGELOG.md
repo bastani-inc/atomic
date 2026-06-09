@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.8.28-alpha.1] - 2026-06-08
+
+### Added
+
+- Added workflow `ctx.ui.custom<T>(factory, options?)` for graph-visible custom TUI human-in-the-loop prompts. Custom prompts create `awaiting_input` prompt nodes, reuse the stage UI broker/attached stage chat component path, expose the same real TUI/theme/keybinding/component types as Atomic extension custom UI, participate in live-memory prompt replay through hashed custom identities, keep labels display-only/outside replay identity, honor prompt/run abort signals, and reject clearly in headless/unavailable UI modes. Iteration 1 supports inline graph rendering; `overlay: true` and non-TUI `workflow send` answers for arbitrary custom widget results return clear unsupported errors rather than silently degrading ([#1309](https://github.com/bastani-inc/atomic/issues/1309)).
+
 ### Changed
 
 - Changed workflow transcript introspection to return `sessionFile`/`transcriptPath` metadata with a lazy-read prompt by default when a transcript path exists, while keeping bounded inline previews behind explicit `tail`/`limit` requests and falling back to a small preview when no path is available ([#1314](https://github.com/bastani-inc/atomic/issues/1314)).

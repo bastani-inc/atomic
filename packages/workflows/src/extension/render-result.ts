@@ -110,6 +110,7 @@ type StageListItem = {
   awaitingInputSince?: number;
   pendingPrompt?: PendingPrompt;
   inputRequest?: StageInputRequest;
+  promptFootprint?: PendingPrompt;
 };
 type StageListResult = { action: "stages"; runId: string; filter: string; stages: StageListItem[]; error?: string };
 type StageDetailItem = StageSnapshot & { transcriptPath?: string };

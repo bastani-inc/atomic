@@ -72,7 +72,6 @@ vi.mock("../src/core/compaction/index.js", () => ({
 		return { tokens: 0, usageTokens: 0, trailingTokens: 0, lastUsageIndex: null };
 	},
 	generateBranchSummary: async () => ({ summary: "", aborted: false, readFiles: [], modifiedFiles: [] }),
-	prepareCompaction: () => ({ dummy: true }),
 	prepareContextCompaction: () => ({ dummy: true }),
 	shouldCompact: (
 		contextTokens: number,
@@ -396,9 +395,7 @@ describe("AgentSession auto-compaction queue resume", () => {
 			timestamp: staleAssistantTimestamp - 1000,
 		});
 		sessionManager.appendMessage(staleAssistant);
-
-		const firstKeptEntryId = sessionManager.getEntries()[0]!.id;
-		sessionManager.appendCompaction("summary", firstKeptEntryId, staleAssistant.usage.totalTokens, undefined, false);
+		sessionManager.appendContextCompaction([], [], createContextCompactionStats(staleAssistant.usage.totalTokens, 50_000));
 
 		sessionManager.appendMessage({
 			role: "user",
@@ -621,15 +618,14 @@ describe("AgentSession auto-compaction queue resume", () => {
 			timestamp: preCompactionTimestamp,
 		};
 
-		// Record the kept assistant in the session and create a compaction after it
+		// Record the kept assistant in the session and create a context compaction after it
 		sessionManager.appendMessage({
 			role: "user",
 			content: [{ type: "text", text: "before compaction" }],
 			timestamp: preCompactionTimestamp - 1000,
 		});
 		sessionManager.appendMessage(keptAssistant);
-		const firstKeptEntryId = sessionManager.getEntries()[0]!.id;
-		sessionManager.appendCompaction("summary", firstKeptEntryId, keptAssistant.usage.totalTokens, undefined, false);
+		sessionManager.appendContextCompaction([], [], createContextCompactionStats(keptAssistant.usage.totalTokens, 50_000));
 
 		// Post-compaction error message
 		const errorAssistant: AssistantMessage = {

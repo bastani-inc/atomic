@@ -6,7 +6,7 @@ import {
   registerHilAnswerNoticeRenderer,
   type WorkflowHilAnswerNoticeDetails,
 } from "../../packages/workflows/src/extension/hil-answer-notifications.js";
-import { StageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
+import { StageUiBroker, type StageCustomUiRequest } from "../../packages/workflows/src/shared/stage-ui-broker.js";
 import { buildStagePromptAdapter } from "../../packages/workflows/src/shared/stage-prompt.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { PendingPrompt, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
@@ -135,6 +135,92 @@ describe("installWorkflowHilAnswerNotifications", () => {
     assert.equal(store.recordStagePendingPrompt("run-1", "stage-1", pendingPrompt()), true);
     assert.equal(
       store.resolveStagePendingPrompt("run-1", "stage-1", "prompt-1", "from tool", { answerSource: "workflow_tool" }),
+      true,
+    );
+    store.recordNotice({ id: "tick", level: "info", message: "force notify", createdAt: 20 });
+
+    assert.deepEqual(sent, []);
+    unsubscribe();
+  });
+
+  test("emits exactly one custom prompt notice when awaiting clears before the answer is recorded", async () => {
+    const { store, broker, sent, options, unsubscribe } = setup();
+    const prompt = pendingPrompt({
+      id: "custom-1",
+      kind: "custom",
+      message: "Approval widget",
+      customIdentityHash: "identity-hash",
+      customIdentitySource: "caller",
+    });
+    store.recordStageStart(
+      "run-1",
+      runningStage({
+        id: "custom-stage",
+        name: "custom",
+        promptFootprint: prompt,
+      }),
+    );
+
+    let request: StageCustomUiRequest<string> | undefined;
+    const unregisterHost = broker.registerHost("run-1", "custom-stage", {
+      showCustomUi(next) {
+        request = next as StageCustomUiRequest<string>;
+      },
+    });
+    try {
+      const pending = broker.requestCustomUi<string>("run-1", "custom-stage", () => ({
+        render: () => [],
+        invalidate: () => {},
+      }));
+      assert.ok(request, "custom request should mount on the registered host");
+      broker.resolve(request, "approved");
+      assert.equal(await pending, "approved");
+
+      const afterBrokerResolve = store.runs()[0]?.stages.find((stage) => stage.id === "custom-stage");
+      assert.equal(afterBrokerResolve?.status, "running");
+      assert.equal(afterBrokerResolve?.promptAnswerState, undefined);
+      assert.equal(sent.length, 0);
+
+      assert.equal(store.recordStagePromptAnswer("run-1", "custom-stage", prompt, "approved"), true);
+      store.recordNotice({ id: "tick-1", level: "info", message: "force notify", createdAt: 21 });
+      assert.equal(store.recordStagePromptAnswer("run-1", "custom-stage", prompt, "approved-again"), true);
+      store.recordNotice({ id: "tick-2", level: "info", message: "force notify again", createdAt: 22 });
+
+      assert.equal(sent.length, 1);
+      assert.deepEqual(options[0], { triggerTurn: false, excludeFromContext: true });
+      assert.equal(sent[0]?.customType, HIL_ANSWER_NOTICE_CUSTOM_TYPE);
+      assert.equal(sent[0]?.display, true);
+      assert.equal(sent[0]?.details?.promptId, "custom-1");
+      assert.equal(sent[0]?.details?.promptKind, "custom");
+      assert.equal(sent[0]?.details?.promptMessage, "Approval widget");
+      assert.equal(sent[0]?.details?.answerSummary, "approved");
+      assert.match(sent[0]?.content ?? "", /User responded with: approved/);
+    } finally {
+      unregisterHost();
+      unsubscribe();
+    }
+  });
+
+  test("does not notify when a custom prompt answer comes from the workflow tool", () => {
+    const { store, sent, unsubscribe } = setup();
+    const prompt = pendingPrompt({
+      id: "custom-tool-1",
+      kind: "custom",
+      message: "Tool-supplied widget",
+      customIdentityHash: "identity-hash",
+      customIdentitySource: "caller",
+    });
+    store.recordStageStart(
+      "run-1",
+      runningStage({
+        id: "custom-tool-stage",
+        name: "custom",
+        promptFootprint: prompt,
+      }),
+    );
+
+    assert.equal(
+      store.recordStagePromptAnswer("run-1", "custom-tool-stage", prompt, "from tool", { answerSource: "workflow_tool" }),
       true,
     );
     store.recordNotice({ id: "tick", level: "info", message: "force notify", createdAt: 20 });

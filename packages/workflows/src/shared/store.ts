@@ -119,6 +119,11 @@ export interface ResolveStagePendingPromptOptions {
   readonly answerSource?: StagePromptAnswerSource;
 }
 
+export interface RecordStagePromptAnswerOptions {
+  /** Identifies who answered the prompt so notification code can avoid echoing workflow-tool answers. */
+  readonly answerSource?: StagePromptAnswerSource;
+}
+
 export interface Store {
   runs(): readonly RunSnapshot[];
   notices(): readonly WorkflowNotice[];
@@ -206,6 +211,19 @@ export interface Store {
   ): boolean;
   /** Wait for a stage/node-scoped HIL prompt to resolve. */
   awaitStagePendingPrompt(runId: string, stageId: string, promptId: string): Promise<unknown>;
+  /**
+   * Record a live-only prompt answer for prompt-node UIs that do not use
+   * `stage.pendingPrompt` (notably arbitrary `ctx.ui.custom<T>` widgets).
+   * The raw value stays in the private answer ledger and is never serialized
+   * into snapshots or persistence.
+   */
+  recordStagePromptAnswer(
+    runId: string,
+    stageId: string,
+    prompt: PendingPrompt,
+    response: unknown,
+    options?: RecordStagePromptAnswerOptions,
+  ): boolean;
   /**
    * Record a live-only draft for an active stage-local input/editor prompt.
    * Draft text may contain secrets and must never be copied into snapshots,
@@ -772,6 +790,39 @@ export function createStore(): Store {
         }
         _resolvers.set(promptId, { promptId, resolve, reject });
       });
+    },
+
+    recordStagePromptAnswer(
+      runId: string,
+      stageId: string,
+      prompt: PendingPrompt,
+      response: unknown,
+      options: RecordStagePromptAnswerOptions = {},
+    ): boolean {
+      const run = findRun(runId);
+      if (!run) return false;
+      if (TERMINAL_STATUSES.has(run.status)) return false;
+      const stage = findStage(run, stageId);
+      if (!stage) return false;
+      if (isTerminalStageStatus(stage.status)) return false;
+      _stagePromptAnswers.set(stagePromptAnswerKey(runId, stageId), {
+        runId,
+        stageId,
+        promptId: prompt.id,
+        kind: prompt.kind,
+        value: response,
+        answeredAt: Date.now(),
+        ...(options.answerSource !== undefined ? { answerSource: options.answerSource } : {}),
+      });
+      if (stage.promptFootprint === undefined) stage.promptFootprint = { ...prompt };
+      stage.promptAnswerState = "available";
+      if (stage.status === "awaiting_input") {
+        stage.status = "running";
+        delete stage.awaitingInputSince;
+      }
+      _version++;
+      notify();
+      return true;
     },
 
     recordStagePromptDraft(runId: string, stageId: string, promptId: string, text: string): boolean {

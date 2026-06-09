@@ -357,7 +357,10 @@ export class GraphView implements Component {
       ? expandWorkflowGraph(this.currentSnapshot, run.id)
       : { stages: [], targets: new Map() };
     const stages = [...this.expandedGraph.stages];
-    const hasStagePrompt = stages.some((stage) => stage.pendingPrompt !== undefined);
+    const hasStagePrompt = stages.some((stage) =>
+      stage.pendingPrompt !== undefined ||
+      (stage.status === "awaiting_input" && stage.promptFootprint?.kind === "custom")
+    );
     if (!hasStagePrompt) return stages;
     return stages.filter((stage) => {
       // Prompt-node injection can leave unstarted author stages in the store

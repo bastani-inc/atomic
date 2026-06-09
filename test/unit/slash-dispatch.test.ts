@@ -2980,6 +2980,52 @@ export default defineWorkflow("tool-headless-lifecycle")
         );
     });
 
+    test("makeExecuteWorkflowTool refuses workflow send answers for custom prompt nodes", async () => {
+        const runId = `stage-tool-send-custom-${Date.now()}`;
+        store.recordRunStart(makeInflightRun(runId));
+        store.recordStageStart(runId, {
+            id: "stage-custom-prompt",
+            name: "custom",
+            status: "awaiting_input",
+            parentIds: [],
+            toolEvents: [],
+            awaitingInputSince: Date.now(),
+            promptFootprint: {
+                id: "custom-prompt-1",
+                kind: "custom",
+                message: "Custom widget",
+                customIdentityHash: "hash",
+                customIdentitySource: "caller",
+                createdAt: Date.now(),
+            },
+        });
+        const handler = makeToolHandler();
+
+        const result = await handler(
+            {
+                action: "send",
+                runId,
+                stageId: "custom",
+                promptId: "custom-prompt-1",
+                delivery: "answer",
+                response: { value: "not-supported" },
+            },
+            {} as never,
+        );
+
+        assert.equal(result.action, "send");
+        const send = result as {
+            action: string;
+            delivery: string;
+            status: string;
+            message: string;
+        };
+        assert.equal(send.delivery, "answer");
+        assert.equal(send.status, "noop");
+        assert.match(send.message, /requires the interactive workflow graph/);
+        assert.equal(store.getStagePromptAnswer(runId, "stage-custom-prompt"), undefined);
+    });
+
     test("makeExecuteWorkflowTool tags brokered prompt answers as workflow-tool sourced", async () => {
         const runId = `stage-tool-send-broker-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
