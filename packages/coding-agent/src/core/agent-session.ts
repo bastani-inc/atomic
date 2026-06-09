@@ -2004,6 +2004,9 @@ export class AgentSession {
 		if (!this.model) {
 			throw new Error(formatNoModelSelectedMessage());
 		}
+		// Capture the narrowed model now (control-flow narrowing holds immediately after the
+		// guard) so the lazy planner-fallback closure below can use a non-undefined model.
+		const model = this.model;
 
 		const pathEntries = this.sessionManager.getBranch();
 		const settings = this.settingsManager.getCompactionSettings();
@@ -2017,6 +2020,23 @@ export class AgentSession {
 		// isolated snapshot so they cannot mutate protection metadata (protectedEntryIds, entry
 		// .protected flags, etc.) on the internal preparation used for validation.
 		const extensionPreparation: ContextCompactionPreparation = deepFreeze(structuredClone(preparation));
+
+		// Planner fallback used when no extension supplies a deletionRequest. Auth is resolved
+		// lazily here so extension-provided deletion requests keep working offline. Returns
+		// undefined when auth is unavailable (auto-mode resolvers), signaling a no-op compaction.
+		const runPlanner = async (): Promise<ValidatedContextDeletionResult | undefined> => {
+			const auth = await options.resolvePlannerAuth();
+			if (!auth) return undefined;
+			return runContextCompact(
+				preparation,
+				model,
+				auth.apiKey,
+				auth.headers,
+				options.abortController.signal,
+				this.thinkingLevel,
+				mode,
+			);
+		};
 
 		// Emit session_before_compact to allow extensions to cancel or provide a deletion request.
 		// This happens BEFORE any auth resolution so local extension deletion requests work
@@ -2057,39 +2077,22 @@ export class AgentSession {
 				}
 				fromExtension = true;
 			} else {
-				// No deletion request from extension — resolve auth and run the planner.
-				const auth = await options.resolvePlannerAuth();
-				if (!auth) {
-					// Auto-mode resolvers return undefined when auth is unavailable; return
-					// undefined to indicate compaction was not performed (no-op for auto).
+				// No deletion request from extension — fall back to the internal planner.
+				const plannerResult = await runPlanner();
+				if (!plannerResult) {
+					// Auth unavailable (auto-mode resolvers return undefined): no-op compaction.
 					return undefined;
 				}
-				validated = await runContextCompact(
-					preparation,
-					this.model,
-					auth.apiKey,
-					auth.headers,
-					options.abortController.signal,
-					this.thinkingLevel,
-					mode,
-				);
+				validated = plannerResult;
 			}
 		} else {
-			// No extension handlers — resolve auth and run the planner directly.
-			const auth = await options.resolvePlannerAuth();
-			if (!auth) {
-				// Auto-mode resolvers return undefined when auth is unavailable.
+			// No extension handlers — fall back to the internal planner directly.
+			const plannerResult = await runPlanner();
+			if (!plannerResult) {
+				// Auth unavailable (auto-mode resolvers return undefined): no-op compaction.
 				return undefined;
 			}
-			validated = await runContextCompact(
-				preparation,
-				this.model,
-				auth.apiKey,
-				auth.headers,
-				options.abortController.signal,
-				this.thinkingLevel,
-				mode,
-			);
+			validated = plannerResult;
 		}
 
 		if (options.abortController.signal.aborted) {
@@ -2112,16 +2115,30 @@ export class AgentSession {
 			...(backupPath ? { backupPath } : {}),
 		};
 
-		// Emit session_compact so extensions can observe the validated result.
+		// Emit session_compact so extensions can observe the validated result. This is a pure
+		// observation hook fired AFTER the compaction has been committed (backup written,
+		// context_compaction entry persisted, active context rebuilt). A misbehaving observer must
+		// never turn a successful, already-persisted compaction into a reported failure, so any
+		// throw is routed to the non-fatal extension-error channel and compaction still reports
+		// success.
 		const contextCompactionEntry = this.sessionManager.getEntry(compactionEntryId) as ContextCompactionEntry;
-		await this._extensionRunner.emit({
-			type: "session_compact",
-			reason: options.reason,
-			mode,
-			result,
-			contextCompactionEntry,
-			fromExtension,
-		} satisfies SessionCompactEvent);
+		try {
+			await this._extensionRunner.emit({
+				type: "session_compact",
+				reason: options.reason,
+				mode,
+				result,
+				contextCompactionEntry,
+				fromExtension,
+			} satisfies SessionCompactEvent);
+		} catch (error) {
+			this._extensionRunner.emitError({
+				extensionPath: "<session_compact>",
+				event: "session_compact",
+				error: error instanceof Error ? error.message : String(error),
+				stack: error instanceof Error ? error.stack : undefined,
+			});
+		}
 
 		return result;
 	}

@@ -50,7 +50,11 @@ function assistantMessage(text: string, timestamp: number): AssistantMessage {
 	};
 }
 
-describe.skipIf(!API_KEY)("Compaction extensions", () => {
+// The deletion-shaped tests below supply a `deletionRequest` or `cancel` and never reach the
+// planner, so they require no API credentials and must run in credential-less CI (they exercise the
+// security-relevant validation: cancel, empty-request rejection, protected-metadata enforcement).
+// Only the final planner-fallback test needs a real model call and is gated with `it.skipIf`.
+describe("Compaction extensions", () => {
 	let session: AgentSession;
 	let tempDir: string;
 	let capturedEvents: SessionEvent[];
@@ -215,7 +219,9 @@ describe.skipIf(!API_KEY)("Compaction extensions", () => {
 		expect(session.sessionManager.getEntries().some((entry) => entry.type === "context_compaction")).toBe(false);
 	});
 
-	it("continues with planner compaction when hooks observe without deletion requests", async () => {
+	// Requires a live model: the hook observes without a deletionRequest, so compaction falls back
+	// to the planner, which needs credentials.
+	it.skipIf(!API_KEY)("continues with planner compaction when hooks observe without deletion requests", async () => {
 		const extension = createExtension(() => undefined);
 		createSession([extension]);
 		await session.prompt("What is 2+2? Reply with just the number.");

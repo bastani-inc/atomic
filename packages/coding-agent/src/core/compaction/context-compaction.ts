@@ -474,8 +474,18 @@ function messageText(message: AgentMessage): string {
 			return textFromUnknownContent(message.content);
 		case "assistant":
 			return textFromUnknownContent(message.content);
+		case "compactionSummary":
+			// Legacy summary-compaction message type retained in the upstream AgentMessage union
+			// after summary compaction was removed; surface its archival summary text.
+			return message.summary;
+		default: {
+			// Exhaustiveness guard: adding a new AgentMessage role must fail the build here instead
+			// of silently degrading to an empty string.
+			const _exhaustiveCheck: never = message;
+			void _exhaustiveCheck;
+			return "";
+		}
 	}
-	return "";
 }
 
 function hasAssistantError(message: AgentMessage): boolean {
@@ -863,6 +873,26 @@ interface ContextDeletionValidationOptions {
 	mode?: ContextCompactionMode;
 }
 
+/**
+ * An entry "bears task context" when it carries the user's intent for the session: a real `user`
+ * message, an extension-injected `custom` message, or a branch summary (`branchSummary` role /
+ * `branch_summary` entry type) that recaps an earlier branch's task.
+ *
+ * Verbatim compaction must always leave at least one task-bearing entry in context. The same set
+ * also defines which protected entries `critical_overflow` may delete, because the intent each one
+ * carries is recoverable from any other surviving task-bearing entry. As a deliberate consequence,
+ * `critical_overflow` MAY delete every literal `user` message as long as a branch summary or custom
+ * entry survives — branch summaries intentionally carry the task forward.
+ */
+function isTaskBearingEntry(entry: CompactableTranscriptEntry): boolean {
+	return (
+		entry.role === "user" ||
+		entry.role === "custom" ||
+		entry.role === "branchSummary" ||
+		entry.entryType === "branch_summary"
+	);
+}
+
 function isCriticalOverflowProtectedEntryDeletable(
 	entry: CompactableTranscriptEntry,
 	transcript: CompactableTranscript,
@@ -875,12 +905,7 @@ function isCriticalOverflowProtectedEntryDeletable(
 	if (hasAssistantError(entry.message) || hasToolResultError(entry.message) || hasFailedBashExecution(entry.message)) {
 		return false;
 	}
-	return (
-		entry.role === "user" ||
-		entry.role === "custom" ||
-		entry.role === "branchSummary" ||
-		entry.entryType === "branch_summary"
-	);
+	return isTaskBearingEntry(entry);
 }
 
 function canDeleteProtectedTargetInMode(
@@ -976,13 +1001,7 @@ export function validateContextDeletionRequest(
 	if (remainingEntries.length === 0) {
 		throw new Error("Deletion request would remove all context entries");
 	}
-	const hasTaskBearingContext = remainingEntries.some(
-		(entry) =>
-			entry.role === "user" ||
-			entry.role === "custom" ||
-			entry.role === "branchSummary" ||
-			entry.entryType === "branch_summary",
-	);
+	const hasTaskBearingContext = remainingEntries.some(isTaskBearingEntry);
 	if (!hasTaskBearingContext) {
 		throw new Error("Deletion request would leave no user task in context");
 	}

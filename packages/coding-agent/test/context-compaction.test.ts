@@ -3,6 +3,7 @@ import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai"
 import { describe, expect, it } from "vitest";
 import {
 	buildContextCompactionPrompt,
+	type CompactableTranscript,
 	DEFAULT_COMPACTION_SETTINGS,
 	estimateContextTokens,
 	estimateTokens,
@@ -466,6 +467,90 @@ describe("context compaction", () => {
 		expect(() =>
 			validateContextDeletionRequest({ deletions: [{ kind: "entry", entryId: u1.id }] }, preparation.transcript),
 		).toThrow(/protected/);
+	});
+
+	describe("critical overflow task-bearing context", () => {
+		function branchSummaryMessage(summary: string): AgentMessage {
+			return { role: "branchSummary", summary, fromId: "branch-1", timestamp: Date.now() } as AgentMessage;
+		}
+
+		// A transcript large enough that the old user + branch-summary entries sit outside the
+		// recent-entry boundary, so critical_overflow may evict the protected user message.
+		function criticalOverflowTranscript(): CompactableTranscript {
+			const entries = [
+				{
+					entryId: "entry-user",
+					entryType: "message" as const,
+					role: "user" as const,
+					text: "Original user task to be evicted under overflow.",
+					tokenEstimate: 12,
+					protected: true,
+					contentBlocks: [],
+					message: user("Original user task to be evicted under overflow."),
+					toolCallIds: [],
+				},
+				{
+					entryId: "entry-branch-summary",
+					entryType: "branch_summary" as const,
+					role: "branchSummary" as const,
+					text: "Recap of the prior branch's task and decisions.",
+					tokenEstimate: 10,
+					protected: true,
+					contentBlocks: [],
+					message: branchSummaryMessage("Recap of the prior branch's task and decisions."),
+					toolCallIds: [],
+				},
+				...Array.from({ length: 6 }, (_unused, index) => ({
+					entryId: `entry-assistant-${index}`,
+					entryType: "message" as const,
+					role: "assistant" as const,
+					text: `assistant context ${index}`,
+					tokenEstimate: 4,
+					protected: false,
+					contentBlocks: [],
+					message: assistantText(`assistant context ${index}`),
+					toolCallIds: [],
+				})),
+			];
+			return {
+				entries,
+				protectedEntryIds: ["entry-user", "entry-branch-summary"],
+				tokensBefore: entries.reduce((total, item) => total + item.tokenEstimate, 0),
+				settings: DEFAULT_COMPACTION_SETTINGS,
+			};
+		}
+
+		it("allows deleting every user message when a branch summary still bears the task", () => {
+			const validated = validateContextDeletionRequest(
+				{ deletions: [{ kind: "entry", entryId: "entry-user" }] },
+				criticalOverflowTranscript(),
+				{ mode: "critical_overflow" },
+			);
+			// The protected user message is evicted, and the surviving branch summary satisfies the
+			// task-bearing guarantee, so validation succeeds.
+			expect(validated.deletedTargets).toContainEqual({ kind: "entry", entryId: "entry-user" });
+		});
+
+		it("rejects deleting every task-bearing entry (user and branch summary)", () => {
+			expect(() =>
+				validateContextDeletionRequest(
+					{
+						deletions: [
+							{ kind: "entry", entryId: "entry-user" },
+							{ kind: "entry", entryId: "entry-branch-summary" },
+						],
+					},
+					criticalOverflowTranscript(),
+					{ mode: "critical_overflow" },
+				),
+			).toThrow(/leave no user task/);
+		});
+
+		it("still protects the user message outside critical overflow", () => {
+			expect(() =>
+				validateContextDeletionRequest({ deletions: [{ kind: "entry", entryId: "entry-user" }] }, criticalOverflowTranscript()),
+			).toThrow(/protected/);
+		});
 	});
 
 	it("repairs deletion requests that would orphan tool calls or results", () => {

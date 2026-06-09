@@ -152,8 +152,18 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
 				case "assistant":
 				case "toolResult":
 					return m;
-				default:
+				case "compactionSummary":
+					// Legacy summary-compaction message type retained in the upstream AgentMessage
+					// union. Summary compaction was removed; these archival entries are inert and are
+					// never injected into active LLM context.
 					return undefined;
+				default: {
+					// Exhaustiveness guard: adding a new AgentMessage role must fail the build here
+					// instead of silently mapping to undefined and dropping the message from context.
+					const _exhaustiveCheck: never = m;
+					void _exhaustiveCheck;
+					return undefined;
+				}
 			}
 		})
 		.filter((m) => m !== undefined);
