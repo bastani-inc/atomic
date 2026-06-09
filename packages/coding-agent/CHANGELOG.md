@@ -2,16 +2,13 @@
 
 ## [Unreleased]
 
-### Changed
-
-- Changed the verbatim compaction critical-overflow recovery prompt to evict in an explicit priority order when context still exceeds the token budget after compaction: removable reasoning traces are evicted first, then removable user/custom/summary context. Existing safety/retention rules (recent entries, unresolved errors, failed commands, and at least one task-bearing entry) are preserved ([#1308](https://github.com/bastani-inc/atomic/issues/1308)).
-
-## [0.8.28-alpha.1] - 2026-06-08
+## [0.8.28-alpha.1] - 2026-06-09
 
 ### Changed
 
 - Changed Atomic compaction to be verbatim-only across manual `/compact`, automatic threshold/overflow compaction, SDK/RPC compaction, and extension-triggered compaction. All compaction now records validated `context_compaction` deletion targets and rebuilds active context with retained transcript content verbatim and unchanged. Retained file paths, exact commands, error strings, and line numbers are never paraphrased or rewritten.
 - Changed compaction extension hooks (`session_before_compact`, `session_compact`) to receive verbatim context-compaction preparations/results and allow cancellation or locally validated deletion requests instead of custom generated summaries. The before-compact hook now yields `ContextCompactionPreparation` and accepts `{ cancel: true }` or `{ deletionRequest }` returns; the after-compact hook now receives `ContextCompactionResult` and `contextCompactionEntry`.
+- Changed the verbatim compaction critical-overflow recovery prompt to evict in an explicit priority order when context still exceeds the token budget after compaction: removable reasoning traces are evicted first, then removable user/custom/summary context. Existing safety/retention rules (recent entries, unresolved errors, failed commands, and at least one task-bearing entry) are preserved ([#1308](https://github.com/bastani-inc/atomic/issues/1308)).
 
 ### Fixed
 
