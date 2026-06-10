@@ -329,6 +329,8 @@ function themedBadges(c: Counts, theme: GraphTheme): FlatBandBadge[] {
   const out: FlatBandBadge[] = [];
   if (c.completed > 0) out.push({ text: `✓ ${c.completed}`, fg: theme.success });
   if (c.active > 0) out.push({ text: `● ${c.active}`, fg: theme.warning });
+  // Keep the word label: the pause glyph is less familiar than the other
+  // status glyphs, so this intentional asymmetry improves scanability.
   if (c.paused > 0) out.push({ text: `❚❚ ${c.paused} paused`, fg: theme.warning });
   if (c.pending > 0) out.push({ text: `○ ${c.pending}`, fg: theme.dim });
   if (c.failed > 0) out.push({ text: `⊘ ${c.failed}`, fg: theme.error });
@@ -339,6 +341,8 @@ function plainBadges(c: Counts): FlatBandBadge[] {
   const out: FlatBandBadge[] = [];
   if (c.completed > 0) out.push({ text: `✓ ${c.completed}` });
   if (c.active > 0) out.push({ text: `● ${c.active}` });
+  // Keep the word label: the pause glyph is less familiar than the other
+  // status glyphs, so this intentional asymmetry improves scanability.
   if (c.paused > 0) out.push({ text: `❚❚ ${c.paused} paused` });
   if (c.pending > 0) out.push({ text: `○ ${c.pending}` });
   if (c.failed > 0) out.push({ text: `⊘ ${c.failed}` });

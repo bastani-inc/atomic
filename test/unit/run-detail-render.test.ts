@@ -152,7 +152,7 @@ describe("renderRunDetail — themed", () => {
     assert.match(plain, /RUN abc123/);
   });
 
-  test("paused run renders paused badges and summary state instead of pending", () => {
+  test("paused run renders paused badges, summary state, and resume hint", () => {
     const now = 1_000_000;
     const detail = detailFromRun(makeRun({
       id: "pause123uuid",
@@ -170,6 +170,9 @@ describe("renderRunDetail — themed", () => {
     assert.match(plain, /ralph/);
     assert.match(plain, /❚❚ paused/);
     assert.match(plain, /state\s+❚❚ paused/);
+    assert.match(plain, /workflow resume\s+id=pause1/);
+    assert.match(plain, /continue workflow/);
+    assert.doesNotMatch(plain, /workflow interrupt/);
     assert.doesNotMatch(plain, /○ pending/);
   });
 

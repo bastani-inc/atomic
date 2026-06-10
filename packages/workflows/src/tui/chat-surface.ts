@@ -11,9 +11,11 @@
  *    left, a `surface0` tag carrying the runId / workflow name, a
  *    bolded title beside it, and one optional second row indented past
  *    the stripe.
- *  - **Progress strip**: bracketed `[✓]` / `[●]` / `[○]` / `[✗]` cells,
- *    coloured by stage status. Truncates with a trailing `…` when the
- *    rendered cells exceed the available budget.
+ *  - **Progress strip**: bracketed status cells such as `[✓]`, `[●]`,
+ *    `[○]`, `[✗]`, and `[❚❚]`, coloured by stage status. Cells are
+ *    measured by visible width per rendered glyph rather than assumed to
+ *    be a fixed 3 columns, and the strip truncates with a trailing `…`
+ *    when the rendered cells exceed the available budget.
  *  - **Hint rows**: a single grammar — `▸ /slash command  verb-phrase
  *    hint`.
  *
@@ -440,7 +442,7 @@ function renderTaggedCardPlain(opts: RenderTaggedCardOpts, width: number): strin
 }
 
 // ---------------------------------------------------------------------------
-// Progress strip — `[✓][●][○][✗]` cells, coloured by stage status
+// Progress strip — variable-width bracketed cells, coloured by stage status
 // ---------------------------------------------------------------------------
 
 export interface ProgressCell {
@@ -449,12 +451,13 @@ export interface ProgressCell {
 
 /**
  * Render a progress strip whose visible width is at most `budget` cells.
- * Each cell renders as a 3-character bracket-glyph-bracket sequence
- * (`[✓]`). When the strip would exceed the budget, the rendered output
- * is truncated and a trailing `…` is appended.
+ * Each cell renders as a bracketed status glyph whose visible width can
+ * vary by status (`[✓]` is 3 cells, `[❚❚]` is 4 cells). Truncation uses
+ * the measured width of each rendered cell and appends a trailing `…`
+ * when the next whole cell would exceed the budget.
  *
  * Themed mode colours the glyphs by status; plain mode emits the same
- * ASCII shape so logs remain readable.
+ * bracketed shape so logs remain readable.
  */
 export function progressStrip(
   cells: readonly ProgressCell[],
