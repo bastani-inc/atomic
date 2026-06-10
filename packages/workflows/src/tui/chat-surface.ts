@@ -461,33 +461,27 @@ export function progressStrip(
   budget: number,
   theme?: GraphTheme,
 ): string {
-  const CELL_WIDTH = 3;
   const usable = Math.max(0, Math.floor(budget));
-  const maxCells = Math.max(0, Math.floor(usable / CELL_WIDTH));
-  if (maxCells === 0 || cells.length === 0) return "";
+  if (usable < 3 || cells.length === 0) return "";
 
-  const truncated = cells.length > maxCells;
-  // Reserve 1 cell of width for the trailing ellipsis if truncating, so the
-  // rendered output still fits.
-  const visibleCount = truncated
-    ? Math.max(0, Math.floor((usable - 1) / CELL_WIDTH))
-    : cells.length;
-  const slice = cells.slice(0, visibleCount);
+  const ellipsisWidth = visibleWidth(ELLIPSIS);
+  const out: string[] = [];
+  let used = 0;
 
-  let out = "";
-  if (theme) {
-    for (const cell of slice) {
-      out += renderCellThemed(cell.status, theme);
-    }
-  } else {
-    for (const cell of slice) {
-      out += renderCellPlain(cell.status);
-    }
+  for (let i = 0; i < cells.length; i++) {
+    const rendered = theme ? renderCellThemed(cells[i]!.status, theme) : renderCellPlain(cells[i]!.status);
+    const renderedWidth = visibleWidth(rendered);
+    const isLast = i === cells.length - 1;
+    const reserved = isLast ? 0 : ellipsisWidth;
+    if (used + renderedWidth + reserved > usable) break;
+    out.push(rendered);
+    used += renderedWidth;
+    if (isLast) return out.join("");
   }
-  if (truncated) {
-    out += theme ? `${hexToAnsi(theme.dim)}${ELLIPSIS}${RESET}` : ELLIPSIS;
-  }
-  return out;
+
+  if (out.length === 0 && ellipsisWidth > usable) return "";
+  const suffix = theme ? `${hexToAnsi(theme.dim)}${ELLIPSIS}${RESET}` : ELLIPSIS;
+  return `${out.join("")}${suffix}`;
 }
 
 function renderCellThemed(status: StageStatus, theme: GraphTheme): string {
@@ -506,6 +500,7 @@ function stageGlyph(status: StageStatus): string {
   switch (status) {
     case "completed": return "✓";
     case "running":   return "●";
+    case "paused":    return "❚❚";
     case "failed":    return "✗";
     case "awaiting_input": return "？";
     case "skipped":   return "⊘";
@@ -518,6 +513,7 @@ function stageColor(status: StageStatus, theme: GraphTheme): string {
   switch (status) {
     case "completed": return hexToAnsi(theme.success);
     case "running":   return hexToAnsi(theme.warning);
+    case "paused":    return hexToAnsi(theme.warning);
     case "failed":    return hexToAnsi(theme.error);
     case "awaiting_input": return hexToAnsi(theme.info);
     case "skipped":   return hexToAnsi(theme.dim);

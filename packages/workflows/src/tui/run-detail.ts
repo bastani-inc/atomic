@@ -295,6 +295,8 @@ function stateBadges(detail: RunDetail, theme: GraphTheme): FlatBandBadge[] {
   switch (detail.status) {
     case "running":
       return [{ text: "● running", fg: theme.warning }];
+    case "paused":
+      return [{ text: "❚❚ paused", fg: theme.warning }];
     case "completed":
       return [{ text: "✓ completed", fg: theme.success }];
     case "failed":
@@ -310,6 +312,7 @@ function stateBadges(detail: RunDetail, theme: GraphTheme): FlatBandBadge[] {
 function stateLabel(detail: RunDetail): string {
   switch (detail.status) {
     case "running": return "● running";
+    case "paused": return "❚❚ paused";
     case "completed": return "✓ completed";
     case "failed": return "✗ failed";
     case "killed": return "⊘ killed";

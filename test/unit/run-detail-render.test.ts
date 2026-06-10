@@ -37,6 +37,9 @@ function makeRun(over: Partial<RunSnapshot> = {}): RunSnapshot {
     startedAt: over.startedAt ?? 1000,
     endedAt: over.endedAt,
     durationMs: over.durationMs,
+    pausedDurationMs: over.pausedDurationMs,
+    pausedAt: over.pausedAt,
+    resumedAt: over.resumedAt,
     result: over.result,
     error: over.error,
   };
@@ -51,6 +54,9 @@ function detailFromRun(run: RunSnapshot): RunDetail {
     startedAt: run.startedAt,
     endedAt: run.endedAt,
     durationMs: run.durationMs,
+    pausedDurationMs: run.pausedDurationMs,
+    pausedAt: run.pausedAt,
+    resumedAt: run.resumedAt,
     inputs: run.inputs,
     stages: run.stages,
     result: run.result,
@@ -144,6 +150,27 @@ describe("renderRunDetail — themed", () => {
     assert.doesNotMatch(plain, /workflow resume/);
     // Pill label uses the short id too.
     assert.match(plain, /RUN abc123/);
+  });
+
+  test("paused run renders paused badges and summary state instead of pending", () => {
+    const now = 1_000_000;
+    const detail = detailFromRun(makeRun({
+      id: "pause123uuid",
+      name: "ralph",
+      status: "paused",
+      startedAt: now - 10_000,
+      pausedAt: now - 6_000,
+      stages: [makeStage("p1", "review", "paused", { startedAt: now - 10_000, pausedAt: now - 6_000 })],
+    }));
+
+    const out = renderRunDetail(detail, { theme: deriveGraphTheme({}), now, width: 100 });
+    const plain = stripAnsi(out);
+
+    assert.match(plain, /RUN pause1/);
+    assert.match(plain, /ralph/);
+    assert.match(plain, /❚❚ paused/);
+    assert.match(plain, /state\s+❚❚ paused/);
+    assert.doesNotMatch(plain, /○ pending/);
   });
 
   test("ended run swaps the action hint to resume and reports duration", () => {

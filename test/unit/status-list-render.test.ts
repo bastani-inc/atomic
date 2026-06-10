@@ -49,6 +49,9 @@ function makeRun(over: Partial<RunSnapshot>): RunSnapshot {
     startedAt: over.startedAt ?? Date.now() - 5000,
     endedAt: over.endedAt,
     durationMs: over.durationMs,
+    pausedDurationMs: over.pausedDurationMs,
+    pausedAt: over.pausedAt,
+    resumedAt: over.resumedAt,
     result: over.result,
     error: over.error,
   };
@@ -125,6 +128,67 @@ describe("renderStatusList — populated", () => {
     // Trailing hint references the most-recently-active run (def456, 42s ago).
     assert.match(plain, /▸ \/workflow status def456/);
     assert.match(plain, /drill into a run/);
+  });
+
+  test("mixed running and paused snapshot keeps paused runs out of running counts and labels their rows", () => {
+    const now = 1_000_000;
+    const runs: RunSnapshot[] = [
+      makeRun({
+        id: "run111uuid",
+        name: "active-wf",
+        status: "running",
+        startedAt: now - 4_000,
+        stages: [makeStage("r1", "worker", "running", { startedAt: now - 4_000 })],
+      }),
+      makeRun({
+        id: "pause222uuid",
+        name: "paused-wf",
+        status: "paused",
+        startedAt: now - 10_000,
+        pausedAt: now - 6_000,
+        stages: [makeStage("p1", "review", "paused", { startedAt: now - 10_000, pausedAt: now - 6_000 })],
+      }),
+    ];
+
+    const out = renderStatusList(runs, { theme: deriveGraphTheme({}), now, width: 120, showDetailHint: false });
+    const plain = stripAnsi(out);
+
+    assert.match(plain, /╭ BACKGROUND  2 runs /);
+    assert.match(plain, /● 1/, "only the running run contributes to the running count");
+    assert.doesNotMatch(plain, /● 2/, "paused run must not be counted as running");
+    assert.match(plain, /❚❚ 1 paused/, "paused count is rendered separately");
+
+    const runningRow = plain.split("\n").find((line) => line.includes("active-wf"));
+    assert.ok(runningRow, "running run row is present");
+    assert.match(runningRow, /● running/);
+
+    const pausedRow = plain.split("\n").find((line) => line.includes("paused-wf"));
+    assert.ok(pausedRow, "paused run row is present");
+    assert.match(pausedRow, /❚❚\s+pause2\s+paused-wf\s+❚❚ paused/);
+    assert.doesNotMatch(pausedRow, /○ pending/);
+    assert.doesNotMatch(pausedRow, /● running/);
+  });
+
+  test("plain paused status output is ANSI-free and uses paused glyph and label", () => {
+    const now = 1_000_000;
+    const run = makeRun({
+      id: "pause333uuid",
+      name: "paused-plain",
+      status: "paused",
+      startedAt: now - 10_000,
+      pausedAt: now - 6_000,
+      stages: [makeStage("p1", "worker", "paused", { startedAt: now - 10_000, pausedAt: now - 6_000 })],
+    });
+
+    const out = renderStatusList([run], { width: 100, now, showDetailHint: false });
+
+    assert.doesNotMatch(out, /\x1b\[/);
+    assert.match(out, /^╭ BACKGROUND  1 run /);
+    assert.match(out, /❚❚ 1 paused/);
+    assert.match(out, /❚❚\s+pause3\s+paused-plain\s+❚❚ paused/);
+    assert.match(out, /single\s+\[❚❚\]/, "paused progress cell uses the paused glyph, not the pending cell");
+    assert.doesNotMatch(out, /○ pending/);
+    assert.doesNotMatch(out, /● 1(?:\s+running)?/);
   });
 
   test("active runs sort ahead of ended runs", () => {
