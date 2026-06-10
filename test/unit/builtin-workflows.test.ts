@@ -2816,6 +2816,7 @@ describe("open-claude-design", () => {
             approved_for_export: "boolean",
             artifact: "text",
             artifact_dir: "text",
+            browse_cli_status: "text",
             design_system: "text",
             handoff: "text",
             import_context: "text",

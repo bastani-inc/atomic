@@ -23,7 +23,10 @@
  * a real HTML page on disk (`preview.html`). The workflow attempts to open it
  * through the `browser` skill so the user can interactively review;
  * when browser automation is unavailable, the file path is surfaced so the user
- * can open it manually. The final exporter produces a rich `spec.html` that
+ * can open it manually. Before any stage runs, an initial deterministic setup
+ * step ensures the browser skill's `browse` CLI is available (`which browse`,
+ * then `npm install -g browse` when missing); it is best-effort and never
+ * blocks the run. The final exporter produces a rich `spec.html` that
  * embeds the agreed-upon design alongside the implementation handoff.
  */
 
@@ -33,6 +36,7 @@ import type {
   WorkflowTaskResult,
   WorkflowTaskStep,
 } from "../src/shared/types.js";
+import { spawnSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -48,6 +52,15 @@ const OUTPUT_TYPES = [
 type OutputType = (typeof OUTPUT_TYPES)[number];
 const DEFAULT_OUTPUT_TYPE: OutputType = "prototype";
 const DEFAULT_MAX_REFINEMENTS = 3;
+
+/**
+ * Read-only builtin tools granted to the structured-decision stages
+ * (user-feedback refinement gate and pre-export gate) so they can actually
+ * inspect the on-disk `preview.html` before emitting their decision. The
+ * artifact stays immutable here — writes/edits belong to apply-changes and
+ * forced-fix, so this list deliberately excludes write/edit/bash.
+ */
+const READ_ONLY_TOOLS = ["read", "grep", "ls"] as const;
 
 type PromptSection = readonly [tag: string, content: string];
 
@@ -275,11 +288,126 @@ const ANTI_SLOP_RULES = [
   "Commit to a specific aesthetic direction; do not hedge with generic SaaS defaults.",
 ].join("\n");
 
-const BROWSER_USE_BOOTSTRAP_RULES = [
-  "Probe for the browser skill's `browse` CLI with `which browse`; if it is unavailable, install the CLI with `npm install -g browse` as documented by the skill, then retry once. Do not add project dependencies.",
-  "Use `browse open <url> --local --headed` when a generated local preview should be visible to the user, and use `browse snapshot` plus `browse screenshot --path <file>` for review evidence.",
-  "If `browse` is unavailable after three attempts or the browser runtime still fails, degrade gracefully and surface the manual file path / URL.",
-].join("\n");
+type BrowseCliStatus = {
+  /** Whether the `browse` CLI is expected to be available to downstream stages. */
+  readonly available: boolean;
+  /** True when the CLI was already on PATH and no install was attempted. */
+  readonly alreadyPresent: boolean;
+  /** True when this step installed the CLI via `npm install -g browse`. */
+  readonly installed: boolean;
+  /** Human-readable, single-line outcome surfaced as a workflow output. */
+  readonly summary: string;
+  /** Raw failure reason when the install could not complete; absent on success. */
+  readonly error?: string;
+};
+
+/**
+ * Initial deterministic setup step (no LLM): ensure the browser skill's `browse`
+ * CLI is available before any design stage runs. Mirrors the browser skill's
+ * documented bootstrap (`which browse || npm install -g browse`) but performs it
+ * once, deterministically, instead of relying on each stage to probe/install it.
+ * The PATH probe always runs, but the actual global install is skipped under
+ * automated tests (`NODE_ENV=test`) to avoid slow, networked, environment-
+ * mutating side effects.
+ *
+ * Best-effort by contract: it never throws and never blocks the workflow. When
+ * the CLI cannot be located or installed, downstream stages keep their graceful
+ * degradation path (surface the manual preview path / URL).
+ */
+function ensureBrowseCli(): BrowseCliStatus {
+  const isWindows = process.platform === "win32";
+  const onPath = (): boolean => {
+    try {
+      const probe = spawnSync(isWindows ? "where" : "which", ["browse"], {
+        stdio: "ignore",
+        timeout: 15_000,
+        shell: isWindows,
+      });
+      return probe.status === 0;
+    } catch {
+      return false;
+    }
+  };
+
+  if (onPath()) {
+    return {
+      available: true,
+      alreadyPresent: true,
+      installed: false,
+      summary: "browse CLI already on PATH; skipped install.",
+    };
+  }
+
+  // Never perform a real global `npm install` during automated tests: it is
+  // slow, network-dependent, and would mutate the test runner's global
+  // environment. The PATH probe above and the prompt guidance below are still
+  // exercised; only the install side effect is skipped.
+  if (process.env.NODE_ENV === "test") {
+    return {
+      available: false,
+      alreadyPresent: false,
+      installed: false,
+      summary:
+        "browse CLI not found; skipped global install under the test environment.",
+      error: "global install skipped during tests",
+    };
+  }
+
+  try {
+    const install = spawnSync("npm", ["install", "-g", "browse"], {
+      stdio: "ignore",
+      timeout: 180_000,
+      shell: isWindows,
+    });
+    if (install.status === 0) {
+      return {
+        available: true,
+        alreadyPresent: false,
+        installed: true,
+        summary: "Installed browse CLI via `npm install -g browse`.",
+      };
+    }
+    const reason =
+      install.error?.message ??
+      (typeof install.status === "number"
+        ? `npm install -g browse exited with code ${install.status}`
+        : "npm install -g browse did not complete");
+    return {
+      available: false,
+      alreadyPresent: false,
+      installed: false,
+      summary: `Could not install browse CLI (${reason}); stages will degrade gracefully.`,
+      error: reason,
+    };
+  } catch (error) {
+    const reason =
+      error instanceof Error ? error.message : String(error);
+    return {
+      available: false,
+      alreadyPresent: false,
+      installed: false,
+      summary: `Could not install browse CLI (${reason}); stages will degrade gracefully.`,
+      error: reason,
+    };
+  }
+}
+
+/**
+ * Build the per-run browser bootstrap guidance injected into stage prompts.
+ * When the deterministic setup step already ensured `browse` is installed, the
+ * guidance tells stages to assume availability and not waste turns reinstalling;
+ * otherwise it retains the original probe-and-install fallback.
+ */
+function buildBrowserBootstrapRules(status: BrowseCliStatus): string {
+  const probeRule = status.available
+    ? "The workflow's deterministic setup step already ensured the browser skill's `browse` CLI is installed and on PATH; assume it is available and do NOT reinstall it. Only if a `browse` command reports the executable as missing should you re-probe with `which browse` and run `npm install -g browse` once before retrying. Do not add project dependencies."
+    : `The workflow's deterministic setup step attempted to install the browser skill's \`browse\` CLI but it FAILED with: "${status.error ?? "unknown error"}". Treat this as a known starting condition to work around, not a hard blocker. Probe with \`which browse\` and retry once with \`npm install -g browse\`; if it still fails, use the error above to diagnose a workaround (for example: EACCES/permission errors → retry with a user-writable global prefix; missing npm/Node → report it plainly; network/registry errors → surface them). If the CLI still cannot be made available, degrade gracefully and surface the manual file path / URL. Do not add project dependencies.`;
+  return [
+    probeRule,
+    "Use `browse open <url> --local --headed` when a generated local preview should be visible to the user, and use `browse snapshot` plus `browse screenshot --path <file>` for review evidence.",
+    "If `browse` is unavailable after three attempts or the browser runtime still fails, degrade gracefully and surface the manual file path / URL.",
+  ].join("\n");
+}
 
 export default defineWorkflow("open-claude-design")
   .description(
@@ -316,7 +444,15 @@ export default defineWorkflow("open-claude-design")
   .output("preview_file_url", Type.Optional(Type.String({ description: "file:// URL for the generated preview.html file." })))
   .output("spec_path", Type.Optional(Type.String({ description: "Absolute path to the generated spec.html file." })))
   .output("spec_file_url", Type.Optional(Type.String({ description: "file:// URL for the generated spec.html file." })))
+  .output("browse_cli_status", Type.Optional(Type.String({ description: "Outcome of the initial deterministic step that ensures the browser skill's `browse` CLI is installed." })))
   .run(async (ctx) => {
+    // Initial deterministic setup step (no LLM): ensure the browser skill's
+    // `browse` CLI is installed before any design stage runs. Best-effort —
+    // a failed install never blocks the workflow; downstream stages keep their
+    // graceful-degradation fallback (surface the manual preview path / URL).
+    const browseCli = ensureBrowseCli();
+    const browserBootstrapRules = buildBrowserBootstrapRules(browseCli);
+
     const inputs = ctx.inputs;
 
     const prompt = inputs.prompt;
@@ -344,12 +480,12 @@ export default defineWorkflow("open-claude-design")
     };
     const refinementDecisionConfig = {
       ...designModelConfig,
-      tools: [refinementDecisionTool.name],
+      tools: [...READ_ONLY_TOOLS, refinementDecisionTool.name],
       customTools: [refinementDecisionTool],
     };
     const exportGateDecisionConfig = {
       ...designModelConfig,
-      tools: [exportGateDecisionTool.name],
+      tools: [...READ_ONLY_TOOLS, exportGateDecisionTool.name],
       customTools: [exportGateDecisionTool],
     };
 
@@ -551,7 +687,7 @@ export default defineWorkflow("open-claude-design")
             `Capture transferable design intent from this reference for: ${prompt}. Apply the impeccable \`extract\` sub-skill to lift concrete, citable design traits from the reference URL. Use browser/screenshot tooling if available; never guess about visual traits without observable evidence.`,
           ],
           ["reference_url", reference],
-          ["browser_use_guidelines", BROWSER_USE_BOOTSTRAP_RULES],
+          ["browser_use_guidelines", browserBootstrapRules],
           [
             "instructions",
             [
@@ -671,7 +807,7 @@ export default defineWorkflow("open-claude-design")
           ],
           ["preview_path", previewPath],
           ["preview_file_url", previewFileUrl],
-          ["browser_use_guidelines", BROWSER_USE_BOOTSTRAP_RULES],
+          ["browser_use_guidelines", browserBootstrapRules],
           [
             "instructions",
             [
@@ -794,7 +930,7 @@ export default defineWorkflow("open-claude-design")
               ["current_design_and_feedback", "{previous}"],
               [
                 "browser_use_guidelines",
-                BROWSER_USE_BOOTSTRAP_RULES,
+                browserBootstrapRules,
               ],
               [
                 "instructions",
@@ -881,7 +1017,7 @@ export default defineWorkflow("open-claude-design")
             ["preview_file_url", previewFileUrl],
             [
               "browser_use_bootstrap",
-              BROWSER_USE_BOOTSTRAP_RULES,
+              browserBootstrapRules,
             ],
             [
               "instructions",
@@ -1044,7 +1180,7 @@ export default defineWorkflow("open-claude-design")
           ["spec_file_url", specFileUrl],
           ["preview_path", previewPath],
           ["preview_file_url", previewFileUrl],
-          ["browser_use_guidelines", BROWSER_USE_BOOTSTRAP_RULES],
+          ["browser_use_guidelines", browserBootstrapRules],
           [
             "instructions",
             [
@@ -1078,6 +1214,7 @@ export default defineWorkflow("open-claude-design")
       preview_file_url: previewFileUrl,
       spec_path: specPath,
       spec_file_url: specFileUrl,
+      browse_cli_status: browseCli.summary,
     };
   })
   .compile();

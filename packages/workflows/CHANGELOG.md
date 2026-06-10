@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Fixed the builtin `open-claude-design` workflow not installing the browser skill's `browse` CLI before it is needed. The workflow now runs an initial deterministic, best-effort setup step that probes `PATH` (`which`/`where browse`) and installs the CLI with `npm install -g browse` when missing (skipped under automated tests); per-run bootstrap guidance is derived from the outcome and injected into every browser-using stage (assume-available when ensured, with concrete recovery steps surfaced when the install failed), the install outcome is exposed via a new `browse_cli_status` output, and the read-only `read`/`grep`/`ls` tools are granted to the refinement and pre-export decision gates so they can inspect `preview.html` without mutating it. The step never throws or blocks the run, so stages keep their graceful-degradation fallback ([#1327](https://github.com/bastani-inc/atomic/issues/1327)).
 - Fixed paused workflow run detail cards to surface the natural `workflow resume` action hint while preserving the interrupt hint for non-paused active runs ([#1283](https://github.com/bastani-inc/atomic/issues/1283)).
 - Fixed paused workflow runs being counted as running and displayed as pending/running in `/workflow status` and `/workflow status <id>`, with paused runs now shown separately as `❚❚ paused` ([#1283](https://github.com/bastani-inc/atomic/issues/1283)).
 
