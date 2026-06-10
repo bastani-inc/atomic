@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.8.28-alpha.2] - 2026-06-10
+
 ### Security
 
 - Bumped the transitive `shell-quote` dependency from `1.8.3` to `1.8.4` in the `examples/extensions/sandbox` lockfile, resolving the critical advisory [GHSA-w7jw-789q-3m8p](https://github.com/advisories/GHSA-w7jw-789q-3m8p) (`shell-quote` `quote()` does not escape newlines in object `.op` values). The bump stays within `@anthropic-ai/sandbox-runtime`'s existing `^1.8.3` range.
