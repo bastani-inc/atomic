@@ -5,7 +5,7 @@
  * Uses `ctx.ui.setTitle()` to update the terminal title via the extension API.
  *
  * Usage:
- *   pi --extension examples/extensions/titlebar-spinner.ts
+ *   atomic --extension examples/extensions/titlebar-spinner.ts
  */
 
 import path from "node:path";

@@ -13,6 +13,7 @@ import { type Args, type Mode, parseArgs, printHelp } from "./cli/args.ts";
 import { processFileArguments } from "./cli/file-processor.ts";
 import { buildInitialMessage } from "./cli/initial-message.ts";
 import { listModels } from "./cli/list-models.ts";
+import { createProjectTrustContext } from "./cli/project-trust.ts";
 import { selectSession } from "./cli/session-picker.ts";
 import {
 	ENV_OFFLINE,
@@ -41,6 +42,7 @@ import { KeybindingsManager } from "./core/keybindings.ts";
 import type { ModelRegistry } from "./core/model-registry.ts";
 import { resolveCliModel, resolveModelScope, type ScopedModel } from "./core/model-resolver.ts";
 import { restoreStdout, takeOverStdout } from "./core/output-guard.ts";
+import { resolveProjectTrusted } from "./core/project-trust.ts";
 import type { CreateAgentSessionOptions } from "./core/sdk.ts";
 import {
 	formatMissingSessionCwdPrompt,
@@ -48,9 +50,10 @@ import {
 	MissingSessionCwdError,
 	type SessionCwdIssue,
 } from "./core/session-cwd.ts";
-import { SessionManager } from "./core/session-manager.ts";
+import { assertValidSessionId, SessionManager } from "./core/session-manager.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
 import { endTimingSpan, printTimings, resetTimings, startTimingSpan, time } from "./core/timings.ts";
+import { hasProjectTrustInputs, ProjectTrustStore } from "./core/trust-manager.ts";
 import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
 import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
 import { ExtensionSelectorComponent } from "./modes/interactive/components/extension-selector.ts";
@@ -122,17 +125,21 @@ export function resolveExcludedToolsForAppMode(
 	}
 }
 
-function resolveAppMode(parsed: Args, stdinIsTTY: boolean): AppMode {
+function resolveAppMode(parsed: Args, stdinIsTTY: boolean, stdoutIsTTY: boolean): AppMode {
 	if (parsed.mode === "rpc") {
 		return "rpc";
 	}
 	if (parsed.mode === "json") {
 		return "json";
 	}
-	if (parsed.print || !stdinIsTTY) {
+	if (parsed.print || !stdinIsTTY || !stdoutIsTTY) {
 		return "print";
 	}
 	return "interactive";
+}
+
+function isPlainRuntimeMetadataCommand(parsed: Args): boolean {
+	return !parsed.print && parsed.mode === undefined && (parsed.help === true || parsed.listModels !== undefined);
 }
 
 function toPrintOutputMode(appMode: AppMode): Exclude<Mode, "rpc"> {
@@ -171,6 +178,16 @@ type ResolvedSession =
  * Resolve a session argument to a file path.
  * If it looks like a path, use as-is. Otherwise try to match as session ID prefix.
  */
+async function findLocalSessionByExactId(
+	sessionId: string,
+	cwd: string,
+	sessionDir?: string,
+): Promise<{ type: "local"; path: string } | undefined> {
+	const localSessions = await SessionManager.list(cwd, sessionDir);
+	const localMatch = localSessions.find((s) => s.id === sessionId);
+	return localMatch ? { type: "local", path: localMatch.path } : undefined;
+}
+
 async function resolveSessionPath(sessionArg: string, cwd: string, sessionDir?: string): Promise<ResolvedSession> {
 	// If it looks like a file path, resolve it before handing it to the session manager.
 	if (sessionArg.includes("/") || sessionArg.includes("\\") || sessionArg.endsWith(".jsonl")) {
@@ -179,19 +196,20 @@ async function resolveSessionPath(sessionArg: string, cwd: string, sessionDir?: 
 
 	// Try to match as session ID in current project first
 	const localSessions = await SessionManager.list(cwd, sessionDir);
-	const localMatches = localSessions.filter((s) => s.id.startsWith(sessionArg));
+	const localMatch =
+		localSessions.find((s) => s.id === sessionArg) ?? localSessions.find((s) => s.id.startsWith(sessionArg));
 
-	if (localMatches.length >= 1) {
-		return { type: "local", path: localMatches[0].path };
+	if (localMatch) {
+		return { type: "local", path: localMatch.path };
 	}
 
 	// Try global search across all projects
-	const allSessions = await SessionManager.listAll();
-	const globalMatches = allSessions.filter((s) => s.id.startsWith(sessionArg));
+	const allSessions = await SessionManager.listAll(sessionDir);
+	const globalMatch =
+		allSessions.find((s) => s.id === sessionArg) ?? allSessions.find((s) => s.id.startsWith(sessionArg));
 
-	if (globalMatches.length >= 1) {
-		const match = globalMatches[0];
-		return { type: "global", path: match.path, cwd: match.cwd };
+	if (globalMatch) {
+		return { type: "global", path: globalMatch.path, cwd: globalMatch.cwd };
 	}
 
 	// Not found anywhere
@@ -228,9 +246,33 @@ function validateForkFlags(parsed: Args): void {
 	}
 }
 
-function forkSessionOrExit(sourcePath: string, cwd: string, sessionDir?: string): SessionManager {
+function validateSessionIdFlags(parsed: Args): void {
+	if (parsed.sessionId === undefined) return;
+
+	const conflictingFlags = [
+		parsed.session ? "--session" : undefined,
+		parsed.continue ? "--continue" : undefined,
+		parsed.resume ? "--resume" : undefined,
+		parsed.noSession ? "--no-session" : undefined,
+	].filter((flag): flag is string => flag !== undefined);
+
+	if (conflictingFlags.length > 0) {
+		console.error(chalk.red(`Error: --session-id cannot be combined with ${conflictingFlags.join(", ")}`));
+		process.exit(1);
+	}
+
 	try {
-		return SessionManager.forkFrom(sourcePath, cwd, sessionDir);
+		assertValidSessionId(parsed.sessionId);
+	} catch (error: unknown) {
+		const message = error instanceof Error ? error.message : String(error);
+		console.error(chalk.red(`Error: ${message}`));
+		process.exit(1);
+	}
+}
+
+function forkSessionOrExit(sourcePath: string, cwd: string, sessionDir?: string, sessionId?: string): SessionManager {
+	try {
+		return SessionManager.forkFrom(sourcePath, cwd, sessionDir, { id: sessionId });
 	} catch (error: unknown) {
 		const message = error instanceof Error ? error.message : String(error);
 		console.error(chalk.red(`Error: ${message}`));
@@ -244,18 +286,26 @@ async function createSessionManager(
 	sessionDir: string | undefined,
 	settingsManager: SettingsManager,
 ): Promise<SessionManager> {
-	if (parsed.noSession) {
-		return SessionManager.inMemory();
+	if (parsed.noSession || parsed.help || parsed.listModels !== undefined) {
+		return SessionManager.inMemory(cwd);
 	}
 
 	if (parsed.fork) {
+		if (parsed.sessionId) {
+			const existingTarget = await findLocalSessionByExactId(parsed.sessionId, cwd, sessionDir);
+			if (existingTarget) {
+				console.error(chalk.red(`Session already exists with id '${parsed.sessionId}'`));
+				process.exit(1);
+			}
+		}
+
 		const resolved = await resolveSessionPath(parsed.fork, cwd, sessionDir);
 
 		switch (resolved.type) {
 			case "path":
 			case "local":
 			case "global":
-				return forkSessionOrExit(resolved.path, cwd, sessionDir);
+				return forkSessionOrExit(resolved.path, cwd, sessionDir, parsed.sessionId);
 
 			case "not_found":
 				console.error(chalk.red(`No session found matching '${resolved.arg}'`));
@@ -292,7 +342,7 @@ async function createSessionManager(
 		try {
 			const selectedPath = await selectSession(
 				(onProgress) => SessionManager.list(cwd, sessionDir, onProgress),
-				SessionManager.listAll,
+				(onProgress) => SessionManager.listAll(sessionDir, onProgress),
 			);
 			if (!selectedPath) {
 				console.log(chalk.dim("No session selected"));
@@ -308,7 +358,14 @@ async function createSessionManager(
 		return SessionManager.continueRecent(cwd, sessionDir);
 	}
 
-	return SessionManager.create(cwd, sessionDir);
+	if (parsed.sessionId) {
+		const existingSession = await findLocalSessionByExactId(parsed.sessionId, cwd, sessionDir);
+		if (existingSession) {
+			return SessionManager.open(existingSession.path, sessionDir);
+		}
+	}
+
+	return SessionManager.create(cwd, sessionDir, { id: parsed.sessionId });
 }
 
 function buildSessionOptions(
@@ -401,6 +458,9 @@ function buildSessionOptions(
 	if (parsed.tools) {
 		options.tools = [...parsed.tools];
 	}
+	if (parsed.excludeTools) {
+		options.excludedTools = [...parsed.excludeTools];
+	}
 
 	return { options, cliThinkingFromModel, diagnostics };
 }
@@ -456,11 +516,11 @@ export async function main(args: string[], options?: MainOptions) {
 		setEnvValue(ENV_SKIP_VERSION_CHECK, "1");
 	}
 
-	if (await handlePackageCommand(args)) {
+	if (await handlePackageCommand(args, { extensionFactories: options?.extensionFactories })) {
 		return;
 	}
 
-	if (await handleConfigCommand(args)) {
+	if (await handleConfigCommand(args, { extensionFactories: options?.extensionFactories })) {
 		return;
 	}
 
@@ -475,11 +535,6 @@ export async function main(args: string[], options?: MainOptions) {
 		}
 	}
 	time("parseArgs");
-	let appMode = resolveAppMode(parsed, process.stdin.isTTY);
-	const shouldTakeOverStdout = appMode !== "interactive";
-	if (shouldTakeOverStdout) {
-		takeOverStdout();
-	}
 
 	if (parsed.version) {
 		console.log(VERSION);
@@ -500,20 +555,41 @@ export async function main(args: string[], options?: MainOptions) {
 		process.exit(0);
 	}
 
+	let appMode = resolveAppMode(parsed, process.stdin.isTTY, process.stdout.isTTY);
+	const shouldTakeOverStdout = appMode !== "interactive";
+	const shouldRestoreStdoutForMetadata = isPlainRuntimeMetadataCommand(parsed);
+	if (shouldTakeOverStdout) {
+		takeOverStdout();
+	}
+
 	if (parsed.mode === "rpc" && parsed.fileArgs.length > 0) {
 		console.error(chalk.red("Error: @file arguments are not supported in RPC mode"));
 		process.exit(1);
 	}
 
 	validateForkFlags(parsed);
-
-	// Run migrations (pass cwd for project-local migrations)
-	const { migratedAuthProviders: migratedProviders, deprecationWarnings } = runMigrations(process.cwd());
-	time("runMigrations");
+	validateSessionIdFlags(parsed);
 
 	const cwd = process.cwd();
 	const agentDir = getAgentDir();
-	const startupSettingsManager = SettingsManager.create(cwd, agentDir);
+	const projectTrustStore = new ProjectTrustStore(agentDir);
+	const startupHasTrustInputs = hasProjectTrustInputs(cwd);
+	const startupStoredProjectTrust = startupHasTrustInputs ? projectTrustStore.get(cwd) : null;
+	const startupGlobalSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
+	const startupDefaultProjectTrust = startupGlobalSettingsManager.getDefaultProjectTrust();
+	const startupProjectTrusted =
+		parsed.projectTrustOverride ??
+		startupStoredProjectTrust ??
+		(!startupHasTrustInputs || startupDefaultProjectTrust === "always");
+
+	// Run migrations after computing startup project trust so project-local migrations
+	// cannot read or mutate untrusted project config before approval.
+	const { migratedAuthProviders: migratedProviders, deprecationWarnings } = runMigrations(cwd, {
+		projectTrusted: startupProjectTrusted,
+	});
+	time("runMigrations");
+
+	const startupSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: startupProjectTrusted });
 	reportDiagnostics(collectSettingsDiagnostics(startupSettingsManager, "startup session lookup"));
 
 	// Decide the final runtime cwd before creating cwd-bound runtime services.
@@ -540,7 +616,19 @@ export async function main(args: string[], options?: MainOptions) {
 			process.exit(1);
 		}
 	}
+	if (parsed.name !== undefined) {
+		const name = parsed.name.trim();
+		if (!name) {
+			console.error(chalk.red("Error: --name requires a non-empty value"));
+			process.exit(1);
+		}
+		sessionManager.appendSessionInfo(name);
+	}
 	time("createSessionManager");
+
+	const sessionCwd = sessionManager.getCwd();
+	const autoTrustOnReloadCwd =
+		parsed.projectTrustOverride === undefined && !hasProjectTrustInputs(sessionCwd) ? sessionCwd : undefined;
 
 	const resolvedExtensionPaths = resolveCliPaths(cwd, parsed.extensions);
 	const resolvedSkillPaths = resolveCliPaths(cwd, parsed.skills);
@@ -548,17 +636,54 @@ export async function main(args: string[], options?: MainOptions) {
 	const resolvedThemePaths = resolveCliPaths(cwd, parsed.themes);
 	const builtinPackagePaths = options?.builtinPackagePaths ?? getBuiltinPackagePaths();
 	const authStorage = AuthStorage.create();
+	const trustPromptMode: AppMode = parsed.help || parsed.listModels !== undefined ? "print" : appMode;
+	const projectTrustByCwd = new Map<string, boolean>();
 	const createRuntime: CreateAgentSessionRuntimeFactory = async ({
 		cwd,
 		agentDir,
 		sessionManager,
 		sessionStartEvent,
+		projectTrustContext,
 	}) => {
+		const cachedProjectTrust = projectTrustByCwd.get(cwd);
+		const hasTrustInputs = hasProjectTrustInputs(cwd);
+		const storedProjectTrust = hasTrustInputs ? projectTrustStore.get(cwd) : null;
+		const initialProjectTrusted = parsed.projectTrustOverride ?? cachedProjectTrust ?? storedProjectTrust ?? !hasTrustInputs;
+		const shouldResolveProjectTrust =
+			parsed.projectTrustOverride === undefined && cachedProjectTrust === undefined && hasTrustInputs;
+		const runtimeSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: initialProjectTrusted });
 		const services = await createAgentSessionServices({
 			cwd,
 			agentDir,
 			authStorage,
+			settingsManager: runtimeSettingsManager,
 			extensionFlagValues: parsed.unknownFlags,
+			resourceLoaderReloadOptions: shouldResolveProjectTrust
+				? {
+						resolveProjectTrust: async ({ extensionsResult }) => {
+							const trusted = await resolveProjectTrusted({
+								cwd,
+								trustStore: projectTrustStore,
+								defaultProjectTrust: runtimeSettingsManager.getDefaultProjectTrust(),
+								extensionsResult,
+								projectTrustContext:
+									projectTrustContext ??
+									createProjectTrustContext({
+										cwd,
+										mode: sessionStartEvent === undefined ? trustPromptMode : appMode,
+										settingsManager: runtimeSettingsManager,
+										hasUI: sessionStartEvent === undefined && trustPromptMode === "interactive",
+									}),
+								onExtensionError: (message) => console.error(chalk.yellow(`Warning: ${message}`)),
+							});
+							projectTrustByCwd.set(cwd, trusted);
+							if (trusted && !initialProjectTrusted) {
+								runMigrations(cwd, { projectTrusted: true });
+							}
+							return trusted;
+						},
+					}
+				: undefined,
 			resourceLoaderOptions: {
 				additionalExtensionPaths: resolvedExtensionPaths,
 				additionalSkillPaths: resolvedSkillPaths,
@@ -651,12 +776,18 @@ export async function main(args: string[], options?: MainOptions) {
 		const extensionFlags = resourceLoader
 			.getExtensions()
 			.extensions.flatMap((extension) => Array.from(extension.flags.values()));
+		if (shouldRestoreStdoutForMetadata) {
+			restoreStdout();
+		}
 		printHelp(extensionFlags);
 		process.exit(0);
 	}
 
 	if (parsed.listModels !== undefined) {
 		const searchPattern = typeof parsed.listModels === "string" ? parsed.listModels : undefined;
+		if (shouldRestoreStdoutForMetadata) {
+			restoreStdout();
+		}
 		await listModels(modelRegistry, searchPattern);
 		process.exit(0);
 	}
@@ -721,6 +852,7 @@ export async function main(args: string[], options?: MainOptions) {
 		const interactiveMode = new InteractiveMode(runtime, {
 			migratedProviders,
 			modelFallbackMessage,
+			autoTrustOnReloadCwd,
 			initialMessage,
 			initialImages,
 			initialMessages: parsed.messages,

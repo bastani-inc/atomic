@@ -1,7 +1,7 @@
 /**
  * DOOM Overlay Demo - Play DOOM as an overlay
  *
- * Usage: pi --extension ./examples/extensions/doom-overlay
+ * Usage: atomic --extension ./examples/extensions/doom-overlay
  *
  * Commands:
  *   /doom-overlay - Play DOOM in an overlay (Q to pause/exit)
@@ -23,7 +23,7 @@ export default function (pi: ExtensionAPI) {
 		description: "Play DOOM as an overlay. Q to pause and exit.",
 
 		handler: async (args, ctx) => {
-			if (!ctx.hasUI) {
+			if (ctx.mode !== "tui") {
 				ctx.ui.notify("DOOM requires interactive mode", "error");
 				return;
 			}

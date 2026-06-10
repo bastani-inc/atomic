@@ -235,7 +235,7 @@ function rebuildBashResultRenderComponent(
 					if (state.cachedSkipped && state.cachedSkipped > 0) {
 						const hint =
 							theme.fg("muted", `... (${state.cachedSkipped} earlier lines,`) +
-							` ${keyHint("app.tools.expand", "Expand")})`;
+							` ${keyHint("app.tools.expand", "Expand")}${theme.fg("muted", ")")}`;
 						return ["", truncateToWidth(hint, width, "..."), ...(state.cachedLines ?? [])];
 					}
 					return ["", ...(state.cachedLines ?? [])];

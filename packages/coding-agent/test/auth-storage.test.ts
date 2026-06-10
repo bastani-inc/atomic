@@ -120,13 +120,13 @@ describe("AuthStorage", () => {
 			expect(apiKey).toBeUndefined();
 		});
 
-		test("apiKey as environment variable name resolves to env value", async () => {
+		test("apiKey with $ prefix resolves to env value", async () => {
 			const originalEnv = process.env.TEST_AUTH_API_KEY_12345;
 			process.env.TEST_AUTH_API_KEY_12345 = "env-api-key-value";
 
 			try {
 				writeAuthJson({
-					anthropic: { type: "api_key", key: "TEST_AUTH_API_KEY_12345" },
+					anthropic: { type: "api_key", key: "$TEST_AUTH_API_KEY_12345" },
 				});
 
 				authStorage = AuthStorage.create(authJsonPath);
@@ -282,7 +282,7 @@ describe("AuthStorage", () => {
 					process.env[envVarName] = "first-value";
 
 					writeAuthJson({
-						anthropic: { type: "api_key", key: envVarName },
+						anthropic: { type: "api_key", key: `$${envVarName}` },
 					});
 
 					authStorage = AuthStorage.create(authJsonPath);

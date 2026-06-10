@@ -48,6 +48,7 @@ function getUsageLine(
   let totalCacheRead = 0;
   let totalCacheWrite = 0;
   let totalCost = 0;
+  let latestCacheHitRate: number | undefined;
 
   for (const entry of session.sessionManager.getEntries()) {
     if (entry.type === "message" && entry.message.role === "assistant") {
@@ -56,6 +57,10 @@ function getUsageLine(
       totalCacheRead += entry.message.usage.cacheRead;
       totalCacheWrite += entry.message.usage.cacheWrite;
       totalCost += entry.message.usage.cost.total;
+
+      const latestPromptTokens =
+        entry.message.usage.input + entry.message.usage.cacheRead + entry.message.usage.cacheWrite;
+      latestCacheHitRate = latestPromptTokens > 0 ? (entry.message.usage.cacheRead / latestPromptTokens) * 100 : undefined;
     }
   }
 
@@ -85,6 +90,9 @@ function getUsageLine(
     usageParts.push(
       `${theme.fg("dim", "W")}${theme.fg("muted", formatTokens(totalCacheWrite))}`,
     );
+  if ((totalCacheRead > 0 || totalCacheWrite > 0) && latestCacheHitRate !== undefined) {
+    usageParts.push(`${theme.fg("dim", "CH")}${theme.fg("muted", `${latestCacheHitRate.toFixed(1)}%`)}`);
+  }
 
   // Show cost with "(sub)" indicator if using OAuth subscription
   const usingSubscription = state.model

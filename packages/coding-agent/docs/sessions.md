@@ -10,6 +10,7 @@ Sessions auto-save to `~/.atomic/agent/sessions/`, organized by working director
 atomic -c                  # Continue most recent session
 atomic -r                  # Browse and select from past sessions
 atomic --no-session        # Ephemeral mode; do not save
+atomic --name "my task"    # Set session display name at startup
 atomic --session <path|id> # Use a specific session file or partial session ID
 atomic --fork <path|id>    # Fork a session file or partial session ID into a new session
 ```
@@ -54,6 +55,13 @@ Use `/name <name>` to set a human-readable session name:
 
 ```text
 /name Refactor auth module
+```
+
+Set the name at startup with `--name` or `-n`:
+
+```bash
+atomic --name "Refactor auth module"
+atomic --name "CI audit" -p "Review this build failure"
 ```
 
 Named sessions are easier to find in `/resume` and `atomic -r`.

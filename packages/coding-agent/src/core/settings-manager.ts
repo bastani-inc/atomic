@@ -70,6 +70,8 @@ export interface CodexFastModeSettings {
 	workflow?: boolean; // default: false
 }
 
+export type DefaultProjectTrust = "ask" | "always" | "never";
+
 export type TransportSetting = Transport;
 
 /**
@@ -103,6 +105,7 @@ export interface Settings {
 	hideThinkingBlock?: boolean;
 	shellPath?: string; // Custom shell path (e.g., for Cygwin users on Windows)
 	quietStartup?: boolean;
+	defaultProjectTrust?: DefaultProjectTrust; // default: "ask"; global setting only
 	shellCommandPrefix?: string; // Prefix prepended to every bash command (e.g., "shopt -s expand_aliases" for alias support)
 	npmCommand?: string[]; // Command used for npm package lookup/install operations, argv-style (e.g., ["mise", "exec", "node@20", "--", "npm"])
 	collapseChangelog?: boolean; // Show condensed changelog after update (use /changelog for full)
@@ -128,6 +131,7 @@ export interface Settings {
 	codexFastMode?: CodexFastModeSettings; // OpenAI priority service tier toggles for chat/workflow
 	sessionDir?: string; // Custom session storage directory (same format as --session-dir CLI flag)
 	httpIdleTimeoutMs?: number; // HTTP header/body idle timeout in milliseconds; 0 disables it
+	websocketConnectTimeoutMs?: number; // WebSocket connect/open handshake timeout in milliseconds; 0 disables it
 }
 
 /** Deep merge settings: project/overrides take precedence, nested objects merge recursively */
@@ -162,6 +166,10 @@ function deepMergeSettings(base: Settings, overrides: Settings): Settings {
 }
 
 export type SettingsScope = "global" | "project";
+
+export interface SettingsManagerCreateOptions {
+	projectTrusted?: boolean;
+}
 
 export interface SettingsStorage {
 	withLock(scope: SettingsScope, fn: (current: string | undefined) => string | undefined): void;
@@ -283,6 +291,7 @@ export class SettingsManager {
 	private projectSettings: Settings;
 	private settings: Settings;
 	private runtimeSettingsOverrides: Settings;
+	private projectTrusted: boolean;
 	private modifiedFields = new Set<keyof Settings>(); // Track global fields modified during session
 	private modifiedNestedFields = new Map<keyof Settings, Set<string>>(); // Track global nested field modifications
 	private modifiedProjectFields = new Set<keyof Settings>(); // Track project fields modified during session
@@ -299,10 +308,12 @@ export class SettingsManager {
 		globalLoadError: Error | null = null,
 		projectLoadError: Error | null = null,
 		initialErrors: SettingsError[] = [],
+		projectTrusted = true,
 	) {
 		this.storage = storage;
 		this.globalSettings = initialGlobal;
 		this.projectSettings = initialProject;
+		this.projectTrusted = projectTrusted;
 		this.globalSettingsLoadError = globalLoadError;
 		this.projectSettingsLoadError = projectLoadError;
 		this.errors = [...initialErrors];
@@ -323,18 +334,23 @@ export class SettingsManager {
 	}
 
 	/** Create a SettingsManager that loads from files */
-	static create(cwd: string, agentDir: string = getAgentDir()): SettingsManager {
+	static create(
+		cwd: string,
+		agentDir: string = getAgentDir(),
+		options: SettingsManagerCreateOptions = {},
+	): SettingsManager {
 		const storage = new FileSettingsStorage(cwd, agentDir, {
 			globalReadPaths: agentDir === getAgentDir() ? getAgentConfigPaths("settings.json") : [join(agentDir, "settings.json")],
 			projectReadPaths: getProjectConfigPaths(cwd, "settings.json"),
 		});
-		return SettingsManager.fromStorage(storage);
+		return SettingsManager.fromStorage(storage, options);
 	}
 
 	/** Create a SettingsManager from an arbitrary storage backend */
-	static fromStorage(storage: SettingsStorage): SettingsManager {
+	static fromStorage(storage: SettingsStorage, options: SettingsManagerCreateOptions = {}): SettingsManager {
+		const projectTrusted = options.projectTrusted ?? true;
 		const globalLoad = SettingsManager.tryLoadFromStorage(storage, "global");
-		const projectLoad = SettingsManager.tryLoadFromStorage(storage, "project");
+		const projectLoad = SettingsManager.tryLoadFromStorage(storage, "project", projectTrusted);
 		const initialErrors: SettingsError[] = [];
 		if (globalLoad.error) {
 			initialErrors.push({ scope: "global", error: globalLoad.error });
@@ -350,6 +366,7 @@ export class SettingsManager {
 			globalLoad.error,
 			projectLoad.error,
 			initialErrors,
+			projectTrusted,
 		);
 	}
 
@@ -361,7 +378,11 @@ export class SettingsManager {
 		return SettingsManager.fromStorage(storage);
 	}
 
-	private static loadFromStorage(storage: SettingsStorage, scope: SettingsScope): Settings {
+	private static loadFromStorage(storage: SettingsStorage, scope: SettingsScope, projectTrusted = true): Settings {
+		if (scope === "project" && !projectTrusted) {
+			return {};
+		}
+
 		let content: string | undefined;
 		storage.withLock(scope, (current) => {
 			content = current;
@@ -378,9 +399,10 @@ export class SettingsManager {
 	private static tryLoadFromStorage(
 		storage: SettingsStorage,
 		scope: SettingsScope,
+		projectTrusted = true,
 	): { settings: Settings; error: Error | null } {
 		try {
-			return { settings: SettingsManager.loadFromStorage(storage, scope), error: null };
+			return { settings: SettingsManager.loadFromStorage(storage, scope, projectTrusted), error: null };
 		} catch (error) {
 			return { settings: {}, error: error as Error };
 		}
@@ -456,6 +478,35 @@ export class SettingsManager {
 		return structuredClone(this.projectSettings);
 	}
 
+	isProjectTrusted(): boolean {
+		return this.projectTrusted;
+	}
+
+	setProjectTrusted(trusted: boolean): void {
+		if (this.projectTrusted === trusted) {
+			return;
+		}
+
+		this.projectTrusted = trusted;
+		this.modifiedProjectFields.clear();
+		this.modifiedProjectNestedFields.clear();
+
+		if (!trusted) {
+			this.projectSettings = {};
+			this.projectSettingsLoadError = null;
+			this.settings = this.mergeEffectiveSettings();
+			return;
+		}
+
+		const projectLoad = SettingsManager.tryLoadFromStorage(this.storage, "project", trusted);
+		this.projectSettings = projectLoad.settings;
+		this.projectSettingsLoadError = projectLoad.error;
+		if (projectLoad.error) {
+			this.recordError("project", projectLoad.error);
+		}
+		this.settings = this.mergeEffectiveSettings();
+	}
+
 	async reload(): Promise<void> {
 		await this.writeQueue;
 		const globalLoad = SettingsManager.tryLoadFromStorage(this.storage, "global");
@@ -472,7 +523,7 @@ export class SettingsManager {
 		this.modifiedProjectFields.clear();
 		this.modifiedProjectNestedFields.clear();
 
-		const projectLoad = SettingsManager.tryLoadFromStorage(this.storage, "project");
+		const projectLoad = SettingsManager.tryLoadFromStorage(this.storage, "project", this.projectTrusted);
 		if (!projectLoad.error) {
 			this.projectSettings = projectLoad.settings;
 			this.projectSettingsLoadError = null;
@@ -501,8 +552,15 @@ export class SettingsManager {
 		}
 	}
 
+	private assertProjectTrustedForWrite(): void {
+		if (!this.projectTrusted) {
+			throw new Error("Project is not trusted; refusing to write project settings");
+		}
+	}
+
 	/** Mark a project field as modified during this session */
 	private markProjectModified(field: keyof Settings, nestedKey?: string): void {
+		this.assertProjectTrustedForWrite();
 		this.modifiedProjectFields.add(field);
 		if (nestedKey) {
 			if (!this.modifiedProjectNestedFields.has(field)) {
@@ -531,6 +589,9 @@ export class SettingsManager {
 	private enqueueWrite(scope: SettingsScope, task: () => void): void {
 		this.writeQueue = this.writeQueue
 			.then(() => {
+				if (scope === "project") {
+					this.assertProjectTrustedForWrite();
+				}
 				task();
 				this.clearModifiedScope(scope);
 			})
@@ -595,6 +656,7 @@ export class SettingsManager {
 	}
 
 	private saveProjectSettings(settings: Settings): void {
+		this.assertProjectTrustedForWrite();
 		this.projectSettings = structuredClone(settings);
 		this.settings = this.mergeEffectiveSettings();
 
@@ -791,6 +853,18 @@ export class SettingsManager {
 		this.save();
 	}
 
+	getWebSocketConnectTimeoutMs(): number | undefined {
+		const value = this.settings.websocketConnectTimeoutMs;
+		const timeoutMs = parseHttpIdleTimeoutMs(value);
+		if (timeoutMs !== undefined) {
+			return timeoutMs;
+		}
+		if (value !== undefined) {
+			throw new Error(`Invalid websocketConnectTimeoutMs setting: ${String(value)}`);
+		}
+		return undefined;
+	}
+
 	getProviderRetrySettings(): { timeoutMs?: number; maxRetries?: number; maxRetryDelayMs: number } {
 		return {
 			timeoutMs: this.settings.retry?.provider?.timeoutMs,
@@ -816,6 +890,17 @@ export class SettingsManager {
 	setShellPath(path: string | undefined): void {
 		this.globalSettings.shellPath = path;
 		this.markModified("shellPath");
+		this.save();
+	}
+
+	getDefaultProjectTrust(): DefaultProjectTrust {
+		const value = this.globalSettings.defaultProjectTrust;
+		return value === "always" || value === "never" ? value : "ask";
+	}
+
+	setDefaultProjectTrust(defaultProjectTrust: DefaultProjectTrust): void {
+		this.globalSettings.defaultProjectTrust = defaultProjectTrust;
+		this.markModified("defaultProjectTrust");
 		this.save();
 	}
 

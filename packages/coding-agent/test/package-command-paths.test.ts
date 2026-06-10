@@ -103,6 +103,68 @@ describe("package commands", () => {
     expect(removedSettings.packages ?? []).toHaveLength(0);
   });
 
+  it("does not list project packages when project trust is denied", async () => {
+    mkdirSync(join(projectDir, ".atomic"), { recursive: true });
+    writeFileSync(
+      join(projectDir, ".atomic", "settings.json"),
+      JSON.stringify({ packages: ["npm:pi-formatter"] }, null, 2),
+    );
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    try {
+      await expect(main(["list", "--no-approve"])).resolves.toBeUndefined();
+
+      const stdout = logSpy.mock.calls
+        .map(([message]) => String(message))
+        .join("\n");
+      expect(stdout).not.toContain("Project packages:");
+      expect(stdout).not.toContain("npm:pi-formatter");
+      expect(stdout).toContain("No packages installed.");
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it("lists project packages when project trust is approved", async () => {
+    mkdirSync(join(projectDir, ".atomic"), { recursive: true });
+    writeFileSync(
+      join(projectDir, ".atomic", "settings.json"),
+      JSON.stringify({ packages: ["npm:pi-formatter"] }, null, 2),
+    );
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    try {
+      await expect(main(["list", "--approve"])).resolves.toBeUndefined();
+
+      const stdout = logSpy.mock.calls
+        .map(([message]) => String(message))
+        .join("\n");
+      expect(stdout).toContain("Project packages:");
+      expect(stdout).toContain("npm:pi-formatter");
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it("refuses local package writes when project trust is denied", async () => {
+    mkdirSync(join(projectDir, ".atomic"), { recursive: true });
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      await expect(main(["install", packageDir, "--local", "--no-approve"])).resolves.toBeUndefined();
+
+      const stderr = errorSpy.mock.calls
+        .map(([message]) => String(message))
+        .join("\n");
+      expect(stderr).toContain("Project is not trusted");
+      expect(process.exitCode).toBe(1);
+      const settingsPath = join(projectDir, ".atomic", "settings.json");
+      expect(() => readFileSync(settingsPath, "utf-8")).toThrow();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it("shows install subcommand help", async () => {
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -134,7 +196,7 @@ describe("package commands", () => {
         .join("\n");
       expect(stderr).toContain('Unknown option --unknown for "install".');
       expect(stderr).toContain(
-        'Use "atomic --help" or "atomic install <source> [-l]".',
+        'Use "atomic --help" or "atomic install <source> [-l] [--approve|--no-approve]".',
       );
       expect(process.exitCode).toBe(1);
     } finally {

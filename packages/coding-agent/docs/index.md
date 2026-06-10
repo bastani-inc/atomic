@@ -48,6 +48,8 @@ For the full first-run flow, see [Quickstart](/quickstart).
 - [Quickstart](/quickstart) - install, authenticate, and run a first session.
 - [Using Atomic](/usage) - interactive mode, slash commands, context files, and CLI reference.
 - [Providers](/providers) - subscription and API-key setup for built-in providers.
+- [Security](/security) - project trust, sandbox boundaries, and vulnerability reporting.
+- [Containerization](/containerization) - sandbox Atomic with OpenShell, Gondolin, or Docker.
 - [Settings](/settings) - global and project settings.
 - [Keybindings](/keybindings) - default shortcuts and custom keybindings.
 - [Sessions](/sessions) - session management, branching, and tree navigation.

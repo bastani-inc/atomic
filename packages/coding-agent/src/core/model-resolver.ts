@@ -26,6 +26,7 @@ export const defaultModelPerProvider: Record<string, string> = {
   xai: "grok-4.20-0309-reasoning",
   groq: "openai/gpt-oss-120b",
   cerebras: "zai-glm-4.7",
+  "ant-ling": "Ring-2.6-1T",
   zai: "glm-5.1",
   mistral: "devstral-medium-latest",
   minimax: "MiniMax-M2.7",

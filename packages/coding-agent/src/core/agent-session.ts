@@ -73,6 +73,7 @@ import {
 	type ExtensionCommandContextActions,
 	type ExtensionErrorListener,
 	ExtensionRunner,
+	type ExtensionMode,
 	type ExtensionUIContext,
 	type InputSource,
 	type MessageEndEvent,
@@ -310,6 +311,7 @@ export interface AgentSessionConfig {
 
 export interface ExtensionBindings {
 	uiContext?: ExtensionUIContext;
+	mode?: ExtensionMode;
 	commandContextActions?: ExtensionCommandContextActions;
 	shutdownHandler?: ShutdownHandler;
 	onError?: ExtensionErrorListener;
@@ -438,6 +440,7 @@ export class AgentSession {
 	private _sessionStartEvent: SessionStartEvent;
 	private _orchestrationContext?: OrchestrationContext;
 	private _extensionUIContext?: ExtensionUIContext;
+	private _extensionMode: ExtensionMode = "print";
 	private _extensionCommandContextActions?: ExtensionCommandContextActions;
 	private _extensionShutdownHandler?: ShutdownHandler;
 	private _extensionErrorListener?: ExtensionErrorListener;
@@ -986,6 +989,7 @@ export class AgentSession {
 			name: definition.name,
 			description: definition.description,
 			parameters: definition.parameters,
+			promptGuidelines: definition.promptGuidelines,
 			sourceInfo,
 		}));
 	}
@@ -1182,6 +1186,7 @@ export class AgentSession {
 					currentText,
 					currentImages,
 					options?.source ?? "interactive",
+					this.isStreaming ? options?.streamingBehavior : undefined,
 				);
 				if (inputResult.action === "handled") {
 					preflightResult?.(true);
@@ -1309,8 +1314,23 @@ export class AgentSession {
 		}
 
 		preflightResult?.(true);
+		await this._runAgentPrompt(messages);
+	}
+
+	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
 		await this.agent.prompt(messages);
 		await this.waitForRetry();
+		await this._continueQueuedAgentMessages();
+	}
+
+	private async _continueQueuedAgentMessages(): Promise<void> {
+		await this._agentEventQueue;
+
+		while (this.agent.hasQueuedMessages()) {
+			await this.agent.continue();
+			await this.waitForRetry();
+			await this._agentEventQueue;
+		}
 	}
 
 	/**
@@ -1542,7 +1562,7 @@ export class AgentSession {
 		} else if (this.isStreaming) {
 			this._queueAgentMessage(appMessage, options?.deliverAs === "followUp" ? "followUp" : "steer");
 		} else if (options?.triggerTurn) {
-			await this.agent.prompt(appMessage);
+			await this._runAgentPrompt(appMessage);
 		} else {
 			this._appendCustomMessage(appMessage);
 		}
@@ -2500,6 +2520,9 @@ export class AgentSession {
 		if (bindings.uiContext !== undefined) {
 			this._extensionUIContext = bindings.uiContext;
 		}
+		if (bindings.mode !== undefined) {
+			this._extensionMode = bindings.mode;
+		}
 		if (bindings.commandContextActions !== undefined) {
 			this._extensionCommandContextActions = bindings.commandContextActions;
 		}
@@ -2569,7 +2592,7 @@ export class AgentSession {
 	}
 
 	private _applyExtensionBindings(runner: ExtensionRunner): void {
-		runner.setUIContext(this._extensionUIContext);
+		runner.setUIContext(this._extensionUIContext, this._extensionMode);
 		runner.bindCommandContext(this._extensionCommandContextActions);
 
 		this._extensionErrorUnsubscriber?.();
@@ -2667,6 +2690,7 @@ export class AgentSession {
 			{
 				getModel: () => this.model,
 				isIdle: () => !this.isStreaming,
+				isProjectTrusted: () => this.settingsManager.isProjectTrusted(),
 				getSignal: () => this.agent.signal,
 				abort: () => this.abort(),
 				hasPendingMessages: () => this.pendingMessageCount > 0,
@@ -2686,6 +2710,7 @@ export class AgentSession {
 					})();
 				},
 				getSystemPrompt: () => this.systemPrompt,
+				getSystemPromptOptions: () => this._baseSystemPromptOptions,
 			},
 			{
 				registerProvider: (name, config) => {
@@ -3248,6 +3273,7 @@ export class AgentSession {
 					customInstructions,
 					replaceInstructions,
 					reserveTokens: branchSummarySettings.reserveTokens,
+					streamFn: this.agent.streamFn,
 				});
 				if (result.aborted) {
 					return { cancelled: true, aborted: true };

@@ -1,6 +1,6 @@
 import { getOAuthProviders, type OAuthDeviceCodeInfo } from "@earendil-works/pi-ai/oauth";
 import { Container, type Focusable, getKeybindings, Input, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
-import { execFile } from "child_process";
+import { openBrowser } from "../../../utils/open-browser.ts";
 import { theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
 import { keyHint } from "./keybinding-hints.ts";
@@ -57,7 +57,9 @@ export class LoginDialogComponent extends Container implements Focusable {
 		this.input = new Input();
 		this.input.onSubmit = () => {
 			if (this.inputResolver) {
-				this.inputResolver(this.input.getValue());
+				const value = this.input.getValue();
+				this.replaceInputWithSubmittedText(value);
+				this.inputResolver(value);
 				this.inputResolver = undefined;
 				this.inputRejecter = undefined;
 			}
@@ -103,7 +105,7 @@ export class LoginDialogComponent extends Container implements Focusable {
 		}
 
 		if (options.autoOpenBrowser ?? true) {
-			this.openUrl(url);
+			openBrowser(url);
 		}
 		this.tui.requestRender();
 	}
@@ -123,27 +125,21 @@ export class LoginDialogComponent extends Container implements Focusable {
 		this.contentContainer.addChild(new Spacer(1));
 		this.contentContainer.addChild(new Text(theme.fg("warning", `Enter code: ${info.userCode}`), 1, 0));
 
-		this.openUrl(info.verificationUri);
+		openBrowser(info.verificationUri);
 		this.tui.requestRender();
 	}
 
-	private openUrl(url: string): void {
-		const openCommand = process.platform === "darwin"
-			? { command: "open", args: [url] }
-			: process.platform === "win32"
-				? { command: "rundll32", args: ["url.dll,FileProtocolHandler", url] }
-				: { command: "xdg-open", args: [url] };
-		try {
-			execFile(openCommand.command, openCommand.args, () => {});
-		} catch {
-			// Ignore browser launch failures. The URL remains visible for manual opening/copying.
-		}
+	private replaceInputWithSubmittedText(value: string): void {
+		this.contentContainer.children = this.contentContainer.children.map((child) =>
+			child === this.input ? new Text(`> ${value}`, 0, 0) : child,
+		);
 	}
 
 	/**
 	 * Show input for manual code/URL entry (for callback server providers)
 	 */
 	showManualInput(prompt: string): Promise<string> {
+		this.input.setValue("");
 		this.contentContainer.addChild(new Spacer(1));
 		this.contentContainer.addChild(new Text(theme.fg("dim", prompt), 1, 0));
 		this.contentContainer.addChild(this.input);

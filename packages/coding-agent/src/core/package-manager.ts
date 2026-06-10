@@ -1036,6 +1036,7 @@ export class DefaultPackageManager implements PackageManager {
 	async install(source: string, options?: { local?: boolean }): Promise<void> {
 		const parsed = this.parseSource(source);
 		const scope: SourceScope = options?.local ? "project" : "user";
+		this.assertProjectTrustedForScope(scope);
 		await this.withProgress("install", source, `Installing ${source}...`, async () => {
 			if (parsed.type === "npm") {
 				await this.installNpm(parsed, scope, false);
@@ -1064,6 +1065,7 @@ export class DefaultPackageManager implements PackageManager {
 	async remove(source: string, options?: { local?: boolean }): Promise<void> {
 		const parsed = this.parseSource(source);
 		const scope: SourceScope = options?.local ? "project" : "user";
+		this.assertProjectTrustedForScope(scope);
 		await this.withProgress("remove", source, `Removing ${source}...`, async () => {
 			if (parsed.type === "npm") {
 				await this.uninstallNpm(parsed, scope);
@@ -1749,6 +1751,12 @@ export class DefaultPackageManager implements PackageManager {
 		};
 	}
 
+	private assertProjectTrustedForScope(scope: SourceScope): void {
+		if (scope === "project" && !this.settingsManager.isProjectTrusted()) {
+			throw new Error("Project is not trusted; refusing to access project package storage");
+		}
+	}
+
 	private getNpmCommand(): { command: string; args: string[] } {
 		const configuredCommand = this.settingsManager.getNpmCommand();
 		if (!configuredCommand || configuredCommand.length === 0) {
@@ -2353,9 +2361,10 @@ export class DefaultPackageManager implements PackageManager {
 		const userConfigDirs = this.getBaseDirsForScope("user");
 		const projectConfigDirs = this.getBaseDirsForScope("project");
 		const userAgentsSkillsDir = join(getHomeDir(), ".agents", "skills");
-		const projectAgentsSkillDirs = collectAncestorAgentsSkillDirs(this.cwd).filter(
-			(dir) => resolve(dir) !== resolve(userAgentsSkillsDir),
-		);
+		const projectTrusted = this.settingsManager.isProjectTrusted();
+		const projectAgentsSkillDirs = projectTrusted
+			? collectAncestorAgentsSkillDirs(this.cwd).filter((dir) => resolve(dir) !== resolve(userAgentsSkillsDir))
+			: [];
 
 		const addResources = (
 			resourceType: ResourceType,
@@ -2371,43 +2380,45 @@ export class DefaultPackageManager implements PackageManager {
 			}
 		};
 
-		for (const configDir of projectConfigDirs) {
-			const metadata: PathMetadata = { ...projectMetadata, baseDir: configDir };
-			addResources(
-				"extensions",
-				collectAutoExtensionEntries(join(configDir, "extensions")),
-				metadata,
-				projectOverrides.extensions,
-				configDir,
-			);
-			addResources(
-				"skills",
-				collectAutoSkillEntries(join(configDir, "skills"), "pi"),
-				metadata,
-				projectOverrides.skills,
-				configDir,
-			);
-			addResources(
-				"prompts",
-				collectAutoPromptEntries(join(configDir, "prompts")),
-				metadata,
-				projectOverrides.prompts,
-				configDir,
-			);
-			addResources(
-				"themes",
-				collectAutoThemeEntries(join(configDir, "themes")),
-				metadata,
-				projectOverrides.themes,
-				configDir,
-			);
-			addResources(
-				"workflows",
-				collectResourceFiles(join(configDir, "workflows"), "workflows"),
-				metadata,
-				projectOverrides.workflows,
-				configDir,
-			);
+		if (projectTrusted) {
+			for (const configDir of projectConfigDirs) {
+				const metadata: PathMetadata = { ...projectMetadata, baseDir: configDir };
+				addResources(
+					"extensions",
+					collectAutoExtensionEntries(join(configDir, "extensions")),
+					metadata,
+					projectOverrides.extensions,
+					configDir,
+				);
+				addResources(
+					"skills",
+					collectAutoSkillEntries(join(configDir, "skills"), "pi"),
+					metadata,
+					projectOverrides.skills,
+					configDir,
+				);
+				addResources(
+					"prompts",
+					collectAutoPromptEntries(join(configDir, "prompts")),
+					metadata,
+					projectOverrides.prompts,
+					configDir,
+				);
+				addResources(
+					"themes",
+					collectAutoThemeEntries(join(configDir, "themes")),
+					metadata,
+					projectOverrides.themes,
+					configDir,
+				);
+				addResources(
+					"workflows",
+					collectResourceFiles(join(configDir, "workflows"), "workflows"),
+					metadata,
+					projectOverrides.workflows,
+					configDir,
+				);
+			}
 		}
 
 		// Project skills from .agents/ (each with its own baseDir)

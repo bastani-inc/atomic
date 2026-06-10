@@ -85,8 +85,10 @@ function isDirectory(p: string): boolean {
 function findNearestProjectAgentsDir(cwd: string): string | null {
 	let currentDir = cwd;
 	while (true) {
-		const candidate = path.join(currentDir, ".pi", "agents");
-		if (isDirectory(candidate)) return candidate;
+		const atomicCandidate = path.join(currentDir, ".atomic", "agents");
+		if (isDirectory(atomicCandidate)) return atomicCandidate;
+		const legacyCandidate = path.join(currentDir, ".pi", "agents");
+		if (isDirectory(legacyCandidate)) return legacyCandidate;
 
 		const parentDir = path.dirname(currentDir);
 		if (parentDir === currentDir) return null;

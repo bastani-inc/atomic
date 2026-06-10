@@ -1,7 +1,7 @@
 /**
  * Modal Editor - vim-like modal editing example
  *
- * Usage: pi --extension ./examples/extensions/modal-editor.ts
+ * Usage: atomic --extension ./examples/extensions/modal-editor.ts
  *
  * - Escape: insert → normal mode (in normal mode, aborts agent)
  * - i: normal → insert mode

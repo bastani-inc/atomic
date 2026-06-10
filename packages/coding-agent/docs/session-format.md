@@ -12,7 +12,7 @@ Where `<path>` is the working directory with `/` replaced by `-`.
 
 ## Deleting Sessions
 
-Sessions can be removed by deleting their `.jsonl` files under `~/.atomic/agent/sessions/` (legacy `~/.pi/agent/sessions/` may exist from older installs).
+Sessions can be removed by deleting their `.jsonl` files under `~/.atomic/agent/sessions/` (legacy `~/.pi/agent/sessions/` may exist from older Pi installs).
 
 Atomic also supports deleting sessions interactively from `/resume` (select a session and press `CTRL+D`, then confirm). When available, Atomic uses the `trash` CLI to avoid permanent deletion.
 
@@ -285,7 +285,7 @@ Set `label` to `undefined` to clear a label.
 
 ### SessionInfoEntry
 
-Session metadata (e.g., user-defined display name). Set via `/name` command or `pi.setSessionName()` in extensions.
+Session metadata (e.g., user-defined display name). Set via `/name`, `--name` / `-n`, or `pi.setSessionName()` in extensions.
 
 ```json
 {"type":"session_info","id":"k1l2m3n4","parentId":"j0k1l2m3","timestamp":"2024-12-03T14:35:00.000Z","name":"Refactor auth module"}

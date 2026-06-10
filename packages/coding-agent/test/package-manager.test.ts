@@ -89,6 +89,19 @@ describe("DefaultPackageManager", () => {
 		rmSync(tempDir, { recursive: true, force: true });
 	});
 
+	describe("project trust", () => {
+		it("blocks project-scoped install/remove operations before mutating package storage", async () => {
+			settingsManager.setProjectTrusted(false);
+
+			await expect(packageManager.installAndPersist("./local-extension", { local: true })).rejects.toThrow(
+				"Project is not trusted; refusing to access project package storage",
+			);
+			await expect(packageManager.removeAndPersist("./local-extension", { local: true })).rejects.toThrow(
+				"Project is not trusted; refusing to access project package storage",
+			);
+		});
+	});
+
 	describe("resolve", () => {
 		it("should return no package-sourced paths when no sources configured", async () => {
 			const result = await packageManager.resolve();

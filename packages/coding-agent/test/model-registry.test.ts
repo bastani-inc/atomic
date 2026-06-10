@@ -35,7 +35,7 @@ describe("ModelRegistry", () => {
 	): ProviderConfigInput {
 		return {
 			baseUrl,
-			apiKey: "TEST_KEY",
+			apiKey: "test-key",
 			api: api as Api,
 			models: models.map((m) => ({
 				id: m.id,
@@ -1195,13 +1195,13 @@ describe("ModelRegistry", () => {
 			expect(apiKey).toBeUndefined();
 		});
 
-		test("apiKey as environment variable name resolves to env value", async () => {
+		test("apiKey with $ prefix resolves to env value", async () => {
 			const originalEnv = process.env.TEST_API_KEY_12345;
 			process.env.TEST_API_KEY_12345 = "env-api-key-value";
 
 			try {
 				writeRawModelsJson({
-					"custom-provider": providerWithApiKey("TEST_API_KEY_12345"),
+					"custom-provider": providerWithApiKey("$TEST_API_KEY_12345"),
 				});
 
 				const registry = ModelRegistry.create(authStorage, modelsJsonPath);
@@ -1326,7 +1326,7 @@ describe("ModelRegistry", () => {
 					process.env[envVarName] = "status-test-key";
 
 					writeRawModelsJson({
-						"custom-provider": providerWithApiKey(envVarName),
+						"custom-provider": providerWithApiKey(`$${envVarName}`),
 					});
 
 					const registry = ModelRegistry.create(authStorage, modelsJsonPath);
@@ -1335,6 +1335,30 @@ describe("ModelRegistry", () => {
 						configured: true,
 						source: "environment",
 						label: envVarName,
+					});
+				} finally {
+					if (originalEnv === undefined) {
+						delete process.env[envVarName];
+					} else {
+						process.env[envVarName] = originalEnv;
+					}
+				}
+			});
+
+			test("provider auth status reports missing explicit env refs as unconfigured", () => {
+				const envVarName = "TEST_API_KEY_STATUS_MISSING_98765";
+				const originalEnv = process.env[envVarName];
+				delete process.env[envVarName];
+
+				try {
+					writeRawModelsJson({
+						"custom-provider": providerWithApiKey(`$${envVarName}`),
+					});
+
+					const registry = ModelRegistry.create(authStorage, modelsJsonPath);
+
+					expect(registry.getProviderAuthStatus("custom-provider")).toEqual({
+						configured: false,
 					});
 				} finally {
 					if (originalEnv === undefined) {
@@ -1384,7 +1408,7 @@ describe("ModelRegistry", () => {
 					process.env[envVarName] = "first-value";
 
 					writeRawModelsJson({
-						"custom-provider": providerWithApiKey(envVarName),
+						"custom-provider": providerWithApiKey(`$${envVarName}`),
 					});
 
 					const registry = ModelRegistry.create(authStorage, modelsJsonPath);

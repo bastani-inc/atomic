@@ -245,7 +245,7 @@ function formatReadResult(
 	const remaining = lines.length - maxLines;
 	let text = `\n${displayLines.map((line) => (lang ? replaceTabs(line) : theme.fg("toolOutput", replaceTabs(line)))).join("\n")}`;
 	if (remaining > 0) {
-		text += `${theme.fg("muted", `\n... (${remaining} more lines,`)} ${keyHint("app.tools.expand", "Expand")})`;
+		text += `${theme.fg("muted", `\n... (${remaining} more lines,`)} ${keyHint("app.tools.expand", "Expand")}${theme.fg("muted", ")")}`;
 	}
 
 	const truncation = result.details?.truncation;

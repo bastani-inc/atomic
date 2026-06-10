@@ -1,7 +1,7 @@
 /**
  * Overlay Test - validates overlay compositing with inline text inputs
  *
- * Usage: pi --extension ./examples/extensions/overlay-test.ts
+ * Usage: atomic --extension ./examples/extensions/overlay-test.ts
  *
  * Run /overlay-test to show a floating overlay with:
  * - Inline text inputs within menu items

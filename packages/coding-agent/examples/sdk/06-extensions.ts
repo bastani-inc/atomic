@@ -5,8 +5,8 @@
  * They provide a unified system for extensions, custom tools, commands, and more.
  *
  * By default, extension files are discovered from:
- * - ~/.pi/agent/extensions/
- * - <cwd>/.pi/extensions/
+ * - ~/.atomic/agent/extensions/ (legacy ~/.pi/agent/extensions/ also works)
+ * - <cwd>/.atomic/extensions/ (legacy <cwd>/.pi/extensions/ also works)
  * - Paths specified in settings.json "extensions" array
  *
  * An extension is a TypeScript file that exports a default function:

@@ -11,7 +11,7 @@ bun install
 bun run typecheck
 ```
 
-Run package scripts from the monorepo root or package directory with Bun, for example:
+This monorepo uses Bun for development commands; avoid npm/yarn/pnpm except for npm registry publishing. Run package scripts from the monorepo root or package directory with Bun, for example:
 
 ```bash
 bun run test:unit

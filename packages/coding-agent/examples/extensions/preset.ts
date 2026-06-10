@@ -6,8 +6,8 @@
  * and can be activated via CLI flag, /preset command, or Ctrl+Shift+U to cycle.
  *
  * Config files (merged, project takes precedence):
- * - ~/.pi/agent/presets.json (global)
- * - <cwd>/.pi/presets.json (project-local)
+ * - ~/.atomic/agent/presets.json (global)
+ * - <cwd>/.atomic/presets.json (project-local; legacy <cwd>/.pi/presets.json also works)
  *
  * Example presets.json:
  * ```json
@@ -30,7 +30,7 @@
  * ```
  *
  * Usage:
- * - `pi --preset plan` - start with plan preset
+ * - `atomic --preset plan` - start with plan preset
  * - `/preset` - show selector to switch presets mid-session
  * - `/preset implement` - switch to implement preset directly
  * - `Ctrl+Shift+U` - cycle through presets
@@ -67,9 +67,10 @@ interface PresetsConfig {
  * Load presets from config files.
  * Project-local presets override global presets with the same name.
  */
-function loadPresets(cwd: string): PresetsConfig {
+function loadPresets(cwd: string, includeProjectPresets: boolean): PresetsConfig {
 	const globalPath = join(getAgentDir(), "presets.json");
-	const projectPath = join(cwd, ".pi", "presets.json");
+	const projectPath = join(cwd, ".atomic", "presets.json");
+	const legacyProjectPath = join(cwd, ".pi", "presets.json");
 
 	let globalPresets: PresetsConfig = {};
 	let projectPresets: PresetsConfig = {};
@@ -84,13 +85,14 @@ function loadPresets(cwd: string): PresetsConfig {
 		}
 	}
 
-	// Load project presets
-	if (existsSync(projectPath)) {
+	// Load project presets only after project trust (Atomic path first; legacy Pi path as fallback)
+	const resolvedProjectPath = existsSync(projectPath) ? projectPath : legacyProjectPath;
+	if (includeProjectPresets && existsSync(resolvedProjectPath)) {
 		try {
-			const content = readFileSync(projectPath, "utf-8");
+			const content = readFileSync(resolvedProjectPath, "utf-8");
 			projectPresets = JSON.parse(content);
 		} catch (err) {
-			console.error(`Failed to load project presets from ${projectPath}: ${err}`);
+			console.error(`Failed to load project presets from ${resolvedProjectPath}: ${err}`);
 		}
 	}
 
@@ -200,7 +202,7 @@ export default function presetExtension(pi: ExtensionAPI) {
 		const presetNames = Object.keys(presets);
 
 		if (presetNames.length === 0) {
-			ctx.ui.notify("No presets defined. Add presets to ~/.pi/agent/presets.json or .pi/presets.json", "warning");
+			ctx.ui.notify("No presets defined. Add presets to ~/.atomic/agent/presets.json or .atomic/presets.json (legacy .pi/presets.json also works)", "warning");
 			return;
 		}
 
@@ -308,7 +310,7 @@ export default function presetExtension(pi: ExtensionAPI) {
 	async function cyclePreset(ctx: ExtensionContext): Promise<void> {
 		const presetNames = getPresetOrder();
 		if (presetNames.length === 0) {
-			ctx.ui.notify("No presets defined. Add presets to ~/.pi/agent/presets.json or .pi/presets.json", "warning");
+			ctx.ui.notify("No presets defined. Add presets to ~/.atomic/agent/presets.json or .atomic/presets.json (legacy .pi/presets.json also works)", "warning");
 			return;
 		}
 
@@ -388,7 +390,7 @@ export default function presetExtension(pi: ExtensionAPI) {
 	// Initialize on session start
 	pi.on("session_start", async (_event, ctx) => {
 		// Load presets from config files
-		presets = loadPresets(ctx.cwd);
+		presets = loadPresets(ctx.cwd, ctx.isProjectTrusted());
 
 		// Check for --preset flag
 		const presetFlag = pi.getFlag("preset");
