@@ -90,7 +90,10 @@ function renderPlain(detail: RunDetail, now: number, width: number): string {
   }
 
   if (detail.endedAt === undefined) {
-    out.push(truncateToWidth(` ▸ workflow interrupt   id=${sid}    cancel `, width - 2, "…"));
+    const hint = detail.status === "paused"
+      ? ` ▸ workflow resume id=${sid}    continue workflow `
+      : ` ▸ workflow interrupt   id=${sid}    cancel `;
+    out.push(truncateToWidth(hint, width - 2, "…"));
   } else {
     out.push(truncateToWidth(` ▸ workflow resume id=${sid}    reopen graph `, width - 2, "…"));
   }
@@ -143,9 +146,10 @@ function renderThemed(detail: RunDetail, now: number, theme: GraphTheme, width: 
   }
 
   if (detail.endedAt === undefined) {
-    out.push(
-      truncateToWidth(` ${dim}▸${RESET} ${accent}workflow interrupt   id=${sid}${RESET}${dim}    cancel${RESET} `, width - 2, "…"),
-    );
+    const hint = detail.status === "paused"
+      ? ` ${dim}▸${RESET} ${accent}workflow resume id=${sid}${RESET}${dim}    continue workflow${RESET} `
+      : ` ${dim}▸${RESET} ${accent}workflow interrupt   id=${sid}${RESET}${dim}    cancel${RESET} `;
+    out.push(truncateToWidth(hint, width - 2, "…"));
   } else {
     out.push(
       truncateToWidth(` ${dim}▸${RESET} ${accent}workflow resume id=${sid}${RESET}${dim}    reopen graph${RESET} `, width - 2, "…"),
@@ -295,6 +299,8 @@ function stateBadges(detail: RunDetail, theme: GraphTheme): FlatBandBadge[] {
   switch (detail.status) {
     case "running":
       return [{ text: "● running", fg: theme.warning }];
+    case "paused":
+      return [{ text: "❚❚ paused", fg: theme.warning }];
     case "completed":
       return [{ text: "✓ completed", fg: theme.success }];
     case "failed":
@@ -310,6 +316,7 @@ function stateBadges(detail: RunDetail, theme: GraphTheme): FlatBandBadge[] {
 function stateLabel(detail: RunDetail): string {
   switch (detail.status) {
     case "running": return "● running";
+    case "paused": return "❚❚ paused";
     case "completed": return "✓ completed";
     case "failed": return "✗ failed";
     case "killed": return "⊘ killed";

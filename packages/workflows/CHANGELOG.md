@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed paused workflow run detail cards to surface the natural `workflow resume` action hint while preserving the interrupt hint for non-paused active runs ([#1283](https://github.com/bastani-inc/atomic/issues/1283)).
+- Fixed paused workflow runs being counted as running and displayed as pending/running in `/workflow status` and `/workflow status <id>`, with paused runs now shown separately as `❚❚ paused` ([#1283](https://github.com/bastani-inc/atomic/issues/1283)).
+
 ## [0.8.28-alpha.1] - 2026-06-09
 
 ### Added
