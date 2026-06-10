@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed the Read tool to block text file-read results above 20,000 estimated tokens and return incremental-read guidance instead of inserting oversized file contents into model context ([#1323](https://github.com/bastani-inc/atomic/issues/1323)).
+
 ## [0.8.28-alpha.1] - 2026-06-09
 
 ### Changed

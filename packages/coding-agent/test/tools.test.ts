@@ -84,16 +84,80 @@ describe("Coding Agent Tools", () => {
 
 		it("should truncate when byte limit exceeded", async () => {
 			const testFile = join(testDir, "large-bytes.txt");
-			// Create file that exceeds 50KB byte limit but has fewer than 2000 lines
-			const lines = Array.from({ length: 500 }, (_, i) => `Line ${i + 1}: ${"x".repeat(200)}`);
+			// Create file that exceeds 50KB byte limit but stays within the oversized-read token threshold.
+			const lines = Array.from({ length: 300 }, (_, i) => `Line ${i + 1}: ${"x".repeat(200)}`);
 			writeFileSync(testFile, lines.join("\n"));
 
 			const result = await readTool.execute("test-call-4", { path: testFile });
 			const output = getTextOutput(result);
 
 			expect(output).toContain("Line 1:");
+			expect(output).not.toContain("File read blocked");
 			// Should show byte limit message
-			expect(output).toMatch(/\[Showing lines 1-\d+ of 500 \(.* limit\)\. Use offset=\d+ to continue\.\]/);
+			expect(output).toMatch(/\[Showing lines 1-\d+ of 300 \(.* limit\)\. Use offset=\d+ to continue\.\]/);
+		});
+
+		it("should allow text reads at the oversized-read token threshold", async () => {
+			const testFile = join(testDir, "threshold-allowed.txt");
+			const lines = ["x".repeat(80), ...Array.from({ length: 999 }, () => "x".repeat(79))];
+			const content = lines.join("\n");
+			expect(content.length).toBe(80_000);
+			writeFileSync(testFile, content);
+
+			const result = await readTool.execute("test-call-threshold-allowed", { path: testFile });
+			const output = getTextOutput(result);
+
+			expect(output).not.toContain("File read blocked");
+			expect(result.details?.oversizedRead).toBeUndefined();
+			expect(result.details?.truncation?.truncated).toBe(true);
+			expect(output).toContain("Use offset=");
+		});
+
+		it("should block text reads above the oversized-read token threshold without leaking content", async () => {
+			const testFile = join(testDir, "too-large.txt");
+			const sentinel = "DO_NOT_LEAK_1323_CONTENT";
+			const fillerPrefix = "z".repeat(100);
+			const content = `${sentinel}\n${fillerPrefix}${"z".repeat(80_000)}`;
+			writeFileSync(testFile, content);
+
+			const result = await readTool.execute("test-call-threshold-blocked", { path: testFile });
+			const output = getTextOutput(result);
+
+			expect(output).toContain("File read blocked");
+			expect(output).toContain(testFile);
+			expect(output).toContain("estimated");
+			expect(output).toContain("threshold: 20,000");
+			expect(output).toContain("grep({");
+			expect(output).toContain("\"offset\": 1");
+			expect(output).toContain("\"limit\": 200");
+			expect(output).toContain("targeted snippet");
+			expect(output).not.toContain(sentinel);
+			expect(output).not.toContain(fillerPrefix);
+			expect(result.details?.oversizedRead?.blocked).toBe(true);
+			expect(result.details?.oversizedRead?.path).toBe(testFile);
+			expect(result.details?.oversizedRead?.estimatedTokens).toBeGreaterThan(20_000);
+			expect(result.details?.oversizedRead?.maxTokens).toBe(20_000);
+			expect(result.details?.truncation).toBeUndefined();
+		});
+
+		it("should allow small ranges from files that would be oversized as whole-file reads", async () => {
+			const testFile = join(testDir, "large-with-range.txt");
+			const lines = Array.from({ length: 1_000 }, (_, i) => `Line ${i + 1}: ${"x".repeat(100)}`);
+			writeFileSync(testFile, lines.join("\n"));
+
+			const result = await readTool.execute("test-call-range-allowed", {
+				path: testFile,
+				offset: 100,
+				limit: 3,
+			});
+			const output = getTextOutput(result);
+
+			expect(output).not.toContain("File read blocked");
+			expect(result.details?.oversizedRead).toBeUndefined();
+			expect(output).toContain("Line 100:");
+			expect(output).toContain("Line 102:");
+			expect(output).not.toContain("Line 103:");
+			expect(output).toContain("[898 more lines in file. Use offset=103 to continue.]");
 		});
 
 		it("should handle offset parameter", async () => {
