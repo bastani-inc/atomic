@@ -1,6 +1,11 @@
 import { describe, test } from "bun:test";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import assert from "node:assert/strict";
 import { mergeStaleDocTasksByOwnerDocs, type StaleDocTask } from "../../.atomic/workflow-utils/release-docs.js";
+import { currentBranchName, extractJsonArray, requireResearchDocPath } from "../../.atomic/workflows/release-docs.js";
 
 const task = (id: string, ownerDocs: string[]): StaleDocTask => ({
     id,
@@ -10,6 +15,58 @@ const task = (id: string, ownerDocs: string[]): StaleDocTask => ({
     source_refs: [`src/${id}.ts`],
     update_instructions: `Update ${id}`,
     acceptance_criteria: [`Criteria ${id}`],
+});
+
+const runGit = (cwd: string, args: string[]): void => {
+    execFileSync("git", args, { cwd, stdio: "ignore" });
+};
+
+describe("release-docs workflow guards", () => {
+    test("refuses to resolve a current branch from detached HEAD", () => {
+        const repo = mkdtempSync(join(tmpdir(), "release-docs-detached-"));
+        try {
+            runGit(repo, ["init", "--quiet"]);
+            writeFileSync(join(repo, "README.md"), "# test\n");
+            runGit(repo, ["add", "README.md"]);
+            runGit(repo, [
+                "-c",
+                "user.name=Atomic Test",
+                "-c",
+                "user.email=atomic-test@example.com",
+                "commit",
+                "--message",
+                "initial",
+                "--quiet",
+            ]);
+            runGit(repo, ["checkout", "--detach", "HEAD", "--quiet"]);
+
+            assert.throws(
+                () => currentBranchName(repo),
+                /release-docs must run from a local branch, but HEAD is detached/,
+            );
+        } finally {
+            rmSync(repo, { recursive: true, force: true });
+        }
+    });
+
+    test("requires deep research to return a concrete research artifact path", () => {
+        assert.equal(requireResearchDocPath("research/report.md"), "research/report.md");
+        assert.throws(
+            () => requireResearchDocPath(undefined),
+            /did not return research_doc_path/,
+        );
+        assert.throws(
+            () => requireResearchDocPath("   "),
+            /did not return research_doc_path/,
+        );
+    });
+
+    test("reports malformed stale-doc detector JSON with a descriptive error", () => {
+        assert.throws(
+            () => extractJsonArray("not valid json"),
+            /stale-doc detector returned invalid JSON/,
+        );
+    });
 });
 
 describe("release-docs stale-doc task merging", () => {

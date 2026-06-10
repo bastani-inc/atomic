@@ -45,7 +45,7 @@ const runResult = (command: string, args: string[], cwd = repoRoot()): CommandRe
   }
 };
 
-const runGit = (args: string[]): string => run("git", args);
+const runGit = (args: string[], cwd = repoRoot()): string => run("git", args, cwd);
 
 const ensureCleanWorkingTree = (): void => {
   const status = runGit(["status", "--porcelain=v1"]);
@@ -61,21 +61,51 @@ const ensureCleanWorkingTree = (): void => {
   }
 };
 
-const currentBranchName = (): string => {
-  const branch = runGit(["branch", "--show-current"]);
+export const currentBranchName = (cwd = repoRoot()): string => {
+  const branch = runGit(["branch", "--show-current"], cwd);
   if (branch.length > 0) {
     return branch;
   }
 
-  const shortSha = runGit(["rev-parse", "--short", "HEAD"]);
-  return `detached-${shortSha}`;
+  const shortSha = runGit(["rev-parse", "--short", "HEAD"], cwd);
+  throw new Error(
+    [
+      "release-docs must run from a local branch, but HEAD is detached.",
+      `Current detached commit: ${shortSha}`,
+      "Check out or create a branch before running this workflow.",
+    ].join("\n"),
+  );
 };
 
-const extractJsonArray = (text: string): StaleDocTask[] => {
+export const requireResearchDocPath = (path: string | undefined): string => {
+  const trimmed = path?.trim() ?? "";
+  if (trimmed.length === 0) {
+    throw new Error(
+      "deep-research-codebase did not return research_doc_path; release-docs cannot continue without a research artifact path.",
+    );
+  }
+  return trimmed;
+};
+
+export const extractJsonArray = (text: string): StaleDocTask[] => {
   const trimmed = text.trim();
   const fenced = /```(?:json)?\s*([\s\S]*?)```/i.exec(trimmed);
   const jsonText = fenced?.[1]?.trim() ?? trimmed;
-  const parsed = JSON.parse(jsonText) as StaleDocTask[];
+  let parsed: StaleDocTask[];
+  try {
+    parsed = JSON.parse(jsonText) as StaleDocTask[];
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    const excerpt = jsonText.length > 1_000 ? `${jsonText.slice(0, 1_000)}…` : jsonText;
+    throw new Error(
+      [
+        "stale-doc detector returned invalid JSON. Expected a JSON array.",
+        `Parse error: ${detail}`,
+        "Output excerpt:",
+        excerpt || "(empty output)",
+      ].join("\n"),
+    );
+  }
   if (!Array.isArray(parsed)) {
     throw new Error("stale-doc detector did not return a JSON array.");
   }
@@ -200,7 +230,7 @@ export default defineWorkflow("release-docs")
       },
     });
 
-    const researchDocPath = String(research.outputs.research_doc_path);
+    const researchDocPath = requireResearchDocPath(research.outputs.research_doc_path);
 
     await ctx.task("identify-stale-docs", {
       prompt: [
