@@ -35,6 +35,10 @@ function getTextOutput(result: any): string {
 	);
 }
 
+function shellQuoteForTest(value: string): string {
+	return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
 describe("Coding Agent Tools", () => {
 	let testDir: string;
 
@@ -175,12 +179,40 @@ describe("Coding Agent Tools", () => {
 			expect(output).toContain("File read blocked");
 			expect(output).toContain("Requested line limit: 1");
 			expect(output).toContain("line pagination is not useful");
-			expect(output).toContain(`sed -n '1p' ${JSON.stringify(testFile)} | head -c 51200`);
+			expect(output).toContain(`sed -n '1p' ${shellQuoteForTest(testFile)} | head -c 51200`);
 			expect(output).toContain("tail -c +51201");
 			expect(output).not.toContain('"offset": 120');
 			expect(output).not.toContain("Read a targeted snippet");
 			expect(result.details?.oversizedRead?.byteGuidance).toBe(true);
 			expect(result.details?.oversizedRead?.requestedLimit).toBe(1);
+		});
+
+		it("should treat oversized single-line reads with a trailing newline as byte-slice cases", async () => {
+			const testFile = join(testDir, "single-line-large-trailing-newline.txt");
+			writeFileSync(testFile, `${"x".repeat(50_001)}\n`);
+
+			const result = await readTool.execute("test-call-single-line-newline-blocked", { path: testFile });
+			const output = getTextOutput(result);
+
+			expect(output).toContain("File read blocked");
+			expect(output).toContain("line pagination is not useful");
+			expect(output).toContain(`sed -n '1p' ${shellQuoteForTest(testFile)} | head -c 51200`);
+			expect(output).not.toContain('"offset": 120');
+			expect(output).not.toContain("Read a targeted snippet");
+			expect(result.details?.oversizedRead?.byteGuidance).toBe(true);
+		});
+
+		it("should shell-escape paths in oversized single-line byte guidance", async () => {
+			const testFile = join(testDir, "evil$(touch HACKED)'file.txt");
+			writeFileSync(testFile, "x".repeat(50_001));
+
+			const result = await readTool.execute("test-call-single-line-shell-escaped", { path: testFile });
+			const output = getTextOutput(result);
+
+			expect(output).toContain(`sed -n '1p' ${shellQuoteForTest(testFile)} | head -c 51200`);
+			expect(output).toContain(`tail -c +51201 | head -c 51200`);
+			expect(output).not.toContain(`${JSON.stringify(testFile)} | head -c 51200`);
+			expect(result.details?.oversizedRead?.byteGuidance).toBe(true);
 		});
 
 		it("should render oversized read blocks as tool output instead of source-highlighted code", async () => {

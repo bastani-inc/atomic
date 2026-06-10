@@ -120,8 +120,13 @@ function formatCount(count: number): string {
 	return count.toLocaleString("en-US");
 }
 
+function shellQuote(value: string): string {
+	return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
 function buildOversizedReadMessage(details: OversizedReadDetails): string {
 	const pathForExample = JSON.stringify(details.path);
+	const shellPathForExample = shellQuote(details.path);
 	const requestedLimitLine =
 		details.requestedLimit !== undefined ? [`Requested line limit: ${formatCount(details.requestedLimit)}`] : [];
 	if (details.byteGuidance) {
@@ -131,8 +136,8 @@ function buildOversizedReadMessage(details: OversizedReadDetails): string {
 			...requestedLimitLine,
 			"",
 			"The selected content starts with a single oversized line, so line pagination is not useful. Read byte slices instead. Examples:",
-			`- Inspect the start of line ${details.startLine}: sed -n '${details.startLine}p' ${pathForExample} | head -c ${DEFAULT_MAX_BYTES}`,
-			`- Inspect a later byte window: sed -n '${details.startLine}p' ${pathForExample} | tail -c +${DEFAULT_MAX_BYTES + 1} | head -c ${DEFAULT_MAX_BYTES}`,
+			`- Inspect the start of line ${details.startLine}: sed -n '${details.startLine}p' ${shellPathForExample} | head -c ${DEFAULT_MAX_BYTES}`,
+			`- Inspect a later byte window: sed -n '${details.startLine}p' ${shellPathForExample} | tail -c +${DEFAULT_MAX_BYTES + 1} | head -c ${DEFAULT_MAX_BYTES}`,
 			`- Search for relevant text first: grep({ "pattern": "functionName", "path": ${pathForExample}, "limit": 20 })`,
 		].join("\n");
 	}
@@ -342,19 +347,22 @@ export function createReadToolDefinition(
 									throw new Error(`Offset ${offset} is beyond end of file (${allLines.length} lines total)`);
 								}
 								let selectedContent: string;
+								let selectedLines: string[];
 								let userLimitedLines: number | undefined;
 								// If limit is specified by the user, honor it first. Otherwise truncateHead decides.
 								if (limit !== undefined) {
 									const endLine = Math.min(startLine + limit, allLines.length);
-									selectedContent = allLines.slice(startLine, endLine).join("\n");
+									selectedLines = allLines.slice(startLine, endLine);
+									selectedContent = selectedLines.join("\n");
 									userLimitedLines = endLine - startLine;
 								} else {
-									selectedContent = allLines.slice(startLine).join("\n");
+									selectedLines = allLines.slice(startLine);
+									selectedContent = selectedLines.join("\n");
 								}
 								if (selectedContent.length > READ_TOOL_MAX_RESULT_CHARS) {
 									const firstSelectedLine = allLines[startLine] ?? "";
 									const firstLineBytes = Buffer.byteLength(firstSelectedLine, "utf-8");
-									const selectedLineCount = limit !== undefined ? (userLimitedLines ?? 0) : allLines.length - startLine;
+									const selectedLineCount = trimTrailingEmptyLines(selectedLines).length;
 									const byteGuidance = selectedLineCount <= 1 || firstLineBytes > DEFAULT_MAX_BYTES;
 									const oversizedRead: OversizedReadDetails = {
 										blocked: true,
