@@ -85,14 +85,32 @@ function collectText(content: readonly (TextContent | ImageContent)[]): string {
  * Ported from the reference `generatePreview`.
  */
 export function generatePreview(content: string, maxBytes: number): { preview: string; hasMore: boolean } {
-	if (content.length <= maxBytes) {
+	if (Buffer.byteLength(content, "utf8") <= maxBytes) {
 		return { preview: content, hasMore: false };
 	}
-	// Find the last newline within the limit to avoid cutting mid-line; fall back
-	// to the hard limit when the newline is too close to the start of the slice.
-	const truncated = content.slice(0, maxBytes);
-	const lastNewline = truncated.lastIndexOf("\n");
-	const cutPoint = lastNewline > maxBytes * 0.5 ? lastNewline : maxBytes;
+
+	let bytes = 0;
+	let hardCutIndex = 0;
+	let lastNewlineIndex = -1;
+	let lastNewlineBytes = 0;
+
+	for (const character of content) {
+		const characterBytes = Buffer.byteLength(character, "utf8");
+		if (bytes + characterBytes > maxBytes) {
+			break;
+		}
+		const characterStartIndex = hardCutIndex;
+		bytes += characterBytes;
+		hardCutIndex += character.length;
+		if (character === "\n") {
+			lastNewlineIndex = characterStartIndex;
+			lastNewlineBytes = bytes - characterBytes;
+		}
+	}
+
+	// Find the last newline within the byte limit to avoid cutting mid-line;
+	// fall back to the hard byte limit when the newline is too close to the start.
+	const cutPoint = lastNewlineBytes > maxBytes * 0.5 ? lastNewlineIndex : hardCutIndex;
 	return { preview: content.slice(0, cutPoint), hasMore: true };
 }
 

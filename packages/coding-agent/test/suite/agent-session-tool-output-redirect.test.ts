@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -363,6 +364,14 @@ describe("AgentSession oversized tool output persistence", () => {
 			const { preview, hasMore } = generatePreview(big, 2000);
 			expect(hasMore).toBe(true);
 			expect(preview).toBe("c".repeat(2000));
+		});
+
+		it("keeps multibyte previews within the byte budget", () => {
+			const big = "é".repeat(3000);
+			const { preview, hasMore } = generatePreview(big, 2000);
+			expect(hasMore).toBe(true);
+			expect(Buffer.byteLength(preview, "utf8")).toBeLessThanOrEqual(2000);
+			expect(preview).toBe("é".repeat(1000));
 		});
 	});
 });
