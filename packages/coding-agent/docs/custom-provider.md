@@ -42,7 +42,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerProvider("my-provider", {
     name: "My Provider",
     baseUrl: "https://api.example.com",
-    apiKey: "MY_API_KEY",
+    apiKey: "$MY_API_KEY",
     api: "openai-completions",
     models: [
       {
@@ -82,7 +82,7 @@ pi.registerProvider("openai", {
 pi.registerProvider("google", {
   baseUrl: "https://ai-gateway.corp.com/google",
   headers: {
-    "X-Corp-Auth": "CORP_AUTH_TOKEN"  // env var or literal
+    "X-Corp-Auth": "$CORP_AUTH_TOKEN"  // resolves from env; omit $ for a literal
   }
 });
 ```
@@ -111,7 +111,7 @@ export default async function (pi: ExtensionAPI) {
 
   pi.registerProvider("local-openai", {
     baseUrl: "http://localhost:1234/v1",
-    apiKey: "LOCAL_OPENAI_API_KEY",
+    apiKey: "$LOCAL_OPENAI_API_KEY",
     api: "openai-completions",
     models: payload.data.map((model) => ({
       id: model.id,
@@ -131,7 +131,7 @@ This registers the fetched models before startup finishes.
 ```typescript
 pi.registerProvider("my-llm", {
   baseUrl: "https://api.my-llm.com/v1",
-  apiKey: "MY_LLM_API_KEY",  // env var name or literal value
+  apiKey: "$MY_LLM_API_KEY",  // env var reference; omit $ for a literal value
   api: "openai-completions",  // which streaming API to use
   models: [
     {
@@ -162,7 +162,7 @@ Use `pi.unregisterProvider(name)` to remove a provider that was previously regis
 // Register
 pi.registerProvider("my-llm", {
   baseUrl: "https://api.my-llm.com/v1",
-  apiKey: "MY_LLM_API_KEY",
+  apiKey: "$MY_LLM_API_KEY",
   api: "openai-completions",
   models: [
     {
@@ -240,7 +240,7 @@ If your provider expects `Authorization: Bearer <key>` but doesn't use a standar
 ```typescript
 pi.registerProvider("custom-api", {
   baseUrl: "https://api.example.com",
-  apiKey: "MY_API_KEY",
+  apiKey: "$MY_API_KEY",
   authHeader: true,  // adds Authorization: Bearer header
   api: "openai-completions",
   models: [...]
@@ -515,7 +515,7 @@ Register your stream function:
 ```typescript
 pi.registerProvider("my-provider", {
   baseUrl: "https://api.example.com",
-  apiKey: "MY_API_KEY",
+  apiKey: "$MY_API_KEY",
   api: "my-custom-api",
   models: [...],
   streamSimple: streamMyProvider
@@ -552,7 +552,7 @@ interface ProviderConfig {
   /** API endpoint URL. Required when defining models. */
   baseUrl?: string;
 
-  /** API key or environment variable name. Required when defining models (unless oauth). */
+  /** API key literal or config value (for env vars use "$ENV_VAR" or "${ENV_VAR}"). Required when defining models (unless oauth). */
   apiKey?: string;
 
   /** API type for streaming. Required at provider or model level when defining models. */
@@ -565,7 +565,7 @@ interface ProviderConfig {
     options?: SimpleStreamOptions
   ) => AssistantMessageEventStream;
 
-  /** Custom headers to include in requests. Values can be env var names. */
+  /** Custom headers to include in requests. Values use the same config-value syntax as apiKey. */
   headers?: Record<string, string>;
 
   /** If true, adds Authorization: Bearer header with the resolved API key. */

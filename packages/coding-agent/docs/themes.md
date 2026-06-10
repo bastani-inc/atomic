@@ -20,7 +20,7 @@ Atomic loads themes from:
 
 - Built-in: `dark`, `light`, `catppuccin-frappe`, `catppuccin-latte`, `catppuccin-macchiato`, `catppuccin-mocha`
 - Global: `~/.atomic/agent/themes/*.json` (legacy `~/.pi/agent/themes/*.json`)
-- Project: `.atomic/themes/*.json` (legacy `.pi/themes/*.json`)
+- Project: `.atomic/themes/*.json` (legacy `.pi/themes/*.json`, only after the project is trusted)
 - Packages: `themes/` directories, `atomic.themes`, or legacy `pi.themes` entries in `package.json`
 - Settings: `themes` array with files or directories
 - CLI: `--theme <path>` (repeatable)

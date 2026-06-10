@@ -1,10 +1,10 @@
 /**
  * Input Transform Example - demonstrates the `input` event for intercepting user input.
  *
- * Start pi with this extension:
- *   pi -e ./examples/extensions/input-transform.ts
+ * Start Atomic with this extension:
+ *   atomic -e ./examples/extensions/input-transform.ts
  *
- * Then type these inside pi:
+ * Then type these inside Atomic:
  *   ?quick What is TypeScript?  → "Respond briefly: What is TypeScript?"
  *   ping                        → "pong" (instant, no LLM)
  *   time                        → current time (instant, no LLM)

@@ -1,19 +1,19 @@
 {
-  "name": "pi-extension-custom-provider-anthropic",
+  "name": "atomic-extension-custom-provider-anthropic",
   "private": true,
-  "version": "0.74.0",
+  "version": "0.79.1",
   "type": "module",
   "scripts": {
     "clean": "echo 'nothing to clean'",
     "build": "echo 'nothing to build'",
     "check": "echo 'nothing to check'"
   },
-  "pi": {
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.52.0"
+  },
+  "atomic": {
     "extensions": [
       "./index.ts"
     ]
-  },
-  "dependencies": {
-    "@anthropic-ai/sdk": "^0.52.0"
   }
 }

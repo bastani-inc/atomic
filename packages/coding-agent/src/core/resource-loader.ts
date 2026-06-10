@@ -31,6 +31,10 @@ export interface ResourceExtensionPaths {
 	themePaths?: Array<{ path: string; metadata: PathMetadata }>;
 }
 
+export interface ResourceLoaderReloadOptions {
+	resolveProjectTrust?: (options: { extensionsResult: LoadExtensionsResult }) => boolean | Promise<boolean>;
+}
+
 export interface ResourceLoader {
 	getExtensions(): LoadExtensionsResult;
 	getSkills(): { skills: Skill[]; diagnostics: ResourceDiagnostic[] };
@@ -40,7 +44,7 @@ export interface ResourceLoader {
 	getSystemPrompt(): string | undefined;
 	getAppendSystemPrompt(): string[];
 	extendResources(paths: ResourceExtensionPaths): void;
-	reload(): Promise<void>;
+	reload(options?: ResourceLoaderReloadOptions): Promise<void>;
 }
 
 function resolvePromptInput(input: string | undefined, description: string): string | undefined {
@@ -81,6 +85,7 @@ function loadContextFileFromDir(dir: string): { path: string; content: string } 
 export function loadProjectContextFiles(options: {
 	cwd: string;
 	agentDir: string;
+	projectTrusted?: boolean;
 }): Array<{ path: string; content: string }> {
 	const resolvedCwd = resolvePath(options.cwd);
 	const resolvedAgentDir = resolvePath(options.agentDir);
@@ -100,6 +105,9 @@ export function loadProjectContextFiles(options: {
 	}
 
 	const ancestorContextFiles: Array<{ path: string; content: string }> = [];
+	if (options.projectTrusted === false) {
+		return contextFiles;
+	}
 
 	let currentDir = resolvedCwd;
 	const root = resolve("/");
@@ -349,7 +357,49 @@ export class DefaultResourceLoader implements ResourceLoader {
 		}
 	}
 
-	async reload(): Promise<void> {
+	async loadProjectTrustExtensions(): Promise<LoadExtensionsResult> {
+		this.settingsManager.setProjectTrusted(false);
+		await this.settingsManager.reload();
+		const { resolvedPaths, cliExtensionPaths, builtinPackagePaths } = await this.resolvePackageResourcePaths();
+		const metadataByPath = new Map<string, PathMetadata>();
+		const getEnabledResources = (
+			resources: Array<{ path: string; enabled: boolean; metadata: PathMetadata }>,
+		): Array<{ path: string; enabled: boolean; metadata: PathMetadata }> => {
+			for (const r of resources) {
+				if (!metadataByPath.has(r.path)) {
+					metadataByPath.set(r.path, r.metadata);
+				}
+			}
+			return resources.filter((r) => r.enabled);
+		};
+		const getEnabledPaths = (
+			resources: Array<{ path: string; enabled: boolean; metadata: PathMetadata }>,
+		): string[] => getEnabledResources(resources).map((r) => r.path);
+
+		const cliEnabledExtensions = getEnabledPaths(cliExtensionPaths.extensions);
+		const enabledExtensions = getEnabledPaths(resolvedPaths.extensions);
+		const builtinEnabledExtensions = this.noExtensions ? [] : getEnabledPaths(builtinPackagePaths.extensions);
+		const workflowResources = this.collectWorkflowResources(resolvedPaths, cliExtensionPaths, builtinPackagePaths);
+		this.workflowResources = workflowResources;
+		const workflowResourceProvider = this.createWorkflowResourceProvider();
+		const extensionPaths = this.noExtensions
+			? cliEnabledExtensions
+			: this.mergePaths(cliEnabledExtensions, [...enabledExtensions, ...builtinEnabledExtensions]);
+		const extensionsResult = await loadExtensions(extensionPaths, this.cwd, this.eventBus, workflowResourceProvider);
+		const inlineExtensions = await this.loadExtensionFactories(extensionsResult.runtime, workflowResourceProvider);
+		extensionsResult.extensions.push(...inlineExtensions.extensions);
+		extensionsResult.errors.push(...inlineExtensions.errors);
+		this.applyExtensionSourceInfo(extensionsResult.extensions, metadataByPath);
+		return extensionsResult;
+	}
+
+	async reload(options?: ResourceLoaderReloadOptions): Promise<void> {
+		let preTrustExtensions: LoadExtensionsResult | undefined;
+		if (options?.resolveProjectTrust) {
+			preTrustExtensions = await this.loadProjectTrustExtensions();
+			const projectTrusted = await options.resolveProjectTrust({ extensionsResult: preTrustExtensions });
+			this.settingsManager.setProjectTrusted(projectTrusted);
+		}
 		const resolveSpan = startTimingSpan("DefaultResourceLoader.reload.resolvePackageResourcePaths");
 		const { resolvedPaths, cliExtensionPaths, builtinPackagePaths } = await this.resolvePackageResourcePaths();
 		endTimingSpan(resolveSpan);
@@ -439,21 +489,11 @@ export class DefaultResourceLoader implements ResourceLoader {
 			? cliEnabledExtensions
 			: this.mergePaths(cliEnabledExtensions, [...enabledExtensions, ...builtinEnabledExtensions]);
 
-		const loadExtensionsSpan = startTimingSpan("DefaultResourceLoader.reload.loadExtensions");
-		const extensionsResult = await loadExtensions(extensionPaths, this.cwd, this.eventBus, workflowResourceProvider);
-		endTimingSpan(loadExtensionsSpan);
-		const inlineExtensionsSpan = startTimingSpan("DefaultResourceLoader.reload.loadInlineExtensionFactories");
-		const inlineExtensions = await this.loadExtensionFactories(extensionsResult.runtime, workflowResourceProvider);
-		endTimingSpan(inlineExtensionsSpan);
-		extensionsResult.extensions.push(...inlineExtensions.extensions);
-		extensionsResult.errors.push(...inlineExtensions.errors);
-
-		// Detect extension conflicts (tools, commands, flags with same names from different extensions)
-		// Keep all extensions loaded. Conflicts are reported as diagnostics, and precedence is handled by load order.
-		const conflicts = this.detectExtensionConflicts(extensionsResult.extensions);
-		for (const conflict of conflicts) {
-			extensionsResult.errors.push({ path: conflict.path, error: conflict.message });
-		}
+		const extensionsResult = await this.loadFinalExtensionSet(
+			extensionPaths,
+			preTrustExtensions,
+			workflowResourceProvider,
+		);
 
 		for (const p of this.additionalExtensionPaths) {
 			if (isLocalPath(p)) {
@@ -530,7 +570,13 @@ export class DefaultResourceLoader implements ResourceLoader {
 
 		const contextFilesSpan = startTimingSpan("DefaultResourceLoader.reload.loadProjectContextFiles");
 		const agentsFiles = {
-			agentsFiles: this.noContextFiles ? [] : loadProjectContextFiles({ cwd: this.cwd, agentDir: this.agentDir }),
+			agentsFiles: this.noContextFiles
+				? []
+				: loadProjectContextFiles({
+						cwd: this.cwd,
+						agentDir: this.agentDir,
+						projectTrusted: this.settingsManager.isProjectTrusted(),
+					}),
 		};
 		endTimingSpan(contextFilesSpan);
 		const resolvedAgentsFiles = this.agentsFilesOverride ? this.agentsFilesOverride(agentsFiles) : agentsFiles;
@@ -890,6 +936,86 @@ export class DefaultResourceLoader implements ResourceLoader {
 		}
 	}
 
+	private resolveExtensionLoadPath(path: string): string {
+		return resolvePath(path, this.cwd, { normalizeUnicodeSpaces: true });
+	}
+
+	private async loadFinalExtensionSet(
+		extensionPaths: string[],
+		preTrustExtensions: LoadExtensionsResult | undefined,
+		workflowResourceProvider: WorkflowResourceProvider,
+	): Promise<LoadExtensionsResult> {
+		if (!preTrustExtensions) {
+			const loadExtensionsSpan = startTimingSpan("DefaultResourceLoader.reload.loadExtensions");
+			const extensionsResult = await loadExtensions(
+				extensionPaths,
+				this.cwd,
+				this.eventBus,
+				workflowResourceProvider,
+			);
+			endTimingSpan(loadExtensionsSpan);
+			const inlineExtensionsSpan = startTimingSpan("DefaultResourceLoader.reload.loadInlineExtensionFactories");
+			const inlineExtensions = await this.loadExtensionFactories(extensionsResult.runtime, workflowResourceProvider);
+			endTimingSpan(inlineExtensionsSpan);
+			extensionsResult.extensions.push(...inlineExtensions.extensions);
+			extensionsResult.errors.push(...inlineExtensions.errors);
+			this.addExtensionConflictDiagnostics(extensionsResult);
+			return extensionsResult;
+		}
+
+		const preloadedByPath = new Map(
+			preTrustExtensions.extensions
+				.filter((extension) => !extension.path.startsWith("<inline:"))
+				.map((extension) => [extension.resolvedPath, extension]),
+		);
+		const failedPreloadPaths = new Set(
+			preTrustExtensions.errors.map((error) => this.resolveExtensionLoadPath(error.path)),
+		);
+		const remainingPaths = extensionPaths.filter((path) => {
+			const resolvedPath = this.resolveExtensionLoadPath(path);
+			return !preloadedByPath.has(resolvedPath) && !failedPreloadPaths.has(resolvedPath);
+		});
+		const loadExtensionsSpan = startTimingSpan("DefaultResourceLoader.reload.loadExtensions");
+		const remainingExtensions = await loadExtensions(
+			remainingPaths,
+			this.cwd,
+			this.eventBus,
+			workflowResourceProvider,
+			preTrustExtensions.runtime,
+		);
+		endTimingSpan(loadExtensionsSpan);
+		const loadedByPath = new Map(preloadedByPath);
+		for (const extension of remainingExtensions.extensions) {
+			loadedByPath.set(extension.resolvedPath, extension);
+		}
+
+		const inlineExtensions = preTrustExtensions.extensions.filter((extension) =>
+			extension.path.startsWith("<inline:"),
+		);
+		const orderedExtensions = extensionPaths
+			.map((path) => loadedByPath.get(this.resolveExtensionLoadPath(path)))
+			.filter((extension): extension is Extension => extension !== undefined);
+		orderedExtensions.push(...inlineExtensions);
+
+		const extensionsResult: LoadExtensionsResult = {
+			extensions: orderedExtensions,
+			errors: [...preTrustExtensions.errors, ...remainingExtensions.errors],
+			runtime: preTrustExtensions.runtime,
+		};
+		this.addExtensionConflictDiagnostics(extensionsResult);
+		return extensionsResult;
+	}
+
+	private addExtensionConflictDiagnostics(extensionsResult: LoadExtensionsResult): void {
+		// Detect extension conflicts (tools, commands, flags with same names from different extensions)
+		// Keep all extensions loaded. Conflicts are reported as diagnostics, and precedence is handled by load order.
+		const conflicts = this.detectExtensionConflicts(extensionsResult.extensions);
+		for (const conflict of conflicts) {
+			extensionsResult.errors.push({ path: conflict.path, error: conflict.message });
+		}
+	}
+
+
 	private async loadExtensionFactories(runtime: ExtensionRuntime, workflowResourceProvider: WorkflowResourceProvider): Promise<{
 		extensions: Extension[];
 		errors: Array<{ path: string; error: string }>;
@@ -972,16 +1098,22 @@ export class DefaultResourceLoader implements ResourceLoader {
 	}
 
 	private discoverSystemPromptFile(): string | undefined {
+		const projectCandidates = this.settingsManager.isProjectTrusted()
+			? getProjectConfigDirs(this.cwd).map((configDir) => join(configDir, "SYSTEM.md"))
+			: [];
 		const candidates = [
-			...getProjectConfigDirs(this.cwd).map((configDir) => join(configDir, "SYSTEM.md")),
+			...projectCandidates,
 			...this.getAgentDirs().map((agentDir) => join(agentDir, "SYSTEM.md")),
 		];
 		return candidates.find((candidate) => existsSync(candidate));
 	}
 
 	private discoverAppendSystemPromptFile(): string | undefined {
+		const projectCandidates = this.settingsManager.isProjectTrusted()
+			? getProjectConfigDirs(this.cwd).map((configDir) => join(configDir, "APPEND_SYSTEM.md"))
+			: [];
 		const candidates = [
-			...getProjectConfigDirs(this.cwd).map((configDir) => join(configDir, "APPEND_SYSTEM.md")),
+			...projectCandidates,
 			...this.getAgentDirs().map((agentDir) => join(agentDir, "APPEND_SYSTEM.md")),
 		];
 		return candidates.find((candidate) => existsSync(candidate));

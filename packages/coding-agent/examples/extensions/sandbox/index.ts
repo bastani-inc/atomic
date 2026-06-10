@@ -10,10 +10,10 @@
  * via `tool_call` input mutation without replacing the tool.
  *
  * Config files (merged, project takes precedence):
- * - ~/.pi/agent/extensions/sandbox.json (global)
- * - <cwd>/.pi/sandbox.json (project-local)
+ * - ~/.atomic/agent/extensions/sandbox.json (global)
+ * - <cwd>/.atomic/sandbox.json (project-local; legacy <cwd>/.pi/sandbox.json also works)
  *
- * Example .pi/sandbox.json:
+ * Example .atomic/sandbox.json:
  * ```json
  * {
  *   "enabled": true,
@@ -30,13 +30,13 @@
  * ```
  *
  * Usage:
- * - `pi -e ./sandbox` - sandbox enabled with default/config settings
- * - `pi -e ./sandbox --no-sandbox` - disable sandboxing
+ * - `atomic -e ./sandbox` - sandbox enabled with default/config settings
+ * - `atomic -e ./sandbox --no-sandbox` - disable sandboxing
  * - `/sandbox` - show current sandbox configuration
  *
  * Setup:
- * 1. Copy sandbox/ directory to ~/.pi/agent/extensions/
- * 2. Run `npm install` in ~/.pi/agent/extensions/sandbox/
+ * 1. Copy sandbox/ directory to ~/.atomic/agent/extensions/
+ * 2. Run `npm install` in ~/.atomic/agent/extensions/sandbox/
  *
  * Linux also requires: bubblewrap, socat, ripgrep
  */
@@ -76,8 +76,9 @@ const DEFAULT_CONFIG: SandboxConfig = {
 	},
 };
 
-function loadConfig(cwd: string): SandboxConfig {
-	const projectConfigPath = join(cwd, ".pi", "sandbox.json");
+function loadConfig(cwd: string, includeProjectConfig: boolean): SandboxConfig {
+	const projectConfigPath = join(cwd, ".atomic", "sandbox.json");
+	const legacyProjectConfigPath = join(cwd, ".pi", "sandbox.json");
 	const globalConfigPath = join(getAgentDir(), "extensions", "sandbox.json");
 
 	let globalConfig: Partial<SandboxConfig> = {};
@@ -91,11 +92,12 @@ function loadConfig(cwd: string): SandboxConfig {
 		}
 	}
 
-	if (existsSync(projectConfigPath)) {
+	const resolvedProjectConfigPath = existsSync(projectConfigPath) ? projectConfigPath : legacyProjectConfigPath;
+	if (includeProjectConfig && existsSync(resolvedProjectConfigPath)) {
 		try {
-			projectConfig = JSON.parse(readFileSync(projectConfigPath, "utf-8"));
+			projectConfig = JSON.parse(readFileSync(resolvedProjectConfigPath, "utf-8"));
 		} catch (e) {
-			console.error(`Warning: Could not parse ${projectConfigPath}: ${e}`);
+			console.error(`Warning: Could not parse ${resolvedProjectConfigPath}: ${e}`);
 		}
 	}
 
@@ -240,7 +242,7 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
-		const config = loadConfig(ctx.cwd);
+		const config = loadConfig(ctx.cwd, ctx.isProjectTrusted());
 
 		if (!config.enabled) {
 			sandboxEnabled = false;
@@ -302,7 +304,7 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			const config = loadConfig(ctx.cwd);
+			const config = loadConfig(ctx.cwd, ctx.isProjectTrusted());
 			const lines = [
 				"Sandbox Configuration:",
 				"",

@@ -205,7 +205,7 @@ export default async function (pi: ExtensionAPI) {
 
   pi.registerProvider("local-openai", {
     baseUrl: "http://localhost:1234/v1",
-    apiKey: "LOCAL_OPENAI_API_KEY",
+    apiKey: "$LOCAL_OPENAI_API_KEY",
     api: "openai-completions",
     models: payload.data.map((model) => ({
       id: model.id,
@@ -276,6 +276,7 @@ The manifest key is the configured Atomic app name (`atomic` here, from the runn
 ```
 Atomic starts
   │
+  ├─► project_trust (user/global and CLI extensions only, before project resources load)
   ├─► session_start { reason: "startup" }
   └─► resources_discover { reason: "startup" }
       │
@@ -340,6 +341,25 @@ thinking level changes (settings, keybinding, pi.setThinkingLevel())
 exit (CTRL+C, CTRL+D, SIGHUP, SIGTERM)
   └─► session_shutdown
 ```
+
+### Startup Events
+
+#### project_trust
+
+Fired before Atomic decides whether to trust a project with dynamic configs (`.atomic`, legacy `.pi`, or `.agents/skills`). It runs during startup and when session replacement (for example `/resume`) enters a cwd whose trust has not been resolved in the current process. Only user/global extensions and CLI `-e` extensions participate; project-local extensions are not loaded until after trust is resolved.
+
+```typescript
+pi.on("project_trust", async (event, ctx) => {
+  // event.cwd - current working directory
+  // ctx has a limited trust context: cwd, mode, hasUI, and select/confirm/input/notify UI helpers
+  if (ctx.hasUI && await ctx.ui.confirm("Trust project?", event.cwd)) {
+    return { trusted: "yes", remember: true };
+  }
+  return { trusted: "undecided" };
+});
+```
+
+A `project_trust` handler must return `{ trusted: "yes" | "no" | "undecided" }`. A user/global or CLI extension that returns `"yes"` or `"no"` owns the decision; the first yes/no decision wins and suppresses the built-in trust prompt. Use `remember: true` to persist a yes/no decision; otherwise it applies only to the current process. Return `"undecided"` to let later handlers or the built-in trust flow decide. Check `ctx.hasUI` before prompting. If no handler returns yes/no, normal trust resolution continues: saved `trust.json` decisions apply first, then `defaultProjectTrust` controls whether Atomic asks, trusts, or declines by default.
 
 ### Resource Events
 
@@ -867,7 +887,7 @@ pi.on("input", async (event, ctx) => {
 - `transform` - modify text/images, then continue to expansion
 - `handled` - skip agent entirely (first handler to return this wins)
 
-Transforms chain across handlers. See [input-transform.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/input-transform.ts).
+Transforms chain across handlers. See [input-transform.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/input-transform.ts) and [input-transform-streaming.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/input-transform-streaming.ts) for `streamingBehavior`-aware routing.
 
 ## ExtensionContext
 
@@ -929,6 +949,19 @@ pi.on("tool_result", async (event, ctx) => {
 ### ctx.isIdle() / ctx.abort() / ctx.hasPendingMessages()
 
 Control flow helpers.
+
+### ctx.isProjectTrusted()
+
+Returns whether project-local trust is active for the current extension context. Use this before reading project-local config, loading project-local resources, or exposing actions that should only run after the user has trusted the cwd.
+
+```typescript
+pi.registerCommand("project-status", {
+  description: "Show trust state",
+  handler: async (_args, ctx) => {
+    ctx.ui.notify(ctx.isProjectTrusted() ? "Project is trusted" : "Project is not trusted", "info");
+  },
+});
+```
 
 ### ctx.shutdown()
 
@@ -1575,7 +1608,7 @@ If you need to discover models from a remote endpoint, prefer an async extension
 pi.registerProvider("my-proxy", {
   name: "My Proxy",
   baseUrl: "https://proxy.example.com",
-  apiKey: "PROXY_API_KEY",  // env var name or literal
+  apiKey: "$PROXY_API_KEY",  // env var reference; omit $ for a literal
   api: "anthropic-messages",
   models: [
     {
@@ -1622,7 +1655,7 @@ pi.registerProvider("corporate-ai", {
 **Config options:**
 - `name` - Display name for the provider in UI such as `/login`.
 - `baseUrl` - API endpoint URL. Required when defining models.
-- `apiKey` - API key or environment variable name. Required when defining models (unless `oauth` provided).
+- `apiKey` - API key literal or explicit environment variable reference (`$ENV_VAR` or `${ENV_VAR}`). Required when defining models (unless `oauth` provided).
 - `api` - API type: `"anthropic-messages"`, `"openai-completions"`, `"openai-responses"`, etc.
 - `headers` - Custom headers to include in requests.
 - `authHeader` - If true, adds `Authorization: Bearer` header automatically.
@@ -2576,6 +2609,8 @@ All examples in [examples/extensions/](https://github.com/bastani-inc/atomic/tre
 | `confirm-destructive.ts` | Confirm session changes | `on("session_before_switch")`, `on("session_before_fork")` |
 | `dirty-repo-guard.ts` | Warn on dirty git repo | `on("session_before_*")`, `exec` |
 | `input-transform.ts` | Transform user input | `on("input")` |
+| `input-transform-streaming.ts` | Streaming-aware input transform | `on("input")`, `streamingBehavior` |
+| `project-trust.ts` | Decide or defer project trust from a user/global or CLI extension | `on("project_trust")`, trust UI, required trust result |
 | `model-status.ts` | React to model changes | `on("model_select")`, `setStatus` |
 | `provider-payload.ts` | Inspect payloads and provider response headers | `on("before_provider_request")`, `on("after_provider_response")` |
 | `system-prompt-header.ts` | Display system prompt info | `on("agent_start")`, `getSystemPrompt` |
@@ -2609,6 +2644,7 @@ All examples in [examples/extensions/](https://github.com/bastani-inc/atomic/tre
 | `ssh.ts` | SSH remote execution | `registerFlag`, `on("user_bash")`, `on("before_agent_start")`, tool operations |
 | `interactive-shell.ts` | Persistent shell session | `on("user_bash")` |
 | `sandbox/` | Sandboxed tool execution | Tool operations |
+| `gondolin/` | Route built-in tools and `!` commands into a Gondolin micro-VM | Tool operations, built-in tool overrides, `on("user_bash")` |
 | `subagent/` | Spawn sub-agents | `registerTool`, `exec` |
 | **Games** |||
 | `snake.ts` | Snake game | `registerCommand`, `ui.custom`, keyboard handling |

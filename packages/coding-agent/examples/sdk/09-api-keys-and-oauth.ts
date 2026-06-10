@@ -6,8 +6,8 @@
 
 import { AuthStorage, createAgentSession, ModelRegistry, SessionManager } from "@bastani/atomic";
 
-// Default: AuthStorage uses ~/.pi/agent/auth.json
-// ModelRegistry loads built-in + custom models from ~/.pi/agent/models.json
+// Default: AuthStorage uses ~/.atomic/agent/auth.json (legacy ~/.pi/agent/auth.json also works)
+// ModelRegistry loads built-in + custom models from ~/.atomic/agent/models.json (legacy ~/.pi/agent/models.json also works)
 const authStorage = AuthStorage.create();
 const modelRegistry = ModelRegistry.create(authStorage);
 
