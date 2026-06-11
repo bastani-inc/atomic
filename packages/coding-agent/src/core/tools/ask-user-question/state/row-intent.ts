@@ -45,8 +45,9 @@ export const SENTINEL_KINDS: readonly SentinelKind[] = ["other", "chat", "next"]
  *   numberable=false row that lives in the list; chat is numbered=true but
  *   `livesInMainList=false` so the flag is moot for chat.
  * - `activatesInputMode` — true iff focusing the row should toggle
- *   `state.inputMode = true`. Read by `state-reducer.ts` `nav` /
- *   `focus_options` cases.
+ *   `state.inputMode = true` and hydrate that row's shared inline-input
+ *   owner. Read by `state-reducer.ts` `nav` / `focus_options` /
+ *   `focus_chat` cases.
  * - `blocksMultiToggle` — in multiSelect mode, Space (and Enter-as-toggle)
  *   on this row is suppressed. The Next sentinel is the only true.
  * - `autoSubmitsInMulti` — in multiSelect mode, Enter on this row commits
@@ -97,7 +98,7 @@ export const ROW_INTENT_META: Record<RowKind, RowIntentMeta> = {
 		reserved: true,
 		livesInMainList: false,
 		numbered: true,
-		activatesInputMode: false,
+		activatesInputMode: true,
 		blocksMultiToggle: false,
 		autoSubmitsInMulti: false,
 		autoAppendOnSingleSelectNoPreview: false,

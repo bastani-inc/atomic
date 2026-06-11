@@ -5,12 +5,15 @@ import { WrappingSelect, type WrappingSelectItem, type WrappingSelectTheme } fro
 /**
  * Per-tick projection of chat-row state. The chat row is a single-item
  * `WrappingSelect` rendered in the question-tab footer; it owns no per-tab
- * state — only `focused` (whether the chat row is the active focus target)
- * and `numbering` (display number aligned with the active tab's items).
+ * state — only `focused` (whether the chat row is the active focus target),
+ * `numbering` (display number aligned with the active tab's items), and the
+ * owner-specific inline input projection supplied by the session.
  */
 export interface ChatRowViewProps {
 	focused: boolean;
 	numbering: { offset: number; total: number };
+	inputBuffer: string;
+	inputCaret: number;
 }
 
 export interface ChatRowViewConfig {
@@ -42,6 +45,8 @@ export class ChatRowView implements StatefulView<ChatRowViewProps>, Component {
 	setProps(props: ChatRowViewProps): void {
 		this.select.setFocused(props.focused);
 		this.select.setNumbering(props.numbering.offset, props.numbering.total);
+		this.select.setInputBuffer(props.inputBuffer);
+		this.select.setInputCursor(props.inputCaret);
 	}
 
 	handleInput(_data: string): void {}

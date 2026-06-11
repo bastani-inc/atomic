@@ -1,5 +1,6 @@
 import type { Component } from "@earendil-works/pi-tui";
 import { visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { ROW_INTENT_META } from "../../state/row-intent.ts";
 
 /**
  * Row-intent discriminated union. `kind` is the single discriminator —
@@ -13,6 +14,7 @@ import { visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
  * - `other`: the inline free-text input row appended to single-select questions
  *   (label is "Type something."). Renders as inline `Input` when active.
  * - `chat`: the abandon-questionnaire escape-hatch row (label is "Chat about this").
+ *   Renders as inline `Input` when active.
  * - `next`: the explicit commit-and-advance row appended to multi-select questions
  *   (label is "Next"). Renders without a number / checkbox.
  */
@@ -209,7 +211,7 @@ export class WrappingSelect implements Component {
 	}
 
 	private shouldRenderAsInlineInput(item: WrappingSelectItem, isActive: boolean): boolean {
-		return item.kind === "other" && isActive;
+		return isActive && ROW_INTENT_META[item.kind].activatesInputMode;
 	}
 
 	/**

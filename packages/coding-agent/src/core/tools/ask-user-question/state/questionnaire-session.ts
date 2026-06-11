@@ -4,6 +4,7 @@ import type { QuestionData, QuestionnaireResult, QuestionParams } from "../tool/
 import type { WrappingSelectItem } from "../view/components/wrapping-select.ts";
 import type { QuestionnairePropsAdapter } from "../view/props-adapter.ts";
 import { buildQuestionnaire } from "./build-questionnaire.ts";
+import { readInlineCaret, readInlineDraft, withInlineDraft } from "./inline-input.ts";
 import { ROW_INTENT_META } from "./row-intent.ts";
 import { type QuestionnaireAction, routeKey } from "./key-router.ts";
 import { computeFocusedOptionHasPreview } from "./selectors/derivations.ts";
@@ -42,6 +43,7 @@ function initialState(): QuestionnaireState {
 		currentTab: 0,
 		optionIndex: 0,
 		inputMode: false,
+		inlineInputOwner: null,
 		notesVisible: false,
 		chatFocused: false,
 		answers: new Map(),
@@ -52,6 +54,8 @@ function initialState(): QuestionnaireState {
 		notesDraft: "",
 		customDraftByTab: new Map(),
 		customCaretByTab: new Map(),
+		chatDraftByTab: new Map(),
+		chatCaretByTab: new Map(),
 	};
 }
 
@@ -133,17 +137,14 @@ export class QuestionnaireSession {
 	}
 
 	private mirrorInlineInputDraft(s: QuestionnaireState): QuestionnaireState {
-		if (!s.inputMode) return s;
+		if (!s.inputMode || !s.inlineInputOwner) return s;
+		const owner = s.inlineInputOwner;
 		const value = this.inlineInput.getValue();
 		const caret = readInputCursor(this.inlineInput);
-		if (s.customDraftByTab.get(s.currentTab) === value && s.customCaretByTab.get(s.currentTab) === caret) {
+		if (readInlineDraft(s, owner) === value && readInlineCaret(s, owner) === caret) {
 			return s;
 		}
-		const customDraftByTab = new Map(s.customDraftByTab);
-		const customCaretByTab = new Map(s.customCaretByTab);
-		customDraftByTab.set(s.currentTab, value);
-		customCaretByTab.set(s.currentTab, caret);
-		return { ...s, customDraftByTab, customCaretByTab };
+		return withInlineDraft(s, owner, value, caret);
 	}
 
 	private runEffect(effect: Effect): void {
@@ -181,7 +182,7 @@ export class QuestionnaireSession {
 	 * latency profile from Phase 11.
 	 */
 	private handleIgnoreInline(data: string): void {
-		if (!this.state.inputMode) return;
+		if (!this.state.inputMode || !this.state.inlineInputOwner) return;
 		this.inlineInput.handleInput(data);
 		this.state = this.mirrorInlineInputDraft(this.state);
 		this.viewAdapter.apply(this.state);
