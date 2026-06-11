@@ -161,6 +161,9 @@ function runAccent(run: RunSnapshot, theme?: GraphTheme): string {
     case "completed": return theme.success;
     case "running":   return theme.warning;
     case "paused":    return theme.warning;
+    case "skipped":   return theme.dim;
+    case "cancelled": return theme.dim;
+    case "blocked":   return theme.dim;
     case "failed":    return theme.error;
     case "killed":    return theme.error;
     case "pending":
@@ -173,6 +176,9 @@ function runTrailing(run: RunSnapshot, theme?: GraphTheme): { text: string; fg?:
     case "completed": return { text: "✓ completed", fg: theme?.success };
     case "running":   return { text: "● running", fg: theme?.warning };
     case "paused":    return { text: "❚❚ paused", fg: theme?.warning };
+    case "skipped":   return { text: "⊘ skipped", fg: theme?.dim };
+    case "cancelled": return { text: "⊘ cancelled", fg: theme?.dim };
+    case "blocked":   return { text: "↑ blocked", fg: theme?.dim };
     case "failed":    return { text: "✗ failed", fg: theme?.error };
     case "killed":    return { text: "⊘ killed", fg: theme?.error };
     case "pending":
@@ -226,7 +232,8 @@ function runCardMeta(run: RunSnapshot, now: number): string {
     return parts.join(" · ");
   }
 
-  if (run.status === "completed") {
+  if (run.status === "completed" || run.status === "skipped" || run.status === "cancelled" || run.status === "blocked") {
+    if (run.exitReason !== undefined && run.exitReason.length > 0) parts.push(run.exitReason);
     if (!isChain && run.stages[0]) parts.push(run.stages[0].name);
     const dur = lastStageDuration(run, now);
     if (dur) parts.push(dur);
@@ -280,6 +287,9 @@ function stageCells(run: RunSnapshot): Array<{ status: StageStatus }> {
 function stageStatusFromRun(run: RunSnapshot): StageStatus {
   switch (run.status) {
     case "completed": return "completed";
+    case "skipped":   return "skipped";
+    case "cancelled": return "skipped";
+    case "blocked":   return "blocked";
     case "running":   return "running";
     case "paused":    return "paused";
     case "failed":    return "failed";
@@ -320,6 +330,7 @@ function countBuckets(runs: readonly RunSnapshot[]): Counts {
       else if (r.status === "completed") c.completed++;
       else c.failed++;
     } else if (r.status === "completed") c.completed++;
+    else if (r.status === "skipped" || r.status === "cancelled" || r.status === "blocked") c.completed++;
     else c.failed++;
   }
   return c;
@@ -372,6 +383,9 @@ function emptyStateLine(theme?: GraphTheme): string {
 function statusIconForRun(run: RunSnapshot): string {
   switch (run.status) {
     case "completed": return "✓";
+    case "skipped": return "⊘";
+    case "cancelled": return "⊘";
+    case "blocked": return "↑";
     case "running": return "●";
     case "paused": return "❚❚";
     case "failed": return "✗";

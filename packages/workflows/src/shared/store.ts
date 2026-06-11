@@ -26,7 +26,7 @@ import { accumulatePausedDurationMs, elapsedRunMs } from "./timing.js";
 import { isTopLevelWorkflowRun } from "./run-visibility.js";
 
 /** Statuses that represent a terminal run state — cannot be overwritten. */
-const TERMINAL_STATUSES: ReadonlySet<RunStatus> = new Set(["completed", "failed", "killed"]);
+const TERMINAL_STATUSES: ReadonlySet<RunStatus> = new Set(["completed", "failed", "killed", "skipped", "cancelled", "blocked"]);
 
 function isTerminalStageStatus(status: StageStatus): boolean {
   return status === "completed" || status === "failed" || status === "skipped";
@@ -53,6 +53,8 @@ export interface RunEndMetadata {
   readonly failedStageId?: string;
   readonly resumable?: boolean;
   readonly retryAfterMs?: number;
+  readonly exited?: boolean;
+  readonly exitReason?: string;
 }
 
 export interface RunBlockedMetadata extends RunEndMetadata {
@@ -73,6 +75,8 @@ function clearRunFailureMetadata(run: RunSnapshot): void {
   delete run.resumable;
   delete run.retryAfterMs;
   delete run.blockedAt;
+  delete run.exited;
+  delete run.exitReason;
 }
 
 function clearStaleBlockedRunMetadata(run: RunSnapshot, metadata: RunEndMetadata | undefined): void {
@@ -84,6 +88,8 @@ function clearStaleBlockedRunMetadata(run: RunSnapshot, metadata: RunEndMetadata
   if (metadata?.failedStageId === undefined) delete run.failedStageId;
   if (metadata?.resumable === undefined) delete run.resumable;
   if (metadata?.retryAfterMs === undefined) delete run.retryAfterMs;
+  if (metadata?.exited === undefined) delete run.exited;
+  if (metadata?.exitReason === undefined) delete run.exitReason;
 }
 
 function applyRunEndMetadata(run: RunSnapshot, metadata: RunEndMetadata): void {
@@ -95,6 +101,8 @@ function applyRunEndMetadata(run: RunSnapshot, metadata: RunEndMetadata): void {
   if (metadata.failureMessage !== undefined) run.failureMessage = metadata.failureMessage;
   if (metadata.failedStageId !== undefined) run.failedStageId = metadata.failedStageId;
   if (metadata.resumable !== undefined) run.resumable = metadata.resumable;
+  if (metadata.exited !== undefined) run.exited = metadata.exited;
+  if (metadata.exitReason !== undefined) run.exitReason = metadata.exitReason;
 }
 
 export type StagePromptAnswerSource = "workflow_ui" | "workflow_tool";
@@ -138,8 +146,8 @@ export interface Store {
   /**
    * Records the end of a run.
    * Returns `true` if state changed, `false` if the run was not found or
-   * already in a terminal state (completed | failed | killed).
-   * `result` is only applied for status "completed".
+   * already in a terminal state (completed | failed | killed | skipped | cancelled | blocked).
+   * `result` is applied for intentional success/exit statuses (completed | skipped | cancelled | blocked).
    * `error` is only applied for status "failed" | "killed".
    */
   recordRunEnd(
@@ -531,8 +539,13 @@ export function createStore(): Store {
       if (stage.promptAnswerState !== undefined) existing.promptAnswerState = stage.promptAnswerState;
       if (stage.replayedFromStageId !== undefined) existing.replayedFromStageId = stage.replayedFromStageId;
       if (stage.replayed !== undefined) existing.replayed = stage.replayed;
-      if (stage.workflowChildRun !== undefined) existing.workflowChildRun = { ...stage.workflowChildRun };
-      if (stage.workflowChild !== undefined) existing.workflowChild = structuredClone(stage.workflowChild);
+      if (stage.status === "completed") {
+        if (stage.workflowChildRun !== undefined) existing.workflowChildRun = { ...stage.workflowChildRun };
+        if (stage.workflowChild !== undefined) existing.workflowChild = structuredClone(stage.workflowChild);
+      } else {
+        delete existing.workflowChildRun;
+        delete existing.workflowChild;
+      }
       delete existing.awaitingInputSince;
       delete existing.inputRequest;
       rejectStagePrompt(runId, existing, `atomic-workflows: stage ${stage.id} ended before prompt resolved`);
@@ -564,11 +577,12 @@ export function createStore(): Store {
       run.durationMs = elapsedRunMs(run, run.endedAt);
       const wasBlocked = run.blockedAt !== undefined || run.failureDisposition === "active_blocked";
       delete run.blockedAt;
-      if (status === "completed") {
+      if (status === "completed" || status === "skipped" || status === "cancelled" || status === "blocked") {
         if (result !== undefined) {
           run.result = result;
         }
         clearRunFailureMetadata(run);
+        if (metadata !== undefined) applyRunEndMetadata(run, metadata);
       } else {
         if (wasBlocked && error === undefined) delete run.error;
         if ((status === "failed" || status === "killed") && error !== undefined) {

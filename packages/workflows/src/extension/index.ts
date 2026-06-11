@@ -693,6 +693,7 @@ function renderStagesToolContent(
     if (stage.transcriptPath) lines.push(`transcriptPath: ${stage.transcriptPath}`);
     if (stage.transcriptPath) lines.push(`transcriptPathJson: ${JSON.stringify(stage.transcriptPath)}`);
     if (stage.error) lines.push(`error: ${stage.error}`);
+    if (stage.skippedReason) lines.push(`skippedReason: ${stage.skippedReason}`);
     if (stage.awaitingInputSince !== undefined) {
       lines.push(`awaitingInputSince: ${stage.awaitingInputSince}`);
     }
@@ -803,6 +804,7 @@ type WorkflowStageSummary = {
   sessionFile?: string;
   transcriptPath?: string;
   error?: string;
+  skippedReason?: string;
   awaitingInputSince?: number;
   pendingPrompt?: StageSnapshot["pendingPrompt"];
   inputRequest?: StageSnapshot["inputRequest"];
@@ -842,6 +844,7 @@ function summarizeStage(stage: StageSnapshot): WorkflowStageSummary {
     sessionFile: stage.sessionFile,
     transcriptPath: stage.sessionFile,
     error: stage.error,
+    skippedReason: stage.skippedReason,
     awaitingInputSince: stage.awaitingInputSince,
     pendingPrompt: stage.pendingPrompt === undefined
       ? undefined
@@ -1201,6 +1204,9 @@ function isRunStatus(value: string): value is RunStatus {
     case "running":
     case "paused":
     case "completed":
+    case "skipped":
+    case "cancelled":
+    case "blocked":
     case "failed":
     case "killed":
       return true;
@@ -1232,6 +1238,8 @@ function fallbackRunDetailFromResult(
     stages,
     result: result.result,
     error: result.error,
+    exited: result.exited,
+    exitReason: result.exitReason,
   };
 }
 

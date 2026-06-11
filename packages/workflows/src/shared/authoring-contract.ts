@@ -45,10 +45,17 @@ export type WorkflowOutputMode = "inline" | "file-only";
 export type WorkflowContextMode = "fresh" | "fork";
 export type WorkflowThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 export type WorkflowExecutionMode = "interactive" | "non_interactive";
-export type RunStatus = "pending" | "running" | "paused" | "completed" | "failed" | "killed";
+export type WorkflowExitStatus = "completed" | "skipped" | "cancelled" | "blocked";
+export type RunStatus = "pending" | "running" | "paused" | WorkflowExitStatus | "failed" | "killed";
 export type WorkflowDetailsMode = "named" | "single" | "parallel" | "chain" | "inspection" | "control";
-export type WorkflowDetailsStatus = "accepted" | "running" | "completed" | "failed" | "killed" | "noop";
+export type WorkflowDetailsStatus = "accepted" | "running" | WorkflowExitStatus | "failed" | "killed" | "noop";
 export type WorkflowAction = "list" | "get" | "inputs" | "run" | "status" | "interrupt" | "resume";
+
+export interface WorkflowExitOptions<TOutputs extends WorkflowOutputValues = WorkflowOutputValues> {
+  readonly status?: WorkflowExitStatus;
+  readonly reason?: string;
+  readonly outputs?: Partial<TOutputs>;
+}
 
 export interface WorkflowModelFallbackFields {
   /** Ordered model IDs to try after `model` fails; entries may use `:off|minimal|low|medium|high|xhigh` reasoning suffixes. */
@@ -390,12 +397,26 @@ export interface WorkflowRunChildOptions<TInputs extends WorkflowInputValues = W
   readonly stageName?: string;
 }
 
-export interface WorkflowChildResult<TOutputs extends WorkflowOutputValues = WorkflowOutputValues> extends WorkflowSerializableObject {
+export interface WorkflowCompletedChildResult<TOutputs extends WorkflowOutputValues = WorkflowOutputValues> extends WorkflowSerializableObject {
   readonly workflow: string;
   readonly runId: string;
   readonly status: "completed";
+  readonly exited: false;
   readonly outputs: TOutputs;
 }
+
+export interface WorkflowExitedChildResult<TOutputs extends WorkflowOutputValues = WorkflowOutputValues> extends WorkflowSerializableObject {
+  readonly workflow: string;
+  readonly runId: string;
+  readonly status: WorkflowExitStatus;
+  readonly exited: true;
+  readonly outputs: Partial<TOutputs>;
+  readonly exitReason?: string;
+}
+
+export type WorkflowChildResult<TOutputs extends WorkflowOutputValues = WorkflowOutputValues> =
+  | WorkflowCompletedChildResult<TOutputs>
+  | WorkflowExitedChildResult<TOutputs>;
 
 export type WorkflowCustomUiComponent = Component & { dispose?(): void };
 export type WorkflowCustomUiTui = TUI;
@@ -449,9 +470,11 @@ export interface WorkflowUIAdapter {
 export interface WorkflowRunContext<
   TInputs extends WorkflowInputValues = WorkflowInputValues,
   TDefinitionBrand extends object = {},
+  TOutputs extends WorkflowOutputValues = WorkflowOutputValues,
 > {
   readonly inputs: Readonly<TInputs>;
   readonly cwd?: string;
+  exit(options?: WorkflowExitOptions<TOutputs>): never;
   stage(name: string, options?: StageOptions): StageContext;
   task(name: string, options: WorkflowTaskOptions): Promise<WorkflowTaskResult>;
   chain(steps: readonly WorkflowTaskStep[], options?: WorkflowChainOptions): Promise<WorkflowTaskResult[]>;
@@ -467,7 +490,7 @@ export type WorkflowRunFn<
   TInputs extends WorkflowInputValues = WorkflowInputValues,
   TOutputs extends WorkflowOutputValues = WorkflowOutputValues,
   TDefinitionBrand extends object = {},
-> = (ctx: WorkflowRunContext<TInputs, TDefinitionBrand>) => Promise<TOutputs> | TOutputs;
+> = (ctx: WorkflowRunContext<TInputs, TDefinitionBrand, TOutputs>) => Promise<TOutputs> | TOutputs;
 
 export interface WorkflowRuntimeConfig {
   readonly maxDepth: number;
@@ -501,7 +524,7 @@ export interface WorkflowDefinition<
   readonly inputs: WorkflowInputSchemaMap;
   readonly outputs?: WorkflowOutputSchemaMap;
   readonly inputBindings?: WorkflowInputBindings;
-  run(ctx: WorkflowRunContext<TInputs, TDefinitionBrand>): Promise<TOutputs> | TOutputs;
+  run(ctx: WorkflowRunContext<TInputs, TDefinitionBrand, TOutputs>): Promise<TOutputs> | TOutputs;
 }
 
 type DeclaredResolvedEntry<K extends string, S extends TSchema> = S extends TOptional<TSchema>
@@ -547,7 +570,7 @@ export interface WorkflowBuilder<
   >;
   worktreeFromInputs(binding: WorkflowWorktreeInputBinding): WorkflowBuilder<TInputs, TOutputs, TRunInputs, TDefinitionBrand, TCompiledDefinition>;
   run<TActualOutputs extends TOutputs>(
-    fn: (ctx: WorkflowRunContext<TInputs, TDefinitionBrand>) => Promise<NoExtraOutputs<TOutputs, TActualOutputs>> | NoExtraOutputs<TOutputs, TActualOutputs>,
+    fn: (ctx: WorkflowRunContext<TInputs, TDefinitionBrand, TOutputs>) => Promise<NoExtraOutputs<TOutputs, TActualOutputs>> | NoExtraOutputs<TOutputs, TActualOutputs>,
   ): CompletedWorkflowBuilder<TInputs, TOutputs, TRunInputs, TDefinitionBrand, TCompiledDefinition>;
 }
 
@@ -640,7 +663,7 @@ export interface RunOpts {
   readonly onRunStart?: (snapshot: RunSnapshot) => void;
   readonly onStageStart?: (runId: string, snapshot: StageSnapshot) => void;
   readonly onStageEnd?: (runId: string, snapshot: StageSnapshot) => void;
-  readonly onRunEnd?: (runId: string, status: RunStatus, result?: WorkflowOutputValues, error?: string) => void;
+  readonly onRunEnd?: (runId: string, status: RunStatus, result?: WorkflowOutputValues, error?: string, exitReason?: string) => void;
 }
 
 export interface WorkflowProgressSummary extends WorkflowSerializableObject {
@@ -673,6 +696,9 @@ export interface WorkflowDetails extends WorkflowSerializableObject {
   readonly intercom?: WorkflowIntercomSummary;
   readonly warnings?: readonly string[];
   readonly error?: string;
+  /** True when the run reached its terminal status through ctx.exit(). */
+  readonly exited?: boolean;
+  readonly exitReason?: string;
 }
 
 export type StageStatus = RunStatus | "skipped" | "awaiting_input" | "blocked";
@@ -688,8 +714,11 @@ export interface StageSnapshot extends WorkflowSerializableObject {
 export interface RunResult<TOutputs extends WorkflowOutputValues = WorkflowOutputValues> extends WorkflowSerializableObject {
   readonly runId: string;
   readonly status: RunStatus;
-  readonly result?: TOutputs;
+  readonly result?: Partial<TOutputs>;
   readonly error?: string;
+  /** True when the run reached its terminal status through ctx.exit(). */
+  readonly exited?: boolean;
+  readonly exitReason?: string;
   readonly stages: readonly StageSnapshot[];
 }
 

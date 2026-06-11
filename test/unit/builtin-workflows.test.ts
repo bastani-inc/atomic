@@ -193,6 +193,9 @@ function makeMockCtx<TInputs extends WorkflowInputValues>(
     const ctx: WorkflowRunContext<TInputs> & { calls: MockCalls } = {
         inputs,
         calls,
+        exit: () => {
+            throw new Error("ctx.exit should not be used by builtin workflow mocks");
+        },
         stage: (name: string) => {
             calls.stage.push(name);
             throw new Error(

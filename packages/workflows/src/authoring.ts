@@ -175,6 +175,8 @@ export type {
   WorkflowDirectTaskItem,
   WorkflowExecutionMode,
   WorkflowExecutionPolicy,
+  WorkflowExitOptions,
+  WorkflowExitStatus,
   WorkflowInputBindings,
   WorkflowInputSchema,
   WorkflowInputSchemaMap,
@@ -248,7 +250,10 @@ export interface WorkflowDefinition<
   TDefinitionBrand extends object = WorkflowDefinitionBrand,
 > extends WorkflowContractDefinition<TInputs, TOutputs, TRunInputs, TDefinitionBrand>, WorkflowDefinitionBrand {}
 
-export type WorkflowRunContext<TInputs extends WorkflowInputValues = WorkflowInputValues> = AuthoringContract.WorkflowRunContext<TInputs, WorkflowDefinitionBrand>;
+export type WorkflowRunContext<
+  TInputs extends WorkflowInputValues = WorkflowInputValues,
+  TOutputs extends WorkflowOutputValues = WorkflowOutputValues,
+> = AuthoringContract.WorkflowRunContext<TInputs, WorkflowDefinitionBrand, TOutputs>;
 export type WorkflowRunFn<
   TInputs extends WorkflowInputValues = WorkflowInputValues,
   TOutputs extends WorkflowOutputValues = WorkflowOutputValues,
@@ -376,6 +381,9 @@ export interface RunSnapshot {
   readonly durationMs?: number;
   readonly result?: WorkflowOutputValues;
   readonly error?: string;
+  /** True when the run reached its terminal status through ctx.exit(). */
+  readonly exited?: boolean;
+  readonly exitReason?: string;
   readonly pendingPrompt?: PendingPrompt;
 }
 

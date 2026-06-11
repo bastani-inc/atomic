@@ -561,6 +561,7 @@ describe("executor.run", () => {
             .output("result", Type.String())
             .run(async (ctx) => {
                 const childResult = await ctx.workflow(child);
+                if (childResult.exited === true) throw new Error("child exited unexpectedly");
                 return { result: childResult.outputs.summary };
             })
             .compile();
@@ -999,6 +1000,7 @@ describe("executor.run", () => {
             .output("childResult", Type.Record(Type.String(), Type.Any()))
             .run(async (ctx) => {
                 const childResult = await ctx.workflow(child);
+                if (childResult.exited === true) throw new Error("child exited unexpectedly");
                 return { childResult: childResult.outputs.result };
             })
             .compile();

@@ -76,6 +76,9 @@ export default defineWorkflow("contract-complex-root")
         passes: ctx.inputs.passes,
       },
     });
+    if (composed.exited === true) {
+      return ctx.exit({ status: composed.status, reason: composed.exitReason ?? "composed workflow stopped early" });
+    }
 
     await ctx.stage("complex-root-final-marker", { noTools: "all" }).prompt(
       [
@@ -86,7 +89,7 @@ export default defineWorkflow("contract-complex-root")
     );
 
     // composed.outputs is typed from contract-complex-composed's declared
-    // output contract, so these are read directly without defensive narrowing.
+    // output contract after the exited branch is handled, so these are read directly.
     const totalScore = composed.outputs.totalScore;
     const bundle = composed.outputs.bundle;
     const childDigests = composed.outputs.childDigests;

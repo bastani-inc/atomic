@@ -171,7 +171,7 @@ export function installToolExecutionHooks(pi: LiveWidgetAPI, storeInstance: Stor
     readonly startedAt: number;
   }
 
-  const terminalRunStatuses = new Set(["completed", "failed", "killed"]);
+  const terminalRunStatuses = new Set(["completed", "failed", "killed", "skipped", "cancelled", "blocked"]);
   const terminalStageStatuses = new Set(["completed", "failed", "skipped"]);
   const activeToolCalls = new Map<string, ActiveToolCall>();
 

@@ -54,6 +54,8 @@ function makeRun(over: Partial<RunSnapshot>): RunSnapshot {
     resumedAt: over.resumedAt,
     result: over.result,
     error: over.error,
+    exited: over.exited,
+    exitReason: over.exitReason,
   };
 }
 
@@ -249,6 +251,39 @@ describe("renderStatusList — populated", () => {
     const plain = stripAnsi(out);
     assert.match(plain, /⊘ killed/);
     assert.match(plain, /failed at partition/);
+  });
+
+  test("terminal ctx.exit rows include the author reason in list meta", () => {
+    const now = 1_000_000;
+    const runs: RunSnapshot[] = [
+      makeRun({
+        id: "exitcmpl",
+        name: "exit-completed",
+        status: "completed",
+        exited: true,
+        exitReason: "guard completed early",
+        startedAt: now - 12_000,
+        endedAt: now - 2_000,
+        stages: [makeStage("c1", "guard", "completed", { durationMs: 10_000 })],
+      }),
+      makeRun({
+        id: "exitskip",
+        name: "exit-skipped",
+        status: "skipped",
+        exited: true,
+        exitReason: "nothing to process",
+        startedAt: now - 8_000,
+        endedAt: now - 1_000,
+        stages: [makeStage("s1", "scan", "skipped", { durationMs: 7_000 })],
+      }),
+    ];
+
+    const out = renderStatusList(runs, { width: 120, now, showDetailHint: false });
+
+    assert.match(out, /guard completed early/);
+    assert.match(out, /nothing to process/);
+    assert.match(out, /✓ completed/);
+    assert.match(out, /⊘ skipped/);
   });
 
   test("narrow width truncates progress strip with …", () => {

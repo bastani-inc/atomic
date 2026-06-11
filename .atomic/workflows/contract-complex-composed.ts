@@ -66,8 +66,12 @@ export default defineWorkflow("contract-complex-composed")
         },
       });
 
+      if (child.exited === true) {
+        return ctx.exit({ status: child.status, reason: child.exitReason ?? `complex leaf pass ${pass} stopped early` });
+      }
+
       // child.outputs is typed from contract-complex-leaf's declared output
-      // contract, so these are read directly without defensive narrowing.
+      // contract after the exited branch is handled, so these are read directly.
       childDigests.push({
         pass,
         workflow: child.workflow,

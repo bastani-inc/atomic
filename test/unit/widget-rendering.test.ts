@@ -246,6 +246,21 @@ describe("renderWidgetLines — standard form", () => {
     assert.ok(header.includes("✗ 1 failed"), "failed badge");
   });
 
+  test("ctx.exit terminal statuses count as complete in the widget header", () => {
+    const t = Date.now();
+    const skipped = makeRun("s1xxxxxx", "wf-s", "skipped", [], t - 5000, t - 3000);
+    const cancelled = makeRun("c1xxxxxx", "wf-c", "cancelled", [], t - 4000, t - 2000);
+    const blocked = makeRun("b1xxxxxx", "wf-b", "blocked", [], t - 3000, t - 1000);
+    const lines = renderWidgetLines(makeSnap([skipped, cancelled, blocked]), 120).map(stripAnsi);
+    const header = lines[0]!;
+
+    assert.ok(header.includes("3 runs"), `expected exited runs in header total, got: ${header}`);
+    assert.ok(header.includes("✓ 3 complete"), `expected exited runs in complete badge, got: ${header}`);
+    assert.ok(lines.join("\n").includes("skipped · 2s"), "skipped row remains visible");
+    assert.ok(lines.join("\n").includes("cancelled · 2s"), "cancelled row remains visible");
+    assert.ok(lines.join("\n").includes("blocked · 2s"), "blocked row remains visible");
+  });
+
   test("terminal rows render final duration without ticking ago labels", () => {
     const originalNow = Date.now;
     try {

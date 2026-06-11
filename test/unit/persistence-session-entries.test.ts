@@ -305,6 +305,26 @@ describe("appendStageEnd", () => {
     });
   });
 
+  test("omits workflow child replay metadata for non-completed stage ends", () => {
+    const workflowChild = {
+      alias: "child",
+      workflow: "child-wf",
+      runId: "child-run",
+      status: "completed" as const,
+      outputs: { summary: "stale" },
+    };
+    for (const status of ["skipped", "failed"] as const) {
+      const api = makeMockApi();
+      appendStageEnd(api, {
+        runId: "r2",
+        stageId: `${status}-boundary`,
+        status,
+        workflowChild,
+      });
+      assert.equal("workflowChild" in api._entries[0]!.payload, false);
+    }
+  });
+
   test("emitMessage=true calls appendCustomMessageEntry when summary provided", () => {
     const api = makeMockApi();
     appendStageEnd(

@@ -43,6 +43,9 @@ export default defineWorkflow("contract-parent")
         multiplier,
       },
     });
+    if (first.exited === true) {
+      return ctx.exit({ status: first.status, reason: first.exitReason ?? "first child stopped early" });
+    }
 
     const second = await ctx.workflow(contractChild, {
       stageName: "child:follow-up",
@@ -51,6 +54,9 @@ export default defineWorkflow("contract-parent")
         multiplier: multiplier + 1,
       },
     });
+    if (second.exited === true) {
+      return ctx.exit({ status: second.status, reason: second.exitReason ?? "second child stopped early" });
+    }
 
     const firstScore = first.outputs.score;
     const secondScore = second.outputs.score;

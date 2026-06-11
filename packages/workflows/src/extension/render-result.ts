@@ -91,6 +91,8 @@ type RunResult = {
   result?: WorkflowOutputValues;
   details?: WorkflowDetails;
   error?: string;
+  exited?: boolean;
+  exitReason?: string;
   stages?: StageSnapshot[];
   /**
    * Free-form message carried by the result. Carries the "started in
@@ -107,6 +109,7 @@ type StageListItem = {
   sessionFile?: string;
   transcriptPath?: string;
   error?: string;
+  skippedReason?: string;
   awaitingInputSince?: number;
   pendingPrompt?: PendingPrompt;
   inputRequest?: StageInputRequest;
@@ -330,7 +333,7 @@ export function renderResult(result: WorkflowToolResult, opts?: RenderResultOpts
         const label = r.name ? ` (${r.name})` : "";
         return renderNotice("WORKFLOW RUN", `${r.runId}${label}: ${r.details.mode} ${r.details.status}`, opts, themed);
       }
-      if (r.status === "completed" || r.status === "killed") {
+      if (r.status === "completed" || r.status === "skipped" || r.status === "cancelled" || r.status === "blocked" || r.status === "killed") {
         const label = r.name ? ` (${r.name})` : "";
         return renderNotice("WORKFLOW RUN", `${r.runId}${label}: ${r.status}`, opts, themed);
       }
@@ -357,7 +360,7 @@ export function renderResult(result: WorkflowToolResult, opts?: RenderResultOpts
     case "stages": {
       const r = result as StageListResult;
       if (r.error) return renderNotice("WORKFLOW STAGES", `${r.runId || "(none)"}: ${r.error}`, opts, themed);
-      const counts = r.stages.map((s) => `${s.name} (${s.id.slice(0, 12)}): ${s.status}`).join("; ");
+      const counts = r.stages.map((s) => `${s.name} (${s.id.slice(0, 12)}): ${s.status}${s.skippedReason ? ` — ${s.skippedReason}` : ""}`).join("; ");
       return renderNotice("WORKFLOW STAGES", `${r.runId}: ${r.filter} — ${counts || "no stages"}`, opts, themed);
     }
 

@@ -111,7 +111,7 @@ export interface WorkflowBuilder<
   output<K extends string, S extends TSchema>(key: K, schema: S): WorkflowBuilder<TInputs, AccumulateWorkflowOutput<TOutputs, K, S>>;
   worktreeFromInputs(binding: WorkflowWorktreeInputBinding): WorkflowBuilder<TInputs, TOutputs>;
   run<TActualOutputs extends SimplifyWorkflowOutputs<TOutputs>>(
-    fn: (ctx: WorkflowRunContext<Simplify<TInputs>>) => Promise<AuthoringContract.NoExtraOutputs<SimplifyWorkflowOutputs<TOutputs>, TActualOutputs>> | AuthoringContract.NoExtraOutputs<SimplifyWorkflowOutputs<TOutputs>, TActualOutputs>,
+    fn: (ctx: WorkflowRunContext<Simplify<TInputs>, SimplifyWorkflowOutputs<TOutputs>>) => Promise<AuthoringContract.NoExtraOutputs<SimplifyWorkflowOutputs<TOutputs>, TActualOutputs>> | AuthoringContract.NoExtraOutputs<SimplifyWorkflowOutputs<TOutputs>, TActualOutputs>,
   ): CompletedWorkflowBuilder<TInputs, TOutputs>;
 }
 
@@ -131,7 +131,7 @@ export interface CompletedWorkflowBuilder<
   output<K extends string, S extends TSchema>(key: K, schema: S): CompletedWorkflowBuilder<TInputs, AccumulateWorkflowOutput<TOutputs, K, S>>;
   worktreeFromInputs(binding: WorkflowWorktreeInputBinding): CompletedWorkflowBuilder<TInputs, TOutputs>;
   run<TActualOutputs extends SimplifyWorkflowOutputs<TOutputs>>(
-    fn: (ctx: WorkflowRunContext<Simplify<TInputs>>) => Promise<AuthoringContract.NoExtraOutputs<SimplifyWorkflowOutputs<TOutputs>, TActualOutputs>> | AuthoringContract.NoExtraOutputs<SimplifyWorkflowOutputs<TOutputs>, TActualOutputs>,
+    fn: (ctx: WorkflowRunContext<Simplify<TInputs>, SimplifyWorkflowOutputs<TOutputs>>) => Promise<AuthoringContract.NoExtraOutputs<SimplifyWorkflowOutputs<TOutputs>, TActualOutputs>> | AuthoringContract.NoExtraOutputs<SimplifyWorkflowOutputs<TOutputs>, TActualOutputs>,
   ): CompletedWorkflowBuilder<TInputs, TOutputs>;
   compile(): WorkflowDefinition<Simplify<TInputs>, SimplifyWorkflowOutputs<TOutputs>>;
 }
@@ -193,7 +193,7 @@ function makeBuilder<
     },
 
     run<TActualOutputs extends SimplifyWorkflowOutputs<TOutputs>>(
-      fn: (ctx: WorkflowRunContext<Simplify<TInputs>>) => Promise<AuthoringContract.NoExtraOutputs<SimplifyWorkflowOutputs<TOutputs>, TActualOutputs>> | AuthoringContract.NoExtraOutputs<SimplifyWorkflowOutputs<TOutputs>, TActualOutputs>,
+      fn: (ctx: WorkflowRunContext<Simplify<TInputs>, SimplifyWorkflowOutputs<TOutputs>>) => Promise<AuthoringContract.NoExtraOutputs<SimplifyWorkflowOutputs<TOutputs>, TActualOutputs>> | AuthoringContract.NoExtraOutputs<SimplifyWorkflowOutputs<TOutputs>, TActualOutputs>,
     ) {
       return makeBuilder<TInputs, TOutputs>({
         ...state,

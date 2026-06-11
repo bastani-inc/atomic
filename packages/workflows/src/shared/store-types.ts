@@ -3,9 +3,9 @@
  * cross-ref: spec §5.5
  */
 
-import type { WorkflowInputValues, WorkflowOutputValues } from "./types.js";
+import type { WorkflowExitStatus, WorkflowInputValues, WorkflowOutputValues } from "./types.js";
 
-export type RunStatus = "pending" | "running" | "paused" | "completed" | "failed" | "killed";
+export type RunStatus = "pending" | "running" | "paused" | WorkflowExitStatus | "failed" | "killed";
 export type StageStatus =
   | "pending"
   | "running"
@@ -125,8 +125,11 @@ export interface WorkflowChildReplaySnapshot {
   readonly alias: string;
   readonly workflow: string;
   readonly runId: string;
-  readonly status: "completed";
+  readonly status: WorkflowExitStatus;
+  /** True when the child reached this terminal status through ctx.exit(). */
+  readonly exited?: boolean;
   readonly outputs: WorkflowOutputValues;
+  readonly exitReason?: string;
 }
 
 export interface StageSnapshot {
@@ -243,6 +246,10 @@ export interface RunSnapshot {
   resumedAt?: number;
   result?: WorkflowOutputValues;
   error?: string;
+  /** True when the run reached its terminal status through ctx.exit(). */
+  exited?: boolean;
+  /** Optional author-supplied reason from ctx.exit(). */
+  exitReason?: string;
   /** Structured workflow failure category for failed runs. */
   failureKind?: WorkflowFailureKind;
   /** Specific additive workflow failure code within `failureKind`. */

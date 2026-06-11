@@ -6,7 +6,7 @@
  * through gracefully when the runtime doesn't support the method.
  */
 
-import type { WorkflowInputValues, WorkflowOutputValues } from "./types.js";
+import type { WorkflowExitStatus, WorkflowInputValues, WorkflowOutputValues } from "./types.js";
 import type {
   WorkflowFailureCode,
   WorkflowFailureDisposition,
@@ -69,8 +69,10 @@ export interface WorkflowChildReplayPayload {
   readonly alias: string;
   readonly workflow: string;
   readonly runId: string;
-  readonly status: "completed";
+  readonly status: WorkflowExitStatus;
+  readonly exited?: boolean;
   readonly outputs: WorkflowOutputValues;
+  readonly exitReason?: string;
 }
 
 export interface StageEndPayload {
@@ -98,6 +100,8 @@ export interface RunEndPayload {
   readonly status: string;
   readonly result?: WorkflowOutputValues;
   readonly error?: string;
+  readonly exited?: boolean;
+  readonly exitReason?: string;
   readonly failureKind?: string;
   readonly failureCode?: string;
   readonly failureRecoverability?: string;
@@ -201,7 +205,7 @@ export function appendStageEnd(
     ...(payload.replayKey !== undefined ? { replayKey: payload.replayKey } : {}),
     ...(payload.replayedFromStageId !== undefined ? { replayedFromStageId: payload.replayedFromStageId } : {}),
     ...(payload.replayed !== undefined ? { replayed: payload.replayed } : {}),
-    ...(payload.workflowChild !== undefined ? { workflowChild: payload.workflowChild } : {}),
+    ...(payload.status === "completed" && payload.workflowChild !== undefined ? { workflowChild: payload.workflowChild } : {}),
   });
   if (opts?.emitMessage === true && payload.summary && typeof api.appendCustomMessageEntry === "function") {
     api.appendCustomMessageEntry(
@@ -236,6 +240,8 @@ export function appendRunEnd(api: PersistenceAPI, payload: RunEndPayload): void 
     status: terminalPayload.status,
     ...(terminalPayload.result !== undefined ? { result: terminalPayload.result } : {}),
     ...(terminalPayload.error !== undefined ? { error: terminalPayload.error } : {}),
+    ...(terminalPayload.exited !== undefined ? { exited: terminalPayload.exited } : {}),
+    ...(terminalPayload.exitReason !== undefined ? { exitReason: terminalPayload.exitReason } : {}),
     ...(terminalPayload.failureKind !== undefined ? { failureKind: terminalPayload.failureKind } : {}),
     ...(terminalPayload.failureCode !== undefined ? { failureCode: terminalPayload.failureCode } : {}),
     ...(terminalPayload.failureRecoverability !== undefined ? { failureRecoverability: terminalPayload.failureRecoverability } : {}),

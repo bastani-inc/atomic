@@ -185,6 +185,9 @@ function summaryRows(detail: RunDetail, now: number): Array<[string, string | un
   } else {
     rows.push(["elapsed", fmtDuration(duration)]);
   }
+  if (detail.exitReason) {
+    rows.push(["reason", detail.exitReason]);
+  }
   if (detail.error) {
     rows.push(["error", detail.error.split("\n")[0] ?? ""]);
   }
@@ -303,6 +306,12 @@ function stateBadges(detail: RunDetail, theme: GraphTheme): FlatBandBadge[] {
       return [{ text: "❚❚ paused", fg: theme.warning }];
     case "completed":
       return [{ text: "✓ completed", fg: theme.success }];
+    case "skipped":
+      return [{ text: "⊘ skipped", fg: theme.dim }];
+    case "cancelled":
+      return [{ text: "⊘ cancelled", fg: theme.dim }];
+    case "blocked":
+      return [{ text: "↑ blocked", fg: theme.dim }];
     case "failed":
       return [{ text: "✗ failed", fg: theme.error }];
     case "killed":
@@ -318,6 +327,9 @@ function stateLabel(detail: RunDetail): string {
     case "running": return "● running";
     case "paused": return "❚❚ paused";
     case "completed": return "✓ completed";
+    case "skipped": return "⊘ skipped";
+    case "cancelled": return "⊘ cancelled";
+    case "blocked": return "↑ blocked";
     case "failed": return "✗ failed";
     case "killed": return "⊘ killed";
     case "pending":

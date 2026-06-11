@@ -29,12 +29,20 @@ function virtualStageId(runId: string, stageId: string, isRootRun: boolean): str
   return isRootRun ? stageId : `${runId}:${stageId}`;
 }
 
+function isTerminalNonCompletedBoundary(stage: StageSnapshot): boolean {
+  return stage.status === "failed" || stage.status === "skipped";
+}
+
 function childRunIdFor(stage: StageSnapshot): string | undefined {
-  return stage.workflowChildRun?.runId ?? stage.workflowChild?.runId;
+  if (isTerminalNonCompletedBoundary(stage)) return undefined;
+  if (stage.status === "completed") return stage.workflowChild?.runId ?? stage.workflowChildRun?.runId;
+  return stage.workflowChildRun?.runId;
 }
 
 function childAliasFor(stage: StageSnapshot): string | undefined {
-  return stage.workflowChildRun?.alias ?? stage.workflowChild?.alias;
+  if (isTerminalNonCompletedBoundary(stage)) return undefined;
+  if (stage.status === "completed") return stage.workflowChild?.alias ?? stage.workflowChildRun?.alias;
+  return stage.workflowChildRun?.alias;
 }
 
 function localTerminalStageIds(stages: readonly StageSnapshot[]): readonly string[] {
