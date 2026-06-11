@@ -5,6 +5,7 @@
 ### Added
 
 - Added optional inline free-form text entry to the `ask_user_question` TUI's **Chat about this** footer row. Non-empty typed chat text now returns as a `kind: "chat"` answer and is surfaced to the agent without the legacy stop/wait termination envelope, while empty submissions keep the existing sentinel behavior.
+- Added session-scoped `bashPolicy` support for the built-in `bash` tool, with exact/prefix/command-string-glob/regex rules, deny-over-allow precedence, segment-aware parsing by default, newline command separators, conservative reserved/compound-head, leading-redirection, attached command-head redirection, assignment, and non-literal command-head rejection, escaped glob bracket-class literal preservation, invalid glob range handling through `invalid-policy`, non-leading `>|` noclobber redirection handling, unknown top-level policy key rejection, runtime invalid-policy fail-closed validation, default-allow no-rule compatibility, and enforcement before shell execution.
 
 ## [0.8.28-alpha.2] - 2026-06-10
 

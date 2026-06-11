@@ -64,6 +64,7 @@ export interface CreateAgentSessionFromServicesOptions {
 	excludedTools?: CreateAgentSessionOptions["excludedTools"];
 	noTools?: CreateAgentSessionOptions["noTools"];
 	customTools?: ToolDefinition[];
+	bashPolicy?: CreateAgentSessionOptions["bashPolicy"];
 }
 
 /**
@@ -215,6 +216,7 @@ export async function createAgentSessionFromServices(
 		excludedTools: options.excludedTools,
 		noTools: options.noTools,
 		customTools: options.customTools,
+		bashPolicy: options.bashPolicy,
 		sessionStartEvent: options.sessionStartEvent,
 	});
 }

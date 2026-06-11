@@ -51,6 +51,7 @@ import {
   createWriteTool,
   defaultToolNames,
   withFileMutationQueue,
+  type BashCommandPolicy,
 } from "./tools/index.ts";
 
 export interface CreateAgentSessionOptions {
@@ -98,6 +99,8 @@ export interface CreateAgentSessionOptions {
   excludedTools?: string[];
   /** Custom tools to register (in addition to built-in tools). */
   customTools?: ToolDefinition[];
+  /** Optional command-level policy for the built-in bash tool. Does not expose bash by itself. */
+  bashPolicy?: BashCommandPolicy;
 
   /** Resource loader. When omitted, DefaultResourceLoader is used. */
   resourceLoader?: ResourceLoader;
@@ -137,7 +140,18 @@ export type {
 } from "./extensions/index.ts";
 export type { PromptTemplate } from "./prompt-templates.ts";
 export type { Skill } from "./skills.ts";
-export type { Tool } from "./tools/index.ts";
+export type {
+  BashCommandParseError,
+  BashCommandParseResult,
+  BashCommandPolicy,
+  BashCommandPolicyDecision,
+  BashCommandPolicyMatchMode,
+  BashCommandPolicyRejection,
+  BashCommandRule,
+  BashCommandSegment,
+  BashCommandSegmentSource,
+  Tool,
+} from "./tools/index.ts";
 
 export {
   withFileMutationQueue,
@@ -453,6 +467,7 @@ export async function createAgentSession(
     scopedModels: options.scopedModels,
     resourceLoader,
     customTools: options.customTools,
+    bashPolicy: options.bashPolicy,
     modelRegistry,
     initialActiveToolNames,
     allowedToolNames,
