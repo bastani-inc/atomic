@@ -17,6 +17,11 @@ import {
 	untrackDetachedChildPid,
 } from "../../utils/shell.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
+import {
+	evaluateBashCommandPolicy,
+	formatBashCommandPolicyRejection,
+	type BashCommandPolicy,
+} from "./bash-policy.ts";
 import { OutputAccumulator } from "./output-accumulator.ts";
 import { getTextOutput, invalidArgText, str } from "./render-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
@@ -148,6 +153,10 @@ export interface BashToolOptions {
 	shellPath?: string;
 	/** Hook to adjust command, cwd, or env before execution */
 	spawnHook?: BashSpawnHook;
+	/** Optional command-level policy enforced before commandPrefix, spawnHook, or execution */
+	policy?: BashCommandPolicy;
+	/** Human-readable label used in policy denial errors */
+	policyLabel?: string;
 }
 
 const BASH_PREVIEW_LINES = 5;
@@ -280,6 +289,8 @@ export function createBashToolDefinition(
 	const ops = options?.operations ?? createLocalBashOperations({ shellPath: options?.shellPath });
 	const commandPrefix = options?.commandPrefix;
 	const spawnHook = options?.spawnHook;
+	const policy = options?.policy;
+	const policyLabel = options?.policyLabel;
 	return {
 		name: "bash",
 		label: "bash",
@@ -294,6 +305,11 @@ export function createBashToolDefinition(
 			onUpdate?,
 			_ctx?,
 		) {
+			const policyDecision = evaluateBashCommandPolicy(command, policy);
+			if (!policyDecision.allowed) {
+				throw new Error(formatBashCommandPolicyRejection(policyDecision, policyLabel));
+			}
+
 			const resolvedCommand = commandPrefix ? `${commandPrefix}\n${command}` : command;
 			const spawnContext = resolveSpawnContext(resolvedCommand, cwd, spawnHook);
 			const output = new OutputAccumulator({ tempFilePrefix: `${APP_NAME}-bash` });

@@ -7,7 +7,7 @@
  * extension-compatible surfaces used by Atomic extension UI.
  */
 
-import type { KeybindingsManager, Theme } from "@bastani/atomic";
+import type { BashCommandPolicy, KeybindingsManager, Theme } from "@bastani/atomic";
 import type {
   Component,
   OverlayHandle,
@@ -146,6 +146,7 @@ export interface StageOptions extends WorkflowModelFallbackFields {
   readonly noTools?: "all" | "builtin";
   readonly excludedTools?: readonly string[];
   readonly customTools?: readonly WorkflowCustomToolDefinition[];
+  readonly bashPolicy?: BashCommandPolicy;
   readonly cwd?: string;
   readonly agentDir?: string;
   readonly scopedModels?: readonly WorkflowScopedModel[];

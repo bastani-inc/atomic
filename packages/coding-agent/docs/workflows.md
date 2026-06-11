@@ -929,7 +929,7 @@ workflow({
 })
 ```
 
-Direct mode supports top-level/default options and per-task options such as `context`, `forkFromSessionFile`, `model`, `fallbackModels`, `thinkingLevel`, `tools`, `noTools`, `customTools`, `mcp`, `output`, `outputMode`, `reads`, `worktree`, `gitWorktreeDir`, `baseBranch`, `maxOutput`, `artifacts`, `sessionDir`, `cwd`, and `agentDir`. Direct chains also support `chainName`, `chainDir`, and `failFast`.
+Direct mode supports top-level/default options and per-task options such as `context`, `forkFromSessionFile`, `model`, `fallbackModels`, `thinkingLevel`, `tools`, `noTools`, `customTools`, `bashPolicy`, `mcp`, `output`, `outputMode`, `reads`, `worktree`, `gitWorktreeDir`, `baseBranch`, `maxOutput`, `artifacts`, `sessionDir`, `cwd`, and `agentDir`. Direct chains also support `chainName`, `chainDir`, and `failFast`.
 
 For large fan-outs, prefer `outputMode: "file-only"` so the parent result contains compact file references instead of full output. Treat intercom payloads from async direct runs as user-visible workflow output.
 
@@ -1381,9 +1381,30 @@ Common task/stage options include:
 - `previous` for small handoff context; use artifact paths plus `reads` for large outputs, logs, research bundles, or reviewer payloads
 - `context: "fresh" | "fork"`, `forkFromSessionFile`
 - `model`, `fallbackModels`, `thinkingLevel`, `scopedModels`, `modelRegistry` — `model` and each `fallbackModels` entry accept a `model_name:thinking_effort` reasoning suffix; the standalone `thinkingLevel` is deprecated (see [Reasoning levels](#reasoning-levels))
-- `tools`, `noTools`, `customTools`, `mcp: { allow?: string[], deny?: string[] }`
+- `tools`, `noTools`, `customTools`, `mcp: { allow?: string[], deny?: string[] }`, `bashPolicy`
 - `output`, `outputMode`, `reads`, `worktree`, `gitWorktreeDir`, `baseBranch`, `maxOutput`, `artifacts`, `sessionDir`, `cwd`, `agentDir`
 - advanced host-supplied SDK seams: `authStorage`, `resourceLoader`, `sessionManager`, `settingsManager`, `sessionStartEvent`
+
+`bashPolicy` scopes the built-in `bash` tool for one stage or task. `tools` must still include `"bash"` (or leave it available by default); the policy only narrows command text after the shell tool is exposed. It supports exact strings, `{ prefix }`, command-string `{ glob }`, and `{ regex, flags? }` rules, `default: "allow" | "deny"` (default `"allow"`), `deny` precedence, and `match: "segments" | "whole"` (default `"segments"`). Omitting `bashPolicy`, passing `{}`, or passing a default-allow policy with no `allow`/`deny` rules (including empty arrays or match-only default-allow policies) preserves legacy behavior and does not parse commands; malformed policy shapes such as unknown top-level keys (`denny`, `extra`), non-array `allow`/`deny`, invalid rule objects, invalid regexes, invalid glob bracket ranges, or stateful `g`/`y` regex flags fail closed as `invalid-policy`. Segment mode checks each command in pipelines/chains/substitutions before execution, treats unquoted LF, CRLF, and bare CR as command separators, keeps non-leading Bash `>|` noclobber redirections inside the current command segment, and rejects reserved/compound shell heads, leading redirections, attached command-head redirections, and command heads that are not literal words.
+
+```ts
+await ctx.task("browser-preview", {
+  tools: ["bash"],
+  bashPolicy: {
+    default: "deny",
+    allow: [
+      "which browse",
+      { prefix: "browse open " },
+      { prefix: "browse snapshot" },
+      { prefix: "grep " },
+    ],
+    deny: [{ regex: "\\brm\\b" }],
+  },
+  prompt: "Open the preview with browse, then summarize the visible state.",
+});
+```
+
+A command such as `browse snapshot | grep title` passes only when both segments are allowed, and `browse snapshot\nrm -rf /tmp/proof` cannot be hidden behind a `{ prefix: "browse " }` rule because the newline starts a new segment. Glob rules match command strings rather than filesystem path segments: `*` and `?` may span `/`, so `{ glob: "browse *" }` matches URLs and slash-bearing paths such as `browse http://localhost:3000`, `browse docs/index.html`, and `browse ./preview/output.html` while still matching the whole target rather than `echo browse ...`; escaped bracket-class metacharacters such as `\-`, `\^`, `\]`, `\[`, and `\\` stay literal, while malformed glob ranges such as `{ glob: "echo [z-a]" }` become `invalid-policy` denials. Segment mode accepts literal heads such as `grep`, `./script`, `/usr/bin/env`, `bun`, and `browse`, and treats non-leading `>|` as redirection syntax so `echo ok >|/tmp/out` stays one segment, but conservatively rejects reserved or compound heads (`coproc`, `if`, `for`, `while`, `case`, `{`, `}`, `!`), leading redirections (`>file cmd`, `2>file cmd`, `<file cmd`, `&>file cmd`, `&>>file cmd`, `>|file cmd`, `<&0 cmd`, `>&2 cmd`), redirections attached to the command-head word (`cmd>file`, `cmd>>file`, `cmd>|file`, `cmd2>file`, `cmd>&2`, `cmd</tmp/in`), leading environment assignments (`PATH=/tmp:$PATH browse snapshot`, `LD_PRELOAD=/tmp/x browse snapshot`, `FOO=bar`), dynamic heads such as `$cmd`, `${cmd}`, `r''m`, `r\m`, `~/bin/rm`, `r*m`, `{rm,echo}`, `r$(printf m)`, or backtick-built command names. A single denied, redirection-prefixed, attached-redirection, assignment-prefixed, dynamic, or unrecognized segment blocks the whole command with a model-readable tool error and no UI prompt, so the behavior works in headless workflow runs. Use `match: "whole"` only when raw-command matching is intentional.
 
 `gitWorktreeDir` selects a reusable Git worktree root for `ctx.stage`, `ctx.task`, `ctx.chain`, and `ctx.parallel`. If the path is missing, Atomic creates it with `git worktree add --detach <path> <baseBranch>`; if it exists, it must be a same-repository worktree root. The default stage cwd becomes the matching cwd inside the worktree and preserves the invoking repo-relative subdirectory. Explicit `cwd` still wins; relative `cwd` values resolve from the worktree cwd, while absolute `cwd` values are used as provided. `gitWorktreeDir` is mutually exclusive with `worktree: true`: use `gitWorktreeDir` for named/reusable worktrees and `worktree: true` for temporary direct-mode worktrees that are cleaned up after the run.
 

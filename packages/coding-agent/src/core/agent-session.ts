@@ -110,6 +110,11 @@ import type { SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.ts";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
+import {
+	evaluateBashCommandPolicy,
+	formatBashCommandPolicyRejection,
+	type BashCommandPolicy,
+} from "./tools/bash-policy.ts";
 import { createAllToolDefinitions, defaultToolNames } from "./tools/index.ts";
 import { redirectOversizedToolResult } from "./tools/oversized-tool-result.js";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
@@ -287,6 +292,8 @@ export interface AgentSessionConfig {
 	resourceLoader: ResourceLoader;
 	/** SDK custom tools registered outside extensions */
 	customTools?: ToolDefinition[];
+	/** Optional command-level policy for built-in bash execution. */
+	bashPolicy?: BashCommandPolicy;
 	/** Model registry for API key resolution and model discovery */
 	modelRegistry: ModelRegistry;
 	/** Initial active built-in tool names. Default: [read, bash, edit, write, ask_user_question, todo] */
@@ -431,6 +438,7 @@ export class AgentSession {
 
 	private _resourceLoader: ResourceLoader;
 	private _customTools: ToolDefinition[];
+	private _bashPolicy: BashCommandPolicy | undefined;
 	private _baseToolDefinitions: Map<string, ToolDefinition> = new Map();
 	private _cwd: string;
 	private _extensionRunnerRef?: { current?: ExtensionRunner };
@@ -467,6 +475,7 @@ export class AgentSession {
 		this._scopedModels = config.scopedModels ?? [];
 		this._resourceLoader = config.resourceLoader;
 		this._customTools = config.customTools ?? [];
+		this._bashPolicy = config.bashPolicy;
 		this._cwd = config.cwd;
 		this._modelRegistry = config.modelRegistry;
 		this._extensionRunnerRef = config.extensionRunnerRef;
@@ -2859,7 +2868,12 @@ export class AgentSession {
 				)
 			: createAllToolDefinitions(this._cwd, {
 					read: { autoResizeImages },
-					bash: { commandPrefix: shellCommandPrefix, shellPath },
+					bash: {
+						commandPrefix: shellCommandPrefix,
+						shellPath,
+						policy: this._bashPolicy,
+						policyLabel: "session bash policy",
+					},
 				});
 
 		this._baseToolDefinitions = new Map(
@@ -3078,6 +3092,11 @@ export class AgentSession {
 		onChunk?: (chunk: string) => void,
 		options?: { excludeFromContext?: boolean; operations?: BashOperations },
 	): Promise<BashResult> {
+		const policyDecision = evaluateBashCommandPolicy(command, this._bashPolicy);
+		if (!policyDecision.allowed) {
+			throw new Error(formatBashCommandPolicyRejection(policyDecision, "session bash policy"));
+		}
+
 		this._bashAbortController = new AbortController();
 
 		// Apply command prefix if configured (e.g., "shopt -s expand_aliases" for alias support)

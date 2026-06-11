@@ -525,6 +525,46 @@ const { session } = await createAgentSession({
 });
 ```
 
+#### Bash command policy
+
+`bashPolicy` narrows what the built-in `bash` tool may execute after `tools`/`excludedTools` have already decided that `bash` is exposed. It does not grant shell access by itself.
+
+```typescript
+import { createAgentSession, type BashCommandPolicy } from "@bastani/atomic";
+
+const browseOnly: BashCommandPolicy = {
+  default: "deny",
+  allow: [
+    "which browse",
+    { prefix: "browse " },
+    { prefix: "grep " },
+    { glob: "bun test test/unit/*.test.ts" },
+    { regex: "^rg\\b" },
+  ],
+  deny: [{ regex: "\\brm\\b" }], // deny rules win over allow rules
+  // match defaults to "segments"
+};
+
+const { session } = await createAgentSession({
+  tools: ["read", "bash"],
+  bashPolicy: browseOnly,
+});
+```
+
+Rules match exact command strings, prefixes, command-string globs, or JavaScript regular expressions. `default` defaults to `"allow"` for backward compatibility; set `default: "deny"` for an allowlist-only shell. Omitting `bashPolicy`, passing `{}`, or passing a default-allow policy with no `allow`/`deny` rules is a compatibility no-op and does not parse the command. Empty `allow`/`deny` arrays and match-only default-allow policies are treated the same; malformed policy objects still fail closed.
+
+Glob rules match command target strings, not filesystem path segments. `*` and `?` can match `/`, so `{ glob: "browse *" }` matches `browse http://localhost:3000`, `browse docs/index.html`, and `browse ./preview/output.html`, while still matching the whole target so `echo browse docs/index.html` does not match unless the pattern includes leading wildcards. Backslash escapes the next glob character when you need a literal `*`, `?`, or bracket; inside bracket classes, escaped metacharacters such as `\-`, `\^`, `\]`, `\[`, and `\\` stay literal instead of becoming regex ranges, negation markers, class delimiters, or backslash escapes. Malformed glob bracket classes or ranges, such as `{ glob: "echo [z-a]" }`, fail closed as `invalid-policy` rather than surfacing raw regular-expression errors.
+
+Runtime policy validation is part of enforcement for JavaScript/JSON callers: a provided policy must be a non-null object with only the top-level keys `default`, `allow`, `deny`, and `match`; typoed or extra keys such as `denny` or `extra` are rejected as `invalid-policy` even when the policy otherwise looks like default-allow. `allow`/`deny` must be arrays when present, rules must be non-empty strings or one-variant objects with string values, regex flags must be strings, and invalid regexes, invalid globs, or stateful `g`/`y` flags are rejected as `invalid-policy` before shell execution.
+
+By default, `match: "segments"` parses shell separators and substitutions and requires every executable segment to pass. Separators include pipes, `&&`, `||`, `;`, background `&`, and unquoted line terminators: LF, CRLF, and bare CR are command separators rather than ordinary whitespace. Bash noclobber redirection `>|` is treated as redirection syntax rather than a pipeline separator after a command head, so `echo ok >|/tmp/out` remains one `echo` segment. For example, `browse snapshot | grep title` must satisfy both the `browse` rule and the `grep` rule, and `browse snapshot; rm -rf /` or `browse snapshot\nrm -rf /` is blocked when `rm` is denied or when `default: "deny"` has no matching allow rule. Segment mode also checks command substitutions (`$(...)`, backticks) and process substitutions (`<(...)`, `>(...)`). Syntax Atomic cannot safely segment is rejected before a shell process starts.
+
+Segment mode requires each command head to be a statically identifiable literal word. Literal names such as `grep`, `./script`, `/usr/bin/env`, `bun`, `browse`, and names containing hyphens, underscores, dots, or slashes are accepted when they contain no shell expansion syntax. Atomic conservatively rejects Bash reserved words and compound introducers (`coproc`, `if`, `for`, `while`, `case`, `{`, `}`, `!`), leading redirection syntax (`>file cmd`, `2>file cmd`, `<file cmd`, `&>file cmd`, `>|file cmd`, `<&0 cmd`, `>&2 cmd`), redirection operators attached to the command-head word (`cmd>file`, `cmd>>file`, `cmd>|file`, `cmd2>file`, `cmd>&2`, `cmd</tmp/in`), leading environment assignment words (`PATH=/tmp:$PATH browse snapshot`, `LD_PRELOAD=/tmp/x browse snapshot`, `FOO=bar`), variable or parameter-expanded heads (`$cmd`, `${cmd}`), quote- or escape-constructed heads (`r''m`, `"rm"`, `r\m`), tilde/glob/brace-expanded heads (`~/bin/rm`, `r*m`, `{rm,echo}`), and command/process substitutions or backticks embedded in the head. Substitutions in argument positions are still parsed so nested commands must also pass the policy.
+
+Use `match: "whole"` only when you intentionally want rules to match the raw command string as-is. Whole-command prefix rules can allow shell operators inside the same raw string.
+
+`AgentSession.executeBash()` applies the same session `bashPolicy` before adding any configured command prefix or invoking the execution backend.
+
 #### Tools with Custom cwd
 
 When you pass a custom `cwd`, `createAgentSession()` builds selected built-in tools for that cwd.
@@ -1161,6 +1201,8 @@ createGrepTool, createFindTool, createLsTool
 // Types
 type CreateAgentSessionOptions
 type CreateAgentSessionResult
+type BashCommandPolicy
+type BashCommandRule
 type ExtensionFactory
 type ExtensionAPI
 type ToolDefinition

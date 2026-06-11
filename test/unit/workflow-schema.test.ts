@@ -15,6 +15,12 @@ describe("WorkflowParametersSchema stage options", () => {
         fallbackModels: ["openai/fallback"],
         tools: ["read", "todo"],
         customTools: [],
+        bashPolicy: {
+          default: "deny",
+          allow: ["pwd", { prefix: "browse " }, { glob: "bun test *" }, { regex: "^rg\\b" }],
+          deny: [{ regex: "\\brm\\b" }],
+          match: "segments",
+        },
         noTools: "builtin",
         thinkingLevel: "high",
         context: "fork",
@@ -43,6 +49,7 @@ describe("WorkflowParametersSchema stage options", () => {
       fallbackModels: ["github-copilot/fallback"],
       tools: ["read", "bash"],
       customTools: [],
+      bashPolicy: { default: "allow", deny: [{ prefix: "sudo " }] },
       noTools: "all",
       thinkingLevel: "medium",
     };
@@ -149,6 +156,44 @@ describe("WorkflowParametersSchema stage options", () => {
     assert.equal(Value.Check(WorkflowParametersSchema, {
       task: { name: "planner", prompt: "plan" },
       fallbackModels: [false],
+    }), false);
+  });
+
+  test("accepts and validates bashPolicy schema", () => {
+    assert.equal(Value.Check(WorkflowParametersSchema, {
+      task: {
+        name: "safe-shell",
+        prompt: "run safe command",
+        tools: ["bash"],
+        bashPolicy: {
+          default: "deny",
+          allow: ["pwd", { prefix: "echo " }, { glob: "bun test *" }, { regex: "^rg\\b", flags: "i" }],
+          deny: [{ regex: "\\brm\\b" }],
+          match: "segments",
+        },
+      },
+    }), true);
+
+    assert.equal(Value.Check(WorkflowParametersSchema, {
+      task: { name: "bad-policy", prompt: "x", bashPolicy: { default: "block" } },
+    }), false);
+    assert.equal(Value.Check(WorkflowParametersSchema, {
+      task: { name: "bad-rule", prompt: "x", bashPolicy: { allow: [{ prefix: "echo ", regex: "echo" }] } },
+    }), false);
+    assert.equal(Value.Check(WorkflowParametersSchema, {
+      bashPolicy: { allow: "echo" },
+    }), false);
+    assert.equal(Value.Check(WorkflowParametersSchema, {
+      bashPolicy: { deny: "rm" },
+    }), false);
+    assert.equal(Value.Check(WorkflowParametersSchema, {
+      bashPolicy: { default: "deny", allow: ["echo ok"], extra: true },
+    }), false);
+    assert.equal(Value.Check(WorkflowParametersSchema, {
+      bashPolicy: { allow: [{ regex: "echo", flags: 1 }] },
+    }), false);
+    assert.equal(Value.Check(WorkflowParametersSchema, {
+      bashPolicy: { match: "raw" },
     }), false);
   });
 });
