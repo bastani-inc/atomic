@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.8.28-alpha.3] - 2026-06-11
+
 ### Added
 
 - Added workflow stage/task `bashPolicy` wiring so individual workflow stages can constrain the built-in `bash` tool with command-level allow/deny rules, command-string glob matching, escaped glob bracket-class literal preservation, reserved/compound-head rejection, leading-redirection and attached command-head redirection rejection, non-leading `>|` noclobber redirection handling, assignment-head rejection, invalid glob range handling through `invalid-policy`, unknown top-level policy key rejection, runtime invalid-policy validation, and default-allow no-rule compatibility.
