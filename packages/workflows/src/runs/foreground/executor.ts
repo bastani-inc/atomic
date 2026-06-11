@@ -378,15 +378,43 @@ function cloneWorkflowExitSnapshotValue(
   return clone;
 }
 
+// Recursively freeze the (already-private) deep clone so the snapshot stored on
+// the thrown WorkflowExitSignal is immutable. Combined with freezing the signal
+// object itself, this stops author code that catches ctx.exit()'s signal from
+// rewriting the captured outputs before finalization reads them (finalization
+// recovers the same object via the abort reason / rethrow, and the reconstruction
+// path reads `outputSnapshot.value` by reference). The clone is acyclic — cycles
+// became frozen invalid-value markers — and the `Object.isFrozen` short-circuit
+// keeps shared (DAG) nodes terminating.
+function deepFreezeWorkflowExitSnapshotValue(value: unknown): void {
+  if (value === null || typeof value !== "object" || Object.isFrozen(value)) return;
+  Object.freeze(value);
+  if (Array.isArray(value)) {
+    for (const item of value) deepFreezeWorkflowExitSnapshotValue(item);
+    return;
+  }
+  for (const key of Object.keys(value as Record<string, unknown>)) {
+    deepFreezeWorkflowExitSnapshotValue((value as Record<string, unknown>)[key]);
+  }
+}
+
+function freezeWorkflowExitOutputSnapshot(snapshot: WorkflowExitOutputSnapshot): WorkflowExitOutputSnapshot {
+  return Object.freeze(snapshot);
+}
+
 function captureWorkflowExitOutputSnapshot(rawOutputs: unknown): WorkflowExitOutputSnapshot {
+  let snapshot: WorkflowExitOutputSnapshot;
   try {
-    return { ok: true, value: cloneWorkflowExitSnapshotValue(rawOutputs, new Map()) };
+    const value = cloneWorkflowExitSnapshotValue(rawOutputs, new Map());
+    deepFreezeWorkflowExitSnapshotValue(value);
+    snapshot = { ok: true, value };
   } catch (err) {
-    return {
+    snapshot = {
       ok: false,
       error: workflowExitSnapshotError("atomic-workflows: ctx.exit() outputs could not be snapshotted", err),
     };
   }
+  return freezeWorkflowExitOutputSnapshot(snapshot);
 }
 
 function formatWorkflowExitSnapshotPath(parent: string, key: string): string {
@@ -3926,13 +3954,17 @@ export async function run<TInputs extends WorkflowInputValues>(
       const outputsRead = readWorkflowExitOption(rawOptions, "outputs");
       throwNestedSelectedExit();
       const outputSnapshot = !outputsRead.ok
-        ? { ok: false, error: outputsRead.error } satisfies WorkflowExitOutputSnapshot
+        ? freezeWorkflowExitOutputSnapshot({ ok: false, error: outputsRead.error })
         : outputsRead.value !== undefined
           ? captureWorkflowExitOutputSnapshot(outputsRead.value)
           : undefined;
       throwNestedSelectedExit();
 
-      selectedExit = {
+      // Freeze the signal so a broad author `catch (signal) { signal.* = ...; throw signal; }`
+      // cannot rewrite the terminal status/reason/outputs. Finalization recovers this exact
+      // object (via the abort reason or the rethrow) and the outputSnapshot value is already
+      // deep-frozen, so the first selected exit is the authoritative terminal result.
+      const signal: WorkflowExitSignal = {
         [WORKFLOW_EXIT_SIGNAL]: true,
         scope: exitScope,
         status,
@@ -3940,6 +3972,7 @@ export async function run<TInputs extends WorkflowInputValues>(
         ...(outputSnapshot !== undefined ? { outputSnapshot } : {}),
         ...(validationError !== undefined ? { validationError } : {}),
       };
+      selectedExit = Object.freeze(signal);
       ownController.abort(selectedExit);
       runWorkflowExitCleanups(reason);
       throw selectedExit;
