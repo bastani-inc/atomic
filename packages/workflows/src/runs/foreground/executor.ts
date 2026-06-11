@@ -821,9 +821,12 @@ function mergeHilSignals(primary: AbortSignal, secondary: AbortSignal | undefine
   };
 }
 
-function makeUnavailableUIContext(): WorkflowUIContext {
-  const msg = (primitive: string): string =>
-    `atomic-workflows: HIL ctx.ui.${primitive} is unavailable because Atomic runtime did not provide a UI adapter`;
+/**
+ * Build a UI context whose every interactive primitive rejects with a clear,
+ * actionable error. Parameterized by `msg` so the "no UI adapter" and
+ * "headless mode" variants share one implementation and never drift (#1339).
+ */
+function makeRejectingUIContext(msg: (primitive: string) => string): WorkflowUIContext {
   return {
     input: () => Promise.reject(new Error(msg("input"))),
     confirm: () => Promise.reject(new Error(msg("confirm"))),
@@ -833,24 +836,55 @@ function makeUnavailableUIContext(): WorkflowUIContext {
   };
 }
 
+function makeUnavailableUIContext(): WorkflowUIContext {
+  return makeRejectingUIContext(
+    (primitive) =>
+      `atomic-workflows: HIL ctx.ui.${primitive} is unavailable because Atomic runtime did not provide a UI adapter`,
+  );
+}
+
+/**
+ * UI context for headless (non-interactive) runs without a UI adapter: every
+ * interactive primitive fails with a clear, actionable error that names the
+ * headless mode instead of surfacing a raw
+ * `TypeError: ctx.ui.custom is not a function` from a missing TUI (#1339).
+ */
+function makeHeadlessUnavailableUIContext(): WorkflowUIContext {
+  return makeRejectingUIContext(
+    (primitive) =>
+      `atomic-workflows: interactive ctx.ui.${primitive} is unavailable in headless (non-interactive) mode; run the workflow in interactive mode or remove the interactive prompt from this stage`,
+  );
+}
+
 function normalizeUIContext(adapter: WorkflowUIAdapter | undefined): WorkflowUIContext {
   const unavailable = makeUnavailableUIContext();
   if (adapter === undefined) return unavailable;
+  // Guard every method: loosely-typed callers can hand over partial adapters
+  // (headless hosts especially), and an unguarded call would surface a raw
+  // "x is not a function" TypeError that kills the whole run (#1339).
   return {
     input(prompt) {
-      return adapter.input.call(adapter, prompt);
+      return typeof adapter.input === "function"
+        ? adapter.input.call(adapter, prompt)
+        : unavailable.input(prompt);
     },
     confirm(message) {
-      return adapter.confirm.call(adapter, message);
+      return typeof adapter.confirm === "function"
+        ? adapter.confirm.call(adapter, message)
+        : unavailable.confirm(message);
     },
     select<T extends string>(message: string, options: readonly T[]): Promise<T> {
-      return adapter.select.call(adapter, message, options) as Promise<T>;
+      return typeof adapter.select === "function"
+        ? adapter.select.call(adapter, message, options) as Promise<T>
+        : unavailable.select(message, options);
     },
     editor(initial) {
-      return adapter.editor.call(adapter, initial);
+      return typeof adapter.editor === "function"
+        ? adapter.editor.call(adapter, initial)
+        : unavailable.editor(initial);
     },
     custom<T>(factory: WorkflowCustomUiFactory<T>, options?: WorkflowCustomUiOptions): Promise<T> {
-      return adapter.custom !== undefined
+      return typeof adapter.custom === "function"
         ? adapter.custom.call(adapter, factory, options) as Promise<T>
         : unavailable.custom(factory, options);
     },
@@ -3876,7 +3910,14 @@ export async function run<TInputs extends WorkflowInputValues>(
   };
 
   const buildExitGatedUiContext = (): WorkflowUIContext => {
-    const base = opts.usePromptNodesForUi === true ? buildPromptNodeUiAdapter() : normalizeUIContext(opts.ui);
+    // Headless (non-interactive) runs without an adapter get a context whose
+    // interactive primitives fail with a clear "unavailable in headless mode"
+    // error instead of a raw TypeError (#1339).
+    const base = opts.usePromptNodesForUi === true
+      ? buildPromptNodeUiAdapter()
+      : opts.executionMode === "non_interactive" && opts.ui === undefined
+        ? makeHeadlessUnavailableUIContext()
+        : normalizeUIContext(opts.ui);
     return {
       async input(promptText: string): Promise<string> {
         throwIfWorkflowExitSelected();
