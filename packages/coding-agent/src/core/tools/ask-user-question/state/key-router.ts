@@ -58,24 +58,30 @@ function computeAutoAdvanceTab(state: QuestionnaireState, runtime: Questionnaire
 	return runtime.questions.length;
 }
 
+function chatAnswerValue(state: QuestionnaireState, runtime: QuestionnaireRuntime, sentinelLabel: string): string {
+	if (state.inlineInputOwner !== "chat") return sentinelLabel;
+	return runtime.inputBuffer.trim().length > 0 ? runtime.inputBuffer : sentinelLabel;
+}
+
 function buildSingleSelectAnswer(state: QuestionnaireState, runtime: QuestionnaireRuntime): QuestionAnswer | null {
 	const q = runtime.questions[state.currentTab];
 	if (!q) return null;
 
 	// Chat sentinel takes priority over inputMode: when chatFocused=true, the host overrides
-	// currentItem() to return the chat sentinel even if inputMode is still true (e.g. user
-	// navigated from "Type something." and DOWN focused the chat row).
+	// currentItem() to return the chat sentinel even though inputMode is true for the shared
+	// inline editor. Non-blank chat drafts become the chat answer; blank drafts preserve the
+	// legacy sentinel-only "Chat about this" answer.
 	const item = runtime.currentItem;
 	if (item?.kind === "chat") {
 		return {
 			questionIndex: state.currentTab,
 			question: q.question,
 			kind: "chat",
-			answer: item.label,
+			answer: chatAnswerValue(state, runtime, item.label),
 		};
 	}
 
-	if (state.inputMode) {
+	if (state.inputMode && state.inlineInputOwner === "other") {
 		const label = runtime.inputBuffer;
 		return {
 			questionIndex: state.currentTab,
@@ -170,6 +176,13 @@ export function routeKey(data: string, state: QuestionnaireState, runtime: Quest
 		}
 		if (kb.matches(data, KEYBIND_DOWN)) {
 			return { kind: "focus_options", optionIndex: 0 };
+		}
+		if (
+			state.inputMode &&
+			state.inlineInputOwner === "chat" &&
+			(matchesKey(data, Key.left) || matchesKey(data, Key.right))
+		) {
+			return { kind: "ignore" };
 		}
 		const tab = tabSwitchAction(data, state, runtime);
 		if (tab) return tab;

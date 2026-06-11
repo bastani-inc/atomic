@@ -1,3 +1,4 @@
+import { ROW_INTENT_META } from "../state/row-intent.ts";
 import type { QuestionAnswer } from "./types.ts";
 
 /**
@@ -25,6 +26,18 @@ export const NO_INPUT_PLACEHOLDER = "(no input)";
 export type FormatAnswerVariant = "summary" | "envelope";
 
 /**
+ * Return the user-provided chat message, or undefined for the legacy signal-only
+ * chat answer. Whitespace-only text and the reserved sentinel label both keep
+ * the legacy stop/wait semantics.
+ */
+export function chatAnswerIntent(a: QuestionAnswer): string | undefined {
+	if (a.kind !== "chat" || typeof a.answer !== "string") return undefined;
+	const trimmed = a.answer.trim();
+	if (trimmed.length === 0 || trimmed === ROW_INTENT_META.chat.label) return undefined;
+	return a.answer;
+}
+
+/**
  * Format a `QuestionAnswer` to its scalar string form. Variant controls only the
  * `kind: "chat"` branch — the envelope's stop/wait directive is needed by the LLM,
  * the dialog summary's one-sentence reminder is not. All other branches return identical
@@ -34,8 +47,11 @@ export type FormatAnswerVariant = "summary" | "envelope";
  */
 export function formatAnswerScalar(a: QuestionAnswer, variant: FormatAnswerVariant): string {
 	switch (a.kind) {
-		case "chat":
+		case "chat": {
+			const typedChat = chatAnswerIntent(a);
+			if (typedChat !== undefined) return typedChat;
 			return variant === "envelope" ? CHAT_CONTINUATION_MESSAGE : CHAT_SUMMARY_MESSAGE;
+		}
 		case "multi":
 			return a.selected && a.selected.length > 0 ? a.selected.join(", ") : NO_INPUT_PLACEHOLDER;
 		case "custom":

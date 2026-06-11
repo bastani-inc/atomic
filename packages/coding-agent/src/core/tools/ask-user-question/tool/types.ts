@@ -106,7 +106,8 @@ export type QuestionParams = Static<typeof QuestionParamsSchema>;
  * Variant semantics:
  * - `option`: user picked one of the author-defined options. `answer` is the option's label.
  * - `custom`: user typed free-text via the "Type something." row. `answer` is the typed text or null.
- * - `chat`: user picked the chat sentinel. `answer` is the literal "Chat about this".
+ * - `chat`: user picked the chat sentinel. `answer` is either typed inline chat text or the legacy
+ *   literal "Chat about this" when submitted empty / whitespace-only.
  * - `multi`: user committed multi-select choices. `selected` carries chosen labels; `answer` is null.
  */
 export interface QuestionAnswer {

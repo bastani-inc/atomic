@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added optional inline free-form text entry to the `ask_user_question` TUI's **Chat about this** footer row. Non-empty typed chat text now returns as a `kind: "chat"` answer and is surfaced to the agent without the legacy stop/wait termination envelope, while empty submissions keep the existing sentinel behavior.
+
 ## [0.8.28-alpha.2] - 2026-06-10
 
 ### Security

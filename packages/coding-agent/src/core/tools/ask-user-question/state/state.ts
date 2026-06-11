@@ -1,5 +1,8 @@
 import type { QuestionAnswer, QuestionData } from "../tool/types.ts";
 import type { WrappingSelectItem } from "../view/components/wrapping-select.ts";
+import type { RowKind } from "./row-intent.ts";
+
+export type InlineInputOwner = Extract<RowKind, "other" | "chat">;
 
 /**
  * Canonical state for the questionnaire dialog. Single source of truth — both the
@@ -11,6 +14,8 @@ export interface QuestionnaireState {
 	inputMode: boolean;
 	notesVisible: boolean;
 	chatFocused: boolean;
+	/** Active owner of the shared inline input, or null when no inline row is being edited. */
+	inlineInputOwner: InlineInputOwner | null;
 	answers: ReadonlyMap<number, QuestionAnswer>;
 	multiSelectChecked: ReadonlySet<number>;
 	/**
@@ -29,6 +34,10 @@ export interface QuestionnaireState {
 	customDraftByTab: ReadonlyMap<number, string>;
 	/** Caret offsets for in-flight custom drafts keyed by question tab. */
 	customCaretByTab: ReadonlyMap<number, number>;
+	/** In-flight "Chat about this" inline drafts keyed by question tab. */
+	chatDraftByTab: ReadonlyMap<number, string>;
+	/** Caret offsets for in-flight chat drafts keyed by question tab. */
+	chatCaretByTab: ReadonlyMap<number, number>;
 }
 
 /**

@@ -12,6 +12,8 @@ export interface BindingContext {
 	readonly activeView: ActiveView;
 	readonly inputBuffer: string;
 	readonly inputCaret: number;
+	readonly chatInputBuffer: string;
+	readonly chatInputCaret: number;
 	readonly activePreviewPane: StatefulView<PreviewPaneProps>;
 }
 
