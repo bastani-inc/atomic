@@ -1,6 +1,6 @@
 {
   "name": "@bastani/web-access",
-  "version": "0.8.28-alpha.3",
+  "version": "0.8.28-alpha.4",
   "private": true,
   "description": "Atomic extension for web search, URL fetching, GitHub repo cloning, PDF/video extraction. Fork of: https://github.com/nicobailon/pi-web-access",
   "contributors": [
