@@ -16,7 +16,7 @@ import {
     verifyReleaseDocsPr,
     type StaleDocTask,
     type UpdateArtifactStatus,
-} from "../../.atomic/workflow-utils/release-docs.js";
+} from "../../.atomic/workflows/lib/release-docs.js";
 
 const task = (id: string, ownerDocs: string[]): StaleDocTask => ({
     id,

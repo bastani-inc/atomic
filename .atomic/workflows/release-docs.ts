@@ -16,7 +16,7 @@ import {
   runGit,
   sanitizeSegment,
   verifyReleaseDocsPr,
-} from "../workflow-utils/release-docs.js";
+} from "./lib/release-docs.js";
 
 const staleDocTaskSchema = Type.Object({
   id: Type.String(),
