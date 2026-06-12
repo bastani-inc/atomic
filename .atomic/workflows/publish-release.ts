@@ -1,12 +1,14 @@
 import { defineWorkflow, Type } from "@bastani/workflows";
 import {
-  firstActionsUrl,
   hasStatusMarker,
+  selectPublishWorkflowRunJson,
   validateReleaseRequest,
+  verifyPublishWorkflowRunJson,
   verifyPullRequestMergedJson,
   verifyReleasePullRequestReferenceJson,
   type JsonValue,
   type PublishReleaseOutput,
+  type PublishWorkflowRunVerification,
   type PullRequestMergeVerification,
   type PullRequestReferenceVerification,
   type ReleaseStatus,
@@ -184,6 +186,130 @@ function verifyReleasePrMerged(release: ValidatedRelease, prSelector: string): P
   };
 }
 
+async function verifyPublishWorkflowSucceeded(release: ValidatedRelease): Promise<PublishWorkflowRunVerification> {
+  let runList: CommandResult | undefined;
+  let selectedRun: ReturnType<typeof selectPublishWorkflowRunJson> | undefined;
+
+  for (let attempt = 1; attempt <= 6; attempt += 1) {
+    runList = runCommand([
+      "gh",
+      "run",
+      "list",
+      "--workflow",
+      "publish.yml",
+      "--event",
+      "push",
+      "--json",
+      "databaseId,status,conclusion,url,headBranch,event,workflowName,createdAt",
+      "--limit",
+      "50",
+    ]);
+
+    if (runList.exitCode !== 0) {
+      return {
+        ok: false,
+        summary: ["GitHub Actions publish run lookup command failed.", commandSummary(runList)].join("\n\n"),
+      };
+    }
+
+    let parsedList: JsonValue;
+    try {
+      parsedList = JSON.parse(runList.stdout) as JsonValue;
+    } catch {
+      return {
+        ok: false,
+        summary: ["GitHub Actions publish run lookup returned invalid JSON.", commandSummary(runList)].join("\n\n"),
+      };
+    }
+
+    selectedRun = selectPublishWorkflowRunJson(parsedList, release.version);
+    if (selectedRun.ok) break;
+    if (attempt < 6) await Bun.sleep(10_000);
+  }
+
+  if (runList === undefined || selectedRun === undefined || !selectedRun.ok) {
+    return {
+      ok: false,
+      summary: [
+        selectedRun?.summary ?? "GitHub Actions publish run lookup did not execute.",
+        runList === undefined ? undefined : commandSummary(runList),
+      ].filter((line): line is string => line !== undefined).join("\n\n"),
+    };
+  }
+
+  const watch = selectedRun.status === "completed"
+    ? undefined
+    : runCommand(["gh", "run", "watch", String(selectedRun.runId), "--exit-status"]);
+
+  if (watch !== undefined && watch.exitCode !== 0) {
+    return {
+      ok: false,
+      runId: selectedRun.runId,
+      runUrl: selectedRun.runUrl,
+      summary: [
+        "GitHub Actions publish run did not complete successfully while watching.",
+        selectedRun.summary,
+        commandSummary(runList),
+        commandSummary(watch),
+      ].join("\n\n"),
+    };
+  }
+
+  const runView = runCommand([
+    "gh",
+    "run",
+    "view",
+    String(selectedRun.runId),
+    "--json",
+    "databaseId,status,conclusion,url,headBranch,event,workflowName,createdAt",
+  ]);
+
+  if (runView.exitCode !== 0) {
+    return {
+      ok: false,
+      runId: selectedRun.runId,
+      runUrl: selectedRun.runUrl,
+      summary: ["GitHub Actions publish run verification command failed.", commandSummary(runView)].join("\n\n"),
+    };
+  }
+
+  let parsedView: JsonValue;
+  try {
+    parsedView = JSON.parse(runView.stdout) as JsonValue;
+  } catch {
+    return {
+      ok: false,
+      runId: selectedRun.runId,
+      runUrl: selectedRun.runUrl,
+      summary: ["GitHub Actions publish run verification returned invalid JSON.", commandSummary(runView)].join("\n\n"),
+    };
+  }
+
+  const publishVerification = verifyPublishWorkflowRunJson(parsedView, release.version);
+  if (!publishVerification.ok) {
+    return {
+      ok: false,
+      runId: publishVerification.runId ?? selectedRun.runId,
+      runUrl: publishVerification.runUrl ?? selectedRun.runUrl,
+      summary: [publishVerification.summary, commandSummary(runList), commandSummary(runView)].join("\n\n"),
+    };
+  }
+
+  return {
+    ok: true,
+    runId: publishVerification.runId,
+    runUrl: publishVerification.runUrl,
+    status: publishVerification.status,
+    conclusion: publishVerification.conclusion,
+    summary: [
+      publishVerification.summary,
+      commandSummary(runList),
+      watch === undefined ? undefined : commandSummary(watch),
+      commandSummary(runView),
+    ].filter((line): line is string => line !== undefined).join("\n\n"),
+  };
+}
+
 function releaseInstructions(release: ValidatedRelease): string {
   return [
     `Release kind: ${release.kind}`,
@@ -341,7 +467,7 @@ export default defineWorkflow("publish-release")
 
     const publish = await ctx.task("tag-and-monitor-publish", {
       prompt: [
-        "Sync main, push the release tag, and monitor the publish action.",
+        "Sync main, push the release tag, and collect publish action evidence.",
         "",
         baseInstructions,
         "",
@@ -355,22 +481,30 @@ export default defineWorkflow("publish-release")
         "1. Switch to `main` and run `git pull origin main`.",
         `2. Confirm the merged release commit for ${release.version} is present on local main with command-backed evidence such as \`git rev-parse HEAD\` and \`git merge-base --is-ancestor ${mergeVerification.mergeCommitOid} HEAD\`.`,
         `3. Confirm tag \`${release.version}\` does not already exist locally or on origin.`,
-        `4. Run \`git tag ${release.version}\` and \`git push origin ${release.version}\`, then verify the pushed tag SHA.`,
-        "5. Use `gh run list`, `gh run view`, and `gh run watch --exit-status` or equivalent GitHub CLI commands to find and monitor the publish/release workflow triggered by the tag.",
-        "6. If publishing fails, stop and report PUBLISH_STATUS: failed with the run URL and failing job/step summary.",
+        `4. Run \`git tag ${release.version}\` and \`git push origin ${release.version}\`.`,
+        "5. Use `gh run list`, `gh run view`, and `gh run watch --exit-status` or equivalent GitHub CLI commands to find and monitor the publish/release workflow triggered by the tag when possible.",
+        "6. If publishing fails while you are monitoring it, report the run URL and failing job/step summary.",
         "",
         "Final response format:",
-        "- Include a standalone status line exactly `PUBLISH_STATUS: completed` or `PUBLISH_STATUS: failed`; if you mention PUBLISH_STATUS more than once, the last standalone status line is authoritative.",
-        "- Include the pushed tag and SHA, GitHub Actions run URL/status if available, commands run, and final release summary.",
+        "- Do not emit a publish status marker; the workflow body will verify the GitHub Actions run state directly after this stage.",
+        "- Include the pushed tag, GitHub Actions run URL/status if available, commands run, and any observed blockers.",
       ].join("\n"),
     });
 
-    if (!hasStatusMarker(publish.text, "PUBLISH_STATUS: completed")) {
-      return blockedOutput(release, "tag-and-monitor-publish", "PUBLISH_STATUS: completed", publish.text, "failed");
+    const publishVerification = await verifyPublishWorkflowSucceeded(release);
+
+    if (!publishVerification.ok) {
+      return blockedOutput(
+        release,
+        "verify-publish-workflow-succeeded",
+        "GitHub Actions Publish run for the release tag has status completed and conclusion success",
+        [publishVerification.summary, "", "Publish stage output:", excerpt(publish.text, 2_000)].join("\n"),
+        "failed",
+      );
     }
 
     const prUrl = mergeVerification.prUrl ?? prReference.prUrl;
-    const actionUrl = firstActionsUrl(publish.text);
+    const actionUrl = publishVerification.runUrl;
     const summary = [
       `publish-release completed for ${release.kind} ${release.version}.`,
       `Branch: ${release.branch}`,
@@ -396,6 +530,9 @@ export default defineWorkflow("publish-release")
       "",
       "## tag-and-monitor-publish",
       excerpt(publish.text, 800),
+      "",
+      "## deterministic-publish-verification",
+      excerpt(publishVerification.summary, 800),
     ].join("\n");
 
     const result: PublishReleaseOutput = {

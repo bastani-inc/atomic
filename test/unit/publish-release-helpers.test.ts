@@ -8,7 +8,9 @@ import {
   hasStatusMarker,
   prereleaseVersionPattern,
   releaseVersionPattern,
+  selectPublishWorkflowRunJson,
   validateReleaseRequest,
+  verifyPublishWorkflowRunJson,
   verifyPullRequestMergedJson,
   verifyReleasePullRequestReferenceJson,
   type JsonValue,
@@ -195,5 +197,83 @@ describe("publish-release GitHub merge verification", () => {
     assert.equal(result.ok, false);
     assert.match(result.summary, /state was OPEN, expected MERGED/u);
     assert.match(result.summary, /headRefName was release\/other, expected release\/1\.2\.3/u);
+  });
+});
+
+describe("publish-release GitHub Actions publish verification", () => {
+  const successfulRun: JsonValue = {
+    databaseId: 987654321,
+    workflowName: "Publish",
+    headBranch: "1.2.3",
+    event: "push",
+    status: "completed",
+    conclusion: "success",
+    url: "https://github.com/earendil-works/pi-mono/actions/runs/987654321",
+  };
+
+  test("selects the newest push run for the release tag from gh run list JSON", () => {
+    const result = selectPublishWorkflowRunJson([
+      { ...successfulRun, databaseId: 111, headBranch: "1.2.4" },
+      { ...successfulRun, status: "in_progress", conclusion: null },
+    ], "1.2.3");
+
+    assert.deepEqual(result, {
+      ok: true,
+      summary: [
+        "GitHub Actions publish run is selected.",
+        "databaseId: 987654321",
+        "headBranch: 1.2.3",
+        "event: push",
+        "status: in_progress",
+        "url: https://github.com/earendil-works/pi-mono/actions/runs/987654321",
+      ].join("\n"),
+      runId: 987654321,
+      runUrl: "https://github.com/earendil-works/pi-mono/actions/runs/987654321",
+      status: "in_progress",
+      conclusion: undefined,
+    });
+  });
+
+  test("rejects run lists without a matching tag-triggered publish run", () => {
+    const result = selectPublishWorkflowRunJson([
+      { ...successfulRun, headBranch: "1.2.4" },
+      { ...successfulRun, event: "workflow_dispatch" },
+    ], "1.2.3");
+
+    assert.equal(result.ok, false);
+    assert.match(result.summary, /expected headBranch: 1\.2\.3/u);
+    assert.match(result.summary, /headBranch=1\.2\.4 event=push/u);
+    assert.match(result.summary, /headBranch=1\.2\.3 event=workflow_dispatch/u);
+  });
+
+  test("accepts only completed successful publish runs for the release tag", () => {
+    assert.deepEqual(verifyPublishWorkflowRunJson(successfulRun, "1.2.3"), {
+      ok: true,
+      summary: [
+        "GitHub Actions publish run is verified as successful.",
+        "databaseId: 987654321",
+        "workflowName: Publish",
+        "headBranch: 1.2.3",
+        "event: push",
+        "status: completed",
+        "conclusion: success",
+        "url: https://github.com/earendil-works/pi-mono/actions/runs/987654321",
+      ].join("\n"),
+      runId: 987654321,
+      runUrl: "https://github.com/earendil-works/pi-mono/actions/runs/987654321",
+      status: "completed",
+      conclusion: "success",
+    });
+  });
+
+  test("rejects unsuccessful or mismatched publish run JSON", () => {
+    const result = verifyPublishWorkflowRunJson(
+      { ...successfulRun, headBranch: "1.2.4", status: "completed", conclusion: "failure" },
+      "1.2.3",
+    );
+
+    assert.equal(result.ok, false);
+    assert.match(result.summary, /headBranch was 1\.2\.4, expected 1\.2\.3/u);
+    assert.match(result.summary, /conclusion was failure, expected success/u);
   });
 });

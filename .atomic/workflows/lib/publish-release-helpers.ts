@@ -49,6 +49,36 @@ export type PullRequestMergeVerification =
       readonly prUrl?: string;
     };
 
+export type PublishWorkflowRunVerification =
+  | {
+      readonly ok: true;
+      readonly summary: string;
+      readonly runId: number;
+      readonly runUrl?: string;
+      readonly status: string;
+      readonly conclusion: string;
+    }
+  | {
+      readonly ok: false;
+      readonly summary: string;
+      readonly runId?: number;
+      readonly runUrl?: string;
+    };
+
+export type PublishWorkflowRunReference =
+  | {
+      readonly ok: true;
+      readonly summary: string;
+      readonly runId: number;
+      readonly runUrl?: string;
+      readonly status: string;
+      readonly conclusion?: string;
+    }
+  | {
+      readonly ok: false;
+      readonly summary: string;
+    };
+
 export const releaseVersionPattern = /^\d+\.\d+\.\d+$/;
 export const prereleaseVersionPattern = /^\d+\.\d+\.\d+-alpha\.[1-9]\d*$/;
 
@@ -126,6 +156,11 @@ function stringField(object: { readonly [key: string]: JsonValue }, key: string)
 function positiveIntegerField(object: { readonly [key: string]: JsonValue }, key: string): number | undefined {
   const value = object[key];
   return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
+}
+
+function nullableStringField(object: { readonly [key: string]: JsonValue }, key: string): string | undefined {
+  const value = object[key];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 export function verifyReleasePullRequestReferenceJson(
@@ -230,5 +265,134 @@ export function verifyPullRequestMergedJson(
     ].filter((line): line is string => line !== undefined).join("\n"),
     mergeCommitOid,
     prUrl,
+  };
+}
+
+export function selectPublishWorkflowRunJson(
+  value: JsonValue,
+  expectedHeadBranch: string,
+): PublishWorkflowRunReference {
+  if (!Array.isArray(value)) {
+    return { ok: false, summary: "GitHub Actions run list response was not a JSON array." };
+  }
+
+  const mismatches: string[] = [];
+
+  for (const [index, candidate] of value.entries()) {
+    if (!isJsonObject(candidate)) {
+      mismatches.push(`run[${index}] was not a JSON object`);
+      continue;
+    }
+
+    const headBranch = stringField(candidate, "headBranch");
+    const event = stringField(candidate, "event");
+    const runId = positiveIntegerField(candidate, "databaseId");
+    const status = stringField(candidate, "status");
+    const conclusion = nullableStringField(candidate, "conclusion");
+    const runUrl = stringField(candidate, "url");
+
+    if (headBranch !== expectedHeadBranch || event !== "push") {
+      mismatches.push(
+        `run[${index}] headBranch=${headBranch ?? "missing"} event=${event ?? "missing"}`,
+      );
+      continue;
+    }
+
+    const failures: string[] = [];
+    if (runId === undefined) failures.push("databaseId was missing or invalid");
+    if (status === undefined) failures.push("status was missing");
+
+    if (failures.length > 0 || runId === undefined || status === undefined) {
+      return {
+        ok: false,
+        summary: [
+          "GitHub Actions publish run is not selectable.",
+          ...failures.map((failure) => `- ${failure}`),
+        ].join("\n"),
+      };
+    }
+
+    return {
+      ok: true,
+      summary: [
+        "GitHub Actions publish run is selected.",
+        `databaseId: ${runId}`,
+        `headBranch: ${headBranch}`,
+        `event: ${event}`,
+        `status: ${status}`,
+        conclusion === undefined ? undefined : `conclusion: ${conclusion}`,
+        runUrl === undefined ? undefined : `url: ${runUrl}`,
+      ].filter((line): line is string => line !== undefined).join("\n"),
+      runId,
+      runUrl,
+      status,
+      conclusion,
+    };
+  }
+
+  return {
+    ok: false,
+    summary: [
+      "GitHub Actions publish run was not found for the release tag.",
+      `expected headBranch: ${expectedHeadBranch}`,
+      `examined runs: ${value.length}`,
+      ...mismatches.slice(0, 10).map((mismatch) => `- ${mismatch}`),
+    ].join("\n"),
+  };
+}
+
+export function verifyPublishWorkflowRunJson(
+  value: JsonValue,
+  expectedHeadBranch: string,
+): PublishWorkflowRunVerification {
+  if (!isJsonObject(value)) {
+    return { ok: false, summary: "GitHub Actions run response was not a JSON object." };
+  }
+
+  const headBranch = stringField(value, "headBranch");
+  const event = stringField(value, "event");
+  const runId = positiveIntegerField(value, "databaseId");
+  const status = stringField(value, "status");
+  const conclusion = nullableStringField(value, "conclusion");
+  const runUrl = stringField(value, "url");
+  const workflowName = stringField(value, "workflowName");
+  const failures: string[] = [];
+
+  if (runId === undefined) failures.push("databaseId was missing or invalid");
+  if (headBranch !== expectedHeadBranch) {
+    failures.push(`headBranch was ${headBranch ?? "missing"}, expected ${expectedHeadBranch}`);
+  }
+  if (event !== "push") failures.push(`event was ${event ?? "missing"}, expected push`);
+  if (status !== "completed") failures.push(`status was ${status ?? "missing"}, expected completed`);
+  if (conclusion !== "success") failures.push(`conclusion was ${conclusion ?? "missing"}, expected success`);
+
+  if (failures.length > 0 || runId === undefined || status === undefined || conclusion === undefined) {
+    return {
+      ok: false,
+      summary: [
+        "GitHub Actions publish run is not verified as successful.",
+        ...failures.map((failure) => `- ${failure}`),
+      ].join("\n"),
+      runId,
+      runUrl,
+    };
+  }
+
+  return {
+    ok: true,
+    summary: [
+      "GitHub Actions publish run is verified as successful.",
+      `databaseId: ${runId}`,
+      workflowName === undefined ? undefined : `workflowName: ${workflowName}`,
+      `headBranch: ${headBranch}`,
+      `event: ${event}`,
+      `status: ${status}`,
+      `conclusion: ${conclusion}`,
+      runUrl === undefined ? undefined : `url: ${runUrl}`,
+    ].filter((line): line is string => line !== undefined).join("\n"),
+    runId,
+    runUrl,
+    status,
+    conclusion,
   };
 }
