@@ -67,7 +67,7 @@ export function parseCursorCatalogCacheRecord(value: unknown): CursorModelCatalo
 	if (typeof value.fetchedAt !== "number" || !Number.isFinite(value.fetchedAt) || value.fetchedAt < 0) return null;
 	if (!Array.isArray(value.models)) return null;
 	const models = value.models.map(parseCachedCursorModel).filter((model): model is CursorUsableModel => model !== null);
-	if (models.length === 0 || models.length !== value.models.length) return null;
+	if (models.length === 0) return null;
 	return { source: "live", fetchedAt: value.fetchedAt, models };
 }
 
@@ -75,7 +75,7 @@ export function toCursorCatalogCacheRecord(catalog: CursorModelCatalog): CursorC
 	if (catalog.source !== "live") return null;
 	if (typeof catalog.fetchedAt !== "number" || !Number.isFinite(catalog.fetchedAt) || catalog.fetchedAt < 0) return null;
 	const models = catalog.models.map(parseCachedCursorModel).filter((model): model is CursorUsableModel => model !== null);
-	if (models.length === 0 || models.length !== catalog.models.length) return null;
+	if (models.length === 0) return null;
 	return { version: CURSOR_CATALOG_CACHE_VERSION, fetchedAt: catalog.fetchedAt, models };
 }
 

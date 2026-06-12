@@ -36,9 +36,9 @@ export interface CursorRpcHeaders extends Record<string, string> {
 }
 
 export class CursorExperimentalProtocolError extends Error {
-	readonly code = "CURSOR_EXPERIMENTAL_PROTOCOL_UNAVAILABLE";
+	readonly code = "CURSOR_EXPERIMENTAL_PROTOCOL_ERROR";
 
-	constructor(message = "Cursor's experimental private protocol transport is not enabled in this build.") {
+	constructor(message = "Cursor's experimental private protocol transport failed.") {
 		super(message);
 		this.name = "CursorExperimentalProtocolError";
 	}
@@ -47,8 +47,8 @@ export class CursorExperimentalProtocolError extends Error {
 export function createCursorExperimentalProtocolError(detail?: string): CursorExperimentalProtocolError {
 	return new CursorExperimentalProtocolError(
 		detail
-			? `Cursor experimental protocol unavailable: ${sanitizeDiagnosticText(detail)}`
-			: "Cursor experimental protocol unavailable: HTTP/2/protobuf transport is isolated but not implemented in this iteration.",
+			? `Cursor experimental protocol error: ${sanitizeDiagnosticText(detail)}`
+			: "Cursor experimental protocol error: HTTP/2/protobuf transport failed.",
 	);
 }
 

@@ -33,6 +33,7 @@ describe("Cursor model mapper", () => {
 		assert.deepEqual(composer?.input, ["text"]);
 		assert.equal(composer?.contextWindow, 200);
 		assert.equal(composer?.maxTokens, 20);
+		assert.deepEqual(composer?.cost, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
 		assert.deepEqual(composer?.thinkingLevelMap, {
 			minimal: "composer-2-low",
 			low: "composer-2-low",
@@ -49,6 +50,7 @@ describe("Cursor model mapper", () => {
 		assert.ok(composer);
 		assert.match(composer.name, /estimated/u);
 		assert.equal(composer.reasoning, true);
+		assert.deepEqual(composer.cost, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
 	});
 
 	test("parses and reconstructs effort variants before fast/thinking suffixes", () => {

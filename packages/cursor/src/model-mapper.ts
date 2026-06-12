@@ -70,7 +70,7 @@ export function createEstimatedCursorCatalog(now = Date.now()): CursorModelCatal
 	return {
 		source: "estimated",
 		fetchedAt: now,
-		note: "static fallback; Cursor private API metadata, costs, and limits are estimated",
+		note: "static fallback; Cursor private API metadata and limits are estimated; token costs are reported as zero for subscription usage",
 		models: [
 			{ id: CURSOR_DEFAULT_MODEL_ID, displayName: "Composer 2", supportsReasoning: true, contextWindow: 200_000, maxTokens: 64_000 },
 			{ id: `${CURSOR_DEFAULT_MODEL_ID}-low`, displayName: "Composer 2 Low", supportsReasoning: true, contextWindow: 200_000, maxTokens: 64_000 },
@@ -96,7 +96,7 @@ export function mapCursorCatalogToProviderModels(catalog: CursorModelCatalog): C
 			reasoning: supportsReasoning,
 			thinkingLevelMap: supportsReasoning ? buildThinkingLevelMap(effortVariants, group.primaryId) : undefined,
 			input: ["text"],
-			cost: estimateCost(group.baseId),
+			cost: subscriptionCost(),
 			contextWindow: chooseLargestNumber(group.variants.map((variant) => variant.contextWindow)) ?? ESTIMATED_CONTEXT_WINDOW,
 			maxTokens: chooseLargestNumber(group.variants.map((variant) => variant.maxTokens)) ?? ESTIMATED_MAX_TOKENS,
 		};
@@ -260,11 +260,6 @@ function titleCaseModelId(id: string): string {
 		.join(" ");
 }
 
-function estimateCost(modelId: string): { readonly input: number; readonly output: number; readonly cacheRead: number; readonly cacheWrite: number } {
-	const lower = modelId.toLowerCase();
-	if (lower.includes("opus")) return { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 };
-	if (lower.includes("sonnet") || lower.includes("composer")) return { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 };
-	if (lower.includes("haiku")) return { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 };
-	if (lower.includes("gpt-5")) return { input: 2.5, output: 10, cacheRead: 0, cacheWrite: 0 };
+function subscriptionCost(): { readonly input: number; readonly output: number; readonly cacheRead: number; readonly cacheWrite: number } {
 	return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 }

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api, AssistantMessageEvent, Context, Model, OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai";
 import type { CursorAuthService } from "../../packages/cursor/src/auth.js";
-import { FileCursorCatalogCache, type CursorCatalogCache } from "../../packages/cursor/src/catalog-cache.js";
+import { FileCursorCatalogCache, parseCursorCatalogCacheRecord, toCursorCatalogCacheRecord, type CursorCatalogCache } from "../../packages/cursor/src/catalog-cache.js";
 import type { CursorModelCatalog } from "../../packages/cursor/src/model-mapper.js";
 import { CursorModelDiscoveryError, type CursorModelDiscoveryService } from "../../packages/cursor/src/models.js";
 import { registerCursorProvider } from "../../packages/cursor/src/provider.js";
@@ -168,6 +168,36 @@ describe("Cursor provider registration", () => {
 				source: "live",
 				fetchedAt: 77,
 				models: [{ id: "composer-2", displayName: "Live Composer", contextWindow: 200_000, maxTokens: 64_000, supportsReasoning: true }],
+			});
+
+			writeFileSync(cachePath, JSON.stringify({
+				version: 1,
+				fetchedAt: 88,
+				models: [
+					{ id: "still-valid", displayName: "Still Valid" },
+					{ id: "bad-display", displayName: 123 },
+					{ displayName: "missing id" },
+				],
+			}), "utf8");
+			assert.deepEqual(cache.load(), {
+				source: "live",
+				fetchedAt: 88,
+				models: [{ id: "still-valid", displayName: "Still Valid" }],
+			});
+
+			const sanitizedRecord = toCursorCatalogCacheRecord({
+				source: "live",
+				fetchedAt: 89,
+				models: [
+					{ id: "save-valid", displayName: "Save Valid" },
+					{ id: "save-bad", displayName: 123 } as CursorModelCatalog["models"][number] & { displayName: number },
+				],
+			});
+			assert.deepEqual(sanitizedRecord?.models, [{ id: "save-valid", displayName: "Save Valid" }]);
+			assert.deepEqual(parseCursorCatalogCacheRecord(sanitizedRecord), {
+				source: "live",
+				fetchedAt: 89,
+				models: [{ id: "save-valid", displayName: "Save Valid" }],
 			});
 
 			writeFileSync(cachePath, JSON.stringify({ version: 1, fetchedAt: "bad", models: [] }), "utf8");

@@ -28,9 +28,17 @@ Field provenance (from `ndraiman/pi-cursor-provider` vendored `proto/agent_pb.ts
 - `ModelDetails.model_id = 1`, `thinking_details = 2`, `display_name = 4`, `max_mode = 7`
 - `AgentServerMessage.interaction_update = 1`, `exec_server_message = 2`, `conversation_checkpoint_update = 3`
 - `InteractionUpdate.text_delta = 1`, `thinking_delta = 4`, `token_delta = 8`, `turn_ended = 14`
-- `ExecServerMessage.exec_id = 15`, `mcp_args = 11`; `McpArgs.name = 1`, `args = 2`, `tool_call_id = 3`, `provider_identifier = 4`, `tool_name = 5`. `McpArgs.args` values are `bytes`; Atomic first decodes them as protobuf `Value` payloads and then falls back to strict raw UTF-8/JSON so Cursor string arguments such as file paths do not fail the tool-call boundary.
+- `ExecServerMessage.exec_id = 15`, `mcp_args = 11`; `McpArgs.name = 1`, `args = 2`, `tool_call_id = 3`, `provider_identifier = 4`, `tool_name = 5`. `McpArgs.args` values are `bytes`; Atomic first decodes them as protobuf `Value` payloads and then falls back to strict raw UTF-8 strings so Cursor string arguments such as file paths do not fail the tool-call boundary. This remains an inferred private-wire-format boundary: a raw string whose bytes exactly match a structurally valid protobuf `Value` could still be interpreted as typed data, so revalidate this behavior when updating the protocol.
 - `ExecClientMessage.id = 1`, `mcp_result = 11`, `exec_id = 15`; Atomic writes these frames back to the same paused Run stream for active tool results rather than encoding tool results as user-message text. Historical completed tool calls are reconstructed as one MCP tool-call step containing both `mcp_args` and `mcp_result`, so tool results are not sent as prefixed transcript text.
 
 Paused Cursor tool streams are owned by the conversation-state store while Atomic executes tools. The store installs abort cleanup and an unref'd idle timer so one-shot CLI/workflow runs can exit and abandoned tool turns are cancelled.
+
+Manual smoke-test procedure after Cursor releases:
+
+1. Sign in to the current Cursor CLI/app and capture a successful `api2.cursor.sh` model discovery or agent `Run` request.
+2. Update `CURSOR_CLIENT_VERSION` in `src/config.ts` from the captured `x-cursor-client-version` header if it changed.
+3. In Atomic, run `/login`, select **Cursor (experimental)**, complete browser auth, then confirm `/model` lists `cursor/<model-id>` entries from live discovery.
+4. Select a Cursor model and run one chat turn plus one tool-using turn; verify the process exits cleanly for a one-shot/noninteractive run.
+5. Re-run the Cursor unit tests and update field notes above for any changed protobuf paths.
 
 If Cursor changes the private protocol, add or generate updated protobuf message definitions here and keep generated code isolated from provider registration/stream mapping. Do not introduce a localhost OpenAI-compatible proxy or child-process bridge.

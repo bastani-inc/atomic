@@ -3,6 +3,7 @@ import type { Context, Model, Api, ThinkingLevel } from "@earendil-works/pi-ai";
 import {
 	buildCursorRpcHeaders,
 	CURSOR_API_BASE_URL,
+	CURSOR_CLIENT_VERSION,
 	CURSOR_GET_USABLE_MODELS_PATH,
 	CURSOR_RUN_PATH,
 	parseJsonObject,
@@ -59,7 +60,7 @@ export type CursorServerMessage =
 	| { readonly type: "textDelta"; readonly text: string }
 	| { readonly type: "thinkingDelta"; readonly text: string }
 	| CursorToolCallMessage
-	| { readonly type: "usage"; readonly kind?: "checkpoint"; readonly inputTokens?: number; readonly outputTokens?: number; readonly cacheReadTokens?: number; readonly cacheWriteTokens?: number; readonly usedTokens?: number; readonly maxTokens?: number }
+	| { readonly type: "usage"; readonly kind?: "checkpoint"; readonly inputTokens?: number; readonly outputTokens?: number; readonly cacheReadTokens?: number; readonly cacheWriteTokens?: number; readonly usedTokens?: number }
 	| { readonly type: "usage"; readonly kind: "outputDelta"; readonly outputTokens: number }
 	| { readonly type: "nonMcpExec"; readonly fieldNumber: number; readonly execId?: string; readonly execNumericId?: number }
 	| { readonly type: "done"; readonly reason: CursorDoneReason };
@@ -651,9 +652,15 @@ function classifyConnectErrorCode(code: string): CursorTransportErrorCode {
 function assertSuccessfulStatus(statusCode: number | undefined, body: Uint8Array, secrets: readonly string[]): void {
 	if (statusCode === undefined || (statusCode >= 200 && statusCode < 300)) return;
 	const detail = sanitizeDiagnosticText(textDecoder.decode(body), secrets);
-	const message = `Cursor API rejected request with HTTP ${statusCode}${detail ? `: ${detail}` : ""}`;
+	const versionHint = cursorClientVersionHint(statusCode);
+	const message = `Cursor API rejected request with HTTP ${statusCode}${detail ? `: ${detail}` : ""}${versionHint}`;
 	if (statusCode === 401 || statusCode === 403) throw new CursorTransportError("Unauthorized", message);
 	throw new CursorTransportError("CursorApiRejected", message);
+}
+
+function cursorClientVersionHint(statusCode: number): string {
+	if (statusCode !== 403 && statusCode !== 426) return "";
+	return ` Cursor may be rejecting the bundled Cursor CLI-compatible client version (${CURSOR_CLIENT_VERSION}); refresh CURSOR_CLIENT_VERSION from current Cursor CLI traffic if authentication still succeeds in Cursor itself.`;
 }
 
 function normalizeIncomingHeaders(headers: IncomingHttpHeaders): Record<string, string> {

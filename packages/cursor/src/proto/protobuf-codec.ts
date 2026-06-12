@@ -132,12 +132,10 @@ function decodeCheckpointUsage(data: Uint8Array): CursorServerMessage | undefine
 	for (const field of readFields(data)) {
 		if (field.fieldNumber !== 5 || !(field.value instanceof Uint8Array)) continue;
 		let usedTokens: number | undefined;
-		let maxTokens: number | undefined;
 		for (const tokenField of readFields(field.value)) {
 			if (tokenField.fieldNumber === 1 && typeof tokenField.value === "bigint") usedTokens = Number(tokenField.value);
-			else if (tokenField.fieldNumber === 2 && typeof tokenField.value === "bigint") maxTokens = Number(tokenField.value);
 		}
-		if (usedTokens !== undefined || maxTokens !== undefined) return { type: "usage", kind: "checkpoint", usedTokens, maxTokens };
+		if (usedTokens !== undefined) return { type: "usage", kind: "checkpoint", usedTokens };
 	}
 	return undefined;
 }

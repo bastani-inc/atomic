@@ -314,7 +314,7 @@ describe("Cursor HTTP2 transport boundary", () => {
 			cursorProtoTest.encodeMessageField(5, tokenDetails),
 		);
 		const agentMessage = cursorProtoTest.encodeMessageField(3, checkpoint);
-		assert.deepEqual(codec.decodeRunFrame({ flags: 0, data: agentMessage, endStream: false }), [{ type: "usage", kind: "checkpoint", usedTokens: 120, maxTokens: 2000 }]);
+		assert.deepEqual(codec.decodeRunFrame({ flags: 0, data: agentMessage, endStream: false }), [{ type: "usage", kind: "checkpoint", usedTokens: 120 }]);
 	});
 
 	test("protobuf codec decodes exec server MCP args as tool calls", () => {
@@ -506,7 +506,10 @@ describe("Cursor HTTP2 transport boundary", () => {
 		const transport = new Http2CursorAgentTransport({ client, codec: new FakeCodec() });
 		await assert.rejects(
 			() => transport.getUsableModels("secret-token", "request-403"),
-			(error: Error) => error instanceof CursorTransportError && error.message.includes("HTTP 403") && !error.message.includes("secret-token"),
+			(error: Error) => error instanceof CursorTransportError
+				&& error.message.includes("HTTP 403")
+				&& error.message.includes("Cursor CLI-compatible client version")
+				&& !error.message.includes("secret-token"),
 		);
 	});
 
