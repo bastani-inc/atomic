@@ -112,7 +112,9 @@ describe("CursorStreamAdapter", () => {
 				{ type: "textDelta", text: "Hello" },
 				{ type: "textDelta", text: " world" },
 				{ type: "toolCall", id: "tool-1", name: "Read", argumentsJson: "{\"path\":\"README.md\"}" },
-				{ type: "usage", inputTokens: 10, outputTokens: 5 },
+				{ type: "usage", kind: "outputDelta", outputTokens: 3 },
+				{ type: "usage", kind: "outputDelta", outputTokens: 2 },
+				{ type: "usage", kind: "checkpoint", inputTokens: 10 },
 				{ type: "done", reason: "toolUse" },
 			],
 		});
@@ -137,11 +139,32 @@ describe("CursorStreamAdapter", () => {
 		assert.equal(done?.type, "done");
 		if (done?.type === "done") {
 			assert.equal(done.reason, "toolUse");
+			assert.equal(done.message.usage.input, 10);
+			assert.equal(done.message.usage.output, 5);
 			assert.equal(done.message.usage.totalTokens, 15);
 			assert.ok(Math.abs(done.message.usage.cost.total - 0.00002) < 0.000000001);
 		}
 		assert.equal(transport.runs[0]?.request.resolvedModelId, "composer-2-high");
 		assert.deepEqual(transport.getLifecycleSnapshot(), { openStreams: 0, cancelledStreams: 0, closedStreams: 1 });
+	});
+
+	test("checkpoint output totals override accumulated usage deltas", async () => {
+		const transport = new CursorMockTransport({ messages: [
+			{ type: "usage", kind: "outputDelta", outputTokens: 3 },
+			{ type: "usage", kind: "outputDelta", outputTokens: 5 },
+			{ type: "usage", kind: "checkpoint", inputTokens: 12 },
+			{ type: "usage", kind: "checkpoint", outputTokens: 20 },
+			{ type: "done", reason: "stop" },
+		] });
+		const adapter = new CursorStreamAdapter({ transport, uuid: () => "run-usage" });
+		const events = await collectEvents(adapter.streamSimple(model(), context(), { apiKey: "access-secret" }));
+		const done = events.at(-1);
+		assert.equal(done?.type, "done");
+		if (done?.type === "done") {
+			assert.equal(done.message.usage.input, 12);
+			assert.equal(done.message.usage.output, 20);
+			assert.equal(done.message.usage.totalTokens, 32);
+		}
 	});
 
 	test("ends a tool-call-only Cursor turn with toolUse", async () => {

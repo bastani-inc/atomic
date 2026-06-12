@@ -254,10 +254,14 @@ function closeOpenContent(stream: AssistantMessageEventStream, output: Assistant
 }
 
 function updateUsage(output: AssistantMessage, model: Model<Api>, message: Extract<CursorServerMessage, { readonly type: "usage" }>): void {
-	output.usage.input = message.inputTokens;
-	output.usage.output = message.outputTokens;
-	output.usage.cacheRead = message.cacheReadTokens ?? 0;
-	output.usage.cacheWrite = message.cacheWriteTokens ?? 0;
+	if (message.kind === "outputDelta") {
+		output.usage.output += message.outputTokens;
+	} else {
+		if (message.inputTokens !== undefined) output.usage.input = message.inputTokens;
+		if (message.outputTokens !== undefined) output.usage.output = message.outputTokens;
+		if (message.cacheReadTokens !== undefined) output.usage.cacheRead = message.cacheReadTokens;
+		if (message.cacheWriteTokens !== undefined) output.usage.cacheWrite = message.cacheWriteTokens;
+	}
 	output.usage.totalTokens = output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
 	output.usage.cost = calculateCost(model, output.usage);
 }

@@ -55,7 +55,8 @@ export type CursorServerMessage =
 	| { readonly type: "textDelta"; readonly text: string }
 	| { readonly type: "thinkingDelta"; readonly text: string }
 	| { readonly type: "toolCall"; readonly id: string; readonly name: string; readonly argumentsJson: string }
-	| { readonly type: "usage"; readonly inputTokens: number; readonly outputTokens: number; readonly cacheReadTokens?: number; readonly cacheWriteTokens?: number }
+	| { readonly type: "usage"; readonly kind?: "checkpoint"; readonly inputTokens?: number; readonly outputTokens?: number; readonly cacheReadTokens?: number; readonly cacheWriteTokens?: number }
+	| { readonly type: "usage"; readonly kind: "outputDelta"; readonly outputTokens: number }
 	| { readonly type: "done"; readonly reason: CursorDoneReason };
 
 export interface CursorRunStream {
@@ -222,6 +223,7 @@ export class Http2CursorAgentTransport implements CursorAgentTransport {
 				request.requestId,
 				handle,
 				this.#codec,
+				[request.accessToken],
 				() => {
 					this.#cancelledStreams += 1;
 				},
@@ -253,6 +255,7 @@ class Http2CursorRunStream implements CursorRunStream {
 		readonly id: string,
 		readonly handle: CursorHttp2StreamHandle,
 		readonly codec: CursorProtocolCodec,
+		readonly secrets: readonly string[],
 		readonly onCancel: () => void,
 		readonly onClose: () => void,
 	) {
@@ -289,10 +292,7 @@ class Http2CursorRunStream implements CursorRunStream {
 		for await (const raw of this.handle.frames) {
 			for (const frame of decoder.push(raw)) {
 				if (frame.endStream) {
-					const endMessage = textDecoder.decode(frame.data);
-					const parsed = parseJsonObject(endMessage);
-					const code = parsed ? readStringField(parsed, "code") : undefined;
-					if (code && code !== "ok") throw new CursorTransportError("CursorApiRejected", `Cursor stream ended with ${code}.`);
+					throwIfCursorEndStreamError(frame.data, this.secrets);
 					continue;
 				}
 				for (const message of this.codec.decodeRunFrame(frame)) {
@@ -695,7 +695,7 @@ function parseCursorServerMessagesFromJson(value: JsonValue): readonly CursorSer
 		if (type === "textDelta") return [{ type, text: readStringField(object, "text") ?? "" }];
 		if (type === "thinkingDelta") return [{ type, text: readStringField(object, "text") ?? "" }];
 		if (type === "toolCall") return [{ type, id: readStringField(object, "id") ?? "cursor-tool", name: readStringField(object, "name") ?? "cursor_tool", argumentsJson: readStringField(object, "argumentsJson") ?? "{}" }];
-		if (type === "usage") return [{ type, inputTokens: readNumberField(object, "inputTokens") ?? 0, outputTokens: readNumberField(object, "outputTokens") ?? 0 }];
+		if (type === "usage") return [{ type, kind: "checkpoint", inputTokens: readNumberField(object, "inputTokens"), outputTokens: readNumberField(object, "outputTokens"), cacheReadTokens: readNumberField(object, "cacheReadTokens"), cacheWriteTokens: readNumberField(object, "cacheWriteTokens") }];
 		if (type === "done") return [{ type, reason: parseDoneReason(readStringField(object, "reason")) }];
 		return [];
 	});
@@ -713,6 +713,25 @@ function unwrapUnaryBody(data: Uint8Array): Uint8Array {
 	} catch {
 		return data;
 	}
+}
+
+function throwIfCursorEndStreamError(data: Uint8Array, secrets: readonly string[]): void {
+	const parsed = parseJsonObject(textDecoder.decode(data));
+	if (!parsed) return;
+	const errorValue = parsed.error;
+	if (!errorValue || typeof errorValue !== "object" || Array.isArray(errorValue)) return;
+	const error = errorValue as JsonObject;
+	const code = readStringField(error, "code");
+	if (!code) return;
+	const message = readStringField(error, "message");
+	throw new CursorTransportError(classifyConnectErrorCode(code), `Cursor stream ended with ${code}${message ? `: ${sanitizeDiagnosticText(message, secrets)}` : ""}.`);
+}
+
+function classifyConnectErrorCode(code: string): CursorTransportErrorCode {
+	if (code === "unauthenticated") return "Unauthorized";
+	if (code === "canceled") return "Aborted";
+	if (code === "resource_exhausted" || code === "unavailable") return "NetworkError";
+	return "CursorApiRejected";
 }
 
 function assertSuccessfulStatus(statusCode: number | undefined, body: Uint8Array, secrets: readonly string[]): void {

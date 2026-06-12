@@ -96,7 +96,7 @@ class FakeCodec implements CursorProtocolCodec {
 		const value = frame.data[0];
 		if (value === 1) return [{ type: "textDelta", text: "hi" }];
 		if (value === 2) return [{ type: "thinkingDelta", text: "think" }];
-		if (value === 3) return [{ type: "usage", inputTokens: 4, outputTokens: 5 }];
+		if (value === 3) return [{ type: "usage", kind: "checkpoint", inputTokens: 4, outputTokens: 5 }];
 		return [{ type: "done", reason: "stop" }];
 	}
 
@@ -247,6 +247,37 @@ describe("Cursor HTTP2 transport boundary", () => {
 		assert.deepEqual([...decodeCursorConnectFrames(client.streamHandle.writes[1] ?? new Uint8Array())[0]!.data], [7]);
 		assert.equal(client.streamHandle.cancelled, true);
 		assert.deepEqual(transport.getLifecycleSnapshot(), { openStreams: 0, cancelledStreams: 1, closedStreams: 1 });
+	});
+
+	test("classifies Connect end-stream errors", async () => {
+		const cases: Array<{ code: string; expected: string }> = [
+			{ code: "resource_exhausted", expected: "NetworkError" },
+			{ code: "unavailable", expected: "NetworkError" },
+			{ code: "unauthenticated", expected: "Unauthorized" },
+			{ code: "canceled", expected: "Aborted" },
+			{ code: "permission_denied", expected: "CursorApiRejected" },
+		];
+		for (const item of cases) {
+			const client = new FakeHttp2Client([encodeCursorConnectFrame(new TextEncoder().encode(JSON.stringify({ error: { code: item.code, message: "secret-token problem" } })), 2)]);
+			const transport = new Http2CursorAgentTransport({ client, codec: new FakeCodec() });
+			const run = await transport.run({ accessToken: "secret-token", requestId: `run-${item.code}`, model, resolvedModelId: "composer-2", context });
+			await assert.rejects(
+				async () => { for await (const _message of run.messages) {} },
+				(error: Error) => error instanceof CursorTransportError && error.code === item.expected && !error.message.includes("secret-token"),
+			);
+		}
+	});
+
+	test("ignores empty and legacy top-level Connect end-stream frames", async () => {
+		const client = new FakeHttp2Client([
+			encodeCursorConnectFrame(new TextEncoder().encode(JSON.stringify({ metadata: {} })), 2),
+			encodeCursorConnectFrame(new TextEncoder().encode(JSON.stringify({ code: "resource_exhausted" })), 2),
+		]);
+		const transport = new Http2CursorAgentTransport({ client, codec: new FakeCodec() });
+		const run = await transport.run({ accessToken: "secret", requestId: "run-end-ok", model, resolvedModelId: "composer-2", context });
+		const messages: CursorServerMessage[] = [];
+		for await (const message of run.messages) messages.push(message);
+		assert.deepEqual(messages, []);
 	});
 
 	test("classifies non-2xx Cursor responses without leaking credentials", async () => {

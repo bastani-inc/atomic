@@ -102,7 +102,7 @@ function decodeInteractionUpdate(data: Uint8Array): readonly CursorServerMessage
 	for (const field of readFields(data)) {
 		if (field.fieldNumber === 1 && field.value instanceof Uint8Array) messages.push({ type: "textDelta", text: decodeTextFieldMessage(field.value) });
 		else if (field.fieldNumber === 4 && field.value instanceof Uint8Array) messages.push({ type: "thinkingDelta", text: decodeTextFieldMessage(field.value) });
-		else if (field.fieldNumber === 8 && field.value instanceof Uint8Array) messages.push({ type: "usage", inputTokens: 0, outputTokens: decodeTokenDelta(field.value) });
+		else if (field.fieldNumber === 8 && field.value instanceof Uint8Array) messages.push({ type: "usage", kind: "outputDelta", outputTokens: decodeTokenDelta(field.value) });
 		else if (field.fieldNumber === 14 && field.value instanceof Uint8Array) messages.push({ type: "done", reason: "stop" satisfies CursorDoneReason });
 	}
 	return messages;
@@ -126,9 +126,13 @@ function decodeCheckpointUsage(data: Uint8Array): CursorServerMessage | undefine
 	for (const field of readFields(data)) {
 		if (field.value instanceof Uint8Array) {
 			const nested = Object.fromEntries(readFields(field.value).flatMap((nestedField) => typeof nestedField.value === "bigint" ? [[nestedField.fieldNumber, Number(nestedField.value)]] : []));
-			const inputTokens = readNumberField(nested, "1") ?? 0;
-			const outputTokens = readNumberField(nested, "2") ?? 0;
-			if (inputTokens || outputTokens) return { type: "usage", inputTokens, outputTokens };
+			const inputTokens = readNumberField(nested, "1");
+			const outputTokens = readNumberField(nested, "2");
+			const cacheReadTokens = readNumberField(nested, "3");
+			const cacheWriteTokens = readNumberField(nested, "4");
+			if (inputTokens !== undefined || outputTokens !== undefined || cacheReadTokens !== undefined || cacheWriteTokens !== undefined) {
+				return { type: "usage", kind: "checkpoint", inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens };
+			}
 		}
 	}
 	return undefined;
@@ -204,8 +208,9 @@ function encodeConversationState(request: CursorRunRequest): Uint8Array {
 	let requestIndex = 0;
 	const steps: Uint8Array[] = [];
 	const flushTurn = (): void => {
-		if (!currentUser) return;
-		const agentTurn = concatBytes(encodeMessageField(1, currentUser), ...steps.map((step) => encodeMessageField(2, step)), encodeStringField(3, `${request.requestId}-history-${requestIndex++}`));
+		if (!currentUser && steps.length === 0) return;
+		const user = currentUser ?? encodeUserMessage("", `${request.requestId}-history-user-${requestIndex}`);
+		const agentTurn = concatBytes(encodeMessageField(1, user), ...steps.map((step) => encodeMessageField(2, step)), encodeStringField(3, `${request.requestId}-history-${requestIndex++}`));
 		fields.push(encodeMessageField(8, encodeMessageField(1, agentTurn)));
 		currentUser = undefined;
 		steps.length = 0;
@@ -222,7 +227,6 @@ function encodeConversationState(request: CursorRunRequest): Uint8Array {
 			}
 		} else {
 			steps.push(encodeMessageField(2, encodeMessageField(15, encodeMessageField(2, encodeMcpSuccessResult(textFromMessage(message), message.isError)))));
-			flushTurn();
 		}
 	}
 	flushTurn();
