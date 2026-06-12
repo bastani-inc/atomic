@@ -1,14 +1,14 @@
 import { defineWorkflow, Type } from "@bastani/workflows";
 import {
   firstActionsUrl,
-  firstPrUrl,
-  firstPullRequestUrl,
   hasStatusMarker,
   validateReleaseRequest,
   verifyPullRequestMergedJson,
+  verifyReleasePullRequestReferenceJson,
   type JsonValue,
   type PublishReleaseOutput,
   type PullRequestMergeVerification,
+  type PullRequestReferenceVerification,
   type ReleaseStatus,
   type ValidatedRelease,
 } from "./lib/publish-release-helpers.js";
@@ -72,6 +72,53 @@ function commandSummary(result: CommandResult): string {
     result.stdout.length === 0 ? undefined : `stdout:\n${result.stdout}`,
     result.stderr.length === 0 ? undefined : `stderr:\n${result.stderr}`,
   ].filter((line): line is string => line !== undefined).join("\n");
+}
+
+function captureReleasePrReference(release: ValidatedRelease): PullRequestReferenceVerification {
+  const prView = runCommand([
+    "gh",
+    "pr",
+    "view",
+    release.branch,
+    "--json",
+    "url,number,state,baseRefName,headRefName,headRefOid",
+  ]);
+
+  if (prView.exitCode !== 0) {
+    return {
+      ok: false,
+      summary: ["GitHub PR reference capture command failed.", commandSummary(prView)].join("\n\n"),
+    };
+  }
+
+  let parsed: JsonValue;
+  try {
+    parsed = JSON.parse(prView.stdout) as JsonValue;
+  } catch {
+    return {
+      ok: false,
+      summary: ["GitHub PR reference capture returned invalid JSON.", commandSummary(prView)].join("\n\n"),
+    };
+  }
+
+  const referenceVerification = verifyReleasePullRequestReferenceJson(parsed, release.branch);
+  if (!referenceVerification.ok) {
+    return {
+      ok: false,
+      prUrl: referenceVerification.prUrl,
+      prNumber: referenceVerification.prNumber,
+      summary: [referenceVerification.summary, commandSummary(prView)].join("\n\n"),
+    };
+  }
+
+  return {
+    ok: true,
+    prUrl: referenceVerification.prUrl,
+    prNumber: referenceVerification.prNumber,
+    headRefOid: referenceVerification.headRefOid,
+    state: referenceVerification.state,
+    summary: [referenceVerification.summary, commandSummary(prView)].join("\n\n"),
+  };
 }
 
 function verifyReleasePrMerged(release: ValidatedRelease, prSelector: string): PullRequestMergeVerification {
@@ -246,6 +293,16 @@ export default defineWorkflow("publish-release")
       return blockedOutput(release, "open-release-pr", "PR_STATUS: opened", pr.text);
     }
 
+    const prReference = captureReleasePrReference(release);
+    if (!prReference.ok) {
+      return blockedOutput(
+        release,
+        "capture-release-pr-reference",
+        "GitHub PR view by release branch returned a PR URL/number with matching base/head refs",
+        [prReference.summary, "", "PR stage output:", excerpt(pr.text, 2_000)].join("\n"),
+      );
+    }
+
     const merge = await ctx.task("wait-for-release-ci-and-merge", {
       prompt: [
         "Wait for CI on the release PR and merge it when checks pass.",
@@ -255,8 +312,11 @@ export default defineWorkflow("publish-release")
         "PR result:",
         excerpt(pr.text),
         "",
+        "Deterministic PR reference captured from GitHub:",
+        excerpt(prReference.summary),
+        "",
         "Required actions:",
-        "1. Identify the PR for the release branch using `gh pr view` or the PR URL above.",
+        `1. Identify the PR using this deterministic selector: ${prReference.prUrl}`,
         "2. Wait for required checks using `gh pr checks --watch` or an equivalent `gh` workflow that returns a non-zero status on failures.",
         "3. If any required check fails, stop and report the failed check names and URLs/log hints.",
         "4. When checks pass, merge the PR using the repository-supported method. Do not delete the release branch after merge.",
@@ -268,8 +328,7 @@ export default defineWorkflow("publish-release")
       ].join("\n"),
     });
 
-    const prSelector = firstPullRequestUrl(pr.text) ?? release.branch;
-    const mergeVerification = verifyReleasePrMerged(release, prSelector);
+    const mergeVerification = verifyReleasePrMerged(release, prReference.prUrl);
 
     if (!mergeVerification.ok) {
       return blockedOutput(
@@ -310,7 +369,7 @@ export default defineWorkflow("publish-release")
       return blockedOutput(release, "tag-and-monitor-publish", "PUBLISH_STATUS: completed", publish.text, "failed");
     }
 
-    const prUrl = firstPullRequestUrl(pr.text) ?? mergeVerification.prUrl ?? firstPrUrl(pr.text);
+    const prUrl = mergeVerification.prUrl ?? prReference.prUrl;
     const actionUrl = firstActionsUrl(publish.text);
     const summary = [
       `publish-release completed for ${release.kind} ${release.version}.`,

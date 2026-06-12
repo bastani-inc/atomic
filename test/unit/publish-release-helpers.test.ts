@@ -4,14 +4,13 @@ import {
   cleanUrl,
   firstActionsUrl,
   firstNonEmptyLine,
-  firstPrUrl,
-  firstPullRequestUrl,
   hasLeadingStatus,
   hasStatusMarker,
   prereleaseVersionPattern,
   releaseVersionPattern,
   validateReleaseRequest,
   verifyPullRequestMergedJson,
+  verifyReleasePullRequestReferenceJson,
   type JsonValue,
 } from "../../.atomic/workflows/lib/publish-release-helpers.js";
 
@@ -68,19 +67,6 @@ describe("publish-release URL extraction", () => {
     );
   });
 
-  test("selects the first pull request URL and ignores unrelated URLs", () => {
-    const text = [
-      "Issue: https://github.com/earendil-works/pi-mono/issues/99",
-      "PR: https://github.com/earendil-works/pi-mono/pull/123.",
-      "Later PR: https://github.com/earendil-works/pi-mono/pull/456",
-    ].join("\n");
-
-    assert.equal(firstPullRequestUrl(text), "https://github.com/earendil-works/pi-mono/pull/123");
-    assert.equal(firstPrUrl(text), "https://github.com/earendil-works/pi-mono/pull/123");
-    assert.equal(firstPullRequestUrl("Docs: https://example.com/release-notes;"), undefined);
-    assert.equal(firstPrUrl("Docs: https://example.com/release-notes;"), undefined);
-  });
-
   test("selects the first actions run URL and ignores unrelated URLs", () => {
     const text = [
       "Workflow: https://github.com/earendil-works/pi-mono/actions/workflows/publish.yml",
@@ -132,6 +118,46 @@ describe("publish-release status parsing", () => {
     assert.equal(hasStatusMarker("- CHECK_STATUS: passed", "CHECK_STATUS: passed"), false);
     assert.equal(hasStatusMarker("CHECK_STATUS: passed after verification", "CHECK_STATUS: passed"), false);
     assert.equal(hasStatusMarker("PUBLISH_STATUS: passed", "CHECK_STATUS: passed"), false);
+  });
+});
+
+describe("publish-release GitHub PR reference verification", () => {
+  const releasePr: JsonValue = {
+    number: 123,
+    state: "OPEN",
+    baseRefName: "main",
+    headRefName: "release/1.2.3",
+    headRefOid: "def456",
+    url: "https://github.com/earendil-works/pi-mono/pull/123",
+  };
+
+  test("accepts GitHub PR JSON only when the URL, number, and refs match the release branch", () => {
+    assert.deepEqual(verifyReleasePullRequestReferenceJson(releasePr, "release/1.2.3"), {
+      ok: true,
+      summary: [
+        "GitHub PR reference is verified.",
+        "number: 123",
+        "url: https://github.com/earendil-works/pi-mono/pull/123",
+        "baseRefName: main",
+        "headRefName: release/1.2.3",
+        "headRefOid: def456",
+        "state: OPEN",
+      ].join("\n"),
+      prUrl: "https://github.com/earendil-works/pi-mono/pull/123",
+      prNumber: 123,
+      headRefOid: "def456",
+      state: "OPEN",
+    });
+  });
+
+  test("rejects GitHub PR JSON for an unrelated branch before merge verification", () => {
+    const result = verifyReleasePullRequestReferenceJson(
+      { ...releasePr, headRefName: "release/other" },
+      "release/1.2.3",
+    );
+
+    assert.equal(result.ok, false);
+    assert.match(result.summary, /headRefName was release\/other, expected release\/1\.2\.3/u);
   });
 });
 

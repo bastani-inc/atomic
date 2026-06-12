@@ -20,6 +20,22 @@ export type PublishReleaseOutput = {
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | readonly JsonValue[] | { readonly [key: string]: JsonValue };
 
+export type PullRequestReferenceVerification =
+  | {
+      readonly ok: true;
+      readonly summary: string;
+      readonly prUrl: string;
+      readonly prNumber: number;
+      readonly headRefOid?: string;
+      readonly state?: string;
+    }
+  | {
+      readonly ok: false;
+      readonly summary: string;
+      readonly prUrl?: string;
+      readonly prNumber?: number;
+    };
+
 export type PullRequestMergeVerification =
   | {
       readonly ok: true;
@@ -65,14 +81,6 @@ function urlsIn(text: string): readonly string[] {
   return (text.match(/https?:\/\/\S+/gu) ?? []).map(cleanUrl);
 }
 
-export function firstPullRequestUrl(text: string): string | undefined {
-  return urlsIn(text).find((url) => url.includes("/pull/"));
-}
-
-export function firstPrUrl(text: string): string | undefined {
-  return firstPullRequestUrl(text);
-}
-
 export function firstActionsUrl(text: string): string | undefined {
   return urlsIn(text).find((url) => url.includes("/actions/runs/"));
 }
@@ -113,6 +121,64 @@ function isJsonObject(value: JsonValue): value is { readonly [key: string]: Json
 function stringField(object: { readonly [key: string]: JsonValue }, key: string): string | undefined {
   const value = object[key];
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function positiveIntegerField(object: { readonly [key: string]: JsonValue }, key: string): number | undefined {
+  const value = object[key];
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
+}
+
+export function verifyReleasePullRequestReferenceJson(
+  value: JsonValue,
+  expectedHeadRefName: string,
+  expectedBaseRefName = "main",
+): PullRequestReferenceVerification {
+  if (!isJsonObject(value)) {
+    return { ok: false, summary: "GitHub PR reference response was not a JSON object." };
+  }
+
+  const baseRefName = stringField(value, "baseRefName");
+  const headRefName = stringField(value, "headRefName");
+  const headRefOid = stringField(value, "headRefOid");
+  const prUrl = stringField(value, "url");
+  const prNumber = positiveIntegerField(value, "number");
+  const state = stringField(value, "state");
+  const failures: string[] = [];
+
+  if (prUrl === undefined) failures.push("url was missing");
+  if (prNumber === undefined) failures.push("number was missing or invalid");
+  if (baseRefName !== expectedBaseRefName) {
+    failures.push(`baseRefName was ${baseRefName ?? "missing"}, expected ${expectedBaseRefName}`);
+  }
+  if (headRefName !== expectedHeadRefName) {
+    failures.push(`headRefName was ${headRefName ?? "missing"}, expected ${expectedHeadRefName}`);
+  }
+
+  if (failures.length > 0 || prUrl === undefined || prNumber === undefined) {
+    return {
+      ok: false,
+      summary: ["GitHub PR reference is not verified.", ...failures.map((failure) => `- ${failure}`)].join("\n"),
+      prUrl,
+      prNumber,
+    };
+  }
+
+  return {
+    ok: true,
+    summary: [
+      "GitHub PR reference is verified.",
+      `number: ${prNumber}`,
+      `url: ${prUrl}`,
+      `baseRefName: ${baseRefName}`,
+      `headRefName: ${headRefName}`,
+      headRefOid === undefined ? undefined : `headRefOid: ${headRefOid}`,
+      state === undefined ? undefined : `state: ${state}`,
+    ].filter((line): line is string => line !== undefined).join("\n"),
+    prUrl,
+    prNumber,
+    headRefOid,
+    state,
+  };
 }
 
 export function verifyPullRequestMergedJson(
