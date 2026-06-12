@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added the experimental bundled `@bastani/cursor` provider scaffold so `/login` can offer Cursor OAuth, `cursor/composer-2` resolves as the default Cursor model, and Cursor model mapping/streaming hooks are available behind an isolated transport boundary.
 - Added the opt-in `createStructuredOutputTool({ schema, capture, output, name })` factory for terminating machine-readable final answers with schema-as-parameters validation, flat `details`, in-process capture, flat private `output.json` capture plus `output.meta.json` sidecar metadata, and prompt guidance for exact-once use without registering `structured_output` in normal agent sessions by default ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
 
 ### Changed
@@ -19,6 +20,10 @@
 - Fixed terminating `structured_output` results to opt out of oversized-result persistence so large final JSON stays inline instead of being replaced by a `<persisted-output>` pointer ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
 - Fixed cross-process structured-output file capture to preserve flat schema-valid params in `output.json` and write call metadata to an `output.meta.json` sidecar so parent readback can reject stale or non-final captures instead of accepting any schema-valid `output.json` payload by existence alone ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
 - Fixed bundled subagent handling so explicit empty `tools: []` plus `outputSchema` grants only the schema-backed `structured_output` runtime tool instead of restoring default tools ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
+
+### Security
+
+- Kept Cursor credentials OAuth-only with token/header redaction and no local proxy or child-process bridge.
 
 ## [0.8.28] - 2026-06-11
 

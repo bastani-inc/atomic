@@ -1,0 +1,65 @@
+import { CURSOR_DEFAULT_MODEL_ID } from "./config.js";
+import { createEstimatedCursorCatalog, type CursorModelCatalog } from "./model-mapper.js";
+import type { CursorAgentTransport } from "./transport.js";
+
+export type CursorDiscoveryErrorCode = "Unauthorized" | "NoUsableModels" | "ProtocolError" | "NetworkError";
+
+export class CursorModelDiscoveryError extends Error {
+	constructor(
+		readonly code: CursorDiscoveryErrorCode,
+		message: string,
+	) {
+		super(message);
+		this.name = "CursorModelDiscoveryError";
+	}
+}
+
+export interface CursorModelDiscoveryServiceOptions {
+	readonly transport: CursorAgentTransport;
+	readonly now?: () => number;
+}
+
+export class CursorModelDiscoveryService {
+	readonly #transport: CursorAgentTransport;
+	readonly #now: () => number;
+
+	constructor(options: CursorModelDiscoveryServiceOptions) {
+		this.#transport = options.transport;
+		this.#now = options.now ?? Date.now;
+	}
+
+	async discover(accessToken: string, requestId: string, signal?: AbortSignal): Promise<CursorModelCatalog> {
+		try {
+			const models = await this.#transport.getUsableModels(accessToken, requestId, signal);
+			if (models.length === 0) {
+				throw new CursorModelDiscoveryError("NoUsableModels", "Cursor account has no usable models.");
+			}
+			return { source: "live", fetchedAt: this.#now(), models };
+		} catch (error) {
+			if (error instanceof CursorModelDiscoveryError) {
+				throw error;
+			}
+			if (signal?.aborted) {
+				throw new CursorModelDiscoveryError("NetworkError", "Cursor model discovery was aborted.");
+			}
+			throw new CursorModelDiscoveryError("ProtocolError", error instanceof Error ? error.message : "Cursor model discovery failed.");
+		}
+	}
+
+	fallbackCatalog(): CursorModelCatalog {
+		return createEstimatedCursorCatalog(this.#now());
+	}
+}
+
+export function ensureDefaultCursorModel(catalog: CursorModelCatalog): CursorModelCatalog {
+	if (catalog.models.some((model) => model.id === CURSOR_DEFAULT_MODEL_ID || model.id.startsWith(`${CURSOR_DEFAULT_MODEL_ID}-`))) {
+		return catalog;
+	}
+	return {
+		...catalog,
+		models: [
+			...catalog.models,
+			{ id: CURSOR_DEFAULT_MODEL_ID, displayName: "Composer 2", supportsReasoning: true, contextWindow: 200_000, maxTokens: 64_000 },
+		],
+	};
+}

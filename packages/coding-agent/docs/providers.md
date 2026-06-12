@@ -18,6 +18,7 @@ Use `/login` in interactive mode, then select a provider:
 - ChatGPT Plus/Pro (Codex)
 - Claude Pro/Max
 - GitHub Copilot
+- Cursor (experimental)
 
 Use `/logout` to clear credentials. Tokens are stored in `~/.atomic/agent/auth.json` and auto-refresh when expired.
 
@@ -38,6 +39,19 @@ Anthropic subscription auth is active for Claude Pro/Max accounts. Third-party h
 
 - Press Enter for github.com, or enter your GitHub Enterprise Server domain
 - If you get "model not supported", enable it in VS Code: Copilot Chat → model selector → select model → "Enable"
+
+### Cursor (experimental)
+
+Cursor support is bundled as the first-party `@bastani/cursor` extension and appears in `/login` as **Cursor (experimental)**. It uses Cursor's browser PKCE flow and stores OAuth credentials in `~/.atomic/agent/auth.json`; do not paste Cursor tokens into environment variables, command-line arguments, or custom proxies.
+
+Current limitations:
+
+- Cursor uses private, undocumented APIs. Atomic keeps the transport isolated and labels this provider experimental because Cursor may change the protocol without notice.
+- Text input is supported; vision/image input is rejected with a clear error.
+- Model metadata may show estimated labels when live `GetUsableModels` discovery is unavailable.
+- The initial implementation avoids the prior localhost proxy/child-process bridge design; unfinished private protobuf transport paths fail with sanitized experimental protocol errors rather than logging credentials.
+
+Select models as `cursor/<model-id>` (default: `cursor/composer-2`).
 
 ## API Keys
 
