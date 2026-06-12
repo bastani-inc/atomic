@@ -3,7 +3,6 @@ import type { Context, Model, Api, ThinkingLevel } from "@earendil-works/pi-ai";
 import {
 	buildCursorRpcHeaders,
 	createCursorExperimentalProtocolError,
-	CURSOR_API,
 	CURSOR_API_BASE_URL,
 	CURSOR_GET_USABLE_MODELS_PATH,
 	CURSOR_RUN_PATH,
@@ -12,7 +11,6 @@ import {
 	readBooleanField,
 	readNumberField,
 	readStringField,
-	redactHeaders,
 	sanitizeDiagnosticText,
 	type JsonObject,
 	type JsonValue,
@@ -53,10 +51,20 @@ export interface CursorRunRequest {
 
 export type CursorDoneReason = "stop" | "length" | "toolUse";
 
+export interface CursorToolCallMessage {
+	readonly type: "toolCall";
+	readonly id: string;
+	readonly name: string;
+	readonly argumentsJson: string;
+	readonly execId?: string;
+	readonly execNumericId?: number;
+}
+
 export type CursorServerMessage =
 	| { readonly type: "textDelta"; readonly text: string }
 	| { readonly type: "thinkingDelta"; readonly text: string }
-	| { readonly type: "toolCall"; readonly id: string; readonly name: string; readonly argumentsJson: string; readonly execId?: string; readonly execNumericId?: number }
+	| CursorToolCallMessage
+	| { readonly type: "toolCallBatch"; readonly toolCalls: readonly CursorToolCallMessage[] }
 	| { readonly type: "usage"; readonly kind?: "checkpoint"; readonly inputTokens?: number; readonly outputTokens?: number; readonly cacheReadTokens?: number; readonly cacheWriteTokens?: number; readonly usedTokens?: number; readonly maxTokens?: number }
 	| { readonly type: "usage"; readonly kind: "outputDelta"; readonly outputTokens: number }
 	| { readonly type: "nonMcpExec"; readonly fieldNumber: number; readonly execId?: string; readonly execNumericId?: number }
@@ -369,7 +377,7 @@ class Http2CursorRunStream implements CursorRunStream {
 					throwIfCursorEndStreamError(frame.data, this.secrets);
 					continue;
 				}
-				for (const message of this.codec.decodeRunFrame(frame)) {
+				for (const message of coalesceToolCallsInFrame(this.codec.decodeRunFrame(frame))) {
 					yield message;
 				}
 			}
@@ -764,7 +772,7 @@ export class CursorMockTransport implements CursorAgentTransport {
 	}
 
 	private async *createMessageIterable(): AsyncIterable<CursorServerMessage> {
-		for (const message of this.#messages) {
+		for (const message of coalesceToolCallsInFrame(this.#messages)) {
 			yield message;
 		}
 	}
@@ -889,5 +897,21 @@ function concatBytes(...parts: readonly Uint8Array[]): Uint8Array {
 	return output;
 }
 
-void redactHeaders;
-void CURSOR_API;
+function coalesceToolCallsInFrame(messages: readonly CursorServerMessage[]): readonly CursorServerMessage[] {
+	const output: CursorServerMessage[] = [];
+	let pendingToolCalls: CursorToolCallMessage[] = [];
+	const flushPendingToolCalls = (): void => {
+		if (pendingToolCalls.length === 1) output.push(pendingToolCalls[0]!);
+		else if (pendingToolCalls.length > 1) output.push({ type: "toolCallBatch", toolCalls: [...pendingToolCalls] });
+		pendingToolCalls = [];
+	};
+	for (const message of messages) {
+		if (message.type === "toolCall") pendingToolCalls.push(message);
+		else {
+			flushPendingToolCalls();
+			output.push(message);
+		}
+	}
+	flushPendingToolCalls();
+	return output;
+}

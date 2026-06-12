@@ -233,8 +233,8 @@ export class CursorAuthService {
 
 			if (!response.ok) {
 				consecutiveErrors += 1;
-				const responseText = await response.text();
 				if (consecutiveErrors >= 3) {
+					const responseText = await response.text();
 					throw new CursorAuthError(
 						"PollRejected",
 						`Cursor login polling was rejected (${response.status}): ${sanitizeDiagnosticText(responseText, [verifier, uuid, pollUrl.toString()])}`,

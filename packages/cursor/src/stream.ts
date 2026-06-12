@@ -12,7 +12,7 @@ import {
 import { parseJsonObject, sanitizeDiagnosticText } from "./config.js";
 import { CursorConversationStateStore } from "./conversation-state.js";
 import { resolveCursorModelVariant } from "./model-mapper.js";
-import type { CursorAgentTransport, CursorRunStream, CursorServerMessage, CursorToolResultMessage } from "./transport.js";
+import type { CursorAgentTransport, CursorRunStream, CursorServerMessage, CursorToolCallMessage, CursorToolResultMessage } from "./transport.js";
 
 export interface CursorStreamAdapterOptions {
 	readonly transport: CursorAgentTransport;
@@ -102,6 +102,7 @@ export class CursorStreamAdapter {
 			const resolvedModelId = resolveCursorModelVariant(model.id, model.thinkingLevelMap, options.reasoning);
 			const trailingToolResults = getTrailingToolResults(context);
 			if (trailingToolResults.length > 0) {
+				conversationId = requireCursorToolSessionId(options.sessionId, "resume a paused Cursor tool turn");
 				runStream = await this.#runtime.conversationState.resumeTurnWithToolResults(conversationId, trailingToolResults, { signal: options.signal, timeoutMs: effectiveTimeoutMs });
 			} else {
 				runStream = await this.#runtime.transport.run({
@@ -131,11 +132,16 @@ export class CursorStreamAdapter {
 					textIndex = appendTextDelta(stream, output, textIndex, message.text);
 				} else if (message.type === "thinkingDelta") {
 					thinkingIndex = appendThinkingDelta(stream, output, thinkingIndex, message.text);
-				} else if (message.type === "toolCall") {
+				} else if (message.type === "toolCall" || message.type === "toolCallBatch") {
+					const toolCalls: readonly CursorToolCallMessage[] = message.type === "toolCall" ? [message] : message.toolCalls;
+					const toolConversationId = requireCursorToolSessionId(options.sessionId, "pause a Cursor tool turn");
 					sawToolCall = true;
-					appendToolCall(stream, output, message.id, message.name, message.argumentsJson);
+					for (const toolCall of toolCalls) {
+						appendToolCall(stream, output, toolCall.id, toolCall.name, toolCall.argumentsJson);
+					}
 					closeOpenContent(stream, output, textIndex, thinkingIndex);
-					this.#runtime.conversationState.pauseTurnForTools(conversationId, runStream, [message], { signal: options?.signal, idleTimeoutMs: this.#runtime.pausedTurnIdleTimeoutMs });
+					this.#runtime.conversationState.pauseTurnForTools(toolConversationId, runStream, toolCalls, { signal: options?.signal, idleTimeoutMs: this.#runtime.pausedTurnIdleTimeoutMs });
+					conversationId = toolConversationId;
 					output.stopReason = "toolUse";
 					stream.push({ type: "done", reason: "toolUse", message: output });
 					terminalEventSent = true;
@@ -158,7 +164,6 @@ export class CursorStreamAdapter {
 				closeOpenContent(stream, output, textIndex, thinkingIndex);
 				output.stopReason = sawToolCall ? "toolUse" : "stop";
 				stream.push({ type: "done", reason: output.stopReason, message: output });
-				terminalEventSent = true;
 			}
 		} catch (error) {
 			const aborted = error instanceof CursorStreamAbortError || options?.signal?.aborted;
@@ -170,7 +175,6 @@ export class CursorStreamAdapter {
 					? "Cursor stream timed out while waiting for provider output."
 					: sanitizeDiagnosticText(error instanceof Error ? error.message : "Cursor stream failed.", [options?.apiKey ?? ""]);
 			stream.push({ type: "error", reason: output.stopReason, error: output });
-			terminalEventSent = true;
 			if ((aborted || timedOut) && runStream && conversationId) {
 				try {
 					await this.#runtime.conversationState.cancelTurn(conversationId);
@@ -239,6 +243,11 @@ function getTrailingToolResults(context: Context): CursorToolResultMessage[] {
 
 function textFromToolResult(message: Extract<Context["messages"][number], { readonly role: "toolResult" }>): string {
 	return message.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("\n");
+}
+
+function requireCursorToolSessionId(sessionId: string | undefined, action: string): string {
+	if (sessionId && sessionId.trim().length > 0) return sessionId;
+	throw new Error(`Cursor tool calls require a stable sessionId from the host before Atomic can ${action}.`);
 }
 
 function hasImageInput(context: Context): boolean {

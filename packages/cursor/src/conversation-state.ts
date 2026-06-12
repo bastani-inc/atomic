@@ -1,4 +1,4 @@
-import type { CursorRunStream, CursorServerMessage, CursorToolResultMessage, CursorTransportLifecycleSnapshot, CursorWriteOptions } from "./transport.js";
+import type { CursorRunStream, CursorToolCallMessage, CursorToolResultMessage, CursorTransportLifecycleSnapshot, CursorWriteOptions } from "./transport.js";
 
 export interface CursorConversationSnapshot extends CursorTransportLifecycleSnapshot {
 	readonly activeTurns: number;
@@ -35,7 +35,7 @@ export class CursorConversationStateStore {
 		this.#activeTurns.set(conversationId, { conversationId, stream, pendingTools: new Map() });
 	}
 
-	pauseTurnForTools(conversationId: string, stream: CursorRunStream, toolCalls: readonly Extract<CursorServerMessage, { readonly type: "toolCall" }>[], options: CursorPauseTurnOptions = {}): void {
+	pauseTurnForTools(conversationId: string, stream: CursorRunStream, toolCalls: readonly CursorToolCallMessage[], options: CursorPauseTurnOptions = {}): void {
 		const existing = this.#activeTurns.get(conversationId);
 		if (existing && existing.stream !== stream) this.replaceExistingTurn(existing, stream);
 		else if (existing) this.cleanupTurn(existing);
@@ -74,7 +74,7 @@ export class CursorConversationStateStore {
 			}
 			if (this.#activeTurns.get(conversationId) !== turn) throw new Error(`Cursor paused tool turn for conversation ${conversationId} was cancelled before resume completed.`);
 			this.cleanupTurn(turn);
-			this.#activeTurns.set(conversationId, { conversationId, stream: turn.stream, pendingTools: turn.pendingTools });
+			this.#activeTurns.set(conversationId, { conversationId, stream: turn.stream, pendingTools: new Map() });
 			return turn.stream;
 		} catch (error) {
 			if (this.#activeTurns.get(conversationId) === turn) await this.cancelSpecificTurn(turn).catch(() => undefined);

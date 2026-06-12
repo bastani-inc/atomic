@@ -304,10 +304,6 @@ function encodeMcpToolResult(result: CursorToolResultMessage): Uint8Array {
 	return encodeMessageField(2, execFields);
 }
 
-function stringifyArguments(value: object): string {
-	return JSON.stringify(value);
-}
-
 function encodeConversationState(request: CursorRunRequest): Uint8Array {
 	interface HistoricalToolStep {
 		readonly kind: "tool";
@@ -346,7 +342,7 @@ function encodeConversationState(request: CursorRunRequest): Uint8Array {
 				else if (part.type === "thinking") steps.push(encodeMessageField(3, encodeStringField(1, part.thinking)));
 				else {
 					if (pendingToolSteps.has(part.id)) throw new Error(`Duplicate historical Cursor tool call id ${part.id}.`);
-					const toolStep: HistoricalToolStep = { kind: "tool", id: part.id, name: part.name, argsJson: stringifyArguments(part.arguments) };
+					const toolStep: HistoricalToolStep = { kind: "tool", id: part.id, name: part.name, argsJson: JSON.stringify(part.arguments) };
 					pendingToolSteps.set(part.id, toolStep);
 					steps.push(toolStep);
 				}

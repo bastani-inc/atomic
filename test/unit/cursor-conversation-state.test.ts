@@ -67,6 +67,22 @@ describe("CursorConversationStateStore", () => {
 		assert.equal(store.activeTurns, 0);
 	});
 
+	test("clears pending tool calls after a successful resume", async () => {
+		const store = new CursorConversationStateStore();
+		const stream = new CountingStream("resume-once");
+		store.registerTurn("conversation-resume", stream);
+		store.pauseTurnForTools("conversation-resume", stream, [toolCall]);
+
+		await store.resumeTurnWithToolResults("conversation-resume", [toolResult()]);
+
+		await assert.rejects(
+			() => store.resumeTurnWithToolResults("conversation-resume", [toolResult()]),
+			/does not match a paused tool call/u,
+		);
+		assert.equal(store.activeTurns, 0);
+		assert.equal(stream.cancelCalls, 1);
+	});
+
 	test("registerTurn disarms and cancels an existing same-conversation turn before replacing it", async () => {
 		const store = new CursorConversationStateStore();
 		const oldStream = new CountingStream("old");
