@@ -18,6 +18,20 @@ import {
 	type JsonValue,
 } from "./config.js";
 import type { CursorUsableModel } from "./model-mapper.js";
+import { CursorProtobufProtocolCodec } from "./proto/protobuf-codec.js";
+export { CursorProtobufProtocolCodec } from "./proto/protobuf-codec.js";
+
+export type CursorTransportErrorCode = "Unauthorized" | "CursorApiRejected" | "Aborted" | "NetworkError" | "ProtocolError";
+
+export class CursorTransportError extends Error {
+	constructor(
+		readonly code: CursorTransportErrorCode,
+		message: string,
+	) {
+		super(message);
+		this.name = "CursorTransportError";
+	}
+}
 
 export interface CursorTransportLifecycleSnapshot {
 	readonly openStreams: number;
@@ -121,24 +135,38 @@ export function encodeCursorConnectFrame(data: Uint8Array, flags = 0): Uint8Arra
 }
 
 export function decodeCursorConnectFrames(data: Uint8Array): readonly CursorConnectFrame[] {
-	const frames: CursorConnectFrame[] = [];
-	let offset = 0;
-	while (offset < data.length) {
-		if (data.length - offset < 5) {
-			throw new Error("Incomplete Cursor Connect frame header.");
-		}
-		const flags = data[offset] ?? 0;
-		const view = new DataView(data.buffer, data.byteOffset + offset, data.byteLength - offset);
-		const length = view.getUint32(1, false);
-		const bodyStart = offset + 5;
-		const bodyEnd = bodyStart + length;
-		if (bodyEnd > data.length) {
-			throw new Error("Incomplete Cursor Connect frame body.");
-		}
-		frames.push({ flags, data: data.slice(bodyStart, bodyEnd), endStream: (flags & CONNECT_END_STREAM_FLAG) !== 0 });
-		offset = bodyEnd;
-	}
+	const decoder = new CursorConnectFrameDecoder();
+	const frames = decoder.push(data);
+	decoder.finish();
 	return frames;
+}
+
+export class CursorConnectFrameDecoder {
+	#buffer: Uint8Array<ArrayBufferLike> = new Uint8Array();
+
+	push(data: Uint8Array): readonly CursorConnectFrame[] {
+		this.#buffer = concatBytes(this.#buffer, data);
+		const frames: CursorConnectFrame[] = [];
+		let offset = 0;
+		while (this.#buffer.length - offset >= 5) {
+			const flags = this.#buffer[offset] ?? 0;
+			const view = new DataView(this.#buffer.buffer, this.#buffer.byteOffset + offset, this.#buffer.byteLength - offset);
+			const length = view.getUint32(1, false);
+			const bodyStart = offset + 5;
+			const bodyEnd = bodyStart + length;
+			if (bodyEnd > this.#buffer.length) break;
+			frames.push({ flags, data: this.#buffer.slice(bodyStart, bodyEnd), endStream: (flags & CONNECT_END_STREAM_FLAG) !== 0 });
+			offset = bodyEnd;
+		}
+		this.#buffer = this.#buffer.slice(offset);
+		return frames;
+	}
+
+	finish(): void {
+		if (this.#buffer.length === 0) return;
+		if (this.#buffer.length < 5) throw new Error("Incomplete Cursor Connect frame header.");
+		throw new Error("Incomplete Cursor Connect frame body.");
+	}
 }
 
 export class Http2CursorAgentTransport implements CursorAgentTransport {
@@ -153,12 +181,12 @@ export class Http2CursorAgentTransport implements CursorAgentTransport {
 		const options = typeof baseUrlOrOptions === "string" ? { baseUrl: baseUrlOrOptions } : baseUrlOrOptions;
 		this.#baseUrl = options.baseUrl ?? CURSOR_API_BASE_URL;
 		this.#client = options.client ?? new NodeHttp2CursorClient();
-		this.#codec = options.codec ?? new JsonCursorProtocolCodec();
+		this.#codec = options.codec ?? new CursorProtobufProtocolCodec();
 	}
 
 	async getUsableModels(accessToken: string, requestId: string, signal?: AbortSignal): Promise<readonly CursorUsableModel[]> {
 		if (signal?.aborted) {
-			throw createCursorExperimentalProtocolError("Cursor model discovery was aborted before the request started.");
+			throw new CursorTransportError("Aborted", "Cursor model discovery was aborted before the request started.");
 		}
 		const headers = buildCursorRpcHeaders(accessToken, requestId, "application/proto");
 		try {
@@ -179,7 +207,7 @@ export class Http2CursorAgentTransport implements CursorAgentTransport {
 
 	async run(request: CursorRunRequest): Promise<CursorRunStream> {
 		if (request.signal?.aborted) {
-			throw createCursorExperimentalProtocolError("Cursor stream was aborted before the request started.");
+			throw new CursorTransportError("Aborted", "Cursor stream was aborted before the request started.");
 		}
 		const headers = {
 			...buildCursorRpcHeaders(request.accessToken, request.requestId, "application/connect+proto"),
@@ -256,13 +284,14 @@ class Http2CursorRunStream implements CursorRunStream {
 	}
 
 	private async *createMessages(): AsyncIterable<CursorServerMessage> {
+		const decoder = new CursorConnectFrameDecoder();
 		for await (const raw of this.handle.frames) {
-			for (const frame of decodeCursorConnectFrames(raw)) {
+			for (const frame of decoder.push(raw)) {
 				if (frame.endStream) {
 					const endMessage = textDecoder.decode(frame.data);
 					const parsed = parseJsonObject(endMessage);
 					const code = parsed ? readStringField(parsed, "code") : undefined;
-					if (code && code !== "ok") throw new Error(`Cursor stream ended with ${code}.`);
+					if (code && code !== "ok") throw new CursorTransportError("CursorApiRejected", `Cursor stream ended with ${code}.`);
 					continue;
 				}
 				for (const message of this.codec.decodeRunFrame(frame)) {
@@ -270,6 +299,7 @@ class Http2CursorRunStream implements CursorRunStream {
 				}
 			}
 		}
+		decoder.finish();
 	}
 }
 
@@ -281,28 +311,38 @@ class NodeHttp2CursorClient implements CursorHttp2Client {
 		return new Promise<CursorHttp2UnaryResponse>((resolve, reject) => {
 			const chunks: Buffer[] = [];
 			let responseHeaders: Record<string, string> = {};
+			let settled = false;
 			const stream = session.request({
 				[constants.HTTP2_HEADER_METHOD]: constants.HTTP2_METHOD_POST,
 				[constants.HTTP2_HEADER_PATH]: request.path,
 				...request.headers,
 			});
+			const finishReject = (error: Error): void => {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				reject(error);
+			};
 			const cleanup = (): void => {
 				request.signal?.removeEventListener("abort", onAbort);
+				session.removeListener("error", onSessionError);
 				this.closeSession(session);
 			};
 			const onAbort = (): void => {
-				stream.destroy(new Error("Cursor request aborted."));
+				stream.destroy(new CursorTransportError("Aborted", "Cursor request aborted."));
 			};
+			const onSessionError = (error: Error): void => finishReject(new CursorTransportError("NetworkError", error.message));
 			request.signal?.addEventListener("abort", onAbort, { once: true });
+			session.on("error", onSessionError);
 			stream.on("response", (headers: IncomingHttpHeaders) => {
 				responseHeaders = normalizeIncomingHeaders(headers);
 			});
 			stream.on("data", (chunk: Buffer) => chunks.push(chunk));
-			stream.on("error", (error: Error) => {
-				cleanup();
-				reject(error);
-			});
+			stream.on("aborted", () => finishReject(new CursorTransportError("NetworkError", "Cursor unary request was aborted by the remote endpoint.")));
+			stream.on("error", (error: Error) => finishReject(toTransportError(error)));
 			stream.on("end", () => {
+				if (settled) return;
+				settled = true;
 				cleanup();
 				resolve({ statusCode: Number(responseHeaders[":status"]), body: Buffer.concat(chunks), headers: responseHeaders });
 			});
@@ -312,12 +352,46 @@ class NodeHttp2CursorClient implements CursorHttp2Client {
 
 	async openStream(request: { readonly baseUrl: string; readonly path: string; readonly headers: Record<string, string>; readonly signal?: AbortSignal }): Promise<CursorHttp2StreamHandle> {
 		const session = this.openSession(request.baseUrl);
-		const stream = session.request({
-			[constants.HTTP2_HEADER_METHOD]: constants.HTTP2_METHOD_POST,
-			[constants.HTTP2_HEADER_PATH]: request.path,
-			...request.headers,
+		return new Promise<CursorHttp2StreamHandle>((resolve, reject) => {
+			let settled = false;
+			const stream = session.request({
+				[constants.HTTP2_HEADER_METHOD]: constants.HTTP2_METHOD_POST,
+				[constants.HTTP2_HEADER_PATH]: request.path,
+				...request.headers,
+			});
+			const cleanupBeforeResolve = (): void => {
+				request.signal?.removeEventListener("abort", onAbort);
+				session.removeListener("error", onSessionError);
+			};
+			const rejectOnce = (error: Error): void => {
+				if (settled) return;
+				settled = true;
+				cleanupBeforeResolve();
+				stream.destroy(error);
+				this.closeSession(session);
+				reject(error);
+			};
+			const onAbort = (): void => rejectOnce(new CursorTransportError("Aborted", "Cursor stream request aborted."));
+			const onSessionError = (error: Error): void => rejectOnce(new CursorTransportError("NetworkError", error.message));
+			request.signal?.addEventListener("abort", onAbort, { once: true });
+			session.on("error", onSessionError);
+			stream.once("response", (headers: IncomingHttpHeaders) => {
+				const normalized = normalizeIncomingHeaders(headers);
+				const statusCode = Number(normalized[":status"]);
+				try {
+					assertSuccessfulStatus(statusCode, new Uint8Array(), []);
+				} catch (error) {
+					rejectOnce(toError(error));
+					return;
+				}
+				if (settled) return;
+				settled = true;
+				cleanupBeforeResolve();
+				resolve(new NodeHttp2CursorStreamHandle(stream, () => this.closeSession(session), request.signal));
+			});
+			stream.once("error", (error: Error) => rejectOnce(toTransportError(error)));
+			stream.once("aborted", () => rejectOnce(new CursorTransportError("NetworkError", "Cursor stream was aborted by the remote endpoint before headers.")));
 		});
-		return new NodeHttp2CursorStreamHandle(stream, () => this.closeSession(session), request.signal);
 	}
 
 	async dispose(): Promise<void> {
@@ -382,32 +456,48 @@ class NodeHttp2CursorStreamHandle implements CursorHttp2StreamHandle {
 			notify?.();
 			notify = undefined;
 		};
-		this.stream.on("data", (chunk: Buffer) => {
+		const finish = (): void => {
+			done = true;
+			wake();
+		};
+		const fail = (error: Error): void => {
+			failure = error;
+			finish();
+		};
+		const onData = (chunk: Buffer): void => {
 			queue.push(chunk);
 			wake();
-		});
-		this.stream.on("end", () => {
-			done = true;
-			wake();
-		});
-		this.stream.on("error", (error: Error) => {
-			failure = error;
-			done = true;
-			wake();
-		});
-		while (!done || queue.length > 0) {
-			const next = queue.shift();
-			if (next) {
-				yield next;
-				continue;
+		};
+		const onEnd = (): void => finish();
+		const onClose = (): void => finish();
+		const onAborted = (): void => fail(new CursorTransportError("NetworkError", "Cursor stream was aborted by the remote endpoint."));
+		const onError = (error: Error): void => fail(toTransportError(error));
+		this.stream.on("data", onData);
+		this.stream.on("end", onEnd);
+		this.stream.on("close", onClose);
+		this.stream.on("aborted", onAborted);
+		this.stream.on("error", onError);
+		try {
+			while (!done || queue.length > 0) {
+				const next = queue.shift();
+				if (next) {
+					yield next;
+					continue;
+				}
+				if (failure) throw failure;
+				if (done) break;
+				await new Promise<void>((resolve) => {
+					notify = resolve;
+				});
 			}
 			if (failure) throw failure;
-			if (done) break;
-			await new Promise<void>((resolve) => {
-				notify = resolve;
-			});
+		} finally {
+			this.stream.removeListener("data", onData);
+			this.stream.removeListener("end", onEnd);
+			this.stream.removeListener("close", onClose);
+			this.stream.removeListener("aborted", onAborted);
+			this.stream.removeListener("error", onError);
 		}
-		if (failure) throw failure;
 	}
 }
 
@@ -572,7 +662,8 @@ export function parseCursorModelFromJson(value: JsonObject): CursorUsableModel |
 }
 
 export function sanitizeCursorTransportError(error: Error, secrets: readonly string[] = []): Error {
-	return new Error(sanitizeDiagnosticText(error.message, secrets));
+	const message = sanitizeDiagnosticText(error.message, secrets);
+	return error instanceof CursorTransportError ? new CursorTransportError(error.code, message) : new CursorTransportError("ProtocolError", message);
 }
 
 export function parseCursorModelListFromJsonText(text: string): readonly CursorUsableModel[] {
@@ -622,7 +713,9 @@ function unwrapUnaryBody(data: Uint8Array): Uint8Array {
 function assertSuccessfulStatus(statusCode: number | undefined, body: Uint8Array, secrets: readonly string[]): void {
 	if (statusCode === undefined || (statusCode >= 200 && statusCode < 300)) return;
 	const detail = sanitizeDiagnosticText(textDecoder.decode(body), secrets);
-	throw new Error(`Cursor API rejected request with HTTP ${statusCode}${detail ? `: ${detail}` : ""}`);
+	const message = `Cursor API rejected request with HTTP ${statusCode}${detail ? `: ${detail}` : ""}`;
+	if (statusCode === 401 || statusCode === 403) throw new CursorTransportError("Unauthorized", message);
+	throw new CursorTransportError("CursorApiRejected", message);
 }
 
 function normalizeIncomingHeaders(headers: IncomingHttpHeaders): Record<string, string> {
@@ -637,6 +730,21 @@ function normalizeIncomingHeaders(headers: IncomingHttpHeaders): Record<string, 
 
 function toError(error: unknown): Error {
 	return error instanceof Error ? error : new Error(String(error));
+}
+
+function toTransportError(error: unknown): CursorTransportError {
+	if (error instanceof CursorTransportError) return error;
+	return new CursorTransportError("NetworkError", toError(error).message);
+}
+
+function concatBytes(...parts: readonly Uint8Array[]): Uint8Array {
+	const output = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
+	let offset = 0;
+	for (const part of parts) {
+		output.set(part, offset);
+		offset += part.length;
+	}
+	return output;
 }
 
 void redactHeaders;

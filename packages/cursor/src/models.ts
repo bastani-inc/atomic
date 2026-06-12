@@ -1,8 +1,8 @@
 import { CURSOR_DEFAULT_MODEL_ID } from "./config.js";
 import { createEstimatedCursorCatalog, type CursorModelCatalog } from "./model-mapper.js";
-import type { CursorAgentTransport } from "./transport.js";
+import { CursorTransportError, type CursorAgentTransport, type CursorTransportErrorCode } from "./transport.js";
 
-export type CursorDiscoveryErrorCode = "Unauthorized" | "NoUsableModels" | "ProtocolError" | "NetworkError";
+export type CursorDiscoveryErrorCode = CursorTransportErrorCode | "NoUsableModels";
 
 export class CursorModelDiscoveryError extends Error {
 	constructor(
@@ -39,8 +39,11 @@ export class CursorModelDiscoveryService {
 			if (error instanceof CursorModelDiscoveryError) {
 				throw error;
 			}
+			if (error instanceof CursorTransportError) {
+				throw new CursorModelDiscoveryError(error.code, error.message);
+			}
 			if (signal?.aborted) {
-				throw new CursorModelDiscoveryError("NetworkError", "Cursor model discovery was aborted.");
+				throw new CursorModelDiscoveryError("Aborted", "Cursor model discovery was aborted.");
 			}
 			throw new CursorModelDiscoveryError("ProtocolError", error instanceof Error ? error.message : "Cursor model discovery failed.");
 		}

@@ -4,7 +4,7 @@
 
 ### Added
 
-- Added the experimental bundled `@bastani/cursor` provider scaffold so `/login` can offer Cursor OAuth, `cursor/composer-2` resolves as the default Cursor model, and Cursor model mapping/streaming hooks are available behind an isolated HTTP/2 Connect transport boundary.
+- Added the experimental bundled `@bastani/cursor` provider scaffold so `/login` can offer Cursor OAuth, `cursor/composer-2` resolves as the default Cursor model, and Cursor model mapping/streaming hooks are available behind an isolated HTTP/2 Connect transport boundary with production-default protobuf decoding and buffered Connect frames.
 - Added the opt-in `createStructuredOutputTool({ schema, capture, output, name })` factory for terminating machine-readable final answers with schema-as-parameters validation, flat `details`, in-process capture, flat private `output.json` capture plus `output.meta.json` sidecar metadata, and prompt guidance for exact-once use without registering `structured_output` in normal agent sessions by default ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
 
 ### Changed

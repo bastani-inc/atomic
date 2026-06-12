@@ -48,8 +48,8 @@ Current limitations:
 
 - Cursor uses private, undocumented APIs. Atomic keeps the transport isolated and labels this provider experimental because Cursor may change the protocol without notice.
 - Text input is supported; vision/image input is rejected with a clear error.
-- Model metadata may show estimated labels when live `GetUsableModels` discovery fails or the protobuf codec cannot decode Cursor's private response.
-- The implementation avoids the prior localhost proxy/child-process bridge design. HTTP/2 Connect request/framing code is isolated and tested with injected fakes; real Cursor protobuf decoding remains experimental and fails with sanitized protocol errors rather than logging credentials.
+- Model metadata may show estimated labels only after allowed live `GetUsableModels` discovery failures; authentication, access rejection, cancellation, and accounts with no usable models surface as errors.
+- The implementation avoids the prior localhost proxy/child-process bridge design. HTTP/2 Connect request/framing code is isolated, buffered across arbitrary chunks, tested with injected fakes, and uses a minimal production protobuf codec while redacting credentials from protocol errors.
 
 Select models as `cursor/<model-id>` (default: `cursor/composer-2`).
 

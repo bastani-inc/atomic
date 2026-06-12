@@ -113,7 +113,7 @@ export function registerCursorProvider(pi: CursorProviderHost, options: CursorPr
 			if (!(error instanceof CursorModelDiscoveryError)) {
 				throw error;
 			}
-			if (throwOnEmptyCatalog && error.code === "NoUsableModels") {
+			if (!isEstimatedCatalogFallbackAllowed(error, throwOnEmptyCatalog)) {
 				throw error;
 			}
 			registerCatalog(mapCursorCatalogToProviderModels(createEstimatedCursorCatalog()));
@@ -135,6 +135,13 @@ export function registerCursorProvider(pi: CursorProviderHost, options: CursorPr
 			await streamAdapter.dispose();
 		},
 	};
+}
+
+function isEstimatedCatalogFallbackAllowed(error: CursorModelDiscoveryError, throwOnEmptyCatalog: boolean): boolean {
+	if (error.code === "NetworkError") return true;
+	if (error.code === "ProtocolError") return true;
+	if (error.code === "NoUsableModels") return !throwOnEmptyCatalog;
+	return false;
 }
 
 export default function cursorProviderExtension(pi: CursorProviderHost): void {

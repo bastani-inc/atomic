@@ -2,6 +2,9 @@ import { test, describe } from "bun:test";
 import assert from "node:assert/strict";
 import type { Api, Context, Model } from "@earendil-works/pi-ai";
 import {
+	CursorConnectFrameDecoder,
+	CursorProtobufProtocolCodec,
+	CursorTransportError,
 	decodeCursorConnectFrames,
 	encodeCursorConnectFrame,
 	Http2CursorAgentTransport,
@@ -12,6 +15,7 @@ import {
 	type CursorRunRequest,
 	type CursorServerMessage,
 } from "../../packages/cursor/src/transport.js";
+import { __cursorProtoTest } from "../../packages/cursor/src/proto/protobuf-codec.js";
 
 class FakeStreamHandle implements CursorHttp2StreamHandle {
 	readonly writes: Uint8Array[] = [];
@@ -42,7 +46,8 @@ class FakeHttp2Client implements CursorHttp2Client {
 	unaryRequests: Array<{ path: string; headers: Record<string, string>; body: Uint8Array }> = [];
 	streamRequests: Array<{ path: string; headers: Record<string, string> }> = [];
 	streamHandle: FakeStreamHandle;
-	unaryBody = new Uint8Array([1, 2, 3]);
+	unaryBody: Uint8Array<ArrayBufferLike> = new Uint8Array([1, 2, 3]);
+	unaryStatus = 200;
 	disposed = false;
 
 	constructor(frames: readonly Uint8Array[] = []) {
@@ -51,7 +56,7 @@ class FakeHttp2Client implements CursorHttp2Client {
 
 	async requestUnary(request: { readonly path: string; readonly headers: Record<string, string>; readonly body: Uint8Array }): Promise<{ readonly body: Uint8Array; readonly headers: Record<string, string>; readonly statusCode?: number }> {
 		this.unaryRequests.push({ path: request.path, headers: request.headers, body: request.body });
-		return { statusCode: 200, body: this.unaryBody, headers: {} };
+		return { statusCode: this.unaryStatus, body: this.unaryBody, headers: {} };
 	}
 
 	async openStream(request: { readonly path: string; readonly headers: Record<string, string> }): Promise<CursorHttp2StreamHandle> {
@@ -117,6 +122,7 @@ const model: Model<Api> = {
 };
 
 const context: Context = { messages: [], systemPrompt: "" };
+const contextWithUserMessage: Context = { messages: [{ role: "user", content: "hello cursor", timestamp: 1 }], systemPrompt: "system prompt" };
 
 describe("Cursor HTTP2 transport boundary", () => {
 	test("encodes and decodes Connect frames", () => {
@@ -126,6 +132,41 @@ describe("Cursor HTTP2 transport boundary", () => {
 		assert.equal(decoded.length, 1);
 		assert.equal(decoded[0]?.endStream, true);
 		assert.deepEqual([...(decoded[0]?.data ?? [])], [1, 2, 3]);
+	});
+
+	test("buffers split Connect frames across HTTP/2 chunks", () => {
+		const encoded = encodeCursorConnectFrame(new Uint8Array([1, 2, 3]));
+		const decoder = new CursorConnectFrameDecoder();
+		assert.deepEqual(decoder.push(encoded.slice(0, 2)), []);
+		assert.deepEqual(decoder.push(encoded.slice(2, 6)), []);
+		const frames = decoder.push(encoded.slice(6));
+		assert.equal(frames.length, 1);
+		assert.deepEqual([...(frames[0]?.data ?? [])], [1, 2, 3]);
+		decoder.finish();
+	});
+
+	test("protobuf codec decodes Cursor model discovery and text frames", () => {
+		const codec = new CursorProtobufProtocolCodec();
+		const encodedRun = codec.encodeRunRequest({ accessToken: "secret", requestId: "run-proto", model, resolvedModelId: "composer-2", context: contextWithUserMessage });
+		assert.ok(new TextDecoder().decode(encodedRun).includes("hello cursor"));
+		const textDelta = __cursorProtoTest.encodeMessageField(1, __cursorProtoTest.encodeStringField(1, "hello"));
+		const interactionUpdate = __cursorProtoTest.encodeMessageField(1, textDelta);
+		assert.deepEqual(codec.decodeRunFrame({ flags: 0, data: interactionUpdate, endStream: false }), [{ type: "textDelta", text: "hello" }]);
+	});
+
+	test("production transport defaults to the isolated protobuf codec", async () => {
+		const client = new FakeHttp2Client();
+		const modelMessage = __cursorProtoTest.concatBytes(
+			__cursorProtoTest.encodeStringField(1, "composer-2"),
+			__cursorProtoTest.encodeStringField(4, "Composer 2"),
+			__cursorProtoTest.encodeMessageField(2, new Uint8Array()),
+		);
+		client.unaryBody = __cursorProtoTest.encodeMessageField(1, modelMessage);
+		const transport = new Http2CursorAgentTransport({ client });
+		const models = await transport.getUsableModels("secret-token", "request-proto");
+		assert.equal(models[0]?.id, "composer-2");
+		assert.equal(models[0]?.supportsThinking, true);
+		assert.ok(client.unaryRequests[0]?.body instanceof Uint8Array);
 	});
 
 	test("getUsableModels sends Cursor headers/path/body and decodes response", async () => {
@@ -170,6 +211,17 @@ describe("Cursor HTTP2 transport boundary", () => {
 		assert.deepEqual([...decodeCursorConnectFrames(client.streamHandle.writes[1] ?? new Uint8Array())[0]!.data], [7]);
 		assert.equal(client.streamHandle.cancelled, true);
 		assert.deepEqual(transport.getLifecycleSnapshot(), { openStreams: 0, cancelledStreams: 1, closedStreams: 1 });
+	});
+
+	test("classifies non-2xx Cursor responses without leaking credentials", async () => {
+		const client = new FakeHttp2Client();
+		client.unaryStatus = 403;
+		client.unaryBody = new TextEncoder().encode("access token secret-token rejected");
+		const transport = new Http2CursorAgentTransport({ client, codec: new FakeCodec() });
+		await assert.rejects(
+			() => transport.getUsableModels("secret-token", "request-403"),
+			(error: Error) => error instanceof CursorTransportError && error.message.includes("HTTP 403") && !error.message.includes("secret-token"),
+		);
 	});
 
 	test("aborted requests fail without the previous unconditional stub message", async () => {

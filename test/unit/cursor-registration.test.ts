@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai";
 import type { CursorAuthService } from "../../packages/cursor/src/auth.js";
 import type { CursorModelCatalog } from "../../packages/cursor/src/model-mapper.js";
-import type { CursorModelDiscoveryService } from "../../packages/cursor/src/models.js";
+import { CursorModelDiscoveryError, type CursorModelDiscoveryService } from "../../packages/cursor/src/models.js";
 import { registerCursorProvider } from "../../packages/cursor/src/provider.js";
 import { CursorMockTransport } from "../../packages/cursor/src/transport.js";
 
@@ -93,6 +93,40 @@ describe("Cursor provider registration", () => {
 			assert.equal(liveComposer?.name, "Live Composer");
 			assert.equal(liveComposer?.contextWindow, 111);
 		}
+		await runtime.dispose();
+	});
+
+	test("login discovery rethrows auth rejection/cancellation and falls back for network discovery failures", async () => {
+		const makeHost = (): { readonly host: CursorHost; readonly registrations: { readonly name: string; readonly config: CursorConfig }[] } => {
+			const registrations: { readonly name: string; readonly config: CursorConfig }[] = [];
+			return {
+				registrations,
+				host: {
+					registerProvider(name, config) {
+						registrations.push({ name, config });
+					},
+					on() {},
+				},
+			};
+		};
+		const fakeAuth = { async login(): Promise<OAuthCredentials> { return { access: "access-live", refresh: "refresh-live", expires: 123 }; } } as unknown as CursorAuthService;
+		const callbacks: OAuthLoginCallbacks = { onAuth() {}, onDeviceCode() {}, onPrompt: async () => "", onSelect: async () => undefined };
+
+		for (const code of ["Unauthorized", "CursorApiRejected", "Aborted", "NoUsableModels"] as const) {
+			const { host, registrations } = makeHost();
+			const discovery = { async discover(): Promise<CursorModelCatalog> { throw new CursorModelDiscoveryError(code, `blocked ${code}`); } } as unknown as CursorModelDiscoveryService;
+			const runtime = registerCursorProvider(host, { transport: new CursorMockTransport(), authService: fakeAuth, discoveryService: discovery, uuid: () => "request-failure" });
+			await assert.rejects(() => registrations[0]!.config.oauth.login(callbacks), (error: Error) => error.message.includes(code));
+			assert.equal(registrations.length, 1);
+			await runtime.dispose();
+		}
+
+		const { host, registrations } = makeHost();
+		const discovery = { async discover(): Promise<CursorModelCatalog> { throw new CursorModelDiscoveryError("NetworkError", "temporary network failure"); } } as unknown as CursorModelDiscoveryService;
+		const runtime = registerCursorProvider(host, { transport: new CursorMockTransport(), authService: fakeAuth, discoveryService: discovery, uuid: () => "request-network" });
+		await registrations[0]!.config.oauth.login(callbacks);
+		assert.equal(registrations.length, 2);
+		assert.ok(registrations[1]!.config.models.some((model) => /estimated/u.test(model.name)));
 		await runtime.dispose();
 	});
 
