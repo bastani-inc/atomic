@@ -68,8 +68,16 @@ function excerpt(text: string, limit = 1_200): string {
   return `${text.slice(0, limit)}\n…[truncated ${text.length - limit} chars]`;
 }
 
-function hasStatus(text: string, marker: string): boolean {
-  return text.includes(marker);
+function firstNonEmptyLine(text: string): string {
+  return text
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .find((line) => line.length > 0) ?? "";
+}
+
+function hasLeadingStatus(text: string, successMarker: string, failureMarker: string): boolean {
+  const firstLine = firstNonEmptyLine(text);
+  return firstLine === successMarker && !firstLine.includes(failureMarker);
 }
 
 function blockedOutput(
@@ -126,7 +134,6 @@ export default defineWorkflow("publish-release")
     const baseInstructions = releaseInstructions(release);
 
     const prepare = await ctx.task("prepare-release-branch-and-metadata", {
-      context: "fork",
       prompt: [
         "Prepare the release branch and metadata changes for this Atomic repository.",
         "",
@@ -142,17 +149,16 @@ export default defineWorkflow("publish-release")
         `7. Commit all release changes on \`${release.branch}\` with a concise conventional message such as \`chore: release ${release.version}\`.`,
         "",
         "Final response format:",
-        "- Start with `PREPARE_STATUS: ready` or `PREPARE_STATUS: blocked`.",
+        "- The first non-empty line must be exactly `PREPARE_STATUS: ready` or `PREPARE_STATUS: blocked`.",
         "- Include source branch, source HEAD, created/current release branch, release commit hash, `git status --short`, changed files, commands run, and any blockers.",
       ].join("\n"),
     });
 
-    if (!hasStatus(prepare.text, "PREPARE_STATUS: ready")) {
+    if (!hasLeadingStatus(prepare.text, "PREPARE_STATUS: ready", "PREPARE_STATUS: blocked")) {
       return blockedOutput(release, "prepare-release-branch-and-metadata", "PREPARE_STATUS: ready", prepare.text);
     }
 
     const checks = await ctx.task("run-release-checks", {
-      context: "fork",
       prompt: [
         "Run local release validation checks before any PR is opened.",
         "",
@@ -168,17 +174,16 @@ export default defineWorkflow("publish-release")
         "4. If either command fails, stop and report CHECK_STATUS: failed with exact failing command and concise diagnostics.",
         "",
         "Final response format:",
-        "- Start with `CHECK_STATUS: passed` or `CHECK_STATUS: failed`.",
+        "- The first non-empty line must be exactly `CHECK_STATUS: passed` or `CHECK_STATUS: failed`.",
         "- Include commands run and a compact validation summary.",
       ].join("\n"),
     });
 
-    if (!hasStatus(checks.text, "CHECK_STATUS: passed")) {
+    if (!hasLeadingStatus(checks.text, "CHECK_STATUS: passed", "CHECK_STATUS: failed")) {
       return blockedOutput(release, "run-release-checks", "CHECK_STATUS: passed", checks.text, "failed");
     }
 
     const pr = await ctx.task("open-release-pr", {
-      context: "fork",
       prompt: [
         "Push the release branch and open the release PR with GitHub CLI.",
         "",
@@ -196,18 +201,17 @@ export default defineWorkflow("publish-release")
         "6. Verify the PR with `gh pr view --json url,baseRefName,headRefName,headRefOid` and confirm base is `main`, head is the release branch, and head SHA matches the pushed commit.",
         "",
         "Final response format:",
-        "- Start with `PR_STATUS: opened` or `PR_STATUS: blocked`.",
+        "- The first non-empty line must be exactly `PR_STATUS: opened` or `PR_STATUS: blocked`.",
         "- Include the PR URL on its own line if available.",
         "- Include PR base, head branch, head SHA, commands run, and any blockers.",
       ].join("\n"),
     });
 
-    if (!hasStatus(pr.text, "PR_STATUS: opened")) {
+    if (!hasLeadingStatus(pr.text, "PR_STATUS: opened", "PR_STATUS: blocked")) {
       return blockedOutput(release, "open-release-pr", "PR_STATUS: opened", pr.text);
     }
 
     const merge = await ctx.task("wait-for-release-ci-and-merge", {
-      context: "fork",
       prompt: [
         "Wait for CI on the release PR and merge it when checks pass.",
         "",
@@ -224,17 +228,16 @@ export default defineWorkflow("publish-release")
         `5. Confirm the PR is merged with \`gh pr view --json state,mergedAt,mergeCommit,baseRefName,headRefName,headRefOid\`, then confirm the remote release branch still exists with \`git ls-remote --heads origin ${release.branch}\`.`,
         "",
         "Final response format:",
-        "- Start with `MERGE_STATUS: merged` or `MERGE_STATUS: blocked`.",
+        "- The first non-empty line must be exactly `MERGE_STATUS: merged` or `MERGE_STATUS: blocked`.",
         "- Include merged commit/ref evidence, branch-retention evidence, commands run, and any blockers.",
       ].join("\n"),
     });
 
-    if (!hasStatus(merge.text, "MERGE_STATUS: merged")) {
+    if (!hasLeadingStatus(merge.text, "MERGE_STATUS: merged", "MERGE_STATUS: blocked")) {
       return blockedOutput(release, "wait-for-release-ci-and-merge", "MERGE_STATUS: merged", merge.text);
     }
 
     const publish = await ctx.task("tag-and-monitor-publish", {
-      context: "fork",
       prompt: [
         "Sync main, push the release tag, and monitor the publish action.",
         "",
@@ -252,12 +255,12 @@ export default defineWorkflow("publish-release")
         "6. If publishing fails, stop and report PUBLISH_STATUS: failed with the run URL and failing job/step summary.",
         "",
         "Final response format:",
-        "- Start with `PUBLISH_STATUS: completed` or `PUBLISH_STATUS: failed`.",
+        "- The first non-empty line must be exactly `PUBLISH_STATUS: completed` or `PUBLISH_STATUS: failed`.",
         "- Include the pushed tag and SHA, GitHub Actions run URL/status if available, commands run, and final release summary.",
       ].join("\n"),
     });
 
-    if (!hasStatus(publish.text, "PUBLISH_STATUS: completed")) {
+    if (!hasLeadingStatus(publish.text, "PUBLISH_STATUS: completed", "PUBLISH_STATUS: failed")) {
       return blockedOutput(release, "tag-and-monitor-publish", "PUBLISH_STATUS: completed", publish.text, "failed");
     }
 
