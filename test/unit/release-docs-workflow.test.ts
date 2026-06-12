@@ -10,6 +10,7 @@ import {
     findMissingOrEmptyUpdateArtifacts,
     mergeStaleDocTasksByOwnerDocs,
     nextDocsValidationPhase,
+    releaseDocsUpdateTaskKey,
     requireNonBaseBranch,
     requireResearchDocPath,
     verifyReleaseDocsPr,
@@ -223,5 +224,14 @@ describe("release-docs stale-doc task merging", () => {
         ]);
 
         assert.deepEqual(deduped?.owner_docs, ["packages/coding-agent/docs/a.mdx"]);
+    });
+
+    test("builds unique update task keys even when model ids repeat", () => {
+        const tasks = [
+            task("same-id", ["packages/coding-agent/docs/a.mdx"]),
+            task("same-id", ["packages/coding-agent/docs/b.mdx"]),
+        ];
+
+        assert.deepEqual(tasks.map(releaseDocsUpdateTaskKey), ["001-same-id", "002-same-id"]);
     });
 });

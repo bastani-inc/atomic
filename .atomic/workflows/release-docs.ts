@@ -9,6 +9,7 @@ import {
   findMissingOrEmptyUpdateArtifacts,
   mergeStaleDocTasksByOwnerDocs,
   nextDocsValidationPhase,
+  releaseDocsUpdateTaskKey,
   requireNonBaseBranch,
   requireResearchDocPath,
   runDocsChecks,
@@ -166,10 +167,11 @@ export default defineWorkflow("release-docs")
       };
     }
 
-    const updateArtifacts = staleTasks.map((task) => join(updatesRoot, `${sanitizeSegment(task.id)}.md`));
+    const updateTaskKeys = staleTasks.map(releaseDocsUpdateTaskKey);
+    const updateArtifacts = updateTaskKeys.map((key) => join(updatesRoot, `${key}.md`));
     await ctx.parallel(
       staleTasks.map((task, index) => ({
-        name: `update-docs-${sanitizeSegment(task.id)}`,
+        name: `update-docs-${updateTaskKeys[index]}`,
         prompt: [
           "Update Atomic release docs for one grouped stale-doc task.",
           `Release docs metadata artifact: ${metadataPath}`,
@@ -276,6 +278,28 @@ export default defineWorkflow("release-docs")
         stale_doc_tasks: staleTasks,
         validation_report_path: validationPath,
         pr_summary: "Validation failed; PR skipped.",
+      };
+    }
+
+    const docsStatusAfterValidation = runGit(["status", "--porcelain=v1", "packages/coding-agent/docs"]);
+    if (docsStatusAfterValidation.length === 0) {
+      const result = [
+        `No docs changes remained after validation for current branch ${currentBranch}.`,
+        "No release docs PR was opened because the docs tree is clean.",
+        `Research artifact: ${researchDocPath}`,
+        `Stale-doc task artifact: ${staleTasksPath}`,
+        `Validation report: ${validationPath}`,
+      ].join("\n");
+      return {
+        result,
+        status: "no_changes" as const,
+        current_branch: currentBranch,
+        artifact_root: artifactRoot,
+        research_doc_path: researchDocPath,
+        stale_doc_task_count: staleTasks.length,
+        stale_doc_tasks: staleTasks,
+        validation_report_path: validationPath,
+        pr_summary: "No docs changes after validation; PR skipped.",
       };
     }
 

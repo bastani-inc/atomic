@@ -67,6 +67,9 @@ export const sanitizeSegment = (value: string): string =>
     .replace(/[^a-z0-9._-]+/g, "-")
     .replace(/^-+|-+$/g, "") || "item";
 
+export const releaseDocsUpdateTaskKey = (task: Pick<StaleDocTask, "id">, index: number): string =>
+  `${String(index + 1).padStart(3, "0")}-${sanitizeSegment(task.id)}`;
+
 const normalizeOwnerDocPath = (path: string): string => {
   let normalized = path.trim().replace(/\\+/g, "/");
   while (normalized.startsWith("./")) {
