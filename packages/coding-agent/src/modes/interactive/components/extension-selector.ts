@@ -3,7 +3,7 @@
  * Displays a list of string options with keyboard navigation.
  */
 
-import { Container, getKeybindings, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
+import { Container, getKeybindings, matchesKey, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
 import { theme } from "../theme/theme.ts";
 import { CountdownTimer } from "./countdown-timer.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
@@ -13,6 +13,8 @@ export interface ExtensionSelectorOptions {
 	tui?: TUI;
 	timeout?: number;
 	onToggleToolsExpanded?: () => void;
+	onBack?: () => void;
+	backHintLabel?: string;
 }
 
 export class ExtensionSelectorComponent extends Container {
@@ -25,6 +27,8 @@ export class ExtensionSelectorComponent extends Container {
 	private baseTitle: string;
 	private countdown: CountdownTimer | undefined;
 	private onToggleToolsExpanded: (() => void) | undefined;
+	private onBack: (() => void) | undefined;
+	private backHintLabel: string;
 
 	constructor(
 		title: string,
@@ -39,6 +43,8 @@ export class ExtensionSelectorComponent extends Container {
 		this.onSelectCallback = onSelect;
 		this.onCancelCallback = onCancel;
 		this.onToggleToolsExpanded = opts?.onToggleToolsExpanded;
+		this.onBack = opts?.onBack;
+		this.backHintLabel = opts?.backHintLabel ?? "back";
 		this.baseTitle = title;
 
 		this.addChild(new DynamicBorder());
@@ -60,17 +66,10 @@ export class ExtensionSelectorComponent extends Container {
 		this.listContainer = new Container();
 		this.addChild(this.listContainer);
 		this.addChild(new Spacer(1));
-		this.addChild(
-			new Text(
-				rawKeyHint("↑↓", "navigate") +
-					"  " +
-					keyHint("tui.select.confirm", "select") +
-					"  " +
-					keyHint("tui.select.cancel", "cancel"),
-				1,
-				0,
-			),
-		);
+		const hints = [rawKeyHint("↑↓", "navigate"), keyHint("tui.select.confirm", "select")];
+		if (this.onBack) hints.push(rawKeyHint("←", this.backHintLabel));
+		hints.push(keyHint("tui.select.cancel", "cancel"));
+		this.addChild(new Text(hints.join("  "), 1, 0));
 		this.addChild(new Spacer(1));
 		this.addChild(new DynamicBorder());
 
@@ -101,6 +100,8 @@ export class ExtensionSelectorComponent extends Container {
 		} else if (kb.matches(keyData, "tui.select.confirm") || keyData === "\n") {
 			const selected = this.options[this.selectedIndex];
 			if (selected) this.onSelectCallback(selected);
+		} else if (this.onBack && matchesKey(keyData, "left")) {
+			this.onBack();
 		} else if (kb.matches(keyData, "tui.select.cancel")) {
 			this.onCancelCallback();
 		}

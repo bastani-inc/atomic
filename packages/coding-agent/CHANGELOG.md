@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Changed the `/rewind` checkpoint confirmation prompt to include a `← back` action between the select and cancel hints, returning interactive checkpoint selection to the checkpoint list instead of requiring users to cancel and restart the command.
+
 ## [0.8.28] - 2026-06-11
 
 ### Added

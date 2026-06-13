@@ -275,6 +275,12 @@ type RewindCheckpointResolution =
 type RewindCheckpointSelection =
   | { selected: false }
   | { selected: true; checkpoint: CheckpointMetadata | undefined };
+type RewindRestorePreviewResult = "restored" | "cancelled" | "back";
+
+interface InteractiveExtensionDialogOptions extends ExtensionUIDialogOptions {
+  onBack?: () => void;
+  backHintLabel?: string;
+}
 
 function formatRewindFailure(prefix: string, result: RewindFailureSummary): string {
   return `${prefix}: ${result.error}${result.message ? `: ${result.message}` : ""}.`;
@@ -2741,7 +2747,7 @@ export class InteractiveMode {
   private showExtensionSelector(
     title: string,
     options: string[],
-    opts?: ExtensionUIDialogOptions,
+    opts?: InteractiveExtensionDialogOptions,
   ): Promise<string | undefined> {
     return new Promise((resolve) => {
       if (opts?.signal?.aborted) {
@@ -2772,6 +2778,15 @@ export class InteractiveMode {
           tui: this.ui,
           timeout: opts?.timeout,
           onToggleToolsExpanded: () => this.toggleToolOutputExpansion(),
+          onBack: opts?.onBack
+            ? () => {
+                opts?.signal?.removeEventListener("abort", onAbort);
+                this.hideExtensionSelector();
+                opts?.onBack?.();
+                resolve(undefined);
+              }
+            : undefined,
+          backHintLabel: opts?.backHintLabel,
         },
       );
 
@@ -2800,7 +2815,7 @@ export class InteractiveMode {
   private async showExtensionConfirm(
     title: string,
     message: string,
-    opts?: ExtensionUIDialogOptions,
+    opts?: InteractiveExtensionDialogOptions,
   ): Promise<boolean> {
     const result = await this.showExtensionSelector(
       `${title}\n${message}`,
@@ -6454,7 +6469,7 @@ export class InteractiveMode {
           ? `Restored files to rewind checkpoint ${checkpoint.id}. Continuing conversation navigation.`
           : `Restored files to rewind checkpoint ${checkpoint.id}. Conversation navigation cancelled.`,
     });
-    if (!restored) {
+    if (restored !== "restored") {
       return { cancelled: true };
     }
 
@@ -6512,12 +6527,13 @@ export class InteractiveMode {
       confirmBody: (preview: DiffPreview) => string;
       cancelStatus: string;
       successStatus: string;
+      allowBack?: boolean;
     },
-  ): Promise<boolean> {
+  ): Promise<RewindRestorePreviewResult> {
     const previewed = this.session.previewRewindCheckpoint(checkpoint.id);
     if (!previewed.ok) {
       this.showStatus(formatRewindFailure("Rewind preview unavailable", previewed));
-      return false;
+      return "cancelled";
     }
 
     const diffText = formatStructuredRewindPreview(previewed.value);
@@ -6529,34 +6545,43 @@ export class InteractiveMode {
     const unsafeRestorePaths = previewed.value.unsafeRestorePaths ?? [];
     if (unsafeRestorePaths.length > 0) {
       this.showStatus(`Rewind restore blocked by ${unsafeRestorePaths.length} unsafe path(s). Resolve blockers shown in the preview and retry.`);
-      return false;
+      return "cancelled";
     }
 
     const eligible = this.session.checkRewindRestoreEligibility(checkpoint.id);
     if (!eligible.ok) {
       this.showStatus(formatRewindFailure("Rewind restore unavailable", eligible));
-      return false;
+      return "cancelled";
     }
 
-    const confirmed = await this.showExtensionConfirm(options.confirmTitle, options.confirmBody(previewed.value));
+    let wentBack = false;
+    const confirmed = await this.showExtensionConfirm(options.confirmTitle, options.confirmBody(previewed.value), {
+      onBack: options.allowBack
+        ? () => {
+            wentBack = true;
+          }
+        : undefined,
+      backHintLabel: "back",
+    });
     if (!confirmed) {
+      if (wentBack) return "back";
       this.showStatus(options.cancelStatus);
-      return false;
+      return "cancelled";
     }
 
     if (this.session.isStreaming) {
       this.showStatus(REWIND_WHILE_STREAMING_MESSAGE);
-      return false;
+      return "cancelled";
     }
 
     const restored = this.session.restoreRewindFiles(checkpoint.id);
     if (!restored.ok) {
       this.showError(formatRewindRestoreFailure(restored));
-      return false;
+      return "cancelled";
     }
 
     this.showStatus(options.successStatus);
-    return true;
+    return "restored";
   }
 
   private async handleRewindCommand(text: string): Promise<void> {
@@ -6588,7 +6613,6 @@ export class InteractiveMode {
     this.chatContainer.addChild(new Text(theme.fg("dim", copy), 1, 0));
     this.ui.requestRender();
 
-    let checkpoint: CheckpointMetadata | undefined;
     if (requested.length > 0) {
       const resolved = this.resolveRequestedRewindCheckpoint(checkpoints, requested);
       if (resolved.kind === "ambiguous") {
@@ -6599,31 +6623,48 @@ export class InteractiveMode {
         this.showStatus(`Rewind checkpoint not found: ${requested}`);
         return;
       }
-      checkpoint = resolved.checkpoint;
-    } else {
+      const checkpoint = resolved.checkpoint;
+      await this.restoreRewindCheckpointWithPreview(checkpoint, {
+        confirmTitle: "Confirm files-only rewind",
+        confirmBody: (preview) =>
+          formatRewindConfirmBody(
+            checkpoint,
+            preview,
+            "This creates a before-restore safety checkpoint when needed and does not restore conversation history.",
+          ),
+        cancelStatus: "Rewind restore cancelled.",
+        successStatus: `Restored files to rewind checkpoint ${checkpoint.id}. Conversation history unchanged.`,
+      });
+      return;
+    }
+
+    while (true) {
       const selection = await this.selectRewindCheckpoint(checkpoints, "Select rewind checkpoint (newest first; files-only restore)");
       if (!selection.selected) {
         this.showStatus("Rewind cancelled.");
         return;
       }
-      checkpoint = selection.checkpoint;
+      const checkpoint = selection.checkpoint;
       if (!checkpoint) {
         this.showStatus("Rewind selection was invalid.");
         return;
       }
-    }
 
-    await this.restoreRewindCheckpointWithPreview(checkpoint, {
-      confirmTitle: "Confirm files-only rewind",
-      confirmBody: (preview) =>
-        formatRewindConfirmBody(
-          checkpoint,
-          preview,
-          "This creates a before-restore safety checkpoint when needed and does not restore conversation history.",
-        ),
-      cancelStatus: "Rewind restore cancelled.",
-      successStatus: `Restored files to rewind checkpoint ${checkpoint.id}. Conversation history unchanged.`,
-    });
+      const result = await this.restoreRewindCheckpointWithPreview(checkpoint, {
+        confirmTitle: "Confirm files-only rewind",
+        confirmBody: (preview) =>
+          formatRewindConfirmBody(
+            checkpoint,
+            preview,
+            "This creates a before-restore safety checkpoint when needed and does not restore conversation history.",
+          ),
+        cancelStatus: "Rewind restore cancelled.",
+        successStatus: `Restored files to rewind checkpoint ${checkpoint.id}. Conversation history unchanged.`,
+        allowBack: true,
+      });
+      if (result === "back") continue;
+      return;
+    }
   }
 
   private handleSessionCommand(): void {
