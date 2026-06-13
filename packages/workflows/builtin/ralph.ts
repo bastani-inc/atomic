@@ -717,8 +717,9 @@ async function runRalphWorkflow(
   let previousOrchestratorSessionFile: string | undefined;
 
   const plannerModelConfig = {
-    model: "openai-codex/gpt-5.5:xhigh",
+    model: "anthropic/claude-fable-5:xhigh",
     fallbackModels: [
+        "openai-codex/gpt-5.5:xhigh",
         "github-copilot/gpt-5.5:xhigh",
         "openai/gpt-5.5:xhigh",
         "github-copilot/claude-opus-4.8:xhigh",
@@ -739,8 +740,9 @@ async function runRalphWorkflow(
   };
 
   const reviewerModelConfig = {
-    model: "openai-codex/gpt-5.5:xhigh",
+    model: "anthropic/claude-fable-5:xhigh",
     fallbackModels: [
+      "openai-codex/gpt-5.5:xhigh",
       "github-copilot/gpt-5.5:xhigh",
       "openai/gpt-5.5:xhigh",
       "github-copilot/claude-opus-4.8:xhigh",

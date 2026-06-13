@@ -188,6 +188,67 @@ describe("store stage blocking", () => {
     assert.equal(stage.resumedAt, 6_000);
     assert.equal(stage.pausedDurationMs, undefined);
   });
+
+  test("recordStageEnd clears workflow child metadata from non-completed terminal stages", () => {
+    const s = createStore();
+    s.recordRunStart(makeRun("r1", [
+      makeStage("skipped-boundary", {
+        status: "running",
+        workflowChildRun: { alias: "child", workflow: "child-wf", runId: "child-run" },
+        workflowChild: {
+          alias: "child",
+          workflow: "child-wf",
+          runId: "child-run",
+          status: "completed",
+          outputs: { summary: "stale" },
+        },
+      }),
+      makeStage("failed-boundary", {
+        status: "running",
+        workflowChildRun: { alias: "child", workflow: "child-wf", runId: "child-run" },
+        workflowChild: {
+          alias: "child",
+          workflow: "child-wf",
+          runId: "child-run",
+          status: "completed",
+          outputs: { summary: "stale" },
+        },
+      }),
+    ]));
+
+    s.recordStageEnd("r1", makeStage("skipped-boundary", {
+      status: "skipped",
+      endedAt: Date.now(),
+      skippedReason: "workflow-exit",
+      workflowChildRun: { alias: "child", workflow: "child-wf", runId: "child-run" },
+      workflowChild: {
+        alias: "child",
+        workflow: "child-wf",
+        runId: "child-run",
+        status: "completed",
+        outputs: { summary: "stale" },
+      },
+    }));
+    s.recordStageEnd("r1", makeStage("failed-boundary", {
+      status: "failed",
+      endedAt: Date.now(),
+      error: "boom",
+      workflowChildRun: { alias: "child", workflow: "child-wf", runId: "child-run" },
+      workflowChild: {
+        alias: "child",
+        workflow: "child-wf",
+        runId: "child-run",
+        status: "completed",
+        outputs: { summary: "stale" },
+      },
+    }));
+
+    const stages = s.snapshot().runs[0]!.stages;
+    for (const stage of stages) {
+      assert.equal(stage.workflowChildRun, undefined);
+      assert.equal(stage.workflowChild, undefined);
+    }
+  });
 });
 
 describe("store run pausing", () => {

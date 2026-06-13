@@ -1,7 +1,7 @@
 ---
 name: codebase-pattern-finder
 description: Find similar implementations, usage examples, or existing patterns in the codebase that can be modeled after.
-tools: read, grep, find, ls, bash
+tools: read, grep, find, ls
 model: openai/gpt-5.4-mini:low
 fallbackModels: openai-codex/gpt-5.4-mini:low, github-copilot/gpt-5.4-mini:low, anthropic/claude-haiku-4-5:low, github-copilot/claude-haiku-4.5:low
 ---

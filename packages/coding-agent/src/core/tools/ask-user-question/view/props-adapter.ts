@@ -34,9 +34,9 @@ export interface QuestionnairePropsAdapterConfig {
  * two binding registries. `globalBindings` covers the cross-tab components
  * (chatRow, dialog, submitPicker?, tabBar?); `perTabBindings` covers the
  * per-tab kinds (optionList, preview, multiSelect?). The hand-coded fan-out
- * collapses to one global loop + one nested per-tab loop. The inline-Other
- * value is read from the headless `inlineInput` instance per tick into ctx so
- * `selectOptionListProps` sees the live value.
+ * collapses to one global loop + one nested per-tab loop. The shared inline
+ * input is projected through owner-specific draft slots so the option list and
+ * chat footer never display each other's in-flight text.
  */
 export class QuestionnairePropsAdapter {
 	private readonly tui: QuestionnairePropsAdapterConfig["tui"];
@@ -65,8 +65,15 @@ export class QuestionnairePropsAdapter {
 		const paneIndex = selectActivePreviewPaneIndex(state.currentTab, totalQuestions);
 		const activePreviewPane = this.tabsByIndex[paneIndex]?.preview ?? this.tabsByIndex[0]!.preview;
 
-		const inputBuffer = state.customDraftByTab.get(state.currentTab) ?? this.inlineInput.getValue();
+		const liveInlineValue = this.inlineInput.getValue();
+		const inputBuffer =
+			state.customDraftByTab.get(state.currentTab) ??
+			(state.inlineInputOwner === "other" ? liveInlineValue : "");
 		const inputCaret = state.customCaretByTab.get(state.currentTab) ?? inputBuffer.length;
+		const chatInputBuffer =
+			state.chatDraftByTab.get(state.currentTab) ??
+			(state.inlineInputOwner === "chat" ? liveInlineValue : "");
+		const chatInputCaret = state.chatCaretByTab.get(state.currentTab) ?? chatInputBuffer.length;
 		const ctx: BindingContext = {
 			questions: this.questions,
 			itemsByTab: this.itemsByTab,
@@ -74,6 +81,8 @@ export class QuestionnairePropsAdapter {
 			activeView,
 			inputBuffer,
 			inputCaret,
+			chatInputBuffer,
+			chatInputCaret,
 			activePreviewPane,
 		};
 

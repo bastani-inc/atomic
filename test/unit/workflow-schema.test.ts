@@ -15,6 +15,12 @@ describe("WorkflowParametersSchema stage options", () => {
         fallbackModels: ["openai/fallback"],
         tools: ["read", "todo"],
         customTools: [],
+        bashPolicy: {
+          default: "deny",
+          allow: ["pwd", { prefix: "browse " }, { glob: "bun test *" }, { regex: "^rg\\b" }],
+          deny: [{ regex: "\\brm\\b" }],
+          match: "segments",
+        },
         noTools: "builtin",
         thinkingLevel: "high",
         context: "fork",
@@ -43,6 +49,7 @@ describe("WorkflowParametersSchema stage options", () => {
       fallbackModels: ["github-copilot/fallback"],
       tools: ["read", "bash"],
       customTools: [],
+      bashPolicy: { default: "allow", deny: [{ prefix: "sudo " }] },
       noTools: "all",
       thinkingLevel: "medium",
     };
@@ -111,14 +118,22 @@ describe("WorkflowParametersSchema stage options", () => {
     assert.match(actionDescription, /sessionFile\/transcriptPath/);
     assert.match(actionDescription, /Windows backslashes/);
     assert.match(actionDescription, /rg\/grep/);
+    assert.match(actionDescription, /path-only by default/);
+    assert.match(actionDescription, /explicit tail\/limit returns bounded previews/);
+    assert.match(actionDescription, /missing transcript paths fall back/);
 
     const limitDescription = properties.limit?.description ?? "";
-    assert.match(limitDescription, /default 5-entry preview/);
+    assert.match(limitDescription, /explicitly inline/);
+    assert.match(limitDescription, /path-only default/);
     assert.match(limitDescription, /sessionFile\/transcriptPath/);
     assert.match(limitDescription, /platform path separators/);
 
     const tailDescription = properties.tail?.description ?? "";
     assert.match(tailDescription, /quick recent-context checks/);
+
+    const includeToolOutputDescription = properties.includeToolOutput?.description ?? "";
+    assert.match(includeToolOutputDescription, /inlined snapshot previews/);
+    assert.match(includeToolOutputDescription, /does not bypass the path-only default/);
   });
 
   test("rejects invalid stage-control enum values and transcript counts", () => {
@@ -141,6 +156,44 @@ describe("WorkflowParametersSchema stage options", () => {
     assert.equal(Value.Check(WorkflowParametersSchema, {
       task: { name: "planner", prompt: "plan" },
       fallbackModels: [false],
+    }), false);
+  });
+
+  test("accepts and validates bashPolicy schema", () => {
+    assert.equal(Value.Check(WorkflowParametersSchema, {
+      task: {
+        name: "safe-shell",
+        prompt: "run safe command",
+        tools: ["bash"],
+        bashPolicy: {
+          default: "deny",
+          allow: ["pwd", { prefix: "echo " }, { glob: "bun test *" }, { regex: "^rg\\b", flags: "i" }],
+          deny: [{ regex: "\\brm\\b" }],
+          match: "segments",
+        },
+      },
+    }), true);
+
+    assert.equal(Value.Check(WorkflowParametersSchema, {
+      task: { name: "bad-policy", prompt: "x", bashPolicy: { default: "block" } },
+    }), false);
+    assert.equal(Value.Check(WorkflowParametersSchema, {
+      task: { name: "bad-rule", prompt: "x", bashPolicy: { allow: [{ prefix: "echo ", regex: "echo" }] } },
+    }), false);
+    assert.equal(Value.Check(WorkflowParametersSchema, {
+      bashPolicy: { allow: "echo" },
+    }), false);
+    assert.equal(Value.Check(WorkflowParametersSchema, {
+      bashPolicy: { deny: "rm" },
+    }), false);
+    assert.equal(Value.Check(WorkflowParametersSchema, {
+      bashPolicy: { default: "deny", allow: ["echo ok"], extra: true },
+    }), false);
+    assert.equal(Value.Check(WorkflowParametersSchema, {
+      bashPolicy: { allow: [{ regex: "echo", flags: 1 }] },
+    }), false);
+    assert.equal(Value.Check(WorkflowParametersSchema, {
+      bashPolicy: { match: "raw" },
     }), false);
   });
 });

@@ -43,7 +43,7 @@ atomic update npm:@foo/bar      # update one package
 atomic update --extension npm:@foo/bar
 ```
 
-By default, `install` and `remove` write to global settings (`~/.atomic/agent/settings.json`). Use `-l` to write to project settings (`.atomic/settings.json`) instead. Project settings can be shared with your team, and Atomic installs any missing packages automatically on startup.
+By default, `install` and `remove` write to global settings (`~/.atomic/agent/settings.json`). Use `-l` to write to project settings (`.atomic/settings.json`) instead. Project settings can be shared with your team, and Atomic installs any missing packages automatically on startup after the project is trusted.
 
 To try a package without installing it, use `--extension` or `-e`. This installs to a temporary directory for the current run only:
 

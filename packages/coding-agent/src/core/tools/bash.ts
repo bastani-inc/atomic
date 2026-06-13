@@ -17,6 +17,11 @@ import {
 	untrackDetachedChildPid,
 } from "../../utils/shell.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
+import {
+	evaluateBashCommandPolicy,
+	formatBashCommandPolicyRejection,
+	type BashCommandPolicy,
+} from "./bash-policy.ts";
 import { OutputAccumulator } from "./output-accumulator.ts";
 import { getTextOutput, invalidArgText, str } from "./render-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
@@ -148,6 +153,10 @@ export interface BashToolOptions {
 	shellPath?: string;
 	/** Hook to adjust command, cwd, or env before execution */
 	spawnHook?: BashSpawnHook;
+	/** Optional command-level policy enforced before commandPrefix, spawnHook, or execution */
+	policy?: BashCommandPolicy;
+	/** Human-readable label used in policy denial errors */
+	policyLabel?: string;
 }
 
 const BASH_PREVIEW_LINES = 5;
@@ -235,7 +244,7 @@ function rebuildBashResultRenderComponent(
 					if (state.cachedSkipped && state.cachedSkipped > 0) {
 						const hint =
 							theme.fg("muted", `... (${state.cachedSkipped} earlier lines,`) +
-							` ${keyHint("app.tools.expand", "Expand")})`;
+							` ${keyHint("app.tools.expand", "Expand")}${theme.fg("muted", ")")}`;
 						return ["", truncateToWidth(hint, width, "..."), ...(state.cachedLines ?? [])];
 					}
 					return ["", ...(state.cachedLines ?? [])];
@@ -280,12 +289,15 @@ export function createBashToolDefinition(
 	const ops = options?.operations ?? createLocalBashOperations({ shellPath: options?.shellPath });
 	const commandPrefix = options?.commandPrefix;
 	const spawnHook = options?.spawnHook;
+	const policy = options?.policy;
+	const policyLabel = options?.policyLabel;
 	return {
 		name: "bash",
 		label: "bash",
 		description: `Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.`,
 		promptSnippet: "Execute bash commands (ls, grep, find, etc.)",
 		parameters: bashSchema,
+		maxResultSizeChars: Infinity,
 		async execute(
 			_toolCallId,
 			{ command, timeout }: { command: string; timeout?: number },
@@ -293,6 +305,11 @@ export function createBashToolDefinition(
 			onUpdate?,
 			_ctx?,
 		) {
+			const policyDecision = evaluateBashCommandPolicy(command, policy);
+			if (!policyDecision.allowed) {
+				throw new Error(formatBashCommandPolicyRejection(policyDecision, policyLabel));
+			}
+
 			const resolvedCommand = commandPrefix ? `${commandPrefix}\n${command}` : command;
 			const spawnContext = resolveSpawnContext(resolvedCommand, cwd, spawnHook);
 			const output = new OutputAccumulator({ tempFilePrefix: `${APP_NAME}-bash` });

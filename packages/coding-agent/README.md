@@ -13,27 +13,17 @@
 
 ---
 
-Pi is a minimal terminal coding harness. Adapt pi to your workflows, not the other way around, without having to fork and modify pi internals. Extend it with TypeScript [Extensions](#extensions), [Skills](#skills), [Prompt Templates](#prompt-templates), and [Themes](#themes). Put your extensions, skills, prompt templates, and themes in [Pi Packages](#pi-packages) and share them with others via npm or git.
+Atomic is a minimal terminal coding harness. Adapt Atomic to your workflows, not the other way around, without having to fork and modify Atomic internals. Extend it with TypeScript [Extensions](#extensions), [Skills](#skills), [Prompt Templates](#prompt-templates), and [Themes](#themes). Put your extensions, skills, prompt templates, and themes in [Atomic Packages](#atomic-packages) and share them with others via npm or git.
 
-Pi ships with powerful defaults but skips features like sub agents and plan mode. Instead, you can ask pi to build what you want or install a third party pi package that matches your workflow.
+Atomic ships with powerful defaults plus first-party bundled extensions for workflows, subagents, MCP, web access, and intercom. You can still adapt or replace any workflow by writing extensions, skills, prompt templates, themes, or Atomic packages that match how you work.
 
-Pi runs in four modes: interactive, print or JSON, RPC for process integration, and an SDK for embedding in your own apps. See [openclaw/openclaw](https://github.com/openclaw/openclaw) for a real-world SDK integration.
+Atomic runs in four modes: interactive, print or JSON, RPC for process integration, and an SDK for embedding in your own apps. See [openclaw/openclaw](https://github.com/openclaw/openclaw) for a real-world SDK integration.
 
 ## Share your OSS coding agent sessions
 
-If you use pi for open source work, please share your coding agent sessions.
+If you use Atomic for open source work, consider sharing coding-agent sessions using an Atomic-owned workflow or your team's dataset process.
 
-Public OSS session data helps improve models, prompts, tools, and evaluations using real development workflows.
-
-For the full explanation, see [this post on X](https://x.com/badlogicgames/status/2037811643774652911).
-
-To publish sessions, use [`badlogic/pi-share-hf`](https://github.com/badlogic/pi-share-hf). Read its README.md for setup instructions. All you need is a Hugging Face account, the Hugging Face CLI, and `pi-share-hf`.
-
-You can also watch [this video](https://x.com/badlogicgames/status/2041151967695634619), where I show how I publish my `pi-mono` sessions.
-
-I regularly publish my own `pi-mono` work sessions here:
-
-- [badlogicgames/pi-mono on Hugging Face](https://huggingface.co/datasets/badlogicgames/pi-mono)
+Public OSS session data can help improve models, prompts, tools, and evaluations using real development workflows. Upstream Pi session-sharing resources may still be useful for historical context, but they are not the primary Atomic publication path.
 
 ## Table of Contents
 
@@ -54,7 +44,7 @@ I regularly publish my own `pi-mono` work sessions here:
   - [Skills](#skills)
   - [Extensions](#extensions)
   - [Themes](#themes)
-  - [Pi Packages](#pi-packages)
+  - [Atomic Packages](#atomic-packages)
 - [Programmatic Usage](#programmatic-usage)
 - [Philosophy](#philosophy)
 - [CLI Reference](#cli-reference)
@@ -64,7 +54,7 @@ I regularly publish my own `pi-mono` work sessions here:
 ## Quick Start
 
 ```bash
-curl -fsSL https://pi.dev/install.sh | sh
+bun install -g @bastani/atomic
 ```
 
 Or with npm:
@@ -77,17 +67,17 @@ Authenticate with an API key:
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
-pi
+atomic
 ```
 
 Or use your existing subscription:
 
 ```bash
-pi
+atomic
 /login  # Then select provider
 ```
 
-Then just talk to pi. By default, pi gives the model four tools: `read`, `write`, `edit`, and `bash`. The model uses these to fulfill your requests. Add capabilities via [skills](#skills), [prompt templates](#prompt-templates), [extensions](#extensions), or [pi packages](#pi-packages).
+Then just talk to Atomic. By default, Atomic gives the model four tools: `read`, `write`, `edit`, and `bash`. The model uses these to fulfill your requests. Add capabilities via [skills](#skills), [prompt templates](#prompt-templates), [extensions](#extensions), or [Atomic packages](#atomic-packages).
 
 **Platform notes:** [Windows](docs/windows.md) | [Termux (Android)](docs/termux.md) | [tmux](docs/tmux.md) | [Terminal setup](docs/terminal-setup.md) | [Shell aliases](docs/shell-aliases.md)
 
@@ -95,7 +85,7 @@ Then just talk to pi. By default, pi gives the model four tools: `read`, `write`
 
 ## Providers & Models
 
-For each built-in provider, pi maintains a list of tool-capable models, updated with every release. Authenticate via subscription (`/login`) or API key, then select any model from that provider via `/model` (or CTRL+L).
+For each built-in provider, Atomic maintains a list of tool-capable models, updated with every release. Authenticate via subscription (`/login`) or API key, then select any model from that provider via `/model` (or CTRL+L).
 
 **Subscriptions:**
 - Anthropic Claude Pro/Max
@@ -133,7 +123,7 @@ For each built-in provider, pi maintains a list of tool-capable models, updated 
 
 See [docs/providers.md](docs/providers.md) for detailed setup instructions.
 
-**Custom providers & models:** Add providers via `~/.pi/agent/models.json` if they speak a supported API (OpenAI, Anthropic, Google). For custom APIs or OAuth, use extensions. See [docs/models.md](docs/models.md) and [docs/custom-provider.md](docs/custom-provider.md).
+**Custom providers & models:** Add providers via `~/.atomic/agent/models.json` (legacy `~/.pi/agent/models.json` also works) if they speak a supported API (OpenAI, Anthropic, Google). For custom APIs or OAuth, use extensions. See [docs/models.md](docs/models.md) and [docs/custom-provider.md](docs/custom-provider.md).
 
 ---
 
@@ -191,7 +181,7 @@ Type `/` in the editor to trigger commands. [Extensions](#extensions) can regist
 
 ### Keyboard Shortcuts
 
-See `/hotkeys` for the full list. Customize via `~/.pi/agent/keybindings.json`. See [docs/keybindings.md](docs/keybindings.md).
+See `/hotkeys` for the full list. Customize via `~/.atomic/agent/keybindings.json` (legacy `~/.pi/agent/keybindings.json` also works). See [docs/keybindings.md](docs/keybindings.md).
 
 **Commonly used:**
 
@@ -216,7 +206,7 @@ Submit messages while the agent is working:
 - **Escape** aborts and restores queued messages to editor
 - **ALT+Up** retrieves queued messages back to editor
 
-On Windows Terminal, `ALT+Enter` is fullscreen by default. Remap it in [docs/terminal-setup.md](docs/terminal-setup.md) so pi can receive the follow-up shortcut.
+On Windows Terminal, `ALT+Enter` is fullscreen by default. Remap it in [docs/terminal-setup.md](docs/terminal-setup.md) so Atomic can receive the follow-up shortcut.
 
 Configure delivery in [settings](docs/settings.md): `steeringMode` and `followUpMode` can be `"one-at-a-time"` (default, waits for response) or `"all"` (delivers all queued at once). `transport` selects provider transport preference (`"sse"`, `"websocket"`, or `"auto"`) for providers that support multiple transports.
 
@@ -228,17 +218,19 @@ Sessions are stored as JSONL files with a tree structure. Each entry has an `id`
 
 ### Management
 
-Sessions auto-save to `~/.pi/agent/sessions/` organized by working directory.
+Sessions auto-save to `~/.atomic/agent/sessions/` organized by working directory (legacy `~/.pi/agent/sessions/` sessions remain readable for compatibility).
 
 ```bash
-pi -c                  # Continue most recent session
-pi -r                  # Browse and select from past sessions
-pi --no-session        # Ephemeral mode (don't save)
-pi --session <path|id> # Use specific session file or ID
-pi --fork <path|id>    # Fork specific session file or ID into a new session
+atomic -c                  # Continue most recent session
+atomic -r                  # Browse and select from past sessions
+atomic --no-session        # Ephemeral mode (don't save)
+atomic --session <path|id> # Use specific session file or partial ID
+atomic --session-id <id>   # Use/create an exact project-local session ID
+atomic --name "Refactor"   # Set the session display name
+atomic --fork <path|id>    # Fork specific session file or ID into a new session
 ```
 
-Use `/session` in interactive mode to see the current session ID before reusing it with `--session <id>` or `--fork <id>`.
+Use `/session` in interactive mode to see the current session ID before reusing it with `--session <id>`, `--session-id <id>`, or `--fork <id>`.
 
 ### Branching
 
@@ -274,26 +266,26 @@ Use `/settings` to modify common options, or edit JSON files directly:
 
 | Location | Scope |
 |----------|-------|
-| `~/.pi/agent/settings.json` | Global (all projects) |
-| `.pi/settings.json` | Project (overrides global) |
+| `~/.atomic/agent/settings.json` | Global (all projects; legacy `~/.pi/agent/settings.json` also works) |
+| `.atomic/settings.json` | Project (overrides global; legacy `.pi/settings.json` also works after trust) |
 
 See [docs/settings.md](docs/settings.md) for all options.
 
 ### Telemetry and update checks
 
-Pi has two separate startup features:
+Atomic has two separate startup features:
 
-- **Update check:** fetches `https://pi.dev/api/latest-version` to check whether a newer Pi version exists. Disable it with `PI_SKIP_VERSION_CHECK=1`. Disabling update checks only turns off this check.
-- **Install/update telemetry:** after first install or a changelog-detected update, sends an anonymous version ping to `https://pi.dev/api/report-install`. Opt out by setting `enableInstallTelemetry` to `false` in `settings.json`, or by setting `PI_TELEMETRY=0`. This does not disable update checks; Pi may still contact `pi.dev` for the latest version unless update checks are disabled or offline mode is enabled.
+- **Update check:** checks whether a newer Atomic version exists. Disable it with `ATOMIC_SKIP_VERSION_CHECK=1` (`PI_SKIP_VERSION_CHECK=1` remains a legacy alias). Disabling update checks only turns off this check.
+- **Install/update telemetry:** after first install or a changelog-detected update, sends an anonymous version ping. Opt out by setting `enableInstallTelemetry` to `false` in `settings.json`, or by setting `ATOMIC_TELEMETRY=0` (`PI_TELEMETRY=0` remains a legacy alias). This does not disable update checks; Atomic may still check for the latest version unless update checks are disabled or offline mode is enabled.
 
-Use `--offline` or `PI_OFFLINE=1` to disable all startup network operations described here, including update checks, package update checks, and install/update telemetry.
+Use `--offline` or `ATOMIC_OFFLINE=1` (`PI_OFFLINE=1` remains a legacy alias) to disable all startup network operations described here, including update checks, package update checks, and install/update telemetry.
 
 ---
 
 ## Context Files
 
-Pi loads `AGENTS.md` (or `CLAUDE.md`) at startup from:
-- `~/.pi/agent/AGENTS.md` (global)
+Atomic loads `AGENTS.md` (or `CLAUDE.md`) at startup from:
+- `~/.atomic/agent/AGENTS.md` (global; legacy `~/.pi/agent/AGENTS.md` also works)
 - Parent directories (walking up from cwd)
 - Current directory
 
@@ -303,7 +295,7 @@ Disable context file loading with `--no-context-files` (or `-nc`).
 
 ### System Prompt
 
-Replace the default system prompt with `.pi/SYSTEM.md` (project) or `~/.pi/agent/SYSTEM.md` (global). Append without replacing via `APPEND_SYSTEM.md`.
+Replace the default system prompt with `.atomic/SYSTEM.md` (project; legacy `.pi/SYSTEM.md` also works) or `~/.atomic/agent/SYSTEM.md` (global; legacy `~/.pi/agent/SYSTEM.md` also works). Append without replacing via `APPEND_SYSTEM.md`.
 
 ---
 
@@ -314,19 +306,19 @@ Replace the default system prompt with `.pi/SYSTEM.md` (project) or `~/.pi/agent
 Reusable prompts as Markdown files. Type `/name` to expand.
 
 ```markdown
-<!-- ~/.pi/agent/prompts/review.md -->
+<!-- ~/.atomic/agent/prompts/review.md -->
 Review this code for bugs, security issues, and performance problems.
 Focus on: {{focus}}
 ```
 
-Place in `~/.pi/agent/prompts/`, `.pi/prompts/`, or a [pi package](#pi-packages) to share with others. See [docs/prompt-templates.md](docs/prompt-templates.md).
+Place in `~/.atomic/agent/prompts/`, `.atomic/prompts/` (legacy `~/.pi/agent/prompts/` and `.pi/prompts/` also work), or an [Atomic package](#atomic-packages) to share with others. See [docs/prompt-templates.md](docs/prompt-templates.md).
 
 ### Skills
 
 On-demand capability packages following the [Agent Skills standard](https://agentskills.io). Invoke via `/skill:name` or let the agent load them automatically.
 
 ```markdown
-<!-- ~/.pi/agent/skills/my-skill/SKILL.md -->
+<!-- ~/.atomic/agent/skills/my-skill/SKILL.md -->
 # My Skill
 Use this skill when the user asks about X.
 
@@ -335,11 +327,11 @@ Use this skill when the user asks about X.
 2. Then that
 ```
 
-Place in `~/.pi/agent/skills/`, `~/.agents/skills/`, `.pi/skills/`, or `.agents/skills/` (from `cwd` up through parent directories) or a [pi package](#pi-packages) to share with others. See [docs/skills.md](docs/skills.md).
+Place in `~/.atomic/agent/skills/`, `~/.agents/skills/`, `.atomic/skills/` (legacy `~/.pi/agent/skills/` and `.pi/skills/` also work), or `.agents/skills/` (from `cwd` up through parent directories) or an [Atomic package](#atomic-packages) to share with others. See [docs/skills.md](docs/skills.md).
 
 ### Extensions
 
-TypeScript modules that extend pi with custom tools, commands, keyboard shortcuts, event handlers, and UI components.
+TypeScript modules that extend Atomic with custom tools, commands, keyboard shortcuts, event handlers, and UI components.
 
 ```typescript
 export default function (pi: ExtensionAPI) {
@@ -349,7 +341,7 @@ export default function (pi: ExtensionAPI) {
 }
 ```
 
-The default export can also be `async`. pi waits for async extension factories before startup continues, which is useful for one-time initialization such as fetching remote model lists before calling `pi.registerProvider()`.
+The default export can also be `async`. Atomic waits for async extension factories before startup continues, which is useful for one-time initialization such as fetching remote model lists before calling `pi.registerProvider()`.
 
 **What's possible:**
 - Custom tools (or replace built-in tools entirely)
@@ -361,54 +353,54 @@ The default export can also be `async`. pi waits for async extension factories b
 - Git checkpointing and auto-commit
 - SSH and sandbox execution
 - MCP server integration
-- Make pi look like Claude Code
+- Make Atomic look like Claude Code
 - Games while waiting (yes, Doom runs)
 - ...anything you can dream up
 
-Place in `~/.pi/agent/extensions/`, `.pi/extensions/`, or a [pi package](#pi-packages) to share with others. See [docs/extensions.md](docs/extensions.md) and [examples/extensions/](examples/extensions/).
+Place in `~/.atomic/agent/extensions/`, `.atomic/extensions/` (legacy `~/.pi/agent/extensions/` and `.pi/extensions/` also work), or an [Atomic package](#atomic-packages) to share with others. See [docs/extensions.md](docs/extensions.md) and [examples/extensions/](examples/extensions/).
 
 ### Themes
 
-Built-in: `dark`, `light`, `catppuccin-frappe`, `catppuccin-latte`, `catppuccin-macchiato`, and `catppuccin-mocha`. Custom themes hot-reload: modify the active theme file and pi immediately applies changes.
+Built-in: `dark`, `light`, `catppuccin-frappe`, `catppuccin-latte`, `catppuccin-macchiato`, and `catppuccin-mocha`. Custom themes hot-reload: modify the active theme file and Atomic immediately applies changes.
 
-Place in `~/.pi/agent/themes/`, `.pi/themes/`, or a [pi package](#pi-packages) to share with others. See [docs/themes.md](docs/themes.md).
+Place in `~/.atomic/agent/themes/`, `.atomic/themes/` (legacy `~/.pi/agent/themes/` and `.pi/themes/` also work), or an [Atomic package](#atomic-packages) to share with others. See [docs/themes.md](docs/themes.md).
 
-### Pi Packages
+### Atomic Packages
 
-Bundle and share extensions, skills, prompts, and themes via npm or git. Find packages on [npmjs.com](https://www.npmjs.com/search?q=keywords%3Api-package) or [Discord](https://discord.com/channels/1456806362351669492/1457744485428629628).
+Bundle and share extensions, skills, prompts, and themes via npm or git. Find packages on [npmjs.com](https://www.npmjs.com/search?q=keywords%3Aatomic-package) or [Discord](https://discord.com/channels/1456806362351669492/1457744485428629628).
 
-> **Security:** Pi packages run with full system access. Extensions execute arbitrary code, and skills can instruct the model to perform any action including running executables. Review source code before installing third-party packages.
+> **Security:** Atomic packages run with full system access. Extensions execute arbitrary code, and skills can instruct the model to perform any action including running executables. Review source code before installing third-party packages.
 
 ```bash
-pi install npm:@foo/pi-tools
-pi install npm:@foo/pi-tools@1.2.3      # pinned version
-pi install git:github.com/user/repo
-pi install git:github.com/user/repo@v1  # tag or commit
-pi install git:git@github.com:user/repo
-pi install git:git@github.com:user/repo@v1  # tag or commit
-pi install https://github.com/user/repo
-pi install https://github.com/user/repo@v1      # tag or commit
-pi install ssh://git@github.com/user/repo
-pi install ssh://git@github.com/user/repo@v1    # tag or commit
-pi remove npm:@foo/pi-tools
-pi uninstall npm:@foo/pi-tools          # alias for remove
-pi list
-pi update                               # update pi and packages (skips pinned packages)
-pi update --extensions                  # update packages only
-pi update --self                        # update pi only
-pi update --self --force                # reinstall pi even if current
-pi update npm:@foo/pi-tools             # update one package
-pi config                               # enable/disable extensions, skills, prompts, themes
+atomic install npm:@foo/atomic-tools
+atomic install npm:@foo/atomic-tools@1.2.3      # pinned version
+atomic install git:github.com/user/repo
+atomic install git:github.com/user/repo@v1  # tag or commit
+atomic install git:git@github.com:user/repo
+atomic install git:git@github.com:user/repo@v1  # tag or commit
+atomic install https://github.com/user/repo
+atomic install https://github.com/user/repo@v1      # tag or commit
+atomic install ssh://git@github.com/user/repo
+atomic install ssh://git@github.com/user/repo@v1    # tag or commit
+atomic remove npm:@foo/atomic-tools
+atomic uninstall npm:@foo/atomic-tools          # alias for remove
+atomic list
+atomic update                               # update Atomic and packages (skips pinned packages)
+atomic update --extensions                  # update packages only
+atomic update --self                        # update Atomic only
+atomic update --self --force                # reinstall Atomic even if current
+atomic update npm:@foo/atomic-tools             # update one package
+atomic config                               # enable/disable extensions, skills, prompts, themes
 ```
 
-Packages install to `~/.pi/agent/git/` (git) or global npm. Use `-l` for project-local installs (`.pi/git/`, `.pi/npm/`). Git packages install dependencies with `npm install --omit=dev` by default, so runtime deps must be listed under `dependencies`; when `npmCommand` is configured, git packages use plain `install` for compatibility with wrappers. If you use a Node version manager and want package installs to reuse a stable npm context, set `npmCommand` in `settings.json`, for example `["mise", "exec", "node@20", "--", "npm"]`.
+Packages install to `~/.atomic/agent/git/` (git) or global npm. Use `-l` for project-local installs (`.atomic/git/`, `.atomic/npm/`; legacy `.pi/git/` and `.pi/npm/` are compatibility fallbacks). Git packages install dependencies with `npm install --omit=dev` by default, so runtime deps must be listed under `dependencies`; when `npmCommand` is configured, git packages use plain `install` for compatibility with wrappers. If you use a Node version manager and want package installs to reuse a stable npm context, set `npmCommand` in `settings.json`, for example `["mise", "exec", "node@20", "--", "npm"]`.
 
 Create a package by adding an app-name manifest key to `package.json` (`atomic` for this package). The legacy `pi` key is still accepted as a backwards-compatible shim:
 
 ```json
 {
-  "name": "my-pi-package",
-  "keywords": ["pi-package"],
+  "name": "my-atomic-package",
+  "keywords": ["atomic-package"],
   "atomic": {
     "extensions": ["./extensions"],
     "skills": ["./skills"],
@@ -452,7 +444,7 @@ See [docs/sdk.md](docs/sdk.md) and [examples/sdk/](examples/sdk/).
 For non-Node.js integrations, use RPC mode over stdin/stdout:
 
 ```bash
-pi --mode rpc
+atomic --mode rpc
 ```
 
 RPC mode uses strict LF-delimited JSONL framing. Clients must split records on `\n` only. Do not use generic line readers like Node `readline`, which also split on Unicode separators inside JSON payloads.
@@ -463,43 +455,41 @@ See [docs/rpc.md](docs/rpc.md) for the protocol.
 
 ## Philosophy
 
-Pi is aggressively extensible so it doesn't have to dictate your workflow. Features that other tools bake in can be built with [extensions](#extensions), [skills](#skills), or installed from third-party [pi packages](#pi-packages). This keeps the core minimal while letting you shape pi to fit how you work.
+Atomic is aggressively extensible so it does not have to dictate your workflow. The distribution bundles first-party extensions for workflows, subagents, MCP, web access, and intercom, while still letting you build or install alternative [extensions](#extensions), [skills](#skills), and [Atomic packages](#atomic-packages). This keeps Atomic adaptable without forcing every workflow into the core CLI.
 
-**No MCP.** Build CLI tools with READMEs (see [Skills](#skills)), or build an extension that adds MCP support. [Why?](https://mariozechner.at/posts/2025-11-02-what-if-you-dont-need-mcp/)
+**Bundled subagents and workflows.** Atomic includes the first-party subagents and workflows packages. Use them as shipped, customize them, or replace them with your own extensions if your workflow needs a different orchestration model.
 
-**No sub-agents.** There's many ways to do this. Spawn pi instances via tmux, or build your own with [extensions](#extensions), or install a package that does it your way.
+**Bundled MCP, web access, and intercom.** Atomic ships first-party integrations for MCP tools, web/repository/document/video extraction, and cross-session coordination. These are packaged extensions rather than hard-coded agent behavior, so they remain configurable and replaceable.
 
-**No permission popups.** Run in a container, or build your own confirmation flow with [extensions](#extensions) inline with your environment and security requirements.
+**Security stays explicit.** Run in a container, use project trust controls, or build confirmation flows with [extensions](#extensions) inline with your environment and security requirements.
 
-**No plan mode.** Write plans to files, or build it with [extensions](#extensions), or install a package.
+**Composable planning and task tracking.** Use the bundled workflow/subagent/todo capabilities, write plans to files, or install a package that matches your team's process.
 
-**No built-in to-dos.** They confuse models. Use a TODO.md file, or build your own with [extensions](#extensions).
+**No hidden background bash.** Use tmux or explicit extensions for background work. Full observability, direct interaction.
 
-**No background bash.** Use tmux. Full observability, direct interaction.
-
-Read the [blog post](https://mariozechner.at/posts/2025-11-30-pi-coding-agent/) for the full rationale.
+Upstream Pi's minimal-core rationale is documented in the [original blog post](https://mariozechner.at/posts/2025-11-30-pi-coding-agent/); Atomic preserves the extensibility model while also bundling first-party capabilities for common workflows.
 
 ---
 
 ## CLI Reference
 
 ```bash
-pi [options] [@files...] [messages...]
+atomic [options] [@files...] [messages...]
 ```
 
 ### Package Commands
 
 ```bash
-pi install <source> [-l]     # Install package, -l for project-local
-pi remove <source> [-l]      # Remove package
-pi uninstall <source> [-l]   # Alias for remove
-pi update [source|self|pi]   # Update pi and packages (skips pinned packages)
-pi update --extensions       # Update packages only
-pi update --self             # Update pi only
-pi update --self --force     # Reinstall pi even if current
-pi update --extension <src>  # Update one package
-pi list                      # List installed packages
-pi config                    # Enable/disable package resources
+atomic install <source> [-l]     # Install package, -l for project-local
+atomic remove <source> [-l]      # Remove package
+atomic uninstall <source> [-l]   # Alias for remove
+atomic update [source|self|atomic]   # Update Atomic and packages (skips pinned packages)
+atomic update --extensions           # Update packages only
+atomic update --self                 # Update Atomic only
+atomic update --self --force         # Reinstall Atomic even if current
+atomic update --extension <src>  # Update one package
+atomic list                      # List installed packages
+atomic config                    # Enable/disable package resources
 ```
 
 ### Modes
@@ -512,10 +502,10 @@ pi config                    # Enable/disable package resources
 | `--mode rpc` | RPC mode for process integration (see [docs/rpc.md](docs/rpc.md)) |
 | `--export <in> [out]` | Export session to HTML |
 
-In print mode, pi also reads piped stdin and merges it into the initial prompt:
+In print mode, Atomic also reads piped stdin and merges it into the initial prompt:
 
 ```bash
-cat README.md | pi -p "Summarize this text"
+cat README.md | atomic -p "Summarize this text"
 ```
 
 ### Model Options
@@ -536,8 +526,10 @@ cat README.md | pi -p "Summarize this text"
 | `-c`, `--continue` | Continue most recent session |
 | `-r`, `--resume` | Browse and select session |
 | `--session <path\|id>` | Use specific session file or partial UUID |
+| `--session-id <id>` | Use an exact project session ID, creating it if missing |
 | `--fork <path\|id>` | Fork specific session file or partial UUID into a new session |
 | `--session-dir <dir>` | Custom session storage directory |
+| `--name <name>`, `-n <name>` | Set the session display name |
 | `--no-session` | Ephemeral mode (don't save) |
 
 ### Tool Options
@@ -545,10 +537,20 @@ cat README.md | pi -p "Summarize this text"
 | Option | Description |
 |--------|-------------|
 | `--tools <list>`, `-t <list>` | Allowlist specific tool names across built-in, extension, and custom tools |
+| `--exclude-tools <list>`, `-xt <list>` | Denylist specific built-in, extension, and custom tools |
 | `--no-builtin-tools`, `-nbt` | Disable built-in tools by default but keep extension/custom tools enabled |
 | `--no-tools`, `-nt` | Disable all tools by default |
 
-Available built-in tools: `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`
+Default built-in tools: `read`, `bash`, `edit`, `write`, `ask_user_question`, `todo`. Additional built-in read-only tools are available through tool options: `grep`, `find`, `ls`. Use `--exclude-tools` to disable one or more tools while leaving the rest available.
+
+### Project Trust Options
+
+| Option | Description |
+|--------|-------------|
+| `--approve`, `-a` | Trust project-local files/resources for this run |
+| `--no-approve`, `-na` | Ignore project-local files/resources for this run |
+
+Project trust gates `.atomic`/legacy `.pi` project resources, project package settings, project-local context files, and `.agents/skills` discovered from the project tree. Saved trust decisions can be managed with `/trust`; see [docs/security.md](docs/security.md).
 
 ### Resource Options
 
@@ -581,53 +583,53 @@ Combine `--no-*` with explicit flags to load exactly what you need, ignoring set
 Prefix files with `@` to include in the message:
 
 ```bash
-pi @prompt.md "Answer this"
-pi -p @screenshot.png "What's in this image?"
-pi @code.ts @test.ts "Review these files"
+atomic @prompt.md "Answer this"
+atomic -p @screenshot.png "What's in this image?"
+atomic @code.ts @test.ts "Review these files"
 ```
 
 ### Examples
 
 ```bash
 # Interactive with initial prompt
-pi "List all .ts files in src/"
+atomic "List all .ts files in src/"
 
 # Non-interactive
-pi -p "Summarize this codebase"
+atomic -p "Summarize this codebase"
 
 # Non-interactive with piped stdin
-cat README.md | pi -p "Summarize this text"
+cat README.md | atomic -p "Summarize this text"
 
 # Different model
-pi --provider openai --model gpt-4o "Help me refactor"
+atomic --provider openai --model gpt-4o "Help me refactor"
 
 # Model with provider prefix (no --provider needed)
-pi --model openai/gpt-4o "Help me refactor"
+atomic --model openai/gpt-4o "Help me refactor"
 
 # Model with thinking level shorthand
-pi --model sonnet:high "Solve this complex problem"
+atomic --model sonnet:high "Solve this complex problem"
 
 # Limit model cycling
-pi --models "claude-*,gpt-4o"
+atomic --models "claude-*,gpt-4o"
 
 # Read-only mode
-pi --tools read,grep,find,ls -p "Review the code"
+atomic --tools read,grep,find,ls -p "Review the code"
 
 # High thinking level
-pi --thinking high "Solve this complex problem"
+atomic --thinking high "Solve this complex problem"
 ```
 
 ### Environment Variables
 
 | Variable | Description |
 |----------|-------------|
-| `PI_CODING_AGENT_DIR` | Override config directory (default: `~/.pi/agent`) |
-| `PI_CODING_AGENT_SESSION_DIR` | Override session storage directory (overridden by `--session-dir`) |
-| `PI_PACKAGE_DIR` | Override package directory (useful for Nix/Guix where store paths tokenize poorly) |
-| `PI_OFFLINE` | Disable startup network operations, including update checks, package update checks, and install/update telemetry |
-| `PI_SKIP_VERSION_CHECK` | Skip the Pi version update check at startup. This prevents the `pi.dev` latest-version request |
-| `PI_TELEMETRY` | Override install/update telemetry. Use `1`/`true`/`yes` to enable or `0`/`false`/`no` to disable. This does not disable update checks |
-| `PI_CACHE_RETENTION` | Set to `long` for extended prompt cache (Anthropic: 1h, OpenAI: 24h) |
+| `ATOMIC_CODING_AGENT_DIR` | Override config directory (default: `~/.atomic/agent`; `PI_CODING_AGENT_DIR` is a legacy alias) |
+| `ATOMIC_CODING_AGENT_SESSION_DIR` | Override session storage directory (overridden by `--session-dir`; `PI_CODING_AGENT_SESSION_DIR` is a legacy alias) |
+| `ATOMIC_PACKAGE_DIR` | Override package directory (useful for Nix/Guix where store paths tokenize poorly; `PI_PACKAGE_DIR` is a legacy alias) |
+| `ATOMIC_OFFLINE` | Disable startup network operations, including update checks, package update checks, and install/update telemetry (`PI_OFFLINE` is a legacy alias) |
+| `ATOMIC_SKIP_VERSION_CHECK` | Skip the Atomic version update check at startup. `PI_SKIP_VERSION_CHECK` is a legacy alias. |
+| `ATOMIC_TELEMETRY` | Override install/update telemetry. Use `1`/`true`/`yes` to enable or `0`/`false`/`no` to disable. This does not disable update checks (`PI_TELEMETRY` is a legacy alias). |
+| `PI_CACHE_RETENTION` | Provider/upstream-specific prompt-cache retention knob; set to `long` where supported. This is not an `ATOMIC_*` alias and has no Atomic-prefixed equivalent. |
 | `VISUAL`, `EDITOR` | External editor for CTRL+G |
 
 ---

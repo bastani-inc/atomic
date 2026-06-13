@@ -201,6 +201,8 @@ export async function dispatch(
           status: snapshot.status,
           result: snapshot.result,
           error: snapshot.error,
+          exited: snapshot.exited,
+          exitReason: snapshot.exitReason,
           stages: snapshot.stages.map((stage) => structuredClone(stage)),
         };
       }

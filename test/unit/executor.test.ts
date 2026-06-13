@@ -12,6 +12,7 @@ import {
     resolveInputs,
 } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { stageUiBroker, type StageCustomUiRequest } from "../../packages/workflows/src/shared/stage-ui-broker.js";
 import {
     WORKFLOW_AUTH_FAILURE_MESSAGE,
     WORKFLOW_INVALID_PROVIDER_CREDENTIALS_MESSAGE,
@@ -21,7 +22,12 @@ import {
 import { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import type { AgentSession, CreateAgentSessionOptions } from "@bastani/atomic";
-import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
+import type {
+    WorkflowCustomUiFactory,
+    WorkflowCustomUiOptions,
+    WorkflowDefinition,
+    WorkflowUIAdapter,
+} from "../../packages/workflows/src/shared/types.js";
 import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 
 async function waitForExecutorStagePendingPrompt(
@@ -59,6 +65,46 @@ async function waitForExecutorStagePendingPrompts(
         await new Promise((resolve) => setTimeout(resolve, 5));
     }
     throw new Error(`${count} stage pending prompts did not appear`);
+}
+
+async function waitForExecutorCustomPromptStage(
+    store: ReturnType<typeof createStore>,
+    timeoutMs = 1000,
+): Promise<{ runId: string; stage: StageSnapshot }> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        for (const runSnapshot of store.runs()) {
+            const stage = runSnapshot.stages.find(
+                (candidate) =>
+                    candidate.status === "awaiting_input" &&
+                    candidate.promptFootprint?.kind === "custom",
+            );
+            if (stage) return { runId: runSnapshot.id, stage };
+        }
+        await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    throw new Error("custom prompt stage did not appear");
+}
+
+function resolveExecutorCustomPrompt<T>(
+    runId: string,
+    stageId: string,
+    value: T,
+): void {
+    let request: StageCustomUiRequest<T> | undefined;
+    const unregister = stageUiBroker.registerHost(runId, stageId, {
+        showCustomUi: (next) => {
+            request = next as StageCustomUiRequest<T>;
+        },
+    });
+    try {
+        if (request === undefined) {
+            throw new Error("custom prompt broker request did not appear");
+        }
+        stageUiBroker.resolve(request, value);
+    } finally {
+        unregister();
+    }
 }
 
 function callThroughStack<T>(depth: number, fn: () => Promise<T>): Promise<T> {
@@ -515,6 +561,7 @@ describe("executor.run", () => {
             .output("result", Type.String())
             .run(async (ctx) => {
                 const childResult = await ctx.workflow(child);
+                if (childResult.exited === true) throw new Error("child exited unexpectedly");
                 return { result: childResult.outputs.summary };
             })
             .compile();
@@ -953,6 +1000,7 @@ describe("executor.run", () => {
             .output("childResult", Type.Record(Type.String(), Type.Any()))
             .run(async (ctx) => {
                 const childResult = await ctx.workflow(child);
+                if (childResult.exited === true) throw new Error("child exited unexpectedly");
                 return { childResult: childResult.outputs.result };
             })
             .compile();
@@ -2852,6 +2900,257 @@ describe("executor.run", () => {
         assert.equal(stage.skippedReason, "run-aborted");
         assert.equal(stage.promptAnswerState, undefined);
         assert.equal(observedPromptAnswerStates.includes("available"), false);
+    });
+
+    test("ctx.ui.custom creates a replay-keyed brokered prompt node and records a live-only answer", async () => {
+        const st = createStore();
+        const def = defineWorkflow("custom-prompt-node-wf")
+            .output("choice", Type.Optional(Type.Any()))
+            .run(async (ctx) => {
+                const choice = await ctx.ui.custom<string>(
+                    () => ({ render: () => ["custom prompt"], invalidate: () => undefined }),
+                    {
+                        replayIdentity: "custom-prompt-node:v1",
+                        label: "Choose deployment target",
+                    },
+                );
+                return { choice };
+            })
+            .compile();
+
+        const runPromise = run(def, {}, { store: st, usePromptNodesForUi: true });
+        const custom = await waitForExecutorCustomPromptStage(st);
+        let request: StageCustomUiRequest | undefined;
+        const unregister = stageUiBroker.registerHost(custom.runId, custom.stage.id, {
+            showCustomUi: (next) => {
+                request = next;
+            },
+        });
+        try {
+            assert.equal(custom.stage.name, "custom");
+            assert.equal(custom.stage.pendingPrompt, undefined);
+            assert.equal(custom.stage.promptFootprint?.kind, "custom");
+            assert.equal(custom.stage.promptFootprint?.message, "Choose deployment target");
+            assert.equal(custom.stage.promptFootprint?.customIdentitySource, "caller");
+            assert.match(custom.stage.replayKey ?? "", /^prompt:custom:/);
+            assert.ok(request, "broker request should be visible to a stage UI host");
+            stageUiBroker.resolve(request as StageCustomUiRequest<string>, "prod");
+
+            const result = await runPromise;
+            assert.equal(result.status, "completed");
+            assert.equal(result.result?.["choice"], "prod");
+            const completed = st
+                .runs()
+                .find((candidate) => candidate.id === custom.runId)!
+                .stages.find((candidate) => candidate.id === custom.stage.id)!;
+            assert.equal(completed.status, "completed");
+            assert.equal(completed.promptAnswerState, "available");
+            assert.equal(st.getStagePromptAnswer(custom.runId, custom.stage.id)?.value, "prod");
+        } finally {
+            unregister();
+            stageUiBroker.cancelStagePrompt(
+                custom.runId,
+                custom.stage.id,
+                new Error("test cleanup"),
+            );
+        }
+    });
+
+    test("custom prompt replay identity ignores label-only changes", async () => {
+        const st = createStore();
+        const makeDef = (label: string, replayIdentity: string) =>
+            defineWorkflow("custom-prompt-label-neutral-replay-wf")
+                .output("choice", Type.Optional(Type.Any()))
+                .run(async (ctx) => {
+                    const choice = await ctx.ui.custom<string>(
+                        () => ({ render: () => ["custom prompt"], invalidate: () => undefined }),
+                        { label, replayIdentity },
+                    );
+                    await ctx.stage("after").prompt(`after:${choice}`);
+                    return { choice };
+                })
+                .compile();
+
+        const firstRunPromise = run(
+            makeDef("Approve production deploy", "approval-widget:v1"),
+            {},
+            {
+                store: st,
+                usePromptNodesForUi: true,
+                adapters: {
+                    prompt: {
+                        prompt: async () => {
+                            throw new Error("continuation test failure");
+                        },
+                    },
+                },
+            },
+        );
+        const firstCustom = await waitForExecutorCustomPromptStage(st);
+        resolveExecutorCustomPrompt(firstCustom.runId, firstCustom.stage.id, "prod");
+        const firstRun = await firstRunPromise;
+        assert.equal(firstRun.status, "failed");
+        const source = st.runs().find((candidate) => candidate.id === firstRun.runId)!;
+        const sourceCustom = source.stages.find((stage) => stage.name === "custom")!;
+        assert.equal(sourceCustom.promptFootprint?.message, "Approve production deploy");
+        assert.equal(sourceCustom.promptAnswerState, "available");
+
+        const continuedPromise = run(
+            makeDef("Approve prod deployment", "approval-widget:v1"),
+            {},
+            {
+                store: st,
+                continuation: { source, resumeFromStageId: source.failedStageId! },
+                usePromptNodesForUi: true,
+                adapters: {
+                    prompt: {
+                        prompt: async () => "after-resumed",
+                    },
+                },
+            },
+        );
+        const unexpectedCustom = await waitForExecutorCustomPromptStage(st, 100).catch(() => undefined);
+        if (unexpectedCustom !== undefined) {
+            resolveExecutorCustomPrompt(unexpectedCustom.runId, unexpectedCustom.stage.id, "unexpected");
+            await continuedPromise.catch(() => undefined);
+            assert.fail("changing only ctx.ui.custom label should not create a fresh custom prompt");
+        }
+
+        const continued = await continuedPromise;
+        assert.equal(continued.status, "completed");
+        assert.equal(continued.result?.["choice"], "prod");
+        const replayedCustom = continued.stages.find((stage) => stage.name === "custom")!;
+        assert.equal(replayedCustom.replayed, true);
+        assert.equal(replayedCustom.replayedFromStageId, sourceCustom.id);
+        assert.equal(replayedCustom.promptAnswerState, "available");
+        assert.equal(replayedCustom.promptFootprint?.message, "Approve prod deployment");
+        assert.equal(replayedCustom.replayKey, sourceCustom.replayKey);
+    });
+
+    test("custom prompt replay identity changes when replayIdentity changes", async () => {
+        const st = createStore();
+        const makeDef = (replayIdentity: string) =>
+            defineWorkflow("custom-prompt-identity-change-reprompt-wf")
+                .output("choice", Type.Optional(Type.Any()))
+                .run(async (ctx) => {
+                    const choice = await ctx.ui.custom<string>(
+                        () => ({ render: () => ["custom prompt"], invalidate: () => undefined }),
+                        {
+                            label: "Approval widget",
+                            replayIdentity,
+                        },
+                    );
+                    await ctx.stage("after").prompt(`after:${choice}`);
+                    return { choice };
+                })
+                .compile();
+
+        const firstRunPromise = run(
+            makeDef("approval-widget:v1"),
+            {},
+            {
+                store: st,
+                usePromptNodesForUi: true,
+                adapters: {
+                    prompt: {
+                        prompt: async () => {
+                            throw new Error("continuation test failure");
+                        },
+                    },
+                },
+            },
+        );
+        const firstCustom = await waitForExecutorCustomPromptStage(st);
+        resolveExecutorCustomPrompt(firstCustom.runId, firstCustom.stage.id, "prod");
+        const firstRun = await firstRunPromise;
+        assert.equal(firstRun.status, "failed");
+        const source = st.runs().find((candidate) => candidate.id === firstRun.runId)!;
+        const sourceCustom = source.stages.find((stage) => stage.name === "custom")!;
+
+        const continuationController = new AbortController();
+        const continuedPromise = run(
+            makeDef("approval-widget:v2"),
+            {},
+            {
+                store: st,
+                continuation: { source, resumeFromStageId: source.failedStageId! },
+                usePromptNodesForUi: true,
+                signal: continuationController.signal,
+                adapters: {
+                    prompt: {
+                        prompt: async () => "after-resumed",
+                    },
+                },
+            },
+        );
+        const freshCustom = await waitForExecutorCustomPromptStage(st);
+        assert.equal(freshCustom.stage.replayed, undefined);
+        assert.equal(freshCustom.stage.replayedFromStageId, undefined);
+        assert.equal(freshCustom.stage.promptAnswerState, undefined);
+        assert.notEqual(freshCustom.stage.replayKey, sourceCustom.replayKey);
+        continuationController.abort(new Error("identity assertion complete"));
+
+        const continued = await continuedPromise;
+        assert.equal(continued.status, "killed");
+    });
+
+    test("ctx.ui.custom prompt signal cancellation rejects with the abort reason and stores no answer", async () => {
+        const st = createStore();
+        const promptController = new AbortController();
+        const def = defineWorkflow("custom-prompt-node-signal-abort-wf")
+            .output("error", Type.Optional(Type.Any()))
+            .run(async (ctx) => {
+                try {
+                    await ctx.ui.custom<string>(
+                        () => ({ render: () => ["custom prompt"], invalidate: () => undefined }),
+                        {
+                            replayIdentity: "custom-prompt-node-signal-abort:v1",
+                            signal: promptController.signal,
+                        },
+                    );
+                    return { error: "not-aborted" };
+                } catch (error) {
+                    return {
+                        error: error instanceof Error ? error.message : String(error),
+                    };
+                }
+            })
+            .compile();
+
+        const runPromise = run(def, {}, { store: st, usePromptNodesForUi: true });
+        const custom = await waitForExecutorCustomPromptStage(st);
+        promptController.abort(new Error("custom prompt cancelled"));
+
+        const result = await runPromise;
+        assert.equal(result.status, "completed");
+        assert.equal(result.result?.["error"], "custom prompt cancelled");
+        const stage = st
+            .runs()
+            .find((candidate) => candidate.id === custom.runId)!
+            .stages.find((candidate) => candidate.id === custom.stage.id)!;
+        assert.equal(stage.status, "skipped");
+        assert.equal(stage.skippedReason, "prompt-aborted");
+        assert.equal(stage.promptAnswerState, undefined);
+        assert.equal(st.getStagePromptAnswer(custom.runId, custom.stage.id), undefined);
+    });
+
+    test("ctx.ui.custom rejects clearly when no UI adapter is available", async () => {
+        const st = createStore();
+        const def = defineWorkflow("custom-prompt-node-headless-unavailable-wf")
+            .run(async (ctx) => {
+                await ctx.ui.custom<string>(() => ({ render: () => ["custom prompt"], invalidate: () => undefined }));
+                return {};
+            })
+            .compile();
+
+        const result = await run(def, {}, { store: st });
+
+        assert.equal(result.status, "failed");
+        assert.match(
+            result.error ?? "",
+            /HIL ctx\.ui\.custom is unavailable because Atomic runtime did not provide a UI adapter/,
+        );
+        assert.equal(st.runs().find((candidate) => candidate.id === result.runId)?.stages.length, 0);
     });
 
     test("continuation maps replayed ctx.ui prompt nodes before downstream stages", async () => {
@@ -5150,6 +5449,210 @@ describe("executor.run — HIL adapter injection", () => {
 
         assert.equal(wfResult.status, "completed");
         assert.equal(wfResult.result?.["content"], "edited: draft");
+    });
+
+    test("ctx.ui.custom delegates to an injected adapter when prompt nodes are disabled", async () => {
+        let capturedLabel: string | undefined;
+        const uiAdapter = {
+            input: async (_prompt: string) => "",
+            confirm: async (_message: string) => false,
+            select: async <T extends string>(
+                _message: string,
+                options: readonly T[],
+            ) => options[0] as T,
+            editor: async (_initial?: string) => "",
+            custom: async <T,>(
+                _factory: Parameters<NonNullable<import("../../packages/workflows/src/shared/types.js").WorkflowUIAdapter["custom"]>>[0],
+                options?: Parameters<NonNullable<import("../../packages/workflows/src/shared/types.js").WorkflowUIAdapter["custom"]>>[1],
+            ): Promise<T> => {
+                capturedLabel = options?.label;
+                return "adapter-custom-result" as T;
+            },
+        };
+
+        const def = defineWorkflow("hil-custom-adapter-wf")
+            .output("value", Type.Optional(Type.Any()))
+            .run(async (ctx) => {
+                const value = await ctx.ui.custom<string>(
+                    () => ({ render: () => ["custom"], invalidate: () => undefined }),
+                    { label: "Adapter custom" },
+                );
+                await ctx.task("after-custom", { prompt: "record custom" });
+                return { value };
+            })
+            .compile();
+
+        const wfResult = await run(
+            def,
+            {},
+            {
+                adapters: { prompt: { prompt: async () => "ok" } },
+                ui: uiAdapter,
+                store: createStore(),
+            },
+        );
+
+        assert.equal(wfResult.status, "completed");
+        assert.equal(wfResult.result?.["value"], "adapter-custom-result");
+        assert.equal(capturedLabel, "Adapter custom");
+    });
+
+    test("method-syntax UI adapters preserve this for every ctx.ui method", async () => {
+        const uiAdapter = {
+            prefix: "object-method",
+            async input(this: { readonly prefix: string }, prompt: string) {
+                return `${this.prefix}:input:${prompt}`;
+            },
+            async confirm(this: { readonly prefix: string }, message: string) {
+                return message === `${this.prefix}:confirm`;
+            },
+            async select<T extends string>(
+                this: { readonly prefix: string },
+                message: string,
+                options: readonly T[],
+            ) {
+                assert.equal(message, `${this.prefix}:select`);
+                return (options[1] ?? options[0]) as T;
+            },
+            async editor(this: { readonly prefix: string }, initial?: string) {
+                return `${this.prefix}:editor:${initial ?? ""}`;
+            },
+            async custom<T>(
+                this: { readonly prefix: string },
+                _factory: WorkflowCustomUiFactory<T>,
+                options?: WorkflowCustomUiOptions,
+            ) {
+                return `${this.prefix}:custom:${options?.label ?? ""}` as T;
+            },
+        } satisfies WorkflowUIAdapter & { readonly prefix: string };
+
+        const def = defineWorkflow("hil-method-syntax-adapter-this-wf")
+            .output("values", Type.Optional(Type.Any()))
+            .run(async (ctx) => {
+                const values = {
+                    input: await ctx.ui.input("hello"),
+                    confirm: await ctx.ui.confirm("object-method:confirm"),
+                    select: await ctx.ui.select("object-method:select", ["a", "b"] as const),
+                    editor: await ctx.ui.editor("draft"),
+                    custom: await ctx.ui.custom<string>(
+                        () => ({ render: () => ["custom"], invalidate: () => undefined }),
+                        { label: "widget" },
+                    ),
+                };
+                await ctx.task("after-ui", { prompt: "record ui adapter" });
+                return { values };
+            })
+            .compile();
+
+        const wfResult = await run(def, {}, {
+            adapters: { prompt: { prompt: async () => "ok" } },
+            ui: uiAdapter,
+            store: createStore(),
+        });
+
+        assert.equal(wfResult.status, "completed");
+        assert.deepEqual(wfResult.result?.["values"], {
+            input: "object-method:input:hello",
+            confirm: true,
+            select: "b",
+            editor: "object-method:editor:draft",
+            custom: "object-method:custom:widget",
+        });
+    });
+
+    test("class-instance UI adapters preserve this for every ctx.ui method", async () => {
+        class StatefulUiAdapter implements WorkflowUIAdapter {
+            constructor(private readonly prefix: string) {}
+
+            async input(prompt: string): Promise<string> {
+                return `${this.prefix}:input:${prompt}`;
+            }
+
+            async confirm(message: string): Promise<boolean> {
+                return message === `${this.prefix}:confirm`;
+            }
+
+            async select<T extends string>(message: string, options: readonly T[]): Promise<T> {
+                assert.equal(message, `${this.prefix}:select`);
+                return (options[1] ?? options[0]) as T;
+            }
+
+            async editor(initial?: string): Promise<string> {
+                return `${this.prefix}:editor:${initial ?? ""}`;
+            }
+
+            async custom<T>(
+                _factory: WorkflowCustomUiFactory<T>,
+                options?: WorkflowCustomUiOptions,
+            ): Promise<T> {
+                return {
+                    prefix: this.prefix,
+                    label: options?.label,
+                } as T;
+            }
+        }
+
+        const def = defineWorkflow("hil-class-adapter-this-wf")
+            .output("values", Type.Optional(Type.Any()))
+            .run(async (ctx) => {
+                const values = {
+                    input: await ctx.ui.input("hello"),
+                    confirm: await ctx.ui.confirm("class-adapter:confirm"),
+                    select: await ctx.ui.select("class-adapter:select", ["a", "b"] as const),
+                    editor: await ctx.ui.editor("draft"),
+                    custom: await ctx.ui.custom<{ prefix: string; label?: string }>(
+                        () => ({ render: () => ["custom"], invalidate: () => undefined }),
+                        { label: "widget" },
+                    ),
+                };
+                await ctx.task("after-ui", { prompt: "record ui adapter" });
+                return { values };
+            })
+            .compile();
+
+        const wfResult = await run(def, {}, {
+            adapters: { prompt: { prompt: async () => "ok" } },
+            ui: new StatefulUiAdapter("class-adapter"),
+            store: createStore(),
+        });
+
+        assert.equal(wfResult.status, "completed");
+        assert.deepEqual(wfResult.result?.["values"], {
+            input: "class-adapter:input:hello",
+            confirm: true,
+            select: "b",
+            editor: "class-adapter:editor:draft",
+            custom: {
+                prefix: "class-adapter",
+                label: "widget",
+            },
+        });
+    });
+
+    test("primitive-only UI adapters reject ctx.ui.custom with the unavailable UI message", async () => {
+        const uiAdapter = {
+            input: async (_prompt: string) => "",
+            confirm: async (_message: string) => false,
+            select: async <T extends string>(
+                _message: string,
+                options: readonly T[],
+            ) => options[0] as T,
+            editor: async (_initial?: string) => "",
+        };
+        const def = defineWorkflow("hil-custom-adapter-missing-wf")
+            .run(async (ctx) => {
+                await ctx.ui.custom<string>(() => ({ render: () => ["custom"], invalidate: () => undefined }));
+                return {};
+            })
+            .compile();
+
+        const wfResult = await run(def, {}, { ui: uiAdapter, store: createStore() });
+
+        assert.equal(wfResult.status, "failed");
+        assert.equal(
+            wfResult.error,
+            "atomic-workflows: HIL ctx.ui.custom is unavailable because Atomic runtime did not provide a UI adapter",
+        );
     });
 
     test("fallback rejects ctx.ui.input with precise missing-adapter error", async () => {

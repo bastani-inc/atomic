@@ -1,7 +1,7 @@
 ---
 name: codebase-analyzer
 description: Analyzes codebase implementation details. Call the codebase-analyzer agent when you need to find detailed information about specific components.
-tools: read, grep, find, ls, bash
+tools: read, grep, find, ls
 model: openai/gpt-5.5:low
 fallbackModels: openai-codex/gpt-5.5:low, github-copilot/gpt-5.5:low, anthropic/claude-opus-4-8:low, github-copilot/claude-opus-4.7:low
 ---

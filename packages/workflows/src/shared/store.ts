@@ -25,8 +25,16 @@ import type {
 import { accumulatePausedDurationMs, elapsedRunMs } from "./timing.js";
 import { isTopLevelWorkflowRun } from "./run-visibility.js";
 
-/** Statuses that represent a terminal run state — cannot be overwritten. */
-const TERMINAL_STATUSES: ReadonlySet<RunStatus> = new Set(["completed", "failed", "killed"]);
+/**
+ * Statuses that represent a terminal run state — cannot be overwritten.
+ *
+ * Note on `"blocked"`: here it is an author-selected `ctx.exit({ status: "blocked" })`
+ * outcome — terminal and non-resumable. This is deliberately distinct from retry-blocking,
+ * which does NOT use this run status: `recordRunBlocked()` keeps `run.status = "running"`
+ * and records the block via `blockedAt` / `failureDisposition: "active_blocked"` (resumable).
+ * The two never collide despite the shared word.
+ */
+const TERMINAL_STATUSES: ReadonlySet<RunStatus> = new Set(["completed", "failed", "killed", "skipped", "cancelled", "blocked"]);
 
 function isTerminalStageStatus(status: StageStatus): boolean {
   return status === "completed" || status === "failed" || status === "skipped";
@@ -53,6 +61,8 @@ export interface RunEndMetadata {
   readonly failedStageId?: string;
   readonly resumable?: boolean;
   readonly retryAfterMs?: number;
+  readonly exited?: boolean;
+  readonly exitReason?: string;
 }
 
 export interface RunBlockedMetadata extends RunEndMetadata {
@@ -73,6 +83,8 @@ function clearRunFailureMetadata(run: RunSnapshot): void {
   delete run.resumable;
   delete run.retryAfterMs;
   delete run.blockedAt;
+  delete run.exited;
+  delete run.exitReason;
 }
 
 function clearStaleBlockedRunMetadata(run: RunSnapshot, metadata: RunEndMetadata | undefined): void {
@@ -84,6 +96,8 @@ function clearStaleBlockedRunMetadata(run: RunSnapshot, metadata: RunEndMetadata
   if (metadata?.failedStageId === undefined) delete run.failedStageId;
   if (metadata?.resumable === undefined) delete run.resumable;
   if (metadata?.retryAfterMs === undefined) delete run.retryAfterMs;
+  if (metadata?.exited === undefined) delete run.exited;
+  if (metadata?.exitReason === undefined) delete run.exitReason;
 }
 
 function applyRunEndMetadata(run: RunSnapshot, metadata: RunEndMetadata): void {
@@ -95,6 +109,8 @@ function applyRunEndMetadata(run: RunSnapshot, metadata: RunEndMetadata): void {
   if (metadata.failureMessage !== undefined) run.failureMessage = metadata.failureMessage;
   if (metadata.failedStageId !== undefined) run.failedStageId = metadata.failedStageId;
   if (metadata.resumable !== undefined) run.resumable = metadata.resumable;
+  if (metadata.exited !== undefined) run.exited = metadata.exited;
+  if (metadata.exitReason !== undefined) run.exitReason = metadata.exitReason;
 }
 
 export type StagePromptAnswerSource = "workflow_ui" | "workflow_tool";
@@ -119,6 +135,11 @@ export interface ResolveStagePendingPromptOptions {
   readonly answerSource?: StagePromptAnswerSource;
 }
 
+export interface RecordStagePromptAnswerOptions {
+  /** Identifies who answered the prompt so notification code can avoid echoing workflow-tool answers. */
+  readonly answerSource?: StagePromptAnswerSource;
+}
+
 export interface Store {
   runs(): readonly RunSnapshot[];
   notices(): readonly WorkflowNotice[];
@@ -133,8 +154,8 @@ export interface Store {
   /**
    * Records the end of a run.
    * Returns `true` if state changed, `false` if the run was not found or
-   * already in a terminal state (completed | failed | killed).
-   * `result` is only applied for status "completed".
+   * already in a terminal state (completed | failed | killed | skipped | cancelled | blocked).
+   * `result` is applied for intentional success/exit statuses (completed | skipped | cancelled | blocked).
    * `error` is only applied for status "failed" | "killed".
    */
   recordRunEnd(
@@ -206,6 +227,19 @@ export interface Store {
   ): boolean;
   /** Wait for a stage/node-scoped HIL prompt to resolve. */
   awaitStagePendingPrompt(runId: string, stageId: string, promptId: string): Promise<unknown>;
+  /**
+   * Record a live-only prompt answer for prompt-node UIs that do not use
+   * `stage.pendingPrompt` (notably arbitrary `ctx.ui.custom<T>` widgets).
+   * The raw value stays in the private answer ledger and is never serialized
+   * into snapshots or persistence.
+   */
+  recordStagePromptAnswer(
+    runId: string,
+    stageId: string,
+    prompt: PendingPrompt,
+    response: unknown,
+    options?: RecordStagePromptAnswerOptions,
+  ): boolean;
   /**
    * Record a live-only draft for an active stage-local input/editor prompt.
    * Draft text may contain secrets and must never be copied into snapshots,
@@ -513,8 +547,13 @@ export function createStore(): Store {
       if (stage.promptAnswerState !== undefined) existing.promptAnswerState = stage.promptAnswerState;
       if (stage.replayedFromStageId !== undefined) existing.replayedFromStageId = stage.replayedFromStageId;
       if (stage.replayed !== undefined) existing.replayed = stage.replayed;
-      if (stage.workflowChildRun !== undefined) existing.workflowChildRun = { ...stage.workflowChildRun };
-      if (stage.workflowChild !== undefined) existing.workflowChild = structuredClone(stage.workflowChild);
+      if (stage.status === "completed") {
+        if (stage.workflowChildRun !== undefined) existing.workflowChildRun = { ...stage.workflowChildRun };
+        if (stage.workflowChild !== undefined) existing.workflowChild = structuredClone(stage.workflowChild);
+      } else {
+        delete existing.workflowChildRun;
+        delete existing.workflowChild;
+      }
       delete existing.awaitingInputSince;
       delete existing.inputRequest;
       rejectStagePrompt(runId, existing, `atomic-workflows: stage ${stage.id} ended before prompt resolved`);
@@ -546,11 +585,12 @@ export function createStore(): Store {
       run.durationMs = elapsedRunMs(run, run.endedAt);
       const wasBlocked = run.blockedAt !== undefined || run.failureDisposition === "active_blocked";
       delete run.blockedAt;
-      if (status === "completed") {
+      if (status === "completed" || status === "skipped" || status === "cancelled" || status === "blocked") {
         if (result !== undefined) {
           run.result = result;
         }
         clearRunFailureMetadata(run);
+        if (metadata !== undefined) applyRunEndMetadata(run, metadata);
       } else {
         if (wasBlocked && error === undefined) delete run.error;
         if ((status === "failed" || status === "killed") && error !== undefined) {
@@ -772,6 +812,39 @@ export function createStore(): Store {
         }
         _resolvers.set(promptId, { promptId, resolve, reject });
       });
+    },
+
+    recordStagePromptAnswer(
+      runId: string,
+      stageId: string,
+      prompt: PendingPrompt,
+      response: unknown,
+      options: RecordStagePromptAnswerOptions = {},
+    ): boolean {
+      const run = findRun(runId);
+      if (!run) return false;
+      if (TERMINAL_STATUSES.has(run.status)) return false;
+      const stage = findStage(run, stageId);
+      if (!stage) return false;
+      if (isTerminalStageStatus(stage.status)) return false;
+      _stagePromptAnswers.set(stagePromptAnswerKey(runId, stageId), {
+        runId,
+        stageId,
+        promptId: prompt.id,
+        kind: prompt.kind,
+        value: response,
+        answeredAt: Date.now(),
+        ...(options.answerSource !== undefined ? { answerSource: options.answerSource } : {}),
+      });
+      if (stage.promptFootprint === undefined) stage.promptFootprint = { ...prompt };
+      stage.promptAnswerState = "available";
+      if (stage.status === "awaiting_input") {
+        stage.status = "running";
+        delete stage.awaitingInputSince;
+      }
+      _version++;
+      notify();
+      return true;
     },
 
     recordStagePromptDraft(runId: string, stageId: string, promptId: string, text: string): boolean {

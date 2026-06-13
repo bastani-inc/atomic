@@ -101,7 +101,7 @@ Use `google-generative-ai` with a `baseUrl` to add models from Google AI Studio,
     "my-google": {
       "baseUrl": "https://generativelanguage.googleapis.com/v1beta",
       "api": "google-generative-ai",
-      "apiKey": "GEMINI_API_KEY",
+      "apiKey": "$GEMINI_API_KEY",
       "models": [
         {
           "id": "gemma-4-31b-it",
@@ -150,11 +150,11 @@ The `apiKey` and `headers` fields support three formats:
   "apiKey": "!security find-generic-password -ws 'anthropic'"
   "apiKey": "!op read 'op://vault/item/credential'"
   ```
-- **Environment variable:** Uses the value of the named variable
+- **Environment variable:** Prefix the variable name with `$` (or use `${VAR}`) to resolve it from the environment
   ```json
-  "apiKey": "MY_API_KEY"
+  "apiKey": "$MY_API_KEY"
   ```
-- **Literal value:** Used directly
+- **Literal value:** Used directly; bare strings are not environment variable references
   ```json
   "apiKey": "sk-..."
   ```
@@ -172,10 +172,10 @@ If your command is slow, expensive, rate-limited, or should keep using a previou
   "providers": {
     "custom-proxy": {
       "baseUrl": "https://proxy.example.com/v1",
-      "apiKey": "MY_API_KEY",
+      "apiKey": "$MY_API_KEY",
       "api": "anthropic-messages",
       "headers": {
-        "x-portkey-api-key": "PORTKEY_API_KEY",
+        "x-portkey-api-key": "$PORTKEY_API_KEY",
         "x-secret": "!op read 'op://vault/item/secret'"
       },
       "models": [...]
@@ -268,7 +268,7 @@ To merge custom models into a built-in provider, include the `models` array:
   "providers": {
     "anthropic": {
       "baseUrl": "https://my-proxy.example.com/v1",
-      "apiKey": "ANTHROPIC_API_KEY",
+      "apiKey": "$ANTHROPIC_API_KEY",
       "api": "anthropic-messages",
       "models": [...]
     }
@@ -325,7 +325,7 @@ By default, Atomic sends per-tool `eager_input_streaming: true`. If a proxy or A
     "anthropic-proxy": {
       "baseUrl": "https://proxy.example.com",
       "api": "anthropic-messages",
-      "apiKey": "ANTHROPIC_PROXY_KEY",
+      "apiKey": "$ANTHROPIC_PROXY_KEY",
       "compat": {
         "supportsEagerToolInputStreaming": false,
         "supportsLongCacheRetention": true
@@ -399,7 +399,7 @@ Example:
   "providers": {
     "openrouter": {
       "baseUrl": "https://openrouter.ai/api/v1",
-      "apiKey": "OPENROUTER_API_KEY",
+      "apiKey": "$OPENROUTER_API_KEY",
       "api": "openai-completions",
       "models": [
         {
@@ -449,7 +449,7 @@ Vercel AI Gateway example:
   "providers": {
     "vercel-ai-gateway": {
       "baseUrl": "https://ai-gateway.vercel.sh/v1",
-      "apiKey": "AI_GATEWAY_API_KEY",
+      "apiKey": "$AI_GATEWAY_API_KEY",
       "api": "openai-completions",
       "models": [
         {

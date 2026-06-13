@@ -18,7 +18,7 @@ describe.skipIf(!API_KEY)("AgentSession tree navigation e2e", () => {
 	beforeEach(() => {
 		ctx = createTestSession({
 			systemPrompt: "You are a helpful assistant. Reply with just a few words.",
-			settingsOverrides: { compaction: { keepRecentTokens: 1 } },
+			settingsOverrides: { compaction: { reserveTokens: 1 } },
 		});
 	});
 

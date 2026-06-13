@@ -14,6 +14,7 @@ import {
 	createReadTool,
 	createWriteTool,
 } from "../src/index.ts";
+import { createReadToolDefinition } from "../src/core/tools/read.ts";
 import * as shellModule from "../src/utils/shell.ts";
 
 const readTool = createReadTool(process.cwd());
@@ -32,6 +33,10 @@ function getTextOutput(result: any): string {
 			.map((c: any) => c.text)
 			.join("\n") || ""
 	);
+}
+
+function shellQuoteForTest(value: string): string {
+	return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 describe("Coding Agent Tools", () => {
@@ -84,16 +89,165 @@ describe("Coding Agent Tools", () => {
 
 		it("should truncate when byte limit exceeded", async () => {
 			const testFile = join(testDir, "large-bytes.txt");
-			// Create file that exceeds 50KB byte limit but has fewer than 2000 lines
-			const lines = Array.from({ length: 500 }, (_, i) => `Line ${i + 1}: ${"x".repeat(200)}`);
-			writeFileSync(testFile, lines.join("\n"));
+			// Create file that exceeds the 50KB byte limit but stays within the oversized-read char threshold.
+			const lines = Array.from({ length: 300 }, (_, i) => `Line ${i + 1}: ${"é".repeat(100)}`);
+			const content = lines.join("\n");
+			expect(content.length).toBeLessThanOrEqual(50_000);
+			expect(Buffer.byteLength(content, "utf-8")).toBeGreaterThan(50 * 1024);
+			writeFileSync(testFile, content);
 
 			const result = await readTool.execute("test-call-4", { path: testFile });
 			const output = getTextOutput(result);
 
 			expect(output).toContain("Line 1:");
+			expect(output).not.toContain("File read blocked");
 			// Should show byte limit message
-			expect(output).toMatch(/\[Showing lines 1-\d+ of 500 \(.* limit\)\. Use offset=\d+ to continue\.\]/);
+			expect(output).toMatch(/\[Showing lines 1-\d+ of 300 \(.* limit\)\. Use offset=\d+ to continue\.\]/);
+		});
+
+		it("should allow text reads at the oversized-read char threshold", async () => {
+			const testFile = join(testDir, "threshold-allowed.txt");
+			const content = "x".repeat(50_000);
+			expect(content.length).toBe(50_000);
+			writeFileSync(testFile, content);
+
+			const result = await readTool.execute("test-call-threshold-allowed", { path: testFile });
+			const output = getTextOutput(result);
+
+			expect(output).not.toContain("File read blocked");
+			expect(result.details?.oversizedRead).toBeUndefined();
+			expect(result.details).toBeUndefined();
+			expect(output).toBe(content);
+		});
+
+		it("should block text reads above the oversized-read char threshold without leaking content", async () => {
+			const testFile = join(testDir, "too-large.txt");
+			const sentinel = "DO_NOT_LEAK_1323_CONTENT";
+			const fillerPrefix = "z".repeat(100);
+			const content = `${sentinel}\n${fillerPrefix}${"z".repeat(50_000)}`;
+			expect(content.length).toBeGreaterThan(50_000);
+			writeFileSync(testFile, content);
+
+			const result = await readTool.execute("test-call-threshold-blocked", { path: testFile });
+			const output = getTextOutput(result);
+
+			expect(output).toContain("File read blocked");
+			expect(output).toContain(testFile);
+			expect(output).toContain(`${content.length.toLocaleString("en-US")} chars`);
+			expect(output).toContain("threshold: 50,000 chars");
+			expect(output).toContain("grep({");
+			expect(output).toContain("\"offset\": 1");
+			expect(output).toContain("\"limit\": 200");
+			expect(output).toContain("targeted snippet");
+			expect(output).not.toContain(sentinel);
+			expect(output).not.toContain(fillerPrefix);
+			expect(result.details?.oversizedRead?.blocked).toBe(true);
+			expect(result.details?.oversizedRead?.path).toBe(testFile);
+			expect(result.details?.oversizedRead?.chars).toBe(content.length);
+			expect(result.details?.oversizedRead?.maxChars).toBe(50_000);
+			expect(result.details?.truncation).toBeUndefined();
+		});
+
+		it("should allow small ranges from files that would be oversized as whole-file reads", async () => {
+			const testFile = join(testDir, "large-with-range.txt");
+			const lines = Array.from({ length: 1_000 }, (_, i) => `Line ${i + 1}: ${"x".repeat(100)}`);
+			writeFileSync(testFile, lines.join("\n"));
+
+			const result = await readTool.execute("test-call-range-allowed", {
+				path: testFile,
+				offset: 100,
+				limit: 3,
+			});
+			const output = getTextOutput(result);
+
+			expect(output).not.toContain("File read blocked");
+			expect(result.details?.oversizedRead).toBeUndefined();
+			expect(output).toContain("Line 100:");
+			expect(output).toContain("Line 102:");
+			expect(output).not.toContain("Line 103:");
+			expect(output).toContain("[898 more lines in file. Use offset=103 to continue.]");
+		});
+
+		it("should show byte-slice guidance for oversized single-line reads", async () => {
+			const testFile = join(testDir, "single-line-large.txt");
+			const content = "x".repeat(50_001);
+			writeFileSync(testFile, content);
+
+			const result = await readTool.execute("test-call-single-line-blocked", { path: testFile, limit: 1 });
+			const output = getTextOutput(result);
+
+			expect(output).toContain("File read blocked");
+			expect(output).toContain("Requested line limit: 1");
+			expect(output).toContain("line pagination is not useful");
+			expect(output).toContain(`sed -n '1p' ${shellQuoteForTest(testFile)} | head -c 51200`);
+			expect(output).toContain("tail -c +51201");
+			expect(output).not.toContain('"offset": 120');
+			expect(output).not.toContain("Read a targeted snippet");
+			expect(result.details?.oversizedRead?.byteGuidance).toBe(true);
+			expect(result.details?.oversizedRead?.requestedLimit).toBe(1);
+		});
+
+		it("should treat oversized single-line reads with a trailing newline as byte-slice cases", async () => {
+			const testFile = join(testDir, "single-line-large-trailing-newline.txt");
+			writeFileSync(testFile, `${"x".repeat(50_001)}\n`);
+
+			const result = await readTool.execute("test-call-single-line-newline-blocked", { path: testFile });
+			const output = getTextOutput(result);
+
+			expect(output).toContain("File read blocked");
+			expect(output).toContain("line pagination is not useful");
+			expect(output).toContain(`sed -n '1p' ${shellQuoteForTest(testFile)} | head -c 51200`);
+			expect(output).not.toContain('"offset": 120');
+			expect(output).not.toContain("Read a targeted snippet");
+			expect(result.details?.oversizedRead?.byteGuidance).toBe(true);
+		});
+
+		it("should shell-escape paths in oversized single-line byte guidance", async () => {
+			const testFile = join(testDir, "evil$(touch HACKED)'file.txt");
+			writeFileSync(testFile, "x".repeat(50_001));
+
+			const result = await readTool.execute("test-call-single-line-shell-escaped", { path: testFile });
+			const output = getTextOutput(result);
+
+			expect(output).toContain(`sed -n '1p' ${shellQuoteForTest(testFile)} | head -c 51200`);
+			expect(output).toContain(`tail -c +51201 | head -c 51200`);
+			expect(output).not.toContain(`${JSON.stringify(testFile)} | head -c 51200`);
+			expect(result.details?.oversizedRead?.byteGuidance).toBe(true);
+		});
+
+		it("should render oversized read blocks as tool output instead of source-highlighted code", async () => {
+			const testFile = join(testDir, "oversized.ts");
+			writeFileSync(testFile, `const value = "${"x".repeat(50_001)}";`);
+			const toolDefinition = createReadToolDefinition(testDir);
+			const result = await toolDefinition.execute("test-call-render-oversized", { path: testFile }, undefined, undefined, {} as any);
+			const markerTheme = {
+				fg: (color: string, text: string) => `<${color}>${text}</${color}>`,
+				bold: (text: string) => text,
+			} as any;
+
+			const component = toolDefinition.renderResult?.(
+				result,
+				{ expanded: false, isPartial: false },
+				markerTheme,
+				{
+					args: { path: testFile },
+					toolCallId: "test-call-render-oversized",
+					invalidate: () => {},
+					lastComponent: undefined,
+					state: undefined,
+					cwd: testDir,
+					executionStarted: true,
+					argsComplete: true,
+					isPartial: false,
+					expanded: false,
+					showImages: false,
+					isError: false,
+				} as any,
+			);
+			const rendered = component?.render(200).join("\n") ?? "";
+
+			expect(rendered).toContain("<toolOutput>File read blocked");
+			expect(rendered).toContain("</toolOutput>");
 		});
 
 		it("should handle offset parameter", async () => {

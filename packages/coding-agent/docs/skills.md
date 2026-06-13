@@ -26,7 +26,7 @@ Atomic loads skills from:
 - Global:
   - `~/.atomic/agent/skills/` (legacy `~/.pi/agent/skills/`)
   - `~/.agents/skills/`
-- Project:
+- Project (only after the project is trusted):
   - `.atomic/skills/` (legacy `.pi/skills/`)
   - `.agents/skills/` in `cwd` and ancestor directories (up to git repo root, or filesystem root when not in a repo)
 - Packages: `skills/` directories, `atomic.skills`, or legacy `pi.skills` entries in `package.json`

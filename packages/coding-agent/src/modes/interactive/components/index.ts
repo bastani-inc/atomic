@@ -29,7 +29,6 @@ export {
   type ChatTranscriptRole,
 } from "./chat-transcript.ts";
 export { BranchSummaryMessageComponent } from "./branch-summary-message.ts";
-export { CompactionSummaryMessageComponent } from "./compaction-summary-message.ts";
 export { ContextCompactionSummaryMessageComponent } from "./context-compaction-summary-message.ts";
 export { CustomEditor } from "./custom-editor.ts";
 export { CustomMessageComponent } from "./custom-message.ts";
@@ -58,6 +57,7 @@ export { ThemeSelectorComponent } from "./theme-selector.ts";
 export { ThinkingSelectorComponent } from "./thinking-selector.ts";
 export { ToolExecutionComponent, type ToolExecutionOptions } from "./tool-execution.ts";
 export { TreeSelectorComponent } from "./tree-selector.ts";
+export { TrustSelectorComponent } from "./trust-selector.ts";
 export { UserMessageComponent } from "./user-message.ts";
 export { UserMessageSelectorComponent } from "./user-message-selector.ts";
 export { WorkingStatusComponent, type WorkingStatusComponentOptions } from "./working-status.ts";

@@ -204,7 +204,9 @@ const EXPECTED_WORKFLOW_DESCRIPTION_TOKENS = [
   "sessionFile/transcriptPath",
   "Windows backslashes",
   "rg/grep",
+  "path-only by default",
   "explicit tail/limit",
+  "missing transcript paths",
 ] as const;
 
 // ---------------------------------------------------------------------------

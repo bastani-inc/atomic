@@ -4,6 +4,7 @@ import type { AgentSession } from "../src/core/agent-session.ts";
 import type { ReadonlyFooterDataProvider } from "../src/core/footer-data-provider.ts";
 import { FooterComponent, UsageMeterComponent, formatCwdForFooter, type FooterSession } from "../src/modes/interactive/components/footer.ts";
 import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
+import { stripAnsi } from "../src/utils/ansi.ts";
 
 type AssistantUsage = {
 	input: number;
@@ -177,6 +178,23 @@ describe("FooterComponent width handling", () => {
 
 		expect(() => footer.render(120)).not.toThrow();
 		expect(footer.render(120)[0]).toContain("test-model");
+	});
+
+	it("shows the latest cache hit rate when cache usage is present", () => {
+		const session = createSession({
+			sessionName: "",
+			usage: {
+				input: 100,
+				output: 10,
+				cacheRead: 50,
+				cacheWrite: 50,
+				cost: { total: 0.001 },
+			},
+		});
+		const usageMeter = new UsageMeterComponent(session);
+
+		const statsText = stripAnsi(usageMeter.render(120).join("\n"));
+		expect(statsText).toContain("CH25.0%");
 	});
 
 	it("keeps stats line within width for wide model and provider names", () => {

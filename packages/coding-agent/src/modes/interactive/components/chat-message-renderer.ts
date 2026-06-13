@@ -6,7 +6,6 @@ import type { MessageRenderer, ToolDefinition } from "../../../core/extensions/t
 import type {
   BashExecutionMessage,
   BranchSummaryMessage,
-  CompactionSummaryMessage,
   CustomMessage,
 } from "../../../core/messages.ts";
 import { parseSkillBlock } from "../../../core/agent-session.ts";
@@ -14,7 +13,6 @@ import { getMarkdownTheme, theme } from "../theme/theme.ts";
 import { AssistantMessageComponent } from "./assistant-message.ts";
 import { BashExecutionComponent } from "./bash-execution.ts";
 import { BranchSummaryMessageComponent } from "./branch-summary-message.ts";
-import { CompactionSummaryMessageComponent } from "./compaction-summary-message.ts";
 import { CustomMessageComponent } from "./custom-message.ts";
 import { SkillInvocationMessageComponent } from "./skill-invocation-message.ts";
 import { ToolExecutionComponent } from "./tool-execution.ts";
@@ -35,7 +33,6 @@ export type ChatMessageEntry =
   | { role: "user"; kind: "user"; text: string }
   | { role: "custom"; kind: "custom"; message: CustomMessage<unknown> }
   | { role: "summary"; kind: "branchSummary"; message: BranchSummaryMessage }
-  | { role: "summary"; kind: "compactionSummary"; message: CompactionSummaryMessage }
   | { role: "system"; kind: "system"; text: string };
 
 export interface ChatMessageRenderOptions {
@@ -58,6 +55,8 @@ export function chatEntriesFromAgentMessages(
   const pendingTools = new Map<string, Extract<ChatMessageEntry, { kind: "tool" }>>();
 
   for (const message of messages) {
+    if (isLegacyCompactionSummaryMessage(message)) continue;
+
     switch (message.role) {
       case "assistant": {
         entries.push({ role: "assistant", kind: "assistant", message });
@@ -125,9 +124,6 @@ export function chatEntriesFromAgentMessages(
         break;
       case "branchSummary":
         entries.push({ role: "summary", kind: "branchSummary", message });
-        break;
-      case "compactionSummary":
-        entries.push({ role: "summary", kind: "compactionSummary", message });
         break;
       default: {
         const role = (message as { role: string }).role;
@@ -404,6 +400,10 @@ function isChatMessageEntry(entry: LiveChatEntry | undefined): entry is ChatMess
   return entry !== undefined && "kind" in entry;
 }
 
+function isLegacyCompactionSummaryMessage(message: AgentMessage): boolean {
+  return message.role === "compaction" + "Summary";
+}
+
 function isAgentMessageLike(message: unknown): message is AgentMessage & { stopReason?: unknown; errorMessage?: unknown } {
   return message !== null && typeof message === "object" && "role" in message;
 }
@@ -522,11 +522,6 @@ export function renderChatMessageEntry(
     }
     case "branchSummary": {
       const component = new BranchSummaryMessageComponent(messageEntry.message, markdownTheme);
-      component.setExpanded(options.toolOutputExpanded ?? false);
-      return component;
-    }
-    case "compactionSummary": {
-      const component = new CompactionSummaryMessageComponent(messageEntry.message, markdownTheme);
       component.setExpanded(options.toolOutputExpanded ?? false);
       return component;
     }

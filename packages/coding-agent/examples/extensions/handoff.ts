@@ -12,10 +12,9 @@
  * The generated prompt appears as a draft in the editor for review/editing.
  */
 
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { complete, type Message } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, SessionEntry } from "@bastani/atomic";
-import { BorderedLoader, convertToLlm, serializeConversation } from "@bastani/atomic";
+import type { ExtensionAPI } from "@bastani/atomic";
+import { BorderedLoader, buildSessionContext, convertToLlm, serializeConversation } from "@bastani/atomic";
 
 const SYSTEM_PROMPT = `You are a context transfer assistant. Given a conversation history and the user's goal for a new thread, generate a focused prompt that:
 
@@ -39,49 +38,11 @@ Files involved:
 ## Task
 [Clear description of what to do next based on user's goal]`;
 
-function entryToMessage(entry: SessionEntry): AgentMessage | undefined {
-	if (entry.type === "message") {
-		return entry.message;
-	}
-	if (entry.type === "compaction") {
-		return {
-			role: "compactionSummary",
-			summary: entry.summary,
-			tokensBefore: entry.tokensBefore,
-			timestamp: new Date(entry.timestamp).getTime(),
-		};
-	}
-	return undefined;
-}
-
-function getHandoffMessages(branch: SessionEntry[]): AgentMessage[] {
-	let compactionIndex = -1;
-	for (let i = branch.length - 1; i >= 0; i--) {
-		if (branch[i].type === "compaction") {
-			compactionIndex = i;
-			break;
-		}
-	}
-	if (compactionIndex < 0) {
-		return branch.map(entryToMessage).filter((message) => message !== undefined);
-	}
-
-	const compaction = branch[compactionIndex];
-	const firstKeptIndex =
-		compaction.type === "compaction" ? branch.findIndex((entry) => entry.id === compaction.firstKeptEntryId) : -1;
-	const compactedBranch = [
-		compaction,
-		...(firstKeptIndex >= 0 ? branch.slice(firstKeptIndex, compactionIndex) : []),
-		...branch.slice(compactionIndex + 1),
-	];
-	return compactedBranch.map(entryToMessage).filter((message) => message !== undefined);
-}
-
 export default function (pi: ExtensionAPI) {
 	pi.registerCommand("handoff", {
 		description: "Transfer context to a new focused session",
 		handler: async (args, ctx) => {
-			if (!ctx.hasUI) {
+			if (ctx.mode !== "tui") {
 				ctx.ui.notify("handoff requires interactive mode", "error");
 				return;
 			}
@@ -97,9 +58,10 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			// Gather conversation context from current branch. If the branch was compacted,
-			// include the compaction summary plus entries from firstKeptEntryId onward.
-			const messages = getHandoffMessages(ctx.sessionManager.getBranch());
+			// Gather the same active context Atomic would send to the model. This applies
+			// context_compaction deletion filters and treats retired summary-compaction
+			// records as archival metadata, not replacement conversation context.
+			const messages = buildSessionContext(ctx.sessionManager.getEntries(), ctx.sessionManager.getLeafId()).messages;
 
 			if (messages.length === 0) {
 				ctx.ui.notify("No conversation to hand off", "error");

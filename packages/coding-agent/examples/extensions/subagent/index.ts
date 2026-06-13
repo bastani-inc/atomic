@@ -1,7 +1,7 @@
 /**
  * Subagent Tool - Delegate tasks to specialized agents
  *
- * Spawns a separate `pi` process for each subagent invocation,
+ * Spawns a separate `atomic` process for each subagent invocation,
  * giving it an isolated context window.
  *
  * Supports three modes:
@@ -249,7 +249,7 @@ async function writePromptToTempFile(
   return { dir: tmpDir, filePath };
 }
 
-function getPiInvocation(args: string[]): { command: string; args: string[] } {
+function getAtomicInvocation(args: string[]): { command: string; args: string[] } {
   const currentScript = process.argv[1];
   const isBunVirtualScript = currentScript?.startsWith("/$bunfs/root/");
   if (currentScript && !isBunVirtualScript && fs.existsSync(currentScript)) {
@@ -262,7 +262,7 @@ function getPiInvocation(args: string[]): { command: string; args: string[] } {
     return { command: process.execPath, args };
   }
 
-  return { command: "pi", args };
+  return { command: APP_NAME, args };
 }
 
 type OnUpdateCallback = (partial: AgentToolResult<SubagentDetails>) => void;
@@ -356,7 +356,7 @@ async function runSingleAgent(
     let wasAborted = false;
 
     const exitCode = await new Promise<number>((resolve) => {
-      const invocation = getPiInvocation(args);
+      const invocation = getAtomicInvocation(args);
       const proc = spawn(invocation.command, invocation.args, {
         cwd: cwd ?? defaultCwd,
         shell: false,
@@ -518,8 +518,8 @@ export default function (pi: ExtensionAPI) {
     description: [
       "Delegate tasks to specialized subagents with isolated context.",
       "Modes: single (agent + task), parallel (tasks array), chain (sequential with {previous} placeholder).",
-      'Default agent scope is "user" (from ~/.pi/agent/agents).',
-      'To enable project-local agents in .pi/agents, set agentScope: "both" (or "project").',
+      'Default agent scope is "user" (from ~/.atomic/agent/agents).',
+      'To enable project-local agents in .atomic/agents (legacy .pi/agents also works), set agentScope: "both" (or "project").',
     ].join(" "),
     parameters: SubagentParams,
 

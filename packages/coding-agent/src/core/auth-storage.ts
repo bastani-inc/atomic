@@ -45,6 +45,8 @@ type LockResult<T> = {
 	next?: string;
 };
 
+const AUTH_FILE_WRITE_OPTIONS = { encoding: "utf-8", mode: 0o600 } as const;
+
 export interface AuthStorageBackend {
 	withLock<T>(fn: (current: string | undefined) => LockResult<T>): T;
 	withLockAsync<T>(fn: (current: string | undefined) => Promise<LockResult<T>>): Promise<T>;
@@ -71,7 +73,7 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 
 	private ensureFileExists(): void {
 		if (!existsSync(this.authPath)) {
-			writeFileSync(this.authPath, "{}", "utf-8");
+			writeFileSync(this.authPath, "{}", AUTH_FILE_WRITE_OPTIONS);
 			chmodSync(this.authPath, 0o600);
 		}
 	}
@@ -133,7 +135,7 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 				if (!release) {
 					release = this.acquireLockSyncWithRetry(this.authPath);
 				}
-				writeFileSync(this.authPath, next, "utf-8");
+				writeFileSync(this.authPath, next, AUTH_FILE_WRITE_OPTIONS);
 				chmodSync(this.authPath, 0o600);
 			}
 			return result;
@@ -180,7 +182,7 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 			const { result, next } = await fn(current);
 			throwIfCompromised();
 			if (next !== undefined) {
-				writeFileSync(this.authPath, next, "utf-8");
+				writeFileSync(this.authPath, next, AUTH_FILE_WRITE_OPTIONS);
 				chmodSync(this.authPath, 0o600);
 			}
 			throwIfCompromised();

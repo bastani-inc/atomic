@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.28] - 2026-06-11
+
+### Changed
+
+- Published a synchronized Atomic 0.8.28 stable release; no functional changes were made in the MCP extension.
+
+## [0.8.27] - 2026-06-08
+
+### Changed
+
+- Promoted the 0.8.27 prerelease package version to a stable release.
+
+## [0.8.26] - 2026-06-08
+
+### Changed
+
+- Kept MCP startup registration cheap by lazily importing the heavy MCP command, initialization, proxy-mode, and OAuth/auth-flow modules, and by deferring config/cache-backed direct-tool discovery instead of loading them on the cold extension factory path ([#1223](https://github.com/bastani-inc/atomic/issues/1223)).
+
+### Fixed
+
+- Stopped logging a spurious stale-context MCP initialization error when a disposed session invalidates the captured extension context during deferred MCP `session_start` initialization; stale-context errors are now treated as cancellation for that path ([#1223](https://github.com/bastani-inc/atomic/issues/1223)).
+
+## [0.8.26-alpha.11] - 2026-06-08
+
+### Changed
+
+- Published a synchronized Atomic 0.8.26-alpha.11 prerelease alongside the subagent codebase-agent tool restriction changes; no functional changes were made in the MCP extension.
+
+## [0.8.26-alpha.10] - 2026-06-08
+
+### Changed
+
+- Bumped package version for the Atomic 0.8.26-alpha.10 prerelease.
+
 ## [0.8.26-alpha.9] - 2026-06-07
 
 ### Changed

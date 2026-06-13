@@ -2,6 +2,45 @@
 
 ## [Unreleased]
 
+## [0.8.28] - 2026-06-11
+
+### Changed
+
+- Published a synchronized Atomic 0.8.28 stable release; no functional changes were made in the subagents extension.
+
+## [0.8.27] - 2026-06-08
+
+### Changed
+
+- Promoted the 0.8.27 prerelease package version to a stable release.
+
+## [0.8.26] - 2026-06-08
+
+### Added
+
+- Replaced the bundled browser-use subagent integration with the first-party `browser` skill for web interaction workflows.
+
+### Changed
+
+- Restricted the bundled codebase locator, analyzer, pattern-finder, research locator, and research analyzer agent tool allowlists to read/search/directory tools only, preventing these read-only helpers from invoking `bash` while they locate or analyze code.
+
+### Fixed
+
+- Fixed the `no-staged-files` acceptance runtime check and subagent worktree Git commands to ignore ambient Git repository environment variables, so subagents inspect the intended working tree instead of a parent hook or unrelated worktree.
+- Suppressed intermediate model fallback failure notes and live foreground failure updates from successful subagent runs while preserving final failures and raw per-attempt diagnostics ([#1226](https://github.com/bastani-inc/atomic/issues/1226)).
+
+## [0.8.26-alpha.11] - 2026-06-08
+
+### Changed
+
+- Restricted the bundled codebase locator, analyzer, pattern-finder, research locator, and research analyzer agent tool allowlists to read/search/directory tools only, preventing these read-only helpers from invoking `bash` while they locate or analyze code.
+
+## [0.8.26-alpha.10] - 2026-06-08
+
+### Changed
+
+- Bumped package version for the Atomic 0.8.26-alpha.10 prerelease.
+
 ## [0.8.26-alpha.9] - 2026-06-07
 
 ### Changed

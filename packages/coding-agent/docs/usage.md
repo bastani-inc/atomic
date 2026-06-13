@@ -48,7 +48,7 @@ Type `/` in the editor to open command completion. Extensions can register custo
 | `/tree` | Jump to any point in the session and continue from there |
 | `/fork` | Create a new session from a previous user message |
 | `/clone` | Duplicate the current active branch into a new session |
-| `/compact` | Run Verbatim Compaction by deleting safe older transcript objects |
+| `/compact` | Run Verbatim Compaction with transcript-bound deletion tools |
 | `/copy` | Copy last assistant message to clipboard |
 | `/export [file]` | Export session to HTML |
 | `/share` | Upload as private GitHub gist with shareable HTML link |
@@ -79,7 +79,9 @@ Sessions are saved automatically to `~/.atomic/agent/sessions/`, organized by wo
 atomic -c                  # Continue most recent session
 atomic -r                  # Browse and select a session
 atomic --no-session        # Ephemeral mode; do not save
-atomic --session <path|id> # Use a specific session file or session ID
+atomic --session <path|id> # Use a specific session file or partial session ID
+atomic --session-id <id>   # Use/create an exact project-local session ID
+atomic --name "Refactor"   # Set the session display name
 atomic --fork <path|id>    # Fork a session into a new session file
 ```
 
@@ -89,7 +91,7 @@ Useful session commands:
 - `/tree` navigates the in-file session tree and can summarize abandoned branches.
 - `/fork` creates a new session from an earlier user message.
 - `/clone` duplicates the current active branch into a new session file.
-- `/compact` uses Verbatim Compaction: a fixed no-argument deletion-only planner applies only validated logical deletions; retained transcript content stays verbatim. Atomic's approach is informed by Morph's Context Compaction article: [Morph's Context Compaction](https://www.morphllm.com/context-compaction).
+- `/compact` uses Verbatim Compaction: a fixed no-argument deletion-only planner searches/reads transcript slices, records exact deletion targets, and applies only locally validated logical deletions. Retained transcript content stays verbatim. Atomic's approach is informed by Morph's Context Compaction article: [Morph's Context Compaction](https://www.morphllm.com/context-compaction).
 
 See [Sessions](/sessions) and [Compaction](/compaction) for details.
 
@@ -118,7 +120,7 @@ Use `/export [file]` to write a session to HTML.
 
 Use `/share` to upload a private GitHub gist with a shareable HTML link.
 
-If you use Atomic for open source work and want to publish sessions for model, prompt, tool, and evaluation research, see [`badlogic/pi-share-hf`](https://github.com/badlogic/pi-share-hf). It publishes sessions to Hugging Face datasets.
+If you use Atomic for open source work and want to publish sessions for model, prompt, tool, and evaluation research, use an Atomic-owned workflow or your team's dataset process. Upstream Pi session-sharing utilities may still be useful for historical context, but they are not the primary Atomic publication path.
 
 ## CLI Reference
 
@@ -176,8 +178,10 @@ cat README.md | atomic -p "Summarize this text"
 | `-c`, `--continue` | Continue the most recent session |
 | `-r`, `--resume` | Browse and select a session |
 | `--session <path\|id>` | Use a specific session file or partial UUID |
+| `--session-id <id>` | Use an exact project session ID, creating it if missing |
 | `--fork <path\|id>` | Fork a session file or partial UUID into a new session |
 | `--session-dir <dir>` | Custom session storage directory |
+| `--name <name>`, `-n <name>` | Set the session display name |
 | `--no-session` | Ephemeral mode; do not save |
 
 ### Tool Options
@@ -185,10 +189,20 @@ cat README.md | atomic -p "Summarize this text"
 | Option | Description |
 |--------|-------------|
 | `--tools <list>`, `-t <list>` | Allowlist specific built-in, extension, and custom tools |
+| `--exclude-tools <list>`, `-xt <list>` | Denylist specific built-in, extension, and custom tools |
 | `--no-builtin-tools`, `-nbt` | Disable built-in tools but keep extension/custom tools enabled |
 | `--no-tools`, `-nt` | Disable all tools |
 
-Default built-in tools: `read`, `bash`, `edit`, `write`, `ask_user_question`, `todo`. Additional built-in read-only tools are available through tool options: `grep`, `find`, `ls`.
+Default built-in tools: `read`, `bash`, `edit`, `write`, `ask_user_question`, `todo`. Additional built-in read-only tools are available through tool options: `grep`, `find`, `ls`. Use `--exclude-tools` to disable one or more tools while leaving the rest available, for example `atomic --exclude-tools ask_user_question`.
+
+### Project Trust Options
+
+| Option | Description |
+|--------|-------------|
+| `--approve`, `-a` | Trust project-local files/resources for this run |
+| `--no-approve`, `-na` | Ignore project-local files/resources for this run |
+
+Project trust gates `.atomic`/legacy `.pi` project resources, project package settings, project-local context files, and `.agents/skills` discovered from the project tree. Saved trust decisions can be managed with `/trust`; see [Security](/security).
 
 ### Resource Options
 

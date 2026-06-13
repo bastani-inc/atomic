@@ -160,6 +160,10 @@ function runAccent(run: RunSnapshot, theme?: GraphTheme): string {
   switch (run.status) {
     case "completed": return theme.success;
     case "running":   return theme.warning;
+    case "paused":    return theme.warning;
+    case "skipped":   return theme.dim;
+    case "cancelled": return theme.dim;
+    case "blocked":   return theme.dim;
     case "failed":    return theme.error;
     case "killed":    return theme.error;
     case "pending":
@@ -171,6 +175,10 @@ function runTrailing(run: RunSnapshot, theme?: GraphTheme): { text: string; fg?:
   switch (run.status) {
     case "completed": return { text: "✓ completed", fg: theme?.success };
     case "running":   return { text: "● running", fg: theme?.warning };
+    case "paused":    return { text: "❚❚ paused", fg: theme?.warning };
+    case "skipped":   return { text: "⊘ skipped", fg: theme?.dim };
+    case "cancelled": return { text: "⊘ cancelled", fg: theme?.dim };
+    case "blocked":   return { text: "↑ blocked", fg: theme?.dim };
     case "failed":    return { text: "✗ failed", fg: theme?.error };
     case "killed":    return { text: "⊘ killed", fg: theme?.error };
     case "pending":
@@ -181,6 +189,7 @@ function runTrailing(run: RunSnapshot, theme?: GraphTheme): { text: string; fg?:
 function runCardMeta(run: RunSnapshot, now: number): string {
   // Builds the right-aligned meta tail.
   //   running  → `3/8 · review-a · 1m42s`
+  //   paused   → `3/8 · review-a · 1m42s` (elapsed is frozen by pausedAt)
   //   failed   → `failed at partition · 4m24s ago`
   //   killed   → `<stage> · <duration> · <when>` (mirrors mockup §2)
   //   completed→ `<stage> · <duration> · <when>`
@@ -204,6 +213,14 @@ function runCardMeta(run: RunSnapshot, now: number): string {
     return parts.join(" · ");
   }
 
+  if (run.status === "paused") {
+    if (isChain) parts.push(`${done}/${total}`);
+    const labels = pausedStageLabels(run);
+    if (labels) parts.push(labels);
+    if (ago) parts.push(ago);
+    return parts.join(" · ");
+  }
+
   if (run.status === "failed" || run.status === "killed") {
     const failed = run.stages.find((s) => s.status === "failed");
     if (failed && isChain) parts.push(`failed at ${failed.name}`);
@@ -215,7 +232,8 @@ function runCardMeta(run: RunSnapshot, now: number): string {
     return parts.join(" · ");
   }
 
-  if (run.status === "completed") {
+  if (run.status === "completed" || run.status === "skipped" || run.status === "cancelled" || run.status === "blocked") {
+    if (run.exitReason !== undefined && run.exitReason.length > 0) parts.push(run.exitReason);
     if (!isChain && run.stages[0]) parts.push(run.stages[0].name);
     const dur = lastStageDuration(run, now);
     if (dur) parts.push(dur);
@@ -232,6 +250,13 @@ function runningStageLabels(run: RunSnapshot): string | undefined {
   const running = run.stages.filter((s) => s.status === "running").map((s) => s.name);
   if (running.length === 0) return undefined;
   const joined = running.join(", ");
+  return truncateToWidth(joined, STAGE_LABEL_BUDGET, ELLIPSIS);
+}
+
+function pausedStageLabels(run: RunSnapshot): string | undefined {
+  const paused = run.stages.filter((s) => s.status === "paused").map((s) => s.name);
+  if (paused.length === 0) return undefined;
+  const joined = paused.join(", ");
   return truncateToWidth(joined, STAGE_LABEL_BUDGET, ELLIPSIS);
 }
 
@@ -262,7 +287,11 @@ function stageCells(run: RunSnapshot): Array<{ status: StageStatus }> {
 function stageStatusFromRun(run: RunSnapshot): StageStatus {
   switch (run.status) {
     case "completed": return "completed";
+    case "skipped":   return "skipped";
+    case "cancelled": return "skipped";
+    case "blocked":   return "blocked";
     case "running":   return "running";
+    case "paused":    return "paused";
     case "failed":    return "failed";
     case "killed":    return "failed";
     case "pending":
@@ -285,18 +314,23 @@ function effectiveWidth(width?: number): number {
 
 interface Counts {
   active: number;
+  paused: number;
   completed: number;
   failed: number;
   pending: number;
 }
 
 function countBuckets(runs: readonly RunSnapshot[]): Counts {
-  const c: Counts = { active: 0, completed: 0, failed: 0, pending: 0 };
+  const c: Counts = { active: 0, paused: 0, completed: 0, failed: 0, pending: 0 };
   for (const r of runs) {
     if (r.endedAt === undefined) {
       if (r.status === "pending") c.pending++;
-      else c.active++;
+      else if (r.status === "paused") c.paused++;
+      else if (r.status === "running") c.active++;
+      else if (r.status === "completed") c.completed++;
+      else c.failed++;
     } else if (r.status === "completed") c.completed++;
+    else if (r.status === "skipped" || r.status === "cancelled" || r.status === "blocked") c.completed++;
     else c.failed++;
   }
   return c;
@@ -306,6 +340,9 @@ function themedBadges(c: Counts, theme: GraphTheme): FlatBandBadge[] {
   const out: FlatBandBadge[] = [];
   if (c.completed > 0) out.push({ text: `✓ ${c.completed}`, fg: theme.success });
   if (c.active > 0) out.push({ text: `● ${c.active}`, fg: theme.warning });
+  // Keep the word label: the pause glyph is less familiar than the other
+  // status glyphs, so this intentional asymmetry improves scanability.
+  if (c.paused > 0) out.push({ text: `❚❚ ${c.paused} paused`, fg: theme.warning });
   if (c.pending > 0) out.push({ text: `○ ${c.pending}`, fg: theme.dim });
   if (c.failed > 0) out.push({ text: `⊘ ${c.failed}`, fg: theme.error });
   return out;
@@ -315,6 +352,9 @@ function plainBadges(c: Counts): FlatBandBadge[] {
   const out: FlatBandBadge[] = [];
   if (c.completed > 0) out.push({ text: `✓ ${c.completed}` });
   if (c.active > 0) out.push({ text: `● ${c.active}` });
+  // Keep the word label: the pause glyph is less familiar than the other
+  // status glyphs, so this intentional asymmetry improves scanability.
+  if (c.paused > 0) out.push({ text: `❚❚ ${c.paused} paused` });
   if (c.pending > 0) out.push({ text: `○ ${c.pending}` });
   if (c.failed > 0) out.push({ text: `⊘ ${c.failed}` });
   return out;
@@ -343,7 +383,11 @@ function emptyStateLine(theme?: GraphTheme): string {
 function statusIconForRun(run: RunSnapshot): string {
   switch (run.status) {
     case "completed": return "✓";
+    case "skipped": return "⊘";
+    case "cancelled": return "⊘";
+    case "blocked": return "↑";
     case "running": return "●";
+    case "paused": return "❚❚";
     case "failed": return "✗";
     case "killed": return "⊘";
     case "pending":

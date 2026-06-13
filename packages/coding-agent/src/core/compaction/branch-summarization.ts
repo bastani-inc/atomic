@@ -5,15 +5,10 @@
  * a summary of the branch being left so context isn't lost.
  */
 
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { Api, Model } from "@earendil-works/pi-ai";
+import type { AgentMessage, StreamFn } from "@earendil-works/pi-agent-core";
+import type { Api, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { completeSimple } from "@earendil-works/pi-ai";
-import {
-	convertToLlm,
-	createBranchSummaryMessage,
-	createCompactionSummaryMessage,
-	createCustomMessage,
-} from "../messages.ts";
+import { convertToLlm, createBranchSummaryMessage, createCustomMessage } from "../messages.ts";
 import {
 	buildContextDeletionFilteredPath,
 	buildContextDeletionFilters,
@@ -82,6 +77,8 @@ export interface GenerateBranchSummaryOptions {
 	replaceInstructions?: boolean;
 	/** Tokens reserved for prompt + LLM response (default 16384) */
 	reserveTokens?: number;
+	/** Optional session stream function. Used to preserve SDK request behavior without mutating agent state. */
+	streamFn?: StreamFn;
 }
 
 // ============================================================================
@@ -92,8 +89,8 @@ export interface GenerateBranchSummaryOptions {
  * Collect entries that should be summarized when navigating from one position to another.
  *
  * Walks from oldLeafId back to the common ancestor with targetId, collecting entries
- * along the way. Does NOT stop at compaction boundaries - those are included and their
- * summaries become context.
+ * along the way. Does NOT stop at legacy compaction entries, but those entries are
+ * inert and are not fed into branch summarization prompts.
  *
  * @param session - Session manager (read-only access)
  * @param oldLeafId - Current position (where we're navigating from)
@@ -146,7 +143,7 @@ export function collectEntriesForBranchSummary(
 
 /**
  * Extract AgentMessage from a session entry.
- * Similar to getMessageFromEntry in compaction.ts but also handles compaction entries.
+ * Similar to getMessageFromEntry in compaction.ts, with legacy compaction entries kept inert.
  */
 function getMessageFromEntry(entry: SessionEntry): AgentMessage | undefined {
 	switch (entry.type) {
@@ -169,7 +166,7 @@ function getMessageFromEntry(entry: SessionEntry): AgentMessage | undefined {
 			return createBranchSummaryMessage(entry.summary, entry.fromId, entry.timestamp);
 
 		case "compaction":
-			return createCompactionSummaryMessage(entry.summary, entry.tokensBefore, entry.timestamp);
+			return undefined;
 
 		// These don't contribute to conversation content
 		case "thinking_level_change":
@@ -232,8 +229,8 @@ export function prepareBranchEntries(entries: SessionEntry[], tokenBudget: numbe
 
 		// Check budget before adding
 		if (tokenBudget > 0 && totalTokens + tokens > tokenBudget) {
-			// If this is a summary entry, try to fit it anyway as it's important context
-			if (entry.type === "compaction" || entry.type === "branch_summary") {
+			// If this is a branch summary entry, try to fit it anyway as it's important context
+			if (entry.type === "branch_summary") {
 				if (totalTokens < tokenBudget * 0.9) {
 					messages.unshift(message);
 					totalTokens += tokens;
@@ -298,7 +295,16 @@ export async function generateBranchSummary(
 	entries: SessionEntry[],
 	options: GenerateBranchSummaryOptions,
 ): Promise<BranchSummaryResult> {
-	const { model, apiKey, headers, signal, customInstructions, replaceInstructions, reserveTokens = 16384 } = options;
+	const {
+		model,
+		apiKey,
+		headers,
+		signal,
+		customInstructions,
+		replaceInstructions,
+		reserveTokens = 16384,
+		streamFn,
+	} = options;
 
 	// Token budget = context window minus reserved space for prompt + response
 	const contextWindow = model.contextWindow || 128000;
@@ -334,12 +340,14 @@ export async function generateBranchSummary(
 		},
 	];
 
-	// Call LLM for summarization
-	const response = await completeSimple(
-		model,
-		{ systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages },
-		{ apiKey, headers, signal, maxTokens: 2048 },
-	);
+	// Call LLM for summarization. Prefer the session stream function so SDK
+	// request behavior (timeouts, retries, attribution headers) stays consistent
+	// without running through agent state/events.
+	const context = { systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages };
+	const requestOptions: SimpleStreamOptions = { apiKey, headers, signal, maxTokens: 2048 };
+	const response = streamFn
+		? await (await streamFn(model, context, requestOptions)).result()
+		: await completeSimple(model, context, requestOptions);
 
 	// Check if aborted or errored
 	if (response.stopReason === "aborted") {

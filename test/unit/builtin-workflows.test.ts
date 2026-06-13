@@ -160,6 +160,9 @@ function makeMockCtx<TInputs extends WorkflowInputValues>(
             options: readonly T[],
         ) => options[0]!,
         editor: async (initial?: string) => initial ?? "mock-editor-content",
+        custom: async () => {
+            throw new Error("mock custom UI unavailable");
+        },
     };
 
     const runTask = async (
@@ -190,6 +193,9 @@ function makeMockCtx<TInputs extends WorkflowInputValues>(
     const ctx: WorkflowRunContext<TInputs> & { calls: MockCalls } = {
         inputs,
         calls,
+        exit: () => {
+            throw new Error("ctx.exit should not be used by builtin workflow mocks");
+        },
         stage: (name: string) => {
             calls.stage.push(name);
             throw new Error(
@@ -2813,6 +2819,7 @@ describe("open-claude-design", () => {
             approved_for_export: "boolean",
             artifact: "text",
             artifact_dir: "text",
+            browse_cli_status: "text",
             design_system: "text",
             handoff: "text",
             import_context: "text",

@@ -1,9 +1,10 @@
 import type { QuestionAnswer, QuestionData, QuestionnaireResult } from "../tool/types.ts";
 import type { WrappingSelectItem } from "../view/components/wrapping-select.ts";
 import type { QuestionnaireAction } from "./key-router.ts";
+import { readInlineCaret, resolveInlineDraftValue, withInlineDraft } from "./inline-input.ts";
 import { ROW_INTENT_META } from "./row-intent.ts";
 import { computeFocusedOptionHasPreview } from "./selectors/derivations.ts";
-import type { QuestionnaireState } from "./state.ts";
+import type { InlineInputOwner, QuestionnaireState } from "./state.ts";
 
 /** Session-lifetime constants. No live-component reads — peripheral values live on canonical state. */
 export interface ApplyContext {
@@ -92,22 +93,23 @@ function clampCaret(value: string, caret: number | undefined): number {
 	return Math.max(0, Math.min(caret, value.length));
 }
 
-function customDraftValue(state: QuestionnaireState): string {
-	const draft = state.customDraftByTab.get(state.currentTab);
-	if (draft !== undefined) return draft;
-	const prior = state.answers.get(state.currentTab);
-	return prior?.kind === "custom" && typeof prior.answer === "string" ? prior.answer : "";
+function inlineOwnerForItem(item: WrappingSelectItem | undefined): InlineInputOwner | null {
+	if (!item || !ROW_INTENT_META[item.kind].activatesInputMode) return null;
+	switch (item.kind) {
+		case "other":
+		case "chat":
+			return item.kind;
+		case "option":
+		case "next":
+			return null;
+	}
 }
 
-function hydrateCustomInputResult(state: QuestionnaireState): ApplyResult {
-	const value = customDraftValue(state);
-	const caret = clampCaret(value, state.customCaretByTab.get(state.currentTab));
-	const customDraftByTab = new Map(state.customDraftByTab);
-	const customCaretByTab = new Map(state.customCaretByTab);
-	customDraftByTab.set(state.currentTab, value);
-	customCaretByTab.set(state.currentTab, caret);
+function hydrateInlineInputResult(state: QuestionnaireState, owner: InlineInputOwner): ApplyResult {
+	const value = resolveInlineDraftValue(state, owner);
+	const caret = clampCaret(value, readInlineCaret(state, owner));
 	return {
-		state: { ...state, customDraftByTab, customCaretByTab },
+		state: withInlineDraft({ ...state, inputMode: true, inlineInputOwner: owner }, owner, value, caret),
 		effects: [{ kind: "set_input_buffer", value, caret }],
 	};
 }
@@ -119,6 +121,7 @@ function switchTabResult(state: QuestionnaireState, nextTab: number, ctx: ApplyC
 		currentTab: nextTab,
 		optionIndex: 0,
 		inputMode: false,
+		inlineInputOwner: null,
 		notesVisible: false,
 		chatFocused: false,
 		submitChoiceIndex: 0,
@@ -153,9 +156,18 @@ type Handler<K extends QuestionnaireAction["kind"]> = (
 const navHandler: Handler<"nav"> = (state, action, ctx) => {
 	const items = ctx.itemsByTab[state.currentTab] ?? [];
 	const item = items[action.nextIndex];
-	const inputMode = item ? ROW_INTENT_META[item.kind].activatesInputMode : false;
-	const next = withFocusedOptionHasPreview({ ...state, optionIndex: action.nextIndex, inputMode }, ctx.questions);
-	return inputMode ? hydrateCustomInputResult(next) : { state: next, effects: [] };
+	const owner = inlineOwnerForItem(item);
+	const next = withFocusedOptionHasPreview(
+		{
+			...state,
+			chatFocused: false,
+			optionIndex: action.nextIndex,
+			inputMode: owner !== null,
+			inlineInputOwner: owner,
+		},
+		ctx.questions,
+	);
+	return owner ? hydrateInlineInputResult(next, owner) : { state: next, effects: [] };
 };
 
 const tabSwitchHandler: Handler<"tab_switch"> = (state, action, ctx) => switchTabResult(state, action.nextTab, ctx);
@@ -249,12 +261,18 @@ const notesExitHandler: Handler<"notes_exit"> = (state, _action, _ctx) => {
 const focusOptionsHandler: Handler<"focus_options"> = (state, action, ctx) => {
 	const items = ctx.itemsByTab[state.currentTab] ?? [];
 	const focused = items[action.optionIndex];
-	const inputMode = focused ? ROW_INTENT_META[focused.kind].activatesInputMode : false;
+	const owner = inlineOwnerForItem(focused);
 	const next = withFocusedOptionHasPreview(
-		{ ...state, chatFocused: false, optionIndex: action.optionIndex, inputMode },
+		{
+			...state,
+			chatFocused: false,
+			optionIndex: action.optionIndex,
+			inputMode: owner !== null,
+			inlineInputOwner: owner,
+		},
 		ctx.questions,
 	);
-	return inputMode ? hydrateCustomInputResult(next) : { state: next, effects: [] };
+	return owner ? hydrateInlineInputResult(next, owner) : { state: next, effects: [] };
 };
 
 const cancelHandler: Handler<"cancel"> = (s, _a, c) => doneFor(s, c, true);
@@ -263,10 +281,8 @@ const submitNavHandler: Handler<"submit_nav"> = (s, a, _c) => ({
 	state: { ...s, submitChoiceIndex: a.nextIndex },
 	effects: [],
 });
-const focusChatHandler: Handler<"focus_chat"> = (s, _a, _c) => ({
-	state: { ...s, chatFocused: true },
-	effects: [],
-});
+const focusChatHandler: Handler<"focus_chat"> = (s, _a, _c) =>
+	hydrateInlineInputResult({ ...s, chatFocused: true, inputMode: true, inlineInputOwner: "chat" }, "chat");
 const notesForwardHandler: Handler<"notes_forward"> = (s, a, _c) => ({
 	state: s,
 	effects: [{ kind: "forward_notes_keystroke", data: a.data }],

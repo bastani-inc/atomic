@@ -1827,9 +1827,10 @@ export default defineWorkflow("tool-headless-lifecycle")
         assert.deepEqual(completed?.result, { answer: "from workflow tool" });
     });
 
-    test("registered workflow tool content is reference-first with default preview and supports explicit transcript entries", async () => {
+    test("registered workflow tool content defaults to path-only transcripts and supports explicit previews", async () => {
         const runId = `tool-content-transcript-${Date.now()}`;
         const longText = `start-${"x".repeat(180)}-sentinel-end`;
+        const toolOutput = `tool-output-${"y".repeat(120)}-sentinel-end`;
         const sessionFile = "C:\\Users\\atomic runner\\tool-content.jsonl";
         store.recordRunStart(makeInflightRun(runId));
         store.recordStageStart(runId, {
@@ -1837,8 +1838,16 @@ export default defineWorkflow("tool-headless-lifecycle")
             name: "summarize",
             status: "completed",
             parentIds: [],
-            toolEvents: [],
+            toolEvents: [
+                {
+                    name: "read",
+                    output: toolOutput,
+                    startedAt: 1,
+                    endedAt: 1,
+                },
+            ],
             result: longText,
+            endedAt: 2,
             sessionId: "session-tool-content",
             sessionFile,
         });
@@ -1846,7 +1855,12 @@ export default defineWorkflow("tool-headless-lifecycle")
 
         const textResult = await tool.execute(
             "tool-content-text",
-            { action: "transcript", runId, stageId: "summarize" },
+            {
+                action: "transcript",
+                runId,
+                stageId: "summarize",
+                includeToolOutput: true,
+            },
             undefined,
             undefined,
             {} as never,
@@ -1856,15 +1870,22 @@ export default defineWorkflow("tool-headless-lifecycle")
         const textContent = textBlock.type === "text" ? textBlock.text : "";
         assert.equal(
             textContent.includes(longText),
-            true,
-            "default tool content should inline the small recent-entry preview",
+            false,
+            "default tool content should not inline transcript text when a path is available",
+        );
+        assert.equal(
+            textContent.includes(toolOutput),
+            false,
+            "includeToolOutput alone should not bypass the path-only default",
         );
         assert.ok(textContent.includes(`sessionFile: ${sessionFile}`));
         assert.ok(textContent.includes(`sessionFileJson: ${JSON.stringify(sessionFile)}`));
         assert.ok(textContent.includes(`transcriptPath: ${sessionFile}`));
         assert.ok(textContent.includes(`transcriptPathJson: ${JSON.stringify(sessionFile)}`));
-        assert.ok(textContent.includes("entries:"));
-        assert.equal(textContent.includes("do not rewrite Windows backslashes"), false);
+        assert.ok(textContent.includes("availableEntries: 2"));
+        assert.ok(textContent.includes("entryLimit: 0"));
+        assert.ok(textContent.includes("lazyReadPrompt: Transcript not inlined to protect context."));
+        assert.ok(textContent.includes("entries: not inlined"));
         assert.equal(
             textContent.includes("╭"),
             false,
@@ -1874,10 +1895,13 @@ export default defineWorkflow("tool-headless-lifecycle")
             WorkflowToolResult,
             { action: "transcript" }
         >;
-        assert.equal(referenceDetails.entries.length, 1);
-        assert.equal(referenceDetails.entryCount, 1);
-        assert.equal(referenceDetails.entryLimit, 5);
+        assert.deepEqual(referenceDetails.entries, []);
+        assert.equal(referenceDetails.entryCount, 2);
+        assert.equal(referenceDetails.entryLimit, 0);
+        assert.equal(referenceDetails.truncated, true);
         assert.equal(referenceDetails.transcriptPath, sessionFile);
+        assert.equal(referenceDetails.inlineMode, "path_only");
+        assert.match(referenceDetails.lazyReadPrompt ?? "", /Read it lazily from C:\\Users\\atomic runner\\tool-content\.jsonl/);
 
         const explicitTextResult = await tool.execute(
             "tool-content-text-tail",
@@ -1895,6 +1919,40 @@ export default defineWorkflow("tool-headless-lifecycle")
             explicitTextContent.includes(longText),
             "explicit tail should inline the requested transcript entry",
         );
+        const explicitTailDetails = explicitTextResult.details as Extract<
+            WorkflowToolResult,
+            { action: "transcript" }
+        >;
+        assert.equal(explicitTailDetails.entryLimit, 1);
+        assert.equal(explicitTailDetails.inlineMode, "preview");
+        assert.equal(explicitTailDetails.lazyReadPrompt, undefined);
+
+        const explicitLimitResult = await tool.execute(
+            "tool-content-text-limit",
+            {
+                action: "transcript",
+                runId,
+                stageId: "summarize",
+                limit: 2,
+                includeToolOutput: true,
+            },
+            undefined,
+            undefined,
+            {} as never,
+        );
+        const explicitLimitBlock = explicitLimitResult.content[0];
+        assert.equal(explicitLimitBlock?.type, "text");
+        const explicitLimitContent = explicitLimitBlock.type === "text"
+            ? explicitLimitBlock.text
+            : "";
+        assert.ok(explicitLimitContent.includes(toolOutput));
+        assert.ok(explicitLimitContent.includes(longText));
+        const explicitLimitDetails = explicitLimitResult.details as Extract<
+            WorkflowToolResult,
+            { action: "transcript" }
+        >;
+        assert.equal(explicitLimitDetails.entryLimit, 2);
+        assert.equal(explicitLimitDetails.entries.length, 2);
 
         const defaultJsonResult = await tool.execute(
             "tool-content-json-default",
@@ -1902,6 +1960,7 @@ export default defineWorkflow("tool-headless-lifecycle")
                 action: "transcript",
                 runId,
                 stageId: "summarize",
+                includeToolOutput: true,
                 format: "json",
             },
             undefined,
@@ -1910,17 +1969,18 @@ export default defineWorkflow("tool-headless-lifecycle")
         );
         const defaultJsonBlock = defaultJsonResult.content[0];
         assert.equal(defaultJsonBlock?.type, "text");
-        const defaultParsed = JSON.parse(
-            defaultJsonBlock.type === "text" ? defaultJsonBlock.text : "{}",
-        );
-        assert.equal(defaultParsed.entries.length, 1);
-        assert.equal(defaultParsed.entryCount, 1);
-        assert.equal(defaultParsed.entryLimit, 5);
+        const defaultJsonText = defaultJsonBlock.type === "text"
+            ? defaultJsonBlock.text
+            : "{}";
+        const defaultParsed = JSON.parse(defaultJsonText);
+        assert.deepEqual(defaultParsed.entries, []);
+        assert.equal(defaultParsed.entryCount, 2);
+        assert.equal(defaultParsed.entryLimit, 0);
         assert.equal(defaultParsed.transcriptPath, sessionFile);
-        assert.equal(
-            (defaultJsonBlock.type === "text" ? defaultJsonBlock.text : "").includes(longText),
-            true,
-        );
+        assert.equal(defaultParsed.inlineMode, "path_only");
+        assert.match(defaultParsed.lazyReadPrompt ?? "", /Transcript not inlined/);
+        assert.equal(defaultJsonText.includes(longText), false);
+        assert.equal(defaultJsonText.includes(toolOutput), false);
 
         const jsonResult = await tool.execute(
             "tool-content-json",
@@ -2453,6 +2513,70 @@ export default defineWorkflow("tool-headless-lifecycle")
         ]);
     });
 
+    test("makeExecuteWorkflowTool falls back to bounded preview when transcript path is unavailable", async () => {
+        const runId = `stage-tool-transcript-no-path-${Date.now()}`;
+        store.recordRunStart(makeInflightRun(runId));
+        store.recordStageStart(runId, {
+            id: "stage-transcript-no-path-1",
+            name: "no-path",
+            status: "completed",
+            parentIds: [],
+            toolEvents: Array.from({ length: 6 }, (_, index) => ({
+                name: `tool-${index + 1}`,
+                output: `tool-output-${index + 1}`,
+                startedAt: index + 1,
+                endedAt: index + 1,
+            })),
+            result: "final-no-path",
+        });
+        const tool = await makeRegisteredWorkflowTool();
+
+        const toolResult = await tool.execute(
+            "tool-content-no-path-fallback",
+            {
+                action: "transcript",
+                runId,
+                stageId: "no-path",
+                includeToolOutput: true,
+            },
+            undefined,
+            undefined,
+            {} as never,
+        );
+        const textBlock = toolResult.content[0];
+        assert.equal(textBlock?.type, "text");
+        const textContent = textBlock.type === "text" ? textBlock.text : "";
+        assert.ok(textContent.includes("fallbackNote: No transcript file path is available"));
+        assert.ok(textContent.includes("entries:"));
+        assert.ok(textContent.includes("tool-output-3"));
+
+        const result = toolResult.details;
+        assert.equal(result.action, "transcript");
+        const transcript = result as Extract<
+            WorkflowToolResult,
+            { action: "transcript" }
+        >;
+        assert.equal(transcript.source, "snapshot");
+        assert.equal(transcript.sessionFile, undefined);
+        assert.equal(transcript.transcriptPath, undefined);
+        assert.equal(transcript.lazyReadPrompt, undefined);
+        assert.match(transcript.fallbackNote ?? "", /No transcript file path is available/);
+        assert.equal(transcript.inlineMode, "fallback_preview");
+        assert.equal(transcript.entryCount, 7);
+        assert.equal(transcript.entryLimit, 5);
+        assert.equal(transcript.truncated, true);
+        assert.equal(transcript.entries.length, 5);
+        assert.deepEqual(
+            transcript.entries.map((entry) => entry.toolName ?? entry.text),
+            ["tool-3", "tool-4", "tool-5", "tool-6", "final-no-path"],
+        );
+        assert.equal(transcript.entries[0]?.output, "tool-output-3");
+        assert.match(
+            renderResult(result, { plain: true, width: 320 }),
+            /no session file; preview:/,
+        );
+    });
+
     test("makeExecuteWorkflowTool labels empty live handles as live transcript source", async () => {
         const runId = `stage-tool-live-empty-handle-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
@@ -2479,22 +2603,17 @@ export default defineWorkflow("tool-headless-lifecycle")
             );
 
             assert.equal(result.action, "transcript");
-            const transcript = result as {
-                action: string;
-                source: string;
-                entries: unknown[];
-                truncated: boolean;
-                sessionId?: string;
-                sessionFile?: string;
-                transcriptPath?: string;
-            };
+            const transcript = result as Extract<
+                WorkflowToolResult,
+                { action: "transcript" }
+            >;
             assert.equal(transcript.source, "live");
             assert.equal(transcript.truncated, false);
             assert.deepEqual(transcript.entries, []);
-            assert.equal(
-                (transcript as { entryLimit?: number }).entryLimit,
-                5,
-            );
+            assert.equal(transcript.entryCount, 0);
+            assert.equal(transcript.entryLimit, 0);
+            assert.equal(transcript.inlineMode, "path_only");
+            assert.match(transcript.lazyReadPrompt ?? "", /Transcript not inlined/);
             assert.equal(transcript.sessionId, "snapshot-session");
             assert.equal(transcript.sessionFile, "/tmp/live-empty-snapshot.jsonl");
             assert.equal(transcript.transcriptPath, "/tmp/live-empty-snapshot.jsonl");
@@ -2859,6 +2978,52 @@ export default defineWorkflow("tool-headless-lifecycle")
             store.getStagePromptAnswer(runId, "stage-prompt-1")?.answerSource,
             "workflow_tool",
         );
+    });
+
+    test("makeExecuteWorkflowTool refuses workflow send answers for custom prompt nodes", async () => {
+        const runId = `stage-tool-send-custom-${Date.now()}`;
+        store.recordRunStart(makeInflightRun(runId));
+        store.recordStageStart(runId, {
+            id: "stage-custom-prompt",
+            name: "custom",
+            status: "awaiting_input",
+            parentIds: [],
+            toolEvents: [],
+            awaitingInputSince: Date.now(),
+            promptFootprint: {
+                id: "custom-prompt-1",
+                kind: "custom",
+                message: "Custom widget",
+                customIdentityHash: "hash",
+                customIdentitySource: "caller",
+                createdAt: Date.now(),
+            },
+        });
+        const handler = makeToolHandler();
+
+        const result = await handler(
+            {
+                action: "send",
+                runId,
+                stageId: "custom",
+                promptId: "custom-prompt-1",
+                delivery: "answer",
+                response: { value: "not-supported" },
+            },
+            {} as never,
+        );
+
+        assert.equal(result.action, "send");
+        const send = result as {
+            action: string;
+            delivery: string;
+            status: string;
+            message: string;
+        };
+        assert.equal(send.delivery, "answer");
+        assert.equal(send.status, "noop");
+        assert.match(send.message, /requires the interactive workflow graph/);
+        assert.equal(store.getStagePromptAnswer(runId, "stage-custom-prompt"), undefined);
     });
 
     test("makeExecuteWorkflowTool tags brokered prompt answers as workflow-tool sourced", async () => {

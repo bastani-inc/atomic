@@ -129,7 +129,7 @@ export const WORKFLOW_TOOL_DESCRIPTION =
   "For large stage handoffs, write context to files/artifacts, pass paths via reads, and prompt downstream agents to 'Read the file at <path>...' instead of injecting large previous text. " +
   "For transcripts, prefer status/stages/stage to get sessionFile/transcriptPath, " +
   "quote the exact path without rewriting separators (Windows backslashes are valid), " +
-  "search it with rg/grep, and read small ranges; transcript defaults to at most 5 recent entries and explicit tail/limit overrides that preview.";
+  "then search it with rg/grep and read small ranges; transcript is path-only by default when sessionFile/transcriptPath exists, explicit tail/limit returns bounded previews, and missing transcript paths fall back to a small preview.";
 
 // ---------------------------------------------------------------------------
 // Minimal ExtensionAPI structural types
@@ -644,8 +644,10 @@ function renderTranscriptToolContent(
   if (result.transcriptPath) lines.push(`transcriptPathJson: ${JSON.stringify(result.transcriptPath)}`);
   if (result.entryCount !== undefined) lines.push(`availableEntries: ${result.entryCount}`);
   if (result.entryLimit !== undefined) lines.push(`entryLimit: ${result.entryLimit}`);
+  if (result.lazyReadPrompt) lines.push(`lazyReadPrompt: ${result.lazyReadPrompt}`);
+  if (result.fallbackNote) lines.push(`fallbackNote: ${result.fallbackNote}`);
   if (result.entries.length === 0) {
-    lines.push("entries: none");
+    lines.push(result.inlineMode === "path_only" || result.lazyReadPrompt ? "entries: not inlined" : "entries: none");
     return lines.join("\n");
   }
   lines.push("entries:");
@@ -691,6 +693,7 @@ function renderStagesToolContent(
     if (stage.transcriptPath) lines.push(`transcriptPath: ${stage.transcriptPath}`);
     if (stage.transcriptPath) lines.push(`transcriptPathJson: ${JSON.stringify(stage.transcriptPath)}`);
     if (stage.error) lines.push(`error: ${stage.error}`);
+    if (stage.skippedReason) lines.push(`skippedReason: ${stage.skippedReason}`);
     if (stage.awaitingInputSince !== undefined) {
       lines.push(`awaitingInputSince: ${stage.awaitingInputSince}`);
     }
@@ -701,6 +704,10 @@ function renderStagesToolContent(
     if (stage.inputRequest !== undefined) {
       lines.push("inputRequest:");
       lines.push(JSON.stringify(stage.inputRequest, null, 2));
+    }
+    if (stage.promptFootprint !== undefined) {
+      lines.push("promptFootprint:");
+      lines.push(JSON.stringify(stage.promptFootprint, null, 2));
     }
   });
   return lines.join("\n");
@@ -797,9 +804,11 @@ type WorkflowStageSummary = {
   sessionFile?: string;
   transcriptPath?: string;
   error?: string;
+  skippedReason?: string;
   awaitingInputSince?: number;
   pendingPrompt?: StageSnapshot["pendingPrompt"];
   inputRequest?: StageSnapshot["inputRequest"];
+  promptFootprint?: StageSnapshot["promptFootprint"];
 };
 
 type WorkflowTranscriptEntry = {
@@ -835,6 +844,7 @@ function summarizeStage(stage: StageSnapshot): WorkflowStageSummary {
     sessionFile: stage.sessionFile,
     transcriptPath: stage.sessionFile,
     error: stage.error,
+    skippedReason: stage.skippedReason,
     awaitingInputSince: stage.awaitingInputSince,
     pendingPrompt: stage.pendingPrompt === undefined
       ? undefined
@@ -842,6 +852,9 @@ function summarizeStage(stage: StageSnapshot): WorkflowStageSummary {
     inputRequest: stage.inputRequest === undefined
       ? undefined
       : structuredClone(stage.inputRequest),
+    promptFootprint: stage.promptFootprint === undefined
+      ? undefined
+      : structuredClone(stage.promptFootprint),
   };
 }
 
@@ -853,6 +866,12 @@ type TranscriptEntrySelection = {
   entryCount: number;
   entryLimit?: number;
 };
+
+type WorkflowTranscriptResult = Extract<WorkflowToolResult, { action: "transcript" }>;
+
+function isTranscriptPreviewExplicit(args: WorkflowToolArgs): boolean {
+  return args.tail !== undefined || args.limit !== undefined;
+}
 
 function requestedTranscriptEntryLimit(args: WorkflowToolArgs): number {
   const raw = args.tail ?? args.limit;
@@ -889,6 +908,80 @@ function selectTranscriptEntries(
     entryCount,
     entryLimit: count,
   };
+}
+
+function transcriptLazyReadPrompt(path: string): string {
+  return `Transcript not inlined to protect context. Read it lazily from ${path} with your file read tools (read small ranges; rg/grep for targeted lookups).`;
+}
+
+function transcriptFallbackNote(limit: number): string {
+  return `No transcript file path is available for this stage; falling back to a bounded inline preview of up to ${limit} recent ${limit === 1 ? "entry" : "entries"}.`;
+}
+
+/**
+ * Shape a transcript tool result, keeping the context-safe path-only default
+ * the cheap hot path for the large runs #1314 protects against.
+ *
+ * `buildEntries` is a thunk so the default case (a transcript file path exists
+ * and no explicit `tail`/`limit` was requested) never materializes entry bodies
+ * just to discard them. Only the caller-provided `entryCount` is needed for the
+ * advisory count, which matches what `buildEntries()` would yield. The thunk is
+ * invoked solely for the explicit-preview and no-path fallback branches.
+ */
+function shapeTranscriptResult(input: {
+  runId: string;
+  stageId: string;
+  source: "live" | "snapshot";
+  entryCount: number;
+  buildEntries: () => readonly WorkflowTranscriptEntry[];
+  args: WorkflowToolArgs;
+  sessionId?: string | undefined;
+  sessionFile?: string | undefined;
+  transcriptPath?: string | undefined;
+}): WorkflowTranscriptResult {
+  // `transcriptPath` already falls back to `sessionFile`, so it is the single
+  // resolved path the agent should lazily read.
+  const transcriptPath = input.transcriptPath ?? input.sessionFile;
+  if (transcriptPath !== undefined && !isTranscriptPreviewExplicit(input.args)) {
+    const result: WorkflowTranscriptResult = {
+      action: "transcript",
+      runId: input.runId,
+      stageId: input.stageId,
+      source: input.source,
+      entries: [],
+      // `truncated` here means "more transcript exists on disk than was inlined"
+      // (everything, since the default inlines nothing), not "an explicit limit
+      // clipped results". It only drives the cosmetic "(truncated)" notice
+      // suffix; no consumer re-fetches on it.
+      truncated: input.entryCount > 0,
+      entryCount: input.entryCount,
+      entryLimit: 0,
+      lazyReadPrompt: transcriptLazyReadPrompt(transcriptPath),
+      inlineMode: "path_only",
+    };
+    if (input.sessionId !== undefined) result.sessionId = input.sessionId;
+    if (input.sessionFile !== undefined) result.sessionFile = input.sessionFile;
+    result.transcriptPath = transcriptPath;
+    return result;
+  }
+
+  const limited = selectTranscriptEntries(input.buildEntries(), input.args);
+  const result: WorkflowTranscriptResult = {
+    action: "transcript",
+    runId: input.runId,
+    stageId: input.stageId,
+    source: input.source,
+    entries: limited.entries,
+    truncated: limited.truncated,
+    entryCount: limited.entryCount,
+    entryLimit: limited.entryLimit,
+    inlineMode: transcriptPath === undefined ? "fallback_preview" : "preview",
+  };
+  if (input.sessionId !== undefined) result.sessionId = input.sessionId;
+  if (input.sessionFile !== undefined) result.sessionFile = input.sessionFile;
+  if (transcriptPath !== undefined) result.transcriptPath = transcriptPath;
+  if (transcriptPath === undefined) result.fallbackNote = transcriptFallbackNote(limited.entryLimit ?? DEFAULT_TRANSCRIPT_LIMIT);
+  return result;
 }
 
 function messageText(content: MessageLike["content"]): string | undefined {
@@ -1111,6 +1204,9 @@ function isRunStatus(value: string): value is RunStatus {
     case "running":
     case "paused":
     case "completed":
+    case "skipped":
+    case "cancelled":
+    case "blocked":
     case "failed":
     case "killed":
       return true;
@@ -1142,6 +1238,8 @@ function fallbackRunDetailFromResult(
     stages,
     result: result.result,
     error: result.error,
+    exited: result.exited,
+    exitReason: result.exitReason,
   };
 }
 
@@ -1463,33 +1561,40 @@ export function makeExecuteWorkflowTool(
         if (liveHandle !== undefined) {
           const sessionFile = liveHandle.sessionFile ?? snapshot?.sessionFile;
           const sessionId = liveHandle.sessionId ?? snapshot?.sessionId;
-          const limited = selectTranscriptEntries(
-            liveHandle.messages.map((m) => transcriptEntryFromMessage(m as MessageLike)),
-            args,
-          );
-          return {
-            action: "transcript",
+          return shapeTranscriptResult({
             runId: stageRunId,
             stageId: stage.stageId,
             source: "live",
-            ...limited,
+            entryCount: liveHandle.messages.length,
+            buildEntries: () =>
+              liveHandle.messages.map((m) => transcriptEntryFromMessage(m as MessageLike)),
+            args,
             sessionId,
             sessionFile,
             transcriptPath: sessionFile,
-          };
+          });
         }
-        const fallback = snapshotTranscriptEntries(snapshot, args.includeToolOutput === true);
-        const limited = selectTranscriptEntries(fallback, args);
-        return {
-          action: "transcript",
+        const snapshotSessionFile = snapshot?.sessionFile;
+        const includeSnapshotOutput = args.includeToolOutput === true && (
+          isTranscriptPreviewExplicit(args) || snapshotSessionFile === undefined
+        );
+        // Cheap count matches `snapshotTranscriptEntries(...).length` (one entry
+        // per tool event plus the optional terminal result/error entries)
+        // without building bodies for the path-only default.
+        const snapshotEntryCount = (snapshot?.toolEvents?.length ?? 0)
+          + (snapshot?.result !== undefined ? 1 : 0)
+          + (snapshot?.error !== undefined ? 1 : 0);
+        return shapeTranscriptResult({
           runId: stageRunId,
           stageId: stage.stageId,
           source: "snapshot",
-          ...limited,
+          entryCount: snapshotEntryCount,
+          buildEntries: () => snapshotTranscriptEntries(snapshot, includeSnapshotOutput),
+          args,
           sessionId: snapshot?.sessionId,
-          sessionFile: snapshot?.sessionFile,
-          transcriptPath: snapshot?.sessionFile,
-        };
+          sessionFile: snapshotSessionFile,
+          transcriptPath: snapshotSessionFile,
+        });
       }
 
       case "send": {
@@ -1541,6 +1646,24 @@ export function makeExecuteWorkflowTool(
             "answer",
             ok ? "ok" : "noop",
             ok ? `Answered input request ${brokerPrompt.id}.` : `No matching pending input request ${brokerPrompt.id}.`,
+          );
+        }
+        const customPrompt = snapshot?.status === "awaiting_input" && snapshot.promptFootprint?.kind === "custom"
+          ? snapshot.promptFootprint
+          : undefined;
+        const targetsCustomPrompt =
+          customPrompt !== undefined &&
+          (args.promptId === undefined || args.promptId === customPrompt.id) &&
+          (requestedDelivery === "answer" ||
+            args.promptId !== undefined ||
+            requestedDelivery === "auto");
+        if (targetsCustomPrompt && customPrompt !== undefined) {
+          return workflowSendResult(
+            stageRunId,
+            stage.stageId,
+            "answer",
+            "noop",
+            `Custom UI prompt ${customPrompt.id} requires the interactive workflow graph; arbitrary ctx.ui.custom<T> results cannot be answered through workflow send.`,
           );
         }
         const targetsPrompt =

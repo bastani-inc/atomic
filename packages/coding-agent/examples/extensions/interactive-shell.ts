@@ -5,7 +5,7 @@
  * with full terminal access. The TUI suspends while they run.
  *
  * Usage:
- *   pi -e examples/extensions/interactive-shell.ts
+ *   atomic -e examples/extensions/interactive-shell.ts
  *
  *   !vim file.txt        # Auto-detected as interactive
  *   !i any-command       # Force interactive mode with !i prefix
@@ -146,7 +146,7 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		// No UI available (print mode, RPC, etc.)
-		if (!ctx.hasUI) {
+		if (ctx.mode !== "tui") {
 			return {
 				result: { output: "(interactive commands require TUI)", exitCode: 1, cancelled: false, truncated: false },
 			};

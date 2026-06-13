@@ -4,6 +4,36 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.8.28] - 2026-06-11
+
+### Changed
+
+- Published a synchronized Atomic 0.8.28 stable release; no functional changes were made in the web-access extension.
+
+## [0.8.27] - 2026-06-08
+
+### Changed
+
+- Promoted the 0.8.27 prerelease package version to a stable release.
+
+## [0.8.26] - 2026-06-08
+
+### Changed
+
+- Deferred heavy search, fetch, curator, summary, provider-probing, and code-search modules until the relevant web-access tool or command is invoked, reducing default CLI startup cost ([#1223](https://github.com/bastani-inc/atomic/issues/1223)).
+
+## [0.8.26-alpha.11] - 2026-06-08
+
+### Changed
+
+- Published a synchronized Atomic 0.8.26-alpha.11 prerelease alongside the subagent codebase-agent tool restriction changes; no functional changes were made in the web-access extension.
+
+## [0.8.26-alpha.10] - 2026-06-08
+
+### Changed
+
+- Bumped package version for the Atomic 0.8.26-alpha.10 prerelease.
+
 ## [0.8.26-alpha.9] - 2026-06-07
 
 ### Changed

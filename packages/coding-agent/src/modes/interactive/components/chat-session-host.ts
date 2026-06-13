@@ -895,8 +895,6 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
         return cacheKey(["custom", this.renderIdentityKey(entry.message)]);
       case "branchSummary":
         return cacheKey(["branchSummary", this.renderIdentityKey(entry.message)]);
-      case "compactionSummary":
-        return cacheKey(["compactionSummary", this.renderIdentityKey(entry.message)]);
       case "system":
         return cacheKey(["system", entry.text]);
     }
@@ -1208,7 +1206,6 @@ function isChatMessageEntry<TExtraEntry extends ChatTranscriptEntryLike>(
     case "custom":
       return candidate.role === "custom" && candidate.message !== undefined;
     case "branchSummary":
-    case "compactionSummary":
       return candidate.role === "summary" && candidate.message !== undefined;
     case "system":
       return candidate.role === "system" && candidate.message !== undefined;

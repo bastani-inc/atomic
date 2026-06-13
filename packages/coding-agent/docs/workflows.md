@@ -10,7 +10,7 @@ Use a workflow when a task should be repeatable, inspectable, resumable, or spli
 - **Tracked stages** - Name each step and inspect it in workflow status and graph views
 - **Parallel branches** - Run independent research, review, or implementation branches concurrently
 - **Context handoffs** - Pass summaries, artifacts, files, and structured outputs between stages
-- **Human input** - Pause for `ctx.ui.input`, `confirm`, `select`, or `editor` decisions during a run
+- **Human input** - Pause for `ctx.ui.input`, `confirm`, `select`, `editor`, or custom TUI widget decisions during a run
 - **Resumable control** - Interrupt, pause, resume, attach to, or kill workflow runs
 - **Artifacts** - Save large outputs to files instead of pushing everything through model context
 - **Model fallback chains** - Retry important stages on fallback models when providers fail
@@ -357,9 +357,11 @@ Named runs go to the background. Common controls:
 /workflow kill <run-id>                # abort and retain for inspection
 ```
 
-Human-in-the-loop prompts from `ctx.ui.input`, `ctx.ui.confirm`, `ctx.ui.select`, and `ctx.ui.editor` appear as awaiting-input nodes in the workflow graph viewer, not as chat modals — use `/workflow connect <run-id>` (or F2), focus the node, and press Enter to answer them locally.
+Human-in-the-loop prompts from `ctx.ui.input`, `ctx.ui.confirm`, `ctx.ui.select`, `ctx.ui.editor`, and `ctx.ui.custom<T>` appear as awaiting-input nodes in the workflow graph viewer, not as chat modals — use `/workflow connect <run-id>` (or F2), focus the node, and press Enter to answer them locally.
 
-Prompt answers are replayable only while the source run remains in the live in-memory store. `StageSnapshot.promptAnswerState` is snapshot-safe metadata for continuation: `available` means a matching live answer can be replayed, `unavailable` means the matching prompt node exists but its private answer was purged, and `ambiguous` means multiple matching prompt nodes exist so Atomic asks again. The raw answer lives in a private `PromptAnswerRecord` ledger, is never written to snapshots or persistence, and remains resident in memory until the answer is cleared, the run is removed, or the store is cleared. Prompt replay keys include the prompt kind, message text, select choices, input/editor initial value, and hashed author callsite, so changing any of those inputs may intentionally re-ask on continuation. An empty `ctx.ui.select(..., [])` has no answerable choices and throws before creating a prompt node.
+`ctx.ui.custom<T>(factory, options?)` reuses Atomic's TUI component path: the factory receives the same real `(tui, theme, keybindings, done)` types as extension `ctx.ui.custom`, and the workflow resumes with the value passed to `done(value)`. Use `options.label` for a safe display-only graph/status label and `options.replayIdentity` when widget semantics can change without the callsite changing. Do not put secrets in labels or replay identities; only a hash of the identity is stored, and label text is not part of replay identity. Inline connected rendering is supported; `overlay: true` is rejected clearly because nested workflow graph overlays are not safely supported yet.
+
+Prompt answers are replayable only while the source run remains in the live in-memory store. `StageSnapshot.promptAnswerState` is snapshot-safe metadata for continuation: `available` means a matching live answer can be replayed, `unavailable` means the matching prompt node exists but its private answer was purged, and `ambiguous` means multiple matching prompt nodes exist so Atomic asks again. The raw answer lives in a private `PromptAnswerRecord` ledger, is never written to snapshots or persistence, and remains resident in memory until the answer is cleared, the run is removed, or the store is cleared. Prompt replay keys include the prompt kind, message text, select choices, input/editor initial value, custom prompt identity hash, and hashed author callsite, so changing any of those inputs may intentionally re-ask on continuation. An empty `ctx.ui.select(..., [])` has no answerable choices and throws before creating a prompt node. Arbitrary custom-widget answers cannot be supplied through `workflow send`; focus the `custom` awaiting-input node in the interactive graph instead.
 
 ## When to Use Workflows
 
@@ -586,6 +588,41 @@ Atomic discovers workflow definitions in this order:
 
 A workflow module may export one default workflow definition and/or named workflow definitions. Discovery checks the default export first, then named exports.
 
+Every runtime export of a discovered workflow file is validated as a workflow definition. A named export that is not a compiled definition — a widget factory, shared constant, or utility function — is rejected with an `INVALID_DEFINITION` discovery diagnostic (`export is not an object`), even when the module also has a valid default export (the valid workflow still loads; the diagnostic flags the extra export as skipped). Type-only exports (`export type` / `export interface`) are erased at runtime and never flagged.
+
+To co-locate reusable helpers with your workflows — for example a `ctx.ui.custom<T>` widget factory you want to import in tests without running the workflow — put them in a subdirectory and import them from the workflow file. Discovery scans only the top level of each workflow directory, so subdirectories such as `.atomic/workflows/lib/` are never treated as workflow modules:
+
+```text
+.atomic/workflows/
+  release-picker.ts      # only runtime export: defineWorkflow(...).compile()
+  lib/
+    table-selector.ts    # widget factory + helpers; not scanned by discovery
+```
+
+```ts
+// .atomic/workflows/release-picker.ts
+import { defineWorkflow, Type } from "@bastani/workflows";
+import { tableSelectorFactory } from "./lib/table-selector.js";
+```
+
+```ts
+// .atomic/workflows/lib/table-selector.ts
+import type { WorkflowCustomUiFactory } from "@bastani/workflows";
+
+export const tableSelectorFactory: WorkflowCustomUiFactory<{ id: string; name: string }> = (
+  tui,
+  theme,
+  _keybindings,
+  done,
+) => ({
+  render: (width) => ["..."],
+  invalidate: () => {},
+  handleInput: (data) => {
+    /* ... done({ id, name }) on Enter ... */
+  },
+});
+```
+
 Workflow files are loaded via [jiti](https://github.com/unjs/jiti), so TypeScript works without compilation.
 
 ## Workflow Configuration
@@ -763,7 +800,7 @@ Input overrides are bare `key=value` tokens. Values are JSON-parsed when possibl
 
 In the TUI, `/workflow <name>` opens an input picker when the workflow declares inputs and either no arguments were supplied or required inputs are missing. Supplied values seed the picker. Pass `--no-picker` to skip that interactive flow.
 
-In non-interactive (`-p`, `--print`, or `--mode json`) sessions, named workflow dispatch waits for the terminal run snapshot and skips pickers. Because human input is runtime-only and workflows no longer carry a declaration-time HIL marker, headless dispatch does not reject a workflow just because its source contains `ctx.ui.*`. If you copy a HIL workflow example into a headless session, it can pass dispatch and then fail when execution reaches the prompt with an error such as `atomic-workflows: HIL ctx.ui.confirm is unavailable because Atomic runtime did not provide a UI adapter` (the primitive name varies). Run those workflows interactively, or guard/remove runtime `ctx.ui.*` calls before using headless mode.
+In non-interactive (`-p`, `--print`, or `--mode json`) sessions, named workflow dispatch waits for the terminal run snapshot and skips pickers. Because human input is runtime-only and workflows no longer carry a declaration-time HIL marker, headless dispatch does not reject a workflow just because its source contains `ctx.ui.*`. If you copy a HIL workflow example into a headless session, it can pass dispatch and then fail when execution reaches the prompt with an error such as `atomic-workflows: interactive ctx.ui.confirm is unavailable in headless (non-interactive) mode; run the workflow in interactive mode or remove the interactive prompt from this stage` (the primitive name varies, including `ctx.ui.custom`). Run those workflows interactively, or guard/remove runtime `ctx.ui.*` calls before using headless mode.
 
 <p align="center"><img src="images/workflow-input-picker.png" alt="Workflow Input Picker" width="600" /></p>
 
@@ -789,7 +826,7 @@ Use `connect` for the workflow graph. Use `attach` when you want a chat pane for
 
 <p align="center"><img src="images/workflow-graph.png" alt="Workflow Graph Viewer" width="600" /></p>
 
-Human-in-the-loop prompts from `ctx.ui.input`, `ctx.ui.confirm`, `ctx.ui.select`, and `ctx.ui.editor` appear as awaiting-input nodes in the workflow UI/graph viewer, not as ordinary chat modals. Workflows do not declare HIL up front; prompt nodes are created when the runtime `ctx.ui.*` call executes. If the prompt lives inside an imported child workflow, it still appears in the same expanded parent graph so the user can focus and answer it without switching to a separate child status entry.
+Human-in-the-loop prompts from `ctx.ui.input`, `ctx.ui.confirm`, `ctx.ui.select`, `ctx.ui.editor`, and `ctx.ui.custom<T>` appear as awaiting-input nodes in the workflow UI/graph viewer, not as ordinary chat modals. Workflows do not declare HIL up front; prompt nodes are created when the runtime `ctx.ui.*` call executes. If the prompt lives inside an imported child workflow, it still appears in the same expanded parent graph so the user can focus and answer it without switching to a separate child status entry. Custom widget prompts mount inside the attached stage chat and must be completed interactively with the widget's `done(value)` callback.
 
 ## Monitor and Control Runs
 
@@ -829,10 +866,11 @@ workflow({ action: "reload", reason: "added team workflow" })
 Control behavior:
 
 - `runId` accepts full run ids or unique prefixes for lifecycle and inspection actions. Status lists and run pickers show top-level user-launched workflows; nested child runs are implementation details of the expanded parent graph.
+- `status` / `status <runId>` show terminal `ctx.exit(...)` statuses (`completed`, `skipped`, `cancelled`, or `blocked`) and the optional exit reason when one was supplied.
 - `stages` lists stage summaries, including flattened stages from nested `ctx.workflow(...)` imports and `sessionFile`/`transcriptPath` when a stage has a persisted session. Use `statusFilter: "all"` to include completed, failed, skipped, and pending stages.
 - `stage` returns details for one stage by stage id, unique prefix, or stage name, including nested child stages shown in the expanded graph and the persisted `sessionFile` when available.
 - `transcript` is reference-first with a small preview by default: it returns metadata, transcript paths, and up to 5 recent entries. For targeted lookup, quote the exact `sessionFile`/`transcriptPath` value without changing platform separators (preserve Windows backslashes), search it with `rg` or `grep`, then read only small surrounding ranges. Text results include JSON-escaped `sessionFileJson`/`transcriptPathJson` lines for copy-safe path literals. Pass explicit `tail` or `limit` to override the 5-entry preview; `tail` overrides `limit`; `includeToolOutput` includes captured snapshot tool output in snapshot transcript results.
-- `send` delivery modes are `auto`, `answer`, `prompt`, `steer`, `followUp`, and `resume`. Prompt answers can include `promptId` and can carry answer content in `response`, `text`, or `message`; structured UI prompts usually prefer `response`.
+- `send` delivery modes are `auto`, `answer`, `prompt`, `steer`, `followUp`, and `resume`. Prompt answers can include `promptId` and can carry answer content in `response`, `text`, or `message`; structured UI prompts usually prefer `response`. Arbitrary `ctx.ui.custom<T>` widget prompts require the interactive workflow graph and return a clear unsupported message when targeted through `send`.
 - `delivery: "auto"` first answers a pending prompt, then resumes paused work, then steers a streaming stage, then queues a follow-up.
 - `pause`, `interrupt`, and `kill` can target one top-level run or `all: true`; `stageId` cannot be combined with `all: true`. Stage-scoped controls can target a visible nested child stage from the expanded graph; Atomic routes the operation to the owning nested run internally.
 - `interrupt` is resumable: it pauses live work when pausable stages exist and keeps the run in live history/status.
@@ -847,7 +885,7 @@ Use slash commands for graph connect and stage attach because those are interact
 
 Atomic emits deduplicated main-chat notices when top-level workflow runs complete or fail. Nested child workflow completion/failure is reflected inside the expanded parent graph instead of producing separate top-level completion cards. These terminal notices are queued into the active main chat as steering/context messages (`triggerTurn: true`, `deliverAs: "steer"`) so the model can react without the user manually polling status. Awaiting-input workflow states are tracked for dedupe/restore, but they do not enqueue main-chat connect cards or wake the model; prompt state remains visible through workflow status/connect surfaces. Configure lifecycle behavior with `workflowNotifications.enabled` (default `true`) and `workflowNotifications.notifyOn` (default `["completed", "failed", "awaiting_input"]`).
 
-Human input is runtime-only: call `ctx.ui.input`, `ctx.ui.confirm`, `ctx.ui.select`, or `ctx.ui.editor` at the point where the workflow actually needs a decision. No builder-level declaration is required or supported.
+Human input is runtime-only: call `ctx.ui.input`, `ctx.ui.confirm`, `ctx.ui.select`, `ctx.ui.editor`, or `ctx.ui.custom<T>` at the point where the workflow actually needs a decision. No builder-level declaration is required or supported.
 
 When a workflow needs human input, answer in the graph viewer or attached stage chat when possible:
 
@@ -856,7 +894,7 @@ When a workflow needs human input, answer in the graph viewer or attached stage 
 /workflow attach <run-id> <stage-id-or-name>
 ```
 
-Agents can answer pending prompts programmatically with `workflow({ action: "send", delivery: "answer", ... })`; use `promptId` when it is present in the stage details, and provide answer content with `response`, `text`, or `message`.
+Agents can answer primitive and structured pending prompts programmatically with `workflow({ action: "send", delivery: "answer", ... })`; use `promptId` when it is present in the stage details, and provide answer content with `response`, `text`, or `message`. Arbitrary custom TUI widget prompts intentionally refuse this path in iteration 1 because a generic `T` cannot be reconstructed safely from a non-TUI payload.
 
 If the user answers a human-in-the-loop prompt in the workflow UI or stage UI broker, the stage receives the answer directly and the active main chat receives a display-only notice (`triggerTurn: false`, `excludeFromContext: true`) containing a concise answer summary. The notice is rendered for the user and persisted for audit, but it does not wake the model, enter LLM context, or authorize answering any other workflow prompt. Prompt answers sent by the main-chat `workflow` tool are suppressed from this notice because the tool result already informs the current turn.
 
@@ -927,7 +965,7 @@ workflow({
 })
 ```
 
-Direct mode supports top-level/default options and per-task options such as `context`, `forkFromSessionFile`, `model`, `fallbackModels`, `thinkingLevel`, `tools`, `noTools`, `customTools`, `mcp`, `output`, `outputMode`, `reads`, `worktree`, `gitWorktreeDir`, `baseBranch`, `maxOutput`, `artifacts`, `sessionDir`, `cwd`, and `agentDir`. Direct chains also support `chainName`, `chainDir`, and `failFast`.
+Direct mode supports top-level/default options and per-task options such as `context`, `forkFromSessionFile`, `model`, `fallbackModels`, `thinkingLevel`, `tools`, `noTools`, `customTools`, `bashPolicy`, `mcp`, `output`, `outputMode`, `reads`, `worktree`, `gitWorktreeDir`, `baseBranch`, `maxOutput`, `artifacts`, `sessionDir`, `cwd`, and `agentDir`. Direct chains also support `chainName`, `chainDir`, and `failFast`.
 
 For large fan-outs, prefer `outputMode: "file-only"` so the parent result contains compact file references instead of full output. Treat intercom payloads from async direct runs as user-visible workflow output.
 
@@ -1018,7 +1056,42 @@ Builder basics:
 
 `prompt` and `task` are aliases for task text. Prefer `prompt` inside authored workflow files because it mirrors lower-level `stage.prompt(...)`; `task` remains useful in direct tool calls and chain examples.
 
-Author workflows to create at least one tracked stage by calling `ctx.task()`, `ctx.chain()`, `ctx.parallel()`, `ctx.stage()`, or `ctx.workflow()` in the run body so each run has graph nodes to inspect, attach to, interrupt, resume, and render.
+Author workflows to create at least one tracked stage by calling `ctx.task()`, `ctx.chain()`, `ctx.parallel()`, `ctx.stage()`, or `ctx.workflow()` in the run body so each normal run has graph nodes to inspect, attach to, interrupt, resume, and render. Guard-only workflows may call `ctx.exit(...)` before creating a stage when they intentionally stop early.
+
+### Early exit with `ctx.exit()`
+
+Use `ctx.exit(options?)` when workflow code intentionally stops the current run from a helper, branch, loop, or precondition guard without classifying the run as failed. `ctx.exit()` throws an executor-owned control signal and is typed as `never`, so code after it is unreachable. In async `.run()` bodies, prefer `return ctx.exit(...)` when the exit is the only path so TypeScript can see the non-returning branch.
+
+```ts
+export default defineWorkflow("guarded-import")
+  .output("scanned", Type.Number())
+  .run(async (ctx) => {
+    const files = await findCandidateFiles(ctx.cwd);
+    if (files.length === 0) {
+      return ctx.exit({
+        status: "skipped",
+        reason: "No matching files",
+        outputs: { scanned: 0 },
+      });
+    }
+
+    const review = await ctx.task("review", { prompt: `Review ${files.join(", ")}` });
+    return { scanned: files.length };
+  })
+  .compile();
+```
+
+`ctx.exit()` accepts `status: "completed" | "skipped" | "cancelled" | "blocked"`; it never accepts `"failed"` or `"killed"` because thrown errors and external run-control keep those meanings. `status` defaults to `"completed"`. `reason` is persisted and shown in status surfaces, including the default `/workflow status` list and `/workflow status <runId>` detail, so do not put secrets in it. `outputs` may contain a partial subset of declared outputs; provided keys still must be declared with `.output(...)`, match their TypeBox schema, and be JSON-serializable. Missing required outputs are allowed only on the `ctx.exit(...)` path. Exited runs are terminal and not resumable; external `kill`, `pause`, and `interrupt` keep their existing behavior.
+
+The first selected `ctx.exit({ outputs })` snapshots its output payload synchronously by value before JavaScript `finally` blocks or cleanup callbacks can mutate the caller-owned object. The snapshot preserves undeclared keys and invalid values until post-cleanup validation, so deleting an undeclared key or changing an invalid value after `ctx.exit(...)` does not change the terminal validation result. If reading `status`, `reason`, or `outputs` options, or enumerating/copying the output snapshot itself, throws, Atomic still selects the exit signal, runs workflow-exit cleanup when feasible, and then records a terminal non-resumable authoring failure (`resumable: false`) if no external terminal control won first.
+
+After the first `ctx.exit(...)` wins, the executor treats that exit as a level-triggered gate. Later delayed calls to `ctx.stage`, `ctx.task`, `ctx.chain`, `ctx.parallel`, `ctx.workflow`, or graph-backed `ctx.ui.*` prompts rethrow the selected exit signal before creating stages, prompt nodes, child runs, or control handles. Retained `StageContext` handles from before the exit also become inert: `prompt`, `complete`, steering/follow-up, model/thinking controls, tree navigation, compaction, abort, and attached-pane session-realization paths refuse to touch or create an `AgentSession` after the exit is selected. `ctx.parallel` stops dequeuing queued work after exit even with `failFast: false` and limited concurrency; already-started stages and prompt nodes are finalized as `skipped` with a `workflow-exit` reason that prompt-node abort handling preserves instead of overwriting with a generic run-aborted reason.
+
+Continuation replay also observes the exit gate. Replayed `ctx.stage(...).prompt(...)`, replayed `complete(...)`, graph-backed prompt-node replay, and completed child-boundary replay re-check for a selected exit after their replay microtask and before writing a current-run completed stage end. If `ctx.exit(...)` wins that gap, the pending replay finalizer is skipped/suppressed with the workflow-exit reason instead of creating a misleading completed stage in the resumed run.
+
+The store is the terminal authority for all run-end races. `ctx.exit(...)` starts cleanup before validating exit outputs, and an external `/workflow kill` can still win the terminal `recordRunEnd` write while that cleanup is pending. When that happens, the SDK `RunResult`, `onRunEnd` callback, live store, and persisted `workflow.run.end` entries all report the canonical `killed` state; the losing `ctx.exit` status or validation failure is not returned and does not append a second run-end entry.
+
+Control-signal probing is fail-closed. When the executor inspects an arbitrary thrown value or abort reason for internal workflow-exit markers, parent-exit markers, aggregate `errors`, `cause`, `reason`, or `scope`, throwing or inaccessible accessors are treated as “no signal for that branch.” The run then continues through ordinary failure finalization, or the ordinary killed path for external abort reasons, instead of letting author-defined getters escape the executor catch path or be misclassified as `ctx.exit(...)`.
 
 ### Guiding Principles
 
@@ -1059,7 +1132,7 @@ In TypeScript workflow files, `.input(...)` also narrows `ctx.inputs` for better
 
 ### Outputs
 
-Workflow outputs are runtime contracts for completed workflow runs and for parent workflows that call a child with `ctx.workflow(childWorkflow, ...)`. A workflow returns a JSON-serializable object from `.run()`, and `.output(key, schema)` documents, validates, and exposes keys from that returned object. Primitives, arrays, `null`, functions, symbols, `undefined` properties, `NaN`, and infinite numbers fail validation.
+Workflow outputs are runtime contracts for completed workflow runs and for parent workflows that call a child with `ctx.workflow(childWorkflow, ...)`. A workflow normally returns a JSON-serializable object from `.run()`, and `.output(key, schema)` documents, validates, and exposes keys from that returned object. `ctx.exit({ outputs })` can expose a partial subset of the same declared output contract when the run intentionally stops early. Primitives, arrays, `null`, functions, symbols, `undefined` properties, `NaN`, and infinite numbers fail validation.
 
 **Return convention:** outputs are return-object keys. Atomic never infers child workflow outputs from stage names, stage order, or the final assistant message. If a parent should read `child.outputs.foo`, the child workflow's `.run()` must both declare `.output("foo", schema)` and return `{ foo: value }`. `result` is not special and is never added for you: to expose `result`, declare `.output("result", schema)` and return `{ result }` exactly like any other output. Returning a key that is not declared with `.output(...)` fails the run with `atomic-workflows: workflow "<name>" returned undeclared output "<key>"; declare it with .output("<key>", Type....) or remove it from the .run() return`.
 
@@ -1165,7 +1238,7 @@ Tradeoff: `Type.Unsafe<T>()` does not deeply validate at runtime — it trusts t
 
 - `ctx.inputs.x` is `Static<inputSchema>` for the input you declared with `.input("x", schema)` — required and defaulted schemas are always present, and `Type.Optional(...)` adds `| undefined`.
 - The `.run()` return is checked against your declared outputs at **compile time** (a missing required output or a wrong value type is a TypeScript error) and at **runtime** via TypeBox `Value` (undeclared keys are rejected and the declared shape is enforced recursively).
-- `ctx.workflow(child).outputs` is typed from the child's declared `.output(...)` contract, so a parent reads precisely-typed child outputs without casting.
+- `ctx.workflow(child)` returns a discriminated child result. When `child.exited === false`, `child.outputs` is the child's full declared `.output(...)` contract; when `child.exited === true`, `child.outputs` is `Partial<TOutputs>` because child `ctx.exit({ outputs })` may intentionally provide only a subset.
 
 Use `Static<typeof schema>` (both `Static` and `TSchema` are re-exported from `@bastani/workflows`) when you need the inferred TypeScript type of a schema directly — for example to type a helper that builds an output value.
 
@@ -1207,6 +1280,9 @@ export default defineWorkflow("research-and-synthesize")
       inputs: { topic: ctx.inputs.topic },
       stageName: "run shared research",
     });
+    if (child.exited === true) {
+      return ctx.exit({ status: child.status, reason: child.exitReason ?? "shared research stopped early" });
+    }
 
     const final = await ctx.task("synthesize", {
       prompt: `Synthesize:\n\n${String(child.outputs.summary)}`,
@@ -1269,6 +1345,9 @@ export default defineWorkflow("research-then-implement")
       inputs: { prompt: topic, max_concurrency: 4 },
       stageName: "deep research",
     });
+    if (research.exited === true) {
+      return ctx.exit({ status: research.status, reason: research.exitReason ?? "deep research stopped early" });
+    }
 
     if (String(ctx.inputs.runner) === "ralph") {
       const implementation = await ctx.workflow(ralph, {
@@ -1278,6 +1357,9 @@ export default defineWorkflow("research-then-implement")
         },
         stageName: "ralph implementation",
       });
+      if (implementation.exited === true) {
+        return ctx.exit({ status: implementation.status, reason: implementation.exitReason ?? "ralph stopped early" });
+      }
 
       return {
         research_doc_path: research.outputs.research_doc_path,
@@ -1293,6 +1375,9 @@ export default defineWorkflow("research-then-implement")
       },
       stageName: "goal implementation",
     });
+    if (implementation.exited === true) {
+      return ctx.exit({ status: implementation.status, reason: implementation.exitReason ?? "goal stopped early" });
+    }
 
     return {
       research_doc_path: research.outputs.research_doc_path,
@@ -1311,8 +1396,10 @@ Passing a compiled definition directly to `ctx.workflow(...)` uses the child wor
 |---|---|
 | `workflow` | Normalized child workflow name. |
 | `runId` | Nested child run id. |
-| `status` | `completed` when the child workflow succeeds. Failed or interrupted children make the parent child call fail. |
-| `outputs` | Declared child outputs. |
+| `status` | `completed`, or `skipped` / `cancelled` / `blocked` when the child intentionally ended with `ctx.exit(...)`. Failed or externally killed children make the parent child call fail. |
+| `exited` | `false` for normal child completion; `true` when the child used `ctx.exit(...)` (including `ctx.exit({ status: "completed" })`). |
+| `outputs` | Full declared child outputs when `exited === false`; partial declared child outputs when `exited === true`. |
+| `exitReason` | Optional child `ctx.exit({ reason })` text, present only on the `exited === true` branch. |
 
 `ctx.workflow()` options:
 
@@ -1325,17 +1412,23 @@ Output exposure rules:
 
 ```ts
 const child = await ctx.workflow(sharedResearch);
-child.outputs.summary; // declared by sharedResearch.output("summary", ...)
-child.outputs.sources; // declared by sharedResearch.output("sources", ...)
+if (child.exited === true) {
+  child.outputs.summary; // string | undefined: ctx.exit({ outputs }) may be partial
+} else {
+  child.outputs.summary; // string: normal completion returned the full declared contract
+  child.outputs.sources; // string[] | undefined: optional output declared by sharedResearch
+}
 ```
 
-A child exposes exactly its declared outputs — the keys it declared with `.output(...)` and returned from `.run()`. There are no implicit outputs and no raw return-object passthrough. If `.run()` returns a key that was not declared with `.output(...)`, the child run fails with `atomic-workflows: workflow "<childName>" returned undeclared output "<key>"; declare it with .output("<key>", Type....) or remove it from the .run() return`, and the parent surfaces that failure through the wrapper `atomic-workflows: child workflow "<childName>" (<displayName>) failed with status failed: ...`. A child with no declared outputs therefore exposes no outputs. Missing required outputs, schema type mismatches, and non-JSON-serializable returned values fail the child workflow call before the parent continues.
+A child exposes exactly its declared outputs — the keys it declared with `.output(...)` and returned from `.run()` or supplied to `ctx.exit({ outputs })`. There are no implicit outputs and no raw return-object passthrough. If `.run()` returns a key that was not declared with `.output(...)`, the child run fails with `atomic-workflows: workflow "<childName>" returned undeclared output "<key>"; declare it with .output("<key>", Type....) or remove it from the .run() return`, and the parent surfaces that failure through the wrapper `atomic-workflows: child workflow "<childName>" (<displayName>) failed with status failed: ...`. A child with no declared outputs therefore exposes no outputs. Missing required outputs, schema type mismatches, and non-JSON-serializable returned values fail normal child completion before the parent continues; child `ctx.exit({ outputs })` allows missing required outputs but still validates every provided key and sets `child.exited === true` so parent code must handle the partial shape.
 
 Only compiled workflow definitions can be passed to `ctx.workflow(...)`. Import reusable workflows with TypeScript `import` statements first; use `/workflow` names such as `goal` only for launching named runs, not as `ctx.workflow(...)` arguments. If a module is missing or does not export a compiled workflow definition, workflow discovery fails when loading that module. Nested child workflows count against `maxDepth` (default `4` total workflow levels).
 
-The graph includes both the parent boundary node and the imported child workflow's own stages while the child is loading/running, so the user can observe progress and interrupt sub-workflows before they complete. Completed boundaries still retain the child workflow name, child run id prefix, and exposed output count for replay/debugging. Use `stageName` when the parent needs a more specific label, but keep it concise so the child summary remains readable in the graph.
+The graph includes both the parent boundary node and the imported child workflow's own stages while the child is loading/running, so the user can observe progress and interrupt sub-workflows before they complete. Completed boundaries still retain the child workflow name, child run id prefix, and exposed output count for replay/debugging. Skipped or failed boundaries do not retain child-edge metadata (`workflowChild` / `workflowChildRun`), and graph expansion ignores any stale non-completed boundary metadata from older persisted sessions instead of flattening an unrelated child run. Use `stageName` when the parent needs a more specific label, but keep it concise so the child summary remains readable in the graph.
 
-Continuation replay treats the parent child-workflow boundary as the durable checkpoint: a previously completed child boundary replays with the original exposed outputs and without re-running the child, while a child that failed or was interrupted before completion starts again from the beginning on continuation.
+If a parent workflow exits through `ctx.exit(...)` while a child workflow is in flight, the parent executor only skips the parent boundary and sends the child a typed parent-exit abort reason. The hidden child executor owns child cleanup: active child stages and prompt nodes are skipped for `workflow-exit`, live child stage handles/sessions are disposed, and the child run is finalized as terminal `cancelled` (not `killed`) and non-resumable. The child executor writes each skipped child `workflow.stage.end` exactly once before its child `workflow.run.end`, and parent exit finalization waits for that child cleanup before writing the parent `workflow.run.end`, so restored sessions do not reconstruct the child as interrupted or failed. The skipped parent boundary clears any live child-run edge before store or persistence updates, so status/graph views do not display stale child stages from a boundary that did not complete. A delayed parent branch that calls `ctx.workflow(...)` after the exit gate is selected does not create a boundary or child run.
+
+Continuation replay treats the parent child-workflow boundary as the durable checkpoint: a previously completed child boundary replays with the original exposed outputs and without re-running the child, while a child that failed or was interrupted before completion starts again from the beginning on continuation. If `ctx.exit(...)` wins while a completed boundary is being replayed but before replay finalization, the boundary is finalized as skipped and its preloaded child metadata is omitted from store, persistence, restore, and expanded graph views.
 
 ## Workflow Primitives
 
@@ -1347,7 +1440,7 @@ Prefer high-level primitives because they create tracked graph nodes, provide co
 | Dependent sequential tasks | `ctx.chain(steps, options?)` |
 | Independent concurrent branches | `ctx.parallel(steps, options?)` |
 | Reusable child workflow | Call `ctx.workflow(workflowDefinition, options?)` |
-| Human input during a workflow run | `ctx.ui.input/confirm/select/editor` |
+| Human input during a workflow run | `ctx.ui.input/confirm/select/editor/custom` |
 | Pure deterministic computation, parsing, or file I/O | Plain TypeScript in `.run()` or helpers |
 | Fine-grained session control | `ctx.stage(name, options?)` |
 
@@ -1379,9 +1472,30 @@ Common task/stage options include:
 - `previous` for small handoff context; use artifact paths plus `reads` for large outputs, logs, research bundles, or reviewer payloads
 - `context: "fresh" | "fork"`, `forkFromSessionFile`
 - `model`, `fallbackModels`, `thinkingLevel`, `scopedModels`, `modelRegistry` — `model` and each `fallbackModels` entry accept a `model_name:thinking_effort` reasoning suffix; the standalone `thinkingLevel` is deprecated (see [Reasoning levels](#reasoning-levels))
-- `tools`, `noTools`, `customTools`, `mcp: { allow?: string[], deny?: string[] }`
+- `tools`, `noTools`, `customTools`, `mcp: { allow?: string[], deny?: string[] }`, `bashPolicy`
 - `output`, `outputMode`, `reads`, `worktree`, `gitWorktreeDir`, `baseBranch`, `maxOutput`, `artifacts`, `sessionDir`, `cwd`, `agentDir`
 - advanced host-supplied SDK seams: `authStorage`, `resourceLoader`, `sessionManager`, `settingsManager`, `sessionStartEvent`
+
+`bashPolicy` scopes the built-in `bash` tool for one stage or task. `tools` must still include `"bash"` (or leave it available by default); the policy only narrows command text after the shell tool is exposed. It supports exact strings, `{ prefix }`, command-string `{ glob }`, and `{ regex, flags? }` rules, `default: "allow" | "deny"` (default `"allow"`), `deny` precedence, and `match: "segments" | "whole"` (default `"segments"`). Omitting `bashPolicy`, passing `{}`, or passing a default-allow policy with no `allow`/`deny` rules (including empty arrays or match-only default-allow policies) preserves legacy behavior and does not parse commands; malformed policy shapes such as unknown top-level keys (`denny`, `extra`), non-array `allow`/`deny`, invalid rule objects, invalid regexes, invalid glob bracket ranges, or stateful `g`/`y` regex flags fail closed as `invalid-policy`. Segment mode checks each command in pipelines/chains/substitutions before execution, treats unquoted LF, CRLF, and bare CR as command separators, keeps non-leading Bash `>|` noclobber redirections inside the current command segment, and rejects reserved/compound shell heads, leading redirections, attached command-head redirections, and command heads that are not literal words.
+
+```ts
+await ctx.task("browser-preview", {
+  tools: ["bash"],
+  bashPolicy: {
+    default: "deny",
+    allow: [
+      "which browse",
+      { prefix: "browse open " },
+      { prefix: "browse snapshot" },
+      { prefix: "grep " },
+    ],
+    deny: [{ regex: "\\brm\\b" }],
+  },
+  prompt: "Open the preview with browse, then summarize the visible state.",
+});
+```
+
+A command such as `browse snapshot | grep title` passes only when both segments are allowed, and `browse snapshot\nrm -rf /tmp/proof` cannot be hidden behind a `{ prefix: "browse " }` rule because the newline starts a new segment. Glob rules match command strings rather than filesystem path segments: `*` and `?` may span `/`, so `{ glob: "browse *" }` matches URLs and slash-bearing paths such as `browse http://localhost:3000`, `browse docs/index.html`, and `browse ./preview/output.html` while still matching the whole target rather than `echo browse ...`; escaped bracket-class metacharacters such as `\-`, `\^`, `\]`, `\[`, and `\\` stay literal, while malformed glob ranges such as `{ glob: "echo [z-a]" }` become `invalid-policy` denials. Segment mode accepts literal heads such as `grep`, `./script`, `/usr/bin/env`, `bun`, and `browse`, and treats non-leading `>|` as redirection syntax so `echo ok >|/tmp/out` stays one segment, but conservatively rejects reserved or compound heads (`coproc`, `if`, `for`, `while`, `case`, `{`, `}`, `!`), leading redirections (`>file cmd`, `2>file cmd`, `<file cmd`, `&>file cmd`, `&>>file cmd`, `>|file cmd`, `<&0 cmd`, `>&2 cmd`), redirections attached to the command-head word (`cmd>file`, `cmd>>file`, `cmd>|file`, `cmd2>file`, `cmd>&2`, `cmd</tmp/in`), leading environment assignments (`PATH=/tmp:$PATH browse snapshot`, `LD_PRELOAD=/tmp/x browse snapshot`, `FOO=bar`), dynamic heads such as `$cmd`, `${cmd}`, `r''m`, `r\m`, `~/bin/rm`, `r*m`, `{rm,echo}`, `r$(printf m)`, or backtick-built command names. A single denied, redirection-prefixed, attached-redirection, assignment-prefixed, dynamic, or unrecognized segment blocks the whole command with a model-readable tool error and no UI prompt, so the behavior works in headless workflow runs. Use `match: "whole"` only when raw-command matching is intentional.
 
 `gitWorktreeDir` selects a reusable Git worktree root for `ctx.stage`, `ctx.task`, `ctx.chain`, and `ctx.parallel`. If the path is missing, Atomic creates it with `git worktree add --detach <path> <baseBranch>`; if it exists, it must be a same-repository worktree root. The default stage cwd becomes the matching cwd inside the worktree and preserves the invoking repo-relative subdirectory. Explicit `cwd` still wins; relative `cwd` values resolve from the worktree cwd, while absolute `cwd` values are used as provided. `gitWorktreeDir` is mutually exclusive with `worktree: true`: use `gitWorktreeDir` for named/reusable worktrees and `worktree: true` for temporary direct-mode worktrees that are cleaned up after the run.
 
@@ -1436,7 +1550,7 @@ This applies everywhere a stage accepts a model: direct `ctx.task`/`ctx.chain`/`
 - `/workflow <name> key=value ...` for interactive named runs
 - `/workflow connect|attach|pause|interrupt|resume|status|inputs|reload` for live control, inspection, and rediscovery
 - the `workflow` tool for agent-initiated orchestration and direct one-off runs
-Workflow definition files must export definitions produced by `defineWorkflow(...).compile()`. The former imperative object-form runner is not part of the public SDK, and authored workflow files cannot import `runWorkflow` from `@bastani/workflows`.
+Workflow definition files must export definitions produced by `defineWorkflow(...).compile()`. Keep non-workflow runtime helpers (widget factories, shared utilities) in a subdirectory the discovery scan ignores, such as `.atomic/workflows/lib/` — see [Workflow Locations](#workflow-locations). The former imperative object-form runner is not part of the public SDK, and authored workflow files cannot import `runWorkflow` from `@bastani/workflows`.
 
 Standalone TypeScript workflow packages type-check the SDK import with no hand-authored `.d.ts`, no `declare module` shim, and no `tsconfig` `paths` alias. The SDK types ship with `@bastani/atomic`, so a workflow package depends only on `@bastani/atomic` (plus a `typebox` peer):
 
@@ -1675,7 +1789,7 @@ Good workflows are information-flow systems, not just prompt sequences. Keep sta
 - Do not use legacy workflow tool fields like `agent`, `stage`, or run-control `name`.
 - Do not pass strings such as `"goal"` or path objects to `ctx.workflow(...)`; import the compiled workflow definition from `@bastani/workflows/builtin` or another TypeScript module first.
 - Do not rely on undeclared child outputs; returning a key that is not declared with `.output(...)` fails the run. Declare `.output(...)` for every child-workflow field you expose — including `result` — and return values matching those schemas from `.run()`.
-- Do not expect to select or rename child outputs at the call site; parent workflows receive the child's declared output contract as `child.outputs`.
+- Do not expect to select or rename child outputs at the call site; parent workflows receive the child's declared output contract as `child.outputs` after checking `child.exited === false`, and a partial declared-output map when `child.exited === true`.
 - Do not expect named workflow runs to block the chat turn; they are background tasks.
 - Do not call `kill` when the user asks to interrupt or pause resumably.
 - Keep stage names readable because they appear in workflow status and UI.

@@ -75,6 +75,8 @@ export const selectChatRowProps: GlobalSelector<ChatRowViewProps> = (state, ctx)
 	return {
 		focused: ctx.activeView === "chat",
 		numbering: chatNumberingFor(activeItems),
+		inputBuffer: ctx.chatInputBuffer,
+		inputCaret: ctx.chatInputCaret,
 	};
 };
 

@@ -8,7 +8,7 @@ Extensions are TypeScript modules that extend Atomic's behavior. They can subscr
 
 **Key capabilities:**
 - **Custom tools** - Register tools the LLM can call via `pi.registerTool()`
-- **Event interception** - Block or modify tool calls, inject context, customize compaction
+- **Event interception** - Block or modify tool calls, inject context, observe/cancel deletion-only compaction, and customize branch summaries
 - **User interaction** - Prompt users via `ctx.ui` (select, confirm, input, notify)
 - **Custom UI components** - Full TUI components with keyboard input via `ctx.ui.custom()` for complex interactions
 - **Custom commands** - Register commands like `/mycommand` via `pi.registerCommand()`
@@ -19,7 +19,7 @@ Extensions are TypeScript modules that extend Atomic's behavior. They can subscr
 - Permission gates (confirm before `rm -rf`, `sudo`, etc.)
 - Git checkpointing (stash at each turn, restore on branch)
 - Path protection (block writes to `.env`, `node_modules/`)
-- Custom compaction (summarize conversation your way)
+- Compaction policies (cancel compaction or provide exact deletion targets)
 - Conversation summaries (see `summarize.ts` example)
 - Interactive tools (questions, wizards, custom dialogs)
 - Stateful tools (todo lists, connection pools)
@@ -205,7 +205,7 @@ export default async function (pi: ExtensionAPI) {
 
   pi.registerProvider("local-openai", {
     baseUrl: "http://localhost:1234/v1",
-    apiKey: "LOCAL_OPENAI_API_KEY",
+    apiKey: "$LOCAL_OPENAI_API_KEY",
     api: "openai-completions",
     models: payload.data.map((model) => ({
       id: model.id,
@@ -276,6 +276,7 @@ The manifest key is the configured Atomic app name (`atomic` here, from the runn
 ```
 Atomic starts
   │
+  ├─► project_trust (user/global and CLI extensions only, before project resources load)
   ├─► session_start { reason: "startup" }
   └─► resources_discover { reason: "startup" }
       │
@@ -322,11 +323,9 @@ user sends another prompt ◄─────────────────
   └─► resources_discover { reason: "startup" }
 
 /compact or auto-compaction
-  └─► compaction_start / compaction_end (deletion-only context compaction)
-
-legacy summary compaction APIs
-  ├─► session_before_compact (can cancel or customize)
-  └─► session_compact
+  ├─► compaction_start / compaction_end (deletion-only context compaction status)
+  ├─► session_before_compact (can cancel or provide a deletion request)
+  └─► session_compact (after the context_compaction entry is persisted)
 
 /tree navigation
   ├─► session_before_tree (can cancel or customize)
@@ -342,6 +341,25 @@ thinking level changes (settings, keybinding, pi.setThinkingLevel())
 exit (CTRL+C, CTRL+D, SIGHUP, SIGTERM)
   └─► session_shutdown
 ```
+
+### Startup Events
+
+#### project_trust
+
+Fired before Atomic decides whether to trust a project with dynamic configs (`.atomic`, legacy `.pi`, or `.agents/skills`). It runs during startup and when session replacement (for example `/resume`) enters a cwd whose trust has not been resolved in the current process. Only user/global extensions and CLI `-e` extensions participate; project-local extensions are not loaded until after trust is resolved.
+
+```typescript
+pi.on("project_trust", async (event, ctx) => {
+  // event.cwd - current working directory
+  // ctx has a limited trust context: cwd, mode, hasUI, and select/confirm/input/notify UI helpers
+  if (ctx.hasUI && await ctx.ui.confirm("Trust project?", event.cwd)) {
+    return { trusted: "yes", remember: true };
+  }
+  return { trusted: "undecided" };
+});
+```
+
+A `project_trust` handler must return `{ trusted: "yes" | "no" | "undecided" }`. A user/global or CLI extension that returns `"yes"` or `"no"` owns the decision; the first yes/no decision wins and suppresses the built-in trust prompt. Use `remember: true` to persist a yes/no decision; otherwise it applies only to the current process. Return `"undecided"` to let later handlers or the built-in trust flow decide. Check `ctx.hasUI` before prompting. If no handler returns yes/no, normal trust resolution continues: saved `trust.json` decisions apply first, then `defaultProjectTrust` controls whether Atomic asks, trusts, or declines by default.
 
 ### Resource Events
 
@@ -416,28 +434,41 @@ Do cleanup work in `session_shutdown`, then reestablish any in-memory state in `
 
 #### session_before_compact / session_compact
 
-Fired by the legacy summary compaction pipeline. `/compact` and auto-compaction now use deletion-only context compaction by default, so extensions should not rely on these events for default compaction. See [Compaction](/compaction) for details.
+Fired by `/compact` and auto-compaction. Compaction is deletion-only: extensions can cancel the run or return exact entry/content-block deletion targets for Atomic to validate locally. Extensions cannot return generated summaries.
 
 ```typescript
 pi.on("session_before_compact", async (event, ctx) => {
-  const { preparation, branchEntries, customInstructions, signal } = event;
+  const { preparation, branchEntries, reason, mode, signal } = event;
+  const { transcript } = preparation;
 
-  // Cancel:
+  // transcript.entries - compactable entries on the active branch
+  // transcript.protectedEntryIds - entries protected from standard compaction
+  // transcript.tokensBefore - token estimate before compaction
+  // branchEntries - raw session entries on the current branch
+  // reason - "manual" | "threshold" | "overflow"
+  // mode - "standard" | "critical_overflow"
+
+  if (signal.aborted) return { cancel: true };
+
+  // Cancel compaction:
   return { cancel: true };
 
-  // Custom summary:
+  // Or provide a deletion request. Atomic validates IDs, protected targets,
+  // tool-call/tool-result pairing, and non-empty remaining context before saving.
   return {
-    compaction: {
-      summary: "...",
-      firstKeptEntryId: preparation.firstKeptEntryId,
-      tokensBefore: preparation.tokensBefore,
-    }
+    deletionRequest: {
+      deletions: [
+        { kind: "entry", entryId: "abc123", rationale: "Old successful command output" },
+        { kind: "content_block", entryId: "def456", blockIndex: 2, rationale: "Verbose obsolete log" },
+      ],
+    },
   };
 });
 
 pi.on("session_compact", async (event, ctx) => {
-  // event.compactionEntry - the saved compaction
-  // event.fromExtension - whether extension provided it
+  // event.result - ContextCompactionResult with deletedTargets/protectedEntryIds/stats
+  // event.contextCompactionEntry - the saved context_compaction entry
+  // event.fromExtension - true if session_before_compact provided deletionRequest
 });
 ```
 
@@ -856,7 +887,7 @@ pi.on("input", async (event, ctx) => {
 - `transform` - modify text/images, then continue to expansion
 - `handled` - skip agent entirely (first handler to return this wins)
 
-Transforms chain across handlers. See [input-transform.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/input-transform.ts).
+Transforms chain across handlers. See [input-transform.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/input-transform.ts) and [input-transform-streaming.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/input-transform-streaming.ts) for `streamingBehavior`-aware routing.
 
 ## ExtensionContext
 
@@ -919,6 +950,19 @@ pi.on("tool_result", async (event, ctx) => {
 
 Control flow helpers.
 
+### ctx.isProjectTrusted()
+
+Returns whether project-local trust is active for the current extension context. Use this before reading project-local config, loading project-local resources, or exposing actions that should only run after the user has trusted the cwd.
+
+```typescript
+pi.registerCommand("project-status", {
+  description: "Show trust state",
+  handler: async (_args, ctx) => {
+    ctx.ui.notify(ctx.isProjectTrusted() ? "Project is trusted" : "Project is not trusted", "info");
+  },
+});
+```
+
 ### ctx.shutdown()
 
 Request a graceful shutdown of Atomic.
@@ -950,7 +994,7 @@ if (usage && usage.tokens > 100_000) {
 
 ### ctx.compact()
 
-Trigger Atomic's default Verbatim Compaction without awaiting completion. This is deletion-only Context Compaction: retained transcript content stays unchanged, and older low-signal objects are omitted by validated logical deletion. The approach is informed by Morph's Context Compaction write-up: [Morph's Context Compaction](https://www.morphllm.com/context-compaction). Use `onComplete` and `onError` for follow-up actions.
+Trigger Atomic's default Verbatim Compaction without awaiting completion. This is deletion-only Context Compaction: the internal planner searches/reads transcript slices, records exact entry/content-block deletion targets with transcript-bound tools, and Atomic applies only locally validated logical deletions. Retained transcript content stays unchanged. The approach is informed by Morph's Context Compaction write-up: [Morph's Context Compaction](https://www.morphllm.com/context-compaction). Use `onComplete` and `onError` for follow-up actions.
 
 ```typescript
 ctx.compact({
@@ -963,7 +1007,7 @@ ctx.compact({
 });
 ```
 
-`customInstructions` is deprecated and ignored for default compaction because Verbatim Compaction never asks the model to write a custom summary.
+Verbatim Compaction uses a fixed internal prompt; no custom summary text can be injected.
 
 ### ctx.getSystemPrompt()
 
@@ -1564,7 +1608,7 @@ If you need to discover models from a remote endpoint, prefer an async extension
 pi.registerProvider("my-proxy", {
   name: "My Proxy",
   baseUrl: "https://proxy.example.com",
-  apiKey: "PROXY_API_KEY",  // env var name or literal
+  apiKey: "$PROXY_API_KEY",  // env var reference; omit $ for a literal
   api: "anthropic-messages",
   models: [
     {
@@ -1611,7 +1655,7 @@ pi.registerProvider("corporate-ai", {
 **Config options:**
 - `name` - Display name for the provider in UI such as `/login`.
 - `baseUrl` - API endpoint URL. Required when defining models.
-- `apiKey` - API key or environment variable name. Required when defining models (unless `oauth` provided).
+- `apiKey` - API key literal or explicit environment variable reference (`$ENV_VAR` or `${ENV_VAR}`). Required when defining models (unless `oauth` provided).
 - `api` - API type: `"anthropic-messages"`, `"openai-completions"`, `"openai-responses"`, etc.
 - `headers` - Custom headers to include in requests.
 - `authHeader` - If true, adds `Authorization: Bearer` header automatically.
@@ -2565,6 +2609,8 @@ All examples in [examples/extensions/](https://github.com/bastani-inc/atomic/tre
 | `confirm-destructive.ts` | Confirm session changes | `on("session_before_switch")`, `on("session_before_fork")` |
 | `dirty-repo-guard.ts` | Warn on dirty git repo | `on("session_before_*")`, `exec` |
 | `input-transform.ts` | Transform user input | `on("input")` |
+| `input-transform-streaming.ts` | Streaming-aware input transform | `on("input")`, `streamingBehavior` |
+| `project-trust.ts` | Decide or defer project trust from a user/global or CLI extension | `on("project_trust")`, trust UI, required trust result |
 | `model-status.ts` | React to model changes | `on("model_select")`, `setStatus` |
 | `provider-payload.ts` | Inspect payloads and provider response headers | `on("before_provider_request")`, `on("after_provider_response")` |
 | `system-prompt-header.ts` | Display system prompt info | `on("agent_start")`, `getSystemPrompt` |
@@ -2572,7 +2618,7 @@ All examples in [examples/extensions/](https://github.com/bastani-inc/atomic/tre
 | `prompt-customizer.ts` | Add context-aware tool guidance using `systemPromptOptions` | `on("before_agent_start")`, `BuildSystemPromptOptions` |
 | `file-trigger.ts` | File watcher triggers messages | `sendMessage` |
 | **Compaction & Sessions** |||
-| `custom-compaction.ts` | Legacy custom compaction summary | `on("session_before_compact")` |
+| `custom-compaction.ts` | Custom deletion-request compaction policy | `on("session_before_compact")` |
 | `trigger-compact.ts` | Trigger compaction manually | `compact()` |
 | `git-checkpoint.ts` | Git stash on turns | `on("turn_start")`, `on("session_before_fork")`, `exec` |
 | `auto-commit-on-exit.ts` | Commit on shutdown | `on("session_shutdown")`, `exec` |
@@ -2598,6 +2644,7 @@ All examples in [examples/extensions/](https://github.com/bastani-inc/atomic/tre
 | `ssh.ts` | SSH remote execution | `registerFlag`, `on("user_bash")`, `on("before_agent_start")`, tool operations |
 | `interactive-shell.ts` | Persistent shell session | `on("user_bash")` |
 | `sandbox/` | Sandboxed tool execution | Tool operations |
+| `gondolin/` | Route built-in tools and `!` commands into a Gondolin micro-VM | Tool operations, built-in tool overrides, `on("user_bash")` |
 | `subagent/` | Spawn sub-agents | `registerTool`, `exec` |
 | **Games** |||
 | `snake.ts` | Snake game | `registerCommand`, `ui.custom`, keyboard handling |

@@ -1,6 +1,6 @@
 {
   "name": "@bastani/mcp",
-  "version": "0.8.26-alpha.9",
+  "version": "0.8.28",
   "private": true,
   "description": "Atomic extension that adapts MCP (Model Context Protocol) servers into the coding agent. Fork of: https://github.com/nicobailon/pi-mcp-adapter",
   "contributors": [
@@ -50,7 +50,7 @@
   "dependencies": {
     "@modelcontextprotocol/ext-apps": "^1.7.2",
     "@modelcontextprotocol/sdk": "^1.25.1",
-    "open": "^10.2.0",
+    "open": "^11.0.0",
     "typebox": "^1.1.24",
     "zod": "^3.25.0 || ^4.0.0"
   }

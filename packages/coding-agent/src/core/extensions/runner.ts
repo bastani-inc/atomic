@@ -28,16 +28,21 @@ import type {
 	ExtensionError,
 	ExtensionEvent,
 	ExtensionFlag,
+	ExtensionMode,
 	ExtensionRuntime,
 	ExtensionShortcut,
 	ExtensionUIContext,
 	InputEvent,
 	InputEventResult,
 	InputSource,
+	LoadExtensionsResult,
 	MessageEndEvent,
 	MessageEndEventResult,
 	MessageRenderer,
 	OrchestrationContext,
+	ProjectTrustContext,
+	ProjectTrustEvent,
+	ProjectTrustEventResult,
 	ProviderConfig,
 	RegisteredCommand,
 	RegisteredTool,
@@ -116,6 +121,7 @@ interface BeforeAgentStartCombinedResult {
 type RunnerEmitEvent = Exclude<
 	ExtensionEvent,
 	| ToolCallEvent
+	| ProjectTrustEvent
 	| ToolResultEvent
 	| UserBashEvent
 	| ContextEvent
@@ -189,6 +195,36 @@ export async function emitSessionShutdownEvent(
 	return false;
 }
 
+export async function emitProjectTrustEvent(
+	extensionsResult: LoadExtensionsResult,
+	event: ProjectTrustEvent,
+	ctx: ProjectTrustContext,
+): Promise<{ result?: ProjectTrustEventResult; errors: ExtensionError[] }> {
+	const errors: ExtensionError[] = [];
+	for (const ext of extensionsResult.extensions) {
+		const handlers = ext.handlers.get("project_trust");
+		if (!handlers || handlers.length === 0) continue;
+
+		for (const handler of handlers) {
+			try {
+				const handlerResult = (await handler(event, ctx)) as ProjectTrustEventResult;
+				if (handlerResult.trusted === "undecided") {
+					continue;
+				}
+				return { result: handlerResult, errors };
+			} catch (error) {
+				errors.push({
+					extensionPath: ext.path,
+					event: event.type,
+					error: error instanceof Error ? error.message : String(error),
+					stack: error instanceof Error ? error.stack : undefined,
+				});
+			}
+		}
+	}
+	return { errors };
+}
+
 const noOpUIContext: ExtensionUIContext = {
 	select: async () => undefined,
 	confirm: async () => false,
@@ -242,6 +278,7 @@ export class ExtensionRunner {
 	private extensions: Extension[];
 	private runtime: ExtensionRuntime;
 	private uiContext: ExtensionUIContext;
+	private mode: ExtensionMode = "print";
 	private cwd: string;
 	private sessionManager: SessionManager;
 	private modelRegistry: ModelRegistry;
@@ -249,6 +286,7 @@ export class ExtensionRunner {
 	private errorListeners: Set<ExtensionErrorListener> = new Set();
 	private getModel: () => Model<Api> | undefined = () => undefined;
 	private isIdleFn: () => boolean = () => true;
+	private isProjectTrustedFn: () => boolean = () => true;
 	private getSignalFn: () => AbortSignal | undefined = () => undefined;
 	private waitForIdleFn: () => Promise<void> = async () => {};
 	private abortFn: () => void = () => {};
@@ -256,6 +294,7 @@ export class ExtensionRunner {
 	private getContextUsageFn: () => ContextUsage | undefined = () => undefined;
 	private compactFn: (options?: CompactOptions) => void = () => {};
 	private getSystemPromptFn: () => string = () => "";
+	private getSystemPromptOptionsFn: () => BuildSystemPromptOptions = () => ({ cwd: this.cwd });
 	private newSessionHandler: NewSessionHandler = async () => ({ cancelled: false });
 	private forkHandler: ForkHandler = async () => ({ cancelled: false });
 	private navigateTreeHandler: NavigateTreeHandler = async () => ({ cancelled: false });
@@ -310,6 +349,7 @@ export class ExtensionRunner {
 		// Context actions (required)
 		this.getModel = contextActions.getModel;
 		this.isIdleFn = contextActions.isIdle;
+		this.isProjectTrustedFn = contextActions.isProjectTrusted;
 		this.getSignalFn = contextActions.getSignal;
 		this.abortFn = contextActions.abort;
 		this.hasPendingMessagesFn = contextActions.hasPendingMessages;
@@ -317,6 +357,7 @@ export class ExtensionRunner {
 		this.getContextUsageFn = contextActions.getContextUsage;
 		this.compactFn = contextActions.compact;
 		this.getSystemPromptFn = contextActions.getSystemPrompt;
+		this.getSystemPromptOptionsFn = contextActions.getSystemPromptOptions ?? (() => ({ cwd: this.cwd }));
 
 		// Flush provider registrations queued during extension loading
 		for (const { name, config, extensionPath } of this.runtime.pendingProviderRegistrations) {
@@ -374,8 +415,9 @@ export class ExtensionRunner {
 		this.reloadHandler = async () => {};
 	}
 
-	setUIContext(uiContext?: ExtensionUIContext): void {
+	setUIContext(uiContext?: ExtensionUIContext, mode: ExtensionMode = "print"): void {
 		this.uiContext = uiContext ?? noOpUIContext;
+		this.mode = mode;
 	}
 
 	getUIContext(): ExtensionUIContext {
@@ -598,6 +640,10 @@ export class ExtensionRunner {
 				runner.assertActive();
 				return runner.uiContext;
 			},
+			get mode() {
+				runner.assertActive();
+				return runner.mode;
+			},
 			get hasUI() {
 				runner.assertActive();
 				return runner.hasUI();
@@ -625,6 +671,10 @@ export class ExtensionRunner {
 			isIdle: () => {
 				runner.assertActive();
 				return runner.isIdleFn();
+			},
+			isProjectTrusted: () => {
+				runner.assertActive();
+				return runner.isProjectTrustedFn();
 			},
 			get signal() {
 				runner.assertActive();
@@ -665,6 +715,10 @@ export class ExtensionRunner {
 			{},
 			Object.getOwnPropertyDescriptors(this.createContext()),
 		) as ExtensionCommandContext;
+		context.getSystemPromptOptions = () => {
+			this.assertActive();
+			return this.getSystemPromptOptionsFn();
+		};
 		context.waitForIdle = () => {
 			this.assertActive();
 			return this.waitForIdleFn();
@@ -1060,7 +1114,12 @@ export class ExtensionRunner {
 	}
 
 	/** Emit input event. Transforms chain, "handled" short-circuits. */
-	async emitInput(text: string, images: ImageContent[] | undefined, source: InputSource): Promise<InputEventResult> {
+	async emitInput(
+		text: string,
+		images: ImageContent[] | undefined,
+		source: InputSource,
+		streamingBehavior?: "steer" | "followUp",
+	): Promise<InputEventResult> {
 		const ctx = this.createContext();
 		let currentText = text;
 		let currentImages = images;
@@ -1068,7 +1127,13 @@ export class ExtensionRunner {
 		for (const ext of this.extensions) {
 			for (const handler of ext.handlers.get("input") ?? []) {
 				try {
-					const event: InputEvent = { type: "input", text: currentText, images: currentImages, source };
+					const event: InputEvent = {
+						type: "input",
+						text: currentText,
+						images: currentImages,
+						source,
+						streamingBehavior,
+					};
 					const result = (await handler(event, ctx)) as InputEventResult | undefined;
 					if (result?.action === "handled") return result;
 					if (result?.action === "transform") {

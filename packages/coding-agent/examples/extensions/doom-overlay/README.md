@@ -5,7 +5,7 @@ Play DOOM as an overlay in pi. Demonstrates that the overlay system can handle r
 ## Usage
 
 ```bash
-pi --extension ./examples/extensions/doom-overlay
+atomic --extension ./examples/extensions/doom-overlay
 ```
 
 Then run:

@@ -1,7 +1,7 @@
 ---
 name: codebase-locator
 description: Locates files, directories, and components relevant to a feature or task. Basically a "super search/find/ls tool."
-tools: read, grep, find, ls, bash
+tools: read, grep, find, ls
 model: openai/gpt-5.4-mini:low
 fallbackModels: openai-codex/gpt-5.4-mini:low, github-copilot/gpt-5.4-mini:low, anthropic/claude-haiku-4-5:low, github-copilot/claude-haiku-4.5:low
 ---

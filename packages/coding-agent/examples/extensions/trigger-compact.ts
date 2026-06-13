@@ -5,12 +5,11 @@ const COMPACT_THRESHOLD_TOKENS = 100_000;
 export default function (pi: ExtensionAPI) {
 	let previousTokens: number | null | undefined;
 
-	const triggerCompaction = (ctx: ExtensionContext, customInstructions?: string) => {
+	const triggerCompaction = (ctx: ExtensionContext) => {
 		if (ctx.hasUI) {
 			ctx.ui.notify("Compaction started", "info");
 		}
 		ctx.compact({
-			customInstructions,
 			onComplete: () => {
 				if (ctx.hasUI) {
 					ctx.ui.notify("Compaction completed", "info");
@@ -43,8 +42,10 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("trigger-compact", {
 		description: "Trigger compaction immediately",
 		handler: async (args, ctx) => {
-			const instructions = args.trim() || undefined;
-			triggerCompaction(ctx, instructions);
+			if (args.trim() && ctx.hasUI) {
+				ctx.ui.notify("/trigger-compact ignores arguments; Verbatim Compaction uses a fixed deletion planner", "warning");
+			}
+			triggerCompaction(ctx);
 		},
 	});
 }

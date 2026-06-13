@@ -326,6 +326,7 @@ describe("restoreOnSessionStart", () => {
             workflow: "child-wf",
             runId: "child-run",
             status: "completed",
+            exited: true,
             outputs: { summary: "ok" },
           },
         },
@@ -337,7 +338,40 @@ describe("restoreOnSessionStart", () => {
     assert.equal(stage.workflowChild?.workflow, "child-wf");
     assert.equal(stage.workflowChild?.runId, "child-run");
     assert.equal(stage.workflowChild?.status, "completed");
+    assert.equal(stage.workflowChild?.exited, true);
     assert.deepEqual(stage.workflowChild?.outputs, { summary: "ok" });
+  });
+
+  test("ignores workflow child replay metadata from skipped and failed stage.end entries", () => {
+    for (const status of ["skipped", "failed"] as const) {
+      const st = createStore();
+      const entries: SessionEntry[] = [
+        { id: `${status}-e1`, type: "workflow.run.start", payload: { runId: `r-${status}`, name: "wf", inputs: {}, ts: 1 } },
+        { id: `${status}-e2`, type: "workflow.stage.start", payload: { runId: `r-${status}`, stageId: "boundary", name: "import:child", parentIds: [], replayKey: "workflow:import:child", ts: 2 } },
+        {
+          id: `${status}-e3`,
+          type: "workflow.stage.end",
+          payload: {
+            runId: `r-${status}`,
+            stageId: "boundary",
+            status,
+            ...(status === "skipped" ? { skippedReason: "workflow-exit" } : { error: "boom" }),
+            workflowChild: {
+              alias: "child",
+              workflow: "child-wf",
+              runId: "child-run",
+              status: "completed",
+              outputs: { summary: "stale" },
+            },
+          },
+        },
+        { id: `${status}-e4`, type: "workflow.run.end", payload: { runId: `r-${status}`, status, ts: 3 } },
+      ];
+      restoreOnSessionStart(makeSessionManager(entries), { resumeInFlight: "never", persistRuns: true }, st);
+      const stage = st.runs()[0]!.stages[0]!;
+      assert.equal(stage.status, status);
+      assert.equal(stage.workflowChild, undefined);
+    }
   });
 
   test("restores malformed and non-terminal stage.end statuses as failed", () => {
@@ -408,6 +442,35 @@ describe("restoreOnSessionStart", () => {
     assert.equal(run.status, "completed");
     assert.notEqual(run.endedAt, undefined);
     assert.equal(run.stages[0]!.status, "completed");
+  });
+
+  test("restores completed ctx.exit markers from run.end entries without requiring completed stages", () => {
+    const st = createStore();
+    const entries: SessionEntry[] = [
+      { id: "e1", type: "workflow.run.start", payload: { runId: "r-exit", name: "wf", inputs: {}, ts: 1 } },
+      {
+        id: "e2",
+        type: "workflow.run.end",
+        payload: {
+          runId: "r-exit",
+          status: "completed",
+          exited: true,
+          exitReason: "guard",
+          result: { note: "ok" },
+          resumable: false,
+          ts: 2,
+        },
+      },
+    ];
+
+    restoreOnSessionStart(makeSessionManager(entries), { resumeInFlight: "never", persistRuns: true }, st);
+    const run = st.runs()[0]!;
+    assert.equal(run.status, "completed");
+    assert.equal(run.exited, true);
+    assert.equal(run.exitReason, "guard");
+    assert.equal(run.resumable, false);
+    assert.deepEqual(run.result, { note: "ok" });
+    assert.deepEqual(run.stages, []);
   });
 
   test("skips completed terminal runs with incomplete stage end data", () => {

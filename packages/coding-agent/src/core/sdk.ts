@@ -11,7 +11,7 @@ import {
   type Model,
   streamSimple,
 } from "@earendil-works/pi-ai";
-import { APP_NAME, getAgentDir } from "../config.ts";
+import { getAgentDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { AgentSession } from "./agent-session.ts";
 import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
@@ -37,7 +37,7 @@ import type { ResourceLoader } from "./resource-loader.ts";
 import { DefaultResourceLoader } from "./resource-loader.ts";
 import { getDefaultSessionDir, SessionManager } from "./session-manager.ts";
 import { SettingsManager } from "./settings-manager.ts";
-import { isInstallTelemetryEnabled } from "./telemetry.ts";
+import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
 import { time } from "./timings.ts";
 import {
   createBashTool,
@@ -51,6 +51,7 @@ import {
   createWriteTool,
   defaultToolNames,
   withFileMutationQueue,
+  type BashCommandPolicy,
 } from "./tools/index.ts";
 
 export interface CreateAgentSessionOptions {
@@ -98,6 +99,8 @@ export interface CreateAgentSessionOptions {
   excludedTools?: string[];
   /** Custom tools to register (in addition to built-in tools). */
   customTools?: ToolDefinition[];
+  /** Optional command-level policy for the built-in bash tool. Does not expose bash by itself. */
+  bashPolicy?: BashCommandPolicy;
 
   /** Resource loader. When omitted, DefaultResourceLoader is used. */
   resourceLoader?: ResourceLoader;
@@ -137,7 +140,18 @@ export type {
 } from "./extensions/index.ts";
 export type { PromptTemplate } from "./prompt-templates.ts";
 export type { Skill } from "./skills.ts";
-export type { Tool } from "./tools/index.ts";
+export type {
+  BashCommandParseError,
+  BashCommandParseResult,
+  BashCommandPolicy,
+  BashCommandPolicyDecision,
+  BashCommandPolicyMatchMode,
+  BashCommandPolicyRejection,
+  BashCommandRule,
+  BashCommandSegment,
+  BashCommandSegmentSource,
+  Tool,
+} from "./tools/index.ts";
 
 export {
   withFileMutationQueue,
@@ -157,56 +171,6 @@ export {
 
 function getDefaultAgentDir(): string {
   return getAgentDir();
-}
-
-function isHostOrSubdomain(rawUrl: string, host: string): boolean {
-  try {
-    const { hostname } = new URL(rawUrl);
-    return hostname === host || hostname.endsWith(`.${host}`);
-  } catch {
-    return false;
-  }
-}
-
-function getAttributionHeaders(
-  model: Model<Api>,
-  settingsManager: SettingsManager,
-  sessionId?: string,
-): Record<string, string> | undefined {
-  if (
-    sessionId &&
-    (model.provider === "opencode" || model.provider === "opencode-go" || isHostOrSubdomain(model.baseUrl, "opencode.ai"))
-  ) {
-    return { "x-opencode-session": sessionId, "x-opencode-client": APP_NAME };
-  }
-
-  if (!isInstallTelemetryEnabled(settingsManager)) {
-    return undefined;
-  }
-
-  if (
-    model.provider === "openrouter" ||
-    isHostOrSubdomain(model.baseUrl, "openrouter.ai")
-  ) {
-    return {
-      "HTTP-Referer": "https://pi.dev",
-      "X-OpenRouter-Title": "pi",
-      "X-OpenRouter-Categories": "cli-agent",
-    };
-  }
-
-  if (
-    model.provider === "cloudflare-workers-ai" ||
-    model.provider === "cloudflare-ai-gateway" ||
-    isHostOrSubdomain(model.baseUrl, "api.cloudflare.com") ||
-    isHostOrSubdomain(model.baseUrl, "gateway.ai.cloudflare.com")
-  ) {
-    return {
-      "User-Agent": APP_NAME,
-    };
-  }
-
-  return undefined;
 }
 
 /**
@@ -415,20 +379,31 @@ export async function createAgentSession(
         throw new Error(auth.error);
       }
       const providerRetrySettings = settingsManager.getProviderRetrySettings();
-      const attributionHeaders = getAttributionHeaders(model, settingsManager, streamOptions?.sessionId);
+      const httpIdleTimeoutMs = settingsManager.getHttpIdleTimeoutMs();
+      // SDKs treat timeout=0 as 0ms (immediate timeout), not "no timeout".
+      // Use max int32 to effectively disable the timeout.
+      const effectiveTimeoutMs = httpIdleTimeoutMs === 0 ? 2147483647 : httpIdleTimeoutMs;
+      const timeoutMs = streamOptions?.timeoutMs ?? providerRetrySettings.timeoutMs ?? effectiveTimeoutMs;
+      const websocketConnectTimeoutMs =
+        streamOptions?.websocketConnectTimeoutMs ?? settingsManager.getWebSocketConnectTimeoutMs();
+      const attributionHeaders = mergeProviderAttributionHeaders(
+        model,
+        settingsManager,
+        streamOptions?.sessionId,
+        auth.headers,
+        streamOptions?.headers,
+      );
       const fastModeEnabled = isCodexFastModeEnabled(model);
       const codexFastModeStreamOptions = withCodexFastModeStreamOptions(
         {
           ...streamOptions,
           apiKey: auth.apiKey,
-          timeoutMs: streamOptions?.timeoutMs ?? providerRetrySettings.timeoutMs,
+          timeoutMs,
+          websocketConnectTimeoutMs,
           maxRetries: streamOptions?.maxRetries ?? providerRetrySettings.maxRetries,
           maxRetryDelayMs:
             streamOptions?.maxRetryDelayMs ?? providerRetrySettings.maxRetryDelayMs,
-          headers:
-            attributionHeaders || auth.headers || streamOptions?.headers
-              ? { ...attributionHeaders, ...auth.headers, ...streamOptions?.headers }
-              : undefined,
+          headers: attributionHeaders,
         },
         fastModeEnabled,
       );
@@ -492,6 +467,7 @@ export async function createAgentSession(
     scopedModels: options.scopedModels,
     resourceLoader,
     customTools: options.customTools,
+    bashPolicy: options.bashPolicy,
     modelRegistry,
     initialActiveToolNames,
     allowedToolNames,

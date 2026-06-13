@@ -1,12 +1,19 @@
-import { homedir } from "node:os";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import * as path from "node:path";
 import { type Api, type Model } from "@earendil-works/pi-ai";
 import { type AutocompleteProvider, CombinedAutocompleteProvider, Container } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, test, vi } from "vitest";
 import type { AutocompleteProviderFactory } from "../src/core/extensions/types.ts";
 import type { SourceInfo } from "../src/core/source-info.ts";
+import { ProjectTrustStore } from "../src/core/trust-manager.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+
+// Upstream pi 0.79.1 also exercises overlay focus restoration with packages/tui's
+// VirtualTerminal harness. Atomic consumes @earendil-works/pi-tui as a dependency
+// rather than vendoring that test harness, so this suite keeps the equivalent
+// package-level interactive status/autocomplete coverage that can run here.
 
 function renderLastLine(container: Container, width = 120): string {
 	const last = container.children[container.children.length - 1];
@@ -528,6 +535,68 @@ describe("InteractiveMode.handleEvent model changes", () => {
 		expect(fakeThis.footer.invalidate).toHaveBeenCalledTimes(1);
 		expect(fakeThis.refreshBuiltInHeader).toHaveBeenCalledTimes(1);
 		expect(fakeThis.updateEditorBorderColor).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("InteractiveMode /trust", () => {
+	test("uses the active runtime agentDir for saved decisions", () => {
+		const root = mkdtempSync(path.join(tmpdir(), "atomic-trust-selector-agent-dir-"));
+		try {
+			const cwd = path.join(root, "project");
+			const runtimeAgentDir = path.join(root, "runtime-agent");
+			mkdirSync(cwd, { recursive: true });
+			mkdirSync(runtimeAgentDir, { recursive: true });
+			let createdSelector: { handleInput(input: string): void } | undefined;
+			const fakeThis = {
+				sessionManager: { getCwd: () => cwd },
+				settingsManager: { isProjectTrusted: () => false },
+				runtimeHost: { services: { agentDir: runtimeAgentDir } },
+				showStatus: vi.fn(),
+				ui: { requestRender: vi.fn() },
+				showSelector: vi.fn((factory: (done: () => void) => { component: { handleInput(input: string): void } }) => {
+					createdSelector = factory(vi.fn()).component;
+				}),
+			};
+
+			(InteractiveMode as any).prototype.showTrustSelector.call(fakeThis);
+			createdSelector?.handleInput("\n");
+
+			expect(new ProjectTrustStore(runtimeAgentDir).get(cwd)).toBe(true);
+			expect(fakeThis.showStatus).toHaveBeenCalledWith(
+				expect.stringContaining("Saved trust decision: trusted"),
+			);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("InteractiveMode reload project trust", () => {
+	test("persists implicit startup trust after reload creates project config", () => {
+		const root = mkdtempSync(path.join(tmpdir(), "atomic-reload-trust-"));
+		try {
+			const cwd = path.join(root, "project");
+			const agentDir = path.join(root, "agent");
+			mkdirSync(path.join(cwd, ".atomic"), { recursive: true });
+			mkdirSync(agentDir, { recursive: true });
+
+			const fakeThis = {
+				autoTrustOnReloadCwd: cwd,
+				sessionManager: { getCwd: () => cwd },
+				settingsManager: { isProjectTrusted: () => true },
+				runtimeHost: { services: { agentDir } },
+				showWarning: vi.fn(),
+			};
+
+			const saved = (InteractiveMode as any).prototype.maybeSaveImplicitProjectTrustAfterReload.call(fakeThis);
+
+			expect(saved).toBe(true);
+			expect(new ProjectTrustStore(agentDir).get(cwd)).toBe(true);
+			expect(fakeThis.autoTrustOnReloadCwd).toBeUndefined();
+			expect(fakeThis.showWarning).not.toHaveBeenCalled();
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 });
 

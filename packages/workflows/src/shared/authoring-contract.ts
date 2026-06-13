@@ -1,11 +1,19 @@
 /**
- * Dependency-light workflow authoring contract shared by the runtime type graph
- * and the standalone package typing surface.
+ * Workflow authoring contract shared by the runtime type graph and the
+ * standalone package typing surface.
  *
- * This module intentionally imports only TypeBox types. Do not import
- * @bastani/atomic, executor internals, stores, or runtime graph modules here.
+ * This module intentionally avoids executor internals, stores, or runtime graph
+ * modules here. Public custom-TUI types are type-only imports from the same
+ * extension-compatible surfaces used by Atomic extension UI.
  */
 
+import type { BashCommandPolicy, KeybindingsManager, Theme } from "@bastani/atomic";
+import type {
+  Component,
+  OverlayHandle,
+  OverlayOptions,
+  TUI,
+} from "@earendil-works/pi-tui";
 import type { Static, TOptional, TSchema } from "typebox";
 
 export type { Static, TSchema };
@@ -37,10 +45,17 @@ export type WorkflowOutputMode = "inline" | "file-only";
 export type WorkflowContextMode = "fresh" | "fork";
 export type WorkflowThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 export type WorkflowExecutionMode = "interactive" | "non_interactive";
-export type RunStatus = "pending" | "running" | "paused" | "completed" | "failed" | "killed";
+export type WorkflowExitStatus = "completed" | "skipped" | "cancelled" | "blocked";
+export type RunStatus = "pending" | "running" | "paused" | WorkflowExitStatus | "failed" | "killed";
 export type WorkflowDetailsMode = "named" | "single" | "parallel" | "chain" | "inspection" | "control";
-export type WorkflowDetailsStatus = "accepted" | "running" | "completed" | "failed" | "killed" | "noop";
+export type WorkflowDetailsStatus = "accepted" | "running" | WorkflowExitStatus | "failed" | "killed" | "noop";
 export type WorkflowAction = "list" | "get" | "inputs" | "run" | "status" | "interrupt" | "resume";
+
+export interface WorkflowExitOptions<TOutputs extends WorkflowOutputValues = WorkflowOutputValues> {
+  readonly status?: WorkflowExitStatus;
+  readonly reason?: string;
+  readonly outputs?: Partial<TOutputs>;
+}
 
 export interface WorkflowModelFallbackFields {
   /** Ordered model IDs to try after `model` fails; entries may use `:off|minimal|low|medium|high|xhigh` reasoning suffixes. */
@@ -138,6 +153,7 @@ export interface StageOptions extends WorkflowModelFallbackFields {
   readonly noTools?: "all" | "builtin";
   readonly excludedTools?: readonly string[];
   readonly customTools?: readonly WorkflowCustomToolDefinition[];
+  readonly bashPolicy?: BashCommandPolicy;
   readonly cwd?: string;
   readonly agentDir?: string;
   readonly scopedModels?: readonly WorkflowScopedModel[];
@@ -381,11 +397,58 @@ export interface WorkflowRunChildOptions<TInputs extends WorkflowInputValues = W
   readonly stageName?: string;
 }
 
-export interface WorkflowChildResult<TOutputs extends WorkflowOutputValues = WorkflowOutputValues> extends WorkflowSerializableObject {
+export interface WorkflowCompletedChildResult<TOutputs extends WorkflowOutputValues = WorkflowOutputValues> extends WorkflowSerializableObject {
   readonly workflow: string;
   readonly runId: string;
   readonly status: "completed";
+  readonly exited: false;
   readonly outputs: TOutputs;
+}
+
+export interface WorkflowExitedChildResult<TOutputs extends WorkflowOutputValues = WorkflowOutputValues> extends WorkflowSerializableObject {
+  readonly workflow: string;
+  readonly runId: string;
+  readonly status: WorkflowExitStatus;
+  readonly exited: true;
+  readonly outputs: Partial<TOutputs>;
+  readonly exitReason?: string;
+}
+
+export type WorkflowChildResult<TOutputs extends WorkflowOutputValues = WorkflowOutputValues> =
+  | WorkflowCompletedChildResult<TOutputs>
+  | WorkflowExitedChildResult<TOutputs>;
+
+export type WorkflowCustomUiComponent = Component & { dispose?(): void };
+export type WorkflowCustomUiTui = TUI;
+export type WorkflowCustomUiTheme = Theme;
+export type WorkflowCustomUiKeybindings = KeybindingsManager;
+export type WorkflowCustomUiOverlayOptions = OverlayOptions;
+export type WorkflowCustomUiOverlayHandle = OverlayHandle;
+
+export type WorkflowCustomUiFactory<T> = (
+  tui: TUI,
+  theme: Theme,
+  keybindings: KeybindingsManager,
+  done: (value: T) => void,
+) => WorkflowCustomUiComponent | Promise<WorkflowCustomUiComponent>;
+
+export interface WorkflowCustomUiOptions {
+  /** Render as a nested overlay. Workflow graph hosts may reject this when unsupported. */
+  readonly overlay?: boolean;
+  /** AbortSignal to programmatically dismiss the custom UI. */
+  readonly signal?: AbortSignal;
+  /** Overlay positioning/sizing options. Can be static or a function for dynamic updates. */
+  readonly overlayOptions?: OverlayOptions | (() => OverlayOptions);
+  /** Called with the real overlay handle after an overlay is shown. */
+  readonly onHandle?: (handle: OverlayHandle) => void;
+  /**
+   * Workflow-only replay identity. Recommended whenever widget state or
+   * semantics can change without the callsite changing. Do not include secrets;
+   * the runtime stores only a hash.
+   */
+  readonly replayIdentity?: string;
+  /** Safe display-only label for graph/status surfaces. Defaults to "Custom TUI prompt". Not part of replay identity. */
+  readonly label?: string;
 }
 
 export interface WorkflowUIContext {
@@ -393,16 +456,25 @@ export interface WorkflowUIContext {
   confirm(message: string): Promise<boolean>;
   select<T extends string>(message: string, options: readonly T[]): Promise<T>;
   editor(initial?: string): Promise<string>;
+  custom<T>(factory: WorkflowCustomUiFactory<T>, options?: WorkflowCustomUiOptions): Promise<T>;
 }
 
-export type WorkflowUIAdapter = WorkflowUIContext;
+export interface WorkflowUIAdapter {
+  input(prompt: string): Promise<string>;
+  confirm(message: string): Promise<boolean>;
+  select<T extends string>(message: string, options: readonly T[]): Promise<T>;
+  editor(initial?: string): Promise<string>;
+  custom?<T>(factory: WorkflowCustomUiFactory<T>, options?: WorkflowCustomUiOptions): Promise<T>;
+}
 
 export interface WorkflowRunContext<
   TInputs extends WorkflowInputValues = WorkflowInputValues,
   TDefinitionBrand extends object = {},
+  TOutputs extends WorkflowOutputValues = WorkflowOutputValues,
 > {
   readonly inputs: Readonly<TInputs>;
   readonly cwd?: string;
+  exit(options?: WorkflowExitOptions<TOutputs>): never;
   stage(name: string, options?: StageOptions): StageContext;
   task(name: string, options: WorkflowTaskOptions): Promise<WorkflowTaskResult>;
   chain(steps: readonly WorkflowTaskStep[], options?: WorkflowChainOptions): Promise<WorkflowTaskResult[]>;
@@ -418,7 +490,7 @@ export type WorkflowRunFn<
   TInputs extends WorkflowInputValues = WorkflowInputValues,
   TOutputs extends WorkflowOutputValues = WorkflowOutputValues,
   TDefinitionBrand extends object = {},
-> = (ctx: WorkflowRunContext<TInputs, TDefinitionBrand>) => Promise<TOutputs> | TOutputs;
+> = (ctx: WorkflowRunContext<TInputs, TDefinitionBrand, TOutputs>) => Promise<TOutputs> | TOutputs;
 
 export interface WorkflowRuntimeConfig {
   readonly maxDepth: number;
@@ -452,7 +524,7 @@ export interface WorkflowDefinition<
   readonly inputs: WorkflowInputSchemaMap;
   readonly outputs?: WorkflowOutputSchemaMap;
   readonly inputBindings?: WorkflowInputBindings;
-  run(ctx: WorkflowRunContext<TInputs, TDefinitionBrand>): Promise<TOutputs> | TOutputs;
+  run(ctx: WorkflowRunContext<TInputs, TDefinitionBrand, TOutputs>): Promise<TOutputs> | TOutputs;
 }
 
 type DeclaredResolvedEntry<K extends string, S extends TSchema> = S extends TOptional<TSchema>
@@ -498,7 +570,7 @@ export interface WorkflowBuilder<
   >;
   worktreeFromInputs(binding: WorkflowWorktreeInputBinding): WorkflowBuilder<TInputs, TOutputs, TRunInputs, TDefinitionBrand, TCompiledDefinition>;
   run<TActualOutputs extends TOutputs>(
-    fn: (ctx: WorkflowRunContext<TInputs, TDefinitionBrand>) => Promise<NoExtraOutputs<TOutputs, TActualOutputs>> | NoExtraOutputs<TOutputs, TActualOutputs>,
+    fn: (ctx: WorkflowRunContext<TInputs, TDefinitionBrand, TOutputs>) => Promise<NoExtraOutputs<TOutputs, TActualOutputs>> | NoExtraOutputs<TOutputs, TActualOutputs>,
   ): CompletedWorkflowBuilder<TInputs, TOutputs, TRunInputs, TDefinitionBrand, TCompiledDefinition>;
 }
 
@@ -591,7 +663,7 @@ export interface RunOpts {
   readonly onRunStart?: (snapshot: RunSnapshot) => void;
   readonly onStageStart?: (runId: string, snapshot: StageSnapshot) => void;
   readonly onStageEnd?: (runId: string, snapshot: StageSnapshot) => void;
-  readonly onRunEnd?: (runId: string, status: RunStatus, result?: WorkflowOutputValues, error?: string) => void;
+  readonly onRunEnd?: (runId: string, status: RunStatus, result?: WorkflowOutputValues, error?: string, exitReason?: string) => void;
 }
 
 export interface WorkflowProgressSummary extends WorkflowSerializableObject {
@@ -624,6 +696,9 @@ export interface WorkflowDetails extends WorkflowSerializableObject {
   readonly intercom?: WorkflowIntercomSummary;
   readonly warnings?: readonly string[];
   readonly error?: string;
+  /** True when the run reached its terminal status through ctx.exit(). */
+  readonly exited?: boolean;
+  readonly exitReason?: string;
 }
 
 export type StageStatus = RunStatus | "skipped" | "awaiting_input" | "blocked";
@@ -639,8 +714,11 @@ export interface StageSnapshot extends WorkflowSerializableObject {
 export interface RunResult<TOutputs extends WorkflowOutputValues = WorkflowOutputValues> extends WorkflowSerializableObject {
   readonly runId: string;
   readonly status: RunStatus;
-  readonly result?: TOutputs;
+  readonly result?: Partial<TOutputs>;
   readonly error?: string;
+  /** True when the run reached its terminal status through ctx.exit(). */
+  readonly exited?: boolean;
+  readonly exitReason?: string;
   readonly stages: readonly StageSnapshot[];
 }
 

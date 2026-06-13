@@ -146,6 +146,7 @@ function makeModelRegistry(): ExecutorContextForTest["modelRegistry"] {
 function makeWorkflowStageContext(cwd: string, uiResult?: unknown): ExecutorContextForTest {
 	return {
 		cwd,
+		mode: "tui",
 		hasUI: uiResult !== undefined,
 		ui: makeUiContext(uiResult),
 		model: undefined,
@@ -163,6 +164,7 @@ function makeWorkflowStageContext(cwd: string, uiResult?: unknown): ExecutorCont
 			constraints: { disableWorkflowTool: true, maxSubagentDepth: 1 },
 		},
 		isIdle: () => true,
+		isProjectTrusted: () => true,
 		signal: undefined,
 		abort: () => {},
 		hasPendingMessages: () => false,

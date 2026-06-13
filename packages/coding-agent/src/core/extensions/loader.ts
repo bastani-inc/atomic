@@ -117,6 +117,8 @@ function getAliases(): Record<string, string> {
 
   _aliases = {
     "@bastani/atomic": piCodingAgentEntry,
+    // Compatibility only: let third-party extensions authored against upstream Pi
+    // import the SDK while still resolving to Atomic's package entry.
     "@earendil-works/pi-coding-agent": piCodingAgentEntry,
     "@earendil-works/pi-agent-core": piAgentCoreEntry,
     "@earendil-works/pi-tui": piTuiEntry,
@@ -526,12 +528,13 @@ export async function loadExtensions(
   cwd: string,
   eventBus?: EventBus,
   workflowResourceProvider: WorkflowResourceProviderInput = emptyWorkflowResourceProvider,
+  runtime?: ExtensionRuntime,
 ): Promise<LoadExtensionsResult> {
   const extensions: Extension[] = [];
   const errors: Array<{ path: string; error: string }> = [];
   const resolvedCwd = resolvePath(cwd);
   const resolvedEventBus = eventBus ?? createEventBus();
-  const runtime = createExtensionRuntime();
+  const resolvedRuntime = runtime ?? createExtensionRuntime();
 
   for (const extPath of paths) {
     const extensionSpan = startTimingSpan(`loadExtensions.${extPath}.total`);
@@ -539,7 +542,7 @@ export async function loadExtensions(
       extPath,
       resolvedCwd,
       resolvedEventBus,
-      runtime,
+      resolvedRuntime,
       workflowResourceProvider,
     );
     endTimingSpan(extensionSpan);
@@ -557,7 +560,7 @@ export async function loadExtensions(
   return {
     extensions,
     errors,
-    runtime,
+    runtime: resolvedRuntime,
   };
 }
 

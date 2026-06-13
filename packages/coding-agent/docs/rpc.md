@@ -13,6 +13,7 @@ atomic --mode rpc [options]
 Common options:
 - `--provider <name>`: Set the LLM provider (anthropic, openai, google, etc.)
 - `--model <pattern>`: Model pattern or ID (supports `provider/id` and optional `:<thinking>`)
+- `--name <name>` / `-n <name>`: Set the session display name at startup
 - `--no-session`: Disable session persistence
 - `--session-dir <path>`: Custom session storage directory
 
@@ -352,7 +353,7 @@ Response:
 
 #### compact
 
-Run Atomic's default Verbatim Compaction to reduce token usage. This command has no prompt/config fields; send no custom instructions. Atomic asks the selected model for deletion targets using a fixed internal prompt, validates them, appends a `context_compaction` entry, and rebuilds active context with surviving entries/content blocks reused verbatim. This deletion-only Context Compaction approach is informed by Morph's article: [Morph's Context Compaction](https://www.morphllm.com/context-compaction).
+Run Atomic's default Verbatim Compaction to reduce token usage. This command has no prompt/config fields; send no custom instructions. The selected model runs Atomic's fixed internal planner with transcript-bound tools (`context_search_transcript`, `context_read_entry`, `context_delete`, and `context_grep_delete`); Atomic validates the cumulative deletion targets locally, appends a `context_compaction` entry, and rebuilds active context with surviving entries/content blocks reused verbatim. This deletion-only Context Compaction approach is informed by Morph's article: [Morph's Context Compaction](https://www.morphllm.com/context-compaction).
 
 ```json
 {"type": "compact"}
@@ -697,7 +698,7 @@ Response:
 }
 ```
 
-The current session name is available via `get_state` in the `sessionName` field.
+The current session name is available via `get_state` in the `sessionName` field. To set the initial name when starting RPC mode, pass `--name <name>` or `-n <name>` to the `atomic --mode rpc` process.
 
 ### Commands
 
@@ -761,8 +762,8 @@ Events are streamed to stdout as JSON lines during agent operation. Events do NO
 | `queue_update` | Pending steering/follow-up queue changed |
 | `compaction_start` | Default Verbatim Compaction begins |
 | `compaction_end` | Default Verbatim Compaction completes |
-| `context_compaction_start` | Legacy context-compaction RPC begins |
-| `context_compaction_end` | Legacy context-compaction RPC completes |
+| `context_compaction_start` | Compatibility `context_compact` RPC begins |
+| `context_compaction_end` | Compatibility `context_compact` RPC completes |
 | `auto_retry_start` | Auto-retry begins (after transient error) |
 | `auto_retry_end` | Auto-retry completes (success or final failure) |
 | `extension_error` | Extension threw an error |
@@ -950,7 +951,7 @@ If compaction failed (e.g., API quota exceeded), `result` is `null`, `aborted` i
 
 ### context_compaction_start / context_compaction_end
 
-Legacy RPC `context_compact` emits these events. The result contains `deletedTargets`, `protectedEntryIds`, `stats`, `promptVersion`, and optional `backupPath`.
+The compatibility RPC command `context_compact` emits these events. It uses the same deletion-only Verbatim Compaction path as `compact`, but reports the historical context-compaction event names. The result contains `deletedTargets`, `protectedEntryIds`, `stats`, `promptVersion`, and optional `backupPath`.
 
 ### auto_retry_start / auto_retry_end
 
@@ -1018,7 +1019,7 @@ Some `ExtensionUIContext` methods are not supported or degraded in RPC mode beca
 - `getTheme()` returns `undefined`
 - `setTheme()` returns `{ success: false, error: "..." }`
 
-Note: `ctx.hasUI` is `true` in RPC mode because the dialog and fire-and-forget methods are functional via the extension UI sub-protocol.
+Note: `ctx.mode` is `"rpc"` and `ctx.hasUI` is `true` in RPC mode because the dialog and fire-and-forget methods are functional via the extension UI sub-protocol. Use `ctx.mode === "tui"` to guard TUI-specific features like `custom()` that require a real terminal.
 
 ### Extension UI Requests (stdout)
 

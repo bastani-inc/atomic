@@ -1,15 +1,15 @@
 # Extension Examples
 
-Example extensions for pi-coding-agent.
+Example extensions for Atomic.
 
 ## Usage
 
 ```bash
 # Load an extension with --extension flag
-pi --extension examples/extensions/permission-gate.ts
+atomic --extension examples/extensions/permission-gate.ts
 
 # Or copy to extensions directory for auto-discovery
-cp permission-gate.ts ~/.pi/agent/extensions/
+cp permission-gate.ts ~/.atomic/agent/extensions/
 ```
 
 ## Examples
@@ -23,6 +23,8 @@ cp permission-gate.ts ~/.pi/agent/extensions/
 | `confirm-destructive.ts` | Confirms before destructive session actions (clear, switch, fork) |
 | `dirty-repo-guard.ts` | Prevents session changes with uncommitted git changes |
 | `sandbox/` | OS-level sandboxing using `@anthropic-ai/sandbox-runtime` with per-project config |
+| `project-trust.ts` | Demonstrates the `project_trust` event for user/global and CLI extensions |
+| `gondolin/` | Route built-in tools and `!` commands into a Gondolin micro-VM |
 
 ### Custom Tools
 
@@ -75,6 +77,7 @@ cp permission-gate.ts ~/.pi/agent/extensions/
 | `reload-runtime.ts` | Adds `/reload-runtime` and `reload_runtime` tool showing safe reload flow |
 | `interactive-shell.ts` | Run interactive commands (vim, htop) with full terminal via `user_bash` hook |
 | `inline-bash.ts` | Expands `!{command}` patterns in prompts via `input` event transformation |
+| `input-transform-streaming.ts` | Skips expensive input preprocessing for mid-stream steering via `streamingBehavior` |
 
 ### Git Integration
 
@@ -89,14 +92,14 @@ cp permission-gate.ts ~/.pi/agent/extensions/
 |-----------|-------------|
 | `pirate.ts` | Demonstrates `systemPromptAppend` to dynamically modify system prompt |
 | `claude-rules.ts` | Scans `.claude/rules/` folder and lists rules in system prompt |
-| `custom-compaction.ts` | Custom compaction that summarizes entire conversation |
+| `custom-compaction.ts` | Custom compaction policy that provides exact deletion targets |
 | `trigger-compact.ts` | Triggers compaction when context usage exceeds 100k tokens and adds `/trigger-compact` command |
 
 ### System Integration
 
 | Extension | Description |
 |-----------|-------------|
-| `mac-system-theme.ts` | Syncs pi theme with macOS dark/light mode |
+| `mac-system-theme.ts` | Syncs Atomic theme with macOS dark/light mode |
 
 ### Resources
 
@@ -123,7 +126,7 @@ cp permission-gate.ts ~/.pi/agent/extensions/
 | Extension | Description |
 |-----------|-------------|
 | `custom-provider-anthropic/` | Custom Anthropic provider with OAuth support and custom streaming implementation |
-| `custom-provider-gitlab-duo/` | GitLab Duo provider using pi-ai's built-in Anthropic/OpenAI streaming via proxy |
+| `custom-provider-gitlab-duo/` | GitLab Duo provider using `@earendil-works/pi-ai`'s built-in Anthropic/OpenAI streaming via proxy |
 
 ### External Dependencies
 

@@ -43,7 +43,12 @@ import type { Static, TSchema } from "typebox";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import type { ResolvedResource } from "../package-manager.ts";
 import type { BashResult } from "../bash-executor.ts";
-import type { CompactionPreparation, CompactionResult, ContextCompactionResult } from "../compaction/index.ts";
+import type {
+	ContextCompactionMode,
+	ContextCompactionPreparation,
+	ContextCompactionResult,
+	ContextDeletionRequest,
+} from "../compaction/index.ts";
 import type { EventBus } from "../event-bus.ts";
 import type { ExecOptions, ExecResult } from "../exec.ts";
 import type { ReadonlyFooterDataProvider } from "../footer-data-provider.ts";
@@ -52,7 +57,7 @@ import type { CustomMessage } from "../messages.ts";
 import type { ModelRegistry } from "../model-registry.ts";
 import type {
 	BranchSummaryEntry,
-	CompactionEntry,
+	ContextCompactionEntry,
 	ReadonlySessionManager,
 	SessionEntry,
 	SessionManager,
@@ -325,8 +330,6 @@ export interface ContextUsage {
 }
 
 export interface CompactOptions {
-	/** @deprecated Default compaction is deletion-only and does not accept custom instructions. */
-	customInstructions?: string;
 	onComplete?: (result: ContextCompactionResult) => void;
 	onError?: (error: Error) => void;
 }
@@ -348,12 +351,16 @@ export type OrchestrationContext = WorkflowStageOrchestrationContext;
 /**
  * Context passed to extension event handlers.
  */
+export type ExtensionMode = "tui" | "rpc" | "json" | "print";
+
 export interface ExtensionContext {
 	/** Session-scoped orchestration policy for child runtimes such as workflow stages. */
 	readonly orchestrationContext?: OrchestrationContext;
 	/** UI methods for user interaction */
 	ui: ExtensionUIContext;
-	/** Whether UI is available (false in print/RPC mode) */
+	/** Current run mode. Use "tui" to guard terminal-only UI such as custom components. */
+	mode: ExtensionMode;
+	/** Whether dialog-capable UI is available (true in TUI and RPC modes) */
 	hasUI: boolean;
 	/** Current working directory */
 	cwd: string;
@@ -365,6 +372,8 @@ export interface ExtensionContext {
 	model: Model<Api> | undefined;
 	/** Whether the agent is idle (not streaming) */
 	isIdle(): boolean;
+	/** Whether project-local trust is active for this context. */
+	isProjectTrusted(): boolean;
 	/** The current abort signal, or undefined when the agent is not streaming. */
 	signal: AbortSignal | undefined;
 	/** Abort the current agent operation */
@@ -386,6 +395,9 @@ export interface ExtensionContext {
  * Includes session control methods only safe in user-initiated commands.
  */
 export interface ExtensionCommandContext extends ExtensionContext {
+	/** Get the current base system-prompt construction options. */
+	getSystemPromptOptions(): BuildSystemPromptOptions;
+
 	/** Wait for the agent to finish streaming */
 	waitForIdle(): Promise<void>;
 
@@ -504,6 +516,8 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 	promptGuidelines?: string[];
 	/** Parameter schema (TypeBox) */
 	parameters: TParams;
+	/** Optional per-tool character cap for model-visible result persistence. Use Infinity to opt out for self-bounded tools. */
+	maxResultSizeChars?: number;
 	/** Controls whether ToolExecutionComponent renders the standard colored shell or the tool renders its own framing. */
 	renderShell?: "default" | "self";
 
@@ -598,16 +612,20 @@ export interface SessionBeforeForkEvent {
 /** Fired before context compaction (can be cancelled or customized) */
 export interface SessionBeforeCompactEvent {
 	type: "session_before_compact";
-	preparation: CompactionPreparation;
+	reason: "manual" | "threshold" | "overflow";
+	mode: ContextCompactionMode;
+	preparation: ContextCompactionPreparation;
 	branchEntries: SessionEntry[];
-	customInstructions?: string;
 	signal: AbortSignal;
 }
 
 /** Fired after context compaction */
 export interface SessionCompactEvent {
 	type: "session_compact";
-	compactionEntry: CompactionEntry;
+	reason: "manual" | "threshold" | "overflow";
+	mode: ContextCompactionMode;
+	result: ContextCompactionResult;
+	contextCompactionEntry: ContextCompactionEntry;
 	fromExtension: boolean;
 }
 
@@ -788,6 +806,35 @@ export interface ThinkingLevelSelectEvent {
 	previousLevel: ThinkingLevel;
 }
 
+
+// ============================================================================
+// Project Trust Events
+// ============================================================================
+
+export interface ProjectTrustEvent {
+	type: "project_trust";
+	cwd: string;
+}
+
+export type ProjectTrustEventDecision = "yes" | "no" | "undecided";
+
+export interface ProjectTrustEventResult {
+	trusted: ProjectTrustEventDecision;
+	remember?: boolean;
+}
+
+export interface ProjectTrustContext {
+	cwd: string;
+	mode: ExtensionMode;
+	hasUI: boolean;
+	ui: Pick<ExtensionUIContext, "select" | "confirm" | "input" | "notify">;
+}
+
+export type ProjectTrustHandler = (
+	event: ProjectTrustEvent,
+	ctx: ProjectTrustContext,
+) => Promise<ProjectTrustEventResult> | ProjectTrustEventResult;
+
 // ============================================================================
 // User Bash Events
 // ============================================================================
@@ -819,6 +866,8 @@ export interface InputEvent {
 	images?: ImageContent[];
 	/** Where the input came from */
 	source: InputSource;
+	/** How the input will be queued when streaming. Undefined means immediate/normal handling. */
+	streamingBehavior?: "steer" | "followUp";
 }
 
 /** Result from input event handler */
@@ -1030,6 +1079,7 @@ export type ExtensionEvent =
 	| ModelSelectEvent
 	| ThinkingLevelSelectEvent
 	| UserBashEvent
+	| ProjectTrustEvent
 	| InputEvent
 	| ToolCallEvent
 	| ToolResultEvent;
@@ -1086,7 +1136,7 @@ export interface SessionBeforeForkResult {
 
 export interface SessionBeforeCompactResult {
 	cancel?: boolean;
-	compaction?: CompactionResult;
+	deletionRequest?: ContextDeletionRequest;
 }
 
 export interface SessionBeforeTreeResult {
@@ -1198,6 +1248,7 @@ export interface ExtensionAPI {
 	on(event: "tool_call", handler: ExtensionHandler<ToolCallEvent, ToolCallEventResult>): void;
 	on(event: "tool_result", handler: ExtensionHandler<ToolResultEvent, ToolResultEventResult>): void;
 	on(event: "user_bash", handler: ExtensionHandler<UserBashEvent, UserBashEventResult>): void;
+	on(event: "project_trust", handler: ProjectTrustHandler): void;
 	on(event: "input", handler: ExtensionHandler<InputEvent, InputEventResult>): void;
 
 	// =========================================================================
@@ -1338,7 +1389,7 @@ export interface ExtensionAPI {
 	 * // Register a new provider with custom models
 	 * pi.registerProvider("my-proxy", {
 	 *   baseUrl: "https://proxy.example.com",
-	 *   apiKey: "PROXY_API_KEY",
+	 *   apiKey: "$PROXY_API_KEY",
 	 *   api: "anthropic-messages",
 	 *   models: [
 	 *     {
@@ -1507,7 +1558,7 @@ export type GetSessionNameHandler = () => string | undefined;
 export type GetActiveToolsHandler = () => string[];
 
 /** Tool info with name, description, parameter schema, and source metadata */
-export type ToolInfo = Pick<ToolDefinition, "name" | "description" | "parameters"> & {
+export type ToolInfo = Pick<ToolDefinition, "name" | "description" | "parameters" | "promptGuidelines"> & {
 	sourceInfo: SourceInfo;
 };
 
@@ -1577,6 +1628,7 @@ export interface ExtensionActions {
 export interface ExtensionContextActions {
 	getModel: () => Model<Api> | undefined;
 	isIdle: () => boolean;
+	isProjectTrusted: () => boolean;
 	getSignal: () => AbortSignal | undefined;
 	abort: () => void;
 	hasPendingMessages: () => boolean;
@@ -1584,6 +1636,7 @@ export interface ExtensionContextActions {
 	getContextUsage: () => ContextUsage | undefined;
 	compact: (options?: CompactOptions) => void;
 	getSystemPrompt: () => string;
+	getSystemPromptOptions?: () => BuildSystemPromptOptions;
 }
 
 /**

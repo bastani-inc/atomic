@@ -1,8 +1,8 @@
 /**
- * Syncs pi theme with macOS system appearance (dark/light mode).
+ * Syncs the Atomic theme with macOS system appearance (dark/light mode).
  *
  * Usage:
- *   pi -e examples/extensions/mac-system-theme.ts
+ *   atomic -e examples/extensions/mac-system-theme.ts
  */
 
 import { exec } from "node:child_process";

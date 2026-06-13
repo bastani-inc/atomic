@@ -6,6 +6,12 @@ Atomic uses the [Kitty keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboa
 
 Work out of the box.
 
+## Apple Terminal
+
+Atomic enables enhanced key reporting when available. If Terminal.app still sends plain Return for `SHIFT+Enter`, Atomic uses a local macOS modifier fallback to treat that Return as `SHIFT+Enter`.
+
+This fallback only works when Atomic runs on the same Mac as Terminal.app. It cannot detect the local keyboard over remote SSH.
+
 ## Ghostty
 
 Add to your Ghostty config (`~/Library/Application Support/com.mitchellh.ghostty/config` on macOS, `~/.config/ghostty/config` on Linux):
@@ -34,7 +40,7 @@ If you want `SHIFT+Enter` to keep working in tmux via that remap, add `ctrl+j` t
 
 ## WezTerm
 
-Create `~/.wezterm.lua`:
+WezTerm usually works out of the box for `SHIFT+Enter` via xterm modifyOtherKeys. To use the Kitty keyboard protocol explicitly, create `~/.wezterm.lua`:
 
 ```lua
 local wezterm = require 'wezterm'
@@ -43,14 +49,50 @@ config.enable_kitty_keyboard = true
 return config
 ```
 
+On macOS, WezTerm binds `Option+Enter` to fullscreen by default. To use `Option+Enter` for Atomic follow-up queueing, add this key override:
+
+```lua
+local wezterm = require 'wezterm'
+local config = wezterm.config_builder()
+config.keys = {
+  {
+    key = 'Enter',
+    mods = 'ALT',
+    action = wezterm.action.SendString('\x1b[13;3u'),
+  },
+}
+return config
+```
+
+If you already have a `config.keys` table, add the entry to it.
+
+On WSL, WezTerm may require a visible hardware cursor for IME candidate window positioning. If CJK IME candidates do not follow the text cursor, set `ATOMIC_HARDWARE_CURSOR=1` before running Atomic or set `showHardwareCursor` to `true` in settings. The legacy `PI_HARDWARE_CURSOR=1` alias also works.
+
+## Alacritty
+
+Alacritty usually works out of the box for `SHIFT+Enter`. On macOS, `Option+Enter` may arrive as plain `Enter`. To use `Option+Enter` for Atomic follow-up queueing, add to `~/.config/alacritty/alacritty.toml`:
+
+```toml
+[[keyboard.bindings]]
+key = "Enter"
+mods = "Alt"
+chars = "\u001b[13;3u"
+```
+
+Restart Alacritty after changing the config.
+
 ## VS Code (Integrated Terminal)
+
+VS Code 1.109.5 and newer enable Kitty keyboard protocol in the integrated terminal by default, so `SHIFT+Enter` should work out of the box.
+
+VS Code versions older than 1.109.5 need an explicit terminal keybinding for `SHIFT+Enter`.
 
 `keybindings.json` locations:
 - macOS: `~/Library/Application Support/Code/User/keybindings.json`
 - Linux: `~/.config/Code/User/keybindings.json`
 - Windows: `%APPDATA%\\Code\\User\\keybindings.json`
 
-Add to `keybindings.json` to enable `SHIFT+Enter` for multi-line input:
+Add to `keybindings.json`:
 
 ```json
 {

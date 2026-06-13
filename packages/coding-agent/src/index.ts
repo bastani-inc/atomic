@@ -1,5 +1,6 @@
 // Core session management
 
+export { type Args, parseArgs } from "./cli/args.ts";
 // Config paths
 export {
 	APP_NAME,
@@ -11,9 +12,19 @@ export {
 	getAgentConfigPaths,
 	getAgentDir,
 	getAgentDirs,
+	getBundledInteractiveAssetPath,
+	getChangelogPath,
+	getDocsPath,
+	getExamplesPath,
+	getExportTemplateDir,
+	getInteractiveAssetsDir,
 	getLegacyAgentDir,
+	getPackageDir,
+	getPackageJsonPath,
 	getProjectConfigDirs,
 	getProjectConfigPaths,
+	getReadmePath,
+	getThemesDir,
 	getEnvNames,
 	getEnvValue,
 	ENV_CODEX_FAST_MODE,
@@ -55,32 +66,27 @@ export {
 	type BranchSummaryResult,
 	type CollectEntriesResult,
 	type CompactableTranscript,
-	type CompactionResult,
+	type ContextCompactionMode,
 	type ContextCompactionPreparation,
 	type ContextCompactionResult,
-	type CutPointResult,
-	type RawContextDeletionPlan,
-	type ValidatedContextDeletionPlan,
+	type ContextDeletionRequest,
+	type ValidatedContextDeletionResult,
 	buildContextCompactionPrompt,
 	calculateContextTokens,
 	collectEntriesForBranchSummary,
-	compact,
 	contextCompact,
 	DEFAULT_COMPACTION_SETTINGS,
 	estimateTokens,
 	type FileOperations,
-	findCutPoint,
-	findTurnStartIndex,
 	type GenerateBranchSummaryOptions,
 	generateBranchSummary,
-	generateSummary,
 	getLastAssistantUsage,
-	parseContextDeletionPlan,
+	parseContextDeletionRequest,
 	prepareBranchEntries,
 	prepareContextCompaction,
 	serializeConversation,
 	shouldCompact,
-	validateContextDeletionPlan,
+	validateContextDeletionRequest,
 } from "./core/compaction/index.ts";
 export {
 	CODEX_FAST_MODE_SERVICE_TIER,
@@ -97,6 +103,7 @@ export {
 	type CodexFastModeScope,
 } from "./core/codex-fast-mode.ts";
 export { createEventBus, type EventBus, type EventBusController } from "./core/event-bus.ts";
+export { areExperimentalFeaturesEnabled } from "./core/experimental.ts";
 // Extension system
 export type {
 	AgentEndEvent,
@@ -147,6 +154,11 @@ export type {
 	MessageRenderer,
 	MessageRenderOptions,
 	OrchestrationContext,
+	ProjectTrustContext,
+	ProjectTrustEvent,
+	ProjectTrustEventDecision,
+	ProjectTrustEventResult,
+	ProjectTrustHandler,
 	ProviderConfig,
 	ProviderModelConfig,
 	ReactiveWidgetAction,
@@ -217,6 +229,14 @@ export { createAskUserQuestionToolDefinition } from "./core/tools/index.ts";
 export type { ReadonlyFooterDataProvider } from "./core/footer-data-provider.ts";
 export { convertToLlm } from "./core/messages.ts";
 export { ModelRegistry } from "./core/model-registry.ts";
+export type { DefaultProjectTrust } from "./core/settings-manager.ts";
+export {
+	hasProjectTrustInputs,
+	type ProjectTrustDecision,
+	ProjectTrustStore,
+	type ProjectTrustStoreEntry,
+	type ProjectTrustUpdate,
+} from "./core/trust-manager.ts";
 export type {
 	PackageManager,
 	PathMetadata,
@@ -234,6 +254,15 @@ export {
 	AgentSessionRuntime,
 	type AgentSessionRuntimeDiagnostic,
 	type AgentSessionServices,
+	type BashCommandParseError,
+	type BashCommandParseResult,
+	type BashCommandPolicy,
+	type BashCommandPolicyDecision,
+	type BashCommandPolicyMatchMode,
+	type BashCommandPolicyRejection,
+	type BashCommandRule,
+	type BashCommandSegment,
+	type BashCommandSegmentSource,
 	type CreateAgentSessionFromServicesOptions,
 	type CreateAgentSessionOptions,
 	type CreateAgentSessionResult,
@@ -260,7 +289,6 @@ export {
 export {
 	type BranchSummaryEntry,
 	buildSessionContext,
-	type CompactionEntry,
 	type ContextCompactionEntry,
 	type ContextCompactionStats,
 	type ContextDeletionTarget,
@@ -269,7 +297,6 @@ export {
 	type CustomMessageEntry,
 	type FileEntry,
 	getLatestCompactionBoundaryEntry,
-	getLatestCompactionEntry,
 	type ModelChangeEntry,
 	migrateSessionEntries,
 	type NewSessionOptions,
@@ -290,6 +317,7 @@ export {
 	type PackageSource,
 	type RetrySettings,
 	SettingsManager,
+	type SettingsManagerCreateOptions,
 } from "./core/settings-manager.ts";
 // Skills
 export {
@@ -304,6 +332,9 @@ export {
 export { createSyntheticSourceInfo } from "./core/source-info.ts";
 // Tools
 export {
+	evaluateBashCommandPolicy,
+	formatBashCommandPolicyRejection,
+	parseBashCommandSegments,
 	type BashOperations,
 	type BashSpawnContext,
 	type BashSpawnHook,
@@ -347,6 +378,7 @@ export {
 	truncateHead,
 	truncateLine,
 	truncateTail,
+	validateBashCommandPolicy,
 	type WriteOperations,
 	type WriteToolInput,
 	type WriteToolOptions,
@@ -366,6 +398,8 @@ export {
 	type RpcCommand,
 	type RpcEvent,
 	type RpcEventListener,
+	type RpcExtensionUIRequest,
+	type RpcExtensionUIResponse,
 	type RpcResponse,
 	type RpcSessionState,
 	runPrintMode,
@@ -396,7 +430,6 @@ export {
 	type ChatTranscriptRenderer,
 	type ChatTranscriptRole,
 	BranchSummaryMessageComponent,
-	CompactionSummaryMessageComponent,
 	CustomEditor,
 	CustomMessageComponent,
 	DynamicBorder,
@@ -446,6 +479,7 @@ export {
 export { copyToClipboard } from "./utils/clipboard.ts";
 export { parseFrontmatter, stripFrontmatter } from "./utils/frontmatter.ts";
 export { createGitEnvironment, GIT_LOCAL_ENV_VARS } from "./utils/git-env.ts";
+export { convertToPng } from "./utils/image-convert.ts";
 export { formatDimensionNote, type ResizedImage, resizeImage } from "./utils/image-resize.ts";
 // Shell utilities
 export { getShellConfig } from "./utils/shell.ts";

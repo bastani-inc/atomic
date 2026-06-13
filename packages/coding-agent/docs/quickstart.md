@@ -227,6 +227,7 @@ Sessions are saved automatically:
 ```bash
 atomic -c                  # Continue most recent session
 atomic -r                  # Browse previous sessions
+atomic --name "my task"    # Set session display name at startup
 atomic --session <path|id> # Open a specific session
 ```
 

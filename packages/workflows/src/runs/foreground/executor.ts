@@ -14,6 +14,8 @@ import type {
   WorkflowRunContext,
   WorkflowUIContext,
   WorkflowUIAdapter,
+  WorkflowCustomUiFactory,
+  WorkflowCustomUiOptions,
   WorkflowInputSchema,
   StageContext,
   StageOptions,
@@ -38,6 +40,8 @@ import type {
   WorkflowExecutionMode,
   WorkflowRunChildOptions,
   WorkflowChildResult,
+  WorkflowExitOptions,
+  WorkflowExitStatus,
   WorkflowOutputSchema,
   WorkflowOutputValues,
   WorkflowInputValues,
@@ -56,7 +60,7 @@ import type {
   WorkflowFailureRecoverability,
   WorkflowFailureDisposition,
   PendingPrompt,
-  PromptKind,
+  CustomPromptIdentitySource,
   WorkflowChildReplaySnapshot,
   WorkflowChildRunRef,
 } from "../../shared/store-types.js";
@@ -96,6 +100,7 @@ import type { WorkflowFailure } from "../../shared/workflow-failures.js";
 import { classifyWorkflowFailure } from "../../shared/workflow-failures.js";
 import { selectPromptCallsiteFrame } from "../shared/prompt-callsite.js";
 import {
+  WORKFLOW_SERIALIZABLE_DESCRIPTION,
   assertWorkflowSerializableObject,
   workflowSerializableValidationError,
   workflowSerializableTypeName,
@@ -108,7 +113,7 @@ export interface RunContinuationOpts {
   readonly resumeFromStageId: string;
 }
 
-export interface RunOpts extends Omit<AuthoringContract.RunOpts, "adapters" | "store" | "cancellation" | "overlay" | "registry" | "stageControlRegistry" | "continuation" | "onRunStart" | "onStageStart" | "onStageEnd" | "onRunEnd"> {
+export interface RunOpts extends Omit<AuthoringContract.RunOpts, "adapters" | "store" | "cancellation" | "overlay" | "registry" | "stageControlRegistry" | "continuation" | "onRunStart" | "onStageStart" | "onStageEnd" | "onRunEnd" | "ui"> {
   adapters?: StageAdapters;
   /** Invocation working directory exposed to workflow definitions as ctx.cwd. */
   cwd?: string;
@@ -193,7 +198,7 @@ export interface RunOpts extends Omit<AuthoringContract.RunOpts, "adapters" | "s
   onRunStart?: (snapshot: RunSnapshot) => void;
   onStageStart?: (runId: string, snapshot: StageSnapshot) => void;
   onStageEnd?: (runId: string, snapshot: StageSnapshot) => void;
-  onRunEnd?: (runId: string, status: RunStatus, result?: WorkflowOutputValues, error?: string) => void;
+  onRunEnd?: (runId: string, status: RunStatus, result?: WorkflowOutputValues, error?: string, exitReason?: string) => void;
 }
 
 export interface RunResult {
@@ -201,7 +206,391 @@ export interface RunResult {
   readonly status: RunStatus;
   readonly result?: WorkflowOutputValues;
   readonly error?: string;
+  /** True when the run reached its terminal status through ctx.exit(). */
+  readonly exited?: boolean;
+  readonly exitReason?: string;
   readonly stages: StageSnapshot[];
+}
+
+const WORKFLOW_EXIT_SIGNAL = Symbol("atomic-workflows.workflow-exit-signal");
+const WORKFLOW_EXIT_STATUSES: ReadonlySet<WorkflowExitStatus> = new Set([
+  "completed",
+  "skipped",
+  "cancelled",
+  "blocked",
+]);
+
+type WorkflowExitOutputSnapshot =
+  | {
+      readonly ok: true;
+      readonly value: unknown;
+    }
+  | {
+      readonly ok: false;
+      readonly error: Error;
+    };
+
+interface WorkflowExitSignal {
+  readonly [WORKFLOW_EXIT_SIGNAL]: true;
+  readonly scope: symbol;
+  readonly status: WorkflowExitStatus;
+  readonly reason?: string;
+  readonly outputSnapshot?: WorkflowExitOutputSnapshot;
+  readonly validationError?: Error;
+}
+
+const WORKFLOW_EXIT_SNAPSHOT_INVALID_VALUE = Symbol("atomic-workflows.workflow-exit-snapshot-invalid-value");
+
+interface WorkflowExitSnapshotInvalidValue {
+  readonly [WORKFLOW_EXIT_SNAPSHOT_INVALID_VALUE]: true;
+  readonly typeName: string;
+}
+
+type SafePropertyRead =
+  | { readonly ok: true; readonly value: unknown }
+  | { readonly ok: false };
+
+function safeGetProperty(value: object, key: PropertyKey): SafePropertyRead {
+  try {
+    return { ok: true, value: (value as Record<PropertyKey, unknown>)[key] };
+  } catch {
+    return { ok: false };
+  }
+}
+
+function unknownErrorMessage(error: unknown): string {
+  if (error !== null && (typeof error === "object" || typeof error === "function")) {
+    const message = safeGetProperty(error, "message");
+    if (message.ok && typeof message.value === "string" && message.value.length > 0) {
+      return message.value;
+    }
+  }
+  if (typeof error === "string") return error;
+  try {
+    return String(error);
+  } catch {
+    return "<unprintable thrown value>";
+  }
+}
+
+function workflowExitSnapshotError(message: string, cause: unknown): Error {
+  return new Error(`${message}: ${unknownErrorMessage(cause)}`, { cause });
+}
+
+function workflowExitOptionReadError(key: "status" | "reason" | "outputs", cause: unknown): Error {
+  return workflowExitSnapshotError(`atomic-workflows: ctx.exit() ${key} option could not be read`, cause);
+}
+
+function readWorkflowExitOption(
+  options: { readonly status?: unknown; readonly reason?: unknown; readonly outputs?: unknown } | null | undefined,
+  key: "status" | "reason" | "outputs",
+): { readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly error: Error } {
+  try {
+    return { ok: true, value: options?.[key] };
+  } catch (err) {
+    return { ok: false, error: workflowExitOptionReadError(key, err) };
+  }
+}
+
+function describeWorkflowExitOptionValue(value: unknown): string {
+  try {
+    const json = JSON.stringify(value);
+    if (json !== undefined) return json;
+  } catch {
+    // Fall back to a coarse type name below. This path is diagnostic only and
+    // must never make ctx.exit() throw before workflow-exit cleanup can run.
+  }
+  return workflowSerializableTypeName(value);
+}
+
+function isPlainWorkflowExitSnapshotObject(value: object): boolean {
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+function makeWorkflowExitSnapshotInvalidValue(typeName: string): WorkflowExitSnapshotInvalidValue {
+  const marker = {} as { [WORKFLOW_EXIT_SNAPSHOT_INVALID_VALUE]?: true; typeName?: string };
+  Object.defineProperty(marker, WORKFLOW_EXIT_SNAPSHOT_INVALID_VALUE, {
+    value: true,
+    enumerable: false,
+  });
+  Object.defineProperty(marker, "typeName", {
+    value: typeName,
+    enumerable: false,
+  });
+  return Object.freeze(marker) as WorkflowExitSnapshotInvalidValue;
+}
+
+function isWorkflowExitSnapshotInvalidValue(value: unknown): value is WorkflowExitSnapshotInvalidValue {
+  return value !== null && typeof value === "object" &&
+    (value as Record<PropertyKey, unknown>)[WORKFLOW_EXIT_SNAPSHOT_INVALID_VALUE] === true;
+}
+
+function cloneWorkflowExitSnapshotValue(
+  value: unknown,
+  seen: Map<object, unknown>,
+  stack: Set<object> = new Set(),
+): unknown {
+  if (value === null) return null;
+  const valueType = typeof value;
+  if (valueType !== "object") {
+    return valueType === "function"
+      ? makeWorkflowExitSnapshotInvalidValue("function")
+      : value;
+  }
+
+  const objectValue = value as object;
+  const previousClone = seen.get(objectValue);
+  if (previousClone !== undefined) {
+    return stack.has(objectValue)
+      ? makeWorkflowExitSnapshotInvalidValue("circular object")
+      : previousClone;
+  }
+
+  if (Array.isArray(value)) {
+    const clone: unknown[] = [];
+    seen.set(objectValue, clone);
+    stack.add(objectValue);
+    try {
+      for (let index = 0; index < value.length; index += 1) {
+        clone[index] = cloneWorkflowExitSnapshotValue(value[index], seen, stack);
+      }
+    } finally {
+      stack.delete(objectValue);
+    }
+    return clone;
+  }
+
+  if (!isPlainWorkflowExitSnapshotObject(objectValue)) {
+    return makeWorkflowExitSnapshotInvalidValue(workflowSerializableTypeName(value));
+  }
+
+  const clone: Record<string, unknown> = {};
+  seen.set(objectValue, clone);
+  stack.add(objectValue);
+  try {
+    for (const key of Object.keys(value as Record<string, unknown>)) {
+      clone[key] = cloneWorkflowExitSnapshotValue((value as Record<string, unknown>)[key], seen, stack);
+    }
+  } finally {
+    stack.delete(objectValue);
+  }
+  return clone;
+}
+
+// Recursively freeze the (already-private) deep clone so the snapshot stored on
+// the thrown WorkflowExitSignal is immutable. Combined with freezing the signal
+// object itself, this stops author code that catches ctx.exit()'s signal from
+// rewriting the captured outputs before finalization reads them (finalization
+// recovers the same object via the abort reason / rethrow, and the reconstruction
+// path reads `outputSnapshot.value` by reference). The clone is acyclic — cycles
+// became frozen invalid-value markers — and the `Object.isFrozen` short-circuit
+// keeps shared (DAG) nodes terminating.
+function deepFreezeWorkflowExitSnapshotValue(value: unknown): void {
+  if (value === null || typeof value !== "object" || Object.isFrozen(value)) return;
+  Object.freeze(value);
+  if (Array.isArray(value)) {
+    for (const item of value) deepFreezeWorkflowExitSnapshotValue(item);
+    return;
+  }
+  for (const key of Object.keys(value as Record<string, unknown>)) {
+    deepFreezeWorkflowExitSnapshotValue((value as Record<string, unknown>)[key]);
+  }
+}
+
+function freezeWorkflowExitOutputSnapshot(snapshot: WorkflowExitOutputSnapshot): WorkflowExitOutputSnapshot {
+  return Object.freeze(snapshot);
+}
+
+function captureWorkflowExitOutputSnapshot(rawOutputs: unknown): WorkflowExitOutputSnapshot {
+  let snapshot: WorkflowExitOutputSnapshot;
+  try {
+    const value = cloneWorkflowExitSnapshotValue(rawOutputs, new Map());
+    deepFreezeWorkflowExitSnapshotValue(value);
+    snapshot = { ok: true, value };
+  } catch (err) {
+    snapshot = {
+      ok: false,
+      error: workflowExitSnapshotError("atomic-workflows: ctx.exit() outputs could not be snapshotted", err),
+    };
+  }
+  return freezeWorkflowExitOutputSnapshot(snapshot);
+}
+
+function formatWorkflowExitSnapshotPath(parent: string, key: string): string {
+  // `segment` already encodes the structure: bracketed for numeric/non-identifier keys,
+  // dotted for identifiers with a parent, and the bare key for an identifier at the root
+  // (where `parent === ""` so `segment === key`). Every case therefore reduces to the
+  // concatenation below.
+  const segment = /^\d+$/.test(key)
+    ? `[${key}]`
+    : /^[A-Za-z_$][\w$]*$/.test(key)
+      ? (parent.length > 0 ? `.${key}` : key)
+      : `[${JSON.stringify(key)}]`;
+  return `${parent}${segment}`;
+}
+
+function findWorkflowExitSnapshotInvalidValue(
+  value: unknown,
+  path = "",
+  seen = new Set<unknown>(),
+): { readonly path: string; readonly typeName: string } | undefined {
+  if (isWorkflowExitSnapshotInvalidValue(value)) {
+    return { path, typeName: value.typeName };
+  }
+  if (value === null || typeof value !== "object") return undefined;
+  if (seen.has(value)) return undefined;
+  seen.add(value);
+
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index += 1) {
+      const found = findWorkflowExitSnapshotInvalidValue(value[index], `${path}[${index}]`, seen);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  }
+
+  for (const key of Object.keys(value as Record<string, unknown>)) {
+    const found = findWorkflowExitSnapshotInvalidValue(
+      (value as Record<string, unknown>)[key],
+      formatWorkflowExitSnapshotPath(path, key),
+      seen,
+    );
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}
+
+function workflowExitSnapshotInvalidValueMessage(label: string, value: unknown): string | undefined {
+  const invalid = findWorkflowExitSnapshotInvalidValue(value);
+  if (invalid === undefined) return undefined;
+  const location = invalid.path.length > 0 ? ` at ${invalid.path}` : "";
+  return `${label}${location} must be ${WORKFLOW_SERIALIZABLE_DESCRIPTION}, got ${invalid.typeName}`;
+}
+
+const PARENT_WORKFLOW_EXIT_ABORT = Symbol("atomic-workflows.parent-workflow-exit-abort");
+
+interface ParentWorkflowExitAbortReason extends Error {
+  readonly [PARENT_WORKFLOW_EXIT_ABORT]: true;
+  readonly workflowExitReason?: string;
+}
+
+function parentWorkflowExitRunReason(reason?: string): string {
+  return reason === undefined || reason.length === 0
+    ? "parent workflow exited"
+    : `parent workflow exited: ${reason}`;
+}
+
+function makeParentWorkflowExitAbortReason(reason?: string): ParentWorkflowExitAbortReason {
+  const error = new Error(parentWorkflowExitRunReason(reason)) as ParentWorkflowExitAbortReason & {
+    [PARENT_WORKFLOW_EXIT_ABORT]: true;
+    workflowExitReason?: string;
+  };
+  Object.defineProperty(error, PARENT_WORKFLOW_EXIT_ABORT, {
+    value: true,
+    enumerable: false,
+  });
+  if (reason !== undefined) error.workflowExitReason = reason;
+  return error;
+}
+
+interface ParentWorkflowExitAbortProbe {
+  readonly workflowExitReason?: string;
+}
+
+function parentWorkflowExitAbortReason(value: unknown): ParentWorkflowExitAbortProbe | undefined {
+  if (value === null || (typeof value !== "object" && typeof value !== "function")) return undefined;
+  const marker = safeGetProperty(value, PARENT_WORKFLOW_EXIT_ABORT);
+  if (!marker.ok || marker.value !== true) return undefined;
+
+  const reason = safeGetProperty(value, "workflowExitReason");
+  return reason.ok && typeof reason.value === "string"
+    ? { workflowExitReason: reason.value }
+    : {};
+}
+
+function isWorkflowExitStatus(value: unknown): value is WorkflowExitStatus {
+  return typeof value === "string" && WORKFLOW_EXIT_STATUSES.has(value as WorkflowExitStatus);
+}
+
+function safeErrorValue(value: unknown): Error {
+  try {
+    if (value instanceof Error) return value;
+  } catch {
+    // Fall through to a safe wrapper below.
+  }
+  return new Error(unknownErrorMessage(value));
+}
+
+function readWorkflowExitOutputSnapshot(value: unknown): WorkflowExitOutputSnapshot | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || (typeof value !== "object" && typeof value !== "function")) return undefined;
+  const ok = safeGetProperty(value, "ok");
+  if (!ok.ok) return undefined;
+  if (ok.value === true) {
+    const snapshotValue = safeGetProperty(value, "value");
+    return snapshotValue.ok ? { ok: true, value: snapshotValue.value } : undefined;
+  }
+  if (ok.value === false) {
+    const error = safeGetProperty(value, "error");
+    return error.ok ? { ok: false, error: safeErrorValue(error.value) } : undefined;
+  }
+  return undefined;
+}
+
+function readWorkflowExitSignalCandidate(value: object, scope: symbol): WorkflowExitSignal | undefined {
+  const marker = safeGetProperty(value, WORKFLOW_EXIT_SIGNAL);
+  if (!marker.ok || marker.value !== true) return undefined;
+
+  const signalScope = safeGetProperty(value, "scope");
+  if (!signalScope.ok || signalScope.value !== scope) return undefined;
+
+  const status = safeGetProperty(value, "status");
+  if (!status.ok || !isWorkflowExitStatus(status.value)) return undefined;
+
+  const reason = safeGetProperty(value, "reason");
+  if (!reason.ok || (reason.value !== undefined && typeof reason.value !== "string")) return undefined;
+
+  const outputSnapshotValue = safeGetProperty(value, "outputSnapshot");
+  if (!outputSnapshotValue.ok) return undefined;
+  const outputSnapshot = readWorkflowExitOutputSnapshot(outputSnapshotValue.value);
+  if (outputSnapshotValue.value !== undefined && outputSnapshot === undefined) return undefined;
+
+  const validationError = safeGetProperty(value, "validationError");
+  if (!validationError.ok) return undefined;
+
+  return {
+    [WORKFLOW_EXIT_SIGNAL]: true,
+    scope,
+    status: status.value,
+    ...(reason.value !== undefined ? { reason: reason.value } : {}),
+    ...(outputSnapshot !== undefined ? { outputSnapshot } : {}),
+    ...(validationError.value !== undefined ? { validationError: safeErrorValue(validationError.value) } : {}),
+  };
+}
+
+function findWorkflowExitSignal(error: unknown, scope: symbol, seen = new Set<unknown>()): WorkflowExitSignal | undefined {
+  if (error === null || (typeof error !== "object" && typeof error !== "function")) return undefined;
+  if (seen.has(error)) return undefined;
+  seen.add(error);
+
+  const directSignal = readWorkflowExitSignalCandidate(error, scope);
+  if (directSignal !== undefined) return directSignal;
+
+  const errors = safeExecutorAggregateErrorItems(error);
+  for (const item of errors) {
+    const signal = findWorkflowExitSignal(item, scope, seen);
+    if (signal !== undefined) return signal;
+  }
+
+  const cause = safeGetProperty(error, "cause");
+  if (cause.ok) {
+    const causeSignal = findWorkflowExitSignal(cause.value, scope, seen);
+    if (causeSignal !== undefined) return causeSignal;
+  }
+
+  const reason = safeGetProperty(error, "reason");
+  return reason.ok ? findWorkflowExitSignal(reason.value, scope, seen) : undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -271,14 +660,28 @@ function resolveInputRuntimeDefaults(
 // HIL unavailable fallback — rejects with precise per-primitive error
 // ---------------------------------------------------------------------------
 
-interface PromptDescriptor {
-  readonly kind: PromptKind;
+type PrimitivePromptDescriptor =
+  | { readonly kind: "input"; readonly message: string; readonly initial?: string }
+  | { readonly kind: "confirm"; readonly message: string }
+  | { readonly kind: "select"; readonly message: string; readonly choices: readonly string[] }
+  | { readonly kind: "editor"; readonly message: string; readonly initial?: string };
+
+interface CustomPromptDescriptor<T> {
+  readonly kind: "custom";
   readonly message: string;
-  readonly choices?: readonly string[];
-  readonly initial?: string;
+  readonly factory: WorkflowCustomUiFactory<T>;
+  readonly options?: WorkflowCustomUiOptions;
+  readonly customIdentityHash: string;
+  readonly customIdentitySource: CustomPromptIdentitySource;
 }
 
-function fallbackForPromptDescriptor(descriptor: PromptDescriptor): unknown {
+type PromptDescriptor<T = unknown> = PrimitivePromptDescriptor | CustomPromptDescriptor<T>;
+
+function isCustomPromptDescriptor<T>(descriptor: PromptDescriptor<T>): descriptor is CustomPromptDescriptor<T> {
+  return descriptor.kind === "custom";
+}
+
+function fallbackForPromptDescriptor(descriptor: PrimitivePromptDescriptor): unknown {
   switch (descriptor.kind) {
     case "input":
     case "editor":
@@ -286,7 +689,7 @@ function fallbackForPromptDescriptor(descriptor: PromptDescriptor): unknown {
     case "confirm":
       return false;
     case "select":
-      return descriptor.choices?.[0] ?? "";
+      return descriptor.choices[0] ?? "";
   }
 }
 
@@ -295,8 +698,12 @@ function makePrompt(descriptor: PromptDescriptor): PendingPrompt {
     id: `hil-${crypto.randomUUID()}`,
     kind: descriptor.kind,
     message: descriptor.message,
-    ...(descriptor.choices !== undefined ? { choices: descriptor.choices } : {}),
-    ...(descriptor.initial !== undefined ? { initial: descriptor.initial } : {}),
+    ...(!isCustomPromptDescriptor(descriptor) && descriptor.kind === "select" ? { choices: descriptor.choices } : {}),
+    ...(!isCustomPromptDescriptor(descriptor) && (descriptor.kind === "input" || descriptor.kind === "editor") && descriptor.initial !== undefined ? { initial: descriptor.initial } : {}),
+    ...(isCustomPromptDescriptor(descriptor) ? {
+      customIdentityHash: descriptor.customIdentityHash,
+      customIdentitySource: descriptor.customIdentitySource,
+    } : {}),
     createdAt: Date.now(),
   };
 }
@@ -307,13 +714,19 @@ function stableHash(value: unknown): string {
 }
 
 function promptDescriptorHash(descriptor: PromptDescriptor): string {
+  if (isCustomPromptDescriptor(descriptor)) {
+    return stableHash({
+      kind: "custom",
+      customIdentityHash: descriptor.customIdentityHash,
+    });
+  }
   return stableHash({
     kind: descriptor.kind,
     message: descriptor.message,
-    choices: descriptor.choices ?? [],
+    choices: descriptor.kind === "select" ? descriptor.choices : [],
     // Include input/editor initial text because it is visible prompt context;
     // changing it should not replay a stale answer from the same callsite.
-    initial: descriptor.initial ?? null,
+    initial: descriptor.kind === "input" || descriptor.kind === "editor" ? descriptor.initial ?? null : null,
   });
 }
 
@@ -334,14 +747,147 @@ function hilAbortError(signal: AbortSignal): Error {
     : new Error("atomic-workflows: HIL aborted");
 }
 
-function makeUnavailableUIContext(): WorkflowUIContext {
-  const msg = (primitive: string): string =>
-    `atomic-workflows: HIL ctx.ui.${primitive} is unavailable because Atomic runtime did not provide a UI adapter`;
+function resolveCustomPromptIdentity<T>(
+  factory: WorkflowCustomUiFactory<T>,
+  options: WorkflowCustomUiOptions | undefined,
+): Pick<CustomPromptDescriptor<T>, "customIdentityHash" | "customIdentitySource"> {
+  const replayIdentity = options?.replayIdentity?.trim();
+  if (replayIdentity !== undefined && replayIdentity.length > 0) {
+    return {
+      customIdentityHash: stableHash({ source: "caller", value: replayIdentity }),
+      customIdentitySource: "caller",
+    };
+  }
+  if (factory.name.trim().length > 0) {
+    return {
+      customIdentityHash: stableHash({ source: "factory", value: factory.name }),
+      customIdentitySource: "factory",
+    };
+  }
+  try {
+    const source = Function.prototype.toString.call(factory);
+    if (source.trim().length > 0) {
+      return {
+        customIdentityHash: stableHash({ source: "factory", value: source }),
+        customIdentitySource: "factory",
+      };
+    }
+  } catch {
+    // Fall through to callsite-only identity below.
+  }
+  return {
+    customIdentityHash: stableHash({ source: "callsite" }),
+    customIdentitySource: "callsite",
+  };
+}
+
+function customPromptDescriptor<T>(
+  factory: WorkflowCustomUiFactory<T>,
+  options: WorkflowCustomUiOptions | undefined,
+): CustomPromptDescriptor<T> {
+  const label = options?.label?.trim();
+  return {
+    kind: "custom",
+    message: label && label.length > 0 ? label : "Custom TUI prompt",
+    factory,
+    ...(options !== undefined ? { options } : {}),
+    ...resolveCustomPromptIdentity(factory, options),
+  };
+}
+
+interface MergedHilSignal {
+  readonly signal: AbortSignal;
+  readonly dispose: () => void;
+}
+
+function mergeHilSignals(primary: AbortSignal, secondary: AbortSignal | undefined): MergedHilSignal {
+  if (secondary === undefined) return { signal: primary, dispose: () => undefined };
+  const controller = new AbortController();
+  const abortFrom = (source: AbortSignal): void => {
+    if (!controller.signal.aborted) controller.abort(source.reason);
+  };
+  const onPrimaryAbort = (): void => abortFrom(primary);
+  const onSecondaryAbort = (): void => abortFrom(secondary);
+  primary.addEventListener("abort", onPrimaryAbort, { once: true });
+  secondary.addEventListener("abort", onSecondaryAbort, { once: true });
+  if (primary.aborted) abortFrom(primary);
+  else if (secondary.aborted) abortFrom(secondary);
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      primary.removeEventListener("abort", onPrimaryAbort);
+      secondary.removeEventListener("abort", onSecondaryAbort);
+    },
+  };
+}
+
+/**
+ * Build a UI context whose every interactive primitive rejects with a clear,
+ * actionable error. Parameterized by `msg` so the "no UI adapter" and
+ * "headless mode" variants share one implementation and never drift (#1339).
+ */
+function makeRejectingUIContext(msg: (primitive: string) => string): WorkflowUIContext {
   return {
     input: () => Promise.reject(new Error(msg("input"))),
     confirm: () => Promise.reject(new Error(msg("confirm"))),
     select: () => Promise.reject(new Error(msg("select"))),
     editor: () => Promise.reject(new Error(msg("editor"))),
+    custom: () => Promise.reject(new Error(msg("custom"))),
+  };
+}
+
+function makeUnavailableUIContext(): WorkflowUIContext {
+  return makeRejectingUIContext(
+    (primitive) =>
+      `atomic-workflows: HIL ctx.ui.${primitive} is unavailable because Atomic runtime did not provide a UI adapter`,
+  );
+}
+
+/**
+ * UI context for headless (non-interactive) runs without a UI adapter: every
+ * interactive primitive fails with a clear, actionable error that names the
+ * headless mode instead of surfacing a raw
+ * `TypeError: ctx.ui.custom is not a function` from a missing TUI (#1339).
+ */
+function makeHeadlessUnavailableUIContext(): WorkflowUIContext {
+  return makeRejectingUIContext(
+    (primitive) =>
+      `atomic-workflows: interactive ctx.ui.${primitive} is unavailable in headless (non-interactive) mode; run the workflow in interactive mode or remove the interactive prompt from this stage`,
+  );
+}
+
+function normalizeUIContext(adapter: WorkflowUIAdapter | undefined): WorkflowUIContext {
+  const unavailable = makeUnavailableUIContext();
+  if (adapter === undefined) return unavailable;
+  // Guard every method: loosely-typed callers can hand over partial adapters
+  // (headless hosts especially), and an unguarded call would surface a raw
+  // "x is not a function" TypeError that kills the whole run (#1339).
+  return {
+    input(prompt) {
+      return typeof adapter.input === "function"
+        ? adapter.input.call(adapter, prompt)
+        : unavailable.input(prompt);
+    },
+    confirm(message) {
+      return typeof adapter.confirm === "function"
+        ? adapter.confirm.call(adapter, message)
+        : unavailable.confirm(message);
+    },
+    select<T extends string>(message: string, options: readonly T[]): Promise<T> {
+      return typeof adapter.select === "function"
+        ? adapter.select.call(adapter, message, options) as Promise<T>
+        : unavailable.select(message, options);
+    },
+    editor(initial) {
+      return typeof adapter.editor === "function"
+        ? adapter.editor.call(adapter, initial)
+        : unavailable.editor(initial);
+    },
+    custom<T>(factory: WorkflowCustomUiFactory<T>, options?: WorkflowCustomUiOptions): Promise<T> {
+      return typeof adapter.custom === "function"
+        ? adapter.custom.call(adapter, factory, options) as Promise<T>
+        : unavailable.custom(factory, options);
+    },
   };
 }
 
@@ -830,6 +1376,11 @@ async function mapParallelSteps<T>(
   failFast: boolean | undefined,
   mapper: (step: WorkflowTaskStep) => Promise<T>,
   onFirstFailure?: (error: unknown) => void,
+  control?: {
+    readonly beforeDequeue?: () => void;
+    readonly beforeMap?: () => void;
+    readonly isControlSignal?: (error: unknown) => boolean;
+  },
 ): Promise<T[]> {
   const limit = positiveConcurrency(concurrency) ?? steps.length;
   const failFastEnabled = failFast !== false;
@@ -837,27 +1388,55 @@ async function mapParallelSteps<T>(
   const failures: Array<{ readonly index: number; readonly error: unknown }> = [];
   let nextIndex = 0;
   let firstFailure: unknown;
+  let controlSignal: unknown;
   let rejectFirstFailure: (reason: unknown) => void = () => {};
   const firstFailurePromise = new Promise<never>((_, reject) => {
     rejectFirstFailure = reject;
   });
 
+  const isControlSignal = (error: unknown): boolean => control?.isControlSignal?.(error) === true;
+  const selectControlSignal = (error: unknown): void => {
+    if (controlSignal !== undefined) return;
+    controlSignal = error;
+    if (failFastEnabled) rejectFirstFailure(error);
+  };
+  const recordFailure = (index: number, error: unknown): void => {
+    failures.push({ index, error });
+    if (firstFailure === undefined) {
+      firstFailure = error;
+      onFirstFailure?.(error);
+      if (failFastEnabled) rejectFirstFailure(error);
+    }
+  };
+
   async function worker(): Promise<void> {
     while (true) {
+      if (controlSignal !== undefined) return;
       if (failFastEnabled && firstFailure !== undefined) return;
+      try {
+        control?.beforeDequeue?.();
+      } catch (err) {
+        if (isControlSignal(err)) {
+          selectControlSignal(err);
+          return;
+        }
+        recordFailure(nextIndex, err);
+        return;
+      }
+      if (controlSignal !== undefined) return;
       const index = nextIndex;
       nextIndex += 1;
       const step = steps[index];
       if (step === undefined) return;
       try {
+        control?.beforeMap?.();
         results[index] = await mapper(step);
       } catch (err) {
-        failures.push({ index, error: err });
-        if (firstFailure === undefined) {
-          firstFailure = err;
-          onFirstFailure?.(err);
-          if (failFastEnabled) rejectFirstFailure(err);
+        if (isControlSignal(err)) {
+          selectControlSignal(err);
+          return;
         }
+        recordFailure(index, err);
         if (failFastEnabled) return;
       }
     }
@@ -875,6 +1454,10 @@ async function mapParallelSteps<T>(
       void allWorkers.catch(() => {});
       throw err;
     }
+  }
+
+  if (controlSignal !== undefined) {
+    throw controlSignal;
   }
 
   if (failures.length > 0) {
@@ -1138,8 +1721,8 @@ function workflowDetailsFromRun(
     mode,
     action: "run",
     runId: runResult.runId,
-    status: runResult.status === "completed"
-      ? "completed"
+    status: isWorkflowExitStatus(runResult.status)
+      ? runResult.status
       : runResult.status === "failed"
         ? "failed"
         : runResult.status === "killed"
@@ -1152,6 +1735,8 @@ function workflowDetailsFromRun(
     ...(artifacts.length > 0 ? { artifacts } : {}),
     ...(allWarnings.length > 0 ? { warnings: allWarnings } : {}),
     ...(runResult.error !== undefined ? { error: runResult.error } : {}),
+    ...(runResult.exited !== undefined ? { exited: runResult.exited } : {}),
+    ...(runResult.exitReason !== undefined ? { exitReason: runResult.exitReason } : {}),
   };
 }
 
@@ -1400,8 +1985,19 @@ export async function runChain(
   return workflowDetailsFromRun("chain", runResult, results, options, validationWarnings);
 }
 
-function raceAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+export function raceAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   if (signal.aborted) {
+    // Callers invoke `raceAbort(call(), signal)`, so `call()` is evaluated —
+    // and the underlying work (e.g. a stage prompt) is already in flight —
+    // before this function observes an already-aborted signal. Attach a no-op
+    // rejection handler so that in-flight promise can never surface as an
+    // unhandled rejection. Without this, killing a workflow mid-prompt orphans
+    // the prompt promise; its eventual rejection (commonly
+    // "No API key found for ...") escapes every workflow error boundary and is
+    // raised as a process-level uncaught exception that crashes the whole CLI.
+    // The run is being aborted, so the orphaned settlement is intentionally
+    // discarded here.
+    void promise.catch(() => {});
     return Promise.reject(signal.reason ?? new DOMException("workflow killed", "AbortError"));
   }
   return new Promise<T>((resolve, reject) => {
@@ -1424,6 +2020,8 @@ function appendRunEndWhenRecorded(
     readonly status: RunStatus;
     readonly result?: WorkflowOutputValues;
     readonly error?: string;
+    readonly exited?: boolean;
+    readonly exitReason?: string;
     readonly failureKind?: WorkflowFailureKind;
     readonly failureCode?: WorkflowFailureCode;
     readonly failureRecoverability?: WorkflowFailureRecoverability;
@@ -1437,6 +2035,54 @@ function appendRunEndWhenRecorded(
 ): void {
   if (!persistence || !recorded) return;
   appendRunEnd(persistence, payload);
+}
+
+function isTerminalRunStatus(status: RunStatus): boolean {
+  return status === "completed" ||
+    status === "failed" ||
+    status === "killed" ||
+    status === "skipped" ||
+    status === "cancelled" ||
+    status === "blocked";
+}
+
+function runResultFromSnapshot(snapshot: RunSnapshot): RunResult {
+  return {
+    runId: snapshot.id,
+    status: snapshot.status,
+    ...(snapshot.result !== undefined ? { result: snapshot.result } : {}),
+    ...(snapshot.error !== undefined ? { error: snapshot.error } : {}),
+    ...(snapshot.exited !== undefined ? { exited: snapshot.exited } : {}),
+    ...(snapshot.exitReason !== undefined ? { exitReason: snapshot.exitReason } : {}),
+    stages: [...snapshot.stages],
+  };
+}
+
+function reconcileTerminalRunResult(
+  runId: string,
+  runSnapshot: RunSnapshot,
+  activeStore: Store,
+  fallback: Omit<RunResult, "runId" | "stages">,
+  onRunEnd: RunOpts["onRunEnd"],
+): RunResult {
+  const canonical = activeStore.runs().find((snapshot) =>
+    snapshot.id === runId && isTerminalRunStatus(snapshot.status)
+  );
+  const result = canonical !== undefined
+    ? runResultFromSnapshot(canonical)
+    : {
+        runId,
+        ...fallback,
+        stages: [...runSnapshot.stages],
+      };
+  // `recordRunEnd` is the terminal authority. If this finalizer lost because
+  // an external kill or another terminal writer won while async cleanup was
+  // pending, callbacks must observe the canonical store status, not the stale
+  // intent that attempted this write. Persistence remains guarded separately by
+  // the `recordRunEnd` boolean, so losing writes do not append duplicate
+  // run-end entries.
+  onRunEnd?.(runId, result.status, result.result, result.error, result.exitReason);
+  return result;
 }
 
 interface RunFailureMetadata {
@@ -1539,23 +2185,40 @@ function runFailureMetadataFromFailure(
   };
 }
 
-function executorAggregateErrorItems(error: unknown): readonly unknown[] {
-  const nativeErrors = error instanceof AggregateError ? error.errors as unknown : undefined;
-  const errors = nativeErrors ?? (error !== null && typeof error === "object"
-    ? (error as Record<string, unknown>)["errors"]
-    : undefined);
-  return Array.isArray(errors) ? errors : [];
+function safeArrayItems(value: unknown): readonly unknown[] {
+  try {
+    if (!Array.isArray(value)) return [];
+    const items: unknown[] = [];
+    const { length } = value;
+    for (let index = 0; index < length; index += 1) {
+      try {
+        items.push(value[index]);
+      } catch {
+        // Treat an inaccessible aggregate item as no signal for that item while
+        // preserving other readable items in the same aggregate branch.
+      }
+    }
+    return items;
+  } catch {
+    return [];
+  }
+}
+
+function safeExecutorAggregateErrorItems(error: unknown): readonly unknown[] {
+  if (error === null || (typeof error !== "object" && typeof error !== "function")) return [];
+  const errors = safeGetProperty(error, "errors");
+  return errors.ok ? safeArrayItems(errors.value) : [];
 }
 
 function isAggregateWrapper(error: unknown): boolean {
-  return executorAggregateErrorItems(error).length > 0;
+  return safeExecutorAggregateErrorItems(error).length > 0;
 }
 
 function aggregateInnerFailures(
   error: unknown,
   classifyFailure: (error: unknown) => WorkflowFailure,
 ): readonly WorkflowFailure[] {
-  return executorAggregateErrorItems(error).map((innerError) => classifyFailure(innerError));
+  return safeExecutorAggregateErrorItems(error).map((innerError) => classifyFailure(innerError));
 }
 
 type StageFailureCandidate = {
@@ -1926,7 +2589,6 @@ function finalizeKilled(
     resumable: false,
   };
   const recorded = activeStore.recordRunEnd(runId, "killed", undefined, errorMessage, metadata);
-  onRunEnd?.(runId, "killed", undefined, errorMessage);
   appendRunEndWhenRecorded(persistence, recorded, {
     runId,
     status: "killed",
@@ -1934,12 +2596,10 @@ function finalizeKilled(
     ...metadata,
     ts: Date.now(),
   });
-  return {
-    runId,
+  return reconcileTerminalRunResult(runId, runSnapshot, activeStore, {
     status: "killed",
     error: errorMessage,
-    stages: [...runSnapshot.stages],
-  };
+  }, onRunEnd);
 }
 
 function finalizeKilledByFailure(
@@ -1951,7 +2611,6 @@ function finalizeKilledByFailure(
   metadata: RunFailureMetadata,
 ): RunResult {
   const recorded = activeStore.recordRunEnd(runId, "killed", undefined, metadata.errorMessage, metadata);
-  onRunEnd?.(runId, "killed", undefined, metadata.errorMessage);
   appendRunEndWhenRecorded(persistence, recorded, {
     runId,
     status: "killed",
@@ -1966,12 +2625,10 @@ function finalizeKilledByFailure(
     ...(metadata.retryAfterMs !== undefined ? { retryAfterMs: metadata.retryAfterMs } : {}),
     ts: Date.now(),
   });
-  return {
-    runId,
+  return reconcileTerminalRunResult(runId, runSnapshot, activeStore, {
     status: "killed",
     error: metadata.errorMessage,
-    stages: [...runSnapshot.stages],
-  };
+  }, onRunEnd);
 }
 
 function recordActiveBlockedFailure(
@@ -2096,9 +2753,10 @@ function assertWorkflowOutputsExplicit(
   }
 }
 
-function normalizeWorkflowRunOutput(
+function normalizeWorkflowOutputObject(
   workflowName: string,
   rawOutput: unknown,
+  label: string,
 ): WorkflowOutputValues | undefined {
   if (rawOutput === undefined) return undefined;
   // Drop top-level keys explicitly set to `undefined` so conditional outputs
@@ -2111,8 +2769,31 @@ function normalizeWorkflowRunOutput(
           Object.entries(rawOutput as Record<string, unknown>).filter(([, v]) => v !== undefined),
         )
       : rawOutput;
-  assertWorkflowSerializableObject(normalized, `workflow "${workflowName}" .run() return`);
+  assertWorkflowSerializableObject(normalized, `workflow "${workflowName}" ${label}`);
   return normalized;
+}
+
+function normalizeWorkflowRunOutput(
+  workflowName: string,
+  rawOutput: unknown,
+): WorkflowOutputValues | undefined {
+  return normalizeWorkflowOutputObject(workflowName, rawOutput, ".run() return");
+}
+
+function normalizeWorkflowExitOutput(
+  workflowName: string,
+  snapshot: WorkflowExitOutputSnapshot | undefined,
+): WorkflowOutputValues | undefined {
+  if (snapshot === undefined) return undefined;
+  if (!snapshot.ok) throw snapshot.error;
+  if (isWorkflowExitSnapshotInvalidValue(snapshot.value)) {
+    const invalidMessage = workflowExitSnapshotInvalidValueMessage(
+      `workflow "${workflowName}" ctx.exit() outputs`,
+      snapshot.value,
+    );
+    throw new Error(`atomic-workflows: ${invalidMessage ?? `workflow "${workflowName}" ctx.exit() outputs must be ${WORKFLOW_SERIALIZABLE_DESCRIPTION}, got object`}`);
+  }
+  return normalizeWorkflowOutputObject(workflowName, snapshot.value, "ctx.exit() outputs");
 }
 
 function assertWorkflowRunOutputs(
@@ -2125,6 +2806,50 @@ function assertWorkflowRunOutputs(
     result ?? {},
     declaredOutputs ?? {},
   );
+}
+
+function assertWorkflowExitOutputs(
+  workflowName: string,
+  result: WorkflowOutputValues | undefined,
+  declaredOutputs: Readonly<Record<string, WorkflowOutputSchema>> | undefined,
+): void {
+  const declarations = declaredOutputs ?? {};
+  const sourceOutput = result ?? {};
+  const scope = `workflow "${workflowName}" ctx.exit()`;
+  for (const key of Object.keys(sourceOutput)) {
+    if (!hasOwnWorkflowOutput(declarations, key)) {
+      throw new Error(
+        `atomic-workflows: ${scope} provided undeclared output "${key}"; declare it with .output("${key}", Type....) or remove it from ctx.exit({ outputs })`,
+      );
+    }
+  }
+  for (const [key, schema] of Object.entries(declarations)) {
+    if (!(key in sourceOutput)) continue;
+    const value = sourceOutput[key];
+    const invalidSnapshotValue = workflowExitSnapshotInvalidValueMessage(`${scope} output "${key}"`, value);
+    if (invalidSnapshotValue !== undefined) {
+      throw new Error(`atomic-workflows: ${invalidSnapshotValue}`);
+    }
+    const kind = schemaFieldKind(schema);
+    if (!Value.Check(schema, value)) {
+      const choices = schemaChoices(schema);
+      if (kind === "select" && choices !== undefined && typeof value === "string") {
+        throw new Error(
+          `atomic-workflows: ${scope} output "${key}" must be one of [${choices.join(", ")}], got ${JSON.stringify(value)}`,
+        );
+      }
+      throw new Error(
+        `atomic-workflows: ${scope} output "${key}" expected ${kind}, got ${workflowSerializableTypeName(value)}`,
+      );
+    }
+    const serializableError = workflowSerializableValidationError(
+      value,
+      `${scope} output "${key}"`,
+    );
+    if (serializableError !== undefined) {
+      throw new Error(`atomic-workflows: ${serializableError}`);
+    }
+  }
 }
 
 function selectWorkflowOutputs(
@@ -2181,7 +2906,9 @@ function cloneWorkflowChildReplaySnapshot(snapshot: WorkflowChildReplaySnapshot)
     workflow: snapshot.workflow,
     runId: snapshot.runId,
     status: snapshot.status,
+    ...(snapshot.exited !== undefined ? { exited: snapshot.exited } : {}),
     outputs: cloneWorkflowChildValue(snapshot.outputs),
+    ...(snapshot.exitReason !== undefined ? { exitReason: snapshot.exitReason } : {}),
   };
 }
 
@@ -2202,12 +2929,15 @@ function workflowChildReplaySnapshot(
     }
   }
 
+  const exitReason = childResult.exited === true ? childResult.exitReason : undefined;
   return {
     alias,
     workflow: childResult.workflow,
     runId: childResult.runId,
     status: childResult.status,
+    exited: childResult.exited,
     outputs,
+    ...(exitReason !== undefined ? { exitReason } : {}),
   };
 }
 
@@ -2248,6 +2978,8 @@ export async function run<TInputs extends WorkflowInputValues>(
 
   // 2. Generate runId (or use pre-allocated seam from caller)
   const runId = opts.runId ?? crypto.randomUUID();
+  const exitScope = Symbol(`workflow-exit:${runId}`);
+  let selectedExit: WorkflowExitSignal | undefined;
   const replayIndex = createContinuationReplayIndex(opts.continuation);
 
   // 2a. Create own AbortController; forward caller signal if provided
@@ -2284,7 +3016,16 @@ export async function run<TInputs extends WorkflowInputValues>(
   const classifyExecutorFailure = (error: unknown): WorkflowFailure => {
     const cached = classifiedFailures.get(error);
     if (cached !== undefined) return cached;
-    const classified = classifyWorkflowFailure(error);
+    let classified: WorkflowFailure;
+    try {
+      classified = classifyWorkflowFailure(error);
+    } catch {
+      // Failure classification can inspect provider-shaped metadata such as
+      // `cause`/`errors`. If an arbitrary workflow-thrown object uses throwing
+      // accessors for those names, keep the executor catch path on the ordinary
+      // failed-run rail instead of letting the accessor escape and strand the run.
+      classified = classifyWorkflowFailure(new Error(unknownErrorMessage(error)));
+    }
     classifiedFailures.set(error, classified);
     return classified;
   };
@@ -2347,6 +3088,88 @@ export async function run<TInputs extends WorkflowInputValues>(
 
   const isTerminalStage = (stage: StageSnapshot): boolean =>
     stage.status === "completed" || stage.status === "failed" || stage.status === "skipped";
+
+  interface WorkflowExitCleanup {
+    skipForWorkflowExit(reason?: string): void | Promise<void>;
+  }
+
+  const exitCleanups = new Map<string, WorkflowExitCleanup>();
+  const workflowExitCleanupPromises = new Set<Promise<void>>();
+  const workflowExitSkippedReason = (reason?: string): string =>
+    reason === undefined || reason.length === 0 ? "workflow-exit" : `workflow-exit: ${reason}`;
+  const isWorkflowExitSkippedReason = (reason: string | undefined): boolean =>
+    reason === "workflow-exit" || reason?.startsWith("workflow-exit: ") === true;
+  const currentWorkflowExitAbortReason = (): { readonly reason?: string } | undefined => {
+    const scopedExit = selectedExit ?? findWorkflowExitSignal(ownController.signal.reason, exitScope);
+    if (scopedExit !== undefined) {
+      return scopedExit.reason === undefined ? {} : { reason: scopedExit.reason };
+    }
+    const parentExit = parentWorkflowExitAbortReason(ownController.signal.reason);
+    if (parentExit !== undefined) {
+      return parentExit.workflowExitReason === undefined ? {} : { reason: parentExit.workflowExitReason };
+    }
+    return undefined;
+  };
+  const preserveWorkflowExitSkippedReason = (stage: StageSnapshot, fallback: string): void => {
+    if (isWorkflowExitSkippedReason(stage.skippedReason)) return;
+    const workflowExitAbort = currentWorkflowExitAbortReason();
+    if (workflowExitAbort !== undefined) {
+      stage.skippedReason = workflowExitSkippedReason(workflowExitAbort.reason);
+      return;
+    }
+    stage.skippedReason = fallback;
+  };
+  const trackWorkflowExitCleanup = (operation: void | Promise<void>): void => {
+    if (operation === undefined) return;
+    let tracked: Promise<void>;
+    tracked = Promise.resolve(operation)
+      .catch(() => {
+        // Cleanup is best-effort and must never surface as an unhandled rejection
+        // or convert an intentional workflow exit into a failed run.
+      })
+      .finally(() => {
+        workflowExitCleanupPromises.delete(tracked);
+      });
+    workflowExitCleanupPromises.add(tracked);
+  };
+  const invokeWorkflowExitCleanup = (cleanup: WorkflowExitCleanup, reason?: string): void => {
+    try {
+      trackWorkflowExitCleanup(cleanup.skipForWorkflowExit(reason));
+    } catch (err) {
+      trackWorkflowExitCleanup(Promise.reject(err));
+    }
+  };
+  const registerWorkflowExitCleanup = (stageId: string, cleanup: WorkflowExitCleanup): (() => void) => {
+    if (selectedExit !== undefined) {
+      invokeWorkflowExitCleanup(cleanup, selectedExit.reason);
+      return () => undefined;
+    }
+    exitCleanups.set(stageId, cleanup);
+    return () => {
+      if (exitCleanups.get(stageId) === cleanup) exitCleanups.delete(stageId);
+    };
+  };
+  const runWorkflowExitCleanups = (reason?: string): void => {
+    for (const cleanup of [...exitCleanups.values()]) {
+      invokeWorkflowExitCleanup(cleanup, reason);
+    }
+  };
+  const drainWorkflowExitCleanups = async (reason?: string): Promise<void> => {
+    runWorkflowExitCleanups(reason);
+    while (workflowExitCleanupPromises.size > 0) {
+      await Promise.all([...workflowExitCleanupPromises]);
+    }
+  };
+  const throwIfWorkflowExitSelected = (): void => {
+    if (selectedExit !== undefined) {
+      if (!ownController.signal.aborted) ownController.abort(selectedExit);
+      runWorkflowExitCleanups(selectedExit.reason);
+      throw selectedExit;
+    }
+    if (ownController.signal.aborted) {
+      throw ownController.signal.reason ?? new DOMException("workflow killed", "AbortError");
+    }
+  };
 
   const stageById = (stageId: string): StageSnapshot | undefined =>
     runSnapshot.stages.find((stage) => stage.id === stageId);
@@ -2487,21 +3310,161 @@ export async function run<TInputs extends WorkflowInputValues>(
     { once: true },
   );
 
+  const finalizeWorkflowExitValidationFailure = (err: unknown, exitReason?: string): RunResult => {
+    const failure = classifyExecutorFailure(err);
+    const classifiedMetadata = runFailureMetadata(failure, runSnapshot.stages);
+    const metadata = {
+      ...classifiedMetadata,
+      // A selected ctx.exit has already unwound the workflow and run exit cleanup;
+      // invalid exit options/outputs must never be offered as resumable snapshots.
+      resumable: false,
+      ...(exitReason !== undefined ? { exitReason } : {}),
+    } as const;
+    const recorded = activeStore.recordRunEnd(runId, "failed", undefined, metadata.errorMessage, metadata);
+    appendRunEndWhenRecorded(opts.persistence, recorded, {
+      runId,
+      status: "failed",
+      error: metadata.errorMessage,
+      failureKind: metadata.failureKind,
+      ...(metadata.failureCode !== undefined ? { failureCode: metadata.failureCode } : {}),
+      ...(metadata.failureRecoverability !== undefined ? { failureRecoverability: metadata.failureRecoverability } : {}),
+      ...(metadata.failureDisposition !== undefined ? { failureDisposition: metadata.failureDisposition } : {}),
+      failureMessage: metadata.failureMessage,
+      ...(metadata.failedStageId !== undefined ? { failedStageId: metadata.failedStageId } : {}),
+      resumable: false,
+      ...(metadata.exitReason !== undefined ? { exitReason: metadata.exitReason } : {}),
+      ...(metadata.retryAfterMs !== undefined ? { retryAfterMs: metadata.retryAfterMs } : {}),
+      ts: Date.now(),
+    });
+    return reconcileTerminalRunResult(runId, runSnapshot, activeStore, {
+      status: "failed",
+      error: metadata.errorMessage,
+      ...(metadata.exitReason !== undefined ? { exitReason: metadata.exitReason } : {}),
+    }, opts.onRunEnd);
+  };
+
+  const finalizeWorkflowExit = async (signal: WorkflowExitSignal): Promise<RunResult> => {
+    await drainWorkflowExitCleanups(signal.reason);
+    if (signal.validationError !== undefined) {
+      return finalizeWorkflowExitValidationFailure(signal.validationError, signal.reason);
+    }
+
+    let outputs: WorkflowOutputValues | undefined;
+    try {
+      outputs = normalizeWorkflowExitOutput(def.name, signal.outputSnapshot);
+      assertWorkflowExitOutputs(def.name, outputs, def.outputs);
+    } catch (err) {
+      return finalizeWorkflowExitValidationFailure(err, signal.reason);
+    }
+
+    const metadata = {
+      resumable: false,
+      exited: true,
+      ...(signal.reason !== undefined ? { exitReason: signal.reason } : {}),
+    } as const;
+    const recorded = activeStore.recordRunEnd(runId, signal.status, outputs, undefined, metadata);
+    appendRunEndWhenRecorded(opts.persistence, recorded, {
+      runId,
+      status: signal.status,
+      result: outputs,
+      exited: true,
+      ...(signal.reason !== undefined ? { exitReason: signal.reason } : {}),
+      resumable: false,
+      ts: Date.now(),
+    });
+    return reconcileTerminalRunResult(runId, runSnapshot, activeStore, {
+      status: signal.status,
+      result: outputs,
+      exited: true,
+      ...(signal.reason !== undefined ? { exitReason: signal.reason } : {}),
+    }, opts.onRunEnd);
+  };
+
+  const finalizeParentWorkflowExitCancellation = async (abortReason: ParentWorkflowExitAbortProbe): Promise<RunResult> => {
+    const parentReason = abortReason.workflowExitReason;
+    await drainWorkflowExitCleanups(parentReason);
+    const exitReason = parentWorkflowExitRunReason(parentReason);
+    const metadata = {
+      resumable: false,
+      exited: true,
+      exitReason,
+    } as const;
+    const recorded = activeStore.recordRunEnd(runId, "cancelled", undefined, undefined, metadata);
+    appendRunEndWhenRecorded(opts.persistence, recorded, {
+      runId,
+      status: "cancelled",
+      exited: true,
+      exitReason,
+      resumable: false,
+      ts: Date.now(),
+    });
+    return reconcileTerminalRunResult(runId, runSnapshot, activeStore, {
+      status: "cancelled",
+      exited: true,
+      exitReason,
+    }, opts.onRunEnd);
+  };
+
+  interface LinkedChildWorkflowExitState {
+    readonly ref: WorkflowChildRunRef;
+    readonly controller: AbortController;
+    runPromise?: Promise<RunResult>;
+  }
+
+  const requestLinkedChildWorkflowExit = (
+    linkedChild: LinkedChildWorkflowExitState,
+    reason?: string,
+  ): void => {
+    if (!linkedChild.controller.signal.aborted) {
+      linkedChild.controller.abort(makeParentWorkflowExitAbortReason(reason));
+    }
+  };
+
+  const waitForLinkedChildWorkflowExit = async (
+    linkedChild: LinkedChildWorkflowExitState,
+  ): Promise<void> => {
+    const childRun = linkedChild.runPromise;
+    if (childRun === undefined) return;
+    try {
+      await childRun;
+    } catch {
+      // The child workflow call itself observes and reports failures. Parent
+      // exit cleanup only needs to await child-owned teardown and must not leak
+      // an unhandled rejection while the parent is already intentionally exiting.
+    }
+  };
+
   interface WorkflowBoundaryStage {
     readonly id: string;
     readonly replayedChild?: WorkflowChildResult;
     finalizeReplay(): void;
-    linkChildRun(ref: WorkflowChildRunRef): void;
+    linkChildRun(ref: WorkflowChildRunRef, childController: AbortController): void;
+    observeChildRun(promise: Promise<RunResult>): void;
     complete(summary: string, workflowChild: WorkflowChildReplaySnapshot): void;
+    skipForWorkflowExit(reason?: string): Promise<void>;
     fail(error: unknown): void;
   }
 
-  const workflowChildResultFromReplay = (snapshot: WorkflowChildReplaySnapshot): WorkflowChildResult => ({
-    workflow: snapshot.workflow,
-    runId: snapshot.runId,
-    status: snapshot.status,
-    outputs: cloneWorkflowChildValue(snapshot.outputs),
-  });
+  const workflowChildResultFromReplay = (snapshot: WorkflowChildReplaySnapshot): WorkflowChildResult => {
+    const outputs = cloneWorkflowChildValue(snapshot.outputs);
+    if (snapshot.exited === true || snapshot.status !== "completed") {
+      return {
+        workflow: snapshot.workflow,
+        runId: snapshot.runId,
+        status: snapshot.status,
+        exited: true,
+        outputs,
+        ...(snapshot.exitReason !== undefined ? { exitReason: snapshot.exitReason } : {}),
+      };
+    }
+    return {
+      workflow: snapshot.workflow,
+      runId: snapshot.runId,
+      status: "completed",
+      exited: false,
+      outputs,
+    };
+  };
 
   const workflowBoundaryReplayCounts = new Map<string, number>();
   const nextWorkflowBoundaryReplayKey = (name: string): string => {
@@ -2551,6 +3514,8 @@ export async function run<TInputs extends WorkflowInputValues>(
       } : {}),
     };
     let finalized = false;
+    let unregisterWorkflowExitCleanup = (): void => {};
+    let linkedChild: LinkedChildWorkflowExitState | undefined;
 
     const appendStageStartOnce = (): void => {
       if (!opts.persistence) return;
@@ -2578,25 +3543,38 @@ export async function run<TInputs extends WorkflowInputValues>(
         ...(stageSnapshot.failureDisposition !== undefined ? { failureDisposition: stageSnapshot.failureDisposition } : {}),
         ...(stageSnapshot.failureMessage !== undefined ? { failureMessage: stageSnapshot.failureMessage } : {}),
         ...(stageSnapshot.retryAfterMs !== undefined ? { retryAfterMs: stageSnapshot.retryAfterMs } : {}),
+        ...(stageSnapshot.skippedReason !== undefined ? { skippedReason: stageSnapshot.skippedReason } : {}),
         ...(stageSnapshot.result !== undefined && stageSnapshot.status === "completed" ? { summary: stageSnapshot.result } : {}),
         ...stageReplayFields(stageSnapshot),
-        ...(stageSnapshot.workflowChild !== undefined ? { workflowChild: stageSnapshot.workflowChild } : {}),
+        ...(stageSnapshot.status === "completed" && stageSnapshot.workflowChild !== undefined
+          ? { workflowChild: stageSnapshot.workflowChild }
+          : {}),
       });
     };
 
+    const clearBoundaryChildMetadata = (): void => {
+      delete stageSnapshot.workflowChildRun;
+      delete stageSnapshot.workflowChild;
+    };
+
     const finalize = (
-      status: "completed" | "failed",
+      status: "completed" | "failed" | "skipped",
       summaryOrError: string,
       workflowChild?: WorkflowChildReplaySnapshot,
       failureError?: unknown,
     ): void => {
       if (finalized) return;
       finalized = true;
+      unregisterWorkflowExitCleanup();
       stageSnapshot.status = status;
       if (status === "completed") {
         stageSnapshot.result = summaryOrError;
         if (workflowChild !== undefined) stageSnapshot.workflowChild = workflowChild;
+      } else if (status === "skipped") {
+        clearBoundaryChildMetadata();
+        stageSnapshot.skippedReason = summaryOrError;
       } else {
+        clearBoundaryChildMetadata();
         applyFailureToStage(stageSnapshot, classifyExecutorFailure(failureError));
       }
       stageSnapshot.endedAt = Date.now();
@@ -2611,19 +3589,39 @@ export async function run<TInputs extends WorkflowInputValues>(
     opts.onStageStart?.(runId, stageSnapshot);
     appendStageStartOnce();
 
+    unregisterWorkflowExitCleanup = registerWorkflowExitCleanup(stageId, {
+      async skipForWorkflowExit(reason?: string): Promise<void> {
+        const child = linkedChild;
+        if (child !== undefined) {
+          requestLinkedChildWorkflowExit(child, reason);
+        }
+        finalize("skipped", workflowExitSkippedReason(reason));
+        if (child !== undefined) {
+          await waitForLinkedChildWorkflowExit(child);
+        }
+      },
+    });
+
     const finalizeReplay = (): void => {
       if (replayedChild === undefined || finalized) return;
       finalized = true;
+      unregisterWorkflowExitCleanup();
       activeStore.recordStageEnd(runId, stageSnapshot);
       opts.onStageEnd?.(runId, stageSnapshot);
       appendStageEndForSnapshot();
       tracker.onSettle(stageId);
     };
 
-    const linkChildRun = (ref: WorkflowChildRunRef): void => {
+    const linkChildRun = (ref: WorkflowChildRunRef, childController: AbortController): void => {
       if (finalized) return;
+      linkedChild = { ref: { ...ref }, controller: childController };
       stageSnapshot.workflowChildRun = { ...ref };
       activeStore.recordStageWorkflowChildRun(runId, stageId, ref);
+    };
+
+    const observeChildRun = (promise: Promise<RunResult>): void => {
+      if (linkedChild === undefined || finalized) return;
+      linkedChild.runPromise = promise;
     };
 
     return {
@@ -2631,8 +3629,19 @@ export async function run<TInputs extends WorkflowInputValues>(
       ...(replayedChild !== undefined ? { replayedChild } : {}),
       finalizeReplay,
       linkChildRun,
+      observeChildRun,
       complete(summary: string, workflowChild: WorkflowChildReplaySnapshot): void {
         finalize("completed", summary, workflowChild);
+      },
+      async skipForWorkflowExit(reason?: string): Promise<void> {
+        const child = linkedChild;
+        if (child !== undefined) {
+          requestLinkedChildWorkflowExit(child, reason);
+        }
+        finalize("skipped", workflowExitSkippedReason(reason));
+        if (child !== undefined) {
+          await waitForLinkedChildWorkflowExit(child);
+        }
       },
       fail(error: unknown): void {
         finalize("failed", error instanceof Error ? error.message : String(error), undefined, error);
@@ -2640,10 +3649,16 @@ export async function run<TInputs extends WorkflowInputValues>(
     };
   };
 
-  const buildPromptNodeUiAdapter = (): WorkflowUIAdapter => {
-    const ask = async (descriptor: PromptDescriptor): Promise<unknown> => {
+  const buildPromptNodeUiAdapter = (): WorkflowUIContext => {
+    const ask = async <T>(descriptor: PromptDescriptor<T>): Promise<unknown> => {
+      throwIfWorkflowExitSelected();
+      const isCustom = isCustomPromptDescriptor(descriptor);
       if (ownController.signal.aborted) {
+        if (isCustom) throw hilAbortError(ownController.signal);
         return fallbackForPromptDescriptor(descriptor);
+      }
+      if (isCustom && descriptor.options?.signal?.aborted) {
+        throw hilAbortError(descriptor.options.signal);
       }
 
       const prompt = makePrompt(descriptor);
@@ -2695,9 +3710,11 @@ export async function run<TInputs extends WorkflowInputValues>(
         } : {}),
       };
       let finalized = false;
+      let unregisterWorkflowExitCleanup = (): void => {};
       const finalizePromptStage = (status: "completed" | "failed" | "skipped"): void => {
         if (finalized) return;
         finalized = true;
+        unregisterWorkflowExitCleanup();
         stageSnapshot.status = status;
         stageSnapshot.endedAt = Date.now();
         stageSnapshot.durationMs = elapsedStageMs(stageSnapshot, stageSnapshot.endedAt);
@@ -2726,6 +3743,20 @@ export async function run<TInputs extends WorkflowInputValues>(
 
       activeStore.recordStageStart(runId, stageSnapshot);
       opts.onStageStart?.(runId, stageSnapshot);
+      unregisterWorkflowExitCleanup = registerWorkflowExitCleanup(stageId, {
+        skipForWorkflowExit(reason?: string): void {
+          if (finalized) return;
+          stageSnapshot.skippedReason = workflowExitSkippedReason(reason);
+          if (!shouldReplay) {
+            stageUiBroker.cancelStagePrompt(
+              runId,
+              stageId,
+              new Error(`atomic-workflows: prompt ${stageId} skipped by workflow exit`),
+            );
+          }
+          finalizePromptStage("skipped");
+        },
+      });
       if (opts.persistence) {
         appendStageStart(opts.persistence, {
           runId,
@@ -2738,9 +3769,62 @@ export async function run<TInputs extends WorkflowInputValues>(
       }
       if (shouldReplay) {
         await Promise.resolve();
+        throwIfWorkflowExitSelected();
         finalizePromptStage("completed");
         return replayAnswer.value;
       }
+
+      if (isCustom) {
+        if (descriptor.options?.overlay === true) {
+          const error = new Error("atomic-workflows: ctx.ui.custom overlay mode is unavailable in the workflow graph viewer");
+          applyFailureToStage(stageSnapshot, classifyExecutorFailure(error));
+          finalizePromptStage("failed");
+          throw error;
+        }
+
+        const mergedSignal = mergeHilSignals(ownController.signal, descriptor.options?.signal);
+        try {
+          if (mergedSignal.signal.aborted) throw hilAbortError(mergedSignal.signal);
+          const accepted = activeStore.recordStageAwaitingInput(runId, stageId, true, prompt.createdAt);
+          if (!accepted) {
+            const error = new Error("atomic-workflows: ctx.ui.custom prompt node is unavailable");
+            stageSnapshot.skippedReason = "prompt-unavailable";
+            finalizePromptStage("skipped");
+            throw error;
+          }
+          const response = await stageUiBroker.requestCustomUi(
+            runId,
+            stageId,
+            descriptor.factory as unknown as Parameters<typeof stageUiBroker.requestCustomUi>[2],
+            descriptor.options as Parameters<typeof stageUiBroker.requestCustomUi>[3],
+            mergedSignal.signal,
+          );
+          activeStore.recordStagePromptAnswer(runId, stageId, prompt, response, {
+            answerSource: "workflow_ui",
+          });
+          finalizePromptStage("completed");
+          return response;
+        } catch (err) {
+          activeStore.recordStageAwaitingInput(runId, stageId, false);
+          stageUiBroker.cancelStagePrompt(runId, stageId, err);
+          if (mergedSignal.signal.aborted) {
+            preserveWorkflowExitSkippedReason(
+              stageSnapshot,
+              ownController.signal.aborted ? "run-aborted" : "prompt-aborted",
+            );
+            finalizePromptStage("skipped");
+            throw hilAbortError(mergedSignal.signal);
+          }
+          if (!finalized) {
+            applyFailureToStage(stageSnapshot, classifyExecutorFailure(err));
+            finalizePromptStage("failed");
+          }
+          throw err;
+        } finally {
+          mergedSignal.dispose();
+        }
+      }
+
       const accepted = activeStore.recordStagePendingPrompt(runId, stageId, prompt);
       if (!accepted) {
         stageSnapshot.skippedReason = "prompt-unavailable";
@@ -2781,7 +3865,7 @@ export async function run<TInputs extends WorkflowInputValues>(
         return response;
       } catch (err) {
         if (ownController.signal.aborted) {
-          stageSnapshot.skippedReason = "run-aborted";
+          preserveWorkflowExitSkippedReason(stageSnapshot, "run-aborted");
           finalizePromptStage("skipped");
         } else {
           applyFailureToStage(stageSnapshot, classifyExecutorFailure(err));
@@ -2818,6 +3902,43 @@ export async function run<TInputs extends WorkflowInputValues>(
         });
         return typeof response === "string" ? response : initial ?? "";
       },
+      async custom<T>(factory: WorkflowCustomUiFactory<T>, options?: WorkflowCustomUiOptions): Promise<T> {
+        const response = await ask(customPromptDescriptor(factory, options));
+        return response as T;
+      },
+    };
+  };
+
+  const buildExitGatedUiContext = (): WorkflowUIContext => {
+    // Headless (non-interactive) runs without an adapter get a context whose
+    // interactive primitives fail with a clear "unavailable in headless mode"
+    // error instead of a raw TypeError (#1339).
+    const base = opts.usePromptNodesForUi === true
+      ? buildPromptNodeUiAdapter()
+      : opts.executionMode === "non_interactive" && opts.ui === undefined
+        ? makeHeadlessUnavailableUIContext()
+        : normalizeUIContext(opts.ui);
+    return {
+      async input(promptText: string): Promise<string> {
+        throwIfWorkflowExitSelected();
+        return await base.input(promptText);
+      },
+      async confirm(message: string): Promise<boolean> {
+        throwIfWorkflowExitSelected();
+        return await base.confirm(message);
+      },
+      async select<T extends string>(message: string, options: readonly T[]): Promise<T> {
+        throwIfWorkflowExitSelected();
+        return await base.select(message, options);
+      },
+      async editor(initial?: string): Promise<string> {
+        throwIfWorkflowExitSelected();
+        return await base.editor(initial);
+      },
+      async custom<T>(factory: WorkflowCustomUiFactory<T>, options?: WorkflowCustomUiOptions): Promise<T> {
+        throwIfWorkflowExitSelected();
+        return await base.custom(factory, options);
+      },
     };
   };
 
@@ -2825,11 +3946,84 @@ export async function run<TInputs extends WorkflowInputValues>(
   const ctx: WorkflowRunContext<TInputs> = {
     inputs: resolvedInputs as TInputs,
     get cwd() { return resolveWorkflowCwd(); },
+    exit(options?: WorkflowExitOptions): never {
+      if (selectedExit !== undefined) {
+        if (!ownController.signal.aborted) ownController.abort(selectedExit);
+        runWorkflowExitCleanups(selectedExit.reason);
+        throw selectedExit;
+      }
+      if (ownController.signal.aborted) {
+        throw ownController.signal.reason ?? new DOMException("workflow killed", "AbortError");
+      }
+
+      const throwNestedSelectedExit = (): void => {
+        if (selectedExit === undefined) return;
+        if (!ownController.signal.aborted) ownController.abort(selectedExit);
+        runWorkflowExitCleanups(selectedExit.reason);
+        throw selectedExit;
+      };
+      const rawOptions = options as { readonly status?: unknown; readonly reason?: unknown; readonly outputs?: unknown } | null | undefined;
+      let validationError: Error | undefined;
+      const captureValidationError = (error: Error): void => {
+        validationError ??= error;
+      };
+
+      const statusRead = readWorkflowExitOption(rawOptions, "status");
+      throwNestedSelectedExit();
+      const rawStatus = statusRead.ok ? statusRead.value ?? "completed" : "completed";
+      if (!statusRead.ok) {
+        captureValidationError(statusRead.error);
+      } else if (!isWorkflowExitStatus(rawStatus)) {
+        captureValidationError(new TypeError(
+          `atomic-workflows: ctx.exit() status must be one of completed, skipped, cancelled, blocked; got ${describeWorkflowExitOptionValue(rawStatus)}`,
+        ));
+      }
+      const status = isWorkflowExitStatus(rawStatus) ? rawStatus : "completed";
+
+      const reasonRead = readWorkflowExitOption(rawOptions, "reason");
+      throwNestedSelectedExit();
+      const rawReason = reasonRead.ok ? reasonRead.value : undefined;
+      if (!reasonRead.ok) {
+        captureValidationError(reasonRead.error);
+      } else if (rawReason !== undefined && typeof rawReason !== "string") {
+        captureValidationError(new TypeError(
+          `atomic-workflows: ctx.exit() reason must be a string when provided; got ${workflowSerializableTypeName(rawReason)}`,
+        ));
+      }
+      const reason = typeof rawReason === "string" ? rawReason : undefined;
+
+      const outputsRead = readWorkflowExitOption(rawOptions, "outputs");
+      throwNestedSelectedExit();
+      const outputSnapshot = !outputsRead.ok
+        ? freezeWorkflowExitOutputSnapshot({ ok: false, error: outputsRead.error })
+        : outputsRead.value !== undefined
+          ? captureWorkflowExitOutputSnapshot(outputsRead.value)
+          : undefined;
+      throwNestedSelectedExit();
+
+      // Freeze the signal so a broad author `catch (signal) { signal.* = ...; throw signal; }`
+      // cannot rewrite the terminal status/reason/outputs. Finalization recovers this exact
+      // object (via the abort reason or the rethrow) and the outputSnapshot value is already
+      // deep-frozen, so the first selected exit is the authoritative terminal result.
+      const signal: WorkflowExitSignal = {
+        [WORKFLOW_EXIT_SIGNAL]: true,
+        scope: exitScope,
+        status,
+        ...(reason !== undefined ? { reason } : {}),
+        ...(outputSnapshot !== undefined ? { outputSnapshot } : {}),
+        ...(validationError !== undefined ? { validationError } : {}),
+      };
+      selectedExit = Object.freeze(signal);
+      ownController.abort(selectedExit);
+      runWorkflowExitCleanups(reason);
+      throw selectedExit;
+    },
     // Prompt nodes and caller-provided UI adapters are mutually exclusive;
     // executor-owned prompt nodes intentionally take precedence when enabled.
-    ui: opts.usePromptNodesForUi === true ? buildPromptNodeUiAdapter() : opts.ui ?? makeUnavailableUIContext(),
+    ui: buildExitGatedUiContext(),
 
     stage(name: string, options?: StageOptions, stageFailFastScope?: ParallelFailFastScope) {
+      throwIfWorkflowExitSelected();
       options = stageOptionsWithGitWorktree(stageOptionsWithInputDefaults(options, inputRuntimeDefaults), workflowInvocationCwd);
       // a. Generate stageId
       const stageId = crypto.randomUUID();
@@ -2897,27 +4091,45 @@ export async function run<TInputs extends WorkflowInputValues>(
         opts.onStageStart?.(runId, stageSnapshot);
         appendStageStartOnce();
         let replayFinalized = false;
-        const finalizeReplayStage = (): void => {
+        let unregisterWorkflowExitCleanup = (): void => {};
+        const appendReplayStageEnd = (): void => {
+          if (!opts.persistence) return;
+          appendStageEnd(opts.persistence, {
+            runId,
+            stageId,
+            status: stageSnapshot.status,
+            durationMs: stageSnapshot.durationMs ?? 0,
+            ...(stageSnapshot.status === "completed" && stageSnapshot.result !== undefined ? { summary: stageSnapshot.result } : {}),
+            ...(stageSnapshot.skippedReason !== undefined ? { skippedReason: stageSnapshot.skippedReason } : {}),
+            ...stageReplayFields(stageSnapshot),
+          });
+        };
+        const finalizeReplayStage = (status: "completed" | "skipped", reason?: string): void => {
           if (replayFinalized) return;
           replayFinalized = true;
+          unregisterWorkflowExitCleanup();
+          stageSnapshot.status = status;
+          if (status === "skipped") {
+            delete stageSnapshot.result;
+            stageSnapshot.skippedReason = workflowExitSkippedReason(reason);
+          }
+          stageSnapshot.endedAt = Date.now();
+          stageSnapshot.durationMs = elapsedStageMs(stageSnapshot, stageSnapshot.endedAt);
           activeStore.recordStageEnd(runId, stageSnapshot);
           opts.onStageEnd?.(runId, stageSnapshot);
-          if (opts.persistence) {
-            appendStageEnd(opts.persistence, {
-              runId,
-              stageId,
-              status: "completed",
-              durationMs: 0,
-              ...(stageSnapshot.result !== undefined ? { summary: stageSnapshot.result } : {}),
-              ...stageReplayFields(stageSnapshot),
-            });
-          }
+          appendReplayStageEnd();
           tracker.onSettle(stageId);
         };
+        unregisterWorkflowExitCleanup = registerWorkflowExitCleanup(stageId, {
+          skipForWorkflowExit(reason?: string): void {
+            finalizeReplayStage("skipped", reason);
+          },
+        });
         const replayResult = replaySource.result ?? "";
         const replayText = async (): Promise<string> => {
           await Promise.resolve();
-          finalizeReplayStage();
+          throwIfWorkflowExitSelected();
+          finalizeReplayStage("completed");
           return replayResult;
         };
         const rejectReplayMutation = (action: string): never => {
@@ -3076,6 +4288,14 @@ export async function run<TInputs extends WorkflowInputValues>(
         // cleared by the host.
         dropStageControlHandle();
       };
+      let stageClosedByWorkflowExit = false;
+      const throwIfStageMutationBlocked = (): void => {
+        if (stageClosedByWorkflowExit) {
+          throwIfWorkflowExitSelected();
+          throw new Error(`atomic-workflows: stage "${name}" skipped by workflow exit`);
+        }
+        throwIfWorkflowExitSelected();
+      };
 
       // e. Register a live stage-control handle so attached panes can
       //    prompt/steer/pause/resume the underlying Pi session lazily.
@@ -3109,26 +4329,33 @@ export async function run<TInputs extends WorkflowInputValues>(
           return innerCtx.__agentSession();
         },
         async ensureAttached() {
+          throwIfStageMutationBlocked();
           await innerCtx.__ensureSession();
+          throwIfStageMutationBlocked();
           const meta = innerCtx.__sessionMeta();
           if (meta.sessionId !== undefined || meta.sessionFile !== undefined) {
             activeStore.recordStageSession(runId, stageId, meta);
           }
         },
         async prompt(text: string) {
+          throwIfStageMutationBlocked();
           await innerCtx.prompt(text);
+          throwIfStageMutationBlocked();
           const meta = innerCtx.__sessionMeta();
           if (meta.sessionId !== undefined || meta.sessionFile !== undefined) {
             activeStore.recordStageSession(runId, stageId, meta);
           }
         },
         async steer(text: string) {
+          throwIfStageMutationBlocked();
           await innerCtx.steer(text);
         },
         async followUp(text: string) {
+          throwIfStageMutationBlocked();
           await innerCtx.followUp(text);
         },
         async pause() {
+          throwIfStageMutationBlocked();
           const statusBeforePause = stageSnapshot.status;
           const changed = activeStore.recordStagePaused(runId, stageId);
           if (changed) {
@@ -3140,6 +4367,7 @@ export async function run<TInputs extends WorkflowInputValues>(
           }
         },
         async resume(message?: string) {
+          throwIfStageMutationBlocked();
           const changed = activeStore.recordStageResumed(runId, stageId);
           if (changed) {
             releaseStageBarrier(stageId);
@@ -3155,9 +4383,18 @@ export async function run<TInputs extends WorkflowInputValues>(
         },
       };
       let stageFinalized = false;
+      let unregisterWorkflowExitCleanup = (): void => {};
       const finalizeStageSnapshot = (): boolean => {
         if (stageFinalized) return false;
+        if (stageSnapshot.endedAt !== undefined && isTerminalStage(stageSnapshot)) {
+          stageFinalized = true;
+          unregisterWorkflowExitCleanup();
+          stageFailFastScope?.activeStages.delete(stageId);
+          tracker.onSettle(stageId);
+          return false;
+        }
         stageFinalized = true;
+        unregisterWorkflowExitCleanup();
         stageSnapshot.endedAt = Date.now();
         stageSnapshot.durationMs = elapsedStageMs(stageSnapshot, stageSnapshot.endedAt);
 
@@ -3211,6 +4448,18 @@ export async function run<TInputs extends WorkflowInputValues>(
         void dropStageControlForCompletion().catch(() => {});
       };
       stageFailFastScope?.activeStages.set(stageId, { skip: skipForParallelFailFast });
+      unregisterWorkflowExitCleanup = registerWorkflowExitCleanup(stageId, {
+        async skipForWorkflowExit(reason?: string): Promise<void> {
+          stageClosedByWorkflowExit = true;
+          if (!isTerminalStage(stageSnapshot)) {
+            stageSnapshot.status = "skipped";
+            stageSnapshot.skippedReason = workflowExitSkippedReason(reason);
+            finalizeStageSnapshot();
+          }
+          await innerCtx.abort().catch(() => {});
+          await releaseLiveHandle().catch(() => {});
+        },
+      });
 
       let stageControlDropped = false;
       dropStageControlHandle = (): void => {
@@ -3269,6 +4518,7 @@ export async function run<TInputs extends WorkflowInputValues>(
       };
 
       const runTrackedStageCall = async (call: () => Promise<string>, eagerSession = false): Promise<string> => {
+        throwIfWorkflowExitSelected();
         await waitForStageRelease();
         if (stageFinalized) {
           throw parallelFailFastError();
@@ -3279,6 +4529,7 @@ export async function run<TInputs extends WorkflowInputValues>(
 
         try {
           await waitForStageRelease();
+          throwIfWorkflowExitSelected();
           if (stageFinalized) {
             throw parallelFailFastError();
           }
@@ -3426,7 +4677,17 @@ export async function run<TInputs extends WorkflowInputValues>(
             activeStore.recordStageSession(runId, stageId, meta);
           }
           applyModelFallbackMeta(innerCtx.__modelFallbackMeta());
-          if (!ownController.signal.aborted && !skippedForParallelFailFast) {
+
+          const workflowExitAbort = ownController.signal.aborted
+            ? currentWorkflowExitAbortReason()
+            : undefined;
+          if (workflowExitAbort !== undefined && !skippedForParallelFailFast) {
+            stageClosedByWorkflowExit = true;
+            if (!isTerminalStage(stageSnapshot)) {
+              stageSnapshot.status = "skipped";
+              stageSnapshot.skippedReason = workflowExitSkippedReason(workflowExitAbort.reason);
+            }
+          } else if (!ownController.signal.aborted && !skippedForParallelFailFast) {
             applyFailureToStage(stageSnapshot, classifyExecutorFailure(err));
           }
           throw err;
@@ -3436,11 +4697,15 @@ export async function run<TInputs extends WorkflowInputValues>(
           }
 
           finalizeStageSnapshot();
-          // The stage has finished participating in workflow scheduling. Drop it
-          // from run-level pause/resume and cascade-pause lookups immediately,
-          // while retaining the direct chat handle so completed nodes can be
-          // reopened and continued instead of becoming read-only archives.
-          await dropStageControlForCompletion().catch(() => {});
+          if (stageClosedByWorkflowExit || currentWorkflowExitAbortReason() !== undefined) {
+            await releaseLiveHandle().catch(() => {});
+          } else {
+            // The stage has finished participating in workflow scheduling. Drop it
+            // from run-level pause/resume and cascade-pause lookups immediately,
+            // while retaining the direct chat handle so completed nodes can be
+            // reopened and continued instead of becoming read-only archives.
+            await dropStageControlForCompletion().catch(() => {});
+          }
           limiter.release();
         }
       };
@@ -3483,29 +4748,46 @@ export async function run<TInputs extends WorkflowInputValues>(
 
       const stageContext: StageContext & Pick<InternalStageContext, "__modelFallbackMeta"> = {
         name: innerCtx.name,
-        prompt: (text, promptOptions) => runTrackedStageCall(() => innerCtx.prompt(text, promptOptions), true),
-        complete: (text, completeOptions) => runTrackedStageCall(() => innerCtx.complete(text, completeOptions)),
-        steer: (text) => innerCtx.steer(text),
-        followUp: (text) => innerCtx.followUp(text),
+        prompt: (text, promptOptions) => {
+          throwIfStageMutationBlocked();
+          return runTrackedStageCall(() => innerCtx.prompt(text, promptOptions), true);
+        },
+        complete: (text, completeOptions) => {
+          throwIfStageMutationBlocked();
+          return runTrackedStageCall(() => innerCtx.complete(text, completeOptions));
+        },
+        steer: (text) => {
+          throwIfStageMutationBlocked();
+          return innerCtx.steer(text);
+        },
+        followUp: (text) => {
+          throwIfStageMutationBlocked();
+          return innerCtx.followUp(text);
+        },
         subscribe: (listener) => innerCtx.subscribe(listener),
         get sessionFile() { return innerCtx.sessionFile; },
         get sessionId() { return innerCtx.sessionId; },
         setModel: async (model) => {
+          throwIfStageMutationBlocked();
           await innerCtx.__ensureSession();
+          throwIfStageMutationBlocked();
           recordStageNotice({ kind: "model", from: noticeValue(innerCtx.model), to: noticeValue(model) });
           await innerCtx.setModel(model);
         },
         setThinkingLevel: (level) => {
+          throwIfStageMutationBlocked();
           recordStageNotice({ kind: "thinking", from: noticeValue(innerCtx.thinkingLevel), to: noticeValue(level) });
           innerCtx.setThinkingLevel(level);
         },
         cycleModel: async () => {
+          throwIfStageMutationBlocked();
           const from = noticeValue(innerCtx.model);
           const result = await innerCtx.cycleModel();
           recordStageNotice({ kind: "model", from, to: noticeValue(innerCtx.model) });
           return result;
         },
         cycleThinkingLevel: () => {
+          throwIfStageMutationBlocked();
           const from = noticeValue(innerCtx.thinkingLevel);
           const result = innerCtx.cycleThinkingLevel();
           recordStageNotice({ kind: "thinking", from, to: noticeValue(innerCtx.thinkingLevel) });
@@ -3517,16 +4799,22 @@ export async function run<TInputs extends WorkflowInputValues>(
         get messages() { return innerCtx.messages; },
         get isStreaming() { return innerCtx.isStreaming; },
         navigateTree: async (targetId, treeOptions) => {
+          throwIfStageMutationBlocked();
           recordStageNotice({ kind: "tree", to: targetId });
           return innerCtx.navigateTree(targetId, treeOptions);
         },
         compact: async () => {
+          throwIfStageMutationBlocked();
           const result = await innerCtx.compact();
           recordStageNotice({ kind: "compaction", to: "compacted", meta: compactionMeta(result) });
           return result;
         },
-        abortCompaction: () => innerCtx.abortCompaction(),
+        abortCompaction: () => {
+          throwIfStageMutationBlocked();
+          innerCtx.abortCompaction();
+        },
         abort: async () => {
+          throwIfStageMutationBlocked();
           recordStageNotice({ kind: "abort", to: "interrupted" });
           await innerCtx.abort();
         },
@@ -3536,7 +4824,9 @@ export async function run<TInputs extends WorkflowInputValues>(
     },
 
     async task(name: string, options: WorkflowTaskOptions, stageFailFastScope?: ParallelFailFastScope): Promise<WorkflowTaskResult> {
+      throwIfWorkflowExitSelected();
       const runTaskOnce = async (taskOptions: WorkflowTaskOptions): Promise<WorkflowTaskResult> => {
+        throwIfWorkflowExitSelected();
         const resolvedTaskOptions = stageOptionsWithGitWorktree(stageOptionsWithInputDefaults(taskOptions, inputRuntimeDefaults), workflowInvocationCwd) ?? taskOptions;
         const stage = (ctx.stage as typeof ctx.stage & ((stageName: string, stageOptions?: StageOptions, scope?: ParallelFailFastScope) => StageContext))(
           name,
@@ -3591,8 +4881,10 @@ export async function run<TInputs extends WorkflowInputValues>(
     },
 
     async chain(steps: readonly WorkflowTaskStep[], options: WorkflowChainOptions = {}): Promise<WorkflowTaskResult[]> {
+      throwIfWorkflowExitSelected();
       const results: WorkflowTaskResult[] = [];
       for (let index = 0; index < steps.length; index += 1) {
+        throwIfWorkflowExitSelected();
         const step = steps[index]!;
         const explicitPrevious = taskPrevious(step);
         const previous = explicitPrevious ?? (index > 0 ? results[index - 1] : undefined);
@@ -3606,11 +4898,13 @@ export async function run<TInputs extends WorkflowInputValues>(
     },
 
     async parallel(steps: readonly WorkflowTaskStep[], options: WorkflowParallelOptions = {}): Promise<WorkflowTaskResult[]> {
+      throwIfWorkflowExitSelected();
       const fallback = parallelFallbackTask(steps, options);
       const failFastScope: ParallelFailFastScope | undefined = options.failFast === false
         ? undefined
         : { failed: false, activeStages: new Map<string, ParallelFailFastStage>() };
       return mapParallelSteps(steps, options.concurrency, options.failFast, async (step) => {
+        throwIfWorkflowExitSelected();
         const prompt = replaceTaskPlaceholder(step.prompt ?? step.task ?? fallback, options.task ?? fallback);
         return await (ctx.task as typeof ctx.task & ((taskName: string, taskOptions: WorkflowTaskOptions, scope?: ParallelFailFastScope) => Promise<WorkflowTaskResult>))(
           step.name,
@@ -3624,6 +4918,10 @@ export async function run<TInputs extends WorkflowInputValues>(
         for (const stage of failFastScope.activeStages.values()) {
           stage.skip();
         }
+      }, {
+        beforeDequeue: throwIfWorkflowExitSelected,
+        beforeMap: throwIfWorkflowExitSelected,
+        isControlSignal: (error) => findWorkflowExitSignal(error, exitScope) !== undefined,
       });
     },
 
@@ -3631,6 +4929,7 @@ export async function run<TInputs extends WorkflowInputValues>(
       child: WorkflowDefinition<TChildInputs, TChildOutputs>,
       options: WorkflowRunChildOptions<TChildInputs> = {},
     ): Promise<WorkflowChildResult<TChildOutputs>> {
+      throwIfWorkflowExitSelected();
       // The executor operates on type-erased definitions at runtime; the child's
       // declared output contract is validated dynamically by the child run and
       // selectWorkflowOutputs, so the typed result is reconstructed via casts.
@@ -3641,16 +4940,6 @@ export async function run<TInputs extends WorkflowInputValues>(
       const boundaryName = options.stageName ?? `workflow:${childName}`;
       const boundaryReplayKey = nextWorkflowBoundaryReplayKey(boundaryName);
       const boundary = startWorkflowBoundaryStage(boundaryName, boundaryReplayKey);
-      if (boundary.replayedChild !== undefined) {
-        // Continuation replay returns the persisted child boundary exactly as
-        // written; input validation and output remapping are intentionally not
-        // re-run against edited workflow code for a completed child boundary.
-        // Defer settling by one microtask so concurrent replayed boundaries
-        // spawned in the same turn see the same frontier as the source run.
-        await Promise.resolve();
-        boundary.finalizeReplay();
-        return boundary.replayedChild as WorkflowChildResult<TChildOutputs>;
-      }
 
       // Tracked so the finally can detach the parent-abort listener and release
       // the pre-registered child controller on every exit path — including the
@@ -3660,28 +4949,48 @@ export async function run<TInputs extends WorkflowInputValues>(
       let childRunId: string | undefined;
       let detachParentAbort: (() => void) | undefined;
       try {
+        if (boundary.replayedChild !== undefined) {
+          // Continuation replay returns the persisted child boundary exactly as
+          // written; input validation and output remapping are intentionally not
+          // re-run against edited workflow code for a completed child boundary.
+          // Defer settling by one microtask so concurrent replayed boundaries
+          // spawned in the same turn see the same frontier as the source run.
+          await Promise.resolve();
+          throwIfWorkflowExitSelected();
+          boundary.finalizeReplay();
+          return boundary.replayedChild as WorkflowChildResult<TChildOutputs>;
+        }
+
         const childInputs = resolveAndValidateInputs(
           child.inputs,
           options.inputs ?? {},
           `child workflow "${childName}" (${child.name})`,
         );
+        throwIfWorkflowExitSelected();
 
         childRunId = crypto.randomUUID();
-        boundary.linkChildRun({
+        const childController = new AbortController();
+        const childRef: WorkflowChildRunRef = {
           alias: childName,
           workflow: child.normalizedName,
           runId: childRunId,
-        });
+        };
+        boundary.linkChildRun(childRef, childController);
 
-        const childController = new AbortController();
+        const abortChildFromParent = (): void => {
+          const parentExit = findWorkflowExitSignal(ownController.signal.reason, exitScope);
+          childController.abort(parentExit !== undefined
+            ? makeParentWorkflowExitAbortReason(parentExit.reason)
+            : ownController.signal.reason);
+        };
         if (ownController.signal.aborted) {
-          childController.abort(ownController.signal.reason);
+          abortChildFromParent();
         } else {
-          const onParentAbort = () => childController.abort(ownController.signal.reason);
-          ownController.signal.addEventListener("abort", onParentAbort, { once: true });
+          ownController.signal.addEventListener("abort", abortChildFromParent, { once: true });
           detachParentAbort = () =>
-            ownController.signal.removeEventListener("abort", onParentAbort);
+            ownController.signal.removeEventListener("abort", abortChildFromParent);
         }
+        throwIfWorkflowExitSelected();
         // Pre-register the child controller under its own runId *before* run()
         // so a kill targeting the child runId works even before the nested run
         // would register itself. The nested run() sees opts.signal set and skips
@@ -3689,6 +4998,7 @@ export async function run<TInputs extends WorkflowInputValues>(
         // key) while still running its finally{} unregister(runId) cleanup, so
         // both branches must agree on this key.
         opts.cancellation?.register(childRunId, childController);
+        throwIfWorkflowExitSelected();
 
         const {
           runId: _parentRunId,
@@ -3699,7 +5009,7 @@ export async function run<TInputs extends WorkflowInputValues>(
           onRunEnd: _parentOnRunEnd,
           ...childBaseOpts
         } = opts;
-        const childRun = await run(child, childInputs, {
+        const childRunPromise = run(child, childInputs, {
           ...childBaseOpts,
           runId: childRunId,
           cwd: resolveWorkflowCwd(),
@@ -3713,8 +5023,11 @@ export async function run<TInputs extends WorkflowInputValues>(
           signal: childController.signal,
           deferWorkflowStart: false,
         });
+        boundary.observeChildRun(childRunPromise);
+        const childRun = await childRunPromise;
+        throwIfWorkflowExitSelected();
 
-        if (childRun.status !== "completed") {
+        if (!isWorkflowExitStatus(childRun.status)) {
           const failedChildStage = childRun.stages.find((stage) => stage.failureKind !== undefined);
           throw new Error(
             `atomic-workflows: child workflow "${childName}" (${child.name}) failed with status ${childRun.status}${childRun.error !== undefined ? `: ${childRun.error}` : ""}`,
@@ -3728,20 +5041,36 @@ export async function run<TInputs extends WorkflowInputValues>(
         }
 
         const outputs = selectWorkflowOutputs(child, childRun.result);
-        const childResult: WorkflowChildResult<TChildOutputs> = {
-          workflow: child.normalizedName,
-          runId: childRun.runId,
-          status: "completed",
-          outputs: outputs as TChildOutputs,
-        };
+        const childExited = childRun.exited === true || childRun.status !== "completed";
+        const childResult: WorkflowChildResult<TChildOutputs> = childExited
+          ? {
+              workflow: child.normalizedName,
+              runId: childRun.runId,
+              status: childRun.status,
+              exited: true,
+              outputs: outputs as Partial<TChildOutputs>,
+              ...(childRun.exitReason !== undefined ? { exitReason: childRun.exitReason } : {}),
+            }
+          : {
+              workflow: child.normalizedName,
+              runId: childRun.runId,
+              status: "completed",
+              exited: false,
+              outputs: outputs as TChildOutputs,
+            };
         const workflowChild = workflowChildReplaySnapshot(childName, childResult);
         const outputKeys = Object.keys(outputs);
         boundary.complete(
-          `Workflow "${child.name}" completed (runId: ${childRun.runId}; outputs: ${outputKeys.length > 0 ? outputKeys.join(", ") : "(none)"})`,
+          `Workflow "${child.name}" ${childRun.status} (runId: ${childRun.runId}; outputs: ${outputKeys.length > 0 ? outputKeys.join(", ") : "(none)"})`,
           workflowChild,
         );
         return childResult;
       } catch (err) {
+        const exit = findWorkflowExitSignal(err, exitScope) ?? findWorkflowExitSignal(ownController.signal.reason, exitScope);
+        if (exit !== undefined) {
+          await boundary.skipForWorkflowExit(exit.reason);
+          throw exit;
+        }
         boundary.fail(err);
         throw err;
       } finally {
@@ -3758,6 +5087,10 @@ export async function run<TInputs extends WorkflowInputValues>(
     if (opts.deferWorkflowStart === true) {
       await nextEventLoopTurn();
       if (ownController.signal.aborted) {
+        const exit = findWorkflowExitSignal(ownController.signal.reason, exitScope);
+        if (exit !== undefined) return await finalizeWorkflowExit(exit);
+        const parentExit = parentWorkflowExitAbortReason(ownController.signal.reason);
+        if (parentExit !== undefined) return await finalizeParentWorkflowExitCancellation(parentExit);
         return finalizeKilled(runId, runSnapshot, activeStore, opts.persistence, opts.onRunEnd);
       }
     }
@@ -3765,8 +5098,12 @@ export async function run<TInputs extends WorkflowInputValues>(
     const rawResult = await def.run(ctx);
 
     // Post-body abort check: if signal was aborted at any point before we record
-    // completion, the run must be finalized as "killed", never "completed".
+    // completion, classify a scoped author exit before falling back to killed.
     if (ownController.signal.aborted) {
+      const exit = findWorkflowExitSignal(ownController.signal.reason, exitScope);
+      if (exit !== undefined) return await finalizeWorkflowExit(exit);
+      const parentExit = parentWorkflowExitAbortReason(ownController.signal.reason);
+      if (parentExit !== undefined) return await finalizeParentWorkflowExitCancellation(parentExit);
       return finalizeKilled(runId, runSnapshot, activeStore, opts.persistence, opts.onRunEnd);
     }
 
@@ -3776,7 +5113,6 @@ export async function run<TInputs extends WorkflowInputValues>(
     assertWorkflowCreatedStage(runSnapshot);
 
     const recorded = activeStore.recordRunEnd(runId, "completed", result);
-    opts.onRunEnd?.(runId, "completed", result);
 
     appendRunEndWhenRecorded(opts.persistence, recorded, {
       runId,
@@ -3785,14 +5121,17 @@ export async function run<TInputs extends WorkflowInputValues>(
       ts: Date.now(),
     });
 
-    return {
-      runId,
+    return reconcileTerminalRunResult(runId, runSnapshot, activeStore, {
       status: "completed",
       result,
-      stages: [...runSnapshot.stages],
-    };
+    }, opts.onRunEnd);
   } catch (err) {
+    const exit = findWorkflowExitSignal(err, exitScope) ?? findWorkflowExitSignal(ownController.signal.reason, exitScope);
+    if (exit !== undefined) return await finalizeWorkflowExit(exit);
+
     if (ownController.signal.aborted) {
+      const parentExit = parentWorkflowExitAbortReason(ownController.signal.reason);
+      if (parentExit !== undefined) return await finalizeParentWorkflowExitCancellation(parentExit);
       return finalizeKilled(runId, runSnapshot, activeStore, opts.persistence, opts.onRunEnd);
     }
 
@@ -3831,7 +5170,6 @@ export async function run<TInputs extends WorkflowInputValues>(
     }
 
     const recorded = activeStore.recordRunEnd(runId, "failed", undefined, metadata.errorMessage, metadata);
-    opts.onRunEnd?.(runId, "failed", undefined, metadata.errorMessage);
 
     appendRunEndWhenRecorded(opts.persistence, recorded, {
       runId,
@@ -3848,12 +5186,10 @@ export async function run<TInputs extends WorkflowInputValues>(
       ts: Date.now(),
     });
 
-    return {
-      runId,
+    return reconcileTerminalRunResult(runId, runSnapshot, activeStore, {
       status: "failed",
       error: metadata.errorMessage,
-      stages: [...runSnapshot.stages],
-    };
+    }, opts.onRunEnd);
   } finally {
     opts.cancellation?.unregister(runId);
   }

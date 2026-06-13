@@ -47,6 +47,8 @@ export type WorkflowSerializableValue = AuthoringContract.WorkflowSerializableVa
 export type WorkflowInputValues = AuthoringContract.WorkflowInputValues;
 export type WorkflowOutputValues = AuthoringContract.WorkflowOutputValues;
 export type WorkflowRunOutput = AuthoringContract.WorkflowRunOutput;
+export type WorkflowExitStatus = AuthoringContract.WorkflowExitStatus;
+export type WorkflowExitOptions<TOutputs extends WorkflowOutputValues = WorkflowOutputValues> = AuthoringContract.WorkflowExitOptions<TOutputs>;
 
 // ---------------------------------------------------------------------------
 // Workflow input / output schemas
@@ -98,14 +100,9 @@ export interface WorkflowRunChildOptions<TInputs extends WorkflowInputValues = W
   readonly stageName?: string;
 }
 
-export interface WorkflowChildResult<TOutputs extends WorkflowOutputValues = WorkflowOutputValues>
-  extends WorkflowSerializableObject {
-  readonly workflow: string;
-  readonly runId: string;
-  readonly status: "completed";
-  /** Child outputs, typed from the child workflow's declared `.output(...)` contract. */
-  readonly outputs: TOutputs;
-}
+export type WorkflowCompletedChildResult<TOutputs extends WorkflowOutputValues = WorkflowOutputValues> = AuthoringContract.WorkflowCompletedChildResult<TOutputs>;
+export type WorkflowExitedChildResult<TOutputs extends WorkflowOutputValues = WorkflowOutputValues> = AuthoringContract.WorkflowExitedChildResult<TOutputs>;
+export type WorkflowChildResult<TOutputs extends WorkflowOutputValues = WorkflowOutputValues> = AuthoringContract.WorkflowChildResult<TOutputs>;
 
 // ---------------------------------------------------------------------------
 // HIL (human-in-the-loop) primitives available inside run functions
@@ -116,14 +113,24 @@ export interface WorkflowChildResult<TOutputs extends WorkflowOutputValues = Wor
  * Each primitive suspends the current stage until the user responds.
  * Mirrors pi ctx.ui.input / confirm / select / editor methods.
  */
-export type WorkflowUIContext = AuthoringContract.WorkflowUIContext;
+export type WorkflowCustomUiComponent = AuthoringContract.WorkflowCustomUiComponent;
+export type WorkflowCustomUiTui = AuthoringContract.WorkflowCustomUiTui;
+export type WorkflowCustomUiTheme = AuthoringContract.WorkflowCustomUiTheme;
+export type WorkflowCustomUiKeybindings = AuthoringContract.WorkflowCustomUiKeybindings;
+export type WorkflowCustomUiOverlayOptions = AuthoringContract.WorkflowCustomUiOverlayOptions;
+export type WorkflowCustomUiOverlayHandle = AuthoringContract.WorkflowCustomUiOverlayHandle;
+export type WorkflowCustomUiFactory<T> = AuthoringContract.WorkflowCustomUiFactory<T>;
+export type WorkflowCustomUiOptions = AuthoringContract.WorkflowCustomUiOptions;
+
+export interface WorkflowUIContext extends AuthoringContract.WorkflowUIContext {}
 
 /**
  * Adapter supplied by the pi runtime (or test harness) to back the HIL
- * primitives.  Must implement the same surface as WorkflowUIContext so that
- * the executor can delegate directly.
+ * primitives.  The custom-widget method is optional for compatibility with
+ * existing primitive-only adapters; the executor normalizes a missing custom
+ * method to the same unavailable-UI rejection used in headless mode.
  */
-export type WorkflowUIAdapter = AuthoringContract.WorkflowUIAdapter;
+export interface WorkflowUIAdapter extends AuthoringContract.WorkflowUIAdapter {}
 
 // ---------------------------------------------------------------------------
 // StageOptions — per-stage configuration + pi SDK session options
@@ -319,11 +326,16 @@ export interface StageContext {
 // Workflow run context (top-level ctx passed to the run function)
 // ---------------------------------------------------------------------------
 
-export interface WorkflowRunContext<TInputs extends WorkflowInputValues = WorkflowInputValues> {
+export interface WorkflowRunContext<
+  TInputs extends WorkflowInputValues = WorkflowInputValues,
+  TOutputs extends WorkflowOutputValues = WorkflowOutputValues,
+> {
   /** Typed inputs provided by the caller, validated against the input schema. */
   readonly inputs: TInputs;
   /** Invocation working directory for workflow-owned artifacts. Defaults to the host process cwd when omitted. */
   readonly cwd?: string;
+  /** Intentionally end this workflow run from any call depth. */
+  exit(options?: WorkflowExitOptions<TOutputs>): never;
   /**
    * Create and register a named stage synchronously. Stage work starts when
    * a stage method such as prompt() or complete() is awaited; the executor
@@ -373,7 +385,7 @@ export type WorkflowRuntimeConfig = AuthoringContract.WorkflowRuntimeConfig;
 export type WorkflowRunFn<
   TInputs extends WorkflowInputValues = WorkflowInputValues,
   TOutputs extends WorkflowOutputValues = WorkflowOutputValues,
-> = (ctx: WorkflowRunContext<TInputs>) => ReturnType<AuthoringContract.WorkflowRunFn<TInputs, TOutputs>>;
+> = (ctx: WorkflowRunContext<TInputs, TOutputs>) => ReturnType<AuthoringContract.WorkflowRunFn<TInputs, TOutputs>>;
 
 // ---------------------------------------------------------------------------
 // Compiled workflow definition

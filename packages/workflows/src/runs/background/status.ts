@@ -82,6 +82,8 @@ export interface RunDetail {
   readonly stages: readonly RunSnapshot["stages"][number][];
   readonly result?: WorkflowOutputValues;
   readonly error?: string;
+  readonly exited?: boolean;
+  readonly exitReason?: string;
   readonly failureKind?: RunSnapshot["failureKind"];
   readonly failureCode?: RunSnapshot["failureCode"];
   readonly failureRecoverability?: RunSnapshot["failureRecoverability"];
@@ -480,6 +482,8 @@ export function inspectRun(
     stages: expandedStages.map((stage) => structuredClone(stage)),
     result: copy.result,
     error: copy.error,
+    exited: copy.exited,
+    exitReason: copy.exitReason,
     failureKind: copy.failureKind,
     failureCode: copy.failureCode,
     failureRecoverability: copy.failureRecoverability,

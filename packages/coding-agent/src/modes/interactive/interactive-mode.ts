@@ -6,6 +6,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import chalk from "chalk";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import {
   type Api,
@@ -80,6 +81,7 @@ import type {
   ExtensionRunner,
   ExtensionUIContext,
   ExtensionUIDialogOptions,
+  ProjectTrustContext,
   ExtensionWidgetOptions,
 } from "../../core/extensions/index.ts";
 import {
@@ -91,7 +93,6 @@ import {
   KeybindingsManager,
 } from "../../core/keybindings.ts";
 import type { ContextCompactionResult } from "../../core/compaction/index.ts";
-import { createCompactionSummaryMessage } from "../../core/messages.ts";
 import {
   defaultModelPerProvider,
   findExactModelReferenceMatch,
@@ -123,6 +124,7 @@ import {
   getChangelogPath,
   getEntriesForVersion,
   getNewEntries,
+  normalizeChangelogLinks,
   parseChangelog,
 } from "../../utils/changelog.ts";
 import { copyToClipboard } from "../../utils/clipboard.ts";
@@ -150,7 +152,6 @@ import {
   type ChatMessageRenderOptions,
 } from "./components/chat-message-renderer.ts";
 import { addChatTranscriptEntry } from "./components/chat-transcript.ts";
-import { CompactionSummaryMessageComponent } from "./components/compaction-summary-message.ts";
 import { ContextCompactionSummaryMessageComponent } from "./components/context-compaction-summary-message.ts";
 import { CountdownTimer } from "./components/countdown-timer.ts";
 import { CustomEditor } from "./components/custom-editor.ts";
@@ -181,6 +182,8 @@ import { SettingsSelectorComponent } from "./components/settings-selector.ts";
 import { SkillInvocationMessageComponent } from "./components/skill-invocation-message.ts";
 import { ToolExecutionComponent } from "./components/tool-execution.ts";
 import { TreeSelectorComponent } from "./components/tree-selector.ts";
+import { TrustSelectorComponent } from "./components/trust-selector.ts";
+import { hasProjectConfigDir, ProjectTrustStore } from "../../core/trust-manager.ts";
 import { UserMessageComponent } from "./components/user-message.ts";
 import { UserMessageSelectorComponent } from "./components/user-message-selector.ts";
 import {
@@ -244,16 +247,6 @@ class ExpandableText extends Text implements Expandable {
   refresh(): void {
     this.setText(this.expanded ? this.getExpandedText() : this.getCollapsedText());
   }
-}
-
-function isContextCompactionResult(result: unknown): result is ContextCompactionResult {
-  return (
-    typeof result === "object" &&
-    result !== null &&
-    "stats" in result &&
-    "deletedTargets" in result &&
-    "protectedEntryIds" in result
-  );
 }
 
 type CompactionQueuedMessage = {
@@ -376,6 +369,28 @@ function isUnknownModel(model: Model<Api> | undefined): boolean {
   );
 }
 
+function quoteIfNeeded(value: string): string {
+  if (value.length > 0 && !/[^a-zA-Z0-9_\-./~:@]/.test(value)) {
+    return value;
+  }
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+export function formatResumeCommand(sessionManager: SessionManager): string | undefined {
+  if (!process.stdout.isTTY) return undefined;
+  if (!sessionManager.isPersisted()) return undefined;
+
+  const sessionFile = sessionManager.getSessionFile();
+  if (!sessionFile || !fs.existsSync(sessionFile)) return undefined;
+
+  const args = [APP_NAME];
+  if (!sessionManager.usesDefaultSessionDir()) {
+    args.push("--session-dir", quoteIfNeeded(sessionManager.getSessionDir()));
+  }
+  args.push("--session", sessionManager.getSessionId());
+  return args.join(" ");
+}
+
 function hasDefaultModelProvider(
   providerId: string,
 ): providerId is keyof typeof defaultModelPerProvider {
@@ -408,6 +423,8 @@ export interface InteractiveModeOptions {
   migratedProviders?: string[];
   /** Warning message if session model couldn't be restored */
   modelFallbackMessage?: string;
+  /** Cwd to persist as trusted after reload if it gains project config during an implicitly trusted session. */
+  autoTrustOnReloadCwd?: string;
   /** Initial message to send on startup (can include @file content) */
   initialMessage?: string;
   /** Images to attach to the initial message */
@@ -439,6 +456,7 @@ export class InteractiveMode {
   private version: string;
   private isInitialized = false;
   private onInputCallback?: (text: string) => void;
+  private pendingUserInputs: string[] = [];
   private loadingAnimation: Loader | undefined = undefined;
   private workingMessage: string | undefined = undefined;
   private workingVisible = true;
@@ -453,6 +471,7 @@ export class InteractiveMode {
   private changelogMarkdown: string | undefined = undefined;
   private startupNoticesShown = false;
   private anthropicSubscriptionWarningShown = false;
+  private autoTrustOnReloadCwd: string | undefined;
 
   // Status line tracking (for mutating immediately-sequential status updates)
   private lastStatusSpacer: Spacer | undefined = undefined;
@@ -555,6 +574,7 @@ export class InteractiveMode {
     options: InteractiveModeOptions = {},
   ) {
     this.options = options;
+    this.autoTrustOnReloadCwd = options.autoTrustOnReloadCwd;
     this.runtimeHost = runtimeHost;
     this.runtimeHost.setBeforeSessionInvalidate(() => {
       this.resetExtensionUI();
@@ -1131,7 +1151,7 @@ export class InteractiveMode {
     if (currentEntries.length > 0) {
       this.settingsManager.setLastChangelogVersion(VERSION);
       this.reportInstallTelemetry(VERSION);
-      return currentEntries.map((e) => e.content).join("\n\n");
+      return currentEntries.map((e) => normalizeChangelogLinks(e.content, e)).join("\n\n");
     }
 
     return undefined;
@@ -2039,6 +2059,7 @@ export class InteractiveMode {
     const uiContext = this.createExtensionUIContext();
     await this.session.bindExtensions({
       uiContext,
+      mode: "tui",
       commandContextActions: {
         waitForIdle: () => this.session.agent.waitForIdle(),
         newSession: async (options) => {
@@ -2198,12 +2219,14 @@ export class InteractiveMode {
     // Create a context for shortcut handlers
     const createContext = (): ExtensionContext => ({
       ui: this.createExtensionUIContext(),
+      mode: "tui",
       hasUI: true,
       cwd: this.sessionManager.getCwd(),
       sessionManager: this.sessionManager,
       modelRegistry: this.session.modelRegistry,
       model: this.session.model,
       isIdle: () => !this.session.isStreaming,
+      isProjectTrusted: () => this.session.settingsManager.isProjectTrusted(),
       signal: this.session.agent.signal,
       abort: () => this.session.abort(),
       hasPendingMessages: () => this.session.pendingMessageCount > 0,
@@ -2214,9 +2237,7 @@ export class InteractiveMode {
       compact: (options) => {
         void (async () => {
           try {
-            const result = await this.session.compact(
-              options?.customInstructions,
-            );
+            const result = await this.session.compact();
             options?.onComplete?.(result);
           } catch (error) {
             const err =
@@ -2582,6 +2603,22 @@ export class InteractiveMode {
       unsubscribe();
     }
     this.extensionTerminalInputUnsubscribers.clear();
+  }
+
+
+  private createProjectTrustContext(cwd: string): ProjectTrustContext {
+    const ui = this.createExtensionUIContext();
+    return {
+      cwd,
+      mode: "tui",
+      hasUI: true,
+      ui: {
+        select: ui.select,
+        confirm: ui.confirm,
+        input: ui.input,
+        notify: ui.notify,
+      },
+    };
   }
 
   /**
@@ -3283,6 +3320,11 @@ export class InteractiveMode {
         await this.handleRewindCommand(text);
         return;
       }
+      if (text === "/trust") {
+        this.showTrustSelector();
+        this.editor.setText("");
+        return;
+      }
       if (text === "/login") {
         this.showOAuthSelector("login");
         this.editor.setText("");
@@ -3389,6 +3431,8 @@ export class InteractiveMode {
 
       if (this.onInputCallback) {
         this.onInputCallback(text);
+      } else {
+        this.pendingUserInputs.push(text);
       }
       this.editor.addToHistory?.(text);
     };
@@ -3693,17 +3737,7 @@ export class InteractiveMode {
         } else if (event.result) {
           this.chatContainer.clear();
           this.rebuildChatFromMessages();
-          if (isContextCompactionResult(event.result)) {
-            this.addContextCompactionSummaryToChat(event.result);
-          } else {
-            this.addMessageToChat(
-              createCompactionSummaryMessage(
-                event.result.summary,
-                event.result.tokensBefore,
-                new Date().toISOString(),
-              ),
-            );
-          }
+          this.addContextCompactionSummaryToChat(event.result as ContextCompactionResult);
           this.footer.invalidate();
         } else if (event.errorMessage) {
           if (event.reason === "manual") {
@@ -3944,16 +3978,6 @@ export class InteractiveMode {
         }
         break;
       }
-      case "compactionSummary": {
-        this.chatContainer.addChild(new Spacer(1));
-        const component = new CompactionSummaryMessageComponent(
-          message,
-          this.getMarkdownThemeWithSettings(),
-        );
-        component.setExpanded(this.toolOutputExpanded);
-        this.chatContainer.addChild(component);
-        break;
-      }
       case "branchSummary": {
         this.chatContainer.addChild(new Spacer(1));
         const component = new BranchSummaryMessageComponent(
@@ -4014,10 +4038,8 @@ export class InteractiveMode {
         // Tool results are rendered inline with tool calls, handled separately
         break;
       }
-      default: {
-        const _exhaustive: never = message;
-        void _exhaustive;
-      }
+      default:
+        break;
     }
   }
 
@@ -4077,6 +4099,11 @@ export class InteractiveMode {
   }
 
   async getUserInput(): Promise<string> {
+    const queuedInput = this.pendingUserInputs.shift();
+    if (queuedInput !== undefined) {
+      return queuedInput;
+    }
+
     return new Promise((resolve) => {
       this.onInputCallback = (text: string) => {
         this.onInputCallback = undefined;
@@ -4117,10 +4144,19 @@ export class InteractiveMode {
    */
   private isShuttingDown = false;
 
-  private async shutdown(): Promise<void> {
+  private async shutdown(options?: { fromSignal?: boolean }): Promise<void> {
     if (this.isShuttingDown) return;
     this.isShuttingDown = true;
     this.unregisterSignalHandlers();
+
+    if (options?.fromSignal) {
+      await this.runtimeHost.dispose();
+      // Drain any in-flight Kitty key release events before stopping.
+      // This prevents escape sequences from leaking to the parent shell over slow SSH.
+      await this.ui.terminal.drainInput(1000);
+      this.stop();
+      process.exit(0);
+    }
 
     // Drain any in-flight Kitty key release events before stopping.
     // This prevents escape sequences from leaking to the parent shell over slow SSH.
@@ -4128,6 +4164,10 @@ export class InteractiveMode {
 
     this.stop();
     await this.runtimeHost.dispose();
+    const resumeCommand = formatResumeCommand(this.sessionManager);
+    if (resumeCommand) {
+      process.stdout.write(`${chalk.dim("To resume this session:")} ${resumeCommand}\n`);
+    }
     process.exit(0);
   }
 
@@ -4188,11 +4228,8 @@ export class InteractiveMode {
 
     for (const signal of signals) {
       const handler = () => {
-        if (signal === "SIGHUP") {
-          this.emergencyTerminalExit();
-        }
         killTrackedDetachedChildren();
-        void this.shutdown();
+        void this.shutdown({ fromSignal: true });
       };
       process.prependListener(signal, handler);
       this.signalCleanupHandlers.push(() => process.off(signal, handler));
@@ -4780,6 +4817,7 @@ export class InteractiveMode {
           autocompleteMaxVisible:
             this.settingsManager.getAutocompleteMaxVisible(),
           quietStartup: this.settingsManager.getQuietStartup(),
+          defaultProjectTrust: this.settingsManager.getDefaultProjectTrust(),
           clearOnShrink: this.settingsManager.getClearOnShrink(),
           showTerminalProgress: this.settingsManager.getShowTerminalProgress(),
           warnings: this.settingsManager.getWarnings(),
@@ -4870,6 +4908,9 @@ export class InteractiveMode {
           },
           onQuietStartupChange: (enabled) => {
             this.settingsManager.setQuietStartup(enabled);
+          },
+          onDefaultProjectTrustChange: (defaultProjectTrust) => {
+            this.settingsManager.setDefaultProjectTrust(defaultProjectTrust);
           },
           onDoubleEscapeActionChange: (action) => {
             this.settingsManager.setDoubleEscapeAction(action);
@@ -5205,6 +5246,57 @@ export class InteractiveMode {
     }
   }
 
+  private maybeSaveImplicitProjectTrustAfterReload(): boolean {
+    const cwd = this.sessionManager.getCwd();
+    if (this.autoTrustOnReloadCwd !== cwd) {
+      return false;
+    }
+    if (!this.settingsManager.isProjectTrusted() || !hasProjectConfigDir(cwd)) {
+      return false;
+    }
+
+    const trustStore = new ProjectTrustStore(this.runtimeHost.services.agentDir);
+    try {
+      if (trustStore.get(cwd) !== null) {
+        this.autoTrustOnReloadCwd = undefined;
+        return false;
+      }
+      trustStore.set(cwd, true);
+      this.autoTrustOnReloadCwd = undefined;
+      return true;
+    } catch (error) {
+      this.showWarning(
+        `Could not save project trust after reload: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return false;
+    }
+  }
+
+  private showTrustSelector(): void {
+    const cwd = this.sessionManager.getCwd();
+    const trustStore = new ProjectTrustStore(this.runtimeHost.services.agentDir);
+    const savedDecision = trustStore.getEntry(cwd);
+    this.showSelector((done) => {
+      const selector = new TrustSelectorComponent({
+        cwd,
+        savedDecision,
+        projectTrusted: this.settingsManager.isProjectTrusted(),
+        onSelect: (selection) => {
+          trustStore.setMany(selection.updates);
+          done();
+          this.showStatus(
+            `Saved trust decision: ${selection.trusted ? "trusted" : "untrusted"}. Restart ${APP_NAME} for this to take effect.`,
+          );
+        },
+        onCancel: () => {
+          done();
+          this.ui.requestRender();
+        },
+      });
+      return { component: selector, focus: selector };
+    });
+  }
+
   private showTreeSelector(initialSelectedId?: string): void {
     const tree = this.sessionManager.getTree();
     const realLeafId = this.sessionManager.getLeafId();
@@ -5347,7 +5439,13 @@ export class InteractiveMode {
             this.sessionManager.getSessionDir(),
             onProgress,
           ),
-        SessionManager.listAll,
+        (onProgress) =>
+          this.sessionManager.usesDefaultSessionDir()
+            ? SessionManager.listAll(onProgress)
+            : SessionManager.listAll(
+                this.sessionManager.getSessionDir(),
+                onProgress,
+              ),
         async (sessionPath) => {
           done();
           await this.handleResumeSession(sessionPath);
@@ -5392,6 +5490,7 @@ export class InteractiveMode {
     try {
       const result = await this.runtimeHost.switchSession(sessionPath, {
         withSession: options?.withSession,
+        projectTrustContextFactory: (cwd) => this.createProjectTrustContext(cwd),
       });
       if (result.cancelled) {
         return result;
@@ -5409,6 +5508,7 @@ export class InteractiveMode {
         const result = await this.runtimeHost.switchSession(sessionPath, {
           cwdOverride: selectedCwd,
           withSession: options?.withSession,
+          projectTrustContextFactory: (cwd) => this.createProjectTrustContext(cwd),
         });
         if (result.cancelled) {
           return result;
@@ -5987,10 +6087,14 @@ export class InteractiveMode {
       this.setupExtensionShortcuts(runner);
       this.rebuildChatFromMessages();
       dismissReloadBox(this.editor as Component);
+      const savedImplicitProjectTrust = this.maybeSaveImplicitProjectTrustAfterReload();
       this.showLoadedResources({
         force: false,
         showDiagnosticsWhenQuiet: true,
       });
+      if (savedImplicitProjectTrust) {
+        this.showStatus("Saved project trust for future sessions");
+      }
       const modelsJsonError = this.session.modelRegistry.getError();
       if (modelsJsonError) {
         this.showError(`models.json error: ${modelsJsonError}`);
@@ -6535,7 +6639,7 @@ export class InteractiveMode {
       allEntries.length > 0
         ? allEntries
             .reverse()
-            .map((e) => e.content)
+            .map((e) => normalizeChangelogLinks(e.content, e))
             .join("\n\n")
         : "No changelog entries found.";
 

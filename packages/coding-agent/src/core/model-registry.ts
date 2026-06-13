@@ -25,10 +25,15 @@ import { Compile } from "typebox/compile";
 import type { TLocalizedValidationError } from "typebox/error";
 import { getAgentConfigPaths } from "../config.ts";
 import { normalizePath } from "../utils/paths.ts";
+import { warnDeprecation } from "../utils/deprecation.ts";
 import type { AuthStatus, AuthStorage } from "./auth-storage.ts";
 import { BUILT_IN_PROVIDER_DISPLAY_NAMES } from "./provider-display-names.ts";
 import {
 	clearConfigValueCache,
+	getConfigValueEnvVarNames,
+	isCommandConfigValue,
+	isConfigValueConfigured,
+	isLegacyEnvVarNameConfigValue,
 	resolveConfigValueOrThrow,
 	resolveConfigValueUncached,
 	resolveHeadersOrThrow,
@@ -121,6 +126,7 @@ const OpenAICompletionsCompatSchema = Type.Object({
 
 const OpenAIResponsesCompatSchema = Type.Object({
 	sendSessionIdHeader: Type.Optional(Type.Boolean()),
+	supportsDeveloperRole: Type.Optional(Type.Boolean()),
 	supportsLongCacheRetention: Type.Optional(Type.Boolean()),
 });
 
@@ -327,6 +333,77 @@ function applyModelOverride(model: Model<Api>, override: ModelOverride): Model<A
 
 /** Clear the config value command cache. Exported for testing. */
 export const clearApiKeyCache = clearConfigValueCache;
+
+function migrateLegacyRegisterProviderConfigValue(providerName: string, field: string, value: string): string {
+	if (!isLegacyEnvVarNameConfigValue(value) || process.env[value] === undefined) return value;
+	warnDeprecation(
+		`registerProvider("${providerName}") ${field} value "${value}" is treated as a legacy environment variable reference. This will no longer be detected as an environment variable reference in a future release. Pass "$${value}" instead.`,
+	);
+	return `$${value}`;
+}
+
+function migrateLegacyRegisterProviderHeaders(
+	providerName: string,
+	field: string,
+	headers: Record<string, string> | undefined,
+): Record<string, string> | undefined {
+	if (!headers) return undefined;
+	let migratedHeaders: Record<string, string> | undefined;
+	for (const [key, value] of Object.entries(headers)) {
+		const migratedValue = migrateLegacyRegisterProviderConfigValue(providerName, `${field} header "${key}"`, value);
+		if (migratedValue === value) continue;
+		migratedHeaders ??= { ...headers };
+		migratedHeaders[key] = migratedValue;
+	}
+	return migratedHeaders ?? headers;
+}
+
+function migrateLegacyRegisterProviderConfigValues(
+	providerName: string,
+	config: ProviderConfigInput,
+): ProviderConfigInput {
+	let migratedConfig: ProviderConfigInput | undefined;
+
+	const setMigratedConfigValue = <TKey extends keyof ProviderConfigInput>(
+		key: TKey,
+		value: ProviderConfigInput[TKey],
+	) => {
+		migratedConfig ??= { ...config };
+		migratedConfig[key] = value;
+	};
+
+	if (config.apiKey) {
+		const apiKey = migrateLegacyRegisterProviderConfigValue(providerName, "apiKey", config.apiKey);
+		if (apiKey !== config.apiKey) {
+			setMigratedConfigValue("apiKey", apiKey);
+		}
+	}
+
+	const headers = migrateLegacyRegisterProviderHeaders(providerName, "headers", config.headers);
+	if (headers !== config.headers) {
+		setMigratedConfigValue("headers", headers);
+	}
+
+	if (config.models) {
+		let models: ProviderConfigInput["models"] | undefined;
+		for (let index = 0; index < config.models.length; index++) {
+			const model = config.models[index];
+			const modelHeaders = migrateLegacyRegisterProviderHeaders(
+				providerName,
+				`model "${model.id}" headers`,
+				model.headers,
+			);
+			if (modelHeaders === model.headers) continue;
+			models ??= [...config.models];
+			models[index] = { ...model, headers: modelHeaders };
+		}
+		if (models) {
+			setMigratedConfigValue("models", models);
+		}
+	}
+
+	return migratedConfig ?? config;
+}
 
 /**
  * Model registry - loads and manages models, resolves API keys via AuthStorage.
@@ -763,12 +840,15 @@ export class ModelRegistry {
 			return authStatus;
 		}
 
-		if (providerApiKey.startsWith("!")) {
+		if (isCommandConfigValue(providerApiKey)) {
 			return { configured: true, source: "models_json_command" };
 		}
 
-		if (process.env[providerApiKey]) {
-			return { configured: true, source: "environment", label: providerApiKey };
+		const envVarNames = getConfigValueEnvVarNames(providerApiKey);
+		if (envVarNames.length > 0) {
+			return isConfigValueConfigured(providerApiKey)
+				? { configured: true, source: "environment", label: envVarNames.join(", ") }
+				: { configured: false };
 		}
 
 		return { configured: true, source: "models_json_key" };
@@ -819,9 +899,10 @@ export class ModelRegistry {
 	 * If provider has oauth: registers OAuth provider for /login support.
 	 */
 	registerProvider(providerName: string, config: ProviderConfigInput): void {
-		this.validateProviderConfig(providerName, config);
-		this.applyProviderConfig(providerName, config);
-		this.upsertRegisteredProvider(providerName, config);
+		const migratedConfig = migrateLegacyRegisterProviderConfigValues(providerName, config);
+		this.validateProviderConfig(providerName, migratedConfig);
+		this.applyProviderConfig(providerName, migratedConfig);
+		this.upsertRegisteredProvider(providerName, migratedConfig);
 	}
 
 	/**

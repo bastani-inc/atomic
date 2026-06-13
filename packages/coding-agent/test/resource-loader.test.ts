@@ -99,6 +99,33 @@ describe("DefaultResourceLoader", () => {
 			expect(factoryCalls).toBe(1);
 		});
 
+		it("reuses pre-trust inline extensions for the final extension set", async () => {
+			const settingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
+			let factoryCalls = 0;
+			let preTrustExtensionCount = 0;
+			const loader = new DefaultResourceLoader({
+				cwd,
+				agentDir,
+				settingsManager,
+				extensionFactories: [
+					() => {
+						factoryCalls += 1;
+					},
+				],
+			});
+
+			await loader.reload({
+				resolveProjectTrust: ({ extensionsResult }) => {
+					preTrustExtensionCount = extensionsResult.extensions.length;
+					return true;
+				},
+			});
+
+			expect(preTrustExtensionCount).toBe(1);
+			expect(factoryCalls).toBe(1);
+			expect(loader.getExtensions().extensions).toHaveLength(1);
+		});
+
 		it("should discover skills from agentDir", async () => {
 			const skillsDir = join(agentDir, "skills");
 			mkdirSync(skillsDir, { recursive: true });

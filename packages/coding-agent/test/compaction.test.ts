@@ -1,18 +1,12 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, Usage } from "@earendil-works/pi-ai";
-import { getModel } from "@earendil-works/pi-ai";
-import { readFileSync } from "fs";
-import { join } from "path";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
 	type CompactionSettings,
 	calculateContextTokens,
-	compact,
 	DEFAULT_COMPACTION_SETTINGS,
 	estimateContextTokens,
-	findCutPoint,
 	getLastAssistantUsage,
-	prepareCompaction,
 	shouldCompact,
 } from "../src/core/compaction/index.ts";
 import {
@@ -26,6 +20,8 @@ import {
 	type SessionMessageEntry,
 	type ThinkingLevelChangeEntry,
 } from "../src/core/session-manager.ts";
+import { readFileSync } from "fs";
+import { join } from "path";
 
 // ============================================================================
 // Test fixtures
@@ -93,7 +89,11 @@ function createMessageEntry(message: AgentMessage): SessionMessageEntry {
 	return entry;
 }
 
-function createCompactionEntry(summary: string, firstKeptEntryId: string): CompactionEntry {
+/**
+ * Creates a legacy CompactionEntry fixture for testing that old sessions with
+ * type:"compaction" records are treated as archival/inert at runtime.
+ */
+function createLegacyCompactionEntry(summary: string, firstKeptEntryId: string): CompactionEntry {
 	const id = `test-id-${entryCounter++}`;
 	const entry: CompactionEntry = {
 		type: "compaction",
@@ -158,44 +158,8 @@ function createThinkingLevelEntry(thinkingLevel: string): ThinkingLevelChangeEnt
 	return entry;
 }
 
-function extractText(messages: AgentMessage[]): string {
-	return messages
-		.map((message) => {
-			switch (message.role) {
-				case "user":
-					return typeof message.content === "string"
-						? message.content
-						: message.content
-								.filter((block): block is { type: "text"; text: string } => block.type === "text")
-								.map((block) => block.text)
-								.join(" ");
-				case "assistant":
-					return message.content
-						.filter((block): block is { type: "text"; text: string } => block.type === "text")
-						.map((block) => block.text)
-						.join(" ");
-				case "branchSummary":
-				case "compactionSummary":
-					return message.summary;
-				case "custom":
-				case "toolResult":
-					return typeof message.content === "string"
-						? message.content
-						: message.content
-								.filter((block): block is { type: "text"; text: string } => block.type === "text")
-								.map((block) => block.text)
-								.join(" ");
-				case "bashExecution":
-					return `${message.command}\n${message.output}`;
-				default:
-					return "";
-			}
-		})
-		.join("\n");
-}
-
 // ============================================================================
-// Unit tests
+// Unit tests — metrics helpers
 // ============================================================================
 
 describe("Token calculation", () => {
@@ -253,7 +217,6 @@ describe("shouldCompact", () => {
 		const settings: CompactionSettings = {
 			enabled: true,
 			reserveTokens: 10000,
-			keepRecentTokens: 20000,
 		};
 
 		expect(shouldCompact(95000, 100000, settings)).toBe(true);
@@ -264,74 +227,50 @@ describe("shouldCompact", () => {
 		const settings: CompactionSettings = {
 			enabled: false,
 			reserveTokens: 10000,
-			keepRecentTokens: 20000,
 		};
 
 		expect(shouldCompact(95000, 100000, settings)).toBe(false);
 	});
 });
 
-describe("findCutPoint", () => {
-	it("should find cut point based on actual token differences", () => {
-		// Create entries with cumulative token counts
-		const entries: SessionEntry[] = [];
-		for (let i = 0; i < 10; i++) {
-			entries.push(createMessageEntry(createUserMessage(`User ${i}`)));
-			entries.push(
-				createMessageEntry(createAssistantMessage(`Assistant ${i}`, createMockUsage(0, 100, (i + 1) * 1000, 0))),
-			);
-		}
-
-		// 20 entries, last assistant has 10000 tokens
-		// keepRecentTokens = 2500: keep entries where diff < 2500
-		const result = findCutPoint(entries, 0, entries.length, 2500);
-
-		// Should cut at a valid cut point (user or assistant message)
-		expect(entries[result.firstKeptEntryIndex].type).toBe("message");
-		const role = (entries[result.firstKeptEntryIndex] as SessionMessageEntry).message.role;
-		expect(role === "user" || role === "assistant").toBe(true);
-	});
-
-	it("should return startIndex if no valid cut points in range", () => {
-		const entries: SessionEntry[] = [createMessageEntry(createAssistantMessage("a"))];
-		const result = findCutPoint(entries, 0, entries.length, 1000);
-		expect(result.firstKeptEntryIndex).toBe(0);
-	});
-
-	it("should keep everything if all messages fit within budget", () => {
-		const entries: SessionEntry[] = [
-			createMessageEntry(createUserMessage("1")),
-			createMessageEntry(createAssistantMessage("a", createMockUsage(0, 50, 500, 0))),
-			createMessageEntry(createUserMessage("2")),
-			createMessageEntry(createAssistantMessage("b", createMockUsage(0, 50, 1000, 0))),
+describe("estimateContextTokens", () => {
+	it("should return the last non-aborted assistant usage tokens", () => {
+		const messages: AgentMessage[] = [
+			createUserMessage("hello"),
+			createAssistantMessage("response", createMockUsage(100, 50)),
 		];
-
-		const result = findCutPoint(entries, 0, entries.length, 50000);
-		expect(result.firstKeptEntryIndex).toBe(0);
+		const result = estimateContextTokens(messages);
+		expect(result.tokens).toBe(150);
 	});
 
-	it("should indicate split turn when cutting at assistant message", () => {
-		// Create a scenario where we cut at an assistant message mid-turn
-		const entries: SessionEntry[] = [
-			createMessageEntry(createUserMessage("Turn 1")),
-			createMessageEntry(createAssistantMessage("A1", createMockUsage(0, 100, 1000, 0))),
-			createMessageEntry(createUserMessage("Turn 2")), // index 2
-			createMessageEntry(createAssistantMessage("A2-1", createMockUsage(0, 100, 5000, 0))), // index 3
-			createMessageEntry(createAssistantMessage("A2-2", createMockUsage(0, 100, 8000, 0))), // index 4
-			createMessageEntry(createAssistantMessage("A2-3", createMockUsage(0, 100, 10000, 0))), // index 5
+	it("should return zero tokens for empty messages", () => {
+		const result = estimateContextTokens([]);
+		expect(result.tokens).toBe(0);
+	});
+
+	it("should skip aborted assistant messages", () => {
+		const abortedMsg: AssistantMessage = {
+			...createAssistantMessage("Aborted", createMockUsage(300, 150)),
+			stopReason: "aborted",
+		};
+		const messages: AgentMessage[] = [
+			createUserMessage("hello"),
+			createAssistantMessage("ok", createMockUsage(50, 30)),
+			createUserMessage("again"),
+			abortedMsg,
 		];
-
-		// With keepRecentTokens = 3000, should cut somewhere in Turn 2
-		const result = findCutPoint(entries, 0, entries.length, 3000);
-
-		// If cut at assistant message (not user), should indicate split turn
-		const cutEntry = entries[result.firstKeptEntryIndex] as SessionMessageEntry;
-		if (cutEntry.message.role === "assistant") {
-			expect(result.isSplitTurn).toBe(true);
-			expect(result.turnStartIndex).toBe(2); // Turn 2 starts at index 2
-		}
+		const result = estimateContextTokens(messages);
+		// usageTokens reflects only the last non-aborted assistant (50+30=80);
+		// tokens also includes trailing message estimates after that assistant.
+		expect(result.usageTokens).toBe(80);
+		expect(result.tokens).toBeGreaterThanOrEqual(80);
+		expect(result.lastUsageIndex).toBe(1); // index of "ok" assistant message
 	});
 });
+
+// ============================================================================
+// buildSessionContext — legacy compaction entries are archival/inert
+// ============================================================================
 
 describe("buildSessionContext", () => {
 	it("should load all messages when no compaction", () => {
@@ -348,60 +287,44 @@ describe("buildSessionContext", () => {
 		expect(loaded.model).toEqual({ provider: "anthropic", modelId: "claude-sonnet-4-5" });
 	});
 
-	it("should handle single compaction", () => {
-		// IDs: u1=test-id-0, a1=test-id-1, u2=test-id-2, a2=test-id-3, compaction=test-id-4, u3=test-id-5, a3=test-id-6
+	it("legacy type:compaction entries are inert — all messages still included", () => {
+		// Old sessions may contain type:"compaction" entries on disk.
+		// These must NOT inject a compactionSummary message or act as a context boundary.
 		const u1 = createMessageEntry(createUserMessage("1"));
 		const a1 = createMessageEntry(createAssistantMessage("a"));
 		const u2 = createMessageEntry(createUserMessage("2"));
 		const a2 = createMessageEntry(createAssistantMessage("b"));
-		const compaction = createCompactionEntry("Summary of 1,a,2,b", u2.id); // keep from u2 onwards
+		const compaction = createLegacyCompactionEntry("Summary of 1,a,2,b", u2.id);
 		const u3 = createMessageEntry(createUserMessage("3"));
 		const a3 = createMessageEntry(createAssistantMessage("c"));
 
 		const entries: SessionEntry[] = [u1, a1, u2, a2, compaction, u3, a3];
 
 		const loaded = buildSessionContext(entries);
-		// summary + kept (u2, a2) + after (u3, a3) = 5
-		expect(loaded.messages.length).toBe(5);
-		expect(loaded.messages[0].role).toBe("compactionSummary");
-		expect((loaded.messages[0] as any).summary).toContain("Summary of 1,a,2,b");
+		// Legacy compaction entry is ignored — all 6 real messages are active.
+		// No compactionSummary is injected.
+		expect(loaded.messages.length).toBe(6);
+		expect(loaded.messages.every((m) => m.role !== "compactionSummary")).toBe(true);
 	});
 
-	it("should handle multiple compactions (only latest matters)", () => {
-		// First batch
+	it("multiple legacy compaction entries are all inert", () => {
 		const u1 = createMessageEntry(createUserMessage("1"));
 		const a1 = createMessageEntry(createAssistantMessage("a"));
-		const compact1 = createCompactionEntry("First summary", u1.id);
-		// Second batch
+		const compact1 = createLegacyCompactionEntry("First summary", u1.id);
 		const u2 = createMessageEntry(createUserMessage("2"));
 		const b = createMessageEntry(createAssistantMessage("b"));
 		const u3 = createMessageEntry(createUserMessage("3"));
 		const c = createMessageEntry(createAssistantMessage("c"));
-		const compact2 = createCompactionEntry("Second summary", u3.id); // keep from u3 onwards
-		// After second compaction
+		const compact2 = createLegacyCompactionEntry("Second summary", u3.id);
 		const u4 = createMessageEntry(createUserMessage("4"));
 		const d = createMessageEntry(createAssistantMessage("d"));
 
 		const entries: SessionEntry[] = [u1, a1, compact1, u2, b, u3, c, compact2, u4, d];
 
 		const loaded = buildSessionContext(entries);
-		// summary + kept from u3 (u3, c) + after (u4, d) = 5
-		expect(loaded.messages.length).toBe(5);
-		expect((loaded.messages[0] as any).summary).toContain("Second summary");
-	});
-
-	it("should keep all messages when firstKeptEntryId is first entry", () => {
-		const u1 = createMessageEntry(createUserMessage("1"));
-		const a1 = createMessageEntry(createAssistantMessage("a"));
-		const compact1 = createCompactionEntry("First summary", u1.id); // keep from first entry
-		const u2 = createMessageEntry(createUserMessage("2"));
-		const b = createMessageEntry(createAssistantMessage("b"));
-
-		const entries: SessionEntry[] = [u1, a1, compact1, u2, b];
-
-		const loaded = buildSessionContext(entries);
-		// summary + all messages (u1, a1, u2, b) = 5
-		expect(loaded.messages.length).toBe(5);
+		// Both legacy compaction entries are ignored — all 8 real messages are active.
+		expect(loaded.messages.length).toBe(8);
+		expect(loaded.messages.every((m) => m.role !== "compactionSummary")).toBe(true);
 	});
 
 	it("should track model and thinking level changes", () => {
@@ -417,136 +340,42 @@ describe("buildSessionContext", () => {
 		expect(loaded.model).toEqual({ provider: "anthropic", modelId: "claude-sonnet-4-5" });
 		expect(loaded.thinkingLevel).toBe("high");
 	});
-});
 
-describe("prepareCompaction with previous compaction", () => {
-	it("should preserve kept messages across repeated compactions when they still fit", () => {
-		const u1 = createMessageEntry(createUserMessage("user msg 1 (summarized by compaction1)"));
-		const a1 = createMessageEntry(createAssistantMessage("assistant msg 1"));
-		const u2 = createMessageEntry(createUserMessage("user msg 2 - kept by compaction1"));
-		const a2 = createMessageEntry(createAssistantMessage("assistant msg 2"));
-		const u3 = createMessageEntry(createUserMessage("user msg 3 - kept by compaction1"));
-		const a3 = createMessageEntry(createAssistantMessage("assistant msg 3", createMockUsage(5000, 1000)));
-		const compaction1 = createCompactionEntry("First summary", u2.id);
-		const u4 = createMessageEntry(createUserMessage("user msg 4 (new after compaction1)"));
-		const a4 = createMessageEntry(createAssistantMessage("assistant msg 4", createMockUsage(8000, 2000)));
-
-		const pathEntries = [u1, a1, u2, a2, u3, a3, compaction1, u4, a4];
-		const contextBefore = buildSessionContext(pathEntries);
-		const preparation = prepareCompaction(pathEntries, DEFAULT_COMPACTION_SETTINGS);
-
-		expect(preparation).toBeDefined();
-		expect(preparation!.firstKeptEntryId).toBe(u2.id);
-		expect(preparation!.previousSummary).toBe("First summary");
-		expect(extractText(preparation!.messagesToSummarize)).not.toContain("First summary");
-		expect(preparation!.tokensBefore).toBe(estimateContextTokens(contextBefore.messages).tokens);
-
-		const compaction2: CompactionEntry = {
-			type: "compaction",
-			id: "compaction2-id",
-			parentId: a4.id,
-			timestamp: new Date().toISOString(),
-			summary: "Second summary",
-			firstKeptEntryId: preparation!.firstKeptEntryId,
-			tokensBefore: preparation!.tokensBefore,
-		};
-		const contextAfter = buildSessionContext([...pathEntries, compaction2]);
-		const contextAfterText = extractText(contextAfter.messages);
-
-		expect(contextAfterText).toContain("user msg 2 - kept by compaction1");
-		expect(contextAfterText).toContain("user msg 3 - kept by compaction1");
-	});
-
-	it("should re-summarize previously kept messages when the recent window moves past them", () => {
-		const u1 = createMessageEntry(createUserMessage("user msg 1 (summarized by compaction1)".repeat(4)));
-		const a1 = createMessageEntry(createAssistantMessage("assistant msg 1".repeat(4)));
-		const u2 = createMessageEntry(createUserMessage("user msg 2 - kept by compaction1 ".repeat(12)));
-		const a2 = createMessageEntry(createAssistantMessage("assistant msg 2 ".repeat(12)));
-		const u3 = createMessageEntry(createUserMessage("user msg 3 - kept by compaction1 ".repeat(12)));
-		const a3 = createMessageEntry(createAssistantMessage("assistant msg 3 ".repeat(12), createMockUsage(5000, 1000)));
-		const compaction1 = createCompactionEntry("First summary", u2.id);
-		const u4 = createMessageEntry(createUserMessage("user msg 4 (new after compaction1) ".repeat(12)));
-		const a4 = createMessageEntry(createAssistantMessage("assistant msg 4 ".repeat(12), createMockUsage(8000, 2000)));
-
-		const settings: CompactionSettings = {
-			...DEFAULT_COMPACTION_SETTINGS,
-			keepRecentTokens: 100,
-		};
-		const preparation = prepareCompaction([u1, a1, u2, a2, u3, a3, compaction1, u4, a4], settings);
-
-		expect(preparation).toBeDefined();
-		const summarizedText = extractText(preparation!.messagesToSummarize);
-		expect(summarizedText).toContain("user msg 2 - kept by compaction1");
-		expect(summarizedText).toContain("user msg 3 - kept by compaction1");
-		expect(summarizedText).not.toContain("First summary");
-		expect(preparation!.previousSummary).toBe("First summary");
-	});
-
-	it("should filter context deletions from summary preparation inputs", () => {
-		const oldUser = createMessageEntry(createUserMessage("old user task to summarize"));
-		const wholeDeleted = createMessageEntry(createAssistantMessage("WHOLE_ENTRY_DELETED_FROM_SUMMARY"));
+	it("context_compaction entries filter deleted targets from active context", () => {
+		const u1 = createMessageEntry(createUserMessage("old user task"));
+		const wholeDeleted = createMessageEntry(createAssistantMessage("WHOLE_ENTRY_DELETED"));
 		const partialDeleted = createMessageEntry({
 			...createAssistantMessage(""),
 			content: [
-				{ type: "text", text: "DELETED_SUMMARY_BLOCK" },
-				{ type: "text", text: "RETAINED_SUMMARY_BLOCK" },
+				{ type: "text", text: "DELETED_BLOCK" },
+				{ type: "text", text: "RETAINED_BLOCK" },
 			],
 		});
-		const fileOps = createMessageEntry({
-			...createAssistantMessage(""),
-			content: [
-				{ type: "toolCall", id: "deleted-read", name: "read", arguments: { path: "deleted-old.ts" } },
-				{ type: "toolCall", id: "retained-read", name: "read", arguments: { path: "retained-old.ts" } },
-			],
-			stopReason: "toolUse",
-		});
-		const currentUser = createMessageEntry(createUserMessage("current turn user request"));
-		const prefix = createMessageEntry({
-			...createAssistantMessage(""),
-			content: [
-				{ type: "text", text: "DELETED_PREFIX_BLOCK" },
-				{ type: "text", text: "RETAINED_PREFIX_BLOCK" },
-			],
-		});
+		const currentUser = createMessageEntry(createUserMessage("current task"));
 		const logicalDeletion = createContextCompactionEntry([
 			{ kind: "entry", entryId: wholeDeleted.id },
 			{ kind: "content_block", entryId: partialDeleted.id, blockIndex: 0 },
-			{ kind: "content_block", entryId: fileOps.id, blockIndex: 0 },
-			{ kind: "content_block", entryId: prefix.id, blockIndex: 0 },
 		]);
 		const suffix = createMessageEntry(createAssistantMessage("current suffix kept"));
-		const entries: SessionEntry[] = [
-			oldUser,
-			wholeDeleted,
-			partialDeleted,
-			fileOps,
-			currentUser,
-			prefix,
-			logicalDeletion,
-			suffix,
-		];
-		const settings: CompactionSettings = { ...DEFAULT_COMPACTION_SETTINGS, keepRecentTokens: 1 };
+		const entries: SessionEntry[] = [u1, wholeDeleted, partialDeleted, currentUser, logicalDeletion, suffix];
 
-		const preparation = prepareCompaction(entries, settings);
+		const loaded = buildSessionContext(entries);
 
-		expect(preparation).toBeDefined();
-		expect(preparation!.isSplitTurn).toBe(true);
-		const summarizedText = extractText(preparation!.messagesToSummarize);
-		const turnPrefixText = extractText(preparation!.turnPrefixMessages);
-		expect(summarizedText).toContain("old user task to summarize");
-		expect(summarizedText).not.toContain("WHOLE_ENTRY_DELETED_FROM_SUMMARY");
-		expect(summarizedText).not.toContain("DELETED_SUMMARY_BLOCK");
-		expect(summarizedText).toContain("RETAINED_SUMMARY_BLOCK");
-		expect(turnPrefixText).not.toContain("DELETED_PREFIX_BLOCK");
-		expect(turnPrefixText).toContain("RETAINED_PREFIX_BLOCK");
-		expect(preparation!.fileOps.read.has("deleted-old.ts")).toBe(false);
-		expect(preparation!.fileOps.read.has("retained-old.ts")).toBe(true);
+		// The deleted entry should not appear at all
+		expect(loaded.messages.find((m) => m.role === "assistant" && (m as AssistantMessage).content.some(
+			(c) => c.type === "text" && c.text === "WHOLE_ENTRY_DELETED"
+		))).toBeUndefined();
 
-		const laterSummary = createCompactionEntry("summary generated from filtered inputs", preparation!.firstKeptEntryId);
-		const rebuiltText = extractText(buildSessionContext([...entries, laterSummary]).messages);
-		expect(rebuiltText).not.toContain("WHOLE_ENTRY_DELETED_FROM_SUMMARY");
-		expect(rebuiltText).not.toContain("DELETED_SUMMARY_BLOCK");
-		expect(rebuiltText).not.toContain("DELETED_PREFIX_BLOCK");
+		// The retained block from the partial deletion should still be present
+		const partialMsg = loaded.messages.find((m) => m.role === "assistant" && (m as AssistantMessage).content.some(
+			(c) => c.type === "text" && c.text === "RETAINED_BLOCK"
+		));
+		expect(partialMsg).toBeDefined();
+
+		// The deleted block should NOT appear
+		expect(loaded.messages.find((m) => m.role === "assistant" && (m as AssistantMessage).content.some(
+			(c) => c.type === "text" && c.text === "DELETED_BLOCK"
+		))).toBeUndefined();
 	});
 });
 
@@ -563,16 +392,6 @@ describe("Large session fixture", () => {
 		expect(messageCount).toBeGreaterThan(100);
 	});
 
-	it("should find cut point in large session", () => {
-		const entries = loadLargeSessionEntries();
-		const result = findCutPoint(entries, 0, entries.length, DEFAULT_COMPACTION_SETTINGS.keepRecentTokens);
-
-		// Cut point should be at a message entry (user or assistant)
-		expect(entries[result.firstKeptEntryIndex].type).toBe("message");
-		const role = (entries[result.firstKeptEntryIndex] as SessionMessageEntry).message.role;
-		expect(role === "user" || role === "assistant").toBe(true);
-	});
-
 	it("should load session correctly", () => {
 		const entries = loadLargeSessionEntries();
 		const loaded = buildSessionContext(entries);
@@ -580,62 +399,11 @@ describe("Large session fixture", () => {
 		expect(loaded.messages.length).toBeGreaterThan(100);
 		expect(loaded.model).not.toBeNull();
 	});
-});
 
-// ============================================================================
-// LLM integration tests (skipped without API key)
-// ============================================================================
-
-describe.skipIf(!process.env.ANTHROPIC_OAUTH_TOKEN)("LLM summarization", () => {
-	it("should generate a compaction result for the large session", async () => {
-		const entries = loadLargeSessionEntries();
-		const model = getModel("anthropic", "claude-sonnet-4-5")!;
-
-		const preparation = prepareCompaction(entries, DEFAULT_COMPACTION_SETTINGS);
-		expect(preparation).toBeDefined();
-
-		const compactionResult = await compact(preparation!, model, process.env.ANTHROPIC_OAUTH_TOKEN!);
-
-		expect(compactionResult.summary.length).toBeGreaterThan(100);
-		expect(compactionResult.firstKeptEntryId).toBeTruthy();
-		expect(compactionResult.tokensBefore).toBeGreaterThan(0);
-
-		console.log("Summary length:", compactionResult.summary.length);
-		console.log("First kept entry ID:", compactionResult.firstKeptEntryId);
-		console.log("Tokens before:", compactionResult.tokensBefore);
-		console.log("\n--- SUMMARY ---\n");
-		console.log(compactionResult.summary);
-	}, 60000);
-
-	it("should produce valid session after compaction", async () => {
-		const entries = loadLargeSessionEntries();
-		const loaded = buildSessionContext(entries);
-		const model = getModel("anthropic", "claude-sonnet-4-5")!;
-
-		const preparation = prepareCompaction(entries, DEFAULT_COMPACTION_SETTINGS);
-		expect(preparation).toBeDefined();
-
-		const compactionResult = await compact(preparation!, model, process.env.ANTHROPIC_OAUTH_TOKEN!);
-
-		// Simulate appending compaction to entries by creating a proper entry
-		const lastEntry = entries[entries.length - 1];
-		const parentId = lastEntry.id;
-		const compactionEntry: CompactionEntry = {
-			type: "compaction",
-			id: "compaction-test-id",
-			parentId,
-			timestamp: new Date().toISOString(),
-			...compactionResult,
-		};
-		const newEntries = [...entries, compactionEntry];
-		const reloaded = buildSessionContext(newEntries);
-
-		// Should have summary + kept messages
-		expect(reloaded.messages.length).toBeLessThan(loaded.messages.length);
-		expect(reloaded.messages[0].role).toBe("compactionSummary");
-		expect((reloaded.messages[0] as any).summary).toContain(compactionResult.summary);
-
-		console.log("Original messages:", loaded.messages.length);
-		console.log("After compaction:", reloaded.messages.length);
-	}, 60000);
+	it("DEFAULT_COMPACTION_SETTINGS has no keepRecentTokens", () => {
+		// Verify the metrics-only settings shape does not include legacy keepRecentTokens
+		expect((DEFAULT_COMPACTION_SETTINGS as Record<string, unknown>)["keepRecentTokens"]).toBeUndefined();
+		expect(DEFAULT_COMPACTION_SETTINGS.enabled).toBe(true);
+		expect(DEFAULT_COMPACTION_SETTINGS.reserveTokens).toBeGreaterThan(0);
+	});
 });

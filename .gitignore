@@ -44,6 +44,7 @@ plans/
 collect.sh
 
 .atomic/todos
+.atomic/workflows/runs/
 # deep-research workflow artifacts written into <cwd>/research during tests and E2E runs
 /research/.deep-research-*/
 /research/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-*.md

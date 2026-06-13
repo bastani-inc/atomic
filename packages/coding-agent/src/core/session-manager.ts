@@ -8,20 +8,19 @@ import {
 	mkdirSync,
 	openSync,
 	readdirSync,
-	readFileSync,
 	readSync,
 	statSync,
 	writeFileSync,
 } from "fs";
 import { readdir, readFile, stat } from "fs/promises";
 import { join, resolve } from "path";
+import { StringDecoder } from "string_decoder";
 import { getAgentDir as getDefaultAgentDir, getSessionsDir } from "../config.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import {
 	type BashExecutionMessage,
 	type CustomMessage,
 	createBranchSummaryMessage,
-	createCompactionSummaryMessage,
 	createCustomMessage,
 } from "./messages.ts";
 
@@ -243,6 +242,14 @@ function createSessionId(): string {
 	return createUuidV7();
 }
 
+export function assertValidSessionId(id: string): void {
+	if (!/^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/.test(id)) {
+		throw new Error(
+			"Session id must be non-empty, contain only alphanumeric characters, '-', '_', and '.', and start and end with an alphanumeric character",
+		);
+	}
+}
+
 /** Generate a unique short ID (8 hex chars, collision-checked) */
 function generateId(byId: { has(id: string): boolean }): string {
 	for (let i = 0; i < 100; i++) {
@@ -339,19 +346,10 @@ export function parseSessionEntries(content: string): FileEntry[] {
 	return entries;
 }
 
-export function getLatestCompactionEntry(entries: SessionEntry[]): CompactionEntry | null {
-	for (let i = entries.length - 1; i >= 0; i--) {
-		if (entries[i].type === "compaction") {
-			return entries[i] as CompactionEntry;
-		}
-	}
-	return null;
-}
-
-export function getLatestCompactionBoundaryEntry(entries: SessionEntry[]): CompactionEntry | ContextCompactionEntry | null {
+export function getLatestCompactionBoundaryEntry(entries: SessionEntry[]): ContextCompactionEntry | null {
 	for (let i = entries.length - 1; i >= 0; i--) {
 		const entry = entries[i];
-		if (entry.type === "compaction" || entry.type === "context_compaction") {
+		if (entry.type === "context_compaction") {
 			return entry;
 		}
 	}
@@ -419,7 +417,6 @@ function filterMessageContentBlocks(
 		}
 		case "bashExecution":
 		case "branchSummary":
-		case "compactionSummary":
 			return message;
 	}
 }
@@ -465,7 +462,7 @@ export function buildContextDeletionFilteredPath(
 /**
  * Build the session context from entries using tree traversal.
  * If leafId is provided, walks from that entry to root.
- * Handles compaction and branch summaries along the path.
+ * Applies context-deletion filtering and includes branch summaries along the path.
  */
 export function buildSessionContext(
 	entries: SessionEntry[],
@@ -506,10 +503,9 @@ export function buildSessionContext(
 		current = current.parentId ? byId.get(current.parentId) : undefined;
 	}
 
-	// Extract settings and find compaction
+	// Extract settings
 	let thinkingLevel = "off";
 	let model: { provider: string; modelId: string } | null = null;
-	let compaction: CompactionEntry | null = null;
 
 	for (const entry of path) {
 		if (entry.type === "thinking_level_change") {
@@ -518,28 +514,16 @@ export function buildSessionContext(
 			model = { provider: entry.provider, modelId: entry.modelId };
 		} else if (entry.type === "message" && entry.message.role === "assistant") {
 			model = { provider: entry.message.provider, modelId: entry.message.model };
-		} else if (entry.type === "compaction") {
-			compaction = entry;
 		}
 	}
 
-	const latestCompactionIndex = compaction
-		? path.findIndex((e) => e.type === "compaction" && e.id === compaction.id)
-		: -1;
 	const filteredPath = buildContextDeletionFilteredPath(path);
-	const filteredEntryById = new Map(filteredPath.map((entry) => [entry.id, entry]));
 
-	// Build messages and collect corresponding entries
-	// When there's a compaction, we need to:
-	// 1. Emit summary first (entry = compaction)
-	// 2. Emit kept messages (from firstKeptEntryId up to compaction)
-	// 3. Emit messages after compaction
+	// Build active context messages from the filtered path. Legacy "compaction"
+	// entries are archival metadata and intentionally inert here.
 	const messages: AgentMessage[] = [];
 
-	const appendMessage = (rawEntry: SessionEntry) => {
-		const entry = filteredEntryById.get(rawEntry.id);
-		if (!entry) return;
-
+	const appendMessage = (entry: SessionEntry) => {
 		let message: AgentMessage | undefined;
 		if (entry.type === "message") {
 			message = entry.message;
@@ -559,35 +543,8 @@ export function buildSessionContext(
 		if (message) messages.push(message);
 	};
 
-	if (compaction) {
-		// Emit summary first. Summary compaction entries are not deletion targets for
-		// logical context compaction, so existing /compact rebuild behavior is preserved.
-		messages.push(createCompactionSummaryMessage(compaction.summary, compaction.tokensBefore, compaction.timestamp));
-
-		const compactionIdx = latestCompactionIndex;
-
-		// Emit kept messages (before compaction, starting from firstKeptEntryId)
-		let foundFirstKept = false;
-		for (let i = 0; i < compactionIdx; i++) {
-			const entry = path[i];
-			if (entry.id === compaction.firstKeptEntryId) {
-				foundFirstKept = true;
-			}
-			if (foundFirstKept) {
-				appendMessage(entry);
-			}
-		}
-
-		// Emit messages after compaction
-		for (let i = compactionIdx + 1; i < path.length; i++) {
-			const entry = path[i];
-			appendMessage(entry);
-		}
-	} else {
-		// No compaction - emit all messages, handle branch summaries and custom messages
-		for (const entry of path) {
-			appendMessage(entry);
-		}
+	for (const entry of filteredPath) {
+		appendMessage(entry);
 	}
 
 	return { messages, thinkingLevel, model };
@@ -597,15 +554,30 @@ export function buildSessionContext(
  * Compute the default session directory for a cwd.
  * Encodes cwd into a safe directory name under ~/.atomic/agent/sessions/.
  */
-export function getDefaultSessionDir(cwd: string, agentDir: string = getDefaultAgentDir()): string {
+function getDefaultSessionDirPath(cwd: string, agentDir: string = getDefaultAgentDir()): string {
 	const resolvedCwd = resolvePath(cwd);
 	const resolvedAgentDir = resolvePath(agentDir);
 	const safePath = `--${resolvedCwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
-	const sessionDir = join(resolvedAgentDir, "sessions", safePath);
+	return join(resolvedAgentDir, "sessions", safePath);
+}
+
+export function getDefaultSessionDir(cwd: string, agentDir: string = getDefaultAgentDir()): string {
+	const sessionDir = getDefaultSessionDirPath(cwd, agentDir);
 	if (!existsSync(sessionDir)) {
 		mkdirSync(sessionDir, { recursive: true });
 	}
 	return sessionDir;
+}
+
+const SESSION_READ_BUFFER_SIZE = 1024 * 1024;
+
+function parseSessionEntryLine(line: string): FileEntry | null {
+	if (!line.trim()) return null;
+	try {
+		return JSON.parse(line) as FileEntry;
+	} catch {
+		return null;
+	}
 }
 
 /** Exported for testing */
@@ -613,18 +585,34 @@ export function loadEntriesFromFile(filePath: string): FileEntry[] {
 	const resolvedFilePath = normalizePath(filePath);
 	if (!existsSync(resolvedFilePath)) return [];
 
-	const content = readFileSync(resolvedFilePath, "utf8");
 	const entries: FileEntry[] = [];
-	const lines = content.trim().split("\n");
+	const fd = openSync(resolvedFilePath, "r");
+	try {
+		const decoder = new StringDecoder("utf8");
+		const buffer = Buffer.allocUnsafe(SESSION_READ_BUFFER_SIZE);
+		let pending = "";
 
-	for (const line of lines) {
-		if (!line.trim()) continue;
-		try {
-			const entry = JSON.parse(line) as FileEntry;
-			entries.push(entry);
-		} catch {
-			// Skip malformed lines
+		while (true) {
+			const bytesRead = readSync(fd, buffer, 0, buffer.length, null);
+			if (bytesRead === 0) break;
+
+			pending += decoder.write(buffer.subarray(0, bytesRead));
+			let lineStart = 0;
+			let newlineIndex = pending.indexOf("\n", lineStart);
+			while (newlineIndex !== -1) {
+				const entry = parseSessionEntryLine(pending.slice(lineStart, newlineIndex));
+				if (entry) entries.push(entry);
+				lineStart = newlineIndex + 1;
+				newlineIndex = pending.indexOf("\n", lineStart);
+			}
+			pending = pending.slice(lineStart);
 		}
+
+		pending += decoder.end();
+		const finalEntry = parseSessionEntryLine(pending);
+		if (finalEntry) entries.push(finalEntry);
+	} finally {
+		closeSync(fd);
 	}
 
 	// Validate session header
@@ -637,30 +625,48 @@ export function loadEntriesFromFile(filePath: string): FileEntry[] {
 	return entries;
 }
 
-function isValidSessionFile(filePath: string): boolean {
+function readSessionHeader(filePath: string): SessionHeader | null {
 	try {
 		const fd = openSync(filePath, "r");
 		const buffer = Buffer.alloc(512);
 		const bytesRead = readSync(fd, buffer, 0, 512, 0);
 		closeSync(fd);
 		const firstLine = buffer.toString("utf8", 0, bytesRead).split("\n")[0];
-		if (!firstLine) return false;
-		const header = JSON.parse(firstLine);
-		return header.type === "session" && typeof header.id === "string";
+		if (!firstLine) return null;
+		const header = JSON.parse(firstLine) as Record<string, unknown>;
+		if (header.type !== "session" || typeof header.id !== "string") {
+			return null;
+		}
+		return header as unknown as SessionHeader;
 	} catch {
-		return false;
+		return null;
 	}
 }
 
+function getSessionHeaderCwd(header: SessionHeader): string | undefined {
+	const cwd = (header as { cwd?: unknown }).cwd;
+	return typeof cwd === "string" ? cwd : undefined;
+}
+
+function sessionCwdMatches(cwd: string | undefined, resolvedCwd: string): boolean {
+	return cwd !== undefined && cwd !== "" && resolvePath(cwd) === resolvedCwd;
+}
+
 /** Exported for testing */
-export function findMostRecentSession(sessionDir: string): string | null {
+export function findMostRecentSession(sessionDir: string, cwd?: string): string | null {
 	const resolvedSessionDir = normalizePath(sessionDir);
+	const resolvedCwd = cwd ? resolvePath(cwd) : undefined;
 	try {
 		const files = readdirSync(resolvedSessionDir)
 			.filter((f) => f.endsWith(".jsonl"))
 			.map((f) => join(resolvedSessionDir, f))
-			.filter(isValidSessionFile)
-			.map((path) => ({ path, mtime: statSync(path).mtime }))
+			.map((path) => ({ path, header: readSessionHeader(path) }))
+			.filter(
+				(file): file is { path: string; header: SessionHeader } =>
+					file.header !== null &&
+					(!resolvedCwd || sessionCwdMatches(getSessionHeaderCwd(file.header), resolvedCwd)),
+			)
+			.map(({ path }) => ({ path, mtime: statSync(path).mtime }))
 			.sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
 
 		return files[0]?.path || null;
@@ -840,7 +846,7 @@ async function listSessionsFromDir(
  * modifying history.
  *
  * Use buildSessionContext() to get the resolved message list for the LLM, which
- * handles compaction summaries and follows the path from root to current leaf.
+ * applies context-deletion filtering and follows the path from root to current leaf.
  */
 export class SessionManager {
 	private sessionId: string = "";
@@ -855,7 +861,13 @@ export class SessionManager {
 	private labelTimestampsById: Map<string, string> = new Map();
 	private leafId: string | null = null;
 
-	private constructor(cwd: string, sessionDir: string, sessionFile: string | undefined, persist: boolean) {
+	private constructor(
+		cwd: string,
+		sessionDir: string,
+		sessionFile: string | undefined,
+		persist: boolean,
+		newSessionOptions?: NewSessionOptions,
+	) {
 		this.cwd = resolvePath(cwd);
 		this.sessionDir = normalizePath(sessionDir);
 		this.persist = persist;
@@ -866,7 +878,7 @@ export class SessionManager {
 		if (sessionFile) {
 			this.setSessionFile(sessionFile);
 		} else {
-			this.newSession();
+			this.newSession(newSessionOptions);
 		}
 	}
 
@@ -904,6 +916,9 @@ export class SessionManager {
 	}
 
 	newSession(options?: NewSessionOptions): string | undefined {
+		if (options?.id !== undefined) {
+			assertValidSessionId(options.id);
+		}
 		this.sessionId = options?.id ?? createSessionId();
 		const timestamp = new Date().toISOString();
 		const header: SessionHeader = {
@@ -966,6 +981,10 @@ export class SessionManager {
 		return this.sessionDir;
 	}
 
+	usesDefaultSessionDir(): boolean {
+		return this.sessionDir === getDefaultSessionDirPath(this.cwd);
+	}
+
 	getSessionId(): string {
 		return this.sessionId;
 	}
@@ -1002,10 +1021,10 @@ export class SessionManager {
 	}
 
 	/** Append a message as child of current leaf, then advance leaf. Returns entry id.
-	 * Does not allow writing CompactionSummaryMessage and BranchSummaryMessage directly.
+	 * Does not allow writing branch summaries or context compaction metadata as regular messages.
 	 * Reason: we want these to be top-level entries in the session, not message session entries,
 	 * so it is easier to find them.
-	 * These need to be appended via appendCompaction() and appendBranchSummary() methods.
+	 * Branch summaries are appended via appendBranchSummary(), and context compaction metadata via appendContextCompaction().
 	 */
 	appendMessage(message: Message | CustomMessage | BashExecutionMessage): string {
 		const entry: SessionMessageEntry = {
@@ -1041,29 +1060,6 @@ export class SessionManager {
 			timestamp: new Date().toISOString(),
 			provider,
 			modelId,
-		};
-		this._appendEntry(entry);
-		return entry.id;
-	}
-
-	/** Append a compaction summary as child of current leaf, then advance leaf. Returns entry id. */
-	appendCompaction<T = unknown>(
-		summary: string,
-		firstKeptEntryId: string,
-		tokensBefore: number,
-		details?: T,
-		fromHook?: boolean,
-	): string {
-		const entry: CompactionEntry<T> = {
-			type: "compaction",
-			id: generateId(this.byId),
-			parentId: this.leafId,
-			timestamp: new Date().toISOString(),
-			summary,
-			firstKeptEntryId,
-			tokensBefore,
-			details,
-			fromHook,
 		};
 		this._appendEntry(entry);
 		return entry.id;
@@ -1478,9 +1474,9 @@ export class SessionManager {
 	 * @param cwd Working directory (stored in session header)
 	 * @param sessionDir Optional session directory. If omitted, uses default (~/.atomic/agent/sessions/<encoded-cwd>/).
 	 */
-	static create(cwd: string, sessionDir?: string): SessionManager {
+	static create(cwd: string, sessionDir?: string, options?: NewSessionOptions): SessionManager {
 		const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(cwd);
-		return new SessionManager(cwd, dir, undefined, true);
+		return new SessionManager(cwd, dir, undefined, true, options);
 	}
 
 	/**
@@ -1507,7 +1503,8 @@ export class SessionManager {
 	 */
 	static continueRecent(cwd: string, sessionDir?: string): SessionManager {
 		const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(cwd);
-		const mostRecent = findMostRecentSession(dir);
+		const filterCwd = sessionDir !== undefined && dir !== getDefaultSessionDirPath(cwd);
+		const mostRecent = findMostRecentSession(dir, filterCwd ? cwd : undefined);
 		if (mostRecent) {
 			return new SessionManager(cwd, dir, mostRecent, true);
 		}
@@ -1526,7 +1523,12 @@ export class SessionManager {
 	 * @param targetCwd Target working directory (where the new session will be stored)
 	 * @param sessionDir Optional session directory. If omitted, uses default for targetCwd.
 	 */
-	static forkFrom(sourcePath: string, targetCwd: string, sessionDir?: string): SessionManager {
+	static forkFrom(
+		sourcePath: string,
+		targetCwd: string,
+		sessionDir?: string,
+		options?: NewSessionOptions,
+	): SessionManager {
 		const resolvedSourcePath = resolvePath(sourcePath);
 		const resolvedTargetCwd = resolvePath(targetCwd);
 		const sourceEntries = loadEntriesFromFile(resolvedSourcePath);
@@ -1545,7 +1547,10 @@ export class SessionManager {
 		}
 
 		// Create new session file with new ID but forked content
-		const newSessionId = createSessionId();
+		if (options?.id !== undefined) {
+			assertValidSessionId(options.id);
+		}
+		const newSessionId = options?.id ?? createSessionId();
 		const timestamp = new Date().toISOString();
 		const fileTimestamp = timestamp.replace(/[:.]/g, "-");
 		const newSessionFile = join(dir, `${fileTimestamp}_${newSessionId}.jsonl`);
@@ -1579,7 +1584,11 @@ export class SessionManager {
 	 */
 	static async list(cwd: string, sessionDir?: string, onProgress?: SessionListProgress): Promise<SessionInfo[]> {
 		const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(cwd);
-		const sessions = await listSessionsFromDir(dir, onProgress);
+		const filterCwd = sessionDir !== undefined && dir !== getDefaultSessionDirPath(cwd);
+		const resolvedCwd = resolvePath(cwd);
+		const sessions = (await listSessionsFromDir(dir, onProgress)).filter(
+			(session) => !filterCwd || sessionCwdMatches(session.cwd, resolvedCwd),
+		);
 		sessions.sort((a, b) => b.modified.getTime() - a.modified.getTime());
 		return sessions;
 	}
@@ -1588,7 +1597,21 @@ export class SessionManager {
 	 * List all sessions across all project directories.
 	 * @param onProgress Optional callback for progress updates (loaded, total)
 	 */
-	static async listAll(onProgress?: SessionListProgress): Promise<SessionInfo[]> {
+	static async listAll(onProgress?: SessionListProgress): Promise<SessionInfo[]>;
+	static async listAll(sessionDir?: string, onProgress?: SessionListProgress): Promise<SessionInfo[]>;
+	static async listAll(
+		sessionDirOrOnProgress?: string | SessionListProgress,
+		onProgress?: SessionListProgress,
+	): Promise<SessionInfo[]> {
+		const customSessionDir =
+			typeof sessionDirOrOnProgress === "string" ? normalizePath(sessionDirOrOnProgress) : undefined;
+		const progress = typeof sessionDirOrOnProgress === "function" ? sessionDirOrOnProgress : onProgress;
+		if (customSessionDir) {
+			const sessions = await listSessionsFromDir(customSessionDir, progress);
+			sessions.sort((a, b) => b.modified.getTime() - a.modified.getTime());
+			return sessions;
+		}
+
 		const sessionsDir = getSessionsDir();
 
 		try {
@@ -1620,7 +1643,7 @@ export class SessionManager {
 				allFiles.map(async (file) => {
 					const info = await buildSessionInfo(file);
 					loaded++;
-					onProgress?.(loaded, totalFiles);
+					progress?.(loaded, totalFiles);
 					return info;
 				}),
 			);

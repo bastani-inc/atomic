@@ -10,6 +10,21 @@ export {
 	createLocalBashOperations,
 } from "./bash.ts";
 export {
+	evaluateBashCommandPolicy,
+	formatBashCommandPolicyRejection,
+	parseBashCommandSegments,
+	validateBashCommandPolicy,
+	type BashCommandParseError,
+	type BashCommandParseResult,
+	type BashCommandPolicy,
+	type BashCommandPolicyDecision,
+	type BashCommandPolicyMatchMode,
+	type BashCommandPolicyRejection,
+	type BashCommandRule,
+	type BashCommandSegment,
+	type BashCommandSegmentSource,
+} from "./bash-policy.ts";
+export {
 	createEditTool,
 	createEditToolDefinition,
 	type EditOperations,

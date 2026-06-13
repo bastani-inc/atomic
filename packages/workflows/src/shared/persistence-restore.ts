@@ -9,14 +9,14 @@
 import type { Store } from "./store.js";
 import type {
   RunSnapshot,
+  RunStatus,
   StageSnapshot,
   StageStatus,
-  WorkflowChildReplaySnapshot,
   WorkflowFailureCode,
   WorkflowFailureDisposition,
   WorkflowFailureKind,
 } from "./store-types.js";
-import type { WorkflowInputValues, WorkflowOutputValues } from "./types.js";
+import type { WorkflowExitStatus, WorkflowInputValues, WorkflowOutputValues } from "./types.js";
 import { workflowSerializableObjectSchema } from "./serializable.js";
 import { Value } from "typebox/value";
 import {
@@ -471,11 +471,12 @@ function serializableObjectOrEmpty(value: unknown): WorkflowOutputValues {
   return serializableObject(value) ?? {};
 }
 
-function isWorkflowChildReplayStatus(status: unknown): status is WorkflowChildReplaySnapshot["status"] {
-  return status === "completed";
+function isWorkflowChildReplayStatus(status: unknown): status is WorkflowExitStatus {
+  return status === "completed" || status === "skipped" || status === "cancelled" || status === "blocked";
 }
 
 function workflowChildMetadata(payload: Record<string, unknown>): Pick<StageSnapshot, "workflowChild"> {
+  if (payload["status"] !== "completed") return {};
   const workflowChild = payload["workflowChild"];
   if (!isRecord(workflowChild)) return {};
   const alias = workflowChild["alias"];
@@ -483,6 +484,8 @@ function workflowChildMetadata(payload: Record<string, unknown>): Pick<StageSnap
   const childRunId = workflowChild["runId"];
   const status = workflowChild["status"];
   const outputs = workflowChild["outputs"];
+  const exited = workflowChild["exited"];
+  const exitReason = workflowChild["exitReason"];
   if (
     typeof alias !== "string" ||
     typeof workflow !== "string" ||
@@ -512,7 +515,9 @@ function workflowChildMetadata(payload: Record<string, unknown>): Pick<StageSnap
       workflow,
       runId: childRunId,
       status,
+      ...(typeof exited === "boolean" ? { exited } : status !== "completed" || typeof exitReason === "string" ? { exited: true } : {}),
       outputs: clonedOutputs,
+      ...(typeof exitReason === "string" ? { exitReason } : {}),
     },
   };
 }
@@ -666,7 +671,12 @@ function restoreTerminalRuns(entries: readonly SessionEntry[], store: Store): vo
 
     const runMeta = findRunStartMetadata(entries, runId);
     const stages = _buildStageSnapshots(entries, runId);
-    if (status === "completed" && stages.some((stage) => stage.status !== "completed")) continue;
+    const exited = end["exited"];
+    const exitReason = end["exitReason"];
+    const resumable = end["resumable"];
+    const restoredAuthorExit = isWorkflowExitTerminalStatus(status) &&
+      (exited === true || status !== "completed" || typeof exitReason === "string" || resumable === false);
+    if (status === "completed" && !restoredAuthorExit && stages.some((stage) => stage.status !== "completed")) continue;
     store.recordRunStart({
       id: runId,
       name: start.name,
@@ -682,6 +692,7 @@ function restoreTerminalRuns(entries: readonly SessionEntry[], store: Store): vo
     });
 
     const error = end["error"];
+    const result = serializableObject(end["result"]);
     const failureKind = end["failureKind"];
     const failureCode = end["failureCode"];
     const failureRecoverability = end["failureRecoverability"];
@@ -689,11 +700,10 @@ function restoreTerminalRuns(entries: readonly SessionEntry[], store: Store): vo
     const retryAfterMs = numericRetryAfterMs(end["retryAfterMs"]);
     const failureMessage = end["failureMessage"];
     const failedStageId = end["failedStageId"];
-    const resumable = end["resumable"];
     store.recordRunEnd(
       runId,
       status,
-      undefined,
+      result,
       typeof error === "string" ? error : undefined,
       {
         ...(typeof failureKind === "string" && isWorkflowFailureKind(failureKind) ? { failureKind } : {}),
@@ -703,15 +713,24 @@ function restoreTerminalRuns(entries: readonly SessionEntry[], store: Store): vo
         ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
         ...(typeof failureMessage === "string" ? { failureMessage } : {}),
         ...(typeof failedStageId === "string" ? { failedStageId } : {}),
-        ...(typeof resumable === "boolean" ? { resumable } : {}),
+        ...(typeof resumable === "boolean" ? { resumable } : isWorkflowExitTerminalStatus(status) && restoredAuthorExit ? { resumable: false } : {}),
+        ...(restoredAuthorExit && isWorkflowExitTerminalStatus(status) ? { exited: true } : {}),
+        ...(typeof exitReason === "string" ? { exitReason } : {}),
       },
     );
   }
 }
 
-function restoreTerminalRunStatus(status: unknown): "completed" | "failed" | "killed" | undefined {
+function isWorkflowExitTerminalStatus(status: RunStatus): status is WorkflowExitStatus {
+  return status === "completed" || status === "skipped" || status === "cancelled" || status === "blocked";
+}
+
+function restoreTerminalRunStatus(status: unknown): RunStatus | undefined {
   switch (status) {
     case "completed":
+    case "skipped":
+    case "cancelled":
+    case "blocked":
     case "failed":
     case "killed":
       return status;

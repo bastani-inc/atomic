@@ -110,7 +110,7 @@ function countRuns(
   for (const r of runs) {
     if (r.endedAt === undefined && r.status === "paused") counts.paused++;
     else if (r.endedAt === undefined) counts.active++;
-    else if (r.status === "completed") counts.done++;
+    else if (r.status === "completed" || r.status === "skipped" || r.status === "cancelled" || r.status === "blocked") counts.done++;
     else if (r.status === "failed" || r.status === "killed") counts.failed++;
     if (r.endedAt === undefined && subtreeAwaitsInput(r, allRuns)) {
       counts.awaiting++;
@@ -172,6 +172,11 @@ function statusGlyph(run: RunSnapshot): string {
       return "❚❚";
     case "completed":
       return "✓";
+    case "skipped":
+    case "cancelled":
+      return "⊘";
+    case "blocked":
+      return "↑";
     case "failed":
       return "✗";
     case "killed":
@@ -189,6 +194,10 @@ function statusFg(run: RunSnapshot, theme: GraphTheme): string {
       return theme.warning;
     case "completed":
       return theme.success;
+    case "skipped":
+    case "cancelled":
+    case "blocked":
+      return theme.dim;
     case "failed":
       return theme.error;
     case "killed":
@@ -207,7 +216,7 @@ function progressLabel(run: RunSnapshot): string | undefined {
   const total = run.stages.length;
   if (total === 0) return undefined;
   const done = run.stages.filter(
-    (s) => s.status === "completed" || s.status === "failed",
+    (s) => s.status === "completed" || s.status === "failed" || s.status === "skipped",
   ).length;
   return `${done}/${total}`;
 }
@@ -364,7 +373,7 @@ export function buildThemedWidgetLines(
   const visibleCounts: RunCounts = {
     active: display.filter((r) => r.endedAt === undefined && r.status !== "paused").length,
     paused: display.filter((r) => r.endedAt === undefined && r.status === "paused").length,
-    done: display.filter((r) => r.endedAt !== undefined && r.status === "completed").length,
+    done: display.filter((r) => r.endedAt !== undefined && (r.status === "completed" || r.status === "skipped" || r.status === "cancelled" || r.status === "blocked")).length,
     failed: display.filter((r) => r.endedAt !== undefined && (r.status === "failed" || r.status === "killed")).length,
     awaiting: counts.awaiting,
   };

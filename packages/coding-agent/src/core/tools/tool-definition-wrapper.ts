@@ -2,6 +2,13 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { TSchema } from "typebox";
 import type { ExtensionContext, ToolDefinition } from "../extensions/types.ts";
 
+declare module "@earendil-works/pi-agent-core" {
+	interface AgentTool<TParameters extends TSchema = TSchema, TDetails = any> {
+		/** Optional per-tool character cap for model-visible result persistence. Use Infinity to opt out. */
+		maxResultSizeChars?: number;
+	}
+}
+
 /** Wrap a ToolDefinition into an AgentTool for the core runtime. */
 export function wrapToolDefinition<TParams extends TSchema, TDetails = unknown>(
 	definition: ToolDefinition<TParams, TDetails>,
@@ -12,6 +19,7 @@ export function wrapToolDefinition<TParams extends TSchema, TDetails = unknown>(
 		label: definition.label,
 		description: definition.description,
 		parameters: definition.parameters,
+		maxResultSizeChars: definition.maxResultSizeChars,
 		prepareArguments: definition.prepareArguments,
 		executionMode: definition.executionMode,
 		execute: (toolCallId, params, signal, onUpdate) =>
@@ -41,6 +49,7 @@ export function createToolDefinitionFromAgentTool<TParams extends TSchema = TSch
 		label: tool.label,
 		description: tool.description,
 		parameters: tool.parameters,
+		maxResultSizeChars: tool.maxResultSizeChars,
 		prepareArguments: tool.prepareArguments,
 		executionMode: tool.executionMode,
 		execute: async (toolCallId, params, signal, onUpdate) => tool.execute(toolCallId, params, signal, onUpdate),

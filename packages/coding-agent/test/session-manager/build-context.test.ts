@@ -117,8 +117,11 @@ describe("buildSessionContext", () => {
 		});
 	});
 
-	describe("with compaction", () => {
-		it("includes summary before kept messages", () => {
+	describe("with legacy type:compaction entries (archival/inert)", () => {
+		it("legacy compaction entry is ignored — all messages included without summary", () => {
+			// Old sessions may contain type:"compaction" entries on disk.
+			// These are now archival only: no compactionSummary message is injected,
+			// and they do not act as a context boundary.
 			const entries: SessionEntry[] = [
 				msg("1", null, "user", "first"),
 				msg("2", "1", "assistant", "response1"),
@@ -130,30 +133,15 @@ describe("buildSessionContext", () => {
 			];
 			const ctx = buildSessionContext(entries);
 
-			// Should have: summary + kept (3,4) + after (6,7) = 5 messages
-			expect(ctx.messages).toHaveLength(5);
-			expect((ctx.messages[0] as any).summary).toContain("Summary of first two turns");
-			expect((ctx.messages[1] as any).content).toBe("second");
-			expect((ctx.messages[2] as any).content[0].text).toBe("response2");
-			expect((ctx.messages[3] as any).content).toBe("third");
-			expect((ctx.messages[4] as any).content[0].text).toBe("response3");
+			// All 6 real messages are included; no compactionSummary injected.
+			expect(ctx.messages).toHaveLength(6);
+			expect(ctx.messages.every((m) => m.role !== "compactionSummary")).toBe(true);
+			expect((ctx.messages[0] as any).content).toBe("first");
+			expect((ctx.messages[2] as any).content).toBe("second");
+			expect((ctx.messages[4] as any).content).toBe("third");
 		});
 
-		it("handles compaction keeping from first message", () => {
-			const entries: SessionEntry[] = [
-				msg("1", null, "user", "first"),
-				msg("2", "1", "assistant", "response"),
-				compaction("3", "2", "Empty summary", "1"),
-				msg("4", "3", "user", "second"),
-			];
-			const ctx = buildSessionContext(entries);
-
-			// Summary + all messages (1,2,4)
-			expect(ctx.messages).toHaveLength(4);
-			expect((ctx.messages[0] as any).summary).toContain("Empty summary");
-		});
-
-		it("multiple compactions uses latest", () => {
+		it("multiple legacy compaction entries are all inert", () => {
 			const entries: SessionEntry[] = [
 				msg("1", null, "user", "a"),
 				msg("2", "1", "assistant", "b"),
@@ -165,9 +153,9 @@ describe("buildSessionContext", () => {
 			];
 			const ctx = buildSessionContext(entries);
 
-			// Should use second summary, keep from 4
-			expect(ctx.messages).toHaveLength(4);
-			expect((ctx.messages[0] as any).summary).toContain("Second summary");
+			// All 5 real messages are included; no compactionSummary injected.
+			expect(ctx.messages).toHaveLength(5);
+			expect(ctx.messages.every((m) => m.role !== "compactionSummary")).toBe(true);
 		});
 	});
 
@@ -207,9 +195,9 @@ describe("buildSessionContext", () => {
 			expect((ctx.messages[3] as any).content).toBe("new direction");
 		});
 
-		it("complex tree with multiple branches and compaction", () => {
+		it("complex tree with multiple branches and legacy compaction (inert)", () => {
 			// Tree:
-			//   1 -> 2 -> 3 -> 4 -> compaction(5) -> 6 -> 7 (main path)
+			//   1 -> 2 -> 3 -> 4 -> legacyCompaction(5) -> 6 -> 7 (main path)
 			//              \-> 8 -> 9 (abandoned branch)
 			//                    \-> branchSummary(10) -> 11 (resumed from 3)
 			const entries: SessionEntry[] = [
@@ -228,14 +216,15 @@ describe("buildSessionContext", () => {
 				msg("11", "10", "user", "better approach"),
 			];
 
-			// Main path to 7: summary + kept(3,4) + after(6,7)
+			// Main path to 7: legacy compaction entry is inert — all 6 real messages
+			// (1,2,3,4,6,7) are included with no compactionSummary injected.
 			const ctxMain = buildSessionContext(entries, "7");
-			expect(ctxMain.messages).toHaveLength(5);
-			expect((ctxMain.messages[0] as any).summary).toContain("Compacted history");
-			expect((ctxMain.messages[1] as any).content).toBe("q2");
-			expect((ctxMain.messages[2] as any).content[0].text).toBe("r2");
-			expect((ctxMain.messages[3] as any).content).toBe("q3");
-			expect((ctxMain.messages[4] as any).content[0].text).toBe("r3");
+			expect(ctxMain.messages).toHaveLength(6);
+			expect(ctxMain.messages.every((m) => m.role !== "compactionSummary")).toBe(true);
+			expect((ctxMain.messages[0] as any).content).toBe("start");
+			expect((ctxMain.messages[2] as any).content).toBe("q2");
+			expect((ctxMain.messages[4] as any).content).toBe("q3");
+			expect((ctxMain.messages[5] as any).content[0].text).toBe("r3");
 
 			// Branch path to 11: 1,2,3 + branch_summary + 11
 			const ctxBranch = buildSessionContext(entries, "11");

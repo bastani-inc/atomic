@@ -3,9 +3,9 @@
  * cross-ref: spec §5.5
  */
 
-import type { WorkflowInputValues, WorkflowOutputValues } from "./types.js";
+import type { WorkflowExitStatus, WorkflowInputValues, WorkflowOutputValues } from "./types.js";
 
-export type RunStatus = "pending" | "running" | "paused" | "completed" | "failed" | "killed";
+export type RunStatus = "pending" | "running" | "paused" | WorkflowExitStatus | "failed" | "killed";
 export type StageStatus =
   | "pending"
   | "running"
@@ -32,10 +32,12 @@ export type WorkflowFailureCode =
   | "unknown";
 
 /**
- * Human-in-the-loop prompt kind. Mirrors the four `WorkflowUIContext` methods.
+ * Human-in-the-loop prompt kind. Mirrors the `WorkflowUIContext` methods.
  * cross-ref: src/shared/types.ts WorkflowUIContext
  */
-export type PromptKind = "input" | "confirm" | "select" | "editor";
+export type PromptKind = "input" | "confirm" | "select" | "editor" | "custom";
+
+export type CustomPromptIdentitySource = "caller" | "factory" | "callsite";
 
 /**
  * A pending HIL prompt awaiting user response. Surfaced through the graph
@@ -53,6 +55,10 @@ export interface PendingPrompt {
   readonly choices?: readonly string[];
   /** Initial value for `kind: "input"` and `kind: "editor"`. */
   readonly initial?: string;
+  /** Hash of caller-supplied or derived replay identity for `kind: "custom"`. */
+  readonly customIdentityHash?: string;
+  /** Explains how a custom prompt replay identity was derived without storing the raw identity. */
+  readonly customIdentitySource?: CustomPromptIdentitySource;
   /** Issue timestamp (ms since epoch). */
   readonly createdAt: number;
 }
@@ -119,8 +125,11 @@ export interface WorkflowChildReplaySnapshot {
   readonly alias: string;
   readonly workflow: string;
   readonly runId: string;
-  readonly status: "completed";
+  readonly status: WorkflowExitStatus;
+  /** True when the child reached this terminal status through ctx.exit(). */
+  readonly exited?: boolean;
   readonly outputs: WorkflowOutputValues;
+  readonly exitReason?: string;
 }
 
 export interface StageSnapshot {
@@ -237,6 +246,10 @@ export interface RunSnapshot {
   resumedAt?: number;
   result?: WorkflowOutputValues;
   error?: string;
+  /** True when the run reached its terminal status through ctx.exit(). */
+  exited?: boolean;
+  /** Optional author-supplied reason from ctx.exit(). */
+  exitReason?: string;
   /** Structured workflow failure category for failed runs. */
   failureKind?: WorkflowFailureKind;
   /** Specific additive workflow failure code within `failureKind`. */

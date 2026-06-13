@@ -10,6 +10,7 @@ Sessions auto-save to `~/.atomic/agent/sessions/`, organized by working director
 atomic -c                  # Continue most recent session
 atomic -r                  # Browse and select from past sessions
 atomic --no-session        # Ephemeral mode; do not save
+atomic --name "my task"    # Set session display name at startup
 atomic --session <path|id> # Use a specific session file or partial session ID
 atomic --fork <path|id>    # Fork a session file or partial session ID into a new session
 ```
@@ -29,7 +30,7 @@ For the JSONL file format and SessionManager API, see [Session Format](/session-
 | `/tree` | Navigate the current session tree |
 | `/fork` | Create a new session from a previous user message |
 | `/clone` | Duplicate the current active branch into a new session |
-| `/compact` | Apply Verbatim Compaction with validated logical deletions; see [Compaction](/compaction) |
+| `/compact` | Apply Verbatim Compaction with transcript-bound, validated logical deletions; see [Compaction](/compaction) |
 | `/export [file]` | Export session to HTML |
 | `/share` | Upload as private GitHub gist with shareable HTML link |
 
@@ -54,6 +55,13 @@ Use `/name <name>` to set a human-readable session name:
 
 ```text
 /name Refactor auth module
+```
+
+Set the name at startup with `--name` or `-n`:
+
+```bash
+atomic --name "Refactor auth module"
+atomic --name "CI audit" -p "Review this build failure"
 ```
 
 Named sessions are easier to find in `/resume` and `atomic -r`.
@@ -128,10 +136,12 @@ When prompted, choose one of:
 2. summarize with the default prompt
 3. summarize with custom focus instructions
 
+Branch summaries are separate from `/compact`: branch navigation can generate summary prose (optionally with focus instructions), while Verbatim Compaction records validated deletion targets and does not accept summary instructions.
+
 See [Compaction](/compaction) for Verbatim Compaction, branch summarization internals, and extension hooks.
 
 ## Session Format
 
-Session files are JSONL and contain message entries, model changes, thinking-level changes, labels, summary compactions, context compactions, branch summaries, and extension entries.
+Session files are JSONL and contain message entries, model changes, thinking-level changes, labels, context compactions, branch summaries, extension entries, and retired legacy `type:"compaction"` records from older sessions.
 
 For parsers, extensions, SDK usage, and the full SessionManager API, see [Session Format](/session-format).
