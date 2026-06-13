@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed workflow graph overlay host-question handoff cleanup and repaint behavior: closing the overlay now unsubscribes host custom-UI listeners, restoring after a host question explicitly requests a render, and the status copy explains that the graph is paused while the user answers the blocking question.
+
 ## [0.8.28] - 2026-06-11
 
 ### Added

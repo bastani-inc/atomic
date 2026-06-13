@@ -48,6 +48,7 @@ export interface OverlayUISurface {
   getEditorComponent?: () => PiEditorFactory | undefined;
   getChatRenderSettings?: () => OverlayChatRenderSettings | undefined;
   getFooterDataProvider?: () => ReadonlyFooterDataProvider;
+  setStatus?: (key: string, value: string | undefined) => void;
 }
 
 export interface OverlayPiSurface {
@@ -99,6 +100,9 @@ const FULLSCREEN_OVERLAY_OPTIONS: PiOverlayOptions = {
 
 const MOUSE_SCROLL_TRACKING_ON = "\x1b[?1000h\x1b[?1006h";
 const MOUSE_SCROLL_TRACKING_OFF = "\x1b[?1006l\x1b[?1000l";
+const WORKFLOW_STATUS_KEY = "pi-workflows";
+const HOST_CUSTOM_UI_PAUSED_STATUS =
+  "Workflow graph paused while you answer this question. Return to the graph after responding.";
 
 function setMouseScrollTracking(enabled: boolean): void {
   if (!process.stdout.isTTY) return;
@@ -143,6 +147,7 @@ export function buildGraphOverlayAdapter(
   let finishMounted: (() => void) | null = null;
   let observedUi: OverlayUISurface | undefined;
   let unsubscribeHostCustomUi: (() => void) | null = null;
+  let currentRequestRender: (() => void) | null = null;
   let hostInlineCustomUiActive = false;
   let overlayYieldedToHostCustomUi = false;
 
@@ -160,6 +165,7 @@ export function buildGraphOverlayAdapter(
     setMouseScrollTracking(false);
     currentHandle.setHidden(true);
     currentHandle.unfocus();
+    observedUi?.setStatus?.(WORKFLOW_STATUS_KEY, HOST_CUSTOM_UI_PAUSED_STATUS);
     overlayYieldedToHostCustomUi = true;
   }
 
@@ -172,6 +178,14 @@ export function buildGraphOverlayAdapter(
     setMouseScrollTracking(currentView?.wantsMouseScrollTracking() ?? true);
     currentHandle.setHidden(false);
     currentHandle.focus();
+    currentRequestRender?.();
+  }
+
+  function clearHostCustomUiObservation(): void {
+    unsubscribeHostCustomUi?.();
+    unsubscribeHostCustomUi = null;
+    observedUi = undefined;
+    hostInlineCustomUiActive = false;
   }
 
   function observeHostCustomUi(ui: OverlayUISurface | undefined): void {
@@ -196,11 +210,14 @@ export function buildGraphOverlayAdapter(
     overlayYieldedToHostCustomUi = false;
     currentHandle?.hide();
     finishMounted?.();
+    observedUi?.setStatus?.(WORKFLOW_STATUS_KEY, undefined);
     currentView?.dispose();
     currentHandle = null;
     finishMounted = null;
     currentView = null;
+    currentRequestRender = null;
     mounted = false;
+    clearHostCustomUiObservation();
   }
 
   /**
@@ -306,7 +323,7 @@ export function buildGraphOverlayAdapter(
 
     const custom = ui?.custom;
     if (typeof custom !== "function") return;
-    const uiStatus = ui as { setStatus?: (key: string, value: string | undefined) => void } | undefined;
+    const uiStatus = ui;
 
     let settled = false;
     const factory = (
@@ -315,15 +332,19 @@ export function buildGraphOverlayAdapter(
       keybindings: PiKeybindings,
       done: (result: undefined) => void,
     ): PiCustomComponent => {
+      currentRequestRender = () => tui.requestRender?.();
       const finish = (): void => {
         if (settled) return;
         settled = true;
         setMouseScrollTracking(false);
+        observedUi?.setStatus?.(WORKFLOW_STATUS_KEY, undefined);
         currentView?.dispose();
         currentView = null;
         currentHandle = null;
         finishMounted = null;
+        currentRequestRender = null;
         mounted = false;
+        clearHostCustomUiObservation();
         done(undefined);
       };
       const view = new WorkflowAttachPane({

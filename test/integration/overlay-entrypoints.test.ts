@@ -163,6 +163,8 @@ interface MockUiOpts {
   rows?: number;
   /** Optional terminal-col hint surfaced to the factory's `tui.terminal.columns`. */
   columns?: number;
+  /** Optional observer for custom overlay render requests. */
+  onRequestRender?: () => void;
 }
 
 /**
@@ -181,7 +183,7 @@ function buildMockUi(mockOpts: MockUiOpts = {}): {
       const { handle } = buildOverlayHandle();
       options.onHandle?.(handle);
       const tui: PiCustomOverlayFactoryTui = {
-        requestRender: () => undefined,
+        requestRender: () => mockOpts.onRequestRender?.(),
         terminal:
           mockOpts.rows != null || mockOpts.columns != null
             ? { rows: mockOpts.rows, columns: mockOpts.columns }
@@ -261,6 +263,7 @@ function buildInteractiveHostCustomUi(): {
 
 function attachHostCustomUiState(ui: NonNullable<OverlayPiSurface["ui"]>): {
   setActive: (active: boolean) => void;
+  listenerCount: () => number;
 } {
   let depth = 0;
   const listeners = new Set<PiHostCustomUiStateListener>();
@@ -281,6 +284,7 @@ function attachHostCustomUiState(ui: NonNullable<OverlayPiSurface["ui"]>): {
       const state = snapshot();
       for (const listener of listeners) listener(state);
     },
+    listenerCount: () => listeners.size,
   };
 }
 
@@ -658,7 +662,16 @@ describe("buildGraphOverlayAdapter — open with pi.ui.custom", () => {
   });
 
   test("host inline custom UI hides and restores a visible graph overlay without remounting (#1353)", () => {
-    const { ui, calls } = buildMockUi();
+    let renderCalls = 0;
+    const { ui, calls } = buildMockUi({
+      onRequestRender: () => {
+        renderCalls++;
+      },
+    });
+    const statusMessages: Array<{ key: string; value: string | undefined }> = [];
+    ui.setStatus = (key, value) => {
+      statusMessages.push({ key, value });
+    };
     const hostCustomUi = attachHostCustomUiState(ui);
     const store = createStore();
     const adapter = buildGraphOverlayAdapter({ ui }, store);
@@ -690,6 +703,15 @@ describe("buildGraphOverlayAdapter — open with pi.ui.custom", () => {
     assert.equal(focused, false);
     assert.deepEqual(setHiddenCalls, [true]);
     assert.equal(unfocusCalls, 1);
+    assert.ok(
+      statusMessages.some(
+        (status) =>
+          status.key === "pi-workflows" &&
+          status.value ===
+            "Workflow graph paused while you answer this question. Return to the graph after responding.",
+      ),
+      "yielding to a host question should explain how to return to the graph",
+    );
     assert.equal(calls.length, 1, "host yield must not remount the overlay");
 
     hostCustomUi.setActive(false);
@@ -697,7 +719,43 @@ describe("buildGraphOverlayAdapter — open with pi.ui.custom", () => {
     assert.equal(focused, true);
     assert.deepEqual(setHiddenCalls, [true, false]);
     assert.equal(focusCalls, 1);
+    assert.equal(renderCalls, 1, "host restore must explicitly request a render");
     assert.equal(calls.length, 1, "host restore must not remount the overlay");
+  });
+
+  test("close unsubscribes from host custom UI state changes (#1353)", () => {
+    const { ui, calls } = buildMockUi();
+    const hostCustomUi = attachHostCustomUiState(ui);
+    const store = createStore();
+    const adapter = buildGraphOverlayAdapter({ ui }, store);
+
+    adapter.open("run-1");
+    assert.equal(hostCustomUi.listenerCount(), 1);
+
+    const { handle } = calls[0]!;
+    const setHiddenCalls: boolean[] = [];
+    let focusCalls = 0;
+    let unfocusCalls = 0;
+    handle.isHidden = () => false;
+    handle.setHidden = (value) => {
+      setHiddenCalls.push(value);
+    };
+    handle.focus = () => {
+      focusCalls++;
+    };
+    handle.unfocus = () => {
+      unfocusCalls++;
+    };
+
+    adapter.close();
+    assert.equal(hostCustomUi.listenerCount(), 0);
+
+    hostCustomUi.setActive(true);
+    hostCustomUi.setActive(false);
+
+    assert.deepEqual(setHiddenCalls, []);
+    assert.equal(focusCalls, 0);
+    assert.equal(unfocusCalls, 0);
   });
 
   test("host inline custom UI does not restore an overlay hidden by the user (#1353)", () => {
