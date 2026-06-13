@@ -18,6 +18,7 @@ Use `/login` in interactive mode, then select a provider:
 - ChatGPT Plus/Pro (Codex)
 - Claude Pro/Max
 - GitHub Copilot
+- Cursor (experimental)
 
 Use `/logout` to clear credentials. Tokens are stored in `~/.atomic/agent/auth.json` and auto-refresh when expired.
 
@@ -38,6 +39,19 @@ Anthropic subscription auth is active for Claude Pro/Max accounts. Third-party h
 
 - Press Enter for github.com, or enter your GitHub Enterprise Server domain
 - If you get "model not supported", enable it in VS Code: Copilot Chat → model selector → select model → "Enable"
+
+### Cursor (experimental)
+
+Cursor support is bundled as the first-party `@bastani/cursor` extension and appears in `/login` as **Cursor (experimental)**. It uses Cursor's browser PKCE flow and stores OAuth credentials in `~/.atomic/agent/auth.json`; do not paste Cursor tokens into environment variables, command-line arguments, or custom proxies. Atomic identifies as a Cursor CLI-compatible client against private endpoints; maintainers and users should explicitly accept that this may conflict with Cursor's terms of service, stop working without notice, or affect the Cursor account used to authenticate.
+
+Current limitations:
+
+- Cursor uses private, undocumented APIs and Cursor CLI-compatible headers. Atomic keeps the transport isolated and labels this provider experimental because Cursor may change the protocol without notice; use may conflict with Cursor's terms of service or provider-side account policies.
+- Text input is supported; vision/image input is rejected with a clear error.
+- Model metadata is cached token-free in `~/.atomic/agent/cursor-model-catalog.json` and can be used at startup before fresh credentials are available. Estimated labels are used only when no valid cache exists and allowed live `GetUsableModels` discovery failures occur; refresh-time discovery is best-effort so rotated credentials are still persisted.
+- The implementation avoids the prior localhost proxy/child-process bridge design. HTTP/2 Connect request/framing code is isolated, buffered across arbitrary chunks, tested with injected fakes, and uses a minimal production protobuf codec with field-order-independent exec ids, protobuf `Value` plus raw UTF-8/JSON tool arguments, historical tool-result correlation, checkpoint token-details parsing, paused-stream abort/idle cleanup, catalog-aware fast/thinking model grouping, and credential/PKCE-redacted protocol errors.
+
+Select models as `cursor/<model-id>` (default: `cursor/composer-2`).
 
 ## API Keys
 

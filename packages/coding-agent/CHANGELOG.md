@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added the experimental bundled `@bastani/cursor` provider scaffold so `/login` can offer Cursor OAuth, estimated fallback exposes `cursor/composer-2`, and Cursor model mapping/streaming hooks are available behind an isolated HTTP/2 Connect transport boundary with production-default protobuf decoding, buffered Connect frames, write-before-headers Run streaming, stable Cursor conversation ids, schema-correct Cursor MCP tool advertisement, Cursor MCP tool-call decoding with protobuf `Value` or raw UTF-8/JSON arguments and exec-id metadata, same-stream MCP tool-result resume, abort/idle cleanup for paused tool streams, Connect end-stream error classification, exact live model id fidelity without static default injection, fast/thinking catalog grouping, and usage-delta accumulation.
 - Added the opt-in `createStructuredOutputTool({ schema, capture, output, name })` factory for terminating machine-readable final answers with schema-as-parameters validation, flat `details`, in-process capture, flat private `output.json` capture plus `output.meta.json` sidecar metadata, and prompt guidance for exact-once use without registering `structured_output` in normal agent sessions by default ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
 
 ### Changed
@@ -19,6 +20,11 @@
 - Fixed terminating `structured_output` results to opt out of oversized-result persistence so large final JSON stays inline instead of being replaced by a `<persisted-output>` pointer ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
 - Fixed cross-process structured-output file capture to preserve flat schema-valid params in `output.json` and write call metadata to an `output.meta.json` sidecar so parent readback can reject stale or non-final captures instead of accepting any schema-valid `output.json` payload by existence alone ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
 - Fixed bundled subagent handling so explicit empty `tools: []` plus `outputSchema` grants only the schema-backed `structured_output` runtime tool instead of restoring default tools ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
+- Fixed the bundled experimental Cursor provider to honor per-request stream deadlines across open/read/resume writes, reset timed-out or aborted streams, clean up replaced paused turns safely, catch cleanup cancellation failures, tolerate non-MCP Cursor exec protocol messages without ending assistant turns, and align Run requests with Cursor's private CLI protocol by using blob/KV conversation state plus request-context tool-definition responses without the unsupported custom system-prompt field ([#1286](https://github.com/bastani-inc/atomic/issues/1286)).
+
+### Security
+
+- Kept Cursor credentials OAuth-only with token/header and PKCE poll-secret redaction and no local proxy or child-process bridge.
 
 ## [0.8.28] - 2026-06-11
 

@@ -12,7 +12,7 @@
     },
     "packages/coding-agent": {
       "name": "@bastani/atomic",
-      "version": "0.8.28-alpha.4",
+      "version": "0.8.28",
       "bin": {
         "atomic": "dist/cli.js",
       },
@@ -60,9 +60,19 @@
         "@mariozechner/clipboard": "^0.3.6",
       },
     },
+    "packages/cursor": {
+      "name": "@bastani/cursor",
+      "version": "0.8.28",
+      "peerDependencies": {
+        "@bastani/atomic": "*",
+      },
+      "optionalPeers": [
+        "@bastani/atomic",
+      ],
+    },
     "packages/intercom": {
       "name": "@bastani/intercom",
-      "version": "0.8.28-alpha.4",
+      "version": "0.8.28",
       "dependencies": {
         "typebox": "^1.1.24",
       },
@@ -77,7 +87,7 @@
     },
     "packages/mcp": {
       "name": "@bastani/mcp",
-      "version": "0.8.28-alpha.4",
+      "version": "0.8.28",
       "dependencies": {
         "@modelcontextprotocol/ext-apps": "^1.7.2",
         "@modelcontextprotocol/sdk": "^1.25.1",
@@ -99,7 +109,7 @@
     },
     "packages/subagents": {
       "name": "@bastani/subagents",
-      "version": "0.8.28-alpha.4",
+      "version": "0.8.28",
       "dependencies": {
         "jiti": "^2.7.0",
         "typebox": "^1.1.24",
@@ -119,7 +129,7 @@
     },
     "packages/web-access": {
       "name": "@bastani/web-access",
-      "version": "0.8.28-alpha.4",
+      "version": "0.8.28",
       "dependencies": {
         "@mozilla/readability": "^0.6.0",
         "linkedom": "^0.18.12",
@@ -138,7 +148,7 @@
     },
     "packages/workflows": {
       "name": "@bastani/workflows",
-      "version": "0.8.28-alpha.4",
+      "version": "0.8.28",
       "dependencies": {
         "jiti": "^2.7.0",
         "typebox": "^1.1.24",
@@ -209,6 +219,8 @@
     "@babel/runtime": ["@babel/runtime@7.29.2", "", {}, "sha512-JiDShH45zKHWyGe4ZNVRrCjBz8Nh9TMmZG1kh4QTK8hCBTWBi8Da+i7s1fJw7/lYpM4ccepSNfqzZ/QvABBi5g=="],
 
     "@bastani/atomic": ["@bastani/atomic@workspace:packages/coding-agent"],
+
+    "@bastani/cursor": ["@bastani/cursor@workspace:packages/cursor"],
 
     "@bastani/intercom": ["@bastani/intercom@workspace:packages/intercom"],
 
