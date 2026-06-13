@@ -1,8 +1,8 @@
 # Cursor protocol notes
 
-This directory contains the isolated Cursor protobuf protocol codec and protocol notes. The codec is intentionally minimal and hand-maintained for the message fields Atomic currently uses; generated protobufs can replace or augment it here without touching provider registration.
+This directory contains the isolated Cursor protobuf protocol codec and vendored generated protobuf descriptors. The codec intentionally follows the MIT-licensed [`ndraiman/pi-cursor-provider`](https://github.com/ndraiman/pi-cursor-provider) implementation at commit `82fc4e73f9ae820d87b34ac36713b18989910a36`: request and control messages are built with the generated `agent_pb.ts` descriptors and `@bufbuild/protobuf`, not with hand-maintained field concatenation.
 
-Known private endpoints (adapted from the MIT-licensed `ndraiman/pi-cursor-provider` project, without copying the proxy implementation):
+Known private endpoints:
 
 - Browser login: `https://cursor.com/loginDeepControl?challenge=<pkce>&uuid=<uuid>&mode=login&redirectTarget=cli`
 - Login poll: `https://api2.cursor.sh/auth/poll?uuid=<uuid>&verifier=<verifier>`
@@ -10,36 +10,25 @@ Known private endpoints (adapted from the MIT-licensed `ndraiman/pi-cursor-provi
 - Model discovery: `POST https://api2.cursor.sh/agent.v1.AgentService/GetUsableModels`
 - Agent stream: `POST https://api2.cursor.sh/agent.v1.AgentService/Run`
 
-Centralized headers live in `src/config.ts`, including `x-cursor-client-version: cli-2026.01.09-231024f`, `x-cursor-client-type: cli`, and `x-ghost-mode: true`. `src/transport.ts` is the only module that should construct Cursor RPC headers or HTTP/2 Connect frames.
+`src/transport.ts` exposes an injectable HTTP/2 client and protocol codec seam plus buffered Connect frame helpers. Production defaults use `CursorProtobufProtocolCodec` and a Node HTTP/2 bridge because Bun's `node:http2` behavior is not reliable against Cursor's private API; this mirrors the reference provider's bridge approach.
 
-`src/transport.ts` exposes an injectable HTTP/2 client and protocol codec seam plus buffered Connect frame helpers. Production defaults use `CursorProtobufProtocolCodec`; unit-test transport doubles live under `test/unit/` so the bundled provider does not export mock protocol surfaces. Run requests write the initial Connect frame before response headers, and stream handles install response/data/error/close listeners eagerly to avoid missed terminal events.
+Protocol behavior intentionally copied from the reference provider:
 
-Field provenance (from `ndraiman/pi-cursor-provider` vendored `proto/agent_pb.ts` commit `82fc4e7`, itself derived from MIT `opencode-cursor`):
-
-- `AgentClientMessage.run_request = 1`
-- `AgentClientMessage.exec_client_message = 2`
-- `AgentClientMessage.conversation_action = 4`
-- `AgentRunRequest.conversation_state = 1`, `action = 2`, `model_details = 3`, `conversation_id = 5`; `conversation_id` is the stable Atomic session/conversation id when available, while request ids remain per-call tracing/message-id seeds. Cursor also has `custom_system_prompt = 8`, but Atomic intentionally does not emit it because Cursor maps it to an allowlisted/unsupported `--system-prompt` option; system prompts are carried through `ConversationStateStructure.root_prompt_messages_json = 1` as a blob id instead.
-- `AgentRunRequest.mcp_tools = 4` exists in the private schema, but Atomic does not emit it in the initial `Run` request. Tool definitions are returned when Cursor sends an `exec_server_message.request_context_args = 10` control message on the active stream.
-- `McpTools.mcp_tools = 1` repeats `McpToolDefinition` messages inside the request-context response payload.
-- `McpToolDefinition.name = 1`, `description = 2`, `input_schema = 3` (JSON schema encoded as `google.protobuf.Value` bytes), `provider_identifier = 4`, `tool_name = 5`
-- `ConversationStateStructure.root_prompt_messages_json = 1`, `turns = 8`; both values are content-addressed blob ids. Cursor fetches the blob payloads by sending `AgentServerMessage.kv_server_message = 4` / `get_blob_args = 2`, and Atomic replies with `AgentClientMessage.kv_client_message = 3` / `get_blob_result = 2` on the same stream.
-- `ConversationAction.user_message_action = 1`, `cancel_action = 3`
-- `UserMessageAction.user_message = 1`; `UserMessage.text = 1`, `message_id = 2`
-- `ModelDetails.model_id = 1`, `thinking_details = 2`, `display_name = 4`, `max_mode = 7`
-- `AgentServerMessage.interaction_update = 1`, `exec_server_message = 2`, `conversation_checkpoint_update = 3`, `kv_server_message = 4`
-- `InteractionUpdate.text_delta = 1`, `thinking_delta = 4`, `token_delta = 8`, `turn_ended = 14`
-- `ExecServerMessage.exec_id = 15`, `request_context_args = 10`, `mcp_args = 11`; `request_context_args` is an internal control message that Atomic answers with tool definitions, and only `mcp_args` becomes an Atomic tool call. `McpArgs.name = 1`, `args = 2`, `tool_call_id = 3`, `provider_identifier = 4`, `tool_name = 5`. `McpArgs.args` values are `bytes`; Atomic first decodes them as protobuf `Value` payloads and then falls back to strict raw UTF-8 strings so Cursor string arguments such as file paths do not fail the tool-call boundary. Historical tool-call arguments sent back to Cursor are encoded as per-argument protobuf `Value` map entries. This remains an inferred private-wire-format boundary: a raw string whose bytes exactly match a structurally valid protobuf `Value` could still be interpreted as typed data, so revalidate this behavior when updating the protocol.
-- `ExecClientMessage.id = 1`, `mcp_result = 11`, `exec_id = 15`; Atomic writes these frames back to the same paused Run stream for active tool results rather than encoding tool results as user-message text. Historical completed tool calls are reconstructed as one MCP tool-call step containing both `mcp_args` and `mcp_result`, so tool results are not sent as prefixed transcript text.
-
-Paused Cursor tool streams are owned by the conversation-state store while Atomic executes tools. The store installs abort cleanup and an unref'd idle timer so one-shot CLI/workflow runs can exit and abandoned tool turns are cancelled.
+- `AgentClientMessage.run_request = 1`, `exec_client_message = 2`, `kv_client_message = 3`, `conversation_action = 4`, `client_heartbeat = 7`.
+- Run requests use generated `AgentRunRequest`, `ConversationStateStructure`, `ConversationAction`, `UserMessage`, and `ModelDetails` messages.
+- `UserMessage.message_id`, `UserMessage.correlation_id`, and reconstructed historical turn request ids are UUIDs generated the same way as the reference provider.
+- Conversation ids are deterministic UUIDs derived from the hashed conversation key (`conv:<session-or-first-user-text>`), matching the reference provider rather than sending raw Atomic session ids to Cursor.
+- Static fallback models are the reference `cursor-models-raw.json`; live model discovery is opportunistic and only replaces the registered catalog when Cursor returns usable models.
+- Tool definitions are returned in response to `ExecServerMessage.request_context_args = 10`; `McpArgs` messages become Atomic tool calls and active tool results are sent back as generated `ExecClientMessage.mcp_result` frames.
+- Checkpoint and blob-store state is persisted per Cursor conversation id and discarded on Cursor end-stream errors such as `not_found`.
+- `InteractionUpdate.turn_ended` is non-terminal; the stream closes on the Connect stream ending.
 
 Manual smoke-test procedure after Cursor releases:
 
 1. Sign in to the current Cursor CLI/app and capture a successful `api2.cursor.sh` model discovery or agent `Run` request.
 2. Update `CURSOR_CLIENT_VERSION` in `src/config.ts` from the captured `x-cursor-client-version` header if it changed.
-3. In Atomic, run `/login`, select **Cursor (experimental)**, complete browser auth, then confirm `/model` lists `cursor/<model-id>` entries from live discovery.
+3. In Atomic, run `/login`, select **Cursor**, complete browser auth, then confirm `/model` lists `cursor/<model-id>` entries from live discovery.
 4. Select a Cursor model and run one chat turn plus one tool-using turn; verify the process exits cleanly for a one-shot/noninteractive run.
-5. Re-run the Cursor unit tests and update field notes above for any changed protobuf paths.
+5. Re-run the Cursor unit tests and update these notes for any changed protobuf paths.
 
-If Cursor changes the private protocol, add or generate updated protobuf message definitions here and keep generated code isolated from provider registration/stream mapping. Do not introduce a localhost OpenAI-compatible proxy or child-process bridge.
+If Cursor changes the private protocol, update the vendored generated protobuf descriptors from the reference/source protocol before changing the codec behavior.

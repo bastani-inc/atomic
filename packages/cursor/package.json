@@ -20,6 +20,8 @@
   "files": [
     "index.ts",
     "src/**/*.ts",
+    "src/**/*.json",
+    "src/h2-bridge.mjs",
     "src/proto/README.md",
     "README.md",
     "CHANGELOG.md",
@@ -37,5 +39,8 @@
     "@bastani/atomic": {
       "optional": true
     }
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "^2.0.0"
   }
 }

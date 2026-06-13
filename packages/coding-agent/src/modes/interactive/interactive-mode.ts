@@ -5997,7 +5997,9 @@ export class InteractiveMode {
         providerId as OAuthProviderId,
         {
           onAuth: (info: { url: string; instructions?: string }) => {
-            dialog.showAuth(info.url, info.instructions);
+            dialog.showAuth(info.url, info.instructions, {
+              showCancelHint: !usesCallbackServer,
+            });
 
             if (usesCallbackServer) {
               // Show input for manual paste, racing with callback

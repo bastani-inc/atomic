@@ -1,6 +1,6 @@
 export const CURSOR_PROVIDER_ID = "cursor";
 export const CURSOR_PROVIDER_NAME = "Cursor";
-export const CURSOR_LOGIN_NAME = "Cursor (experimental)";
+export const CURSOR_LOGIN_NAME = "Cursor";
 export const CURSOR_API = "cursor-agent";
 export const CURSOR_API_BASE_URL = "https://api2.cursor.sh";
 export const CURSOR_WEB_BASE_URL = "https://cursor.com";
@@ -38,7 +38,7 @@ export interface CursorRpcHeaders extends Record<string, string> {
 export class CursorExperimentalProtocolError extends Error {
 	readonly code = "CURSOR_EXPERIMENTAL_PROTOCOL_ERROR";
 
-	constructor(message = "Cursor's experimental private protocol transport failed.") {
+	constructor(message = "Cursor private protocol transport failed.") {
 		super(message);
 		this.name = "CursorExperimentalProtocolError";
 	}
@@ -47,8 +47,8 @@ export class CursorExperimentalProtocolError extends Error {
 export function createCursorExperimentalProtocolError(detail?: string): CursorExperimentalProtocolError {
 	return new CursorExperimentalProtocolError(
 		detail
-			? `Cursor experimental protocol error: ${sanitizeDiagnosticText(detail)}`
-			: "Cursor experimental protocol error: HTTP/2/protobuf transport failed.",
+			? `Cursor protocol error: ${sanitizeDiagnosticText(detail)}`
+			: "Cursor protocol error: HTTP/2/protobuf transport failed.",
 	);
 }
 

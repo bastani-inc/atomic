@@ -140,6 +140,16 @@ function makeKvBlobGetFrame(execId: number, blobId: Uint8Array): Uint8Array {
 	);
 }
 
+function makeKvBlobSetFrame(execId: number, blobId: Uint8Array, blobData: Uint8Array): Uint8Array {
+	return cursorProtoTest.encodeMessageField(
+		4,
+		cursorProtoTest.concatBytes(
+			cursorProtoTest.encodeVarintField(1, BigInt(execId)),
+			cursorProtoTest.encodeMessageField(3, cursorProtoTest.concatBytes(cursorProtoTest.encodeMessageField(1, blobId), cursorProtoTest.encodeMessageField(2, blobData))),
+		),
+	);
+}
+
 const model: Model<Api> = {
 	id: "composer-2",
 	name: "Composer 2",
@@ -252,7 +262,7 @@ describe("Cursor HTTP2 transport boundary", () => {
 		assert.deepEqual(codec.decodeRunFrame({ flags: 0, data: interactionUpdate, endStream: false }), [{ type: "textDelta", text: "hello" }]);
 	});
 
-	test("protobuf codec rejects orphan and duplicate historical tool results", () => {
+	test("protobuf codec tolerates orphan and repeated historical tool results like the reference parser", () => {
 		const codec = new CursorProtobufProtocolCodec();
 		const orphanContext: Context = {
 			messages: [
@@ -261,7 +271,7 @@ describe("Cursor HTTP2 transport boundary", () => {
 				{ role: "user", content: "next", timestamp: 3 },
 			],
 		};
-		assert.throws(() => codec.encodeRunRequest({ accessToken: "secret", requestId: "run-orphan", model, resolvedModelId: "composer-2", context: orphanContext }), /Orphan historical Cursor tool result/u);
+		assert.doesNotThrow(() => codec.encodeRunRequest({ accessToken: "secret", requestId: "run-orphan", model, resolvedModelId: "composer-2", context: orphanContext }));
 		const duplicateContext: Context = {
 			messages: [
 				{ role: "user", content: "first", timestamp: 1 },
@@ -271,7 +281,7 @@ describe("Cursor HTTP2 transport boundary", () => {
 				{ role: "user", content: "next", timestamp: 5 },
 			],
 		};
-		assert.throws(() => codec.encodeRunRequest({ accessToken: "secret", requestId: "run-duplicate", model, resolvedModelId: "composer-2", context: duplicateContext }), /Orphan historical Cursor tool result/u);
+		assert.doesNotThrow(() => codec.encodeRunRequest({ accessToken: "secret", requestId: "run-duplicate", model, resolvedModelId: "composer-2", context: duplicateContext }));
 	});
 
 	test("protobuf codec uses stable conversation ids separately from request ids", () => {
@@ -363,7 +373,75 @@ describe("Cursor HTTP2 transport boundary", () => {
 			cursorProtoTest.encodeMessageField(5, tokenDetails),
 		);
 		const agentMessage = cursorProtoTest.encodeMessageField(3, checkpoint);
-		assert.deepEqual(codec.decodeRunFrame({ flags: 0, data: agentMessage, endStream: false }), [{ type: "usage", kind: "checkpoint", usedTokens: 120 }]);
+		assert.deepEqual(codec.decodeRunFrame({ flags: 0, data: agentMessage, endStream: false }), [
+			{ type: "conversationCheckpoint", checkpoint },
+			{ type: "usage", kind: "checkpoint", usedTokens: 120 },
+		]);
+	});
+
+	test("protobuf codec ignores Cursor turn-ended updates until the stream actually closes", () => {
+		const codec = new CursorProtobufProtocolCodec();
+		const turnEnded = cursorProtoTest.encodeMessageField(1, cursorProtoTest.encodeMessageField(14, new Uint8Array()));
+
+		assert.deepEqual(codec.decodeRunFrame({ flags: 0, data: turnEnded, endStream: false }), []);
+	});
+
+	test("protobuf codec persists Cursor checkpoints and blob stores across same-session requests", () => {
+		const codec = new CursorProtobufProtocolCodec();
+		codec.encodeRunRequest({ accessToken: "secret", requestId: "run-state-1", conversationId: "session-state", model, resolvedModelId: "composer-2", context: contextWithUserMessage });
+		const blobId = new Uint8Array([1, 2, 3, 4]);
+		const blobData = new TextEncoder().encode("persisted blob");
+		const [setBlob] = codec.decodeRunFrame({ flags: 0, data: makeKvBlobSetFrame(77, blobId, blobData), endStream: false });
+		assert.ok(setBlob);
+		const setResponse = codec.encodeServerResponse(setBlob, "run-state-1");
+		assert.ok(setResponse instanceof Uint8Array);
+		const checkpoint = cursorProtoTest.concatBytes(cursorProtoTest.encodeMessageField(1, blobId), cursorProtoTest.encodeStringField(13, "checkpoint-marker"));
+		const [checkpointMessage] = codec.decodeRunFrame({ flags: 0, data: cursorProtoTest.encodeMessageField(3, checkpoint), endStream: false });
+		assert.ok(checkpointMessage);
+		assert.equal(codec.encodeServerResponse(checkpointMessage, "run-state-1"), undefined);
+		codec.disposeRun("run-state-1");
+
+		const encodedSecondRun = codec.encodeRunRequest({ accessToken: "secret", requestId: "run-state-2", conversationId: "session-state", model, resolvedModelId: "composer-2", context: { messages: [{ role: "user", content: "next", timestamp: 5 }] } });
+		const runRequest = cursorProtoTest.readFields(encodedSecondRun)[0]?.value;
+		assert.ok(runRequest instanceof Uint8Array);
+		const conversationState = cursorProtoTest.readFields(runRequest).find((field) => field.fieldNumber === 1)?.value;
+		assert.ok(conversationState instanceof Uint8Array);
+		assert.deepEqual([...conversationState], [...checkpoint]);
+
+		const [getBlob] = codec.decodeRunFrame({ flags: 0, data: makeKvBlobGetFrame(78, blobId), endStream: false });
+		assert.ok(getBlob);
+		const getResponse = codec.encodeServerResponse(getBlob, "run-state-2");
+		assert.ok(getResponse instanceof Uint8Array);
+		const kvClient = cursorProtoTest.readFields(getResponse).find((field) => field.fieldNumber === 3)?.value;
+		assert.ok(kvClient instanceof Uint8Array);
+		const getResult = cursorProtoTest.readFields(kvClient).find((field) => field.fieldNumber === 2)?.value;
+		assert.ok(getResult instanceof Uint8Array);
+		const returnedBlob = cursorProtoTest.readFields(getResult).find((field) => field.fieldNumber === 1)?.value;
+		assert.ok(returnedBlob instanceof Uint8Array);
+		assert.equal(new TextDecoder().decode(returnedBlob), "persisted blob");
+	});
+
+	test("transport discards persisted Cursor conversation state on end-stream errors", async () => {
+		const codec = new CursorProtobufProtocolCodec();
+		const checkpoint = cursorProtoTest.concatBytes(cursorProtoTest.encodeStringField(13, "stale-checkpoint"));
+		const client = new FakeHttp2Client([
+			encodeCursorConnectFrame(cursorProtoTest.encodeMessageField(3, checkpoint)),
+			encodeCursorConnectFrame(new TextEncoder().encode(JSON.stringify({ error: { code: "not_found", message: "Error" } })), 2),
+		]);
+		const transport = new Http2CursorAgentTransport({ client, codec });
+		const run = await transport.run({ accessToken: "secret", requestId: "run-error-state-1", conversationId: "session-error-state", model, resolvedModelId: "composer-2", context: contextWithUserMessage });
+
+		await assert.rejects(
+			async () => { for await (const _message of run.messages) {} },
+			(error: Error) => error instanceof CursorTransportError && /not_found/u.test(error.message),
+		);
+
+		const encodedSecondRun = codec.encodeRunRequest({ accessToken: "secret", requestId: "run-error-state-2", conversationId: "session-error-state", model, resolvedModelId: "composer-2", context: { messages: [{ role: "user", content: "retry", timestamp: 6 }] } });
+		const runRequest = cursorProtoTest.readFields(encodedSecondRun)[0]?.value;
+		assert.ok(runRequest instanceof Uint8Array);
+		const conversationState = cursorProtoTest.readFields(runRequest).find((field) => field.fieldNumber === 1)?.value;
+		assert.ok(conversationState instanceof Uint8Array);
+		assert.notDeepEqual([...conversationState], [...checkpoint]);
 	});
 
 	test("protobuf codec decodes exec server MCP args as tool calls", () => {
@@ -389,17 +467,40 @@ describe("Cursor HTTP2 transport boundary", () => {
 			cursorProtoTest.encodeStringField(15, "exec-99"),
 		);
 		const agentMessage = cursorProtoTest.encodeMessageField(2, execServer);
-		assert.deepEqual(codec.decodeRunFrame({ flags: 0, data: agentMessage, endStream: false }), [{
-			type: "toolCall",
-			id: "exec-99",
-			name: "search",
-			execId: "exec-99",
-			execNumericId: 99,
-			argumentsJson: JSON.stringify({ query: "hello", count: 42.5, enabled: true, nothing: null, nested: { key: "value" }, items: ["a", 2], path: "README.md", rawNumber: "2024", rawBoolean: "true", rawNull: "null", options: "{\"limit\":3}" }),
-		}]);
+		const [decoded] = codec.decodeRunFrame({ flags: 0, data: agentMessage, endStream: false });
+		assert.equal(decoded?.type, "toolCall");
+		if (decoded?.type !== "toolCall") throw new Error("expected tool call");
+		assert.match(decoded.id, /^[0-9a-f-]{36}$/iu);
+		assert.notEqual(decoded.id, "exec-99");
+		assert.equal(decoded.name, "search");
+		assert.equal(decoded.execId, "exec-99");
+		assert.equal(decoded.execNumericId, 99);
+		assert.equal(decoded.argumentsJson, JSON.stringify({ query: "hello", count: 42.5, enabled: true, nothing: null, nested: { key: "value" }, items: ["a", 2], path: "README.md", rawNumber: "2024", rawBoolean: "true", rawNull: "null", options: "{\"limit\":3}" }));
 	});
 
-	test("protobuf codec rejects invalid raw MCP argument bytes", () => {
+	test("protobuf codec preserves Cursor MCP toolCallId and generates unique reference fallbacks", () => {
+		const codec = new CursorProtobufProtocolCodec();
+		const withToolCallId = cursorProtoTest.encodeMessageField(2, cursorProtoTest.concatBytes(
+			cursorProtoTest.encodeMessageField(11, cursorProtoTest.concatBytes(cursorProtoTest.encodeStringField(1, "Read"), cursorProtoTest.encodeStringField(3, "tool-from-cursor"))),
+			cursorProtoTest.encodeStringField(15, "exec-with-tool-id"),
+		));
+		const [preserved] = codec.decodeRunFrame({ flags: 0, data: withToolCallId, endStream: false });
+		assert.equal(preserved?.type, "toolCall");
+		if (preserved?.type === "toolCall") assert.equal(preserved.id, "tool-from-cursor");
+
+		const idlessMcp = cursorProtoTest.encodeMessageField(2, cursorProtoTest.encodeMessageField(11, cursorProtoTest.encodeStringField(1, "Read")));
+		const [first] = codec.decodeRunFrame({ flags: 0, data: idlessMcp, endStream: false });
+		const [second] = codec.decodeRunFrame({ flags: 0, data: idlessMcp, endStream: false });
+		assert.equal(first?.type, "toolCall");
+		assert.equal(second?.type, "toolCall");
+		if (first?.type === "toolCall" && second?.type === "toolCall") {
+			assert.match(first.id, /^[0-9a-f-]{36}$/iu);
+			assert.match(second.id, /^[0-9a-f-]{36}$/iu);
+			assert.notEqual(first.id, second.id);
+		}
+	});
+
+	test("protobuf codec decodes raw MCP argument bytes like the reference parser", () => {
 		const codec = new CursorProtobufProtocolCodec();
 		const mcpArgs = cursorProtoTest.concatBytes(
 			cursorProtoTest.encodeStringField(1, "search"),
@@ -408,7 +509,9 @@ describe("Cursor HTTP2 transport boundary", () => {
 		);
 		const execServer = cursorProtoTest.encodeMessageField(11, mcpArgs);
 		const agentMessage = cursorProtoTest.encodeMessageField(2, execServer);
-		assert.throws(() => codec.decodeRunFrame({ flags: 0, data: agentMessage, endStream: false }), /neither protobuf Value nor valid UTF-8/u);
+		const [decoded] = codec.decodeRunFrame({ flags: 0, data: agentMessage, endStream: false });
+		assert.equal(decoded?.type, "toolCall");
+		if (decoded?.type === "toolCall") assert.equal(decoded.argumentsJson, JSON.stringify({ bad: "�" }));
 	});
 
 	test("protobuf codec decodes non-MCP exec server messages as safe notifications", () => {
@@ -424,8 +527,21 @@ describe("Cursor HTTP2 transport boundary", () => {
 			execNumericId: 55,
 		}]);
 
-		const nativeExec = cursorProtoTest.encodeMessageField(2, cursorProtoTest.encodeStringField(2, "native shell"));
-		assert.deepEqual(codec.decodeRunFrame({ flags: 0, data: nativeExec, endStream: false }), [{ type: "nonMcpExec", fieldNumber: 2 }]);
+		const nativeExec = cursorProtoTest.encodeMessageField(2, cursorProtoTest.encodeMessageField(2, new Uint8Array()));
+		assert.deepEqual(codec.decodeRunFrame({ flags: 0, data: nativeExec, endStream: false }), [{ type: "nonMcpExec", fieldNumber: 2, execNumericId: 0 }]);
+	});
+
+	test("protobuf codec ignores Cursor exec span context metadata", () => {
+		const codec = new CursorProtobufProtocolCodec();
+		const spanContextExec = cursorProtoTest.encodeMessageField(2, cursorProtoTest.concatBytes(
+			cursorProtoTest.encodeVarintField(1, 7n),
+			cursorProtoTest.encodeMessageField(19, cursorProtoTest.encodeStringField(1, "trace")),
+			cursorProtoTest.encodeStringField(15, "exec-span"),
+		));
+
+		assert.deepEqual(codec.decodeRunFrame({ flags: 0, data: spanContextExec, endStream: false }), []);
+		assert.equal(codec.encodeServerResponse({ type: "nonMcpExec", fieldNumber: 19, execId: "exec-span", execNumericId: 7 }, "run-span"), undefined);
+		assert.equal(codec.encodeServerResponse({ type: "nonMcpExec", fieldNumber: 99 }, "run-unknown"), undefined);
 	});
 
 	test("production transport defaults to the isolated protobuf codec", async () => {
@@ -441,6 +557,18 @@ describe("Cursor HTTP2 transport boundary", () => {
 		assert.equal(models[0]?.id, "composer-2");
 		assert.equal(models[0]?.supportsThinking, true);
 		assert.ok(client.unaryRequests[0]?.body instanceof Uint8Array);
+	});
+
+	test("production codec decodes Connect-framed model discovery responses", async () => {
+		const client = new FakeHttp2Client();
+		const modelMessage = cursorProtoTest.concatBytes(cursorProtoTest.encodeStringField(1, "gpt-5.4-high"), cursorProtoTest.encodeStringField(4, "GPT-5.4 High"));
+		client.unaryBody = encodeCursorConnectFrame(cursorProtoTest.encodeMessageField(1, modelMessage));
+		const transport = new Http2CursorAgentTransport({ client });
+
+		const models = await transport.getUsableModels("secret-token", "request-connect-proto");
+
+		assert.equal(models[0]?.id, "gpt-5.4-high");
+		assert.equal(models[0]?.displayName, "GPT-5.4 High");
 	});
 
 	test("transport request deadlines abort hung model discovery and stream opening", async () => {
@@ -505,6 +633,22 @@ describe("Cursor HTTP2 transport boundary", () => {
 		assert.deepEqual(transport.getLifecycleSnapshot(), { openStreams: 0, cancelledStreams: 0, closedStreams: 1 });
 	});
 
+	test("writes reference Cursor heartbeats while a Run stream is open", async () => {
+		const client = new FakeHttp2Client();
+		const transport = new Http2CursorAgentTransport({ client, codec: new FakeCodec(), heartbeatIntervalMs: 1 });
+		const run = await transport.run({ accessToken: "secret", requestId: "run-heartbeat", model, resolvedModelId: "composer-2", context });
+
+		await new Promise((resolve) => setTimeout(resolve, 5));
+
+		const writtenPayloads = client.streamHandle.writes.map((write) => [...decodeCursorConnectFrames(write)[0]!.data]);
+		assert.deepEqual(writtenPayloads[0], [8]);
+		assert.ok(writtenPayloads.slice(1).some((payload) => payload.length === 1 && payload[0] === 6));
+		await run.close();
+		const writesAfterClose = client.streamHandle.writes.length;
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		assert.equal(client.streamHandle.writes.length, writesAfterClose);
+	});
+
 	test("answers internal Cursor control frames on the same stream", async () => {
 		const client = new FakeHttp2Client([encodeCursorConnectFrame(new Uint8Array([9])), encodeCursorConnectFrame(new Uint8Array([1]))]);
 		const transport = new Http2CursorAgentTransport({ client, codec: new FakeCodec() });
@@ -545,7 +689,28 @@ describe("Cursor HTTP2 transport boundary", () => {
 		}
 	});
 
-	test("ignores empty and legacy top-level Connect end-stream frames", async () => {
+	test("classifies malformed and code-less Connect end-stream errors", async () => {
+		const cases = [
+			{
+				name: "malformed",
+				body: new TextEncoder().encode("not-json"),
+				predicate: (error: Error) => error instanceof CursorTransportError && error.code === "ProtocolError" && /Failed to parse/u.test(error.message),
+			},
+			{
+				name: "unknown",
+				body: new TextEncoder().encode(JSON.stringify({ error: { message: "missing code secret" } })),
+				predicate: (error: Error) => error instanceof CursorTransportError && error.code === "CursorApiRejected" && /unknown/u.test(error.message) && !error.message.includes("secret"),
+			},
+		];
+		for (const item of cases) {
+			const client = new FakeHttp2Client([encodeCursorConnectFrame(item.body, 2)]);
+			const transport = new Http2CursorAgentTransport({ client, codec: new FakeCodec() });
+			const run = await transport.run({ accessToken: "secret", requestId: `run-end-${item.name}`, model, resolvedModelId: "composer-2", context });
+			await assert.rejects(async () => { for await (const _message of run.messages) {} }, item.predicate);
+		}
+	});
+
+	test("ignores legacy top-level Connect end-stream frames", async () => {
 		const client = new FakeHttp2Client([
 			encodeCursorConnectFrame(new TextEncoder().encode(JSON.stringify({ metadata: {} })), 2),
 			encodeCursorConnectFrame(new TextEncoder().encode(JSON.stringify({ code: "resource_exhausted" })), 2),

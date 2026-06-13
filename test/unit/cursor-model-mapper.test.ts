@@ -44,13 +44,30 @@ describe("Cursor model mapper", () => {
 		assert.equal(models.find((entry) => entry.id === "composer-2-thinking-fast")?.reasoning, true);
 	});
 
-	test("marks static fallback catalog as estimated and keeps cursor/composer-2 available", () => {
+	test("marks static fallback catalog as estimated and mirrors the reference visible Cursor model set", () => {
 		const models = mapCursorCatalogToProviderModels(createEstimatedCursorCatalog(123));
+		const ids = models.map((model) => model.id);
 		const composer = models.find((model) => model.id === "composer-2");
 		assert.ok(composer);
 		assert.match(composer.name, /estimated/u);
 		assert.equal(composer.reasoning, true);
 		assert.deepEqual(composer.cost, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+		assert.equal(models.length, 37);
+		for (const id of ["gpt-5.4", "gpt-5.4-fast", "gpt-5.4-mini", "claude-4.6-opus", "gpt-5.1-codex-max", "kimi-k2.5"]) {
+			assert.ok(ids.includes(id), `expected fallback catalog to include ${id}`);
+		}
+		for (const leaked of ["gpt-5.4-high", "gpt-5.4-mini-none", "claude-4.6-opus-high", "gpt-5.1-codex-max-high"]) {
+			assert.equal(ids.includes(leaked), false, `fallback catalog leaked effort variant ${leaked}`);
+		}
+	});
+
+	test("marks live Cursor reasoning-capable ids by id even without discovery metadata", () => {
+		const [composer] = mapCursorCatalogToProviderModels({ source: "live", fetchedAt: 1, models: [{ id: "composer-2.5", displayName: "Composer 2.5" }] });
+
+		assert.equal(composer?.id, "composer-2.5");
+		assert.equal(composer?.reasoning, true);
+		assert.equal(composer?.thinkingLevelMap, undefined);
+		assert.equal(resolveCursorModelVariant("composer-2.5", composer?.thinkingLevelMap, "high"), "composer-2.5");
 	});
 
 	test("parses and reconstructs effort variants before fast/thinking suffixes", () => {
@@ -77,7 +94,7 @@ describe("Cursor model mapper", () => {
 		);
 	});
 
-	test("prefers advertised default or none live variants as primary ids", () => {
+	test("collapses effort variants into synthesized primary ids", () => {
 		const catalog: CursorModelCatalog = {
 			source: "live",
 			fetchedAt: 1,
@@ -91,11 +108,11 @@ describe("Cursor model mapper", () => {
 		};
 
 		const models = mapCursorCatalogToProviderModels(catalog);
-		assert.equal(models.find((model) => model.id.startsWith("alpha"))?.id, "alpha-none");
-		assert.equal(models.find((model) => model.id.startsWith("beta"))?.id, "beta-default");
+		assert.deepEqual(models.map((model) => model.id), ["alpha", "beta", "beta-default"]);
+		assert.equal(resolveCursorModelVariant("alpha", models.find((model) => model.id === "alpha")?.thinkingLevelMap, "high"), "alpha-high");
 	});
 
-	test("keeps ambiguous max suffixes as standalone model names without sibling evidence", () => {
+	test("treats max suffixes as effort levels like the reference provider", () => {
 		const catalog: CursorModelCatalog = {
 			source: "live",
 			fetchedAt: 1,
@@ -103,8 +120,8 @@ describe("Cursor model mapper", () => {
 		};
 
 		const models = mapCursorCatalogToProviderModels(catalog);
-		assert.deepEqual(models.map((entry) => entry.id), ["gpt-5.1-codex-max"]);
-		assert.equal(models[0]?.thinkingLevelMap?.high, undefined);
+		assert.deepEqual(models.map((entry) => entry.id), ["gpt-5.1-codex"]);
+		assert.equal(resolveCursorModelVariant("gpt-5.1-codex", models[0]?.thinkingLevelMap, "high"), "gpt-5.1-codex-max");
 	});
 
 	test("keeps fast and thinking modes in separate live model groups", () => {
@@ -128,7 +145,7 @@ describe("Cursor model mapper", () => {
 		assert.equal(resolveCursorModelVariant(fast!.id, fast!.thinkingLevelMap, "high"), "gpt-5.4-high-fast");
 	});
 
-	test("uses advertised live fast/thinking ids instead of synthesizing absent base ids", () => {
+	test("collapses mandatory effort-only live fast/thinking ids", () => {
 		const catalog: CursorModelCatalog = {
 			source: "live",
 			fetchedAt: 1,
@@ -142,5 +159,9 @@ describe("Cursor model mapper", () => {
 		assert.equal(mapped?.id, "claude-4-sonnet-thinking-fast");
 		assert.equal(resolveCursorModelVariant(mapped!.id, mapped!.thinkingLevelMap, "high"), "claude-4-sonnet-high-thinking-fast");
 		assert.equal(resolveCursorModelVariant(mapped!.id, mapped!.thinkingLevelMap, "medium"), "claude-4-sonnet-thinking-fast");
+
+		const [effortOnly] = mapCursorCatalogToProviderModels({ source: "live", fetchedAt: 1, models: [{ id: "claude-4.5-opus-high", displayName: "Claude Opus 4.5" }] });
+		assert.equal(effortOnly?.id, "claude-4.5-opus");
+		assert.equal(resolveCursorModelVariant(effortOnly!.id, effortOnly!.thinkingLevelMap, "minimal"), "claude-4.5-opus-high");
 	});
 });

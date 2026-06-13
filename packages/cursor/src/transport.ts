@@ -1,4 +1,5 @@
-import { connect, constants, type ClientHttp2Session, type ClientHttp2Stream, type IncomingHttpHeaders } from "node:http2";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import type { Context, Model, Api, ThinkingLevel } from "@earendil-works/pi-ai";
 import {
 	buildCursorRpcHeaders,
@@ -6,7 +7,6 @@ import {
 	CURSOR_CLIENT_VERSION,
 	CURSOR_GET_USABLE_MODELS_PATH,
 	CURSOR_RUN_PATH,
-	parseJsonObject,
 	readStringField,
 	sanitizeDiagnosticText,
 	type JsonObject,
@@ -68,6 +68,7 @@ export type CursorServerMessage =
 export type CursorControlMessage =
 	| { readonly type: "kvGetBlob"; readonly id: number; readonly blobId: Uint8Array }
 	| { readonly type: "kvSetBlob"; readonly id: number; readonly blobId: Uint8Array; readonly blobData: Uint8Array }
+	| { readonly type: "conversationCheckpoint"; readonly checkpoint: Uint8Array }
 	| { readonly type: "requestContext"; readonly execNumericId?: number; readonly execId?: string };
 
 export type CursorProtocolMessage = CursorServerMessage | CursorControlMessage;
@@ -98,6 +99,7 @@ export interface CursorAgentTransport {
 	getUsableModels(accessToken: string, requestId: string, signal?: AbortSignal): Promise<readonly CursorUsableModel[]>;
 	run(request: CursorRunRequest): Promise<CursorRunStream>;
 	dispose(): Promise<void>;
+	discardConversation?(conversationId: string): void;
 	getLifecycleSnapshot(): CursorTransportLifecycleSnapshot;
 }
 
@@ -148,6 +150,8 @@ export interface CursorProtocolCodec {
 	encodeHeartbeatRequest(): Uint8Array;
 	encodeServerResponse?(message: CursorProtocolMessage, requestId: string): Uint8Array | undefined;
 	disposeRun?(requestId: string): void;
+	discardRun?(requestId: string): void;
+	discardConversation?(conversationId: string): void;
 }
 
 export interface Http2CursorAgentTransportOptions {
@@ -156,10 +160,12 @@ export interface Http2CursorAgentTransportOptions {
 	readonly codec?: CursorProtocolCodec;
 	readonly requestTimeoutMs?: number;
 	readonly streamOpenTimeoutMs?: number;
+	readonly heartbeatIntervalMs?: number;
 }
 
 const CONNECT_END_STREAM_FLAG = 0b10;
 const DEFAULT_CANCEL_WRITE_TIMEOUT_MS = 1_000;
+const DEFAULT_HEARTBEAT_INTERVAL_MS = 5_000;
 
 export function encodeCursorConnectFrame(data: Uint8Array, flags = 0): Uint8Array {
 	const frame = new Uint8Array(5 + data.length);
@@ -206,7 +212,7 @@ export class CursorConnectFrameDecoder {
 }
 
 function isCursorControlMessage(message: CursorProtocolMessage): message is CursorControlMessage {
-	return message.type === "kvGetBlob" || message.type === "kvSetBlob" || message.type === "requestContext";
+	return message.type === "kvGetBlob" || message.type === "kvSetBlob" || message.type === "conversationCheckpoint" || message.type === "requestContext";
 }
 
 async function runWithDeadline<T>(operation: (signal: AbortSignal | undefined) => Promise<T>, timeoutMs: number, parentSignal: AbortSignal | undefined, timeoutMessage: string): Promise<T> {
@@ -236,6 +242,7 @@ export class Http2CursorAgentTransport implements CursorAgentTransport {
 	readonly #codec: CursorProtocolCodec;
 	readonly #requestTimeoutMs: number;
 	readonly #streamOpenTimeoutMs: number;
+	readonly #heartbeatIntervalMs: number;
 	#openStreams = 0;
 	#cancelledStreams = 0;
 	#closedStreams = 0;
@@ -243,10 +250,11 @@ export class Http2CursorAgentTransport implements CursorAgentTransport {
 	constructor(baseUrlOrOptions: string | Http2CursorAgentTransportOptions = CURSOR_API_BASE_URL) {
 		const options = typeof baseUrlOrOptions === "string" ? { baseUrl: baseUrlOrOptions } : baseUrlOrOptions;
 		this.#baseUrl = options.baseUrl ?? CURSOR_API_BASE_URL;
-		this.#client = options.client ?? new NodeHttp2CursorClient();
+		this.#client = options.client ?? new BridgeHttp2CursorClient();
 		this.#codec = options.codec ?? new CursorProtobufProtocolCodec();
 		this.#requestTimeoutMs = options.requestTimeoutMs ?? 60_000;
 		this.#streamOpenTimeoutMs = options.streamOpenTimeoutMs ?? 60_000;
+		this.#heartbeatIntervalMs = options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
 	}
 
 	async getUsableModels(accessToken: string, requestId: string, signal?: AbortSignal): Promise<readonly CursorUsableModel[]> {
@@ -298,6 +306,7 @@ export class Http2CursorAgentTransport implements CursorAgentTransport {
 				handle,
 				this.#codec,
 				[request.accessToken],
+				this.#heartbeatIntervalMs,
 				() => {
 					this.#cancelledStreams += 1;
 				},
@@ -315,6 +324,10 @@ export class Http2CursorAgentTransport implements CursorAgentTransport {
 		await this.#client.dispose();
 	}
 
+	discardConversation(conversationId: string): void {
+		this.#codec.discardConversation?.(conversationId);
+	}
+
 	getLifecycleSnapshot(): CursorTransportLifecycleSnapshot {
 		return { openStreams: this.#openStreams, cancelledStreams: this.#cancelledStreams, closedStreams: this.#closedStreams };
 	}
@@ -324,16 +337,26 @@ class Http2CursorRunStream implements CursorRunStream {
 	readonly messages: AsyncIterable<CursorServerMessage>;
 	#closed = false;
 	#cancelled = false;
+	readonly #heartbeatTimer?: ReturnType<typeof setInterval>;
 
 	constructor(
 		readonly id: string,
 		readonly handle: CursorHttp2StreamHandle,
 		readonly codec: CursorProtocolCodec,
 		readonly secrets: readonly string[],
+		heartbeatIntervalMs: number,
 		readonly onCancel: () => void,
 		readonly onClose: () => void,
 	) {
 		this.messages = this.createMessages();
+		if (heartbeatIntervalMs > 0) {
+			this.#heartbeatTimer = setInterval(() => {
+				this.handle.write(encodeCursorConnectFrame(this.codec.encodeHeartbeatRequest())).catch(() => {
+					this.cancel().catch(() => undefined);
+				});
+			}, heartbeatIntervalMs);
+			this.#heartbeatTimer.unref?.();
+		}
 	}
 
 	async writeToolResult(result: CursorToolResultMessage, options?: CursorWriteOptions): Promise<void> {
@@ -349,6 +372,7 @@ class Http2CursorRunStream implements CursorRunStream {
 	async cancel(): Promise<void> {
 		if (this.#cancelled) return;
 		this.#cancelled = true;
+		this.clearHeartbeat();
 		let cancelError: Error | undefined;
 		try {
 			await this.handle.write(encodeCursorConnectFrame(this.codec.encodeCancelRequest()), { timeoutMs: DEFAULT_CANCEL_WRITE_TIMEOUT_MS }).catch(() => undefined);
@@ -372,6 +396,7 @@ class Http2CursorRunStream implements CursorRunStream {
 	async close(): Promise<void> {
 		if (this.#closed) return;
 		this.#closed = true;
+		this.clearHeartbeat();
 		try {
 			await this.handle.close();
 		} finally {
@@ -380,12 +405,21 @@ class Http2CursorRunStream implements CursorRunStream {
 		}
 	}
 
+	private clearHeartbeat(): void {
+		if (this.#heartbeatTimer) clearInterval(this.#heartbeatTimer);
+	}
+
 	private async *createMessages(): AsyncIterable<CursorServerMessage> {
 		const decoder = new CursorConnectFrameDecoder();
 		for await (const raw of this.handle.frames) {
 			for (const frame of decoder.push(raw)) {
 				if (frame.endStream) {
-					throwIfCursorEndStreamError(frame.data, this.secrets);
+					try {
+						throwIfCursorEndStreamError(frame.data, this.secrets);
+					} catch (error) {
+						this.codec.discardRun?.(this.id);
+						throw error;
+					}
 					continue;
 				}
 				for (const message of this.codec.decodeRunFrame(frame)) {
@@ -402,118 +436,131 @@ class Http2CursorRunStream implements CursorRunStream {
 	}
 }
 
-class NodeHttp2CursorClient implements CursorHttp2Client {
-	readonly #sessions = new Set<ClientHttp2Session>();
+const CURSOR_H2_BRIDGE_PATH = fileURLToPath(new URL("./h2-bridge.mjs", import.meta.url));
+const CURSOR_H2_BRIDGE_NODE = process.env.ATOMIC_CURSOR_H2_BRIDGE_NODE?.trim() || "node";
+
+class BridgeHttp2CursorClient implements CursorHttp2Client {
+	readonly #nodeCommand: string;
+
+	constructor(nodeCommand = CURSOR_H2_BRIDGE_NODE) {
+		this.#nodeCommand = nodeCommand;
+	}
 
 	async requestUnary(request: { readonly baseUrl: string; readonly path: string; readonly headers: Record<string, string>; readonly body: Uint8Array; readonly signal?: AbortSignal }): Promise<CursorHttp2UnaryResponse> {
-		const session = this.openSession(request.baseUrl);
-		return new Promise<CursorHttp2UnaryResponse>((resolve, reject) => {
-			const chunks: Buffer[] = [];
-			let responseHeaders: Record<string, string> = {};
-			let settled = false;
-			const stream = session.request({
-				[constants.HTTP2_HEADER_METHOD]: constants.HTTP2_METHOD_POST,
-				[constants.HTTP2_HEADER_PATH]: request.path,
-				...request.headers,
-			});
-			const finishReject = (error: Error): void => {
-				if (settled) return;
-				settled = true;
-				cleanup();
-				reject(error);
-			};
-			const cleanup = (): void => {
-				request.signal?.removeEventListener("abort", onAbort);
-				session.removeListener("error", onSessionError);
-				this.closeSession(session);
-			};
-			const onAbort = (): void => {
-				stream.destroy(new CursorTransportError("Aborted", "Cursor request aborted."));
-			};
-			const onSessionError = (error: Error): void => finishReject(new CursorTransportError("NetworkError", error.message));
-			request.signal?.addEventListener("abort", onAbort, { once: true });
-			session.on("error", onSessionError);
-			stream.on("response", (headers: IncomingHttpHeaders) => {
-				responseHeaders = normalizeIncomingHeaders(headers);
-			});
-			stream.on("data", (chunk: Buffer) => chunks.push(chunk));
-			stream.on("aborted", () => finishReject(new CursorTransportError("NetworkError", "Cursor unary request was aborted by the remote endpoint.")));
-			stream.on("error", (error: Error) => finishReject(toTransportError(error)));
-			stream.on("end", () => {
-				if (settled) return;
-				settled = true;
-				cleanup();
-				resolve({ statusCode: Number(responseHeaders[":status"]), body: Buffer.concat(chunks), headers: responseHeaders });
-			});
-			stream.end(Buffer.from(request.body));
-		});
+		const bridge = new CursorH2BridgeProcess(this.#nodeCommand, request.signal);
+		try {
+			await bridge.writeJson({ baseUrl: request.baseUrl, path: request.path, headers: request.headers, unary: true }, request.signal);
+			await bridge.write(request.body, { signal: request.signal });
+			await bridge.finishInput();
+			const chunks: Uint8Array[] = [];
+			for await (const chunk of bridge.frames) chunks.push(chunk);
+			return { body: concatBytes(...chunks), headers: {} };
+		} catch (error) {
+			await bridge.cancel();
+			throw toTransportError(error);
+		}
 	}
 
 	async openStream(request: { readonly baseUrl: string; readonly path: string; readonly headers: Record<string, string>; readonly signal?: AbortSignal; readonly initialBody?: Uint8Array }): Promise<CursorHttp2StreamHandle> {
-		const session = this.openSession(request.baseUrl);
-		const stream = session.request({
-			[constants.HTTP2_HEADER_METHOD]: constants.HTTP2_METHOD_POST,
-			[constants.HTTP2_HEADER_PATH]: request.path,
-			...request.headers,
-		});
-		const handle = new NodeHttp2CursorStreamHandle(stream, session, () => this.closeSession(session), request.signal);
+		const bridge = new CursorH2BridgeProcess(this.#nodeCommand, request.signal);
 		try {
-			if (request.initialBody) await handle.write(request.initialBody, { signal: request.signal });
-			return handle;
+			await bridge.writeJson({ baseUrl: request.baseUrl, path: request.path, headers: request.headers, unary: false }, request.signal);
+			if (request.initialBody) await bridge.write(request.initialBody, { signal: request.signal });
+			return new BridgeCursorStreamHandle(bridge);
 		} catch (error) {
-			await handle.cancel();
+			await bridge.cancel();
 			throw toTransportError(error);
 		}
 	}
 
 	async dispose(): Promise<void> {
-		for (const session of [...this.#sessions]) {
-			this.closeSession(session);
-		}
-	}
-
-	private openSession(baseUrl: string): ClientHttp2Session {
-		// Cursor's private API is experimental and streams must clean up
-		// predictably in one-shot CLI/workflow runs, so each request owns its
-		// session for now. Pooling can be added once protocol stability is known.
-		const session = connect(baseUrl);
-		this.#sessions.add(session);
-		session.on("close", () => this.#sessions.delete(session));
-		return session;
-	}
-
-	private closeSession(session: ClientHttp2Session): void {
-		this.#sessions.delete(session);
-		if (!session.closed && !session.destroyed) session.close();
+		// Bridge processes are request-scoped and are disposed by their handles.
 	}
 }
 
-class NodeHttp2CursorStreamHandle implements CursorHttp2StreamHandle {
+class BridgeCursorStreamHandle implements CursorHttp2StreamHandle {
 	readonly frames: AsyncIterable<Uint8Array>;
 	#closed = false;
+
+	constructor(readonly bridge: CursorH2BridgeProcess) {
+		this.frames = bridge.frames;
+	}
+
+	async write(data: Uint8Array, options?: CursorWriteOptions): Promise<void> {
+		if (this.#closed) throw new CursorTransportError("ProtocolError", "Cannot write to a closed Cursor bridge stream.");
+		await this.bridge.write(data, options);
+	}
+
+	async close(): Promise<void> {
+		if (this.#closed) return;
+		this.#closed = true;
+		await this.bridge.finishInput();
+	}
+
+	async cancel(): Promise<void> {
+		if (this.#closed) return;
+		this.#closed = true;
+		await this.bridge.cancel();
+	}
+}
+
+class CursorH2BridgeProcess {
+	readonly #process: ChildProcessWithoutNullStreams;
+	readonly #signal?: AbortSignal;
+	readonly #stderr: Buffer[] = [];
+	readonly #queue: Uint8Array[] = [];
+	#stdoutBuffer: Uint8Array<ArrayBufferLike> = new Uint8Array();
 	#done = false;
+	#cancelled = false;
 	#failure: Error | undefined;
 	#notify: (() => void) | undefined;
-	readonly #queue: Uint8Array[] = [];
+	#inputFinished = false;
+	readonly frames: AsyncIterable<Uint8Array>;
 
-	constructor(readonly stream: ClientHttp2Stream, readonly session: ClientHttp2Session, readonly onClose: () => void, readonly signal?: AbortSignal) {
+	constructor(nodeCommand: string, signal?: AbortSignal) {
+		this.#signal = signal;
+		this.#process = spawn(nodeCommand, [CURSOR_H2_BRIDGE_PATH], { stdio: "pipe" });
 		this.frames = this.createFrames();
-		this.stream.on("response", this.onResponse);
-		this.stream.on("data", this.onData);
-		this.stream.on("end", this.onEnd);
-		this.stream.on("close", this.onCloseEvent);
-		this.stream.on("aborted", this.onAborted);
-		this.stream.on("error", this.onError);
-		this.session.on("error", this.onSessionError);
-		this.signal?.addEventListener("abort", this.abort, { once: true });
+		this.#process.stdout.on("data", this.onStdout);
+		this.#process.stderr.on("data", this.onStderr);
+		this.#process.on("error", this.onProcessError);
+		this.#process.on("close", this.onProcessClose);
+		this.#signal?.addEventListener("abort", this.abort, { once: true });
+	}
+
+	async writeJson(value: object, signal?: AbortSignal): Promise<void> {
+		await this.write(new TextEncoder().encode(JSON.stringify(value)), { signal });
 	}
 
 	async write(data: Uint8Array, options: CursorWriteOptions = {}): Promise<void> {
-		if (this.#closed) return;
-		if (options.signal?.aborted) {
+		if (this.#inputFinished) throw new CursorTransportError("ProtocolError", "Cannot write to a finished Cursor bridge input.");
+		if (this.#failure) throw this.#failure;
+		if (this.#done) throw new CursorTransportError("NetworkError", "Cursor HTTP/2 bridge exited before accepting input.");
+		if (options.signal?.aborted || this.#signal?.aborted) {
 			await this.cancel();
-			throw new CursorTransportError("Aborted", "Cursor stream write aborted.");
+			throw new CursorTransportError("Aborted", "Cursor bridge write aborted.");
 		}
+		const frame = encodeBridgeMessage(data);
+		await this.writeRaw(frame, options);
+	}
+
+	async finishInput(): Promise<void> {
+		if (this.#inputFinished) return;
+		this.#inputFinished = true;
+		if (!this.#process.stdin.destroyed) {
+			this.#process.stdin.end();
+		}
+	}
+
+	async cancel(): Promise<void> {
+		if (this.#cancelled) return;
+		this.#cancelled = true;
+		this.#signal?.removeEventListener("abort", this.abort);
+		this.#process.kill("SIGTERM");
+		this.finish(new CursorTransportError("Aborted", "Cursor HTTP/2 bridge was cancelled."));
+	}
+
+	private async writeRaw(data: Uint8Array, options: CursorWriteOptions): Promise<void> {
 		let abortListener: (() => void) | undefined;
 		let timeout: ReturnType<typeof setTimeout> | undefined;
 		let settled = false;
@@ -525,22 +572,18 @@ class NodeHttp2CursorStreamHandle implements CursorHttp2StreamHandle {
 					this.cancel().catch(() => undefined);
 					reject(error);
 				};
-				abortListener = () => rejectAndCancel(new CursorTransportError("Aborted", "Cursor stream write aborted."));
+				abortListener = () => rejectAndCancel(new CursorTransportError("Aborted", "Cursor bridge write aborted."));
 				options.signal?.addEventListener("abort", abortListener, { once: true });
 				if (options.timeoutMs && options.timeoutMs > 0) {
-					timeout = setTimeout(() => rejectAndCancel(new CursorTransportError("NetworkError", "Cursor stream write timed out.")), options.timeoutMs);
+					timeout = setTimeout(() => rejectAndCancel(new CursorTransportError("NetworkError", "Cursor bridge write timed out.")), options.timeoutMs);
 					timeout.unref?.();
 				}
-				try {
-					this.stream.write(Buffer.from(data), (error?: Error | null) => {
-						if (settled) return;
-						settled = true;
-						if (error) reject(error);
-						else resolve();
-					});
-				} catch (error) {
-					rejectAndCancel(toTransportError(error));
-				}
+				this.#process.stdin.write(Buffer.from(data), (error?: Error | null) => {
+					if (settled) return;
+					settled = true;
+					if (error) reject(toTransportError(error));
+					else resolve();
+				});
 			});
 		} finally {
 			if (abortListener) options.signal?.removeEventListener("abort", abortListener);
@@ -548,93 +591,81 @@ class NodeHttp2CursorStreamHandle implements CursorHttp2StreamHandle {
 		}
 	}
 
-	async close(): Promise<void> {
-		if (this.#closed) return;
-		this.#closed = true;
-		this.cleanup();
-		this.stream.end();
-		this.finish();
-		this.onClose();
-	}
-
-	async cancel(): Promise<void> {
-		if (this.#closed) return;
-		this.#closed = true;
-		this.cleanup();
-		this.stream.close();
-		this.finish();
-		this.onClose();
-	}
-
 	private readonly abort = (): void => {
-		this.fail(new CursorTransportError("Aborted", "Cursor stream request aborted."));
 		this.cancel().catch(() => undefined);
 	};
 
-	private readonly onResponse = (headers: IncomingHttpHeaders): void => {
-		const normalized = normalizeIncomingHeaders(headers);
-		try {
-			assertSuccessfulStatus(Number(normalized[":status"]), new Uint8Array(), []);
-		} catch (error) {
-			this.fail(toError(error));
+	private readonly onStdout = (chunk: Buffer): void => {
+		this.#stdoutBuffer = concatBytes(this.#stdoutBuffer, chunk);
+		let offset = 0;
+		while (this.#stdoutBuffer.byteLength - offset >= 4) {
+			const view = new DataView(this.#stdoutBuffer.buffer, this.#stdoutBuffer.byteOffset + offset, this.#stdoutBuffer.byteLength - offset);
+			const length = view.getUint32(0, false);
+			const bodyStart = offset + 4;
+			const bodyEnd = bodyStart + length;
+			if (bodyEnd > this.#stdoutBuffer.byteLength) break;
+			this.#queue.push(this.#stdoutBuffer.slice(bodyStart, bodyEnd));
+			offset = bodyEnd;
 		}
-	};
-
-	private readonly onData = (chunk: Buffer): void => {
-		this.#queue.push(chunk);
+		this.#stdoutBuffer = this.#stdoutBuffer.slice(offset);
 		this.wake();
 	};
-	private readonly onEnd = (): void => this.finish();
-	private readonly onCloseEvent = (): void => this.finish();
-	private readonly onAborted = (): void => this.fail(new CursorTransportError("NetworkError", "Cursor stream was aborted by the remote endpoint."));
-	private readonly onError = (error: Error): void => this.fail(toTransportError(error));
-	private readonly onSessionError = (error: Error): void => this.fail(new CursorTransportError("NetworkError", error.message));
+
+	private readonly onStderr = (chunk: Buffer): void => {
+		this.#stderr.push(chunk);
+	};
+
+	private readonly onProcessError = (error: Error): void => {
+		this.finish(toTransportError(error));
+	};
+
+	private readonly onProcessClose = (code: number | null): void => {
+		if (this.#cancelled) {
+			this.finish();
+			return;
+		}
+		if (code && code !== 0) {
+			const stderr = sanitizeDiagnosticText(Buffer.concat(this.#stderr).toString("utf8"));
+			this.finish(new CursorTransportError("NetworkError", `Cursor HTTP/2 bridge exited with code ${code}${stderr ? `: ${stderr}` : ""}.`));
+			return;
+		}
+		this.finish();
+	};
+
+	private finish(error?: Error): void {
+		if (error) this.#failure = error;
+		this.#done = true;
+		this.#signal?.removeEventListener("abort", this.abort);
+		this.wake();
+	}
 
 	private wake(): void {
 		this.#notify?.();
 		this.#notify = undefined;
 	}
 
-	private finish(): void {
-		this.#done = true;
-		this.wake();
-	}
-
-	private fail(error: Error): void {
-		this.#failure = error;
-		this.finish();
-	}
-
-	private cleanup(): void {
-		this.signal?.removeEventListener("abort", this.abort);
-		this.stream.removeListener("response", this.onResponse);
-		this.stream.removeListener("data", this.onData);
-		this.stream.removeListener("end", this.onEnd);
-		this.stream.removeListener("close", this.onCloseEvent);
-		this.stream.removeListener("aborted", this.onAborted);
-		this.stream.removeListener("error", this.onError);
-		this.session.removeListener("error", this.onSessionError);
-	}
-
 	private async *createFrames(): AsyncIterable<Uint8Array> {
-		try {
-			while (!this.#done || this.#queue.length > 0) {
-				const next = this.#queue.shift();
-				if (next) {
-					yield next;
-					continue;
-				}
-				if (this.#failure) throw this.#failure;
-				if (this.#done) break;
-				await new Promise<void>((resolve) => {
-					this.#notify = resolve;
-				});
+		while (!this.#done || this.#queue.length > 0) {
+			const next = this.#queue.shift();
+			if (next) {
+				yield next;
+				continue;
 			}
 			if (this.#failure) throw this.#failure;
-		} finally {
-			this.cleanup();
+			if (this.#done) break;
+			await new Promise<void>((resolve) => {
+				this.#notify = resolve;
+			});
 		}
+		if (this.#failure) throw this.#failure;
 	}
+}
+
+function encodeBridgeMessage(data: Uint8Array): Uint8Array {
+	const frame = new Uint8Array(4 + data.byteLength);
+	new DataView(frame.buffer, frame.byteOffset, frame.byteLength).setUint32(0, data.byteLength, false);
+	frame.set(data, 4);
+	return frame;
 }
 
 const textDecoder = new TextDecoder();
@@ -645,15 +676,23 @@ export function sanitizeCursorTransportError(error: Error, secrets: readonly str
 }
 
 function throwIfCursorEndStreamError(data: Uint8Array, secrets: readonly string[]): void {
-	const parsed = parseJsonObject(textDecoder.decode(data));
-	if (!parsed) return;
+	let parsed: JsonObject;
+	try {
+		const value = JSON.parse(textDecoder.decode(data)) as unknown;
+		if (typeof value !== "object" || value === null || Array.isArray(value)) return;
+		parsed = value as JsonObject;
+	} catch {
+		throw new CursorTransportError("ProtocolError", "Failed to parse Cursor Connect end stream.");
+	}
 	const errorValue = parsed.error;
-	if (!errorValue || typeof errorValue !== "object" || Array.isArray(errorValue)) return;
+	if (!errorValue) return;
+	if (typeof errorValue !== "object" || Array.isArray(errorValue)) {
+		throw new CursorTransportError("CursorApiRejected", `Cursor stream ended with unknown: ${sanitizeDiagnosticText(String(errorValue), secrets)}.`);
+	}
 	const error = errorValue as JsonObject;
-	const code = readStringField(error, "code");
-	if (!code) return;
-	const message = readStringField(error, "message");
-	throw new CursorTransportError(classifyConnectErrorCode(code), `Cursor stream ended with ${code}${message ? `: ${sanitizeDiagnosticText(message, secrets)}` : ""}.`);
+	const code = readStringField(error, "code") ?? "unknown";
+	const message = readStringField(error, "message") ?? "Unknown error";
+	throw new CursorTransportError(classifyConnectErrorCode(code), `Cursor stream ended with ${code}: ${sanitizeDiagnosticText(message, secrets)}.`);
 }
 
 function classifyConnectErrorCode(code: string): CursorTransportErrorCode {
@@ -675,16 +714,6 @@ function assertSuccessfulStatus(statusCode: number | undefined, body: Uint8Array
 function cursorClientVersionHint(statusCode: number): string {
 	if (statusCode !== 403 && statusCode !== 426) return "";
 	return ` Cursor may be rejecting the bundled Cursor CLI-compatible client version (${CURSOR_CLIENT_VERSION}); refresh CURSOR_CLIENT_VERSION from current Cursor CLI traffic if authentication still succeeds in Cursor itself.`;
-}
-
-function normalizeIncomingHeaders(headers: IncomingHttpHeaders): Record<string, string> {
-	const normalized: Record<string, string> = {};
-	for (const [key, value] of Object.entries(headers)) {
-		if (typeof value === "string") normalized[key] = value;
-		else if (typeof value === "number") normalized[key] = String(value);
-		else if (Array.isArray(value)) normalized[key] = value.join(", ");
-	}
-	return normalized;
 }
 
 function toError(error: unknown): Error {

@@ -54,6 +54,7 @@ export interface CursorMockTransportRun {
 export class CursorMockTransport implements CursorAgentTransport {
 	readonly runs: CursorMockTransportRun[] = [];
 	readonly modelRequests: string[] = [];
+	readonly discardedConversations: string[] = [];
 	#models: readonly CursorUsableModel[];
 	#messages: readonly CursorServerMessage[];
 	#openStreams = 0;
@@ -97,6 +98,10 @@ export class CursorMockTransport implements CursorAgentTransport {
 		for (const run of this.runs) {
 			await run.stream.cancel();
 		}
+	}
+
+	discardConversation(conversationId: string): void {
+		this.discardedConversations.push(conversationId);
 	}
 
 	getLifecycleSnapshot() {

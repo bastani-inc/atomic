@@ -20,9 +20,12 @@ function jwtWithExp(exp: number): string {
 
 const deterministicRandom: CursorRandomBytes = (length: number) => new Uint8Array(length).fill(7);
 
-function loginCallbacks(openedUrls: string[]): OAuthLoginCallbacks {
+function loginCallbacks(openedUrls: string[], authInfos: Parameters<OAuthLoginCallbacks["onAuth"]>[0][] = []): OAuthLoginCallbacks {
 	return {
-		onAuth: (info) => openedUrls.push(info.url),
+		onAuth: (info) => {
+			authInfos.push(info);
+			openedUrls.push(info.url);
+		},
 		onDeviceCode: () => {},
 		onPrompt: async () => "",
 		onSelect: async () => undefined,
@@ -32,6 +35,7 @@ function loginCallbacks(openedUrls: string[]): OAuthLoginCallbacks {
 describe("CursorAuthService", () => {
 	test("runs Cursor PKCE login polling and returns persist-compatible OAuth credentials", async () => {
 		const openedUrls: string[] = [];
+		const authInfos: Parameters<OAuthLoginCallbacks["onAuth"]>[0][] = [];
 		const sleeps: number[] = [];
 		const token = jwtWithExp(2_000);
 		const responses = [
@@ -54,7 +58,7 @@ describe("CursorAuthService", () => {
 			initialPollDelayMs: 10,
 		});
 
-		const credentials = await service.login(loginCallbacks(openedUrls));
+		const credentials = await service.login(loginCallbacks(openedUrls, authInfos));
 		const expectedPkce = createPkcePair(deterministicRandom);
 		const loginUrl = new URL(openedUrls[0] ?? "");
 		assert.equal(loginUrl.hostname, "cursor.com");
@@ -63,8 +67,9 @@ describe("CursorAuthService", () => {
 		assert.equal(loginUrl.searchParams.get("uuid"), "uuid-1");
 		assert.equal(loginUrl.searchParams.get("mode"), "login");
 		assert.equal(loginUrl.searchParams.get("redirectTarget"), "cli");
+		assert.deepEqual(authInfos, [{ url: loginUrl.toString() }]);
 		assert.equal(new URL(requestedUrls[0] ?? "").pathname, "/auth/poll");
-		assert.deepEqual(sleeps, [10]);
+		assert.deepEqual(sleeps, [10, 12]);
 		assert.equal(credentials.access, token);
 		assert.equal(credentials.refresh, "refresh-secret");
 		assert.equal(credentials.expires, 2_000_000 - 300_000);

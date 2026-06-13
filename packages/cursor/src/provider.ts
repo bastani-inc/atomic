@@ -18,7 +18,7 @@ import {
 import { CursorAuthService } from "./auth.js";
 import { FileCursorCatalogCache, type CursorCatalogCache } from "./catalog-cache.js";
 import { CursorConversationStateStore } from "./conversation-state.js";
-import { CursorModelDiscoveryError, CursorModelDiscoveryService } from "./models.js";
+import { CursorModelDiscoveryService } from "./models.js";
 import {
 	createEstimatedCursorCatalog,
 	mapCursorCatalogToProviderModels,
@@ -46,9 +46,21 @@ export interface CursorProviderConfig {
 	readonly streamSimple: (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => AssistantMessageEventStream;
 }
 
+export type CursorSessionLifecycleEvent = "session_before_switch" | "session_before_fork" | "session_before_tree" | "session_shutdown";
+export type CursorProviderEvent = "session_start" | CursorSessionLifecycleEvent;
+
+export interface CursorProviderContext {
+	readonly sessionManager?: {
+		getSessionId?(): string;
+	};
+	readonly modelRegistry?: {
+		getApiKeyForProvider?(provider: string): Promise<string | undefined> | string | undefined;
+	};
+}
+
 export interface CursorProviderHost {
 	registerProvider(name: string, config: CursorProviderConfig): void;
-	on(event: "session_shutdown", handler: () => Promise<void> | void): void;
+	on(event: CursorProviderEvent, handler: (event?: unknown, context?: CursorProviderContext) => Promise<void> | void): void;
 }
 
 export interface CursorProviderRegistrationOptions {
@@ -86,9 +98,11 @@ export function registerCursorProvider(pi: CursorProviderHost, options: CursorPr
 		conversationState: new CursorConversationStateStore(),
 		uuid,
 	});
-	const catalogDiscoveryTasks = new Set<Promise<void>>();
+	const catalogDiscoveryTasks = new Set<Promise<boolean>>();
 	const catalogDiscoveryAbortControllers = new Set<AbortController>();
-	let firstUseRediscoveryTask: Promise<void> | undefined;
+	const catalogDiscoveryTokens = new Set<string>();
+	const catalogDiscoveryInFlightTokens = new Map<string, Promise<boolean>>();
+	let firstUseRediscoveryTask: Promise<boolean> | undefined;
 	let disposed = false;
 	let disposePromise: Promise<void> | undefined;
 
@@ -100,11 +114,13 @@ export function registerCursorProvider(pi: CursorProviderHost, options: CursorPr
 		}
 	};
 
-	const saveLiveCatalog = (catalog: CursorModelCatalog): void => {
+	const saveLiveCatalog = (catalog: CursorModelCatalog): boolean => {
 		try {
 			catalogCache.save(catalog);
+			return true;
 		} catch {
 			// Cache writes are best-effort and must never make auth/model use fail.
+			return false;
 		}
 	};
 
@@ -118,7 +134,7 @@ export function registerCursorProvider(pi: CursorProviderHost, options: CursorPr
 				name: CURSOR_LOGIN_NAME,
 				async login(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials> {
 					const credentials = await authService.login(callbacks);
-					await registerLiveCatalogOrFallback(credentials.access, uuid(), callbacks.signal, true);
+					await registerLiveCatalogBestEffort(credentials.access, uuid(), callbacks.signal);
 					return credentials;
 				},
 				async refreshToken(credentials: OAuthCredentials): Promise<OAuthCredentials> {
@@ -137,47 +153,35 @@ export function registerCursorProvider(pi: CursorProviderHost, options: CursorPr
 		});
 	};
 
-	const registerLiveCatalog = (catalog: CursorModelCatalog): void => {
-		if (disposed) return;
+	const registerLiveCatalog = (catalog: CursorModelCatalog): boolean => {
+		if (disposed) return false;
+		if (!saveLiveCatalog(catalog)) return false;
 		registerCatalog(mapCursorCatalogToProviderModels(catalog));
-		saveLiveCatalog(catalog);
+		return true;
 	};
 
-	const discoverAndRegisterLiveCatalog = async (accessToken: string, requestId: string, signal: AbortSignal | undefined): Promise<void> => {
+	const discoverAndRegisterLiveCatalog = async (accessToken: string, requestId: string, signal: AbortSignal | undefined): Promise<boolean> => {
 		const liveCatalog = await discoveryService.discover(accessToken, requestId, signal);
-		registerLiveCatalog(liveCatalog);
+		return registerLiveCatalog(liveCatalog);
 	};
 
-	const registerLiveCatalogOrFallback = async (
-		accessToken: string,
-		requestId: string,
-		signal: AbortSignal | undefined,
-		throwOnEmptyCatalog: boolean,
-	): Promise<void> => {
+	const registerLiveCatalogBestEffort = async (accessToken: string, requestId: string, signal: AbortSignal | undefined): Promise<boolean> => {
 		try {
-			await discoverAndRegisterLiveCatalog(accessToken, requestId, signal);
-		} catch (error) {
-			if (!(error instanceof CursorModelDiscoveryError)) {
-				throw error;
-			}
-			if (!isEstimatedCatalogFallbackAllowed(error, throwOnEmptyCatalog)) {
-				throw error;
-			}
-			const fallbackCatalog = loadCachedLiveCatalog() ?? createEstimatedCursorCatalog();
-			registerCatalog(mapCursorCatalogToProviderModels(fallbackCatalog));
-		}
-	};
-
-	const registerLiveCatalogBestEffort = async (accessToken: string, requestId: string, signal: AbortSignal | undefined): Promise<void> => {
-		try {
-			await discoverAndRegisterLiveCatalog(accessToken, requestId, signal);
+			const registered = await discoverAndRegisterLiveCatalog(accessToken, requestId, signal);
+			if (!registered) return false;
+			catalogDiscoveryTokens.add(accessToken);
+			return true;
 		} catch {
-			// Refresh and first-use discovery are best-effort. Never leak tokens via errors/logs.
+			// Login, refresh, startup, and first-use discovery are best-effort in the reference provider.
+			// Never leak tokens via discovery errors/logs and keep the current fallback/cached catalog.
+			return false;
 		}
 	};
 
-	const scheduleTrackedCatalogDiscovery = (accessToken: string): Promise<void> | undefined => {
-		if (disposed) return undefined;
+	const scheduleTrackedCatalogDiscovery = (accessToken: string): Promise<boolean> | undefined => {
+		if (disposed || accessToken.trim().length === 0 || catalogDiscoveryTokens.has(accessToken)) return undefined;
+		const existing = catalogDiscoveryInFlightTokens.get(accessToken);
+		if (existing) return existing;
 		let requestId: string;
 		try {
 			requestId = uuid();
@@ -187,13 +191,16 @@ export function registerCursorProvider(pi: CursorProviderHost, options: CursorPr
 		const controller = new AbortController();
 		catalogDiscoveryAbortControllers.add(controller);
 		const task = registerLiveCatalogBestEffort(accessToken, requestId, controller.signal);
+		catalogDiscoveryInFlightTokens.set(accessToken, task);
 		catalogDiscoveryTasks.add(task);
 		task.then(
 			() => {
+				catalogDiscoveryInFlightTokens.delete(accessToken);
 				catalogDiscoveryTasks.delete(task);
 				catalogDiscoveryAbortControllers.delete(controller);
 			},
 			() => {
+				catalogDiscoveryInFlightTokens.delete(accessToken);
 				catalogDiscoveryTasks.delete(task);
 				catalogDiscoveryAbortControllers.delete(controller);
 			},
@@ -203,17 +210,44 @@ export function registerCursorProvider(pi: CursorProviderHost, options: CursorPr
 
 	const scheduleFirstUseRediscovery = (accessToken: string | undefined): void => {
 		if (!accessToken || firstUseRediscoveryTask || disposed) return;
-		firstUseRediscoveryTask = scheduleTrackedCatalogDiscovery(accessToken);
+		const task = scheduleTrackedCatalogDiscovery(accessToken);
+		if (!task) return;
+		firstUseRediscoveryTask = task;
+		task.then(
+			(success) => {
+				if (!success && firstUseRediscoveryTask === task) firstUseRediscoveryTask = undefined;
+			},
+			() => {
+				if (firstUseRediscoveryTask === task) firstUseRediscoveryTask = undefined;
+			},
+		);
+	};
+
+	const discoverCatalogFromStoredCredentials = async (_event?: unknown, context?: CursorProviderContext): Promise<void> => {
+		if (disposed) return;
+		let accessToken: string | undefined;
+		try {
+			accessToken = await context?.modelRegistry?.getApiKeyForProvider?.(CURSOR_PROVIDER_ID);
+		} catch {
+			return;
+		}
+		if (!accessToken) return;
+		scheduleTrackedCatalogDiscovery(accessToken);
+	};
+
+	const cleanupCurrentSession = async (_event?: unknown, context?: CursorProviderContext): Promise<void> => {
+		const sessionId = context?.sessionManager?.getSessionId?.();
+		if (sessionId) await streamAdapter.cleanupSession(sessionId);
 	};
 
 	const disposeRuntime = async (): Promise<void> => {
 		if (disposePromise) return disposePromise;
 		disposePromise = (async () => {
+			await waitForCatalogDiscoveryTasks(catalogDiscoveryTasks, catalogDiscoveryDisposeTimeoutMs);
 			disposed = true;
 			for (const controller of catalogDiscoveryAbortControllers) {
 				controller.abort();
 			}
-			await waitForCatalogDiscoveryTasks(catalogDiscoveryTasks, catalogDiscoveryDisposeTimeoutMs);
 			await streamAdapter.dispose();
 		})();
 		return disposePromise;
@@ -222,7 +256,19 @@ export function registerCursorProvider(pi: CursorProviderHost, options: CursorPr
 	const startupCatalog = loadCachedLiveCatalog() ?? createEstimatedCursorCatalog();
 	registerCatalog(mapCursorCatalogToProviderModels(startupCatalog));
 
-	pi.on("session_shutdown", disposeRuntime);
+	const cleanupCurrentSessionAndDispose = async (event?: unknown, context?: CursorProviderContext): Promise<void> => {
+		try {
+			await cleanupCurrentSession(event, context);
+		} finally {
+			await disposeRuntime();
+		}
+	};
+
+	pi.on("session_start", discoverCatalogFromStoredCredentials);
+	pi.on("session_before_switch", cleanupCurrentSession);
+	pi.on("session_before_fork", cleanupCurrentSession);
+	pi.on("session_before_tree", cleanupCurrentSession);
+	pi.on("session_shutdown", cleanupCurrentSessionAndDispose);
 
 	return {
 		transport,
@@ -234,14 +280,7 @@ export function registerCursorProvider(pi: CursorProviderHost, options: CursorPr
 	};
 }
 
-function isEstimatedCatalogFallbackAllowed(error: CursorModelDiscoveryError, throwOnEmptyCatalog: boolean): boolean {
-	if (error.code === "NetworkError") return true;
-	if (error.code === "ProtocolError") return true;
-	if (error.code === "NoUsableModels") return !throwOnEmptyCatalog;
-	return false;
-}
-
-async function waitForCatalogDiscoveryTasks(tasks: ReadonlySet<Promise<void>>, timeoutMs: number): Promise<void> {
+async function waitForCatalogDiscoveryTasks(tasks: ReadonlySet<Promise<boolean>>, timeoutMs: number): Promise<void> {
 	const pending = [...tasks];
 	if (pending.length === 0 || timeoutMs <= 0) return;
 	let timer: ReturnType<typeof setTimeout> | undefined;

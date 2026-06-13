@@ -193,15 +193,12 @@ export class CursorAuthService {
 		loginUrl.searchParams.set("uuid", uuid);
 		loginUrl.searchParams.set("mode", "login");
 		loginUrl.searchParams.set("redirectTarget", "cli");
-		callbacks.onAuth({
-			url: loginUrl.toString(),
-			instructions: "Complete the experimental Cursor login in your browser. Atomic uses Cursor's private, undocumented API; this may conflict with Cursor's terms, can break without notice, and could affect your Cursor account.",
-		});
-		callbacks.onProgress?.("Waiting for Cursor browser login...");
+		callbacks.onAuth({ url: loginUrl.toString() });
 
 		let delayMs = this.#initialPollDelayMs;
 		let consecutiveErrors = 0;
 		for (let attempt = 0; attempt < this.#maxPollAttempts; attempt += 1) {
+			await this.#sleep(delayMs, callbacks.signal);
 			if (callbacks.signal?.aborted) {
 				throw new CursorAuthError("LoginCancelled", "Cursor login was cancelled.");
 			}
@@ -219,14 +216,11 @@ export class CursorAuthService {
 				if (consecutiveErrors >= 3) {
 					throw new CursorAuthError("NetworkError", "Cursor login polling failed after repeated network errors.");
 				}
-				await this.#sleep(delayMs, callbacks.signal);
-				delayMs = Math.min(this.#maxPollDelayMs, Math.ceil(delayMs * this.#pollBackoffMultiplier));
 				continue;
 			}
 
 			if (response.status === 404) {
 				consecutiveErrors = 0;
-				await this.#sleep(delayMs, callbacks.signal);
 				delayMs = Math.min(this.#maxPollDelayMs, Math.ceil(delayMs * this.#pollBackoffMultiplier));
 				continue;
 			}
@@ -241,8 +235,6 @@ export class CursorAuthService {
 						response.status,
 					);
 				}
-				await this.#sleep(delayMs, callbacks.signal);
-				delayMs = Math.min(this.#maxPollDelayMs, Math.ceil(delayMs * this.#pollBackoffMultiplier));
 				continue;
 			}
 
@@ -251,7 +243,6 @@ export class CursorAuthService {
 				throw new CursorAuthError("PollRejected", "Cursor login response did not include usable tokens.", response.status);
 			}
 
-			callbacks.onProgress?.("Cursor login complete.");
 			return {
 				access: new CursorToken("access", tokenResponse.accessToken),
 				refresh: new CursorToken("refresh", tokenResponse.refreshToken),

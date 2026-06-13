@@ -63,6 +63,9 @@
     "packages/cursor": {
       "name": "@bastani/cursor",
       "version": "0.8.28",
+      "dependencies": {
+        "@bufbuild/protobuf": "^2.0.0",
+      },
       "peerDependencies": {
         "@bastani/atomic": "*",
       },
@@ -231,6 +234,8 @@
     "@bastani/web-access": ["@bastani/web-access@workspace:packages/web-access"],
 
     "@bastani/workflows": ["@bastani/workflows@workspace:packages/workflows"],
+
+    "@bufbuild/protobuf": ["@bufbuild/protobuf@2.12.0", "", {}, "sha512-B/XlCaFIP8LOwzo+bz5uFzATYokcwCKQcghqnlfwSmM5eX/qTkvDBnDPs+gXtX/RyjxJ4DRikECcPJbyALA8FA=="],
 
     "@earendil-works/pi-agent-core": ["@earendil-works/pi-agent-core@0.79.1", "", { "dependencies": { "@earendil-works/pi-ai": "^0.79.1", "ignore": "7.0.5", "typebox": "1.1.38", "yaml": "2.9.0" } }, "sha512-PBPjBa2YBm9jauiLtHAKaSfVJ4Dvm3/nK/bR/oHebLjwBCS2tGx3aQDX7MSGAOXi6BejlhzbB/z82BkyAyNjjQ=="],
 

@@ -1,5 +1,6 @@
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -29,22 +30,39 @@ class MemoryCursorCatalogCache implements CursorCatalogCache {
 	}
 }
 
+class ThrowingCursorCatalogCache implements CursorCatalogCache {
+	load(): CursorModelCatalog | null {
+		return null;
+	}
+
+	save(_catalog: CursorModelCatalog): void {
+		throw new Error("cursor catalog cache write failed");
+	}
+}
+
 function makeHost(): {
 	readonly host: CursorHost;
 	readonly registrations: { readonly name: string; readonly config: CursorConfig }[];
-	readonly shutdownHandlers: (() => Promise<void> | void)[];
+	readonly lifecycleHandlers: Map<string, Array<(event?: unknown, context?: unknown) => Promise<void> | void>>;
+	readonly shutdownHandlers: Array<(event?: unknown, context?: unknown) => Promise<void> | void>;
 } {
 	const registrations: { readonly name: string; readonly config: CursorConfig }[] = [];
-	const shutdownHandlers: (() => Promise<void> | void)[] = [];
+	const lifecycleHandlers = new Map<string, Array<(event?: unknown, context?: unknown) => Promise<void> | void>>();
+	const shutdownHandlers: Array<(event?: unknown, context?: unknown) => Promise<void> | void> = [];
 	return {
 		registrations,
+		lifecycleHandlers,
 		shutdownHandlers,
 		host: {
 			registerProvider(name, config) {
 				registrations.push({ name, config });
 			},
-			on(_event, handler) {
-				shutdownHandlers.push(handler);
+			on(event, handler) {
+				const typedHandler = handler as (event?: unknown, context?: unknown) => Promise<void> | void;
+				const handlers = lifecycleHandlers.get(event) ?? [];
+				handlers.push(typedHandler);
+				lifecycleHandlers.set(event, handlers);
+				if (event === "session_shutdown") shutdownHandlers.push(typedHandler);
 			},
 		},
 	};
@@ -79,8 +97,15 @@ async function nextTick(): Promise<void> {
 	await new Promise<void>((resolve) => setTimeout(resolve, 0));
 }
 
+function deterministicCursorConversationIdForSession(sessionId: string): string {
+	const convKey = createHash("sha256").update(`conv:${sessionId}`).digest("hex").slice(0, 16);
+	const hex = createHash("sha256").update(`cursor-conv-id:${convKey}`).digest("hex").slice(0, 32);
+	const variantNibble = (0x8 | (Number.parseInt(hex[16] ?? "0", 16) & 0x3)).toString(16);
+	return [hex.slice(0, 8), hex.slice(8, 12), `4${hex.slice(13, 16)}`, `${variantNibble}${hex.slice(17, 20)}`, hex.slice(20, 32)].join("-");
+}
+
 describe("Cursor provider registration", () => {
-	test("registers Cursor as an experimental OAuth provider with estimated models and streamSimple", async () => {
+	test("registers Cursor OAuth provider with estimated models and streamSimple", async () => {
 		const { host, registrations, shutdownHandlers } = makeHost();
 
 		const runtime = registerCursorProvider(host, {
@@ -92,11 +117,35 @@ describe("Cursor provider registration", () => {
 		assert.equal(registrations[0]?.name, "cursor");
 		const config = registrations[0]?.config;
 		assert.equal(config?.name, "Cursor");
-		assert.equal(config?.oauth.name, "Cursor (experimental)");
+		assert.equal(config?.oauth.name, "Cursor");
 		assert.equal(config?.api, "cursor-agent");
 		assert.equal(typeof config?.streamSimple, "function");
 		assert.ok(config?.models.some((model) => model.id === "composer-2" && /estimated/u.test(model.name)));
 		assert.equal(shutdownHandlers.length, 1);
+		await runtime.dispose();
+	});
+
+	test("registers reference lifecycle cleanup hooks for Cursor session state", async () => {
+		const { host, lifecycleHandlers } = makeHost();
+		const transport = new CursorMockTransport();
+		const runtime = registerCursorProvider(host, {
+			transport,
+			catalogCache: new MemoryCursorCatalogCache(),
+			uuid: () => "request-lifecycle",
+		});
+
+		for (const event of ["session_before_switch", "session_before_fork", "session_before_tree", "session_shutdown"] as const) {
+			const handler = lifecycleHandlers.get(event)?.[0];
+			assert.ok(handler, `missing ${event} cleanup handler`);
+			await handler({}, { sessionManager: { getSessionId: () => `session-${event}` } });
+		}
+
+		assert.deepEqual(transport.discardedConversations, [
+			deterministicCursorConversationIdForSession("session-session_before_switch"),
+			deterministicCursorConversationIdForSession("session-session_before_fork"),
+			deterministicCursorConversationIdForSession("session-session_before_tree"),
+			deterministicCursorConversationIdForSession("session-session_shutdown"),
+		]);
 		await runtime.dispose();
 	});
 
@@ -123,12 +172,224 @@ describe("Cursor provider registration", () => {
 		const cache = new MemoryCursorCatalogCache({
 			source: "live",
 			fetchedAt: 56,
-			models: [{ id: "cursor-small", displayName: "Cursor Small", supportsReasoning: false, contextWindow: 1234, maxTokens: 567 }],
+			models: [{ id: "composer-2.5", displayName: "Composer 2.5", contextWindow: 1234, maxTokens: 567 }],
 		});
 
 		const runtime = registerCursorProvider(host, { transport: new CursorMockTransport(), catalogCache: cache, uuid: () => "startup-cache-no-default" });
 
-		assert.deepEqual(registrations[0]?.config.models.map((model) => model.id), ["cursor-small"]);
+		assert.deepEqual(registrations[0]?.config.models.map((model) => model.id), ["composer-2.5"]);
+		await runtime.dispose();
+	});
+
+	test("login-persisted live-only models are available to the next provider runtime", async () => {
+		const cache = new MemoryCursorCatalogCache();
+		const authService = {
+			async login(): Promise<OAuthCredentials> {
+				return { access: "access-live-only", refresh: "refresh-live-only", expires: 123 };
+			},
+		} as unknown as CursorAuthService;
+		const discoveryService = {
+			async discover(): Promise<CursorModelCatalog> {
+				return { source: "live", fetchedAt: 57, models: [{ id: "composer-2.5", displayName: "Composer 2.5" }] };
+			},
+		} as unknown as CursorModelDiscoveryService;
+		const first = makeHost();
+		const firstRuntime = registerCursorProvider(first.host, {
+			transport: new CursorMockTransport(),
+			authService,
+			discoveryService,
+			catalogCache: cache,
+			uuid: () => "login-live-only",
+		});
+
+		await first.registrations[0]!.config.oauth.login(callbacks());
+		await firstRuntime.dispose();
+
+		const second = makeHost();
+		const secondRuntime = registerCursorProvider(second.host, { transport: new CursorMockTransport(), catalogCache: cache, uuid: () => "restart-live-only" });
+
+		assert.equal(cache.saved.length, 1);
+		assert.equal(second.registrations[0]?.config.models.find((model) => model.id === "composer-2.5")?.name, "Composer 2.5");
+		assert.deepEqual(second.registrations[0]?.config.models.map((model) => model.id), ["composer-2.5"]);
+		await secondRuntime.dispose();
+	});
+
+	test("session_start discovers live models from stored Cursor OAuth credentials when cache is missing", async () => {
+		const { host, registrations, lifecycleHandlers } = makeHost();
+		const cache = new MemoryCursorCatalogCache();
+		const discoveryRequests: { readonly accessToken: string; readonly requestId: string }[] = [];
+		const fakeDiscovery = {
+			async discover(accessToken: string, requestId: string): Promise<CursorModelCatalog> {
+				discoveryRequests.push({ accessToken, requestId });
+				return { source: "live", fetchedAt: 202, models: [{ id: "composer-2.5", displayName: "Composer 2.5" }] };
+			},
+		} as unknown as CursorModelDiscoveryService;
+		const runtime = registerCursorProvider(host, {
+			transport: new CursorMockTransport(),
+			discoveryService: fakeDiscovery,
+			catalogCache: cache,
+			uuid: () => "session-start-discovery",
+		});
+
+		const handler = lifecycleHandlers.get("session_start")?.[0];
+		assert.ok(handler);
+		await handler({}, { modelRegistry: { getApiKeyForProvider: async (provider: string) => provider === "cursor" ? "stored-access" : undefined } });
+		await nextTick();
+
+		assert.deepEqual(discoveryRequests, [{ accessToken: "stored-access", requestId: "session-start-discovery" }]);
+		assert.equal(cache.saved.length, 1);
+		assert.equal(registrations.at(-1)?.config.models.find((model) => model.id === "composer-2.5")?.name, "Composer 2.5");
+		await runtime.dispose();
+	});
+
+	test("session_shutdown flushes pending stored-credential discovery to the live catalog cache", async () => {
+		const { host, registrations, lifecycleHandlers } = makeHost();
+		const cache = new MemoryCursorCatalogCache();
+		let resolveDiscovery: ((catalog: CursorModelCatalog) => void) | undefined;
+		const discoveryStarted = new Promise<void>((resolveStarted) => {
+			const fakeDiscovery = {
+				async discover(): Promise<CursorModelCatalog> {
+					resolveStarted();
+					return new Promise<CursorModelCatalog>((resolve) => {
+						resolveDiscovery = resolve;
+					});
+				},
+			} as unknown as CursorModelDiscoveryService;
+			registerCursorProvider(host, {
+				transport: new CursorMockTransport(),
+				discoveryService: fakeDiscovery,
+				catalogCache: cache,
+				catalogDiscoveryDisposeTimeoutMs: 250,
+				uuid: () => "session-shutdown-flush",
+			});
+		});
+		const startHandler = lifecycleHandlers.get("session_start")?.[0];
+		const shutdownHandler = lifecycleHandlers.get("session_shutdown")?.[0];
+		assert.ok(startHandler);
+		assert.ok(shutdownHandler);
+
+		await startHandler({}, { modelRegistry: { getApiKeyForProvider: async (provider: string) => provider === "cursor" ? "stored-access" : undefined } });
+		await discoveryStarted;
+		setTimeout(() => {
+			resolveDiscovery?.({ source: "live", fetchedAt: 205, models: [{ id: "composer-2.5", displayName: "Composer 2.5" }] });
+		}, 0);
+		await shutdownHandler({}, { sessionManager: { getSessionId: () => "shutdown-session" } });
+
+		assert.equal(cache.saved.length, 1);
+		assert.equal(registrations.at(-1)?.config.models.find((model) => model.id === "composer-2.5")?.name, "Composer 2.5");
+	});
+
+	test("session_shutdown still disposes runtime when session cleanup fails", async () => {
+		class ThrowingDiscardTransport extends CursorMockTransport {
+			disposeCalled = false;
+
+			override async dispose(): Promise<void> {
+				this.disposeCalled = true;
+				await super.dispose();
+			}
+
+			override discardConversation(_conversationId: string): void {
+				throw new Error("discard failed");
+			}
+		}
+
+		const { host, lifecycleHandlers } = makeHost();
+		const cache = new MemoryCursorCatalogCache();
+		const transport = new ThrowingDiscardTransport();
+		let resolveDiscovery: ((catalog: CursorModelCatalog) => void) | undefined;
+		const discoveryStarted = new Promise<void>((resolveStarted) => {
+			const fakeDiscovery = {
+				async discover(): Promise<CursorModelCatalog> {
+					resolveStarted();
+					return new Promise<CursorModelCatalog>((resolve) => {
+						resolveDiscovery = resolve;
+					});
+				},
+			} as unknown as CursorModelDiscoveryService;
+			registerCursorProvider(host, {
+				transport,
+				discoveryService: fakeDiscovery,
+				catalogCache: cache,
+				catalogDiscoveryDisposeTimeoutMs: 250,
+				uuid: () => "session-shutdown-cleanup-fails",
+			});
+		});
+		const startHandler = lifecycleHandlers.get("session_start")?.[0];
+		const shutdownHandler = lifecycleHandlers.get("session_shutdown")?.[0];
+		assert.ok(startHandler);
+		assert.ok(shutdownHandler);
+
+		await startHandler({}, { modelRegistry: { getApiKeyForProvider: async (provider: string) => provider === "cursor" ? "stored-access" : undefined } });
+		await discoveryStarted;
+		setTimeout(() => {
+			resolveDiscovery?.({ source: "live", fetchedAt: 206, models: [{ id: "composer-2.5", displayName: "Composer 2.5" }] });
+		}, 0);
+
+		await assert.rejects(
+			async () => {
+				await shutdownHandler({}, { sessionManager: { getSessionId: () => "cleanup-throws" } });
+			},
+			/discard failed/u,
+		);
+		assert.equal(cache.saved.length, 1);
+		assert.equal(transport.disposeCalled, true);
+	});
+
+	test("session_start skips live model discovery without stored Cursor credentials", async () => {
+		const { host, registrations, lifecycleHandlers } = makeHost();
+		let discoveryAttempts = 0;
+		const fakeDiscovery = {
+			async discover(): Promise<CursorModelCatalog> {
+				discoveryAttempts += 1;
+				return { source: "live", fetchedAt: 203, models: [{ id: "composer-2.5", displayName: "Composer 2.5" }] };
+			},
+		} as unknown as CursorModelDiscoveryService;
+		const runtime = registerCursorProvider(host, {
+			transport: new CursorMockTransport(),
+			discoveryService: fakeDiscovery,
+			catalogCache: new MemoryCursorCatalogCache(),
+			uuid: () => "session-start-no-token",
+		});
+
+		const handler = lifecycleHandlers.get("session_start")?.[0];
+		assert.ok(handler);
+		await handler({}, { modelRegistry: { getApiKeyForProvider: async () => undefined } });
+		await nextTick();
+
+		assert.equal(discoveryAttempts, 0);
+		assert.equal(registrations.length, 1);
+		await runtime.dispose();
+	});
+
+	test("stored-credential live model discovery is deduped by access token", async () => {
+		const { host, lifecycleHandlers } = makeHost();
+		const discoveryRequests: string[] = [];
+		const fakeDiscovery = {
+			async discover(accessToken: string): Promise<CursorModelCatalog> {
+				discoveryRequests.push(accessToken);
+				return { source: "live", fetchedAt: 204, models: [{ id: "composer-2.5", displayName: "Composer 2.5" }] };
+			},
+		} as unknown as CursorModelDiscoveryService;
+		let token = "stored-access-1";
+		const runtime = registerCursorProvider(host, {
+			transport: new CursorMockTransport(),
+			discoveryService: fakeDiscovery,
+			catalogCache: new MemoryCursorCatalogCache(),
+			uuid: () => "session-start-dedupe",
+		});
+		const handler = lifecycleHandlers.get("session_start")?.[0];
+		assert.ok(handler);
+		const context = { modelRegistry: { getApiKeyForProvider: async () => token } };
+
+		await handler({}, context);
+		await handler({}, context);
+		await nextTick();
+		assert.deepEqual(discoveryRequests, ["stored-access-1"]);
+
+		token = "stored-access-2";
+		await handler({}, context);
+		await nextTick();
+		assert.deepEqual(discoveryRequests, ["stored-access-1", "stored-access-2"]);
 		await runtime.dispose();
 	});
 
@@ -259,6 +520,32 @@ describe("Cursor provider registration", () => {
 		await runtime.dispose();
 	});
 
+	test("login keeps live-only models out of memory when catalog cache persistence fails", async () => {
+		const { host, registrations } = makeHost();
+		const fakeAuth = {
+			async login(): Promise<OAuthCredentials> {
+				return { access: "access-live", refresh: "refresh-live", expires: 123 };
+			},
+		} as unknown as CursorAuthService;
+		const fakeDiscovery = {
+			async discover(): Promise<CursorModelCatalog> {
+				return { source: "live", fetchedAt: 43, models: [{ id: "composer-2.5", displayName: "Composer 2.5" }] };
+			},
+		} as unknown as CursorModelDiscoveryService;
+		const runtime = registerCursorProvider(host, {
+			transport: new CursorMockTransport(),
+			authService: fakeAuth,
+			discoveryService: fakeDiscovery,
+			catalogCache: new ThrowingCursorCatalogCache(),
+			uuid: () => "login-cache-failure",
+		});
+
+		assert.deepEqual(await registrations[0]!.config.oauth.login(callbacks()), { access: "access-live", refresh: "refresh-live", expires: 123 });
+		assert.equal(registrations.length, 1);
+		assert.equal(registrations[0]?.config.models.some((model) => model.id === "composer-2.5"), false);
+		await runtime.dispose();
+	});
+
 	test("refresh returns rotated credentials when best-effort catalog discovery rejects", async () => {
 		const { host, registrations } = makeHost();
 		const cache = new MemoryCursorCatalogCache();
@@ -323,6 +610,37 @@ describe("Cursor provider registration", () => {
 		await runtime.dispose();
 	});
 
+	test("first-use rediscovery retries after an empty or failed reference discovery", async () => {
+		const { host, registrations } = makeHost();
+		const cache = new MemoryCursorCatalogCache();
+		let attempts = 0;
+		const fakeDiscovery = {
+			async discover(): Promise<CursorModelCatalog> {
+				attempts += 1;
+				if (attempts === 1) throw new CursorModelDiscoveryError("NoUsableModels", "empty model list");
+				return { source: "live", fetchedAt: 101, models: [{ id: "composer-2.5", displayName: "Composer 2.5" }] };
+			},
+		} as unknown as CursorModelDiscoveryService;
+		const runtime = registerCursorProvider(host, {
+			transport: new CursorMockTransport({ messages: [{ type: "done", reason: "stop" }] }),
+			discoveryService: fakeDiscovery,
+			catalogCache: cache,
+			uuid: () => `retry-${attempts}`,
+		});
+		const config = registrations[0]!.config;
+
+		await collectEvents(config.streamSimple(streamModelFromConfig(config), streamContext(), { apiKey: "access-secret" }));
+		await nextTick();
+		assert.equal(attempts, 1);
+		assert.equal(cache.saved.length, 0);
+
+		await collectEvents(registrations.at(-1)!.config.streamSimple(streamModelFromConfig(registrations.at(-1)!.config), streamContext(), { apiKey: "access-secret" }));
+		await nextTick();
+		assert.equal(attempts, 2);
+		assert.equal(registrations.at(-1)?.config.models.find((model) => model.id === "composer-2.5")?.reasoning, true);
+		await runtime.dispose();
+	});
+
 	test("dispose aborts pending first-use rediscovery and does not hang when discovery ignores abort", async () => {
 		const { host, registrations } = makeHost();
 		const discoverySignals: AbortSignal[] = [];
@@ -358,10 +676,10 @@ describe("Cursor provider registration", () => {
 		assert.equal(discoverySignals[0]?.aborted, true);
 	});
 
-	test("login discovery rethrows auth rejection/cancellation and falls back for network discovery failures", async () => {
+	test("login model discovery is best-effort like the reference provider", async () => {
 		const fakeAuth = { async login(): Promise<OAuthCredentials> { return { access: "access-live", refresh: "refresh-live", expires: 123 }; } } as unknown as CursorAuthService;
 
-		for (const code of ["Unauthorized", "CursorApiRejected", "Aborted", "NoUsableModels"] as const) {
+		for (const code of ["Unauthorized", "CursorApiRejected", "Aborted", "NoUsableModels", "NetworkError", "ProtocolError"] as const) {
 			const { host, registrations } = makeHost();
 			const discovery = { async discover(): Promise<CursorModelCatalog> { throw new CursorModelDiscoveryError(code, `blocked ${code}`); } } as unknown as CursorModelDiscoveryService;
 			const runtime = registerCursorProvider(host, {
@@ -371,24 +689,11 @@ describe("Cursor provider registration", () => {
 				catalogCache: new MemoryCursorCatalogCache(),
 				uuid: () => "request-failure",
 			});
-			await assert.rejects(() => registrations[0]!.config.oauth.login(callbacks()), (error: Error) => error.message.includes(code));
+			assert.deepEqual(await registrations[0]!.config.oauth.login(callbacks()), { access: "access-live", refresh: "refresh-live", expires: 123 });
 			assert.equal(registrations.length, 1);
+			assert.ok(registrations[0]!.config.models.some((model) => /estimated/u.test(model.name)));
 			await runtime.dispose();
 		}
-
-		const { host, registrations } = makeHost();
-		const discovery = { async discover(): Promise<CursorModelCatalog> { throw new CursorModelDiscoveryError("NetworkError", "temporary network failure"); } } as unknown as CursorModelDiscoveryService;
-		const runtime = registerCursorProvider(host, {
-			transport: new CursorMockTransport(),
-			authService: fakeAuth,
-			discoveryService: discovery,
-			catalogCache: new MemoryCursorCatalogCache(),
-			uuid: () => "request-network",
-		});
-		await registrations[0]!.config.oauth.login(callbacks());
-		assert.equal(registrations.length, 2);
-		assert.ok(registrations[1]!.config.models.some((model) => /estimated/u.test(model.name)));
-		await runtime.dispose();
 	});
 
 	test("host wiring includes bundled package copy and default model resolution", () => {

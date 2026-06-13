@@ -106,7 +106,7 @@ describe("CursorStreamAdapter", () => {
 		assert.equal(transport.runs.length, 0);
 	});
 
-	test("maps fake Cursor text, thinking, tool-call, usage, and done messages to streamSimple events", async () => {
+	test("pauses immediately when Cursor emits an MCP tool call", async () => {
 		const transport = new CursorMockTransport({
 			messages: [
 				{ type: "thinkingDelta", text: "plan" },
@@ -140,9 +140,9 @@ describe("CursorStreamAdapter", () => {
 		assert.equal(done?.type, "done");
 		if (done?.type === "done") {
 			assert.equal(done.reason, "toolUse");
-			assert.equal(done.message.usage.input, 10);
-			assert.equal(done.message.usage.output, 5);
-			assert.equal(done.message.usage.totalTokens, 15);
+			assert.equal(done.message.usage.input, 0);
+			assert.equal(done.message.usage.output, 0);
+			assert.equal(done.message.usage.totalTokens, 0);
 		}
 		assert.equal(transport.runs[0]?.request.resolvedModelId, "composer-2-high");
 		assert.deepEqual(transport.getLifecycleSnapshot(), { openStreams: 1, cancelledStreams: 0, closedStreams: 0 });
@@ -196,7 +196,7 @@ describe("CursorStreamAdapter", () => {
 		assert.deepEqual(transport.getLifecycleSnapshot(), { openStreams: 0, cancelledStreams: 1, closedStreams: 1 });
 	});
 
-	test("pauses pending tool calls when Cursor waits for tool results without done", async () => {
+	test("pauses pending tool calls immediately when Cursor waits for tool results without done", async () => {
 		class WaitingToolTransport extends CursorMockTransport {
 			async run(request: CursorRunRequest): Promise<CursorRunStream> {
 				const stream = await super.run(request);
@@ -209,7 +209,7 @@ describe("CursorStreamAdapter", () => {
 		const transport = new WaitingToolTransport();
 		const adapter = new CursorStreamAdapter({ transport, uuid: () => "run-tool-waiting" });
 
-		const events = await collectEventsWithTimeout(adapter.streamSimple(model(), context(), { apiKey: "access-secret", sessionId: "session-tool-waiting", timeoutMs: 1 }), 250);
+		const events = await collectEventsWithTimeout(adapter.streamSimple(model(), context(), { apiKey: "access-secret", sessionId: "session-tool-waiting", timeoutMs: 10_000 }), 250);
 
 		const terminal = events.at(-1);
 		assert.equal(terminal?.type, "done");
@@ -217,23 +217,106 @@ describe("CursorStreamAdapter", () => {
 		assert.deepEqual(events.map((event) => event.type), ["start", "toolcall_start", "toolcall_delta", "toolcall_end", "done"]);
 	});
 
-	test("requires a stable session id before pausing a tool-using Cursor turn", async () => {
-		const transport = new CursorMockTransport({ messages: [{ type: "toolCall", id: "tool-1", name: "Read", argumentsJson: "{\"path\":\"README.md\"}" }] });
+	test("resumes immediately-paused Cursor tool turns without dropping the first post-tool message", async () => {
+		class TimeoutResumeStream implements CursorRunStream {
+			readonly id = "run-timeout-resume";
+			readonly messages = this.createMessages();
+			readonly writtenToolResults: CursorToolResultMessage[] = [];
+			#toolResultWritten = deferred();
+			#cancelled = false;
+			#closed = false;
+
+			constructor(readonly onCancel: () => void, readonly onClose: () => void) {}
+
+			async writeToolResult(result: CursorToolResultMessage): Promise<void> {
+				this.writtenToolResults.push(result);
+				this.#toolResultWritten.resolve();
+			}
+
+			async cancel(): Promise<void> {
+				if (this.#cancelled) return;
+				this.#cancelled = true;
+				this.onCancel();
+				await this.close();
+			}
+
+			async close(): Promise<void> {
+				if (this.#closed) return;
+				this.#closed = true;
+				this.onClose();
+			}
+
+			private async *createMessages(): AsyncIterable<CursorServerMessage> {
+				yield { type: "toolCall", id: "tool-timeout", name: "Read", argumentsJson: "{\"path\":\"README.md\"}", execId: "exec-timeout", execNumericId: 1 };
+				await this.#toolResultWritten.promise;
+				yield { type: "textDelta", text: "after tool" };
+				yield { type: "done", reason: "stop" };
+			}
+		}
+
+		class TimeoutResumeTransport implements CursorAgentTransport {
+			readonly requests: CursorRunRequest[] = [];
+			#openStreams = 0;
+			#cancelledStreams = 0;
+			#closedStreams = 0;
+			readonly stream = new TimeoutResumeStream(() => {
+				this.#cancelledStreams += 1;
+			}, () => {
+				this.#closedStreams += 1;
+				this.#openStreams = Math.max(0, this.#openStreams - 1);
+			});
+
+			async getUsableModels(): Promise<readonly CursorUsableModel[]> { return []; }
+			async run(request: CursorRunRequest): Promise<CursorRunStream> {
+				this.requests.push(request);
+				this.#openStreams += 1;
+				return this.stream;
+			}
+			async dispose(): Promise<void> {}
+			getLifecycleSnapshot() { return { openStreams: this.#openStreams, cancelledStreams: this.#cancelledStreams, closedStreams: this.#closedStreams }; }
+		}
+
+		const transport = new TimeoutResumeTransport();
+		const adapter = new CursorStreamAdapter({ transport, uuid: () => "request-timeout-resume" });
+
+		const firstEvents = await collectEventsWithTimeout(adapter.streamSimple(model(), context(), { apiKey: "access-secret", sessionId: "session-timeout-resume", timeoutMs: 1 }), 250);
+
+		assert.deepEqual(firstEvents.map((event) => event.type), ["start", "toolcall_start", "toolcall_delta", "toolcall_end", "done"]);
+		const resumeContext: Context = { messages: [{ role: "toolResult", toolCallId: "tool-timeout", toolName: "Read", content: [{ type: "text", text: "file contents" }], isError: false, timestamp: 2 }] };
+		const secondEvents = await collectEventsWithTimeout(adapter.streamSimple(model(), resumeContext, { apiKey: "access-secret", sessionId: "session-timeout-resume" }), 250);
+
+		assert.equal(transport.requests.length, 1);
+		assert.deepEqual(transport.stream.writtenToolResults, [{ toolCallId: "tool-timeout", toolName: "Read", text: "file contents", isError: false, execId: "exec-timeout", execNumericId: 1 }]);
+		assert.deepEqual(secondEvents.filter((event) => event.type === "text_delta").map((event) => event.delta), ["after tool"]);
+		assert.equal(secondEvents.at(-1)?.type, "done");
+	});
+
+	test("derives reference-style Cursor conversation keys when no session id is provided", async () => {
+		const transport = new CursorMockTransport({ messages: [
+			{ type: "toolCall", id: "tool-1", name: "Read", argumentsJson: "{\"path\":\"README.md\"}" },
+			{ type: "textDelta", text: "after tool" },
+			{ type: "done", reason: "stop" },
+		] });
 		const adapter = new CursorStreamAdapter({ transport, uuid: () => "run-tool-missing-session" });
 
-		const events = await collectEvents(adapter.streamSimple(model(), context(), { apiKey: "access-secret" }));
+		const firstEvents = await collectEvents(adapter.streamSimple(model(), context(), { apiKey: "access-secret" }));
+		assert.deepEqual(firstEvents.map((event) => event.type), ["start", "toolcall_start", "toolcall_delta", "toolcall_end", "done"]);
+		assert.equal(transport.runs[0]?.request.conversationId, "bc933415-34b2-474e-9078-cd393275bf94");
+		assert.deepEqual(adapter.getLifecycleSnapshot(), { openStreams: 1, cancelledStreams: 0, closedStreams: 0, activeTurns: 1 });
 
-		const terminal = events.at(-1);
-		assert.equal(terminal?.type, "error");
-		if (terminal?.type === "error") assert.match(terminal.error.errorMessage ?? "", /stable sessionId/u);
+		const resumeContext: Context = { messages: [
+			{ role: "user", content: "hello", timestamp: 1 },
+			{ role: "toolResult", toolCallId: "tool-1", toolName: "Read", content: [{ type: "text", text: "file contents" }], isError: false, timestamp: 2 },
+		] };
+		const secondEvents = await collectEvents(adapter.streamSimple(model(), resumeContext, { apiKey: "access-secret" }));
+		assert.deepEqual(secondEvents.filter((event) => event.type === "text_delta").map((event) => event.delta), ["after tool"]);
 		assert.deepEqual(adapter.getLifecycleSnapshot(), { openStreams: 0, cancelledStreams: 0, closedStreams: 1, activeTurns: 0 });
 	});
 
-	test("pauses with every tool call emitted across separate Cursor messages", async () => {
+	test("handles separate Cursor tool calls as sequential paused turns", async () => {
 		const transport = new CursorMockTransport({ messages: [
 			{ type: "toolCall", id: "tool-1", name: "Read", argumentsJson: "{\"path\":\"README.md\"}", execId: "exec-1", execNumericId: 7 },
 			{ type: "toolCall", id: "tool-2", name: "List", argumentsJson: "{\"path\":\"packages\"}", execId: "exec-2", execNumericId: 8 },
-			{ type: "done", reason: "toolUse" },
 			{ type: "textDelta", text: "after tools" },
 			{ type: "done", reason: "stop" },
 		] });
@@ -241,39 +324,34 @@ describe("CursorStreamAdapter", () => {
 
 		const firstEvents = await collectEvents(adapter.streamSimple(model(), context(), { apiKey: "access-secret", sessionId: "session-multi-tool" }));
 
-		assert.deepEqual(firstEvents.map((event) => event.type), [
-			"start",
-			"toolcall_start",
-			"toolcall_delta",
-			"toolcall_end",
-			"toolcall_start",
-			"toolcall_delta",
-			"toolcall_end",
-			"done",
-		]);
+		assert.deepEqual(firstEvents.map((event) => event.type), ["start", "toolcall_start", "toolcall_delta", "toolcall_end", "done"]);
 		const firstDone = firstEvents.at(-1);
 		assert.equal(firstDone?.type, "done");
 		if (firstDone?.type === "done") assert.equal(firstDone.reason, "toolUse");
 
-		const resumeContext: Context = { messages: [
+		const secondResumeContext: Context = { messages: [
 			{ role: "toolResult", toolCallId: "tool-1", toolName: "Read", content: [{ type: "text", text: "file contents" }], isError: false, timestamp: 2 },
+		] };
+		const secondEvents = await collectEvents(adapter.streamSimple(model(), secondResumeContext, { apiKey: "access-secret", sessionId: "session-multi-tool" }));
+
+		assert.deepEqual(secondEvents.map((event) => event.type), ["start", "toolcall_start", "toolcall_delta", "toolcall_end", "done"]);
+		const thirdResumeContext: Context = { messages: [
 			{ role: "toolResult", toolCallId: "tool-2", toolName: "List", content: [{ type: "text", text: "listing" }], isError: false, timestamp: 3 },
 		] };
-		const secondEvents = await collectEvents(adapter.streamSimple(model(), resumeContext, { apiKey: "access-secret", sessionId: "session-multi-tool" }));
+		const thirdEvents = await collectEvents(adapter.streamSimple(model(), thirdResumeContext, { apiKey: "access-secret", sessionId: "session-multi-tool" }));
 
 		assert.equal(transport.runs.length, 1);
 		assert.deepEqual(transport.runs[0]?.stream.writtenToolResults, [
 			{ toolCallId: "tool-1", toolName: "Read", text: "file contents", isError: false, execId: "exec-1", execNumericId: 7 },
 			{ toolCallId: "tool-2", toolName: "List", text: "listing", isError: false, execId: "exec-2", execNumericId: 8 },
 		]);
-		assert.equal(secondEvents.some((event) => event.type === "text_delta"), true);
-		assert.equal(secondEvents.at(-1)?.type, "done");
+		assert.equal(thirdEvents.some((event) => event.type === "text_delta"), true);
+		assert.equal(thirdEvents.at(-1)?.type, "done");
 	});
 
 	test("resumes a paused Cursor tool turn with trailing tool results", async () => {
 		const transport = new CursorMockTransport({ messages: [
 			{ type: "toolCall", id: "tool-1", name: "Read", argumentsJson: "{\"path\":\"README.md\"}", execId: "exec-1", execNumericId: 7 },
-			{ type: "done", reason: "toolUse" },
 			{ type: "textDelta", text: "done" },
 			{ type: "done", reason: "stop" },
 		] });

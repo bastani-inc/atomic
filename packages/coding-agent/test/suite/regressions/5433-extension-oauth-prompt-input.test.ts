@@ -70,6 +70,19 @@ describe("LoginDialogComponent OAuth prompts", () => {
 		expect(output).toContain("First prompt:");
 	});
 
+	test("can show a standalone cancel hint for auth-only flows", () => {
+		const dialog = createDialog();
+
+		dialog.showAuth("https://example.invalid/login", undefined, {
+			autoOpenBrowser: false,
+			showCancelHint: true,
+		});
+
+		const output = renderDialog(dialog).join("\n");
+		expect(output).toContain("https://example.invalid/login");
+		expect(output).toContain("(esc/ctrl+c Cancel)");
+	});
+
 	test("keeps previous manual input stable when a later prompt is active", async () => {
 		const dialog = createDialog();
 
