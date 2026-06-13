@@ -49,6 +49,17 @@ export type PullRequestMergeVerification =
       readonly prUrl?: string;
     };
 
+export type PullRequestChecksVerification =
+  | {
+      readonly ok: true;
+      readonly summary: string;
+      readonly checkCount: number;
+    }
+  | {
+      readonly ok: false;
+      readonly summary: string;
+    };
+
 export type PublishWorkflowRunVerification =
   | {
       readonly ok: true;
@@ -57,6 +68,7 @@ export type PublishWorkflowRunVerification =
       readonly runUrl?: string;
       readonly status: string;
       readonly conclusion: string;
+      readonly headSha?: string;
     }
   | {
       readonly ok: false;
@@ -73,6 +85,7 @@ export type PublishWorkflowRunReference =
       readonly runUrl?: string;
       readonly status: string;
       readonly conclusion?: string;
+      readonly headSha?: string;
     }
   | {
       readonly ok: false;
@@ -167,6 +180,8 @@ export function verifyReleasePullRequestReferenceJson(
   value: JsonValue,
   expectedHeadRefName: string,
   expectedBaseRefName = "main",
+  expectedHeadRefOid?: string,
+  expectedState?: string,
 ): PullRequestReferenceVerification {
   if (!isJsonObject(value)) {
     return { ok: false, summary: "GitHub PR reference response was not a JSON object." };
@@ -187,6 +202,12 @@ export function verifyReleasePullRequestReferenceJson(
   }
   if (headRefName !== expectedHeadRefName) {
     failures.push(`headRefName was ${headRefName ?? "missing"}, expected ${expectedHeadRefName}`);
+  }
+  if (expectedHeadRefOid !== undefined && headRefOid !== expectedHeadRefOid) {
+    failures.push(`headRefOid was ${headRefOid ?? "missing"}, expected ${expectedHeadRefOid}`);
+  }
+  if (expectedState !== undefined && state !== expectedState) {
+    failures.push(`state was ${state ?? "missing"}, expected ${expectedState}`);
   }
 
   if (failures.length > 0 || prUrl === undefined || prNumber === undefined) {
@@ -220,6 +241,7 @@ export function verifyPullRequestMergedJson(
   value: JsonValue,
   expectedHeadRefName: string,
   expectedBaseRefName = "main",
+  expectedHeadRefOid?: string,
 ): PullRequestMergeVerification {
   if (!isJsonObject(value)) {
     return { ok: false, summary: "GitHub PR response was not a JSON object." };
@@ -229,6 +251,7 @@ export function verifyPullRequestMergedJson(
   const mergedAt = stringField(value, "mergedAt");
   const baseRefName = stringField(value, "baseRefName");
   const headRefName = stringField(value, "headRefName");
+  const headRefOid = stringField(value, "headRefOid");
   const prUrl = stringField(value, "url");
   const mergeCommit = value.mergeCommit;
   const mergeCommitOid = isJsonObject(mergeCommit) ? stringField(mergeCommit, "oid") : undefined;
@@ -242,6 +265,9 @@ export function verifyPullRequestMergedJson(
   }
   if (headRefName !== expectedHeadRefName) {
     failures.push(`headRefName was ${headRefName ?? "missing"}, expected ${expectedHeadRefName}`);
+  }
+  if (expectedHeadRefOid !== undefined && headRefOid !== expectedHeadRefOid) {
+    failures.push(`headRefOid was ${headRefOid ?? "missing"}, expected ${expectedHeadRefOid}`);
   }
 
   if (failures.length > 0 || mergeCommitOid === undefined) {
@@ -261,10 +287,69 @@ export function verifyPullRequestMergedJson(
       `mergeCommit.oid: ${mergeCommitOid}`,
       `baseRefName: ${baseRefName}`,
       `headRefName: ${headRefName}`,
+      headRefOid === undefined ? undefined : `headRefOid: ${headRefOid}`,
       prUrl === undefined ? undefined : `url: ${prUrl}`,
     ].filter((line): line is string => line !== undefined).join("\n"),
     mergeCommitOid,
     prUrl,
+  };
+}
+
+function checkName(value: JsonValue, index: number): string {
+  if (!isJsonObject(value)) return `check[${index}]`;
+  return stringField(value, "name") ?? stringField(value, "workflow") ?? `check[${index}]`;
+}
+
+function checkPassed(value: { readonly [key: string]: JsonValue }): boolean {
+  const bucket = stringField(value, "bucket")?.toLowerCase();
+  if (bucket !== undefined) return bucket === "pass";
+
+  const state = stringField(value, "state")?.toUpperCase();
+  return state === "SUCCESS" || state === "PASSING" || state === "PASSED" || state === "COMPLETED";
+}
+
+export function verifyPullRequestChecksJson(value: JsonValue): PullRequestChecksVerification {
+  if (!Array.isArray(value)) {
+    return { ok: false, summary: "GitHub PR checks response was not a JSON array." };
+  }
+
+  if (value.length === 0) {
+    return { ok: false, summary: "GitHub PR checks response contained no required checks." };
+  }
+
+  const failures: string[] = [];
+  for (const [index, check] of value.entries()) {
+    if (!isJsonObject(check)) {
+      failures.push(`check[${index}] was not a JSON object`);
+      continue;
+    }
+
+    if (!checkPassed(check)) {
+      const name = checkName(check, index);
+      const bucket = stringField(check, "bucket") ?? "missing";
+      const state = stringField(check, "state") ?? "missing";
+      const link = stringField(check, "link");
+      failures.push(`${name} bucket=${bucket} state=${state}${link === undefined ? "" : ` link=${link}`}`);
+    }
+  }
+
+  if (failures.length > 0) {
+    return {
+      ok: false,
+      summary: [
+        "GitHub PR required checks are not verified as passing.",
+        ...failures.map((failure) => `- ${failure}`),
+      ].join("\n"),
+    };
+  }
+
+  return {
+    ok: true,
+    summary: [
+      "GitHub PR required checks are verified as passing.",
+      `checkCount: ${value.length}`,
+    ].join("\n"),
+    checkCount: value.length,
   };
 }
 
@@ -290,6 +375,7 @@ export function selectPublishWorkflowRunJson(
     const status = stringField(candidate, "status");
     const conclusion = nullableStringField(candidate, "conclusion");
     const runUrl = stringField(candidate, "url");
+    const headSha = stringField(candidate, "headSha");
 
     if (headBranch !== expectedHeadBranch || event !== "push") {
       mismatches.push(
@@ -321,12 +407,14 @@ export function selectPublishWorkflowRunJson(
         `event: ${event}`,
         `status: ${status}`,
         conclusion === undefined ? undefined : `conclusion: ${conclusion}`,
+        headSha === undefined ? undefined : `headSha: ${headSha}`,
         runUrl === undefined ? undefined : `url: ${runUrl}`,
       ].filter((line): line is string => line !== undefined).join("\n"),
       runId,
       runUrl,
       status,
       conclusion,
+      headSha,
     };
   }
 
@@ -344,6 +432,7 @@ export function selectPublishWorkflowRunJson(
 export function verifyPublishWorkflowRunJson(
   value: JsonValue,
   expectedHeadBranch: string,
+  expectedHeadSha?: string,
 ): PublishWorkflowRunVerification {
   if (!isJsonObject(value)) {
     return { ok: false, summary: "GitHub Actions run response was not a JSON object." };
@@ -356,6 +445,7 @@ export function verifyPublishWorkflowRunJson(
   const conclusion = nullableStringField(value, "conclusion");
   const runUrl = stringField(value, "url");
   const workflowName = stringField(value, "workflowName");
+  const headSha = stringField(value, "headSha");
   const failures: string[] = [];
 
   if (runId === undefined) failures.push("databaseId was missing or invalid");
@@ -365,6 +455,9 @@ export function verifyPublishWorkflowRunJson(
   if (event !== "push") failures.push(`event was ${event ?? "missing"}, expected push`);
   if (status !== "completed") failures.push(`status was ${status ?? "missing"}, expected completed`);
   if (conclusion !== "success") failures.push(`conclusion was ${conclusion ?? "missing"}, expected success`);
+  if (expectedHeadSha !== undefined && headSha !== expectedHeadSha) {
+    failures.push(`headSha was ${headSha ?? "missing"}, expected ${expectedHeadSha}`);
+  }
 
   if (failures.length > 0 || runId === undefined || status === undefined || conclusion === undefined) {
     return {
@@ -388,11 +481,13 @@ export function verifyPublishWorkflowRunJson(
       `event: ${event}`,
       `status: ${status}`,
       `conclusion: ${conclusion}`,
+      headSha === undefined ? undefined : `headSha: ${headSha}`,
       runUrl === undefined ? undefined : `url: ${runUrl}`,
     ].filter((line): line is string => line !== undefined).join("\n"),
     runId,
     runUrl,
     status,
     conclusion,
+    headSha,
   };
 }

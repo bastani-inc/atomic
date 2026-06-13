@@ -11,6 +11,7 @@ import {
   selectPublishWorkflowRunJson,
   validateReleaseRequest,
   verifyPublishWorkflowRunJson,
+  verifyPullRequestChecksJson,
   verifyPullRequestMergedJson,
   verifyReleasePullRequestReferenceJson,
   type JsonValue,
@@ -184,6 +185,7 @@ describe("publish-release GitHub merge verification", () => {
         "mergeCommit.oid: abc123",
         "baseRefName: main",
         "headRefName: release/1.2.3",
+        "headRefOid: def456",
         "url: https://github.com/earendil-works/pi-mono/pull/123",
       ].join("\n"),
       mergeCommitOid: "abc123",
@@ -200,6 +202,35 @@ describe("publish-release GitHub merge verification", () => {
   });
 });
 
+describe("publish-release GitHub PR checks verification", () => {
+  test("accepts only non-empty required check lists where every check is passing", () => {
+    assert.deepEqual(verifyPullRequestChecksJson([
+      { name: "typecheck", bucket: "pass", state: "SUCCESS" },
+      { name: "unit", state: "SUCCESS" },
+    ]), {
+      ok: true,
+      summary: [
+        "GitHub PR required checks are verified as passing.",
+        "checkCount: 2",
+      ].join("\n"),
+      checkCount: 2,
+    });
+  });
+
+  test("rejects empty, failing, pending, or malformed required check lists", () => {
+    assert.equal(verifyPullRequestChecksJson([]).ok, false);
+
+    const result = verifyPullRequestChecksJson([
+      { name: "typecheck", bucket: "fail", state: "FAILURE", link: "https://example.test/check" },
+      { name: "unit", bucket: "pending", state: "PENDING" },
+    ]);
+
+    assert.equal(result.ok, false);
+    assert.match(result.summary, /typecheck bucket=fail state=FAILURE link=https:\/\/example\.test\/check/u);
+    assert.match(result.summary, /unit bucket=pending state=PENDING/u);
+  });
+});
+
 describe("publish-release GitHub Actions publish verification", () => {
   const successfulRun: JsonValue = {
     databaseId: 987654321,
@@ -208,6 +239,7 @@ describe("publish-release GitHub Actions publish verification", () => {
     event: "push",
     status: "completed",
     conclusion: "success",
+    headSha: "abc123",
     url: "https://github.com/earendil-works/pi-mono/actions/runs/987654321",
   };
 
@@ -225,12 +257,14 @@ describe("publish-release GitHub Actions publish verification", () => {
         "headBranch: 1.2.3",
         "event: push",
         "status: in_progress",
+        "headSha: abc123",
         "url: https://github.com/earendil-works/pi-mono/actions/runs/987654321",
       ].join("\n"),
       runId: 987654321,
       runUrl: "https://github.com/earendil-works/pi-mono/actions/runs/987654321",
       status: "in_progress",
       conclusion: undefined,
+      headSha: "abc123",
     });
   });
 
@@ -257,12 +291,14 @@ describe("publish-release GitHub Actions publish verification", () => {
         "event: push",
         "status: completed",
         "conclusion: success",
+        "headSha: abc123",
         "url: https://github.com/earendil-works/pi-mono/actions/runs/987654321",
       ].join("\n"),
       runId: 987654321,
       runUrl: "https://github.com/earendil-works/pi-mono/actions/runs/987654321",
       status: "completed",
       conclusion: "success",
+      headSha: "abc123",
     });
   });
 

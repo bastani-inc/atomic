@@ -9,7 +9,7 @@
 
 ## 1. Executive Summary
 
-This RFC proposes a project-local Atomic workflow named `publish-release` under `.atomic/workflows/publish-release.ts` to automate the repo's documented release/prerelease process. It accepts a required `target_version`, a required `release_kind` (`release` or `prerelease`), starts from the maintainer's current source branch/commit, creates `release/<version>` or `prerelease/<version>` from that exact current HEAD, and uses tracked stages to prepare changelogs/version bumps, validate with Bun typecheck and unit tests, open and merge a GitHub PR to `main`, tag the merged commit, push the tag, monitor publishing, and summarize the release. The two dangerous doors are `merge_verified_release_pr` and `publish_release_tag`; they funnel irreversible remote effects through named workflow stages with explicit success/failure handling.
+This RFC proposes a project-local Atomic workflow named `publish-release` under `.atomic/workflows/publish-release.ts` to automate the repo's documented release/prerelease process. It accepts a required `target_version`, a required `release_kind` (`release` or `prerelease`), starts from the maintainer's current source branch/commit, creates `release/<version>` or `prerelease/<version>` from that exact current HEAD, and uses tracked stages to prepare changelogs/version bumps, open and merge a GitHub PR to `main`, tag the merged commit, push the tag, monitor publishing, and summarize the release. The workflow keeps model stages for flexible work such as changelog wording, PR body creation, CI-log interpretation, and command adaptation, but the release gates themselves are deterministic workflow-code checks. The two dangerous doors are `merge_verified_release_pr` and `publish_release_tag`; they funnel irreversible remote effects through named workflow stages guarded by deterministic preconditions and postcondition verification.
 
 ## 2. Context and Motivation
 
@@ -96,7 +96,7 @@ Selected starter pattern: **Classify-and-act + loop until done + adversarial ver
 
 ### 4.4 The Door Set at a Glance
 
-`launch_publish_release`, `validate_release_request`, `prepare_release_branch`, `update_release_metadata`, `run_release_checks`, `open_release_pr`, `wait_for_release_ci`, `merge_verified_release_pr` ⚠, `sync_main_after_merge`, `publish_release_tag` ⚠, `verify_published_release`, `summarize_release`.
+`launch_publish_release`, `validate_release_request`, `prepare_release_branch`, `update_release_metadata`, `verify_release_preparation`, `run_local_release_checks`, `open_release_pr`, `verify_release_pr_reference`, `wait_for_release_ci`, `verify_release_pr_checks_passed`, `merge_verified_release_pr` ⚠, `verify_release_pr_merged`, `sync_main_after_merge`, `verify_main_ready_for_tag`, `publish_release_tag` ⚠, `verify_release_tag_published`, `verify_published_release`, `summarize_release`.
 
 ## 5. Detailed Design
 
@@ -112,19 +112,28 @@ launch_publish_release(input: { target_version: string; release_kind: ReleaseKin
 validate_release_request(input): ValidReleaseRequest | VersionFormatError
 // Guarantee: returns typed release metadata only when kind and version format agree.
 
-merge_verified_release_pr(pr: ReleasePr): MergedReleasePr | CiFailure
+verify_release_pr_checks_passed(pr: ReleasePr): CheckedReleasePr | CiFailure
+// Guarantee: returns checked PR evidence only when required checks pass for the captured PR head SHA.
+
+merge_verified_release_pr(pr: CheckedReleasePr): MergedReleasePr | CiFailure
 // Guarantee: merges only a PR whose required checks have passed. IRREVERSIBLE remote effect.
 
-publish_release_tag(merged: MergedReleasePr): PublishedTag | TagFailure
+verify_main_ready_for_tag(merged: MergedReleasePr): TaggableMain | TagFailure
+// Guarantee: returns taggable main evidence only when local main matches origin/main, contains the merge commit, and the tag does not already exist.
+
+publish_release_tag(main: TaggableMain): PublishedTag | TagFailure
 // Guarantee: pushes the version tag that triggers CI publishing. IRREVERSIBLE remote effect.
 ```
 
 | Door | Joint | One-sentence guarantee | Refusals | Chokepoint |
 | ---- | ----- | ---------------------- | -------- | ---------- |
 | `validate_release_request` | Release request validity | Produces validated release metadata. | Wrong release/prerelease format; leading `v`; invalid alpha revision. | Input airlock |
+| `verify_release_pr_checks_passed` | CI pass evidence | Accepts only required checks passing for the captured PR head SHA. | Failed/pending/missing checks; PR head changed; wrong PR state. | Deterministic CI gate |
 | `merge_verified_release_pr` ⚠ | Merge release PR | Merges only verified release changes. | Failing CI; missing PR; wrong branch; gh auth failure. | Sole merge door |
+| `verify_main_ready_for_tag` | Tag readiness | Accepts only clean local main matching origin/main with no existing release tag. | Missing main sync; existing local/remote tag; merge commit absent. | Deterministic tag precondition |
 | `publish_release_tag` ⚠ | Publish release tag | Pushes the tag that starts publishing. | Missing main sync; existing tag; failed merge; git push failure. | Sole publish trigger |
-| `verify_published_release` | Release completion evidence | Reports publish outcome from GitHub Actions. | Failed action; timed out/unknown status. | Final verification gate |
+| `verify_release_tag_published` | Tag publication evidence | Accepts only a local and remote tag pointing to the verified main commit. | Missing tag; tag points to wrong commit; push failed. | Deterministic tag postcondition |
+| `verify_published_release` | Release completion evidence | Reports publish outcome from GitHub Actions. | Failed action; timed out/unknown status; run head SHA differs from tag target. | Final verification gate |
 
 ### 5.2 Workflow Inputs
 
@@ -160,12 +169,19 @@ The workflow should fail early when:
    - updates relevant changelogs under `## [Unreleased]`,
    - runs `bun run scripts/bump-version.ts <version>` and `bun install`,
    - commits changes.
-3. `run-release-checks` — toolful stage that runs `bun run typecheck` and `bun run test:unit`.
-4. `open-release-pr` — toolful stage that pushes branch and creates/reuses a PR targeting `main` with `gh`, verifying PR base/head/SHA with `gh pr view --json`.
-5. `wait-for-release-ci-and-merge` — toolful stage that waits for checks and merges/automerge when checks pass, does not delete the release/prerelease branch, and reports actionable failure details if checks fail.
-6. Deterministic merge verification in the workflow body — runs `gh pr view <pr-url-or-branch> --json state,mergedAt,mergeCommit,baseRefName,headRefName,headRefOid,url` and `git ls-remote --heads origin <release-branch>`; GitHub state, not an LLM status marker, is the source of truth before tagging.
-7. `tag-and-monitor-publish` — toolful stage that syncs main, creates/pushes tag, and monitors release/publish action.
-8. Workflow returns summary outputs.
+3. Deterministic release-preparation verification in the workflow body — checks current branch, clean worktree, changed-file allowlist, package manifest versions/private flags, and release commit identity.
+4. Deterministic local checks in the workflow body — runs `bun run typecheck` and `bun run test:unit` directly and blocks on non-zero exits or a dirty worktree.
+5. `open-release-pr` — toolful stage that pushes branch and creates/reuses a PR targeting `main` with useful PR title/body content.
+6. Deterministic PR reference verification in the workflow body — runs `gh pr view` and `git ls-remote` to require `OPEN` state, `main` base, release branch head, and exact release commit SHA.
+7. `wait-for-release-ci` — toolful stage that may wait for/check CI and summarize failures, but does not merge.
+8. Deterministic CI verification in the workflow body — runs `gh pr checks --required --json ...` and requires a non-empty required-check list where every check passes for the captured PR head SHA.
+9. `merge-verified-release-pr` — toolful stage that performs the repository-supported merge after the deterministic CI gate and keeps the release/prerelease branch.
+10. Deterministic merge verification in the workflow body — runs `gh pr view <pr-url> --json state,mergedAt,mergeCommit,baseRefName,headRefName,headRefOid,url` and `git ls-remote --heads origin <release-branch>`; GitHub state, captured head SHA, and branch retention are the source of truth before tagging.
+11. `sync-main-after-merge` — toolful stage that switches to `main`, pulls `origin/main`, and does not tag.
+12. Deterministic tag-readiness verification in the workflow body — requires clean local `main`, `HEAD === origin/main`, merge commit ancestry, and no existing local/remote release tag.
+13. `push-release-tag` — toolful stage that creates and pushes the version tag, without force-pushing.
+14. Deterministic tag/publish verification in the workflow body — requires the local and remote tag to point to the verified main commit, then verifies the publish workflow run has matching `headSha`, `status === completed`, and `conclusion === success`.
+15. Workflow returns summary outputs.
 
 Large command output should stay in stage transcripts/artifacts, while the final returned `summary` stays compact.
 
