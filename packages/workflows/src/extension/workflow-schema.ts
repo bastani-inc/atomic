@@ -37,11 +37,37 @@ const McpOptionsSchema = Type.Object({
   deny: Type.Optional(Type.Array(Type.String())),
 });
 
-const JsonSchemaObject = Type.Object({
-  type: Type.Literal("object"),
-}, {
+const JsonSchemaObjectTypeValue = {
+  anyOf: [
+    { const: "object" },
+    { type: "array", minItems: 1, maxItems: 1, items: { const: "object" } },
+  ],
+};
+
+const JsonSchemaExplicitObjectDescriptor = {
+  type: "object",
+  required: ["type"],
+  properties: { type: JsonSchemaObjectTypeValue },
   additionalProperties: true,
+};
+
+const JsonSchemaObject = Type.Unsafe<Record<string, unknown>>({
   description: "Top-level object JSON Schema used as structured_output tool arguments for this workflow item.",
+  anyOf: [
+    JsonSchemaExplicitObjectDescriptor,
+    {
+      type: "object",
+      required: ["allOf"],
+      properties: {
+        allOf: {
+          type: "array",
+          minItems: 1,
+          items: JsonSchemaExplicitObjectDescriptor,
+        },
+      },
+      additionalProperties: true,
+    },
+  ],
 });
 
 const BashCommandRuleSchema = Type.Union([

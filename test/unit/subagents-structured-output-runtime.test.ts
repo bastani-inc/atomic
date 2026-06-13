@@ -162,10 +162,22 @@ describe("subagent structured output parent runtime", () => {
     });
   });
 
-  test("rejects stale captures followed by later assistant, custom, or tool-result messages", () => {
+  test("accepts benign custom transcript messages around the final structured_output result", () => {
+    withRuntime((runtime) => {
+      writePayloadAndMetadata(runtime);
+
+      const readback = readStructuredOutput(runtime, {
+        messages: [assistantToolCall(), customMessage(), toolResult(), customMessage()],
+      });
+
+      assert.equal(readback.error, undefined);
+      assert.deepEqual(readback.value, payload);
+    });
+  });
+
+  test("rejects stale captures followed by later assistant or tool-result messages", () => {
     const cases: Array<{ label: string; later: StructuredOutputTranscriptMessage; pattern: RegExp }> = [
       { label: "assistant", later: assistantText(), pattern: /later assistant/i },
-      { label: "custom", later: customMessage(), pattern: /later custom/i },
       { label: "tool result", later: toolResult("other-call", "read"), pattern: /later toolResult/i },
     ];
 

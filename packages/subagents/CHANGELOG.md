@@ -10,7 +10,7 @@
 
 ### Fixed
 
-- Fixed subagent `outputSchema` readback to accept cross-process captures only when flat `output.json` params validate against the schema and `output.meta.json` sidecar metadata matches the final successful terminating `structured_output` transcript action, rejecting missing metadata, stale captures, sibling tool calls, duplicate structured-output calls, later assistant/custom/tool-result messages, mismatched call IDs/names, and error tool results ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
+- Fixed subagent `outputSchema` readback to accept cross-process captures only when flat `output.json` params validate against the schema and `output.meta.json` sidecar metadata matches the final successful terminating `structured_output` transcript action, rejecting missing metadata, stale captures with later assistant/tool-result messages, sibling tool calls, duplicate structured-output calls, mismatched call IDs/names, and error tool results while ignoring benign `custom` host annotations around the final tool result ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
 - Fixed explicit empty child `tools: []` allowlists with `outputSchema` to pass only `--tools structured_output`, keeping the restricted child from regaining default tools while still enabling the required final-answer channel ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
 
 ## [0.8.28] - 2026-06-11

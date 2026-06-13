@@ -152,7 +152,7 @@ describe("WorkflowParametersSchema stage options", () => {
     assert.equal(Value.Check(WorkflowParametersSchema, { action: "send", delivery: "chat" }), false);
   });
 
-  test("rejects schema options without an explicit top-level object type", () => {
+  test("validates schema options as top-level object tool-argument contracts", () => {
     assert.equal(Value.Check(WorkflowParametersSchema, {
       task: { name: "planner", prompt: "plan", schema: { type: "array", items: { type: "string" } } },
     }), false);
@@ -169,6 +169,28 @@ describe("WorkflowParametersSchema stage options", () => {
         { parallel: [{ name: "second", task: "two", schema: { type: "object", properties: { ok: { type: "boolean" } } } }] },
       ],
     }), true);
+    assert.equal(Value.Check(WorkflowParametersSchema, {
+      task: { name: "tuple-object", prompt: "plan", schema: { type: ["object"], properties: { ok: { type: "boolean" } } } },
+    }), true);
+    assert.equal(Value.Check(WorkflowParametersSchema, {
+      task: {
+        name: "all-of-object",
+        prompt: "plan",
+        schema: {
+          allOf: [
+            { type: "object", required: ["ok"], properties: { ok: { type: "boolean" } } },
+            { type: ["object"], properties: { note: { type: "string" } } },
+          ],
+        },
+      },
+    }), true);
+    assert.equal(Value.Check(WorkflowParametersSchema, {
+      task: {
+        name: "bad-all-of",
+        prompt: "plan",
+        schema: { allOf: [{ type: "object" }, { type: "array", items: { type: "string" } }] },
+      },
+    }), false);
   });
 
   test("rejects non-array and non-string fallbackModels", () => {

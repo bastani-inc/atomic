@@ -107,9 +107,12 @@ function toolCallBlocks(message: StructuredOutputTranscriptMessage): ToolCallBlo
 		.map((block) => ({ type: "toolCall", id: block.id, name: block.name }));
 }
 
-function isRelevantLaterMessage(message: StructuredOutputTranscriptMessage): boolean {
+function isFinalityRelevantMessage(message: StructuredOutputTranscriptMessage): boolean {
 	const role = roleOf(message);
-	return role === "assistant" || role === "toolResult" || role === "custom";
+	// `custom` entries are host/runtime annotations (for example display/status
+	// messages) rather than additional child model output, so they should not make
+	// an otherwise-final structured_output capture look stale.
+	return role === "assistant" || role === "toolResult";
 }
 
 function finalityInvalid(message: string): { status: "invalid"; message: string } {
@@ -223,7 +226,7 @@ function verifyStructuredOutputFinality(
 
 	for (let index = assistantIndex + 1; index < resultIndex; index++) {
 		const message = messages[index];
-		if (isRelevantLaterMessage(message)) {
+		if (isFinalityRelevantMessage(message)) {
 			return finalityInvalid(
 				`Structured output call ${JSON.stringify(metadata.toolCallId)} was not final; another ${roleOf(message)} message appeared before its matching tool result.`,
 			);
@@ -231,7 +234,7 @@ function verifyStructuredOutputFinality(
 	}
 	for (let index = resultIndex + 1; index < messages.length; index++) {
 		const message = messages[index];
-		if (isRelevantLaterMessage(message)) {
+		if (isFinalityRelevantMessage(message)) {
 			return finalityInvalid(
 				`Structured output call ${JSON.stringify(metadata.toolCallId)} was not final; a later ${roleOf(message)} message followed the successful tool result.`,
 			);

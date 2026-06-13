@@ -132,6 +132,10 @@ export function buildPiArgs(input: BuildPiArgsInput): BuildPiArgsResult {
 	const toolExtensionPaths: string[] = [];
 	if (input.tools !== undefined) {
 		const builtinTools = [...declaredBuiltinTools];
+		// Path-only extension entries are passed via --extension, not --tools. An
+		// extension-only list intentionally emits no --tools flag, so default built-ins
+		// remain available; do not synthesize a built-in allowlist just to add
+		// structured_output and accidentally make that case restrictive.
 		const shouldAutoAllowStructuredOutput = input.structuredOutput
 			&& (declaredBuiltinTools.length > 0 || input.tools.length === 0);
 		if (shouldAutoAllowStructuredOutput && !builtinTools.includes(STRUCTURED_OUTPUT_TOOL_NAME)) {

@@ -887,6 +887,13 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
     }
 
     let index = activeCandidateIndex ?? 0;
+    const capturedStructuredOutputForAttempt = (): boolean =>
+      structuredOutputCapture?.called === true && signal?.aborted !== true;
+    const recordSuccessfulAttempt = (candidate: WorkflowResolvedModelCandidate): void => {
+      modelAttempts.push({ model: candidate.id, success: true, ...modelAttemptReasoning(candidate) });
+      pendingFallbackWarnings.length = 0;
+    };
+
     while (index < candidates.length) {
       const candidate = candidates[index]!;
       const activeSession = session && activeCandidateIndex === index
@@ -899,13 +906,20 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
         const { terminalScanStartIndex } = await promptWithPauseResume(activeSession, text, sdkOptions);
         const terminalFailure = latestTerminalAssistantFailureSince(activeSession.messages, terminalScanStartIndex);
         if (terminalFailure !== undefined) {
+          if (capturedStructuredOutputForAttempt()) {
+            recordSuccessfulAttempt(candidate);
+            return;
+          }
           throw new WorkflowPromptModelFailure(terminalFailure);
         }
-        modelAttempts.push({ model: candidate.id, success: true, ...modelAttemptReasoning(candidate) });
-        pendingFallbackWarnings.length = 0;
+        recordSuccessfulAttempt(candidate);
         return;
       } catch (err) {
         const message = errorMessage(err);
+        if (capturedStructuredOutputForAttempt() && isRetryableModelFailure(err)) {
+          recordSuccessfulAttempt(candidate);
+          return;
+        }
         modelAttempts.push({ model: candidate.id, success: false, ...modelAttemptReasoning(candidate), error: message });
         if (signal?.aborted || !isRetryableModelFailure(err) || index === candidates.length - 1) {
           modelWarnings.push(...pendingFallbackWarnings);

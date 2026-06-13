@@ -18,8 +18,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- Fixed direct workflow tool validation so schema-enabled `task`, `tasks`, `chain`, and `parallel` items reject array or primitive structured-output schemas at argument-validation time instead of failing later during stage setup ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
+- Fixed direct workflow tool validation so schema-enabled `task`, `tasks`, `chain`, and `parallel` items reject array or primitive structured-output schemas at argument-validation time while accepting the same object-root contracts as runtime validation, including object-only `allOf` schemas ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
 - Fixed schema-backed workflow stages to fail with a clear stage-level error when `prompt()` is called more than once on the same `StageContext`, rather than surfacing the lower-level structured-output single-use guard ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
+- Fixed schema-backed workflow model fallback so an attempt that already captured a valid terminating `structured_output` result is treated as successful instead of retrying against fallback models and tripping the single-use result guard ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
 - Fixed the workflow graph overlay remaining interactive when the parent/main-chat agent opens `ask_user_question`: the graph keeps focus, the parent question stays pending behind it with a clear “Main chat needs input — exit graph to answer.” status hint, hiding/exiting the graph focuses the pending question, and host custom-UI state changes no longer hide, restore, remount, or repaint the overlay ([#1353](https://github.com/bastani-inc/atomic/issues/1353)).
 
 ## [0.8.28] - 2026-06-11
