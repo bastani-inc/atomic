@@ -1,12 +1,16 @@
 import { existsSync, readdirSync } from "node:fs";
 import { defineWorkflow, Type } from "@bastani/workflows";
 import {
+  commandSummary,
+  parseJsonCommand,
+  runCommand,
   selectPublishWorkflowRunJson,
   validateReleaseRequest,
   verifyPublishWorkflowRunJson,
   verifyPullRequestChecksJson,
   verifyPullRequestMergedJson,
   verifyReleasePullRequestReferenceJson,
+  type CommandResult,
   type JsonValue,
   type PublishReleaseOutput,
   type PublishWorkflowRunVerification,
@@ -14,7 +18,7 @@ import {
   type PullRequestReferenceVerification,
   type ReleaseStatus,
   type ValidatedRelease,
-} from "./lib/publish-release-helpers.js";
+} from "./lib/publish-release.js";
 
 const releaseKindSchema = Type.Union([Type.Literal("release"), Type.Literal("prerelease")]);
 const statusSchema = Type.Union([Type.Literal("completed"), Type.Literal("blocked"), Type.Literal("failed")]);
@@ -45,13 +49,6 @@ function blockedOutput(
     ].join("\n"),
   };
 }
-
-type CommandResult = {
-  readonly command: string;
-  readonly exitCode: number;
-  readonly stdout: string;
-  readonly stderr: string;
-};
 
 type GateVerification =
   | {
@@ -101,38 +98,6 @@ type PackageManifest = {
   readonly version?: JsonValue;
   readonly private?: JsonValue;
 };
-
-function runCommand(args: readonly string[]): CommandResult {
-  const result = Bun.spawnSync({
-    cmd: [...args],
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-
-  return {
-    command: args.join(" "),
-    exitCode: result.exitCode,
-    stdout: result.stdout.toString().trim(),
-    stderr: result.stderr.toString().trim(),
-  };
-}
-
-function commandSummary(result: CommandResult): string {
-  return [
-    `$ ${result.command}`,
-    `exitCode: ${result.exitCode}`,
-    result.stdout.length === 0 ? undefined : `stdout:\n${result.stdout}`,
-    result.stderr.length === 0 ? undefined : `stderr:\n${result.stderr}`,
-  ].filter((line): line is string => line !== undefined).join("\n");
-}
-
-function parseJsonCommand(result: CommandResult, failurePrefix: string): { readonly ok: true; readonly value: JsonValue } | { readonly ok: false; readonly summary: string } {
-  try {
-    return { ok: true, value: JSON.parse(result.stdout) as JsonValue };
-  } catch {
-    return { ok: false, summary: [failurePrefix, commandSummary(result)].join("\n\n") };
-  }
-}
 
 function isJsonObject(value: JsonValue): value is { readonly [key: string]: JsonValue } {
   return typeof value === "object" && value !== null && !Array.isArray(value);

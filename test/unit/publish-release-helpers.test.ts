@@ -15,7 +15,7 @@ import {
   verifyPullRequestMergedJson,
   verifyReleasePullRequestReferenceJson,
   type JsonValue,
-} from "../../.atomic/workflows/lib/publish-release-helpers.js";
+} from "../../.atomic/workflows/lib/publish-release.js";
 
 describe("publish-release version validation", () => {
   test("accepts stable release versions only for release requests", () => {

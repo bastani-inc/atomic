@@ -1,3 +1,6 @@
+import { execFileSync } from "node:child_process";
+import { createGitEnvironment } from "@bastani/atomic";
+
 export type ReleaseKind = "release" | "prerelease";
 export type ReleaseStatus = "completed" | "blocked" | "failed";
 
@@ -19,6 +22,13 @@ export type PublishReleaseOutput = {
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | readonly JsonValue[] | { readonly [key: string]: JsonValue };
+
+export type CommandResult = {
+  readonly command: string;
+  readonly exitCode: number;
+  readonly stdout: string;
+  readonly stderr: string;
+};
 
 export type PullRequestReferenceVerification =
   | {
@@ -155,6 +165,72 @@ export function hasStatusMarker(text: string, successMarker: string): boolean {
   }
 
   return lastStatusForKey === successMarker;
+}
+
+// Sanitize repository-local Git environment variables so release subprocesses
+// always target this checkout rather than an inherited hook/worktree context.
+export function runCommand(args: readonly string[]): CommandResult {
+  const [command, ...commandArgs] = args;
+  if (command === undefined) {
+    return {
+      command: "",
+      exitCode: 1,
+      stdout: "",
+      stderr: "Cannot run an empty command.",
+    };
+  }
+
+  try {
+    const stdout = execFileSync(command, commandArgs, {
+      encoding: "utf8",
+      env: createGitEnvironment(),
+      maxBuffer: 1024 * 1024 * 20,
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+
+    return {
+      command: args.join(" "),
+      exitCode: 0,
+      stdout,
+      stderr: "",
+    };
+  } catch (error) {
+    const failure = error as {
+      readonly status?: number;
+      readonly stdout?: Buffer | string;
+      readonly stderr?: Buffer | string;
+      readonly message?: string;
+    };
+    const stdout = String(failure.stdout ?? "").trim();
+    const stderr = String(failure.stderr ?? failure.message ?? "").trim();
+
+    return {
+      command: args.join(" "),
+      exitCode: failure.status ?? 1,
+      stdout,
+      stderr,
+    };
+  }
+}
+
+export function commandSummary(result: CommandResult): string {
+  return [
+    `$ ${result.command}`,
+    `exitCode: ${result.exitCode}`,
+    result.stdout.length === 0 ? undefined : `stdout:\n${result.stdout}`,
+    result.stderr.length === 0 ? undefined : `stderr:\n${result.stderr}`,
+  ].filter((line): line is string => line !== undefined).join("\n");
+}
+
+export function parseJsonCommand(
+  result: CommandResult,
+  failurePrefix: string,
+): { readonly ok: true; readonly value: JsonValue } | { readonly ok: false; readonly summary: string } {
+  try {
+    return { ok: true, value: JSON.parse(result.stdout) as JsonValue };
+  } catch {
+    return { ok: false, summary: [failurePrefix, commandSummary(result)].join("\n\n") };
+  }
 }
 
 function isJsonObject(value: JsonValue): value is { readonly [key: string]: JsonValue } {
