@@ -1,11 +1,6 @@
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import {
-  cleanUrl,
-  firstActionsUrl,
-  firstNonEmptyLine,
-  hasLeadingStatus,
-  hasStatusMarker,
   prereleaseVersionPattern,
   releaseVersionPattern,
   selectPublishWorkflowRunJson,
@@ -59,68 +54,6 @@ describe("publish-release version validation", () => {
       () => validateReleaseRequest("prerelease", "v1.2.3-alpha.1"),
       /must not include a leading "v"/u,
     );
-  });
-});
-
-describe("publish-release URL extraction", () => {
-  test("strips trailing punctuation from URLs", () => {
-    assert.equal(
-      cleanUrl("https://github.com/earendil-works/pi-mono/pull/123),.;"),
-      "https://github.com/earendil-works/pi-mono/pull/123",
-    );
-  });
-
-  test("selects the first actions run URL and ignores unrelated URLs", () => {
-    const text = [
-      "Workflow: https://github.com/earendil-works/pi-mono/actions/workflows/publish.yml",
-      "Run: https://github.com/earendil-works/pi-mono/actions/runs/987654321)",
-      "Later run: https://github.com/earendil-works/pi-mono/actions/runs/123456789",
-    ].join("\n");
-
-    assert.equal(firstActionsUrl(text), "https://github.com/earendil-works/pi-mono/actions/runs/987654321");
-    assert.equal(firstActionsUrl("Docs: https://example.com/actions."), undefined);
-  });
-});
-
-describe("publish-release status parsing", () => {
-  test("finds the first non-empty line while trimming whitespace and handling CRLF", () => {
-    assert.equal(firstNonEmptyLine("\r\n  \r\n  CHECK_STATUS: passed  \r\nbody"), "CHECK_STATUS: passed");
-    assert.equal(firstNonEmptyLine("\n\n"), "");
-  });
-
-  test("keeps exact leading-status behavior available for strict checks", () => {
-    assert.equal(hasLeadingStatus("\n  CHECK_STATUS: passed  \nbody", "CHECK_STATUS: passed"), true);
-    assert.equal(hasLeadingStatus("Preamble\nCHECK_STATUS: passed", "CHECK_STATUS: passed"), false);
-    assert.equal(hasLeadingStatus("CHECK_STATUS: passed with prose", "CHECK_STATUS: passed"), false);
-  });
-
-  test("accepts a standalone status marker even when the model adds a preamble", () => {
-    const text = [
-      "I verified the checks before reporting success.",
-      "CHECK_STATUS: passed",
-      "CHECK_RUN: typecheck",
-      "CHECK_RUN: test:unit",
-    ].join("\n");
-
-    assert.equal(hasStatusMarker(text, "CHECK_STATUS: passed"), true);
-  });
-
-  test("uses the last standalone marker for the same status key", () => {
-    assert.equal(
-      hasStatusMarker("CHECK_STATUS: passed\nCHECK_STATUS: failed", "CHECK_STATUS: passed"),
-      false,
-    );
-    assert.equal(
-      hasStatusMarker("CHECK_STATUS: failed\nCHECK_STATUS: passed", "CHECK_STATUS: passed"),
-      true,
-    );
-  });
-
-  test("rejects inline, bulleted, partial, and wrong-key status mentions", () => {
-    assert.equal(hasStatusMarker("Result: CHECK_STATUS: passed", "CHECK_STATUS: passed"), false);
-    assert.equal(hasStatusMarker("- CHECK_STATUS: passed", "CHECK_STATUS: passed"), false);
-    assert.equal(hasStatusMarker("CHECK_STATUS: passed after verification", "CHECK_STATUS: passed"), false);
-    assert.equal(hasStatusMarker("PUBLISH_STATUS: passed", "CHECK_STATUS: passed"), false);
   });
 });
 
@@ -228,6 +161,15 @@ describe("publish-release GitHub PR checks verification", () => {
     assert.equal(result.ok, false);
     assert.match(result.summary, /typecheck bucket=fail state=FAILURE link=https:\/\/example\.test\/check/u);
     assert.match(result.summary, /unit bucket=pending state=PENDING/u);
+  });
+
+  test("does not treat completed check status as passing without a pass bucket", () => {
+    const result = verifyPullRequestChecksJson([
+      { name: "typecheck", state: "COMPLETED" },
+    ]);
+
+    assert.equal(result.ok, false);
+    assert.match(result.summary, /typecheck bucket=missing state=COMPLETED/u);
   });
 });
 

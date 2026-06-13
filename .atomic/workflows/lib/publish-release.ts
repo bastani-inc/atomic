@@ -105,8 +105,6 @@ export type PublishWorkflowRunReference =
 export const releaseVersionPattern = /^\d+\.\d+\.\d+$/;
 export const prereleaseVersionPattern = /^\d+\.\d+\.\d+-alpha\.[1-9]\d*$/;
 
-const statusMarkerPattern = /^([A-Z][A-Z_]*_STATUS): [a-z][a-z0-9_-]*$/u;
-
 export function validateReleaseRequest(kind: ReleaseKind, version: string): ValidatedRelease {
   if (version.startsWith("v")) {
     throw new Error(`target_version must not include a leading "v"; received ${version}`);
@@ -124,47 +122,6 @@ export function validateReleaseRequest(kind: ReleaseKind, version: string): Vali
     version,
     branch: `${kind}/${version}`,
   };
-}
-
-export function cleanUrl(url: string): string {
-  return url.replace(/[),.;]+$/u, "");
-}
-
-function urlsIn(text: string): readonly string[] {
-  return (text.match(/https?:\/\/\S+/gu) ?? []).map(cleanUrl);
-}
-
-export function firstActionsUrl(text: string): string | undefined {
-  return urlsIn(text).find((url) => url.includes("/actions/runs/"));
-}
-
-export function firstNonEmptyLine(text: string): string {
-  return text
-    .split(/\r?\n/u)
-    .map((line) => line.trim())
-    .find((line) => line.length > 0) ?? "";
-}
-
-export function hasLeadingStatus(text: string, successMarker: string): boolean {
-  return firstNonEmptyLine(text) === successMarker;
-}
-
-export function hasStatusMarker(text: string, successMarker: string): boolean {
-  const expected = statusMarkerPattern.exec(successMarker);
-  if (expected === null) return false;
-
-  const statusKey = expected[1];
-  let lastStatusForKey: string | undefined;
-
-  for (const line of text.split(/\r?\n/u)) {
-    const trimmed = line.trim();
-    const marker = statusMarkerPattern.exec(trimmed);
-    if (marker !== null && marker[1] === statusKey) {
-      lastStatusForKey = trimmed;
-    }
-  }
-
-  return lastStatusForKey === successMarker;
 }
 
 // Sanitize repository-local Git environment variables so release subprocesses
@@ -381,7 +338,7 @@ function checkPassed(value: { readonly [key: string]: JsonValue }): boolean {
   if (bucket !== undefined) return bucket === "pass";
 
   const state = stringField(value, "state")?.toUpperCase();
-  return state === "SUCCESS" || state === "PASSING" || state === "PASSED" || state === "COMPLETED";
+  return state === "SUCCESS" || state === "PASSING" || state === "PASSED";
 }
 
 export function verifyPullRequestChecksJson(value: JsonValue): PullRequestChecksVerification {
