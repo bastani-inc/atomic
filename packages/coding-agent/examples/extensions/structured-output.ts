@@ -1,15 +1,15 @@
 /**
- * Schema-specific structured_output override
+ * Schema-specific structured_output tool
  *
- * Atomic already ships a generic `structured_output` builtin. This extension
- * demonstrates the canonical factory for narrowing that builtin to a custom
- * schema while preserving the built-in terminating behavior.
+ * Atomic does not register `structured_output` in normal agent sessions by
+ * default. This extension demonstrates the canonical factory for adding a
+ * schema-backed terminating final-answer tool only when this extension is
+ * enabled.
  *
- * Custom factory names are additive: `createStructuredOutputTool({ name:
- * "final_decision", ... })` would register beside the default generic
- * `structured_output` builtin. Keep a strict contract isolated by overriding
- * the same `structured_output` name as below, using `tools: ["final_decision"]`,
- * or excluding the generic builtin with `excludedTools: ["structured_output"]`.
+ * Custom factory names are opt-in tools too: `createStructuredOutputTool({ name:
+ * "final_decision", ... })` registers `final_decision`; include that name in any
+ * explicit `tools` allowlist. The default factory name registers
+ * `structured_output` for this extension/runtime only.
  */
 
 import {
@@ -29,6 +29,6 @@ const structuredOutputTool = createStructuredOutputTool({
 });
 
 export default function (pi: ExtensionAPI) {
-	// Registering the same name overrides the generic builtin for this session.
+	// Register structured_output for sessions that load this extension.
 	pi.registerTool(structuredOutputTool);
 }

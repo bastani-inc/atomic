@@ -264,6 +264,24 @@ Worktree semantics:
 
 For advanced integrations, the SDK also exports `setupGitWorktree(options)`, which returns `{ worktreeRoot, cwd, repositoryRoot, created }` and uses the same validation/path behavior as the executor.
 
+### Structured stage results
+
+`structured_output` is opt-in for workflow items. Add `schema` to `ctx.stage`, `ctx.task`, `ctx.chain` items, or `ctx.parallel` items when the stage must finish with machine-readable JSON:
+
+```typescript
+const Decision = Type.Object({
+  approved: Type.Boolean(),
+  findings: Type.Array(Type.String()),
+}, { additionalProperties: false });
+
+const decision = await ctx.stage("review-gate", { schema: Decision }).prompt(
+  "Review the artifact and return the decision.",
+);
+// decision.approved is typed from the schema.
+```
+
+Atomic registers the canonical `structured_output` tool only for schema-enabled items, automatically adds it to explicit `tools` allowlists, and fails the item if the model completes without the final tool call. The schema is used directly as the tool argument contract, so wrap arrays or primitives in an object field such as `{ items: [...] }` or `{ value: ... }`. `ctx.task`/`ctx.chain`/`ctx.parallel` results expose the parsed value as `result.structured` and keep `result.text` as formatted JSON for handoffs.
+
 ### Model fallbacks
 
 Stages and high-level task helpers can retry transient provider/model failures with an ordered `fallbackModels` list. The primary `model` is tried first, then each fallback, and finally the current Atomic-selected model when available. Fallbacks are only used for retryable model/provider failures such as rate limits, quota/auth/provider outages, unavailable models, network timeouts, and 5xx errors — ordinary tool, shell, validation, cancellation, and workflow-code failures are not retried.
@@ -501,7 +519,7 @@ Prompt answer replay is live-memory only. `StageSnapshot.promptAnswerState` repo
     "async": "optional boolean to dispatch a run in the background",
     "intercom": "optional intercom coordination options",
     "chainDir": "optional directory for direct chain artifacts",
-    "session/task options": "per-stage overrides also accepted at the top level and on direct task items — model, thinkingLevel, fallbackModels, tools, noTools, customTools, mcp, context, cwd, output, outputMode, reads, worktree, gitWorktreeDir, baseBranch, maxOutput, artifacts, and more"
+    "session/task options": "per-stage overrides also accepted at the top level and on direct task items — schema, model, thinkingLevel, fallbackModels, tools, noTools, customTools, mcp, context, cwd, output, outputMode, reads, worktree, gitWorktreeDir, baseBranch, maxOutput, artifacts, and more"
   }
 }
 ```

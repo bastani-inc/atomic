@@ -36,7 +36,7 @@ cp permission-gate.ts ~/.atomic/agent/extensions/
 | `questionnaire.ts` | Multi-question input with tab bar navigation between questions |
 | `tool-override.ts` | Override built-in tools (e.g., add logging/access control to `read`) |
 | `dynamic-tools.ts` | Register tools after startup (`session_start`) and at runtime via command, with prompt snippets and tool-specific prompt guidelines |
-| `structured-output.ts` | Schema-specific `structured_output` override using Atomic's canonical terminating output factory |
+| `structured-output.ts` | Opt-in schema-specific `structured_output` tool using Atomic's canonical terminating output factory |
 | `built-in-tool-renderer.ts` | Custom compact rendering for built-in tools (read, bash, edit, write) while keeping original behavior |
 | `minimal-mode.ts` | Override built-in tool rendering for minimal display (only tool calls, no output in collapsed mode) |
 | `truncated-tool.ts` | Wraps ripgrep with proper output truncation (50KB/2000 lines) |

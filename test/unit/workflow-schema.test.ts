@@ -13,6 +13,12 @@ describe("WorkflowParametersSchema stage options", () => {
         agentDir: "/agent",
         model: "anthropic/primary",
         fallbackModels: ["openai/fallback"],
+        schema: {
+          type: "object",
+          required: ["approved"],
+          properties: { approved: { type: "boolean" } },
+          additionalProperties: false,
+        },
         tools: ["read", "todo"],
         customTools: [],
         bashPolicy: {
@@ -27,7 +33,7 @@ describe("WorkflowParametersSchema stage options", () => {
         forkFromSessionFile: "/tmp/session.jsonl",
       },
       tasks: [
-        { name: "reviewer", task: "review", fallbackModels: ["openai/fallback"] },
+        { name: "reviewer", task: "review", fallbackModels: ["openai/fallback"], schema: { type: "object", properties: { ok: { type: "boolean" } } } },
       ],
       chain: [
         { name: "first", task: "one", fallbackModels: ["openai/fallback"] },

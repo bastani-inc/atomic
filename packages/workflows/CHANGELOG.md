@@ -6,12 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Added opt-in schema-backed workflow item results: `ctx.stage(..., { schema })`, `ctx.task(..., { schema })`, `ctx.chain` items, and `ctx.parallel` items now receive a schema-specific `structured_output` tool only for that item, require the final tool call, return the parsed value from `ctx.stage().prompt(...)`, and expose parsed task values as `result.structured` while preserving formatted JSON handoff text ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
+
 ### Changed
 
-- Documented the canonical `structured_output` builtin as the default structured final-answer path for workflow stages and clarified schema-specific gate guidance around `createStructuredOutputTool` flat parameters ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
+- Documented the opt-in `structured_output` workflow path and clarified that ordinary workflow stages do not receive `structured_output` from the default tool registry; schema-enabled items auto-add the runtime tool to explicit `tools` allowlists ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
 - Clarified that workflow `structured_output` gate schemas must be top-level object tool-argument schemas, with arrays and primitives wrapped in object fields before being returned through the terminating tool ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
 - Documented that terminating workflow-stage `structured_output` JSON stays inline even when large, while artifact-sized handoffs should still be saved to files when downstream stages do not need the full payload in context ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
-- Clarified that custom-named workflow structured-output tools do not suppress the default generic `structured_output` builtin, and that strict gate contracts should isolate them with same-name overrides, explicit `tools`, or `excludedTools` ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
 
 ### Fixed
 

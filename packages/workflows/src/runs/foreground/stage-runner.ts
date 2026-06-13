@@ -10,11 +10,14 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import {
+  createStructuredOutputCapture,
+  createStructuredOutputTool,
   shouldApplyCodexFastModeForScope,
   SessionManager,
   type AgentSession,
   type CreateAgentSessionOptions,
   type PromptOptions,
+  type StructuredOutputCapture,
 } from "@bastani/atomic";
 import type {
   CompleteStageOpts,
@@ -28,6 +31,7 @@ import type {
   WorkflowExecutionMode,
   WorkflowModelCatalogPort,
 } from "../../shared/types.js";
+import type { Static, TSchema } from "typebox";
 import {
   buildModelCandidatesFromCatalog,
   errorMessage,
@@ -167,6 +171,7 @@ export interface InternalStageContext extends StageContext {
 function stripWorkflowOnlyOptions(options: StageOptions | undefined): CreateAgentSessionOptions {
   if (!options) return {};
   const {
+    schema: _schema,
     mcp: _mcp,
     fallbackModels: _fallbackModels,
     fallbackThinkingLevels: _fallbackThinkingLevels,
@@ -530,6 +535,43 @@ function splitPromptOptions(options: StagePromptOptions | undefined): {
   };
 }
 
+const STRUCTURED_OUTPUT_TOOL_NAME = "structured_output";
+
+function structuredOutputPrompt(text: string): string {
+  return `${text}\n\nFinal output contract:\n- Your final action MUST be a structured_output tool call.\n- Pass the schema fields directly as tool arguments; do not wrap them in { value: ... } unless the schema explicitly defines a top-level value field.\n- Do not emit a prose final answer instead of structured_output.\n- If you need to inspect files or run commands first, do so, then call structured_output exactly once.`;
+}
+
+function stringifyStructuredOutputValue(value: unknown): string {
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch (error) {
+    throw new Error(`atomic-workflows: structured_output returned a non-serializable value: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+function stageOptionsWithStructuredOutput(
+  options: StageOptions | undefined,
+  capture: StructuredOutputCapture<unknown> | undefined,
+): StageOptions | undefined {
+  if (!options?.schema || !capture) return options;
+  const tools = options.tools === undefined
+    ? undefined
+    : Array.from(new Set([...options.tools, STRUCTURED_OUTPUT_TOOL_NAME]));
+  const excludedTools = options.excludedTools?.filter((toolName) => toolName !== STRUCTURED_OUTPUT_TOOL_NAME);
+  return {
+    ...options,
+    ...(tools !== undefined ? { tools } : {}),
+    ...(excludedTools !== undefined ? { excludedTools } : {}),
+    customTools: [
+      ...(options.customTools ?? []),
+      createStructuredOutputTool({
+        schema: options.schema as TSchema,
+        capture: capture as StructuredOutputCapture<Static<TSchema>>,
+      }),
+    ],
+  };
+}
+
 function validatePromptOutputOptions(outputOptions: StageOutputOptions): void {
   if (outputOptions.outputMode === "file-only" && (typeof outputOptions.output !== "string" || outputOptions.output.length === 0)) {
     throw new Error(
@@ -564,7 +606,9 @@ async function finalizePromptOutput(
 
 export function createStageContext(opts: StageRunnerOpts): InternalStageContext {
   const { stageId, stageName, adapters, runId, signal, stageOptions, executionMode } = opts;
-  const meta: StageExecutionMeta = { runId, stageId, stageName, signal, stageOptions, executionMode };
+  const structuredOutputCapture = stageOptions?.schema ? createStructuredOutputCapture<unknown>() : undefined;
+  const effectiveStageOptions = stageOptionsWithStructuredOutput(stageOptions, structuredOutputCapture);
+  const meta: StageExecutionMeta = { runId, stageId, stageName, signal, stageOptions: effectiveStageOptions, executionMode };
   let session: StageSessionRuntime | undefined;
   let sessionPromise: Promise<StageSessionRuntime> | undefined;
   let lastAssistantText: string | undefined;
@@ -633,7 +677,7 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
   }
 
   const hasExplicitModelFallbackConfig =
-    stageOptions?.model !== undefined || (stageOptions?.fallbackModels?.length ?? 0) > 0;
+    effectiveStageOptions?.model !== undefined || (effectiveStageOptions?.fallbackModels?.length ?? 0) > 0;
   let candidatesPromise: Promise<WorkflowResolvedModelCandidate[]> | undefined;
   let activeCandidateIndex: number | undefined;
   let selectedModel: string | undefined;
@@ -653,9 +697,9 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
   function modelCandidates(): Promise<WorkflowResolvedModelCandidate[]> {
     if (!candidatesPromise) {
       candidatesPromise = buildModelCandidatesFromCatalog({
-        primaryModel: stageOptions?.model,
-        fallbackModels: stageOptions?.fallbackModels,
-        fallbackThinkingLevels: stageOptions?.fallbackThinkingLevels,
+        primaryModel: effectiveStageOptions?.model,
+        fallbackModels: effectiveStageOptions?.fallbackModels,
+        fallbackThinkingLevels: effectiveStageOptions?.fallbackThinkingLevels,
         catalog: modelCatalog,
       });
     }
@@ -663,9 +707,9 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
   }
 
   function stageOptionsForCandidate(candidate: WorkflowResolvedModelCandidate | undefined): StageOptions | undefined {
-    if (candidate === undefined) return stageOptions;
+    if (candidate === undefined) return effectiveStageOptions;
     return {
-      ...(stageOptions ?? {}),
+      ...(effectiveStageOptions ?? {}),
       model: candidate.value,
       ...(candidate.reasoningLevel !== undefined ? { thinkingLevel: candidate.reasoningLevel } : {}),
       fallbackModels: undefined,
@@ -677,7 +721,7 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 
   function isWorkflowFastModeEnabled(): boolean | undefined {
     const model = session?.model;
-    const settingsManager = sessionSettingsManager ?? stageOptions?.settingsManager;
+    const settingsManager = sessionSettingsManager ?? effectiveStageOptions?.settingsManager;
     if (model === undefined || settingsManager === undefined) return undefined;
     return shouldApplyCodexFastModeForScope(model, settingsManager.getCodexFastModeSettings(), "workflow");
   }
@@ -705,7 +749,7 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
   }
 
   function effectiveCandidateReasoning(candidate: WorkflowResolvedModelCandidate): StageOptions["thinkingLevel"] | undefined {
-    return candidate.reasoningLevel ?? stageOptions?.thinkingLevel;
+    return candidate.reasoningLevel ?? effectiveStageOptions?.thinkingLevel;
   }
 
   function modelAttemptReasoning(candidate: WorkflowResolvedModelCandidate): Pick<WorkflowModelAttempt, "reasoningLevel"> {
@@ -715,7 +759,7 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 
   function applyCandidateThinking(candidate: WorkflowResolvedModelCandidate | undefined): void {
     pendingThinkingLevel = candidate === undefined
-      ? stageOptions?.thinkingLevel
+      ? effectiveStageOptions?.thinkingLevel
       : effectiveCandidateReasoning(candidate);
   }
 
@@ -887,15 +931,26 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 
     async prompt(text, options) {
       const { sdkOptions, outputOptions } = splitPromptOptions(options);
-      const runtimeCwd = typeof stageOptions?.cwd === "string" ? stageOptions.cwd : process.cwd();
+      const runtimeCwd = typeof effectiveStageOptions?.cwd === "string" ? effectiveStageOptions.cwd : process.cwd();
       validatePromptOutputOptions(outputOptions);
       if (adapters.prompt) {
+        if (structuredOutputCapture) {
+          throw new Error("atomic-workflows: stage schema requires an AgentSessionAdapter so the structured_output tool can be registered.");
+        }
         const rawText = await adapters.prompt.prompt(text, meta);
         lastAssistantText = await finalizePromptOutput(rawText, outputOptions, runtimeCwd);
         adapterMessages = assistantMessage(lastAssistantText);
         return lastAssistantText;
       }
-      await promptWithFallback(text, sdkOptions);
+      await promptWithFallback(structuredOutputCapture ? structuredOutputPrompt(text) : text, sdkOptions);
+      if (structuredOutputCapture) {
+        if (!structuredOutputCapture.called) {
+          throw new Error("atomic-workflows: stage configured with schema must finish by calling structured_output.");
+        }
+        const rawStructuredText = stringifyStructuredOutputValue(structuredOutputCapture.value);
+        lastAssistantText = await finalizePromptOutput(rawStructuredText, outputOptions, runtimeCwd);
+        return structuredOutputCapture.value as never;
+      }
       const rawText = lastAssistantTextFromSession(session, lastAssistantText, terminatingToolCallIds) ?? "";
       lastAssistantText = await finalizePromptOutput(rawText, outputOptions, runtimeCwd);
       return lastAssistantText;

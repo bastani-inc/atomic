@@ -160,7 +160,7 @@ In print mode, Atomic also reads piped stdin and merges it into the initial prom
 cat README.md | atomic -p "Summarize this text"
 ```
 
-When a print-mode turn correctly finishes by calling the terminating `structured_output` tool, stdout contains the tool result's JSON text even though there is no follow-up assistant prose. Large final JSON from `structured_output` is preserved inline rather than redirected to a `<persisted-output>` pointer. Non-terminating or unrelated tool results are not printed as the final response.
+When a print-mode turn correctly finishes by calling an opt-in terminating `structured_output` tool (for example from an extension or workflow item with a schema), stdout contains the tool result's JSON text even though there is no follow-up assistant prose. Large final JSON from `structured_output` is preserved inline rather than redirected to a `<persisted-output>` pointer. Non-terminating or unrelated tool results are not printed as the final response.
 
 ### Model Options
 

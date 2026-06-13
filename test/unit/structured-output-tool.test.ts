@@ -26,7 +26,7 @@ function assertPrivateFileModeIfSupported(filePath: string): void {
   assert.equal(statSync(filePath).mode & 0o777, 0o600);
 }
 
-describe("structured_output builtin tool", () => {
+describe("structured_output factory tool", () => {
   test("uses the supplied schema directly and exposes final-answer prompt metadata", () => {
     const schema = Type.Object({
       headline: Type.String(),
@@ -61,7 +61,7 @@ describe("structured_output builtin tool", () => {
     assert.doesNotMatch(promptText, /calling\s+structured_output/i);
   });
 
-  test("generic builtin accepts arbitrary top-level JSON objects without a value wrapper", async () => {
+  test("generic factory accepts arbitrary top-level JSON objects without a value wrapper", async () => {
     const tool = createStructuredOutputTool();
     const payload = {
       headline: "done",
@@ -239,29 +239,30 @@ describe("structured_output builtin tool", () => {
     }
   });
 
-  test("is registered as a default builtin and appears in the default prompt", () => {
-    assert.equal(allToolNames.has("structured_output"), true);
-    assert.equal(defaultToolNames.includes("structured_output"), true);
+  test("is exported as an opt-in factory but not registered as a builtin", () => {
+    assert.equal(allToolNames.has("structured_output" as never), false);
+    assert.equal(defaultToolNames.includes("structured_output" as never), false);
     assert.equal(typeof createStructuredOutputToolFromEntrypoint, "function");
     assert.equal(STRUCTURED_OUTPUT_TOOL_NAME_FROM_ENTRYPOINT, STRUCTURED_OUTPUT_TOOL_NAME);
 
     const defs = createAllToolDefinitions(process.cwd());
-    assert.equal(defs.structured_output.name, "structured_output");
-    assert.equal(createAllTools(process.cwd()).structured_output.name, "structured_output");
+    assert.equal("structured_output" in defs, false);
+    assert.equal("structured_output" in createAllTools(process.cwd()), false);
 
     const snippets = Object.fromEntries(
       Object.values(defs).flatMap((definition) => (
         definition.promptSnippet ? [[definition.name, definition.promptSnippet] as const] : []
       )),
     );
-    const prompt = buildSystemPrompt({ cwd: process.cwd(), toolSnippets: snippets });
-    assert.match(prompt, /structured_output/);
+    const defaultPrompt = buildSystemPrompt({ cwd: process.cwd(), toolSnippets: snippets });
+    assert.doesNotMatch(defaultPrompt, /structured_output/);
 
-    const excludedPrompt = buildSystemPrompt({
+    const optInTool = createStructuredOutputTool();
+    const optInPrompt = buildSystemPrompt({
       cwd: process.cwd(),
-      toolSnippets: snippets,
-      excludedTools: ["structured_output"],
+      selectedTools: [optInTool.name],
+      toolSnippets: { [optInTool.name]: optInTool.promptSnippet ?? "" },
     });
-    assert.doesNotMatch(excludedPrompt, /structured_output/);
+    assert.match(optInPrompt, /structured_output/);
   });
 });

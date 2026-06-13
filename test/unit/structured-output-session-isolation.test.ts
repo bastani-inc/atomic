@@ -59,19 +59,19 @@ async function createIsolatedSession(options: {
 }
 
 describe("structured_output custom-name isolation in AgentSession", () => {
-  test("custom-named structured output is additive with the default builtin unless isolated", async () => {
+  test("custom-named structured output does not register the standard tool", async () => {
     const finalDecision = createStructuredOutputTool({ name: "final_decision", schema: gateSchema });
     const session = await createIsolatedSession({ customTools: [finalDecision] });
     try {
       const activeNames = session.getActiveToolNames();
       const allNames = session.getAllTools().map((tool) => tool.name);
 
-      assert.ok(activeNames.includes("structured_output"));
+      assert.equal(activeNames.includes("structured_output"), false);
       assert.ok(activeNames.includes("final_decision"));
-      assert.ok(allNames.includes("structured_output"));
+      assert.equal(allNames.includes("structured_output"), false);
       assert.ok(allNames.includes("final_decision"));
       assert.equal(session.getToolDefinition("final_decision")?.parameters, gateSchema);
-      assert.notEqual(session.getToolDefinition("structured_output")?.parameters, gateSchema);
+      assert.equal(session.getToolDefinition("structured_output"), undefined);
     } finally {
       session.dispose();
     }
@@ -93,10 +93,10 @@ describe("structured_output custom-name isolation in AgentSession", () => {
     }
   });
 
-  test("excludedTools can remove the default generic structured_output while retaining a custom name", async () => {
-    const finalDecision = createStructuredOutputTool({ name: "final_decision", schema: gateSchema });
+  test("excludedTools can remove an opt-in standard structured_output tool", async () => {
+    const strictStructuredOutput = createStructuredOutputTool({ schema: gateSchema });
     const session = await createIsolatedSession({
-      customTools: [finalDecision],
+      customTools: [strictStructuredOutput],
       excludedTools: ["structured_output"],
     });
     try {
@@ -105,15 +105,13 @@ describe("structured_output custom-name isolation in AgentSession", () => {
 
       assert.equal(activeNames.includes("structured_output"), false);
       assert.equal(allNames.includes("structured_output"), false);
-      assert.ok(activeNames.includes("final_decision"));
-      assert.ok(allNames.includes("final_decision"));
-      assert.equal(session.getToolDefinition("final_decision")?.parameters, gateSchema);
+      assert.equal(session.getToolDefinition("structured_output"), undefined);
     } finally {
       session.dispose();
     }
   });
 
-  test("same-name structured_output custom tool overrides the generic builtin schema", async () => {
+  test("standard-name structured_output custom tool registers a schema-specific tool", async () => {
     const strictStructuredOutput = createStructuredOutputTool({ schema: gateSchema });
     const session = await createIsolatedSession({ customTools: [strictStructuredOutput] });
     try {

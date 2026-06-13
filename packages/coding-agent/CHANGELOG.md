@@ -4,13 +4,13 @@
 
 ### Added
 
-- Added a first-class `structured_output` builtin and exported `createStructuredOutputTool({ schema, capture, output, name })` factory for terminating machine-readable final answers with schema-as-parameters validation, flat `details`, in-process capture, flat private `output.json` capture plus `output.meta.json` sidecar metadata, and prompt guidance for exact-once use ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
+- Added the opt-in `createStructuredOutputTool({ schema, capture, output, name })` factory for terminating machine-readable final answers with schema-as-parameters validation, flat `details`, in-process capture, flat private `output.json` capture plus `output.meta.json` sidecar metadata, and prompt guidance for exact-once use without registering `structured_output` in normal agent sessions by default ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
 
 ### Changed
 
 - Updated the structured-output extension example and SDK/workflow/extension docs to use the canonical factory instead of hand-rolled `terminate: true` wrappers, and documented that schema-specific calls pass fields directly rather than through `{ value: ... }` ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
 - Enforced top-level object schemas for `structured_output` factory registration, with guidance to wrap array or primitive final values in object fields, and made custom-named factory tools advertise the configured name in prompt metadata ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
-- Clarified SDK, extension, and workflow guidance that custom-named structured-output tools are additive and strict contracts should use a same-name `structured_output` override, an explicit `tools` allowlist, or `excludedTools: ["structured_output"]` to avoid the generic builtin ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
+- Clarified SDK, extension, and workflow guidance that structured-output tools are opt-in custom tools, with workflow stages/tasks/chains/parallel items receiving `structured_output` only when they declare a `schema` and subagent children receiving it only when `outputSchema` is enabled ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
 
 ### Fixed
 
@@ -18,7 +18,7 @@
 - Fixed text print mode to emit the trailing terminating `structured_output` tool-result JSON as stdout instead of producing an empty final response after a correct final tool call ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
 - Fixed terminating `structured_output` results to opt out of oversized-result persistence so large final JSON stays inline instead of being replaced by a `<persisted-output>` pointer ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
 - Fixed cross-process structured-output file capture to preserve flat schema-valid params in `output.json` and write call metadata to an `output.meta.json` sidecar so parent readback can reject stale or non-final captures instead of accepting any schema-valid `output.json` payload by existence alone ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
-- Fixed bundled subagent handling so ordinary non-schema children can surface a final successful `structured_output` tool result as `finalOutput`/handoff text, and explicit empty `tools: []` plus `outputSchema` grants only `structured_output` instead of restoring default tools ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
+- Fixed bundled subagent handling so explicit empty `tools: []` plus `outputSchema` grants only the schema-backed `structured_output` runtime tool instead of restoring default tools ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
 
 ## [0.8.28] - 2026-06-11
 

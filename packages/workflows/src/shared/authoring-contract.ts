@@ -65,6 +65,9 @@ export interface WorkflowModelFallbackFields {
 }
 
 export type WorkflowModelValue = string | object;
+export type WorkflowStageResult<TSchemaDef extends TSchema | undefined = undefined> = [TSchemaDef] extends [TSchema]
+  ? Static<TSchemaDef>
+  : string;
 
 export interface WorkflowModelUsage extends WorkflowSerializableObject {
   readonly input?: number;
@@ -146,7 +149,9 @@ export interface WorkflowFastModeSettingsManager {
   getCodexFastModeSettings(): WorkflowFastModeSettings;
 }
 
-export interface StageOptions extends WorkflowModelFallbackFields {
+export interface StageOptions<TSchemaDef extends TSchema | undefined = TSchema | undefined> extends WorkflowModelFallbackFields {
+  /** Optional structured final-answer schema. When set, the stage receives a schema-specific `structured_output` tool and must finish by calling it. */
+  readonly schema?: TSchemaDef;
   readonly model?: WorkflowModelValue;
   readonly mcp?: StageMcpOptions;
   readonly tools?: readonly string[];
@@ -279,9 +284,9 @@ export interface StageAdapters {
   readonly complete?: CompleteAdapter;
 }
 
-export interface StageContext {
+export interface StageContext<TSchemaDef extends TSchema | undefined = undefined> {
   readonly name: string;
-  prompt(text: string, options?: StagePromptOptions): Promise<string>;
+  prompt(text: string, options?: StagePromptOptions): Promise<WorkflowStageResult<TSchemaDef>>;
   complete(text: string, options?: CompleteStageOpts): Promise<string>;
   steer(text: string): Promise<void>;
   followUp(text: string): Promise<void>;
@@ -326,6 +331,8 @@ export type WorkflowTaskContextInput = string | WorkflowTaskContext | WorkflowTa
 
 export interface WorkflowTaskResult extends WorkflowTaskContext {
   readonly stageName: string;
+  /** Parsed structured value when the task/stage was configured with `schema`. */
+  readonly structured?: WorkflowSerializableValue;
   readonly sessionId?: string;
   readonly sessionFile?: string;
   readonly artifacts?: readonly WorkflowArtifact[];
@@ -475,6 +482,7 @@ export interface WorkflowRunContext<
   readonly inputs: Readonly<TInputs>;
   readonly cwd?: string;
   exit(options?: WorkflowExitOptions<TOutputs>): never;
+  stage<TSchemaDef extends TSchema>(name: string, options: StageOptions<TSchemaDef> & { readonly schema: TSchemaDef }): StageContext<TSchemaDef>;
   stage(name: string, options?: StageOptions): StageContext;
   task(name: string, options: WorkflowTaskOptions): Promise<WorkflowTaskResult>;
   chain(steps: readonly WorkflowTaskStep[], options?: WorkflowChainOptions): Promise<WorkflowTaskResult[]>;

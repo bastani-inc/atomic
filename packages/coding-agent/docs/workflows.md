@@ -9,7 +9,7 @@ Use a workflow when a task should be repeatable, inspectable, resumable, or spli
 **Key capabilities:**
 - **Tracked stages** - Name each step and inspect it in workflow status and graph views
 - **Parallel branches** - Run independent research, review, or implementation branches concurrently
-- **Context handoffs** - Pass summaries, artifacts, files, and `structured_output` results between stages
+- **Context handoffs** - Pass summaries, artifacts, files, and schema-backed structured results between stages
 - **Human input** - Pause for `ctx.ui.input`, `confirm`, `select`, `editor`, or custom TUI widget decisions during a run
 - **Resumable control** - Interrupt, pause, resume, attach to, or kill workflow runs
 - **Artifacts** - Save large outputs to files instead of pushing everything through model context
@@ -1100,7 +1100,7 @@ Control-signal probing is fail-closed. When the executor inspects an arbitrary t
 - Avoid workflow-specific or stage-specific vocabulary that is not explained inside the current prompt.
 - Use clear software engineering terminology in self-described prompts.
 - Avoid hard-coded regular expressions for condition matching when gating reviews or model outputs.
-- Prefer the canonical `structured_output` tool, with a schema-specific factory override when needed, for review/gate decisions whenever model output needs to be evaluated.
+- Prefer schema-backed workflow stages (`ctx.stage(..., { schema })`, `ctx.chain` items, or `ctx.parallel` items) for review/gate decisions whenever model output needs to be evaluated; Atomic injects the canonical `structured_output` tool only for those schema-enabled items.
 - Treat atomic workflow units as language model stages, not deterministic tools.
 - When deterministic gates are needed, create small dedicated stages that instruct a model to run a specific tool or perform a specific check. This keeps gates adaptive to the current codebase while preserving explicit workflow structure.
 
@@ -1473,8 +1473,11 @@ Common task/stage options include:
 - `context: "fresh" | "fork"`, `forkFromSessionFile`
 - `model`, `fallbackModels`, `thinkingLevel`, `scopedModels`, `modelRegistry` — `model` and each `fallbackModels` entry accept a `model_name:thinking_effort` reasoning suffix; the standalone `thinkingLevel` is deprecated (see [Reasoning levels](#reasoning-levels))
 - `tools`, `noTools`, `customTools`, `mcp: { allow?: string[], deny?: string[] }`, `bashPolicy`
+- `schema` for a structured final answer from this workflow item
 - `output`, `outputMode`, `reads`, `worktree`, `gitWorktreeDir`, `baseBranch`, `maxOutput`, `artifacts`, `sessionDir`, `cwd`, `agentDir`
 - advanced host-supplied SDK seams: `authStorage`, `resourceLoader`, `sessionManager`, `settingsManager`, `sessionStartEvent`
+
+`schema` is opt-in. When a `ctx.stage` call, `ctx.task` call, `ctx.chain` item, or `ctx.parallel` item includes a top-level object TypeBox/JSON Schema, Atomic registers a schema-specific `structured_output` tool for that item only, appends final-answer instructions, and requires the stage to finish by calling the tool exactly once. The prompt result is the parsed structured value for `ctx.stage(..., { schema }).prompt(...)`; task/chain/parallel results also include `result.structured` and keep `result.text` as formatted JSON for handoffs. If the item also uses an explicit `tools` allowlist, Atomic automatically adds `structured_output` to that allowlist. Items without `schema` do not receive `structured_output` from the normal tool registry.
 
 `bashPolicy` scopes the built-in `bash` tool for one stage or task. `tools` must still include `"bash"` (or leave it available by default); the policy only narrows command text after the shell tool is exposed. It supports exact strings, `{ prefix }`, command-string `{ glob }`, and `{ regex, flags? }` rules, `default: "allow" | "deny"` (default `"allow"`), `deny` precedence, and `match: "segments" | "whole"` (default `"segments"`). Omitting `bashPolicy`, passing `{}`, or passing a default-allow policy with no `allow`/`deny` rules (including empty arrays or match-only default-allow policies) preserves legacy behavior and does not parse commands; malformed policy shapes such as unknown top-level keys (`denny`, `extra`), non-array `allow`/`deny`, invalid rule objects, invalid regexes, invalid glob bracket ranges, or stateful `g`/`y` regex flags fail closed as `invalid-policy`. Segment mode checks each command in pipelines/chains/substitutions before execution, treats unquoted LF, CRLF, and bare CR as command separators, keeps non-leading Bash `>|` noclobber redirections inside the current command segment, and rejects reserved/compound shell heads, leading redirections, attached command-head redirections, and command heads that are not literal words.
 
@@ -1619,7 +1622,7 @@ Stage prompts should be local contracts, not miniature descriptions of the entir
 
 - the stage's current objective and what is out of scope for this stage
 - the exact files, artifacts, child outputs, or user inputs it may use
-- the expected output format or `structured_output` schema it must return
+- the expected output format, or the schema it must return when the workflow item is schema-enabled
 - the checks, tools, or deterministic commands it should run when relevant
 - the success criteria that let this stage stop
 
@@ -1735,9 +1738,9 @@ Build validation into the workflow instead of waiting for a final manual check. 
 - reviewer stages: fresh-context reviewers that inspect artifacts and current files
 - LLM-as-judge stages: direct scoring, pairwise comparison, or rubric-based grading for subjective outputs
 
-Prefer the canonical `structured_output` tool for model review and gate decisions. It is available to workflow stages by default through the normal Atomic tool registry; when a stage needs a strict contract, pass a schema-specific `createStructuredOutputTool({ schema, capture })` override in `customTools` and prompt the model to call `structured_output` exactly once with the schema fields directly. Structured-output schemas must be top-level object tool-argument schemas, so wrap array or primitive decisions in object fields such as `{ items: [...] }` or `{ value: ... }`. Terminating `structured_output` JSON is preserved inline even when it exceeds the normal oversized-tool-result threshold, so downstream workflow code can consume the final machine-readable payload instead of a `<persisted-output>` pointer. Custom names such as `final_decision` do not suppress the default generic `structured_output`; strict workflow contracts should use a same-name `structured_output` override, an explicit `tools: ["final_decision"]` allowlist, or `excludedTools: ["structured_output"]`. Do not add the old synthetic `{ value: ... }` wrapper around an object payload, and do not make correctness depend on brittle regular-expression matching against free-form prose such as “looks good”, “approved”, or “PASS”. A schema with explicit booleans/enums, findings arrays, confidence, evidence fields, and error reporting is easier to validate, replay, and safely default to “not approved” when malformed.
+Prefer schema-enabled workflow items for model review and gate decisions. `structured_output` is not available to workflow stages through the normal Atomic tool registry; it is injected only when a `ctx.stage`, `ctx.task`, `ctx.chain` item, or `ctx.parallel` item includes `schema`. Structured-output schemas must be top-level object tool-argument schemas, so wrap array or primitive decisions in object fields such as `{ items: [...] }` or `{ value: ... }`. Terminating `structured_output` JSON is preserved inline even when it exceeds the normal oversized-tool-result threshold, so workflow code can consume the parsed value instead of a `<persisted-output>` pointer. Do not add the old synthetic `{ value: ... }` wrapper around an object payload unless your schema defines that field, and do not make correctness depend on brittle regular-expression matching against free-form prose such as “looks good”, “approved”, or “PASS”. A schema with explicit booleans/enums, findings arrays, confidence, evidence fields, and error reporting is easier to validate, replay, and safely default to “not approved” when malformed.
 
-Use small dedicated model stages for adaptive gates when deterministic code alone cannot decide what to check. For example, a stage can read an artifact, inspect the repo, run a named tool or command, and then emit a structured decision through `structured_output`. Keep that stage's prompt narrow: tell it the specific check to perform, the files/tools it may use, and the structured decision it must return.
+Use small dedicated model stages for adaptive gates when deterministic code alone cannot decide what to check. For example, a stage can read an artifact, inspect the repo, run a named tool or command, and then emit a structured decision by configuring `schema` on that workflow item. Keep that stage's prompt narrow: tell it the specific check to perform, the files/tools it may use, and the structured decision it must return.
 
 When using LLM judges, mitigate bias by defining score anchors, asking for evidence, calibrating against examples, and keeping length/order effects in mind. Track pass rates and failures over time for reusable workflows.
 
@@ -1794,5 +1797,5 @@ Good workflows are information-flow systems, not just prompt sequences. Keep sta
 - Do not call `kill` when the user asks to interrupt or pause resumably.
 - Keep stage names readable because they appear in workflow status and UI.
 - Do not write stage prompts that depend on hidden workflow-wide awareness; make each model stage locally scoped and self-described.
-- Do not parse model gate decisions from ad-hoc prose with regular expressions; use the canonical `structured_output` tool, schema-specific factory overrides, or a focused checking stage that returns a structured decision.
-- Return compact structured output for decisions and save large artifacts to files; `structured_output` preserves large final JSON inline, but artifact handoffs should still use files when the next stage does not need the whole payload in context.
+- Do not parse model gate decisions from ad-hoc prose with regular expressions; configure `schema` on a focused workflow item so Atomic injects the canonical `structured_output` tool for that item.
+- Return compact structured output for decisions and save large artifacts to files; schema-enabled workflow items preserve final JSON inline, but artifact handoffs should still use files when the next stage does not need the whole payload in context.

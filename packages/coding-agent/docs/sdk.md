@@ -624,7 +624,7 @@ If you pass `tools`, include each custom or extension tool name you want enabled
 
 #### Structured output final results
 
-`structured_output` is available as a default builtin for generic top-level JSON object answers. For strict SDK or workflow contracts, override the builtin with the exported factory:
+`structured_output` is not registered in normal agent sessions by default. Add it only when a caller needs a machine-readable final-answer contract by registering the exported factory as a custom tool:
 
 ```typescript
 import { Type, type Static } from "typebox";
@@ -657,7 +657,7 @@ const { session } = await createAgentSession({
 
 The tool parameters are exactly `DecisionSchema`: the model calls `structured_output({ approved, findings })`, not `structured_output({ value: { approved, findings } })`. A successful call stores the flat params in `capture.value`, returns them as tool `details`, and sets `terminate: true` so there is no extra follow-up assistant turn. When an `output` file sink is configured, the factory writes the same flat schema-valid params to `output.json` and writes call metadata (`toolName`, `toolCallId`, `success`, `terminate`) to a private `output.meta.json` sidecar for finality-checked parent readback. Structured-output schemas must be top-level object tool-argument schemas; wrap array or primitive final values in object fields such as `{ items: [...] }` or `{ value: ... }`. Structured-output tool definitions opt out of oversized-result persistence, so large final JSON remains inline as the machine-readable result instead of being replaced by a `<persisted-output>` pointer.
 
-Custom tool names are supported, and the prompt metadata follows the configured name. A custom name is additive: registering `final_decision` does **not** suppress the default generic `structured_output` builtin. If the schema-specific contract is mandatory, either override the builtin by using the same name (`structured_output`), isolate the custom name with `tools`, or remove the generic builtin with `excludedTools`:
+Custom tool names are supported, and the prompt metadata follows the configured name. If you use a custom name such as `final_decision`, include that name in any explicit `tools` allowlist. If the standard `structured_output` name is required, register the factory with its default name:
 
 ```typescript
 const finalDecision = createStructuredOutputTool({
@@ -673,13 +673,8 @@ await createAgentSession({
 });
 
 await createAgentSession({
-  customTools: [finalDecision],
-  excludedTools: ["structured_output"], // keep other defaults, remove generic output
-});
-
-await createAgentSession({
   customTools: [createStructuredOutputTool({ schema: DecisionSchema, capture })],
-  // Same-name custom tool overrides the generic structured_output builtin.
+  // Registers the standard structured_output tool for this session only.
 });
 ```
 

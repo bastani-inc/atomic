@@ -253,7 +253,7 @@ async function createTestAgentSession(_options?: CreateAgentSessionOptions): Pro
 function stripWorkflowOnlyOptions(options: (StageOptions | CreateAgentSessionOptions) | undefined): CreateAgentSessionOptions | undefined {
   if (!options) return options;
   const maybeWorkflowOptions = options as StageOptions;
-  const { mcp: _mcp, fallbackModels: _fallbackModels, ...sessionOptions } = maybeWorkflowOptions;
+  const { schema: _schema, mcp: _mcp, fallbackModels: _fallbackModels, ...sessionOptions } = maybeWorkflowOptions;
   return sessionOptions as CreateAgentSessionOptions;
 }
 

@@ -37,6 +37,10 @@ const McpOptionsSchema = Type.Object({
   deny: Type.Optional(Type.Array(Type.String())),
 });
 
+const JsonSchemaObject = Type.Record(Type.String(), Type.Unknown(), {
+  description: "Top-level object JSON Schema used as structured_output tool arguments for this workflow item.",
+});
+
 const BashCommandRuleSchema = Type.Union([
   Type.String(),
   Type.Object({ prefix: Type.String() }, { additionalProperties: false }),
@@ -55,6 +59,7 @@ const BashCommandPolicySchema = Type.Object({
 }, { additionalProperties: false });
 
 const StageSessionOptionProperties = {
+  schema: Type.Optional(JsonSchemaObject),
   cwd: Type.Optional(Type.String()),
   agentDir: Type.Optional(Type.String()),
   authStorage: Type.Optional(SdkSessionOptionSchema("authStorage")),
