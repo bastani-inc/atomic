@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed workflow discovery for user-authored workflows that import Atomic root package helpers by adding a default condition to the `@bastani/atomic` package root export, allowing Jiti-based workflow loading to resolve the published entrypoint.
+
 ## [0.8.28] - 2026-06-11
 
 ### Added
