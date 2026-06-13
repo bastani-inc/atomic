@@ -2,6 +2,57 @@
 
 ## [Unreleased]
 
+## [0.8.28] - 2026-06-11
+
+### Added
+
+- Added optional inline free-form text entry to the `ask_user_question` TUI's **Chat about this** footer row. Non-empty typed chat text now returns as a `kind: "chat"` answer surfaced to the agent without the legacy stop/wait termination envelope, while empty submissions keep the existing sentinel behavior.
+- Added session-scoped `bashPolicy` support for the built-in `bash` tool, with exact/prefix/command-string-glob/regex rules, deny-over-allow precedence, segment-aware parsing by default, fail-closed validation of invalid policies, and conservative rejection of compound heads, redirections, assignments, and non-literal command heads before shell execution.
+- Ported the upstream project-trust store and resolver foundation: project trust decisions are remembered, `--approve`/`--no-approve` affect runtime trust state, untrusted sessions skip project-local extensions/resources/context/system-prompt discovery and refuse project-setting writes, startup migrations and project config reads are trust-gated, and a new `/trust` slash command with the upstream `TrustSelectorComponent` lets saved project-trust decisions be reviewed and changed in-session.
+- Added upstream pi 0.76.0-0.79.1 coding-agent compatibility exports for package asset path helpers, CLI argument parsing (`Args`, `parseArgs`), `SettingsManagerCreateOptions`, image conversion (`convertToPng`), and RPC extension UI request/response types, plus the shared JSON comment/trailing-comma stripping utility used by model configuration migrations.
+- Added the upstream `project-trust`, `git-merge-and-resolve`, `input-transform-streaming`, and Gondolin tool-routing example extensions adapted to Atomic package identity, shared `warnDeprecation`/`openBrowser` utilities, upstream `docs/security.md` and `docs/containerization.md` rebranded for Atomic, and extensive upstream regression coverage.
+
+### Changed
+
+- Changed Atomic compaction to be verbatim-only across manual `/compact`, automatic threshold/overflow compaction, SDK/RPC compaction, and extension-triggered compaction. All compaction now records validated `context_compaction` deletion targets and rebuilds active context with retained transcript content verbatim and unchanged; retained file paths, exact commands, error strings, and line numbers are never paraphrased.
+- Changed compaction extension hooks (`session_before_compact`, `session_compact`) to receive verbatim context-compaction preparations/results and allow cancellation or locally validated deletion requests instead of custom generated summaries.
+- Changed the verbatim compaction critical-overflow recovery prompt to evict in an explicit priority order (removable reasoning traces first, then removable user/custom/summary context) while preserving existing safety/retention rules ([#1308](https://github.com/bastani-inc/atomic/issues/1308)).
+- Changed the bundled builtin `deep-research-codebase`, `goal`, `ralph`, and `open-claude-design` workflows to use `anthropic/claude-fable-5:xhigh` as the primary planner/reviewer/design model, demoting each previous primary to the head of the fallback chain ([#1345](https://github.com/bastani-inc/atomic/pull/1345)).
+- Bumped the bundled upstream pi libraries `@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, and `@earendil-works/pi-tui` from `^0.78.1` to `^0.79.1`, bringing in Claude Fable 5 and Azure metadata updates, GPT-5 token/context metadata fixes, provider thinking-payload compatibility updates, autocomplete/CJK prompt rendering fixes, and keyboard-protocol fallback improvements.
+- Ported upstream prompt-template argument default handling and added `${N:-default}` positional default support in prompt templates, matching upstream slash-template substitution behavior without recursively expanding argument/default values.
+
+### Fixed
+
+- Fixed oversized tool-call results flooding model context by persisting large results to disk (`<sessionDir>/tool-results/<toolCallId>.txt`) and returning a compact `<persisted-output>` message with the file path and a 2KB head preview when a result exceeds the 50,000-character system cap or a lower per-tool cap; tools can opt out via `maxResultSizeChars: Infinity`, and persistence degrades gracefully for images or write failures ([#1322](https://github.com/bastani-inc/atomic/issues/1322)).
+- Fixed the Read tool to block text file-read results above 50,000 characters and return incremental-read guidance, including byte-slice guidance for oversized single-line selections ([#1323](https://github.com/bastani-inc/atomic/issues/1323)).
+- Fixed `AgentSession.prompt` surfacing the confusing `No API key found for undefined` error when a model never resolved to a real provider; the prompt path now fails fast with a clear `Unknown model: "<id>" did not resolve to an available provider` message.
+- Hardened prompt-template argument substitution against polynomial-time regex backtracking (ReDoS) by length-bounding the `${N:-default}` default-value capture.
+- Fixed provider auth-status reporting for explicit `$ENV_VAR` config values, preserved uppercase literal credentials during config-value migrations (including legacy `~/.pi/agent` roots), preserved `models.json` JSONC comments/formatting during migration, and accepted the upstream `supportsDeveloperRole` flag for custom OpenAI Responses models.
+- Fixed RPC client requests to reject promptly when the child agent process exits or its stdio fails, completed the RPC-mode output/backpressure and `excludeFromContext` bash-command port, and preserved steering/follow-up queue modes across extension-triggered RPC session reloads.
+- Fixed SDK provider stream options so HTTP idle timeouts and WebSocket connect timeouts from settings are forwarded to provider streams while preserving per-request overrides.
+- Fixed interactive startup input handling so prompts submitted before the main input loop is installed are queued instead of dropped, and fixed signal-triggered shutdown ordering so extension `session_shutdown` cleanup runs before terminal restore writes.
+- Fixed the initial `--resume` session picker and all-sessions pane to honor a custom `--session-dir`.
+- Fixed plain metadata commands (`--version`, `--help`, `--list-models`) to keep their output on stdout for scripts/completions while keeping auto-install/startup chatter off stdout.
+- Fixed OAuth login dialog prompt/manual input rendering so submitted values remain stable, auth storage writes to consistently use `0600` file mode, and self-update command generation to bypass package-manager minimum-release-age delays.
+- Fixed changelog link normalization to produce Atomic repository/tag-pinned links from local package links and legacy pi-mono URLs, wired into startup and `/changelog` output.
+- Fixed WSL repositories on Windows-mounted paths to poll Git `HEAD` changes so the footer branch display updates reliably, plus footer cache-hit-rate display, settings selector default project-trust editing, tool self-render image rendering, and collapsed tool-output hint styling.
+- Rebranded provider attribution headers (OpenRouter, NVIDIA NIM) and the Gondolin VM session label to Atomic identity, matched OpenRouter-compatible custom endpoints by exact hostname, and corrected README/RPC/session-format/SDK/example docs to use `atomic`, `ATOMIC_*`, and `.atomic` as primary with legacy `PI_*`/`.pi` labeled as such.
+- Fixed extension command contexts to expose live base system-prompt options, hid `streamingBehavior` from idle input handlers, continued agent turns for follow-ups queued during `agent_end` handlers, and ported upstream tool path rendering with terminal hyperlink support for edit tool output.
+
+### Removed
+
+- Removed the legacy summary-compaction runtime path, summary prompts, `CompactionEntry` active-context injection, `CompactionSummaryMessage` active message type, custom compaction instructions (`CompactOptions.customInstructions`, RPC `compact.customInstructions`, `/compact [instructions]`), `compaction.keepRecentTokens` setting, summary-compaction public exports, and summary-compaction docs and examples. Historical `type:"compaction"` JSONL lines on disk are inert and are not injected into active LLM context.
+
+### Security
+
+- Bumped the transitive `shell-quote` dependency from `1.8.3` to `1.8.4` in the `examples/extensions/sandbox` lockfile, resolving the critical advisory [GHSA-w7jw-789q-3m8p](https://github.com/advisories/GHSA-w7jw-789q-3m8p).
+
+## [0.8.28-alpha.4] - 2026-06-11
+
+### Changed
+
+- Changed the bundled builtin `deep-research-codebase`, `goal`, `ralph`, and `open-claude-design` workflows to use `anthropic/claude-fable-5:xhigh` as the primary planner/reviewer/design model, demoting each previous primary (`openai-codex/gpt-5.5:xhigh` or `github-copilot/claude-opus-4.8:xhigh`) to the head of the fallback chain ([#1345](https://github.com/bastani-inc/atomic/pull/1345)).
+
 ## [0.8.28-alpha.3] - 2026-06-11
 
 ### Added

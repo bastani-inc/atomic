@@ -6,6 +6,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.8.28] - 2026-06-11
+
+### Added
+
+- Added workflow `ctx.ui.custom<T>(factory, options?)` for graph-visible custom TUI human-in-the-loop prompts. Custom prompts create `awaiting_input` prompt nodes, reuse the stage UI broker/attached stage chat component path, expose the same real TUI/theme/keybinding/component types as Atomic extension custom UI, participate in live-memory prompt replay through hashed custom identities, honor prompt/run abort signals, and reject clearly in headless/unavailable UI modes ([#1309](https://github.com/bastani-inc/atomic/issues/1309)).
+- Added workflow authoring `ctx.exit(options?)` for intentional early terminal runs from any call depth, supporting `completed`, `skipped`, `cancelled`, and `blocked` terminal statuses, optional persisted/displayed reasons, and partial declared outputs with strict validation for provided output keys. Public run/detail/child status unions widen with `skipped`, `cancelled`, and `blocked`, and child workflow results are discriminated by `exited`.
+- Added workflow stage/task `bashPolicy` wiring so individual workflow stages can constrain the built-in `bash` tool with command-level allow/deny rules, command-string glob matching, fail-closed invalid-policy validation, and default-allow no-rule compatibility.
+
+### Changed
+
+- Changed the builtin `deep-research-codebase`, `goal`, `ralph`, and `open-claude-design` workflows to use `anthropic/claude-fable-5:xhigh` as the primary planner/reviewer/design model, demoting each previous primary to the head of the fallback chain ([#1345](https://github.com/bastani-inc/atomic/pull/1345)).
+- Changed workflow transcript introspection to return `sessionFile`/`transcriptPath` metadata with a lazy-read prompt by default when a transcript path exists, keeping bounded inline previews behind explicit `tail`/`limit` requests ([#1314](https://github.com/bastani-inc/atomic/issues/1314)).
+
+### Fixed
+
+- Fixed a workflow kill/abort race that could crash the entire CLI with a process-level uncaught exception when a workflow was killed mid-prompt; `raceAbort` now always observes the in-flight promise in the already-aborted branch so a killed run can no longer orphan a rejecting prompt.
+- Fixed `ctx.exit(...)` cleanup races across the executor: the selected exit is a level-triggered gate so delayed `ctx.stage`/`ctx.task`/`ctx.chain`/`ctx.parallel`/`ctx.workflow`/graph-backed `ctx.ui.*` calls and retained `StageContext` session-control methods no longer create artifacts after exit, queued `ctx.parallel` work stops after exit, parent exits cancel linked hidden child workflows with typed parent-exit abort reasons and exactly-once stage-end ordering, and prompt-node abort handling preserves `workflow-exit` skipped reasons.
+- Fixed terminal run-end reconciliation after `ctx.exit(...)` so when an external kill or another terminal writer wins `Store.recordRunEnd(...)`, the returned `RunResult` and `onRunEnd` callback report the canonical store status and only the winning run-end write is persisted.
+- Fixed workflow-boundary child-edge metadata cleanup for `ctx.exit(...)` and continuation replay: skipped/failed boundaries clear `workflowChild`/`workflowChildRun`, stage-end persistence only emits child replay metadata for completed boundary stages, and expanded graph views no longer flatten stale child stages.
+- Fixed `ctx.exit({ outputs })` payload capture to snapshot outputs by value at the first selected exit call, and deep-froze the thrown exit signal so author code cannot rewrite the terminal status, reason, or outputs after the fact.
+- Fixed continuation replay races where replayed stage `prompt`/`complete` or prompt-node finalizers could complete after a concurrent `ctx.exit(...)`; pending replay finalizers now re-check the exit gate so resumed runs skip those stages instead of writing misleading completed stage-end entries.
+- Fixed control-signal probing for arbitrary workflow-thrown values and abort reasons to use non-throwing reads, so throwing or inaccessible author accessors no longer leak from the executor catch path.
+- Fixed interactive `ctx.ui.*` handling so workflow runs degrade gracefully: every primitive is guarded against method-less UI adapters with a clear per-method error, and headless (non-interactive) runs without a UI adapter reject with an explicit actionable message ([#1339](https://github.com/bastani-inc/atomic/issues/1339)).
+- Fixed the builtin `open-claude-design` workflow not installing the browser skill's `browse` CLI before it is needed: a deterministic best-effort setup step probes `PATH` and installs the CLI when missing, per-run bootstrap guidance is injected into every browser-using stage, the install outcome is exposed via a new `browse_cli_status` output, and read-only `read`/`grep`/`ls` tools are granted to the refinement and pre-export decision gates ([#1327](https://github.com/bastani-inc/atomic/issues/1327)).
+- Fixed paused workflow runs being counted as running in `/workflow status` (now shown separately as `❚❚ paused`) and run detail cards to surface the natural `workflow resume` action hint ([#1283](https://github.com/bastani-inc/atomic/issues/1283)).
+
+## [0.8.28-alpha.4] - 2026-06-11
+
+### Changed
+
+- Changed the builtin `deep-research-codebase`, `goal`, `ralph`, and `open-claude-design` workflows to use `anthropic/claude-fable-5:xhigh` as the primary planner/reviewer/design model, demoting each previous primary (`openai-codex/gpt-5.5:xhigh` or `github-copilot/claude-opus-4.8:xhigh`) to the head of the fallback chain ([#1345](https://github.com/bastani-inc/atomic/pull/1345)).
+
 ## [0.8.28-alpha.3] - 2026-06-11
 
 ### Added

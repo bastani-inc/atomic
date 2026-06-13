@@ -415,8 +415,9 @@ export default defineWorkflow("deep-research-codebase")
     );
 
     const plannerModelConfig = {
-      model: "openai-codex/gpt-5.5:xhigh",
+      model: "anthropic/claude-fable-5:xhigh",
       fallbackModels: [
+        "openai-codex/gpt-5.5:xhigh",
         "github-copilot/gpt-5.5:xhigh",
         "openai/gpt-5.5:xhigh",
         "github-copilot/claude-opus-4.8:xhigh",

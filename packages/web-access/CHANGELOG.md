@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.8.28] - 2026-06-11
+
+### Changed
+
+- Published a synchronized Atomic 0.8.28 stable release; no functional changes were made in the web-access extension.
+
 ## [0.8.27] - 2026-06-08
 
 ### Changed
