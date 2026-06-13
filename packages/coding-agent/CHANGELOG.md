@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed extension custom UI focus deferral so full-screen overlays can keep keyboard focus while a parent/main-chat inline custom UI is pending, then focus that pending UI when the overlay is hidden; already-aborted custom UI calls no longer invoke factories or emit host custom-UI state changes ([#1353](https://github.com/bastani-inc/atomic/issues/1353)).
+
 ## [0.8.28] - 2026-06-11
 
 ### Added

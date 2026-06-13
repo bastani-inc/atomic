@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- Fixed workflow graph overlay host-question handoff cleanup and repaint behavior: closing the overlay now unsubscribes host custom-UI listeners, restoring after a host question explicitly clears its paused status and requests a render, all overlay teardown paths reset yielded-host-question state, and the status copy explains that the graph is paused while the user answers the blocking question.
+- Fixed the workflow graph overlay remaining interactive when the parent/main-chat agent opens `ask_user_question`: the graph keeps focus, the parent question stays pending behind it with a clear “Main chat needs input — exit graph to answer.” status hint, hiding/exiting the graph focuses the pending question, and host custom-UI state changes no longer hide, restore, remount, or repaint the overlay ([#1353](https://github.com/bastani-inc/atomic/issues/1353)).
 
 ## [0.8.28] - 2026-06-11
 
