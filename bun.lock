@@ -37,7 +37,7 @@
         "linkedom": "^0.18.12",
         "minimatch": "^10.2.3",
         "open": "^11.0.0",
-        "p-limit": "^6.1.0",
+        "p-limit": "^7.3.0",
         "proper-lockfile": "^4.1.2",
         "turndown": "^7.2.0",
         "typebox": "^1.1.24",
@@ -146,7 +146,7 @@
       "dependencies": {
         "@mozilla/readability": "^0.6.0",
         "linkedom": "^0.18.12",
-        "p-limit": "^6.1.0",
+        "p-limit": "^7.3.0",
         "turndown": "^7.2.0",
         "unpdf": "^1.6.2",
       },
@@ -1041,7 +1041,7 @@
 
     "p-finally": ["p-finally@1.0.0", "", {}, "sha512-LICb2p9CB7FS+0eR1oqWnHhp0FljGLZCWBE9aix0Uye9W8LTQPwMTYVGWQWIw9RdQiDg4+epXQODwIYJtSJaow=="],
 
-    "p-limit": ["p-limit@6.2.0", "", { "dependencies": { "yocto-queue": "^1.1.1" } }, "sha512-kuUqqHNUqoIWp/c467RI4X6mmyuojY5jGutNU0wVTmEOOfcuwLqyMVoAi9MKi2Ak+5i9+nhmrK4ufZE8069kHA=="],
+    "p-limit": ["p-limit@7.3.0", "", { "dependencies": { "yocto-queue": "^1.2.1" } }, "sha512-7cIXg/Z0M5WZRblrsOla88S4wAK+zOQQWeBYfV3qJuJXMr+LnbYjaadrFaS0JILfEDPVqHyKnZ1Z/1d6J9VVUw=="],
 
     "p-retry": ["p-retry@4.6.2", "", { "dependencies": { "@types/retry": "0.12.0", "retry": "^0.13.1" } }, "sha512-312Id396EbJdvRONlngUx0NydfrIQ5lsYu0znKVUzVvArzEIt08V1qhtyESbGVd1FGX7UKtiFp5uwKZdM8wIuQ=="],
 

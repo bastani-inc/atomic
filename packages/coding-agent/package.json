@@ -88,7 +88,7 @@
     "linkedom": "^0.18.12",
     "minimatch": "^10.2.3",
     "open": "^11.0.0",
-    "p-limit": "^6.1.0",
+    "p-limit": "^7.3.0",
     "proper-lockfile": "^4.1.2",
     "turndown": "^7.2.0",
     "typebox": "^1.1.24",
