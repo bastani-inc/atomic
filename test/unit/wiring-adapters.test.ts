@@ -70,6 +70,32 @@ function fakeSession(): StageSessionRuntime {
     };
 }
 
+function deferred(): {
+    readonly promise: Promise<void>;
+    readonly resolve: () => void;
+    readonly reject: (reason?: unknown) => void;
+} {
+    let resolvePromise: (() => void) | undefined;
+    let rejectPromise: ((reason?: unknown) => void) | undefined;
+    const promise = new Promise<void>((resolve, reject) => {
+        resolvePromise = resolve;
+        rejectPromise = reject;
+    });
+    return {
+        promise,
+        resolve: () => resolvePromise?.(),
+        reject: (reason?: unknown) => rejectPromise?.(reason),
+    };
+}
+
+async function waitUntil(predicate: () => boolean, message: string): Promise<void> {
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+        if (predicate()) return;
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    }
+    assert.fail(message);
+}
+
 function makeFakeAtomicSdk(
     defaultAgentDir: string,
     builtinPackagePaths: string[] = [],
@@ -191,6 +217,124 @@ describe("prepareAtomicStageSessionOptions", () => {
             "/repo/packages/web-access",
             "/repo/packages/intercom",
         ]);
+    });
+
+    test("serializes workflow stage resource reload env isolation", async () => {
+        const projectDir = join("/tmp", "project");
+        const atomicAgentDir = join("/home", "user", ".atomic", "agent");
+        const envKeys = [
+            "ATOMIC_SUBAGENT_CHILD",
+            "ATOMIC_SUBAGENT_FANOUT_CHILD",
+            "PI_SUBAGENT_CHILD",
+            "PI_SUBAGENT_FANOUT_CHILD",
+        ] as const;
+        const savedEnv = new Map<string, string | undefined>(
+            envKeys.map((key) => [key, process.env[key]]),
+        );
+        const reloadGates: Array<{
+            readonly release: ReturnType<typeof deferred>;
+            readonly envDuringReload: ReadonlyMap<string, string | undefined>;
+        }> = [];
+
+        class GatedResourceLoader implements PiSdkResourceLoader {
+            constructor(_options: {
+                cwd: string;
+                agentDir: string;
+                settingsManager?: PiSdkSettingsManager;
+                builtinPackagePaths?: PackageSource[];
+            }) {}
+
+            async reload(): Promise<void> {
+                const release = deferred();
+                reloadGates.push({
+                    release,
+                    envDuringReload: new Map<string, string | undefined>(
+                        envKeys.map((key) => [key, process.env[key]]),
+                    ),
+                });
+                await release.promise;
+            }
+        }
+
+        const sdk: PiCodingAgentSdk = {
+            getAgentDir: () => atomicAgentDir,
+            getBuiltinPackagePaths: () => [],
+            SettingsManager: {
+                create(): PiSdkSettingsManager {
+                    return {
+                        getCodexFastModeSettings: () => ({
+                            chat: false,
+                            workflow: false,
+                        }),
+                    };
+                },
+            },
+            DefaultResourceLoader: GatedResourceLoader,
+            async createAgentSession(): Promise<{ session: StageSessionRuntime }> {
+                return { session: fakeSession() };
+            },
+        };
+
+        let first: ReturnType<typeof prepareAtomicStageSessionOptions> | undefined;
+        let second: ReturnType<typeof prepareAtomicStageSessionOptions> | undefined;
+        try {
+            process.env.ATOMIC_SUBAGENT_CHILD = "1";
+            process.env.ATOMIC_SUBAGENT_FANOUT_CHILD = "0";
+            process.env.PI_SUBAGENT_CHILD = "legacy-child";
+            delete process.env.PI_SUBAGENT_FANOUT_CHILD;
+
+            first = prepareAtomicStageSessionOptions({ cwd: projectDir }, sdk);
+            await waitUntil(
+                () => reloadGates.length >= 1,
+                "expected the first resource reload to start",
+            );
+            second = prepareAtomicStageSessionOptions({ cwd: projectDir }, sdk);
+            await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+            assert.deepEqual(
+                Object.fromEntries(reloadGates[0]!.envDuringReload),
+                {
+                    ATOMIC_SUBAGENT_CHILD: undefined,
+                    ATOMIC_SUBAGENT_FANOUT_CHILD: undefined,
+                    PI_SUBAGENT_CHILD: undefined,
+                    PI_SUBAGENT_FANOUT_CHILD: undefined,
+                },
+            );
+
+            reloadGates[0]!.release.resolve();
+            await waitUntil(
+                () => reloadGates.length >= 2,
+                "expected the second resource reload to start after the first completes",
+            );
+            assert.deepEqual(
+                Object.fromEntries(reloadGates[1]!.envDuringReload),
+                {
+                    ATOMIC_SUBAGENT_CHILD: undefined,
+                    ATOMIC_SUBAGENT_FANOUT_CHILD: undefined,
+                    PI_SUBAGENT_CHILD: undefined,
+                    PI_SUBAGENT_FANOUT_CHILD: undefined,
+                },
+            );
+
+            reloadGates[1]!.release.resolve();
+            await Promise.all([first, second]);
+
+            assert.equal(process.env.ATOMIC_SUBAGENT_CHILD, "1");
+            assert.equal(process.env.ATOMIC_SUBAGENT_FANOUT_CHILD, "0");
+            assert.equal(process.env.PI_SUBAGENT_CHILD, "legacy-child");
+            assert.equal(process.env.PI_SUBAGENT_FANOUT_CHILD, undefined);
+        } finally {
+            for (const gate of reloadGates) gate.release.resolve();
+            const pendingReloads: Array<ReturnType<typeof prepareAtomicStageSessionOptions>> = [];
+            if (first !== undefined) pendingReloads.push(first);
+            if (second !== undefined) pendingReloads.push(second);
+            await Promise.allSettled(pendingReloads);
+            for (const key of envKeys) {
+                const value = savedEnv.get(key);
+                if (value === undefined) delete process.env[key];
+                else process.env[key] = value;
+            }
+        }
     });
 });
 

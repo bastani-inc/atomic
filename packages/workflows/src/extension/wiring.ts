@@ -185,7 +185,17 @@ const SUBAGENT_CHILD_EXTENSION_ENV_KEYS = [
   "PI_SUBAGENT_FANOUT_CHILD",
 ] as const;
 
+let workflowStageResourceReloadQueue: Promise<void> = Promise.resolve();
+
 async function reloadWorkflowStageResources(resourceLoader: PiSdkResourceLoader): Promise<void> {
+  const queuedReload = workflowStageResourceReloadQueue.then(() =>
+    reloadWorkflowStageResourcesWithEnvIsolation(resourceLoader),
+  );
+  workflowStageResourceReloadQueue = queuedReload.catch(() => undefined);
+  return queuedReload;
+}
+
+async function reloadWorkflowStageResourcesWithEnvIsolation(resourceLoader: PiSdkResourceLoader): Promise<void> {
   // Workflow stage sessions are already governed by an orchestration context
   // that disables recursive workflow tools and caps nested subagent depth. When
   // a workflow itself runs inside a subagent child process, inherited subagent
@@ -193,6 +203,10 @@ async function reloadWorkflowStageResources(resourceLoader: PiSdkResourceLoader)
   // registering its `subagent` tool before the stage session exists. Isolate
   // extension discovery from those parent-process flags so an explicit
   // `tools: ["subagent"]` allowlist works the same in workflow stages everywhere.
+  // The isolation mutates process-global env, so serialize the full
+  // save/delete/reload/restore section. Without this queue, overlapping workflow
+  // stage session creation can snapshot an already-cleared env and restore that
+  // stale snapshot after another reload restores the real parent values.
   const previousValues = new Map<string, string | undefined>();
   for (const key of SUBAGENT_CHILD_EXTENSION_ENV_KEYS) {
     previousValues.set(key, process.env[key]);
