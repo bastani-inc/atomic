@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Aligned the workflows extension with upstream pi TUI `^0.79.3` so workflow graph, custom UI, and prompt-broker integrations inherit the latest shared TUI compatibility fixes.
 - Documented the opt-in `structured_output` workflow path and clarified that ordinary workflow stages do not receive `structured_output` from the default tool registry; schema-enabled items auto-add the runtime tool to explicit `tools` allowlists ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
 - Clarified that workflow `structured_output` gate schemas must be top-level object tool-argument schemas, with arrays and primitives wrapped in object fields before being returned through the terminating tool, and documented the one-`prompt()` limit for schema-backed `StageContext` result contracts ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
 - Documented that terminating workflow-stage `structured_output` JSON stays inline even when large, while artifact-sized handoffs should still be saved to files when downstream stages do not need the full payload in context ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
