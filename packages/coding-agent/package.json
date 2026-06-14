@@ -108,7 +108,7 @@
   },
   "devDependencies": {
     "@types/cross-spawn": "6.0.6",
-    "@types/diff": "^7.0.2",
+    "@types/diff": "^8.0.0",
     "@types/hosted-git-info": "^3.0.5",
     "@types/ms": "^2.1.0",
     "@types/node": "^25.9.1",
