@@ -310,7 +310,7 @@ jobs:
               run: bun run test:all
 
             - name: Download Atomic native bindings
-              uses: actions/download-artifact@v4
+              uses: actions/download-artifact@v8
               with:
                   pattern: atomic-natives-*
                   path: packages/natives/native
