@@ -104,7 +104,7 @@
     }
   },
   "optionalDependencies": {
-    "@mariozechner/clipboard": "^0.3.6"
+    "@mariozechner/clipboard": "^0.3.9"
   },
   "devDependencies": {
     "@types/cross-spawn": "6.0.6",
