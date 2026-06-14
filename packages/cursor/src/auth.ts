@@ -216,6 +216,7 @@ export class CursorAuthService {
 				if (consecutiveErrors >= 3) {
 					throw new CursorAuthError("NetworkError", "Cursor login polling failed after repeated network errors.");
 				}
+				delayMs = Math.min(this.#maxPollDelayMs, Math.ceil(delayMs * this.#pollBackoffMultiplier));
 				continue;
 			}
 
@@ -235,6 +236,7 @@ export class CursorAuthService {
 						response.status,
 					);
 				}
+				delayMs = Math.min(this.#maxPollDelayMs, Math.ceil(delayMs * this.#pollBackoffMultiplier));
 				continue;
 			}
 

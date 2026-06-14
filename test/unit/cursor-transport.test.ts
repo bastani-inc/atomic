@@ -240,6 +240,8 @@ describe("Cursor HTTP2 transport boundary", () => {
 		const conversationState = runFields.find((field) => field.fieldNumber === 1)?.value;
 		assert.ok(conversationState instanceof Uint8Array);
 		const conversationFields = cursorProtoTest.readFields(conversationState);
+		assert.equal(conversationFields.some((field) => field.fieldNumber === 9), false);
+		assert.equal(decodedRunText.includes(`file://${process.cwd()}`), false);
 		const rootPromptBlobId = conversationFields.find((field) => field.fieldNumber === 1)?.value;
 		assert.ok(rootPromptBlobId instanceof Uint8Array);
 		assert.equal(rootPromptBlobId.byteLength, 32);

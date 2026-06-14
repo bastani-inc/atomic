@@ -3,6 +3,7 @@ import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import assert from "node:assert/strict";
 import atomicPackageJson from "../../packages/coding-agent/package.json" with { type: "json" };
+import cursorPackageJson from "../../packages/cursor/package.json" with { type: "json" };
 import intercomPackageJson from "../../packages/intercom/package.json" with { type: "json" };
 import mcpPackageJson from "../../packages/mcp/package.json" with { type: "json" };
 import subagentsPackageJson from "../../packages/subagents/package.json" with { type: "json" };
@@ -77,6 +78,7 @@ const BUNDLED_PACKAGE_MANIFESTS: readonly PackageDependencySections[] = [
     mcpPackageJson,
     webAccessPackageJson,
     intercomPackageJson,
+    cursorPackageJson,
 ];
 
 const ATOMIC_RUNTIME_DEPENDENCIES: DependencyMap = {

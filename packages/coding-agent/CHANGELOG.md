@@ -21,10 +21,11 @@
 - Fixed cross-process structured-output file capture to preserve flat schema-valid params in `output.json` and write call metadata to an `output.meta.json` sidecar so parent readback can reject stale or non-final captures instead of accepting any schema-valid `output.json` payload by existence alone ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
 - Fixed bundled subagent handling so explicit empty `tools: []` plus `outputSchema` grants only the schema-backed `structured_output` runtime tool instead of restoring default tools ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
 - Fixed the bundled experimental Cursor provider to honor per-request stream deadlines across open/read/resume writes, reset timed-out or aborted streams, clean up replaced paused turns safely, catch cleanup cancellation failures, tolerate non-MCP Cursor exec protocol messages without ending assistant turns, and align Run requests with Cursor's private CLI protocol by using blob/KV conversation state plus request-context tool-definition responses without the unsupported custom system-prompt field ([#1286](https://github.com/bastani-inc/atomic/issues/1286)).
+- Fixed release archive startup for the bundled experimental Cursor provider by declaring `@bufbuild/protobuf` as an `@bastani/atomic` runtime dependency, covering Cursor in the bundled-package dependency metadata guard, and smoke-checking Cursor/protobuf assets in native archives ([#1286](https://github.com/bastani-inc/atomic/issues/1286)).
 
 ### Security
 
-- Kept Cursor credentials OAuth-only with token/header and PKCE poll-secret redaction and no local proxy or child-process bridge.
+- Kept Cursor credentials OAuth-only with token/header and PKCE poll-secret redaction and no localhost proxy, while documenting that Cursor HTTP/2 currently uses a request-scoped Node bridge (`node` on `PATH` or `ATOMIC_CURSOR_H2_BRIDGE_NODE`) and no longer sends the current working directory as `previousWorkspaceUris` by default.
 
 ## [0.8.28] - 2026-06-11
 

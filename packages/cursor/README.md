@@ -14,6 +14,7 @@ The unavoidable Atomic-specific integration difference is the provider surface: 
 
 - Text input only. Vision/image content is rejected.
 - Cursor's private API may change without notice.
+- HTTP/2 transport currently starts a request-scoped Node bridge process; `node` must be on `PATH`, or set `ATOMIC_CURSOR_H2_BRIDGE_NODE=/path/to/node`.
 - Credentials are OAuth-only. Do not pass Cursor tokens via command-line args, environment variables, logs, or local proxy processes.
 
 ## Attribution

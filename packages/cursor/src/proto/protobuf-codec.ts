@@ -357,7 +357,7 @@ function buildConversationState(
 		turns: turnBlobIds,
 		todos: [],
 		pendingToolCalls: [],
-		previousWorkspaceUris: [`file://${process.cwd()}`],
+		previousWorkspaceUris: [],
 		mode: 1,
 		fileStates: {},
 		fileStatesV2: {},

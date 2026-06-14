@@ -75,6 +75,30 @@ describe("CursorAuthService", () => {
 		assert.equal(credentials.expires, 2_000_000 - 300_000);
 	});
 
+	test("backs off after transient poll rejections before retrying", async () => {
+		const sleeps: number[] = [];
+		const token = jwtWithExp(2_000);
+		const responses = [
+			new Response("busy", { status: 500 }),
+			new Response("still busy", { status: 502 }),
+			new Response(JSON.stringify({ accessToken: token, refreshToken: "refresh-secret" }), { status: 200 }),
+		];
+		const service = new CursorAuthService({
+			fetch: async () => responses.shift() ?? new Response("missing", { status: 500 }),
+			randomBytes: deterministicRandom,
+			uuid: () => "uuid-transient",
+			sleep: async (milliseconds) => {
+				sleeps.push(milliseconds);
+			},
+			initialPollDelayMs: 10,
+		});
+
+		const credentials = await service.login(loginCallbacks([]));
+
+		assert.deepEqual(sleeps, [10, 12, 15]);
+		assert.equal(credentials.access, token);
+	});
+
 	test("refreshes Cursor credentials, preserves omitted refresh token, and redacts token wrappers", async () => {
 		const access = jwtWithExp(3_000);
 		let sawAuthorization = false;

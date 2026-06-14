@@ -408,6 +408,8 @@ function deriveCursorConversationKey(prefix: "bridge" | "conv", context: Context
 	const trimmedSessionId = sessionId?.trim();
 	if (trimmedSessionId) return hashCursorKey(prefix, trimmedSessionId);
 	const firstUserMessage = context.messages.find((message) => message.role === "user");
+	// No-session runs lack a durable session id, so this fallback is best-effort
+	// and can collide for conversations with the same leading user text.
 	const firstUserText = firstUserMessage ? textFromMessage(firstUserMessage).slice(0, 200) : "";
 	return hashCursorKey(prefix, firstUserText);
 }
