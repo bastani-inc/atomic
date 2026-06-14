@@ -2277,12 +2277,12 @@ describe("ralph", () => {
         const promptEngineerPrompt = ctx.calls.prompts["prompt-engineer-1"]?.[0] ?? "";
         assert.equal(
             promptEngineerPrompt.startsWith(
-                "/prompt-engineer Transform the following user prompt to a codebase and online research question which can be thoroughly explored: Add a small feature",
+                "/skill:prompt-engineer Transform the following user prompt to a codebase and online research question which can be thoroughly explored: Add a small feature",
             ),
             true,
         );
         const researchPrompt = ctx.calls.prompts["research-1"]?.[0] ?? "";
-        assert.equal(researchPrompt.startsWith("/research-codebase "), true);
+        assert.equal(researchPrompt.startsWith("/skill:research-codebase "), true);
         assert.match(researchPrompt, /mock-task:prompt-engineer-1/);
         assert.equal(ctx.calls.task.includes("planner-1"), false);
         assert.doesNotMatch(promptEngineerPrompt, /Technical Design Document|RFC Template/);
@@ -2641,7 +2641,7 @@ describe("ralph", () => {
         );
         assert.equal(
             (ctx.calls.prompts["prompt-engineer-2"]?.[0] ?? "").startsWith(
-                "/prompt-engineer Transform the following user prompt",
+                "/skill:prompt-engineer Transform the following user prompt",
             ),
             true,
         );
@@ -2653,7 +2653,7 @@ describe("ralph", () => {
         );
         assert.equal(
             (ctx.calls.prompts["research-2"]?.[0] ?? "").startsWith(
-                "/research-codebase ",
+                "/skill:research-codebase ",
             ),
             true,
         );

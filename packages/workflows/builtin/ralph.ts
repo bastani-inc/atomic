@@ -302,7 +302,7 @@ function renderPromptEngineerPrompt(args: {
   readonly workflowCwdContext: PromptSection;
   readonly latestReviewReportPath: string | undefined;
 }): string {
-  const basePrompt = `/prompt-engineer Transform the following user prompt to a codebase and online research question which can be thoroughly explored: ${args.prompt}`;
+  const basePrompt = `/skill:prompt-engineer Transform the following user prompt to a codebase and online research question which can be thoroughly explored: ${args.prompt}`;
   return [
     basePrompt,
     taggedPrompt([
@@ -333,7 +333,7 @@ function renderResearchPrompt(args: {
   readonly latestReviewReportPath: string | undefined;
   readonly researchPath: string;
 }): string {
-  const basePrompt = `/research-codebase ${args.transformedResearchQuestion}`;
+  const basePrompt = `/skill:research-codebase ${args.transformedResearchQuestion}`;
   return [
     basePrompt,
     taggedPrompt([
