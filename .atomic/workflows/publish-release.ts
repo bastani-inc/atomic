@@ -129,6 +129,9 @@ function packageManifestPaths(): readonly string[] {
 function releaseChangedFileAllowed(path: string): boolean {
   return path === "package.json"
     || path === "bun.lock"
+    || path === "Cargo.toml"
+    || path === "Cargo.lock"
+    || path === "packages/natives/native/index.js"
     || /^packages\/[^/]+\/(?:package\.json|README\.md|CHANGELOG\.md)$/u.test(path);
 }
 
@@ -177,7 +180,14 @@ async function verifyReleasePreparation(
       failures.push(`${manifestPath} name was ${String(manifest.name)}, expected @bastani/atomic`);
     }
 
-    if (manifestPath !== "packages/coding-agent/package.json"
+    if (manifestPath === "packages/natives/package.json") {
+      if (manifest.name !== "@bastani/atomic-natives") {
+        failures.push(`${manifestPath} name was ${String(manifest.name)}, expected @bastani/atomic-natives`);
+      }
+      if (manifest.private === true) {
+        failures.push(`${manifestPath} must remain publishable because @bastani/atomic depends on it at runtime`);
+      }
+    } else if (manifestPath !== "packages/coding-agent/package.json"
       && manifestPath.startsWith("packages/")
       && manifest.private !== true) {
       failures.push(`${manifestPath} must remain private because it is bundled into @bastani/atomic`);
