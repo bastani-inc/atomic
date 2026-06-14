@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { getBuiltinPackagePaths } from "../../packages/coding-agent/src/core/builtin-packages.js";
 import { DefaultResourceLoader } from "../../packages/coding-agent/src/core/resource-loader.js";
-import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
+import { SettingsManager, type PackageSource } from "../../packages/coding-agent/src/core/settings-manager.js";
 import { BUILTIN_SLASH_COMMANDS } from "../../packages/coding-agent/src/core/slash-commands.js";
 
 function tempDir(prefix: string): string {
@@ -216,5 +216,52 @@ describe("coding-agent builtin resources", () => {
     assert.ok(atomicCommand, "expected builtin /atomic command");
     assert.equal(atomicCommand.description, "Atomic onboarding and help guide");
     assert.equal(typeof atomicCommand.getArgumentCompletions, "function");
+  }, fullBuiltinPackageLoadTimeoutMs);
+
+  test("can disable the workflows extension while keeping bundled package skills", async () => {
+    const cwd = tempDir("atomic-stage-builtin-skills-cwd-");
+    const agentDir = tempDir("atomic-stage-builtin-skills-agent-");
+    const stageBuiltinPackages: PackageSource[] = expectedBuiltinPackages.map((packagePath) =>
+      packagePath.replace(/\\/g, "/").endsWith("/workflows")
+        ? { source: packagePath, extensions: [] }
+        : packagePath,
+    );
+    const loader = new DefaultResourceLoader({
+      cwd,
+      agentDir,
+      settingsManager: SettingsManager.inMemory(),
+      builtinPackagePaths: stageBuiltinPackages,
+    });
+
+    await loader.reload();
+
+    const extensions = loader.getExtensions();
+    assert.deepEqual(extensions.errors, []);
+    const extensionPaths = extensions.extensions.map((extension) => extension.path.replace(/\\/g, "/"));
+    assert.equal(
+      extensionPaths.some((extensionPath) => extensionPath.endsWith("packages/workflows/src/extension/index.ts")),
+      false,
+      "expected stage sessions not to recursively load the workflows extension",
+    );
+    assert.ok(
+      extensionPaths.some((extensionPath) => extensionPath.endsWith("packages/subagents/src/extension/index.ts")),
+      "expected non-workflow builtin extensions to stay enabled",
+    );
+
+    const skillNames = new Set(loader.getSkills().skills.map((skill) => skill.name));
+    for (const skillName of [
+      "browser",
+      "create-spec",
+      "impeccable",
+      "intercom",
+      "prompt-engineer",
+      "research-codebase",
+      "skill-creator",
+      "subagent",
+      "tdd",
+      "tmux",
+    ]) {
+      assert.ok(skillNames.has(skillName), `expected bundled package skill ${skillName}`);
+    }
   }, fullBuiltinPackageLoadTimeoutMs);
 });

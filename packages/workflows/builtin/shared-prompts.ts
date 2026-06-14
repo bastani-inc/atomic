@@ -9,3 +9,10 @@ export const WORKER_PREFLIGHT_CONTRACT = [
   "If setup requirements cannot be determined confidently, delegate a focused discovery task before implementation instead of guessing.",
   "If setup remains blocked after evidence-based discovery and setup attempts, report the blocker with commands tried and the exact evidence needed to continue.",
 ].join("\n");
+
+export const E2E_VERIFICATION_GUIDANCE = [
+  "Verify correctness end-to-end whenever practical for user-visible behavior; do not rely only on code inspection, unit tests, or stage summaries when an executable user scenario can prove the outcome.",
+  "For web or frontend flows — including frontend changes whose correctness depends on backend/API behavior — use the browser skill, or delegate to a subagent with `skill: \"browser\"`, to drive the application like a user and capture screenshot, DOM, or network evidence when that proves the objective.",
+  "For TUI or terminal-app flows, use the tmux skill, or delegate to a subagent with `skill: \"tmux\"`, to launch the app in an isolated tmux session, send keys, capture pane output, and simulate the scenario end to end.",
+  "If end-to-end verification is not practical in this checkout, record what was attempted, the smallest missing prerequisite, and the narrower validation that was run instead; do not claim end-to-end proof when it was not performed.",
+].join("\n");

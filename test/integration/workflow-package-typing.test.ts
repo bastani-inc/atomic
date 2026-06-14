@@ -320,7 +320,7 @@ run(goal, { objective: "x" }).then((runResult) => {
 const typedGoalOutputs: GoalWorkflowOutputs = { status: "complete", approved: true, receipts: [{ turn: 1, stage: "worker", artifact_path: "worker.md", summary: "done" }] };
 const typedDesignOutputs: OpenClaudeDesignWorkflowOutputs = { approved_for_export: true, preview_path: "preview.html", refinements_completed: 1 };
 const typedDeepResearchOutputs: DeepResearchCodebaseWorkflowOutputs = { partitions: ["core"], explorer_count: 1, research_doc_path: "research.md" };
-const typedRalphOutputs: RalphWorkflowOutputs = { approved: true, iterations_completed: 1, plan_path: "spec.md" };
+const typedRalphOutputs: RalphWorkflowOutputs = { approved: true, iterations_completed: 1, research_path: "research.md" };
 const typedRalphRunInputs: RalphWorkflowRunInputs = { prompt: "x", create_pr: true };
 void typedGoalOutputs;
 void typedDesignOutputs;

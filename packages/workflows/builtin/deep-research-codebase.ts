@@ -44,27 +44,6 @@ interface DeepResearchCodebaseResult {
 
 const FILE_ONLY_OUTPUT = "file-only" satisfies WorkflowOutputMode;
 
-const CODEBASE_SKILLS = {
-  locator:
-    "codebase-locator — use this skill's search-first discipline when mapping where files, symbols, docs, tests, and configuration live.",
-  analyzer:
-    "codebase-analyzer — use this skill's evidence-driven deep-read style when explaining behavior, architecture, control flow, data flow, and edge cases.",
-  patternFinder:
-    "codebase-pattern-finder — use this skill's example-mining approach when separating reusable conventions from one-off details.",
-  researchLocator:
-    "codebase-research-locator — use this skill's historical-discovery approach when finding prior research, specs, ADRs, issues, and TODOs.",
-  researchAnalyzer:
-    "codebase-research-analyzer — use this skill's synthesis approach when extracting decisions, constraints, stale assumptions, and open questions from prior research.",
-  onlineResearcher:
-    "codebase-online-researcher — use this skill's source-citing approach when external documentation or ecosystem behavior materially affects the answer.",
-} as const;
-
-function codebaseSkillGuidance(
-  ...skills: readonly (keyof typeof CODEBASE_SKILLS)[]
-): string {
-  return skills.map((skill) => CODEBASE_SKILLS[skill]).join("\n");
-}
-
 function taggedPrompt(sections: readonly PromptSection[]): string {
   return sections
     .map(([tag, content]) => {
@@ -446,11 +425,7 @@ export default defineWorkflow("deep-research-codebase")
               "role",
               "You are a senior codebase research scout preparing work for specialist agents.",
             ],
-            ["objective", `Map the repository. Research question: ${prompt}`],
-            [
-              "codebase_skills",
-              codebaseSkillGuidance("locator", "analyzer", "patternFinder"),
-            ],
+            ["objective", `Map the repository using parallel codebase-locator, codebase-analyzer, and codebase-pattern-finder subagents. Research question: ${prompt}`],
             [
               "instructions",
               [
@@ -480,10 +455,9 @@ export default defineWorkflow("deep-research-codebase")
             ["role", "You locate prior project research and decision history."],
             [
               "objective",
-              "Find existing docs, specs, ADRs, issues/PR notes, TODOs, and research artifacts relevant to the task.",
+              "Find existing docs, specs, ADRs, issues/PR notes, TODOs, and research artifacts relevant to the task using parallel codebase-research-locator subagents.",
             ],
             ["task", "{task}"],
-            ["codebase_skills", codebaseSkillGuidance("researchLocator")],
             [
               "instructions",
               [
@@ -520,10 +494,9 @@ export default defineWorkflow("deep-research-codebase")
             ],
             [
               "objective",
-              `Extract reusable historical context. Research question: ${prompt}`,
+              `Extract reusable historical context using parallel codebase-research-analyzer subagents. Research question: ${prompt}`,
             ],
             ["prior_research_locator_output", "{previous}"],
-            ["codebase_skills", codebaseSkillGuidance("researchAnalyzer")],
             [
               "instructions",
               [
@@ -558,13 +531,9 @@ export default defineWorkflow("deep-research-codebase")
         ["role", "You turn scout research into clean work partitions."],
         [
           "objective",
-          `Return at most ${partitionCap} independent partitions for this research question: ${prompt}`,
+          `Return at most ${partitionCap} independent partitions for this research question: ${prompt}. Use parallel codebase-locator, codebase-analyzer, and codebase-pattern-finder subagents.`,
         ],
         ["scout_output", "{previous}"],
-        [
-          "codebase_skills",
-          codebaseSkillGuidance("locator", "analyzer", "patternFinder"),
-        ],
         [
           "instructions",
           [
@@ -607,11 +576,11 @@ export default defineWorkflow("deep-research-codebase")
                 "scout_context",
                 `Read the scout artifact before making evidence claims: ${displayWorkflowPath(scoutPath)}\nCompact saved-output reference: {previous}`,
               ],
-              ["codebase_skills", codebaseSkillGuidance("locator")],
               [
                 "instructions",
                 [
                   "Find the highest-signal files, tests, docs, commands, configs, and symbols for this partition.",
+                  "Use parallel codebase-locator subagents to explore different areas of the partition.",
                   "Explain why each path matters for the research question.",
                   "Prioritize exact paths and symbol names over broad descriptions.",
                   "Flag areas that look relevant but could not be verified.",
@@ -643,11 +612,10 @@ export default defineWorkflow("deep-research-codebase")
                 "scout_context",
                 `Read the scout artifact before making evidence claims: ${displayWorkflowPath(scoutPath)}\nCompact saved-output reference: {previous}`,
               ],
-              ["codebase_skills", codebaseSkillGuidance("patternFinder")],
               [
                 "instructions",
                 [
-                  "Identify recurring implementation patterns, abstractions, naming conventions, and anti-patterns in this partition.",
+                  "Identify recurring implementation patterns, abstractions, naming conventions, and anti-patterns in this partition using parallel codebase-pattern-finder subagents.",
                   "Use concrete examples with paths, symbols, or test names.",
                   "Distinguish established conventions from one-off implementation details.",
                   "Avoid generic advice that is not grounded in the repository.",
@@ -711,11 +679,10 @@ export default defineWorkflow("deep-research-codebase")
                 "context",
                 `Read these artifacts before analyzing: ${displayWorkflowPaths(analyzerReads)}\nCompact saved-output reference: {previous}`,
               ],
-              ["codebase_skills", codebaseSkillGuidance("analyzer")],
               [
                 "instructions",
                 [
-                  "Analyze behavior, control flow, data flow, lifecycle, error handling, and test coverage for this partition.",
+                  "Analyze behavior, control flow, data flow, lifecycle, error handling, and test coverage for this partition using parallel codebase-analyzer subagents.",
                   "Build on the locator output; do not repeat file discovery except where needed as evidence.",
                   "Call out edge cases, invariants, and coupling to other partitions.",
                   "If evidence is incomplete, explain what remains unknown and how to verify it.",
@@ -747,11 +714,11 @@ export default defineWorkflow("deep-research-codebase")
               ["assignment", `Partition ${i}/${partitions.length}: ${partition}`],
               ["research_question", prompt],
               ["local_context", onlineResearcherLocalContext],
-              ["codebase_skills", codebaseSkillGuidance("onlineResearcher")],
               [
                 "instructions",
                 [
                   "Identify external library/framework behavior, standards, or docs that materially affect the local interpretation.",
+                  "Use parallel codebase-online-researcher subagents to explore different angles of external research.",
                   "Cite sources, package names, API names, versions, or documentation titles when available.",
                   "Explain how each external fact applies to this repository.",
                   "If external research is unnecessary or unavailable, say so and focus on local implications.",
@@ -830,14 +797,6 @@ export default defineWorkflow("deep-research-codebase")
           `Read the complete explorer handoff artifact(s) at ${displayWorkflowPaths(explorerPaths)}. They preserve every partition's Locator, Pattern Finder, Analyzer, and Online Researcher output from the original inline specialist handoff while keeping this prompt bounded.`,
         ],
         [
-          "codebase_skills",
-          codebaseSkillGuidance(
-            "analyzer",
-            "researchAnalyzer",
-            "onlineResearcher",
-          ),
-        ],
-        [
           "instructions",
           [
             "Synthesize; do not merely concatenate specialist reports.",
@@ -845,6 +804,7 @@ export default defineWorkflow("deep-research-codebase")
             "Prioritize claims supported by concrete paths, symbols, tests, docs, or cited external references.",
             "Resolve contradictions explicitly and preserve important uncertainty.",
             "Avoid inventing facts not supported by the supplied reports; state unknowns instead.",
+            "Use parallel codebase-analyzer, codebase-research-analyzer, and codebase-online-researcher subagents as needed to verify claims or fill critical gaps in the supplied reports.",
             "End with actionable next steps for a developer who will use this research.",
           ].join("\n"),
         ],

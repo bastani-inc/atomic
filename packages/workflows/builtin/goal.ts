@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { defineWorkflow } from "../src/workflows/define-workflow.js";
 import { Type } from "typebox";
 import type { WorkflowTaskResult } from "../src/shared/types.js";
-import { WORKER_PREFLIGHT_CONTRACT } from "./shared-prompts.js";
+import { E2E_VERIFICATION_GUIDANCE, WORKER_PREFLIGHT_CONTRACT } from "./shared-prompts.js";
 
 const DEFAULT_MAX_TURNS = 10;
 // Goal Runner runs three independent reviewer personas; two approvals form a majority.
@@ -135,108 +135,64 @@ function positiveInteger(value: number | undefined, fallback: number): number {
   return floored >= 1 ? floored : fallback;
 }
 
-const reviewDecisionSchema = {
-  type: "object",
-  additionalProperties: false,
-  required: [
-    "findings",
-    "overall_correctness",
-    "overall_explanation",
-    "overall_confidence_score",
-    "goal_oracle_satisfied",
-    "receipt_assessment",
-    "verification_remaining",
-    "stop_review_loop",
-  ],
-  properties: {
-    findings: {
-      type: "array",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["title", "body", "confidence_score", "code_location"],
-        properties: {
-          title: { type: "string" },
-          body: { type: "string" },
-          confidence_score: { type: "number", minimum: 0, maximum: 1 },
-          priority: { type: ["integer", "null"], minimum: 0, maximum: 3 },
-          code_location: {
-            type: "object",
-            additionalProperties: false,
-            required: ["absolute_file_path", "line_range"],
-            properties: {
-              absolute_file_path: { type: "string" },
-              line_range: {
-                type: "object",
-                additionalProperties: false,
-                required: ["start", "end"],
-                properties: {
-                  start: { type: "integer", minimum: 1 },
-                  end: { type: "integer", minimum: 1 },
-                },
-              },
-            },
+const reviewFindingSchema = Type.Object(
+  {
+    title: Type.String(),
+    body: Type.String(),
+    confidence_score: Type.Number({ minimum: 0, maximum: 1 }),
+    priority: Type.Optional(
+      Type.Union([Type.Integer({ minimum: 0, maximum: 3 }), Type.Null()]),
+    ),
+    code_location: Type.Object(
+      {
+        absolute_file_path: Type.String(),
+        line_range: Type.Object(
+          {
+            start: Type.Integer({ minimum: 1 }),
+            end: Type.Integer({ minimum: 1 }),
           },
-        },
+          { additionalProperties: false },
+        ),
       },
-    },
-    overall_correctness: {
-      type: "string",
-      enum: ["patch is correct", "patch is incorrect"],
-    },
-    overall_explanation: { type: "string" },
-    overall_confidence_score: { type: "number", minimum: 0, maximum: 1 },
-    goal_oracle_satisfied: { type: "boolean" },
-    receipt_assessment: { type: "string" },
-    verification_remaining: { type: "string" },
-    stop_review_loop: { type: "boolean" },
-    reviewer_error: {
-      anyOf: [
-        { type: "null" },
-        {
-          type: "object",
-          additionalProperties: false,
-          required: ["kind", "message", "attempted_recovery"],
-          properties: {
-            kind: {
-              type: "string",
-              enum: [
-                "validation_unavailable",
-                "dependency_unavailable",
-                "tool_failure",
-                "reviewer_failure",
-              ],
-            },
-            message: { type: "string" },
-            attempted_recovery: { type: "string" },
-          },
-        },
-      ],
-    },
+      { additionalProperties: false },
+    ),
   },
-} as const;
+  { additionalProperties: false },
+);
 
-const reviewDecisionTool = {
-  name: "review_decision",
-  label: "Review Decision",
-  description:
-    "Emit the final structured review verdict after inspecting the patch.",
-  promptSnippet: "Emit the final review verdict as structured data",
-  promptGuidelines: [
-    "Call review_decision after completing review investigation and validation.",
-    "This is a terminating structured-output tool; do not emit another assistant response after calling it.",
-  ],
-  parameters: reviewDecisionSchema,
-  async execute(_toolCallId: string, params: ReviewDecision) {
-    return {
-      content: [
-        { type: "text" as const, text: JSON.stringify(params, null, 2) },
-      ],
-      details: params,
-      terminate: true,
-    };
+const reviewerErrorSchema = Type.Object(
+  {
+    kind: Type.Union([
+      Type.Literal("validation_unavailable"),
+      Type.Literal("dependency_unavailable"),
+      Type.Literal("tool_failure"),
+      Type.Literal("reviewer_failure"),
+    ]),
+    message: Type.String(),
+    attempted_recovery: Type.String(),
   },
-};
+  { additionalProperties: false },
+);
+
+const reviewDecisionSchema = Type.Object(
+  {
+    findings: Type.Array(reviewFindingSchema),
+    overall_correctness: Type.Union([
+      Type.Literal("patch is correct"),
+      Type.Literal("patch is incorrect"),
+    ]),
+    overall_explanation: Type.String(),
+    overall_confidence_score: Type.Number({ minimum: 0, maximum: 1 }),
+    goal_oracle_satisfied: Type.Boolean(),
+    receipt_assessment: Type.String(),
+    verification_remaining: Type.String(),
+    stop_review_loop: Type.Boolean(),
+    reviewer_error: Type.Optional(
+      Type.Union([Type.Null(), reviewerErrorSchema]),
+    ),
+  },
+  { additionalProperties: false },
+);
 
 const GOAL_CONTINUATION_REFERENCE = [
   "Continuation behavior:",
@@ -589,6 +545,7 @@ function renderGoalContinuationPrompt(
       ].join("\n"),
     ],
     ["goal_guidelines", GOAL_CONTINUATION_REFERENCE],
+    ["e2e_verification", E2E_VERIFICATION_GUIDANCE],
   ]);
 }
 
@@ -619,6 +576,7 @@ function renderForkedGoalWorkerPrompt(
         renderLatestReviewArtifacts(latestReviewArtifactPaths),
       ].join("\n"),
     ],
+    ["e2e_verification", E2E_VERIFICATION_GUIDANCE],
   ]);
 }
 
@@ -795,6 +753,7 @@ function renderReviewerPrompt(args: {
     ["goal_framework", GOAL_METHOD_REFERENCE],
     ["goal_guidelines", GOAL_CONTINUATION_REFERENCE],
     ["auditability", RECEIPT_EXPECTATIONS],
+    ["e2e_verification", E2E_VERIFICATION_GUIDANCE],
     [
       "goal_context",
       [
@@ -829,8 +788,6 @@ function renderReviewerPrompt(args: {
       [
         "Inspect the actual diff/repository state rather than trusting stage summaries.",
         "Identify the smallest relevant validation set from repository evidence: targeted tests, lint, typecheck, build, generated-artifact checks, CI-equivalent scripts, or user-flow proof.",
-        "When practical, include an end-to-end QA check that exercises the app the way a user would: use the tmux skill for terminal app environments and browser for web app environments.",
-        "For web app environments, capture a screenshot as a certificate of correct completion when the UI state proves the objective; for terminal app environments, capture the terminal window/output that shows proof of correctness.",
         "Run or delegate focused validation when it is necessary to distinguish a real bug from a hunch.",
         "If tests or typechecks fail because dependencies are missing, install/download the missing dependencies with the repo's documented package manager instead of bypassing the check.",
         "If validation cannot be completed after reasonable recovery, record the limitation in overall_explanation and reviewer_error; do not use missing dependencies as a reason to approve.",
@@ -915,14 +872,14 @@ function renderReviewerPrompt(args: {
     [
       "output_format",
       [
-        "You have a structured-output tool named review_decision. Use it after your investigation and validation attempts.",
+        "Use the schema-backed structured_output tool after your investigation and validation attempts.",
         "The tool terminates the turn and provides the structured data; do not emit a separate final assistant response after calling it.",
-        "The review gate decides completion only by parsing the JSON object returned by this tool; invalid JSON, missing fields, reviewer_error, or stop_review_loop=false are treated as not approved for safety.",
+        "The review gate decides completion only from the JSON object captured by structured_output; invalid JSON, missing fields, reviewer_error, or stop_review_loop=false are treated as not approved for safety.",
         "Set stop_review_loop=true only when there are no P0/P1/P2 findings, overall_correctness is patch is correct, goal_oracle_satisfied is true, no objective-relevant verification remains, and reviewer_error is null/omitted.",
         "P3 nice-to-have findings are non-blocking when the rest of the approval contract is satisfied; do not use P3 for work required by the objective or verification oracle.",
         "If you hit a reviewer/tool/validation error, still return the object with stop_review_loop=false and reviewer_error populated instead of pretending the patch is approved.",
         [
-          "The review_decision tool schema is authoritative; do not copy a hand-written JSON blob into the final response. Here is an example output:",
+          "The structured_output schema is authoritative; do not copy a hand-written JSON blob into the final response. Here is an example output:",
           "{",
           '  "findings": [',
           "    {",
@@ -1080,8 +1037,8 @@ export default defineWorkflow("goal")
           "github-copilot/claude-opus-4.8:xhigh",
           "anthropic/claude-opus-4-8:xhigh"
       ],
-      tools: [...goalRunnerTools, reviewDecisionTool.name],
-      customTools: [reviewDecisionTool],
+      tools: goalRunnerTools,
+      schema: reviewDecisionSchema,
     };
 
     let latestReviews: ReviewRecord[] = [];

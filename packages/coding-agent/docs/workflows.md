@@ -153,7 +153,7 @@ For the builtin result tables below, `deep-research-codebase`, `goal`, and `ralp
 |---|---|---|
 | `deep-research-codebase` | Scout + research-history chain → parallel specialist waves → aggregator. Indexes the whole repo and synthesizes findings. | Broad or cross-cutting research before you decide what to change. Prefer `/skill:research-codebase` for one subsystem. |
 | `goal` | Persisted goal ledger → bounded worker turns → receipts → three-reviewer gate → deterministic reducer → final report. | Small-to-medium scope changes when you can identify the work surface, state the exact outcome, and name the validation that proves it is done — for example tests, lint/typecheck, docs builds, or observable behavior. |
-| `ralph` | RFC planning → sub-agent orchestration → simplification → parallel review → optional final-stage PR handoff. | Larger migrations, broad refactors, multi-package changes, and spec-to-reviewed-change work where you want Atomic to plan the approach, delegate implementation through sub-agents, simplify, review, iterate, and optionally allow only the final `pull-request` stage to attempt PR creation with `create_pr=true`. |
+| `ralph` | Prompt-engineering → codebase/online research → sub-agent orchestration → parallel review → optional final-stage PR handoff. | Larger migrations, broad refactors, and multi-package changes where you want Atomic to transform the prompt into a research question, research the codebase before implementing, delegate through sub-agents, review, iterate, and optionally allow only the final `pull-request` stage to attempt PR creation with `create_pr=true`. |
 | `open-claude-design` | Design-system onboarding → reference import → HTML generation → impeccable-driven refinement → quality gate → rich HTML handoff. Renders a live `preview.html` you can iterate against (opens through `browser` when available). | UI, page, component, theme, or design-token work that benefits from generation + critique loops. |
 
 ### `deep-research-codebase`
@@ -224,7 +224,7 @@ Run examples:
 
 Write the `objective` like a compact acceptance spec. Say what should exist when the run is done, how you want testing handled, which command(s) or manual checks matter, and what outcome proves completion. The workflow is intentionally lean: it does not first generate an RFC or migration plan, so the developer-supplied objective is where scope, validation, and completion criteria belong.
 
-The worker may claim readiness, but it cannot finalize completion. Three reviewers independently inspect the ledger, worker receipt, repository state, and diff against `base_branch`; each returns structured JSON with findings, evidence, verification still remaining, and an optional blocker. A TypeScript reducer marks the goal complete only when reviewer quorum approves, marks blocked only when the same dependency/tool blocker repeats for the blocker threshold, continues when evidence is missing, and returns `needs_human` when `max_turns` is exhausted or worker execution fails.
+The worker may claim readiness, but it cannot finalize completion. Workers and reviewers are prompted to verify user-visible behavior end-to-end when practical, using browser-skilled subagents for web/frontend flows that may depend on backend/API behavior and tmux-skilled subagents for TUI or terminal-app scenarios. Three reviewers independently inspect the ledger, worker receipt, repository state, and diff against `base_branch`; each returns structured JSON with findings, evidence, verification still remaining, and an optional blocker. A TypeScript reducer marks the goal complete only when reviewer quorum approves, marks blocked only when the same dependency/tool blocker repeats for the blocker threshold, continues when evidence is missing, and returns `needs_human` when `max_turns` is exhausted or worker execution fails.
 
 Result fields:
 
@@ -248,8 +248,8 @@ Inputs:
 
 | Input | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `prompt` | text | yes | — | Task, feature request, issue summary, or spec path to plan, execute, refine, and review. |
-| `max_loops` | number | no | `10` | Maximum plan/orchestrate/review iterations before the workflow completes or, when enabled, proceeds to final handoff without reviewer approval. |
+| `prompt` | text | yes | — | Task, feature request, issue summary, or spec path to research, execute, refine, and review. |
+| `max_loops` | number | no | `10` | Maximum research/orchestrate/review iterations before the workflow completes or, when enabled, proceeds to final handoff without reviewer approval. |
 | `base_branch` | string | no | `origin/main` | Branch reviewers and the optional final stage compare the current code delta against; also used to create a missing worktree. |
 | `git_worktree_dir` | string | no | `""` | Optional reusable Git worktree root. Empty runs in the invoking checkout; non-empty values run Ralph stages in the created/reused worktree. |
 | `create_pr` | boolean | no | `false` | Safe-by-default PR creation flag. Omitted or `false` skips the final `pull-request` stage and omits `pr_report`; prompt text alone does not opt in, and only strict `true` authorizes the final `pull-request` stage to attempt provider-appropriate PR/MR/review creation. |
@@ -257,12 +257,12 @@ Inputs:
 Run examples:
 
 ```text
-/workflow ralph prompt="Plan and migrate the database layer to Drizzle" max_loops=3 base_branch=develop
+/workflow ralph prompt="Migrate the database layer to Drizzle" max_loops=3 base_branch=develop
 /workflow ralph prompt="Refactor authentication across the API, CLI, and web UI" create_pr=true
 /workflow ralph prompt="Safely implement the API refactor" git_worktree_dir=../atomic-ralph-api-wt base_branch=main
 ```
 
-Each `ralph` iteration writes an RFC-style technical design document under `specs/`, initializes an OS-temp implementation notes file, delegates implementation through sub-agents, runs a behavior-preserving code simplifier, and asks two reviewers to inspect the patch directly against `base_branch`. Reviewers discover any needed repository infrastructure themselves while inspecting the actual diff; Ralph no longer runs separate `infra-*` discovery stages. The loop stops when every reviewer approves or `max_loops` is reached. By default Ralph does not start the final `pull-request` stage, and `pr_report` is omitted. Prompt text alone does not opt in. Pass `create_pr=true` only when you explicitly want the final `pull-request` stage to inspect provider credentials and attempt provider-appropriate PR/MR/review creation, such as GitHub `gh`, Azure Repos `az repos pr create`, or Sapling/Phabricator tooling; Ralph's own PR-creation instructions live in that final stage.
+Each `ralph` iteration starts by prompt-engineering the user prompt with `/skill:prompt-engineer Transform the following user prompt to a codebase and online research question which can be thoroughly explored: ...`, then researches that transformed question with `/skill:research-codebase ...` and writes the findings under `research/`. The orchestrator treats that research artifact as its primary implementation context, initializes/updates an OS-temp implementation notes file, delegates implementation through sub-agents, and asks two reviewers to inspect the patch directly against `base_branch`. Ralph's orchestrator and reviewers are prompted to verify user-visible behavior end-to-end when practical, using browser-skilled subagents for web/frontend flows that may depend on backend/API behavior and tmux-skilled subagents for TUI or terminal-app scenarios. If reviewers find issues, the next prompt-engineering and research stages receive the review artifact path so follow-up research can address unresolved findings, and research stages fork from prior research session data when available. The loop stops when every reviewer approves or `max_loops` is reached. By default Ralph does not start the final `pull-request` stage, and `pr_report` is omitted. Prompt text alone does not opt in. Pass `create_pr=true` only when you explicitly want the final `pull-request` stage to inspect provider credentials and attempt provider-appropriate PR/MR/review creation, such as GitHub `gh`, Azure Repos `az repos pr create`, or Sapling/Phabricator tooling; Ralph's own PR-creation instructions live in that final stage.
 
 Set `git_worktree_dir` when you want Ralph's worker stages isolated in a reusable Git worktree. Relative paths resolve from the invoking repository root, existing same-repository worktree roots are reused, and missing paths are created from `base_branch`. Ralph preserves the invoking repo-relative cwd inside the worktree, so launching from `repo/packages/api` with `git_worktree_dir=../repo-wt` runs stages from `../repo-wt/packages/api`.
 
@@ -271,16 +271,18 @@ Result fields:
 | Field | Meaning |
 |---|---|
 | `result` | Final implementation report from the orchestrator stage. |
-| `plan` | Latest RFC-style plan text. |
-| `plan_path` | Path to the latest generated spec under `specs/`. |
+| `plan` | Latest transformed research question, retained for compatibility. |
+| `plan_path` | Backward-compatible alias for `research_path`. |
+| `research` | Latest research report text or artifact reference. |
+| `research_path` | Path to the latest generated research artifact under `research/`. |
 | `implementation_notes_path` | OS-temp notes file containing decisions, deviations, blockers, and validation notes. |
 | `pr_report` | Pull-request report emitted only when `create_pr=true` and the final `pull-request` stage runs. |
 | `approved` | Whether the reviewer loop approved before completion or optional final handoff. |
-| `iterations_completed` | Number of plan/orchestrate/review loops completed. |
+| `iterations_completed` | Number of research/orchestrate/review loops completed. |
 | `review_report` | Compact reference to the latest reviewer payload artifact. |
 | `review_report_path` | JSON artifact path for the latest Ralph review round. |
 
-A typical end-to-end flow is `/skill:research-codebase` → `/skill:create-spec` → `/workflow goal objective="Implement the researched rate-limit behavior, run the focused tests, and finish when the documented burst behavior is validated"` when you can identify the work surface, state the exact outcome, and name the validation that proves it is done. Keep using `/workflow ralph` for larger migrations, broad refactors, multi-package changes, and spec-to-reviewed-change work where you want Atomic to plan, delegate through sub-agents, simplify, review, iterate, and optionally allow only the final `pull-request` stage to attempt PR creation with `create_pr=true`.
+A typical end-to-end flow is `/skill:research-codebase` → `/skill:create-spec` → `/workflow goal objective="Implement the researched rate-limit behavior, run the focused tests, and finish when the documented burst behavior is validated"` when you can identify the work surface, state the exact outcome, and name the validation that proves it is done. Keep using `/workflow ralph` for larger migrations, broad refactors, and multi-package changes where you want Atomic to research first, delegate through sub-agents, review, iterate, and optionally allow only the final `pull-request` stage to attempt PR creation with `create_pr=true`.
 
 ### `open-claude-design`
 
@@ -335,7 +337,7 @@ Use the goal workflow to implement specs/2026-03-rate-limit.md, run the focused 
 ```
 
 ```text
-Use the ralph workflow to plan a database-layer migration, implement it, review it, and set `create_pr=true` for final-stage PR handoff.
+Use the ralph workflow to research a database-layer migration, implement it, review it, and set `create_pr=true` for final-stage PR handoff.
 ```
 
 ```text
@@ -381,7 +383,7 @@ If the task is only deterministic TypeScript with no LLM/session stage, use a sc
 |-----------|-----|
 | Run, inspect, attach to, pause, interrupt, resume, or check status for an existing workflow | `/workflow ...` or `workflow({ action: ... })` |
 | Implement a small-to-medium scope change with an identifiable work surface, exact outcome, and named validation | `/workflow goal objective="..."` so Atomic keeps the run bounded, captures receipts in a goal ledger, gates completion through reviewers, and stops as `complete`, `blocked`, or `needs_human` |
-| Plan and execute a larger migration, broad refactor, multi-package change, or spec-to-reviewed-change effort | `/workflow ralph prompt="..."` so Atomic can plan the approach, delegate implementation through sub-agents, simplify, review, and iterate; prompt text alone does not opt in to PR creation, so add `create_pr=true` only when you want the final `pull-request` stage and `pr_report` |
+| Research and execute a larger migration, broad refactor, or multi-package change | `/workflow ralph prompt="..."` so Atomic can transform the prompt into a research question, research the codebase first, delegate implementation through sub-agents, review, and iterate; prompt text alone does not opt in to PR creation, so add `create_pr=true` only when you want the final `pull-request` stage and `pr_report` |
 | Create or edit reusable automation | a TypeScript workflow definition exported from `defineWorkflow(...).compile()` |
 | Track one-off work without saving a workflow file | direct `workflow({ task })`, `workflow({ tasks })`, or `workflow({ chain })` calls |
 | Make a workflow robust | design the stage graph, context handoffs, artifacts, validation gates, model fallbacks, and human approval points before coding |
@@ -1315,7 +1317,7 @@ Common builtin import targets:
 |---|---|---|---|
 | `deep-research-codebase` | `deepResearchCodebase` | `@bastani/workflows/builtin/deep-research-codebase` | Gather broad repo research before planning, synthesis, or implementation. |
 | `goal` | `goal` | `@bastani/workflows/builtin/goal` | Run a bounded implementation/check loop with receipts and reviewer-gated completion. |
-| `ralph` | `ralph` | `@bastani/workflows/builtin/ralph` | Delegate a larger migration/refactor/spec-to-reviewed-change effort to Ralph's plan/orchestrate/review loop; pass `create_pr=true` to authorize only the final PR-creation stage. |
+| `ralph` | `ralph` | `@bastani/workflows/builtin/ralph` | Delegate a larger migration/refactor effort to Ralph's research/orchestrate/review loop; pass `create_pr=true` to authorize only the final PR-creation stage. |
 | `open-claude-design` | `openClaudeDesign` | `@bastani/workflows/builtin/open-claude-design` | Generate and refine a UI/design artifact and handoff spec. |
 
 Example parent workflow that runs builtin deep research, then chooses either `goal` or `ralph` as the nested implementation runner:
@@ -1330,7 +1332,7 @@ export default defineWorkflow("research-then-implement")
     "runner",
     Type.Union([Type.Literal("goal"), Type.Literal("ralph")], {
       default: "goal",
-      description: "Use goal for bounded changes or Ralph for broad spec-to-reviewed-change work.",
+      description: "Use goal for bounded changes or Ralph for broad research-first implementation work.",
     }),
   )
   .output("research_doc_path", Type.Optional(Type.String({ description: "Path to the deep-research document used for implementation." })))
@@ -1478,6 +1480,8 @@ Common task/stage options include:
 - advanced host-supplied SDK seams: `authStorage`, `resourceLoader`, `sessionManager`, `settingsManager`, `sessionStartEvent`
 
 `schema` is opt-in. When a `ctx.stage` call, `ctx.task` call, `ctx.chain` item, or `ctx.parallel` item includes a top-level object TypeBox/JSON Schema, Atomic registers a schema-specific `structured_output` tool for that item only, appends final-answer instructions, and requires the stage to finish by calling the tool exactly once. The prompt result is the parsed structured value for `ctx.stage(..., { schema }).prompt(...)`; task/chain/parallel results also include `result.structured` and keep `result.text` as formatted JSON for handoffs. Because the result contract is single-use, a schema-backed `StageContext` supports one `prompt()` call; create a new `ctx.stage(..., { schema })` for each additional structured prompt. If the item also uses an explicit `tools` allowlist, Atomic automatically adds `structured_output` to that allowlist. Items without `schema` do not receive `structured_output` from the normal tool registry.
+
+`subagent` is available as a default workflow-stage tool, with the same default two-hop nesting budget as main chat: a workflow stage can launch a subagent, and that subagent can launch one nested subagent before the guard blocks further delegation. `tools` remains an allowlist across built-in tools and bundled extension tools; if you set `tools`, list every tool the stage should see. Explicitly listing tools such as `subagent`, `web_search`, `fetch_content`, or `intercom` exposes those tools to the stage, while `excludedTools` and `noTools: "all"` still win. The bundled subagent definitions from `@bastani/subagents` are available to the `subagent` tool in workflow stages; when a workflow is itself running inside a subagent child process, Atomic isolates stage resource discovery from the parent child-process flags so `subagent` remains available while workflow-stage nested-depth guards remain in force.
 
 `bashPolicy` scopes the built-in `bash` tool for one stage or task. `tools` must still include `"bash"` (or leave it available by default); the policy only narrows command text after the shell tool is exposed. It supports exact strings, `{ prefix }`, command-string `{ glob }`, and `{ regex, flags? }` rules, `default: "allow" | "deny"` (default `"allow"`), `deny` precedence, and `match: "segments" | "whole"` (default `"segments"`). Omitting `bashPolicy`, passing `{}`, or passing a default-allow policy with no `allow`/`deny` rules (including empty arrays or match-only default-allow policies) preserves legacy behavior and does not parse commands; malformed policy shapes such as unknown top-level keys (`denny`, `extra`), non-array `allow`/`deny`, invalid rule objects, invalid regexes, invalid glob bracket ranges, or stateful `g`/`y` regex flags fail closed as `invalid-policy`. Segment mode checks each command in pipelines/chains/substitutions before execution, treats unquoted LF, CRLF, and bare CR as command separators, keeps non-leading Bash `>|` noclobber redirections inside the current command segment, and rejects reserved/compound shell heads, leading redirections, attached command-head redirections, and command heads that are not literal words.
 
