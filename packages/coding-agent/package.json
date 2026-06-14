@@ -111,7 +111,7 @@
     "@types/diff": "^7.0.2",
     "@types/hosted-git-info": "^3.0.5",
     "@types/ms": "^2.1.0",
-    "@types/node": "^25.9.1",
+    "@types/node": "^25.9.3",
     "@types/proper-lockfile": "^4.1.4",
     "@typescript/native-preview": "7.0.0-dev.20260511.1",
     "shx": "^0.4.0",
