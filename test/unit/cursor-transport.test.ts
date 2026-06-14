@@ -5,6 +5,7 @@ import {
 	CursorConnectFrameDecoder,
 	CursorProtobufProtocolCodec,
 	CursorTransportError,
+	createNativeCursorHttp2ClientForTest,
 	decodeCursorConnectFrames,
 	encodeCursorConnectFrame,
 	Http2CursorAgentTransport,
@@ -15,6 +16,7 @@ import {
 	type CursorRunRequest,
 	type CursorServerMessage,
 } from "../../packages/cursor/src/transport.js";
+import type { CursorH2NativeBinding, CursorH2NativeStream, CursorH2NativeUnaryResponse } from "../../packages/cursor/src/native-loader.js";
 import { cursorProtoTest } from "./cursor-proto-test-helpers.js";
 
 class FakeStreamHandle implements CursorHttp2StreamHandle {
@@ -164,6 +166,15 @@ const model: Model<Api> = {
 };
 
 const context: Context = { messages: [], systemPrompt: "" };
+
+async function waitFor(predicate: () => boolean, timeoutMs = 100): Promise<void> {
+	const startedAt = Date.now();
+	while (!predicate()) {
+		if (Date.now() - startedAt > timeoutMs) throw new Error("timed out waiting for condition");
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	}
+}
+
 const contextWithUserMessage: Context = {
 	systemPrompt: "system prompt",
 	messages: [
@@ -602,6 +613,127 @@ describe("Cursor HTTP2 transport boundary", () => {
 		assert.equal(client.streamSignal?.aborted, true);
 	});
 
+	test("transport aborts promptly while native-like model discovery and stream opening are pending", async () => {
+		class SignalIgnoringClient implements CursorHttp2Client {
+			unarySignal: AbortSignal | undefined;
+			streamSignal: AbortSignal | undefined;
+			async requestUnary(request: { readonly signal?: AbortSignal }): Promise<{ readonly body: Uint8Array; readonly headers: Record<string, string>; readonly statusCode?: number }> {
+				this.unarySignal = request.signal;
+				return await new Promise(() => {});
+			}
+			async openStream(request: { readonly signal?: AbortSignal }): Promise<CursorHttp2StreamHandle> {
+				this.streamSignal = request.signal;
+				return await new Promise(() => {});
+			}
+			async dispose(): Promise<void> {}
+		}
+		const client = new SignalIgnoringClient();
+		const transport = new Http2CursorAgentTransport({ client, codec: new FakeCodec(), requestTimeoutMs: 60_000, streamOpenTimeoutMs: 60_000 });
+
+		const unaryController = new AbortController();
+		const unaryPromise = transport.getUsableModels("secret", "request-abort", unaryController.signal);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		unaryController.abort();
+		await assert.rejects(
+			() => Promise.race([
+				unaryPromise,
+				new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("still-pending-after-abort")), 25)),
+			]),
+			(error) => error instanceof CursorTransportError && error.code === "Aborted",
+		);
+		assert.equal(client.unarySignal?.aborted, true);
+
+		const streamController = new AbortController();
+		const streamPromise = transport.run({ accessToken: "secret", requestId: "run-abort", model, resolvedModelId: "composer-2", context, signal: streamController.signal });
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		streamController.abort();
+		await assert.rejects(
+			() => Promise.race([
+				streamPromise,
+				new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("still-pending-after-abort")), 25)),
+			]),
+			(error) => error instanceof CursorTransportError && error.code === "Aborted",
+		);
+		assert.equal(client.streamSignal?.aborted, true);
+		assert.deepEqual(transport.getLifecycleSnapshot(), { openStreams: 0, cancelledStreams: 0, closedStreams: 0 });
+	});
+
+	test("native client passes operation deadlines to Rust and cancels pending native operations", async () => {
+		const cancelled: string[] = [];
+		let unaryConfig: { operationId?: string; timeoutMs?: number } | undefined;
+		let streamConfig: { operationId?: string; timeoutMs?: number } | undefined;
+		const binding: CursorH2NativeBinding = {
+			cursorH2RequestUnary(configJson: string): Promise<CursorH2NativeUnaryResponse> {
+				unaryConfig = JSON.parse(configJson) as { operationId?: string; timeoutMs?: number };
+				return new Promise(() => {});
+			},
+			cursorH2OpenStream(configJson: string): Promise<CursorH2NativeStream> {
+				streamConfig = JSON.parse(configJson) as { operationId?: string; timeoutMs?: number };
+				return new Promise(() => {});
+			},
+			cursorH2CancelOperation(operationId: string): void {
+				cancelled.push(operationId);
+			},
+		};
+		const client = createNativeCursorHttp2ClientForTest(binding);
+
+		const unaryController = new AbortController();
+		const unary = client.requestUnary({ baseUrl: "https://api2.cursor.sh", path: "/unary", headers: {}, body: new Uint8Array(), signal: unaryController.signal, timeoutMs: 123 });
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		unaryController.abort();
+		await assert.rejects(() => unary, (error) => error instanceof CursorTransportError && error.code === "Aborted");
+		assert.equal(unaryConfig?.timeoutMs, 123);
+		assert.equal(typeof unaryConfig?.operationId, "string");
+		assert.ok(cancelled.includes(unaryConfig?.operationId ?? ""));
+
+		const streamController = new AbortController();
+		const stream = client.openStream({ baseUrl: "https://api2.cursor.sh", path: "/stream", headers: {}, signal: streamController.signal, timeoutMs: 456 });
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		streamController.abort();
+		await assert.rejects(() => stream, (error) => error instanceof CursorTransportError && error.code === "Aborted");
+		assert.equal(streamConfig?.timeoutMs, 456);
+		assert.equal(typeof streamConfig?.operationId, "string");
+		assert.ok(cancelled.includes(streamConfig?.operationId ?? ""));
+	});
+
+	test("native stream handle honors write abort and timeout options", async () => {
+		const writes: Array<{ data: Uint8Array; timeoutMs?: number | null }> = [];
+		let cancelled = false;
+		const nativeStream: CursorH2NativeStream = {
+			write(data: Uint8Array, timeoutMs?: number | null): Promise<void> {
+				writes.push({ data, timeoutMs });
+				return new Promise(() => {});
+			},
+			async finishInput(): Promise<void> {},
+			async nextFrame(): Promise<Uint8Array | null> { return null; },
+			async cancel(): Promise<void> { cancelled = true; },
+		};
+		const binding: CursorH2NativeBinding = {
+			async cursorH2RequestUnary(): Promise<CursorH2NativeUnaryResponse> {
+				return { headersJson: "{}", body: new Uint8Array() };
+			},
+			async cursorH2OpenStream(): Promise<CursorH2NativeStream> {
+				return nativeStream;
+			},
+			cursorH2CancelOperation(): void {},
+		};
+		const handle = await createNativeCursorHttp2ClientForTest(binding).openStream({ baseUrl: "https://api2.cursor.sh", path: "/stream", headers: {}, timeoutMs: 1000 });
+		const aborted = new AbortController();
+		aborted.abort();
+		await assert.rejects(
+			() => handle.write(new Uint8Array([1]), { signal: aborted.signal }),
+			(error) => error instanceof CursorTransportError && error.code === "Aborted",
+		);
+		assert.equal(writes.length, 0);
+
+		await assert.rejects(
+			() => handle.write(new Uint8Array([2]), { timeoutMs: 1 }),
+			(error) => error instanceof CursorTransportError && error.code === "NetworkError" && /timed out/u.test(error.message),
+		);
+		assert.equal(writes[0]?.timeoutMs, 1);
+		assert.equal(cancelled, true);
+	});
+
 	test("getUsableModels sends Cursor headers/path/body and decodes response", async () => {
 		const client = new FakeHttp2Client();
 		const codec = new FakeCodec();
@@ -659,6 +791,21 @@ describe("Cursor HTTP2 transport boundary", () => {
 		for await (const message of run.messages) messages.push(message);
 		assert.deepEqual(messages, [{ type: "textDelta", text: "hi" }]);
 		assert.deepEqual([...decodeCursorConnectFrames(client.streamHandle.writes[1] ?? new Uint8Array())[0]!.data], [4]);
+	});
+
+	test("answers internal Cursor control frames before public messages are consumed", async () => {
+		const client = new FakeHttp2Client([encodeCursorConnectFrame(new Uint8Array([9])), encodeCursorConnectFrame(new Uint8Array([1]))]);
+		const transport = new Http2CursorAgentTransport({ client, codec: new FakeCodec() });
+		const run = await transport.run({ accessToken: "secret", requestId: "run-background-control", model, resolvedModelId: "composer-2", context });
+
+		await waitFor(() => client.streamHandle.writes.length >= 2);
+
+		assert.deepEqual([...decodeCursorConnectFrames(client.streamHandle.writes[1] ?? new Uint8Array())[0]!.data], [4]);
+		const iterator = run.messages[Symbol.asyncIterator]();
+		const first = await iterator.next();
+		assert.equal(first.done, false);
+		assert.deepEqual(first.value, { type: "textDelta", text: "hi" });
+		await run.close();
 	});
 
 	test("cancel writes a framed cancel request and updates lifecycle", async () => {

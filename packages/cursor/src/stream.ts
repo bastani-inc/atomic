@@ -32,6 +32,7 @@ interface CursorStreamRuntime {
 
 const DEFAULT_PAUSED_TURN_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 const DEFAULT_STREAM_READ_TIMEOUT_MS = 10 * 60 * 1000;
+const TOOL_CALL_BATCH_IDLE_TIMEOUT_MS = 100;
 
 type IteratorReadResult =
 	| { readonly kind: "message"; readonly result: IteratorResult<CursorServerMessage> }
@@ -140,7 +141,8 @@ export class CursorStreamAdapter {
 			}
 			const reader = this.#messageReaderFor(runStream);
 			while (true) {
-				const next = await readNextCursorMessage(reader, options.signal, effectiveTimeoutMs);
+				const readTimeoutMs = pendingToolCalls.length > 0 ? Math.min(effectiveTimeoutMs, TOOL_CALL_BATCH_IDLE_TIMEOUT_MS) : effectiveTimeoutMs;
+				const next = await readNextCursorMessage(reader, options.signal, readTimeoutMs);
 				if (next.kind === "aborted") {
 					throw new CursorStreamAbortError();
 				}
@@ -148,6 +150,16 @@ export class CursorStreamAdapter {
 					break;
 				}
 				const message = next.result.value;
+				if (pendingToolCalls.length > 0 && message.type !== "toolCall" && message.type !== "usage") {
+					closeOpenContent(stream, output, textIndex, thinkingIndex);
+					if (!(message.type === "done" && message.reason === "toolUse")) reader.unread(next.result);
+					this.#runtime.conversationState.pauseTurnForTools(activeConversationKey, runStream, pendingToolCalls, { signal: options?.signal, idleTimeoutMs: this.#runtime.pausedTurnIdleTimeoutMs });
+					output.stopReason = "toolUse";
+					stream.push({ type: "done", reason: "toolUse", message: output });
+					terminalEventSent = true;
+					runStream = undefined;
+					break;
+				}
 				if (message.type === "textDelta") {
 					textIndex = appendTextDelta(stream, output, textIndex, message.text);
 				} else if (message.type === "thinkingDelta") {
@@ -156,13 +168,7 @@ export class CursorStreamAdapter {
 					sawToolCall = true;
 					pendingToolCalls.push(message);
 					appendToolCall(stream, output, message.id, message.name, message.argumentsJson);
-					closeOpenContent(stream, output, textIndex, thinkingIndex);
-					this.#runtime.conversationState.pauseTurnForTools(activeConversationKey, runStream, pendingToolCalls, { signal: options?.signal, idleTimeoutMs: this.#runtime.pausedTurnIdleTimeoutMs });
-					output.stopReason = "toolUse";
-					stream.push({ type: "done", reason: "toolUse", message: output });
-					terminalEventSent = true;
-					runStream = undefined;
-					break;
+					continue;
 				} else if (message.type === "usage") {
 					updateUsage(output, model, message);
 				} else if (message.type === "nonMcpExec") {
@@ -275,6 +281,11 @@ class CursorMessageReader {
 
 	constructor(messages: AsyncIterable<CursorServerMessage>) {
 		this.#iterator = messages[Symbol.asyncIterator]();
+	}
+
+	unread(result: IteratorResult<CursorServerMessage>): void {
+		if (this.#buffered) return;
+		this.#buffered = { kind: "result", result };
 	}
 
 	peek(): CursorMessageReadHandle {

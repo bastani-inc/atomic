@@ -1,5 +1,9 @@
 node_modules/
 dist/
+target/
+packages/natives/*.node
+packages/natives/native/*.node
+packages/natives/npm/
 *.log
 .DS_Store
 *.tsbuildinfo

@@ -1,0 +1,60 @@
+{
+  "name": "@bastani/atomic-natives",
+  "version": "0.8.28",
+  "description": "Native Rust bindings for Atomic via N-API",
+  "homepage": "https://github.com/bastani-inc/atomic",
+  "author": "Bastani",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bastani-inc/atomic.git",
+    "directory": "packages/natives"
+  },
+  "bugs": {
+    "url": "https://github.com/bastani-inc/atomic/issues"
+  },
+  "keywords": [
+    "napi",
+    "rust",
+    "native",
+    "http2",
+    "cursor"
+  ],
+  "main": "./native/index.js",
+  "types": "./native/index.d.ts",
+  "scripts": {
+    "artifacts": "napi artifacts --output-dir native --npm-dir npm",
+    "build": "bun scripts/build-native.ts",
+    "build:debug": "bun scripts/build-native.ts --debug",
+    "create-npm-dirs": "napi create-npm-dirs --npm-dir npm",
+    "prepublish:native": "napi prepublish --npm-dir npm --tag-style npm --no-gh-release"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "3.7.0"
+  },
+  "engines": {
+    "bun": ">=1.3.14",
+    "node": ">= 12.22.0 < 13 || >= 14.17.0 < 15 || >= 15.12.0 < 16 || >= 16.0.0"
+  },
+  "napi": {
+    "binaryName": "atomic_natives",
+    "targets": [
+      "x86_64-pc-windows-msvc",
+      "x86_64-apple-darwin",
+      "x86_64-unknown-linux-gnu",
+      "aarch64-unknown-linux-gnu",
+      "aarch64-apple-darwin",
+      "aarch64-pc-windows-msvc"
+    ]
+  },
+  "files": [
+    "native/index.js",
+    "native/index.d.ts",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  }
+}

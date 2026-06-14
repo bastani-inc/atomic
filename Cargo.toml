@@ -1,0 +1,29 @@
+[workspace]
+members = ["crates/atomic-natives"]
+resolver = "3"
+
+[workspace.package]
+version = "0.8.28"
+edition = "2024"
+license = "MIT"
+authors = ["Bastani"]
+repository = "https://github.com/bastani-inc/atomic"
+
+[profile.release]
+lto = true
+strip = "symbols"
+
+[workspace.dependencies]
+bytes = "1"
+h2 = "0.4"
+http = "1"
+napi = { version = "3", features = ["tokio_rt"] }
+napi-build = "2"
+napi-derive = "3"
+rustls = "0.23"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio-rustls = "0.26"
+url = "2"
+webpki-roots = "0.26"

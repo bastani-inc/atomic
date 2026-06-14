@@ -10,7 +10,7 @@ Known private endpoints:
 - Model discovery: `POST https://api2.cursor.sh/agent.v1.AgentService/GetUsableModels`
 - Agent stream: `POST https://api2.cursor.sh/agent.v1.AgentService/Run`
 
-`src/transport.ts` exposes an injectable HTTP/2 client and protocol codec seam plus buffered Connect frame helpers. Production defaults use `CursorProtobufProtocolCodec` and a Node HTTP/2 bridge because Bun's `node:http2` behavior is not reliable against Cursor's private API; this mirrors the reference provider's bridge approach.
+`src/transport.ts` exposes an injectable HTTP/2 client and protocol codec seam plus buffered Connect frame helpers. Production defaults use `CursorProtobufProtocolCodec` and the Rust/N-API HTTP/2 native binding in `@bastani/atomic-natives` (`crates/atomic-natives`) because Bun's `node:http2` behavior is not reliable against Cursor's private API.
 
 Protocol behavior intentionally copied from the reference provider:
 

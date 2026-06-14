@@ -106,7 +106,7 @@ describe("CursorStreamAdapter", () => {
 		assert.equal(transport.runs.length, 0);
 	});
 
-	test("pauses immediately when Cursor emits an MCP tool call", async () => {
+	test("pauses after collecting Cursor MCP tool call usage metadata", async () => {
 		const transport = new CursorMockTransport({
 			messages: [
 				{ type: "thinkingDelta", text: "plan" },
@@ -140,9 +140,9 @@ describe("CursorStreamAdapter", () => {
 		assert.equal(done?.type, "done");
 		if (done?.type === "done") {
 			assert.equal(done.reason, "toolUse");
-			assert.equal(done.message.usage.input, 0);
-			assert.equal(done.message.usage.output, 0);
-			assert.equal(done.message.usage.totalTokens, 0);
+			assert.equal(done.message.usage.input, 10);
+			assert.equal(done.message.usage.output, 5);
+			assert.equal(done.message.usage.totalTokens, 15);
 		}
 		assert.equal(transport.runs[0]?.request.resolvedModelId, "composer-2-high");
 		assert.deepEqual(transport.getLifecycleSnapshot(), { openStreams: 1, cancelledStreams: 0, closedStreams: 0 });
@@ -313,7 +313,7 @@ describe("CursorStreamAdapter", () => {
 		assert.deepEqual(adapter.getLifecycleSnapshot(), { openStreams: 0, cancelledStreams: 0, closedStreams: 1, activeTurns: 0 });
 	});
 
-	test("handles separate Cursor tool calls as sequential paused turns", async () => {
+	test("batches adjacent Cursor tool calls into one paused turn", async () => {
 		const transport = new CursorMockTransport({ messages: [
 			{ type: "toolCall", id: "tool-1", name: "Read", argumentsJson: "{\"path\":\"README.md\"}", execId: "exec-1", execNumericId: 7 },
 			{ type: "toolCall", id: "tool-2", name: "List", argumentsJson: "{\"path\":\"packages\"}", execId: "exec-2", execNumericId: 8 },
@@ -324,29 +324,24 @@ describe("CursorStreamAdapter", () => {
 
 		const firstEvents = await collectEvents(adapter.streamSimple(model(), context(), { apiKey: "access-secret", sessionId: "session-multi-tool" }));
 
-		assert.deepEqual(firstEvents.map((event) => event.type), ["start", "toolcall_start", "toolcall_delta", "toolcall_end", "done"]);
+		assert.deepEqual(firstEvents.map((event) => event.type), ["start", "toolcall_start", "toolcall_delta", "toolcall_end", "toolcall_start", "toolcall_delta", "toolcall_end", "done"]);
 		const firstDone = firstEvents.at(-1);
 		assert.equal(firstDone?.type, "done");
 		if (firstDone?.type === "done") assert.equal(firstDone.reason, "toolUse");
 
-		const secondResumeContext: Context = { messages: [
+		const resumeContext: Context = { messages: [
 			{ role: "toolResult", toolCallId: "tool-1", toolName: "Read", content: [{ type: "text", text: "file contents" }], isError: false, timestamp: 2 },
-		] };
-		const secondEvents = await collectEvents(adapter.streamSimple(model(), secondResumeContext, { apiKey: "access-secret", sessionId: "session-multi-tool" }));
-
-		assert.deepEqual(secondEvents.map((event) => event.type), ["start", "toolcall_start", "toolcall_delta", "toolcall_end", "done"]);
-		const thirdResumeContext: Context = { messages: [
 			{ role: "toolResult", toolCallId: "tool-2", toolName: "List", content: [{ type: "text", text: "listing" }], isError: false, timestamp: 3 },
 		] };
-		const thirdEvents = await collectEvents(adapter.streamSimple(model(), thirdResumeContext, { apiKey: "access-secret", sessionId: "session-multi-tool" }));
+		const secondEvents = await collectEvents(adapter.streamSimple(model(), resumeContext, { apiKey: "access-secret", sessionId: "session-multi-tool" }));
 
 		assert.equal(transport.runs.length, 1);
 		assert.deepEqual(transport.runs[0]?.stream.writtenToolResults, [
 			{ toolCallId: "tool-1", toolName: "Read", text: "file contents", isError: false, execId: "exec-1", execNumericId: 7 },
 			{ toolCallId: "tool-2", toolName: "List", text: "listing", isError: false, execId: "exec-2", execNumericId: 8 },
 		]);
-		assert.equal(thirdEvents.some((event) => event.type === "text_delta"), true);
-		assert.equal(thirdEvents.at(-1)?.type, "done");
+		assert.equal(secondEvents.some((event) => event.type === "text_delta"), true);
+		assert.equal(secondEvents.at(-1)?.type, "done");
 	});
 
 	test("resumes a paused Cursor tool turn with trailing tool results", async () => {

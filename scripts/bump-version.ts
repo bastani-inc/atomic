@@ -35,7 +35,10 @@ type PackageJsonObject = { [key: string]: PackageJsonValue | undefined };
 
 type VersionTarget =
   | { kind: "json"; filePath: string }
-  | { kind: "readme"; filePath: string; optional?: boolean };
+  | { kind: "cargo"; filePath: string }
+  | { kind: "cargoLock"; filePath: string }
+  | { kind: "readme"; filePath: string; optional?: boolean }
+  | { kind: "nativeIndex"; filePath: string };
 
 /**
  * Parse argv once into the values both `resolveRoot` and `getVersion` need.
@@ -75,6 +78,7 @@ function findRepoRoot(startDir: string): string {
 }
 
 const STRICT_RELEASE_VERSION_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-alpha\.([1-9]\d*))?$/;
+const FIRST_PARTY_DEPENDENCY_SECTIONS = ["dependencies", "optionalDependencies", "devDependencies"] as const;
 const STABLE_RELEASE_BRANCH_RE = /^(?:release)\/((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))$/;
 const ALPHA_PRERELEASE_BRANCH_RE = /^(?:prerelease)\/((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)-alpha\.[1-9]\d*)$/;
 
@@ -160,8 +164,32 @@ function readmeTargets(): VersionTarget[] {
     .map((filePath) => ({ kind: "readme", filePath, optional: true }));
 }
 
+function cargoManifestPaths(): string[] {
+  const rootCargo = existsSync(resolve(ROOT, "Cargo.toml")) ? ["Cargo.toml"] : [];
+  const cratesDir = resolve(ROOT, "crates");
+  const crateCargo = existsSync(cratesDir)
+    ? readdirSync(cratesDir, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => `crates/${entry.name}/Cargo.toml`)
+        .filter((filePath) => existsSync(resolve(ROOT, filePath)))
+        .sort()
+    : [];
+  return [...rootCargo, ...crateCargo];
+}
+
+function cargoTargets(): VersionTarget[] {
+  const cargoTomlTargets = cargoManifestPaths().map((filePath) => ({ kind: "cargo" as const, filePath }));
+  const cargoLockTargets = existsSync(resolve(ROOT, "Cargo.lock")) ? [{ kind: "cargoLock" as const, filePath: "Cargo.lock" }] : [];
+  return [...cargoTomlTargets, ...cargoLockTargets];
+}
+
+function nativeIndexTargets(): VersionTarget[] {
+  const filePath = "packages/natives/native/index.js";
+  return existsSync(resolve(ROOT, filePath)) ? [{ kind: "nativeIndex", filePath }] : [];
+}
+
 async function versionTargets(): Promise<VersionTarget[]> {
-  return [...(await packageJsonTargets()), ...readmeTargets()];
+  return [...(await packageJsonTargets()), ...cargoTargets(), ...readmeTargets(), ...nativeIndexTargets()];
 }
 
 function shieldBadgeVersion(version: string): string {
@@ -169,19 +197,99 @@ function shieldBadgeVersion(version: string): string {
   return version.replaceAll("_", "__").replaceAll("-", "--").replaceAll(" ", "_");
 }
 
+function shouldBumpFirstPartyDependency(name: string): boolean {
+  return name === "@bastani/atomic-natives" || name.startsWith("@bastani/atomic-natives-");
+}
+
+function bumpFirstPartyDependencyRanges(content: PackageJson, version: string): number {
+  let changed = 0;
+  for (const sectionName of FIRST_PARTY_DEPENDENCY_SECTIONS) {
+    const section = content[sectionName];
+    if (!section || typeof section !== "object" || Array.isArray(section)) continue;
+    for (const [dependencyName, dependencyRange] of Object.entries(section)) {
+      if (!shouldBumpFirstPartyDependency(dependencyName)) continue;
+      if (typeof dependencyRange !== "string" || dependencyRange === version) continue;
+      section[dependencyName] = version;
+      changed += 1;
+    }
+  }
+  return changed;
+}
+
 async function bumpJsonFile(filePath: string, version: string): Promise<void> {
   const fullPath = resolve(ROOT, filePath);
   const content = (await Bun.file(fullPath).json()) as PackageJson;
   const oldVersion = content.version;
+  const dependencyChanges = bumpFirstPartyDependencyRanges(content, version);
 
-  if (oldVersion === version) {
+  if (oldVersion === version && dependencyChanges === 0) {
     console.log(`  ${filePath}: already at ${version}`);
     return;
   }
 
   content.version = version;
   await Bun.write(fullPath, `${JSON.stringify(content, null, 2)}\n`);
-  console.log(`  ${filePath}: ${oldVersion ?? "(none)"} → ${version}`);
+  console.log(`  ${filePath}: ${oldVersion ?? "(none)"} → ${version}${dependencyChanges > 0 ? ` (${dependencyChanges} dependency range${dependencyChanges === 1 ? "" : "s"})` : ""}`);
+}
+
+async function bumpCargoToml(filePath: string, version: string): Promise<void> {
+  const fullPath = resolve(ROOT, filePath);
+  const content = await Bun.file(fullPath).text();
+  const updated = content.replace(/^(version\s*=\s*")[^"]+(")/m, `$1${version}$2`);
+  if (updated === content) {
+    console.log(`  ${filePath}: no package version field`);
+    return;
+  }
+  await Bun.write(fullPath, updated);
+  console.log(`  ${filePath}: version → ${version}`);
+}
+
+function parseCargoPackageName(content: string): string | undefined {
+  let inPackageSection = false;
+  for (const line of content.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (/^\[[^\]]+\]$/.test(trimmed)) {
+      inPackageSection = trimmed === "[package]";
+      continue;
+    }
+    if (!inPackageSection) continue;
+    const match = trimmed.match(/^name\s*=\s*"([^"]+)"/);
+    if (match) return match[1];
+  }
+  return undefined;
+}
+
+async function cargoWorkspacePackageNames(): Promise<Set<string>> {
+  const names = new Set<string>();
+  for (const manifestPath of cargoManifestPaths()) {
+    const name = parseCargoPackageName(await Bun.file(resolve(ROOT, manifestPath)).text());
+    if (name) names.add(name);
+  }
+  return names;
+}
+
+async function bumpCargoLock(filePath: string, version: string): Promise<void> {
+  const workspacePackageNames = await cargoWorkspacePackageNames();
+  const fullPath = resolve(ROOT, filePath);
+  const content = await Bun.file(fullPath).text();
+  let changed = false;
+  const updated = content
+    .split(/(?=^\[\[package\]\]\n)/m)
+    .map((block) => {
+      if (!block.startsWith("[[package]]")) return block;
+      const name = block.match(/^name = "([^"]+)"/m)?.[1];
+      if (!name || !workspacePackageNames.has(name)) return block;
+      const replaced = block.replace(/^(version = ")[^"]+(")/m, `$1${version}$2`);
+      if (replaced !== block) changed = true;
+      return replaced;
+    })
+    .join("");
+  if (!changed) {
+    console.log(`  ${filePath}: no workspace cargo package entries`);
+    return;
+  }
+  await Bun.write(fullPath, updated);
+  console.log(`  ${filePath}: workspace cargo package entries → ${version}`);
 }
 
 async function bumpReadme(filePath: string, version: string, optional = false): Promise<void> {
@@ -211,13 +319,44 @@ async function bumpReadme(filePath: string, version: string, optional = false): 
   console.log(`  ${filePath}: badge → ${version}`);
 }
 
+async function bumpNativeIndex(filePath: string, version: string): Promise<void> {
+  const fullPath = resolve(ROOT, filePath);
+  const content = await Bun.file(fullPath).text();
+  const updated = content
+    .replace(
+      /(bindingPackageVersion !== ')[^']+(' && process\.env\.NAPI_RS_ENFORCE_VERSION_CHECK)/g,
+      `$1${version}$2`,
+    )
+    .replace(
+      /(Native binding package version mismatch, expected )[^ ]+( but got \$\{bindingPackageVersion\})/g,
+      `$1${version}$2`,
+    );
+
+  if (updated === content) {
+    console.log(`  ${filePath}: no generated NAPI version checks`);
+    return;
+  }
+
+  await Bun.write(fullPath, updated);
+  console.log(`  ${filePath}: generated NAPI version checks → ${version}`);
+}
+
 async function bumpTarget(target: VersionTarget, version: string): Promise<void> {
   switch (target.kind) {
     case "json":
       await bumpJsonFile(target.filePath, version);
       break;
+    case "cargo":
+      await bumpCargoToml(target.filePath, version);
+      break;
+    case "cargoLock":
+      await bumpCargoLock(target.filePath, version);
+      break;
     case "readme":
       await bumpReadme(target.filePath, version, target.optional);
+      break;
+    case "nativeIndex":
+      await bumpNativeIndex(target.filePath, version);
       break;
   }
 }

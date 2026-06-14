@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added a prototype Rust/N-API Cursor HTTP/2 native transport binding through the generated `@bastani/atomic-natives` NAPI-RS package, so Atomic can use an in-process native HTTP/2 client without requiring Node.js on `PATH`.
 - Added the experimental bundled `@bastani/cursor` provider scaffold so `/login` can offer Cursor OAuth, estimated fallback exposes `cursor/composer-2`, and Cursor model mapping/streaming hooks are available behind an isolated HTTP/2 Connect transport boundary with production-default protobuf decoding, buffered Connect frames, write-before-headers Run streaming, stable Cursor conversation ids, schema-correct Cursor MCP tool advertisement, Cursor MCP tool-call decoding with protobuf `Value` or raw UTF-8/JSON arguments and exec-id metadata, same-stream MCP tool-result resume, abort/idle cleanup for paused tool streams, Connect end-stream error classification, exact live model id fidelity without static default injection, fast/thinking catalog grouping, and usage-delta accumulation.
 - Added the opt-in `createStructuredOutputTool({ schema, capture, output, name })` factory for terminating machine-readable final answers with schema-as-parameters validation, flat `details`, in-process capture, flat private `output.json` capture plus `output.meta.json` sidecar metadata, and prompt guidance for exact-once use without registering `structured_output` in normal agent sessions by default ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
 
@@ -25,7 +26,7 @@
 
 ### Security
 
-- Kept Cursor credentials OAuth-only with token/header and PKCE poll-secret redaction and no localhost proxy, while documenting that Cursor HTTP/2 currently uses a request-scoped Node bridge (`node` on `PATH` or `ATOMIC_CURSOR_H2_BRIDGE_NODE`) and no longer sends the current working directory as `previousWorkspaceUris` by default.
+- Kept Cursor credentials OAuth-only with token/header and PKCE poll-secret redaction and no localhost proxy, while moving Cursor HTTP/2 to a bundled Rust/N-API native binding and no longer sending the current working directory as `previousWorkspaceUris` by default.
 
 ## [0.8.28] - 2026-06-11
 

@@ -26,3 +26,14 @@ updates:
       labels:
           - "dependencies"
           - "bun"
+
+    # Rust crates (workspace)
+    - package-ecosystem: "cargo"
+      directory: "/"
+      schedule:
+          interval: "weekly"
+      commit-message:
+          prefix: "deps"
+      labels:
+          - "dependencies"
+          - "rust"

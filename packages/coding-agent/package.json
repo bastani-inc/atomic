@@ -68,6 +68,7 @@
     "prepublishOnly": "bun run clean && bun run build"
   },
   "dependencies": {
+    "@bastani/atomic-natives": "0.8.28",
     "@bufbuild/protobuf": "^2.0.0",
     "@earendil-works/pi-agent-core": "^0.79.1",
     "@earendil-works/pi-ai": "^0.79.1",

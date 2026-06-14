@@ -79,6 +79,7 @@ interface StoredCursorConversationState {
 	blobStore: Map<string, Uint8Array>;
 }
 
+
 interface ParsedAssistantTextStep {
 	readonly kind: "assistantText";
 	readonly text: string;
@@ -479,6 +480,8 @@ function decodeAgentServerMessage(message: AgentServerMessage): readonly CursorP
 			return decodeKvServerMessage(message.message.value);
 		case "execServerMessage":
 			return decodeExecServerMessage(message.message.value);
+		case "interactionQuery":
+			return [];
 		default:
 			return [];
 	}
