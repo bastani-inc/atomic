@@ -22,7 +22,7 @@
  */
 
 import { basename } from "node:path";
-import type { ChatMessageRenderOptions, CreateAgentSessionOptions } from "@bastani/atomic";
+import type { ChatMessageRenderOptions, CreateAgentSessionOptions, PackageSource } from "@bastani/atomic";
 import type { StageAdapters, StageSessionCreateResult, StageSessionRuntime } from "../runs/foreground/stage-runner.js";
 import type { StageExecutionMeta, StageOptions } from "../shared/types.js";
 import { stageUiBroker, type StageUiBroker } from "../shared/stage-ui-broker.js";
@@ -109,7 +109,7 @@ export interface PiCodingAgentSdk {
     cwd: string;
     agentDir: string;
     settingsManager?: PiSdkSettingsManager;
-    builtinPackagePaths?: string[];
+    builtinPackagePaths?: PackageSource[];
   }) => PiSdkResourceLoader;
   createAgentSession(options?: AtomicCreateAgentSessionOptions): Promise<{ session: StageSessionRuntime }>;
 }
@@ -156,7 +156,7 @@ export async function prepareAtomicStageSessionOptions(
     settingsManager,
     builtinPackagePaths: stageBuiltinPackagePaths(sdk.getBuiltinPackagePaths?.() ?? []),
   });
-  await resourceLoader.reload();
+  await reloadWorkflowStageResources(resourceLoader);
 
   return {
     ...atomicOptions,
@@ -167,13 +167,46 @@ export async function prepareAtomicStageSessionOptions(
   };
 }
 
-function stageBuiltinPackagePaths(paths: readonly string[]): string[] {
+function stageBuiltinPackagePaths(paths: readonly string[]): PackageSource[] {
   // Workflow stages are child AgentSessions owned by the workflow extension.
   // Loading the workflows extension again inside that child session replays its
   // `session_start` lifecycle and clears/kills the parent workflow store. Keep
-  // the other builtin packages (subagents, mcp, web-access, intercom), but do
-  // not recursively install workflows into workflow stage sessions.
-  return paths.filter((path) => basename(path) !== "workflows");
+  // the workflows package itself so its bundled skills/prompts/resources remain
+  // available, but disable only its extension entry for stage sessions.
+  return paths.map((path) =>
+    basename(path) === "workflows" ? { source: path, extensions: [] } : path,
+  );
+}
+
+const SUBAGENT_CHILD_EXTENSION_ENV_KEYS = [
+  "ATOMIC_SUBAGENT_CHILD",
+  "ATOMIC_SUBAGENT_FANOUT_CHILD",
+  "PI_SUBAGENT_CHILD",
+  "PI_SUBAGENT_FANOUT_CHILD",
+] as const;
+
+async function reloadWorkflowStageResources(resourceLoader: PiSdkResourceLoader): Promise<void> {
+  // Workflow stage sessions are already governed by an orchestration context
+  // that disables recursive workflow tools and caps nested subagent depth. When
+  // a workflow itself runs inside a subagent child process, inherited subagent
+  // child env flags would otherwise make the bundled subagents extension skip
+  // registering its `subagent` tool before the stage session exists. Isolate
+  // extension discovery from those parent-process flags so an explicit
+  // `tools: ["subagent"]` allowlist works the same in workflow stages everywhere.
+  const previousValues = new Map<string, string | undefined>();
+  for (const key of SUBAGENT_CHILD_EXTENSION_ENV_KEYS) {
+    previousValues.set(key, process.env[key]);
+    delete process.env[key];
+  }
+  try {
+    await resourceLoader.reload();
+  } finally {
+    for (const key of SUBAGENT_CHILD_EXTENSION_ENV_KEYS) {
+      const previousValue = previousValues.get(key);
+      if (previousValue === undefined) delete process.env[key];
+      else process.env[key] = previousValue;
+    }
+  }
 }
 
 async function createPiSdkAgentSession(
@@ -265,7 +298,7 @@ function makeWorkflowStageOrchestrationContext(meta: StageExecutionMeta): NonNul
     workflowStageName: meta.stageName,
     constraints: {
       disableWorkflowTool: true,
-      maxSubagentDepth: 1,
+      maxSubagentDepth: 2,
     },
   };
 }

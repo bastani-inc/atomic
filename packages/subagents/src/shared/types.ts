@@ -1008,8 +1008,9 @@ export function resolveWorkflowStageMaxSubagentDepth(
 ): number {
 	const maxDepth = resolveCurrentMaxSubagentDepth(configMaxDepth);
 	return isWorkflowStageOrchestrationContext(ctx)
-		// Workflow stages reserve one child-subagent hop; a 0-depth constraint would
-		// prevent the stage from delegating to its configured subagent at all.
+		// Workflow stages use the same two-hop default as main chat. A 0-depth
+		// constraint still preserves one child-subagent hop so configured workflow
+		// stages can delegate at least once.
 		? Math.min(maxDepth, Math.max(1, ctx.orchestrationContext?.constraints.maxSubagentDepth ?? 1))
 		: maxDepth;
 }
@@ -1030,7 +1031,7 @@ export function resolveSubagentDepthPolicy(
 }
 
 function workflowStageSubagentDepthMessage(depth: number, maxDepth: number, action: "call" | "resume" = "call"): string {
-	return `Nested subagent ${action} blocked (depth=${depth}, max=${maxDepth}). Sub-agents inside workflow stages cannot spawn nested sub-agents.`;
+	return `Nested subagent ${action} blocked (depth=${depth}, max=${maxDepth}). Sub-agents inside workflow stages are running at the maximum nesting depth.`;
 }
 
 export function subagentDepthBlockedMessage(

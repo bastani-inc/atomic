@@ -115,79 +115,34 @@ type ExportGateDecision = {
   readonly blocking_findings: readonly ExportGateFinding[];
 };
 
-const refinementDecisionSchema = {
-  type: "object",
-  additionalProperties: false,
-  required: ["ready_for_export", "rationale", "required_changes"],
-  properties: {
-    ready_for_export: { type: "boolean" },
-    rationale: { type: "string" },
-    required_changes: { type: "array", items: { type: "string" } },
+const refinementDecisionSchema = Type.Object(
+  {
+    ready_for_export: Type.Boolean(),
+    rationale: Type.String(),
+    required_changes: Type.Array(Type.String()),
   },
-} as const;
+  { additionalProperties: false },
+);
 
-const refinementDecisionTool = {
-  name: "refinement_decision",
-  label: "Refinement Decision",
-  description: "Emit the structured design refinement decision.",
-  promptSnippet: "Emit the final refinement decision as structured data",
-  promptGuidelines: [
-    "Call refinement_decision after inspecting the preview and deciding whether another refinement iteration is needed.",
-    "This is a terminating structured-output tool; do not emit another assistant response after calling it.",
-  ],
-  parameters: refinementDecisionSchema,
-  async execute(_toolCallId: string, params: RefinementDecision) {
-    return {
-      content: [{ type: "text" as const, text: JSON.stringify(params, null, 2) }],
-      details: params,
-      terminate: true,
-    };
+const exportGateFindingSchema = Type.Object(
+  {
+    finding: Type.String(),
+    evidence: Type.String(),
+    why_blocking: Type.String(),
+    must_fix_action: Type.String(),
+    severity: Type.Literal("P0"),
   },
-};
+  { additionalProperties: false },
+);
 
-const exportGateDecisionSchema = {
-  type: "object",
-  additionalProperties: false,
-  required: ["has_blocking_findings", "rationale", "blocking_findings"],
-  properties: {
-    has_blocking_findings: { type: "boolean" },
-    rationale: { type: "string" },
-    blocking_findings: {
-      type: "array",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["finding", "evidence", "why_blocking", "must_fix_action", "severity"],
-        properties: {
-          finding: { type: "string" },
-          evidence: { type: "string" },
-          why_blocking: { type: "string" },
-          must_fix_action: { type: "string" },
-          severity: { type: "string", enum: ["P0"] },
-        },
-      },
-    },
+const exportGateDecisionSchema = Type.Object(
+  {
+    has_blocking_findings: Type.Boolean(),
+    rationale: Type.String(),
+    blocking_findings: Type.Array(exportGateFindingSchema),
   },
-} as const;
-
-const exportGateDecisionTool = {
-  name: "export_gate_decision",
-  label: "Export Gate Decision",
-  description: "Emit the structured pre-export gate decision.",
-  promptSnippet: "Emit the final export gate decision as structured data",
-  promptGuidelines: [
-    "Call export_gate_decision after auditing the preview for blocking findings.",
-    "This is a terminating structured-output tool; do not emit another assistant response after calling it.",
-  ],
-  parameters: exportGateDecisionSchema,
-  async execute(_toolCallId: string, params: ExportGateDecision) {
-    return {
-      content: [{ type: "text" as const, text: JSON.stringify(params, null, 2) }],
-      details: params,
-      terminate: true,
-    };
-  },
-};
+  { additionalProperties: false },
+);
 
 function parseRefinementDecision(text: string): RefinementDecision {
   const parsed = JSON.parse(text) as Partial<RefinementDecision>;
@@ -481,13 +436,13 @@ export default defineWorkflow("open-claude-design")
     };
     const refinementDecisionConfig = {
       ...designModelConfig,
-      tools: [...READ_ONLY_TOOLS, refinementDecisionTool.name],
-      customTools: [refinementDecisionTool],
+      tools: [...READ_ONLY_TOOLS],
+      schema: refinementDecisionSchema,
     };
     const exportGateDecisionConfig = {
       ...designModelConfig,
-      tools: [...READ_ONLY_TOOLS, exportGateDecisionTool.name],
-      customTools: [exportGateDecisionTool],
+      tools: [...READ_ONLY_TOOLS],
+      schema: exportGateDecisionSchema,
     };
 
     let designSystem: string;
@@ -850,7 +805,7 @@ export default defineWorkflow("open-claude-design")
             [
               "1. If a previous `preview-display-*` step captured annotated user feedback or notes, honor them as the primary signal.",
               "2. Otherwise, you may inspect the HTML file at preview_path directly (read it from disk) and run an impeccable `critique` against it.",
-              "3. Decide whether the current design is ready for export using the refinement_decision structured-output tool.",
+              "3. Decide whether the current design is ready for export using the schema-backed structured_output tool.",
               "4. If refinement is still needed, put specific changes in required_changes ordered by user value and implementation risk.",
               "5. Never request changes that contradict DESIGN.md unless you explicitly identify and explain the conflict.",
             ].join("\n"),
@@ -858,7 +813,7 @@ export default defineWorkflow("open-claude-design")
           [
             "output_format",
             [
-              "Call the refinement_decision tool after your inspection.",
+              "Call structured_output after your inspection.",
               "Set ready_for_export=true only when the current preview needs no further refinement before export.",
               "Set ready_for_export=false and populate required_changes when another polish iteration is needed.",
             ].join("\n"),
@@ -1058,14 +1013,14 @@ export default defineWorkflow("open-claude-design")
             "1. Read the HTML at preview_path and score it across all five audit dimensions.",
             "2. Scan for banned anti-patterns, accessibility blockers, severe visual regressions, missing critical states, and handoff gaps.",
             "3. Only mark findings as blocking when they would materially harm implementation or user experience (impeccable P0 severity).",
-            "4. Decide whether export is blocked using the export_gate_decision structured-output tool.",
+            "4. Decide whether export is blocked using the schema-backed structured_output tool.",
             "5. Every blocking finding must include selector-level evidence and a must-fix action.",
           ].join("\n"),
         ],
         [
           "output_format",
           [
-            "Call the export_gate_decision tool after the audit.",
+            "Call structured_output after the audit.",
             "Set has_blocking_findings=true only when one or more P0 findings block export.",
             "Populate blocking_findings with every blocking P0 issue; leave it empty when export is safe.",
           ].join("\n"),

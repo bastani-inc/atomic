@@ -15,7 +15,7 @@ import {
 } from "../../packages/workflows/src/extension/wiring.js";
 import { StageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
-import type { CreateAgentSessionOptions } from "@bastani/atomic";
+import type { CreateAgentSessionOptions, PackageSource } from "@bastani/atomic";
 import type {
     PiCodingAgentSdk,
     PiSdkResourceLoader,
@@ -79,7 +79,7 @@ function makeFakeAtomicSdk(
         cwd: string;
         agentDir: string;
         settingsManager?: PiSdkSettingsManager;
-        builtinPackagePaths?: string[];
+        builtinPackagePaths?: PackageSource[];
     }>;
     readonly settingsCalls: Array<{ cwd?: string; agentDir?: string }>;
     readonly reloads: PiSdkResourceLoader[];
@@ -88,7 +88,7 @@ function makeFakeAtomicSdk(
         cwd: string;
         agentDir: string;
         settingsManager?: PiSdkSettingsManager;
-        builtinPackagePaths?: string[];
+        builtinPackagePaths?: PackageSource[];
     }> = [];
     const settingsCalls: Array<{ cwd?: string; agentDir?: string }> = [];
     const reloads: PiSdkResourceLoader[] = [];
@@ -98,7 +98,7 @@ function makeFakeAtomicSdk(
             cwd: string;
             agentDir: string;
             settingsManager?: PiSdkSettingsManager;
-            builtinPackagePaths?: string[];
+            builtinPackagePaths?: PackageSource[];
         }) {
             loaderOptions.push(options);
         }
@@ -167,7 +167,7 @@ describe("prepareAtomicStageSessionOptions", () => {
         assert.equal(loaderOptions[0]?.agentDir, customAgentDir);
     });
 
-    test("loads non-workflow Atomic builtin package extensions for workflow stage sessions", async () => {
+    test("disables only the recursive workflow extension for workflow stage sessions", async () => {
         const projectDir = join("/tmp", "project");
         const atomicAgentDir = join("/home", "user", ".atomic", "agent");
         const builtinPackagePaths = [
@@ -185,6 +185,7 @@ describe("prepareAtomicStageSessionOptions", () => {
         await prepareAtomicStageSessionOptions({ cwd: projectDir }, sdk);
 
         assert.deepEqual(loaderOptions[0]?.builtinPackagePaths, [
+            { source: "/repo/packages/workflows", extensions: [] },
             "/repo/packages/subagents",
             "/repo/packages/mcp",
             "/repo/packages/web-access",
@@ -307,7 +308,7 @@ describe("buildRuntimeAdapters — SDK AgentSession adapter", () => {
             workflowRunId: "run-1",
             workflowStageId: "stage-1",
             workflowStageName: "Implement",
-            constraints: { disableWorkflowTool: true, maxSubagentDepth: 1 },
+            constraints: { disableWorkflowTool: true, maxSubagentDepth: 2 },
         });
     });
 

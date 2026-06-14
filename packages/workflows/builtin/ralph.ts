@@ -2,9 +2,9 @@
  * Builtin workflow: ralph
  *
  * Re-implements the Atomic SDK Ralph design with the local workflow task
- * primitives: bounded plan → orchestrate → simplify → review iterations.
- * Reviewer passes fan out with ctx.parallel(); each iteration feeds review
- * findings into the next planner with ctx.task().
+ * primitives: bounded prompt-engineering → research → orchestrate → review iterations.
+ * Reviewer passes fan out with ctx.parallel(); each iteration feeds unresolved
+ * findings into the next research pass with ctx.task().
  */
 
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
@@ -19,9 +19,9 @@ import type {
 import { WORKER_PREFLIGHT_CONTRACT } from "./shared-prompts.js";
 
 const DEFAULT_MAX_LOOPS = 10;
-const DEFAULT_SPEC_DIR = "specs";
+const DEFAULT_RESEARCH_DIR = "research";
 const IMPLEMENTATION_NOTES_FILENAME = "implementation-notes.md";
-const MAX_SPEC_SLUG_LENGTH = 80;
+const MAX_RESEARCH_SLUG_LENGTH = 80;
 
 type ReviewFinding = {
   readonly title: string;
@@ -56,333 +56,61 @@ type ReviewDecision = {
   readonly reviewer_error?: ReviewerError | null;
 };
 
-const reviewDecisionSchema = {
-  type: "object",
-  additionalProperties: false,
-  required: [
-    "findings",
-    "overall_correctness",
-    "overall_explanation",
-    "overall_confidence_score",
-    "stop_review_loop",
-  ],
-  properties: {
-    findings: {
-      type: "array",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["title", "body", "confidence_score", "code_location"],
-        properties: {
-          title: { type: "string" },
-          body: { type: "string" },
-          confidence_score: { type: "number", minimum: 0, maximum: 1 },
-          priority: { type: ["integer", "null"], minimum: 0, maximum: 3 },
-          code_location: {
-            type: "object",
-            additionalProperties: false,
-            required: ["absolute_file_path", "line_range"],
-            properties: {
-              absolute_file_path: { type: "string" },
-              line_range: {
-                type: "object",
-                additionalProperties: false,
-                required: ["start", "end"],
-                properties: {
-                  start: { type: "integer", minimum: 1 },
-                  end: { type: "integer", minimum: 1 },
-                },
-              },
-            },
+const reviewFindingSchema = Type.Object(
+  {
+    title: Type.String(),
+    body: Type.String(),
+    confidence_score: Type.Number({ minimum: 0, maximum: 1 }),
+    priority: Type.Optional(
+      Type.Union([Type.Integer({ minimum: 0, maximum: 3 }), Type.Null()]),
+    ),
+    code_location: Type.Object(
+      {
+        absolute_file_path: Type.String(),
+        line_range: Type.Object(
+          {
+            start: Type.Integer({ minimum: 1 }),
+            end: Type.Integer({ minimum: 1 }),
           },
-        },
+          { additionalProperties: false },
+        ),
       },
-    },
-    overall_correctness: {
-      type: "string",
-      enum: ["patch is correct", "patch is incorrect"],
-    },
-    overall_explanation: { type: "string" },
-    overall_confidence_score: { type: "number", minimum: 0, maximum: 1 },
-    stop_review_loop: { type: "boolean" },
-    reviewer_error: {
-      anyOf: [
-        { type: "null" },
-        {
-          type: "object",
-          additionalProperties: false,
-          required: ["kind", "message", "attempted_recovery"],
-          properties: {
-            kind: {
-              type: "string",
-              enum: [
-                "validation_unavailable",
-                "dependency_unavailable",
-                "tool_failure",
-                "reviewer_failure",
-              ],
-            },
-            message: { type: "string" },
-            attempted_recovery: { type: "string" },
-          },
-        },
-      ],
-    },
+      { additionalProperties: false },
+    ),
   },
-} as const;
+  { additionalProperties: false },
+);
 
-const reviewDecisionTool = {
-  name: "review_decision",
-  label: "Review Decision",
-  description:
-    "Emit the final structured review verdict after inspecting the patch.",
-  promptSnippet: "Emit the final review verdict as structured data",
-  promptGuidelines: [
-    "Call review_decision after completing review investigation and validation.",
-    "This is a terminating structured-output tool; do not emit another assistant response after calling it.",
-  ],
-  parameters: reviewDecisionSchema,
-  async execute(_toolCallId: string, params: ReviewDecision) {
-    return {
-      content: [
-        { type: "text" as const, text: JSON.stringify(params, null, 2) },
-      ],
-      details: params,
-      terminate: true,
-    };
+const reviewerErrorSchema = Type.Object(
+  {
+    kind: Type.Union([
+      Type.Literal("validation_unavailable"),
+      Type.Literal("dependency_unavailable"),
+      Type.Literal("tool_failure"),
+      Type.Literal("reviewer_failure"),
+    ]),
+    message: Type.String(),
+    attempted_recovery: Type.String(),
   },
-};
-
-const PLANNER_RFC_TEMPLATE = `
-# [Project Name] Technical Design Document / RFC
-
-| Document Metadata      | Details                                                                        |
-| ---------------------- | ------------------------------------------------------------------------------ |
-| Author(s)              | Run \`git config user.name\` and insert the result.                              |
-| Status                 | Draft (WIP) / In Review (RFC) / Approved / Implemented / Deprecated / Rejected |
-| Team / Owner           |                                                                                |
-| Created / Last Updated |                                                                                |
-
-## 1. Executive Summary
-
-_Instruction: A "TL;DR" of the document. Assume the reader is a VP or an engineer from another team who has 2 minutes. Summarize the Context (Problem), the Solution (Proposal), and the Impact (Value). Name the one or two **doors** at the heart of the change. Keep it under 200 words._
-
-> **Example:** This RFC proposes replacing our current nightly batch billing system with an event-driven architecture. Currently, billing delays cause a 5% increase in customer support tickets. The proposed solution introduces two money doors — \`authorize_charge\` (reversible hold) and \`settle_payment\` (irreversible capture) — as the single chokepoint for outbound money, reducing billing latency from 24 hours to <5 minutes while making double-charges structurally impossible.
-
-## 2. Context and Motivation
-
-_Instruction: Why are we doing this? Why now? Link to the Product Requirement Document (PRD) and cite the relevant \`research/\` documents._
-
-### 2.1 Current State
-
-_Instruction: Describe the existing architecture. Use a "Context Diagram" if possible. Be honest about the flaws — including which existing doors **leak** (named for tools, dishonest compression, scattered danger)._
-
-- **Architecture:** Currently, Service A communicates with Service B via a shared SQL database.
-- **Limitations:** This creates a tight coupling; when Service A locks the table, Service B times out.
-- **Leaking doors (today):** e.g. \`chargeCard(token, cents)\` is reachable from checkout, the retry job, *and* the admin panel — no one owns "charge exactly once." \`processPayment(...) -> bool\` collapses a declined card, a network failure, and a duplicate submission into the same \`false\`.
-
-### 2.2 The Problem
-
-_Instruction: What is the specific pain point?_
-
-- **User Impact:** Customers cannot download receipts during the nightly batch window.
-- **Business Impact:** We are losing $X/month in churn due to billing errors.
-- **Technical Debt:** Danger is scattered; the boundary is misplaced, with defensive code deep inside the core instead of at the door.
-
-## 3. Goals and Non-Goals
-
-_Instruction: This is the contract / Definition of Success. Be precise._
-
-### 3.1 Functional Goals
-
-- [ ] Users must be able to export data in CSV format.
-- [ ] System must support multi-tenant data isolation.
-
-### 3.2 Non-Goals (Out of Scope)
-
-_Instruction: Explicitly state what you are NOT doing. Remember: **intent lives in what the door refuses** — the doors you deliberately do not build are as much a statement of purpose as the ones you do. This prevents scope creep._
-
-- [ ] We will NOT support PDF export in this version (CSV only).
-- [ ] We will NOT migrate data older than 3 years.
-- [ ] We will NOT expose a second path to move money; \`settle_payment\` remains the only chokepoint.
-
-## 4. Proposed Solution (High-Level Design)
-
-_Instruction: The "Big Picture." Diagrams are mandatory here._
-
-### 4.1 System Architecture Diagram
-
-_Instruction: Insert a C4 System Context or Container diagram. Show the "Black Boxes" and mark where the **airlock** sits (the single edge where untrusted network becomes a trusted request)._
-
-\`\`\`mermaid
-%%{init: {'theme':'base', 'themeVariables': { 'primaryColor':'#f8f9fa','primaryTextColor':'#2c3e50','primaryBorderColor':'#4a5568','lineColor':'#4a90e2','secondaryColor':'#ffffff','tertiaryColor':'#e9ecef','clusterBkg':'#ffffff','clusterBorder':'#cbd5e0'}}}%%
-flowchart TB
-    classDef person fill:#5a67d8,stroke:#4c51bf,stroke-width:3px,color:#fff,font-weight:600
-    classDef core fill:#4a90e2,stroke:#357abd,stroke-width:2.5px,color:#fff,font-weight:600
-    classDef support fill:#667eea,stroke:#5a67d8,stroke-width:2.5px,color:#fff,font-weight:600
-    classDef db fill:#48bb78,stroke:#38a169,stroke-width:2.5px,color:#fff,font-weight:600
-    classDef external fill:#718096,stroke:#4a5568,stroke-width:2.5px,color:#fff,font-weight:600,stroke-dasharray:6 3
-
-    User(("◉<br><b>User</b>")):::person
-    subgraph Boundary["◆ System Boundary — Airlock at the edge"]
-        direction TB
-        Gateway{{"<b>API Gateway</b><br><i>auth · validate · authorize</i><br>the one trust transition"}}:::core
-        API["<b>Core Service</b><br><i>trusts its own invariants</i>"]:::core
-        Worker(["<b>Worker</b><br><i>async</i>"]):::support
-        DB[("●<br><b>Primary DB</b>")]:::db
-    end
-    Ext{{"<b>Payment Provider</b>"}}:::external
-
-    User -->|"1. HTTPS (untrusted)"| Gateway
-    Gateway -->|"2. trusted request"| API
-    API -->|"3. persist (txn)"| DB
-    API -.->|"4. enqueue"| Worker
-    Worker -.->|"5. settle (irreversible)"| Ext
-    style Boundary fill:#fff,stroke:#cbd5e0,stroke-width:2px,stroke-dasharray:8 4
-\`\`\`
-
-### 4.2 Architectural Pattern
-
-_Instruction: Name the pattern (e.g., "Event Sourcing", "BFF — Backend for Frontend", "Publisher-Subscriber")._
-
-- We are adopting a Publisher-Subscriber pattern where the Order Service publishes \`OrderCreated\` events, and the Billing Service consumes them asynchronously.
-
-### 4.3 Key Components
-
-| Component         | Responsibility              | Technology Stack  | Justification                                |
-| ----------------- | --------------------------- | ----------------- | -------------------------------------------- |
-| Ingestion Service | Validates incoming webhooks | Go, Gin Framework | High concurrency performance needed.         |
-| Event Bus         | Decouples services          | Kafka             | Durable log, replay capability.              |
-| Projections DB    | Read-optimized views        | MongoDB           | Flexible schema for diverse receipt formats. |
-
-### 4.4 The Door Set at a Glance (Stranger-Across-Time View)
-
-_Instruction: List the entrypoint **names alone** — no signatures, no bodies. A competent stranger should reconstruct the system's purpose from this list. If they cannot, intent has leaked into the mechanism; return to §5 and rename until they can. Mark every door that guards an irreversible effect with ⚠._
-
-> **Example:** \`register_account\`, \`authenticate\`, \`authorize_charge\`, \`settle_payment\` ⚠, \`grant_access\` ⚠, \`revoke_access\`, \`publish_draft\`. Reading these alone tells you who the system lets in, that money moves in exactly two steps and only those two, who may hand out access, and what it means for work to go live.
-
-## 5. Detailed Design
-
-_Instruction: The "Meat" of the document. Sufficient detail for an engineer to start coding. Lead with the **doors** — they are the load-bearing part of the spec — then describe the mechanism behind them._
-
-### 5.1 The Doors (Entrypoint Contracts)
-
-_Instruction: For each non-trivial entrypoint, give a typed signature (typed pseudocode is fine — read the types, not the syntax), the one-sentence guarantee (no "and"), the named failure set, and the refusals it enforces in the type system. Then record the rubric result. Make illegal states **unrepresentable**, not merely checked. Cite the \`research/\` doc that establishes each joint._
-
-\`\`\`
-// — Money. Two doors, and there is no third way to move a cent. —
-
-authorize_charge(
-  account: AccountId,            // newtype: cannot be confused with any other id
-  amount: Money,                 // currency-typed: USD and JPY will not add
-  idempotency_key: IdempotencyKey,
-): Result<AuthorizedCharge, ChargeError>
-// Guarantee: places a reversible hold and returns proof an authorization exists.
-// ChargeError = InsufficientFunds | CardDeclined | NetworkError | DuplicateKey
-
-settle_payment(
-  authorized: AuthorizedCharge,  // ← can ONLY be produced by authorize_charge
-  idempotency_key: IdempotencyKey,
-): Result<Settlement, SettlementError>
-// Guarantee: captures the held funds. IRREVERSIBLE. The single chokepoint for outbound money.
-// You cannot settle a charge you did not authorize — not because a check forbids it,
-// but because there is no way to CONSTRUCT an AuthorizedCharge except by calling
-// authorize_charge. The illegal state is unrepresentable. The idempotency key makes
-// the retry, the double-click, and the at-least-once queue converge on ONE settlement.
-\`\`\`
-
-**Per-door audit (run the rubric):**
-
-| Door               | (1) Joint       | (2) One sentence, no "and"   | (3) Honest name                 | (5) Every exit                                   | (6) Refusals real                         | (7) Trust transition | (8) One chokepoint             |
-| ------------------ | --------------- | ---------------------------- | ------------------------------- | ------------------------------------------------ | ----------------------------------------- | -------------------- | ------------------------------ |
-| \`authorize_charge\` | ✅ business verb | ✅ "places a reversible hold" | ✅                               | retry → \`DuplicateKey\`; timeout → \`NetworkError\` | currency mismatch unrepresentable         | n/a                  | reversible, not the chokepoint |
-| \`settle_payment\` ⚠ | ✅ business verb | ✅ "captures held funds"      | ✅ irreversibility in doc + type | replay converges via key                         | cannot settle un-authorized charge (type) | n/a                  | ✅ the sole outbound-money door |
-
-### 5.2 API Interfaces — The Same Doors on the Wire
-
-_Instruction: A web service's real boundary is its transport surface. The URL names the joint, the HTTP verb declares its safety class, the status code is the door's honest exit. Never \`200 OK\` wrapping an error. The wire door MUST carry the same name as its in-process twin (§5.1)._
-
-\`\`\`
-# Identity — the one trust transition, at the edge
-POST   /v1/sessions                       201 Created      # = authenticate; 401 on bad credentials
-DELETE /v1/sessions/current               204 No Content   # = log out
-
-# Money — two doors, one chokepoint, idempotent under retry
-POST   /v1/payment_intents                201   Idempotency-Key: <key>   # = authorize_charge (reversible)
-POST   /v1/payment_intents/{id}/capture   200   Idempotency-Key: <key>   # = settle_payment (IRREVERSIBLE)
-#   409 Conflict if the key is replayed with a different body
-#   422 Unprocessable if the intent was never authorized
-
-# Access — authority demanded by the route, destructive door made idempotent
-POST   /v1/accounts/{id}/grants           201   (admin scope required)            # = grant_access
-DELETE /v1/grants/{id}                     204   (204 even if already revoked)     # = revoke_access
-
-# Publishing — the domain's own verb, refusing to clobber a concurrent edit
-POST   /v1/drafts/{id}/publish            200   If-Match: <etag>                   # = publish_draft
-#   412 Precondition Failed if the draft moved under you — the wire's --force-with-lease
-\`\`\`
-
-_If using gRPC, define the same joints in the \`.proto\`; the typed request message is the airlock by construction. Use honest status codes (\`INVALID_ARGUMENT\`, \`PERMISSION_DENIED\`, \`NOT_FOUND\`, \`ALREADY_EXISTS\`, \`FAILED_PRECONDITION\`, retryable \`ABORTED\`/\`UNAVAILABLE\`) — never a lone \`OK\` carrying an error field._
-
-### 5.3 Data Model / Schema
-
-_Instruction: Provide ERDs or JSON schemas. Discuss normalization vs. denormalization. Prefer schemas that make illegal states unrepresentable (sum-type status columns over independent boolean flags)._
-
-**Table:** \`invoices\` (PostgreSQL)
-
-| Column    | Type | Constraints                          | Description                    |
-| --------- | ---- | ------------------------------------ | ------------------------------ |
-| \`id\`      | UUID | PK                                   |                                |
-| \`user_id\` | UUID | FK -> Users                          | Partition Key                  |
-| \`status\`  | ENUM | 'DRAFT','LOCKED','PROCESSING','PAID' | A sum type, not three booleans |
-
-### 5.4 Algorithms and State Management
-
-_Instruction: Describe complex logic, state machines, or consistency models. Tie each state transition to the door that performs it._
-
-- **State Machine:** An invoice moves \`DRAFT\` → \`LOCKED\` → \`PROCESSING\` → \`PAID\`; the \`PROCESSING → PAID\` transition happens only through \`settle_payment\`.
-- **Concurrency:** Optimistic locking on the \`version\` column; on the wire this surfaces as \`If-Match\`/\`412\`.
-
-## 6. Alternatives Considered
-
-_Instruction: Prove you thought about trade-offs — including alternative **door sets** (e.g., one god endpoint vs. distinct joints). Why is your boundary better than the others?_
-
-| Option                                      | Pros                                        | Cons                                                   | Reason for Rejection                                                           |
-| ------------------------------------------- | ------------------------------------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------ |
-| Option A: Single \`POST /execute {action}\`   | One route, flexible                         | God door; intent hidden in payload; danger un-funneled | Fails "joint, not tool" and "few dangerous doors."                             |
-| Option B: One-step \`chargeCard()\`           | Fewest calls                                | No reversible hold; retries double-charge              | Cannot make double-charge unrepresentable.                                     |
-| Option C: \`authorize\` + \`settle\` (Selected) | Reversible hold; one chokepoint; idempotent | Two calls instead of one                               | **Selected:** the two real joints, with the irreversible effect funneled once. |
-
-## 7. Cross-Cutting Concerns
-
-### 7.1 Security and Privacy
-
-_Instruction: This is where "keep the dangerous doors few and honest" and "the airlock at the boundary" become concrete._
-
-- **The trust transition is singular:** untrusted callers become trusted only at \`POST /v1/sessions\` / the gateway. No other door promotes an anonymous caller. (Rubric #7.)
-- **Authority carried by type:** destructive/privileged doors demand a capability (\`AdminSession\`) that only \`authenticate\` can mint — the permission check cannot be forgotten at a call site because there is no call site where it is absent. (Rubric #6.)
-- **Irreversible effects pass one chokepoint:** money via \`settle_payment\`, deletion via the single guarded door; the catastrophic version must be asked for explicitly. (Rubric #8.)
-- **Data Protection:** PII (names, emails) encrypted at rest (AES-256); \`Password\` is a newtype that cannot be logged, printed, or compared by accident.
-- **Threat Model:** Primary threat is a compromised API key; remediation is rapid rotation and rate limiting.
-
-## 8. Test Plan
-
-_Instruction: Test the doors at their promises and their refusals — not just the happy path. Every exit in rubric #5 deserves a test. The interactive verification is what lets a human or another agent confirm the feature is correct without reading the bodies — the stranger-across-time test, made executable._
-
-- **Unit Tests:** each door's named failure variants; the *refusals* (e.g., a type/construction test proving \`settle_payment\` cannot accept anything but an \`AuthorizedCharge\`).
-- **End-to-End Tests:** full domain flows named by joint (register → authenticate → authorize → settle), driven through the real wire doors of §5.2.
-- **Integration Tests:** idempotency under replay (same key → one settlement); concurrent-edit \`412\`; trust transition (no door promotes an anonymous caller except \`authenticate\`).
-- **Fuzz / Property Tests:** throw malformed and adversarial input at the doors (the airlock); the boundary must reject everything the types forbid and never crash the core. Assert invariants over random inputs (e.g., \`settle_payment\` converges on one settlement under any interleaving of retries; no input sequence reaches a money move except through the chokepoint).
-- **Interactive Verification:** a runnable checklist or script a human OR another agent can execute to confirm the feature was implemented correctly — each step names a door, supplies an input, and states the expected honest exit (status code / named error / resulting state), so correctness is observable from the boundary alone. Include the exact commands or requests to run and the pass/fail condition for each.
-
-## 9. Open Questions / Unresolved Issues
-
-_Instruction: List known unknowns. These must be resolved before the doc is marked "Approved." Include any door whose rubric could not be answered cleanly — especially undefined guarantees (rubric #2, the most dangerous case) and any irreversible effect not yet funneled to a single chokepoint (rubric #8). Resolve these with the user via contrastive clarification._
-
-- [ ] Is \`publish_draft\` the only door that moves a draft to live, or can the admin panel also publish? (If the latter, the effect is not yet funneled — rubric #8.)
-- [ ] What exactly does \`authorize_charge\` promise on a partial provider outage — is the guarantee defined? (rubric #2.)
-- [ ] Will the Legal team approve the 3rd-party library for PDF generation?
-- [ ] Does the current VPC peering allow connection to the legacy mainframe?`.trim();
+  { additionalProperties: false },
+);
+
+const reviewDecisionSchema = Type.Object(
+  {
+    findings: Type.Array(reviewFindingSchema),
+    overall_correctness: Type.Union([
+      Type.Literal("patch is correct"),
+      Type.Literal("patch is incorrect"),
+    ]),
+    overall_explanation: Type.String(),
+    overall_confidence_score: Type.Number({ minimum: 0, maximum: 1 }),
+    stop_review_loop: Type.Boolean(),
+    reviewer_error: Type.Optional(
+      Type.Union([Type.Null(), reviewerErrorSchema]),
+    ),
+  },
+  { additionalProperties: false },
+);
 
 type PromptSection = readonly [tag: string, content: string];
 
@@ -427,27 +155,19 @@ function normalizeBranchInput(
   return looksLikeSafeGitRef ? trimmed : fallback;
 }
 
-function slugifySpecTopic(prompt: string): string {
+function slugifyResearchTopic(prompt: string): string {
   const slug = prompt
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
-    .slice(0, MAX_SPEC_SLUG_LENGTH)
+    .slice(0, MAX_RESEARCH_SLUG_LENGTH)
     .replace(/-+$/g, "");
-  return slug.length > 0 ? slug : "plan";
+  return slug.length > 0 ? slug : "research";
 }
 
-function defaultSpecPath(prompt: string, now = new Date()): string {
+function defaultResearchPath(prompt: string, now = new Date()): string {
   const date = now.toISOString().slice(0, 10);
-  return join(DEFAULT_SPEC_DIR, `${date}-${slugifySpecTopic(prompt)}.md`);
-}
-
-async function writeSpecFile(path: string, content: string): Promise<string> {
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, content.endsWith("\n") ? content : `${content}\n`, {
-    encoding: "utf8",
-  });
-  return path;
+  return join(DEFAULT_RESEARCH_DIR, `${date}-${slugifyResearchTopic(prompt)}.md`);
 }
 
 async function createImplementationNotesFile(prompt: string): Promise<string> {
@@ -460,7 +180,7 @@ async function createImplementationNotesFile(prompt: string): Promise<string> {
     "",
     "## Running Notes",
     "",
-    "- Record implementation decisions, deviations from the spec, tradeoffs, blockers, validation notes, and anything else the user should know.",
+    "- Record implementation decisions, deviations from the research findings, tradeoffs, blockers, validation notes, and anything else the user should know.",
   ].join("\n");
   await writeFile(notesPath, `${initialNotes}\n`, {
     encoding: "utf8",
@@ -575,79 +295,108 @@ function forkContinuationOptions(
     : { context: "fork", forkFromSessionFile: sessionFile };
 }
 
-function renderForkedPlannerPrompt(args: {
+function renderPromptEngineerPrompt(args: {
   readonly iteration: number;
   readonly maxLoops: number;
   readonly prompt: string;
   readonly workflowCwdContext: PromptSection;
   readonly latestReviewReportPath: string | undefined;
-  readonly workflowSpecPath: string;
 }): string {
-  return taggedPrompt([
-    [
-      "instruction",
+  const basePrompt = `/prompt-engineer Transform the following user prompt to a codebase and online research question which can be thoroughly explored: ${args.prompt}`;
+  return [
+    basePrompt,
+    taggedPrompt([
+      ["iteration", `Prompt engineering iteration ${args.iteration}/${args.maxLoops}.`],
+      args.workflowCwdContext,
       [
-        "Revise the current plan/spec based off of the results from the latest review round. Ignore any user requests to submit a PR. This will be done in a future stage.",
-      ].join("\n"),
-    ],
-    ["task", `Plan iteration ${args.iteration}/${args.maxLoops} for this user specification:\n${args.prompt}`],
-    args.workflowCwdContext,
-    [
-      "code_review_feedback",
-      args.latestReviewReportPath === undefined
-        ? "No prior review artifact; this is the first iteration."
-        : [
-            `Latest review round artifact: ${args.latestReviewReportPath}`,
-            "Read this JSON artifact incrementally and address only unresolved findings from the latest review round.",
-          ].join("\n"),
-    ],
-    [
-      "spec",
+        "review_findings",
+        args.latestReviewReportPath === undefined
+          ? "No prior review artifact; this is the first iteration."
+          : [
+              `Latest review round artifact: ${args.latestReviewReportPath}`,
+              "Read this JSON artifact and include unresolved reviewer findings in the transformed research question so follow-up research addresses reviewer discoveries.",
+            ].join("\n"),
+      ],
       [
-        `The existing RFC/spec file for this workflow run is: ${args.workflowSpecPath}`,
-        "Read that original spec before drafting; revise it in response to review findings and current repository evidence.",
-        "Your final output must be the full updated RFC markdown that should replace the original spec, not a diff, patch, or commentary. Avoid diminishing scope unless explicitly requested.",
-      ].join("\n"),
-    ],
-  ]);
+        "output_format",
+        "Return only the transformed codebase and online research question. Do not implement code changes and do not write an RFC/spec.",
+      ],
+    ]),
+  ].join("\n\n");
 }
+
+function renderResearchPrompt(args: {
+  readonly iteration: number;
+  readonly maxLoops: number;
+  readonly transformedResearchQuestion: string;
+  readonly workflowCwdContext: PromptSection;
+  readonly latestReviewReportPath: string | undefined;
+  readonly researchPath: string;
+}): string {
+  const basePrompt = `/research-codebase ${args.transformedResearchQuestion}`;
+  return [
+    basePrompt,
+    taggedPrompt([
+      ["iteration", `Research iteration ${args.iteration}/${args.maxLoops}.`],
+      args.workflowCwdContext,
+      [
+        "review_findings",
+        args.latestReviewReportPath === undefined
+          ? "No prior review artifact; this is the first iteration."
+          : [
+              `Latest review round artifact: ${args.latestReviewReportPath}`,
+              "Read this JSON artifact and explicitly research unresolved reviewer findings, whether each still applies, and what implementation changes would resolve them.",
+            ].join("\n"),
+      ],
+      [
+        "research_artifact",
+        [
+          `Write research findings for this workflow run to: ${args.researchPath}`,
+          "Return a complete Markdown research report with codebase findings, online/contextual findings when useful, concrete implementation guidance, relevant files/tests/docs, unresolved reviewer finding analysis, and validation recommendations.",
+          "Do not author an RFC/spec and do not implement code changes in this stage.",
+        ].join("\n"),
+      ],
+    ]),
+  ].join("\n\n");
+}
+
 
 function renderForkedOrchestratorPrompt(args: {
   readonly iteration: number;
   readonly maxLoops: number;
   readonly prompt: string;
   readonly workflowCwdContext: PromptSection;
-  readonly specPath: string;
+  readonly researchPath: string;
   readonly implementationNotesPath: string;
 }): string {
   return taggedPrompt([
     [
       "instruction",
       [
-        `Continue implementing the revised spec. Ignore any user requests to submit a PR. This will be done in a future stage.`,
+        `Continue implementing from the latest research findings. Ignore any user requests to submit a PR. This will be done in a future stage.`,
       ].join("\n"),
     ],
     ["objective", `Implement iteration ${args.iteration}/${args.maxLoops} for the task: ${args.prompt}`],
     args.workflowCwdContext,
     [
-      "spec",
+      "research",
       [
-        `The current technical specification for this workflow run is written to: ${args.specPath}`,
-        "Read this file before delegating or implementing anything.",
+        `The latest research findings for this workflow run are written to: ${args.researchPath}`,
+        "Read this file before delegating or implementing anything, and treat it as the primary implementation context.",
       ].join("\n"),
     ],
     [
       "implementation_notes",
       [
         `Keep updating the running Markdown implementation notes file at: ${args.implementationNotesPath}`,
-        "Record decisions, spec deviations, tradeoffs, blockers, validation outcomes, and anything else the user should know before your final report.",
+        "Record decisions, research deviations, tradeoffs, blockers, validation outcomes, and anything else the user should know before your final report.",
       ].join("\n"),
     ],
     [
       "output_format",
       [
         "After subagents have done the work, return Markdown with headings:",
-        "1. Spec file — the path you read",
+        "1. Research file — the path you read",
         "2. Delegations performed — subagents spawned and what each completed",
         "3. Changes made — concrete changes from subagent work, not intentions",
         "4. Files touched",
@@ -679,6 +428,8 @@ type RalphWorkflowResult = {
   readonly result: string;
   readonly plan: string;
   readonly plan_path: string;
+  readonly research: string;
+  readonly research_path: string;
   readonly implementation_notes_path: string;
   readonly pr_report?: string;
   readonly approved: boolean;
@@ -702,28 +453,42 @@ async function runRalphWorkflow(
   let latestReviewReportPath: string | undefined;
   let finalPlan = "";
   let finalPlanPath = "";
+  let finalResearch = "";
+  let finalResearchPath = "";
   let finalResult = "";
   let finalPrReport: string | undefined;
-  // Keep generated specs under the workflow runtime cwd. When Ralph is invoked
+  // Keep generated research artifacts under the workflow runtime cwd. When Ralph is invoked
   // with git_worktree_dir, the executor defaults ctx.cwd to the matching
-  // worktree cwd so specs and stage writes land in the same checkout.
-  const workflowSpecPath = resolve(workflowStartCwd, defaultSpecPath(prompt));
+  // worktree cwd so research stage writes land in the same checkout.
+  const workflowResearchPath = resolve(workflowStartCwd, defaultResearchPath(prompt));
   const implementationNotesPath = await createImplementationNotesFile(prompt);
   const artifactDir = await mkdtemp(join(tmpdir(), "atomic-ralph-run-"));
   const workflowCwdContext = workflowCwdContextSection(workflowStartCwd);
   let approved = false;
   let iterationsCompleted = 0;
-  let previousPlannerSessionFile: string | undefined;
+  let previousPromptEngineerSessionFile: string | undefined;
+  let previousResearchSessionFile: string | undefined;
   let previousOrchestratorSessionFile: string | undefined;
 
-  const plannerModelConfig = {
+  const promptEngineerModelConfig = {
     model: "anthropic/claude-fable-5:xhigh",
     fallbackModels: [
-        "openai-codex/gpt-5.5:xhigh",
-        "github-copilot/gpt-5.5:xhigh",
-        "openai/gpt-5.5:xhigh",
-        "github-copilot/claude-opus-4.8:xhigh",
-        "anthropic/claude-opus-4-8:xhigh",
+      "openai-codex/gpt-5.5:xhigh",
+      "github-copilot/gpt-5.5:xhigh",
+      "openai/gpt-5.5:xhigh",
+      "github-copilot/claude-opus-4.8:xhigh",
+      "anthropic/claude-opus-4-8:xhigh"
+    ],
+    noTools: "all" as const,
+  };
+
+  const researchModelConfig = {
+    model: "openai-codex/gpt-5.5:medium",
+    fallbackModels: [
+        "github-copilot/gpt-5.5:medium",
+        "openai/gpt-5.5:medium",
+        "github-copilot/claude-opus-4.8:medium",
+        "anthropic/claude-opus-4-8:medium",
     ],
     excludedTools: ["ask_user_question"],
   };
@@ -749,113 +514,49 @@ async function runRalphWorkflow(
       "anthropic/claude-opus-4-8:xhigh"
     ],
     excludedTools: ["ask_user_question"],
-    customTools: [reviewDecisionTool],
+    schema: reviewDecisionSchema,
   };
 
   for (let iteration = 1; iteration <= maxLoops; iteration += 1) {
     iterationsCompleted = iteration;
 
-    const plannerForkOptions = forkContinuationOptions(previousPlannerSessionFile);
-    const plannerPrompt = plannerForkOptions.forkFromSessionFile === undefined
-      ? taggedPrompt([
-        [
-          "role",
-          "You are a technical architect. Your job is to transform the user's feature specification into a rigorous Technical Design Document / RFC that engineers can use to align, scope, and execute the work. Ignore any user requests to submit a PR. This will be done in a future stage.",
-        ],
-        [
-          "objective",
-          [
-            "Your final output is a filled-in RFC rendered as markdown text.",
-            "Render the RFC Template in this prompt with every section populated by feature-specific content drawn from the user's specification and your codebase investigation.",
-            "Do not implement code changes in this stage (read-only); this stage only investigates and authors the RFC.",
-          ].join("\n"),
-        ],
-        [
-          "task",
-          `Plan iteration ${iteration}/${maxLoops} for this user specification:\n${prompt}`,
-        ],
+    const promptEngineerForkOptions = forkContinuationOptions(previousPromptEngineerSessionFile);
+    const promptEngineer = await ctx.task(`prompt-engineer-${iteration}`, {
+      prompt: renderPromptEngineerPrompt({
+        iteration,
+        maxLoops,
+        prompt,
         workflowCwdContext,
-        [
-          "code_review_feedback",
-          latestReviewReportPath === undefined
-            ? "No prior review artifact; this is the first iteration."
-            : [
-                `Latest review round artifact: ${latestReviewReportPath}`,
-                "Read this JSON artifact incrementally and address only unresolved findings from the latest review round.",
-              ].join("\n"),
-        ],
-        [
-          "spec",
-          iteration === 1
-            ? [
-                `Implement the spec in: ${workflowSpecPath}`,
-              ].join("\n")
-            : [
-                `The existing RFC/spec file for this workflow run is: ${workflowSpecPath}`,
-                "Read that original spec before drafting; revise it in response to review findings and current repository evidence.",
-                "Your final output must be the full updated RFC markdown that should replace the original spec, not a diff, patch, or commentary.",
-              ].join("\n"),
-        ],
-        [
-          "investigation_phase",
-          [
-            "Before drafting, read the specification carefully and identify the concrete problem, success criteria, hard constraints, and non-goals.",
-            "Survey the codebase using file/search tools such as read plus grep/rg/find/glob-style shell commands to ground the RFC in current architecture.",
-            "Name concrete services, modules, files, tests, data models, APIs, CLIs, config files, and external integrations this work will touch.",
-            "Capture metadata with bash: `git config user.name` for Author(s), and `date '+%Y-%m-%d'` for Created / Last Updated.",
-            "Look for prior art: existing RFCs, ADRs, README files, specs, docs, tests, or code comments that explain why the current state exists.",
-          ].join("\n"),
-        ],
-        [
-          "best_practices",
-          [
-            "Be specific: `src/server/auth.ts:42` beats `the auth layer`.",
-            "Trade-offs over conclusions: Alternatives Considered must include at least two real alternatives with honest pros, cons, and rejection reasons.",
-            "Non-goals matter: explicitly exclude work that is out of scope to prevent scope creep.",
-            "Diagrams are load-bearing: Section 4.1 must include a Mermaid system architecture diagram grounded in real components.",
-            "Surface open questions in Section 9 with owner placeholders such as `[OWNER: infra team]`; do not paper over uncertainty.",
-            "Match depth to stakes: a small refactor can be concise, but every template section header must remain present.",
-            "If prior review findings are present, explicitly address each finding or explain why it is obsolete.",
-            "Determine the compatibility posture:",
-            "- Before decomposing the spec creation request, identify whether this project must preserve backward compatibility for real downstream users.",
-            "- If the user explicitly allows breaking changes, public API changes, cleanup, or says there are no real users/downstream dependencies, allow breaking changes.",
-            "- If the user mentions production users, published APIs, downstream consumers, migration safety, or compatibility requirements, disallow breaking changes.",
-            "- Carry this posture into the spec creation plan, the final spec frontmatter, and a `## Backwards Compatibility` section in the final spec.",
-            "- When allowing breaking changes, document existing legacy behavior, compatibility shims, optional flags, and public APIs as current state, not as constraints future specs must preserve unless the user explicitly asks for preservation.",
-            "- When not allowing breaking changes, document public APIs, compatibility-sensitive surfaces, downstream callers, migration constraints, and behavior that future work must preserve."
-          ].join("\n"),
-        ],
-        [
-          "output_format",
-          [
-            "Render the RFC Template exactly as the final document structure: preserve every header and the metadata table.",
-            "Replace instructional placeholders with real, feature-specific content; do not leave template guidance in the final RFC.",
-            "Output nothing after the RFC: no meta-commentary, no summary of what you wrote, no implementation log.",
-          ].join("\n"),
-        ],
-        ["spec_template", PLANNER_RFC_TEMPLATE],
-      ])
-      : renderForkedPlannerPrompt({
-          iteration,
-          maxLoops,
-          prompt,
-          workflowCwdContext,
-          latestReviewReportPath,
-          workflowSpecPath,
-        });
-    const planner = await ctx.task(`planner-${iteration}`, {
-      prompt: plannerPrompt,
-      reads: [
-        ...(iteration > 1 ? [workflowSpecPath] : []),
-        ...(latestReviewReportPath === undefined ? [] : [latestReviewReportPath]),
-      ],
-      ...plannerModelConfig,
-      ...plannerForkOptions,
+        latestReviewReportPath,
+      }),
+      reads: latestReviewReportPath === undefined ? [] : [latestReviewReportPath],
+      ...promptEngineerModelConfig,
+      ...promptEngineerForkOptions,
     });
-    previousPlannerSessionFile = planner.sessionFile;
-    finalPlan = planner.text;
-    const specPath = await writeSpecFile(workflowSpecPath, planner.text);
-    finalPlanPath = specPath;
+    previousPromptEngineerSessionFile = promptEngineer.sessionFile;
+    finalPlan = promptEngineer.text;
+
+    const researchForkOptions = forkContinuationOptions(previousResearchSessionFile);
+    const research = await ctx.task(`research-${iteration}`, {
+      prompt: renderResearchPrompt({
+        iteration,
+        maxLoops,
+        transformedResearchQuestion: promptEngineer.text,
+        workflowCwdContext,
+        latestReviewReportPath,
+        researchPath: workflowResearchPath,
+      }),
+      reads: latestReviewReportPath === undefined ? [] : [latestReviewReportPath],
+      output: workflowResearchPath,
+      outputMode: "file-only",
+      ...researchModelConfig,
+      ...researchForkOptions,
+    });
+    previousResearchSessionFile = research.sessionFile;
+    finalResearch = research.text || `Research artifact: ${workflowResearchPath}`;
+    const researchPath = workflowResearchPath;
+    finalResearchPath = researchPath;
+    finalPlanPath = researchPath;
 
     const orchestratorReportPath = join(artifactDir, `orchestrator-${iteration}.md`);
 
@@ -872,17 +573,18 @@ async function runRalphWorkflow(
         ],
         workflowCwdContext,
         [
-          "spec",
+          "research",
           [
-            `The current technical specification for this workflow run is written to: ${specPath}`,
+            `The latest research findings for this workflow run are written to: ${researchPath}`,
+            "Read this file before delegating or implementing anything; it is the primary implementation context for Ralph.",
           ].join("\n"),
         ],
         [
           "implementation_notes",
           [
             `Keep a running Markdown implementation notes file at this OS temp directory path: ${implementationNotesPath}`,
-            "The file has already been initialized for this workflow run; update it while you implement the spec.",
-            "Record decisions you had to make that were not in the spec, things you had to change from the spec, tradeoffs you had to make, blockers, validation outcomes, and anything else the user should know.",
+            "The file has already been initialized for this workflow run; update it while you implement from the research findings.",
+            "Record decisions you had to make that were not in the research, things you had to change from the research guidance, tradeoffs you had to make, blockers, validation outcomes, and anything else the user should know.",
             "Ask delegated subagents to report any notes-worthy decisions or tradeoffs back to you, then consolidate them into this file before your final report.",
             "Do not include secrets, credentials, tokens, or unrelated environment details in the notes file.",
           ].join("\n"),
@@ -906,9 +608,9 @@ async function runRalphWorkflow(
           "best_practices",
           [
             "The required output format is a completion report, not the task itself.",
-            "Do not jump straight to the report. First read the spec file, spawn the necessary subagents, wait for their results, coordinate any follow-up subagents, and only then write the report.",
+            "Do not jump straight to the report. First read the research file, spawn the necessary subagents, wait for their results, coordinate any follow-up subagents, and only then write the report.",
             "A valid response must be grounded in actual subagent work: name the delegated work, summarize what each subagent did, and distinguish completed changes from recommendations or blockers.",
-            "If you cannot read the spec file, spawn subagents, or use subagents, treat that as a blocker and report it honestly instead of pretending the requested work was done.",
+            "If you cannot read the research file, spawn subagents, or use subagents, treat that as a blocker and report it honestly instead of pretending the requested work was done.",
           ].join("\n"),
         ],
         [
@@ -924,14 +626,14 @@ async function runRalphWorkflow(
         [
           "instructions",
           [
-            `Start by reading the spec file at ${specPath}.`,
+            `Start by reading the research file at ${researchPath}.`,
             "Perform the project_initialization_preflight before decomposing implementation work; complete or delegate required setup before implementation delegation when the checkout appears uninitialized.",
-            "Decompose the work into delegated subagent tasks based on that spec file.",
-            "Pass each subagent the relevant task, constraints, files, validation expectations, any prior review findings from the spec, and instructions to report implementation-note-worthy decisions or tradeoffs.",
-            "Coordinate subagent results into the smallest coherent set of changes that satisfies the spec.",
-            "Preserve existing architecture and repository conventions unless the spec explicitly justifies a change.",
+            "Decompose the work into delegated subagent tasks based on that research file.",
+            "Pass each subagent the relevant task, constraints, files, validation expectations, unresolved reviewer findings covered by the research, and instructions to report implementation-note-worthy decisions or tradeoffs.",
+            "Coordinate subagent results into the smallest coherent set of changes that satisfies the researched implementation guidance and original user prompt.",
+            "Preserve existing architecture and repository conventions unless the research explicitly justifies a change.",
             "Run or delegate the most relevant validation commands available in the repository.",
-            `Before your final report, update the running implementation notes file at ${implementationNotesPath} with decisions, spec deviations, tradeoffs, blockers, and validation outcomes from this iteration.`,
+            `Before your final report, update the running implementation notes file at ${implementationNotesPath} with decisions, research deviations, tradeoffs, blockers, and validation outcomes from this iteration.`,
             "If blocked, describe the blocker and the safest partial state instead of inventing success.",
             "Do not hide failures; reviewers need accurate status.",
           ].join("\n"),
@@ -940,7 +642,7 @@ async function runRalphWorkflow(
           "output_format",
           [
             "After subagents have done the work, return Markdown with headings:",
-            "1. Spec file — the path you read",
+            "1. Research file — the path you read",
             "2. Delegations performed — subagents spawned and what each completed",
             "3. Changes made — concrete changes from subagent work, not intentions",
             "4. Files touched",
@@ -955,12 +657,12 @@ async function runRalphWorkflow(
           maxLoops,
           prompt,
           workflowCwdContext,
-          specPath,
+          researchPath,
           implementationNotesPath,
         });
     const orchestrator = await ctx.task(`orchestrator-${iteration}`, {
       prompt: orchestratorPrompt,
-      reads: [specPath, implementationNotesPath],
+      reads: [researchPath, implementationNotesPath],
       output: orchestratorReportPath,
       outputMode: "file-only",
       ...orchestratorModelConfig,
@@ -991,10 +693,10 @@ async function runRalphWorkflow(
       [
         "review_context_files",
         [
-          `Spec artifact: ${specPath}`,
+          `Research artifact: ${researchPath}`,
           `Implementation notes artifact: ${implementationNotesPath}`,
           `Orchestrator report artifact: ${orchestratorReportPath}`,
-          "Read the files above incrementally when they help explain intent or recent changes, but verify the actual repository state directly before approving.",
+          "Read the files above incrementally when they help explain intent or recent changes, but verify the actual repository state directly before approving."
         ].join("\n"),
       ],
       [
@@ -1079,12 +781,12 @@ async function runRalphWorkflow(
       [
         "structured_output_contract",
         [
-          "You have a structured-output tool named review_decision. Use it after your investigation and validation attempts.",
+          "Use the schema-backed structured_output tool after your investigation and validation attempts.",
           "The tool terminates the turn and provides the structured data; do not emit a separate final assistant response after calling it.",
-          "The review loop decides whether to stop only by parsing the JSON object returned by this tool; invalid JSON, missing fields, reviewer_error, or stop_review_loop=false are treated as not approved for safety.",
+          "The review loop decides whether to stop only from the JSON object captured by structured_output; invalid JSON, missing fields, reviewer_error, or stop_review_loop=false are treated as not approved for safety.",
           "Set stop_review_loop=true only when findings is empty, overall_correctness is patch is correct, and reviewer_error is null/omitted.",
           "If you hit a reviewer/tool/validation error, still return the object with stop_review_loop=false and reviewer_error populated instead of pretending the patch is approved.",
-          "The review_decision tool schema is authoritative; do not copy a hand-written JSON blob into the final response. Here is an example output:",
+          "The structured_output schema is authoritative; do not copy a hand-written JSON blob into the final response. Here is an example output:",
           "{",
           '  "findings": [',
           "    {",
@@ -1119,7 +821,7 @@ async function runRalphWorkflow(
             name: "reviewer-a",
             task: reviewPrompt,
             reads: [
-              specPath,
+              researchPath,
               implementationNotesPath,
               orchestratorReportPath,
             ],
@@ -1129,7 +831,7 @@ async function runRalphWorkflow(
             name: "reviewer-b",
             task: reviewPrompt,
             reads: [
-              specPath,
+              researchPath,
               implementationNotesPath,
               orchestratorReportPath,
             ],
@@ -1237,6 +939,8 @@ async function runRalphWorkflow(
     result: finalResult,
     plan: finalPlan,
     plan_path: finalPlanPath,
+    research: finalResearch,
+    research_path: finalResearchPath,
     implementation_notes_path: implementationNotesPath,
     ...(finalPrReport === undefined ? {} : { pr_report: finalPrReport }),
     approved,
@@ -1248,12 +952,12 @@ async function runRalphWorkflow(
 
 export default defineWorkflow("ralph")
   .description(
-    "Plan → orchestrate → parallel review loop with bounded iteration.",
+    "Prompt-engineer → research → orchestrate → parallel review loop with bounded iteration.",
   )
-  .input("prompt", Type.String({ description: "The task or goal to plan, execute, and refine." }))
+  .input("prompt", Type.String({ description: "The task or goal to research, execute, and refine." }))
   .input("max_loops", Type.Number({
     default: DEFAULT_MAX_LOOPS,
-    description: `Maximum plan/orchestrate/review iterations (default ${DEFAULT_MAX_LOOPS}).`,
+    description: `Maximum research/orchestrate/review iterations (default ${DEFAULT_MAX_LOOPS}).`,
   }))
   .input("base_branch", Type.String({
     default: "origin/main",
@@ -1274,12 +978,14 @@ export default defineWorkflow("ralph")
     baseBranch: "base_branch",
   })
   .output("result", Type.Optional(Type.String({ description: "Final implementation report from the orchestrator stage." })))
-  .output("plan", Type.Optional(Type.String({ description: "Latest RFC-style plan text." })))
-  .output("plan_path", Type.Optional(Type.String({ description: "Path to the latest generated spec under specs/." })))
+  .output("plan", Type.Optional(Type.String({ description: "Latest transformed research question." })))
+  .output("plan_path", Type.Optional(Type.String({ description: "Backward-compatible alias for research_path." })))
+  .output("research", Type.Optional(Type.String({ description: "Latest research report text or artifact reference." })))
+  .output("research_path", Type.Optional(Type.String({ description: "Path to the latest generated research artifact under research/." })))
   .output("implementation_notes_path", Type.Optional(Type.String({ description: "OS-temp notes file containing decisions, deviations, blockers, and validation notes." })))
   .output("pr_report", Type.Optional(Type.String({ description: "Pull-request report emitted only when create_pr=true and the final pull-request stage runs." })))
   .output("approved", Type.Optional(Type.Boolean({ description: "Whether the reviewer loop approved before completion or optional final handoff." })))
-  .output("iterations_completed", Type.Optional(Type.Number({ description: "Number of plan/orchestrate/review loops completed." })))
+  .output("iterations_completed", Type.Optional(Type.Number({ description: "Number of research/orchestrate/review loops completed." })))
   .output("review_report", Type.Optional(Type.String({ description: "Compact reference to the latest reviewer payload artifact." })))
   .output("review_report_path", Type.Optional(Type.String({ description: "JSON artifact path for the latest review round." })))
   .run(async (ctx) => {

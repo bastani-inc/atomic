@@ -282,6 +282,8 @@ const decision = await ctx.stage("review-gate", { schema: Decision }).prompt(
 
 Atomic registers the canonical `structured_output` tool only for schema-enabled items, automatically adds it to explicit `tools` allowlists, and fails the item if the model completes without the final tool call. The schema is used directly as the tool argument contract, so wrap arrays or primitives in an object field such as `{ items: [...] }` or `{ value: ... }`. A schema-backed `StageContext` supports one `prompt()` call because the final-answer tool is an exact-once result contract; create another `ctx.stage(..., { schema })` for another structured prompt. `ctx.task`/`ctx.chain`/`ctx.parallel` results expose the parsed value as `result.structured` and keep `result.text` as formatted JSON for handoffs.
 
+`subagent` is available as a default workflow-stage tool with the same default two-hop nesting budget as main chat: a stage can launch a subagent, and that child can launch one nested subagent before the guard blocks further delegation. `tools` allowlists apply to bundled extension tools as well as built-ins; if a stage sets `tools`, list every tool it should see. Workflow stages can explicitly list `subagent`, `web_search`, `fetch_content`, `intercom`, and other loaded extension tools, while `excludedTools` and `noTools: "all"` still win. Bundled `@bastani/subagents` agent definitions are available to the `subagent` tool in workflow stages, including workflows launched from a subagent child process.
+
 ### Model fallbacks
 
 Stages and high-level task helpers can retry transient provider/model failures with an ordered `fallbackModels` list. The primary `model` is tried first, then each fallback, and finally the current Atomic-selected model when available. Fallbacks are only used for retryable model/provider failures such as rate limits, quota/auth/provider outages, unavailable models, network timeouts, and 5xx errors — ordinary tool, shell, validation, cancellation, and workflow-code failures are not retried.
@@ -607,22 +609,22 @@ Child workflow outputs: `result`, `status`, `approved`, `goal_id`, `objective`, 
 
 ### `ralph`
 
-Plan → orchestrate → simplify → review workflow with optional final-stage PR handoff: write an RFC-style technical design document under `specs/`, delegate implementation through sub-agents, simplify recent changes, run parallel reviewers, and iterate until approval or the loop limit. Ralph skips PR creation by default; prompt text alone does not opt in. Pass `create_pr=true` to authorize only the final `pull-request` stage to inspect provider credentials and attempt provider-appropriate PR/MR/review creation (for example GitHub `gh`, Azure Repos `az repos pr create`, or Sapling/Phabricator tooling). Ralph's own PR-creation instructions live in that final stage. Reviewers inspect repository infrastructure directly as needed; Ralph no longer runs separate `infra-*` discovery stages.
+Prompt-engineering → research → orchestrate → review workflow with optional final-stage PR handoff: transform the user prompt into a codebase and online research question, run `/research-codebase` against it, write findings under `research/`, delegate implementation through sub-agents from that research, run parallel reviewers, and iterate until approval or the loop limit. Follow-up iterations pass unresolved review artifacts into prompt-engineering/research and fork research from prior research session data when available. Ralph skips PR creation by default; prompt text alone does not opt in. Pass `create_pr=true` to authorize only the final `pull-request` stage to inspect provider credentials and attempt provider-appropriate PR/MR/review creation (for example GitHub `gh`, Azure Repos `az repos pr create`, or Sapling/Phabricator tooling). Ralph's own PR-creation instructions live in that final stage. Reviewers inspect repository infrastructure directly as needed; Ralph no longer runs separate `infra-*` discovery stages.
 
 ```text
-/workflow ralph prompt="Plan and migrate the database layer to Drizzle ORM" max_loops=3 base_branch=develop
-/workflow ralph prompt="Plan and migrate the database layer to Drizzle ORM" max_loops=3 base_branch=develop create_pr=true
+/workflow ralph prompt="Migrate the database layer to Drizzle ORM" max_loops=3 base_branch=develop
+/workflow ralph prompt="Migrate the database layer to Drizzle ORM" max_loops=3 base_branch=develop create_pr=true
 ```
 
 | Input              | Type      | Required | Default       | Description                                                   |
 | ------------------ | --------- | -------- | ------------- | ------------------------------------------------------------- |
-| `prompt`           | `text`    | ✓        | —             | Task, feature request, issue summary, or spec path to plan, execute, refine, and review. |
-| `max_loops`        | `number`  | —        | `10`          | Maximum plan/orchestrate/review iterations before completion or optional final handoff. |
+| `prompt`           | `text`    | ✓        | —             | Task, feature request, issue summary, or spec path to research, execute, refine, and review. |
+| `max_loops`        | `number`  | —        | `10`          | Maximum research/orchestrate/review iterations before completion or optional final handoff. |
 | `base_branch`      | `string`  | —        | `origin/main` | Branch reviewers and the optional final stage compare the current delta with; also used to create a missing worktree. |
 | `git_worktree_dir` | `string`  | —        | `""`          | Optional reusable Git worktree root. Empty runs in the invoking checkout; non-empty values run Ralph stages in the created/reused worktree. |
 | `create_pr`        | `boolean` | —        | `false`       | Safe-by-default PR creation flag. Omitted or `false` skips the final `pull-request` stage and omits `pr_report`; prompt text alone does not opt in, and only strict `true` authorizes the final `pull-request` stage to attempt provider-appropriate PR/MR/review creation. |
 
-Child workflow outputs: `result`, `plan`, `plan_path`, `implementation_notes_path`, `approved`, `iterations_completed`, `review_report`, and `review_report_path`. `pr_report` is included only when `create_pr=true` and the final `pull-request` stage runs.
+Child workflow outputs: `result`, `plan` (latest transformed research question), `plan_path` (compatibility alias for `research_path`), `research`, `research_path`, `implementation_notes_path`, `approved`, `iterations_completed`, `review_report`, and `review_report_path`. `pr_report` is included only when `create_pr=true` and the final `pull-request` stage runs.
 
 ### `open-claude-design`
 
