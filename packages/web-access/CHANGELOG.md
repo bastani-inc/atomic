@@ -434,7 +434,7 @@ All notable changes to this project will be documented in this file.
 ## [0.5.0] - 2026-02-01
 
 ### Added
-- GitHub repository clone extraction for `fetch_content` -- detects GitHub code URLs, clones repos to `/tmp/pi-github-repos/`, and returns actual file contents plus local path for further exploration with `read` and `bash`
+- GitHub repository clone extraction for `fetch_content` -- detects GitHub code URLs, clones repos to `/tmp/atomic-github-repos/`, and returns actual file contents plus local path for further exploration with `read` and `bash`
 - Lightweight API fallback for oversized repos (>350MB) and commit SHA URLs via `gh api`
 - Clone cache with concurrent request deduplication (second request awaits first's clone)
 - `forceClone` parameter on `fetch_content` to override the size threshold

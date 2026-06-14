@@ -65,10 +65,24 @@ The user's research question/request is: **$ARGUMENTS**
         - The agent fetches live web content using the **browser** skill's `browse` CLI (or `npx browse` / `curl`). Instruct it to apply the token-efficient fetch order: (1) try `curl https://<site>/llms.txt` for an AI-friendly index (see [llmstxt.org](https://llmstxt.org/llms.txt)), (2) try `curl <url> -H "Accept: text/markdown"` to get pre-converted Markdown (supported on Cloudflare-hosted docs via [Markdown for Agents](https://developers.cloudflare.com/fundamentals/reference/markdown-for-agents/)), (3) fall back to HTML parsing via `browse`
         - Instruct the agent to return LINKS with their findings and INCLUDE those links in the research document
         - The agent should persist reusable source documents under `research/web/<YYYY-MM-DD>-<kebab-case-topic>.md` (with frontmatter noting `source_url`, `fetched_at`, and `fetch_method`) so future research can reuse them without re-fetching
-        - Output directory for the synthesized research artifact: `research/docs/`
+        - Output directory for the synthesized web research artifacts: `research/web/`:
+
+          When you fetch a document that is worth keeping for future sessions (reference docs, API schemas, SDK guides, release notes, troubleshooting writeups, architecture articles), `write` it to `research/web/<YYYY-MM-DD>-<kebab-case-topic>.md` with frontmatter capturing:
+          
+          ```markdown
+          ---
+          source_url: <original URL>
+          fetched_at: <YYYY-MM-DD>
+          fetch_method: read | llms.txt | markdown-accept-header | browser | browse
+          topic: <short description>
+          ---
+          ```
+
+        - Followed by the extracted content (trimmed of nav chrome, ads, and irrelevant boilerplate). This lets future work reuse the lookup without re-fetching. Before fetching anything, quickly `find research/web/` for an existing, recent copy.
+
         - Examples:
-            - If researching `Redis` locks usage, the agent might find relevant usage and create a document `research/docs/2024-01-15-redis-locks-usage.md` with internal links to Redis docs and code references (and cache the fetched Redis docs under `research/web/`)
-            - If researching `OAuth` flows, the agent might find relevant external articles and create a document `research/docs/2024-01-16-oauth-flows.md` with links to those articles
+            - If researching `Redis` locks usage, the agent might find relevant usage and create a document `research/web/2024-01-15-redis-locks-usage.md` with internal links to Redis docs and code references (and cache the fetched Redis docs under `research/web/`)
+            - If researching `OAuth` flows, the agent might find relevant external articles and create a document `research/web/2024-01-16-oauth-flows.md` with links to those articles
 
     The key is to use these agents intelligently:
     - Start with locator agents to find what exists

@@ -78,7 +78,7 @@ function loadGitHubConfig(): GitHubCloneConfig {
 		enabled: true,
 		maxRepoSizeMB: 350,
 		cloneTimeoutSeconds: 30,
-		clonePath: "/tmp/pi-github-repos",
+		clonePath: "/tmp/atomic-github-repos",
 	};
 
 	if (!existsSync(CONFIG_PATH)) {
