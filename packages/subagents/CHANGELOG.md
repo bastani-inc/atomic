@@ -4,6 +4,7 @@
 
 ### Changed
 
+- Aligned the subagents extension with upstream pi `^0.79.3` runtime packages (`@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, and `@earendil-works/pi-tui`) so child sessions inherit the latest shared agent, provider, and TUI compatibility fixes.
 - Changed `outputSchema` child runs to use Atomic's shared `structured_output` factory with flat schema parameters, preserving parent-side `structuredOutput` capture while removing the old child-facing `{ value: ... }` envelope, auto-allowing the required tool for explicit child tool allowlists, and documenting that the prompt-runtime extension is loaded before user/tool extensions so the allowlist sees the runtime-registered tool ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
 - Enforced parent-side fail-fast validation that subagent child `outputSchema` roots are top-level object tool-argument schemas; array or primitive handoff values must now be wrapped in object fields such as `{ items: [...] }` or `{ value: ... }` ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
 - Kept dynamic fanout `collect.outputSchema` as a general JSON Schema validator so saved chains and direct runs can validate aggregate arrays with array-root schemas while child `outputSchema` tool contracts remain object-rooted ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).

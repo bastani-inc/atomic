@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Changed
+
+- Published a synchronized Atomic 0.8.29-alpha.1 prerelease with the upstream pi TUI dependency aligned to `^0.79.3`; no functional changes were made in the intercom extension.
+
 ## [0.8.28] - 2026-06-11
 
 ### Changed
