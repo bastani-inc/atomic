@@ -13,6 +13,7 @@
 
 - Fixed subagent `outputSchema` readback to accept cross-process captures only when flat `output.json` params validate against the schema and `output.meta.json` sidecar metadata matches the final successful terminating `structured_output` transcript action, rejecting missing metadata, stale captures with later assistant/tool-result messages, sibling tool calls, duplicate structured-output calls, mismatched call IDs/names, and error tool results while ignoring benign `custom` host annotations around the final tool result ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
 - Fixed explicit empty child `tools: []` allowlists with `outputSchema` to pass only `--tools structured_output`, keeping the restricted child from regaining default tools while still enabling the required final-answer channel ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
+- Fixed workflow-stage subagent depth handling so bundled workflow stages inherit the main-chat two-hop subagent nesting budget while preserving stricter configured limits, and updated the nested-depth rejection message to describe the maximum-depth condition ([#1372](https://github.com/bastani-inc/atomic/pull/1372)).
 
 ## [0.8.28] - 2026-06-11
 
