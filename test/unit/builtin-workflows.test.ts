@@ -1145,6 +1145,9 @@ describe("goal", () => {
             /Use the current worktree and external state as authoritative/,
         );
         assert.match(prompt, /The audit must prove completion/);
+        assert.match(prompt, /Verify correctness end-to-end whenever practical/);
+        assert.match(prompt, /skill: "browser"/);
+        assert.match(prompt, /skill: "tmux"/);
         assert.match(
             prompt,
             /Blocked threshold: same blocker must repeat for at least 3 consecutive turns/,
@@ -1715,10 +1718,12 @@ describe("goal", () => {
             ctx.calls.prompts["completion-reviewer-1"]?.[0] ?? "",
             /echo the prior turn's exact blocker string/i,
         );
-        assert.match(
-            ctx.calls.prompts["completion-reviewer-1"]?.[0] ?? "",
-            /structured_output/i,
-        );
+        const reviewerPrompt = ctx.calls.prompts["completion-reviewer-1"]?.[0] ?? "";
+        assert.match(reviewerPrompt, /structured_output/i);
+        assert.match(reviewerPrompt, /Verify correctness end-to-end whenever practical/);
+        assert.match(reviewerPrompt, /frontend changes whose correctness depends on backend\/API behavior/);
+        assert.match(reviewerPrompt, /skill: "browser"/);
+        assert.match(reviewerPrompt, /skill: "tmux"/);
     });
 
     test("requires repeated same-blocker evidence before blocked status", async () => {
@@ -2347,6 +2352,13 @@ describe("ralph", () => {
             );
             assert.match(prompt, /When delegating subagents/i, label);
         }
+        for (const label of ["orchestrator-1", "reviewer-a", "reviewer-b"] as const) {
+            const prompt = ctx.calls.prompts[label]?.[0] ?? "";
+            assert.match(prompt, /Verify correctness end-to-end whenever practical/, label);
+            assert.match(prompt, /frontend changes whose correctness depends on backend\/API behavior/, label);
+            assert.match(prompt, /skill: "browser"/, label);
+            assert.match(prompt, /skill: "tmux"/, label);
+        }
         assert.equal(ctx.calls.task.includes("code-simplifier-1"), false);
     });
 
@@ -2666,10 +2678,14 @@ describe("ralph", () => {
             ctx.calls.taskOptions["orchestrator-2"]?.[0]?.forkFromSessionFile,
             "/tmp/ralph-orchestrator-1.jsonl",
         );
+        const forkedOrchestratorPrompt = ctx.calls.prompts["orchestrator-2"]?.[0] ?? "";
         assert.match(
-            ctx.calls.prompts["orchestrator-2"]?.[0] ?? "",
+            forkedOrchestratorPrompt,
             /Continue implementing from the latest research findings/i,
         );
+        assert.match(forkedOrchestratorPrompt, /Verify correctness end-to-end whenever practical/);
+        assert.match(forkedOrchestratorPrompt, /skill: "browser"/);
+        assert.match(forkedOrchestratorPrompt, /skill: "tmux"/);
         assert.doesNotMatch(
             ctx.calls.prompts["orchestrator-2"]?.[0] ?? "",
             /project_initialization_preflight/,

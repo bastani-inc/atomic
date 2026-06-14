@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { defineWorkflow } from "../src/workflows/define-workflow.js";
 import { Type } from "typebox";
 import type { WorkflowTaskResult } from "../src/shared/types.js";
-import { WORKER_PREFLIGHT_CONTRACT } from "./shared-prompts.js";
+import { E2E_VERIFICATION_GUIDANCE, WORKER_PREFLIGHT_CONTRACT } from "./shared-prompts.js";
 
 const DEFAULT_MAX_TURNS = 10;
 // Goal Runner runs three independent reviewer personas; two approvals form a majority.
@@ -545,6 +545,7 @@ function renderGoalContinuationPrompt(
       ].join("\n"),
     ],
     ["goal_guidelines", GOAL_CONTINUATION_REFERENCE],
+    ["e2e_verification", E2E_VERIFICATION_GUIDANCE],
   ]);
 }
 
@@ -575,6 +576,7 @@ function renderForkedGoalWorkerPrompt(
         renderLatestReviewArtifacts(latestReviewArtifactPaths),
       ].join("\n"),
     ],
+    ["e2e_verification", E2E_VERIFICATION_GUIDANCE],
   ]);
 }
 
@@ -751,6 +753,7 @@ function renderReviewerPrompt(args: {
     ["goal_framework", GOAL_METHOD_REFERENCE],
     ["goal_guidelines", GOAL_CONTINUATION_REFERENCE],
     ["auditability", RECEIPT_EXPECTATIONS],
+    ["e2e_verification", E2E_VERIFICATION_GUIDANCE],
     [
       "goal_context",
       [
@@ -785,8 +788,6 @@ function renderReviewerPrompt(args: {
       [
         "Inspect the actual diff/repository state rather than trusting stage summaries.",
         "Identify the smallest relevant validation set from repository evidence: targeted tests, lint, typecheck, build, generated-artifact checks, CI-equivalent scripts, or user-flow proof.",
-        "When practical, include an end-to-end QA check that exercises the app the way a user would: use the tmux skill for terminal app environments and browser for web app environments.",
-        "For web app environments, capture a screenshot as a certificate of correct completion when the UI state proves the objective; for terminal app environments, capture the terminal window/output that shows proof of correctness.",
         "Run or delegate focused validation when it is necessary to distinguish a real bug from a hunch.",
         "If tests or typechecks fail because dependencies are missing, install/download the missing dependencies with the repo's documented package manager instead of bypassing the check.",
         "If validation cannot be completed after reasonable recovery, record the limitation in overall_explanation and reviewer_error; do not use missing dependencies as a reason to approve.",

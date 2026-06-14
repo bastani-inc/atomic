@@ -16,7 +16,7 @@ import type {
   WorkflowRunContext,
   WorkflowTaskResult,
 } from "../src/shared/types.js";
-import { WORKER_PREFLIGHT_CONTRACT } from "./shared-prompts.js";
+import { E2E_VERIFICATION_GUIDANCE, WORKER_PREFLIGHT_CONTRACT } from "./shared-prompts.js";
 
 const DEFAULT_MAX_LOOPS = 10;
 const DEFAULT_RESEARCH_DIR = "research";
@@ -392,6 +392,7 @@ function renderForkedOrchestratorPrompt(args: {
         "Record decisions, research deviations, tradeoffs, blockers, validation outcomes, and anything else the user should know before your final report.",
       ].join("\n"),
     ],
+    ["e2e_verification", E2E_VERIFICATION_GUIDANCE],
     [
       "output_format",
       [
@@ -590,6 +591,7 @@ async function runRalphWorkflow(
           ].join("\n"),
         ],
         ["project_setup", WORKER_PREFLIGHT_CONTRACT],
+        ["e2e_verification", E2E_VERIFICATION_GUIDANCE],
         [
           "orchestration_guidance",
           [
@@ -632,7 +634,7 @@ async function runRalphWorkflow(
             "Pass each subagent the relevant task, constraints, files, validation expectations, unresolved reviewer findings covered by the research, and instructions to report implementation-note-worthy decisions or tradeoffs.",
             "Coordinate subagent results into the smallest coherent set of changes that satisfies the researched implementation guidance and original user prompt.",
             "Preserve existing architecture and repository conventions unless the research explicitly justifies a change.",
-            "Run or delegate the most relevant validation commands available in the repository.",
+            "Run or delegate the most relevant validation commands available in the repository, including end-to-end browser or tmux validation when the change has an executable user scenario.",
             `Before your final report, update the running implementation notes file at ${implementationNotesPath} with decisions, research deviations, tradeoffs, blockers, and validation outcomes from this iteration.`,
             "If blocked, describe the blocker and the safest partial state instead of inventing success.",
             "Do not hide failures; reviewers need accurate status.",
@@ -708,11 +710,12 @@ async function runRalphWorkflow(
           "If validation requires dependencies or tools that are missing, download or install them using the repository-approved package manager/commands rather than bypassing, mocking, or skipping the verification solely because dependencies are absent.",
         ].join("\n"),
       ],
+      ["e2e_verification", E2E_VERIFICATION_GUIDANCE],
       [
         "validation_expectations",
         [
           "Inspect the actual diff/repository state rather than trusting stage summaries.",
-          "Run or delegate focused validation when it is necessary to distinguish a real bug from a hunch.",
+          "Run or delegate focused validation when it is necessary to distinguish a real bug from a hunch, including end-to-end browser or tmux validation when a user scenario can prove the outcome.",
           "If tests or typechecks fail because dependencies are missing, install/download the missing dependencies with the repo's documented package manager instead of bypassing the check.",
           "If validation cannot be completed after reasonable recovery, record the limitation in overall_explanation and reviewer_error; do not use missing dependencies as a reason to approve.",
         ].join("\n"),
@@ -767,7 +770,7 @@ async function runRalphWorkflow(
         [
           "1. Identify the changed files or diff under review.",
           "2. Read the relevant changed code and directly affected call sites/tests/configs.",
-          "3. Run or delegate focused validation when needed to resolve uncertainty.",
+          "3. Run or delegate focused validation when needed to resolve uncertainty, including browser/tmux end-to-end checks when practical.",
           "4. If you cannot inspect or validate enough to approve safely, populate reviewer_error and set stop_review_loop=false.",
         ].join("\n"),
       ],
