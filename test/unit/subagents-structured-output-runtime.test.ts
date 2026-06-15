@@ -144,7 +144,7 @@ describe("subagent structured_output prompt runtime", () => {
 
         assert.equal(result.terminate, true);
         assert.deepEqual(result.details, promptPayload);
-        assert.equal(result.content[0]?.type === "text" ? result.content[0].text : "", "Structured output received.");
+        assert.deepEqual(JSON.parse(result.content[0]?.type === "text" ? result.content[0].text : ""), promptPayload);
         assert.deepEqual(JSON.parse(readFileSync(outputPath, "utf-8")), promptPayload);
         assertPrivateFileModeIfSupported(outputPath);
       });

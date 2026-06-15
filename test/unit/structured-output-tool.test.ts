@@ -80,7 +80,7 @@ describe("structured_output factory tool", () => {
 
     assert.equal(result.terminate, true);
     assert.deepEqual(result.details, payload);
-    assert.equal(textContent(result), "Structured output received.");
+    assert.deepEqual(JSON.parse(textContent(result)), payload);
 
     const arrayResult = await tool.execute("call-2", ["not", "an", "object"] as unknown as Parameters<typeof tool.execute>[1], undefined, undefined, {} as Parameters<typeof tool.execute>[4]);
     assert.deepEqual(arrayResult.details, ["not", "an", "object"]);
@@ -100,7 +100,7 @@ describe("structured_output factory tool", () => {
 
     assert.equal(result.terminate, true);
     assert.deepEqual(result.details, payload);
-    assert.equal(textContent(result), "Structured output received.");
+    assert.deepEqual(JSON.parse(textContent(result)), payload);
     assert.equal(capture.called, true);
     assert.deepEqual(capture.value, payload);
   });
@@ -163,7 +163,7 @@ describe("structured_output factory tool", () => {
         maxResultSizeChars: tool.maxResultSizeChars,
       });
       assert.equal(structuredReplacement, undefined);
-      assert.equal(textContent(result), "Structured output received.");
+      assert.deepEqual(JSON.parse(textContent(result)), payload);
       assert.deepEqual(result.details, payload);
 
       const ordinaryReplacement = await redirectOversizedToolResult({

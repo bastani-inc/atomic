@@ -1,7 +1,10 @@
 import type { AssistantMessage, ImageContent, ToolResultMessage } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentSessionEvent, AgentSessionEventListener, ExtensionBindings } from "../src/core/agent-session.ts";
+import type { ExtensionContext } from "../src/core/extensions/types.ts";
 import type { CustomMessage } from "../src/core/messages.ts";
+import { createStructuredOutputTool } from "../src/core/tools/structured-output.ts";
 import type { SessionShutdownEvent } from "../src/index.ts";
 import { runPrintMode, type PrintModeOptions } from "../src/modes/print-mode.ts";
 
@@ -81,13 +84,16 @@ function createToolResultMessage(options: {
 	toolCallId: string;
 	toolName: string;
 	text?: string;
+	content?: ToolResultMessage["content"];
+	details?: unknown;
 	isError?: boolean;
 }): ToolResultMessage {
 	return {
 		role: "toolResult",
 		toolCallId: options.toolCallId,
 		toolName: options.toolName,
-		content: options.text === undefined ? [] : [{ type: "text", text: options.text }],
+		content: options.content ?? (options.text === undefined ? [] : [{ type: "text", text: options.text }]),
+		...(options.details === undefined ? {} : { details: options.details }),
 		isError: options.isError ?? false,
 		timestamp: Date.now(),
 	};
@@ -238,23 +244,33 @@ describe("runPrintMode", () => {
 		const { session } = runtimeHost;
 		const stdoutChunks = captureStdout();
 		const finalJson = "{\n  \"ok\": true\n}";
+		const structuredOutputTool = createStructuredOutputTool({
+			schema: Type.Object({ ok: Type.Boolean() }, { additionalProperties: false }),
+		});
+		const result = await structuredOutputTool.execute(
+			"structured-call-1",
+			{ ok: true },
+			undefined,
+			undefined,
+			{} as ExtensionContext,
+		);
+
+		expect(result.content).toEqual([{ type: "text", text: finalJson }]);
+		expect(result.details).toEqual({ ok: true });
 
 		session.prompt.mockImplementation(async () => {
 			session.emitEvent({
 				type: "tool_execution_end",
 				toolCallId: "structured-call-1",
 				toolName: "structured_output",
-				result: {
-					content: [{ type: "text", text: finalJson }],
-					details: { ok: true },
-					terminate: true,
-				},
+				result,
 				isError: false,
 			});
 			session.state.messages.push(createToolResultMessage({
 				toolCallId: "structured-call-1",
 				toolName: "structured_output",
-				text: finalJson,
+				content: result.content,
+				details: result.details,
 			}));
 		});
 
@@ -275,23 +291,34 @@ describe("runPrintMode", () => {
 		const { session } = runtimeHost;
 		const stdoutChunks = captureStdout();
 		const finalJson = "{\n  \"approved\": true\n}";
+		const structuredOutputTool = createStructuredOutputTool({
+			name: "final_decision",
+			schema: Type.Object({ approved: Type.Boolean() }, { additionalProperties: false }),
+		});
+		const result = await structuredOutputTool.execute(
+			"custom-structured-call-1",
+			{ approved: true },
+			undefined,
+			undefined,
+			{} as ExtensionContext,
+		);
+
+		expect(result.content).toEqual([{ type: "text", text: finalJson }]);
+		expect(result.details).toEqual({ approved: true });
 
 		session.prompt.mockImplementation(async () => {
 			session.emitEvent({
 				type: "tool_execution_end",
 				toolCallId: "custom-structured-call-1",
 				toolName: "final_decision",
-				result: {
-					content: [{ type: "text", text: finalJson }],
-					details: { approved: true },
-					terminate: true,
-				},
+				result,
 				isError: false,
 			});
 			session.state.messages.push(createToolResultMessage({
 				toolCallId: "custom-structured-call-1",
 				toolName: "final_decision",
-				text: finalJson,
+				content: result.content,
+				details: result.details,
 			}));
 		});
 

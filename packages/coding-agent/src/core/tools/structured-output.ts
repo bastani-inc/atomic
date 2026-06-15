@@ -85,7 +85,7 @@ export function createStructuredOutputTool<TSchemaDef extends TSchema>(
 			}
 
 			return {
-				content: [{ type: "text", text: "Structured output received." }],
+				content: [{ type: "text", text: serializedParams }],
 				details: params,
 				terminate: true,
 			};
