@@ -48,7 +48,13 @@ import { getPiSpawnCommand } from "../shared/pi-spawn.ts";
 import { createJsonlWriter } from "../../shared/jsonl-writer.ts";
 import { attachPostExitStdioGuard, trySignalChild } from "../../shared/post-exit-stdio-guard.ts";
 import { applyThinkingSuffix, buildPiArgs, cleanupTempDir } from "../shared/pi-args.ts";
-import { readStructuredOutput } from "../shared/structured-output.ts";
+import {
+	STRUCTURED_OUTPUT_MAX_CORRECTIVE_PROMPTS,
+	formatStructuredOutputCorrectionPrompt,
+	isStructuredOutputContractError,
+	latestStructuredOutputToolErrorFromMessages,
+	readStructuredOutput,
+} from "../shared/structured-output.ts";
 import { captureSingleOutputSnapshot, formatSavedOutputReference, resolveSingleOutput, validateFileOnlyOutputMode, type SingleOutputSnapshot } from "../shared/single-output.ts";
 import {
 	buildModelCandidates,
@@ -157,18 +163,39 @@ function extractUpdateText(update: RunSyncUpdate): string | undefined {
 	return text || undefined;
 }
 
-export function shouldSuppressIntermediateRetryableFailureUpdate(update: RunSyncUpdate): boolean {
+function terminalUpdateFailureText(update: RunSyncUpdate): string | undefined {
 	const result = update.details?.results?.[0];
-	if (!result) return false;
+	if (!result) return undefined;
 	const progress = update.details?.progress?.[0];
 	const status = result.progress?.status ?? progress?.status;
-	if (status !== "failed") return false;
-	const failureText = result.error
+	if (status !== "failed") return undefined;
+	return result.error
 		?? result.progress?.error
 		?? progress?.error
 		?? extractUpdateText(update);
-	return isRetryableModelFailure(failureText);
 }
+
+export function shouldSuppressIntermediateRetryableFailureUpdate(update: RunSyncUpdate): boolean {
+	return isRetryableModelFailure(terminalUpdateFailureText(update));
+}
+
+export function shouldSuppressIntermediateStructuredOutputFailureUpdate(update: RunSyncUpdate): boolean {
+	return isStructuredOutputContractError(terminalUpdateFailureText(update));
+}
+
+type RunSingleAttemptShared = {
+	sessionEnabled: boolean;
+	systemPrompt: string;
+	resolvedSkillNames?: string[];
+	skillsWarning?: string;
+	jsonlPath?: string;
+	artifactPaths?: ArtifactPaths;
+	attemptNotes: string[];
+	outputSnapshot?: SingleOutputSnapshot;
+	fastModeSettings: CodexFastModeResolvedSettings;
+	fastModeScope: CodexFastModeScope;
+	originalTask?: string;
+};
 
 async function runSingleAttempt(
 	runtimeCwd: string,
@@ -176,19 +203,7 @@ async function runSingleAttempt(
 	task: string,
 	model: string | undefined,
 	options: RunSyncOptions,
-	shared: {
-		sessionEnabled: boolean;
-		systemPrompt: string;
-		resolvedSkillNames?: string[];
-		skillsWarning?: string;
-		jsonlPath?: string;
-		artifactPaths?: ArtifactPaths;
-		attemptNotes: string[];
-		outputSnapshot?: SingleOutputSnapshot;
-		fastModeSettings: CodexFastModeResolvedSettings;
-		fastModeScope: CodexFastModeScope;
-		originalTask?: string;
-	},
+	shared: RunSingleAttemptShared,
 ): Promise<SingleResult> {
 	const modelArg = applyThinkingSuffix(model, agent.thinking);
 	const runCwd = options.cwd ?? runtimeCwd;
@@ -834,6 +849,71 @@ async function runSingleAttempt(
 	return result;
 }
 
+async function runSingleAttemptWithStructuredOutputRetries(
+	runtimeCwd: string,
+	agent: AgentConfig,
+	task: string,
+	model: string | undefined,
+	options: RunSyncOptions,
+	shared: RunSingleAttemptShared,
+): Promise<SingleResult> {
+	let nextTask = task;
+	let correctiveAttempts = 0;
+	let finalResult: SingleResult | undefined;
+	const aggregateUsage = emptyUsage();
+	let totalToolCount = 0;
+	let totalDurationMs = 0;
+
+	while (true) {
+		const suppressIntermediateStructuredOutputFailure = options.structuredOutput !== undefined
+			&& correctiveAttempts < STRUCTURED_OUTPUT_MAX_CORRECTIVE_PROMPTS
+			&& options.onUpdate !== undefined;
+		const attemptOptions = suppressIntermediateStructuredOutputFailure
+			? {
+				...options,
+				onUpdate: (update: RunSyncUpdate) => {
+					if (shouldSuppressIntermediateStructuredOutputFailureUpdate(update)) return;
+					options.onUpdate?.(update);
+				},
+			}
+			: options;
+		const result = await runSingleAttempt(runtimeCwd, agent, nextTask, model, attemptOptions, shared);
+		finalResult = result;
+		sumUsage(aggregateUsage, result.usage);
+		totalToolCount += result.progressSummary?.toolCount ?? 0;
+		totalDurationMs += result.progressSummary?.durationMs ?? 0;
+
+		if (!options.structuredOutput || !isStructuredOutputContractError(result.error)) break;
+		const correctionError = latestStructuredOutputToolErrorFromMessages(result.messages) ?? result.error ?? "Structured output contract failed.";
+		if (correctiveAttempts >= STRUCTURED_OUTPUT_MAX_CORRECTIVE_PROMPTS) {
+			result.error = correctionError;
+			break;
+		}
+		correctiveAttempts += 1;
+		nextTask = formatStructuredOutputCorrectionPrompt({
+			originalTask: task,
+			error: correctionError,
+			attempt: correctiveAttempts,
+		});
+	}
+
+	const result = finalResult ?? {
+		agent: agent.name,
+		task,
+		exitCode: 1,
+		messages: [],
+		usage: emptyUsage(),
+		error: "Subagent did not produce a result.",
+	} satisfies SingleResult;
+	result.usage = aggregateUsage;
+	result.progressSummary = {
+		toolCount: totalToolCount,
+		tokens: aggregateUsage.input + aggregateUsage.output,
+		durationMs: totalDurationMs,
+	};
+	return result;
+}
+
 /**
  * Run a subagent synchronously (blocking until complete)
  */
@@ -949,7 +1029,7 @@ export async function runSync(
 				},
 			};
 		}
-		const result = await runSingleAttempt(runtimeCwd, agent, taskWithAcceptance, candidate, attemptOptions, {
+		const result = await runSingleAttemptWithStructuredOutputRetries(runtimeCwd, agent, taskWithAcceptance, candidate, attemptOptions, {
 			sessionEnabled,
 			systemPrompt,
 			resolvedSkillNames: resolvedSkills.length > 0 ? resolvedSkills.map((skill) => skill.name) : undefined,

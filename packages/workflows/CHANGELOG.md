@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed schema-backed workflow stages to send up to three corrective follow-up prompts when a turn finishes without the required `structured_output` call or with an invalid `structured_output` call, echoing the concrete contract/validation error before failing the stage.
+- Fixed failed workflow stages to retain and persist SDK `sessionId`/`sessionFile` metadata, so post-error transcript inspection and follow-up messaging resume from the failed conversation instead of silently creating a fresh empty session.
+- Fixed schema-backed workflow stages with `noTools: "all"` to keep the restrictive allowlist while still exposing the required `structured_output` final-answer tool.
+
 ## [0.8.29] - 2026-06-15
 
 ### Added

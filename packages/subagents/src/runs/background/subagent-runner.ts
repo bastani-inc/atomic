@@ -45,7 +45,14 @@ import {
 } from "../shared/parallel-utils.ts";
 import { buildPiArgs, cleanupTempDir } from "../shared/pi-args.ts";
 import { outputEntryFromAsyncResult, resolveOutputReferences } from "../shared/chain-outputs.ts";
-import { createStructuredOutputRuntime, readStructuredOutput } from "../shared/structured-output.ts";
+import {
+	STRUCTURED_OUTPUT_MAX_CORRECTIVE_PROMPTS,
+	createStructuredOutputRuntime,
+	formatStructuredOutputCorrectionPrompt,
+	isStructuredOutputContractError,
+	latestStructuredOutputToolErrorFromMessages,
+	readStructuredOutput,
+} from "../shared/structured-output.ts";
 import { collectDynamicResults, DynamicFanoutError, materializeDynamicParallelStep, validateDynamicCollection } from "../shared/dynamic-fanout.ts";
 import { nestedSummaryFromAsyncStatus, writeNestedEvent } from "../shared/nested-events.ts";
 import { formatModelAttemptNote, isRetryableModelFailure, modelFailureMessage } from "../shared/model-fallback.ts";
@@ -692,124 +699,148 @@ async function runSingleStep(
 		const candidate = candidates[index];
 		const attemptFastMode = fastModeForStepAttempt(step, candidate);
 		ctx.onAttemptStart?.({ model: candidate, thinking: resolveEffectiveThinking(candidate, step.thinking), fastMode: attemptFastMode ? true : undefined });
-		const outputSnapshot = captureSingleOutputSnapshot(step.outputPath);
-		if (effectiveStructuredOutput) {
-			try {
-				if (fs.existsSync(effectiveStructuredOutput.outputPath)) fs.unlinkSync(effectiveStructuredOutput.outputPath);
-			} catch {
-				// Missing/stale structured-output files are handled after the child exits.
-			}
-		}
-		const { args, env, tempDir } = buildPiArgs({
-			baseArgs: ["--mode", "json", "-p"],
-			task,
-			sessionEnabled,
-			sessionDir,
-			sessionFile: step.sessionFile,
-			model: candidate,
-			inheritProjectContext: step.inheritProjectContext,
-			inheritSkills: step.inheritSkills,
-			tools: step.tools,
-			extensions: step.extensions,
-			systemPrompt: step.systemPrompt,
-			systemPromptMode: step.systemPromptMode,
-			mcpDirectTools: step.mcpDirectTools,
-			cwd: step.cwd ?? ctx.cwd,
-			promptFileStem: step.agent,
-			intercomSessionName: ctx.childIntercomTarget,
-			orchestratorIntercomTarget: ctx.orchestratorIntercomTarget,
-			runId: ctx.id,
-			childAgentName: step.agent,
-			childIndex: ctx.flatIndex,
-			parentEventSink: ctx.nestedRoute?.eventSink,
-			parentControlInbox: ctx.nestedRoute?.controlInbox,
-			parentRootRunId: ctx.nestedRoute?.rootRunId,
-			parentCapabilityToken: ctx.nestedRoute?.capabilityToken,
-			codexFastModeSettings: step.codexFastModeSettings,
-			codexFastModeScope: step.codexFastModeScope,
-			structuredOutput: effectiveStructuredOutput,
-		});
-		const run = await runPiStreaming(
-			args,
-			step.cwd ?? ctx.cwd,
-			ctx.outputFile,
-			env,
-			ctx.piPackageRoot,
-			ctx.piArgv1,
-			step.maxSubagentDepth,
-			step.workflowStageSubagentGuard ?? ctx.workflowStageSubagentGuard,
-			{ eventsPath, runId: ctx.id, stepIndex: ctx.flatIndex, agent: step.agent },
-			ctx.registerInterrupt,
-			ctx.onChildEvent,
-		);
-		cleanupTempDir(tempDir);
-
-		const hiddenError = run.exitCode === 0 && !run.error ? detectSubagentError(run.messages) : null;
-		let structuredOutput: unknown;
-		let structuredError: string | undefined;
-		if (effectiveStructuredOutput && run.exitCode === 0 && !run.error && !hiddenError?.hasError) {
-			const structured = readStructuredOutput(effectiveStructuredOutput);
-			if (structured.error) structuredError = structured.error;
-			else structuredOutput = structured.value;
-		}
-		const completionGuard = run.exitCode === 0 && !run.error && !hiddenError?.hasError && step.completionGuard !== false
-			? evaluateCompletionMutationGuard({
-				agent: step.agent,
-				task: taskForCompletionGuard,
-				messages: run.messages,
-				tools: step.tools,
-				mcpDirectTools: step.mcpDirectTools,
-			})
-			: undefined;
-		const completionGuardTriggered = completionGuard?.triggered === true && !run.observedMutationAttempt;
-		const completionGuardError = completionGuardTriggered
-			? "Subagent completed without making edits for an implementation task.\nIt appears to have returned planning or scratchpad output instead of applying changes."
-			: undefined;
-		const effectiveExitCode = completionGuardTriggered
-			? 1
-			: structuredError
-				? 1
-				: hiddenError?.hasError
-				? (hiddenError.exitCode ?? 1)
-				: run.error && run.exitCode === 0
-					? 1
-					: run.exitCode;
-		const error = completionGuardError
-			?? structuredError
-			?? (hiddenError?.hasError
-				? hiddenError.details
-					? `${hiddenError.errorType} failed (exit ${effectiveExitCode}): ${hiddenError.details}`
-					: `${hiddenError.errorType} failed with exit code ${effectiveExitCode}`
-				: run.error || (run.exitCode !== 0 && run.stderr.trim() ? run.stderr.trim() : undefined));
-		const attemptModel = candidate ?? run.model ?? step.model ?? "default";
-		const attempt: ModelAttempt = {
-			model: attemptModel,
-			reasoningLevel: resolveEffectiveThinking(attemptModel, step.thinking),
-			success: effectiveExitCode === 0 && !error,
-			exitCode: effectiveExitCode,
-			error,
-			usage: run.usage,
-		};
-		modelAttempts.push(attempt);
 		if (candidate) attemptedModels.push(candidate);
-		completionGuardTriggeredFinal = completionGuardTriggered;
-		finalFastMode = attemptFastMode;
-		finalOutputSnapshot = outputSnapshot;
-		finalResult = { ...run, exitCode: effectiveExitCode, model: candidate ?? run.model, error, structuredOutput } as RunPiStreamingResult & { structuredOutput?: unknown };
-		if (attempt.success) break;
-		const retrySignal = run.modelFailureSignal ?? error;
-		if (
-			!completionGuardTriggered
-			&& structuredError === undefined
-			&& hiddenError?.hasError !== true
-			&& isRetryableModelFailure(retrySignal)
-			&& index < candidates.length - 1
-		) {
-			pendingAttemptNotes.push(formatModelAttemptNote(attempt, candidates[index + 1]));
-			continue;
+		let nextTask = task;
+		let correctiveAttempts = 0;
+		let tryNextModel = false;
+
+		while (true) {
+			const outputSnapshot = captureSingleOutputSnapshot(step.outputPath);
+			if (effectiveStructuredOutput) {
+				try {
+					if (fs.existsSync(effectiveStructuredOutput.outputPath)) fs.unlinkSync(effectiveStructuredOutput.outputPath);
+				} catch {
+					// Missing/stale structured-output files are handled after the child exits.
+				}
+			}
+			const { args, env, tempDir } = buildPiArgs({
+				baseArgs: ["--mode", "json", "-p"],
+				task: nextTask,
+				sessionEnabled,
+				sessionDir,
+				sessionFile: step.sessionFile,
+				model: candidate,
+				inheritProjectContext: step.inheritProjectContext,
+				inheritSkills: step.inheritSkills,
+				tools: step.tools,
+				extensions: step.extensions,
+				systemPrompt: step.systemPrompt,
+				systemPromptMode: step.systemPromptMode,
+				mcpDirectTools: step.mcpDirectTools,
+				cwd: step.cwd ?? ctx.cwd,
+				promptFileStem: step.agent,
+				intercomSessionName: ctx.childIntercomTarget,
+				orchestratorIntercomTarget: ctx.orchestratorIntercomTarget,
+				runId: ctx.id,
+				childAgentName: step.agent,
+				childIndex: ctx.flatIndex,
+				parentEventSink: ctx.nestedRoute?.eventSink,
+				parentControlInbox: ctx.nestedRoute?.controlInbox,
+				parentRootRunId: ctx.nestedRoute?.rootRunId,
+				parentCapabilityToken: ctx.nestedRoute?.capabilityToken,
+				codexFastModeSettings: step.codexFastModeSettings,
+				codexFastModeScope: step.codexFastModeScope,
+				structuredOutput: effectiveStructuredOutput,
+			});
+			const run = await runPiStreaming(
+				args,
+				step.cwd ?? ctx.cwd,
+				ctx.outputFile,
+				env,
+				ctx.piPackageRoot,
+				ctx.piArgv1,
+				step.maxSubagentDepth,
+				step.workflowStageSubagentGuard ?? ctx.workflowStageSubagentGuard,
+				{ eventsPath, runId: ctx.id, stepIndex: ctx.flatIndex, agent: step.agent },
+				ctx.registerInterrupt,
+				ctx.onChildEvent,
+			);
+			cleanupTempDir(tempDir);
+
+			const hiddenError = run.exitCode === 0 && !run.error ? detectSubagentError(run.messages) : null;
+			let structuredOutput: unknown;
+			let structuredError: string | undefined;
+			if (effectiveStructuredOutput && run.exitCode === 0 && !run.error && !hiddenError?.hasError) {
+				const structured = readStructuredOutput(effectiveStructuredOutput);
+				if (structured.error) structuredError = structured.error;
+				else structuredOutput = structured.value;
+			}
+			const structuredContractError = structuredError
+				? latestStructuredOutputToolErrorFromMessages(run.messages) ?? structuredError
+				: undefined;
+			const completionGuard = run.exitCode === 0 && !run.error && !hiddenError?.hasError && step.completionGuard !== false
+				? evaluateCompletionMutationGuard({
+					agent: step.agent,
+					task: taskForCompletionGuard,
+					messages: run.messages,
+					tools: step.tools,
+					mcpDirectTools: step.mcpDirectTools,
+				})
+				: undefined;
+			const completionGuardTriggered = completionGuard?.triggered === true && !run.observedMutationAttempt;
+			const completionGuardError = completionGuardTriggered
+				? "Subagent completed without making edits for an implementation task.\nIt appears to have returned planning or scratchpad output instead of applying changes."
+				: undefined;
+			const effectiveExitCode = completionGuardTriggered
+				? 1
+				: structuredContractError
+					? 1
+					: hiddenError?.hasError
+					? (hiddenError.exitCode ?? 1)
+					: run.error && run.exitCode === 0
+						? 1
+						: run.exitCode;
+			const error = completionGuardError
+				?? structuredContractError
+				?? (hiddenError?.hasError
+					? hiddenError.details
+						? `${hiddenError.errorType} failed (exit ${effectiveExitCode}): ${hiddenError.details}`
+						: `${hiddenError.errorType} failed with exit code ${effectiveExitCode}`
+					: run.error || (run.exitCode !== 0 && run.stderr.trim() ? run.stderr.trim() : undefined));
+			const attemptModel = candidate ?? run.model ?? step.model ?? "default";
+			const attempt: ModelAttempt = {
+				model: attemptModel,
+				reasoningLevel: resolveEffectiveThinking(attemptModel, step.thinking),
+				success: effectiveExitCode === 0 && !error,
+				exitCode: effectiveExitCode,
+				error,
+				usage: run.usage,
+			};
+			modelAttempts.push(attempt);
+			completionGuardTriggeredFinal = completionGuardTriggered;
+			finalFastMode = attemptFastMode;
+			finalOutputSnapshot = outputSnapshot;
+			finalResult = { ...run, exitCode: effectiveExitCode, model: candidate ?? run.model, error, structuredOutput } as RunPiStreamingResult & { structuredOutput?: unknown };
+			if (attempt.success) break;
+			if (
+				effectiveStructuredOutput
+				&& isStructuredOutputContractError(structuredContractError)
+				&& correctiveAttempts < STRUCTURED_OUTPUT_MAX_CORRECTIVE_PROMPTS
+			) {
+				correctiveAttempts += 1;
+				nextTask = formatStructuredOutputCorrectionPrompt({
+					originalTask: task,
+					error: structuredContractError!,
+					attempt: correctiveAttempts,
+				});
+				continue;
+			}
+			const retrySignal = run.modelFailureSignal ?? error;
+			if (
+				!completionGuardTriggered
+				&& structuredContractError === undefined
+				&& hiddenError?.hasError !== true
+				&& isRetryableModelFailure(retrySignal)
+				&& index < candidates.length - 1
+			) {
+				pendingAttemptNotes.push(formatModelAttemptNote(attempt, candidates[index + 1]));
+				tryNextModel = true;
+				break;
+			}
+			attemptNotes.push(...pendingAttemptNotes);
+			break;
 		}
-		attemptNotes.push(...pendingAttemptNotes);
-		break;
+		if (!tryNextModel) break;
 	}
 
 	const rawOutput = finalResult?.finalOutput ?? "";

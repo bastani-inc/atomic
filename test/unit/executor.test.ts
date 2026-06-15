@@ -7257,6 +7257,76 @@ describe("executor — stage-control registry integration", () => {
         assert.equal(stage!.sessionFile, "/tmp/atomic-test-session.ndjson");
     });
 
+    test("failed schema-backed stage retains session metadata", async () => {
+        const def = defineWorkflow("failed-session-meta-wf")
+            .run(async (ctx) => {
+                await ctx.stage("review", {
+                    schema: Type.Object({ ok: Type.Boolean() }, { additionalProperties: false }),
+                }).prompt("review");
+                return {};
+            })
+            .compile();
+        const store = createStore();
+        const result = await run(
+            def,
+            {},
+            {
+                adapters: {
+                    agentSession: {
+                        async create() {
+                            return mockSession();
+                        },
+                    },
+                },
+                store,
+                stageControlRegistry: createStageControlRegistry(),
+            },
+        );
+
+        assert.equal(result.status, "failed");
+        const stage = store.runs()[0]?.stages[0];
+        assert.equal(stage?.status, "failed");
+        assert.equal(stage?.sessionId, "sess-test-1");
+        assert.equal(stage?.sessionFile, "/tmp/atomic-test-session.ndjson");
+    });
+
+    test("failed schema-backed stage persists session metadata", async () => {
+        const calls: Array<{ type: string; payload: Record<string, unknown> }> = [];
+        const def = defineWorkflow("failed-session-persist-wf")
+            .run(async (ctx) => {
+                await ctx.stage("review", {
+                    schema: Type.Object({ ok: Type.Boolean() }, { additionalProperties: false }),
+                }).prompt("review");
+                return {};
+            })
+            .compile();
+        await run(
+            def,
+            {},
+            {
+                adapters: {
+                    agentSession: {
+                        async create() {
+                            return mockSession();
+                        },
+                    },
+                },
+                store: createStore(),
+                stageControlRegistry: createStageControlRegistry(),
+                persistence: {
+                    appendEntry(type: string, payload: Record<string, unknown>): string {
+                        calls.push({ type, payload });
+                        return `entry-${calls.length}`;
+                    },
+                },
+            },
+        );
+
+        const stageEnd = calls.find((call) => call.type === "workflow.stage.end");
+        assert.equal(stageEnd?.payload["sessionId"], "sess-test-1");
+        assert.equal(stageEnd?.payload["sessionFile"], "/tmp/atomic-test-session.ndjson");
+    });
+
     test("attachable flag is cleared once the stage settles", async () => {
         const def = defineWorkflow("attachable-wf")
             .run(async (ctx) => {

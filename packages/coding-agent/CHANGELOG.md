@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed bundled workflow and subagent structured-output gates to recover from missing or invalid `structured_output` final answers by issuing up to three corrective retries that echo the actual contract or schema-validation error before failing.
+- Fixed bundled workflow failed-stage metadata so error-stage transcripts remain discoverable and follow-up messaging resumes from the failed conversation instead of resetting to an empty session.
+
 ## [0.8.29] - 2026-06-15
 
 ### Added

@@ -141,6 +141,8 @@ export interface InternalStageContext extends StageContext {
    * workflow body's natural first `prompt()` lands.
    */
   __ensureSession(): Promise<void>;
+  /** Internal: reopen an archived stage transcript before post-terminal follow-up. */
+  __ensureSessionFromFile(sessionFile: string): Promise<void>;
   /**
    * Internal: snapshot of currently-known SDK session metadata. Returns
    * `undefined` keys when the session has not yet been created.
@@ -536,6 +538,48 @@ function splitPromptOptions(options: StagePromptOptions | undefined): {
 }
 
 const STRUCTURED_OUTPUT_TOOL_NAME = "structured_output";
+const STRUCTURED_OUTPUT_MAX_CORRECTIVE_PROMPTS = 3;
+const STRUCTURED_OUTPUT_MISSING_ERROR = "atomic-workflows: stage configured with schema must finish by calling structured_output.";
+
+type ToolResultContentBlock = {
+  readonly type?: unknown;
+  readonly text?: unknown;
+};
+
+function toolResultText(content: unknown): string | undefined {
+  if (!Array.isArray(content)) return undefined;
+  const text = content
+    .map((block: ToolResultContentBlock) => block.type === "text" && typeof block.text === "string" ? block.text : "")
+    .join("\n")
+    .trim();
+  return text.length > 0 ? text : undefined;
+}
+
+function structuredOutputToolErrorFromEvent(event: unknown): string | undefined {
+  if (event === null || typeof event !== "object") return undefined;
+  const record = event as Record<string, unknown>;
+  if (record["type"] !== "tool_execution_end") return undefined;
+  if (record["toolName"] !== STRUCTURED_OUTPUT_TOOL_NAME) return undefined;
+  const result = record["result"];
+  const resultRecord = result !== null && typeof result === "object" ? result as Record<string, unknown> : undefined;
+  const isError = record["isError"] === true || resultRecord?.["isError"] === true;
+  if (!isError) return undefined;
+  return toolResultText(resultRecord?.["content"]) ?? "structured_output tool call failed schema validation.";
+}
+
+function formatStructuredOutputCorrectionPrompt(error: string, attempt: number): string {
+  return [
+    "The previous response failed this stage's structured-output contract.",
+    "",
+    `Corrective attempt ${attempt}/${STRUCTURED_OUTPUT_MAX_CORRECTIVE_PROMPTS}.`,
+    "",
+    "Error:",
+    error,
+    "",
+    "You must finish by calling the `structured_output` tool exactly once with arguments matching the registered schema.",
+    "Do not answer with plain JSON text, Markdown, or prose. If you attempted `structured_output` and validation failed, correct the tool arguments and call `structured_output` again.",
+  ].join("\n");
+}
 
 function stringifyStructuredOutputValue(value: unknown): string {
   try {
@@ -551,7 +595,7 @@ function stageOptionsWithStructuredOutput(
 ): StageOptions | undefined {
   if (!options?.schema || !capture) return options;
   const tools = options.tools === undefined
-    ? undefined
+    ? options.noTools === "all" ? [STRUCTURED_OUTPUT_TOOL_NAME] : undefined
     : Array.from(new Set([...options.tools, STRUCTURED_OUTPUT_TOOL_NAME]));
   const excludedTools = options.excludedTools?.filter((toolName) => toolName !== STRUCTURED_OUTPUT_TOOL_NAME);
   return {
@@ -607,6 +651,7 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
   const meta: StageExecutionMeta = { runId, stageId, stageName, signal, stageOptions: effectiveStageOptions, executionMode };
   let session: StageSessionRuntime | undefined;
   let sessionPromise: Promise<StageSessionRuntime> | undefined;
+  let reattachSessionFile: string | undefined;
   let lastAssistantText: string | undefined;
   // Tool-call ids whose tool returned `terminate: true` at runtime, observed
   // from the session's `tool_execution_end` events. The SDK ends the turn on a
@@ -615,6 +660,7 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
   // `lastAssistantTextFromSession`. The tool result *message* does not carry the
   // terminate flag, so it must be tracked from the live event stream.
   const terminatingToolCallIds = new Set<string>();
+  let latestStructuredOutputToolError: string | undefined;
   let unsubscribeTerminateWatcher: (() => void) | undefined;
   const recordTerminatingToolCall = (event: unknown): void => {
     if (event === null || typeof event !== "object") return;
@@ -703,14 +749,26 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
   }
 
   function stageOptionsForCandidate(candidate: WorkflowResolvedModelCandidate | undefined): StageOptions | undefined {
-    if (candidate === undefined) return effectiveStageOptions;
-    return {
-      ...(effectiveStageOptions ?? {}),
-      model: candidate.value,
-      ...(candidate.reasoningLevel !== undefined ? { thinkingLevel: candidate.reasoningLevel } : {}),
-      fallbackModels: undefined,
-      fallbackThinkingLevels: undefined,
-    };
+    const optionsForCandidate: StageOptions = candidate === undefined
+      ? { ...(effectiveStageOptions ?? {}) }
+      : {
+          ...(effectiveStageOptions ?? {}),
+          model: candidate.value,
+          ...(candidate.reasoningLevel !== undefined ? { thinkingLevel: candidate.reasoningLevel } : {}),
+          fallbackModels: undefined,
+          fallbackThinkingLevels: undefined,
+        };
+    if (reattachSessionFile !== undefined && optionsForCandidate.sessionManager === undefined) {
+      const cwd = optionsForCandidate.cwd ?? process.cwd();
+      optionsForCandidate.sessionManager = SessionManager.open(
+        reattachSessionFile,
+        optionsForCandidate.sessionDir,
+        cwd,
+      );
+      optionsForCandidate.context = undefined;
+      optionsForCandidate.forkFromSessionFile = undefined;
+    }
+    return Object.keys(optionsForCandidate).length === 0 ? undefined : optionsForCandidate;
   }
 
   let sessionSettingsManager: WorkflowFastModeSettingsManager | undefined;
@@ -774,9 +832,14 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
       listenerUnsubscribes.set(listener, result.session.subscribe(listener));
     }
     // Track terminating tool calls for this session so the stage result text is
-    // derived deterministically from a tool that actually ended the turn.
+    // derived deterministically from a tool that actually ended the turn. Also
+    // remember schema-validation errors from structured_output so corrective
+    // retry prompts can echo the concrete failure instead of a generic miss.
     unsubscribeTerminateWatcher?.();
-    unsubscribeTerminateWatcher = result.session.subscribe((event) => recordTerminatingToolCall(event));
+    unsubscribeTerminateWatcher = result.session.subscribe((event) => {
+      recordTerminatingToolCall(event);
+      latestStructuredOutputToolError = structuredOutputToolErrorFromEvent(event) ?? latestStructuredOutputToolError;
+    });
     return result.session;
   }
 
@@ -808,6 +871,12 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
       })();
     }
     return sessionPromise;
+  }
+
+  async function ensureSessionFromFile(sessionFile: string, consumer: AgentSessionConsumer = "prompt"): Promise<StageSessionRuntime> {
+    if (sessionPromise || session) return ensureSession(consumer);
+    reattachSessionFile = sessionFile;
+    return ensureSession(consumer);
   }
 
   async function disposeCurrentSession(): Promise<void> {
@@ -955,15 +1024,26 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
         adapterMessages = assistantMessage(lastAssistantText);
         return lastAssistantText;
       }
-      await promptWithFallback(text, sdkOptions);
       if (structuredOutputCapture) {
-        if (!structuredOutputCapture.called) {
-          throw new Error("atomic-workflows: stage configured with schema must finish by calling structured_output.");
+        let nextPrompt = text;
+        let correctiveAttempts = 0;
+        let structuredOutputError = STRUCTURED_OUTPUT_MISSING_ERROR;
+        while (!structuredOutputCapture.called) {
+          latestStructuredOutputToolError = undefined;
+          await promptWithFallback(nextPrompt, sdkOptions);
+          if (structuredOutputCapture.called) break;
+          structuredOutputError = latestStructuredOutputToolError ?? STRUCTURED_OUTPUT_MISSING_ERROR;
+          if (correctiveAttempts >= STRUCTURED_OUTPUT_MAX_CORRECTIVE_PROMPTS) {
+            throw new Error(structuredOutputError);
+          }
+          correctiveAttempts += 1;
+          nextPrompt = formatStructuredOutputCorrectionPrompt(structuredOutputError, correctiveAttempts);
         }
         const rawStructuredText = stringifyStructuredOutputValue(structuredOutputCapture.value);
         lastAssistantText = await finalizePromptOutput(rawStructuredText, outputOptions, runtimeCwd);
         return structuredOutputCapture.value as never;
       }
+      await promptWithFallback(text, sdkOptions);
       const rawText = lastAssistantTextFromSession(session, lastAssistantText, terminatingToolCallIds) ?? "";
       lastAssistantText = await finalizePromptOutput(rawText, outputOptions, runtimeCwd);
       return lastAssistantText;
@@ -1093,6 +1173,10 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 
     async __ensureSession() {
       await ensureSession();
+    },
+
+    async __ensureSessionFromFile(sessionFile) {
+      await ensureSessionFromFile(sessionFile);
     },
 
     __sessionMeta() {

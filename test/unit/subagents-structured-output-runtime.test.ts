@@ -7,8 +7,10 @@ import registerSubagentPromptRuntime, { rewriteSubagentPrompt } from "../../pack
 import {
   STRUCTURED_OUTPUT_CAPTURE_ENV,
   STRUCTURED_OUTPUT_SCHEMA_ENV,
+  STRUCTURED_OUTPUT_MISSING_ERROR,
   cleanupStructuredOutputRuntime,
   createStructuredOutputRuntime,
+  formatStructuredOutputCorrectionPrompt,
   readStructuredOutput,
 } from "../../packages/subagents/src/runs/shared/structured-output.js";
 import type { ExtensionAPI, ToolDefinition } from "../../packages/coding-agent/src/index.js";
@@ -77,7 +79,7 @@ describe("subagent structured output parent runtime", () => {
     }
   });
 
-  test("reads the captured output JSON without metadata or transcript validation", () => {
+  test("reads the captured output JSON after schema validation", () => {
     withRuntime(objectSchema, (runtime) => {
       writeFileSync(runtime.outputPath, JSON.stringify(payload), { mode: 0o600 });
 
@@ -86,6 +88,40 @@ describe("subagent structured output parent runtime", () => {
       assert.equal(readback.error, undefined);
       assert.deepEqual(readback.value, payload);
     });
+  });
+
+  test("reports missing structured_output with the contract error", () => {
+    withRuntime(objectSchema, (runtime) => {
+      const readback = readStructuredOutput(runtime);
+
+      assert.equal(readback.value, undefined);
+      assert.equal(readback.error, STRUCTURED_OUTPUT_MISSING_ERROR);
+    });
+  });
+
+  test("rejects captured JSON that does not match outputSchema", () => {
+    withRuntime(objectSchema, (runtime) => {
+      writeFileSync(runtime.outputPath, JSON.stringify({ answer: 123 }), { mode: 0o600 });
+
+      const readback = readStructuredOutput(runtime);
+
+      assert.equal(readback.value, undefined);
+      assert.match(readback.error ?? "", /Structured output validation failed:/);
+      assert.match(readback.error ?? "", /answer/);
+    });
+  });
+
+  test("formats corrective prompts with the actual structured-output error", () => {
+    const prompt = formatStructuredOutputCorrectionPrompt({
+      originalTask: "Review the patch",
+      error: "Validation failed for tool structured_output: answer is required",
+      attempt: 2,
+    });
+
+    assert.match(prompt, /Corrective attempt 2\/3/);
+    assert.match(prompt, /structured_output/);
+    assert.match(prompt, /answer is required/);
+    assert.match(prompt, /Original task:\nReview the patch/);
   });
 });
 

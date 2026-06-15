@@ -319,6 +319,8 @@ function _buildStageSnapshots(
       const retryAfterMs = entry.payload["retryAfterMs"];
       const failureMessage = entry.payload["failureMessage"];
       const skippedReason = entry.payload["skippedReason"];
+      const sessionId = entry.payload["sessionId"];
+      const sessionFile = entry.payload["sessionFile"];
       if (typeof stageId !== "string") continue;
       endedStages.add(stageId);
       const snap = stageMap.get(stageId);
@@ -334,6 +336,8 @@ function _buildStageSnapshots(
         if (typeof retryAfterMs === "number") snap.retryAfterMs = retryAfterMs;
         if (typeof failureMessage === "string") snap.failureMessage = failureMessage;
         if (typeof skippedReason === "string") snap.skippedReason = skippedReason;
+        if (typeof sessionId === "string") snap.sessionId = sessionId;
+        if (typeof sessionFile === "string") snap.sessionFile = sessionFile;
         Object.assign(snap, replayMetadata(entry.payload), workflowChildMetadata(entry.payload));
       }
     }
