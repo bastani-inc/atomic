@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.8.29] - 2026-06-15
+
 ### Added
 
 - Added support for local `-e <dir>` extension sources to borrow project-local Atomic resources from `<dir>/.atomic`, legacy `<dir>/.pi`, and `<dir>/.agents/skills` after resolving trust for that extension source, preserving package-manager provenance and explicit-path workflow forwarding while avoiding untrusted borrowed resources ([#1354](https://github.com/bastani-inc/atomic/issues/1354)).

@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.8.29] - 2026-06-15
+
 ### Added
 
 - Added opt-in schema-backed workflow item results: `ctx.stage(..., { schema })`, `ctx.task(..., { schema })`, `ctx.chain` items, and `ctx.parallel` items now receive a schema-specific `structured_output` tool only for that item, return the captured value from `ctx.stage().prompt(...)`, and expose parsed task values as `result.structured` while preserving formatted JSON handoff text ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
