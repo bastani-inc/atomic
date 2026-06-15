@@ -8,7 +8,7 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { createExtensionRuntime, discoverAndLoadExtensions, loadExtensions } from "../src/core/extensions/loader.ts";
-import { ExtensionRunner, emitProjectTrustEvent } from "../src/core/extensions/runner.ts";
+import { emitProjectTrustEvent, emitSessionBeforeShutdownEvent, ExtensionRunner } from "../src/core/extensions/runner.ts";
 import type {
 	ExtensionActions,
 	ExtensionContextActions,
@@ -85,6 +85,34 @@ describe("ExtensionRunner", () => {
 		compact: () => {},
 		getSystemPrompt: () => "",
 	};
+
+	describe("session_before_shutdown", () => {
+		it("returns cancellation from pre-shutdown handlers", async () => {
+			const extPath = path.join(extensionsDir, "before-shutdown.ts");
+			fs.writeFileSync(
+				extPath,
+				`export default function(pi) {
+	pi.on("session_before_shutdown", (event) => ({ cancel: event.reason === "quit" }));
+}`,
+			);
+
+			const result = await loadExtensions([extPath], tempDir);
+			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
+
+			expect(
+				await emitSessionBeforeShutdownEvent(runner, { type: "session_before_shutdown", reason: "quit" }),
+			).toEqual({ cancelled: true, emitted: true });
+		});
+
+		it("reports no emission when no pre-shutdown handlers are registered", async () => {
+			const result = await loadExtensions([], tempDir);
+			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
+
+			expect(
+				await emitSessionBeforeShutdownEvent(runner, { type: "session_before_shutdown", reason: "quit" }),
+			).toEqual({ cancelled: false, emitted: false });
+		});
+	});
 
 	describe("project_trust", () => {
 		it("continues past undecided handlers and returns the first yes/no decision", async () => {

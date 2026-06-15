@@ -45,6 +45,7 @@ export interface KillConfirmRenderOpts {
 }
 
 const TITLE = "Kill workflow run?";
+const QUIT_TITLE = "Quit with active workflows?";
 
 function padTo(s: string, width: number): string {
   const vis = visibleWidth(s);
@@ -52,15 +53,19 @@ function padTo(s: string, width: number): string {
   return s + " ".repeat(width - vis);
 }
 
-function renderHeader(width: number, theme: GraphTheme): string {
+function renderTitledHeader(width: number, theme: GraphTheme, title: string): string {
   const inner = Math.max(4, width - 2);
   const border = hexToAnsi(theme.border);
   const error = hexToAnsi(theme.error);
-  const padded = ` ${TITLE} `;
+  const padded = ` ${title} `;
   const padLen = Math.max(0, inner - visibleWidth(padded));
   const left = Math.min(2, padLen);
   const right = padLen - left;
   return `${border}╭${"─".repeat(left)}${RESET}${error}${BOLD}${padded}${RESET}${border}${"─".repeat(right)}╮${RESET}`;
+}
+
+function renderHeader(width: number, theme: GraphTheme): string {
+  return renderTitledHeader(width, theme, TITLE);
 }
 
 function renderFooter(width: number, theme: GraphTheme): string {
@@ -179,6 +184,78 @@ export function renderKillConfirm(opts: KillConfirmRenderOpts): string[] {
   return lines;
 }
 
+export interface WorkflowQuitConfirmRenderOpts {
+  width: number;
+  theme: GraphTheme;
+  runs: RunSnapshot[];
+  state: KillConfirmState;
+  now?: number;
+}
+
+export function renderWorkflowQuitConfirm(opts: WorkflowQuitConfirmRenderOpts): string[] {
+  const { width, theme, runs, state } = opts;
+  const now = opts.now ?? Date.now();
+  const inner = Math.max(50, width - 2);
+  const count = runs.length;
+  const workflowNoun = count === 1 ? "workflow" : "workflows";
+  const runningStages = runs.reduce((sum, run) => sum + run.stages.filter((s) => s.status === "running").length, 0);
+  const totalStages = runs.reduce((sum, run) => sum + run.stages.length, 0);
+  const oldestStartedAt = Math.min(...runs.map((run) => run.startedAt));
+  const elapsed = Number.isFinite(oldestStartedAt) ? fmtDuration(Math.max(0, now - oldestStartedAt)) : "0s";
+
+  const warning = hexToAnsi(theme.warning);
+  const text = hexToAnsi(theme.text);
+  const muted = hexToAnsi(theme.textMuted);
+  const dim = hexToAnsi(theme.dim);
+  const panelBg = hexBg(theme.bg);
+
+  const lines: string[] = [];
+  lines.push(renderTitledHeader(width, theme, QUIT_TITLE));
+  lines.push(renderBlankRow(inner, theme));
+  lines.push(renderTextRow(
+    inner,
+    theme,
+    `   ${warning}\u26a0${RESET}${panelBg}  ${text}${BOLD}${count} in-flight ${workflowNoun}${RESET}${panelBg}  ${dim}\u00b7${RESET}${panelBg}  ${muted}${runningStages}/${totalStages} stages running${RESET}`,
+  ));
+  lines.push(renderTextRow(
+    inner,
+    theme,
+    `      ${muted}Oldest active run has been running for ${elapsed}.${RESET}`,
+  ));
+  lines.push(renderBlankRow(inner, theme));
+  lines.push(renderTextRow(
+    inner,
+    theme,
+    `      ${muted}Quitting Atomic will abort active workflow work.${RESET}`,
+  ));
+  lines.push(renderTextRow(
+    inner,
+    theme,
+    `      ${muted}Killed runs are retained in workflow history/status.${RESET}`,
+  ));
+  const names = runs.slice(0, 3).map((run) => `${run.name} (${run.id.slice(0, 8)})`).join(", ");
+  const suffix = runs.length > 3 ? `, +${runs.length - 3} more` : "";
+  lines.push(renderTextRow(
+    inner,
+    theme,
+    `      ${muted}${truncateToWidth(`Active: ${names}${suffix}`, Math.max(1, inner - 6), "…")}${RESET}`,
+  ));
+  lines.push(renderBlankRow(inner, theme));
+
+  const cancelBtn = renderButton("Cancel", state.focusedButton === 0, false, theme);
+  const quitBtn = renderButton("\u25c6 Quit & kill", state.focusedButton === 1, true, theme);
+  const buttonsVis = visibleWidth(" Cancel ") + 3 + visibleWidth(" \u25c6 Quit & kill ");
+  const leftPad = Math.max(2, Math.floor((inner - buttonsVis) / 2));
+  const rightPad = Math.max(0, inner - leftPad - buttonsVis);
+  const buttonsRow =
+    `${" ".repeat(leftPad)}${cancelBtn}${panelBg}   ${RESET}${quitBtn}${panelBg}${" ".repeat(rightPad)}${RESET}`;
+  const border = hexToAnsi(theme.border);
+  lines.push(`${border}│${RESET}${panelBg}${padTo(buttonsRow, inner)}${RESET}${border}│${RESET}`);
+  lines.push(renderBlankRow(inner, theme));
+  lines.push(renderFooter(width, theme));
+  return lines;
+}
+
 // ---------------------------------------------------------------------------
 // Input handling
 // ---------------------------------------------------------------------------
@@ -188,6 +265,14 @@ export type KillConfirmAction =
   | { kind: "cancel" }
   | { kind: "confirm" };
 
+function isCtrlC(data: string): boolean {
+  return (
+    matchesKey(data, Key.ctrl("c")) ||
+    data === "ctrl+C" ||
+    data === "\u0003"
+  );
+}
+
 export function handleKillConfirmInput(
   data: string,
   state: KillConfirmState,
@@ -195,7 +280,7 @@ export function handleKillConfirmInput(
   // Direct shortcuts bypass focus.
   if (matchesKey(data, "y") || matchesKey(data, Key.shift("y"))) return { kind: "confirm" };
   if (matchesKey(data, "n") || matchesKey(data, Key.shift("n"))) return { kind: "cancel" };
-  if (matchesKey(data, Key.escape)) return { kind: "cancel" };
+  if (matchesKey(data, Key.escape) || isCtrlC(data)) return { kind: "cancel" };
 
   // Tab / arrows toggle focus.
   if (

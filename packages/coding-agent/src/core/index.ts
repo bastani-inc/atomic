@@ -75,6 +75,8 @@ export {
 	type RegisteredCommand,
 	type SessionBeforeCompactEvent,
 	type SessionBeforeForkEvent,
+	type SessionBeforeShutdownEvent,
+	type SessionBeforeShutdownResult,
 	type SessionBeforeSwitchEvent,
 	type SessionBeforeTreeEvent,
 	type SessionCompactEvent,

@@ -662,6 +662,12 @@ export interface SessionShutdownEvent {
 	targetSessionFile?: string;
 }
 
+/** Fired before an interactive quit shutdown (can be cancelled). */
+export interface SessionBeforeShutdownEvent {
+	type: "session_before_shutdown";
+	reason: "quit";
+}
+
 /** Preparation data for tree navigation */
 export interface TreePreparation {
 	targetId: string;
@@ -699,6 +705,7 @@ export type SessionEvent =
 	| SessionBeforeForkEvent
 	| SessionBeforeCompactEvent
 	| SessionCompactEvent
+	| SessionBeforeShutdownEvent
 	| SessionShutdownEvent
 	| SessionBeforeTreeEvent
 	| SessionTreeEvent;
@@ -1164,6 +1171,10 @@ export interface SessionBeforeCompactResult {
 	deletionRequest?: ContextDeletionRequest;
 }
 
+export interface SessionBeforeShutdownResult {
+	cancel?: boolean;
+}
+
 export interface SessionBeforeTreeResult {
 	cancel?: boolean;
 	summary?: {
@@ -1248,6 +1259,10 @@ export interface ExtensionAPI {
 		handler: ExtensionHandler<SessionBeforeCompactEvent, SessionBeforeCompactResult>,
 	): void;
 	on(event: "session_compact", handler: ExtensionHandler<SessionCompactEvent>): void;
+	on(
+		event: "session_before_shutdown",
+		handler: ExtensionHandler<SessionBeforeShutdownEvent, SessionBeforeShutdownResult>,
+	): void;
 	on(event: "session_shutdown", handler: ExtensionHandler<SessionShutdownEvent>): void;
 	on(event: "session_before_tree", handler: ExtensionHandler<SessionBeforeTreeEvent, SessionBeforeTreeResult>): void;
 	on(event: "session_tree", handler: ExtensionHandler<SessionTreeEvent>): void;

@@ -49,7 +49,7 @@ import { renderSessionList } from "../tui/session-list.js";
 import { selectRunsForPicker } from "../tui/session-picker.js";
 import { renderRunDetail } from "../tui/run-detail.js";
 
-import { openSessionPicker, openKillConfirm } from "../tui/session-overlays.js";
+import { openSessionPicker, openKillConfirm, openWorkflowQuitConfirm } from "../tui/session-overlays.js";
 import {
   openInlineInputsForm,
   registerInlineFormRenderer,
@@ -3964,6 +3964,32 @@ function factory(pi: ExtensionAPI): void {
 
       const cancelledLabel = reason === "new" ? "New session" : "Resume";
       ctx?.ui?.notify?.(`${cancelledLabel} cancelled; in-flight workflows were left unchanged.`, "info");
+      return { cancel: true };
+    });
+
+    pi.on("session_before_shutdown", async (event, ctx) => {
+      const reason = typeof event === "object" && event !== null && "reason" in event
+        ? (event as { readonly reason?: string }).reason
+        : undefined;
+      if (reason !== "quit") return undefined;
+
+      const inFlightRuns = topLevelWorkflowRuns(store.runs()).filter((run) => run.endedAt === undefined);
+      if (inFlightRuns.length === 0) return undefined;
+
+      // Match session-switch behavior for headless/degraded hosts: fail open so
+      // automation and signal-adjacent teardown paths cannot wedge on a prompt.
+      if (ctx?.hasUI === false || typeof ctx?.ui?.custom !== "function") return undefined;
+
+      let shouldQuit: boolean | undefined;
+      try {
+        shouldQuit = await openWorkflowQuitConfirm(ctx.ui, inFlightRuns, deriveGraphTheme({}));
+      } catch {
+        return undefined;
+      }
+      if (shouldQuit !== false) return undefined;
+
+      const workflowNoun = inFlightRuns.length === 1 ? "workflow" : "workflows";
+      ctx?.ui?.notify?.(`Quit cancelled; ${inFlightRuns.length} in-flight ${workflowNoun} left running.`, "info");
       return { cancel: true };
     });
 

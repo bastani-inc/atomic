@@ -666,7 +666,9 @@ function discoverExtensionsInDir(dir: string): string[] {
   const discovered: string[] = [];
 
   try {
-    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    const entries = fs
+      .readdirSync(dir, { withFileTypes: true })
+      .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 
     for (const entry of entries) {
       const entryPath = path.join(dir, entry.name);

@@ -49,6 +49,7 @@ import {
   createKillConfirmState,
   handleKillConfirmInput,
   renderKillConfirm,
+  renderWorkflowQuitConfirm,
 } from "./session-confirm.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 
@@ -179,6 +180,27 @@ export interface ConfirmUiSurface extends UiSurface {
   confirm?: (title: string, message: string) => Promise<boolean>;
 }
 
+function observeCustomMount(
+  mount: () => unknown,
+  factoryInvoked: () => boolean,
+  settleHostFailure: () => void,
+): void {
+  let result: unknown;
+  try {
+    result = mount();
+  } catch {
+    settleHostFailure();
+    return;
+  }
+
+  Promise.resolve(result).then(
+    () => {
+      if (!factoryInvoked()) settleHostFailure();
+    },
+    () => settleHostFailure(),
+  );
+}
+
 export function openKillConfirm(
   ui: ConfirmUiSurface,
   run: RunSnapshot,
@@ -201,6 +223,13 @@ export function openKillConfirm(
 
     const state = createKillConfirmState();
     let settled = false;
+    let factoryInvoked = false;
+
+    const settle = (result: boolean): void => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
 
     const factory = (
       tui: PiCustomOverlayFactoryTui,
@@ -208,6 +237,7 @@ export function openKillConfirm(
       _keys: unknown,
       done: (r: undefined) => void,
     ): PiCustomComponent => {
+      factoryInvoked = true;
       const finish = (result: boolean): void => {
         if (settled) return;
         settled = true;
@@ -225,15 +255,78 @@ export function openKillConfirm(
           finish(action.kind === "confirm");
         },
         invalidate: () => tui.requestRender?.(),
-        dispose: () => {
-          if (!settled) {
-            settled = true;
-            resolve(false);
-          }
-        },
+        dispose: () => settle(false),
       };
     };
 
-    void custom(factory, { overlay: true, overlayOptions: CONFIRM_OVERLAY });
+    observeCustomMount(
+      () => custom(factory, { overlay: true, overlayOptions: CONFIRM_OVERLAY }),
+      () => factoryInvoked,
+      () => settle(false),
+    );
+  });
+}
+
+/**
+ * Mount a safe default-cancel quit confirmation for active workflows.
+ * Returns `undefined` when custom UI is unavailable so callers can fail open
+ * for headless/automation paths instead of relying on a generic yes-default
+ * confirm implementation.
+ */
+export function openWorkflowQuitConfirm(
+  ui: UiSurface,
+  runs: RunSnapshot[],
+  theme: GraphTheme,
+): Promise<boolean | undefined> {
+  return new Promise<boolean | undefined>((resolve) => {
+    const custom = ui.custom;
+    if (typeof custom !== "function") {
+      resolve(undefined);
+      return;
+    }
+
+    const state = createKillConfirmState();
+    let settled = false;
+    let factoryInvoked = false;
+
+    const settle = (result: boolean | undefined): void => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+
+    const factory = (
+      tui: PiCustomOverlayFactoryTui,
+      _theme: unknown,
+      _keys: unknown,
+      done: (r: undefined) => void,
+    ): PiCustomComponent => {
+      factoryInvoked = true;
+      const finish = (result: boolean): void => {
+        if (settled) return;
+        settled = true;
+        done(undefined);
+        resolve(result);
+      };
+      return {
+        render: (width: number) => renderWorkflowQuitConfirm({ width, theme, runs, state }),
+        handleInput: (data: string) => {
+          const action = handleKillConfirmInput(data, state);
+          if (action.kind === "noop") {
+            tui.requestRender?.();
+            return;
+          }
+          finish(action.kind === "confirm");
+        },
+        invalidate: () => tui.requestRender?.(),
+        dispose: () => settle(false),
+      };
+    };
+
+    observeCustomMount(
+      () => custom(factory, { overlay: true, overlayOptions: CONFIRM_OVERLAY }),
+      () => factoryInvoked,
+      () => settle(undefined),
+    );
   });
 }

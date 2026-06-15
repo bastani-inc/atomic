@@ -66,9 +66,8 @@ export interface GraphViewOpts {
   onClose?: () => void;
   /**
    * Invoked when the user presses `q` inside the pane on an in-flight
-   * run. Fires immediately (no confirm) per the toggle-driven UX:
-   * `h` hides without quitting; `q` is reserved for terminating the
-   * current run.
+   * run. The host owns destructive confirmation and closes the pane only
+   * after a confirmed kill; GraphView does not close speculatively.
    */
   onKill?: (runId: string) => void;
   /**
@@ -1192,8 +1191,11 @@ export class GraphView implements Component {
       }
       return true;
     }
-    // `q` kills the active run (no confirm). `h` hides the pane via
-    // the overlay's setHidden() flag (not unmount); Escape/Ctrl+C closes.
+    // `q` requests kill confirmation for a live run. The host closes
+    // only after confirmation; when there is no live target, restore the
+    // legacy close/fall-through behavior instead of swallowing the key.
+    // `h` hides the pane via the overlay's setHidden() flag (not unmount);
+    // Escape/Ctrl+C closes.
     if (matchesKey(data, "q")) {
       const run = this._getCurrentRun();
       const targetRunId = this._focusedStageTarget()?.runId ?? run?.id;
@@ -1202,9 +1204,13 @@ export class GraphView implements Component {
         : undefined;
       if (targetRun && targetRun.endedAt === undefined && this.onKill) {
         this.onKill(targetRun.id);
+        return true;
       }
-      this.onClose?.();
-      return true;
+      if (this.onClose) {
+        this.onClose();
+        return true;
+      }
+      return false;
     }
     if (matchesKey(data, "h") && this.onHide) {
       this.onHide();

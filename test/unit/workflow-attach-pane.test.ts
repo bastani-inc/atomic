@@ -1496,7 +1496,7 @@ describe("WorkflowAttachPane", () => {
         assert.equal(lastCall.value, undefined);
     });
 
-    test("q kill delegates to graph close while chat gets the notice", () => {
+    test("q kill delegates without closing before host confirmation", () => {
         const store = createStore();
         setupRun(store, "run-1", [{ id: "stage-a", name: "A" }]);
         let killedRunId: string | undefined;
@@ -1518,7 +1518,7 @@ describe("WorkflowAttachPane", () => {
         pane.handleInput("q");
 
         assert.equal(killedRunId, "run-1");
-        assert.equal(closed, 1);
+        assert.equal(closed, 0);
         assert.equal(pane._mode, "graph");
         pane.dispose();
     });

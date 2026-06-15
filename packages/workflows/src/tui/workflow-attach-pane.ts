@@ -72,7 +72,7 @@ export interface WorkflowAttachPaneOpts {
   onClose: () => void;
   /** Called when the user requests the host to hide the popup. */
   onHide?: () => void;
-  /** Called when the user kills the active run (q in graph mode). */
+  /** Called when the user requests killing the active run (q in graph mode); host confirms and closes after kill. */
   onKill?: (runId: string) => void;
   /** Called when the user resolves a HIL prompt via the graph view. */
   onPromptResolve?: (runId: string, promptId: string, response: unknown) => void;

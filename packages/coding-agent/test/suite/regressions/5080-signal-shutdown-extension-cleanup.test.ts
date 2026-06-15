@@ -18,10 +18,18 @@ import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode
 
 type ShutdownThis = {
 	isShuttingDown: boolean;
+	shutdownRequested: boolean;
+	shutdownConfirmationPending: boolean;
 	unregisterSignalHandlers: () => void;
 	runtimeHost: { dispose: () => Promise<void> };
 	ui: { terminal: { drainInput: (ms: number) => Promise<void> } };
 	stop: () => void;
+	session: {
+		extensionRunner: {
+			hasHandlers: (eventType: string) => boolean;
+			emit?: (event: { type: "session_before_shutdown"; reason: "quit" }) => Promise<{ cancel?: boolean }>;
+		};
+	};
 	sessionManager: SessionManager;
 };
 
@@ -68,6 +76,8 @@ function restoreStdoutIsTTY(): void {
 function createContext(order: string[], sessionManager = createSessionManager()): ShutdownThis {
 	return {
 		isShuttingDown: false,
+		shutdownRequested: false,
+		shutdownConfirmationPending: false,
 		unregisterSignalHandlers: vi.fn(),
 		runtimeHost: {
 			dispose: vi.fn(async () => {
@@ -84,6 +94,11 @@ function createContext(order: string[], sessionManager = createSessionManager())
 		stop: vi.fn(() => {
 			order.push("stop");
 		}),
+		session: {
+			extensionRunner: {
+				hasHandlers: vi.fn(() => false),
+			},
+		},
 		sessionManager,
 	};
 }
@@ -129,6 +144,7 @@ describe("InteractiveMode.shutdown ordering (#5080)", () => {
 		await callShutdown(context);
 
 		expect(order).toEqual(["drainInput", "stop", "dispose"]);
+		expect(context.shutdownConfirmationPending).toBe(false);
 	});
 
 	test("interactive quit prints a resume hint for persisted sessions", async () => {
@@ -166,6 +182,74 @@ describe("InteractiveMode.shutdown ordering (#5080)", () => {
 		for (const call of stdoutWrite.mock.calls) {
 			expect(call[0]).not.toContain("To resume this session:");
 		}
+	});
+
+	test("cancelled interactive shutdown clears pending shutdown request", async () => {
+		const order: string[] = [];
+		const context = createContext(order);
+		context.shutdownRequested = true;
+		context.session.extensionRunner = {
+			hasHandlers: vi.fn((eventType) => eventType === "session_before_shutdown"),
+			emit: vi.fn(async () => ({ cancel: true })),
+		};
+
+		await callShutdown(context);
+
+		expect(context.shutdownRequested).toBe(false);
+		expect(context.isShuttingDown).toBe(false);
+		expect(context.shutdownConfirmationPending).toBe(false);
+		expect(order).toEqual([]);
+		expect(context.session.extensionRunner.emit).toHaveBeenCalledWith({
+			type: "session_before_shutdown",
+			reason: "quit",
+		});
+	});
+
+	test("pending interactive shutdown confirmation suppresses duplicate pre-shutdown prompts", async () => {
+		const order: string[] = [];
+		const context = createContext(order);
+		context.shutdownRequested = true;
+		let resolvePrompt!: (value: { cancel?: boolean }) => void;
+		const prompt = new Promise<{ cancel?: boolean }>((resolve) => {
+			resolvePrompt = resolve;
+		});
+		context.session.extensionRunner = {
+			hasHandlers: vi.fn((eventType) => eventType === "session_before_shutdown"),
+			emit: vi.fn(() => prompt),
+		};
+
+		const first = callShutdown(context);
+		await Promise.resolve();
+		expect(context.shutdownConfirmationPending).toBe(true);
+
+		await callShutdown(context);
+		expect(context.session.extensionRunner.emit).toHaveBeenCalledTimes(1);
+		expect(context.shutdownRequested).toBe(true);
+		expect(context.isShuttingDown).toBe(false);
+
+		resolvePrompt({ cancel: true });
+		await first;
+
+		expect(context.shutdownConfirmationPending).toBe(false);
+		expect(context.shutdownRequested).toBe(false);
+		expect(order).toEqual([]);
+	});
+
+	test("failed pre-shutdown confirmation clears the pending guard", async () => {
+		const order: string[] = [];
+		const context = createContext(order);
+		context.session.extensionRunner = {
+			hasHandlers: vi.fn((eventType) => eventType === "session_before_shutdown"),
+			emit: vi.fn(async () => {
+				throw new Error("prompt failed");
+			}),
+		};
+
+		await expect(callShutdown(context)).rejects.toThrow("prompt failed");
+
+		expect(context.shutdownConfirmationPending).toBe(false);
+		expect(context.isShuttingDown).toBe(false);
+		expect(order).toEqual([]);
 	});
 
 	test("re-entrant shutdown is a no-op", async () => {

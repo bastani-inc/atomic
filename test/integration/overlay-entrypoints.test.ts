@@ -1579,7 +1579,7 @@ describe("buildGraphOverlayAdapter — Ctrl+D / h non-destructive hide", () => {
     assert.equal(run!.endedAt, undefined);
   });
 
-  test("`q` on a real custom mount kills and retains the active run (regression gate)", () => {
+  test("`q` on a real custom mount confirms, kills, and retains the active run (regression gate)", async () => {
     const runId = `q-kill-${Date.now()}`;
     const store = createStore();
     store.recordRunStart({
@@ -1591,7 +1591,7 @@ describe("buildGraphOverlayAdapter — Ctrl+D / h non-destructive hide", () => {
       startedAt: Date.now(),
     });
 
-    let capturedComponent: PiCustomComponent | undefined;
+    const capturedComponents: PiCustomComponent[] = [];
     const customFn: PiCustomOverlayFunction = (factoryArg, options) => {
       const { handle } = buildOverlayHandle();
       options.onHandle?.(handle);
@@ -1600,14 +1600,19 @@ describe("buildGraphOverlayAdapter — Ctrl+D / h non-destructive hide", () => {
       };
       const component = factoryArg(tui, {}, {}, () => undefined);
       if (component instanceof Promise) throw new Error("expected sync factory");
-      capturedComponent = component;
+      capturedComponents.push(component);
       return undefined;
     };
 
     const adapter = buildGraphOverlayAdapter({ ui: { custom: customFn } }, store);
     adapter.open(runId);
 
-    capturedComponent!.handleInput!("q");
+    capturedComponents[0]!.handleInput!("q");
+    assert.equal(capturedComponents.length, 2, "q must mount the confirmation overlay first");
+    assert.notEqual(store.runs().find((r) => r.id === runId)?.status, "killed");
+
+    capturedComponents[1]!.handleInput!("y");
+    await Promise.resolve();
 
     const run = store.runs().find((r) => r.id === runId);
     assert.ok(run, "`q` must retain the run in live history/status for inspection");

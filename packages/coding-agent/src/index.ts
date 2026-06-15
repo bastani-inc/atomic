@@ -178,6 +178,8 @@ export type {
 	ResolvedCommand,
 	SessionBeforeCompactEvent,
 	SessionBeforeForkEvent,
+	SessionBeforeShutdownEvent,
+	SessionBeforeShutdownResult,
 	SessionBeforeSwitchEvent,
 	SessionBeforeTreeEvent,
 	SessionCompactEvent,

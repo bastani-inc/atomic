@@ -639,6 +639,7 @@ describe("GraphView keyboard navigation", () => {
       version: 1,
     };
     const killed: string[] = [];
+    let closed = 0;
     const view = new GraphView({
       mode: "overlay",
       runId: "run-1",
@@ -646,11 +647,15 @@ describe("GraphView keyboard navigation", () => {
       graphTheme: defaultTheme,
       initialFocusedStageId: "child-first",
       onKill: (runId) => killed.push(runId),
+      onClose: () => {
+        closed += 1;
+      },
     });
 
     view.handleInput("q");
 
     assert.deepEqual(killed, ["child-run"]);
+    assert.equal(closed, 0);
     view.dispose();
   });
 
@@ -808,13 +813,63 @@ describe("GraphView keyboard navigation", () => {
     view.dispose();
   });
 
-  it("q calls onClose", () => {
+  it("q does not close before the host confirms a kill", () => {
     const stages = [makeStage("A")];
     const onClose = mock(() => {});
-    const view = makeView(stages, onClose);
+    const onKill = mock(() => {});
+    const snap = makeSnap(stages);
+    const view = new GraphView({
+      mode: "overlay",
+      runId: "run-1",
+      store: makeStore(snap),
+      graphTheme: defaultTheme,
+      onClose,
+      onKill,
+    });
     view.handleInput("q");
+    assert.equal(onKill.mock.calls.length, 1);
+    assert.equal(onClose.mock.calls.length, 0);
+    view.dispose();
+  });
+
+  it("q closes or falls through when there is no live run to kill", () => {
+    const baseSnap = makeSnap([makeStage("A")]);
+    const snap: StoreSnapshot = {
+      ...baseSnap,
+      runs: [
+        {
+          ...baseSnap.runs[0]!,
+          status: "completed",
+          endedAt: Date.now(),
+          durationMs: 1,
+        },
+      ],
+    };
+    const onClose = mock(() => {});
+    const onKill = mock(() => {});
+    const view = new GraphView({
+      mode: "overlay",
+      runId: "run-1",
+      store: makeStore(snap),
+      graphTheme: defaultTheme,
+      onClose,
+      onKill,
+    });
+    assert.equal(view.handleInput("q"), true);
+    assert.equal(onKill.mock.calls.length, 0);
     assert.equal(onClose.mock.calls.length, 1);
     view.dispose();
+
+    const fallthroughView = new GraphView({
+      mode: "overlay",
+      runId: "run-1",
+      store: makeStore(snap),
+      graphTheme: defaultTheme,
+      onKill,
+    });
+    assert.equal(fallthroughView.handleInput("q"), false);
+    assert.equal(onKill.mock.calls.length, 0);
+    fallthroughView.dispose();
   });
 
   it("Escape variants and Ctrl+C variants call onClose", () => {

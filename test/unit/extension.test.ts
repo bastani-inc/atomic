@@ -74,6 +74,14 @@ function getSessionBeforeSwitchHandler(): SessionBeforeSwitchHandler {
   return handler;
 }
 
+function getSessionBeforeShutdownHandler(): SessionBeforeSwitchHandler {
+  const handler = captureHandlers().get("session_before_shutdown");
+  if (handler === undefined) {
+    assert.fail("session_before_shutdown handler was not registered");
+  }
+  return handler;
+}
+
 beforeEach(() => {
   stageControlRegistry.clear();
   store.clear();
@@ -183,6 +191,76 @@ test("session_before_switch cancels /new and /resume when warning is declined", 
       store.clear();
     }
   }
+});
+
+test("session_before_shutdown confirms quit with active workflows and cancels by default", async () => {
+  store.recordRunStart(workflowRun({ id: "run-1", stages: [{ id: "s1", name: "plan", status: "running", parentIds: [], toolEvents: [] }] }));
+  const handler = getSessionBeforeShutdownHandler();
+  const notifications: Array<{ message: string; type?: string }> = [];
+  let customMounted = 0;
+
+  const result = await handler({ reason: "quit" }, {
+    ui: {
+      custom: (factory: Function) => {
+        customMounted += 1;
+        const component = factory({ requestRender: () => undefined }, {}, {}, () => undefined);
+        component.handleInput("n");
+        return undefined;
+      },
+      notify: (message: string, type?: string) => notifications.push({ message, type }),
+    },
+  });
+
+  assert.deepEqual(result, { cancel: true });
+  assert.equal(customMounted, 1);
+  assert.equal(notifications.at(-1)?.type, "info");
+  assert.match(notifications.at(-1)?.message ?? "", /quit cancelled/i);
+  assert.equal(store.runs()[0]?.endedAt, undefined);
+});
+
+test("session_before_shutdown allows quit after custom confirmation", async () => {
+  store.recordRunStart(workflowRun({ id: "run-1" }));
+  const handler = getSessionBeforeShutdownHandler();
+
+  const result = await handler({ reason: "quit" }, {
+    ui: {
+      custom: (factory: Function) => {
+        const component = factory({ requestRender: () => undefined }, {}, {}, () => undefined);
+        component.handleInput("y");
+        return undefined;
+      },
+      notify: () => undefined,
+    },
+  });
+
+  assert.equal(result, undefined);
+});
+
+test("session_before_shutdown fails open without custom UI", async () => {
+  store.recordRunStart(workflowRun({ id: "run-1" }));
+  const handler = getSessionBeforeShutdownHandler();
+
+  assert.equal(await handler({ reason: "quit" }, { ui: { notify: () => undefined } }), undefined);
+});
+
+test("session_before_shutdown fails open when hasUI is false even with no-op custom UI", async () => {
+  store.recordRunStart(workflowRun({ id: "run-1" }));
+  const handler = getSessionBeforeShutdownHandler();
+  let customCalls = 0;
+
+  const result = await handler({ reason: "quit" }, {
+    hasUI: false,
+    ui: {
+      custom: () => {
+        customCalls += 1;
+        return undefined;
+      },
+      notify: () => undefined,
+    },
+  });
+
+  assert.equal(result, undefined);
+  assert.equal(customCalls, 0);
 });
 
 test("session_before_switch does not prompt without in-flight workflows", async () => {

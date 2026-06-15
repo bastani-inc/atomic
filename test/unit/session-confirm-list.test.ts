@@ -9,8 +9,10 @@ import {
   handleKillConfirmInput,
   renderKillConfirm,
   renderWorkflowKilledNotice,
+  renderWorkflowQuitConfirm,
 } from "../../packages/workflows/src/tui/session-confirm.ts";
 import { renderSessionList } from "../../packages/workflows/src/tui/session-list.ts";
+import { openKillConfirm, openWorkflowQuitConfirm } from "../../packages/workflows/src/tui/session-overlays.ts";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.ts";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.ts";
 import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.ts";
@@ -31,12 +33,15 @@ function makeRun(over: Partial<RunSnapshot>): RunSnapshot {
   };
 }
 
-test("kill confirm: y always confirms, n / esc variants cancel", () => {
+test("kill confirm: y always confirms, n / esc / Ctrl+C variants cancel", () => {
   const s = createKillConfirmState();
   assert.deepEqual(handleKillConfirmInput("y", s), { kind: "confirm" });
   assert.deepEqual(handleKillConfirmInput("Y", s), { kind: "confirm" });
   assert.deepEqual(handleKillConfirmInput("n", s), { kind: "cancel" });
   assert.deepEqual(handleKillConfirmInput(Key.escape, s), { kind: "cancel" });
+  for (const key of [Key.ctrl("c"), "ctrl+C", "\x03", "\x1b[99;5u", "\x1b[99;5:1u", "\x1b[27;5;99~"]) {
+    assert.deepEqual(handleKillConfirmInput(key, s), { kind: "cancel" });
+  }
 });
 
 test("kill confirm: tab toggles focus, enter commits focused button", () => {
@@ -92,6 +97,105 @@ test("kill confirm clamps long and wide workflow names to the dialog width", () 
     assert.ok(visibleWidth(line) <= width, `line exceeds ${width}: ${visibleWidth(line)} ${JSON.stringify(line)}`);
   }
   assert.match(lines.join("\n"), /…/);
+});
+
+test("workflow quit confirm defaults to cancel and renders active-run summary", () => {
+  const theme = deriveGraphTheme({});
+  const state = createKillConfirmState();
+  const lines = renderWorkflowQuitConfirm({
+    width: 76,
+    theme,
+    state,
+    now: 61_000,
+    runs: [
+      makeRun({
+        id: "abc12345-0000-0000-0000-000000000000",
+        name: "alpha",
+        startedAt: 1_000,
+        stages: [{ id: "s1", name: "plan", status: "running", parentIds: [], toolEvents: [] }],
+      }),
+      makeRun({
+        id: "def67890-0000-0000-0000-000000000000",
+        name: "beta",
+        startedAt: 31_000,
+        stages: [{ id: "s2", name: "build", status: "pending", parentIds: [], toolEvents: [] }],
+      }),
+    ],
+  });
+
+  assert.equal(state.focusedButton, 0);
+  assert.deepEqual(handleKillConfirmInput(Key.enter, state), { kind: "cancel" });
+  const joined = lines.join("\n");
+  assert.match(joined, /Quit with active workflows/);
+  assert.match(joined, /2 in-flight workflows/);
+  assert.match(joined, /Quit & kill/);
+  assert.match(joined, /Killed runs are retained/);
+  assert.match(joined, /alpha/);
+  assert.match(joined, /beta/);
+});
+
+test("workflow quit confirm fails open when custom UI rejects or never mounts", async () => {
+  const theme = deriveGraphTheme({});
+  const runs = [makeRun({ id: "run-quit" })];
+
+  assert.equal(
+    await openWorkflowQuitConfirm(
+      {
+        custom: () => Promise.reject(new Error("custom unavailable")),
+      },
+      runs,
+      theme,
+    ),
+    undefined,
+  );
+
+  let factoryCalls = 0;
+  assert.equal(
+    await openWorkflowQuitConfirm(
+      {
+        custom: () => {
+          factoryCalls += 0;
+          return undefined;
+        },
+      },
+      runs,
+      theme,
+    ),
+    undefined,
+  );
+  assert.equal(factoryCalls, 0);
+});
+
+test("kill confirm cancels safely when custom UI rejects or never mounts", async () => {
+  const theme = deriveGraphTheme({});
+  const run = makeRun({ id: "run-kill" });
+
+  assert.equal(
+    await openKillConfirm(
+      {
+        custom: () => Promise.reject(new Error("custom unavailable")),
+      },
+      run,
+      theme,
+    ),
+    false,
+  );
+
+  let factoryCalls = 0;
+  assert.equal(
+    await openKillConfirm(
+      {
+        custom: () => {
+          factoryCalls += 0;
+          return undefined;
+        },
+      },
+      run,
+      theme,
+    ),
+    false,
+  );
+  assert.equal(factoryCalls, 0);
 });
 
 test("workflow killed notice renders transparent completion details", () => {

@@ -44,6 +44,8 @@ Set `enabled` to `false` to disable all lifecycle notices, or narrow `notifyOn` 
 
 When a stage human-in-the-loop prompt is answered from the workflow TUI/stage chat, workflows also emits a separate display-only `workflows:hil-answer-notice` custom message. It records the answer for user-visible audit, but it does not wake the main agent, enter LLM context, or authorize answering later workflow prompts. Answers sent by the main-chat `workflow` tool do not emit this notice because the tool result already tells the main agent what happened.
 
+When you quit Atomic while top-level workflow runs are still in flight, the extension shows a destructive quit confirmation in the TUI. **Cancel** is focused by default. Confirming quit lets the normal shutdown path kill active workflow work and retain killed runs for later status/history inspection; cancelling leaves Atomic and the workflows running. Headless or degraded UI shutdowns fail open so automation cannot wedge on a prompt.
+
 ---
 
 ## Authoring API

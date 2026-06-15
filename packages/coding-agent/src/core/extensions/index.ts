@@ -19,7 +19,7 @@ export type {
 	ShutdownHandler,
 	SwitchSessionHandler,
 } from "./runner.ts";
-export { ExtensionRunner } from "./runner.ts";
+export { emitSessionBeforeShutdownEvent, ExtensionRunner } from "./runner.ts";
 export type {
 	AfterProviderResponseEvent,
 	AgentEndEvent,
@@ -129,6 +129,8 @@ export type {
 	SessionBeforeCompactResult,
 	SessionBeforeForkEvent,
 	SessionBeforeForkResult,
+	SessionBeforeShutdownEvent,
+	SessionBeforeShutdownResult,
 	SessionBeforeSwitchEvent,
 	SessionBeforeSwitchResult,
 	SessionBeforeTreeEvent,

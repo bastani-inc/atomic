@@ -73,6 +73,7 @@ import {
   type AgentSessionRuntime,
   SessionImportFileNotFoundError,
 } from "../../core/agent-session-runtime.ts";
+import { emitSessionBeforeShutdownEvent } from "../../core/extensions/index.ts";
 import type {
   AutocompleteProviderFactory,
   EditorFactory,
@@ -4210,9 +4211,30 @@ export class InteractiveMode {
    * repaint the final frame while the process is exiting.
    */
   private isShuttingDown = false;
+  private shutdownConfirmationPending = false;
 
   private async shutdown(options?: { fromSignal?: boolean }): Promise<void> {
     if (this.isShuttingDown) return;
+
+    if (!options?.fromSignal) {
+      if (this.shutdownConfirmationPending) return;
+      this.shutdownConfirmationPending = true;
+      let beforeShutdown: Awaited<ReturnType<typeof emitSessionBeforeShutdownEvent>>;
+      try {
+        beforeShutdown = await emitSessionBeforeShutdownEvent(this.session.extensionRunner, {
+          type: "session_before_shutdown",
+          reason: "quit",
+        });
+      } finally {
+        this.shutdownConfirmationPending = false;
+      }
+      if (beforeShutdown.cancelled) {
+        this.shutdownRequested = false;
+        return;
+      }
+      if (this.isShuttingDown) return;
+    }
+
     this.isShuttingDown = true;
     this.unregisterSignalHandlers();
 

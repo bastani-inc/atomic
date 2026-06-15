@@ -16,9 +16,10 @@
  */
 
 import type { Store } from "../shared/store.js";
-import type { StoreSnapshot } from "../shared/store-types.js";
+import type { RunSnapshot, StoreSnapshot } from "../shared/store-types.js";
 import type { ChatMessageRenderOptions, ReadonlyFooterDataProvider } from "@bastani/atomic";
 import { WorkflowAttachPane } from "./workflow-attach-pane.js";
+import { openKillConfirm } from "./session-overlays.js";
 import { WORKFLOW_STATUS_KEY } from "./workflow-status.js";
 import { deriveGraphThemeFromPiTheme } from "./graph-theme.js";
 import { killRun as defaultKillRun } from "../runs/background/status.js";
@@ -51,6 +52,7 @@ export interface OverlayUISurface {
   getChatRenderSettings?: () => OverlayChatRenderSettings | undefined;
   getFooterDataProvider?: () => ReadonlyFooterDataProvider;
   setStatus?: (key: string, value: string | undefined) => void;
+  confirm?: (title: string, message: string) => Promise<boolean>;
 }
 
 export interface OverlayPiSurface {
@@ -320,16 +322,26 @@ export function buildGraphOverlayAdapter(
         clearHostCustomUiObservation();
         done(undefined);
       };
+      const graphTheme = deriveGraphThemeFromPiTheme(theme);
+      const requestKill = (targetRunId: string): void => {
+        const targetRun: RunSnapshot | undefined = store.runs().find((candidate) => candidate.id === targetRunId);
+        if (!targetRun || targetRun.endedAt !== undefined) return;
+        void openKillConfirm(ui ?? {}, targetRun, graphTheme).then((confirmed) => {
+          if (!confirmed) return;
+          killRun(targetRunId);
+          finish();
+        });
+      };
       const view = new WorkflowAttachPane({
         store,
-        graphTheme: deriveGraphThemeFromPiTheme(theme),
+        graphTheme,
         runId,
         stageControlRegistry: registry,
         stageUiBroker,
         uiStatus,
         onClose: finish,
         onHide: hideMounted,
-        onKill: killRun,
+        onKill: requestKill,
         initialAttachStageId: stageId,
         piTui: tui,
         piTheme: theme,

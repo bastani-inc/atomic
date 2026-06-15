@@ -338,7 +338,11 @@ user sends another prompt ◄─────────────────
 thinking level changes (settings, keybinding, pi.setThinkingLevel())
   └─► thinking_level_select
 
-exit (CTRL+C, CTRL+D, SIGHUP, SIGTERM)
+exit (CTRL+C, CTRL+D)
+  ├─► session_before_shutdown (can cancel; reason: "quit")
+  └─► session_shutdown
+
+signal exit (SIGHUP, SIGTERM)
   └─► session_shutdown
 ```
 
@@ -489,9 +493,23 @@ pi.on("session_tree", async (event, ctx) => {
 });
 ```
 
+#### session_before_shutdown
+
+Fired before an interactive quit shutdown. Return `{ cancel: true }` to abort the quit before Atomic stops the UI or disposes the runtime. Signal shutdowns (`SIGHUP`, `SIGTERM`) skip this cancellable prompt path so process teardown remains non-interactive. Reloads and session replacement flows are not cancellable through this hook; use `session_shutdown` for terminal cleanup in those paths.
+
+```typescript
+pi.on("session_before_shutdown", async (event, ctx) => {
+  // event.reason - "quit"
+  if (ctx.hasUI) {
+    const ok = await ctx.ui.confirm("Quit?", "Stop background work and exit?");
+    if (!ok) return { cancel: true };
+  }
+});
+```
+
 #### session_shutdown
 
-Fired before an extension runtime is torn down.
+Fired before an extension runtime is torn down, after any cancellable `session_before_shutdown` handlers have allowed the shutdown to proceed.
 
 ```typescript
 pi.on("session_shutdown", async (event, ctx) => {
@@ -971,7 +989,7 @@ Request a graceful shutdown of Atomic.
 - **RPC mode:** Deferred until the next idle state (after completing the current command response, when waiting for the next command).
 - **Print mode:** No-op. The process exits automatically when all prompts are processed.
 
-Emits `session_shutdown` event to all extensions before exiting. Available in all contexts (event handlers, tools, commands, shortcuts).
+Interactive quit requests first emit cancellable `session_before_shutdown`; when not cancelled, Atomic emits `session_shutdown` before exiting. Available in all contexts (event handlers, tools, commands, shortcuts).
 
 ```typescript
 pi.on("tool_call", (event, ctx) => {
