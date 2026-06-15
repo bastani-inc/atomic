@@ -1,6 +1,6 @@
 {
   "name": "@bastani/atomic-natives",
-  "version": "0.8.29-alpha.4",
+  "version": "0.8.29",
   "description": "Native Rust bindings for Atomic via N-API",
   "homepage": "https://github.com/bastani-inc/atomic",
   "author": "Bastani",

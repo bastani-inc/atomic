@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.8.29] - 2026-06-15
+
 ### Changed
 
 - Aligned the subagents extension with upstream pi `^0.79.3` runtime packages (`@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, and `@earendil-works/pi-tui`) so child sessions inherit the latest shared agent, provider, and TUI compatibility fixes.

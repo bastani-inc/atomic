@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.8.29] - 2026-06-15
+
 ### Added
 
 - Added a prototype Rust/N-API HTTP/2 native binding and loader so the Cursor transport uses the generated `@bastani/atomic-natives` NAPI-RS package without requiring Node.js on `PATH`.
