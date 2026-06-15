@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { defineWorkflow, Type } from "@bastani/workflows";
-import deepResearchCodebase from "../../packages/workflows/builtin/deep-research-codebase.js";
+import deepResearchCodebase from "@bastani/workflows/builtin/deep-research-codebase";
 import {
   currentBranchName,
   DEFAULT_RELEASE_DOCS_BASE_BRANCH,
