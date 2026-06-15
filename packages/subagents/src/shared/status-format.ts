@@ -1,4 +1,4 @@
-import type { ActivityState, AsyncJobStep } from "./types.ts";
+import type { AcceptanceLedger, AcceptanceLedgerStatus, ActivityState, AsyncJobStep } from "./types.ts";
 
 type StepStatusLike = Pick<AsyncJobStep, "status">;
 
@@ -34,6 +34,49 @@ export function aggregateStepStatus(steps: StepStatusLike[]): AsyncJobStep["stat
 
 export function formatAgentRunningLabel(count: number): string {
 	return count === 1 ? "1 agent running" : `${count} agents running`;
+}
+
+export function formatAcceptanceStatusForDisplay(status: AcceptanceLedgerStatus | undefined): string | undefined {
+	if (!status || status === "not-required") return undefined;
+	if (status === "rejected") return "acceptance gate rejected after completion";
+	return `acceptance: ${status}`;
+}
+
+function oneLine(value: string): string {
+	return value.replace(/\s+/g, " ").trim();
+}
+
+function formatReviewFindingDetail(finding: NonNullable<AcceptanceLedger["reviewResult"]>["findings"][number] | undefined): string | undefined {
+	if (!finding?.issue.trim()) return undefined;
+	const location = finding.file ? `${finding.file}: ` : "";
+	const rationale = finding.rationale.trim() ? ` (${finding.rationale.trim()})` : "";
+	return oneLine(`${location}${finding.issue.trim()}${rationale}`);
+}
+
+function firstAcceptanceRejectedReason(ledger: AcceptanceLedger): string | undefined {
+	const failedCheck = ledger.runtimeChecks.find((check) => check.status === "failed");
+	if (failedCheck?.message) return oneLine(failedCheck.message);
+	const failedVerify = ledger.verifyRuns.find((run) => run.status === "failed" || run.status === "timed-out");
+	if (failedVerify) return `verification '${failedVerify.id}' ${failedVerify.status}`;
+	if (ledger.reviewResult?.status === "needs-parent-decision") {
+		const finding = formatReviewFindingDetail(ledger.reviewResult.findings.find((item) => item.issue.trim().length > 0));
+		return `acceptance review is required and no automatic reviewer result is available${finding ? `: ${finding}` : ""}`;
+	}
+	if (ledger.reviewResult?.status === "blockers") {
+		const blocker = ledger.reviewResult.findings.find((finding) => finding.severity === "blocker" && finding.issue.trim().length > 0)
+			?? ledger.reviewResult.findings.find((finding) => finding.issue.trim().length > 0);
+		const detail = formatReviewFindingDetail(blocker);
+		return detail ? `acceptance review found blockers: ${detail}` : "acceptance review found blockers";
+	}
+	if (ledger.childReportParseError) return oneLine(ledger.childReportParseError);
+	return undefined;
+}
+
+export function formatAcceptanceLedgerForDisplay(ledger: AcceptanceLedger | undefined): string | undefined {
+	const statusText = formatAcceptanceStatusForDisplay(ledger?.status);
+	if (!statusText || ledger?.status !== "rejected") return statusText;
+	const reason = firstAcceptanceRejectedReason(ledger);
+	return reason ? `${statusText}: ${reason}` : statusText;
 }
 
 export function formatParallelOutcome(steps: StepStatusLike[], total: number, options: { showRunning?: boolean } = {}): string {

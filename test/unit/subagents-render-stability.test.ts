@@ -16,6 +16,7 @@ import {
 } from "../../packages/subagents/src/tui/render.js";
 import type { ExtensionContext } from "@bastani/atomic";
 import type {
+    AcceptanceLedger,
     AsyncJobState,
     Details,
 } from "../../packages/subagents/src/shared/types.js";
@@ -83,6 +84,26 @@ function runningSingleResult(): AgentToolResult<Details> {
                 },
             ],
         },
+    };
+}
+
+function rejectedAcceptanceLedger(): AcceptanceLedger {
+    return {
+        status: "rejected",
+        explicit: false,
+        effectiveAcceptance: {
+            level: "checked",
+            explicit: false,
+            inferredReason: [],
+            criteria: [],
+            evidence: [],
+            verify: [],
+            stopRules: [],
+        },
+        inferredReason: [],
+        criteria: [],
+        runtimeChecks: [{ id: "tests-added", status: "failed", message: "tests-added evidence missing from child report" }],
+        verifyRuns: [],
     };
 }
 
@@ -178,6 +199,41 @@ describe("subagent fast-mode UI labels (issue #1153)", () => {
         );
 
         assert.match(text, /gpt-5\.1-codex · thinking medium · fast/);
+    });
+});
+
+describe("subagent acceptance status rendering", () => {
+    test("foreground compact result includes actionable rejected acceptance reason", () => {
+        const result: AgentToolResult<Details> = {
+            content: [{ type: "text", text: "done" }],
+            details: {
+                mode: "single",
+                results: [
+                    {
+                        agent: "worker",
+                        task: "do work",
+                        exitCode: 0,
+                        usage: {
+                            input: 0,
+                            output: 0,
+                            cacheRead: 0,
+                            cacheWrite: 0,
+                            cost: 0,
+                            turns: 0,
+                        },
+                        finalOutput: "done",
+                        acceptance: rejectedAcceptanceLedger(),
+                    },
+                ],
+            },
+        };
+
+        const text = renderSubagentResult(result, { expanded: false }, theme)
+            .render(160)
+            .join("\n");
+
+        assert.match(text, /Completed · acceptance gate rejected after completion: tests-added evidence missing from child report/);
+        assert.doesNotMatch(text, /acceptance: rejected/);
     });
 });
 

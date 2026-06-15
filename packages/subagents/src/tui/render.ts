@@ -22,7 +22,7 @@ import { formatTokens, formatUsage, formatDuration, formatModelThinking, formatT
 import { getDisplayItems, getSingleResultOutput } from "../shared/utils.ts";
 import { flatToLogicalStepIndex } from "../runs/background/parallel-groups.ts";
 import { formatNestedAggregate } from "../runs/shared/nested-render.ts";
-import { aggregateStepStatus, formatActivityLabel, formatAgentRunningLabel, formatParallelOutcome } from "../shared/status-format.ts";
+import { aggregateStepStatus, formatAcceptanceLedgerForDisplay, formatActivityLabel, formatAgentRunningLabel, formatParallelOutcome } from "../shared/status-format.ts";
 
 type Theme = ExtensionContext["ui"]["theme"];
 
@@ -306,7 +306,8 @@ function resultStatusLine(result: Details["results"][number], output: string): s
 	if (result.detached) return result.detachedReason ? `Detached: ${result.detachedReason}` : "Detached";
 	if (result.interrupted) return "Paused";
 	if (result.exitCode !== 0) return `Error: ${result.error ?? (firstOutputLine(output) || `exit ${result.exitCode}`)}`;
-	if (result.acceptance?.status && result.acceptance.status !== "not-required") return `Done · acceptance: ${result.acceptance.status}`;
+	const acceptanceText = formatAcceptanceLedgerForDisplay(result.acceptance);
+	if (acceptanceText) return result.acceptance?.status === "rejected" ? `Completed · ${acceptanceText}` : `Done · ${acceptanceText}`;
 	if (hasEmptyTextOutputWithoutOutputTarget(result.task, output)) return "Done (no text output)";
 	return "Done";
 }

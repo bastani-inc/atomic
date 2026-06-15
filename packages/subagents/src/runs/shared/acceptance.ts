@@ -62,6 +62,115 @@ function requiredEvidenceForLevel(level: Exclude<AcceptanceLevel, "auto">): Acce
 	}
 }
 
+const READ_ONLY_AGENTS = new Set([
+	"codebase-locator",
+	"codebase-analyzer",
+	"codebase-pattern-finder",
+	"codebase-research-locator",
+	"codebase-research-analyzer",
+	"codebase-online-researcher",
+]);
+
+function isReadOnlyAgent(agent: string): boolean {
+	return READ_ONLY_AGENTS.has(agent) || /\b(?:reviewer|scout|context-builder|researcher|analyst)\b/.test(agent);
+}
+
+const READ_ONLY_CONTINUATION_VERB = String.raw`(?:identify|find|explain|describe|report|return|list|summari[sz]e)`;
+const NO_WRITE_BOUNDARY = String.raw`(?=\s*(?:[.!?;]|\n|$|,\s*(?:(?:and|then)\s+)?(?:just\s+)?(?:only\s+)?${READ_ONLY_CONTINUATION_VERB}\b|,\s*but\s+(?:just\s+)?(?:only\s+)?${READ_ONLY_CONTINUATION_VERB}\b|\b(?:and|then)\s+(?:just\s+)?(?:only\s+)?${READ_ONLY_CONTINUATION_VERB}\b))`;
+const BROAD_NO_WRITE_OBJECT = String.raw`(?:anything(?!\s+else\b)|any\s+(?:files?|code|source|edits?|modifications?|changes?|writes?)|files?|code|source|edits?|modifications?|changes?|writes?)`;
+const DO_NOT_BARE_NO_WRITE_RE = new RegExp(String.raw`\b(?:do not|don't|dont)\s+(?:write|edit|modify|change|fix|implement|patch)\b(?:\s+at\s+all)?${NO_WRITE_BOUNDARY}`);
+const DO_NOT_BROAD_NO_WRITE_RE = new RegExp(String.raw`\b(?:do not|don't|dont)\s+(?:write|edit|modify|change|fix|implement|patch)\s+${BROAD_NO_WRITE_OBJECT}\b(?:\s+at\s+all)?${NO_WRITE_BOUNDARY}`);
+const DO_NOT_ANYTHING_ELSE_SCOPE_GUARD_RE = new RegExp(String.raw`\b(?:do not|don't|dont)\s+(?:write|edit|modify|change|fix|implement|patch)\s+anything\s+else\b(?:\s+at\s+all)?${NO_WRITE_BOUNDARY}`);
+const DO_NOT_MAKE_BROAD_NO_WRITE_RE = new RegExp(String.raw`\b(?:do not|don't|dont)\s+(?:(?:make|perform|do)\s+)(?:any\s+)?(?:(?:file|code|source)\s+)?(?:edits?|modifications?|changes?|writes?)\b(?:\s+at\s+all)?${NO_WRITE_BOUNDARY}`);
+const NO_BARE_NO_WRITE_RE = new RegExp(String.raw`\bno[- ](?:write|writes|file[- ]writes|file[- ]edits|source[- ]changes|source[- ]edits|code[- ]changes|code[- ]edits)\b${NO_WRITE_BOUNDARY}`);
+const NO_SPACE_NO_WRITE_RE = new RegExp(String.raw`\bno\s+(?:edits?|writes?|file\s+(?:edits?|changes?|writes?|modifications?))\b${NO_WRITE_BOUNDARY}`);
+const NO_SOURCE_NO_WRITE_RE = new RegExp(String.raw`\bno\s+(?:code|source)\s+(?:edits?|changes?|writes?|modifications?)\b${NO_WRITE_BOUNDARY}`);
+const WITHOUT_BARE_NO_WRITE_RE = new RegExp(String.raw`\bwithout\s+(?:any\s+)?(?:edits?|modifications?|changes?)\b(?:\s+at\s+all)?${NO_WRITE_BOUNDARY}`);
+const WITHOUT_FILE_NO_WRITE_RE = new RegExp(String.raw`\bwithout\s+(?:(?:making|performing|doing)\s+)?(?:any\s+)?(?:file|code|source)\s+(?:edits?|editing|modifications?|modifying|changes?|changing|writes?|writing)\b(?:\s+at\s+all)?${NO_WRITE_BOUNDARY}`);
+const WITHOUT_EDITING_NO_WRITE_RE = new RegExp(String.raw`\bwithout\s+(?:editing|modifying|changing|writing)\s+(?:any\s+)?(?:files?|code|source)\b(?:\s+at\s+all)?${NO_WRITE_BOUNDARY}`);
+
+function hasNoWriteWording(task: string, options: { allowAnythingElseScopeGuard?: boolean } = {}): boolean {
+	const doNotAnythingElseScopeGuard = DO_NOT_ANYTHING_ELSE_SCOPE_GUARD_RE.test(task);
+	const doNotDirectWrite = DO_NOT_BARE_NO_WRITE_RE.test(task)
+		|| DO_NOT_BROAD_NO_WRITE_RE.test(task)
+		|| (doNotAnythingElseScopeGuard && !options.allowAnythingElseScopeGuard)
+		|| DO_NOT_MAKE_BROAD_NO_WRITE_RE.test(task);
+	return /\b(?:read[- ]only|review[- ]only|analysis[- ]only|investigation[- ]only|investigate[- ]only|research[- ]only|inspect[- ]only|diagnos(?:e|is)[- ]only|debug[- ]only|report[- ]only|findings[- ]only)\b/.test(task)
+		|| doNotDirectWrite
+		|| NO_BARE_NO_WRITE_RE.test(task)
+		|| /\bno[- ]implementation\s+(?:report|summary|write[- ]?up|brief)\b/.test(task)
+		|| NO_SPACE_NO_WRITE_RE.test(task)
+		|| NO_SOURCE_NO_WRITE_RE.test(task)
+		|| WITHOUT_BARE_NO_WRITE_RE.test(task)
+		|| WITHOUT_FILE_NO_WRITE_RE.test(task)
+		|| WITHOUT_EDITING_NO_WRITE_RE.test(task);
+}
+
+function hasProseReportIntent(task: string): boolean {
+	return /\b(?:summari[sz]e|summary|report|write[- ]?up|brief)\b/.test(task)
+		|| /\bwrite\s+(?:a\s+|an\s+|the\s+)?(?:report|summary|brief|write[- ]?up|proposal|findings?)\b/.test(task);
+}
+
+function hasPriorWorkReportIntent(task: string): boolean {
+	return /\b(?:report|summari[sz]e|review|analy[sz]e|inspect)\b/.test(task)
+		&& (/\bwhat\s+changed\b/.test(task)
+			|| /\b(?:in|from|by)\s+(?:the\s+)?(?:diff|patch|previous\s+change|previous\s+commit|prior\s+implementation|last\s+patch)\b/.test(task)
+			|| /\b(?:the\s+)?(?:previous|prior|last)\s+commit\b/.test(task)
+			|| /\btests?\s+added\s+(?:by|in)\s+(?:the\s+)?(?:previous|prior|last)\b/.test(task));
+}
+
+function hasReadOnlyInvestigationIntent(task: string): boolean {
+	const actionPrefix = String.raw`(?:^|[;.!?\n]\s*|\b(?:and|then|also|please|must|should|need(?:s|ed)?\s+to|can\s+you|could\s+you|would\s+you)\s+)`;
+	const investigationAction = String.raw`(?:investigate|diagnose|debug|inspect|analy[sz]e|review|trace|examine|audit|research|identify|determine|find)`;
+	const investigationObject = String.raw`[^.!?\n]*(?:root\s+cause|cause|regression|failure|bug|issue|problem|race|flak(?:e|y)|behavior|flow|diff|patch|fix|implementation|code|files?)`;
+	return new RegExp(`${actionPrefix}${investigationAction}\\b${investigationObject}`).test(task);
+}
+
+function hasSideEffectfulOperationIntent(task: string): boolean {
+	const actionPrefix = String.raw`(?:^|[;.!?\n]\s*|\b(?:and|then|also|please|must|should|need(?:s|ed)?\s+to|can\s+you|could\s+you|would\s+you)\s+)`;
+	const optionalAdverbs = String.raw`(?:(?:[a-z]+ly)\s+){0,2}`;
+	const releaseObject = String.raw`(?:the\s+)?(?:package|version|release|build|artifact|library|module|app(?:lication)?|service|site|cli|extension|tag)\b`;
+	const publishObject = String.raw`(?:the\s+)?(?:package|version|release|build|artifact|library|module|app(?:lication)?|service|site|docs?|documentation|extension)\b`;
+	const deployObject = String.raw`(?:the\s+)?(?:app(?:lication)?|service|site|build|release|package|artifact|docs?|documentation|extension)\b`;
+	const commitObject = String.raw`(?:the\s+)?(?:(?:current|pending|staged|local)\s+)?(?:changes?|work|patch|fix|implementation|updates?|files?)\b`;
+	const objectlessOperationBoundary = String.raw`(?=\s*(?:[,;.!?\n]|$|\band\b|\bthen\b))`;
+	return new RegExp(`${actionPrefix}${optionalAdverbs}release\\s+${releaseObject}`).test(task)
+		|| new RegExp(`${actionPrefix}${optionalAdverbs}release\\b${objectlessOperationBoundary}`).test(task)
+		|| new RegExp(`${actionPrefix}${optionalAdverbs}publish\\s+${publishObject}`).test(task)
+		|| new RegExp(`${actionPrefix}${optionalAdverbs}deploy\\s+${deployObject}`).test(task)
+		|| new RegExp(`${actionPrefix}${optionalAdverbs}commit\\s+${commitObject}`).test(task)
+		|| new RegExp(`${actionPrefix}${optionalAdverbs}commit\\b${objectlessOperationBoundary}`).test(task);
+}
+
+function hasStrongImplementationIntent(task: string): boolean {
+	const actionPrefix = String.raw`(?:^|[;.!?\n]\s*|\b(?:and|then|also|please|must|should|need(?:s|ed)?\s+to|can\s+you|could\s+you|would\s+you)\s+)`;
+	const optionalAdverbs = String.raw`(?:(?:[a-z]+ly)\s+){0,3}`;
+	const directAction = String.raw`(?:fix(?:e[ds]|ing)?|implement(?:ed|ing)?|update(?:d|s|ing)?|refactor(?:ed|s|ing)?|patch(?:ed|es|ing)?|migrate(?:d|s|ing)?)`;
+	const completedOrGerundAction = String.raw`(?:fix(?:e[ds]|ing)?|implement(?:ed|ing)?|patch(?:ed|es|ing)?|updat(?:ed|ing)|refactor(?:ed|ing)|migrat(?:ed|ing)|(?:applied|applying)\s+(?:a\s+|an\s+|the\s+)?patch)`;
+	return new RegExp(`${actionPrefix}${optionalAdverbs}${directAction}\\b`).test(task)
+		|| new RegExp(`${actionPrefix}${optionalAdverbs}apply\\s+(?:a\\s+|an\\s+|the\\s+)?patch\\b`).test(task)
+		|| new RegExp(`\\b(?:after|once|when)\\s+(?:you\\s+)?${completedOrGerundAction}\\b`).test(task)
+		|| /\bwhat\s+you\s+(?:changed|fixed|implemented|patched|updated)\b/.test(task)
+		|| /\byour\s+(?:changes|fixes|implementation|patch|updates)\b/.test(task);
+}
+
+const EXPLICIT_FILE_OR_CODE_MUTATION = String.raw`(?:edit|modify|change|update|refactor|delete|remove|clean(?:\s|-)?up|implement|migrate)`;
+const NAMED_FILE_OBJECT = String.raw`(?:readme(?:\.[a-z0-9]+)?|changelog(?:\.[a-z0-9]+)?|license(?:\.[a-z0-9]+)?|package(?:-lock)?\.json|bun\.lockb?|tsconfig(?:\.[\w-]+)?\.json|(?:[\w.-]+[/\\])+[\w.-]+|[\w-]+\.[a-z0-9]{1,8})`;
+const OBJECTFUL_FILE_MUTATION = String.raw`(?:edit|modify|change|update|refactor|delete|remove|clean(?:\s|-)?up)`;
+const EXPLICIT_FILE_OR_CODE_MUTATION_BEFORE_OBJECT_RE = new RegExp(String.raw`\b${EXPLICIT_FILE_OR_CODE_MUTATION}\b[^.!?\n]*(?:\b(?:files?|code|source|implementation|patch(?:es)?|changes?)\b)`);
+const EXPLICIT_FILE_OR_CODE_OBJECT_BEFORE_MUTATION_RE = new RegExp(String.raw`\b(?:files?|code|source)\b[^.!?\n]*\b${EXPLICIT_FILE_OR_CODE_MUTATION}\b`);
+const EXPLICIT_NAMED_FILE_MUTATION_BEFORE_OBJECT_RE = new RegExp(String.raw`\b${OBJECTFUL_FILE_MUTATION}\b(?:\s+(?:the|a|an))?[^.!?\n]{0,80}\b${NAMED_FILE_OBJECT}\b`);
+const EXPLICIT_NAMED_FILE_WRITE_RE = new RegExp(String.raw`\bwrite\s+(?:(?:to|into)\s+)?(?:the\s+)?${NAMED_FILE_OBJECT}\b(?=\s*(?:[,;.!?\n]|$|\band\b|\bthen\b))`);
+
+function hasExplicitFileOrCodeWriteIntent(task: string): boolean {
+	return EXPLICIT_FILE_OR_CODE_MUTATION_BEFORE_OBJECT_RE.test(task)
+		|| EXPLICIT_FILE_OR_CODE_OBJECT_BEFORE_MUTATION_RE.test(task)
+		|| EXPLICIT_NAMED_FILE_MUTATION_BEFORE_OBJECT_RE.test(task)
+		|| /\bwrite\s+(?:code|tests?|files?|source|patch(?:es)?)\b/.test(task)
+		|| EXPLICIT_NAMED_FILE_WRITE_RE.test(task)
+		|| /\b(?:write|save|output)\b[^.!?\n]*\b(?:to|into)\b[^.!?\n]*(?:\b(?:file|code|source)\b|[/\\]|\.[a-z0-9]{1,8}\b)/.test(task);
+}
+
 function inferLevel(input: {
 	agentName: string;
 	task?: string;
@@ -73,25 +182,41 @@ function inferLevel(input: {
 	const agent = input.agentName.toLowerCase();
 	const task = input.task?.toLowerCase() ?? "";
 	const reasons: string[] = [];
-	const readOnlyAgent = [
-		"codebase-locator",
-		"codebase-analyzer",
-		"codebase-pattern-finder",
-		"codebase-research-locator",
-		"codebase-research-analyzer",
-		"codebase-online-researcher",
-	].includes(agent) || /\b(?:reviewer|scout|context-builder|researcher|analyst)\b/.test(agent);
-	const readOnlyTask = /\b(?:read[- ]only|review[- ]only|do not edit|don't edit|no edits|without edits|inspect|summari[sz]e)\b/.test(task);
-	const writeTask = /\b(?:fix|implement|update|write|edit|modify|migrate|release|security|delete|remove|refactor|commit)\b/.test(task)
-		|| /\bworker\b/.test(agent);
-	const risky = Boolean(input.async && writeTask)
-		|| Boolean(input.dynamic)
-		|| Boolean(input.dynamicGroup)
-		|| /\b(?:release|migration|migrate|security|data[- ]loss|destructive|post-review|fix pass)\b/.test(task);
+	const readOnlyAgent = isReadOnlyAgent(agent);
+	const explicitFileOrCodeWriteTask = hasExplicitFileOrCodeWriteIntent(task);
+	const strongImplementationTask = hasStrongImplementationIntent(task);
+	const sideEffectfulOperationTask = hasSideEffectfulOperationIntent(task);
+	const noWriteTask = hasNoWriteWording(task, {
+		allowAnythingElseScopeGuard: explicitFileOrCodeWriteTask || strongImplementationTask || sideEffectfulOperationTask,
+	});
+	const proseReportTask = hasProseReportIntent(task)
+		&& !explicitFileOrCodeWriteTask
+		&& !strongImplementationTask
+		&& !sideEffectfulOperationTask;
+	const priorWorkReportTask = hasPriorWorkReportIntent(task)
+		&& !explicitFileOrCodeWriteTask
+		&& !strongImplementationTask
+		&& !sideEffectfulOperationTask;
+	const investigationTask = hasReadOnlyInvestigationIntent(task)
+		&& !explicitFileOrCodeWriteTask
+		&& !strongImplementationTask
+		&& !sideEffectfulOperationTask;
+	const readOnlyTask = noWriteTask || proseReportTask || priorWorkReportTask || investigationTask;
+	const genericWriteTask = strongImplementationTask
+		|| sideEffectfulOperationTask
+		|| /\b(?:fix|implement|update|write|edit|modify|migrate|security|delete|remove|refactor|apply|patch|clean(?:\s|-)?up)\b/.test(task)
+		|| (/\bworker\b/.test(agent) && !proseReportTask);
+	const writeCapableTask = !readOnlyAgent && (explicitFileOrCodeWriteTask || genericWriteTask) && !readOnlyTask;
+	const riskyTask = sideEffectfulOperationTask || /\b(?:migration|migrate|security|data[- ]loss|destructive|post-review|fix pass)\b/.test(task);
+	const dynamicFanout = Boolean(input.dynamic || input.dynamicGroup);
+	const dynamicNeedsReview = dynamicFanout && !readOnlyAgent && !readOnlyTask;
+	const risky = !readOnlyAgent && (Boolean(input.async && writeCapableTask)
+		|| dynamicNeedsReview
+		|| Boolean(riskyTask && !readOnlyTask));
 
 	if (risky) {
-		reasons.push(input.async ? "async write-capable or risky run" : "risky write-capable run");
-		if (input.dynamic || input.dynamicGroup) reasons.push("dynamic fanout context");
+		reasons.push(input.async && writeCapableTask ? "async write-capable or risky run" : "risky write-capable run");
+		if (dynamicFanout) reasons.push("dynamic fanout context");
 		return {
 			level: "reviewed",
 			reasons,
@@ -100,7 +225,7 @@ function inferLevel(input: {
 			review: { agent: "codebase-analyzer", required: true },
 		};
 	}
-	if (writeTask && !readOnlyTask) {
+	if (writeCapableTask) {
 		reasons.push("write-capable worker/task");
 		return {
 			level: "checked",
@@ -110,7 +235,7 @@ function inferLevel(input: {
 		};
 	}
 	if (readOnlyAgent || readOnlyTask) {
-		reasons.push(readOnlyAgent ? "read-only/reviewer-style agent" : "read-only task wording");
+		reasons.push(readOnlyAgent ? "read-only/reviewer-style agent" : (proseReportTask ? "prose report/summary task" : (investigationTask ? "investigation/diagnostic task" : "read-only task wording")));
 		return {
 			level: "attested",
 			reasons,
@@ -385,17 +510,24 @@ function checkCriteriaSatisfied(criteria: ResolvedAcceptanceGate[], report: Acce
 	});
 }
 
-function reportEvidencePresent(report: AcceptanceReport, kind: AcceptanceEvidenceKind): boolean {
+function reportEvidenceCheck(report: AcceptanceReport, kind: AcceptanceEvidenceKind): AcceptanceRuntimeCheck {
+	const passed = (message: string): AcceptanceRuntimeCheck => ({ id: `evidence:${kind}`, status: "passed", message });
+	const failed = (message: string): AcceptanceRuntimeCheck => ({ id: `evidence:${kind}`, status: "failed", message });
 	switch (kind) {
-		case "changed-files": return isStringArray(report.changedFiles) && report.changedFiles.length > 0;
-		case "tests-added": return isStringArray(report.testsAddedOrUpdated) && report.testsAddedOrUpdated.length > 0;
-		case "commands-run": return Array.isArray(report.commandsRun) && report.commandsRun.length > 0;
-		case "validation-output": return isStringArray(report.validationOutput) && report.validationOutput.length > 0;
-		case "residual-risks": return isStringArray(report.residualRisks);
-		case "no-staged-files": return report.noStagedFiles === true;
-		case "diff-summary": return typeof report.diffSummary === "string" && report.diffSummary.trim().length > 0;
-		case "review-findings": return isStringArray(report.reviewFindings);
-		case "manual-notes": return Boolean((report.manualNotes ?? report.notes)?.trim());
+		case "changed-files": {
+			if (report.changedFiles === undefined) return failed("changed-files evidence missing from child report.");
+			if (!isStringArray(report.changedFiles)) return failed("changed-files evidence must be an array of file paths.");
+			if (report.changedFiles.length === 0) return failed("changed-files evidence was present but empty; checked, verified, and reviewed write gates require at least one changed file.");
+			return passed("changed-files evidence present.");
+		}
+		case "tests-added": return isStringArray(report.testsAddedOrUpdated) && report.testsAddedOrUpdated.length > 0 ? passed("tests-added evidence present.") : failed("tests-added evidence missing from child report.");
+		case "commands-run": return Array.isArray(report.commandsRun) && report.commandsRun.length > 0 ? passed("commands-run evidence present.") : failed("commands-run evidence missing from child report.");
+		case "validation-output": return isStringArray(report.validationOutput) && report.validationOutput.length > 0 ? passed("validation-output evidence present.") : failed("validation-output evidence missing from child report.");
+		case "residual-risks": return isStringArray(report.residualRisks) ? passed("residual-risks evidence present.") : failed("residual-risks evidence missing from child report.");
+		case "no-staged-files": return report.noStagedFiles === true ? passed("no-staged-files evidence present.") : failed("no-staged-files evidence missing from child report.");
+		case "diff-summary": return typeof report.diffSummary === "string" && report.diffSummary.trim().length > 0 ? passed("diff-summary evidence present.") : failed("diff-summary evidence missing from child report.");
+		case "review-findings": return isStringArray(report.reviewFindings) ? passed("review-findings evidence present.") : failed("review-findings evidence missing from child report.");
+		case "manual-notes": return Boolean((report.manualNotes ?? report.notes)?.trim()) ? passed("manual-notes evidence present.") : failed("manual-notes evidence missing from child report.");
 	}
 }
 
@@ -413,12 +545,7 @@ function checkNoStagedFiles(cwd: string): AcceptanceRuntimeCheck {
 function runStructuralChecks(acceptance: ResolvedAcceptanceConfig, report: AcceptanceReport, cwd: string): AcceptanceRuntimeCheck[] {
 	const checks: AcceptanceRuntimeCheck[] = [];
 	for (const kind of acceptance.evidence) {
-		const present = reportEvidencePresent(report, kind);
-		checks.push({
-			id: `evidence:${kind}`,
-			status: present ? "passed" : "failed",
-			message: present ? `${kind} evidence present.` : `${kind} evidence missing from child report.`,
-		});
+		checks.push(reportEvidenceCheck(report, kind));
 	}
 	if (acceptance.evidence.includes("no-staged-files")) checks.push(checkNoStagedFiles(cwd));
 	return checks;
@@ -600,13 +727,37 @@ export async function evaluateAcceptance(input: {
 	return ledger;
 }
 
+function firstReviewFindingWithIssue(ledger: AcceptanceLedger): NonNullable<AcceptanceLedger["reviewResult"]>["findings"][number] | undefined {
+	return ledger.reviewResult?.findings.find((item) => item.issue.trim().length > 0);
+}
+
+function firstBlockerFindingWithIssue(ledger: AcceptanceLedger): NonNullable<AcceptanceLedger["reviewResult"]>["findings"][number] | undefined {
+	return ledger.reviewResult?.findings.find((item) => item.severity === "blocker" && item.issue.trim().length > 0)
+		?? firstReviewFindingWithIssue(ledger);
+}
+
+function formatReviewFinding(finding: NonNullable<AcceptanceLedger["reviewResult"]>["findings"][number] | undefined): string | undefined {
+	if (!finding) return undefined;
+	const issue = finding.issue.trim();
+	if (!issue) return undefined;
+	const location = finding.file ? `${finding.file}: ` : "";
+	const rationale = finding.rationale.trim() ? ` (${finding.rationale.trim()})` : "";
+	return `${location}${issue}${rationale}`;
+}
+
 export function acceptanceFailureMessage(ledger: AcceptanceLedger): string | undefined {
 	if (ledger.status !== "rejected") return undefined;
 	const failedCheck = ledger.runtimeChecks.find((check) => check.status === "failed");
-	if (failedCheck) return `Acceptance rejected: ${failedCheck.message}`;
+	if (failedCheck) return `Run completed, but the acceptance gate rejected the result: ${failedCheck.message}`;
 	const failedVerify = ledger.verifyRuns.find((run) => run.status === "failed" || run.status === "timed-out");
-	if (failedVerify) return `Acceptance verification '${failedVerify.id}' ${failedVerify.status}.`;
-	if (ledger.reviewResult?.status === "needs-parent-decision") return "Acceptance review required but no automatic reviewer result is available.";
-	if (ledger.reviewResult?.status === "blockers") return "Acceptance review found blockers.";
-	return "Acceptance rejected.";
+	if (failedVerify) return `Run completed, but acceptance verification '${failedVerify.id}' ${failedVerify.status}.`;
+	if (ledger.reviewResult?.status === "needs-parent-decision") {
+		const firstReviewFinding = formatReviewFinding(firstReviewFindingWithIssue(ledger));
+		return `Run completed, but acceptance review is required and no automatic reviewer result is available${firstReviewFinding ? `: ${firstReviewFinding}` : "."}`;
+	}
+	if (ledger.reviewResult?.status === "blockers") {
+		const firstBlockerFinding = formatReviewFinding(firstBlockerFindingWithIssue(ledger));
+		return `Run completed, but acceptance review found blockers${firstBlockerFinding ? `: ${firstBlockerFinding}` : "."}`;
+	}
+	return "Run completed, but the acceptance gate rejected the result.";
 }

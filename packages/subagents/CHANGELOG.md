@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Clarified subagent acceptance rejection status and failure copy so completed child runs that fail the acceptance gate include the first actionable rejection reason when available, selecting the first blocker review finding for blocker results and preserving first finding details for parent-decision results, and are not shown as a raw `acceptance: rejected` state; compact status follows the same blocker-first behavior and includes the first `needs-parent-decision` finding detail when one is available.
+- Kept prose report/summary requests, bare investigation/diagnostic prompts such as `Investigate the likely fix for the cache race`, read-only-agent tasks such as `codebase-analyzer` handling `Analyze each fix regression`, and explicit no-write/no-edit/no-file-write/no-source-change debugger, investigation, research, and inspect tasks on attested acceptance even when their issue title includes write-like words such as `fix` or `patch`; no-write boundary forms followed by commas, conjunctions, read-only `but` continuations, or `list`, such as `do not edit files, just identify the root cause`, `do not edit files, but only report the root cause`, `do not edit files, just list findings`, `do not edit files and only report root cause`, and `do not modify code, then summarize findings`, now infer no-write as well.
+- Preserved checked/reviewed write gates for objectful named-file edits and implementation-plus-report phrasing such as `edit README and write a summary`, `modify README and report results`, `please quickly fix the bug and report results`, `after implementing the fix, write a summary`, `after patching the bug, report results`, or `report what you changed and tests added`.
+- Preserved checked/reviewed write gates for side-effectful operation-plus-report phrasing such as `release the package and write a summary`, objectless `release and write a summary`, `publish the package and write a report`, `deploy the app and write a summary`, `commit the changes and write a report`, or objectless `commit and write a report`, while keeping read-only phrases like `summarize release notes` and `analyze the previous commit` attested.
+- Preserved write gates for implementation prompts that include scoped constraints such as `do not change anything else`, `do not change tests`, `do not change snapshots`, `do not change existing behavior`, `do not modify CLI behavior`, or `do not change database schema`.
+- Treated read-only prior-work summaries such as `report what changed in the patch`, `summarize what changed in the diff`, and passive `tests added by the previous change` prompts as attested while keeping actor-owned implementation summaries write-gated.
+- Defaulted dynamic fanout and dynamic-group writer contexts to reviewed acceptance unless task wording or the selected agent is read-only/no-write.
+- Distinguished missing `changedFiles` evidence from present-but-empty `changedFiles` evidence for checked/verified/reviewed write gates.
+
 ## [0.8.29] - 2026-06-15
 
 ### Changed
