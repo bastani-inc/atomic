@@ -748,12 +748,7 @@ async function runSingleStep(
 		let structuredOutput: unknown;
 		let structuredError: string | undefined;
 		if (effectiveStructuredOutput && run.exitCode === 0 && !run.error && !hiddenError?.hasError) {
-			const structured = readStructuredOutput({
-				schema: effectiveStructuredOutput.schema,
-				schemaPath: effectiveStructuredOutput.schemaPath,
-				outputPath: effectiveStructuredOutput.outputPath,
-				metadataPath: effectiveStructuredOutput.metadataPath,
-			}, { messages: run.messages });
+			const structured = readStructuredOutput(effectiveStructuredOutput);
 			if (structured.error) structuredError = structured.error;
 			else structuredOutput = structured.value;
 		}

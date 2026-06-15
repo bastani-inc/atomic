@@ -37,25 +37,16 @@ function discoverChain(projectDir: string, name: string): ChainConfig {
 }
 
 describe("saved chain outputSchema loading", () => {
-  test("allows array-root dynamic collect.outputSchema while rejecting array-root child schemas", async () => {
+  test("allows plain JSON Schema objects for child and collect outputSchema", async () => {
     await withIsolatedAgentDir(async () => {
       const projectDir = mkdtempSync(join(tmpdir(), "atomic-subagents-chain-schema-"));
       try {
         mkdirSync(join(projectDir, CONFIG_DIR_NAME, "chains"), { recursive: true });
         const suffix = basename(projectDir).replace(/[^A-Za-z0-9_]/g, "_");
-        const validCollectName = `collect_array_${suffix}`;
-        const invalidChildName = `child_array_${suffix}`;
+        const chainName = `schema_array_${suffix}`;
 
-        writeJsonChain(projectDir, validCollectName, [
-          { agent: "scout", task: "Return targets", as: "targets", outputSchema: { type: "object" } },
-          {
-            expand: { from: { output: "targets", path: "/items" }, maxItems: 4 },
-            parallel: { agent: "reviewer", task: "Review {item.path}", outputSchema: { type: "object" } },
-            collect: { as: "reviews", outputSchema: { type: "array", minItems: 1 } },
-          },
-        ]);
-        writeJsonChain(projectDir, invalidChildName, [
-          { agent: "scout", task: "Return targets", as: "targets", outputSchema: { type: "object" } },
+        writeJsonChain(projectDir, chainName, [
+          { agent: "scout", task: "Return targets", as: "targets", outputSchema: { type: "array", items: { type: "object" } } },
           {
             expand: { from: { output: "targets", path: "/items" }, maxItems: 4 },
             parallel: { agent: "reviewer", task: "Review {item.path}", outputSchema: { type: "array", items: { type: "object" } } },
@@ -63,16 +54,11 @@ describe("saved chain outputSchema loading", () => {
           },
         ]);
 
-        assert.deepEqual(mapSavedChainSteps(discoverChain(projectDir, validCollectName))[1], {
+        assert.deepEqual(mapSavedChainSteps(discoverChain(projectDir, chainName))[1], {
           expand: { from: { output: "targets", path: "/items" }, maxItems: 4 },
-          parallel: { agent: "reviewer", task: "Review {item.path}", outputSchema: { type: "object" } },
+          parallel: { agent: "reviewer", task: "Review {item.path}", outputSchema: { type: "array", items: { type: "object" } } },
           collect: { as: "reviews", outputSchema: { type: "array", minItems: 1 } },
         });
-
-        assert.throws(
-          () => mapSavedChainSteps(discoverChain(projectDir, invalidChildName)),
-          /top-level object/i,
-        );
       } finally {
         rmSync(projectDir, { recursive: true, force: true });
       }

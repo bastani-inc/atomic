@@ -98,11 +98,13 @@ function makeTaskResult(
     name: string,
     text: string,
     sessionFile?: string,
+    structured?: WorkflowTaskResult["structured"],
 ): WorkflowTaskResult {
     return {
         name,
         stageName: name,
         text,
+        ...(structured === undefined ? {} : { structured }),
         ...(sessionFile === undefined ? {} : { sessionFile }),
     };
 }
@@ -183,10 +185,19 @@ function makeMockCtx<TInputs extends WorkflowInputValues>(
             mkdirSync(dirname(options.output), { recursive: true });
             writeFileSync(options.output, resultText);
         }
+        let structured: WorkflowTaskResult["structured"] | undefined;
+        if (options.schema !== undefined) {
+            try {
+                structured = JSON.parse(resultText) as WorkflowTaskResult["structured"];
+            } catch {
+                structured = undefined;
+            }
+        }
         return makeTaskResult(
             name,
             resultText,
             responders.sessionFile?.(name, options, calls),
+            structured,
         );
     };
 
@@ -1687,7 +1698,7 @@ describe("goal", () => {
         assert.equal(result["turns_completed"], 10);
     });
 
-    test("uses schema-backed structured output for reviewer stages", async () => {
+    test("uses schema-backed reviewer stages without prompt tool nudges", async () => {
         const mod = await import("../../packages/workflows/builtin/goal.js");
         const d = mod.default as unknown as WorkflowDefinition;
         const ctx = makeMockCtx(
@@ -1719,7 +1730,8 @@ describe("goal", () => {
             /echo the prior turn's exact blocker string/i,
         );
         const reviewerPrompt = ctx.calls.prompts["completion-reviewer-1"]?.[0] ?? "";
-        assert.match(reviewerPrompt, /structured_output/i);
+        assert.doesNotMatch(reviewerPrompt, /structured_output/i);
+        assert.match(reviewerPrompt, /stop_review_loop=true/);
         assert.match(reviewerPrompt, /Verify correctness end-to-end whenever practical/);
         assert.match(reviewerPrompt, /frontend changes whose correctness depends on backend\/API behavior/);
         assert.match(reviewerPrompt, /skill: "browser"/);
@@ -2711,7 +2723,7 @@ describe("ralph", () => {
         }
     });
 
-    test("uses schema-backed structured output for Ralph reviewer stages", async () => {
+    test("uses schema-backed Ralph reviewer stages without prompt tool nudges", async () => {
         const mod = await import("../../packages/workflows/builtin/ralph.js");
         const ctx = makeMockCtx(
             {
@@ -2743,7 +2755,9 @@ describe("ralph", () => {
         const reviewerOptions = ctx.calls.taskOptions["reviewer-a"]?.[0];
         assert.notEqual(reviewerOptions?.schema, undefined);
         assert.equal(reviewerOptions?.customTools, undefined);
-        assert.match(ctx.calls.prompts["reviewer-a"]?.[0] ?? "", /structured_output/i);
+        const reviewerPrompt = ctx.calls.prompts["reviewer-a"]?.[0] ?? "";
+        assert.doesNotMatch(reviewerPrompt, /structured_output/i);
+        assert.doesNotMatch(reviewerPrompt, /output_format/i);
     });
 
     test("passes Ralph review artifacts into follow-up research", async () => {
@@ -2991,12 +3005,15 @@ describe("open-claude-design", () => {
         assert.notEqual(refinementOptions?.schema, undefined);
         assert.equal(refinementOptions?.customTools, undefined);
         assert.deepEqual(refinementOptions?.tools, ["read", "grep", "ls"]);
-        assert.match(ctx.calls.prompts["user-feedback-1"]?.[0] ?? "", /structured_output/i);
+        const refinementPrompt = ctx.calls.prompts["user-feedback-1"]?.[0] ?? "";
+        assert.doesNotMatch(refinementPrompt, /structured_output/i);
+        assert.match(refinementPrompt, /ready_for_export=true/);
         const exportGateOptions = ctx.calls.taskOptions["pre-export-scan"]?.[0];
         assert.notEqual(exportGateOptions?.schema, undefined);
         assert.equal(exportGateOptions?.customTools, undefined);
         assert.deepEqual(exportGateOptions?.tools, ["read", "grep", "ls"]);
-        assert.match(ctx.calls.prompts["pre-export-scan"]?.[0] ?? "", /structured_output/i);
+        assert.doesNotMatch(ctx.calls.prompts["pre-export-scan"]?.[0] ?? "", /structured_output/i);
+        assert.doesNotMatch(ctx.calls.prompts["pre-export-scan"]?.[0] ?? "", /output_format/i);
         assert.equal(result["output_type"], "component");
         assert.equal(typeof result["artifact"], "string");
         assert.equal(typeof result["handoff"], "string");

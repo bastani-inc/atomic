@@ -11,13 +11,6 @@ import type { JsonSchemaObject } from "../../shared/types.ts";
 
 export { SUBAGENT_INTERCOM_SESSION_NAME_ENV } from "./pi-args.ts";
 
-const STRUCTURED_OUTPUT_INSTRUCTIONS = [
-	"This subagent step has a strict structured output contract.",
-	"Your final action must be to call the `structured_output` tool with JSON matching the provided schema.",
-	"Pass the schema fields directly as the tool arguments; do not wrap them in `{ value: ... }` unless the schema explicitly defines a top-level `value` field.",
-	"Do not rely on prose-only completion; if you do not call `structured_output`, the parent will fail this step.",
-].join("\n");
-
 export const CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS = [
 	"You are a child subagent, not the parent orchestrator.",
 	"The parent session owns delegation, orchestration, review fanout, and follow-up worker launches.",
@@ -107,8 +100,7 @@ export function rewriteSubagentPrompt(
 	rewritten = stripSubagentOrchestrationSkill(rewritten);
 	rewritten = stripChildBoundaryInstructions(rewritten);
 	const boundary = options.fanoutChild ? CHILD_FANOUT_BOUNDARY_INSTRUCTIONS : CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS;
-	const structured = process.env[STRUCTURED_OUTPUT_CAPTURE_ENV] ? `\n\n${STRUCTURED_OUTPUT_INSTRUCTIONS}` : "";
-	return `${boundary}${structured}\n\n${rewritten}`;
+	return `${boundary}\n\n${rewritten}`;
 }
 
 function isParentOnlySubagentMessage(message: unknown): boolean {

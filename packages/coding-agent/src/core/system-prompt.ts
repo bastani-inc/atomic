@@ -167,43 +167,6 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 
   const guidelines = guidelinesList.map((g) => `- ${g}`).join("\n");
 
-  const askUserQuestionGuidance = explicitlyExcludedTools.has(
-    "ask_user_question",
-  )
-    ? ""
-    : "- Always ask clarifying questions if the user's request is ambiguous or lacks necessary details. NEVER make assumptions about what the user wants. If you find yourself circling in thought and asking what the user \"really\" wants, stop and ask the user for clarification using the ask_user_question tool if available. It's better to clarify intent rather than to guess.\n- **Asking the user is a strict requirement**: Whenever you need to ask the user anything — a clarification, a decision, a choice between options, a confirmation, or any yes/no question — you MUST ask it by calling the `ask_user_question` tool. Never pose a question to the user as plain assistant text. Every question you direct to the user goes through `ask_user_question`; writing the question in prose instead of calling the tool is not allowed.";
-  const todoGuidance = explicitlyExcludedTools.has("todo")
-    ? ""
-    : "- **To-do management**: If the user has a complex task that can be broken down into actionable steps, use the `todo` tool to create a task list before proceeding. This ensures clarity and alignment with the user's goals and that you have a way to track your work and ensure you are meeting the user's expectations.";
-
-  const subagentGuidance = explicitlyExcludedTools.has("subagent")
-    ? ""
-    : `- **Subagent Orchestration**:
-  - To avoid draining your context window, prefer to use subagents for complex tasks all non-trivial operations should be delegated to subagents.
-  - You should delegate running bash commands (particularly ones that are likely to produce lots of output) such as investigating with the \`aws\` CLI, using the \`gh\` CLI, digging through logs to \`bash\` subagents.
-  - You should use separate subagents for separate tasks, and you may launch them in parallel, but do not delegate multiple tasks that are likely to have significant overlap to separate subagents.
-  - Sometimes subagents will take a long time. DO NOT attempt to do the job yourself while waiting for the subagent to respond Instead, use the time to plan out your next steps.
-  - **Debugging**: When a user asks about debugging, spawn a debugger subagent first.
-    - Do not attempt to debug or analyze code yourself without first consulting the debugger subagent.
-    - Explain the debugger's insights to the user clearly and concisely.
-    - Once the user confirms, implement the necessary code changes based on those insights.
-    - If the user has follow-up questions, spawn additional debugger and research subagents as needed.`;
-
-  const workflowGuidance = explicitlyExcludedTools.has("workflow")
-    ? ""
-    : `- **Workflows**: Use the \`workflow\` tool for existing named workflows and for repeatable, inspectable, resumable, or multi-stage processes; use direct \`task\`, \`tasks\`, or \`chain\` workflow calls for one-off tracked work when that is useful.
-  - For unfamiliar named workflows, discover with \`action: "list"\`, inspect with \`action: "get"\` or \`action: "inputs"\`, and run with \`action: "run"\`, \`workflow\`, and validated \`inputs\`; do not invent workflow names or input keys.
-  - When designing or editing workflows, read docs/workflows.md and reference its Workflow Starter Patterns: Classify-and-act, Fan-out-and-synthesize, Adversarial verification, Generate-and-filter, Tournament, and Loop until done. Choose or combine these patterns before inventing a custom stage graph, and reflect the selected pattern in the spec and Mermaid diagram when using the create-spec skill.
-  - Once you run a workflow with the workflow tool, end your current turn and wait for the next user input or lifecycle notice.
-    - You will automatically be alerted of key lifecycle events like start, finish, failure; do not micro-manage the run with sleep/status polling loops or read its logs/stages unless the user asks you to or you need information for the next step.
-    - If the user needs information from the workflow run, use targeted \`status\`/\`stages\`/\`stage\` checks instead of trying to read everything.
-    - Offer to help the user on another task instead of anxiously polling or help the user run another workflow if they need.
-    - Use run-control and messaging actions (\`send\`, \`pause\`, \`resume\`, \`interrupt\`, \`kill\`) only when needed to answer prompts, steer a stage, resume or interrupt paused work, or respond to user requests/control signals.
-  - For transcripts, avoid reading whole session transcripts at once. Use \`stages\` or \`stage\` to get \`sessionFile\`/\`transcriptPath\`, quote the exact path without rewriting separators (preserve Windows backslashes), search it with \`rg\`/\`grep\`, and read small relevant ranges; use \`transcript\` with explicit \`tail\` or \`limit\` only for quick recent-context checks.
-  - If a user asks to create or edit a workflow, use the create-spec skill when available and ask detailed clarifying questions until you understand its purpose, inputs, stages, handoffs, validation, success criteria, and selected starter pattern. Then read the workflow docs/examples and implement the workflow from the created spec directly as a TypeScript definition. After you implement the workflow, reload it to access it and run it with test inputs to validate it works as intended before presenting it to the user.
-    - Tip: when designing workflows, implement it in a way that you pass information from stage to stage by writing it to a file or artifact (either deterministic or model-driven), pass the path with \`reads\`, and explicitly prompt the downstream agent with wording like \`Read the file at <path>...\`; do not inject large \`previous\` payloads or session history into the next prompt unless explicitly requested to.
-  - If you run \`ralph\` or \`goal\` workflow, define an objective that includes tight scope, concrete and verifiable done criteria, and validation steps; then monitor progress as above instead of doing parallel implementation yourself.`;
-
   let prompt = `You are an expert coding assistant operating named Atomic, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.
 
 Available tools:
@@ -213,10 +176,6 @@ In addition to the tools above, you may have access to other custom tools depend
 
 Guidelines:
 ${guidelines}
-${askUserQuestionGuidance}
-${todoGuidance}
-${subagentGuidance}
-${workflowGuidance}
 
 Atomic documentation (read only when the user asks about customizing Atomic itself, its SDK, creating workflows, packages, extensions, themes, skills, or TUI):
 - Main documentation: ${readmePath}

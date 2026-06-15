@@ -150,7 +150,7 @@ export interface WorkflowFastModeSettingsManager {
 }
 
 export interface StageOptions<TSchemaDef extends TSchema | undefined = TSchema | undefined> extends WorkflowModelFallbackFields {
-  /** Optional structured final-answer schema. When set, the stage receives a schema-specific `structured_output` tool and must finish by calling it. */
+  /** Optional structured final-answer schema. When set, the stage receives a schema-specific final-answer tool. */
   readonly schema?: TSchemaDef;
   readonly model?: WorkflowModelValue;
   readonly mcp?: StageMcpOptions;

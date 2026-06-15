@@ -314,26 +314,8 @@ function normalizeBranchInput(
   return looksLikeSafeGitRef ? trimmed : fallback;
 }
 
-function parseReviewDecision(text: string): ReviewDecision | undefined {
-  try {
-    const parsed = JSON.parse(text) as Partial<ReviewDecision>;
-    if (
-      parsed.overall_correctness !== "patch is correct" &&
-      parsed.overall_correctness !== "patch is incorrect"
-    ) {
-      return undefined;
-    }
-    if (!Array.isArray(parsed.findings)) return undefined;
-    if (typeof parsed.stop_review_loop !== "boolean") return undefined;
-    if (typeof parsed.overall_explanation !== "string") return undefined;
-    if (typeof parsed.overall_confidence_score !== "number") return undefined;
-    if (typeof parsed.goal_oracle_satisfied !== "boolean") return undefined;
-    if (typeof parsed.receipt_assessment !== "string") return undefined;
-    if (typeof parsed.verification_remaining !== "string") return undefined;
-    return parsed as ReviewDecision;
-  } catch {
-    return undefined;
-  }
+function reviewDecisionFromResult(result: WorkflowTaskResult): ReviewDecision | undefined {
+  return result.structured as ReviewDecision | undefined;
 }
 
 function reviewApproved(decision: ReviewDecision): boolean {
@@ -872,37 +854,9 @@ function renderReviewerPrompt(args: {
     [
       "output_format",
       [
-        "Use the schema-backed structured_output tool after your investigation and validation attempts.",
-        "The tool terminates the turn and provides the structured data; do not emit a separate final assistant response after calling it.",
-        "The review gate decides completion only from the JSON object captured by structured_output; invalid JSON, missing fields, reviewer_error, or stop_review_loop=false are treated as not approved for safety.",
         "Set stop_review_loop=true only when there are no P0/P1/P2 findings, overall_correctness is patch is correct, goal_oracle_satisfied is true, no objective-relevant verification remains, and reviewer_error is null/omitted.",
         "P3 nice-to-have findings are non-blocking when the rest of the approval contract is satisfied; do not use P3 for work required by the objective or verification oracle.",
-        "If you hit a reviewer/tool/validation error, still return the object with stop_review_loop=false and reviewer_error populated instead of pretending the patch is approved.",
-        [
-          "The structured_output schema is authoritative; do not copy a hand-written JSON blob into the final response. Here is an example output:",
-          "{",
-          '  "findings": [',
-          "    {",
-          '      "title": "<≤ 80 chars, imperative, starts with [P0]/[P1]/[P2]/[P3]>",',
-          '      "body": "<one paragraph of valid Markdown explaining why this is a problem; cite files/lines/functions>",',
-          '      "confidence_score": <float 0.0-1.0>,',
-          '      "priority": <int 0-3 or null>,',
-          '      "code_location": {',
-          '        "absolute_file_path": "<absolute file path>",',
-          '        "line_range": {"start": <int>, "end": <int>}',
-          "      }",
-          "    }",
-          "  ],",
-          '  "overall_correctness": "patch is correct" | "patch is incorrect",',
-          '  "overall_explanation": "<1-3 sentence explanation justifying the verdict>",',
-          '  "overall_confidence_score": <float 0.0-1.0>,',
-          '  "goal_oracle_satisfied": <boolean>,',
-          '  "receipt_assessment": "<how receipts/current evidence map to the verification oracle>",',
-          '  "verification_remaining": "<oracle-relevant verification still missing, or none>",',
-          '  "stop_review_loop": <boolean>,',
-          '  "reviewer_error": null | {"kind": "validation_unavailable" | "dependency_unavailable" | "tool_failure" | "reviewer_failure", "message": "<what failed>", "attempted_recovery": "<what you tried>"}',
-          "}",
-        ].join("\n"),
+        "If you hit a reviewer/tool/validation error, set stop_review_loop=false and populate reviewer_error instead of pretending the patch is approved.",
       ].join("\n"),
     ],
   ]);
@@ -1169,20 +1123,22 @@ export default defineWorkflow("goal")
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        const structured = reviewerErrorDecision(message);
         reviewResults = [
           {
             name: `reviewer-error-${turn}`,
             stageName: `reviewer-error-${turn}`,
-            text: JSON.stringify(reviewerErrorDecision(message), null, 2),
+            text: JSON.stringify(structured, null, 2),
+            structured,
           },
         ];
       }
 
       latestReviews = await Promise.all(reviewResults.map(async (result) => {
         const reviewerName = result.name ?? result.stageName;
-        const parsed = parseReviewDecision(result.text) ??
+        const parsed = reviewDecisionFromResult(result) ??
           reviewerErrorDecision(
-            `Reviewer ${reviewerName} returned invalid structured JSON.`,
+            `Reviewer ${reviewerName} returned no structured decision.`,
           );
         const reviewArtifactPath = await writeReviewArtifact(
           artifactDir,

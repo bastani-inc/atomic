@@ -189,23 +189,8 @@ async function createImplementationNotesFile(prompt: string): Promise<string> {
   return notesPath;
 }
 
-function parseReviewDecision(text: string): ReviewDecision | undefined {
-  try {
-    const parsed = JSON.parse(text) as Partial<ReviewDecision>;
-    if (
-      parsed.overall_correctness !== "patch is correct" &&
-      parsed.overall_correctness !== "patch is incorrect"
-    ) {
-      return undefined;
-    }
-    if (!Array.isArray(parsed.findings)) return undefined;
-    if (typeof parsed.stop_review_loop !== "boolean") return undefined;
-    if (typeof parsed.overall_explanation !== "string") return undefined;
-    if (typeof parsed.overall_confidence_score !== "number") return undefined;
-    return parsed as ReviewDecision;
-  } catch {
-    return undefined;
-  }
+function reviewDecisionFromResult(result: WorkflowTaskResult): ReviewDecision | undefined {
+  return result.structured as ReviewDecision | undefined;
 }
 
 function reviewDecisionApproved(decision: ReviewDecision): boolean {
@@ -237,10 +222,12 @@ function reviewerErrorDecision(error: string): ReviewDecision {
 function reviewerErrorResult(
   error: string,
 ): WorkflowTaskResult {
+  const structured = reviewerErrorDecision(error);
   return {
     name: "reviewer-error",
     stageName: "reviewer-error",
-    text: JSON.stringify(reviewerErrorDecision(error), null, 2),
+    text: JSON.stringify(structured, null, 2),
+    structured,
   };
 }
 
@@ -766,7 +753,7 @@ async function runRalphWorkflow(
         ].join("\n"),
       ],
       [
-        "required_actions_before_tool_call",
+        "action_items",
         [
           "1. Identify the changed files or diff under review.",
           "2. Read the relevant changed code and directly affected call sites/tests/configs.",
@@ -782,36 +769,10 @@ async function runRalphWorkflow(
         ].join("\n"),
       ],
       [
-        "structured_output_contract",
+        "decision_rules",
         [
-          "Use the schema-backed structured_output tool after your investigation and validation attempts.",
-          "The tool terminates the turn and provides the structured data; do not emit a separate final assistant response after calling it.",
-          "The review loop decides whether to stop only from the JSON object captured by structured_output; invalid JSON, missing fields, reviewer_error, or stop_review_loop=false are treated as not approved for safety.",
           "Set stop_review_loop=true only when findings is empty, overall_correctness is patch is correct, and reviewer_error is null/omitted.",
-          "If you hit a reviewer/tool/validation error, still return the object with stop_review_loop=false and reviewer_error populated instead of pretending the patch is approved.",
-          "The structured_output schema is authoritative; do not copy a hand-written JSON blob into the final response. Here is an example output:",
-          "{",
-          '  "findings": [',
-          "    {",
-          '      "title": "<≤ 80 chars, imperative, starts with [P0]/[P1]/[P2]/[P3]>",',
-          '      "body": "<one paragraph of valid Markdown explaining why this is a problem; cite files/lines/functions>",',
-          '      "confidence_score": <float 0.0-1.0>,',
-          '      "priority": <int 0-3 or null>,',
-          '      "code_location": {',
-          '        "absolute_file_path": "<absolute file path>",',
-          '        "line_range": {"start": <int>, "end": <int>}',
-          "      }",
-          "    }",
-          "  ],",
-          '  "overall_correctness": "patch is correct" | "patch is incorrect",',
-          '  "overall_explanation": "<1-3 sentence explanation justifying the verdict>",',
-          '  "overall_confidence_score": <float 0.0-1.0>,',
-          '  "goal_oracle_satisfied": <boolean>,',
-          '  "receipt_assessment": "<how receipts/current evidence map to the verification oracle>",',
-          '  "verification_remaining": "<oracle-relevant verification still missing, or none>",',
-          '  "stop_review_loop": <boolean>,',
-          '  "reviewer_error": null | {"kind": "validation_unavailable" | "dependency_unavailable" | "tool_failure" | "reviewer_failure", "message": "<what failed>", "attempted_recovery": "<what you tried>"}',
-          "}",
+          "If you hit a reviewer/tool/validation error, set stop_review_loop=false and populate reviewer_error instead of pretending the patch is approved.",
         ].join("\n"),
       ],
     ]);
@@ -853,8 +814,8 @@ async function runRalphWorkflow(
 
     const reviewEntries = await Promise.all(reviews.map(async (review) => {
       const reviewer = review.name ?? review.stageName;
-      const decision = parseReviewDecision(review.text) ??
-        reviewerErrorDecision(`Reviewer ${reviewer} returned invalid structured JSON.`);
+      const decision = reviewDecisionFromResult(review) ??
+        reviewerErrorDecision(`Reviewer ${reviewer} returned no structured decision.`);
       const artifactPath = join(
         artifactDir,
         `review-${iteration}-${artifactSafeName(reviewer)}.json`,
@@ -886,7 +847,7 @@ async function runRalphWorkflow(
         ],
         [
           "objective",
-          `Review the changes since the base branch \`${comparisonBaseBranch}\` and create a provider-appropriate pull request, merge request, or code-review handoff if possible and credentials are available. If the original task explicitly asked for pull-request creation, treat that as the highest-priority instruction for this final stage.`,
+          `Review the changes since the base branch \`${comparisonBaseBranch}\` and create a provider-appropriate pull request, merge request, or code-review handoff if possible and credentials are available. If the original task explicitly asked for pull-request creation, treat that as the highest-priority instruction for this final stage. Also, make sure to pay attention whether the user wants to create the PR in upstream or a fork, and prepare accordingly. If PR creation is not possible (lack of permissions, etc.), report why instead of pretending success.`,
         ],
         workflowCwdContext,
         [

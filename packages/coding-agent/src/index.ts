@@ -292,10 +292,8 @@ export {
 	type JsonValue,
 	type PromptTemplate,
 	type StructuredOutputCapture,
-	type StructuredOutputCaptureMetadata,
 	type StructuredOutputFileCapture,
 	type StructuredOutputToolOptions,
-	getStructuredOutputMetadataPath,
 } from "./core/sdk.ts";
 export {
 	type BranchSummaryEntry,

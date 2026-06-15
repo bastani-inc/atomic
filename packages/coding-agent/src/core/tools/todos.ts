@@ -721,6 +721,10 @@ async function deleteTodo(
 	return result;
 }
 
+export const DEFAULT_PROMPT_GUIDANCE: string[] = [
+	"**To-do management**: If the user has a complex task that can be broken down into actionable steps, use the `todo` tool to create a task list before proceeding. This ensures clarity and alignment with the user's goals and that you have a way to track your work and ensure you are meeting the user's expectations.",
+];
+
 export function createTodoToolDefinition(
 	cwd: string = process.cwd(),
 ): ToolDefinition<typeof TodoParams, TodoToolDetails> {
@@ -735,6 +739,7 @@ export function createTodoToolDefinition(
 			"Todo ids are shown as TODO-<hex>; id parameters accept TODO-<hex> or the raw hex filename. " +
 			"Claim tasks before working on them to avoid conflicts, and close them when complete.",
 		parameters: TodoParams,
+		promptGuidelines: DEFAULT_PROMPT_GUIDANCE,
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const todosDir = getTodosDir(ctx.cwd);

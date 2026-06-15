@@ -51,7 +51,6 @@ import {
   STRUCTURED_OUTPUT_TOOL_NAME,
   createStructuredOutputCapture,
   createStructuredOutputTool,
-  getStructuredOutputMetadataPath,
   createWriteTool,
   defaultToolNames,
   withFileMutationQueue,
@@ -158,7 +157,6 @@ export type {
   JsonPrimitive,
   JsonValue,
   StructuredOutputCapture,
-  StructuredOutputCaptureMetadata,
   StructuredOutputFileCapture,
   StructuredOutputToolOptions,
   Tool,
@@ -179,7 +177,6 @@ export {
   createLsTool,
   createStructuredOutputCapture,
   createStructuredOutputTool,
-  getStructuredOutputMetadataPath,
 };
 
 // Helper Functions

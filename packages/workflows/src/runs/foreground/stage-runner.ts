@@ -537,10 +537,6 @@ function splitPromptOptions(options: StagePromptOptions | undefined): {
 
 const STRUCTURED_OUTPUT_TOOL_NAME = "structured_output";
 
-function structuredOutputPrompt(text: string): string {
-  return `${text}\n\nFinal output contract:\n- Your final action MUST be a structured_output tool call.\n- Pass the schema fields directly as tool arguments; do not wrap them in { value: ... } unless the schema explicitly defines a top-level value field.\n- Do not emit a prose final answer instead of structured_output.\n- If you need to inspect files or run commands first, do so, then call structured_output exactly once.`;
-}
-
 function stringifyStructuredOutputValue(value: unknown): string {
   try {
     return JSON.stringify(value, null, 2);
@@ -959,7 +955,7 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
         adapterMessages = assistantMessage(lastAssistantText);
         return lastAssistantText;
       }
-      await promptWithFallback(structuredOutputCapture ? structuredOutputPrompt(text) : text, sdkOptions);
+      await promptWithFallback(text, sdkOptions);
       if (structuredOutputCapture) {
         if (!structuredOutputCapture.called) {
           throw new Error("atomic-workflows: stage configured with schema must finish by calling structured_output.");

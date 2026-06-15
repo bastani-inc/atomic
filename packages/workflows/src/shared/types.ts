@@ -156,7 +156,7 @@ export interface StageMcpOptions extends AuthoringContract.StageMcpOptions {
 export interface StageOptions<TSchemaDef extends TSchema | undefined = TSchema | undefined>
   extends Omit<CreateAgentSessionOptions, "model" | keyof AuthoringContract.StageOptions>,
     Omit<Mutable<AuthoringContract.StageOptions<TSchemaDef>>, "sessionManager" | "settingsManager"> {
-  /** Optional structured final-answer schema. When set, the stage receives a schema-specific `structured_output` tool and must finish by calling it. */
+  /** Optional structured final-answer schema. When set, the stage receives a schema-specific final-answer tool. */
   schema?: TSchemaDef;
   /** Model id or pi SDK model object used as the primary stage model. */
   model?: WorkflowModelValue;

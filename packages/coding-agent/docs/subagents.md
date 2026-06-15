@@ -148,7 +148,7 @@ If an agent or chain step uses an explicit empty `tools: []` allowlist together 
 
 ## Structured output schemas
 
-Chain and parallel steps can declare an `outputSchema` when the parent needs reliable machine-readable handoff data. Atomic passes that schema to the child as a schema-specific `structured_output` tool backed by the shared Atomic factory. The child must finish by calling `structured_output` exactly once with arguments that match the schema directly:
+Chain and parallel steps can declare an `outputSchema` when the parent needs reliable machine-readable handoff data. Atomic passes that schema directly to a `structured_output` tool backed by the shared Atomic factory. The child should call `structured_output` when it is done:
 
 ```ts
 structured_output({
@@ -157,13 +157,11 @@ structured_output({
 })
 ```
 
-`outputSchema` itself must be a top-level object schema because the schema is used directly as the tool's argument contract. Wrap array or primitive handoff values in an explicit object field, such as `{ items: [...] }` or `{ value: ... }`.
+`outputSchema` is a plain JSON Schema object. Atomic no longer adds object-root restrictions, sidecar metadata, transcript-finality checks, duplicate-call guards, or extra parent-side schema parsing. The child runtime writes the tool arguments to `output.json`; the parent reads that JSON back as `result.structuredOutput` and in named-chain references under `outputs.name.structured`.
 
-Do not wrap the payload as `structured_output({ value: ... })` unless your own schema explicitly defines a top-level `value` field. The child runtime writes the flat schema-valid params to `output.json` and call metadata (`toolName`, `toolCallId`, `success`, `terminate`) to the `output.meta.json` sidecar; the parent validates both files before checking transcript finality. Prose-only completion, missing tool calls, missing sidecar metadata, invalid schema data, duplicate structured-output calls, stale output-file captures, sibling tool calls in the same assistant batch, and any assistant/custom/tool-result messages after the successful structured-output result fail the step. The parent accepts cross-process captures only when the transcript proves the same `structured_output` call was the final successful terminating action, then returns the validated flat value as `result.structuredOutput` and in named-chain references under `outputs.name.structured`.
+Children without `outputSchema` do not receive `structured_output` from Atomic's default tool registry. They can still use a custom extension-provided terminating tool if you explicitly add one.
 
-Children without `outputSchema` do not receive `structured_output` from Atomic's default tool registry. They can still use a custom extension-provided terminating tool if you explicitly add one, but validated `result.structuredOutput` is reserved for schema-backed `outputSchema` captures.
-
-Dynamic fanout `collect.outputSchema` is different: it validates the collected result array after child runs finish, not a child tool-call argument object. Collection schemas remain general JSON Schemas and may use array roots such as `{ "type": "array", "minItems": 1 }`.
+Dynamic fanout `collect.outputSchema` validates the collected result array after child runs finish.
 
 ## Fallback models
 

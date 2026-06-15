@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
-- Added opt-in schema-backed workflow item results: `ctx.stage(..., { schema })`, `ctx.task(..., { schema })`, `ctx.chain` items, and `ctx.parallel` items now receive a schema-specific `structured_output` tool only for that item, require the final tool call, return the parsed value from `ctx.stage().prompt(...)`, and expose parsed task values as `result.structured` while preserving formatted JSON handoff text ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
+- Added opt-in schema-backed workflow item results: `ctx.stage(..., { schema })`, `ctx.task(..., { schema })`, `ctx.chain` items, and `ctx.parallel` items now receive a schema-specific `structured_output` tool only for that item, return the captured value from `ctx.stage().prompt(...)`, and expose parsed task values as `result.structured` while preserving formatted JSON handoff text ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
 
 ### Changed
 
@@ -17,13 +17,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Changed the builtin `ralph` prompt-engineering stage to disable all tools while relying on the `/skill:prompt-engineer` skill prompt, keeping that first-pass rewrite focused and tool-free.
 - Changed builtin `goal` worker/reviewer prompts and `ralph` orchestrator/reviewer prompts to request end-to-end verification when practical, using browser-skilled subagents for web/frontend flows that may depend on backend/API behavior and tmux-skilled subagents for TUI or terminal-app scenarios.
 - Aligned the workflows extension with upstream pi TUI `^0.79.3` so workflow graph, custom UI, and prompt-broker integrations inherit the latest shared TUI compatibility fixes.
-- Documented the opt-in `structured_output` workflow path and clarified that ordinary workflow stages do not receive `structured_output` from the default tool registry; schema-enabled items auto-add the runtime tool to explicit `tools` allowlists ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
-- Clarified that workflow `structured_output` gate schemas must be top-level object tool-argument schemas, with arrays and primitives wrapped in object fields before being returned through the terminating tool, and documented the one-`prompt()` limit for schema-backed `StageContext` result contracts ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
-- Documented that terminating workflow-stage `structured_output` JSON stays inline even when large, while artifact-sized handoffs should still be saved to files when downstream stages do not need the full payload in context ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
+- Documented the opt-in `structured_output` workflow path and clarified that ordinary workflow stages do not receive `structured_output` from the default tool registry; schema-enabled items auto-add the runtime tool to explicit `tools` allowlists without adding extra workflow prompt text about the tool ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
+- Removed top-level-object restrictions from workflow `structured_output` gate schemas; Atomic now passes any plain JSON Schema object directly to the tool and documents the one-`prompt()` limit for schema-backed `StageContext` result contracts ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
 
 ### Fixed
 
-- Fixed direct workflow tool validation so schema-enabled `task`, `tasks`, `chain`, and `parallel` items reject array or primitive structured-output schemas at argument-validation time while accepting the same object-root contracts as runtime validation, including object-only `allOf` schemas ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
+- Fixed direct workflow tool validation so schema-enabled `task`, `tasks`, `chain`, and `parallel` items accept plain JSON Schema objects without additional object-root constraints ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
 - Fixed schema-backed workflow stages to fail with a clear stage-level error when `prompt()` is called more than once on the same `StageContext`, rather than surfacing the lower-level structured-output single-use guard ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
 - Fixed schema-backed workflow model fallback so an attempt that already captured a valid terminating `structured_output` result is treated as successful instead of retrying against fallback models and tripping the single-use result guard ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
 - Fixed the workflow graph overlay remaining interactive when the parent/main-chat agent opens `ask_user_question`: the graph keeps focus, the parent question stays pending behind it with a clear “Main chat needs input — exit graph to answer.” status hint, hiding/exiting the graph focuses the pending question, and host custom-UI state changes no longer hide, restore, remount, or repaint the overlay ([#1353](https://github.com/bastani-inc/atomic/issues/1353)).

@@ -91,10 +91,8 @@ export {
 	type JsonPrimitive,
 	type JsonValue,
 	type StructuredOutputCapture,
-	type StructuredOutputCaptureMetadata,
 	type StructuredOutputFileCapture,
 	type StructuredOutputToolOptions,
-	getStructuredOutputMetadataPath,
 } from "./structured-output.ts";
 export { createTodoToolDefinition } from "./todos.ts";
 

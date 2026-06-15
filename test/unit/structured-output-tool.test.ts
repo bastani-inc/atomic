@@ -1,6 +1,6 @@
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Type } from "typebox";
@@ -26,8 +26,13 @@ function assertPrivateFileModeIfSupported(filePath: string): void {
   assert.equal(statSync(filePath).mode & 0o777, 0o600);
 }
 
+function textContent(result: Awaited<ReturnType<ReturnType<typeof createStructuredOutputTool>["execute"]>>): string {
+  const first = result.content[0];
+  return first?.type === "text" ? first.text : "";
+}
+
 describe("structured_output factory tool", () => {
-  test("uses the supplied schema directly and exposes final-answer prompt metadata", () => {
+  test("uses the supplied schema directly and exposes pi-dynamic-workflows prompt metadata", () => {
     const schema = Type.Object({
       headline: Type.String(),
       approved: Type.Boolean(),
@@ -38,11 +43,12 @@ describe("structured_output factory tool", () => {
     assert.equal(tool.name, STRUCTURED_OUTPUT_TOOL_NAME);
     assert.equal(tool.parameters, schema);
     assert.equal(tool.maxResultSizeChars, Infinity);
-    assert.equal("value" in schema.properties, false);
-    assert.match(tool.promptSnippet ?? "", /final machine-readable/i);
-    assert.match(tool.promptGuidelines?.join("\n") ?? "", /exactly once/i);
-    assert.match(tool.promptGuidelines?.join("\n") ?? "", /no.*prose/i);
-    assert.match(tool.promptGuidelines?.join("\n") ?? "", /value/i);
+    assert.equal(tool.description, "Return the final machine-readable result for this subagent task.");
+    assert.equal(tool.promptSnippet, "Return final machine-readable output");
+    assert.deepEqual(tool.promptGuidelines, [
+      "structured_output is the final answer channel for this task; call structured_output exactly once when done.",
+      "Do not write a prose final answer after calling structured_output.",
+    ]);
   });
 
   test("interpolates custom tool names into prompt metadata", () => {
@@ -55,14 +61,15 @@ describe("structured_output factory tool", () => {
     const promptText = [tool.promptSnippet, ...(tool.promptGuidelines ?? [])].join("\n");
 
     assert.equal(tool.name, "final_decision");
-    assert.match(tool.promptSnippet ?? "", /final_decision/);
+    assert.equal(tool.promptSnippet, "Return final machine-readable output");
     assert.match(promptText, /final_decision/);
     assert.doesNotMatch(promptText, /call\s+structured_output/i);
     assert.doesNotMatch(promptText, /calling\s+structured_output/i);
   });
 
-  test("generic factory accepts arbitrary top-level JSON objects without a value wrapper", async () => {
-    const tool = createStructuredOutputTool();
+  test("factory captures tool arguments without manual validation", async () => {
+    const schema = Type.Object({}, { additionalProperties: Type.Unknown() });
+    const tool = createStructuredOutputTool({ schema });
     const payload = {
       headline: "done",
       nested: { ok: true, count: 2 },
@@ -73,14 +80,13 @@ describe("structured_output factory tool", () => {
 
     assert.equal(result.terminate, true);
     assert.deepEqual(result.details, payload);
-    assert.deepEqual(JSON.parse(result.content[0]?.type === "text" ? result.content[0].text : ""), payload);
-    await assert.rejects(
-      () => tool.execute("call-2", ["not", "an", "object"] as unknown as Parameters<typeof tool.execute>[1], undefined, undefined, {} as Parameters<typeof tool.execute>[4]),
-      /Structured output validation failed/,
-    );
+    assert.equal(textContent(result), "Structured output received.");
+
+    const arrayResult = await tool.execute("call-2", ["not", "an", "object"] as unknown as Parameters<typeof tool.execute>[1], undefined, undefined, {} as Parameters<typeof tool.execute>[4]);
+    assert.deepEqual(arrayResult.details, ["not", "an", "object"]);
   });
 
-  test("captures valid params, returns them as details, and terminates", async () => {
+  test("captures params, returns them as details, and terminates", async () => {
     const schema = Type.Object({
       ok: Type.Boolean(),
       message: Type.String(),
@@ -94,108 +100,50 @@ describe("structured_output factory tool", () => {
 
     assert.equal(result.terminate, true);
     assert.deepEqual(result.details, payload);
-    assert.deepEqual(JSON.parse(result.content[0]?.type === "text" ? result.content[0].text : ""), payload);
+    assert.equal(textContent(result), "Structured output received.");
     assert.equal(capture.called, true);
     assert.deepEqual(capture.value, payload);
   });
 
-  test("rejects invalid params before mutating capture or writing files", async () => {
+  test("writes only the flat file capture and allows later calls to replace it", async () => {
     const dir = mkdtempSync(join(tmpdir(), "atomic-structured-output-"));
     try {
       const outputPath = join(dir, "output.json");
-      const schema = Type.Object({
-        ok: Type.Boolean(),
-      }, { additionalProperties: false });
-      const capture: StructuredOutputCapture<{ ok: boolean }> = { called: false, value: undefined };
-      const tool = createStructuredOutputTool({ schema, capture, output: { outputPath } });
-
-      await assert.rejects(
-        () => tool.execute("call-1", { ok: "yes" } as unknown as Parameters<typeof tool.execute>[1], undefined, undefined, {} as Parameters<typeof tool.execute>[4]),
-        /Structured output validation failed/,
-      );
-
-      assert.equal(capture.called, false);
-      assert.equal(capture.value, undefined);
-      assert.equal(existsSync(outputPath), false);
-      assert.equal(existsSync(join(dir, "output.meta.json")), false);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  test("writes flat file capture plus metadata sidecar with 0600 mode and rejects duplicate capture calls", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "atomic-structured-output-"));
-    try {
-      const outputPath = join(dir, "output.json");
-      const metadataPath = join(dir, "output.meta.json");
       const schema = Type.Object({
         files: Type.Array(Type.String()),
       }, { additionalProperties: false });
       const tool = createStructuredOutputTool({ schema, output: { outputPath } });
-      const payload = { files: ["README.md"] };
+      const firstPayload = { files: ["README.md"] };
+      const secondPayload = { files: ["AGENTS.md"] };
 
-      const result = await tool.execute("call-1", payload, undefined, undefined, {} as Parameters<typeof tool.execute>[4]);
-
-      assert.equal(result.terminate, true);
-      assert.deepEqual(result.details, payload);
-      assert.deepEqual(JSON.parse(readFileSync(outputPath, "utf-8")), payload);
+      const first = await tool.execute("call-1", firstPayload, undefined, undefined, {} as Parameters<typeof tool.execute>[4]);
+      assert.equal(first.terminate, true);
+      assert.deepEqual(first.details, firstPayload);
+      assert.deepEqual(JSON.parse(readFileSync(outputPath, "utf-8")), firstPayload);
       assertPrivateFileModeIfSupported(outputPath);
-      const metadata = JSON.parse(readFileSync(metadataPath, "utf-8")) as Record<string, unknown>;
-      assert.equal(metadata.toolName, "structured_output");
-      assert.equal(metadata.toolCallId, "call-1");
-      assert.equal(metadata.success, true);
-      assert.equal(metadata.terminate, true);
-      assert.equal(typeof metadata.capturedAt, "string");
-      assertPrivateFileModeIfSupported(metadataPath);
-      await assert.rejects(
-        () => tool.execute("call-2", { files: ["AGENTS.md"] }, undefined, undefined, {} as Parameters<typeof tool.execute>[4]),
-        /already called/,
-      );
-      assert.deepEqual(JSON.parse(readFileSync(outputPath, "utf-8")), payload);
-      assert.equal((JSON.parse(readFileSync(metadataPath, "utf-8")) as Record<string, unknown>).toolCallId, "call-1");
+
+      const second = await tool.execute("call-2", secondPayload, undefined, undefined, {} as Parameters<typeof tool.execute>[4]);
+      assert.equal(second.terminate, true);
+      assert.deepEqual(second.details, secondPayload);
+      assert.deepEqual(JSON.parse(readFileSync(outputPath, "utf-8")), secondPayload);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  test("accepts object schemas that wrap array outputs in a field", async () => {
-    const schema = Type.Object({
-      items: Type.Array(Type.String()),
-    }, { additionalProperties: false });
-    const tool = createStructuredOutputTool({ schema });
-    const payload = { items: ["a", "b"] };
+  test("does not reject non-object schemas at factory construction", async () => {
+    const arraySchema = Type.Array(Type.String());
+    const tool = createStructuredOutputTool({ schema: arraySchema });
+    const payload = ["a", "b"];
 
     const result = await tool.execute("call-1", payload, undefined, undefined, {} as Parameters<typeof tool.execute>[4]);
 
-    assert.equal(tool.parameters, schema);
+    assert.equal(tool.parameters, arraySchema);
     assert.equal(result.terminate, true);
     assert.deepEqual(result.details, payload);
   });
 
-  test("rejects non-object schemas at factory construction", () => {
-    const cases: Array<{ label: string; schema: never }> = [
-      { label: "missing", schema: null as never },
-      { label: "TypeBox array", schema: Type.Array(Type.String()) as never },
-      { label: "TypeBox string", schema: Type.String() as never },
-      { label: "TypeBox number", schema: Type.Number() as never },
-      { label: "TypeBox boolean", schema: Type.Boolean() as never },
-      { label: "plain JSON array", schema: { type: "array", items: { type: "string" } } as never },
-      { label: "plain JSON string", schema: { type: "string" } as never },
-      { label: "top-level anyOf", schema: { anyOf: [Type.Object({ ok: Type.Boolean() }), Type.Object({ error: Type.String() })] } as never },
-      { label: "top-level oneOf", schema: { oneOf: [Type.Object({ ok: Type.Boolean() }), Type.Object({ error: Type.String() })] } as never },
-      { label: "top-level non-object allOf", schema: { allOf: [Type.Array(Type.String())] } as never },
-    ];
-
-    for (const testCase of cases) {
-      assert.throws(
-        () => createStructuredOutputTool({ schema: testCase.schema }),
-        /top-level object/i,
-        testCase.label,
-      );
-    }
-  });
-
-  test("preserves oversized structured output inline while ordinary tool results redirect", async () => {
+  test("keeps structured output tool results from oversized persistence", async () => {
     const dir = mkdtempSync(join(tmpdir(), "atomic-structured-output-oversized-"));
     try {
       const largeText = "x".repeat(DEFAULT_MAX_RESULT_SIZE_CHARS + 1);
@@ -215,7 +163,8 @@ describe("structured_output factory tool", () => {
         maxResultSizeChars: tool.maxResultSizeChars,
       });
       assert.equal(structuredReplacement, undefined);
-      assert.deepEqual(JSON.parse(result.content[0]?.type === "text" ? result.content[0].text : ""), payload);
+      assert.equal(textContent(result), "Structured output received.");
+      assert.deepEqual(result.details, payload);
 
       const ordinaryReplacement = await redirectOversizedToolResult({
         toolName: "ordinary_tool",
@@ -257,7 +206,7 @@ describe("structured_output factory tool", () => {
     const defaultPrompt = buildSystemPrompt({ cwd: process.cwd(), toolSnippets: snippets });
     assert.doesNotMatch(defaultPrompt, /structured_output/);
 
-    const optInTool = createStructuredOutputTool();
+    const optInTool = createStructuredOutputTool({ schema: Type.Object({}, { additionalProperties: Type.Unknown() }) });
     const optInPrompt = buildSystemPrompt({
       cwd: process.cwd(),
       selectedTools: [optInTool.name],

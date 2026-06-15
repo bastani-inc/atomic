@@ -144,41 +144,20 @@ const exportGateDecisionSchema = Type.Object(
   { additionalProperties: false },
 );
 
-function parseRefinementDecision(text: string): RefinementDecision {
-  const parsed = JSON.parse(text) as Partial<RefinementDecision>;
-  if (typeof parsed.ready_for_export !== "boolean") {
-    throw new Error("open-claude-design refinement decision missing ready_for_export.");
+function refinementDecisionFromResult(result: WorkflowTaskResult): RefinementDecision {
+  const decision = result.structured as RefinementDecision | undefined;
+  if (!decision) {
+    throw new Error("open-claude-design refinement decision missing structured result.");
   }
-  return {
-    ready_for_export: parsed.ready_for_export,
-    rationale: typeof parsed.rationale === "string" ? parsed.rationale : "",
-    required_changes: Array.isArray(parsed.required_changes)
-      ? parsed.required_changes.filter((item): item is string => typeof item === "string")
-      : [],
-  };
+  return decision;
 }
 
-function parseExportGateDecision(text: string): ExportGateDecision {
-  const parsed = JSON.parse(text) as Partial<ExportGateDecision>;
-  if (typeof parsed.has_blocking_findings !== "boolean") {
-    throw new Error("open-claude-design export gate decision missing has_blocking_findings.");
+function exportGateDecisionFromResult(result: WorkflowTaskResult): ExportGateDecision {
+  const decision = result.structured as ExportGateDecision | undefined;
+  if (!decision) {
+    throw new Error("open-claude-design export gate decision missing structured result.");
   }
-  return {
-    has_blocking_findings: parsed.has_blocking_findings,
-    rationale: typeof parsed.rationale === "string" ? parsed.rationale : "",
-    blocking_findings: Array.isArray(parsed.blocking_findings)
-      ? parsed.blocking_findings.filter(
-          (item): item is ExportGateFinding =>
-            typeof item === "object" &&
-            item !== null &&
-            "finding" in item &&
-            "evidence" in item &&
-            "why_blocking" in item &&
-            "must_fix_action" in item &&
-            "severity" in item,
-        )
-      : [],
-  };
+  return decision;
 }
 
 function joinResults(results: readonly WorkflowTaskResult[]): string {
@@ -805,7 +784,7 @@ export default defineWorkflow("open-claude-design")
             [
               "1. If a previous `preview-display-*` step captured annotated user feedback or notes, honor them as the primary signal.",
               "2. Otherwise, you may inspect the HTML file at preview_path directly (read it from disk) and run an impeccable `critique` against it.",
-              "3. Decide whether the current design is ready for export using the schema-backed structured_output tool.",
+              "3. Decide whether the current design is ready for export.",
               "4. If refinement is still needed, put specific changes in required_changes ordered by user value and implementation risk.",
               "5. Never request changes that contradict DESIGN.md unless you explicitly identify and explain the conflict.",
             ].join("\n"),
@@ -813,7 +792,6 @@ export default defineWorkflow("open-claude-design")
           [
             "output_format",
             [
-              "Call structured_output after your inspection.",
               "Set ready_for_export=true only when the current preview needs no further refinement before export.",
               "Set ready_for_export=false and populate required_changes when another polish iteration is needed.",
             ].join("\n"),
@@ -823,7 +801,7 @@ export default defineWorkflow("open-claude-design")
         ...refinementDecisionConfig,
       });
 
-      const feedbackDecision = parseRefinementDecision(feedback.text);
+      const feedbackDecision = refinementDecisionFromResult(feedback);
       if (feedbackDecision.ready_for_export) {
         approvedForExport = true;
         break;
@@ -1013,14 +991,13 @@ export default defineWorkflow("open-claude-design")
             "1. Read the HTML at preview_path and score it across all five audit dimensions.",
             "2. Scan for banned anti-patterns, accessibility blockers, severe visual regressions, missing critical states, and handoff gaps.",
             "3. Only mark findings as blocking when they would materially harm implementation or user experience (impeccable P0 severity).",
-            "4. Decide whether export is blocked using the schema-backed structured_output tool.",
+            "4. Decide whether export is blocked.",
             "5. Every blocking finding must include selector-level evidence and a must-fix action.",
           ].join("\n"),
         ],
         [
-          "output_format",
+          "decision_rules",
           [
-            "Call structured_output after the audit.",
             "Set has_blocking_findings=true only when one or more P0 findings block export.",
             "Populate blocking_findings with every blocking P0 issue; leave it empty when export is safe.",
           ].join("\n"),
@@ -1030,7 +1007,7 @@ export default defineWorkflow("open-claude-design")
       ...exportGateDecisionConfig,
     });
 
-    const exportGateDecision = parseExportGateDecision(preExport.text);
+    const exportGateDecision = exportGateDecisionFromResult(preExport);
     if (exportGateDecision.has_blocking_findings) {
       const forcedFix = await ctx.task("forced-fix", {
         prompt: taggedPrompt([

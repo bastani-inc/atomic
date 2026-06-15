@@ -19,7 +19,6 @@ function structuredOutputRuntime() {
     schema: { type: "object" },
     schemaPath: "/tmp/schema.json",
     outputPath: "/tmp/output.json",
-    metadataPath: "/tmp/output.meta.json",
   };
 }
 

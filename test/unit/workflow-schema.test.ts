@@ -152,18 +152,18 @@ describe("WorkflowParametersSchema stage options", () => {
     assert.equal(Value.Check(WorkflowParametersSchema, { action: "send", delivery: "chat" }), false);
   });
 
-  test("validates schema options as top-level object tool-argument contracts", () => {
+  test("accepts plain JSON Schema objects for structured output schema options", () => {
     assert.equal(Value.Check(WorkflowParametersSchema, {
       task: { name: "planner", prompt: "plan", schema: { type: "array", items: { type: "string" } } },
-    }), false);
+    }), true);
     assert.equal(Value.Check(WorkflowParametersSchema, {
       tasks: [{ name: "reviewer", task: "review", schema: { type: "string" } }],
-    }), false);
+    }), true);
     assert.equal(Value.Check(WorkflowParametersSchema, {
       chain: [
         { name: "first", task: "one", schema: { properties: { ok: { type: "boolean" } } } },
       ],
-    }), false);
+    }), true);
     assert.equal(Value.Check(WorkflowParametersSchema, {
       chain: [
         { parallel: [{ name: "second", task: "two", schema: { type: "object", properties: { ok: { type: "boolean" } } } }] },
@@ -184,13 +184,6 @@ describe("WorkflowParametersSchema stage options", () => {
         },
       },
     }), true);
-    assert.equal(Value.Check(WorkflowParametersSchema, {
-      task: {
-        name: "bad-all-of",
-        prompt: "plan",
-        schema: { allOf: [{ type: "object" }, { type: "array", items: { type: "string" } }] },
-      },
-    }), false);
   });
 
   test("rejects non-array and non-string fallbackModels", () => {

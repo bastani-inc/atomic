@@ -75,7 +75,6 @@ interface BuildPiArgsInput {
 		schema: JsonSchemaObject;
 		schemaPath: string;
 		outputPath: string;
-		metadataPath: string;
 	};
 }
 

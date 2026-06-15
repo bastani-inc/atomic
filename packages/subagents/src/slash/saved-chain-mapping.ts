@@ -1,36 +1,22 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ChainConfig } from "../agents/agents.ts";
-import { assertJsonSchemaDescriptor, assertStructuredOutputParameterSchema } from "../runs/shared/structured-output.ts";
 import { isDynamicParallelStep, isParallelStep, type ChainStep } from "../shared/settings.ts";
 import type { JsonSchemaObject } from "../shared/types.ts";
 
 function loadSavedOutputSchema(
 	chain: ChainConfig,
-	stepAgent: string,
+	_stepAgent: string,
 	outputSchema: unknown,
-	options: { schemaRole: "tool-parameters" | "collection" } = { schemaRole: "tool-parameters" },
 ): JsonSchemaObject | undefined {
 	if (outputSchema === undefined) return undefined;
-	const labelForSchema = (schemaPath?: string): string => schemaPath
-		? `outputSchema for chain '${chain.name}' step '${stepAgent}' (${schemaPath})`
-		: `outputSchema for chain '${chain.name}' step '${stepAgent}'`;
-	const validateSavedSchema = (schema: unknown, label: string): JsonSchemaObject => {
-		if (options.schemaRole === "collection") {
-			assertJsonSchemaDescriptor(schema, label);
-		} else {
-			assertStructuredOutputParameterSchema(schema, label);
-		}
-		return schema;
-	};
 	if (typeof outputSchema === "string") {
 		const schemaPath = path.isAbsolute(outputSchema)
 			? outputSchema
 			: path.join(path.dirname(chain.filePath), outputSchema);
-		const parsed = JSON.parse(fs.readFileSync(schemaPath, "utf-8")) as unknown;
-		return validateSavedSchema(parsed, labelForSchema(schemaPath));
+		return JSON.parse(fs.readFileSync(schemaPath, "utf-8")) as JsonSchemaObject;
 	}
-	return validateSavedSchema(outputSchema, labelForSchema());
+	return outputSchema as JsonSchemaObject;
 }
 
 export function mapSavedChainSteps(chain: ChainConfig, worktree = false): ChainStep[] {
@@ -50,7 +36,6 @@ export function mapSavedChainSteps(chain: ChainConfig, worktree = false): ChainS
 				chain,
 				`${step.collect.as} collection`,
 				step.collect.outputSchema,
-				{ schemaRole: "collection" },
 			);
 			return {
 				...step,
