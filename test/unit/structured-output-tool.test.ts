@@ -32,7 +32,7 @@ function textContent(result: Awaited<ReturnType<ReturnType<typeof createStructur
 }
 
 describe("structured_output factory tool", () => {
-  test("uses the supplied schema directly and exposes pi-dynamic-workflows prompt metadata", () => {
+  test("uses the supplied schema directly and exposes context-neutral prompt metadata", () => {
     const schema = Type.Object({
       headline: Type.String(),
       approved: Type.Boolean(),
@@ -43,12 +43,13 @@ describe("structured_output factory tool", () => {
     assert.equal(tool.name, STRUCTURED_OUTPUT_TOOL_NAME);
     assert.equal(tool.parameters, schema);
     assert.equal(tool.maxResultSizeChars, Infinity);
-    assert.equal(tool.description, "Return the final machine-readable result for this subagent task.");
+    assert.equal(tool.description, "Return the final machine-readable result.");
     assert.equal(tool.promptSnippet, "Return final machine-readable output");
     assert.deepEqual(tool.promptGuidelines, [
-      "structured_output is the final answer channel for this task; call structured_output exactly once when done.",
+      "structured_output is the final machine-readable result channel; call structured_output exactly once when done.",
       "Do not write a prose final answer after calling structured_output.",
     ]);
+    assert.doesNotMatch([tool.description, tool.promptSnippet, ...(tool.promptGuidelines ?? [])].join("\n"), /subagent/i);
   });
 
   test("interpolates custom tool names into prompt metadata", () => {

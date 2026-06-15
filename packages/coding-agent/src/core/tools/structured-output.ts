@@ -65,10 +65,10 @@ export function createStructuredOutputTool<TSchemaDef extends TSchema>(
 	return defineTool({
 		name,
 		label: "Structured Output",
-		description: "Return the final machine-readable result for this subagent task.",
+		description: "Return the final machine-readable result.",
 		promptSnippet: "Return final machine-readable output",
 		promptGuidelines: [
-			`${name} is the final answer channel for this task; call ${name} exactly once when done.`,
+			`${name} is the final machine-readable result channel; call ${name} exactly once when done.`,
 			`Do not write a prose final answer after calling ${name}.`,
 		],
 		parameters: options.schema,

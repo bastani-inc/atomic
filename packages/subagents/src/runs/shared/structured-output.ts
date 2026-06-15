@@ -21,10 +21,6 @@ export function assertJsonSchemaDescriptor(schema: unknown, label = "outputSchem
 	}
 }
 
-export function assertStructuredOutputParameterSchema(schema: unknown, label = "outputSchema"): asserts schema is JsonSchemaObject {
-	assertJsonSchemaDescriptor(schema, label);
-}
-
 export function createStructuredOutputRuntime(schema: JsonSchemaObject, baseDir?: string): StructuredOutputRuntime {
 	const rootDir = baseDir ?? os.tmpdir();
 	fs.mkdirSync(rootDir, { recursive: true });
