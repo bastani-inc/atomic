@@ -28,6 +28,7 @@ jobs:
             - uses: oven-sh/setup-bun@v2
               with:
                   bun-version: latest
+            - uses: dtolnay/rust-toolchain@stable
             - name: Install dependencies
               run: bun install --frozen-lockfile
             - name: Typecheck
@@ -72,6 +73,12 @@ jobs:
                     builtin/web-access/index.ts \
                     builtin/intercom/package.json \
                     builtin/intercom/index.ts \
+                    builtin/cursor/package.json \
+                    builtin/cursor/index.ts \
+                    node_modules/@bastani/atomic-natives/package.json \
+                    node_modules/@bastani/atomic-natives/native/index.js \
+                    node_modules/@bastani/atomic-natives/native/atomic_natives.linux-x64-gnu.node \
+                    node_modules/@bufbuild/protobuf/package.json \
                     node_modules/@modelcontextprotocol/ext-apps/package.json \
                     node_modules/@mozilla/readability/package.json; do
                     test -f "$smoke_dir/atomic/$required_path" || {
@@ -115,6 +122,12 @@ jobs:
                     "builtin/web-access/index.ts",
                     "builtin/intercom/package.json",
                     "builtin/intercom/index.ts",
+                    "builtin/cursor/package.json",
+                    "builtin/cursor/index.ts",
+                    "node_modules/@bastani/atomic-natives/package.json",
+                    "node_modules/@bastani/atomic-natives/native/index.js",
+                    "node_modules/@bastani/atomic-natives/native/atomic_natives.win32-x64-msvc.node",
+                    "node_modules/@bufbuild/protobuf/package.json",
                     "node_modules/@modelcontextprotocol/ext-apps/package.json",
                     "node_modules/@mozilla/readability/package.json"
                   )) {

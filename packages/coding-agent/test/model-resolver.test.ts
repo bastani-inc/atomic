@@ -5,6 +5,7 @@ import {
 	findInitialModel,
 	parseModelPattern,
 	resolveCliModel,
+	restoreModelFromSession,
 } from "../src/core/model-resolver.ts";
 
 // Mock models for testing
@@ -64,6 +65,19 @@ const mockOpenRouterModels: Model<"anthropic-messages">[] = [
 ];
 
 const allModels = [...mockModels, ...mockOpenRouterModels];
+
+const cursorBaseModel: Model<"cursor-agent"> = {
+	id: "composer-2",
+	name: "Composer 2",
+	api: "cursor-agent",
+	provider: "cursor",
+	baseUrl: "https://api2.cursor.sh",
+	reasoning: true,
+	input: ["text"],
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	contextWindow: 200000,
+	maxTokens: 64000,
+};
 
 describe("parseModelPattern", () => {
 	describe("simple patterns without colons", () => {
@@ -405,6 +419,47 @@ describe("default model selection", () => {
 
 		expect(result.model?.provider).toBe("openrouter");
 		expect(result.model?.id).toBe("openai/ghost-model");
+	});
+
+	test("findInitialModel restores saved custom Cursor model ids from an authenticated provider template", async () => {
+		const registry = {
+			find: () => undefined,
+			getAvailable: async () => [cursorBaseModel],
+		} as unknown as Parameters<typeof findInitialModel>[0]["modelRegistry"];
+
+		const result = await findInitialModel({
+			scopedModels: [],
+			isContinuing: false,
+			defaultProvider: "cursor",
+			defaultModelId: "cursor-compose-2.5",
+			defaultThinkingLevel: "medium",
+			modelRegistry: registry,
+		});
+
+		expect(result.model?.provider).toBe("cursor");
+		expect(result.model?.id).toBe("cursor-compose-2.5");
+		expect(result.model?.api).toBe("cursor-agent");
+		expect(result.thinkingLevel).toBe("medium");
+	});
+
+	test("restoreModelFromSession restores saved custom Cursor model ids from an authenticated provider template", async () => {
+		const registry = {
+			find: () => undefined,
+			getAvailable: async () => [cursorBaseModel],
+		} as unknown as Parameters<typeof restoreModelFromSession>[4];
+
+		const result = await restoreModelFromSession(
+			"cursor",
+			"cursor-compose-2.5",
+			undefined,
+			false,
+			registry,
+		);
+
+		expect(result.fallbackMessage).toBeUndefined();
+		expect(result.model?.provider).toBe("cursor");
+		expect(result.model?.id).toBe("cursor-compose-2.5");
+		expect(result.model?.api).toBe("cursor-agent");
 	});
 
 	test("findInitialModel selects ai-gateway default when available", async () => {

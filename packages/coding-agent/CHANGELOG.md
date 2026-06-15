@@ -11,6 +11,46 @@
 
 - Changed the `/rewind` checkpoint confirmation prompt to include a `← back` action between the select and cancel hints, returning interactive checkpoint selection to the checkpoint list instead of requiring users to cancel and restart the command.
 
+## [0.8.29] - 2026-06-15
+
+### Added
+
+- Added support for local `-e <dir>` extension sources to borrow project-local Atomic resources from `<dir>/.atomic`, legacy `<dir>/.pi`, and `<dir>/.agents/skills` after resolving trust for that extension source, preserving package-manager provenance and explicit-path workflow forwarding while avoiding untrusted borrowed resources ([#1354](https://github.com/bastani-inc/atomic/issues/1354)).
+- Added a prototype Rust/N-API Cursor HTTP/2 native transport binding through the generated `@bastani/atomic-natives` NAPI-RS package, so Atomic can use an in-process native HTTP/2 client without requiring Node.js on `PATH`.
+- Added the experimental bundled `@bastani/cursor` provider scaffold so `/login` can offer Cursor OAuth, estimated fallback exposes `cursor/composer-2`, and Cursor model mapping/streaming hooks are available behind an isolated HTTP/2 Connect transport boundary with production-default protobuf decoding, buffered Connect frames, write-before-headers Run streaming, stable Cursor conversation ids, schema-correct Cursor MCP tool advertisement, Cursor MCP tool-call decoding with protobuf `Value` or raw UTF-8/JSON arguments and exec-id metadata, same-stream MCP tool-result resume, abort/idle cleanup for paused tool streams, Connect end-stream error classification, exact live model id fidelity without static default injection, fast/thinking catalog grouping, and usage-delta accumulation.
+- Added the opt-in `createStructuredOutputTool({ schema, capture, output, name })` factory for terminating machine-readable final answers with direct schema-as-parameters capture, flat `details`, in-process capture, configurable private file capture via `output.outputPath`, and the concise two-line `structured_output` prompt guidance from `pi-dynamic-workflows` without registering `structured_output` in normal agent sessions by default ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
+
+### Changed
+
+- Changed the bundled builtin `ralph` workflow to run `/skill:prompt-engineer` prompt-engineering and `/skill:research-codebase` research before orchestration instead of starting with an RFC/planner stage, pass the research artifact as primary implementation context, reuse prior research session data on follow-up loops, and feed unresolved reviewer findings into later research passes ([#1371](https://github.com/bastani-inc/atomic/issues/1371)).
+- Changed bundled `goal`, `ralph`, and `open-claude-design` decision gates to use schema-backed workflow `structured_output` stages instead of registering bespoke terminating custom tools.
+- Changed bundled `goal` worker/reviewer prompts and `ralph` orchestrator/reviewer prompts to request end-to-end verification when practical, using browser-skilled subagents for web/frontend flows that may depend on backend/API behavior and tmux-skilled subagents for TUI or terminal-app scenarios.
+- Bumped the bundled upstream pi runtime libraries `@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, and `@earendil-works/pi-tui` from `^0.79.1` to `^0.79.3`, bringing the latest upstream provider, model, agent-core, and TUI compatibility fixes into `@bastani/atomic`.
+- Updated the structured-output extension example and SDK/workflow/extension docs to use the canonical factory instead of hand-rolled `terminate: true` wrappers, and documented that Atomic passes the supplied schema directly to the tool without additional structured-output parsing, object-root restrictions, or sidecar validation ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
+- Made custom-named factory tools advertise the configured name in concise prompt metadata, and documented that text print mode recognizes factory-created custom structured-output tools without treating every terminating tool as printable ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
+- Changed factory-created structured-output tool descriptions and prompt guidance to use context-neutral final-result wording for SDK, extension, workflow, and subagent registrations ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
+- Clarified SDK, extension, and workflow guidance that structured-output tools are opt-in custom tools, with workflow stages/tasks/chains/parallel items receiving `structured_output` only when they declare a `schema` and subagent children receiving it only when `outputSchema` is enabled ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
+
+### Fixed
+
+- Fixed the root `@bastani/atomic` package export to include a `default` condition alongside the ESM import target, improving compatibility with loaders that select default export conditions.
+- Fixed extension custom UI focus deferral so full-screen overlays can keep keyboard focus while a parent/main-chat inline custom UI is pending, then focus that pending UI when the overlay is hidden; already-aborted custom UI calls no longer invoke factories or emit host custom-UI state changes ([#1353](https://github.com/bastani-inc/atomic/issues/1353)).
+- Fixed text print mode to emit trailing terminating JSON from factory-created structured-output tools, including custom tool names such as `final_decision`, instead of only recognizing the canonical `structured_output` name; the same structured value remains available through `details`, capture sinks, and workflow/subagent structured result fields ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
+- Fixed terminating `structured_output` results to opt out of oversized-result persistence ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
+- Fixed cross-process structured-output file capture to preserve flat tool arguments in `output.json` without sidecar metadata or transcript-finality parsing ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
+- Fixed bundled subagent handling so explicit empty `tools: []` plus `outputSchema` grants only the schema-backed `structured_output` runtime tool instead of restoring default tools ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
+- Fixed prerelease publishing for native Atomic artifacts by allowing the `@bastani/atomic-natives` package metadata in release-preparation verification, running native artifact builds on architecture-matched Blacksmith and macOS runners, and documenting the two-package publish flow while keeping npm provenance publishing on GitHub-hosted Ubuntu.
+- Fixed the bundled experimental Cursor provider to honor per-request stream deadlines across open/read/resume writes, reset timed-out or aborted streams, clean up replaced paused turns safely, catch cleanup cancellation failures, tolerate non-MCP Cursor exec protocol messages without ending assistant turns, and align Run requests with Cursor's private CLI protocol by using blob/KV conversation state plus request-context tool-definition responses without the unsupported custom system-prompt field ([#1286](https://github.com/bastani-inc/atomic/issues/1286)).
+- Fixed release archive startup for the bundled experimental Cursor provider by declaring `@bufbuild/protobuf` as an `@bastani/atomic` runtime dependency, covering Cursor in the bundled-package dependency metadata guard, and smoke-checking Cursor/protobuf assets in native archives ([#1286](https://github.com/bastani-inc/atomic/issues/1286)).
+- Fixed bundled `ralph` skill-prompt stages to invoke bundled skills through `/skill:<name>` expansion so prompt engineering and research stages receive the intended skill instructions.
+- Fixed concurrent bundled workflow stage resource reloads to serialize temporary subagent child environment isolation so parallel stage startup cannot leave parent process child flags accidentally cleared.
+- Fixed bundled workflow stage sessions to keep workflow package skills (`create-spec`, `impeccable`, `prompt-engineer`, `research-codebase`, and `skill-creator`) available while disabling only the recursive workflows extension in child sessions.
+- Fixed bundled workflow stage resource discovery so bundled subagent definitions stay available, `subagent` is active by default with the same two-hop nesting budget as main chat, and explicitly allowlisted bundled extension tools such as `subagent`, `web_search`, `fetch_content`, and `intercom` remain visible even when a workflow is launched from a subagent child process.
+
+### Security
+
+- Kept Cursor credentials OAuth-only with token/header and PKCE poll-secret redaction and no localhost proxy, while moving Cursor HTTP/2 to a bundled Rust/N-API native binding and no longer sending the current working directory as `previousWorkspaceUris` by default.
+
 ## [0.8.28] - 2026-06-11
 
 ### Added

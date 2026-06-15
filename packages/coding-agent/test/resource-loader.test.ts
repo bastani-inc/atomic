@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -97,6 +97,296 @@ describe("DefaultResourceLoader", () => {
 			expect(apiGetWorkflowResources().map((resource) => resource.path)).toEqual([workflowA, workflowB]);
 			expect(loader.getWorkflowResources().map((resource) => resource.path)).toEqual([workflowA, workflowB]);
 			expect(factoryCalls).toBe(1);
+		});
+
+		it("should expose project-local workflows from additional extension paths", async () => {
+			const repoDir = join(tempDir, "borrowed-repo");
+			const atomicWorkflow = join(repoDir, ".atomic", "workflows", "atomic.ts");
+			const legacyWorkflow = join(repoDir, ".pi", "workflows", "legacy.ts");
+			mkdirSync(join(repoDir, ".atomic", "workflows"), { recursive: true });
+			mkdirSync(join(repoDir, ".pi", "workflows"), { recursive: true });
+			writeFileSync(atomicWorkflow, "export default {}");
+			writeFileSync(legacyWorkflow, "export default {}");
+
+			let apiGetWorkflowResources: (() => ResolvedResource[]) | undefined;
+			let apiRefreshWorkflowResources: (() => Promise<ResolvedResource[]>) | undefined;
+			const loader = new DefaultResourceLoader({
+				cwd,
+				agentDir,
+				settingsManager: SettingsManager.inMemory(),
+				additionalExtensionPaths: [repoDir],
+				extensionFactories: [
+					(pi: ExtensionAPI) => {
+						apiGetWorkflowResources = () => pi.getWorkflowResources();
+						apiRefreshWorkflowResources = () => pi.refreshWorkflowResources();
+					},
+				],
+			});
+
+			await loader.reload();
+
+			if (!apiGetWorkflowResources || !apiRefreshWorkflowResources) {
+				throw new Error("expected extension factory to capture workflow resource APIs");
+			}
+
+			const expected = [
+				expect.objectContaining({
+					path: atomicWorkflow,
+					enabled: true,
+					metadata: expect.objectContaining({ origin: "top-level", scope: "temporary" }),
+				}),
+				expect.objectContaining({
+					path: legacyWorkflow,
+					enabled: true,
+					metadata: expect.objectContaining({ origin: "top-level", scope: "temporary" }),
+				}),
+			];
+
+			expect(loader.getWorkflowResources()).toEqual(expect.arrayContaining(expected));
+			expect(apiGetWorkflowResources()).toEqual(expect.arrayContaining(expected));
+
+			const refreshed = await apiRefreshWorkflowResources();
+			expect(refreshed).toEqual(expect.arrayContaining(expected));
+			expect(loader.getWorkflowResources()).toEqual(expect.arrayContaining(expected));
+		});
+
+		it("should preserve borrowed project-local skill provenance from additional extension paths", async () => {
+			const repoDir = join(tempDir, "borrowed-skills-repo");
+			const atomicSkillDir = join(repoDir, ".atomic", "skills", "atomic-skill");
+			const agentsSkillDir = join(repoDir, ".agents", "skills", "agents-skill");
+			const atomicSkillPath = join(atomicSkillDir, "SKILL.md");
+			const agentsSkillPath = join(agentsSkillDir, "SKILL.md");
+			mkdirSync(atomicSkillDir, { recursive: true });
+			mkdirSync(agentsSkillDir, { recursive: true });
+			writeFileSync(
+				atomicSkillPath,
+				`---
+name: borrowed-atomic-skill
+description: Atomic skill
+---
+Atomic skill content`,
+			);
+			writeFileSync(
+				agentsSkillPath,
+				`---
+name: borrowed-agents-skill
+description: Agents skill
+---
+Agents skill content`,
+			);
+
+			const loader = new DefaultResourceLoader({
+				cwd,
+				agentDir,
+				settingsManager: SettingsManager.inMemory(),
+				additionalExtensionPaths: [repoDir],
+			});
+			await loader.reload();
+
+			const atomicSkill = loader.getSkills().skills.find((skill) => skill.name === "borrowed-atomic-skill");
+			const agentsSkill = loader.getSkills().skills.find((skill) => skill.name === "borrowed-agents-skill");
+
+			expect(atomicSkill?.sourceInfo).toEqual({
+				path: atomicSkillPath,
+				source: repoDir,
+				scope: "temporary",
+				origin: "top-level",
+				baseDir: join(repoDir, ".atomic"),
+			});
+			expect(agentsSkill?.sourceInfo).toEqual({
+				path: agentsSkillPath,
+				source: repoDir,
+				scope: "temporary",
+				origin: "top-level",
+				baseDir: join(repoDir, ".agents"),
+			});
+			expect(atomicSkill?.sourceInfo?.source).not.toBe("cli");
+			expect(agentsSkill?.sourceInfo?.source).not.toBe("cli");
+		});
+
+		it("should preserve borrowed project-local extension provenance from additional extension paths", async () => {
+			const repoDir = join(tempDir, "borrowed-extension-repo");
+			const extensionsDir = join(repoDir, ".atomic", "extensions");
+			const extensionPath = join(extensionsDir, "borrowed.ts");
+			mkdirSync(extensionsDir, { recursive: true });
+			writeFileSync(
+				extensionPath,
+				`import { Type } from "typebox";
+export default function(pi) {
+	pi.registerCommand("borrowed-command", {
+		description: "borrowed command",
+		handler: async () => {},
+	});
+	pi.registerTool({
+		name: "borrowed_tool",
+		label: "Borrowed tool",
+		description: "borrowed tool",
+		parameters: Type.Object({}),
+		execute: async () => ({ result: "ok" }),
+	});
+}`,
+			);
+
+			const loader = new DefaultResourceLoader({
+				cwd,
+				agentDir,
+				settingsManager: SettingsManager.inMemory(),
+				additionalExtensionPaths: [repoDir],
+			});
+			await loader.reload();
+
+			const extension = loader.getExtensions().extensions.find((ext) => ext.path === extensionPath);
+			const expectedSourceInfo = {
+				path: extensionPath,
+				source: repoDir,
+				scope: "temporary" as const,
+				origin: "top-level" as const,
+				baseDir: join(repoDir, ".atomic"),
+			};
+
+			expect(extension?.sourceInfo).toEqual(expectedSourceInfo);
+			expect(extension?.sourceInfo.source).not.toBe("cli");
+			expect(extension?.commands.get("borrowed-command")?.sourceInfo).toEqual(expectedSourceInfo);
+			expect(extension?.tools.get("borrowed_tool")?.sourceInfo).toEqual(expectedSourceInfo);
+		});
+
+		it("does not load borrowed project-local extensions from additional paths before source trust", async () => {
+			const repoDir = join(tempDir, "borrowed-trust-repo");
+			const packageExtensionsDir = join(repoDir, "extensions");
+			const borrowedExtensionsDir = join(repoDir, ".atomic", "extensions");
+			const packageExtension = join(packageExtensionsDir, "pkg.ts");
+			const borrowedExtension = join(borrowedExtensionsDir, "borrowed.ts");
+			const markerPath = join(tempDir, "borrowed-loaded");
+			mkdirSync(packageExtensionsDir, { recursive: true });
+			mkdirSync(borrowedExtensionsDir, { recursive: true });
+			writeFileSync(packageExtension, "export default function() {}\n");
+			writeFileSync(
+				borrowedExtension,
+				`import { writeFileSync } from "node:fs";\nexport default function() { writeFileSync(${JSON.stringify(markerPath)}, "loaded"); }\n`,
+			);
+
+			let trustCalls = 0;
+			let preTrustPaths: string[] = [];
+			const loader = new DefaultResourceLoader({
+				cwd,
+				agentDir,
+				settingsManager: SettingsManager.inMemory(),
+				additionalExtensionPaths: [repoDir],
+			});
+
+			await loader.reload({
+				resolveBorrowedProjectTrust: ({ source, resources, extensionsResult }) => {
+					trustCalls += 1;
+					expect(source).toBe(repoDir);
+					expect(resources.map((resource) => resource.path)).toContain(borrowedExtension);
+					preTrustPaths = extensionsResult.extensions.map((extension) => extension.path);
+					return false;
+				},
+			});
+
+			expect(trustCalls).toBe(1);
+			expect(preTrustPaths).toContain(packageExtension);
+			expect(preTrustPaths).not.toContain(borrowedExtension);
+			expect(loader.getExtensions().extensions.map((extension) => extension.path)).not.toContain(borrowedExtension);
+			expect(existsSync(markerPath)).toBe(false);
+		});
+
+		it("preserves declined borrowed project-local trust across reloads without trust callbacks", async () => {
+			const repoDir = join(tempDir, "declined-borrowed-reload-repo");
+			const borrowedExtensionsDir = join(repoDir, ".atomic", "extensions");
+			const borrowedExtension = join(borrowedExtensionsDir, "borrowed.ts");
+			const markerPath = join(tempDir, "declined-borrowed-reload-loaded");
+			mkdirSync(borrowedExtensionsDir, { recursive: true });
+			writeFileSync(
+				borrowedExtension,
+				`import { writeFileSync } from "node:fs";\nexport default function() { writeFileSync(${JSON.stringify(markerPath)}, "loaded"); }\n`,
+			);
+
+			let trustCalls = 0;
+			const loader = new DefaultResourceLoader({
+				cwd,
+				agentDir,
+				settingsManager: SettingsManager.inMemory(),
+				additionalExtensionPaths: [repoDir],
+			});
+
+			await loader.reload({
+				resolveBorrowedProjectTrust: () => {
+					trustCalls += 1;
+					return false;
+				},
+			});
+
+			expect(loader.getExtensions().extensions.map((extension) => extension.path)).not.toContain(borrowedExtension);
+			expect(existsSync(markerPath)).toBe(false);
+
+			await loader.reload();
+
+			expect(trustCalls).toBe(1);
+			expect(loader.getExtensions().extensions.map((extension) => extension.path)).not.toContain(borrowedExtension);
+			expect(existsSync(markerPath)).toBe(false);
+		});
+
+		it("does not preload a project-local-only additional path as a root extension", async () => {
+			const repoDir = join(tempDir, "project-local-only-borrowed-repo");
+			const skillDir = join(repoDir, ".atomic", "skills", "borrowed-skill");
+			const promptsDir = join(repoDir, ".atomic", "prompts");
+			const skillPath = join(skillDir, "SKILL.md");
+			const promptPath = join(promptsDir, "borrowed.md");
+			mkdirSync(skillDir, { recursive: true });
+			mkdirSync(promptsDir, { recursive: true });
+			writeFileSync(skillPath, "---\nname: borrowed-skill\ndescription: Borrowed skill\n---\n");
+			writeFileSync(promptPath, "Borrowed prompt");
+
+			let preTrustPaths: string[] = [];
+			const loader = new DefaultResourceLoader({
+				cwd,
+				agentDir,
+				settingsManager: SettingsManager.inMemory(),
+				additionalExtensionPaths: [repoDir],
+			});
+
+			await loader.reload({
+				resolveBorrowedProjectTrust: ({ extensionsResult }) => {
+					preTrustPaths = extensionsResult.extensions.map((extension) => extension.path);
+					return true;
+				},
+			});
+
+			expect(preTrustPaths).not.toContain(repoDir);
+			expect(loader.getExtensions().errors).toEqual([]);
+			expect(loader.getSkills().skills.some((skill) => skill.filePath === skillPath)).toBe(true);
+			expect(loader.getPrompts().prompts.some((prompt) => prompt.filePath === promptPath)).toBe(true);
+		});
+
+		it("loads borrowed project-local extensions from additional paths after source trust", async () => {
+			const repoDir = join(tempDir, "trusted-borrowed-repo");
+			const packageExtensionsDir = join(repoDir, "extensions");
+			const borrowedExtensionsDir = join(repoDir, ".atomic", "extensions");
+			const packageExtension = join(packageExtensionsDir, "pkg.ts");
+			const borrowedExtension = join(borrowedExtensionsDir, "borrowed.ts");
+			const markerPath = join(tempDir, "trusted-borrowed-loaded");
+			mkdirSync(packageExtensionsDir, { recursive: true });
+			mkdirSync(borrowedExtensionsDir, { recursive: true });
+			writeFileSync(packageExtension, "export default function() {}\n");
+			writeFileSync(
+				borrowedExtension,
+				`import { writeFileSync } from "node:fs";\nexport default function() { writeFileSync(${JSON.stringify(markerPath)}, "loaded"); }\n`,
+			);
+
+			const loader = new DefaultResourceLoader({
+				cwd,
+				agentDir,
+				settingsManager: SettingsManager.inMemory(),
+				additionalExtensionPaths: [repoDir],
+			});
+
+			await loader.reload({
+				resolveBorrowedProjectTrust: () => true,
+			});
+
+			expect(loader.getExtensions().extensions.map((extension) => extension.path)).toContain(borrowedExtension);
+			expect(existsSync(markerPath)).toBe(true);
 		});
 
 		it("reuses pre-trust inline extensions for the final extension set", async () => {

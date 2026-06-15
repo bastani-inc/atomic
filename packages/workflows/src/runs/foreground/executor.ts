@@ -1267,6 +1267,15 @@ function truncateByBytes(text: string, maxBytes: number): { text: string; trunca
   return { text: text.slice(0, low), truncated: true };
 }
 
+function structuredTaskOutputText(value: unknown): string {
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch (error) {
+    throw new Error(`atomic-workflows: structured task output is not JSON-serializable: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 function truncateTaskOutput(text: string, maxOutput: WorkflowMaxOutput | undefined): string {
   const limits = normalizeMaxOutput(maxOutput);
   const byLines = truncateByLines(text, limits.lines);
@@ -4833,11 +4842,12 @@ export async function run<TInputs extends WorkflowInputValues>(
           taskStageOptions(resolvedTaskOptions),
           stageFailFastScope,
         );
-        const rawText = await stage.prompt(
+        const rawOutput = await stage.prompt(
           applyTaskContext(`${taskReadInstruction(resolvedTaskOptions)}${taskPrompt(resolvedTaskOptions)}`, taskPrevious(resolvedTaskOptions)),
           taskPromptOptions(resolvedTaskOptions),
         );
-        const text = truncateTaskOutput(rawText, resolvedTaskOptions.maxOutput);
+        const structured = typeof rawOutput === "string" ? undefined : rawOutput;
+        const text = truncateTaskOutput(structuredTaskOutputText(rawOutput), resolvedTaskOptions.maxOutput);
         const sessionId = (() => {
           try {
             return stage.sessionId;
@@ -4850,6 +4860,7 @@ export async function run<TInputs extends WorkflowInputValues>(
           name,
           stageName: name,
           text,
+          ...(structured !== undefined ? { structured: structured as WorkflowSerializableValue } : {}),
           ...(sessionId !== undefined ? { sessionId } : {}),
           ...(stage.sessionFile !== undefined ? { sessionFile: stage.sessionFile } : {}),
           ...(stageMeta.model !== undefined ? { model: stageMeta.model } : {}),

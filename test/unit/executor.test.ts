@@ -21,7 +21,7 @@ import {
 } from "../../packages/workflows/src/shared/workflow-failures.js";
 import { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
-import type { AgentSession, CreateAgentSessionOptions } from "@bastani/atomic";
+import type { AgentSession, CreateAgentSessionOptions, ToolDefinition } from "@bastani/atomic";
 import type {
     WorkflowCustomUiFactory,
     WorkflowCustomUiOptions,
@@ -1231,6 +1231,95 @@ describe("executor.run", () => {
         assert.deepEqual(calls[0]?.tools, ["read"]);
         assert.equal(calls[0]?.noTools, "builtin");
         assert.equal(calls[0]?.thinkingLevel, "high");
+    });
+
+    test("ctx.stage schema opt-in registers structured_output and returns captured params", async () => {
+        const calls: CreateAgentSessionOptions[] = [];
+        const DecisionSchema = Type.Object(
+            { approved: Type.Boolean() },
+            { additionalProperties: false },
+        );
+        const def = defineWorkflow("stage-schema-structured-output-wf")
+            .output("approved", Type.Boolean())
+            .run(async (ctx) => {
+                const decision = await ctx
+                    .stage("decision", { schema: DecisionSchema, tools: ["read"] })
+                    .prompt("Decide whether the work is approved.");
+                return { approved: decision.approved };
+            })
+            .compile();
+
+        const wfResult = await run(
+            def,
+            {},
+            {
+                adapters: {
+                    agentSession: {
+                        async create(options) {
+                            calls.push(options);
+                            return structuredOutputMockSession(options, { approved: true });
+                        },
+                    },
+                },
+                store: createStore(),
+            },
+        );
+
+        assert.equal(wfResult.status, "completed");
+        assert.equal(wfResult.result?.["approved"], true);
+        assert.deepEqual(calls[0]?.tools, ["read", "structured_output"]);
+        assert.equal(calls[0]?.customTools?.some((tool) => tool.name === "structured_output"), true);
+        assert.equal("schema" in (calls[0] ?? {}), false);
+    });
+
+    test("ctx.chain and ctx.parallel only add structured_output for schema items", async () => {
+        const calls: CreateAgentSessionOptions[] = [];
+        const DecisionSchema = Type.Object(
+            { approved: Type.Boolean() },
+            { additionalProperties: false },
+        );
+        const def = defineWorkflow("task-schema-structured-output-wf")
+            .output("chainStructured", Type.Boolean())
+            .output("parallelStructured", Type.Boolean())
+            .output("plainStructured", Type.Boolean())
+            .run(async (ctx) => {
+                const chainResults = await ctx.chain([
+                    { name: "chain-decision", task: "Decide", schema: DecisionSchema },
+                    { name: "chain-plain", task: "Plain" },
+                ]);
+                const parallelResults = await ctx.parallel([
+                    { name: "parallel-decision", task: "Decide", schema: DecisionSchema },
+                    { name: "parallel-plain", task: "Plain" },
+                ]);
+                return {
+                    chainStructured: chainResults[0]?.structured !== undefined,
+                    parallelStructured: parallelResults[0]?.structured !== undefined,
+                    plainStructured: chainResults[1]?.structured !== undefined || parallelResults[1]?.structured !== undefined,
+                };
+            })
+            .compile();
+
+        const wfResult = await run(
+            def,
+            {},
+            {
+                adapters: {
+                    agentSession: {
+                        async create(options) {
+                            calls.push(options);
+                            return structuredOutputMockSession(options, { approved: true });
+                        },
+                    },
+                },
+                store: createStore(),
+            },
+        );
+
+        assert.equal(wfResult.status, "completed");
+        assert.equal(wfResult.result?.["chainStructured"], true);
+        assert.equal(wfResult.result?.["parallelStructured"], true);
+        assert.equal(wfResult.result?.["plainStructured"], false);
+        assert.equal(calls.filter((call) => call.customTools?.some((tool) => tool.name === "structured_output")).length, 2);
     });
 
     test("ctx.task applies maxOutput truncation to reusable task output", async () => {
@@ -6790,6 +6879,69 @@ function mockSession(): StageSessionRuntime {
         dispose() {},
         getLastAssistantText() {
             return "ok";
+        },
+    };
+}
+
+function structuredOutputMockSession(
+    options: CreateAgentSessionOptions,
+    payload: Record<string, unknown>,
+): StageSessionRuntime {
+    const listeners = new Set<
+        (e: { type: string; [k: string]: unknown }) => void
+    >();
+    const messages: AgentSession["messages"] = [] as AgentSession["messages"];
+    const base = mockSession();
+    const structuredTool = options.customTools?.find(
+        (tool): tool is ToolDefinition => tool.name === "structured_output",
+    );
+    return {
+        ...base,
+        async prompt() {
+            if (!structuredTool) {
+                messages.push({
+                    role: "assistant",
+                    content: [{ type: "text", text: "plain" }],
+                } as AgentSession["messages"][number]);
+                return;
+            }
+            messages.push({
+                role: "assistant",
+                content: [{ type: "toolCall", id: "structured-call", name: "structured_output" }],
+            } as AgentSession["messages"][number]);
+            const result = await structuredTool.execute(
+                "structured-call",
+                payload as Parameters<ToolDefinition["execute"]>[1],
+                undefined,
+                undefined,
+                {} as Parameters<ToolDefinition["execute"]>[4],
+            );
+            for (const listener of listeners) {
+                listener({
+                    type: "tool_execution_end",
+                    toolCallId: "structured-call",
+                    toolName: "structured_output",
+                    result,
+                });
+            }
+            messages.push({
+                role: "toolResult",
+                toolCallId: "structured-call",
+                toolName: "structured_output",
+                content: result.content,
+            } as AgentSession["messages"][number]);
+        },
+        subscribe(listener) {
+            listeners.add(listener as (e: { type: string; [k: string]: unknown }) => void);
+            return () => {
+                listeners.delete(listener as (e: { type: string; [k: string]: unknown }) => void);
+            };
+        },
+        get messages() {
+            return messages;
+        },
+        getLastAssistantText() {
+            return structuredTool ? undefined : "plain";
         },
     };
 }

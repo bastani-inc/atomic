@@ -44,6 +44,8 @@ jobs:
               with:
                   node-version: 24
 
+            - uses: dtolnay/rust-toolchain@stable
+
             - name: Build Linux x64 archive
               run: ./scripts/build-binaries.sh --skip-deps --platform linux-x64
 
@@ -68,6 +70,11 @@ jobs:
                     builtin/web-access/index.ts \
                     builtin/intercom/package.json \
                     builtin/intercom/index.ts \
+                    builtin/cursor/package.json \
+                    builtin/cursor/index.ts \
+                    node_modules/@bastani/atomic-natives/package.json \
+                    node_modules/@bastani/atomic-natives/native/index.js \
+                    node_modules/@bastani/atomic-natives/native/atomic_natives.linux-x64-gnu.node \
                     node_modules/@modelcontextprotocol/ext-apps/package.json \
                     node_modules/@mozilla/readability/package.json; do
                     test -f "$smoke_dir/atomic/$required_path" || {
@@ -110,6 +117,8 @@ jobs:
               with:
                   node-version: 24
 
+            - uses: dtolnay/rust-toolchain@stable
+
             - name: Build Windows x64 archive
               shell: bash
               run: ./scripts/build-binaries.sh --skip-deps --platform windows-x64
@@ -139,6 +148,11 @@ jobs:
                     "builtin/web-access/index.ts",
                     "builtin/intercom/package.json",
                     "builtin/intercom/index.ts",
+                    "builtin/cursor/package.json",
+                    "builtin/cursor/index.ts",
+                    "node_modules/@bastani/atomic-natives/package.json",
+                    "node_modules/@bastani/atomic-natives/native/index.js",
+                    "node_modules/@bastani/atomic-natives/native/atomic_natives.win32-x64-msvc.node",
                     "node_modules/@modelcontextprotocol/ext-apps/package.json",
                     "node_modules/@mozilla/readability/package.json"
                   )) {
@@ -162,6 +176,83 @@ jobs:
                   }
                   Write-Host "Runtime smoke test completed with status $status."
 
+    atomic-native-artifacts:
+        name: Atomic native ${{ matrix.platform }}
+        runs-on: ${{ matrix.runner }}
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - { runner: blacksmith-4vcpu-ubuntu-2404, platform: linux-x64, target: "" }
+                    - { runner: blacksmith-4vcpu-ubuntu-2404-arm, platform: linux-arm64, target: "" }
+                    - { runner: macos-26-intel, platform: darwin-x64, target: "" }
+                    - { runner: blacksmith-6vcpu-macos-26, platform: darwin-arm64, target: "" }
+                    - { runner: blacksmith-4vcpu-ubuntu-2404, platform: windows-x64, target: x86_64-pc-windows-msvc }
+                    - { runner: blacksmith-4vcpu-ubuntu-2404, platform: windows-arm64, target: aarch64-pc-windows-msvc }
+
+        steps:
+            - uses: actions/checkout@v6.0.3
+              with:
+                  ref: ${{ github.event.inputs.tag || github.ref_name }}
+                  persist-credentials: false
+
+            - uses: oven-sh/setup-bun@v2
+              with:
+                  bun-version: latest
+
+            - uses: dtolnay/rust-toolchain@stable
+              with:
+                  targets: ${{ matrix.target }}
+
+            - uses: actions/setup-node@v6
+              with:
+                  node-version: 24
+
+            - name: Install dependencies
+              run: bun install --frozen-lockfile
+
+            - name: Setup zig for Linux cross compile
+              if: matrix.target != '' && startsWith(matrix.target, 'aarch64-unknown-linux')
+              uses: mlugg/setup-zig@v2
+              with:
+                  version: 0.16.0
+
+            - name: Install cargo-zigbuild for Linux cross compile
+              if: matrix.target != '' && startsWith(matrix.target, 'aarch64-unknown-linux')
+              uses: taiki-e/install-action@v2
+              with:
+                  tool: cargo-zigbuild
+
+            - name: Install LLVM tooling for Windows cross compile
+              if: endsWith(matrix.target, '-msvc')
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y clang lld llvm
+
+            - name: Install cargo-xwin for Windows cross compile
+              if: endsWith(matrix.target, '-msvc')
+              uses: taiki-e/install-action@v2
+              with:
+                  tool: cargo-xwin
+
+            - name: Build Atomic native binding
+              shell: bash
+              env:
+                  CROSS_TARGET: ${{ matrix.target }}
+                  XWIN_ACCEPT_LICENSE: "1"
+              run: |
+                  set -euo pipefail
+                  bun run --cwd packages/natives build
+                  ls -lh packages/natives/native/*.node
+
+            - name: Upload Atomic native binding
+              uses: actions/upload-artifact@v7
+              with:
+                  name: atomic-natives-${{ matrix.platform }}
+                  path: packages/natives/native/*.node
+                  if-no-files-found: error
+                  retention-days: 14
+
     publish:
         name: Publish @bastani/atomic
         # npm provenance only supports GitHub-hosted runners.
@@ -169,6 +260,7 @@ jobs:
         needs:
             - linux-binary-smoke
             - windows-binary-smoke
+            - atomic-native-artifacts
         outputs:
             version: ${{ steps.package.outputs.version }}
             npm_tag: ${{ steps.package.outputs.npm_tag }}
@@ -216,6 +308,18 @@ jobs:
 
             - name: Test
               run: bun run test:all
+
+            - name: Download Atomic native bindings
+              uses: actions/download-artifact@v8
+              with:
+                  pattern: atomic-natives-*
+                  path: packages/natives/native
+                  merge-multiple: true
+
+            - name: Prepare Atomic native optional packages
+              run: |
+                  bun run --cwd packages/natives create-npm-dirs
+                  bun run --cwd packages/natives artifacts
 
             - name: Docs link validation
               working-directory: ${{ env.PACKAGE_DIR }}
@@ -277,7 +381,7 @@ jobs:
                       exit 1
                     fi
 
-                    if [ "$manifest_name" != "$PACKAGE_NAME" ] && [ "$manifest_private" != "true" ]; then
+                    if [ "$manifest_name" != "$PACKAGE_NAME" ] && [ "$manifest_name" != "@bastani/atomic-natives" ] && [ "$manifest_private" != "true" ]; then
                       echo "$manifest_path ($manifest_name) is bundled into $PACKAGE_NAME and must remain private (not independently published)." >&2
                       exit 1
                     fi
@@ -321,7 +425,7 @@ jobs:
                     import pkg from "./package.json" with { type: "json" };
 
                     const failures = [];
-                    const expectedBuiltins = ["workflows", "subagents", "mcp", "web-access", "intercom"];
+                    const expectedBuiltins = ["workflows", "subagents", "mcp", "web-access", "intercom", "cursor"];
                     const clean = (value) => String(value).replace(/^\.\//, "").replace(/\/$/, "");
                     const walk = (dir) => {
                       if (!existsSync(dir)) return [];
@@ -358,7 +462,7 @@ jobs:
                         if (String(dependencyRange).startsWith("workspace:")) {
                           failures.push(`${sectionName}.${dependencyName} must not use workspace protocol`);
                         }
-                        if (dependencyName.startsWith("@bastani/")) {
+                        if (dependencyName.startsWith("@bastani/") && dependencyName !== "@bastani/atomic-natives") {
                           failures.push(`${sectionName}.${dependencyName} must not reference a private bundled package`);
                         }
                       }
@@ -371,6 +475,16 @@ jobs:
 
                     for (const builtin of expectedBuiltins) {
                       requirePath(`dist builtin ${builtin}`, `dist/builtin/${builtin}/package.json`);
+                    }
+                    for (const native of [
+                      "atomic_natives.darwin-arm64.node",
+                      "atomic_natives.darwin-x64.node",
+                      "atomic_natives.linux-arm64-gnu.node",
+                      "atomic_natives.linux-x64-gnu.node",
+                      "atomic_natives.win32-arm64-msvc.node",
+                      "atomic_natives.win32-x64-msvc.node",
+                    ]) {
+                      requirePath(`atomic native ${native}`, `../../packages/natives/native/${native}`);
                     }
 
                     if (failures.length > 0) {
@@ -403,7 +517,7 @@ jobs:
 
                   echo "notes_file=$notes_file" >> "$GITHUB_OUTPUT"
 
-            - name: Check npm registry
+            - name: Check @bastani/atomic npm registry
               id: registry
               shell: bash
               env:
@@ -416,6 +530,34 @@ jobs:
                   else
                     echo "exists=false" >> "$GITHUB_OUTPUT"
                   fi
+
+            - name: Check @bastani/atomic-natives npm registry
+              id: native_registry
+              shell: bash
+              env:
+                  PACKAGE_VERSION: ${{ steps.package.outputs.version }}
+              run: |
+                  set -euo pipefail
+                  if bun pm view "@bastani/atomic-natives@$PACKAGE_VERSION" version >/dev/null 2>&1; then
+                    echo "exists=true" >> "$GITHUB_OUTPUT"
+                    echo "@bastani/atomic-natives@$PACKAGE_VERSION is already on npm; skipping publish."
+                  else
+                    echo "exists=false" >> "$GITHUB_OUTPUT"
+                  fi
+
+            - name: Publish Atomic native packages to npm
+              if: steps.native_registry.outputs.exists != 'true'
+              working-directory: packages/natives
+              shell: bash
+              env:
+                  NPM_CONFIG_PROVENANCE: "true"
+                  NPM_CONFIG_TAG: ${{ steps.package.outputs.npm_tag }}
+                  NPM_TAG: ${{ steps.package.outputs.npm_tag }}
+              run: |
+                  set -euo pipefail
+                  bun run prepublish:native
+                  bun pm pack --dry-run
+                  npm publish --provenance --access public --tag "$NPM_TAG" --registry https://registry.npmjs.org
 
             - name: Verify npm tarball contents
               if: steps.registry.outputs.exists != 'true'

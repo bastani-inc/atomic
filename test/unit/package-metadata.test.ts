@@ -1,10 +1,12 @@
 import { describe, test } from "bun:test";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import assert from "node:assert/strict";
 import atomicPackageJson from "../../packages/coding-agent/package.json" with { type: "json" };
+import cursorPackageJson from "../../packages/cursor/package.json" with { type: "json" };
 import intercomPackageJson from "../../packages/intercom/package.json" with { type: "json" };
 import mcpPackageJson from "../../packages/mcp/package.json" with { type: "json" };
+import nativesPackageJson from "../../packages/natives/package.json" with { type: "json" };
 import subagentsPackageJson from "../../packages/subagents/package.json" with { type: "json" };
 import webAccessPackageJson from "../../packages/web-access/package.json" with { type: "json" };
 import workflowsPackageJson from "../../packages/workflows/package.json" with { type: "json" };
@@ -77,12 +79,18 @@ const BUNDLED_PACKAGE_MANIFESTS: readonly PackageDependencySections[] = [
     mcpPackageJson,
     webAccessPackageJson,
     intercomPackageJson,
+    cursorPackageJson,
 ];
 
 const ATOMIC_RUNTIME_DEPENDENCIES: DependencyMap = {
     ...atomicPackageJson.dependencies,
     ...atomicPackageJson.optionalDependencies,
 };
+
+const PUBLISHABLE_WORKSPACE_PACKAGES = new Set([
+    "@bastani/atomic",
+    "@bastani/atomic-natives",
+]);
 
 function markdownFiles(dir: string): string[] {
     return readdirSync(dir)
@@ -134,7 +142,7 @@ describe("package metadata", () => {
         }
     });
 
-    test("only @bastani/atomic is publishable", async () => {
+    test("only intended workspace packages are publishable", async () => {
         const packages = await workspacePackages();
         assert.equal(atomicPackageJson.name, "@bastani/atomic");
         assert.equal(
@@ -143,7 +151,7 @@ describe("package metadata", () => {
         );
 
         for (const { manifestPath, packageJson } of packages) {
-            if (packageJson.name === "@bastani/atomic") continue;
+            if (PUBLISHABLE_WORKSPACE_PACKAGES.has(packageJson.name)) continue;
             assert.equal(
                 packageJson.private,
                 true,
@@ -172,7 +180,7 @@ describe("package metadata", () => {
                 `${sectionName}.${dependencyName} must not use the workspace protocol in the published manifest`,
             );
             assert.ok(
-                !dependencyName.startsWith("@bastani/"),
+                !dependencyName.startsWith("@bastani/") || dependencyName === "@bastani/atomic-natives",
                 `${sectionName}.${dependencyName} must not point at a private bundled workspace package`,
             );
         }
@@ -199,6 +207,46 @@ describe("package metadata", () => {
         assert.ok(workflowsPackageJson.files.includes("skills/**/*"));
         assert.deepEqual(workflowsPackageJson.pi.skills, ["./skills"]);
         assert.deepEqual(workflowsPackageJson.pi.builtin, ["./builtin"]);
+    });
+
+    test("natives package follows the generated NAPI-RS package layout", () => {
+        assert.equal(nativesPackageJson.name, "@bastani/atomic-natives");
+        assert.equal(nativesPackageJson.main, "./native/index.js");
+        assert.equal(nativesPackageJson.types, "./native/index.d.ts");
+        assert.equal(nativesPackageJson.napi.binaryName, "atomic_natives");
+        assert.deepEqual(nativesPackageJson.napi.targets, [
+            "x86_64-pc-windows-msvc",
+            "x86_64-apple-darwin",
+            "x86_64-unknown-linux-gnu",
+            "aarch64-unknown-linux-gnu",
+            "aarch64-apple-darwin",
+            "aarch64-pc-windows-msvc",
+        ]);
+        assert.ok(nativesPackageJson.files.includes("native/index.js"));
+        assert.ok(nativesPackageJson.files.includes("native/index.d.ts"));
+    });
+
+    test("Cursor native transport documentation does not mention removed Node bridge paths", () => {
+        const checkedPaths = [
+            "packages/coding-agent/docs/providers.md",
+            "packages/cursor/README.md",
+            "packages/cursor/src/proto/README.md",
+        ];
+        const forbiddenPatterns = [
+            /ATOMIC_CURSOR_H2_BRIDGE_NODE/,
+            /h2-bridge/,
+            /Node bridge/i,
+            /node subprocess/i,
+            /subprocess bridge/i,
+            /shell out to Node/i,
+        ];
+
+        for (const checkedPath of checkedPaths) {
+            const content = readFileSync(checkedPath, "utf8");
+            for (const pattern of forbiddenPatterns) {
+                assert.doesNotMatch(content, pattern, `${checkedPath} must not mention ${pattern}`);
+            }
+        }
     });
 
     test("subagents package ships bundled agent markdown files", () => {

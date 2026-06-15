@@ -38,7 +38,7 @@ const ReadsOverride = Type.Unsafe({
 const JsonSchemaObject = Type.Unsafe({
 	type: "object",
 	additionalProperties: true,
-	description: "JSON Schema object for strict structured output. Non-object roots are rejected.",
+	description: "Plain JSON Schema object for structured output.",
 });
 
 const AcceptanceEvidenceKind = Type.String({

@@ -1,6 +1,6 @@
 {
   "name": "@bastani/atomic",
-  "version": "0.8.28",
+  "version": "0.8.29",
   "description": "Atomic coding agent CLI with read, bash, edit, write tools and session management",
   "type": "module",
   "atomicConfig": {
@@ -21,7 +21,8 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
     },
     "./hooks": {
       "types": "./dist/core/hooks/index.d.ts",
@@ -67,9 +68,11 @@
     "prepublishOnly": "bun run clean && bun run build"
   },
   "dependencies": {
-    "@earendil-works/pi-agent-core": "^0.79.1",
-    "@earendil-works/pi-ai": "^0.79.1",
-    "@earendil-works/pi-tui": "^0.79.1",
+    "@bastani/atomic-natives": "0.8.29",
+    "@bufbuild/protobuf": "^2.0.0",
+    "@earendil-works/pi-agent-core": "^0.79.3",
+    "@earendil-works/pi-ai": "^0.79.3",
+    "@earendil-works/pi-tui": "^0.79.4",
     "@modelcontextprotocol/ext-apps": "^1.7.2",
     "@modelcontextprotocol/sdk": "^1.25.1",
     "@mozilla/readability": "^0.6.0",
@@ -85,7 +88,7 @@
     "linkedom": "^0.18.12",
     "minimatch": "^10.2.3",
     "open": "^11.0.0",
-    "p-limit": "^6.1.0",
+    "p-limit": "^7.3.0",
     "proper-lockfile": "^4.1.2",
     "turndown": "^7.2.0",
     "typebox": "^1.1.24",
@@ -101,14 +104,14 @@
     }
   },
   "optionalDependencies": {
-    "@mariozechner/clipboard": "^0.3.6"
+    "@mariozechner/clipboard": "^0.3.9"
   },
   "devDependencies": {
     "@types/cross-spawn": "6.0.6",
-    "@types/diff": "^7.0.2",
+    "@types/diff": "^8.0.0",
     "@types/hosted-git-info": "^3.0.5",
     "@types/ms": "^2.1.0",
-    "@types/node": "^25.9.1",
+    "@types/node": "^25.9.3",
     "@types/proper-lockfile": "^4.1.4",
     "@typescript/native-preview": "7.0.0-dev.20260511.1",
     "shx": "^0.4.0",

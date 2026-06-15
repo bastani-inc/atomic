@@ -6,6 +6,20 @@
 
 - Fixed subagent model-fallback failure classification to inspect nested provider error payloads (`diagnostics`, `cause`, `error`, `response`, and `body`), treat authentication/authorization and server status codes as fallbackable model failures, and keep tool-call/runtime failures non-retryable.
 
+## [0.8.29] - 2026-06-15
+
+### Changed
+
+- Aligned the subagents extension with upstream pi `^0.79.3` runtime packages (`@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, and `@earendil-works/pi-tui`) so child sessions inherit the latest shared agent, provider, and TUI compatibility fixes.
+- Changed `outputSchema` child runs to use Atomic's shared `structured_output` factory with direct schema parameters, concise two-line prompt guidance, parent-side `structuredOutput` capture from `output.json`, and auto-allowing the required tool for explicit child tool allowlists ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
+- Removed parent-side top-level-object restrictions from child `outputSchema`; any plain JSON Schema object can be passed directly to the `structured_output` tool ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
+
+### Fixed
+
+- Fixed subagent `outputSchema` readback to use the captured `output.json` directly without sidecar metadata, transcript-finality parsing, duplicate-call checks, or parent-side schema revalidation ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
+- Fixed explicit empty child `tools: []` allowlists with `outputSchema` to pass only `--tools structured_output`, keeping the restricted child from regaining default tools while still enabling the required final-answer channel ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
+- Fixed workflow-stage subagent depth handling so bundled workflow stages inherit the main-chat two-hop subagent nesting budget while preserving stricter configured limits, and updated the nested-depth rejection message to describe the maximum-depth condition ([#1372](https://github.com/bastani-inc/atomic/pull/1372)).
+
 ## [0.8.28] - 2026-06-11
 
 ### Changed

@@ -47,7 +47,7 @@ Default to using **Bun**, not Node/npm/yarn/pnpm.
 
 ## Design Context
 
-Refer to `.impeccable.md`
+Refer to `DESIGN.md` and `PRODUCT.md`.
 
 ## Testing
 
@@ -95,8 +95,8 @@ Relevant resources (use your `browser` skill if the information is not available
     1. [`bun:test`](https://bun.sh/docs/cli/test)
     2. [Bun + TypeScript](https://bun.sh/docs/runtime/typescript)
     3. [`bunfig.toml`](https://bun.sh/docs/runtime/bunfig)
-2. pi: `can1357/pi`
-    1. Extension loading + SDK docs under `docs/`
+2. Pi: `earendil-works/pi`
+    1. [`docs/`](https://github.com/earendil-works/pi/tree/main/packages/coding-agent/docs)
 3. TypeScript: `microsoft/TypeScript`
     1. [Module resolution](https://www.typescriptlang.org/docs/handbook/module-resolution.html)
     2. [`paths`](https://www.typescriptlang.org/tsconfig#paths)
@@ -114,28 +114,18 @@ atomic:
 - extensions: `~/.atomic/agent/extensions/<name>/`
 - local: `.atomic/` in the project directory
 
-**Agent Skill Locations** - local: - `.agents/skills` (`.claude/skills` is a symlink to `.agents/skills`) - global: - `~/.agents/skills` for OpenCode and Copilot CLI - `~/.claude/skills` for Claude Code
-
 ## Releasing
 
 Atomic mirrors pi's tag-driven release flow: bump versions locally, commit, push a `<version>` git tag (no leading `v`, for example `0.8.24` or `0.8.24-alpha.1`), and CI publishes to npm with OIDC provenance and creates the GitHub Release with cross-compiled binaries attached.
 
 ### Agent publishing requests
 
-If a user asks you to publish the package or create a release/prerelease:
+If a user asks you to publish the package or create a release/prerelease, run the `publish-release` workflow using your workflow tool.
 
-1. Ask the user with the `ask_user_question`/ask-question tool what version to publish if they have not supplied a version.
-2. Ask whether they want a release or prerelease if that cannot be inferred from the supplied version, or if the version is in an incorrect format. Valid formats are `MAJOR.MINOR.PATCH` for releases and `MAJOR.MINOR.PATCH-alpha.REVISION` (revision starts at 1) for prereleases.
-3. Create a branch using the naming convention: `[prerelease | release]/<version>` (no leading `v`) where `[prerelease | release]` changes depending on whether the version if a release or prerelease version.
-4. Follow the guidance in the "Changelog" section to update the `CHANGELOG.md` files.
-5. Follow the "Bumping Versions" guidance to correctly bump the package version.
-6. Commit all unstaged changes in the current branch.
-7. Create a PR to merge the branch to main.
-8. Wait to make sure all of the CI checks pass using the `gh` tool.
-9. Auto-merge when all CI checks pass. If the checks don't pass, ask the user what they want to do using the `ask_user_question` tool.
-10. If/when the branch is merged to main, switch back to main, and pull the latest changes from `origin/main`.
-11. A branch push or PR merge alone does not publish, so if all the steps above succeed, create the new release by creating a git tag with: `git tag <version>` and push it with `git push origin <version>`.
-12. Wait for the release to finish and monitor the status of the publish action. If the publish checks don't pass, ask the user what they want to do using the `ask_user_question` tool. Otherwise, provide a summary to the user.
+## Docs
+
+- ALWAYS keep the user-facing docs in `packages/coding-agent/docs` up-to-date with the latest changes after you make changes. Prefer to keep other docs up-to-date as well, but the coding-agent docs are the most important since they are user-facing and often consulted by users and other agents.
+- To update docs, prefer using your `release-docs` workflow to thoroughly update all relevant docs with the latest changes. If you need to make a quick fix or update, you can also edit the markdown files directly, but make sure to keep them comprehensive and up-to-date.
 
 ## Changelog
 
@@ -190,11 +180,12 @@ Note: Remember that npm publishing with provenance does NOT require a token. Tha
 
 1. The workflows extension is bundled into `@bastani/atomic`. For local development against upstream pi, symlink `packages/workflows` into `~/.pi/agent/extensions/workflows` if you want host-level discovery outside Atomic.
 2. Rely on agent skills to provide information on best practices during implementation. Here is a short list of Agent Skills that are incredibly relevant to this project that you should try to use when applicable:
+    - bun
+    - gh-commit
+    - gh-create-pr
+    - prek
     - typescript-advanced-types
     - typescript-expert
-    - typescript-react-reviewer
-    - tdd
-    - impeccable
 3. Ask for clarity if you are unsure about a change. The developer is your best friend and oftentimes can clarify intent.
 4. When modifying this extension, follow pi's extension and SDK conventions.
 

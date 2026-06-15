@@ -5,8 +5,7 @@ import type { ExtensionAPI, ExtensionContext } from "@bastani/atomic";
 import { Key, matchesKey } from "@earendil-works/pi-tui";
 import { discoverAgents, discoverAgentsAll, type ChainConfig } from "../agents/agents.ts";
 import type { SubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
-import { isDynamicParallelStep, isParallelStep, type ChainStep } from "../shared/settings.ts";
-import { assertJsonSchemaObject } from "../runs/shared/structured-output.ts";
+import { mapSavedChainSteps } from "./saved-chain-mapping.ts";
 import type { SlashSubagentResponse, SlashSubagentUpdate } from "./slash-bridge.ts";
 import {
 	applySlashUpdate,
@@ -21,7 +20,6 @@ import {
 	SLASH_SUBAGENT_RESPONSE_EVENT,
 	SLASH_SUBAGENT_STARTED_EVENT,
 	SLASH_SUBAGENT_UPDATE_EVENT,
-	type JsonSchemaObject,
 	type SingleResult,
 	type SubagentState,
 } from "../shared/types.ts";
@@ -123,58 +121,6 @@ const makeChainCompletions = (state: SubagentState) => (prefix: string) => {
 	return discoverSavedChains(state.baseCwd)
 		.filter((chain) => chain.name.startsWith(prefix))
 		.map((chain) => ({ value: chain.name, label: chain.name }));
-};
-
-function loadSavedOutputSchema(chain: ChainConfig, stepAgent: string, outputSchema: unknown): JsonSchemaObject | undefined {
-	if (outputSchema === undefined) return undefined;
-	if (typeof outputSchema === "string") {
-		const schemaPath = path.isAbsolute(outputSchema)
-			? outputSchema
-			: path.join(path.dirname(chain.filePath), outputSchema);
-		const parsed = JSON.parse(fs.readFileSync(schemaPath, "utf-8")) as unknown;
-		assertJsonSchemaObject(parsed, `outputSchema for chain '${chain.name}' step '${stepAgent}' (${schemaPath})`);
-		return parsed;
-	}
-	assertJsonSchemaObject(outputSchema, `outputSchema for chain '${chain.name}' step '${stepAgent}'`);
-	return outputSchema;
-}
-
-const mapSavedChainSteps = (chain: ChainConfig, worktree = false): ChainStep[] => {
-	return (chain.steps as unknown as Array<ChainStep & { skills?: string[] | false }>).map((step) => {
-		if (isParallelStep(step)) {
-			const parallel = step.parallel.map((task) => {
-				const { outputSchema: rawOutputSchema, ...rest } = task as typeof task & { outputSchema?: unknown };
-				const outputSchema = loadSavedOutputSchema(chain, task.agent, rawOutputSchema);
-				return { ...rest, ...(outputSchema ? { outputSchema } : {}) };
-			});
-			return { ...step, parallel, ...(worktree ? { worktree: true } : {}) };
-		}
-		if (isDynamicParallelStep(step)) {
-			const { outputSchema: rawOutputSchema, ...parallelRest } = step.parallel as typeof step.parallel & { outputSchema?: unknown };
-			const outputSchema = loadSavedOutputSchema(chain, step.parallel.agent, rawOutputSchema);
-			const collectSchema = loadSavedOutputSchema(chain, `${step.collect.as} collection`, step.collect.outputSchema);
-			return {
-				...step,
-				parallel: { ...parallelRest, ...(outputSchema ? { outputSchema } : {}) },
-				collect: { ...step.collect, ...(collectSchema ? { outputSchema: collectSchema } : {}) },
-			};
-		}
-		const outputSchema = loadSavedOutputSchema(chain, step.agent, (step as { outputSchema?: unknown }).outputSchema);
-		return {
-			agent: step.agent,
-			task: step.task || undefined,
-			...(step.phase ? { phase: step.phase } : {}),
-			...(step.label ? { label: step.label } : {}),
-			...(step.as ? { as: step.as } : {}),
-			...(outputSchema ? { outputSchema } : {}),
-			output: step.output,
-			outputMode: step.outputMode,
-			reads: step.reads,
-			progress: step.progress,
-			skill: step.skill ?? step.skills,
-			model: step.model,
-		};
-	});
 };
 
 async function requestSlashRun(

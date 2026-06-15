@@ -47,6 +47,7 @@ const WORKSPACE_BUILTINS = [
 	{ packageName: "@bastani/mcp", workspaceDirName: "mcp" },
 	{ packageName: "@bastani/web-access", workspaceDirName: "web-access" },
 	{ packageName: "@bastani/intercom", workspaceDirName: "intercom" },
+	{ packageName: "@bastani/cursor", workspaceDirName: "cursor" },
 ] as const;
 
 function readPackageName(packageDir: string): string | undefined {

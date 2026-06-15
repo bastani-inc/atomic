@@ -144,6 +144,25 @@ You are a read-only inspector. Inspect the current diff, cite evidence with file
 
 Use `completionGuard: false` sparingly. It opts a user-authored agent out of automatic completion-guard reminders and is intended for read-only agents whose prompt already prevents premature completion. Do not use it to bypass required implementation or validation work.
 
+If an agent or chain step uses an explicit empty `tools: []` allowlist together with `outputSchema`, Atomic starts the child with only `structured_output` enabled for the required final answer. It does not omit `--tools` and accidentally restore default tools. Path-only tool entries remain extension paths and do not create a builtin allowlist by themselves. The child prompt-runtime extension is loaded before user/tool extensions so its schema-backed `structured_output` tool is registered before explicit allowlists are applied.
+
+## Structured output schemas
+
+Chain and parallel steps can declare an `outputSchema` when the parent needs reliable machine-readable handoff data. Atomic passes that schema directly to a `structured_output` tool backed by the shared Atomic factory. The child should call `structured_output` when it is done:
+
+```ts
+structured_output({
+  files: ["src/auth.ts"],
+  risks: ["missing regression test"],
+})
+```
+
+`outputSchema` is a plain JSON Schema descriptor object. It may describe object, array, or primitive final values, and the child should pass a JSON value that matches that schema directly. Atomic no longer adds object-root restrictions, sidecar metadata, transcript-finality checks, duplicate-call guards, or extra parent-side schema parsing. The child runtime writes the tool arguments to `output.json`; the parent reads that JSON back as `result.structuredOutput` and in named-chain references under `outputs.name.structured`.
+
+Children without `outputSchema` do not receive `structured_output` from Atomic's default tool registry. They can still use a custom extension-provided terminating tool if you explicitly add one.
+
+Dynamic fanout `collect.outputSchema` validates the collected result array after child runs finish.
+
 ## Fallback models
 
 Agents can define ordered `fallbackModels` for retryable provider or model failures such as rate limits, quota/auth problems, unavailable models, network timeouts, or 5xx errors. Atomic tries the requested primary model first, then configured fallbacks, and finally appends the current user-selected model as the last fallback candidate when available.

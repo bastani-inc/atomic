@@ -15,6 +15,7 @@ export class LoginDialogComponent extends Container implements Focusable {
 	private abortController = new AbortController();
 	private inputResolver?: (value: string) => void;
 	private inputRejecter?: (error: Error) => void;
+	private authCancelHint?: Text;
 
 	// Focusable implementation - propagate to input for IME cursor positioning
 	private _focused = false;
@@ -89,8 +90,13 @@ export class LoginDialogComponent extends Container implements Focusable {
 	/**
 	 * Called by onAuth callback - show URL and optional instructions
 	 */
-	showAuth(url: string, instructions?: string, options: { autoOpenBrowser?: boolean } = {}): void {
+	showAuth(
+		url: string,
+		instructions?: string,
+		options: { autoOpenBrowser?: boolean; showCancelHint?: boolean } = {},
+	): void {
 		this.contentContainer.clear();
+		this.authCancelHint = undefined;
 		this.contentContainer.addChild(new Spacer(1));
 		const linkedUrl = `\x1b]8;;${url}\x07${url}\x1b]8;;\x07`;
 		this.contentContainer.addChild(new Text(theme.fg("accent", linkedUrl), 1, 0));
@@ -104,6 +110,11 @@ export class LoginDialogComponent extends Container implements Focusable {
 			this.contentContainer.addChild(new Text(theme.fg("warning", instructions), 1, 0));
 		}
 
+		if (options.showCancelHint) {
+			this.authCancelHint = new Text(`(${keyHint("tui.select.cancel", "Cancel")})`, 1, 0);
+			this.contentContainer.addChild(this.authCancelHint);
+		}
+
 		if (options.autoOpenBrowser ?? true) {
 			openBrowser(url);
 		}
@@ -115,6 +126,7 @@ export class LoginDialogComponent extends Container implements Focusable {
 	 */
 	showDeviceCode(info: OAuthDeviceCodeInfo): void {
 		this.contentContainer.clear();
+		this.authCancelHint = undefined;
 		this.contentContainer.addChild(new Spacer(1));
 		const linkedUrl = `\x1b]8;;${info.verificationUri}\x07${info.verificationUri}\x1b]8;;\x07`;
 		this.contentContainer.addChild(new Text(theme.fg("accent", linkedUrl), 1, 0));
@@ -135,10 +147,19 @@ export class LoginDialogComponent extends Container implements Focusable {
 		);
 	}
 
+	private removeAuthCancelHint(): void {
+		if (!this.authCancelHint) return;
+		this.contentContainer.children = this.contentContainer.children.filter(
+			(child) => child !== this.authCancelHint,
+		);
+		this.authCancelHint = undefined;
+	}
+
 	/**
 	 * Show input for manual code/URL entry (for callback server providers)
 	 */
 	showManualInput(prompt: string): Promise<string> {
+		this.removeAuthCancelHint();
 		this.input.setValue("");
 		this.contentContainer.addChild(new Spacer(1));
 		this.contentContainer.addChild(new Text(theme.fg("dim", prompt), 1, 0));
@@ -157,6 +178,7 @@ export class LoginDialogComponent extends Container implements Focusable {
 	 * Note: Does NOT clear content, appends to existing (preserves URL from showAuth)
 	 */
 	showPrompt(message: string, placeholder?: string): Promise<string> {
+		this.removeAuthCancelHint();
 		this.contentContainer.addChild(new Spacer(1));
 		this.contentContainer.addChild(new Text(theme.fg("text", message), 1, 0));
 		if (placeholder) {
@@ -185,6 +207,7 @@ export class LoginDialogComponent extends Container implements Focusable {
 	 */
 	showInfo(lines: string[]): void {
 		this.contentContainer.clear();
+		this.authCancelHint = undefined;
 		this.contentContainer.addChild(new Spacer(1));
 		for (const line of lines) {
 			this.contentContainer.addChild(new Text(line, 1, 0));
@@ -198,6 +221,7 @@ export class LoginDialogComponent extends Container implements Focusable {
 	 * Show waiting message (for polling flows like GitHub Copilot)
 	 */
 	showWaiting(message: string): void {
+		this.removeAuthCancelHint();
 		this.contentContainer.addChild(new Spacer(1));
 		this.contentContainer.addChild(new Text(theme.fg("dim", message), 1, 0));
 		this.contentContainer.addChild(new Text(`(${keyHint("tui.select.cancel", "Cancel")})`, 1, 0));

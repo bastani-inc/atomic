@@ -149,6 +149,18 @@ export interface ChatRenderSettings {
 	getCustomMessageRenderer(customType: string): MessageRenderer | undefined;
 }
 
+/** Host-owned inline custom UI focus state exposed to overlays without prompt content. */
+export interface HostCustomUiState {
+	/** Number of active non-overlay host custom UI mounts. */
+	blockingInlineCustomUiDepth: number;
+	/** True when at least one non-overlay host custom UI is mounted and blocking. */
+	blockingInlineCustomUiActive: boolean;
+	/** True when the active inline custom UI is waiting behind an overlay that kept focus. */
+	blockingInlineCustomUiFocusDeferred?: boolean;
+}
+
+export type HostCustomUiStateListener = (state: HostCustomUiState) => void;
+
 /**
  * UI context for extensions to request interactive UI.
  * Each mode (interactive, RPC, print) provides its own implementation.
@@ -168,6 +180,15 @@ export interface ExtensionUIContext {
 
 	/** Request an interactive repaint after extension-owned state changes. */
 	requestRender(): void;
+
+	/** Get host-owned inline custom UI focus state, if the mode exposes it. */
+	getHostCustomUiState?(): HostCustomUiState;
+
+	/** Observe host-owned inline custom UI focus state changes. Returns an unsubscribe function. */
+	onHostCustomUiStateChange?(listener: HostCustomUiStateListener): () => void;
+
+	/** Move focus to a mounted host-owned inline custom UI, if one is pending. */
+	focusHostInlineCustomUi?(): boolean;
 
 	/** Listen to raw terminal input (interactive mode only). Returns an unsubscribe function. */
 	onTerminalInput(handler: TerminalInputHandler): () => void;
@@ -230,6 +251,8 @@ export interface ExtensionUIContext {
 		) => (Component & { dispose?(): void }) | Promise<Component & { dispose?(): void }>,
 		options?: {
 			overlay?: boolean;
+			/** Keep host inline custom UI pending in the background while this overlay is visible. */
+			deferInlineCustomUiFocus?: boolean;
 			/** AbortSignal to programmatically dismiss the custom UI. */
 			signal?: AbortSignal;
 			/** Overlay positioning/sizing options. Can be static or a function for dynamic updates. */
@@ -518,6 +541,8 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 	parameters: TParams;
 	/** Optional per-tool character cap for model-visible result persistence. Use Infinity to opt out for self-bounded tools. */
 	maxResultSizeChars?: number;
+	/** Marks a terminating tool created by createStructuredOutputTool() so print mode can emit custom-named final JSON without treating every terminating tool as printable. */
+	structuredOutput?: true;
 	/** Controls whether ToolExecutionComponent renders the standard colored shell or the tool renders its own framing. */
 	renderShell?: "default" | "self";
 

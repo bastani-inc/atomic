@@ -9,6 +9,18 @@ import {
   SUBAGENT_PARENT_DEPTH_ENV,
   SUBAGENT_PARENT_MAX_DEPTH,
 } from "../../packages/subagents/src/runs/shared/pi-args.js";
+import {
+  STRUCTURED_OUTPUT_CAPTURE_ENV,
+  STRUCTURED_OUTPUT_SCHEMA_ENV,
+} from "../../packages/subagents/src/runs/shared/structured-output.js";
+
+function structuredOutputRuntime() {
+  return {
+    schema: { type: "object" },
+    schemaPath: "/tmp/schema.json",
+    outputPath: "/tmp/output.json",
+  };
+}
 
 describe("subagent child CLI args", () => {
   test("adds fanout child extension only when the subagent tool is explicitly authorized", () => {
@@ -83,6 +95,99 @@ describe("subagent child CLI args", () => {
 
     assert.equal(disabled.env.MCP_DIRECT_TOOLS, "__none__");
     assert.equal(selected.env.MCP_DIRECT_TOOLS, "github/search_code");
+  });
+
+  test("auto-allows structured_output for explicit child tool allowlists with outputSchema", () => {
+    const result = buildPiArgs({
+      baseArgs: [],
+      task: "hello",
+      sessionEnabled: false,
+      inheritProjectContext: true,
+      inheritSkills: true,
+      tools: ["read"],
+      structuredOutput: structuredOutputRuntime(),
+    });
+
+    const toolsIndex = result.args.indexOf("--tools");
+    assert.notEqual(toolsIndex, -1);
+    assert.equal(result.args[toolsIndex + 1], "read,structured_output");
+    assert.equal(result.env[STRUCTURED_OUTPUT_SCHEMA_ENV], "/tmp/schema.json");
+    assert.equal(result.env[STRUCTURED_OUTPUT_CAPTURE_ENV], "/tmp/output.json");
+  });
+
+  test("keeps explicit empty tool allowlists restrictive while auto-allowing structured_output for outputSchema", () => {
+    const result = buildPiArgs({
+      baseArgs: [],
+      task: "hello",
+      sessionEnabled: false,
+      inheritProjectContext: true,
+      inheritSkills: true,
+      tools: [],
+      structuredOutput: structuredOutputRuntime(),
+    });
+
+    const toolsIndex = result.args.indexOf("--tools");
+    assert.notEqual(toolsIndex, -1);
+    assert.equal(result.args[toolsIndex + 1], "structured_output");
+    assert.deepEqual(result.args[toolsIndex + 1]?.split(","), ["structured_output"]);
+    assert.equal(result.env[STRUCTURED_OUTPUT_SCHEMA_ENV], "/tmp/schema.json");
+    assert.equal(result.env[STRUCTURED_OUTPUT_CAPTURE_ENV], "/tmp/output.json");
+  });
+
+  test("does not duplicate structured_output when an explicit allowlist already includes it", () => {
+    const result = buildPiArgs({
+      baseArgs: [],
+      task: "hello",
+      sessionEnabled: false,
+      inheritProjectContext: true,
+      inheritSkills: true,
+      tools: ["read", "structured_output"],
+      structuredOutput: structuredOutputRuntime(),
+    });
+
+    const toolsIndex = result.args.indexOf("--tools");
+    assert.notEqual(toolsIndex, -1);
+    assert.equal(result.args[toolsIndex + 1], "read,structured_output");
+  });
+
+  test("does not convert path-only tool extensions into an explicit allowlist for outputSchema", () => {
+    const toolPath = "/tmp/custom-tool.ts";
+    const result = buildPiArgs({
+      baseArgs: [],
+      task: "hello",
+      sessionEnabled: false,
+      inheritProjectContext: true,
+      inheritSkills: true,
+      tools: [toolPath],
+      structuredOutput: structuredOutputRuntime(),
+    });
+
+    assert.equal(result.args.includes("--tools"), false);
+    assert.equal(result.args.includes(toolPath), true);
+  });
+
+  test("loads the prompt runtime before user extensions when structured_output is allowlisted", () => {
+    const toolPath = "/tmp/custom-tool.ts";
+    const userExtensionPath = "/tmp/user-extension.ts";
+    const result = buildPiArgs({
+      baseArgs: [],
+      task: "hello",
+      sessionEnabled: false,
+      inheritProjectContext: true,
+      inheritSkills: true,
+      tools: ["read", toolPath],
+      extensions: [userExtensionPath],
+      structuredOutput: structuredOutputRuntime(),
+    });
+
+    const toolsIndex = result.args.indexOf("--tools");
+    assert.notEqual(toolsIndex, -1);
+    assert.equal(result.args[toolsIndex + 1], "read,structured_output");
+
+    const extensionPaths = result.args
+      .map((arg, index) => (arg === "--extension" ? result.args[index + 1] : undefined))
+      .filter((arg): arg is string => typeof arg === "string");
+    assert.deepEqual(extensionPaths, [PROMPT_RUNTIME_EXTENSION_PATH, toolPath, userExtensionPath]);
   });
 
   test("maps scoped fast-mode settings onto child chat env", () => {

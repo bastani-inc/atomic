@@ -78,6 +78,13 @@ else
     echo "==> Skipping cross-platform native bindings (--skip-deps)"
 fi
 
+if compgen -G "packages/natives/native/*.node" >/dev/null; then
+    echo "==> Using existing Atomic native binding artifacts..."
+else
+    echo "==> Building Atomic native bindings for host platform..."
+    bun run --cwd packages/natives build
+fi
+
 echo "==> Building @bastani/atomic package..."
 cd packages/coding-agent
 bun run build
@@ -109,6 +116,18 @@ rm -rf "$runtime_deps_dir"
 bun run scripts/copy-runtime-dependencies.ts "$runtime_deps_dir"
 
 echo "==> Copying shared assets..."
+cursor_native_filename() {
+    case "$1" in
+        darwin-arm64) echo "atomic_natives.darwin-arm64.node" ;;
+        darwin-x64) echo "atomic_natives.darwin-x64.node" ;;
+        linux-x64) echo "atomic_natives.linux-x64-gnu.node" ;;
+        linux-arm64) echo "atomic_natives.linux-arm64-gnu.node" ;;
+        windows-x64) echo "atomic_natives.win32-x64-msvc.node" ;;
+        windows-arm64) echo "atomic_natives.win32-arm64-msvc.node" ;;
+        *) echo "Unknown platform: $1" >&2; return 1 ;;
+    esac
+}
+
 for platform in "${PLATFORMS[@]}"; do
     cp package.json "binaries/$platform/"
     cp README.md "binaries/$platform/"
@@ -120,7 +139,19 @@ for platform in "${PLATFORMS[@]}"; do
     cp dist/modes/interactive/assets/* "binaries/$platform/assets/"
     cp -r dist/core/export-html "binaries/$platform/"
     cp -r dist/builtin "binaries/$platform/"
+
     cp -r "$runtime_deps_dir" "binaries/$platform/node_modules"
+    rm -rf "binaries/$platform/node_modules/@bastani/atomic-natives/npm"
+    find "binaries/$platform/node_modules/@bastani/atomic-natives" -maxdepth 1 -type f -name 'atomic_natives.*.node' -delete
+    cursor_native="$(cursor_native_filename "$platform")"
+    cursor_native_dir="binaries/$platform/node_modules/@bastani/atomic-natives/native"
+    if [ ! -f "$cursor_native_dir/$cursor_native" ]; then
+        echo "Missing Atomic native binding for $platform: $cursor_native_dir/$cursor_native" >&2
+        echo "Build or download all Atomic native artifacts before building release archives." >&2
+        exit 1
+    fi
+    find "$cursor_native_dir" -type f -name 'atomic_natives.*.node' ! -name "$cursor_native" -delete
+
     cp -r docs "binaries/$platform/"
     cp -r examples "binaries/$platform/"
 done

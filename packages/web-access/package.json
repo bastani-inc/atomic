@@ -1,6 +1,6 @@
 {
   "name": "@bastani/web-access",
-  "version": "0.8.28",
+  "version": "0.8.29",
   "private": true,
   "description": "Atomic extension for web search, URL fetching, GitHub repo cloning, PDF/video extraction. Fork of: https://github.com/nicobailon/pi-web-access",
   "contributors": [
@@ -30,7 +30,7 @@
   },
   "peerDependencies": {
     "@bastani/atomic": "*",
-    "@earendil-works/pi-tui": "^0.78.1"
+    "@earendil-works/pi-tui": "^0.79.4"
   },
   "peerDependenciesMeta": {
     "@bastani/atomic": {
@@ -43,7 +43,7 @@
   "dependencies": {
     "@mozilla/readability": "^0.6.0",
     "linkedom": "^0.18.12",
-    "p-limit": "^6.1.0",
+    "p-limit": "^7.3.0",
     "turndown": "^7.2.0",
     "unpdf": "^1.6.2"
   }

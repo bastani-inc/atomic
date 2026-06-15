@@ -38,6 +38,7 @@ import type {
 import type { StageUiBroker } from "../shared/stage-ui-broker.js";
 import type { StageSnapshot, StoreSnapshot } from "../shared/store-types.js";
 import { expandWorkflowGraph } from "../shared/expanded-workflow-graph.js";
+import { WORKFLOW_STATUS_KEY } from "./workflow-status.js";
 
 /**
  * Surface used to write Pi's footer/status tag while the attach pane is
@@ -125,7 +126,6 @@ export interface WorkflowAttachPaneOpts {
 
 export type WorkflowAttachPaneMode = "graph" | "stage-chat";
 
-const STATUS_KEY = "pi-workflows";
 const ENTER_TRANSITION_QUARANTINE_MS = 200;
 
 export class WorkflowAttachPane implements Component {
@@ -417,13 +417,13 @@ export class WorkflowAttachPane implements Component {
 
   private _setBaseStatus(): void {
     const runId = this._resolveRunId();
-    const name = runId ? `pi-workflows/${this._workflowName(runId)}` : "pi-workflows";
-    this.uiStatus?.setStatus?.(STATUS_KEY, name);
+    const name = runId ? `${WORKFLOW_STATUS_KEY}/${this._workflowName(runId)}` : WORKFLOW_STATUS_KEY;
+    this.uiStatus?.setStatus?.(WORKFLOW_STATUS_KEY, name);
   }
 
   private _setAttachedStatus(runId: string, stageId: string): void {
-    const value = `pi-workflows/${this._workflowName(runId)}/${this._stageName(runId, stageId)}`;
-    this.uiStatus?.setStatus?.(STATUS_KEY, value);
+    const value = `${WORKFLOW_STATUS_KEY}/${this._workflowName(runId)}/${this._stageName(runId, stageId)}`;
+    this.uiStatus?.setStatus?.(WORKFLOW_STATUS_KEY, value);
   }
 
   setVisible(visible: boolean): void {
@@ -431,11 +431,11 @@ export class WorkflowAttachPane implements Component {
     if (this.mode === "stage-chat" && this.attachedRunId && this.lastAttachedStageId) {
       this.store.recordStageAttached(this.attachedRunId, this.lastAttachedStageId, visible);
       if (visible) this._setAttachedStatus(this.attachedRunId, this.lastAttachedStageId);
-      else this.uiStatus?.setStatus?.(STATUS_KEY, undefined);
+      else this.uiStatus?.setStatus?.(WORKFLOW_STATUS_KEY, undefined);
       return;
     }
     if (visible) this._setBaseStatus();
-    else this.uiStatus?.setStatus?.(STATUS_KEY, undefined);
+    else this.uiStatus?.setStatus?.(WORKFLOW_STATUS_KEY, undefined);
   }
 
   private _syncMouseScrollTracking(): void {
@@ -609,7 +609,7 @@ export class WorkflowAttachPane implements Component {
     // back into chat. Without this, every subsequent message header
     // keeps rendering `pi-workflows/<workflow>` (or `…/<stage>`) until
     // the next attach replaces the slot.
-    this.uiStatus?.setStatus?.(STATUS_KEY, undefined);
+    this.uiStatus?.setStatus?.(WORKFLOW_STATUS_KEY, undefined);
   }
 
   // ---- Test seams ----

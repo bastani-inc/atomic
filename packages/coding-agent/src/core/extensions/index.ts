@@ -81,6 +81,8 @@ export type {
 	GetAllToolsHandler,
 	GetCommandsHandler,
 	GetThinkingLevelHandler,
+	HostCustomUiState,
+	HostCustomUiStateListener,
 	GrepToolCallEvent,
 	GrepToolResultEvent,
 	// Events - Input

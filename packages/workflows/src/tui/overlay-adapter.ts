@@ -19,6 +19,7 @@ import type { Store } from "../shared/store.js";
 import type { StoreSnapshot } from "../shared/store-types.js";
 import type { ChatMessageRenderOptions, ReadonlyFooterDataProvider } from "@bastani/atomic";
 import { WorkflowAttachPane } from "./workflow-attach-pane.js";
+import { WORKFLOW_STATUS_KEY } from "./workflow-status.js";
 import { deriveGraphThemeFromPiTheme } from "./graph-theme.js";
 import { killRun as defaultKillRun } from "../runs/background/status.js";
 import { cancellationRegistry } from "../runs/background/cancellation-registry.js";
@@ -31,6 +32,8 @@ import type {
   PiCustomOverlayFunction,
   PiCustomOverlayOptions,
   PiEditorFactory,
+  PiHostCustomUiState,
+  PiHostCustomUiStateListener,
   PiKeybindings,
   PiOverlayHandle,
   PiOverlayOptions,
@@ -41,9 +44,13 @@ export type OverlayChatRenderSettings = Partial<Omit<ChatMessageRenderOptions, "
 
 export interface OverlayUISurface {
   custom?: PiCustomOverlayFunction;
+  getHostCustomUiState?: () => PiHostCustomUiState;
+  onHostCustomUiStateChange?: (listener: PiHostCustomUiStateListener) => () => void;
+  focusHostInlineCustomUi?: () => boolean;
   getEditorComponent?: () => PiEditorFactory | undefined;
   getChatRenderSettings?: () => OverlayChatRenderSettings | undefined;
   getFooterDataProvider?: () => ReadonlyFooterDataProvider;
+  setStatus?: (key: string, value: string | undefined) => void;
 }
 
 export interface OverlayPiSurface {
@@ -95,6 +102,8 @@ const FULLSCREEN_OVERLAY_OPTIONS: PiOverlayOptions = {
 
 const MOUSE_SCROLL_TRACKING_ON = "\x1b[?1000h\x1b[?1006h";
 const MOUSE_SCROLL_TRACKING_OFF = "\x1b[?1006l\x1b[?1000l";
+const MAIN_CHAT_INPUT_STATUS_KEY = `${WORKFLOW_STATUS_KEY}:main-chat-input`;
+const MAIN_CHAT_INPUT_STATUS = "Main chat needs input — exit graph to answer.";
 
 function setMouseScrollTracking(enabled: boolean): void {
   if (!process.stdout.isTTY) return;
@@ -137,16 +146,59 @@ export function buildGraphOverlayAdapter(
   let currentHandle: PiOverlayHandle | null = null;
   let mounted = false;
   let finishMounted: (() => void) | null = null;
+  let observedUi: OverlayUISurface | undefined;
+  let unsubscribeHostCustomUi: (() => void) | null = null;
+  let hostInlineCustomUiActive = false;
+
+  function readHostCustomUiActive(ui: OverlayUISurface | undefined = observedUi): boolean {
+    const state = ui?.getHostCustomUiState?.();
+    if (state) hostInlineCustomUiActive = state.blockingInlineCustomUiActive;
+    return hostInlineCustomUiActive;
+  }
+
+  function updateMainChatInputHint(active: boolean): void {
+    observedUi?.setStatus?.(
+      MAIN_CHAT_INPUT_STATUS_KEY,
+      active ? MAIN_CHAT_INPUT_STATUS : undefined,
+    );
+  }
+
+  function clearHostCustomUiObservation(): void {
+    unsubscribeHostCustomUi?.();
+    unsubscribeHostCustomUi = null;
+    observedUi?.setStatus?.(MAIN_CHAT_INPUT_STATUS_KEY, undefined);
+    observedUi = undefined;
+    hostInlineCustomUiActive = false;
+  }
+
+  function observeHostCustomUi(ui: OverlayUISurface | undefined): void {
+    if (observedUi !== ui) {
+      unsubscribeHostCustomUi?.();
+      unsubscribeHostCustomUi = null;
+      observedUi = ui;
+      hostInlineCustomUiActive = false;
+      if (typeof ui?.onHostCustomUiStateChange === "function") {
+        unsubscribeHostCustomUi = ui.onHostCustomUiStateChange((state) => {
+          hostInlineCustomUiActive = state.blockingInlineCustomUiActive;
+          updateMainChatInputHint(hostInlineCustomUiActive);
+        });
+      }
+    }
+    updateMainChatInputHint(readHostCustomUiActive(ui));
+  }
 
   function close(): void {
     setMouseScrollTracking(false);
     currentHandle?.hide();
     finishMounted?.();
+    observedUi?.setStatus?.(WORKFLOW_STATUS_KEY, undefined);
+    observedUi?.setStatus?.(MAIN_CHAT_INPUT_STATUS_KEY, undefined);
     currentView?.dispose();
     currentHandle = null;
     finishMounted = null;
     currentView = null;
     mounted = false;
+    clearHostCustomUiObservation();
   }
 
   /**
@@ -167,6 +219,7 @@ export function buildGraphOverlayAdapter(
    */
   function hideMounted(): void {
     setMouseScrollTracking(false);
+    observedUi?.setStatus?.(MAIN_CHAT_INPUT_STATUS_KEY, undefined);
     if (currentHandle) {
       currentView?.setVisible(false);
       currentHandle.setHidden(true);
@@ -217,6 +270,9 @@ export function buildGraphOverlayAdapter(
     surface?: OverlayPiSurface,
     stageId?: string,
   ): void {
+    const ui = surface?.ui ?? pi.ui;
+    observeHostCustomUi(ui);
+
     // Already mounted but hidden — flip visibility without remounting.
     if (mounted && currentHandle?.isHidden()) {
       currentView?.retarget(runId, stageId);
@@ -239,10 +295,9 @@ export function buildGraphOverlayAdapter(
       return;
     }
 
-    const ui = surface?.ui ?? pi.ui;
     const custom = ui?.custom;
     if (typeof custom !== "function") return;
-    const uiStatus = ui as { setStatus?: (key: string, value: string | undefined) => void } | undefined;
+    const uiStatus = ui;
 
     let settled = false;
     const factory = (
@@ -255,11 +310,14 @@ export function buildGraphOverlayAdapter(
         if (settled) return;
         settled = true;
         setMouseScrollTracking(false);
+        observedUi?.setStatus?.(WORKFLOW_STATUS_KEY, undefined);
+        observedUi?.setStatus?.(MAIN_CHAT_INPUT_STATUS_KEY, undefined);
         currentView?.dispose();
         currentView = null;
         currentHandle = null;
         finishMounted = null;
         mounted = false;
+        clearHostCustomUiObservation();
         done(undefined);
       };
       const view = new WorkflowAttachPane({
@@ -320,20 +378,24 @@ export function buildGraphOverlayAdapter(
       finishMounted = finish;
       mounted = true;
       setMouseScrollTracking(view.wantsMouseScrollTracking());
+      updateMainChatInputHint(readHostCustomUiActive(ui));
       return makeComponent(view, tui);
     };
 
     const options: PiCustomOverlayOptions = {
       overlay: true,
+      deferInlineCustomUiFocus: true,
       overlayOptions: FULLSCREEN_OVERLAY_OPTIONS,
       onHandle: (handle) => {
         currentHandle = handle;
+        updateMainChatInputHint(readHostCustomUiActive(ui));
       },
     };
     void custom(factory, options);
   }
 
   function toggle(runId: string | null, surface?: OverlayPiSurface): void {
+    observeHostCustomUi(surface?.ui ?? pi.ui);
     // Hide without unmounting if we have a handle (no remount means
     // no scroll-pollution).
     if (mounted && currentHandle) {

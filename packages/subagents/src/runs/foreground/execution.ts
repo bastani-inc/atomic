@@ -748,11 +748,7 @@ async function runSingleAttempt(
 		}
 	}
 	if (options.structuredOutput && result.exitCode === 0 && !result.error) {
-		const structured = readStructuredOutput({
-			schema: options.structuredOutput.schema,
-			schemaPath: options.structuredOutput.schemaPath,
-			outputPath: options.structuredOutput.outputPath,
-		});
+		const structured = readStructuredOutput(options.structuredOutput);
 		result.structuredOutputSchemaPath = options.structuredOutput.schemaPath;
 		result.structuredOutputPath = options.structuredOutput.outputPath;
 		if (structured.error) {

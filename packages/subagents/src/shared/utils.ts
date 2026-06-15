@@ -122,21 +122,61 @@ export function findLatestSessionFile(sessionDir: string): string | null {
 // Message Parsing Utilities
 // ============================================================================
 
+const STRUCTURED_OUTPUT_TOOL_NAME = "structured_output";
+
+type TextContentCandidate = {
+	type: string;
+	text?: string;
+};
+
+function getLastNonEmptyTextContent(content: readonly TextContentCandidate[]): string | undefined {
+	for (let index = content.length - 1; index >= 0; index--) {
+		const part = content[index];
+		if (part.type === "text" && typeof part.text === "string" && part.text.trim().length > 0) {
+			return part.text;
+		}
+	}
+	return undefined;
+}
+
+function getCombinedNonEmptyTextContent(content: readonly TextContentCandidate[]): string | undefined {
+	let text = "";
+	for (const part of content) {
+		if (part.type === "text" && typeof part.text === "string") {
+			text += part.text;
+		}
+	}
+	return text.trim().length > 0 ? text : undefined;
+}
+
+function getStructuredOutputToolResultText(message: Message): string | undefined {
+	if (message.role !== "toolResult") return undefined;
+	if (message.toolName !== STRUCTURED_OUTPUT_TOOL_NAME) return undefined;
+	if (message.isError === true) return undefined;
+	return getCombinedNonEmptyTextContent(message.content);
+}
+
+function getAssistantOutputText(message: Message): string | undefined {
+	if (message.role !== "assistant") return undefined;
+	const hasAssistantError = ("errorMessage" in message && typeof message.errorMessage === "string" && message.errorMessage.length > 0)
+		|| ("stopReason" in message && message.stopReason === "error");
+	if (hasAssistantError) return undefined;
+	return getLastNonEmptyTextContent(message.content);
+}
+
 /**
  * Get the final text output from a list of messages
  */
 export function getFinalOutput(messages: Message[]): string {
+	const finalMessage = messages[messages.length - 1];
+	if (finalMessage) {
+		const finalStructuredOutput = getStructuredOutputToolResultText(finalMessage);
+		if (finalStructuredOutput !== undefined) return finalStructuredOutput;
+	}
+
 	for (let i = messages.length - 1; i >= 0; i--) {
-		const msg = messages[i];
-		if (msg.role === "assistant") {
-			const hasAssistantError = ("errorMessage" in msg && typeof msg.errorMessage === "string" && msg.errorMessage.length > 0)
-				|| ("stopReason" in msg && msg.stopReason === "error");
-			if (hasAssistantError) continue;
-			for (let j = msg.content.length - 1; j >= 0; j--) {
-				const part = msg.content[j];
-				if (part.type === "text" && part.text.trim().length > 0) return part.text;
-			}
-		}
+		const assistantOutput = getAssistantOutputText(messages[i]);
+		if (assistantOutput !== undefined) return assistantOutput;
 	}
 	return "";
 }

@@ -6,9 +6,11 @@
  * - `pi --mode json "prompt"` - JSON event stream
  */
 
-import type { AssistantMessage, ImageContent } from "@earendil-works/pi-ai";
+import type { AssistantMessage, ImageContent, ToolResultMessage } from "@earendil-works/pi-ai";
+import type { AgentSessionEvent } from "../core/agent-session.ts";
 import type { AgentSessionRuntime } from "../core/agent-session-runtime.ts";
 import type { ExtensionError } from "../core/extensions/index.ts";
+import type { ToolDefinition } from "../core/extensions/types.ts";
 import type { CustomMessage } from "../core/messages.ts";
 import { flushRawStdout, writeRawStdout } from "../core/output-guard.ts";
 import { killTrackedDetachedChildren } from "../utils/shell.ts";
@@ -47,6 +49,49 @@ function displayableCustomText(message: CustomMessage): string | undefined {
 	return hasTextPart ? text : undefined;
 }
 
+type MaybeTerminatingToolResult = {
+	terminate?: boolean;
+};
+
+type ToolExecutionEndSessionEvent = Extract<AgentSessionEvent, { type: "tool_execution_end" }>;
+
+type GetToolDefinition = (name: string) => ToolDefinition | undefined;
+
+function isStructuredOutputTool(getToolDefinition: GetToolDefinition, name: string): boolean {
+	return getToolDefinition(name)?.structuredOutput === true;
+}
+
+function isTerminatingStructuredOutputEvent(
+	event: AgentSessionEvent,
+	getToolDefinition: GetToolDefinition,
+): event is ToolExecutionEndSessionEvent {
+	if (event.type !== "tool_execution_end") return false;
+	if (!isStructuredOutputTool(getToolDefinition, event.toolName)) return false;
+	if (event.isError) return false;
+	const result = event.result as MaybeTerminatingToolResult | undefined;
+	return result?.terminate === true;
+}
+
+function textFromToolResult(message: ToolResultMessage): string | undefined {
+	let text = "";
+	let hasTextPart = false;
+	for (const part of message.content) {
+		if (part.type === "text") {
+			hasTextPart = true;
+			text += part.text;
+		}
+	}
+	return hasTextPart ? text : undefined;
+}
+
+function terminatingStructuredOutputText(
+	message: ToolResultMessage,
+	terminatingStructuredOutputCallIds: ReadonlySet<string>,
+): string | undefined {
+	if (!terminatingStructuredOutputCallIds.has(message.toolCallId)) return undefined;
+	return textFromToolResult(message);
+}
+
 /**
  * Run in print (single-shot) mode.
  * Sends prompts to the agent and outputs the result.
@@ -58,6 +103,7 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 	let activePromptHadCommandError = false;
 	let session = runtimeHost.session;
 	let unsubscribe: (() => void) | undefined;
+	const terminatingStructuredOutputCallIds = new Set<string>();
 	let disposed = false;
 	const signalCleanupHandlers: Array<() => void> = [];
 
@@ -144,6 +190,9 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 
 		unsubscribe?.();
 		unsubscribe = session.subscribe((event) => {
+			if (isTerminatingStructuredOutputEvent(event, (name) => session.getToolDefinition(name))) {
+				terminatingStructuredOutputCallIds.add(event.toolCallId);
+			}
 			if (mode === "json") {
 				writeRawStdout(`${JSON.stringify(event)}\n`);
 			}
@@ -190,6 +239,11 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 				}
 			} else if (lastMessage?.role === "custom") {
 				const text = displayableCustomText(lastMessage as CustomMessage);
+				if (text !== undefined) {
+					writeRawStdout(`${text}\n`);
+				}
+			} else if (lastMessage?.role === "toolResult") {
+				const text = terminatingStructuredOutputText(lastMessage as ToolResultMessage, terminatingStructuredOutputCallIds);
 				if (text !== undefined) {
 					writeRawStdout(`${text}\n`);
 				}

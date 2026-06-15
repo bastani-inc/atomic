@@ -146,43 +146,9 @@ describe("buildSystemPrompt", () => {
 	});
 
 	describe("workflow guidance", () => {
-		test("includes workflow guidance by default", () => {
+		test("does not inject workflow guidance directly from system-prompt", () => {
 			const prompt = buildSystemPrompt({
 				selectedTools: [],
-				contextFiles: [],
-				skills: [],
-				cwd: process.cwd(),
-			});
-
-			expect(prompt).toContain("- **Workflows**:");
-			expect(prompt).toContain("Use the `workflow` tool");
-			expect(prompt).toContain("direct `task`, `tasks`, or `chain`");
-			expect(prompt).toContain("create or edit a workflow");
-			expect(prompt).toContain("Workflow Starter Patterns");
-			expect(prompt).toContain("Classify-and-act");
-			expect(prompt).toContain("Fan-out-and-synthesize");
-			expect(prompt).toContain("Adversarial verification");
-			expect(prompt).toContain("Generate-and-filter");
-			expect(prompt).toContain("Tournament");
-			expect(prompt).toContain("Loop until done");
-			expect(prompt).toContain("create-spec skill when available");
-			expect(prompt).toContain("clarifying questions");
-			expect(prompt).toContain("implement the workflow from the created spec directly");
-			expect(prompt).toContain("targeted `status`/`stages`/`stage` checks");
-			expect(prompt).toContain("do not micro-manage");
-			expect(prompt).toContain("sleep/status polling loops");
-			expect(prompt).toContain("sessionFile`/`transcriptPath");
-			expect(prompt).toContain("preserve Windows backslashes");
-			expect(prompt).toContain("explicit `tail` or `limit`");
-			expect(prompt).toContain("steer a stage");
-			expect(prompt).toContain("If you run `ralph` or `goal`");
-			expect(prompt).not.toContain("`stage` workflow call");
-		});
-
-		test("omits workflow guidance when the workflow tool is excluded", () => {
-			const prompt = buildSystemPrompt({
-				selectedTools: [],
-				excludedTools: ["workflow"],
 				contextFiles: [],
 				skills: [],
 				cwd: process.cwd(),

@@ -13,6 +13,7 @@
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { Type } from "typebox";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createStageContext } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
@@ -469,6 +470,47 @@ describe("createStageContext — error paths", () => {
         const ctx = createStageContext(makeOpts({ stageName: "Ingest" }));
         assert.equal(ctx.name, "Ingest");
     });
+
+    test("schema-backed stages fail clearly when prompt is called more than once", async () => {
+        let createOptions: StageSessionCreateOptions | undefined;
+        const { session, state } = makeMockSession({
+            async prompt() {
+                state.promptCalls += 1;
+                const structuredTool = createOptions?.customTools?.find(
+                    (tool) => tool.name === "structured_output",
+                );
+                assert.ok(structuredTool);
+                await structuredTool.execute(
+                    "structured-call-1",
+                    { ok: true },
+                    undefined,
+                    undefined,
+                    undefined as never,
+                );
+            },
+        });
+        const agentSession: AgentSessionAdapter = {
+            async create(options) {
+                createOptions = options;
+                return session;
+            },
+        };
+        const ctx = createStageContext(
+            makeOpts({
+                adapters: { agentSession },
+                stageOptions: {
+                    schema: Type.Object({ ok: Type.Boolean() }, { additionalProperties: false }),
+                },
+            }),
+        );
+
+        assert.deepEqual(await ctx.prompt("first"), { ok: true });
+        await assert.rejects(
+            ctx.prompt("second"),
+            /stage schema supports one prompt\(\) call per stage context/,
+        );
+        assert.equal(state.promptCalls, 1);
+    });
 });
 
 // ---------------------------------------------------------------------------
@@ -478,6 +520,7 @@ describe("createStageContext — error paths", () => {
 import type {
     InternalStageContext,
     AgentSessionAdapter,
+    StageSessionCreateOptions,
     StageSessionRuntime,
 } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import type { AgentSession } from "@bastani/atomic";
@@ -607,6 +650,63 @@ describe("createStageContext — model fallback", () => {
             [false, true],
         );
         assert.equal(meta.modelAttempts?.[0]?.error, "429 rate limit exceeded");
+        assert.equal(meta.warnings, undefined);
+    });
+
+    test("schema-backed structured_output capture prevents fallback retry after a later model error", async () => {
+        const calls: string[] = [];
+        const disposed: string[] = [];
+        let createOptions: StageSessionCreateOptions | undefined;
+        const agentSession: AgentSessionAdapter = {
+            async create(options) {
+                createOptions = options;
+                const model = typeof options.model === "string"
+                    ? options.model
+                    : "object-model";
+                calls.push(model);
+                const { session } = makeMockSession({
+                    async prompt() {
+                        const structuredTool = createOptions?.customTools?.find(
+                            (tool) => tool.name === "structured_output",
+                        );
+                        assert.ok(structuredTool);
+                        await structuredTool.execute(
+                            "structured-call-1",
+                            { ok: true },
+                            undefined,
+                            undefined,
+                            undefined as never,
+                        );
+                        throw new Error("429 rate limit exceeded after structured_output");
+                    },
+                    dispose() {
+                        disposed.push(model);
+                    },
+                });
+                return session;
+            },
+        };
+
+        const ctx = createStageContext(
+            makeOpts({
+                adapters: { agentSession },
+                stageOptions: {
+                    model: "anthropic/primary",
+                    fallbackModels: ["openai/fallback"],
+                    schema: Type.Object({ ok: Type.Boolean() }, { additionalProperties: false }),
+                },
+            }),
+        ) as InternalStageContext;
+
+        assert.deepEqual(await ctx.prompt("go"), { ok: true });
+        assert.deepEqual(calls, ["anthropic/primary"]);
+        assert.deepEqual(disposed, []);
+        const meta = ctx.__modelFallbackMeta();
+        assert.deepEqual(meta.attemptedModels, ["anthropic/primary"]);
+        assert.deepEqual(
+            meta.modelAttempts?.map((attempt) => ({ model: attempt.model, success: attempt.success })),
+            [{ model: "anthropic/primary", success: true }],
+        );
         assert.equal(meta.warnings, undefined);
     });
 

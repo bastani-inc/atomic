@@ -153,9 +153,11 @@ export interface StageMcpOptions extends AuthoringContract.StageMcpOptions {
  * All pi SDK createAgentSession options are forwarded to the stage session;
  * workflow-owned options such as `mcp` and `gitWorktreeDir` are stripped before SDK session creation.
  */
-export interface StageOptions
+export interface StageOptions<TSchemaDef extends TSchema | undefined = TSchema | undefined>
   extends Omit<CreateAgentSessionOptions, "model" | keyof AuthoringContract.StageOptions>,
-    Omit<Mutable<AuthoringContract.StageOptions>, "sessionManager" | "settingsManager"> {
+    Omit<Mutable<AuthoringContract.StageOptions<TSchemaDef>>, "sessionManager" | "settingsManager"> {
+  /** Optional structured final-answer schema. When set, the stage receives a schema-specific final-answer tool. */
+  schema?: TSchemaDef;
   /** Model id or pi SDK model object used as the primary stage model. */
   model?: WorkflowModelValue;
   /** Per-stage MCP server gating. No-op when no WorkflowMcpPort is configured. */
@@ -231,6 +233,7 @@ export interface WorkflowPersistencePort {
 export type WorkflowTaskContext = AuthoringContract.WorkflowTaskContext;
 export type WorkflowTaskContextInput = AuthoringContract.WorkflowTaskContextInput;
 export type WorkflowTaskResult = AuthoringContract.WorkflowTaskResult;
+export type WorkflowStageResult<TSchemaDef extends TSchema | undefined = undefined> = AuthoringContract.WorkflowStageResult<TSchemaDef>;
 
 /**
  * Higher-level task API: create a tracked stage, optionally inject prior task
@@ -276,12 +279,12 @@ export interface WorkflowDirectOptions extends StageOptions, Omit<Mutable<Author
  * This exposes the supported subset of pi's SDK AgentSession. The workflow
  * executor owns disposal and wraps prompt() with stage lifecycle tracking.
  */
-export interface StageContext {
+export interface StageContext<TSchemaDef extends TSchema | undefined = undefined> {
   /** Human-readable name for this stage (used in TUI + persistence). */
   readonly name: string;
 
   /** Send a prompt and wait for completion. */
-  prompt(text: string, options?: StagePromptOptions): Promise<string>;
+  prompt(text: string, options?: StagePromptOptions): Promise<WorkflowStageResult<TSchemaDef>>;
   complete(text: string, options?: CompleteStageOpts): Promise<string>;
 
   /** Queue messages during streaming. */
@@ -344,6 +347,7 @@ export interface WorkflowRunContext<
    * @param name   Human-readable stage name (used in TUI + persistence).
    * @param options Optional per-stage configuration (mcp allow/deny, etc.).
    */
+  stage<TSchemaDef extends TSchema>(name: string, options: StageOptions<TSchemaDef> & { schema: TSchemaDef }): StageContext<TSchemaDef>;
   stage(name: string, options?: StageOptions): StageContext;
   /**
    * Safe high-level task primitive. Equivalent to creating a named stage and

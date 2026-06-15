@@ -52,6 +52,8 @@ atomic -e npm:@foo/bar
 atomic -e git:github.com/user/repo
 ```
 
+For local directories, `-e <dir>` also borrows project-local Atomic resources under `<dir>/.atomic`, legacy `<dir>/.pi`, and `<dir>/.agents/skills` when present. Because borrowed extensions and workflows can execute code, Atomic resolves trust for that extension source before loading those borrowed project-local resources.
+
 ## Package Sources
 
 Atomic accepts three source types in settings and `atomic install`.
@@ -113,7 +115,7 @@ atomic install git:git@github.com:user/repo@v1.0.0
 ./relative/path/to/package
 ```
 
-Local paths point to files or directories on disk and are added to settings without copying. Relative paths are resolved against the settings file they appear in. If the path is a file, it loads as a single extension. If it is a directory, Atomic loads resources using package rules.
+Local paths point to files or directories on disk and are added to settings without copying. Relative paths are resolved against the settings file they appear in. If the path is a file, it loads as a single extension. If it is a directory, Atomic loads resources using package rules. Temporary local directories supplied with `-e` may also expose `.atomic`/`.pi` project-local resources and `.agents/skills` after the extension source is trusted.
 
 ## Creating an Atomic Package
 

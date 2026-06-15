@@ -20,6 +20,8 @@
         "paths": {
             "@bastani/atomic": ["./packages/coding-agent/src/index.ts"],
             "@bastani/workflows": ["./packages/workflows/src/index.ts"],
+            "@bastani/workflows/builtin": ["./packages/workflows/builtin/index.ts"],
+            "@bastani/workflows/builtin/*": ["./packages/workflows/builtin/*"],
             "@bastani/workflows/*": ["./packages/workflows/src/*"],
             "@bastani/subagents": [
                 "./packages/subagents/src/extension/index.ts"
@@ -30,7 +32,9 @@
             "@bastani/web-access": ["./packages/web-access/index.ts"],
             "@bastani/web-access/*": ["./packages/web-access/*"],
             "@bastani/intercom": ["./packages/intercom/index.ts"],
-            "@bastani/intercom/*": ["./packages/intercom/*"]
+            "@bastani/intercom/*": ["./packages/intercom/*"],
+            "@bastani/cursor": ["./packages/cursor/index.ts"],
+            "@bastani/cursor/*": ["./packages/cursor/*"]
         }
     },
     "include": [

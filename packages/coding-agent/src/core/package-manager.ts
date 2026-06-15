@@ -61,6 +61,8 @@ export interface PathMetadata {
 	scope: SourceScope;
 	origin: "package" | "top-level";
 	baseDir?: string;
+	/** True for project-local resources borrowed from an explicit temporary extension source. */
+	borrowedProjectLocal?: true;
 }
 
 export interface ResolvedResource {
@@ -110,10 +112,7 @@ export interface PackageManager {
 	removeAndPersist(source: string, options?: { local?: boolean }): Promise<boolean>;
 	update(source?: string): Promise<void>;
 	listConfiguredPackages(): ConfiguredPackage[];
-	resolveExtensionSources(
-		sources: string[],
-		options?: { local?: boolean; temporary?: boolean },
-	): Promise<ResolvedPaths>;
+	resolveExtensionSources(sources: PackageSource[], options?: ResolveExtensionSourcesOptions): Promise<ResolvedPaths>;
 	addSourceToSettings(source: string, options?: { local?: boolean }): boolean;
 	removeSourceFromSettings(source: string, options?: { local?: boolean }): boolean;
 	setProgressCallback(callback: ProgressCallback | undefined): void;
@@ -185,9 +184,11 @@ interface ResourceAccumulator {
  *   2  user + settings entry (source: "local", scope: "user")
  *   3  user + auto-discovered (source: "auto", scope: "user")
  *   4  package resource (origin: "package")
+ *   5  project-local resources borrowed from explicit temporary extension sources
  */
 function resourcePrecedenceRank(m: PathMetadata): number {
 	if (m.origin === "package") return 4;
+	if (m.borrowedProjectLocal) return 5;
 	const scopeBase = m.scope === "project" ? 0 : 2;
 	return scopeBase + (m.source === "local" ? 0 : 1);
 }
@@ -198,6 +199,12 @@ interface PackageFilter {
 	prompts?: string[];
 	themes?: string[];
 	workflows?: string[];
+}
+
+export interface ResolveExtensionSourcesOptions {
+	local?: boolean;
+	temporary?: boolean;
+	includeProjectLocalResources?: boolean;
 }
 
 type ResourceType = "extensions" | "skills" | "prompts" | "themes" | "workflows";
@@ -995,13 +1002,15 @@ export class DefaultPackageManager implements PackageManager {
 	}
 
 	async resolveExtensionSources(
-		sources: string[],
-		options?: { local?: boolean; temporary?: boolean },
+		sources: PackageSource[],
+		options?: ResolveExtensionSourcesOptions,
 	): Promise<ResolvedPaths> {
 		const accumulator = this.createAccumulator();
 		const scope: SourceScope = options?.temporary ? "temporary" : options?.local ? "project" : "user";
-		const packageSources = sources.map((source) => ({ pkg: source as PackageSource, scope }));
-		await this.resolvePackageSources(packageSources, accumulator);
+		const packageSources = sources.map((source) => ({ pkg: source, scope }));
+		await this.resolvePackageSources(packageSources, accumulator, undefined, {
+			includeProjectLocalResources: options?.includeProjectLocalResources === true,
+		});
 		return this.toResolvedPaths(accumulator);
 	}
 
@@ -1283,6 +1292,7 @@ export class DefaultPackageManager implements PackageManager {
 		sources: Array<{ pkg: PackageSource; scope: SourceScope }>,
 		accumulator: ResourceAccumulator,
 		onMissing?: (source: string) => Promise<MissingSourceAction>,
+		options?: { includeProjectLocalResources?: boolean },
 	): Promise<void> {
 		for (const { pkg, scope } of sources) {
 			const sourceStr = typeof pkg === "string" ? pkg : pkg.source;
@@ -1292,7 +1302,9 @@ export class DefaultPackageManager implements PackageManager {
 
 			if (parsed.type === "local") {
 				for (const baseDir of this.getBaseDirsForScope(scope)) {
-					this.resolveLocalExtensionSource(parsed, accumulator, filter, { ...metadata, baseDir }, baseDir);
+					this.resolveLocalExtensionSource(parsed, accumulator, filter, { ...metadata, baseDir }, baseDir, {
+						includeProjectLocalResources: options?.includeProjectLocalResources === true,
+					});
 				}
 				continue;
 			}
@@ -1348,6 +1360,7 @@ export class DefaultPackageManager implements PackageManager {
 		filter: PackageFilter | undefined,
 		metadata: PathMetadata,
 		baseDir: string,
+		options?: { includeProjectLocalResources?: boolean },
 	): void {
 		const resolved = this.resolvePathFromBase(source.path, baseDir);
 		if (!existsSync(resolved)) {
@@ -1357,15 +1370,20 @@ export class DefaultPackageManager implements PackageManager {
 		try {
 			const stats = statSync(resolved);
 			if (stats.isFile()) {
-				metadata.baseDir = dirname(resolved);
-				this.addResource(accumulator.extensions, resolved, metadata, true);
+				this.addResource(accumulator.extensions, resolved, { ...metadata, baseDir: dirname(resolved) }, true);
 				return;
 			}
 			if (stats.isDirectory()) {
-				metadata.baseDir = resolved;
-				const resources = this.collectPackageResources(resolved, accumulator, filter, metadata);
-				if (!resources) {
-					this.addResource(accumulator.extensions, resolved, metadata, true);
+				const packageMetadata: PathMetadata = { ...metadata, baseDir: resolved };
+				const packageResources = this.collectPackageResources(resolved, accumulator, filter, packageMetadata);
+				const projectLocalResources = options?.includeProjectLocalResources
+					? this.collectProjectLocalResources(resolved, accumulator, filter, packageMetadata)
+					: false;
+				const extensionEntries = resolveExtensionEntries(resolved);
+				const shouldAddDirectoryFallback =
+					extensionEntries !== null || (options?.includeProjectLocalResources === true && !projectLocalResources);
+				if (!packageResources && shouldAddDirectoryFallback) {
+					this.addResource(accumulator.extensions, resolved, packageMetadata, true);
 				}
 			}
 		} catch {
@@ -2172,6 +2190,82 @@ export class DefaultPackageManager implements PackageManager {
 			}
 		}
 		return hasAnyDir;
+	}
+
+	private collectProjectLocalResources(
+		sourceRoot: string,
+		accumulator: ResourceAccumulator,
+		filter: PackageFilter | undefined,
+		metadata: PathMetadata,
+	): boolean {
+		let found = false;
+		const projectMetadata: PathMetadata = { ...metadata, origin: "top-level", borrowedProjectLocal: true };
+
+		const addResources = (
+			resourceType: ResourceType,
+			paths: string[],
+			resourceMetadata: PathMetadata,
+			patterns: string[] | undefined,
+		): void => {
+			if (paths.length === 0) return;
+			found = true;
+			const target = this.getTargetMap(accumulator, resourceType);
+			let enabledPaths: Set<string>;
+			if (patterns === undefined) {
+				enabledPaths = new Set(paths);
+			} else if (patterns.length === 0) {
+				enabledPaths = new Set();
+			} else {
+				enabledPaths = applyPatterns(paths, patterns, sourceRoot);
+			}
+			for (const path of paths) {
+				this.addResource(target, path, resourceMetadata, enabledPaths.has(path));
+			}
+		};
+
+		for (const configDir of getProjectConfigDirs(sourceRoot)) {
+			const configMetadata: PathMetadata = { ...projectMetadata, baseDir: configDir };
+			addResources(
+				"extensions",
+				collectAutoExtensionEntries(join(configDir, "extensions")),
+				configMetadata,
+				filter?.extensions,
+			);
+			addResources(
+				"skills",
+				collectAutoSkillEntries(join(configDir, "skills"), "pi"),
+				configMetadata,
+				filter?.skills,
+			);
+			addResources(
+				"prompts",
+				collectAutoPromptEntries(join(configDir, "prompts")),
+				configMetadata,
+				filter?.prompts,
+			);
+			addResources(
+				"themes",
+				collectAutoThemeEntries(join(configDir, "themes")),
+				configMetadata,
+				filter?.themes,
+			);
+			addResources(
+				"workflows",
+				collectResourceFiles(join(configDir, "workflows"), "workflows"),
+				configMetadata,
+				filter?.workflows,
+			);
+		}
+
+		const agentsSkillsDir = join(sourceRoot, ".agents", "skills");
+		addResources(
+			"skills",
+			collectAutoSkillEntries(agentsSkillsDir, "agents"),
+			{ ...projectMetadata, baseDir: dirname(agentsSkillsDir) },
+			filter?.skills,
+		);
+
+		return found;
 	}
 
 	private collectDefaultResources(

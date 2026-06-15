@@ -1,23 +1,15 @@
 import * as fs from "node:fs";
-import * as path from "node:path";
-import type { ExtensionAPI } from "@bastani/atomic";
-import { getEnvValue } from "@bastani/atomic";
+import { createStructuredOutputTool, getEnvValue, type ExtensionAPI } from "@bastani/atomic";
 import {
 	SUBAGENT_FANOUT_CHILD_ENV,
 	SUBAGENT_INHERIT_PROJECT_CONTEXT_ENV,
 	SUBAGENT_INHERIT_SKILLS_ENV,
 	SUBAGENT_INTERCOM_SESSION_NAME_ENV,
 } from "./pi-args.ts";
-import { STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_SCHEMA_ENV, validateStructuredOutputValue } from "./structured-output.ts";
+import { STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_SCHEMA_ENV } from "./structured-output.ts";
 import type { JsonSchemaObject } from "../../shared/types.ts";
 
 export { SUBAGENT_INTERCOM_SESSION_NAME_ENV } from "./pi-args.ts";
-
-const STRUCTURED_OUTPUT_INSTRUCTIONS = [
-	"This subagent step has a strict structured output contract.",
-	"Your final action must be to call the `structured_output` tool with JSON matching the provided schema.",
-	"Do not rely on prose-only completion; if you do not call `structured_output`, the parent will fail this step.",
-].join("\n");
 
 export const CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS = [
 	"You are a child subagent, not the parent orchestrator.",
@@ -108,8 +100,7 @@ export function rewriteSubagentPrompt(
 	rewritten = stripSubagentOrchestrationSkill(rewritten);
 	rewritten = stripChildBoundaryInstructions(rewritten);
 	const boundary = options.fanoutChild ? CHILD_FANOUT_BOUNDARY_INSTRUCTIONS : CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS;
-	const structured = process.env[STRUCTURED_OUTPUT_CAPTURE_ENV] ? `\n\n${STRUCTURED_OUTPUT_INSTRUCTIONS}` : "";
-	return `${boundary}${structured}\n\n${rewritten}`;
+	return `${boundary}\n\n${rewritten}`;
 }
 
 function isParentOnlySubagentMessage(message: unknown): boolean {
@@ -162,44 +153,18 @@ export default function registerSubagentPromptRuntime(pi: ExtensionAPI): void {
 	const structuredSchemaPath = process.env[STRUCTURED_OUTPUT_SCHEMA_ENV];
 	if (structuredOutputPath && structuredSchemaPath) {
 		const schema = JSON.parse(fs.readFileSync(structuredSchemaPath, "utf-8")) as JsonSchemaObject;
-		const parameters = {
-			type: "object",
-			properties: { value: schema },
-			required: ["value"],
-			additionalProperties: false,
-		};
-		const registerTool = pi.registerTool as unknown as (tool: {
-			name: string;
-			label: string;
-			description: string;
-			parameters: unknown;
-			execute: (_id: string, params: { value: unknown }) => Promise<unknown>;
-		}) => void;
-		registerTool({
-			name: "structured_output",
-			label: "Structured Output",
-			description: "Submit the required final structured output for this subagent step. This terminates the step.",
-			parameters: parameters as never,
-			async execute(_id: string, params: { value: unknown }) {
-				const validation = validateStructuredOutputValue(schema, params.value);
-				if (validation.status === "invalid") {
-					throw new Error(`Structured output validation failed: ${validation.message}`);
-				}
-				fs.mkdirSync(path.dirname(structuredOutputPath), { recursive: true });
-				fs.writeFileSync(structuredOutputPath, JSON.stringify(params.value), { mode: 0o600 });
-				return {
-					content: [{ type: "text", text: "Structured output captured." }],
-					details: { path: structuredOutputPath },
-					terminate: true,
-				};
-			},
-		});
+		pi.registerTool(createStructuredOutputTool({
+			schema,
+			output: { outputPath: structuredOutputPath },
+		}));
 	}
 
 	const onRuntimeEvent = pi.on as unknown as (event: string, handler: (event: unknown) => unknown) => void;
-	onRuntimeEvent("context", (event: { messages: unknown[] }) => {
-		const messages = stripParentOnlySubagentMessages(event.messages);
-		if (messages === event.messages) return undefined;
+	onRuntimeEvent("context", (event) => {
+		const contextEvent = event as { messages?: unknown[] };
+		if (!Array.isArray(contextEvent.messages)) return undefined;
+		const messages = stripParentOnlySubagentMessages(contextEvent.messages);
+		if (messages === contextEvent.messages) return undefined;
 		return { messages };
 	});
 

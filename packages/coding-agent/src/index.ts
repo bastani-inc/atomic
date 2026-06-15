@@ -283,8 +283,17 @@ export {
 	createLsTool,
 	createReadOnlyTools,
 	createReadTool,
+	createStructuredOutputCapture,
+	STRUCTURED_OUTPUT_TOOL_NAME,
+	createStructuredOutputTool,
 	createWriteTool,
+	type JsonObject,
+	type JsonPrimitive,
+	type JsonValue,
 	type PromptTemplate,
+	type StructuredOutputCapture,
+	type StructuredOutputFileCapture,
+	type StructuredOutputToolOptions,
 } from "./core/sdk.ts";
 export {
 	type BranchSummaryEntry,

@@ -83,6 +83,8 @@ export type RalphWorkflowOutputs = WorkflowOutputValues & {
   readonly result?: string;
   readonly plan?: string;
   readonly plan_path?: string;
+  readonly research?: string;
+  readonly research_path?: string;
   readonly implementation_notes_path?: string;
   readonly pr_report?: string;
   readonly approved?: boolean;

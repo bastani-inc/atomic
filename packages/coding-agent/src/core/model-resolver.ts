@@ -21,6 +21,7 @@ export const defaultModelPerProvider: Record<string, string> = {
   google: "gemini-3.1-pro-preview",
   "google-vertex": "gemini-3.1-pro-preview",
   "github-copilot": "gpt-5.4",
+  cursor: "composer-2",
   openrouter: "moonshotai/kimi-k2.6",
   "vercel-ai-gateway": "zai/glm-5.1",
   xai: "grok-4.20-0309-reasoning",
@@ -185,6 +186,24 @@ function buildFallbackModel(
     id: modelId,
     name: modelId,
   };
+}
+
+async function buildConfiguredProviderFallbackModel(
+  provider: string,
+  modelId: string,
+  modelRegistry: ModelRegistry,
+): Promise<Model<Api> | undefined> {
+  return buildFallbackModel(provider, modelId, await modelRegistry.getAvailable());
+}
+
+export async function resolveSavedModelReference(
+  provider: string,
+  modelId: string,
+  modelRegistry: ModelRegistry,
+): Promise<Model<Api> | undefined> {
+  const found = modelRegistry.find(provider, modelId);
+  if (found) return found;
+  return buildConfiguredProviderFallbackModel(provider, modelId, modelRegistry);
 }
 
 /**
@@ -601,7 +620,11 @@ export async function findInitialModel(options: {
 
   // 3. Try saved default from settings
   if (defaultProvider && defaultModelId) {
-    const found = modelRegistry.find(defaultProvider, defaultModelId);
+    const found = await resolveSavedModelReference(
+      defaultProvider,
+      defaultModelId,
+      modelRegistry,
+    );
     if (found) {
       model = found;
       if (defaultThinkingLevel) {
@@ -660,14 +683,12 @@ export async function restoreModelFromSession(
   model: Model<Api> | undefined;
   fallbackMessage: string | undefined;
 }> {
-  const restoredModel = modelRegistry.find(savedProvider, savedModelId);
+  const exactRestoredModel = modelRegistry.find(savedProvider, savedModelId);
+  const restoredModel = exactRestoredModel && modelRegistry.hasConfiguredAuth(exactRestoredModel)
+    ? exactRestoredModel
+    : await buildConfiguredProviderFallbackModel(savedProvider, savedModelId, modelRegistry);
 
-  // Check if restored model exists and still has auth configured
-  const hasConfiguredAuth = restoredModel
-    ? modelRegistry.hasConfiguredAuth(restoredModel)
-    : false;
-
-  if (restoredModel && hasConfiguredAuth) {
+  if (restoredModel) {
     if (shouldPrintMessages) {
       console.log(
         chalk.dim(`Restored model: ${savedProvider}/${savedModelId}`),
@@ -677,7 +698,7 @@ export async function restoreModelFromSession(
   }
 
   // Model not found or no API key - fall back
-  const reason = !restoredModel
+  const reason = !exactRestoredModel
     ? "model no longer exists"
     : "no auth configured";
 

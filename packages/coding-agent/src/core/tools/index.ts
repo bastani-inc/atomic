@@ -83,6 +83,17 @@ export {
 	type WriteToolOptions,
 } from "./write.ts";
 export { createAskUserQuestionToolDefinition } from "./ask-user-question/index.ts";
+export {
+	STRUCTURED_OUTPUT_TOOL_NAME,
+	createStructuredOutputCapture,
+	createStructuredOutputTool,
+	type JsonObject,
+	type JsonPrimitive,
+	type JsonValue,
+	type StructuredOutputCapture,
+	type StructuredOutputFileCapture,
+	type StructuredOutputToolOptions,
+} from "./structured-output.ts";
 export { createTodoToolDefinition } from "./todos.ts";
 
 import type { AgentTool } from "@earendil-works/pi-agent-core";

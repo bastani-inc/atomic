@@ -638,6 +638,7 @@ export async function main(args: string[], options?: MainOptions) {
 	const authStorage = AuthStorage.create();
 	const trustPromptMode: AppMode = parsed.help || parsed.listModels !== undefined ? "print" : appMode;
 	const projectTrustByCwd = new Map<string, boolean>();
+	const borrowedExtensionSourceTrustByPath = new Map<string, boolean>();
 	const createRuntime: CreateAgentSessionRuntimeFactory = async ({
 		cwd,
 		agentDir,
@@ -652,38 +653,60 @@ export async function main(args: string[], options?: MainOptions) {
 		const shouldResolveProjectTrust =
 			parsed.projectTrustOverride === undefined && cachedProjectTrust === undefined && hasTrustInputs;
 		const runtimeSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: initialProjectTrusted });
+		const getProjectTrustContext = () =>
+			projectTrustContext ??
+			createProjectTrustContext({
+				cwd,
+				mode: sessionStartEvent === undefined ? trustPromptMode : appMode,
+				settingsManager: runtimeSettingsManager,
+				hasUI: sessionStartEvent === undefined && trustPromptMode === "interactive",
+			});
 		const services = await createAgentSessionServices({
 			cwd,
 			agentDir,
 			authStorage,
 			settingsManager: runtimeSettingsManager,
 			extensionFlagValues: parsed.unknownFlags,
-			resourceLoaderReloadOptions: shouldResolveProjectTrust
-				? {
-						resolveProjectTrust: async ({ extensionsResult }) => {
-							const trusted = await resolveProjectTrusted({
-								cwd,
-								trustStore: projectTrustStore,
-								defaultProjectTrust: runtimeSettingsManager.getDefaultProjectTrust(),
-								extensionsResult,
-								projectTrustContext:
-									projectTrustContext ??
-									createProjectTrustContext({
-										cwd,
-										mode: sessionStartEvent === undefined ? trustPromptMode : appMode,
-										settingsManager: runtimeSettingsManager,
-										hasUI: sessionStartEvent === undefined && trustPromptMode === "interactive",
-									}),
-								onExtensionError: (message) => console.error(chalk.yellow(`Warning: ${message}`)),
-							});
-							projectTrustByCwd.set(cwd, trusted);
-							if (trusted && !initialProjectTrusted) {
-								runMigrations(cwd, { projectTrusted: true });
-							}
-							return trusted;
-						},
-					}
-				: undefined,
+			resourceLoaderReloadOptions:
+				shouldResolveProjectTrust || (resolvedExtensionPaths?.length ?? 0) > 0
+					? {
+							resolveProjectTrust: shouldResolveProjectTrust
+								? async ({ extensionsResult }) => {
+										const trusted = await resolveProjectTrusted({
+											cwd,
+											trustStore: projectTrustStore,
+											defaultProjectTrust: runtimeSettingsManager.getDefaultProjectTrust(),
+											extensionsResult,
+											projectTrustContext: getProjectTrustContext(),
+											onExtensionError: (message) => console.error(chalk.yellow(`Warning: ${message}`)),
+										});
+										projectTrustByCwd.set(cwd, trusted);
+										if (trusted && !initialProjectTrusted) {
+											runMigrations(cwd, { projectTrusted: true });
+										}
+										return trusted;
+									}
+								: undefined,
+							resolveBorrowedProjectTrust: async ({ source, extensionsResult }) => {
+								const cachedTrust = borrowedExtensionSourceTrustByPath.get(source);
+								if (cachedTrust !== undefined) {
+									return cachedTrust;
+								}
+								const trusted = await resolveProjectTrusted({
+									cwd: source,
+									trustStore: projectTrustStore,
+									trustOverride: parsed.projectTrustOverride,
+									defaultProjectTrust: runtimeSettingsManager.getDefaultProjectTrust(),
+									extensionsResult,
+									projectTrustContext: getProjectTrustContext(),
+									promptMessage: `Trust extension source?\n${source}\n\nThis allows Atomic to load project-local .atomic/.pi resources and .agents/skills from this -e source, including extensions and workflows that can execute code.`,
+									onExtensionError: (message) => console.error(chalk.yellow(`Warning: ${message}`)),
+								});
+								borrowedExtensionSourceTrustByPath.set(source, trusted);
+								return trusted;
+							},
+						}
+					: undefined,
 			resourceLoaderOptions: {
 				additionalExtensionPaths: resolvedExtensionPaths,
 				additionalSkillPaths: resolvedSkillPaths,

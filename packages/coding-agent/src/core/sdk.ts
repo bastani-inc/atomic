@@ -32,7 +32,7 @@ import type {
 } from "./extensions/index.ts";
 import { convertToLlm } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
-import { findInitialModel } from "./model-resolver.ts";
+import { findInitialModel, resolveSavedModelReference } from "./model-resolver.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
 import { DefaultResourceLoader } from "./resource-loader.ts";
 import { getDefaultSessionDir, SessionManager } from "./session-manager.ts";
@@ -48,6 +48,9 @@ import {
   createLsTool,
   createReadOnlyTools,
   createReadTool,
+  STRUCTURED_OUTPUT_TOOL_NAME,
+  createStructuredOutputCapture,
+  createStructuredOutputTool,
   createWriteTool,
   defaultToolNames,
   withFileMutationQueue,
@@ -150,11 +153,18 @@ export type {
   BashCommandRule,
   BashCommandSegment,
   BashCommandSegmentSource,
+  JsonObject,
+  JsonPrimitive,
+  JsonValue,
+  StructuredOutputCapture,
+  StructuredOutputFileCapture,
+  StructuredOutputToolOptions,
   Tool,
 } from "./tools/index.ts";
 
 export {
   withFileMutationQueue,
+  STRUCTURED_OUTPUT_TOOL_NAME,
   // Tool factories (for custom cwd)
   createCodingTools,
   createReadOnlyTools,
@@ -165,6 +175,8 @@ export {
   createGrepTool,
   createFindTool,
   createLsTool,
+  createStructuredOutputCapture,
+  createStructuredOutputTool,
 };
 
 // Helper Functions
@@ -252,9 +264,10 @@ export async function createAgentSession(
 
   // If session has data, try to restore model from it
   if (!model && hasExistingSession && existingSession.model) {
-    const restoredModel = modelRegistry.find(
+    const restoredModel = await resolveSavedModelReference(
       existingSession.model.provider,
       existingSession.model.modelId,
+      modelRegistry,
     );
     if (restoredModel && modelRegistry.hasConfiguredAuth(restoredModel)) {
       model = restoredModel;

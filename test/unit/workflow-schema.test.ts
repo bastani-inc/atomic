@@ -13,6 +13,12 @@ describe("WorkflowParametersSchema stage options", () => {
         agentDir: "/agent",
         model: "anthropic/primary",
         fallbackModels: ["openai/fallback"],
+        schema: {
+          type: "object",
+          required: ["approved"],
+          properties: { approved: { type: "boolean" } },
+          additionalProperties: false,
+        },
         tools: ["read", "todo"],
         customTools: [],
         bashPolicy: {
@@ -27,7 +33,7 @@ describe("WorkflowParametersSchema stage options", () => {
         forkFromSessionFile: "/tmp/session.jsonl",
       },
       tasks: [
-        { name: "reviewer", task: "review", fallbackModels: ["openai/fallback"] },
+        { name: "reviewer", task: "review", fallbackModels: ["openai/fallback"], schema: { type: "object", properties: { ok: { type: "boolean" } } } },
       ],
       chain: [
         { name: "first", task: "one", fallbackModels: ["openai/fallback"] },
@@ -144,6 +150,40 @@ describe("WorkflowParametersSchema stage options", () => {
     assert.equal(Value.Check(WorkflowParametersSchema, { action: "transcript", tail: -1 }), false);
     assert.equal(Value.Check(WorkflowParametersSchema, { action: "transcript", tail: 1.5 }), false);
     assert.equal(Value.Check(WorkflowParametersSchema, { action: "send", delivery: "chat" }), false);
+  });
+
+  test("accepts plain JSON Schema objects for structured output schema options", () => {
+    assert.equal(Value.Check(WorkflowParametersSchema, {
+      task: { name: "planner", prompt: "plan", schema: { type: "array", items: { type: "string" } } },
+    }), true);
+    assert.equal(Value.Check(WorkflowParametersSchema, {
+      tasks: [{ name: "reviewer", task: "review", schema: { type: "string" } }],
+    }), true);
+    assert.equal(Value.Check(WorkflowParametersSchema, {
+      chain: [
+        { name: "first", task: "one", schema: { properties: { ok: { type: "boolean" } } } },
+      ],
+    }), true);
+    assert.equal(Value.Check(WorkflowParametersSchema, {
+      chain: [
+        { parallel: [{ name: "second", task: "two", schema: { type: "object", properties: { ok: { type: "boolean" } } } }] },
+      ],
+    }), true);
+    assert.equal(Value.Check(WorkflowParametersSchema, {
+      task: { name: "tuple-object", prompt: "plan", schema: { type: ["object"], properties: { ok: { type: "boolean" } } } },
+    }), true);
+    assert.equal(Value.Check(WorkflowParametersSchema, {
+      task: {
+        name: "all-of-object",
+        prompt: "plan",
+        schema: {
+          allOf: [
+            { type: "object", required: ["ok"], properties: { ok: { type: "boolean" } } },
+            { type: ["object"], properties: { note: { type: "string" } } },
+          ],
+        },
+      },
+    }), true);
   });
 
   test("rejects non-array and non-string fallbackModels", () => {

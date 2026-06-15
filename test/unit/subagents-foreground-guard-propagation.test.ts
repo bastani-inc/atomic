@@ -161,7 +161,7 @@ function makeWorkflowStageContext(cwd: string, uiResult?: unknown): ExecutorCont
 			workflowRunId: "workflow-run-1",
 			workflowStageId: "stage-1",
 			workflowStageName: "Stage 1",
-			constraints: { disableWorkflowTool: true, maxSubagentDepth: 1 },
+			constraints: { disableWorkflowTool: true, maxSubagentDepth: 2 },
 		},
 		isIdle: () => true,
 		isProjectTrusted: () => true,
@@ -229,7 +229,7 @@ function assertNoErrorFlag(result: ExecutorResultForTest): void {
 function assertGuardedRunSyncCalls(expectedAgentNames: string[]): void {
 	assert.deepEqual(runSyncCalls.map((call) => call.agentName), expectedAgentNames);
 	for (const call of runSyncCalls) {
-		assert.equal(call.options.maxSubagentDepth, 1);
+		assert.equal(call.options.maxSubagentDepth, 2);
 		assert.equal(call.options.workflowStageSubagentGuard, true);
 	}
 }
@@ -310,7 +310,7 @@ describe("foreground workflow-stage subagent guard propagation", () => {
 		assertNoErrorFlag(result);
 		assert.equal(runSyncCalls.length, 0);
 		assert.equal(asyncChainCalls.length, 1);
-		assert.equal(asyncChainCalls[0]!.params.maxSubagentDepth, 1);
+		assert.equal(asyncChainCalls[0]!.params.maxSubagentDepth, 2);
 		assert.equal(asyncChainCalls[0]!.params.workflowStageSubagentGuard, true);
 	});
 
@@ -340,7 +340,7 @@ describe("foreground workflow-stage subagent guard propagation", () => {
 		assertNoErrorFlag(result);
 		assert.equal(runSyncCalls.length, 0);
 		assert.equal(asyncSingleCalls.length, 1);
-		assert.equal(asyncSingleCalls[0]!.params.maxSubagentDepth, 1);
+		assert.equal(asyncSingleCalls[0]!.params.maxSubagentDepth, 2);
 		assert.equal(asyncSingleCalls[0]!.params.workflowStageSubagentGuard, true);
 	});
 });

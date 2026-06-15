@@ -1817,7 +1817,7 @@ pi.registerTool({
 
 **Signaling errors:** To mark a tool execution as failed (sets `isError: true` on the result and reports it to the LLM), throw an error from `execute`. Returning a value never sets the error flag regardless of what properties you include in the return object.
 
-**Early termination:** Return `terminate: true` from `execute()` to hint that the automatic follow-up LLM call should be skipped after the current tool batch. This only takes effect when every finalized tool result in that batch is terminating. See [examples/extensions/structured-output.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/structured-output.ts) for a minimal example where the agent ends on a final structured-output tool call.
+**Early termination:** Return `terminate: true` from `execute()` to hint that the automatic follow-up LLM call should be skipped after the current tool batch. This only takes effect when every finalized tool result in that batch is terminating. Atomic does not register `structured_output` in normal agent sessions by default; use `createStructuredOutputTool({ schema, capture, output, name })` when an extension, SDK session, workflow stage, or subagent runtime needs a schema-backed final-answer tool. The factory uses the supplied schema as the tool parameters directly, captures the tool arguments as whatever JSON value matches the schema, emits the same pretty-printed JSON as the terminating tool-result text for `atomic -p`, optionally writes them to the configured `output.outputPath`, and terminates the turn. In text print mode, a terminating result from a factory-created structured-output tool is emitted to stdout as the final response. Custom factory names are opt-in tools: if you register `final_decision`, include `final_decision` in any explicit `tools` allowlist; if you register the default `structured_output` name, it is available only to that session/runtime.
 
 ```typescript
 // Correct: throw to signal an error
@@ -2592,7 +2592,7 @@ All examples in [examples/extensions/](https://github.com/bastani-inc/atomic/tre
 | `questionnaire.ts` | Multi-step wizard tool | `registerTool`, `ui.custom` |
 | `todo.ts` | Stateful tool with persistence | `registerTool`, `appendEntry`, `renderResult`, session events |
 | `dynamic-tools.ts` | Register tools after startup and during commands | `registerTool`, `session_start`, `registerCommand` |
-| `structured-output.ts` | Final structured-output tool with `terminate: true` | `registerTool`, terminating tool results |
+| `structured-output.ts` | Opt-in schema-specific `structured_output` tool using the canonical factory | `createStructuredOutputTool`, `registerTool`, terminating tool results |
 | `truncated-tool.ts` | Output truncation example | `registerTool`, `truncateHead` |
 | `tool-override.ts` | Override built-in read tool | `registerTool` (same name as built-in) |
 | **Commands** |||

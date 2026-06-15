@@ -160,6 +160,8 @@ In print mode, Atomic also reads piped stdin and merges it into the initial prom
 cat README.md | atomic -p "Summarize this text"
 ```
 
+When a print-mode turn correctly finishes by calling an opt-in terminating structured-output tool created with `createStructuredOutputTool` (for example from an extension, SDK caller, or workflow item with a schema), Atomic ends after that tool result without an extra follow-up assistant turn. Print-mode stdout contains the terminating structured JSON payload, so `atomic -p` remains script-friendly while the same value is also available through the SDK `capture` sink, tool `details`, a configured file sink, workflow `result.structured`, or subagent `result.structuredOutput`. This also works for custom factory names such as `final_decision`. Non-terminating or unrelated tool results are not printed as the final response.
+
 ### Model Options
 
 | Option | Description |

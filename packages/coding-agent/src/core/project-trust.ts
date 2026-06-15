@@ -17,6 +17,7 @@ export interface ResolveProjectTrustedOptions {
 	defaultProjectTrust?: DefaultProjectTrust;
 	extensionsResult?: LoadExtensionsResult;
 	projectTrustContext: ProjectTrustContext;
+	promptMessage?: string;
 	onExtensionError?: (message: string) => void;
 }
 
@@ -27,10 +28,11 @@ function formatProjectTrustPrompt(cwd: string): string {
 async function selectProjectTrustOption(
 	cwd: string,
 	ctx: ProjectTrustContext,
+	promptMessage?: string,
 ): Promise<ProjectTrustOption | undefined> {
 	const options = getProjectTrustOptions(cwd, { includeSessionOnly: true });
 	const selected = await ctx.ui.select(
-		formatProjectTrustPrompt(cwd),
+		promptMessage ?? formatProjectTrustPrompt(cwd),
 		options.map((option) => option.label),
 	);
 	return options.find((option) => option.label === selected);
@@ -86,7 +88,7 @@ export async function resolveProjectTrusted(options: ResolveProjectTrustedOption
 		return false;
 	}
 
-	const selected = await selectProjectTrustOption(options.cwd, options.projectTrustContext);
+	const selected = await selectProjectTrustOption(options.cwd, options.projectTrustContext, options.promptMessage);
 	if (selected !== undefined) {
 		saveProjectTrustPromptResult(options.trustStore, selected);
 		return selected.trusted;

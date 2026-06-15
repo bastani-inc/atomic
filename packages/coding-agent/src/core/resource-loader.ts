@@ -19,7 +19,7 @@ import type { Extension, ExtensionFactory, ExtensionRuntime, LoadExtensionsResul
 import { DefaultPackageManager, type PathMetadata, type ResolvedPaths, type ResolvedResource } from "./package-manager.ts";
 import type { PromptTemplate } from "./prompt-templates.ts";
 import { loadPromptTemplates } from "./prompt-templates.ts";
-import { SettingsManager } from "./settings-manager.ts";
+import { SettingsManager, type PackageSource } from "./settings-manager.ts";
 import type { Skill } from "./skills.ts";
 import { loadSkills } from "./skills.ts";
 import { createSourceInfo, type SourceInfo } from "./source-info.ts";
@@ -33,6 +33,11 @@ export interface ResourceExtensionPaths {
 
 export interface ResourceLoaderReloadOptions {
 	resolveProjectTrust?: (options: { extensionsResult: LoadExtensionsResult }) => boolean | Promise<boolean>;
+	resolveBorrowedProjectTrust?: (options: {
+		source: string;
+		resources: ResolvedResource[];
+		extensionsResult: LoadExtensionsResult;
+	}) => boolean | Promise<boolean>;
 }
 
 export interface ResourceLoader {
@@ -140,7 +145,7 @@ export interface DefaultResourceLoaderOptions {
 	additionalSkillPaths?: string[];
 	additionalPromptTemplatePaths?: string[];
 	additionalThemePaths?: string[];
-	builtinPackagePaths?: string[];
+	builtinPackagePaths?: PackageSource[];
 	extensionFactories?: ExtensionFactory[];
 	noExtensions?: boolean;
 	noSkills?: boolean;
@@ -179,7 +184,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private additionalSkillPaths: string[];
 	private additionalPromptTemplatePaths: string[];
 	private additionalThemePaths: string[];
-	private builtinPackagePaths: string[];
+	private builtinPackagePaths: PackageSource[];
 	private extensionFactories: ExtensionFactory[];
 	private noExtensions: boolean;
 	private noSkills: boolean;
@@ -218,6 +223,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private systemPrompt?: string;
 	private appendSystemPrompt: string[];
 	private workflowResources: ResolvedResource[];
+	private trustedBorrowedProjectLocalSources?: Set<string>;
 	private lastSkillPaths: string[];
 	private extensionSkillSourceInfos: Map<string, SourceInfo>;
 	private extensionPromptSourceInfos: Map<string, SourceInfo>;
@@ -266,6 +272,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.agentsFiles = [];
 		this.appendSystemPrompt = [];
 		this.workflowResources = [];
+		this.trustedBorrowedProjectLocalSources = undefined;
 		this.lastSkillPaths = [];
 		this.extensionSkillSourceInfos = new Map();
 		this.extensionPromptSourceInfos = new Map();
@@ -307,7 +314,9 @@ export class DefaultResourceLoader implements ResourceLoader {
 	}
 
 	async refreshWorkflowResources(): Promise<ResolvedResource[]> {
-		const { resolvedPaths, cliExtensionPaths, builtinPackagePaths } = await this.resolvePackageResourcePaths();
+		const { resolvedPaths, cliExtensionPaths, builtinPackagePaths } = await this.resolvePackageResourcePaths({
+			trustedBorrowedProjectLocalSources: this.trustedBorrowedProjectLocalSources,
+		});
 		const workflowResources = this.collectWorkflowResources(
 			resolvedPaths,
 			cliExtensionPaths,
@@ -360,7 +369,9 @@ export class DefaultResourceLoader implements ResourceLoader {
 	async loadProjectTrustExtensions(): Promise<LoadExtensionsResult> {
 		this.settingsManager.setProjectTrusted(false);
 		await this.settingsManager.reload();
-		const { resolvedPaths, cliExtensionPaths, builtinPackagePaths } = await this.resolvePackageResourcePaths();
+		const { resolvedPaths, cliExtensionPaths, builtinPackagePaths } = await this.resolvePackageResourcePaths({
+			includeCliProjectLocalResources: false,
+		});
 		const metadataByPath = new Map<string, PathMetadata>();
 		const getEnabledResources = (
 			resources: Array<{ path: string; enabled: boolean; metadata: PathMetadata }>,
@@ -395,13 +406,26 @@ export class DefaultResourceLoader implements ResourceLoader {
 
 	async reload(options?: ResourceLoaderReloadOptions): Promise<void> {
 		let preTrustExtensions: LoadExtensionsResult | undefined;
-		if (options?.resolveProjectTrust) {
+		const initialProjectTrusted = this.settingsManager.isProjectTrusted();
+		if (options?.resolveProjectTrust || options?.resolveBorrowedProjectTrust) {
 			preTrustExtensions = await this.loadProjectTrustExtensions();
+		}
+		if (options?.resolveProjectTrust && preTrustExtensions) {
 			const projectTrusted = await options.resolveProjectTrust({ extensionsResult: preTrustExtensions });
 			this.settingsManager.setProjectTrusted(projectTrusted);
+		} else if (preTrustExtensions) {
+			this.settingsManager.setProjectTrusted(initialProjectTrusted);
+		}
+		if (options?.resolveBorrowedProjectTrust) {
+			this.trustedBorrowedProjectLocalSources = await this.resolveTrustedBorrowedProjectLocalSources(
+				options.resolveBorrowedProjectTrust,
+				preTrustExtensions,
+			);
 		}
 		const resolveSpan = startTimingSpan("DefaultResourceLoader.reload.resolvePackageResourcePaths");
-		const { resolvedPaths, cliExtensionPaths, builtinPackagePaths } = await this.resolvePackageResourcePaths();
+		const { resolvedPaths, cliExtensionPaths, builtinPackagePaths } = await this.resolvePackageResourcePaths({
+			trustedBorrowedProjectLocalSources: this.trustedBorrowedProjectLocalSources,
+		});
 		endTimingSpan(resolveSpan);
 		const metadataByPath = new Map<string, PathMetadata>();
 
@@ -464,12 +488,12 @@ export class DefaultResourceLoader implements ResourceLoader {
 		// Add CLI paths metadata
 		for (const r of cliExtensionPaths.extensions) {
 			if (!metadataByPath.has(r.path)) {
-				metadataByPath.set(r.path, { source: "cli", scope: "temporary", origin: "top-level" });
+				metadataByPath.set(r.path, r.metadata);
 			}
 		}
 		for (const r of cliExtensionPaths.skills) {
 			if (!metadataByPath.has(r.path)) {
-				metadataByPath.set(r.path, { source: "cli", scope: "temporary", origin: "top-level" });
+				metadataByPath.set(r.path, r.metadata);
 			}
 		}
 
@@ -605,21 +629,84 @@ export class DefaultResourceLoader implements ResourceLoader {
 		return { extensions: [], skills: [], prompts: [], themes: [], workflows: [] };
 	}
 
-	private async resolvePackageResourcePaths(): Promise<{
+	private async resolvePackageResourcePaths(options?: {
+		includeCliProjectLocalResources?: boolean;
+		trustedBorrowedProjectLocalSources?: Set<string>;
+	}): Promise<{
 		resolvedPaths: ResolvedPaths;
 		cliExtensionPaths: ResolvedPaths;
 		builtinPackagePaths: ResolvedPaths;
 	}> {
 		await this.settingsManager.reload();
 		const resolvedPaths = await this.packageManager.resolve();
-		const cliExtensionPaths = await this.packageManager.resolveExtensionSources(this.additionalExtensionPaths, {
+		const includeCliProjectLocalResources = options?.includeCliProjectLocalResources ?? true;
+		let cliExtensionPaths = await this.packageManager.resolveExtensionSources(this.additionalExtensionPaths, {
 			temporary: true,
+			includeProjectLocalResources: includeCliProjectLocalResources,
 		});
+		if (includeCliProjectLocalResources && options?.trustedBorrowedProjectLocalSources) {
+			cliExtensionPaths = this.filterBorrowedProjectLocalResources(
+				cliExtensionPaths,
+				options.trustedBorrowedProjectLocalSources,
+			);
+		}
 		const builtinPackagePaths =
 			this.builtinPackagePaths.length > 0
 				? await this.packageManager.resolveExtensionSources(this.builtinPackagePaths, { temporary: true })
 				: this.emptyResolvedPaths();
 		return { resolvedPaths, cliExtensionPaths, builtinPackagePaths };
+	}
+
+	private async resolveTrustedBorrowedProjectLocalSources(
+		resolveBorrowedProjectTrust: NonNullable<ResourceLoaderReloadOptions["resolveBorrowedProjectTrust"]>,
+		preTrustExtensions: LoadExtensionsResult | undefined,
+	): Promise<Set<string>> {
+		const cliExtensionPaths = await this.packageManager.resolveExtensionSources(this.additionalExtensionPaths, {
+			temporary: true,
+			includeProjectLocalResources: true,
+		});
+		const resourcesBySource = new Map<string, ResolvedResource[]>();
+		for (const resources of Object.values(cliExtensionPaths)) {
+			for (const resource of resources) {
+				if (!resource.metadata.borrowedProjectLocal) {
+					continue;
+				}
+				const sourceResources = resourcesBySource.get(resource.metadata.source) ?? [];
+				sourceResources.push(resource);
+				resourcesBySource.set(resource.metadata.source, sourceResources);
+			}
+		}
+
+		const trustedSources = new Set<string>();
+		for (const [source, resources] of resourcesBySource) {
+			const trusted = await resolveBorrowedProjectTrust({
+				source,
+				resources,
+				extensionsResult: preTrustExtensions ?? { extensions: [], errors: [], runtime: createExtensionRuntime() },
+			});
+			if (trusted) {
+				trustedSources.add(source);
+			}
+		}
+		return trustedSources;
+	}
+
+	private filterBorrowedProjectLocalResources(paths: ResolvedPaths, trustedSources: Set<string>): ResolvedPaths {
+		const filterResources = (resources: ResolvedResource[]): ResolvedResource[] =>
+			resources.filter(
+				(resource) => !resource.metadata.borrowedProjectLocal || trustedSources.has(resource.metadata.source),
+			);
+		return {
+			extensions: filterResources(paths.extensions),
+			skills: filterResources(paths.skills),
+			prompts: filterResources(paths.prompts),
+			themes: filterResources(paths.themes),
+			workflows: filterResources(paths.workflows),
+		};
+	}
+
+	private enabledWorkflowResources(resources: ResolvedResource[]): ResolvedResource[] {
+		return resources.filter((resource) => resource.enabled);
 	}
 
 	private enabledPackageWorkflowResources(resources: ResolvedResource[]): ResolvedResource[] {
@@ -632,7 +719,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		builtinPackagePaths: ResolvedPaths,
 	): ResolvedResource[] {
 		return [
-			...this.enabledPackageWorkflowResources(cliExtensionPaths.workflows),
+			...this.enabledWorkflowResources(cliExtensionPaths.workflows),
 			...this.enabledPackageWorkflowResources(resolvedPaths.workflows),
 			...this.enabledPackageWorkflowResources(builtinPackagePaths.workflows),
 		];

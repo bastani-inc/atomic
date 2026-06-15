@@ -2,15 +2,15 @@
 name: intercom
 description: |
   Streamline session-to-session coordination with the intercom extension. Send
-  messages, delegate tasks, and coordinate work across multiple pi sessions on
+  messages, delegate tasks, and coordinate work across multiple atomic sessions on
   the same machine. Use for planner-worker workflows, cross-session context
   sharing, and real-time collaboration between sessions.
 ---
 
 # Intercom Skill
 
-Use this skill when you need to coordinate work across multiple pi sessions
-running on the same machine. Pi-intercom enables direct 1:1 messaging between
+Use this skill when you need to coordinate work across multiple atomic sessions
+running on the same machine. Intercom enables direct 1:1 messaging between
 sessions for delegation, context sharing, and collaborative workflows.
 
 When you are supervising with the `subagent` skill, delegated child agents can
@@ -204,9 +204,9 @@ message, treat it as a `contact_supervisor` escalation.
 | `list` | Returns all sessions with live status | You need to discover targets or choose an idle peer |
 | `status` | Returns your connection state | Troubleshooting |
 
-## Optional: Visible Peer Sessions via cmux or tmux
+## Optional: Visible Peer Sessions via cmux, tmux, or psmux (Windows rewrite of tmux that has fully parity with tmux)
 
-If no suitable intercom-connected peer session already exists and the task benefits from a long-lived visible conversation, you may spawn a new `pi` session.
+If no suitable intercom-connected peer session already exists and the task benefits from a long-lived visible conversation, you may spawn a new `atomic` session.
 
 Prefer `cmux new-split right` over new surfaces or workspaces so both sessions are visible side by side.
 

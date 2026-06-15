@@ -2,6 +2,8 @@
 
 Add custom providers and models (Ollama, vLLM, LM Studio, proxies) via `~/.atomic/agent/models.json` (legacy `~/.pi/agent/models.json` is also read).
 
+Built-in subscription providers such as Cursor (experimental) are selected with the same `provider/model` syntax, for example `cursor/composer-2`. Cursor is text-only in the initial experimental implementation; live private-API model metadata may fall back to estimated labels. Because Cursor support targets undocumented private endpoints with Cursor CLI-compatible headers, maintainers and users should explicitly accept the risk that it may conflict with Cursor's terms, break without notice, or affect the Cursor account used to authenticate.
+
 ## Table of Contents
 
 - [Minimal Example](#minimal-example)
