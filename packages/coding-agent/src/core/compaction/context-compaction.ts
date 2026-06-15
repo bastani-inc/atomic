@@ -12,8 +12,12 @@ import { join } from "node:path";
 import { Type } from "typebox";
 import { createBranchSummaryMessage, createCustomMessage } from "../messages.ts";
 import {
+	isAssistantThinkingBlockType,
+	messageHasAssistantThinkingContentBlock,
+} from "../thinking-blocks.ts";
+import {
 	buildContextDeletionFilteredPath,
-	buildContextDeletionFilters,
+	buildEffectiveContextDeletionFilters,
 	type ContextCompactionStats,
 	type ContextDeletionTarget,
 	type SessionEntry,
@@ -239,6 +243,8 @@ export interface ContextGrepDeletionSkipped {
 	reason:
 		| "protected_entry"
 		| "protected_block"
+		| "assistant_thinking_entry"
+		| "assistant_thinking_block"
 		| "already_deleted"
 		| "max_matches_exceeded"
 		| "expected_match_count_mismatch";
@@ -406,6 +412,14 @@ function textFromContentBlock(block: unknown): string {
 	return JSON.stringify(record);
 }
 
+function assistantEntryHasThinkingContentBlock(entry: CompactableTranscriptEntry): boolean {
+	return (
+		entry.role === "assistant" &&
+		(entry.contentBlocks.some((block) => isAssistantThinkingBlockType(block.type)) ||
+			messageHasAssistantThinkingContentBlock(entry.message))
+	);
+}
+
 const IMAGE_BLOCK_CHAR_ESTIMATE = 4800;
 const IMAGE_BLOCK_TOKEN_ESTIMATE = Math.ceil(IMAGE_BLOCK_CHAR_ESTIMATE / 4);
 
@@ -441,18 +455,20 @@ function contentBlocksForEntry(
 ): CompactableContentBlock[] {
 	const content = (message as { content?: unknown }).content;
 	if (!Array.isArray(content)) return [];
-
 	return content
 		.map((block, blockIndex): CompactableContentBlock | undefined => {
-			if (existingDeletedBlocks?.has(blockIndex)) return undefined;
+			if (existingDeletedBlocks?.has(blockIndex)) {
+				return undefined;
+			}
+			const type =
+				block && typeof block === "object" && typeof (block as { type?: unknown }).type === "string"
+					? ((block as { type: string }).type)
+					: "unknown";
 			const text = textFromContentBlock(block);
 			return {
 				entryId,
 				blockIndex,
-				type:
-					block && typeof block === "object" && typeof (block as { type?: unknown }).type === "string"
-						? ((block as { type: string }).type)
-						: "unknown",
+				type,
 				text,
 				tokenEstimate: estimateContentBlockTokens(block, text),
 				protected: protectedEntry,
@@ -522,8 +538,8 @@ export function prepareContextCompaction(
 ): ContextCompactionPreparation | undefined {
 	if (pathEntries.length === 0) return undefined;
 
-	const deletionFilters = buildContextDeletionFilters(pathEntries);
-	const filteredPathEntries = buildContextDeletionFilteredPath(pathEntries, deletionFilters);
+	const effectiveDeletionFilters = buildEffectiveContextDeletionFilters(pathEntries);
+	const filteredPathEntries = buildContextDeletionFilteredPath(pathEntries, effectiveDeletionFilters);
 	const rawEntryById = new Map(pathEntries.map((entry) => [entry.id, entry]));
 	const messageEntryIds = filteredPathEntries
 		.filter((entry) => entry.type !== "context_compaction" && getContextEligibleMessageFromEntry(entry) !== undefined)
@@ -544,7 +560,7 @@ export function prepareContextCompaction(
 			entry.id,
 			rawMessage,
 			protectedEntry,
-			deletionFilters.deletedContentBlocks.get(entry.id),
+			effectiveDeletionFilters.deletedContentBlocks.get(entry.id),
 		);
 		const toolCallIds = contentBlocks.map((block) => block.toolCallId).filter((id): id is string => id !== undefined);
 		const text = contentBlocks.length > 0 ? contentBlocks.map((block) => block.text).join("\n") : messageText(message);
@@ -611,6 +627,53 @@ function getDeletedContentBlocks(targets: readonly ContextDeletionTarget[]): Map
 		blocksByEntry.set(target.entryId, blocks);
 	}
 	return blocksByEntry;
+}
+
+function assertNoAssistantThinkingDeletionTargets(
+	transcript: CompactableTranscript,
+	targets: readonly ContextDeletionTarget[],
+): void {
+	const entryById = new Map(transcript.entries.map((entry) => [entry.entryId, entry]));
+	for (const target of targets) {
+		const entry = entryById.get(target.entryId);
+		if (!entry || entry.role !== "assistant") continue;
+		if (target.kind === "entry") {
+			if (assistantEntryHasThinkingContentBlock(entry)) {
+				throw new Error(
+					`Cannot delete assistant entry ${target.entryId} because it contains thinking/redacted_thinking content blocks`,
+				);
+			}
+			continue;
+		}
+		if (assistantEntryHasThinkingContentBlock(entry)) {
+			throw new Error(
+				`Cannot delete content block ${target.entryId}:${target.blockIndex} because assistant entry ${target.entryId} contains thinking/redacted_thinking content blocks that must be preserved verbatim`,
+			);
+		}
+	}
+}
+
+function assertNoLatestRetainedThinkingAssistantContentBlockDeletionTargets(
+	transcript: CompactableTranscript,
+	targets: readonly ContextDeletionTarget[],
+): void {
+	const deletedEntryIds = getDeletedEntryIds(targets);
+	let latestRetainedAssistant: CompactableTranscriptEntry | undefined;
+	for (let index = transcript.entries.length - 1; index >= 0; index--) {
+		const entry = transcript.entries[index];
+		if (entry.role !== "assistant" || deletedEntryIds.has(entry.entryId)) continue;
+		latestRetainedAssistant = entry;
+		break;
+	}
+	if (!latestRetainedAssistant || !assistantEntryHasThinkingContentBlock(latestRetainedAssistant)) return;
+
+	const unsafeTarget = targets.find(
+		(target) => target.kind === "content_block" && target.entryId === latestRetainedAssistant.entryId,
+	);
+	if (!unsafeTarget || unsafeTarget.kind !== "content_block") return;
+	throw new Error(
+		`Content block ${unsafeTarget.entryId}:${unsafeTarget.blockIndex} is not deletable during critical_overflow because latest retained assistant entry ${latestRetainedAssistant.entryId} contains thinking/redacted_thinking blocks and must be preserved verbatim. Choose an older assistant entry or older thinking block instead.`,
+	);
 }
 
 function isToolCallBlockDeleted(
@@ -949,19 +1012,29 @@ export function validateContextDeletionRequest(
 		if (!entry) {
 			throw new Error(`Unknown deletion target entryId: ${deletion.entryId}`);
 		}
-		if (entry.protected && !canDeleteProtectedTargetInMode(transcript, normalizeRawTarget(deletion), mode)) {
+		const normalized = normalizeRawTarget(deletion);
+		if (mode !== "critical_overflow" && deletion.kind === "entry" && assistantEntryHasThinkingContentBlock(entry)) {
+			throw new Error(
+				`Cannot delete assistant entry ${deletion.entryId} because it contains thinking/redacted_thinking content blocks`,
+			);
+		}
+		if (entry.protected && !canDeleteProtectedTargetInMode(transcript, normalized, mode)) {
 			throw new Error(`Deletion target ${deletion.entryId} is protected`);
 		}
-
 		if (deletion.kind === "content_block") {
-			if (!Number.isInteger(deletion.blockIndex) || deletion.blockIndex === undefined || deletion.blockIndex < 0) {
+			if (typeof deletion.blockIndex !== "number" || !Number.isInteger(deletion.blockIndex) || deletion.blockIndex < 0) {
 				throw new Error(`Invalid content block index for entry ${deletion.entryId}`);
 			}
 			const block = entry.contentBlocks.find((item) => item.blockIndex === deletion.blockIndex);
 			if (!block) {
 				throw new Error(`Unknown content block ${deletion.blockIndex} for entry ${deletion.entryId}`);
 			}
-			if (block.protected && !canDeleteProtectedTargetInMode(transcript, normalizeRawTarget(deletion), mode)) {
+			if (mode !== "critical_overflow" && assistantEntryHasThinkingContentBlock(entry)) {
+				throw new Error(
+					`Cannot delete content block ${deletion.entryId}:${deletion.blockIndex} because assistant entry ${deletion.entryId} contains thinking/redacted_thinking content blocks that must be preserved verbatim`,
+				);
+			}
+			if (block.protected && !canDeleteProtectedTargetInMode(transcript, normalized, mode)) {
 				throw new Error(`Content block ${deletion.entryId}:${deletion.blockIndex} is protected`);
 			}
 			if (entry.contentBlocks.length <= 1) {
@@ -974,11 +1047,17 @@ export function validateContextDeletionRequest(
 			throw new Error(`Duplicate deletion target: ${key}`);
 		}
 		seen.add(key);
-		const normalized = normalizeRawTarget(deletion);
 		deletedTargets.push(normalized);
 	}
 
 	const reconciledTargets = reconcileToolDependencies(transcript, deletedTargets);
+	if (mode === "critical_overflow") {
+		assertNoLatestRetainedThinkingAssistantContentBlockDeletionTargets(transcript, reconciledTargets);
+	} else {
+		// Tool reconciliation can add targets after the per-request checks above, so
+		// this post-reconcile assertion remains authoritative for standard mode.
+		assertNoAssistantThinkingDeletionTargets(transcript, reconciledTargets);
+	}
 	const reconciledDeletedEntryIds = getDeletedEntryIds(reconciledTargets);
 
 	for (const target of reconciledTargets) {
@@ -1132,6 +1211,7 @@ interface EntryTextRow {
 	entry_id: string;
 	text: string;
 	is_protected: number;
+	has_assistant_thinking_blocks: number;
 }
 
 interface EntryReadRow extends EntryTextRow {
@@ -1142,14 +1222,16 @@ interface EntryReadRow extends EntryTextRow {
 interface ContentBlockTextRow {
 	entry_id: string;
 	block_index: number;
+	role: AgentMessage["role"];
+	type: string;
 	text: string;
 	entry_protected: number;
 	block_protected: number;
 	block_count: number;
+	has_assistant_thinking_blocks: number;
 }
 
 interface ContentBlockReadRow extends ContentBlockTextRow {
-	type: string;
 	token_estimate: number;
 }
 
@@ -1157,6 +1239,7 @@ interface StoredTranscriptEntry {
 	entryId: string;
 	role: AgentMessage["role"];
 	protected: boolean;
+	hasAssistantThinkingBlocks: boolean;
 	tokenEstimate: number;
 	text: string;
 }
@@ -1165,8 +1248,10 @@ interface StoredContentBlock {
 	entryPosition: number;
 	entryId: string;
 	blockIndex: number;
+	role: AgentMessage["role"];
 	type: string;
 	protected: boolean;
+	hasAssistantThinkingBlocks: boolean;
 	tokenEstimate: number;
 	text: string;
 }
@@ -1204,13 +1289,15 @@ class ContextDeletionMemoryStore {
 				entryId: entry.entryId,
 				role: entry.role,
 				protected: entry.protected,
+				hasAssistantThinkingBlocks: assistantEntryHasThinkingContentBlock(entry),
 				tokenEstimate: entry.tokenEstimate,
 				text: entry.text,
 			};
 		});
 		this.entriesById = new Map<string, StoredTranscriptEntry>(this.entries.map((entry) => [entry.entryId, entry] as const));
-		this.contentBlocks = transcript.entries.flatMap((entry, entryPosition) =>
-			entry.contentBlocks.map((block) => {
+		this.contentBlocks = transcript.entries.flatMap((entry, entryPosition) => {
+			const hasAssistantThinkingBlocks = assistantEntryHasThinkingContentBlock(entry);
+			return entry.contentBlocks.map((block) => {
 				if (block.entryId !== entry.entryId) {
 					throw new Error(`Transcript content block ${block.entryId}:${block.blockIndex} does not belong to entry ${entry.entryId}`);
 				}
@@ -1223,13 +1310,15 @@ class ContextDeletionMemoryStore {
 					entryPosition,
 					entryId: block.entryId,
 					blockIndex: block.blockIndex,
+					role: entry.role,
 					type: block.type,
 					protected: block.protected,
+					hasAssistantThinkingBlocks,
 					tokenEstimate: block.tokenEstimate,
 					text: block.text,
 				};
-			}),
-		);
+			});
+		});
 		this.contentBlockCountByEntryId = new Map();
 		for (const block of this.contentBlocks) {
 			this.contentBlockCountByEntryId.set(block.entryId, (this.contentBlockCountByEntryId.get(block.entryId) ?? 0) + 1);
@@ -1259,6 +1348,7 @@ class ContextDeletionMemoryStore {
 			entry_id: entry.entryId,
 			text: entry.text,
 			is_protected: entry.protected ? 1 : 0,
+			has_assistant_thinking_blocks: entry.hasAssistantThinkingBlocks ? 1 : 0,
 		}));
 	}
 
@@ -1268,10 +1358,13 @@ class ContextDeletionMemoryStore {
 			.map((block) => ({
 				entry_id: block.entryId,
 				block_index: block.blockIndex,
+				role: block.role,
+				type: block.type,
 				text: block.text,
 				entry_protected: this.entriesById.get(block.entryId)?.protected ? 1 : 0,
 				block_protected: block.protected ? 1 : 0,
 				block_count: this.contentBlockCountByEntryId.get(block.entryId) ?? 0,
+				has_assistant_thinking_blocks: block.hasAssistantThinkingBlocks ? 1 : 0,
 			}));
 	}
 
@@ -1282,6 +1375,7 @@ class ContextDeletionMemoryStore {
 			entry_id: entry.entryId,
 			role: entry.role,
 			is_protected: entry.protected ? 1 : 0,
+			has_assistant_thinking_blocks: entry.hasAssistantThinkingBlocks ? 1 : 0,
 			token_estimate: entry.tokenEstimate,
 			text: entry.text,
 		};
@@ -1293,12 +1387,14 @@ class ContextDeletionMemoryStore {
 		return {
 			entry_id: block.entryId,
 			block_index: block.blockIndex,
+			role: block.role,
 			type: block.type,
 			token_estimate: block.tokenEstimate,
 			text: block.text,
 			entry_protected: this.entriesById.get(block.entryId)?.protected ? 1 : 0,
 			block_protected: block.protected ? 1 : 0,
 			block_count: this.contentBlockCountByEntryId.get(block.entryId) ?? 0,
+			has_assistant_thinking_blocks: block.hasAssistantThinkingBlocks ? 1 : 0,
 		};
 	}
 
@@ -1444,6 +1540,10 @@ export function createContextDeletionTool(
 						for (const entry of store.listEntriesForGrep()) {
 							if (!matcher.test(entry.text)) continue;
 							const candidate: ContextDeletionTarget = { kind: "entry", entryId: entry.entry_id };
+							if (mode !== "critical_overflow" && entry.has_assistant_thinking_blocks === 1) {
+								skipped.push({ entryId: entry.entry_id, target, reason: "assistant_thinking_entry", text: entry.text });
+								continue;
+							}
 							if (entry.is_protected === 1 && !canDeleteProtectedTarget(candidate)) {
 								skipped.push({ entryId: entry.entry_id, target, reason: "protected_entry", text: entry.text });
 								continue;
@@ -1461,6 +1561,29 @@ export function createContextDeletionTool(
 					} else {
 						for (const block of store.listContentBlocksForGrep()) {
 							if (!matcher.test(block.text)) continue;
+							if (mode !== "critical_overflow" && block.role === "assistant" && isAssistantThinkingBlockType(block.type)) {
+								skipped.push({
+									entryId: block.entry_id,
+									target,
+									blockIndex: block.block_index,
+									reason: "assistant_thinking_block",
+									text: block.text,
+								});
+								continue;
+							}
+							// Non-thinking sibling blocks in a thinking-bearing assistant are also
+							// skipped in standard mode so block indexes are not reflowed around
+							// provider-managed thinking/redacted_thinking content.
+							if (mode !== "critical_overflow" && block.role === "assistant" && block.has_assistant_thinking_blocks === 1) {
+								skipped.push({
+									entryId: block.entry_id,
+									target,
+									blockIndex: block.block_index,
+									reason: "assistant_thinking_entry",
+									text: block.text,
+								});
+								continue;
+							}
 							const candidate: ContextDeletionTarget =
 								block.block_count <= 1
 									? { kind: "entry", entryId: block.entry_id }
@@ -1856,7 +1979,7 @@ function contextCompactionTranscriptManifest(transcript: CompactableTranscript, 
 
 function contextCompactionModePrompt(mode: ContextCompactionMode): string {
 	if (mode === "critical_overflow") {
-		return `\n<critical-overflow-mode>\nThe previous model request overflowed its context window. This is a critical LRU-style compaction pass. First delete stale unprotected context. If that is not enough, you may also delete the earliest protected entries or protected content shown in the manifest. Evict in priority order: remove old reasoning traces first, then old user/custom/summary context, while preserving recent entries, unresolved errors, failed commands, and enough task-bearing context for the assistant to continue.\n</critical-overflow-mode>`;
+		return `\n<critical-overflow-mode>\nThe previous model request overflowed its context window. This is a critical LRU-style compaction pass. First delete stale unprotected context. If that is not enough, you may also delete the earliest protected entries or protected content shown in the manifest. Evict old low-signal context first, including old reasoning/thinking traces when they are not part of the latest retained assistant message, then older user/custom/summary context while preserving recent entries, unresolved errors, failed commands, and enough task-bearing context for the assistant to continue.\n\nSafety invariant: the latest retained assistant message cannot be modified when it contains content blocks with type "thinking" or "redacted_thinking". Do not delete, target, or suggest any content block in that latest thinking-bearing assistant message, including sibling text or tool-call blocks. Older non-latest thinking/redacted_thinking blocks may be deleted during critical overflow when validation allows it.\n</critical-overflow-mode>`;
 	}
 	return `\n<standard-mode>\nDo not delete entries or content blocks marked protected. Protected context is only eligible during critical overflow recovery, not during standard compaction.\n</standard-mode>`;
 }

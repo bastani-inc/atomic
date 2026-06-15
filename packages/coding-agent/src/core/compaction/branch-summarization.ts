@@ -11,7 +11,6 @@ import { completeSimple } from "@earendil-works/pi-ai";
 import { convertToLlm, createBranchSummaryMessage, createCustomMessage } from "../messages.ts";
 import {
 	buildContextDeletionFilteredPath,
-	buildContextDeletionFilters,
 	type ReadonlySessionManager,
 	type SessionEntry,
 } from "../session-manager.ts";
@@ -195,7 +194,7 @@ function getMessageFromEntry(entry: SessionEntry): AgentMessage | undefined {
 export function prepareBranchEntries(entries: SessionEntry[], tokenBudget: number = 0): BranchPreparation {
 	const messages: AgentMessage[] = [];
 	const fileOps = createFileOps();
-	const filteredEntries = buildContextDeletionFilteredPath(entries, buildContextDeletionFilters(entries));
+	const filteredEntries = buildContextDeletionFilteredPath(entries);
 	let totalTokens = 0;
 
 	// First pass: collect file ops from ALL entries (even if they don't fit in token budget)

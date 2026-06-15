@@ -551,6 +551,232 @@ describe("context compaction", () => {
 				validateContextDeletionRequest({ deletions: [{ kind: "entry", entryId: "entry-user" }] }, criticalOverflowTranscript()),
 			).toThrow(/protected/);
 		});
+
+		it("allows deleting old thinking blocks during critical overflow", () => {
+			const oldThinkingAssistant = {
+				...assistantText(""),
+				content: [
+					{ type: "text", text: "older assistant block 0" },
+					{ type: "thinking", thinking: "old reasoning can be evicted", thinkingSignature: "sig-old" },
+				],
+			};
+			const latestAssistant = assistantText("latest assistant remains intact");
+			const entries: CompactableTranscript["entries"] = [
+				{
+					entryId: "entry-user",
+					entryType: "message",
+					role: "user",
+					text: "Task remains available.",
+					tokenEstimate: 6,
+					protected: true,
+					contentBlocks: [],
+					message: user("Task remains available."),
+					toolCallIds: [],
+				},
+				{
+					entryId: "entry-old-thinking-assistant",
+					entryType: "message",
+					role: "assistant",
+					text: "older assistant block 0\nold reasoning can be evicted",
+					tokenEstimate: 8,
+					protected: false,
+					contentBlocks: [
+						{
+							entryId: "entry-old-thinking-assistant",
+							blockIndex: 0,
+							type: "text",
+							text: "older assistant block 0",
+							tokenEstimate: 4,
+							protected: false,
+						},
+						{
+							entryId: "entry-old-thinking-assistant",
+							blockIndex: 1,
+							type: "thinking",
+							text: "old reasoning can be evicted",
+							tokenEstimate: 4,
+							protected: false,
+						},
+					],
+					message: oldThinkingAssistant,
+					toolCallIds: [],
+				},
+				{
+					entryId: "entry-latest-assistant",
+					entryType: "message",
+					role: "assistant",
+					text: "latest assistant remains intact",
+					tokenEstimate: 6,
+					protected: false,
+					contentBlocks: [],
+					message: latestAssistant,
+					toolCallIds: [],
+				},
+			];
+			const transcript: CompactableTranscript = {
+				entries,
+				protectedEntryIds: ["entry-user"],
+				tokensBefore: entries.reduce((total, item) => total + item.tokenEstimate, 0),
+				settings: DEFAULT_COMPACTION_SETTINGS,
+			};
+
+			const validated = validateContextDeletionRequest(
+				{ deletions: [{ kind: "content_block", entryId: "entry-old-thinking-assistant", blockIndex: 1 }] },
+				transcript,
+				{ mode: "critical_overflow" },
+			);
+
+			expect(validated.deletedTargets).toEqual([
+				{ kind: "content_block", entryId: "entry-old-thinking-assistant", blockIndex: 1 },
+			]);
+		});
+
+		it("allows whole-entry deletion of the latest thinking-bearing assistant during critical overflow", () => {
+			const latestThinkingAssistant = {
+				...assistantText(""),
+				content: [
+					{ type: "text", text: "latest assistant visible text" },
+					{ type: "thinking", thinking: "latest thinking can be removed with the whole turn", thinkingSignature: "sig-latest" },
+				],
+			};
+			const entries: CompactableTranscript["entries"] = [
+				{
+					entryId: "entry-user",
+					entryType: "message",
+					role: "user",
+					text: "Task remains available.",
+					tokenEstimate: 6,
+					protected: true,
+					contentBlocks: [],
+					message: user("Task remains available."),
+					toolCallIds: [],
+				},
+				{
+					entryId: "entry-latest-thinking-assistant",
+					entryType: "message",
+					role: "assistant",
+					text: "latest assistant visible text\nlatest thinking can be removed with the whole turn",
+					tokenEstimate: 8,
+					protected: false,
+					contentBlocks: [
+						{
+							entryId: "entry-latest-thinking-assistant",
+							blockIndex: 0,
+							type: "text",
+							text: "latest assistant visible text",
+							tokenEstimate: 4,
+							protected: false,
+						},
+						{
+							entryId: "entry-latest-thinking-assistant",
+							blockIndex: 1,
+							type: "thinking",
+							text: "latest thinking can be removed with the whole turn",
+							tokenEstimate: 4,
+							protected: false,
+						},
+					],
+					message: latestThinkingAssistant,
+					toolCallIds: [],
+				},
+			];
+			const transcript: CompactableTranscript = {
+				entries,
+				protectedEntryIds: ["entry-user"],
+				tokensBefore: entries.reduce((total, item) => total + item.tokenEstimate, 0),
+				settings: DEFAULT_COMPACTION_SETTINGS,
+			};
+
+			const validated = validateContextDeletionRequest(
+				{ deletions: [{ kind: "entry", entryId: "entry-latest-thinking-assistant" }] },
+				transcript,
+				{ mode: "critical_overflow" },
+			);
+
+			expect(validated.deletedTargets).toEqual([{ kind: "entry", entryId: "entry-latest-thinking-assistant" }]);
+		});
+
+		it("rejects partial content-block deletion of the latest retained thinking-bearing assistant during critical overflow", () => {
+			const olderAssistant = {
+				...assistantText(""),
+				content: [
+					{ type: "text", text: "older assistant block 0" },
+					{ type: "thinking", thinking: "older assistant thinking now latest", thinkingSignature: "sig-older" },
+				],
+			};
+			const newerAssistant = assistantText("newer assistant entry can be removed entirely");
+			const entries: CompactableTranscript["entries"] = [
+				{
+					entryId: "entry-user",
+					entryType: "message",
+					role: "user",
+					text: "Task remains available.",
+					tokenEstimate: 6,
+					protected: true,
+					contentBlocks: [],
+					message: user("Task remains available."),
+					toolCallIds: [],
+				},
+				{
+					entryId: "entry-older-assistant",
+					entryType: "message",
+					role: "assistant",
+					text: "older assistant block 0\nolder assistant thinking now latest",
+					tokenEstimate: 8,
+					protected: false,
+					contentBlocks: [
+						{
+							entryId: "entry-older-assistant",
+							blockIndex: 0,
+							type: "text",
+							text: "older assistant block 0",
+							tokenEstimate: 4,
+							protected: false,
+						},
+						{
+							entryId: "entry-older-assistant",
+							blockIndex: 1,
+							type: "thinking",
+							text: "older assistant thinking now latest",
+							tokenEstimate: 4,
+							protected: false,
+						},
+					],
+					message: olderAssistant,
+					toolCallIds: [],
+				},
+				{
+					entryId: "entry-newer-assistant",
+					entryType: "message",
+					role: "assistant",
+					text: "newer assistant entry can be removed entirely",
+					tokenEstimate: 6,
+					protected: false,
+					contentBlocks: [],
+					message: newerAssistant,
+					toolCallIds: [],
+				},
+			];
+			const transcript: CompactableTranscript = {
+				entries,
+				protectedEntryIds: ["entry-user"],
+				tokensBefore: entries.reduce((total, item) => total + item.tokenEstimate, 0),
+				settings: DEFAULT_COMPACTION_SETTINGS,
+			};
+
+			expect(() =>
+				validateContextDeletionRequest(
+					{
+						deletions: [
+							{ kind: "entry", entryId: "entry-newer-assistant" },
+							{ kind: "content_block", entryId: "entry-older-assistant", blockIndex: 1 },
+						],
+					},
+					transcript,
+					{ mode: "critical_overflow" },
+				),
+			).toThrow(/not deletable during critical_overflow.*latest retained assistant entry entry-older-assistant/);
+		});
 	});
 
 	it("repairs deletion requests that would orphan tool calls or results", () => {
@@ -589,6 +815,39 @@ describe("context compaction", () => {
 		]);
 	});
 
+	it("rejects tool-call reconciliation that would partially delete a thinking-bearing assistant entry", () => {
+		resetIds();
+		const combinedToolCallId = "call_7SZEC0NytS60tNYbfx3iV93P|fc_0f290ffb56102ac9016a262e88c10c819aa3fe84e1e79aa20f";
+		const task = entry(user("Task"));
+		const assistantWithThinkingAndCall = entry({
+			...assistantText(""),
+			content: [
+				{ type: "thinking", thinking: "tool-call reasoning must remain indexed", thinkingSignature: "sig-thinking" },
+				{ type: "toolCall", id: combinedToolCallId, name: "read", arguments: { path: "old.ts" } },
+			],
+			stopReason: "toolUse",
+		} as unknown as AssistantMessage);
+		const result = entry(toolResult(combinedToolCallId, "redundant old file contents"));
+		const entries: SessionEntry[] = [
+			task,
+			assistantWithThinkingAndCall,
+			result,
+			entry(assistantText("old filler 1")),
+			entry(assistantText("old filler 2")),
+			entry(assistantText("old filler 3")),
+			entry(assistantText("old filler 4")),
+			entry(assistantText("old filler 5")),
+		];
+		const preparation = prepareContextCompaction(entries, DEFAULT_COMPACTION_SETTINGS)!;
+
+		expect(() =>
+			validateContextDeletionRequest(
+				{ deletions: [{ kind: "entry", entryId: result.id }] },
+				preparation.transcript,
+			),
+		).toThrow(/contains thinking\/redacted_thinking content blocks that must be preserved verbatim/);
+	});
+
 	it("rejects content-block deletion requests that would remove every block from an entry", () => {
 		resetIds();
 		const multi = entry({
@@ -621,6 +880,103 @@ describe("context compaction", () => {
 				preparation.transcript,
 			),
 		).toThrow(/every content block/);
+	});
+
+	it("rejects assistant thinking-bearing entry content-block and containing-entry deletions while accepting safe content-block deletions", () => {
+		resetIds();
+		const task = entry(user("Task must remain available"));
+		const sensitiveAssistant = entry({
+			...assistantText(""),
+			content: [
+				{ type: "text", text: "stale visible assistant text" },
+				{ type: "thinking", thinking: "private thinking must remain", thinkingSignature: "sig-thinking" },
+				{ type: "redacted_thinking", data: "opaque-redacted-payload" },
+			],
+		} as unknown as AssistantMessage);
+		const safeAssistant = entry({
+			...assistantText(""),
+			content: [
+				{ type: "text", text: "obsolete text block" },
+				{ type: "text", text: "retained text block" },
+			],
+		});
+		const entries: SessionEntry[] = [
+			task,
+			sensitiveAssistant,
+			safeAssistant,
+			entry(assistantText("recent 1")),
+			entry(assistantText("recent 2")),
+			entry(assistantText("recent 3")),
+			entry(assistantText("recent 4")),
+			entry(assistantText("recent 5")),
+			entry(assistantText("recent 6")),
+		];
+		const preparation = prepareContextCompaction(entries, DEFAULT_COMPACTION_SETTINGS)!;
+		const sensitiveEntry = preparation.transcript.entries.find((item) => item.entryId === sensitiveAssistant.id)!;
+
+		expect(sensitiveEntry.protected).toBe(false);
+		expect(sensitiveEntry.contentBlocks.map((block) => block.type)).toEqual(["text", "thinking", "redacted_thinking"]);
+		for (const blockIndex of [0, 1, 2]) {
+			expect(() =>
+				validateContextDeletionRequest(
+					{ deletions: [{ kind: "content_block", entryId: sensitiveAssistant.id, blockIndex }] },
+					preparation.transcript,
+				),
+			).toThrow(/contains thinking\/redacted_thinking content blocks that must be preserved verbatim/);
+		}
+		expect(() =>
+			validateContextDeletionRequest(
+				{ deletions: [{ kind: "entry", entryId: sensitiveAssistant.id }] },
+				preparation.transcript,
+			),
+		).toThrow(/contains thinking\/redacted_thinking content blocks/);
+
+		const safeValidated = validateContextDeletionRequest(
+			{ deletions: [{ kind: "content_block", entryId: safeAssistant.id, blockIndex: 0 }] },
+			preparation.transcript,
+		);
+		expect(safeValidated.deletedTargets).toEqual([{ kind: "content_block", entryId: safeAssistant.id, blockIndex: 0 }]);
+	});
+
+	it("preserves assistant thinking-bearing content arrays when applying persisted content-block deletion filters", () => {
+		resetIds();
+		const task = entry(user("Task"));
+		const originalContent = [
+			{ type: "text", text: "obsolete visible text" },
+			{ type: "thinking", thinking: "persisted thinking must remain", thinkingSignature: "sig-thinking" },
+			{ type: "redacted_thinking", data: "opaque-redacted-payload" },
+			{ type: "text", text: "retained visible text" },
+		];
+		const assistantWithThinking = entry({
+			...assistantText(""),
+			content: originalContent,
+		} as unknown as AssistantMessage);
+		const persistedDeletion = contextEntry([
+			{ kind: "content_block", entryId: assistantWithThinking.id, blockIndex: 0 },
+			{ kind: "content_block", entryId: assistantWithThinking.id, blockIndex: 1 },
+			{ kind: "content_block", entryId: assistantWithThinking.id, blockIndex: 2 },
+		]);
+
+		const branch = [task, assistantWithThinking, persistedDeletion];
+		const rebuilt = buildSessionContext(branch);
+		const rebuiltAssistant = rebuilt.messages.find((message) => message.role === "assistant") as AssistantMessage | undefined;
+
+		expect(rebuiltAssistant?.content).toEqual(originalContent);
+
+		const preparation = prepareContextCompaction(branch, DEFAULT_COMPACTION_SETTINGS)!;
+		const transcriptAssistant = preparation.transcript.entries.find((item) => item.entryId === assistantWithThinking.id)!;
+		expect(transcriptAssistant.contentBlocks.map((block) => block.type)).toEqual([
+			"text",
+			"thinking",
+			"redacted_thinking",
+			"text",
+		]);
+		expect(transcriptAssistant.contentBlocks.map((block) => block.text)).toEqual([
+			"obsolete visible text",
+			"persisted thinking must remain",
+			JSON.stringify({ type: "redacted_thinking", data: "opaque-redacted-payload" }),
+			"retained visible text",
+		]);
 	});
 
 	it("repairs deleted tool-call content blocks with combined call ids", () => {

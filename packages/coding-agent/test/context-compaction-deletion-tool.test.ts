@@ -206,6 +206,109 @@ function createContentBlockTranscript(): CompactableTranscript {
 	};
 }
 
+function createAssistantThinkingBlockTranscript(): CompactableTranscript {
+	const task = userMessage("Keep the user's task protected.");
+	const thinkingMessage = {
+		...assistantMessage(""),
+		content: [{ type: "thinking", thinking: "single thinking sentinel", thinkingSignature: "sig-thinking" }],
+	} as AgentMessage;
+	return {
+		entries: [
+			{
+				entryId: "entry-user",
+				entryType: "message",
+				role: "user",
+				text: "Keep the user's task protected.",
+				tokenEstimate: 8,
+				protected: true,
+				contentBlocks: [],
+				message: task,
+				toolCallIds: [],
+			},
+			{
+				entryId: "entry-thinking",
+				entryType: "message",
+				role: "assistant",
+				text: "single thinking sentinel",
+				tokenEstimate: 6,
+				protected: false,
+				contentBlocks: [
+					{
+						entryId: "entry-thinking",
+						blockIndex: 0,
+						type: "thinking",
+						text: "single thinking sentinel",
+						tokenEstimate: 6,
+						protected: false,
+					},
+				],
+				message: thinkingMessage,
+				toolCallIds: [],
+			},
+		],
+		protectedEntryIds: ["entry-user"],
+		tokensBefore: 14,
+		settings: DEFAULT_COMPACTION_SETTINGS,
+	};
+}
+
+function createAssistantThinkingSiblingTranscript(): CompactableTranscript {
+	const task = userMessage("Keep the user's task protected.");
+	const thinkingMessage = {
+		...assistantMessage(""),
+		content: [
+			{ type: "text", text: "visible sibling sentinel" },
+			{ type: "thinking", thinking: "paired thinking sentinel", thinkingSignature: "sig-thinking" },
+		],
+	} as AgentMessage;
+	return {
+		entries: [
+			{
+				entryId: "entry-user",
+				entryType: "message",
+				role: "user",
+				text: "Keep the user's task protected.",
+				tokenEstimate: 8,
+				protected: true,
+				contentBlocks: [],
+				message: task,
+				toolCallIds: [],
+			},
+			{
+				entryId: "entry-thinking-sibling",
+				entryType: "message",
+				role: "assistant",
+				text: "visible sibling sentinel\npaired thinking sentinel",
+				tokenEstimate: 10,
+				protected: false,
+				contentBlocks: [
+					{
+						entryId: "entry-thinking-sibling",
+						blockIndex: 0,
+						type: "text",
+						text: "visible sibling sentinel",
+						tokenEstimate: 4,
+						protected: false,
+					},
+					{
+						entryId: "entry-thinking-sibling",
+						blockIndex: 1,
+						type: "thinking",
+						text: "paired thinking sentinel",
+						tokenEstimate: 6,
+						protected: false,
+					},
+				],
+				message: thinkingMessage,
+				toolCallIds: [],
+			},
+		],
+		protectedEntryIds: ["entry-user"],
+		tokensBefore: 18,
+		settings: DEFAULT_COMPACTION_SETTINGS,
+	};
+}
+
 describe("context compaction deletion tools", () => {
 	const cleanups: Array<() => void> = [];
 
@@ -308,9 +411,11 @@ describe("context compaction deletion tools", () => {
 		expect(prompt).toContain("Do not delete entries or content blocks marked protected");
 		expect(overflowPrompt).toContain("critical LRU-style compaction pass");
 		expect(overflowPrompt).toContain("earliest protected entries");
-		// Overflow eviction must prioritize reasoning traces before user/custom/summary context (#1308).
-		expect(overflowPrompt).toContain("reasoning traces first");
-		expect(overflowPrompt.indexOf("reasoning traces")).toBeLessThan(overflowPrompt.indexOf("user/custom/summary context"));
+		expect(overflowPrompt).toMatch(/old reasoning\/thinking traces/i);
+		expect(overflowPrompt).toContain('type "thinking"');
+		expect(overflowPrompt).toContain('"redacted_thinking"');
+		expect(overflowPrompt).toContain("latest retained assistant message cannot be modified");
+		expect(overflowPrompt).toContain("Older non-latest thinking/redacted_thinking blocks may be deleted");
 		expect(prompt.length).toBeLessThan(80_000);
 		expect(prompt).not.toContain("SENTINEL_FULL_TEXT_119");
 		expect(prompt).not.toContain("x".repeat(1000));
@@ -485,6 +590,65 @@ describe("context compaction deletion tools", () => {
 		]);
 	});
 
+	it("grep deletion skips assistant thinking blocks without promoting single-block entries", async () => {
+		const blockController = createContextDeletionTool(createAssistantThinkingBlockTranscript());
+
+		const blockResult = await blockController.grepTool.execute("toolu_thinking_block_grep", {
+			pattern: "single thinking sentinel",
+			target: "content_block",
+			maxMatches: 10,
+		});
+
+		expect(blockResult.terminate).toBe(false);
+		expect(blockResult.details.error).toBeUndefined();
+		expect(blockResult.details.matches).toEqual([]);
+		expect(blockResult.details.skipped).toEqual([
+			expect.objectContaining({
+				entryId: "entry-thinking",
+				target: "content_block",
+				blockIndex: 0,
+				reason: "assistant_thinking_block",
+			}),
+		]);
+		expect(blockController.getDeletionRequest().deletions).toEqual([]);
+
+		const entryController = createContextDeletionTool(createAssistantThinkingBlockTranscript());
+		const entryResult = await entryController.grepTool.execute("toolu_thinking_entry_grep", {
+			pattern: "single thinking sentinel",
+			target: "entry",
+			maxMatches: 10,
+		});
+
+		expect(entryResult.details.matches).toEqual([]);
+		expect(entryResult.details.skipped).toEqual([
+			expect.objectContaining({ entryId: "entry-thinking", target: "entry", reason: "assistant_thinking_entry" }),
+		]);
+		expect(entryController.getDeletionRequest().deletions).toEqual([]);
+	});
+
+	it("grep deletion skips non-thinking sibling blocks in assistant thinking-bearing entries", async () => {
+		const controller = createContextDeletionTool(createAssistantThinkingSiblingTranscript());
+
+		const result = await controller.grepTool.execute("toolu_thinking_sibling_grep", {
+			pattern: "visible sibling sentinel",
+			target: "content_block",
+			maxMatches: 10,
+		});
+
+		expect(result.terminate).toBe(false);
+		expect(result.details.error).toBeUndefined();
+		expect(result.details.matches).toEqual([]);
+		expect(result.details.skipped).toEqual([
+			expect.objectContaining({
+				entryId: "entry-thinking-sibling",
+				target: "content_block",
+				blockIndex: 0,
+				reason: "assistant_thinking_entry",
+			}),
+		]);
+		expect(controller.getDeletionRequest().deletions).toEqual([]);
+	});
+
 	it("reports grep guardrail skip reasons without applying matches", async () => {
 		const maxController = createContextDeletionTool(createTranscript());
 		const maxResult = await maxController.grepTool.execute("toolu_grep_max", {
@@ -563,6 +727,73 @@ describe("context compaction deletion tools", () => {
 
 		expect(result.terminate).toBe(false);
 		expect(result.details.error).toMatch(/entry-recent-user is protected/);
+		expect(controller.getDeletionRequest().deletions).toEqual([]);
+	});
+
+	it("returns a clear self-correction error for non-deletable latest thinking blocks", async () => {
+		const latestThinking = {
+			...assistantMessage(""),
+			content: [
+				{ type: "text", text: "latest visible text" },
+				{ type: "thinking", thinking: "latest thinking must stay", thinkingSignature: "sig-latest" },
+			],
+		};
+		const transcript: CompactableTranscript = {
+			entries: [
+				{
+					entryId: "entry-user",
+					entryType: "message",
+					role: "user",
+					text: "Task remains available.",
+					tokenEstimate: 6,
+					protected: true,
+					contentBlocks: [],
+					message: userMessage("Task remains available."),
+					toolCallIds: [],
+				},
+				{
+					entryId: "entry-latest-thinking",
+					entryType: "message",
+					role: "assistant",
+					text: "latest visible text\nlatest thinking must stay",
+					tokenEstimate: 8,
+					protected: false,
+					contentBlocks: [
+						{
+							entryId: "entry-latest-thinking",
+							blockIndex: 0,
+							type: "text",
+							text: "latest visible text",
+							tokenEstimate: 4,
+							protected: false,
+						},
+						{
+							entryId: "entry-latest-thinking",
+							blockIndex: 1,
+							type: "thinking",
+							text: "latest thinking must stay",
+							tokenEstimate: 4,
+							protected: false,
+						},
+					],
+					message: latestThinking,
+					toolCallIds: [],
+				},
+			],
+			protectedEntryIds: ["entry-user"],
+			tokensBefore: 14,
+			settings: DEFAULT_COMPACTION_SETTINGS,
+		};
+		const controller = createContextDeletionTool(transcript, { mode: "critical_overflow" });
+
+		const result = await controller.tool.execute("toolu_delete_latest_thinking_block", {
+			deletions: [{ kind: "content_block", entryId: "entry-latest-thinking", blockIndex: 1 }],
+		});
+
+		expect(result.terminate).toBe(false);
+		expect(result.details.error).toMatch(/not deletable during critical_overflow/);
+		expect(result.details.error).toMatch(/Choose an older assistant entry or older thinking block instead/);
+		expect(result.content[0]?.type === "text" ? result.content[0].text : "").toMatch(/corrected tool call/);
 		expect(controller.getDeletionRequest().deletions).toEqual([]);
 	});
 
