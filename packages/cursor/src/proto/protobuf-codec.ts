@@ -1,6 +1,8 @@
+import { Buffer } from "node:buffer";
 import { createHash, randomUUID } from "node:crypto";
 import { create, fromBinary, fromJson, type JsonValue as ProtobufJsonValue, toBinary, toJson } from "@bufbuild/protobuf";
 import { ValueSchema } from "@bufbuild/protobuf/wkt";
+import type { ImageContent } from "@earendil-works/pi-ai";
 import { createCursorExperimentalProtocolError, parseJsonObject, parseJsonValue, type JsonObject, type JsonValue } from "../config.js";
 import type { CursorUsableModel } from "../model-mapper.js";
 import type { CursorConnectFrame, CursorControlMessage, CursorProtocolCodec, CursorProtocolMessage, CursorRunRequest, CursorServerMessage, CursorToolResultMessage } from "../transport.js";
@@ -48,6 +50,7 @@ import {
 	RequestContextSchema,
 	RequestContextSuccessSchema,
 	SelectedContextSchema,
+	SelectedImageSchema,
 	SetBlobResultSchema,
 	ShellRejectedSchema,
 	ShellResultSchema,
@@ -65,6 +68,7 @@ import {
 	type KvServerMessage,
 	type McpToolDefinition,
 	type ModelDetails,
+	type SelectedImage,
 	type UserMessage,
 } from "./agent_pb.js";
 
@@ -102,6 +106,10 @@ interface ParsedTurn {
 
 const CURSOR_PROTO_CLIENT_NAME = "pi";
 const NATIVE_EXEC_REJECT_REASON = "Tool not available in this environment. Use the MCP tools provided instead.";
+const CURSOR_IMAGE_SERIALIZATION_OPT_IN_ERROR = "Cursor experimental image input serialization requires explicit opt-in before encoding image content.";
+const CURSOR_HISTORICAL_IMAGE_SERIALIZATION_ERROR = "Cursor experimental image input serialization only supports images on the current user message.";
+const CURSOR_TOOL_RESULT_IMAGE_SERIALIZATION_ERROR = "Cursor experimental image input serialization does not support tool-result images.";
+const CURSOR_IMAGE_DECODE_ERROR = "Cursor experimental image input could not decode an image content block because the image payload is not valid base64/data URL base64. Remove image content or switch to a vision-capable provider.";
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
@@ -152,12 +160,15 @@ export class CursorProtobufProtocolCodec implements CursorProtocolCodec {
 	}
 
 	encodeRunRequest(request: CursorRunRequest): Uint8Array {
+		validateCursorImageSerializationContext(request);
+		const currentImages = extractCurrentActionImages(request);
 		const conversationIdValue = request.conversationId ?? request.requestId;
 		const storedState = this.#conversationStates.get(conversationIdValue);
 		const payload = buildCursorRequest(
 			request.resolvedModelId,
 			request.context.systemPrompt ?? "",
 			extractCurrentActionText(request),
+			currentImages,
 			parseHistoricalTurns(request.context.messages.slice(0, -1)),
 			conversationIdValue,
 			storedState?.checkpoint ?? null,
@@ -309,6 +320,7 @@ function buildCursorRequest(
 	modelId: string,
 	systemPrompt: string,
 	userText: string,
+	userImages: readonly ImageContent[],
 	turns: readonly ParsedTurn[],
 	conversationId: string,
 	checkpoint: Uint8Array | null,
@@ -320,7 +332,7 @@ function buildCursorRequest(
 	const conversationState = checkpoint
 		? fromBinary(ConversationStateStructureSchema, checkpoint)
 		: buildConversationState(turns, blobStore, systemBlobId, selectedContextBlob);
-	const userMessage = createUserMessage(userText, selectedContextBlob);
+	const userMessage = createUserMessage(userText, selectedContextBlob, userImages);
 	const action = create(ConversationActionSchema, {
 		action: { case: "userMessageAction", value: create(UserMessageActionSchema, { userMessage }) },
 	});
@@ -371,16 +383,58 @@ function buildConversationState(
 	});
 }
 
-function createUserMessage(text: string, selectedContextBlob: Uint8Array): UserMessage {
+function createUserMessage(text: string, selectedContextBlob: Uint8Array, images: readonly ImageContent[] = []): UserMessage {
 	const messageId = randomUUID();
 	return create(UserMessageSchema, {
 		text,
 		messageId,
-		selectedContext: create(SelectedContextSchema, {}),
+		selectedContext: create(SelectedContextSchema, { selectedImages: images.map(createSelectedImage) }),
 		mode: 1,
 		selectedContextBlob,
 		correlationId: messageId,
 	});
+}
+
+function createSelectedImage(image: ImageContent): SelectedImage {
+	return create(SelectedImageSchema, {
+		uuid: randomUUID(),
+		mimeType: image.mimeType,
+		dataOrBlobId: { case: "data", value: decodeImageData(image) },
+	});
+}
+
+function decodeImageData(image: ImageContent): Uint8Array {
+	const encoded = extractBase64ImagePayload(image.data);
+	return decodeStrictBase64ImagePayload(encoded);
+}
+
+function extractBase64ImagePayload(data: string): string {
+	if (!data.startsWith("data:")) return data;
+	const commaIndex = data.indexOf(",");
+	if (commaIndex === -1) throw new Error(CURSOR_IMAGE_DECODE_ERROR);
+	const metadata = data.slice("data:".length, commaIndex);
+	const hasBase64Parameter = metadata.split(";").slice(1).some((parameter) => parameter.toLowerCase() === "base64");
+	if (!hasBase64Parameter) throw new Error(CURSOR_IMAGE_DECODE_ERROR);
+	return data.slice(commaIndex + 1);
+}
+
+function decodeStrictBase64ImagePayload(encoded: string): Uint8Array {
+	if (encoded.length === 0 || /\s/u.test(encoded) || /[^A-Za-z0-9+/=]/u.test(encoded)) throw new Error(CURSOR_IMAGE_DECODE_ERROR);
+	const firstPaddingIndex = encoded.indexOf("=");
+	const hasPadding = firstPaddingIndex !== -1;
+	if (hasPadding) {
+		const padding = encoded.slice(firstPaddingIndex);
+		if (!/^={1,2}$/u.test(padding) || encoded.length % 4 !== 0) throw new Error(CURSOR_IMAGE_DECODE_ERROR);
+	} else if (encoded.length % 4 === 1) {
+		throw new Error(CURSOR_IMAGE_DECODE_ERROR);
+	}
+	const padded = hasPadding ? encoded : encoded.padEnd(Math.ceil(encoded.length / 4) * 4, "=");
+	const bytes = Buffer.from(padded, "base64");
+	const canonical = bytes.toString("base64");
+	const expected = hasPadding ? encoded : encoded;
+	const actual = hasPadding ? canonical : canonical.replace(/=+$/u, "");
+	if (actual !== expected) throw new Error(CURSOR_IMAGE_DECODE_ERROR);
+	return Uint8Array.from(bytes);
 }
 
 function buildTurnStepBytes(step: ParsedTurnStep): Uint8Array {
@@ -408,6 +462,20 @@ function buildTurnStepBytes(step: ParsedTurnStep): Uint8Array {
 	}));
 }
 
+function validateCursorImageSerializationContext(request: CursorRunRequest): void {
+	const finalMessageIndex = request.context.messages.length - 1;
+	for (const [index, message] of request.context.messages.entries()) {
+		if (message.role === "toolResult") {
+			if (message.content.some((part) => part.type === "image")) throw new Error(CURSOR_TOOL_RESULT_IMAGE_SERIALIZATION_ERROR);
+			continue;
+		}
+		if (message.role !== "user" || typeof message.content === "string") continue;
+		if (!message.content.some((part) => part.type === "image")) continue;
+		if (index !== finalMessageIndex) throw new Error(CURSOR_HISTORICAL_IMAGE_SERIALIZATION_ERROR);
+		if (request.experimentalImageInput !== true) throw new Error(CURSOR_IMAGE_SERIALIZATION_OPT_IN_ERROR);
+	}
+}
+
 function parseHistoricalTurns(messages: readonly CursorRunRequest["context"]["messages"][number][]): readonly ParsedTurn[] {
 	const turns: ParsedTurn[] = [];
 	let currentTurn: { userText: string; steps: ParsedTurnStep[]; toolCallById: Map<string, ParsedToolCallStep> } | undefined;
@@ -423,7 +491,7 @@ function parseHistoricalTurns(messages: readonly CursorRunRequest["context"]["me
 	for (const message of messages) {
 		if (message.role === "user") {
 			flushTurn();
-			currentTurn = { userText: textFromMessage(message), steps: [], toolCallById: new Map() };
+			currentTurn = { userText: textFromMessage(message, { allowUserImages: false }), steps: [], toolCallById: new Map() };
 		} else if (message.role === "assistant") {
 			const turn = ensureTurn();
 			for (const part of message.content) {
@@ -664,16 +732,24 @@ function serializableJsonValue(value: object): JsonValue {
 
 function extractCurrentActionText(request: CursorRunRequest): string {
 	const last = request.context.messages.at(-1);
-	return last ? textFromMessage(last) : "";
+	return last ? textFromMessage(last, { allowUserImages: true }) : "";
+}
+
+function extractCurrentActionImages(request: CursorRunRequest): readonly ImageContent[] {
+	const last = request.context.messages.at(-1);
+	if (last?.role !== "user" || typeof last.content === "string") return [];
+	return last.content.filter((part): part is ImageContent => part.type === "image");
 }
 
 function rawToolResultText(message: Extract<CursorRunRequest["context"]["messages"][number], { readonly role: "toolResult" }>): string {
+	if (message.content.some((part) => part.type === "image")) throw new Error(CURSOR_TOOL_RESULT_IMAGE_SERIALIZATION_ERROR);
 	return message.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("\n");
 }
 
-function textFromMessage(message: CursorRunRequest["context"]["messages"][number]): string {
+function textFromMessage(message: CursorRunRequest["context"]["messages"][number], options: { readonly allowUserImages?: boolean } = {}): string {
 	if (message.role === "user") {
 		if (typeof message.content === "string") return message.content;
+		if (!options.allowUserImages && message.content.some((part) => part.type === "image")) throw new Error(CURSOR_HISTORICAL_IMAGE_SERIALIZATION_ERROR);
 		return message.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("\n");
 	}
 	if (message.role === "assistant") {

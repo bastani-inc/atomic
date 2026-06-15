@@ -46,6 +46,7 @@ export interface CursorRunRequest {
 	readonly resolvedModelId: string;
 	readonly thinkingLevel?: ThinkingLevel;
 	readonly context: Context;
+	readonly experimentalImageInput?: boolean;
 	readonly signal?: AbortSignal;
 	readonly openTimeoutMs?: number;
 }

@@ -12,7 +12,8 @@ The unavoidable Atomic-specific integration difference is the provider surface: 
 
 ## Limitations
 
-- Text input only. Images/screenshots are not supported by Cursor's headless provider API; remove image content or switch to a vision-capable provider.
+- Text input only by default. Images/screenshots are rejected unless the experimental opt-in is enabled; remove image content or switch to a vision-capable provider.
+- Experimental user-image transport can be tried by setting `ATOMIC_CURSOR_EXPERIMENTAL_IMAGE_INPUT=1`. This keeps model metadata text-only, requires a serialization-level opt-in, strictly validates base64/data URL payloads, and sends only final user-message image blocks through Cursor's local private protobuf `selectedImages[].data` path. That protobuf path is undocumented and unvalidated against live Cursor remote behavior; Cursor documents image support on other product/API surfaces, which do not validate this local private protobuf transport. Remote Cursor may fail or ignore images, and tool-result images remain rejected.
 - Cursor's private API may change without notice.
 - HTTP/2 transport requires the bundled `@bastani/atomic-natives` Rust/N-API native client for the current platform.
 - Credentials are OAuth-only. Do not pass Cursor tokens via command-line args, environment variables, logs, or local proxy processes.

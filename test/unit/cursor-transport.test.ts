@@ -1,5 +1,7 @@
 import { test, describe } from "bun:test";
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
+import { fromBinary } from "@bufbuild/protobuf";
 import type { Api, Context, Model } from "@earendil-works/pi-ai";
 import {
 	CursorConnectFrameDecoder,
@@ -17,6 +19,7 @@ import {
 	type CursorServerMessage,
 } from "../../packages/cursor/src/transport.js";
 import type { CursorH2NativeBinding, CursorH2NativeStream, CursorH2NativeUnaryResponse } from "../../packages/cursor/src/native-loader.js";
+import { AgentClientMessageSchema } from "../../packages/cursor/src/proto/agent_pb.js";
 import { cursorProtoTest } from "./cursor-proto-test-helpers.js";
 
 class FakeStreamHandle implements CursorHttp2StreamHandle {
@@ -186,6 +189,16 @@ const contextWithUserMessage: Context = {
 	tools: [{ name: "Read", description: "Read a file", parameters: { type: "object", properties: { path: { type: "string" } } } }],
 };
 
+function decodeRunUserMessage(data: Uint8Array) {
+	const clientMessage = fromBinary(AgentClientMessageSchema, data);
+	if (clientMessage.message.case !== "runRequest") assert.fail("expected runRequest");
+	const action = clientMessage.message.value.action;
+	if (!action || action.action.case !== "userMessageAction") assert.fail("expected userMessageAction");
+	const { userMessage } = action.action.value;
+	if (!userMessage) assert.fail("expected userMessage");
+	return userMessage;
+}
+
 function valueString(value: string): Uint8Array {
 	return cursorProtoTest.encodeStringField(3, value);
 }
@@ -272,7 +285,245 @@ describe("Cursor HTTP2 transport boundary", () => {
 		assert.match(cursorProtoTest.decodeString(rootPromptBlob), /system prompt/u);
 		const textDelta = cursorProtoTest.encodeMessageField(1, cursorProtoTest.encodeStringField(1, "hello"));
 		const interactionUpdate = cursorProtoTest.encodeMessageField(1, textDelta);
+		const userMessage = decodeRunUserMessage(encodedRun);
+		assert.equal(userMessage.text, "hello cursor");
+		assert.equal(userMessage.selectedContext?.selectedImages.length ?? 0, 0);
 		assert.deepEqual(codec.decodeRunFrame({ flags: 0, data: interactionUpdate, endStream: false }), [{ type: "textDelta", text: "hello" }]);
+	});
+
+	test("protobuf codec encodes current user images as inline Cursor selected images without changing text", () => {
+		const codec = new CursorProtobufProtocolCodec();
+		const pngBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+		const encodedRun = codec.encodeRunRequest({
+			accessToken: "secret-token-that-must-not-appear",
+			requestId: "run-image",
+			model,
+			resolvedModelId: "composer-2",
+			experimentalImageInput: true,
+			context: {
+				systemPrompt: "system prompt",
+				messages: [{
+					role: "user",
+					content: [
+						{ type: "text", text: "describe without mutation" },
+						{ type: "image", data: Buffer.from(pngBytes).toString("base64"), mimeType: "image/png" },
+					],
+					timestamp: 1,
+				}],
+			},
+		});
+
+		const decodedText = new TextDecoder().decode(encodedRun);
+		assert.equal(decodedText.includes("secret-token-that-must-not-appear"), false);
+		assert.equal(decodedText.includes(Buffer.from(pngBytes).toString("base64")), false);
+		const userMessage = decodeRunUserMessage(encodedRun);
+		assert.equal(userMessage.text, "describe without mutation");
+		const selectedImages = userMessage.selectedContext?.selectedImages ?? [];
+		assert.equal(selectedImages.length, 1);
+		assert.equal(selectedImages[0]?.mimeType, "image/png");
+		assert.equal(selectedImages[0]?.dataOrBlobId.case, "data");
+		assert.deepEqual([...(selectedImages[0]?.dataOrBlobId.value ?? [])], [...pngBytes]);
+	});
+
+	test("protobuf codec rejects current user images without serialization opt-in", () => {
+		const codec = new CursorProtobufProtocolCodec();
+		assert.throws(
+			() => codec.encodeRunRequest({
+				accessToken: "secret-token-that-must-not-appear",
+				requestId: "run-image-rejected",
+				model,
+				resolvedModelId: "composer-2",
+				context: {
+					messages: [{ role: "user", content: [{ type: "image", data: "image-bytes-must-not-leak", mimeType: "image/png" }], timestamp: 1 }],
+				},
+			}),
+			(error: Error) => {
+				assert.match(error.message, /explicit opt-in/u);
+				assert.doesNotMatch(error.message, /secret-token-that-must-not-appear/u);
+				assert.doesNotMatch(error.message, /image-bytes-must-not-leak/u);
+				return true;
+			},
+		);
+	});
+
+	test("protobuf codec rejects historical user images under serialization opt-in without leaking payloads", () => {
+		const codec = new CursorProtobufProtocolCodec();
+		assert.throws(
+			() => codec.encodeRunRequest({
+				accessToken: "secret-token-that-must-not-appear",
+				requestId: "run-historical-image-rejected",
+				model,
+				resolvedModelId: "composer-2",
+				experimentalImageInput: true,
+				context: {
+					messages: [
+						{ role: "user", content: [{ type: "text", text: "historical text must not leak" }, { type: "image", data: "historical-image-must-not-leak", mimeType: "image/png" }], timestamp: 1 },
+						{ role: "user", content: "current text", timestamp: 2 },
+					],
+				},
+			}),
+			(error: Error) => {
+				assert.match(error.message, /current user message/u);
+				assert.doesNotMatch(error.message, /secret-token-that-must-not-appear/u);
+				assert.doesNotMatch(error.message, /historical-image-must-not-leak/u);
+				assert.doesNotMatch(error.message, /historical text must not leak/u);
+				return true;
+			},
+		);
+	});
+
+	test("protobuf codec rejects tool-result images anywhere in context under serialization opt-in without leaking payloads", () => {
+		const codec = new CursorProtobufProtocolCodec();
+		assert.throws(
+			() => codec.encodeRunRequest({
+				accessToken: "secret-token-that-must-not-appear",
+				requestId: "run-tool-image-rejected",
+				model,
+				resolvedModelId: "composer-2",
+				experimentalImageInput: true,
+				context: {
+					messages: [
+						{ role: "user", content: "first", timestamp: 1 },
+						{ role: "assistant", content: [{ type: "toolCall", id: "tool-1", name: "Read", arguments: { path: "README.md" } }], api: "cursor-agent", provider: "cursor", model: "composer-2", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "toolUse", timestamp: 2 },
+						{ role: "toolResult", toolCallId: "tool-1", toolName: "Read", content: [{ type: "text", text: "tool text must not leak" }, { type: "image", data: "tool-image-must-not-leak", mimeType: "image/png" }], isError: false, timestamp: 3 },
+						{ role: "user", content: "current text", timestamp: 4 },
+					],
+				},
+			}),
+			(error: Error) => {
+				assert.match(error.message, /tool-result images/u);
+				assert.doesNotMatch(error.message, /secret-token-that-must-not-appear/u);
+				assert.doesNotMatch(error.message, /tool-image-must-not-leak/u);
+				assert.doesNotMatch(error.message, /tool text must not leak/u);
+				return true;
+			},
+		);
+	});
+
+	test("transport rejects historical user images before opening a Cursor stream", async () => {
+		const client = new FakeHttp2Client();
+		const transport = new Http2CursorAgentTransport({ client });
+
+		await assert.rejects(
+			() => transport.run({
+				accessToken: "secret-token-that-must-not-appear",
+				requestId: "run-transport-historical-image",
+				model,
+				resolvedModelId: "composer-2",
+				experimentalImageInput: true,
+				context: {
+					messages: [
+						{ role: "user", content: [{ type: "image", data: "historical-transport-image-must-not-leak", mimeType: "image/png" }], timestamp: 1 },
+						{ role: "user", content: "current text", timestamp: 2 },
+					],
+				},
+			}),
+			(error: Error) => {
+				assert.ok(error instanceof CursorTransportError);
+				assert.equal(error.code, "ProtocolError");
+				assert.match(error.message, /current user message/u);
+				assert.doesNotMatch(error.message, /secret-token-that-must-not-appear/u);
+				assert.doesNotMatch(error.message, /historical-transport-image-must-not-leak/u);
+				return true;
+			},
+		);
+		assert.equal(client.streamRequests.length, 0);
+		assert.equal(client.streamHandle.writes.length, 0);
+	});
+
+	test("transport rejects tool-result images before opening a Cursor stream", async () => {
+		const client = new FakeHttp2Client();
+		const transport = new Http2CursorAgentTransport({ client });
+
+		await assert.rejects(
+			() => transport.run({
+				accessToken: "secret-token-that-must-not-appear",
+				requestId: "run-transport-tool-image",
+				model,
+				resolvedModelId: "composer-2",
+				experimentalImageInput: true,
+				context: {
+					messages: [
+						{ role: "user", content: "first", timestamp: 1 },
+						{ role: "toolResult", toolCallId: "tool-1", toolName: "Read", content: [{ type: "image", data: "tool-transport-image-must-not-leak", mimeType: "image/png" }], isError: false, timestamp: 2 },
+						{ role: "user", content: "current text", timestamp: 3 },
+					],
+				},
+			}),
+			(error: Error) => {
+				assert.ok(error instanceof CursorTransportError);
+				assert.equal(error.code, "ProtocolError");
+				assert.match(error.message, /tool-result images/u);
+				assert.doesNotMatch(error.message, /secret-token-that-must-not-appear/u);
+				assert.doesNotMatch(error.message, /tool-transport-image-must-not-leak/u);
+				return true;
+			},
+		);
+		assert.equal(client.streamRequests.length, 0);
+		assert.equal(client.streamHandle.writes.length, 0);
+	});
+
+	test("protobuf codec accepts parameterized image data URLs under serialization opt-in", () => {
+		const codec = new CursorProtobufProtocolCodec();
+		const pngBytes = new Uint8Array([0, 1, 2, 3]);
+		const encodedRun = codec.encodeRunRequest({
+			accessToken: "secret-token-that-must-not-appear",
+			requestId: "run-parameterized-image-url",
+			model,
+			resolvedModelId: "composer-2",
+			experimentalImageInput: true,
+			context: {
+				messages: [{
+					role: "user",
+					content: [
+						{ type: "image", data: `data:image/png;name=tiny.png;base64,${Buffer.from(pngBytes).toString("base64")}`, mimeType: "image/png" },
+						{ type: "image", data: `data:;base64,${Buffer.from([4, 5]).toString("base64")}`, mimeType: "image/png" },
+					],
+					timestamp: 1,
+				}],
+			},
+		});
+
+		const selectedImages = decodeRunUserMessage(encodedRun).selectedContext?.selectedImages ?? [];
+		assert.equal(selectedImages.length, 2);
+		assert.equal(selectedImages[0]?.dataOrBlobId.case, "data");
+		assert.equal(selectedImages[1]?.dataOrBlobId.case, "data");
+		assert.deepEqual([...(selectedImages[0]?.dataOrBlobId.value ?? [])], [...pngBytes]);
+		assert.deepEqual([...(selectedImages[1]?.dataOrBlobId.value ?? [])], [4, 5]);
+	});
+
+	test("protobuf codec rejects malformed image base64 and data URLs without leaking payloads", () => {
+		const cases = [
+			"%%%%malformed-image-payload%%%%",
+			"abcde",
+			"YQ=Q",
+			"data:image/png;base64,%%%%malformed-data-url%%%%",
+			"data:image/png,not-base64",
+			"data:image/png;base64",
+		];
+		for (const data of cases) {
+			const codec = new CursorProtobufProtocolCodec();
+			assert.throws(
+				() => codec.encodeRunRequest({
+					accessToken: "secret-token-that-must-not-appear",
+					requestId: "run-malformed-image",
+					model,
+					resolvedModelId: "composer-2",
+					experimentalImageInput: true,
+					context: {
+						messages: [{ role: "user", content: [{ type: "image", data, mimeType: "image/png" }], timestamp: 1 }],
+					},
+				}),
+				(error: Error) => {
+					assert.match(error.message, /not valid base64\/data URL base64/u);
+					assert.doesNotMatch(error.message, /secret-token-that-must-not-appear/u);
+					assert.doesNotMatch(error.message, /malformed-image-payload/u);
+					assert.doesNotMatch(error.message, /malformed-data-url/u);
+					assert.doesNotMatch(error.message, /not-base64/u);
+					return true;
+				},
+			);
+		}
 	});
 
 	test("protobuf codec tolerates orphan and repeated historical tool results like the reference parser", () => {

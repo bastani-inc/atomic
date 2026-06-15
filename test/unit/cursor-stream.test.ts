@@ -70,6 +70,18 @@ async function collectEventsWithTimeout(stream: AsyncIterable<AssistantMessageEv
 	}
 }
 
+async function withCursorExperimentalImageInput<T>(value: string | undefined, fn: () => Promise<T>): Promise<T> {
+	const previous = process.env.ATOMIC_CURSOR_EXPERIMENTAL_IMAGE_INPUT;
+	try {
+		if (value === undefined) delete process.env.ATOMIC_CURSOR_EXPERIMENTAL_IMAGE_INPUT;
+		else process.env.ATOMIC_CURSOR_EXPERIMENTAL_IMAGE_INPUT = value;
+		return await fn();
+	} finally {
+		if (previous === undefined) delete process.env.ATOMIC_CURSOR_EXPERIMENTAL_IMAGE_INPUT;
+		else process.env.ATOMIC_CURSOR_EXPERIMENTAL_IMAGE_INPUT = previous;
+	}
+}
+
 describe("CursorStreamAdapter", () => {
 	test("uses the production UUID generator when no test UUID is injected", async () => {
 		const transport = new CursorMockTransport({ messages: [{ type: "textDelta", text: "ok" }, { type: "done", reason: "stop" }] });
@@ -781,55 +793,222 @@ describe("CursorStreamAdapter", () => {
 	});
 
 	test("rejects user image input with provider fallback guidance before invoking Cursor transport", async () => {
-		const transport = new CursorMockTransport();
-		const adapter = new CursorStreamAdapter({ transport, uuid: () => "run-user-image" });
-		const imageContext: Context = {
-			messages: [{ role: "user", content: [{ type: "image", data: "abc", mimeType: "image/png" }], timestamp: 1 }],
-		};
+		await withCursorExperimentalImageInput(undefined, async () => {
+			const transport = new CursorMockTransport();
+			const adapter = new CursorStreamAdapter({ transport, uuid: () => "run-user-image" });
+			const imageContext: Context = {
+				messages: [{ role: "user", content: [{ type: "image", data: "image-bytes-must-not-leak", mimeType: "image/png" }], timestamp: 1 }],
+			};
 
-		const events = await collectEvents(adapter.streamSimple(model(), imageContext, { apiKey: "access-secret" }));
+			const events = await collectEvents(adapter.streamSimple(model(), imageContext, { apiKey: "access-secret" }));
 
-		const terminal = events.at(-1);
-		assert.equal(terminal?.type, "error");
-		if (terminal?.type === "error") {
-			const message = terminal.error.errorMessage ?? "";
-			assert.match(message, /text input only/u);
-			assert.match(message, /images\/screenshots/u);
-			assert.match(message, /vision-capable provider/u);
-			assert.doesNotMatch(message, /access-secret/u);
-		}
-		assert.equal(transport.runs.length, 0);
+			const terminal = events.at(-1);
+			assert.equal(terminal?.type, "error");
+			if (terminal?.type === "error") {
+				const message = terminal.error.errorMessage ?? "";
+				assert.match(message, /text input only/u);
+				assert.match(message, /images\/screenshots/u);
+				assert.match(message, /vision-capable provider/u);
+				assert.match(message, /ATOMIC_CURSOR_EXPERIMENTAL_IMAGE_INPUT=1/u);
+				assert.doesNotMatch(message, /access-secret/u);
+				assert.doesNotMatch(message, /image-bytes-must-not-leak/u);
+			}
+			assert.equal(transport.runs.length, 0);
+		});
+	});
+
+	test("rejects opted-in image-only input without sessionId before invoking Cursor transport", async () => {
+		await withCursorExperimentalImageInput("1", async () => {
+			const transport = new CursorMockTransport();
+			const adapter = new CursorStreamAdapter({ transport, uuid: () => "run-user-image-no-session" });
+			const imageData = "image-only-session-sentinel-must-not-leak";
+			const imageContext: Context = {
+				messages: [{ role: "user", content: [{ type: "image", data: imageData, mimeType: "image/png" }], timestamp: 1 }],
+			};
+
+			const events = await collectEvents(adapter.streamSimple(model(), imageContext, { apiKey: "access-secret" }));
+
+			const terminal = events.at(-1);
+			assert.equal(terminal?.type, "error");
+			if (terminal?.type === "error") {
+				const message = terminal.error.errorMessage ?? "";
+				assert.match(message, /non-empty sessionId/u);
+				assert.doesNotMatch(message, /access-secret/u);
+				assert.doesNotMatch(message, /image-only-session-sentinel-must-not-leak/u);
+			}
+			assert.equal(transport.runs.length, 0);
+		});
+	});
+
+	test("rejects opted-in same-text different-image inputs without sessionId before invoking Cursor transport", async () => {
+		await withCursorExperimentalImageInput("1", async () => {
+			const firstTransport = new CursorMockTransport();
+			const secondTransport = new CursorMockTransport();
+			const firstAdapter = new CursorStreamAdapter({ transport: firstTransport, uuid: () => "run-same-text-image-a" });
+			const secondAdapter = new CursorStreamAdapter({ transport: secondTransport, uuid: () => "run-same-text-image-b" });
+			const firstImageData = "same-text-first-image-must-not-leak";
+			const secondImageData = "same-text-second-image-must-not-leak";
+			const firstContext: Context = {
+				messages: [{ role: "user", content: [{ type: "text", text: "same prompt" }, { type: "image", data: firstImageData, mimeType: "image/png" }], timestamp: 1 }],
+			};
+			const secondContext: Context = {
+				messages: [{ role: "user", content: [{ type: "text", text: "same prompt" }, { type: "image", data: secondImageData, mimeType: "image/png" }], timestamp: 1 }],
+			};
+
+			const firstEvents = await collectEvents(firstAdapter.streamSimple(model(), firstContext, { apiKey: "access-secret" }));
+			const secondEvents = await collectEvents(secondAdapter.streamSimple(model(), secondContext, { apiKey: "access-secret" }));
+
+			for (const [events, imageData] of [[firstEvents, firstImageData], [secondEvents, secondImageData]] as const) {
+				const terminal = events.at(-1);
+				assert.equal(terminal?.type, "error");
+				if (terminal?.type === "error") {
+					const message = terminal.error.errorMessage ?? "";
+					assert.match(message, /non-empty sessionId/u);
+					assert.doesNotMatch(message, /access-secret/u);
+					assert.doesNotMatch(message, new RegExp(imageData, "u"));
+				}
+			}
+			assert.equal(firstTransport.runs.length, 0);
+			assert.equal(secondTransport.runs.length, 0);
+		});
+	});
+
+	test("rejects opted-in user image input with whitespace-only sessionId before invoking Cursor transport", async () => {
+		await withCursorExperimentalImageInput("1", async () => {
+			const transport = new CursorMockTransport();
+			const adapter = new CursorStreamAdapter({ transport, uuid: () => "run-user-image-whitespace-session" });
+			const imageContext: Context = {
+				messages: [{ role: "user", content: [{ type: "image", data: "whitespace-session-image-must-not-leak", mimeType: "image/png" }], timestamp: 1 }],
+			};
+
+			const events = await collectEvents(adapter.streamSimple(model(), imageContext, { apiKey: "access-secret", sessionId: " \t\n " }));
+
+			const terminal = events.at(-1);
+			assert.equal(terminal?.type, "error");
+			if (terminal?.type === "error") {
+				const message = terminal.error.errorMessage ?? "";
+				assert.match(message, /non-empty sessionId/u);
+				assert.doesNotMatch(message, /access-secret/u);
+				assert.doesNotMatch(message, /whitespace-session-image-must-not-leak/u);
+			}
+			assert.equal(transport.runs.length, 0);
+		});
+	});
+
+	test("allows current user image input to reach transport when experimental Cursor image input is enabled", async () => {
+		await withCursorExperimentalImageInput("1", async () => {
+			const transport = new CursorMockTransport({ messages: [{ type: "done", reason: "stop" }] });
+			const adapter = new CursorStreamAdapter({ transport, uuid: () => "run-user-image-opt-in" });
+			const imageContext: Context = {
+				messages: [{ role: "user", content: [{ type: "text", text: "keep text exactly" }, { type: "image", data: "YWJj", mimeType: "image/png" }], timestamp: 1 }],
+			};
+
+			const events = await collectEvents(adapter.streamSimple(model(), imageContext, { apiKey: "access-secret", sessionId: "session-user-image-opt-in" }));
+
+			assert.equal(events.at(-1)?.type, "done");
+			assert.equal(transport.runs.length, 1);
+			assert.equal(transport.runs[0]?.request.experimentalImageInput, true);
+			assert.deepEqual(transport.runs[0]?.request.context, imageContext);
+		});
+	});
+
+	test("rejects historical user images under the experimental opt-in instead of dropping them", async () => {
+		await withCursorExperimentalImageInput("1", async () => {
+			const transport = new CursorMockTransport();
+			const adapter = new CursorStreamAdapter({ transport, uuid: () => "run-historical-user-image" });
+			const imageContext: Context = {
+				messages: [
+					{ role: "user", content: [{ type: "image", data: "historical-image-must-not-leak", mimeType: "image/png" }], timestamp: 1 },
+					{ role: "assistant", content: [{ type: "text", text: "ok" }], api: "cursor-agent", provider: "cursor", model: "composer-2", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: 2 },
+					{ role: "user", content: "next", timestamp: 3 },
+				],
+			};
+
+			const events = await collectEvents(adapter.streamSimple(model(), imageContext, { apiKey: "access-secret", sessionId: "session-historical-user-image" }));
+
+			const terminal = events.at(-1);
+			assert.equal(terminal?.type, "error");
+			if (terminal?.type === "error") {
+				const message = terminal.error.errorMessage ?? "";
+				assert.match(message, /current user message/u);
+				assert.doesNotMatch(message, /historical-image-must-not-leak/u);
+				assert.doesNotMatch(message, /access-secret/u);
+			}
+			assert.equal(transport.runs.length, 0);
+		});
+	});
+
+	test("allows text-only tool-result resumes after an opted-in image turn", async () => {
+		await withCursorExperimentalImageInput("1", async () => {
+			const transport = new CursorMockTransport({ messages: [
+				{ type: "toolCall", id: "tool-1", name: "Read", argumentsJson: "{\"path\":\"README.md\"}", execId: "exec-1", execNumericId: 7 },
+				{ type: "done", reason: "toolUse" },
+			] });
+			const adapter = new CursorStreamAdapter({ transport, uuid: () => "run-resume-image-tool" });
+			const imageData = "cmVzdW1lLWltYWdlLXNlbnRpbmVsLW11c3Qtbm90LWxlYWs=";
+			const imageTurn = { role: "user" as const, content: [{ type: "text" as const, text: "inspect this" }, { type: "image" as const, data: imageData, mimeType: "image/png" }], timestamp: 1 };
+			const firstContext: Context = { messages: [imageTurn] };
+
+			const firstEvents = await collectEvents(adapter.streamSimple(model(), firstContext, { apiKey: "access-secret", sessionId: "session-resume-image-tool" }));
+
+			assert.equal(firstEvents.at(-1)?.type, "done");
+			const firstTerminal = firstEvents.at(-1);
+			if (firstTerminal?.type === "done") assert.equal(firstTerminal.reason, "toolUse");
+			assert.equal(transport.runs.length, 1);
+			assert.equal(transport.runs[0]?.request.experimentalImageInput, true);
+			const resumeContext: Context = {
+				messages: [
+					imageTurn,
+					{ role: "assistant", content: [{ type: "toolCall", id: "tool-1", name: "Read", arguments: { path: "README.md" } }], api: "cursor-agent", provider: "cursor", model: "composer-2", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "toolUse", timestamp: 2 },
+					{ role: "toolResult", toolCallId: "tool-1", toolName: "Read", content: [{ type: "text", text: "file contents" }], isError: false, timestamp: 3 },
+				],
+			};
+
+			const secondEvents = await collectEvents(adapter.streamSimple(model(), resumeContext, { apiKey: "access-secret", sessionId: "session-resume-image-tool" }));
+
+			assert.equal(secondEvents.some((event) => event.type === "error"), false);
+			assert.equal(secondEvents.at(-1)?.type, "done");
+			assert.equal(transport.runs.length, 1);
+			assert.deepEqual(transport.runs[0]?.stream.writtenToolResults, [{ toolCallId: "tool-1", toolName: "Read", text: "file contents", isError: false, execId: "exec-1", execNumericId: 7 }]);
+			const serializedSecondEvents = JSON.stringify(secondEvents);
+			assert.equal(serializedSecondEvents.includes(imageData), false);
+			assert.doesNotMatch(serializedSecondEvents, /resume-image-sentinel-must-not-leak/u);
+			assert.doesNotMatch(serializedSecondEvents, /access-secret/u);
+		});
 	});
 
 	test("rejects tool-result image input with provider fallback guidance before resume", async () => {
-		class TrackingConversationState extends CursorConversationStateStore {
-			resumeAttempts = 0;
+		await withCursorExperimentalImageInput("1", async () => {
+			class TrackingConversationState extends CursorConversationStateStore {
+				resumeAttempts = 0;
 
-			override async resumeTurnWithToolResults(conversationId: string, results: readonly CursorToolResultMessage[], options?: CursorResumeTurnOptions): Promise<CursorRunStream> {
-				this.resumeAttempts += 1;
-				return super.resumeTurnWithToolResults(conversationId, results, options);
+				override async resumeTurnWithToolResults(conversationId: string, results: readonly CursorToolResultMessage[], options?: CursorResumeTurnOptions): Promise<CursorRunStream> {
+					this.resumeAttempts += 1;
+					return super.resumeTurnWithToolResults(conversationId, results, options);
+				}
 			}
-		}
-		const transport = new CursorMockTransport();
-		const conversationState = new TrackingConversationState();
-		const adapter = new CursorStreamAdapter({ transport, conversationState, uuid: () => "run-tool-image" });
-		const imageContext: Context = {
-			messages: [{ role: "toolResult", toolCallId: "tool-1", toolName: "Read", content: [{ type: "image", data: "abc", mimeType: "image/png" }], isError: false, timestamp: 1 }],
-		};
+			const transport = new CursorMockTransport();
+			const conversationState = new TrackingConversationState();
+			const adapter = new CursorStreamAdapter({ transport, conversationState, uuid: () => "run-tool-image" });
+			const imageContext: Context = {
+				messages: [{ role: "toolResult", toolCallId: "tool-1", toolName: "Read", content: [{ type: "image", data: "tool-image-must-not-leak", mimeType: "image/png" }], isError: false, timestamp: 1 }],
+			};
 
-		const events = await collectEvents(adapter.streamSimple(model(), imageContext, { apiKey: "access-secret", sessionId: "session-tool-image" }));
+			const events = await collectEvents(adapter.streamSimple(model(), imageContext, { apiKey: "access-secret", sessionId: "session-tool-image" }));
 
-		const terminal = events.at(-1);
-		assert.equal(terminal?.type, "error");
-		if (terminal?.type === "error") {
-			const message = terminal.error.errorMessage ?? "";
-			assert.match(message, /text input only/u);
-			assert.match(message, /images\/screenshots/u);
-			assert.match(message, /vision-capable provider/u);
-			assert.doesNotMatch(message, /access-secret/u);
-		}
-		assert.equal(transport.runs.length, 0);
-		assert.equal(conversationState.resumeAttempts, 0);
+			const terminal = events.at(-1);
+			assert.equal(terminal?.type, "error");
+			if (terminal?.type === "error") {
+				const message = terminal.error.errorMessage ?? "";
+				assert.match(message, /text tool results only/u);
+				assert.match(message, /tool-result images\/screenshots/u);
+				assert.match(message, /vision-capable provider/u);
+				assert.doesNotMatch(message, /access-secret/u);
+				assert.doesNotMatch(message, /tool-image-must-not-leak/u);
+			}
+			assert.equal(transport.runs.length, 0);
+			assert.equal(conversationState.resumeAttempts, 0);
+		});
 	});
 
 	test("rejects missing credentials with a terminal error", async () => {

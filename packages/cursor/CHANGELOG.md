@@ -2,9 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added opt-in experimental Cursor user-image transport behind `ATOMIC_CURSOR_EXPERIMENTAL_IMAGE_INPUT=1`, requiring a serialization-level opt-in/internal guard and strict base64/data URL validation before encoding final user-message images into Cursor's local private protobuf `selectedImages[].data` path while keeping Cursor model metadata text-only. That protobuf path is undocumented and unvalidated against live Cursor remote behavior; Cursor documents image support on other product/API surfaces, which do not validate this local private protobuf transport. Remote behavior may fail or ignore images, and tool-result images are still rejected.
+
 ### Fixed
 
-- Clarified Cursor image/screenshot rejection guidance so users know the headless provider is text-only and can remove image content or switch to a vision-capable provider.
+- Tightened experimental Cursor image validation so historical user images and tool-result images are rejected before protobuf encoding instead of being omitted.
+- Clarified Cursor image/screenshot rejection guidance so users know Atomic's Cursor provider is text-only by default and can remove image content, switch to a vision-capable provider, or explicitly try the experimental opt-in for user images.
 
 ## [0.8.29] - 2026-06-15
 

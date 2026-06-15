@@ -1,7 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { defineWorkflow, Type } from "@bastani/workflows";
-import deepResearchCodebase from "../../packages/workflows/builtin/deep-research-codebase.js";
+import type { WorkflowDefinition, WorkflowInputValues, WorkflowOutputValues } from "@bastani/workflows";
+import deepResearchCodebaseBuiltin from "@bastani/workflows/builtin/deep-research-codebase";
 import {
   currentBranchName,
   DEFAULT_RELEASE_DOCS_BASE_BRANCH,
@@ -45,6 +46,21 @@ const ensureCleanWorkingTree = (): void => {
 const writeJson = (path: string, value: object): void => {
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
 };
+
+type DeepResearchCodebaseInputs = WorkflowInputValues & {
+  readonly prompt: string;
+  readonly max_partitions: number;
+  readonly max_concurrency: number;
+};
+
+type DeepResearchCodebaseOutputs = WorkflowOutputValues & {
+  readonly research_doc_path?: string;
+};
+
+const deepResearchCodebase = deepResearchCodebaseBuiltin as unknown as WorkflowDefinition<
+  DeepResearchCodebaseInputs,
+  DeepResearchCodebaseOutputs
+>;
 
 export default defineWorkflow("release-docs")
   .description("Prepare Atomic release docs updates from the current branch, validate Mintlify docs, and open a PR.")
