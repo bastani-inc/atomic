@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Published a synchronized Atomic 0.8.29-alpha.1 prerelease with upstream pi AI/TUI dependencies aligned to `^0.79.3`; no functional changes were made in the MCP extension.
+- Published a synchronized Atomic 0.8.29-alpha.4 prerelease with upstream pi AI/TUI dependencies aligned to `^0.79.3`; no functional changes were made in the MCP extension.
 
 ## [0.8.28] - 2026-06-11
 
