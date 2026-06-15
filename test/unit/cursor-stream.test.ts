@@ -1,6 +1,7 @@
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import type { Api, AssistantMessageEvent, Context, Model } from "@earendil-works/pi-ai";
+import { CursorConversationStateStore, type CursorResumeTurnOptions } from "../../packages/cursor/src/conversation-state.js";
 import { CursorStreamAdapter } from "../../packages/cursor/src/stream.js";
 import {
 	type CursorAgentTransport,
@@ -779,18 +780,60 @@ describe("CursorStreamAdapter", () => {
 		assert.deepEqual(transport.getLifecycleSnapshot(), { openStreams: 0, cancelledStreams: 1, closedStreams: 1 });
 	});
 
-	test("rejects image input and missing credentials with sanitized errors", async () => {
-		const adapter = new CursorStreamAdapter({ transport: new CursorMockTransport(), uuid: () => "run-error" });
+	test("rejects user image input with provider fallback guidance before invoking Cursor transport", async () => {
+		const transport = new CursorMockTransport();
+		const adapter = new CursorStreamAdapter({ transport, uuid: () => "run-user-image" });
 		const imageContext: Context = {
 			messages: [{ role: "user", content: [{ type: "image", data: "abc", mimeType: "image/png" }], timestamp: 1 }],
 		};
-		const imageEvents = await collectEvents(adapter.streamSimple(model(), imageContext, { apiKey: "access-secret" }));
-		const imageTerminal = imageEvents.at(-1);
-		assert.equal(imageTerminal?.type, "error");
-		if (imageTerminal?.type === "error") {
-			assert.match(imageTerminal.error.errorMessage ?? "", /text input only/u);
-			assert.doesNotMatch(imageTerminal.error.errorMessage ?? "", /access-secret/u);
+
+		const events = await collectEvents(adapter.streamSimple(model(), imageContext, { apiKey: "access-secret" }));
+
+		const terminal = events.at(-1);
+		assert.equal(terminal?.type, "error");
+		if (terminal?.type === "error") {
+			const message = terminal.error.errorMessage ?? "";
+			assert.match(message, /text input only/u);
+			assert.match(message, /images\/screenshots/u);
+			assert.match(message, /vision-capable provider/u);
+			assert.doesNotMatch(message, /access-secret/u);
 		}
+		assert.equal(transport.runs.length, 0);
+	});
+
+	test("rejects tool-result image input with provider fallback guidance before resume", async () => {
+		class TrackingConversationState extends CursorConversationStateStore {
+			resumeAttempts = 0;
+
+			override async resumeTurnWithToolResults(conversationId: string, results: readonly CursorToolResultMessage[], options?: CursorResumeTurnOptions): Promise<CursorRunStream> {
+				this.resumeAttempts += 1;
+				return super.resumeTurnWithToolResults(conversationId, results, options);
+			}
+		}
+		const transport = new CursorMockTransport();
+		const conversationState = new TrackingConversationState();
+		const adapter = new CursorStreamAdapter({ transport, conversationState, uuid: () => "run-tool-image" });
+		const imageContext: Context = {
+			messages: [{ role: "toolResult", toolCallId: "tool-1", toolName: "Read", content: [{ type: "image", data: "abc", mimeType: "image/png" }], isError: false, timestamp: 1 }],
+		};
+
+		const events = await collectEvents(adapter.streamSimple(model(), imageContext, { apiKey: "access-secret", sessionId: "session-tool-image" }));
+
+		const terminal = events.at(-1);
+		assert.equal(terminal?.type, "error");
+		if (terminal?.type === "error") {
+			const message = terminal.error.errorMessage ?? "";
+			assert.match(message, /text input only/u);
+			assert.match(message, /images\/screenshots/u);
+			assert.match(message, /vision-capable provider/u);
+			assert.doesNotMatch(message, /access-secret/u);
+		}
+		assert.equal(transport.runs.length, 0);
+		assert.equal(conversationState.resumeAttempts, 0);
+	});
+
+	test("rejects missing credentials with a terminal error", async () => {
+		const adapter = new CursorStreamAdapter({ transport: new CursorMockTransport(), uuid: () => "run-error" });
 
 		const missingCredentialEvents = await collectEvents(adapter.streamSimple(model(), context()));
 		const missingTerminal = missingCredentialEvents.at(-1);

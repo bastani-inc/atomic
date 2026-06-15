@@ -33,6 +33,7 @@ interface CursorStreamRuntime {
 const DEFAULT_PAUSED_TURN_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 const DEFAULT_STREAM_READ_TIMEOUT_MS = 10 * 60 * 1000;
 const TOOL_CALL_BATCH_IDLE_TIMEOUT_MS = 100;
+const CURSOR_IMAGE_INPUT_ERROR = "Cursor supports text input only; images/screenshots are not supported by Cursor's headless provider API. Remove image content or switch to a vision-capable provider.";
 
 type IteratorReadResult =
 	| { readonly kind: "message"; readonly result: IteratorResult<CursorServerMessage> }
@@ -112,7 +113,7 @@ export class CursorStreamAdapter {
 				throw new Error("Cursor OAuth credentials are required. Run /login and select Cursor.");
 			}
 			if (hasImageInput(context)) {
-				throw new Error("Cursor provider currently supports text input only; vision/image content is unsupported.");
+				throw new Error(CURSOR_IMAGE_INPUT_ERROR);
 			}
 			if (options.signal?.aborted) {
 				throw new CursorStreamAbortError();

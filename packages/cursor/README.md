@@ -12,7 +12,7 @@ The unavoidable Atomic-specific integration difference is the provider surface: 
 
 ## Limitations
 
-- Text input only. Vision/image content is rejected.
+- Text input only. Images/screenshots are not supported by Cursor's headless provider API; remove image content or switch to a vision-capable provider.
 - Cursor's private API may change without notice.
 - HTTP/2 transport requires the bundled `@bastani/atomic-natives` Rust/N-API native client for the current platform.
 - Credentials are OAuth-only. Do not pass Cursor tokens via command-line args, environment variables, logs, or local proxy processes.

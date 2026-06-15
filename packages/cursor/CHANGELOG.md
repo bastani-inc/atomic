@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Clarified Cursor image/screenshot rejection guidance so users know the headless provider is text-only and can remove image content or switch to a vision-capable provider.
+
 ## [0.8.29] - 2026-06-15
 
 ### Added
