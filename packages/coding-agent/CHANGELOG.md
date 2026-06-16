@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- Fixed workflow stages launched from workflows discovered through `atomic -e` to inherit the parent chat's custom resource-loading snapshot (extensions/tools, subagents and agent definitions, skills, prompt templates, themes, workflows, packages, and trusted borrowed project-local resources) without sharing the parent resource-loader instance.
 - Fixed context compaction recent-entry and id-only deletion guards so `context_delete` attempts against disallowed context entries now return explicit non-terminating correction errors, exact deletion payloads with transcript text or replacement content are rejected instead of ignored, `context_grep_delete` silently ignores rejected matches while deleting allowed matches without counting rejected blocks as removals, and `context_grep_delete` keeps `maxMatches` scoped to one tool call without adding any cumulative deletion cap.
 - Fixed bundled workflow and subagent structured-output gates to recover from missing or invalid `structured_output` final answers by issuing up to three corrective retries that echo the actual contract or schema-validation error before failing.
 - Fixed bundled workflow failed-stage metadata so error-stage transcripts remain discoverable and follow-up messaging resumes from the failed conversation instead of resetting to an empty session.

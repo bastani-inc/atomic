@@ -120,7 +120,12 @@ import {
   stageMatchesExpandedIdentifier,
 } from "../shared/expanded-workflow-graph.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
-import { WORKFLOW_STAGE_SUBAGENT_GUARD_ENV, getEnvValue, type CreateAgentSessionOptions } from "@bastani/atomic";
+import {
+  WORKFLOW_STAGE_SUBAGENT_GUARD_ENV,
+  getEnvValue,
+  type CreateAgentSessionOptions,
+  type DefaultResourceLoaderInheritanceSnapshot,
+} from "@bastani/atomic";
 
 export const WORKFLOW_TOOL_DESCRIPTION =
   "Run named workflows or direct one-off task/tasks/chain workflows; " +
@@ -377,6 +382,8 @@ export interface ExtensionAPI {
   getWorkflowResources?: () => readonly WorkflowResourceInfo[];
   /** Refresh package-provided workflow files before rediscovery, when supported by host. */
   refreshWorkflowResources?: () => Promise<readonly WorkflowResourceInfo[]>;
+  /** Return resource-loader options child Atomic workflow stages should inherit. */
+  getResourceLoaderInheritanceSnapshot?: () => DefaultResourceLoaderInheritanceSnapshot | undefined;
   /**
    * Register a keyboard shortcut.
    * Present on pi >= 1.x; absent on older runtimes.

@@ -725,6 +725,8 @@ atomic -e npm:my-atomic-workflows
 atomic -e ./local-workflow-package
 ```
 
+Workflow stage sessions inherit the same package and temporary `-e` resource discovery snapshot as the main chat. That means a workflow loaded from an external package or directory can start stages that see the package's extensions/tools, subagents and agent definitions, skills, prompt templates, themes, workflows, and trusted borrowed project-local resources without sharing the parent chat's resource-loader instance. Passing an explicit `resourceLoader` in stage options still opts that stage out of this inheritance.
+
 ## Settings
 
 Settings can list package sources directly:
