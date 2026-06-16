@@ -17,7 +17,6 @@ function agentConfig(): AgentConfig {
     systemPromptMode: "replace",
     inheritProjectContext: false,
     inheritSkills: false,
-    completionGuard: false,
   };
 }
 

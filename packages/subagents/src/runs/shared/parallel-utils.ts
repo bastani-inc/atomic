@@ -18,7 +18,6 @@ export interface RunnerSubagentStep {
 	tools?: string[];
 	extensions?: string[];
 	mcpDirectTools?: string[];
-	completionGuard?: boolean;
 	systemPrompt?: string | null;
 	systemPromptMode?: "append" | "replace";
 	inheritProjectContext: boolean;
@@ -35,7 +34,6 @@ export interface RunnerSubagentStep {
 		outputPath: string;
 	};
 	structuredOutputSchema?: import("../../shared/types.ts").JsonSchemaObject;
-	effectiveAcceptance?: import("../../shared/types.ts").ResolvedAcceptanceConfig;
 }
 
 export interface ParallelStepGroup {
@@ -53,7 +51,6 @@ export interface DynamicRunnerGroup {
 	failFast?: boolean;
 	phase?: string;
 	label?: string;
-	effectiveAcceptance?: import("../../shared/types.ts").ResolvedAcceptanceConfig;
 }
 
 export type RunnerStep = RunnerSubagentStep | ParallelStepGroup | DynamicRunnerGroup;

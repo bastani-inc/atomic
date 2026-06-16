@@ -41,76 +41,6 @@ const JsonSchemaObject = Type.Unsafe({
 	description: "Plain JSON Schema object for structured output.",
 });
 
-const AcceptanceEvidenceKind = Type.String({
-	enum: [
-		"changed-files",
-		"tests-added",
-		"commands-run",
-		"validation-output",
-		"residual-risks",
-		"no-staged-files",
-		"diff-summary",
-		"review-findings",
-		"manual-notes",
-	],
-});
-
-const AcceptanceGateSchema = Type.Object({
-	id: Type.String(),
-	must: Type.String(),
-	evidence: Type.Optional(Type.Array(AcceptanceEvidenceKind)),
-	severity: Type.Optional(Type.String({ enum: ["required", "recommended"] })),
-}, { additionalProperties: false });
-
-const AcceptanceVerifyCommandSchema = Type.Object({
-	id: Type.String(),
-	command: Type.String(),
-	timeoutMs: Type.Optional(Type.Integer({ minimum: 1 })),
-	cwd: Type.Optional(Type.String()),
-	env: Type.Optional(Type.Unsafe({ type: "object", additionalProperties: { type: "string" } })),
-	allowFailure: Type.Optional(Type.Boolean()),
-}, { additionalProperties: false });
-
-const AcceptanceReviewGateSchema = Type.Object({
-	agent: Type.Optional(Type.String()),
-	focus: Type.Optional(Type.String()),
-	required: Type.Optional(Type.Boolean()),
-}, { additionalProperties: false });
-
-const AcceptanceOverride = Type.Unsafe({
-	anyOf: [
-		{ type: "string", enum: ["auto", "none", "attested", "checked", "verified", "reviewed"] },
-		{ const: false },
-		{
-			type: "object",
-			properties: {
-				level: { type: "string", enum: ["auto", "none", "attested", "checked", "verified", "reviewed"] },
-				criteria: {
-					type: "array",
-					items: {
-						anyOf: [
-							{ type: "string" },
-							AcceptanceGateSchema,
-						],
-					},
-				},
-				evidence: { type: "array", items: AcceptanceEvidenceKind },
-				verify: { type: "array", items: AcceptanceVerifyCommandSchema },
-				review: {
-					anyOf: [
-						{ const: false },
-						AcceptanceReviewGateSchema,
-					],
-				},
-				stopRules: { type: "array", items: { type: "string" } },
-				reason: { type: "string" },
-			},
-			additionalProperties: false,
-		},
-	],
-	description: "Optional acceptance policy. Omitted means auto-inferred; verified requires configured runtime commands.",
-});
-
 const TaskItem = Type.Object({
 	agent: Type.String(), 
 	task: Type.String(), 
@@ -122,7 +52,6 @@ const TaskItem = Type.Object({
 	progress: Type.Optional(Type.Boolean({ description: "Enable progress.md tracking for this task" })),
 	model: Type.Optional(Type.String({ description: "Override model for this task (e.g. 'google/gemini-3-pro')" })),
 	skill: Type.Optional(SkillOverride),
-	acceptance: Type.Optional(AcceptanceOverride),
 });
 
 // Parallel task item (within a parallel step)
@@ -141,7 +70,6 @@ const ParallelTaskSchema = Type.Object({
 	progress: Type.Optional(Type.Boolean({ description: "Enable progress.md tracking in {chain_dir}" })),
 	skill: Type.Optional(SkillOverride),
 	model: Type.Optional(Type.String({ description: "Override model for this task" })),
-	acceptance: Type.Optional(AcceptanceOverride),
 });
 
 const DynamicExpandSchema = Type.Object({
@@ -168,7 +96,6 @@ const DynamicParallelTemplateSchema = Type.Object({
 	progress: Type.Optional(Type.Boolean({ description: "Enable progress.md tracking in {chain_dir}" })),
 	skill: Type.Optional(SkillOverride),
 	model: Type.Optional(Type.String({ description: "Override model for this task" })),
-	acceptance: Type.Optional(AcceptanceOverride),
 }, { additionalProperties: false });
 
 const DynamicCollectSchema = Type.Object({
@@ -193,7 +120,6 @@ const ChainItem = Type.Object({
 	progress: Type.Optional(Type.Boolean({ description: "Enable progress.md tracking in {chain_dir}" })),
 	skill: Type.Optional(SkillOverride),
 	model: Type.Optional(Type.String({ description: "Override model for this step" })),
-	acceptance: Type.Optional(AcceptanceOverride),
 	parallel: Type.Optional(Type.Unsafe({
 		anyOf: [
 			Type.Array(ParallelTaskSchema, { minItems: 1, description: "Tasks to run in parallel" }),
@@ -300,5 +226,4 @@ export const SubagentParams = Type.Object({
 	outputMode: Type.Optional(OutputModeOverride),
 	skill: Type.Optional(SkillOverride),
 	model: Type.Optional(Type.String({ description: "Override model for single agent (e.g. 'anthropic/claude-sonnet-4')" })),
-	acceptance: Type.Optional(AcceptanceOverride),
 });

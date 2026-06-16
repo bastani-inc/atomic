@@ -64,7 +64,6 @@ import {
 } from "../shared/worktree.ts";
 import {
 	type AgentProgress,
-	type AcceptanceInput,
 	type ArtifactConfig,
 	type ArtifactPaths,
 	type ControlConfig,
@@ -109,7 +108,6 @@ interface TaskParam {
 	progress?: boolean;
 	model?: string;
 	skill?: string | string[] | boolean;
-	acceptance?: AcceptanceInput;
 }
 
 export interface SubagentParamsLike {
@@ -143,7 +141,6 @@ export interface SubagentParamsLike {
 	outputMode?: "inline" | "file-only";
 	agentScope?: string;
 	chainDir?: string;
-	acceptance?: AcceptanceInput;
 }
 
 export interface SubagentExecutorRuntimeDeps {
@@ -1150,7 +1147,6 @@ function runAsyncPath(data: ExecutionContextData, deps: ResolvedExecutorDeps): S
 			...(task.outputMode !== undefined ? { outputMode: task.outputMode } : {}),
 			...(task.reads !== undefined && task.reads !== true ? { reads: task.reads } : {}),
 			...(task.progress !== undefined ? { progress: task.progress } : {}),
-			...(task.acceptance !== undefined ? { acceptance: task.acceptance } : {}),
 		}));
 		return deps.runtime.executeAsyncChain(id, {
 			chain: [{
@@ -1252,7 +1248,6 @@ function runAsyncPath(data: ExecutionContextData, deps: ResolvedExecutorDeps): S
 			controlIntercomTarget,
 			childIntercomTarget: childIntercomTarget ? (agent, index) => childIntercomTarget(agent, index) : undefined,
 			nestedRoute,
-			acceptance: params.acceptance,
 		});
 	}
 
@@ -1577,8 +1572,6 @@ async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Pr
 			preferredModelProvider: input.ctx.model?.provider,
 			currentModel: currentModelFullId(input.ctx.model),
 			skills: effectiveSkills === false ? [] : effectiveSkills,
-			acceptance: task.acceptance,
-			acceptanceContext: { mode: "parallel" },
 			onUpdate: input.onUpdate
 				? (progressUpdate) => {
 					const stepResults = progressUpdate.details?.results || [];
@@ -1771,7 +1764,6 @@ async function runParallelPath(data: ExecutionContextData, deps: ResolvedExecuto
 					...(behaviorOverrides[i]?.outputMode !== undefined ? { outputMode: behaviorOverrides[i]!.outputMode } : {}),
 					...(behaviorOverrides[i]?.reads !== undefined ? { reads: behaviorOverrides[i]!.reads } : {}),
 					...(progress !== undefined ? { progress } : {}),
-					...(t.acceptance !== undefined ? { acceptance: t.acceptance } : {}),
 				};
 			});
 			return deps.runtime.executeAsyncChain(id, {
@@ -2154,8 +2146,6 @@ async function runSinglePath(data: ExecutionContextData, deps: ResolvedExecutorD
 		preferredModelProvider: currentProvider,
 		currentModel: currentModelFullId(ctx.model),
 		skills: effectiveSkills,
-		acceptance: params.acceptance,
-		acceptanceContext: { mode: "single" },
 	});
 	if (foregroundControl?.currentIndex === 0) {
 		foregroundControl.interrupt = undefined;

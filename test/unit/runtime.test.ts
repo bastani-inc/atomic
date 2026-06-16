@@ -247,7 +247,7 @@ describe("runtime.runDirect — workflow intercom", () => {
         );
     });
 
-    test("async direct invalid fallback models fail before background acceptance", async () => {
+    test("async direct invalid fallback models fail before background spawn", async () => {
         const activeStore = createStore();
         const runtime = createExtensionRuntime({
             store: activeStore,
