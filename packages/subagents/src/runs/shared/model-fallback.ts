@@ -100,7 +100,6 @@ const NON_RETRYABLE_FAILURE_PATTERNS: readonly RegExp[] = [
 	/shell/i,
 	/missing file/i,
 	/no such file/i,
-	/completion guard/i,
 	/cancel/i,
 	/abort/i,
 	/interrupted/i,

@@ -2,7 +2,6 @@ import type { ChainConfig, ChainStepConfig } from "./agents.ts";
 import { buildRuntimeName, frontmatterNameForConfig, parsePackageName } from "./identity.ts";
 import { parseFrontmatter } from "./frontmatter.ts";
 import { ChainOutputValidationError, validateChainOutputBindings } from "../runs/shared/chain-outputs.ts";
-import { validateAcceptanceInput } from "../runs/shared/acceptance.ts";
 import type { ChainStep } from "../shared/settings.ts";
 
 function parseStepBody(agent: string, sectionBody: string): ChainStepConfig {
@@ -149,27 +148,6 @@ export function parseJsonChain(content: string, source: "user" | "project", file
 		const step = input.chain[i];
 		if (!step || typeof step !== "object" || Array.isArray(step)) {
 			throw new Error(`JSON chain '${filePath}' step ${i + 1} must be an object.`);
-		}
-		const stepRecord = step as Record<string, unknown>;
-		const acceptanceErrors = validateAcceptanceInput(stepRecord.acceptance, `step ${i + 1} acceptance`);
-		if (acceptanceErrors.length > 0) {
-			throw new Error(`Invalid JSON chain '${filePath}': ${acceptanceErrors.join(" ")}`);
-		}
-		const parallel = stepRecord.parallel;
-		if (Array.isArray(parallel)) {
-			for (let taskIndex = 0; taskIndex < parallel.length; taskIndex++) {
-				const task = parallel[taskIndex];
-				if (!task || typeof task !== "object" || Array.isArray(task)) continue;
-				const taskErrors = validateAcceptanceInput((task as Record<string, unknown>).acceptance, `step ${i + 1} parallel task ${taskIndex + 1} acceptance`);
-				if (taskErrors.length > 0) {
-					throw new Error(`Invalid JSON chain '${filePath}': ${taskErrors.join(" ")}`);
-				}
-			}
-		} else if (parallel && typeof parallel === "object") {
-			const templateErrors = validateAcceptanceInput((parallel as Record<string, unknown>).acceptance, `step ${i + 1} dynamic template acceptance`);
-			if (templateErrors.length > 0) {
-				throw new Error(`Invalid JSON chain '${filePath}': ${templateErrors.join(" ")}`);
-			}
 		}
 	}
 	try {

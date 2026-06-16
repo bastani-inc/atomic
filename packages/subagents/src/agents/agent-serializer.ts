@@ -22,6 +22,7 @@ export const KNOWN_FIELDS = new Set([
 	"defaultProgress",
 	"interactive",
 	"maxSubagentDepth",
+	// Removed frontmatter key: keep recognized so legacy files drop it instead of preserving a no-op extra field.
 	"completionGuard",
 ]);
 
@@ -74,7 +75,6 @@ export function serializeAgent(config: AgentConfig): string {
 	if (typeof maxSubagentDepth === "number" && Number.isInteger(maxSubagentDepth) && maxSubagentDepth >= 0) {
 		lines.push(`maxSubagentDepth: ${maxSubagentDepth}`);
 	}
-	if (config.completionGuard === false) lines.push("completionGuard: false");
 
 	if (config.extraFields) {
 		for (const [key, value] of Object.entries(config.extraFields)) {

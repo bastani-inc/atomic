@@ -27,9 +27,7 @@ import { resolveExpectedWorktreeAgentCwd } from "../shared/worktree.ts";
 import { buildWorkflowGraphSnapshot } from "../shared/workflow-graph.ts";
 import { ChainOutputValidationError, validateChainOutputBindings } from "../shared/chain-outputs.ts";
 import { createStructuredOutputRuntime } from "../shared/structured-output.ts";
-import { resolveEffectiveAcceptance } from "../shared/acceptance.ts";
 import {
-	type AcceptanceInput,
 	type ArtifactConfig,
 	type Details,
 	type MaxOutputConfig,
@@ -126,7 +124,6 @@ interface AsyncChainParams {
 	controlIntercomTarget?: string;
 	childIntercomTarget?: (agent: string, index: number) => string | undefined;
 	nestedRoute?: NestedRouteInfo;
-	acceptance?: AcceptanceInput;
 }
 
 interface AsyncSingleParams {
@@ -154,7 +151,6 @@ interface AsyncSingleParams {
 	controlIntercomTarget?: string;
 	childIntercomTarget?: (agent: string, index: number) => string | undefined;
 	nestedRoute?: NestedRouteInfo;
-	acceptance?: AcceptanceInput;
 }
 
 interface AsyncExecutionResult {
@@ -379,7 +375,6 @@ export function executeAsyncChain(
 			tools: a.tools,
 			extensions: a.extensions,
 			mcpDirectTools: a.mcpDirectTools,
-			completionGuard: a.completionGuard,
 			systemPrompt,
 			systemPromptMode: a.systemPromptMode,
 			inheritProjectContext: a.inheritProjectContext,
@@ -390,14 +385,6 @@ export function executeAsyncChain(
 			sessionFile,
 			maxSubagentDepth: resolveChildMaxSubagentDepth(maxSubagentDepth, a.maxSubagentDepth),
 			workflowStageSubagentGuard,
-			effectiveAcceptance: resolveEffectiveAcceptance({
-				explicit: s.acceptance,
-				agentName: s.agent,
-				task: s.task,
-				mode: resultMode,
-				async: true,
-				dynamic: false,
-			}),
 			...(s.outputSchema ? { structuredOutputSchema: s.outputSchema } : {}),
 			...(s.outputSchema ? { structuredOutput: createStructuredOutputRuntime(s.outputSchema, path.join(asyncDir, "structured-output")) } : {}),
 		};
@@ -456,14 +443,6 @@ export function executeAsyncChain(
 					failFast: s.failFast,
 					phase: s.phase,
 					label: s.label,
-					effectiveAcceptance: resolveEffectiveAcceptance({
-						explicit: s.acceptance,
-						agentName: s.parallel.agent,
-						task: s.parallel.task,
-						mode: resultMode,
-						async: true,
-						dynamicGroup: true,
-					}),
 				};
 			}
 			return buildSeqStep(s as SequentialStep, nextSessionFile());
@@ -715,7 +694,6 @@ export function executeAsyncSingle(
 						tools: agentConfig.tools,
 						extensions: agentConfig.extensions,
 						mcpDirectTools: agentConfig.mcpDirectTools,
-						completionGuard: agentConfig.completionGuard,
 						systemPrompt,
 						systemPromptMode: agentConfig.systemPromptMode,
 						inheritProjectContext: agentConfig.inheritProjectContext,
@@ -726,13 +704,6 @@ export function executeAsyncSingle(
 						sessionFile,
 						maxSubagentDepth: resolveChildMaxSubagentDepth(maxSubagentDepth, agentConfig.maxSubagentDepth),
 						workflowStageSubagentGuard,
-						effectiveAcceptance: resolveEffectiveAcceptance({
-							explicit: params.acceptance,
-							agentName: agent,
-							task,
-							mode: "single",
-							async: true,
-						}),
 					},
 				],
 				resultPath: inheritedNestedRoute ? nestedResultsPath(inheritedNestedRoute.rootRunId, id) : path.join(RESULTS_DIR, `${id}.json`),

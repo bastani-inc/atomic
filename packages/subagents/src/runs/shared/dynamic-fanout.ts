@@ -40,16 +40,16 @@ const SAFE_OUTPUT_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const ITEM_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const ITEM_REF_PATTERN = /\{([A-Za-z_][A-Za-z0-9_]*)(?:\.([^{}]+))?\}/g;
 const RESERVED_TEMPLATE_NAMES = new Set(["task", "previous", "chain_dir", "outputs"]);
-const DYNAMIC_STEP_KEYS = new Set(["expand", "parallel", "collect", "concurrency", "failFast", "phase", "label", "acceptance"]);
-const RUNNER_DYNAMIC_STEP_KEYS = new Set([...DYNAMIC_STEP_KEYS, "effectiveAcceptance"]);
+const DYNAMIC_STEP_KEYS = new Set(["expand", "parallel", "collect", "concurrency", "failFast", "phase", "label"]);
+const RUNNER_DYNAMIC_STEP_KEYS = DYNAMIC_STEP_KEYS;
 const DYNAMIC_EXPAND_KEYS = new Set(["from", "item", "key", "maxItems", "onEmpty"]);
 const DYNAMIC_EXPAND_FROM_KEYS = new Set(["output", "path"]);
-const DYNAMIC_PARALLEL_KEYS = new Set(["agent", "task", "phase", "label", "outputSchema", "cwd", "output", "outputMode", "reads", "progress", "skill", "model", "acceptance"]);
+const DYNAMIC_PARALLEL_KEYS = new Set(["agent", "task", "phase", "label", "outputSchema", "cwd", "output", "outputMode", "reads", "progress", "skill", "model"]);
 const RUNNER_DYNAMIC_PARALLEL_KEYS = new Set([
 	...DYNAMIC_PARALLEL_KEYS,
 	"outputName", "structured", "inheritProjectContext", "inheritSkills", "skills", "outputPath", "maxSubagentDepth",
-	"structuredOutput", "structuredOutputSchema", "tools", "extensions", "mcpDirectTools", "completionGuard", "systemPrompt",
-	"systemPromptMode", "thinking", "modelCandidates", "sessionFile", "effectiveAcceptance",
+	"structuredOutput", "structuredOutputSchema", "tools", "extensions", "mcpDirectTools", "systemPrompt",
+	"systemPromptMode", "thinking", "modelCandidates", "sessionFile",
 ]);
 const DYNAMIC_COLLECT_KEYS = new Set(["as", "outputSchema"]);
 

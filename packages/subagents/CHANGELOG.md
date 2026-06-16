@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Removed subagent acceptance gates, deterministic task-text acceptance inference, the remaining no-mutation completion guard, acceptance-report prompt injection/parsing, acceptance/completion-guard status metadata, and related tool/schema/config fields; completed child output is now preserved without acceptance or mutation-intent evaluation ([#1398](https://github.com/bastani-inc/atomic/issues/1398)).
+
 ### Fixed
 
 - Fixed `outputSchema` child runs to retry the structured-output contract up to three times before failing, re-running with a corrective prompt that includes the exact missing-output or schema-validation error and validating captured `output.json` against the schema on readback.
