@@ -343,6 +343,12 @@ Research lives in `research/`, specs live in `specs/`, and workflow runs can per
 
 ---
 
+## Workflow playbook
+
+Want better results from coding agents and workflow systems? Read the [Workflow Playbook](./docs/workflow-playbook.md) for a practical, personal guide to writing tighter objectives, constraining scope, steering long-running work, validating results, and turning agent output into reliable engineering handoffs.
+
+---
+
 ## Support & ideas
 
 Join the [Atomic Discord community](https://discord.gg/9CvdXUGXR4) to get in touch with us and other Atomic users. Use it for questions and help, feedback or feature ideas, and sharing what you've been able to build with Atomic.
