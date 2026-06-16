@@ -54,6 +54,8 @@ atomic -e git:github.com/user/repo
 
 For local directories, `-e <dir>` also borrows project-local Atomic resources under `<dir>/.atomic`, legacy `<dir>/.pi`, and `<dir>/.agents/skills` when present. Because borrowed extensions and workflows can execute code, Atomic resolves trust for that extension source before loading those borrowed project-local resources.
 
+Workflows discovered through `-e` keep that same trusted resource set when they create child stage sessions. Stage agents get fresh resource loaders seeded from the parent snapshot, so package tools/extensions, subagents and agent definitions, skills, prompt templates, themes, workflows, and trusted borrowed project-local resources remain available in workflow stages unless the stage supplies its own explicit `resourceLoader`.
+
 ## Package Sources
 
 Atomic accepts three source types in settings and `atomic install`.

@@ -15,7 +15,12 @@ import {
 } from "../../packages/workflows/src/extension/wiring.js";
 import { StageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
-import type { CreateAgentSessionOptions, PackageSource } from "@bastani/atomic";
+import {
+    DefaultResourceLoader,
+    type CreateAgentSessionOptions,
+    type DefaultResourceLoaderInheritanceSnapshot,
+    type PackageSource,
+} from "@bastani/atomic";
 import type {
     PiCodingAgentSdk,
     PiSdkResourceLoader,
@@ -106,8 +111,13 @@ function makeFakeAtomicSdk(
         agentDir: string;
         settingsManager?: PiSdkSettingsManager;
         builtinPackagePaths?: PackageSource[];
+        resourceLoaderInheritanceSnapshot?: DefaultResourceLoaderInheritanceSnapshot;
     }>;
-    readonly settingsCalls: Array<{ cwd?: string; agentDir?: string }>;
+    readonly settingsCalls: Array<{
+        cwd?: string;
+        agentDir?: string;
+        options?: { projectTrusted?: boolean };
+    }>;
     readonly reloads: PiSdkResourceLoader[];
 } {
     const loaderOptions: Array<{
@@ -115,8 +125,13 @@ function makeFakeAtomicSdk(
         agentDir: string;
         settingsManager?: PiSdkSettingsManager;
         builtinPackagePaths?: PackageSource[];
+        resourceLoaderInheritanceSnapshot?: DefaultResourceLoaderInheritanceSnapshot;
     }> = [];
-    const settingsCalls: Array<{ cwd?: string; agentDir?: string }> = [];
+    const settingsCalls: Array<{
+        cwd?: string;
+        agentDir?: string;
+        options?: { projectTrusted?: boolean };
+    }> = [];
     const reloads: PiSdkResourceLoader[] = [];
 
     class FakeResourceLoader implements PiSdkResourceLoader {
@@ -125,6 +140,7 @@ function makeFakeAtomicSdk(
             agentDir: string;
             settingsManager?: PiSdkSettingsManager;
             builtinPackagePaths?: PackageSource[];
+            resourceLoaderInheritanceSnapshot?: DefaultResourceLoaderInheritanceSnapshot;
         }) {
             loaderOptions.push(options);
         }
@@ -138,8 +154,12 @@ function makeFakeAtomicSdk(
         getAgentDir: () => defaultAgentDir,
         getBuiltinPackagePaths: () => builtinPackagePaths,
         SettingsManager: {
-            create(cwd?: string, agentDir?: string): PiSdkSettingsManager {
-                settingsCalls.push({ cwd, agentDir });
+            create(
+                cwd?: string,
+                agentDir?: string,
+                options?: { projectTrusted?: boolean },
+            ): PiSdkSettingsManager {
+                settingsCalls.push({ cwd, agentDir, options });
                 return {
                     getCodexFastModeSettings: () => ({
                         chat: false,
@@ -217,6 +237,72 @@ describe("prepareAtomicStageSessionOptions", () => {
             "/repo/packages/web-access",
             "/repo/packages/intercom",
         ]);
+    });
+
+    test("passes inherited atomic -e resource options to fresh workflow stage loaders", async () => {
+        const projectDir = join("/tmp", "project");
+        const atomicAgentDir = join("/home", "user", ".atomic", "agent");
+        const inheritedSnapshot: DefaultResourceLoaderInheritanceSnapshot = {
+            projectTrusted: false,
+            additionalExtensionPaths: ["/external-package/extensions/index.ts"],
+            additionalSkillPaths: ["/external-package/.atomic/skills/inherited/SKILL.md"],
+            additionalPromptTemplatePaths: ["/external-package/.atomic/prompts/review.md"],
+            additionalThemePaths: ["/external-package/.atomic/themes/theme.json"],
+            builtinPackagePaths: [
+                "/repo/packages/workflows",
+                {
+                    source: "/repo/packages/subagents",
+                    skills: ["skills/**"],
+                },
+            ],
+            trustedBorrowedProjectLocalSources: ["/external-package"],
+        };
+        const { sdk, loaderOptions, settingsCalls, reloads } = makeFakeAtomicSdk(
+            atomicAgentDir,
+            ["/should/not/use/sdk/builtins"],
+        );
+
+        await prepareAtomicStageSessionOptions({ cwd: projectDir }, sdk, {
+            resourceLoaderInheritanceSnapshot: inheritedSnapshot,
+        });
+
+        assert.equal(settingsCalls[0]?.options?.projectTrusted, false);
+        assert.deepEqual(
+            loaderOptions[0]?.resourceLoaderInheritanceSnapshot,
+            inheritedSnapshot,
+        );
+        assert.deepEqual(loaderOptions[0]?.builtinPackagePaths, [
+            { source: "/repo/packages/workflows", extensions: [] },
+            { source: "/repo/packages/subagents", skills: ["skills/**"] },
+        ]);
+        assert.equal(reloads.length, 1);
+    });
+
+    test("preserves explicit resourceLoader overrides instead of inheriting parent resources", async () => {
+        const projectDir = join("/tmp", "project");
+        const atomicAgentDir = join("/home", "user", ".atomic", "agent");
+        const { sdk, loaderOptions, settingsCalls, reloads } =
+            makeFakeAtomicSdk(atomicAgentDir);
+        const explicitResourceLoader = new DefaultResourceLoader({
+            cwd: projectDir,
+            agentDir: atomicAgentDir,
+        });
+
+        const options = await prepareAtomicStageSessionOptions(
+            { cwd: projectDir, resourceLoader: explicitResourceLoader },
+            sdk,
+            {
+                resourceLoaderInheritanceSnapshot: {
+                    additionalExtensionPaths: ["/external-package"],
+                    builtinPackagePaths: ["/repo/packages/workflows"],
+                },
+            },
+        );
+
+        assert.equal(options?.resourceLoader, explicitResourceLoader);
+        assert.equal(loaderOptions.length, 0);
+        assert.equal(settingsCalls.length, 0);
+        assert.equal(reloads.length, 0);
     });
 
     test("serializes workflow stage resource reload env isolation", async () => {
