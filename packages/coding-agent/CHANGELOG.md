@@ -26,6 +26,7 @@
 - Fixed bundled workflow and subagent structured-output gates to recover from missing or invalid `structured_output` final answers by issuing up to three corrective retries that echo the actual contract or schema-validation error before failing.
 - Fixed bundled workflow failed-stage metadata so error-stage transcripts remain discoverable and follow-up messaging resumes from the failed conversation instead of resetting to an empty session.
 - Fixed context compaction so older assistant `thinking` and `redacted_thinking` blocks can be removed like other stale blocks, while `thinking` or `redacted_thinking` blocks in the latest assistant message remain rejected by validation and paired tool-result restoration still preserves active context integrity ([#1386](https://github.com/bastani-inc/atomic/issues/1386)).
+- Fixed context compaction to universally protect every content block in the latest retained assistant message when that message contains `thinking` or `redacted_thinking`, so `context_delete` and `context_grep_delete` cannot remove visible sibling blocks or make an older partially-filtered thinking-bearing assistant become the latest retained assistant ([#1405](https://github.com/bastani-inc/atomic/issues/1405)).
 
 ## [0.8.29] - 2026-06-15
 
