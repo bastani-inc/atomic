@@ -1369,6 +1369,31 @@ describe("ModelRegistry", () => {
 				}
 			});
 
+			test("missing explicit env apiKey keeps provider unavailable", () => {
+				const envVarName = "TEST_API_KEY_MISSING_AVAILABILITY_98765";
+				const originalEnv = process.env[envVarName];
+				delete process.env[envVarName];
+
+				try {
+					writeRawModelsJson({
+						"custom-provider": providerWithApiKey(`$${envVarName}`),
+					});
+
+					const registry = ModelRegistry.create(authStorage, modelsJsonPath);
+
+					expect(registry.getProviderAuthStatus("custom-provider")).toEqual({
+						configured: false,
+					});
+					expect(registry.getAvailable().some((model) => model.provider === "custom-provider")).toBe(false);
+				} finally {
+					if (originalEnv === undefined) {
+						delete process.env[envVarName];
+					} else {
+						process.env[envVarName] = originalEnv;
+					}
+				}
+			});
+
 			test("provider auth status reports non-env apiKey values from models.json as a config key", () => {
 				writeRawModelsJson({
 					"custom-provider": providerWithApiKey("literal_api_key_value"),

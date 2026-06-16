@@ -22,6 +22,53 @@ describe("package commands", () => {
   let originalExitCode: typeof process.exitCode;
   let originalExecPath: string;
 
+  type WriteCallback = (error?: Error | null) => void;
+  type WriteEncodingOrCallback = BufferEncoding | WriteCallback;
+
+  function getWriteCallback(
+    encodingOrCallback?: WriteEncodingOrCallback,
+    callback?: WriteCallback,
+  ): WriteCallback | undefined {
+    return typeof encodingOrCallback === "function"
+      ? encodingOrCallback
+      : callback;
+  }
+
+  async function waitForDrainMarker(
+    getCallback: () => WriteCallback | undefined,
+  ): Promise<WriteCallback> {
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const callback = getCallback();
+      if (callback) {
+        return callback;
+      }
+      await Promise.resolve();
+    }
+    throw new Error("stdio drain marker was not written");
+  }
+
+  function createWriteMock(
+    onEmptyWrite: (callback: WriteCallback | undefined) => void,
+  ): typeof process.stdout.write {
+    return ((
+      chunk: string | Uint8Array,
+      encodingOrCallback?: WriteEncodingOrCallback,
+      callback?: WriteCallback,
+    ): boolean => {
+      const writeCallback = getWriteCallback(encodingOrCallback, callback);
+      if (chunk === "") {
+        onEmptyWrite(writeCallback);
+        return true;
+      }
+      writeCallback?.();
+      return true;
+    }) as typeof process.stdout.write;
+  }
+
+  function expectSuccessfulExitCode(): void {
+    expect(process.exitCode ?? 0).toBe(0);
+  }
+
   function getNewerPatchVersion(): string {
     const [major = "0", minor = "0", patch = "0"] = VERSION.split(".");
     return `${major}.${minor}.${Number.parseInt(patch, 10) + 1}`;
@@ -44,15 +91,23 @@ describe("package commands", () => {
     originalAtomicPackageDir = process.env.ATOMIC_PACKAGE_DIR;
     originalExitCode = process.exitCode;
     originalExecPath = process.execPath;
-    process.exitCode = undefined;
+    process.exitCode = 0;
+    vi.spyOn(process, "exit").mockImplementation(((code?: string | number | null) => {
+      if (code === undefined || code === null || Number(code) === 0) {
+        process.exitCode = 0;
+      } else {
+        process.exitCode = code;
+      }
+      return undefined as never;
+    }) as typeof process.exit);
     process.env[ENV_AGENT_DIR] = agentDir;
     process.chdir(projectDir);
   });
 
   afterEach(() => {
-    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
     process.chdir(originalCwd);
-    process.exitCode = originalExitCode;
+    process.exitCode = originalExitCode ?? 0;
     if (originalAgentDir === undefined) {
       delete process.env[ENV_AGENT_DIR];
     } else {
@@ -178,10 +233,58 @@ describe("package commands", () => {
       expect(stdout).toContain("Usage:");
       expect(stdout).toContain("atomic install <source> [-l]");
       expect(errorSpy).not.toHaveBeenCalled();
-      expect(process.exitCode).toBeUndefined();
+      expectSuccessfulExitCode();
     } finally {
       logSpy.mockRestore();
       errorSpy.mockRestore();
+    }
+  });
+
+  it("drains stdout before forcing package-command help exit", async () => {
+    let stdoutDrainCallback: WriteCallback | undefined;
+    let stdoutDrainReleased = false;
+    let runPromise: Promise<void> | undefined;
+    const stdoutWriteSpy = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(
+        createWriteMock((callback) => {
+          stdoutDrainCallback = callback;
+        }),
+      );
+    const stderrWriteSpy = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(createWriteMock((callback) => callback?.()));
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      runPromise = main(["install", "--help"]);
+      const releaseStdoutDrain = await waitForDrainMarker(
+        () => stdoutDrainCallback,
+      );
+
+      expect(process.exit).not.toHaveBeenCalled();
+      expect(stdoutWriteSpy).toHaveBeenCalledWith("", expect.any(Function));
+      expect(stderrWriteSpy).toHaveBeenCalledWith("", expect.any(Function));
+
+      stdoutDrainReleased = true;
+      releaseStdoutDrain();
+      await expect(runPromise).resolves.toBeUndefined();
+
+      expect(process.exit).toHaveBeenCalledWith(0);
+      expect(errorSpy).not.toHaveBeenCalled();
+      expectSuccessfulExitCode();
+    } finally {
+      if (!stdoutDrainReleased) {
+        stdoutDrainCallback?.();
+      }
+      if (runPromise) {
+        await runPromise.catch(() => undefined);
+      }
+      logSpy.mockRestore();
+      errorSpy.mockRestore();
+      stdoutWriteSpy.mockRestore();
+      stderrWriteSpy.mockRestore();
     }
   });
 
@@ -201,6 +304,54 @@ describe("package commands", () => {
       expect(process.exitCode).toBe(1);
     } finally {
       errorSpy.mockRestore();
+    }
+  });
+
+  it("drains stderr before forcing package-command error exit", async () => {
+    let stderrDrainCallback: WriteCallback | undefined;
+    let stderrDrainReleased = false;
+    let runPromise: Promise<void> | undefined;
+    const stdoutWriteSpy = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(createWriteMock((callback) => callback?.()));
+    const stderrWriteSpy = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(
+        createWriteMock((callback) => {
+          stderrDrainCallback = callback;
+        }),
+      );
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      runPromise = main(["install", "--unknown"]);
+      const releaseStderrDrain = await waitForDrainMarker(
+        () => stderrDrainCallback,
+      );
+
+      expect(process.exit).not.toHaveBeenCalled();
+      expect(stdoutWriteSpy).toHaveBeenCalledWith("", expect.any(Function));
+      expect(stderrWriteSpy).toHaveBeenCalledWith("", expect.any(Function));
+
+      stderrDrainReleased = true;
+      releaseStderrDrain();
+      await expect(runPromise).resolves.toBeUndefined();
+
+      expect(process.exit).toHaveBeenCalledWith(1);
+      expect(logSpy).not.toHaveBeenCalled();
+      expect(process.exitCode).toBe(1);
+    } finally {
+      if (!stderrDrainReleased) {
+        stderrDrainCallback?.();
+      }
+      if (runPromise) {
+        await runPromise.catch(() => undefined);
+      }
+      logSpy.mockRestore();
+      errorSpy.mockRestore();
+      stdoutWriteSpy.mockRestore();
+      stderrWriteSpy.mockRestore();
     }
   });
 
@@ -273,8 +424,8 @@ else fs.writeFileSync(${JSON.stringify(recordPath)},JSON.stringify(args));
       value: join(selfPackageDir, "dist", "cli.js"),
       configurable: true,
     });
-    const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
+    const fetchMock = vi.fn(async () => Response.json({}));
+    vi.spyOn(globalThis, "fetch").mockImplementation(fetchMock);
 
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -284,7 +435,7 @@ else fs.writeFileSync(${JSON.stringify(recordPath)},JSON.stringify(args));
         main(["update", "--self", "--force"]),
       ).resolves.toBeUndefined();
 
-      expect(process.exitCode).toBeUndefined();
+      expectSuccessfulExitCode();
       expect(errorSpy).not.toHaveBeenCalled();
       expect(fetchMock).not.toHaveBeenCalled();
       const recordedArgs = JSON.parse(
@@ -336,7 +487,7 @@ else fs.writeFileSync(${JSON.stringify(recordPath)},JSON.stringify(args));
     const fetchMock = vi.fn(async () =>
       Response.json({ version: getNewerPatchVersion() }),
     );
-    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(globalThis, "fetch").mockImplementation(fetchMock);
 
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -344,7 +495,7 @@ else fs.writeFileSync(${JSON.stringify(recordPath)},JSON.stringify(args));
     try {
       await expect(main(["update", "--self"])).resolves.toBeUndefined();
 
-      expect(process.exitCode).toBeUndefined();
+      expectSuccessfulExitCode();
       expect(errorSpy).not.toHaveBeenCalled();
       expect(fetchMock).toHaveBeenCalledOnce();
       const recordedArgs = JSON.parse(
@@ -397,8 +548,7 @@ else {
     });
     const activePackageName =
       PACKAGE_NAME === "@new-scope/pi" ? "@newer-scope/pi" : "@new-scope/pi";
-    vi.stubGlobal(
-      "fetch",
+    vi.spyOn(globalThis, "fetch").mockImplementation(
       vi.fn(async () =>
         Response.json({ name: activePackageName, version: "0.73.0" }),
       ),
@@ -410,7 +560,7 @@ else {
     try {
       await expect(main(["update", "--self"])).resolves.toBeUndefined();
 
-      expect(process.exitCode).toBeUndefined();
+      expectSuccessfulExitCode();
       expect(errorSpy).not.toHaveBeenCalled();
       const recordedCalls = JSON.parse(
         readFileSync(recordPath, "utf-8"),
@@ -467,8 +617,7 @@ if(args.includes("install")) process.exit(23);
     });
     const activePackageName =
       PACKAGE_NAME === "@new-scope/pi" ? "@newer-scope/pi" : "@new-scope/pi";
-    vi.stubGlobal(
-      "fetch",
+    vi.spyOn(globalThis, "fetch").mockImplementation(
       vi.fn(async () =>
         Response.json({ name: activePackageName, version: "0.73.0" }),
       ),

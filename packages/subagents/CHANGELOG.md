@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Aligned the subagents extension peer dependencies with upstream pi `^0.79.4` runtime packages (`@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, and `@earendil-works/pi-tui`); no subagents extension code changes were made for this metadata sync.
+
 ### Fixed
 
 - Fixed `outputSchema` child runs to retry the structured-output contract up to three times before failing, re-running with a corrective prompt that includes the exact missing-output or schema-validation error and validating captured `output.json` against the schema on readback.

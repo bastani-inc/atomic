@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Aligned the workflows extension peer dependency with upstream pi TUI `^0.79.4` so workflow graph, custom UI, and prompt-broker integrations consume the latest shared TUI fixes; no workflows extension code changes were made for this metadata sync.
+
 ### Fixed
 
 - Fixed schema-backed workflow stages to send up to three corrective follow-up prompts when a turn finishes without the required `structured_output` call or with an invalid `structured_output` call, echoing the concrete contract/validation error before failing the stage.

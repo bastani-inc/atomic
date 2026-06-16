@@ -27,13 +27,26 @@ class MockSpawnedProcess extends EventEmitter {
 	}
 }
 
+interface ParsedNpmSourceForTest {
+	type: "npm";
+	spec: string;
+	name: string;
+	version?: string;
+	range?: string;
+	pinned: boolean;
+}
+
+type ParsedSourceForTest = ParsedNpmSourceForTest | { type: "git" | "local" };
+
 interface PackageManagerInternals {
 	runCommand(command: string, args: string[], options?: { cwd?: string }): Promise<void>;
+	runCommandSync(command: string, args: string[]): string;
 	runCommandCapture(
 		command: string,
 		args: string[],
 		options?: { cwd?: string; timeoutMs?: number; env?: Record<string, string> },
 	): Promise<string>;
+	parseSource(source: string): ParsedSourceForTest;
 	getLocalGitUpdateTarget(installedPath: string): Promise<{ ref: string; head: string; fetchArgs: string[] }>;
 }
 
@@ -1212,6 +1225,141 @@ Content`,
 			expect(packageManager.getInstalledPath("npm:pnpm-pkg", "user")).toBe(packagePath);
 		});
 
+		it("should load the managed npm package after installing a range over a stale legacy global package", async () => {
+			settingsManager = SettingsManager.inMemory({
+				npmCommand: ["npm"],
+				packages: ["npm:example@^2.0.0"],
+			});
+			packageManager = new DefaultPackageManager({
+				cwd: tempDir,
+				agentDir,
+				settingsManager,
+			});
+
+			const legacyRoot = join(tempDir, "legacy-global", "node_modules");
+			const legacyPath = join(legacyRoot, "example");
+			const managedPath = join(agentDir, "npm", "node_modules", "example");
+			const legacyExtensionPath = join(legacyPath, "extensions", "legacy.ts");
+			const managedExtensionPath = join(managedPath, "extensions", "managed.ts");
+
+			mkdirSync(join(legacyPath, "extensions"), { recursive: true });
+			writeFileSync(
+				join(legacyPath, "package.json"),
+				JSON.stringify({
+					name: "example",
+					version: "1.0.0",
+					atomic: { extensions: ["extensions/legacy.ts"] },
+				}),
+			);
+			writeFileSync(legacyExtensionPath, "export default function legacy() {};");
+
+			const managerWithInternals = packageManager as object as PackageManagerInternals;
+			vi.spyOn(managerWithInternals, "runCommandSync").mockImplementation((command, args) => {
+				expect(command).toBe("npm");
+				expect(args).toEqual(["root", "-g"]);
+				return legacyRoot;
+			});
+			const runCommandSpy = vi.spyOn(managerWithInternals, "runCommand").mockImplementation(async (command, args) => {
+				expect(command).toBe("npm");
+				expect(args).toEqual([
+					"install",
+					"example@^2.0.0",
+					"--prefix",
+					join(agentDir, "npm"),
+					"--legacy-peer-deps",
+				]);
+				mkdirSync(join(managedPath, "extensions"), { recursive: true });
+				writeFileSync(
+					join(managedPath, "package.json"),
+					JSON.stringify({
+						name: "example",
+						version: "2.0.0",
+						atomic: { extensions: ["extensions/managed.ts"] },
+					}),
+				);
+				writeFileSync(managedExtensionPath, "export default function managed() {};");
+			});
+
+			const result = await packageManager.resolve();
+
+			expect(result.extensions.some((r) => r.path === managedExtensionPath && r.enabled)).toBe(true);
+			expect(result.extensions.some((r) => r.path === legacyExtensionPath)).toBe(false);
+			expect(result.extensions.find((r) => r.path === managedExtensionPath)?.metadata.baseDir).toBe(managedPath);
+			expect(runCommandSpy).toHaveBeenCalledTimes(1);
+		});
+
+		it("should load the managed npm package after a stale legacy global dist-tag install resolves newer", async () => {
+			settingsManager = SettingsManager.inMemory({
+				npmCommand: ["npm"],
+				packages: ["npm:example@beta"],
+			});
+			packageManager = new DefaultPackageManager({
+				cwd: tempDir,
+				agentDir,
+				settingsManager,
+			});
+
+			const legacyRoot = join(tempDir, "legacy-global", "node_modules");
+			const legacyPath = join(legacyRoot, "example");
+			const managedPath = join(agentDir, "npm", "node_modules", "example");
+			const legacyExtensionPath = join(legacyPath, "extensions", "legacy.ts");
+			const managedExtensionPath = join(managedPath, "extensions", "managed.ts");
+
+			mkdirSync(join(legacyPath, "extensions"), { recursive: true });
+			writeFileSync(
+				join(legacyPath, "package.json"),
+				JSON.stringify({
+					name: "example",
+					version: "1.0.0",
+					atomic: { extensions: ["extensions/legacy.ts"] },
+				}),
+			);
+			writeFileSync(legacyExtensionPath, "export default function legacy() {};");
+
+			const managerWithInternals = packageManager as object as PackageManagerInternals;
+			vi.spyOn(managerWithInternals, "runCommandSync").mockImplementation((command, args) => {
+				expect(command).toBe("npm");
+				expect(args).toEqual(["root", "-g"]);
+				return legacyRoot;
+			});
+			const runCommandCaptureSpy = vi
+				.spyOn(managerWithInternals, "runCommandCapture")
+				.mockResolvedValue('"2.0.0"');
+			const runCommandSpy = vi.spyOn(managerWithInternals, "runCommand").mockImplementation(async (command, args) => {
+				expect(command).toBe("npm");
+				expect(args).toEqual([
+					"install",
+					"example@beta",
+					"--prefix",
+					join(agentDir, "npm"),
+					"--legacy-peer-deps",
+				]);
+				mkdirSync(join(managedPath, "extensions"), { recursive: true });
+				writeFileSync(
+					join(managedPath, "package.json"),
+					JSON.stringify({
+						name: "example",
+						version: "2.0.0",
+						atomic: { extensions: ["extensions/managed.ts"] },
+					}),
+				);
+				writeFileSync(managedExtensionPath, "export default function managed() {};");
+			});
+
+			const result = await packageManager.resolve();
+
+			expect(result.extensions.some((r) => r.path === managedExtensionPath && r.enabled)).toBe(true);
+			expect(result.extensions.some((r) => r.path === legacyExtensionPath)).toBe(false);
+			expect(result.extensions.find((r) => r.path === managedExtensionPath)?.metadata.baseDir).toBe(managedPath);
+			expect(runCommandCaptureSpy).toHaveBeenCalledTimes(2);
+			expect(runCommandCaptureSpy).toHaveBeenCalledWith(
+				"npm",
+				["view", "example@beta", "version", "--json"],
+				expect.objectContaining({ cwd: tempDir, timeoutMs: expect.any(Number) }),
+			);
+			expect(runCommandSpy).toHaveBeenCalledTimes(1);
+		});
+
 		it("should load legacy pnpm global package paths from pnpm list output", async () => {
 			settingsManager = SettingsManager.inMemory({
 				npmCommand: ["pnpm"],
@@ -1341,8 +1489,21 @@ Content`,
 		});
 
 		it("should parse package source types from docs examples", () => {
-			expect((packageManager as any).parseSource("npm:@scope/pkg@1.2.3").type).toBe("npm");
-			expect((packageManager as any).parseSource("npm:pkg").type).toBe("npm");
+			const parseSource = Reflect.get(packageManager, "parseSource") as (source: string) => {
+				type: string;
+				pinned?: boolean;
+			};
+			const parseNpm = (source: string) => {
+				const parsed = parseSource.call(packageManager, source);
+				if (parsed.type !== "npm") {
+					throw new Error(`Expected npm source: ${source}`);
+				}
+				return parsed;
+			};
+
+			expect(parseNpm("npm:@scope/pkg@1.2.3").pinned).toBe(true);
+			expect(parseNpm("npm:@scope/pkg@^1.2.3").pinned).toBe(false);
+			expect(parseNpm("npm:pkg").pinned).toBe(false);
 
 			expect((packageManager as any).parseSource("git:github.com/user/repo@v1").type).toBe("git");
 			expect((packageManager as any).parseSource("https://github.com/user/repo@v1").type).toBe("git");
@@ -1352,6 +1513,34 @@ Content`,
 			expect((packageManager as any).parseSource("/absolute/path/to/package").type).toBe("local");
 			expect((packageManager as any).parseSource("./relative/path/to/package").type).toBe("local");
 			expect((packageManager as any).parseSource("../relative/path/to/package").type).toBe("local");
+		});
+
+		it("should parse explicit npm dist-tag selectors without treating them as pinned ranges", () => {
+			const internals = packageManager as object as PackageManagerInternals;
+			const parseNpm = (source: string): ParsedNpmSourceForTest => {
+				const parsed = internals.parseSource(source);
+				if (parsed.type !== "npm") {
+					throw new Error(`Expected npm source: ${source}`);
+				}
+				return parsed;
+			};
+
+			expect(parseNpm("npm:pkg@beta")).toMatchObject({
+				type: "npm",
+				spec: "pkg@beta",
+				name: "pkg",
+				version: "beta",
+				pinned: false,
+			});
+			expect(parseNpm("npm:pkg@beta").range).toBeUndefined();
+			expect(parseNpm("npm:pkg@latest")).toMatchObject({
+				type: "npm",
+				spec: "pkg@latest",
+				name: "pkg",
+				version: "latest",
+				pinned: false,
+			});
+			expect(parseNpm("npm:pkg@latest").range).toBeUndefined();
 		});
 
 		it("should never parse dot-relative paths as git", () => {
@@ -2308,6 +2497,76 @@ export default function(api) { api.registerTool({ name: "test", description: "te
 			);
 		});
 
+		it("should update npm range packages using the configured spec", async () => {
+			const installedPath = join(tempDir, CONFIG_DIR_NAME, "npm", "node_modules", "example");
+			mkdirSync(installedPath, { recursive: true });
+			writeFileSync(join(installedPath, "package.json"), JSON.stringify({ name: "example", version: "1.0.0" }));
+			settingsManager.setProjectPackages(["npm:example@^1.0.0"]);
+
+			const internals = packageManager as object as PackageManagerInternals;
+			const runCommandCaptureSpy = vi.spyOn(internals, "runCommandCapture").mockResolvedValue('["1.0.0","1.2.0"]');
+			const runCommandSpy = vi.spyOn(internals, "runCommand").mockResolvedValue(undefined);
+
+			await packageManager.update("npm:example");
+
+			expect(runCommandCaptureSpy).toHaveBeenCalledWith(
+				"npm",
+				["view", "example@^1.0.0", "version", "--json"],
+				expect.objectContaining({ cwd: tempDir, timeoutMs: expect.any(Number) }),
+			);
+			expect(runCommandSpy).toHaveBeenCalledWith(
+				"npm",
+				["install", "example@^1.0.0", "--prefix", join(tempDir, CONFIG_DIR_NAME, "npm"), "--legacy-peer-deps"],
+				undefined,
+			);
+		});
+
+		it("should update npm dist-tag packages using the configured tag spec", async () => {
+			const installedPath = join(tempDir, CONFIG_DIR_NAME, "npm", "node_modules", "example");
+			mkdirSync(installedPath, { recursive: true });
+			writeFileSync(join(installedPath, "package.json"), JSON.stringify({ name: "example", version: "1.0.0" }));
+			settingsManager.setProjectPackages(["npm:example@beta"]);
+
+			const internals = packageManager as object as PackageManagerInternals;
+			const runCommandCaptureSpy = vi.spyOn(internals, "runCommandCapture").mockResolvedValue('"2.0.0"');
+			const runCommandSpy = vi.spyOn(internals, "runCommand").mockResolvedValue(undefined);
+
+			await packageManager.update("npm:example");
+
+			expect(runCommandCaptureSpy).toHaveBeenCalledWith(
+				"npm",
+				["view", "example@beta", "version", "--json"],
+				expect.objectContaining({ cwd: tempDir, timeoutMs: expect.any(Number) }),
+			);
+			expect(runCommandSpy).toHaveBeenCalledWith(
+				"npm",
+				["install", "example@beta", "--prefix", join(tempDir, CONFIG_DIR_NAME, "npm"), "--legacy-peer-deps"],
+				undefined,
+			);
+		});
+
+		it("should skip npm range package update when installed version matches the satisfying target", async () => {
+			const installedPath = join(tempDir, CONFIG_DIR_NAME, "npm", "node_modules", "example");
+			mkdirSync(installedPath, { recursive: true });
+			writeFileSync(join(installedPath, "package.json"), JSON.stringify({ name: "example", version: "1.3.1" }));
+			settingsManager.setProjectPackages(["npm:example@^1.0.0"]);
+
+			const internals = packageManager as object as PackageManagerInternals;
+			const runCommandCaptureSpy = vi
+				.spyOn(internals, "runCommandCapture")
+				.mockResolvedValue('["1.0.0","1.3.1","1.0.2"]');
+			const runCommandSpy = vi.spyOn(internals, "runCommand").mockResolvedValue(undefined);
+
+			await packageManager.update("npm:example");
+
+			expect(runCommandCaptureSpy).toHaveBeenCalledWith(
+				"npm",
+				["view", "example@^1.0.0", "version", "--json"],
+				expect.objectContaining({ cwd: tempDir, timeoutMs: expect.any(Number) }),
+			);
+			expect(runCommandSpy).not.toHaveBeenCalled();
+		});
+
 		it("should skip project npm update when installed version matches latest", async () => {
 			const installedPath = join(tempDir, CONFIG_DIR_NAME, "npm", "node_modules", "example");
 			mkdirSync(installedPath, { recursive: true });
@@ -2544,6 +2803,141 @@ export default function(api) { api.registerTool({ name: "test", description: "te
 			expect(runCommandCaptureSpy).not.toHaveBeenCalled();
 		});
 
+		for (const tag of ["latest", "beta"] as const) {
+			it(`should resolve installed npm ${tag} dist-tag packages offline without registry or install`, async () => {
+				process.env.ATOMIC_OFFLINE = "1";
+				const installedPath = join(tempDir, CONFIG_DIR_NAME, "npm", "node_modules", "example");
+				const extensionPath = join(installedPath, "extensions", `${tag}.ts`);
+				mkdirSync(join(installedPath, "extensions"), { recursive: true });
+				writeFileSync(
+					join(installedPath, "package.json"),
+					JSON.stringify({
+						name: "example",
+						version: "1.0.0",
+						atomic: { extensions: [`extensions/${tag}.ts`] },
+					}),
+				);
+				writeFileSync(extensionPath, `export default function ${tag}() {};`);
+				settingsManager.setProjectPackages([`npm:example@${tag}`]);
+
+				const internals = packageManager as object as PackageManagerInternals;
+				const runCommandCaptureSpy = vi.spyOn(internals, "runCommandCapture");
+				const runCommandSpy = vi.spyOn(internals, "runCommand");
+
+				const result = await packageManager.resolve();
+
+				expect(result.extensions.some((r) => r.path === extensionPath && r.enabled)).toBe(true);
+				expect(runCommandCaptureSpy).not.toHaveBeenCalled();
+				expect(runCommandSpy).not.toHaveBeenCalled();
+			});
+		}
+
+		it("should skip installed npm packages with mismatched semver selectors while offline", async () => {
+			process.env.ATOMIC_OFFLINE = "1";
+			const exactPath = join(tempDir, CONFIG_DIR_NAME, "npm", "node_modules", "exact-example");
+			const rangePath = join(tempDir, CONFIG_DIR_NAME, "npm", "node_modules", "range-example");
+			const exactExtensionPath = join(exactPath, "extensions", "exact.ts");
+			const rangeExtensionPath = join(rangePath, "extensions", "range.ts");
+			mkdirSync(join(exactPath, "extensions"), { recursive: true });
+			mkdirSync(join(rangePath, "extensions"), { recursive: true });
+			writeFileSync(
+				join(exactPath, "package.json"),
+				JSON.stringify({
+					name: "exact-example",
+					version: "1.0.0",
+					atomic: { extensions: ["extensions/exact.ts"] },
+				}),
+			);
+			writeFileSync(
+				join(rangePath, "package.json"),
+				JSON.stringify({
+					name: "range-example",
+					version: "1.0.0",
+					atomic: { extensions: ["extensions/range.ts"] },
+				}),
+			);
+			writeFileSync(exactExtensionPath, "export default function exact() {};");
+			writeFileSync(rangeExtensionPath, "export default function range() {};");
+			settingsManager.setProjectPackages(["npm:exact-example@2.0.0", "npm:range-example@^2.0.0"]);
+
+			const internals = packageManager as object as PackageManagerInternals;
+			const runCommandCaptureSpy = vi.spyOn(internals, "runCommandCapture");
+			const runCommandSpy = vi.spyOn(internals, "runCommand");
+
+			const result = await packageManager.resolve();
+
+			expect(result.extensions.some((r) => r.path === exactExtensionPath)).toBe(false);
+			expect(result.extensions.some((r) => r.path === rangeExtensionPath)).toBe(false);
+			expect(runCommandCaptureSpy).not.toHaveBeenCalled();
+			expect(runCommandSpy).not.toHaveBeenCalled();
+		});
+
+		it("should resolve installed npm packages that satisfy configured ranges without reinstalling", async () => {
+			const installedPath = join(tempDir, CONFIG_DIR_NAME, "npm", "node_modules", "example");
+			mkdirSync(join(installedPath, "extensions"), { recursive: true });
+			writeFileSync(join(installedPath, "package.json"), JSON.stringify({ name: "example", version: "1.2.0" }));
+			writeFileSync(join(installedPath, "extensions", "index.ts"), "export default function() {};");
+			settingsManager.setProjectPackages(["npm:example@^1.0.0"]);
+
+			const runCommandSpy = vi.spyOn(packageManager as object as PackageManagerInternals, "runCommand");
+
+			const result = await packageManager.resolve();
+
+			expect(result.extensions.some((r) => pathEndsWith(r.path, "extensions/index.ts") && r.enabled)).toBe(true);
+			expect(runCommandSpy).not.toHaveBeenCalled();
+		});
+
+		it("should reinstall stale managed npm dist-tag packages when the resolved tag target differs", async () => {
+			const installedPath = join(tempDir, CONFIG_DIR_NAME, "npm", "node_modules", "example");
+			const staleExtensionPath = join(installedPath, "extensions", "stale.ts");
+			const managedExtensionPath = join(installedPath, "extensions", "managed.ts");
+			mkdirSync(join(installedPath, "extensions"), { recursive: true });
+			writeFileSync(
+				join(installedPath, "package.json"),
+				JSON.stringify({
+					name: "example",
+					version: "1.0.0",
+					atomic: { extensions: ["extensions/stale.ts"] },
+				}),
+			);
+			writeFileSync(staleExtensionPath, "export default function stale() {};");
+			settingsManager.setProjectPackages(["npm:example@latest"]);
+
+			const internals = packageManager as object as PackageManagerInternals;
+			const runCommandCaptureSpy = vi.spyOn(internals, "runCommandCapture").mockResolvedValue('"2.0.0"');
+			const runCommandSpy = vi.spyOn(internals, "runCommand").mockImplementation(async (command, args) => {
+				expect(command).toBe("npm");
+				expect(args).toEqual([
+					"install",
+					"example@latest",
+					"--prefix",
+					join(tempDir, CONFIG_DIR_NAME, "npm"),
+					"--legacy-peer-deps",
+				]);
+				writeFileSync(
+					join(installedPath, "package.json"),
+					JSON.stringify({
+						name: "example",
+						version: "2.0.0",
+						atomic: { extensions: ["extensions/managed.ts"] },
+					}),
+				);
+				writeFileSync(managedExtensionPath, "export default function managed() {};");
+			});
+
+			const result = await packageManager.resolve();
+
+			expect(result.extensions.some((r) => r.path === managedExtensionPath && r.enabled)).toBe(true);
+			expect(result.extensions.some((r) => r.path === staleExtensionPath)).toBe(false);
+			expect(runCommandCaptureSpy).toHaveBeenCalledTimes(2);
+			expect(runCommandCaptureSpy).toHaveBeenCalledWith(
+				"npm",
+				["view", "example@latest", "version", "--json"],
+				expect.objectContaining({ cwd: tempDir, timeoutMs: expect.any(Number) }),
+			);
+			expect(runCommandSpy).toHaveBeenCalledTimes(1);
+		});
+
 		it("should reinstall pinned npm packages when installed version does not match", async () => {
 			const installedPath = join(tempDir, CONFIG_DIR_NAME, "npm", "node_modules", "example");
 			mkdirSync(installedPath, { recursive: true });
@@ -2579,6 +2973,32 @@ export default function(api) { api.registerTool({ name: "test", description: "te
 			expect(updates).toEqual([
 				{
 					source: "npm:example",
+					displayName: "example",
+					type: "npm",
+					scope: "project",
+				},
+			]);
+		});
+
+		it("should report available updates for installed npm dist-tag packages", async () => {
+			const installedPath = join(tempDir, CONFIG_DIR_NAME, "npm", "node_modules", "example");
+			mkdirSync(installedPath, { recursive: true });
+			writeFileSync(join(installedPath, "package.json"), JSON.stringify({ name: "example", version: "1.0.0" }));
+			settingsManager.setProjectPackages(["npm:example@beta"]);
+
+			const internals = packageManager as object as PackageManagerInternals;
+			const runCommandCaptureSpy = vi.spyOn(internals, "runCommandCapture").mockResolvedValue('"2.0.0"');
+
+			const updates = await packageManager.checkForAvailableUpdates();
+
+			expect(runCommandCaptureSpy).toHaveBeenCalledWith(
+				"npm",
+				["view", "example@beta", "version", "--json"],
+				expect.objectContaining({ cwd: tempDir, timeoutMs: expect.any(Number) }),
+			);
+			expect(updates).toEqual([
+				{
+					source: "npm:example@beta",
 					displayName: "example",
 					type: "npm",
 					scope: "project",
