@@ -2,11 +2,16 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Replaced the verbatim context-compaction planner's fixed turn cap and mode split with a deterministic strict reduction loop driven by configurable compaction parameters: `compression_ratio` (fraction to keep, default `0.5`), `preserve_recent` (default `2`), and `query` (explicit or auto-detected). The prompt substitutes the effective ratio-derived target as a hard completion requirement, hooks receive the parameters through `event.parameters`/`preparation.parameters`/`result.parameters`, extension `ctx.compact()` can override them per run, the runtime exits only once validated deletion stats meet the target, and premature plain-text exits receive an automatic nudge to keep removing message entries/content blocks. The planner still balances early search/read exploration with quick exploitation of high-confidence low-value deletion targets, the `context_compaction_budget` progress tool reports context-window fullness and remaining reduction work while inheriting the session's current model thinking level, and legacy parsing of deletion JSON from final assistant prose has been removed so only validated tool state can drive compaction.
+
 ### Fixed
 
+- Fixed context compaction recent-entry and id-only deletion guards so `context_delete` attempts against disallowed context entries now return explicit non-terminating correction errors, exact deletion payloads with transcript text or replacement content are rejected instead of ignored, `context_grep_delete` silently ignores rejected matches while deleting allowed matches without counting rejected blocks as removals, and `context_grep_delete` keeps `maxMatches` scoped to one tool call without adding any cumulative deletion cap.
 - Fixed bundled workflow and subagent structured-output gates to recover from missing or invalid `structured_output` final answers by issuing up to three corrective retries that echo the actual contract or schema-validation error before failing.
 - Fixed bundled workflow failed-stage metadata so error-stage transcripts remain discoverable and follow-up messaging resumes from the failed conversation instead of resetting to an empty session.
-- Fixed critical-overflow context compaction so the latest retained assistant message containing `thinking` or `redacted_thinking` blocks is preserved as an indivisible verbatim content array, including sibling content, stale persisted content-block filters, and paired tool-result entries for restored tool-call blocks, while still allowing old non-latest thinking blocks to be evicted and preserving later valid deletion filters for restored tool results ([#1386](https://github.com/bastani-inc/atomic/issues/1386)).
+- Fixed context compaction so older assistant `thinking` and `redacted_thinking` blocks can be removed like other stale blocks, while `thinking` or `redacted_thinking` blocks in the latest assistant message remain rejected by validation and paired tool-result restoration still preserves active context integrity ([#1386](https://github.com/bastani-inc/atomic/issues/1386)).
 
 ## [0.8.29] - 2026-06-15
 

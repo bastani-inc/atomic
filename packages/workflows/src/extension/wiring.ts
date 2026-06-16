@@ -275,6 +275,7 @@ async function createTestAgentSession(_options?: CreateAgentSessionOptions): Pro
     async compact(): ReturnType<StageSessionRuntime["compact"]> {
       return {
         promptVersion: 1,
+        parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "auto-detected" },
         deletedTargets: [],
         protectedEntryIds: [],
         stats: {

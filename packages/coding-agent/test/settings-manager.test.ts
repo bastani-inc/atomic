@@ -24,6 +24,40 @@ describe("SettingsManager", () => {
 		}
 	});
 
+	describe("compaction settings", () => {
+		it("returns default and configured context compaction parameters", () => {
+			const defaults = SettingsManager.create(projectDir, agentDir);
+			expect(defaults.getCompactionSettings()).toEqual({
+				enabled: true,
+				reserveTokens: 16384,
+				compression_ratio: 0.5,
+				preserve_recent: 2,
+			});
+
+			const settingsPath = join(agentDir, "settings.json");
+			writeFileSync(
+				settingsPath,
+				JSON.stringify({
+					compaction: {
+						enabled: false,
+						reserveTokens: 8192,
+						compression_ratio: 0.3,
+						preserve_recent: 4,
+						query: "focus current migration",
+					},
+				}),
+			);
+			const configured = SettingsManager.create(projectDir, agentDir);
+			expect(configured.getCompactionSettings()).toEqual({
+				enabled: false,
+				reserveTokens: 8192,
+				compression_ratio: 0.3,
+				preserve_recent: 4,
+				query: "focus current migration",
+			});
+		});
+	});
+
 	describe("preserves externally added settings", () => {
 		it("should preserve enabledModels when changing thinking level", async () => {
 			// Create initial settings file

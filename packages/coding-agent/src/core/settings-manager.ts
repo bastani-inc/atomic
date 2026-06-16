@@ -18,6 +18,9 @@ import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, parseHttpIdleTimeoutMs } from "./http-dis
 export interface CompactionSettings {
 	enabled?: boolean; // default: true
 	reserveTokens?: number; // default: 16384
+	compression_ratio?: number; // default: 0.5 (fraction of compactable context to keep)
+	preserve_recent?: number; // default: 2 (recent context-eligible messages to keep)
+	query?: string; // default: auto-detected from session context
 }
 
 export interface BranchSummarySettings {
@@ -792,10 +795,35 @@ export class SettingsManager {
 		return this.settings.compaction?.reserveTokens ?? 16384;
 	}
 
-	getCompactionSettings(): { enabled: boolean; reserveTokens: number } {
+	getCompactionCompressionRatio(): number {
+		const value = this.settings.compaction?.compression_ratio;
+		return typeof value === "number" && Number.isFinite(value) && value > 0 && value < 1 ? value : 0.5;
+	}
+
+	getCompactionPreserveRecent(): number {
+		const value = this.settings.compaction?.preserve_recent;
+		return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 2;
+	}
+
+	getCompactionQuery(): string | undefined {
+		const query = this.settings.compaction?.query?.trim();
+		return query && query.length > 0 ? query : undefined;
+	}
+
+	getCompactionSettings(): {
+		enabled: boolean;
+		reserveTokens: number;
+		compression_ratio: number;
+		preserve_recent: number;
+		query?: string;
+	} {
+		const query = this.getCompactionQuery();
 		return {
 			enabled: this.getCompactionEnabled(),
 			reserveTokens: this.getCompactionReserveTokens(),
+			compression_ratio: this.getCompactionCompressionRatio(),
+			preserve_recent: this.getCompactionPreserveRecent(),
+			...(query === undefined ? {} : { query }),
 		};
 	}
 

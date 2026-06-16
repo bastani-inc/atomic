@@ -7,8 +7,6 @@ import {
 	DEFAULT_COMPACTION_SETTINGS,
 	estimateContextTokens,
 	estimateTokens,
-	parseContextDeletionRequest,
-	parseContextDeletionResponse,
 	prepareContextCompaction,
 	validateContextDeletionRequest,
 } from "../src/core/compaction/index.ts";
@@ -204,30 +202,6 @@ function compactionEntry(summary: string, firstKeptEntryId: string, tokensBefore
 }
 
 describe("context compaction", () => {
-	it("parses fenced deletion-request JSON", () => {
-		const parsed = parseContextDeletionRequest('```json\n{ "deletions": [{ "kind": "entry", "entryId": "abc" }] }\n```');
-		expect(parsed.deletions).toEqual([{ kind: "entry", entryId: "abc" }]);
-	});
-
-	it("reads deletion requests from structured deletion tool calls", () => {
-		const response: AssistantMessage = {
-			...assistantText(""),
-			content: [
-				{
-					type: "toolCall",
-					id: "toolu_delete",
-					name: "context_delete",
-					arguments: { deletions: [{ kind: "content_block", entryId: "abc", blockIndex: 1 }] },
-				},
-			],
-			stopReason: "toolUse",
-		};
-
-		const parsed = parseContextDeletionResponse(response);
-
-		expect(parsed.deletions).toEqual([{ kind: "content_block", entryId: "abc", blockIndex: 1 }]);
-	});
-
 	it("excludes excludeFromContext entries from context compaction transcript, prompt, recency, and stats", () => {
 		resetIds();
 		const bashSentinel = "ITER4_EXCLUDED_BASH_SENTINEL";
@@ -281,7 +255,9 @@ describe("context compaction", () => {
 		expect(transcript.protectedEntryIds).not.toContain(excludedBash.id);
 		expect(transcript.protectedEntryIds).not.toContain(excludedCustom.id);
 		expect(transcript.protectedEntryIds).not.toContain(excludedCustomEntry.id);
-		expect(transcript.entries.find((item) => item.entryId === recentCandidate.id)?.protected).toBe(true);
+		expect(transcript.entries.find((item) => item.entryId === recentCandidate.id)?.protected).toBe(false);
+		expect(transcript.entries.find((item) => item.entryId === recent3.id)?.protected).toBe(true);
+		expect(transcript.entries.find((item) => item.entryId === recent4.id)?.protected).toBe(true);
 
 		const eligibleContextMessages = rawContextMessages.filter((message) => {
 			const serialized = JSON.stringify(message);
@@ -303,6 +279,25 @@ describe("context compaction", () => {
 		expect(validated.protectedEntryIds).not.toContain(excludedBash.id);
 		expect(validated.protectedEntryIds).not.toContain(excludedCustom.id);
 		expect(validated.protectedEntryIds).not.toContain(excludedCustomEntry.id);
+	});
+
+	it("auto-detects the compaction query from the last user message unless an explicit query is provided", () => {
+		resetIds();
+		const entries: SessionEntry[] = [
+			entry(user("initial task query")),
+			entry(assistantTextWithoutUsage("assistant progress")),
+			entry(user("latest user focus query")),
+			customMessageEntry("custom context after latest user"),
+			entry(assistantTextWithoutUsage("recent assistant tail")),
+		];
+
+		const autoPreparation = prepareContextCompaction(entries, DEFAULT_COMPACTION_SETTINGS)!;
+		expect(autoPreparation.parameters.query).toBe("latest user focus query");
+
+		const explicitPreparation = prepareContextCompaction(entries, DEFAULT_COMPACTION_SETTINGS, {
+			query: "explicit extension query",
+		})!;
+		expect(explicitPreparation.parameters.query).toBe("explicit extension query");
 	});
 
 	it("protects failed context-eligible bash executions while keeping excluded bash omitted", () => {
@@ -469,314 +464,45 @@ describe("context compaction", () => {
 		).toThrow(/protected/);
 	});
 
-	describe("critical overflow task-bearing context", () => {
-		function branchSummaryMessage(summary: string): AgentMessage {
-			return { role: "branchSummary", summary, fromId: "branch-1", timestamp: Date.now() } as AgentMessage;
-		}
+	it("rejects last-two context deletion with an explicit recent-context error", () => {
+		resetIds();
+		const recentTarget = entry(assistantText("recent target should be guarded"));
+		const entries: SessionEntry[] = [
+			entry(user("Task remains available")),
+			entry(assistantText("old deletable context")),
+			entry(assistantText("older filler 1")),
+			entry(assistantText("older filler 2")),
+			recentTarget,
+			entry(assistantText("recent 2")),
+		];
+		const preparation = prepareContextCompaction(entries, DEFAULT_COMPACTION_SETTINGS)!;
 
-		// A transcript large enough that the old user + branch-summary entries sit outside the
-		// recent-entry boundary, so critical_overflow may evict the protected user message.
-		function criticalOverflowTranscript(): CompactableTranscript {
-			const entries = [
-				{
-					entryId: "entry-user",
-					entryType: "message" as const,
-					role: "user" as const,
-					text: "Original user task to be evicted under overflow.",
-					tokenEstimate: 12,
-					protected: true,
-					contentBlocks: [],
-					message: user("Original user task to be evicted under overflow."),
-					toolCallIds: [],
-				},
-				{
-					entryId: "entry-branch-summary",
-					entryType: "branch_summary" as const,
-					role: "branchSummary" as const,
-					text: "Recap of the prior branch's task and decisions.",
-					tokenEstimate: 10,
-					protected: true,
-					contentBlocks: [],
-					message: branchSummaryMessage("Recap of the prior branch's task and decisions."),
-					toolCallIds: [],
-				},
-				...Array.from({ length: 6 }, (_unused, index) => ({
-					entryId: `entry-assistant-${index}`,
-					entryType: "message" as const,
-					role: "assistant" as const,
-					text: `assistant context ${index}`,
-					tokenEstimate: 4,
-					protected: false,
-					contentBlocks: [],
-					message: assistantText(`assistant context ${index}`),
-					toolCallIds: [],
-				})),
-			];
-			return {
-				entries,
-				protectedEntryIds: ["entry-user", "entry-branch-summary"],
-				tokensBefore: entries.reduce((total, item) => total + item.tokenEstimate, 0),
-				settings: DEFAULT_COMPACTION_SETTINGS,
-			};
-		}
+		expect(preparation.transcript.entries.find((item) => item.entryId === recentTarget.id)?.protected).toBe(true);
+		expect(() =>
+			validateContextDeletionRequest({ deletions: [{ kind: "entry", entryId: recentTarget.id }] }, preparation.transcript),
+		).toThrow(/Cannot delete recent context entry/);
+	});
 
-		it("allows deleting every user message when a branch summary still bears the task", () => {
-			const validated = validateContextDeletionRequest(
-				{ deletions: [{ kind: "entry", entryId: "entry-user" }] },
-				criticalOverflowTranscript(),
-				{ mode: "critical_overflow" },
-			);
-			// The protected user message is evicted, and the surviving branch summary satisfies the
-			// task-bearing guarantee, so validation succeeds.
-			expect(validated.deletedTargets).toContainEqual({ kind: "entry", entryId: "entry-user" });
-		});
+	it("uses custom preserve_recent when marking recent context", () => {
+		resetIds();
+		const olderTarget = entry(assistantText("older target outside custom recent window"));
+		const recentTarget = entry(assistantText("recent target inside custom recent window"));
+		const entries: SessionEntry[] = [
+			entry(user("Task remains available")),
+			olderTarget,
+			entry(assistantText("middle filler")),
+			recentTarget,
+			entry(assistantText("recent 2")),
+			entry(assistantText("recent 3")),
+		];
+		const preparation = prepareContextCompaction(entries, DEFAULT_COMPACTION_SETTINGS, { preserve_recent: 3 })!;
 
-		it("rejects deleting every task-bearing entry (user and branch summary)", () => {
-			expect(() =>
-				validateContextDeletionRequest(
-					{
-						deletions: [
-							{ kind: "entry", entryId: "entry-user" },
-							{ kind: "entry", entryId: "entry-branch-summary" },
-						],
-					},
-					criticalOverflowTranscript(),
-					{ mode: "critical_overflow" },
-				),
-			).toThrow(/leave no user task/);
-		});
-
-		it("still protects the user message outside critical overflow", () => {
-			expect(() =>
-				validateContextDeletionRequest({ deletions: [{ kind: "entry", entryId: "entry-user" }] }, criticalOverflowTranscript()),
-			).toThrow(/protected/);
-		});
-
-		it("allows deleting old thinking blocks during critical overflow", () => {
-			const oldThinkingAssistant = {
-				...assistantText(""),
-				content: [
-					{ type: "text", text: "older assistant block 0" },
-					{ type: "thinking", thinking: "old reasoning can be evicted", thinkingSignature: "sig-old" },
-				],
-			};
-			const latestAssistant = assistantText("latest assistant remains intact");
-			const entries: CompactableTranscript["entries"] = [
-				{
-					entryId: "entry-user",
-					entryType: "message",
-					role: "user",
-					text: "Task remains available.",
-					tokenEstimate: 6,
-					protected: true,
-					contentBlocks: [],
-					message: user("Task remains available."),
-					toolCallIds: [],
-				},
-				{
-					entryId: "entry-old-thinking-assistant",
-					entryType: "message",
-					role: "assistant",
-					text: "older assistant block 0\nold reasoning can be evicted",
-					tokenEstimate: 8,
-					protected: false,
-					contentBlocks: [
-						{
-							entryId: "entry-old-thinking-assistant",
-							blockIndex: 0,
-							type: "text",
-							text: "older assistant block 0",
-							tokenEstimate: 4,
-							protected: false,
-						},
-						{
-							entryId: "entry-old-thinking-assistant",
-							blockIndex: 1,
-							type: "thinking",
-							text: "old reasoning can be evicted",
-							tokenEstimate: 4,
-							protected: false,
-						},
-					],
-					message: oldThinkingAssistant,
-					toolCallIds: [],
-				},
-				{
-					entryId: "entry-latest-assistant",
-					entryType: "message",
-					role: "assistant",
-					text: "latest assistant remains intact",
-					tokenEstimate: 6,
-					protected: false,
-					contentBlocks: [],
-					message: latestAssistant,
-					toolCallIds: [],
-				},
-			];
-			const transcript: CompactableTranscript = {
-				entries,
-				protectedEntryIds: ["entry-user"],
-				tokensBefore: entries.reduce((total, item) => total + item.tokenEstimate, 0),
-				settings: DEFAULT_COMPACTION_SETTINGS,
-			};
-
-			const validated = validateContextDeletionRequest(
-				{ deletions: [{ kind: "content_block", entryId: "entry-old-thinking-assistant", blockIndex: 1 }] },
-				transcript,
-				{ mode: "critical_overflow" },
-			);
-
-			expect(validated.deletedTargets).toEqual([
-				{ kind: "content_block", entryId: "entry-old-thinking-assistant", blockIndex: 1 },
-			]);
-		});
-
-		it("allows whole-entry deletion of the latest thinking-bearing assistant during critical overflow", () => {
-			const latestThinkingAssistant = {
-				...assistantText(""),
-				content: [
-					{ type: "text", text: "latest assistant visible text" },
-					{ type: "thinking", thinking: "latest thinking can be removed with the whole turn", thinkingSignature: "sig-latest" },
-				],
-			};
-			const entries: CompactableTranscript["entries"] = [
-				{
-					entryId: "entry-user",
-					entryType: "message",
-					role: "user",
-					text: "Task remains available.",
-					tokenEstimate: 6,
-					protected: true,
-					contentBlocks: [],
-					message: user("Task remains available."),
-					toolCallIds: [],
-				},
-				{
-					entryId: "entry-latest-thinking-assistant",
-					entryType: "message",
-					role: "assistant",
-					text: "latest assistant visible text\nlatest thinking can be removed with the whole turn",
-					tokenEstimate: 8,
-					protected: false,
-					contentBlocks: [
-						{
-							entryId: "entry-latest-thinking-assistant",
-							blockIndex: 0,
-							type: "text",
-							text: "latest assistant visible text",
-							tokenEstimate: 4,
-							protected: false,
-						},
-						{
-							entryId: "entry-latest-thinking-assistant",
-							blockIndex: 1,
-							type: "thinking",
-							text: "latest thinking can be removed with the whole turn",
-							tokenEstimate: 4,
-							protected: false,
-						},
-					],
-					message: latestThinkingAssistant,
-					toolCallIds: [],
-				},
-			];
-			const transcript: CompactableTranscript = {
-				entries,
-				protectedEntryIds: ["entry-user"],
-				tokensBefore: entries.reduce((total, item) => total + item.tokenEstimate, 0),
-				settings: DEFAULT_COMPACTION_SETTINGS,
-			};
-
-			const validated = validateContextDeletionRequest(
-				{ deletions: [{ kind: "entry", entryId: "entry-latest-thinking-assistant" }] },
-				transcript,
-				{ mode: "critical_overflow" },
-			);
-
-			expect(validated.deletedTargets).toEqual([{ kind: "entry", entryId: "entry-latest-thinking-assistant" }]);
-		});
-
-		it("rejects partial content-block deletion of the latest retained thinking-bearing assistant during critical overflow", () => {
-			const olderAssistant = {
-				...assistantText(""),
-				content: [
-					{ type: "text", text: "older assistant block 0" },
-					{ type: "thinking", thinking: "older assistant thinking now latest", thinkingSignature: "sig-older" },
-				],
-			};
-			const newerAssistant = assistantText("newer assistant entry can be removed entirely");
-			const entries: CompactableTranscript["entries"] = [
-				{
-					entryId: "entry-user",
-					entryType: "message",
-					role: "user",
-					text: "Task remains available.",
-					tokenEstimate: 6,
-					protected: true,
-					contentBlocks: [],
-					message: user("Task remains available."),
-					toolCallIds: [],
-				},
-				{
-					entryId: "entry-older-assistant",
-					entryType: "message",
-					role: "assistant",
-					text: "older assistant block 0\nolder assistant thinking now latest",
-					tokenEstimate: 8,
-					protected: false,
-					contentBlocks: [
-						{
-							entryId: "entry-older-assistant",
-							blockIndex: 0,
-							type: "text",
-							text: "older assistant block 0",
-							tokenEstimate: 4,
-							protected: false,
-						},
-						{
-							entryId: "entry-older-assistant",
-							blockIndex: 1,
-							type: "thinking",
-							text: "older assistant thinking now latest",
-							tokenEstimate: 4,
-							protected: false,
-						},
-					],
-					message: olderAssistant,
-					toolCallIds: [],
-				},
-				{
-					entryId: "entry-newer-assistant",
-					entryType: "message",
-					role: "assistant",
-					text: "newer assistant entry can be removed entirely",
-					tokenEstimate: 6,
-					protected: false,
-					contentBlocks: [],
-					message: newerAssistant,
-					toolCallIds: [],
-				},
-			];
-			const transcript: CompactableTranscript = {
-				entries,
-				protectedEntryIds: ["entry-user"],
-				tokensBefore: entries.reduce((total, item) => total + item.tokenEstimate, 0),
-				settings: DEFAULT_COMPACTION_SETTINGS,
-			};
-
-			expect(() =>
-				validateContextDeletionRequest(
-					{
-						deletions: [
-							{ kind: "entry", entryId: "entry-newer-assistant" },
-							{ kind: "content_block", entryId: "entry-older-assistant", blockIndex: 1 },
-						],
-					},
-					transcript,
-					{ mode: "critical_overflow" },
-				),
-			).toThrow(/not deletable during critical_overflow.*latest retained assistant entry entry-older-assistant/);
-		});
+		expect(preparation.parameters.preserve_recent).toBe(3);
+		expect(preparation.transcript.entries.find((item) => item.entryId === olderTarget.id)?.protected).toBe(false);
+		expect(preparation.transcript.entries.find((item) => item.entryId === recentTarget.id)?.protected).toBe(true);
+		expect(() =>
+			validateContextDeletionRequest({ deletions: [{ kind: "entry", entryId: recentTarget.id }] }, preparation.transcript),
+		).toThrow(/last 3 context entries/);
 	});
 
 	it("repairs deletion requests that would orphan tool calls or results", () => {
@@ -815,7 +541,7 @@ describe("context compaction", () => {
 		]);
 	});
 
-	it("rejects tool-call reconciliation that would partially delete a thinking-bearing assistant entry", () => {
+	it("repairs tool-call reconciliation inside older thinking-bearing assistant entries", () => {
 		resetIds();
 		const combinedToolCallId = "call_7SZEC0NytS60tNYbfx3iV93P|fc_0f290ffb56102ac9016a262e88c10c819aa3fe84e1e79aa20f";
 		const task = entry(user("Task"));
@@ -840,12 +566,14 @@ describe("context compaction", () => {
 		];
 		const preparation = prepareContextCompaction(entries, DEFAULT_COMPACTION_SETTINGS)!;
 
-		expect(() =>
-			validateContextDeletionRequest(
-				{ deletions: [{ kind: "entry", entryId: result.id }] },
-				preparation.transcript,
-			),
-		).toThrow(/contains thinking\/redacted_thinking content blocks that must be preserved verbatim/);
+		const validated = validateContextDeletionRequest(
+			{ deletions: [{ kind: "entry", entryId: result.id }] },
+			preparation.transcript,
+		);
+		expect(validated.deletedTargets).toEqual([
+			{ kind: "entry", entryId: result.id },
+			{ kind: "content_block", entryId: assistantWithThinkingAndCall.id, blockIndex: 1 },
+		]);
 	});
 
 	it("rejects content-block deletion requests that would remove every block from an entry", () => {
@@ -882,7 +610,7 @@ describe("context compaction", () => {
 		).toThrow(/every content block/);
 	});
 
-	it("rejects assistant thinking-bearing entry content-block and containing-entry deletions while accepting safe content-block deletions", () => {
+	it("allows older assistant thinking-bearing entry and content-block deletions while rejecting latest thinking blocks", () => {
 		resetIds();
 		const task = entry(user("Task must remain available"));
 		const sensitiveAssistant = entry({
@@ -917,25 +645,55 @@ describe("context compaction", () => {
 		expect(sensitiveEntry.protected).toBe(false);
 		expect(sensitiveEntry.contentBlocks.map((block) => block.type)).toEqual(["text", "thinking", "redacted_thinking"]);
 		for (const blockIndex of [0, 1, 2]) {
-			expect(() =>
-				validateContextDeletionRequest(
-					{ deletions: [{ kind: "content_block", entryId: sensitiveAssistant.id, blockIndex }] },
-					preparation.transcript,
-				),
-			).toThrow(/contains thinking\/redacted_thinking content blocks that must be preserved verbatim/);
-		}
-		expect(() =>
-			validateContextDeletionRequest(
-				{ deletions: [{ kind: "entry", entryId: sensitiveAssistant.id }] },
+			const validated = validateContextDeletionRequest(
+				{ deletions: [{ kind: "content_block", entryId: sensitiveAssistant.id, blockIndex }] },
 				preparation.transcript,
-			),
-		).toThrow(/contains thinking\/redacted_thinking content blocks/);
+			);
+			expect(validated.deletedTargets).toEqual([{ kind: "content_block", entryId: sensitiveAssistant.id, blockIndex }]);
+		}
+		const entryValidated = validateContextDeletionRequest(
+			{ deletions: [{ kind: "entry", entryId: sensitiveAssistant.id }] },
+			preparation.transcript,
+		);
+		expect(entryValidated.deletedTargets).toEqual([{ kind: "entry", entryId: sensitiveAssistant.id }]);
 
 		const safeValidated = validateContextDeletionRequest(
 			{ deletions: [{ kind: "content_block", entryId: safeAssistant.id, blockIndex: 0 }] },
 			preparation.transcript,
 		);
 		expect(safeValidated.deletedTargets).toEqual([{ kind: "content_block", entryId: safeAssistant.id, blockIndex: 0 }]);
+	});
+
+	it("rejects deleting thinking blocks in the latest assistant message", () => {
+		resetIds();
+		const task = entry(user("Task must remain available"));
+		const latestAssistant = entry({
+			...assistantText(""),
+			content: [
+				{ type: "text", text: "latest visible text" },
+				{ type: "thinking", thinking: "latest thinking must remain", thinkingSignature: "sig-thinking" },
+				{ type: "redacted_thinking", data: "opaque-redacted-payload" },
+			],
+		} as unknown as AssistantMessage);
+		const preparation = prepareContextCompaction([task, latestAssistant], DEFAULT_COMPACTION_SETTINGS, { preserve_recent: 0 })!;
+
+		expect(() =>
+			validateContextDeletionRequest(
+				{ deletions: [{ kind: "content_block", entryId: latestAssistant.id, blockIndex: 1 }] },
+				preparation.transcript,
+			),
+		).toThrow(/thinking\/redacted_thinking block in the latest assistant message/);
+		expect(() =>
+			validateContextDeletionRequest({ deletions: [{ kind: "entry", entryId: latestAssistant.id }] }, preparation.transcript),
+		).toThrow(/latest assistant message.*thinking\/redacted_thinking/);
+
+		const visibleValidated = validateContextDeletionRequest(
+			{ deletions: [{ kind: "content_block", entryId: latestAssistant.id, blockIndex: 0 }] },
+			preparation.transcript,
+		);
+		expect(visibleValidated.deletedTargets).toEqual([
+			{ kind: "content_block", entryId: latestAssistant.id, blockIndex: 0 },
+		]);
 	});
 
 	it("preserves assistant thinking-bearing content arrays when applying persisted content-block deletion filters", () => {

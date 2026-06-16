@@ -51,7 +51,7 @@ import {
 } from "./auth-guidance.ts";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.ts";
 import {
-	type ContextCompactionMode,
+	type ContextCompactionParameters,
 	type ContextCompactionPreparation,
 	type ContextCompactionResult,
 	type ContextDeletionRequest,
@@ -2044,7 +2044,9 @@ export class AgentSession {
 		resolvePlannerAuth: () => Promise<{ apiKey: string; headers?: Record<string, string> } | undefined>;
 		abortController: AbortController;
 		backupLabel: string;
-		mode?: ContextCompactionMode;
+		compression_ratio?: number;
+		preserve_recent?: number;
+		query?: string;
 		reason: "manual" | "threshold" | "overflow";
 	}): Promise<ContextCompactionResult | undefined> {
 		if (!this.model) {
@@ -2053,14 +2055,19 @@ export class AgentSession {
 		// Capture the narrowed model now (control-flow narrowing holds immediately after the
 		// guard) so the lazy planner-fallback closure below can use a non-undefined model.
 		const model = this.model;
+		const compactionThinkingLevel = this.thinkingLevel;
 
 		const pathEntries = this.sessionManager.getBranch();
 		const settings = this.settingsManager.getCompactionSettings();
-		const mode = options.mode ?? "standard";
-		const preparation = prepareContextCompaction(pathEntries, settings, { mode });
+		const preparation = prepareContextCompaction(pathEntries, settings, {
+			...(options.compression_ratio === undefined ? {} : { compression_ratio: options.compression_ratio }),
+			...(options.preserve_recent === undefined ? {} : { preserve_recent: options.preserve_recent }),
+			...(options.query === undefined ? {} : { query: options.query }),
+		});
 		if (!preparation) {
 			return undefined;
 		}
+		const parameters: ContextCompactionParameters = preparation.parameters;
 
 		// Planner fallback used when no extension supplies a deletionRequest. Auth is resolved
 		// lazily here so extension-provided deletion requests keep working offline. Returns
@@ -2074,8 +2081,7 @@ export class AgentSession {
 				auth.apiKey,
 				auth.headers,
 				options.abortController.signal,
-				this.thinkingLevel,
-				mode,
+				compactionThinkingLevel,
 			);
 		};
 
@@ -2107,7 +2113,7 @@ export class AgentSession {
 			const hookResult = (await this._extensionRunner.emit({
 				type: "session_before_compact",
 				reason: options.reason,
-				mode,
+				parameters,
 				preparation: extensionPreparation,
 				branchEntries: pathEntries,
 				signal: options.abortController.signal,
@@ -2125,11 +2131,7 @@ export class AgentSession {
 				}
 				// Validate against the internal transcript snapshot, not the extension-facing clone.
 				// Auth is NOT resolved here — local extension deletion requests work offline.
-				validated = validateContextDeletionRequest(
-					extensionDeletionRequest,
-					preparation.transcript,
-					{ mode },
-				);
+				validated = validateContextDeletionRequest(extensionDeletionRequest, preparation.transcript);
 				// Reject if reconciliation reduced deletions to zero.
 				if (validated.deletedTargets.length === 0) {
 					throw new Error("No safe context deletions proposed by extension");
@@ -2166,6 +2168,7 @@ export class AgentSession {
 		const result: ContextCompactionResult = {
 			...validated,
 			promptVersion: 1,
+			parameters,
 			...(backupPath ? { backupPath } : {}),
 		};
 
@@ -2180,7 +2183,7 @@ export class AgentSession {
 			await this._extensionRunner.emit({
 				type: "session_compact",
 				reason: options.reason,
-				mode,
+				parameters,
 				result,
 				contextCompactionEntry,
 				fromExtension,
@@ -2201,7 +2204,7 @@ export class AgentSession {
 	 * Manually compact the session context using deletion-only verbatim context compaction.
 	 * Aborts current agent operation first.
 	 */
-	async compact(): Promise<ContextCompactionResult> {
+	async compact(options: Partial<ContextCompactionParameters> = {}): Promise<ContextCompactionResult> {
 		this._disconnectFromAgent();
 		await this.abort();
 		this._compactionAbortController = new AbortController();
@@ -2220,6 +2223,9 @@ export class AgentSession {
 				abortController: this._compactionAbortController,
 				backupLabel: "compact",
 				reason: "manual",
+				...(options.compression_ratio === undefined ? {} : { compression_ratio: options.compression_ratio }),
+				...(options.preserve_recent === undefined ? {} : { preserve_recent: options.preserve_recent }),
+				...(options.query === undefined ? {} : { query: options.query }),
 			});
 			if (!result) {
 				throw new Error("Nothing to compact (session too small)");
@@ -2490,7 +2496,6 @@ export class AgentSession {
 				},
 				abortController: this._autoCompactionAbortController,
 				backupLabel: reason === "overflow" ? "overflow-auto-compact" : "auto-compact",
-				mode: reason === "overflow" ? "critical_overflow" : "standard",
 				reason,
 			});
 			if (!result) {
@@ -2727,7 +2732,11 @@ export class AgentSession {
 				compact: (options) => {
 					void (async () => {
 						try {
-							const result = await this.compact();
+							const result = await this.compact({
+								...(options?.compression_ratio === undefined ? {} : { compression_ratio: options.compression_ratio }),
+								...(options?.preserve_recent === undefined ? {} : { preserve_recent: options.preserve_recent }),
+								...(options?.query === undefined ? {} : { query: options.query }),
+							});
 							options?.onComplete?.(result);
 						} catch (error) {
 							const err = error instanceof Error ? error : new Error(String(error));

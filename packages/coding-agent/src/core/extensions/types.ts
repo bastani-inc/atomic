@@ -43,12 +43,7 @@ import type { Static, TSchema } from "typebox";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import type { ResolvedResource } from "../package-manager.ts";
 import type { BashResult } from "../bash-executor.ts";
-import type {
-	ContextCompactionMode,
-	ContextCompactionPreparation,
-	ContextCompactionResult,
-	ContextDeletionRequest,
-} from "../compaction/index.ts";
+import type { ContextCompactionPreparation, ContextCompactionResult, ContextDeletionRequest } from "../compaction/index.ts";
 import type { EventBus } from "../event-bus.ts";
 import type { ExecOptions, ExecResult } from "../exec.ts";
 import type { ReadonlyFooterDataProvider } from "../footer-data-provider.ts";
@@ -353,6 +348,12 @@ export interface ContextUsage {
 }
 
 export interface CompactOptions {
+	/** Fraction of compactable context to keep. 0.3 is aggressive, 0.7 is light. */
+	compression_ratio?: number;
+	/** Number of recent context-eligible messages to keep uncompressed. */
+	preserve_recent?: number;
+	/** Focus query for relevance-based pruning. Defaults to auto-detected session context. */
+	query?: string;
 	onComplete?: (result: ContextCompactionResult) => void;
 	onError?: (error: Error) => void;
 }
@@ -638,7 +639,7 @@ export interface SessionBeforeForkEvent {
 export interface SessionBeforeCompactEvent {
 	type: "session_before_compact";
 	reason: "manual" | "threshold" | "overflow";
-	mode: ContextCompactionMode;
+	parameters: ContextCompactionPreparation["parameters"];
 	preparation: ContextCompactionPreparation;
 	branchEntries: SessionEntry[];
 	signal: AbortSignal;
@@ -648,7 +649,7 @@ export interface SessionBeforeCompactEvent {
 export interface SessionCompactEvent {
 	type: "session_compact";
 	reason: "manual" | "threshold" | "overflow";
-	mode: ContextCompactionMode;
+	parameters: ContextCompactionPreparation["parameters"];
 	result: ContextCompactionResult;
 	contextCompactionEntry: ContextCompactionEntry;
 	fromExtension: boolean;

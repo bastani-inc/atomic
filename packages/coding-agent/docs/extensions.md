@@ -438,15 +438,14 @@ Fired by `/compact` and auto-compaction. Compaction is deletion-only: extensions
 
 ```typescript
 pi.on("session_before_compact", async (event, ctx) => {
-  const { preparation, branchEntries, reason, mode, signal } = event;
+  const { preparation, branchEntries, reason, signal } = event;
   const { transcript } = preparation;
 
   // transcript.entries - compactable entries on the active branch
-  // transcript.protectedEntryIds - entries protected from standard compaction
+  // transcript.protectedEntryIds - entries validation will reject if directly deleted
   // transcript.tokensBefore - token estimate before compaction
   // branchEntries - raw session entries on the current branch
   // reason - "manual" | "threshold" | "overflow"
-  // mode - "standard" | "critical_overflow"
 
   if (signal.aborted) return { cancel: true };
 
@@ -994,10 +993,13 @@ if (usage && usage.tokens > 100_000) {
 
 ### ctx.compact()
 
-Trigger Atomic's default Verbatim Compaction without awaiting completion. This is deletion-only Context Compaction: the internal planner searches/reads transcript slices, records exact entry/content-block deletion targets with transcript-bound tools, and Atomic applies only locally validated logical deletions. Retained transcript content stays unchanged. The approach is informed by Morph's Context Compaction write-up: [Morph's Context Compaction](https://www.morphllm.com/context-compaction). Use `onComplete` and `onError` for follow-up actions.
+Trigger Atomic's default Verbatim Compaction without awaiting completion. This is deletion-only Context Compaction: the internal planner searches/reads transcript slices, records exact entry/content-block deletion targets with transcript-bound tools, and Atomic applies only locally validated logical deletions. Retained transcript content stays unchanged. The approach is informed by Morph's Context Compaction write-up: [Morph's Context Compaction](https://www.morphllm.com/context-compaction). Use `compression_ratio`, `preserve_recent`, and `query` to tune the run, and `onComplete`/`onError` for follow-up actions.
 
 ```typescript
 ctx.compact({
+  compression_ratio: 0.5, // fraction to keep: 0.3 aggressive, 0.7 light
+  preserve_recent: 2,    // keep the last N context-eligible messages
+  query: "keep active migration details",
   onComplete: (result) => {
     ctx.ui.notify(`Compaction deleted ${result.stats.objectsDeleted} objects`, "info");
   },
@@ -1007,7 +1009,7 @@ ctx.compact({
 });
 ```
 
-Verbatim Compaction uses a fixed internal prompt; no custom summary text can be injected.
+Verbatim Compaction uses a fixed internal prompt; no custom summary text can be injected. The `query` parameter guides relevance-based pruning inside that fixed prompt; it is not replacement summary text.
 
 ### ctx.getSystemPrompt()
 
