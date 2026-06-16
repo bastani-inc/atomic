@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
 	buildContextCompactionPrompt,
 	type CompactableTranscript,
+	createContextDeletionTool,
 	DEFAULT_COMPACTION_SETTINGS,
 	estimateContextTokens,
 	estimateTokens,
@@ -664,7 +665,7 @@ describe("context compaction", () => {
 		expect(safeValidated.deletedTargets).toEqual([{ kind: "content_block", entryId: safeAssistant.id, blockIndex: 0 }]);
 	});
 
-	it("rejects deleting thinking blocks in the latest assistant message", () => {
+	it("rejects deleting any content block in the latest thinking-bearing assistant message", () => {
 		resetIds();
 		const task = entry(user("Task must remain available"));
 		const latestAssistant = entry({
@@ -679,20 +680,158 @@ describe("context compaction", () => {
 
 		expect(() =>
 			validateContextDeletionRequest(
+				{ deletions: [{ kind: "content_block", entryId: latestAssistant.id, blockIndex: 0 }] },
+				preparation.transcript,
+			),
+		).toThrow(/latest retained assistant message contains thinking\/redacted_thinking/);
+		expect(() =>
+			validateContextDeletionRequest(
 				{ deletions: [{ kind: "content_block", entryId: latestAssistant.id, blockIndex: 1 }] },
 				preparation.transcript,
 			),
-		).toThrow(/thinking\/redacted_thinking block in the latest assistant message/);
+		).toThrow(/latest retained assistant message contains thinking\/redacted_thinking/);
 		expect(() =>
 			validateContextDeletionRequest({ deletions: [{ kind: "entry", entryId: latestAssistant.id }] }, preparation.transcript),
 		).toThrow(/latest assistant message.*thinking\/redacted_thinking/);
+	});
 
-		const visibleValidated = validateContextDeletionRequest(
-			{ deletions: [{ kind: "content_block", entryId: latestAssistant.id, blockIndex: 0 }] },
-			preparation.transcript,
-		);
-		expect(visibleValidated.deletedTargets).toEqual([
-			{ kind: "content_block", entryId: latestAssistant.id, blockIndex: 0 },
+	it("rejects content-block deletion when deleting newer assistants would make an older thinking assistant latest retained", () => {
+		resetIds();
+		const task = entry(user("Task must remain available"));
+		const olderThinkingAssistant = entry({
+			...assistantText(""),
+			content: [
+				{ type: "text", text: "older visible text" },
+				{ type: "thinking", thinking: "older thinking becomes latest", thinkingSignature: "sig-thinking" },
+			],
+		} as unknown as AssistantMessage);
+		const newerAssistant = entry(assistantText("newer assistant to delete"));
+		const entries: SessionEntry[] = [task, olderThinkingAssistant, newerAssistant];
+		const preparation = prepareContextCompaction(entries, DEFAULT_COMPACTION_SETTINGS, { preserve_recent: 0 })!;
+
+		expect(() =>
+			validateContextDeletionRequest(
+				{
+					deletions: [
+						{ kind: "content_block", entryId: olderThinkingAssistant.id, blockIndex: 0 },
+						{ kind: "entry", entryId: newerAssistant.id },
+					],
+				},
+				preparation.transcript,
+			),
+		).toThrow(/latest retained assistant message contains thinking\/redacted_thinking/);
+	});
+
+	it("rejects entry deletion when deleting newer assistants would make an older thinking assistant latest retained", () => {
+		resetIds();
+		const task = entry(user("Task must remain available"));
+		const olderThinkingAssistant = entry({
+			...assistantText(""),
+			content: [
+				{ type: "text", text: "older visible text" },
+				{ type: "thinking", thinking: "older thinking becomes latest", thinkingSignature: "sig-thinking" },
+			],
+		} as unknown as AssistantMessage);
+		const newerAssistant = entry(assistantText("newer assistant to delete"));
+		const preparation = prepareContextCompaction([task, olderThinkingAssistant, newerAssistant], DEFAULT_COMPACTION_SETTINGS, {
+			preserve_recent: 0,
+		})!;
+
+		expect(() =>
+			validateContextDeletionRequest(
+				{
+					deletions: [
+						{ kind: "entry", entryId: newerAssistant.id },
+						{ kind: "entry", entryId: olderThinkingAssistant.id },
+					],
+				},
+				preparation.transcript,
+			),
+		).toThrow(/latest assistant message retained after other deletions.*thinking\/redacted_thinking/);
+	});
+
+	it("context_grep_delete skips unsafe latest-retained thinking assistant content blocks without counting them as removals", async () => {
+		resetIds();
+		const task = entry(user("Task must remain available"));
+		const olderThinkingAssistant = entry({
+			...assistantText(""),
+			content: [
+				{ type: "text", text: "obsolete shared grep marker in visible sibling" },
+				{ type: "thinking", thinking: "private thinking remains", thinkingSignature: "sig-thinking" },
+			],
+		} as unknown as AssistantMessage);
+		const newerAssistant = entry(assistantText("obsolete shared grep marker newer assistant"));
+		const preparation = prepareContextCompaction([task, olderThinkingAssistant, newerAssistant], DEFAULT_COMPACTION_SETTINGS, {
+			preserve_recent: 0,
+		})!;
+		const controller = createContextDeletionTool(preparation.transcript, { preserve_recent: 0 });
+
+		const result = await controller.grepTool.execute("grep-call", {
+			pattern: "obsolete shared grep marker",
+			target: "content_block",
+		});
+
+		expect(result.details.error).toBeUndefined();
+		expect(result.details.matches).toEqual([
+			{
+				entryId: newerAssistant.id,
+				target: "entry",
+				text: "obsolete shared grep marker newer assistant",
+			},
+		]);
+		expect(result.details.skipped).toEqual([
+			expect.objectContaining({
+				entryId: olderThinkingAssistant.id,
+				target: "content_block",
+				blockIndex: 0,
+				reason: "protected_block",
+			}),
+		]);
+		expect(result.details.deletedTargets).toEqual([{ kind: "entry", entryId: newerAssistant.id }]);
+		expect(result.details.deletedTargets).toHaveLength(1);
+		expect(result.details.matches).toHaveLength(1);
+	});
+
+	it("context_grep_delete skips newer entries that would expose an already-filtered thinking assistant", async () => {
+		resetIds();
+		const task = entry(user("Task must remain available"));
+		const olderThinkingAssistant = entry({
+			...assistantText(""),
+			content: [
+				{ type: "text", text: "old visible block selected first" },
+				{ type: "thinking", thinking: "private thinking remains", thinkingSignature: "sig-thinking" },
+			],
+		} as unknown as AssistantMessage);
+		const newerAssistant = entry(assistantText("newer obsolete entry marker"));
+		const preparation = prepareContextCompaction([task, olderThinkingAssistant, newerAssistant], DEFAULT_COMPACTION_SETTINGS, {
+			preserve_recent: 0,
+		})!;
+		const controller = createContextDeletionTool(preparation.transcript, { preserve_recent: 0 });
+
+		const first = await controller.tool.execute("delete-old-visible", {
+			deletions: [{ kind: "content_block", entryId: olderThinkingAssistant.id, blockIndex: 0 }],
+		});
+		expect(first.details.error).toBeUndefined();
+		expect(controller.getDeletionRequest().deletions).toEqual([
+			{ kind: "content_block", entryId: olderThinkingAssistant.id, blockIndex: 0 },
+		]);
+
+		const second = await controller.grepTool.execute("grep-newer", {
+			pattern: "newer obsolete entry marker",
+			target: "entry",
+		});
+
+		expect(second.details.error).toBeUndefined();
+		expect(second.details.matches).toEqual([]);
+		expect(second.details.skipped).toEqual([
+			expect.objectContaining({
+				entryId: newerAssistant.id,
+				target: "entry",
+				reason: "protected_entry",
+			}),
+		]);
+		expect(controller.getDeletionRequest().deletions).toEqual([
+			{ kind: "content_block", entryId: olderThinkingAssistant.id, blockIndex: 0 },
 		]);
 	});
 
