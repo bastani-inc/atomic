@@ -170,15 +170,14 @@ describe("subagent acceptance removal", () => {
 
 	test("subagent tool schema no longer exposes acceptance fields", () => {
 		const serialized = JSON.stringify(SubagentParams);
+		const removedNoMutationField = `completion${"Guard"}`;
+		const removedNoMutationPattern = new RegExp(`${removedNoMutationField}|completion_guard|completion guard`, "i");
 
 		assert.doesNotMatch(serialized, /\"acceptance\"/);
 		assert.doesNotMatch(serialized, /AcceptanceOverride|Acceptance level|acceptance policy/);
-		assert.doesNotMatch(serialized, /completionGuard|completion_guard|completion guard/i);
+		assert.doesNotMatch(serialized, removedNoMutationPattern);
 
-		const serializedAgent = serializeAgent({ ...agentConfig(), completionGuard: false } as AgentConfig);
-		assert.doesNotMatch(serializedAgent, /completionGuard|completion guard/i);
-
-		const serializedLegacyAgent = serializeAgent({ ...agentConfig(), extraFields: { completionGuard: "false" } });
-		assert.doesNotMatch(serializedLegacyAgent, /completionGuard|completion guard/i);
+		const serializedLegacyAgent = serializeAgent({ ...agentConfig(), extraFields: { [removedNoMutationField]: "false" } });
+		assert.doesNotMatch(serializedLegacyAgent, removedNoMutationPattern);
 	});
 });

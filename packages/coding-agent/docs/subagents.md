@@ -29,6 +29,14 @@ Atomic decides whether to call the bundled `subagent` tool, which specialist fit
 
 Subagents now run and return their results directly. Atomic does not infer acceptance gates from prompt wording, inject `acceptance-report` instructions into child prompts, parse or strip `acceptance-report` blocks, or reject completed child runs because changed-file, test, or review evidence is missing. Put any evidence or validation requirements directly in the task text you give the parent or child agent.
 
+## Migration from acceptance gates
+
+If you have older subagent calls, saved chains, or custom agents that used the removed gate fields:
+
+- Remove `acceptance` properties from `subagent()` calls, `tasks` entries, `chain` steps, static parallel task items, and dynamic fanout parallel templates. Atomic no longer reads these fields; JSON chain rewrites drop legacy copies.
+- Remove `completionGuard: false` from agent frontmatter and custom agent definitions. The no-mutation completion guard no longer exists, so the override has no effect and management rewrites strip it.
+- Move validation, command, evidence, review, or residual-risk requirements into the natural-language task text passed to the parent or child agent.
+
 ## Bundled agents
 
 Atomic currently bundles these agents from `@bastani/subagents`:

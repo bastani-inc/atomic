@@ -1081,6 +1081,5 @@ export async function runSync(
 		if (sessionFile) result.sessionFile = sessionFile;
 	}
 
-
 	return result;
 }

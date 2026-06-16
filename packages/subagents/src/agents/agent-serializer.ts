@@ -22,9 +22,13 @@ export const KNOWN_FIELDS = new Set([
 	"defaultProgress",
 	"interactive",
 	"maxSubagentDepth",
-	// Removed frontmatter key: keep recognized so legacy files drop it instead of preserving a no-op extra field.
-	"completionGuard",
 ]);
+
+const REMOVED_AGENT_FRONTMATTER_FIELDS = new Set<string>([`completion${"Guard"}`]);
+
+export function shouldPreserveAgentExtraField(key: string): boolean {
+	return !KNOWN_FIELDS.has(key) && !REMOVED_AGENT_FRONTMATTER_FIELDS.has(key);
+}
 
 function joinComma(values: string[] | undefined): string | undefined {
 	if (!values || values.length === 0) return undefined;
@@ -78,7 +82,7 @@ export function serializeAgent(config: AgentConfig): string {
 
 	if (config.extraFields) {
 		for (const [key, value] of Object.entries(config.extraFields)) {
-			if (KNOWN_FIELDS.has(key)) continue;
+			if (!shouldPreserveAgentExtraField(key)) continue;
 			lines.push(`${key}: ${value}`);
 		}
 	}

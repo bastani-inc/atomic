@@ -8,7 +8,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { CONFIG_DIR_NAME, getAgentConfigPaths, getEnvValue, getProjectConfigDirs } from "@bastani/atomic";
 import type { OutputMode } from "../shared/types.ts";
-import { KNOWN_FIELDS } from "./agent-serializer.ts";
+import { shouldPreserveAgentExtraField } from "./agent-serializer.ts";
 import { parseChain, parseJsonChain } from "./chain-serializer.ts";
 import { mergeAgentsForScope } from "./agent-selection.ts";
 import { parseFrontmatter } from "./frontmatter.ts";
@@ -693,7 +693,7 @@ function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig[] {
 
 		const extraFields: Record<string, string> = {};
 		for (const [key, value] of Object.entries(frontmatter)) {
-			if (!KNOWN_FIELDS.has(key)) extraFields[key] = value;
+			if (shouldPreserveAgentExtraField(key)) extraFields[key] = value;
 		}
 
 		const parsedMaxSubagentDepth = Number(frontmatter.maxSubagentDepth);

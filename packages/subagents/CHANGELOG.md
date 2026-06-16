@@ -4,7 +4,7 @@
 
 ### Changed
 
-- Removed subagent acceptance gates, deterministic task-text acceptance inference, the remaining no-mutation completion guard, acceptance-report prompt injection/parsing, acceptance/completion-guard status metadata, and related tool/schema/config fields; completed child output is now preserved without acceptance or mutation-intent evaluation ([#1398](https://github.com/bastani-inc/atomic/issues/1398)).
+- Removed subagent acceptance gates, deterministic task-text acceptance inference, the remaining no-mutation completion guard, acceptance-report prompt injection/parsing, acceptance/completion-guard status metadata, and related tool/schema/config fields; completed child output is now preserved without acceptance or mutation-intent evaluation. Migration guidance now directs users to remove stale acceptance fields from subagent calls/chains/parallel items and move validation requirements into task text; JSON chain rewrites drop legacy acceptance entries ([#1398](https://github.com/bastani-inc/atomic/issues/1398)).
 
 ### Fixed
 

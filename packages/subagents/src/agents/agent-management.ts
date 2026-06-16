@@ -333,7 +333,8 @@ function applyAgentConfig(target: AgentConfig, cfg: Record<string, unknown>): st
 		else if (typeof cfg.maxSubagentDepth === "number" && Number.isInteger(cfg.maxSubagentDepth) && cfg.maxSubagentDepth >= 0) {
 			target.maxSubagentDepth = cfg.maxSubagentDepth;
 		} else return "config.maxSubagentDepth must be an integer >= 0 or false when provided.";
-	}	return undefined;
+	}
+	return undefined;
 }
 
 type MutableDefinition<T extends { source: AgentSource }> = T & { source: ManagementScope };

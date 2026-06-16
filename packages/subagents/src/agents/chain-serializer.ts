@@ -4,6 +4,29 @@ import { parseFrontmatter } from "./frontmatter.ts";
 import { ChainOutputValidationError, validateChainOutputBindings } from "../runs/shared/chain-outputs.ts";
 import type { ChainStep } from "../shared/settings.ts";
 
+const REMOVED_CHAIN_CONFIG_FIELDS = new Set(["acceptance"]);
+
+function stripRemovedChainConfigFields(value: unknown): unknown {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+	const input = value as Record<string, unknown>;
+	const output: Record<string, unknown> = {};
+	for (const [key, entry] of Object.entries(input)) {
+		if (REMOVED_CHAIN_CONFIG_FIELDS.has(key)) continue;
+		if (key === "parallel") {
+			output[key] = Array.isArray(entry)
+				? entry.map((item) => stripRemovedChainConfigFields(item))
+				: stripRemovedChainConfigFields(entry);
+			continue;
+		}
+		output[key] = entry;
+	}
+	return output;
+}
+
+function stripRemovedChainConfigSteps(steps: readonly unknown[]): ChainStepConfig[] {
+	return steps.map((step) => stripRemovedChainConfigFields(step) as ChainStepConfig);
+}
+
 function parseStepBody(agent: string, sectionBody: string): ChainStepConfig {
 	const lines = sectionBody.split("\n");
 	const blankIndex = lines.findIndex((line) => line.trim() === "");
@@ -150,8 +173,9 @@ export function parseJsonChain(content: string, source: "user" | "project", file
 			throw new Error(`JSON chain '${filePath}' step ${i + 1} must be an object.`);
 		}
 	}
+	const chainSteps = stripRemovedChainConfigSteps(input.chain);
 	try {
-		validateChainOutputBindings(input.chain as ChainStep[], { maxItems: Number.MAX_SAFE_INTEGER });
+		validateChainOutputBindings(chainSteps as ChainStep[], { maxItems: Number.MAX_SAFE_INTEGER });
 	} catch (error) {
 		if (error instanceof ChainOutputValidationError) throw new Error(`Invalid JSON chain '${filePath}': ${error.message}`);
 		throw error;
@@ -170,7 +194,7 @@ export function parseJsonChain(content: string, source: "user" | "project", file
 		description: input.description.trim(),
 		source,
 		filePath,
-		steps: input.chain as ChainStepConfig[],
+		steps: chainSteps,
 		extraFields: Object.keys(extraFields).length > 0 ? extraFields : undefined,
 	};
 }
@@ -179,7 +203,7 @@ export function serializeJsonChain(config: ChainConfig): string {
 	const root: Record<string, unknown> = {
 		name: frontmatterNameForConfig(config),
 		description: config.description,
-		chain: config.steps,
+		chain: stripRemovedChainConfigSteps(config.steps),
 	};
 	if (config.packageName) root.package = config.packageName;
 	if (config.extraFields) {

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "bun:test";
+import { parseJsonChain, serializeJsonChain } from "../../packages/subagents/src/agents/chain-serializer.js";
 import { ChainOutputValidationError, validateChainOutputBindings } from "../../packages/subagents/src/runs/shared/chain-outputs.js";
 import {
 	DynamicFanoutError,
@@ -88,6 +89,38 @@ describe("dynamic fanout helpers", () => {
 			() => materializeDynamicParallelStep({ ...base, expand: { ...base.expand, onEmpty: "fail" } }, { targets: { ...outputs.targets, structured: { items: [] } } }, 1, { maxItems: 4 }),
 			/source array is empty/,
 		);
+	});
+
+	test("ignores legacy acceptance fields on dynamic fanout configs", () => {
+		const removedGateField = "accept" + "ance";
+		const legacyStep = {
+			expand: { from: { output: "targets", path: "/items" }, item: "target", key: "/path", maxItems: 4 },
+			parallel: { agent: "reviewer", task: "Review {target.path}", [removedGateField]: { level: "checked" } },
+			collect: { as: "reviews" },
+			[removedGateField]: { level: "checked" },
+		};
+
+		assert.doesNotThrow(() => validateChainOutputBindings([
+			{ agent: "scout", task: "Return targets", as: "targets", outputSchema: { type: "object" } },
+			legacyStep,
+		]));
+		const materialized = materializeDynamicParallelStep(legacyStep, outputs, 1);
+		assert.equal(removedGateField in materialized.parallel[0]!, false);
+	});
+
+	test("JSON chain rewrites strip legacy acceptance fields", () => {
+		const removedGateField = "accept" + "ance";
+		const chain = parseJsonChain(JSON.stringify({
+			name: "legacy-cleanup",
+			description: "Legacy cleanup",
+			chain: [
+				{ agent: "scout", task: "Return targets", [removedGateField]: { level: "checked" } },
+				{ parallel: [{ agent: "reviewer", task: "Review", [removedGateField]: "reviewed" }] },
+			],
+		}), "project", "legacy-cleanup.chain.json");
+
+		const serialized = serializeJsonChain(chain);
+		assert.doesNotMatch(serialized, new RegExp(`\"${removedGateField}\"`));
 	});
 
 	test("rejects malformed dynamic-like shapes before they can run as static parallel", () => {

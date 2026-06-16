@@ -992,6 +992,14 @@ Async runs write:
 
 Subagent runs no longer inject acceptance gate prompts, infer task policies from text, parse `acceptance-report` blocks, or reject completed children for missing acceptance evidence. Child output is preserved as returned, including any literal fenced block named `acceptance-report`. Parent sessions remain responsible for deciding whether the returned work is sufficient.
 
+### Migration from acceptance gates
+
+For existing subagent integrations and saved definitions:
+
+- Remove `acceptance` properties from `subagent()` calls, top-level `tasks` items, `chain` steps, static parallel task items, and dynamic fanout parallel templates. The fields are no longer read; JSON chain rewrites drop legacy copies.
+- Remove `completionGuard: false` from agent frontmatter or custom agent definitions. The completion guard no longer exists, so the override has no effect and management rewrites strip it.
+- Put validation, command, evidence, review, or residual-risk requirements directly in the task text you pass to the parent or child agent.
+
 ## Live progress
 
 Foreground runs show compact live progress for single, chain, and parallel modes: current tool, recent output, token counts, duration, activity freshness, current-tool duration, and chain graph metadata when available.
