@@ -136,11 +136,30 @@ export function loadProjectContextFiles(options: {
 	return contextFiles;
 }
 
+export interface DefaultResourceLoaderInheritanceSnapshot {
+	readonly projectTrusted?: boolean;
+	readonly additionalExtensionPaths?: readonly string[];
+	readonly additionalSkillPaths?: readonly string[];
+	readonly additionalPromptTemplatePaths?: readonly string[];
+	readonly additionalThemePaths?: readonly string[];
+	readonly builtinPackagePaths?: readonly PackageSource[];
+	readonly extensionFactories?: readonly ExtensionFactory[];
+	readonly noExtensions?: boolean;
+	readonly noSkills?: boolean;
+	readonly noPromptTemplates?: boolean;
+	readonly noThemes?: boolean;
+	readonly noContextFiles?: boolean;
+	readonly systemPrompt?: string;
+	readonly appendSystemPrompt?: readonly string[];
+	readonly trustedBorrowedProjectLocalSources?: readonly string[];
+}
+
 export interface DefaultResourceLoaderOptions {
 	cwd: string;
 	agentDir: string;
 	settingsManager?: SettingsManager;
 	eventBus?: EventBus;
+	resourceLoaderInheritanceSnapshot?: DefaultResourceLoaderInheritanceSnapshot;
 	additionalExtensionPaths?: string[];
 	additionalSkillPaths?: string[];
 	additionalPromptTemplatePaths?: string[];
@@ -172,6 +191,35 @@ export interface DefaultResourceLoaderOptions {
 	};
 	systemPromptOverride?: (base: string | undefined) => string | undefined;
 	appendSystemPromptOverride?: (base: string[]) => string[];
+}
+
+function cloneStringArray(values: readonly string[] | undefined): string[] {
+	return values === undefined ? [] : [...values];
+}
+
+function mergeInheritedStrings(
+	inherited: readonly string[] | undefined,
+	current: readonly string[] | undefined,
+): string[] {
+	return [...cloneStringArray(inherited), ...cloneStringArray(current)];
+}
+
+function clonePackageSource(source: PackageSource): PackageSource {
+	if (typeof source === "string") {
+		return source;
+	}
+	return {
+		source: source.source,
+		...(source.extensions === undefined ? {} : { extensions: [...source.extensions] }),
+		...(source.skills === undefined ? {} : { skills: [...source.skills] }),
+		...(source.prompts === undefined ? {} : { prompts: [...source.prompts] }),
+		...(source.themes === undefined ? {} : { themes: [...source.themes] }),
+		...(source.workflows === undefined ? {} : { workflows: [...source.workflows] }),
+	};
+}
+
+function clonePackageSources(sources: readonly PackageSource[] | undefined): PackageSource[] {
+	return sources === undefined ? [] : sources.map((source) => clonePackageSource(source));
 }
 
 export class DefaultResourceLoader implements ResourceLoader {
@@ -232,28 +280,57 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private lastThemePaths: string[];
 
 	constructor(options: DefaultResourceLoaderOptions) {
+		const inheritanceSnapshot = options.resourceLoaderInheritanceSnapshot;
+		const inheritedSettingsOptions = inheritanceSnapshot?.projectTrusted === undefined
+			? undefined
+			: { projectTrusted: inheritanceSnapshot.projectTrusted };
 		this.cwd = resolvePath(options.cwd);
 		this.agentDir = resolvePath(options.agentDir);
-		this.settingsManager = options.settingsManager ?? SettingsManager.create(this.cwd, this.agentDir);
+		this.settingsManager = options.settingsManager ?? SettingsManager.create(
+			this.cwd,
+			this.agentDir,
+			inheritedSettingsOptions,
+		);
 		this.eventBus = options.eventBus ?? createEventBus();
 		this.packageManager = new DefaultPackageManager({
 			cwd: this.cwd,
 			agentDir: this.agentDir,
 			settingsManager: this.settingsManager,
 		});
-		this.additionalExtensionPaths = options.additionalExtensionPaths ?? [];
-		this.additionalSkillPaths = options.additionalSkillPaths ?? [];
-		this.additionalPromptTemplatePaths = options.additionalPromptTemplatePaths ?? [];
-		this.additionalThemePaths = options.additionalThemePaths ?? [];
-		this.builtinPackagePaths = options.builtinPackagePaths ?? [];
-		this.extensionFactories = options.extensionFactories ?? [];
-		this.noExtensions = options.noExtensions ?? false;
-		this.noSkills = options.noSkills ?? false;
-		this.noPromptTemplates = options.noPromptTemplates ?? false;
-		this.noThemes = options.noThemes ?? false;
-		this.noContextFiles = options.noContextFiles ?? false;
-		this.systemPromptSource = options.systemPrompt;
-		this.appendSystemPromptSource = options.appendSystemPrompt;
+		this.additionalExtensionPaths = mergeInheritedStrings(
+			inheritanceSnapshot?.additionalExtensionPaths,
+			options.additionalExtensionPaths,
+		);
+		this.additionalSkillPaths = mergeInheritedStrings(
+			inheritanceSnapshot?.additionalSkillPaths,
+			options.additionalSkillPaths,
+		);
+		this.additionalPromptTemplatePaths = mergeInheritedStrings(
+			inheritanceSnapshot?.additionalPromptTemplatePaths,
+			options.additionalPromptTemplatePaths,
+		);
+		this.additionalThemePaths = mergeInheritedStrings(
+			inheritanceSnapshot?.additionalThemePaths,
+			options.additionalThemePaths,
+		);
+		this.builtinPackagePaths = options.builtinPackagePaths !== undefined
+			? clonePackageSources(options.builtinPackagePaths)
+			: clonePackageSources(inheritanceSnapshot?.builtinPackagePaths);
+		this.extensionFactories = [
+			...(inheritanceSnapshot?.extensionFactories ?? []),
+			...(options.extensionFactories ?? []),
+		];
+		this.noExtensions = options.noExtensions ?? inheritanceSnapshot?.noExtensions ?? false;
+		this.noSkills = options.noSkills ?? inheritanceSnapshot?.noSkills ?? false;
+		this.noPromptTemplates = options.noPromptTemplates ?? inheritanceSnapshot?.noPromptTemplates ?? false;
+		this.noThemes = options.noThemes ?? inheritanceSnapshot?.noThemes ?? false;
+		this.noContextFiles = options.noContextFiles ?? inheritanceSnapshot?.noContextFiles ?? false;
+		this.systemPromptSource = options.systemPrompt ?? inheritanceSnapshot?.systemPrompt;
+		this.appendSystemPromptSource = options.appendSystemPrompt !== undefined
+			? [...options.appendSystemPrompt]
+			: inheritanceSnapshot?.appendSystemPrompt === undefined
+				? undefined
+				: [...inheritanceSnapshot.appendSystemPrompt];
 		this.extensionsOverride = options.extensionsOverride;
 		this.skillsOverride = options.skillsOverride;
 		this.promptsOverride = options.promptsOverride;
@@ -272,7 +349,9 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.agentsFiles = [];
 		this.appendSystemPrompt = [];
 		this.workflowResources = [];
-		this.trustedBorrowedProjectLocalSources = undefined;
+		this.trustedBorrowedProjectLocalSources = inheritanceSnapshot?.trustedBorrowedProjectLocalSources === undefined
+			? undefined
+			: new Set(inheritanceSnapshot.trustedBorrowedProjectLocalSources);
 		this.lastSkillPaths = [];
 		this.extensionSkillSourceInfos = new Map();
 		this.extensionPromptSourceInfos = new Map();
@@ -311,6 +390,30 @@ export class DefaultResourceLoader implements ResourceLoader {
 
 	getWorkflowResources(): ResolvedResource[] {
 		return [...this.workflowResources];
+	}
+
+	getInheritanceSnapshot(): DefaultResourceLoaderInheritanceSnapshot {
+		return {
+			projectTrusted: this.settingsManager.isProjectTrusted(),
+			additionalExtensionPaths: [...this.additionalExtensionPaths],
+			additionalSkillPaths: [...this.additionalSkillPaths],
+			additionalPromptTemplatePaths: [...this.additionalPromptTemplatePaths],
+			additionalThemePaths: [...this.additionalThemePaths],
+			builtinPackagePaths: clonePackageSources(this.builtinPackagePaths),
+			extensionFactories: [...this.extensionFactories],
+			noExtensions: this.noExtensions,
+			noSkills: this.noSkills,
+			noPromptTemplates: this.noPromptTemplates,
+			noThemes: this.noThemes,
+			noContextFiles: this.noContextFiles,
+			...(this.systemPromptSource === undefined ? {} : { systemPrompt: this.systemPromptSource }),
+			...(this.appendSystemPromptSource === undefined
+				? {}
+				: { appendSystemPrompt: [...this.appendSystemPromptSource] }),
+			...(this.trustedBorrowedProjectLocalSources === undefined
+				? {}
+				: { trustedBorrowedProjectLocalSources: [...this.trustedBorrowedProjectLocalSources] }),
+		};
 	}
 
 	async refreshWorkflowResources(): Promise<ResolvedResource[]> {
@@ -393,11 +496,23 @@ export class DefaultResourceLoader implements ResourceLoader {
 		const workflowResources = this.collectWorkflowResources(resolvedPaths, cliExtensionPaths, builtinPackagePaths);
 		this.workflowResources = workflowResources;
 		const workflowResourceProvider = this.createWorkflowResourceProvider();
+		const inheritanceSnapshotProvider = this.createInheritanceSnapshotProvider();
 		const extensionPaths = this.noExtensions
 			? cliEnabledExtensions
 			: this.mergePaths(cliEnabledExtensions, [...enabledExtensions, ...builtinEnabledExtensions]);
-		const extensionsResult = await loadExtensions(extensionPaths, this.cwd, this.eventBus, workflowResourceProvider);
-		const inlineExtensions = await this.loadExtensionFactories(extensionsResult.runtime, workflowResourceProvider);
+		const extensionsResult = await loadExtensions(
+			extensionPaths,
+			this.cwd,
+			this.eventBus,
+			workflowResourceProvider,
+			undefined,
+			inheritanceSnapshotProvider,
+		);
+		const inlineExtensions = await this.loadExtensionFactories(
+			extensionsResult.runtime,
+			workflowResourceProvider,
+			inheritanceSnapshotProvider,
+		);
 		extensionsResult.extensions.push(...inlineExtensions.extensions);
 		extensionsResult.errors.push(...inlineExtensions.errors);
 		this.applyExtensionSourceInfo(extensionsResult.extensions, metadataByPath);
@@ -513,10 +628,12 @@ export class DefaultResourceLoader implements ResourceLoader {
 			? cliEnabledExtensions
 			: this.mergePaths(cliEnabledExtensions, [...enabledExtensions, ...builtinEnabledExtensions]);
 
+		const inheritanceSnapshotProvider = this.createInheritanceSnapshotProvider();
 		const extensionsResult = await this.loadFinalExtensionSet(
 			extensionPaths,
 			preTrustExtensions,
 			workflowResourceProvider,
+			inheritanceSnapshotProvider,
 		);
 
 		for (const p of this.additionalExtensionPaths) {
@@ -730,6 +847,10 @@ export class DefaultResourceLoader implements ResourceLoader {
 			get: () => this.workflowResources,
 			refresh: () => this.refreshWorkflowResources(),
 		};
+	}
+
+	private createInheritanceSnapshotProvider(): () => DefaultResourceLoaderInheritanceSnapshot {
+		return () => this.getInheritanceSnapshot();
 	}
 
 	private normalizeExtensionPaths(
@@ -1031,6 +1152,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		extensionPaths: string[],
 		preTrustExtensions: LoadExtensionsResult | undefined,
 		workflowResourceProvider: WorkflowResourceProvider,
+		inheritanceSnapshotProvider: () => DefaultResourceLoaderInheritanceSnapshot,
 	): Promise<LoadExtensionsResult> {
 		if (!preTrustExtensions) {
 			const loadExtensionsSpan = startTimingSpan("DefaultResourceLoader.reload.loadExtensions");
@@ -1039,10 +1161,16 @@ export class DefaultResourceLoader implements ResourceLoader {
 				this.cwd,
 				this.eventBus,
 				workflowResourceProvider,
+				undefined,
+				inheritanceSnapshotProvider,
 			);
 			endTimingSpan(loadExtensionsSpan);
 			const inlineExtensionsSpan = startTimingSpan("DefaultResourceLoader.reload.loadInlineExtensionFactories");
-			const inlineExtensions = await this.loadExtensionFactories(extensionsResult.runtime, workflowResourceProvider);
+			const inlineExtensions = await this.loadExtensionFactories(
+				extensionsResult.runtime,
+				workflowResourceProvider,
+				inheritanceSnapshotProvider,
+			);
 			endTimingSpan(inlineExtensionsSpan);
 			extensionsResult.extensions.push(...inlineExtensions.extensions);
 			extensionsResult.errors.push(...inlineExtensions.errors);
@@ -1069,6 +1197,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 			this.eventBus,
 			workflowResourceProvider,
 			preTrustExtensions.runtime,
+			inheritanceSnapshotProvider,
 		);
 		endTimingSpan(loadExtensionsSpan);
 		const loadedByPath = new Map(preloadedByPath);
@@ -1103,7 +1232,11 @@ export class DefaultResourceLoader implements ResourceLoader {
 	}
 
 
-	private async loadExtensionFactories(runtime: ExtensionRuntime, workflowResourceProvider: WorkflowResourceProvider): Promise<{
+	private async loadExtensionFactories(
+		runtime: ExtensionRuntime,
+		workflowResourceProvider: WorkflowResourceProvider,
+		inheritanceSnapshotProvider: () => DefaultResourceLoaderInheritanceSnapshot,
+	): Promise<{
 		extensions: Extension[];
 		errors: Array<{ path: string; error: string }>;
 	}> {
@@ -1120,6 +1253,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 					runtime,
 					extensionPath,
 					workflowResourceProvider,
+					inheritanceSnapshotProvider,
 				);
 				extensions.push(extension);
 			} catch (error) {

@@ -107,6 +107,43 @@ function isTruthyEnvFlag(value: string | undefined): boolean {
 	return value === "1" || value.toLowerCase() === "true" || value.toLowerCase() === "yes";
 }
 
+type DrainableWritable = NodeJS.WritableStream & {
+	destroyed?: boolean;
+	writable?: boolean;
+	writableEnded?: boolean;
+};
+
+function drainWritable(stream: DrainableWritable): Promise<void> {
+	if (stream.destroyed || stream.writable === false || stream.writableEnded) {
+		return Promise.resolve();
+	}
+
+	return new Promise((resolve) => {
+		let settled = false;
+
+		const settle = () => {
+			if (settled) {
+				return;
+			}
+			settled = true;
+			stream.removeListener("error", onError);
+			resolve();
+		};
+		const onError = () => settle();
+
+		stream.once("error", onError);
+		try {
+			stream.write("", settle);
+		} catch {
+			settle();
+		}
+	});
+}
+
+async function drainProcessStdio(): Promise<void> {
+	await Promise.all([drainWritable(process.stdout), drainWritable(process.stderr)]);
+}
+
 export type AppMode = "interactive" | "print" | "json" | "rpc";
 
 const NO_UI_EXCLUDED_TOOLS = ["ask_user_question"] as const;
@@ -517,6 +554,9 @@ export async function main(args: string[], options?: MainOptions) {
 	}
 
 	if (await handlePackageCommand(args, { extensionFactories: options?.extensionFactories })) {
+		const exitCode = process.exitCode ?? 0;
+		await drainProcessStdio();
+		process.exit(exitCode);
 		return;
 	}
 

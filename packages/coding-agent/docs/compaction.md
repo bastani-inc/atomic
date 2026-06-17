@@ -370,9 +370,9 @@ Candidate cumulative deletion request
         │
         ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│ Gate 2: thinking-content guard                                       │
-│   assistant entries containing thinking/redacted_thinking cannot be   │
-│   deleted or partially block-deleted                                  │
+│ Gate 2: latest thinking-content guard                                │
+│   the latest retained assistant with thinking/redacted_thinking       │
+│   cannot be entry-deleted or partially content-block-deleted          │
 └─────────────────────────────────────────────────────────────────────┘
         │
         ▼
@@ -405,7 +405,8 @@ Candidate cumulative deletion request
         ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │ Gate 7: post-reconcile guards                                        │
-│   no recent targets, no thinking-bearing assistant targets            │
+│   no recent targets, no content-block deletion from the latest        │
+│   retained assistant when it has thinking/redacted_thinking           │
 └─────────────────────────────────────────────────────────────────────┘
         │
         ▼
@@ -544,7 +545,7 @@ The compaction assistant can only compact by using these internal tools. Exact d
 
 The planner is prompted to call `context_compaction_budget` before deleting and after deletion batches. The tool reports the current transcript token estimate as a percentage of the selected model's context window, the configured `compression_ratio`, the projected percentage after selected deletions, current reduction percentage, and how many more estimated tokens must be removed to reach the strict target. With the default `compression_ratio: 0.5`, the strict target is a 50% token reduction.
 
-`context_grep_delete` supports literal or regex matching, skips already-deleted or disallowed context, enforces a per-call `maxMatches` safety cap, can require `expectedMatchCount` when the planner wants an exact-match safety check, and routes every accepted match through the same validation pipeline as exact deletions. Disallowed matches are ignored before `matches`, `expectedMatchCount`, deletion stats, and selected targets are calculated, so a broad regex can still remove safe blocks without counting rejected candidates as removed. `maxMatches` limits only one tool call; there is no cumulative deletion cap across repeated `context_delete` or `context_grep_delete` calls. Exact deletion attempts that target disallowed entries/blocks return an explicit non-terminating tool error with correction guidance. Exact deletion payloads that include unsupported fields such as transcript `text`, block `content`, summaries, or replacement data are rejected as non-id-only requests.
+`context_grep_delete` supports literal or regex matching, skips already-deleted or disallowed context, enforces a per-call `maxMatches` safety cap, can require `expectedMatchCount` when the planner wants an exact-match safety check, and routes every accepted match through the same validation pipeline as exact deletions. Disallowed matches are ignored before `matches`, `expectedMatchCount`, deletion stats, and selected targets are calculated, so a broad regex can still remove safe blocks without counting rejected candidates as removed. This includes the universal latest-retained assistant guard: if the latest retained assistant message contains `thinking` or `redacted_thinking`, neither `context_delete` nor `context_grep_delete` may remove any content block from that assistant message, even a visible text sibling block. `maxMatches` limits only one tool call; there is no cumulative deletion cap across repeated `context_delete` or `context_grep_delete` calls. Exact deletion attempts that target disallowed entries/blocks return an explicit non-terminating tool error with correction guidance. Exact deletion payloads that include unsupported fields such as transcript `text`, block `content`, summaries, or replacement data are rejected as non-id-only requests.
 
 Tool calls are cumulative during one compaction run. The assistant can apply several small deletion batches, inspect the updated state, and stop only after the validated stats meet the strict reduction target. Atomic uses the validated tool state as the compaction result; ordinary assistant text is ignored for deletion targets.
 

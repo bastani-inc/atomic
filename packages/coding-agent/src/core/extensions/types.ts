@@ -42,6 +42,7 @@ import type {
 import type { Static, TSchema } from "typebox";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import type { ResolvedResource } from "../package-manager.ts";
+import type { DefaultResourceLoaderInheritanceSnapshot } from "../resource-loader.ts";
 import type { BashResult } from "../bash-executor.ts";
 import type { ContextCompactionPreparation, ContextCompactionResult, ContextDeletionRequest } from "../compaction/index.ts";
 import type { EventBus } from "../event-bus.ts";
@@ -1323,6 +1324,11 @@ export interface ExtensionAPI {
 	 * Does not reload extensions, skills, prompts, themes, or context files.
 	 */
 	refreshWorkflowResources?: () => Promise<ResolvedResource[]>;
+
+	/**
+	 * Return the resource-loader options that child Atomic sessions should inherit without sharing this loader instance.
+	 */
+	getResourceLoaderInheritanceSnapshot?: () => DefaultResourceLoaderInheritanceSnapshot;
 
 	// =========================================================================
 	// Message Rendering

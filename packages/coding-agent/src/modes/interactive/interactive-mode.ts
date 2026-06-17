@@ -188,6 +188,7 @@ import { hasProjectConfigDir, ProjectTrustStore } from "../../core/trust-manager
 import { UserMessageComponent } from "./components/user-message.ts";
 import { UserMessageSelectorComponent } from "./components/user-message-selector.ts";
 import {
+  detectTerminalBackgroundTheme,
   getAvailableThemes,
   getAvailableThemesWithPaths,
   getEditorTheme,
@@ -546,6 +547,25 @@ export class InteractiveMode {
     initTheme(this.settingsManager.getTheme(), true);
   }
 
+  private async detectThemeIfUnset(): Promise<void> {
+    if (this.settingsManager.getTheme()) {
+      return;
+    }
+
+    const detection = await detectTerminalBackgroundTheme({ ui: this.ui, timeoutMs: 100 });
+    const result = setTheme(detection.theme, true);
+    if (!result.success) {
+      return;
+    }
+
+    if (detection.confidence === "high") {
+      this.settingsManager.setTheme(detection.theme);
+      await this.settingsManager.flush();
+    }
+    this.updateEditorBorderColor();
+    this.ui.requestRender();
+  }
+
   private getAutocompleteSourceTag(
     sourceInfo?: SourceInfo,
   ): string | undefined {
@@ -787,29 +807,8 @@ export class InteractiveMode {
     // Load changelog (only show new entries, skip for resumed sessions)
     this.changelogMarkdown = this.getChangelogForDisplay();
 
-    // Add header container as first child
+    // Add header container as first child. Populate it after detectThemeIfUnset.
     this.ui.addChild(this.headerContainer);
-
-    // Add the quiet startup identity (unless silenced). Resource details are
-    // disclosed separately in the chat canvas via the tools/resources toggle.
-    if (this.options.verbose || !this.settingsManager.getQuietStartup()) {
-      this.builtInHeader = new ExpandableText(
-        () => this.getStartupIdentityText(),
-        () => this.getStartupIdentityText(),
-        this.getStartupExpansionState(),
-        1,
-        0,
-      );
-
-      // Setup UI layout
-      this.headerContainer.addChild(new Spacer(1));
-      this.headerContainer.addChild(this.builtInHeader);
-      this.headerContainer.addChild(new Spacer(1));
-    } else {
-      // Minimal header when silenced
-      this.builtInHeader = new Text("", 0, 0);
-      this.headerContainer.addChild(this.builtInHeader);
-    }
 
     this.ui.addChild(this.chatContainer);
     this.ui.addChild(this.pendingMessagesContainer);
@@ -839,6 +838,29 @@ export class InteractiveMode {
     this.ui.start();
     recordTimeSinceReset("time-to-first-frame");
     this.isInitialized = true;
+
+    await this.detectThemeIfUnset();
+
+    // Add the quiet startup identity (unless silenced). Resource details are
+    // disclosed separately in the chat canvas via the tools/resources toggle.
+    if (this.options.verbose || !this.settingsManager.getQuietStartup()) {
+      this.builtInHeader = new ExpandableText(
+        () => this.getStartupIdentityText(),
+        () => this.getStartupIdentityText(),
+        this.getStartupExpansionState(),
+        1,
+        0,
+      );
+
+      this.headerContainer.addChild(new Spacer(1));
+      this.headerContainer.addChild(this.builtInHeader);
+      this.headerContainer.addChild(new Spacer(1));
+    } else {
+      // Minimal header when silenced
+      this.builtInHeader = new Text("", 0, 0);
+      this.headerContainer.addChild(this.builtInHeader);
+    }
+    this.ui.requestRender();
 
     void Promise.all([ensureTool("fd"), ensureTool("rg")])
       .then(([fdPath]) => {
@@ -4214,7 +4236,9 @@ export class InteractiveMode {
   private async shutdown(options?: { fromSignal?: boolean }): Promise<void> {
     if (this.isShuttingDown) return;
     this.isShuttingDown = true;
-    this.unregisterSignalHandlers();
+    // Keep signal handlers registered until terminal cleanup has completed.
+    // `signal-exit` checks the listener list during the same SIGTERM/SIGHUP
+    // dispatch and re-sends the signal if only its own listeners remain.
 
     if (options?.fromSignal) {
       await this.runtimeHost.dispose();
@@ -6855,7 +6879,6 @@ export class InteractiveMode {
   }
 
   stop(): void {
-    this.unregisterSignalHandlers();
     if (this.settingsManager.getShowTerminalProgress()) {
       this.ui.terminal.setProgress(false);
     }
@@ -6873,5 +6896,6 @@ export class InteractiveMode {
       this.ui.stop();
       this.isInitialized = false;
     }
+    this.unregisterSignalHandlers();
   }
 }

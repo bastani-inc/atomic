@@ -392,7 +392,7 @@ What Survives:
 - User instructions: The original task and any clarifications.
 
 Conditionally Deleted:
-- Old Reasoning decisions: If there is nothing else to remove and the target reduction is not met, you can remove any reasoning steps, EXCEPT thinking or redacted_thinking blocks in the latest assistant message.
+- Old Reasoning decisions: If there is nothing else to remove and the target reduction is not met, you can remove reasoning steps, EXCEPT do not delete any content block from the latest assistant message when that message contains thinking or redacted_thinking blocks.
 
 <output_format>
 Call the context_delete tool one or more times with deletion targets in this shape:
@@ -852,10 +852,41 @@ function assertNoRecentContextDeletionTargets(
 	}
 }
 
-function latestAssistantEntry(transcript: CompactableTranscript): CompactableTranscriptEntry | undefined {
+function latestAssistantEntry(
+	transcript: CompactableTranscript,
+	deletedEntryIds: ReadonlySet<string> = new Set<string>(),
+): CompactableTranscriptEntry | undefined {
 	for (let index = transcript.entries.length - 1; index >= 0; index--) {
 		const entry = transcript.entries[index];
-		if (entry.role === "assistant") return entry;
+		if (entry.role === "assistant" && !deletedEntryIds.has(entry.entryId)) return entry;
+	}
+	return undefined;
+}
+
+function findLatestAssistantThinkingDeletionViolation(
+	transcript: CompactableTranscript,
+	targets: readonly ContextDeletionTarget[],
+): ContextDeletionTarget | undefined {
+	const deletedEntryIds = getDeletedEntryIds(targets);
+	const latestRetainedAssistant = latestAssistantEntry(transcript, deletedEntryIds);
+
+	for (const target of targets) {
+		if (target.kind === "entry") {
+			const entry = findTranscriptEntry(transcript, target.entryId);
+			if (!entry || !assistantEntryHasThinkingContentBlock(entry)) continue;
+			const deletedEntryIdsIfTargetWereKept = new Set(deletedEntryIds);
+			deletedEntryIdsIfTargetWereKept.delete(target.entryId);
+			if (latestAssistantEntry(transcript, deletedEntryIdsIfTargetWereKept)?.entryId === target.entryId) {
+				return target;
+			}
+			continue;
+		}
+		if (
+			latestRetainedAssistant?.entryId === target.entryId &&
+			assistantEntryHasThinkingContentBlock(latestRetainedAssistant)
+		) {
+			return target;
+		}
 	}
 	return undefined;
 }
@@ -864,22 +895,16 @@ function assertNoLatestAssistantThinkingDeletionTargets(
 	transcript: CompactableTranscript,
 	targets: readonly ContextDeletionTarget[],
 ): void {
-	const latestAssistant = latestAssistantEntry(transcript);
-	if (!latestAssistant || !assistantEntryHasThinkingContentBlock(latestAssistant)) return;
-	for (const target of targets) {
-		if (target.entryId !== latestAssistant.entryId) continue;
-		if (target.kind === "entry") {
-			throw new Error(
-				`Cannot delete assistant entry ${target.entryId} because it is the latest assistant message and contains thinking/redacted_thinking content blocks`,
-			);
-		}
-		const block = latestAssistant.contentBlocks.find((candidate) => candidate.blockIndex === target.blockIndex);
-		if (block && isAssistantThinkingBlockType(block.type)) {
-			throw new Error(
-				`Cannot delete content block ${target.entryId}:${target.blockIndex} because it is a thinking/redacted_thinking block in the latest assistant message`,
-			);
-		}
+	const violation = findLatestAssistantThinkingDeletionViolation(transcript, targets);
+	if (!violation) return;
+	if (violation.kind === "entry") {
+		throw new Error(
+			`Cannot delete assistant entry ${violation.entryId} because it is the latest assistant message retained after other deletions and contains thinking/redacted_thinking content blocks`,
+		);
 	}
+	throw new Error(
+		`Cannot delete content block ${violation.entryId}:${violation.blockIndex} because a thinking/redacted_thinking block in the latest assistant message must remain unmodified; the latest retained assistant message contains thinking/redacted_thinking content blocks`,
+	);
 }
 
 function isToolCallBlockDeleted(
@@ -1508,6 +1533,33 @@ function filterProtectedGrepCandidates(
 			eligibleMatches.push(match);
 		}
 	}
+
+	// Some latest-assistant thinking violations only become visible after a grep batch also
+	// deletes newer assistant entries. Classify the newly-unsafe grep candidates as
+	// protected/skipped before maxMatches, expectedMatchCount, stats, or removals are computed.
+	let changed = true;
+	while (changed) {
+		changed = false;
+		const mergedTargets = mergeContextDeletionTargets(currentTargets, eligibleCandidates);
+		const violation = findLatestAssistantThinkingDeletionViolation(transcript, mergedTargets);
+		if (!violation) continue;
+		const violationKey = targetKey(violation);
+		let violationIndex = eligibleCandidates.findIndex((candidate) => targetKey(candidate) === violationKey);
+		if (violationIndex < 0) {
+			violationIndex = eligibleCandidates.findIndex((_candidate, candidateIndex) => {
+				const remainingCandidates = eligibleCandidates.filter((_candidateToKeep, index) => index !== candidateIndex);
+				const remainingTargets = mergeContextDeletionTargets(currentTargets, remainingCandidates);
+				const remainingViolation = findLatestAssistantThinkingDeletionViolation(transcript, remainingTargets);
+				return !remainingViolation || targetKey(remainingViolation) !== violationKey;
+			});
+		}
+		if (violationIndex < 0) continue;
+		const [skippedMatch] = eligibleMatches.splice(violationIndex, 1);
+		eligibleCandidates.splice(violationIndex, 1);
+		if (skippedMatch) pushProtectedGrepSkip(skipped, skippedMatch);
+		changed = true;
+	}
+
 	return { candidates: eligibleCandidates, matches: eligibleMatches };
 }
 

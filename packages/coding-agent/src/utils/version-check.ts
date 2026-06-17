@@ -1,3 +1,4 @@
+import { compare, valid } from "semver";
 import { ENV_OFFLINE, ENV_SKIP_VERSION_CHECK, PACKAGE_NAME, getEnvValue } from "../config.ts";
 
 const LATEST_VERSION_URL = `https://registry.npmjs.org/${PACKAGE_NAME}/latest`;
@@ -8,40 +9,13 @@ export interface LatestPiRelease {
 	packageName?: string;
 }
 
-interface ParsedVersion {
-	major: number;
-	minor: number;
-	patch: number;
-	prerelease?: string;
-}
-
-function parsePackageVersion(version: string): ParsedVersion | undefined {
-	const match = version.trim().match(/^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+.*)?$/);
-	if (!match) {
-		return undefined;
-	}
-	return {
-		major: Number.parseInt(match[1], 10),
-		minor: Number.parseInt(match[2], 10),
-		patch: Number.parseInt(match[3], 10),
-		prerelease: match[4],
-	};
-}
-
 export function comparePackageVersions(leftVersion: string, rightVersion: string): number | undefined {
-	const left = parsePackageVersion(leftVersion);
-	const right = parsePackageVersion(rightVersion);
+	const left = valid(leftVersion.trim());
+	const right = valid(rightVersion.trim());
 	if (!left || !right) {
 		return undefined;
 	}
-
-	if (left.major !== right.major) return left.major - right.major;
-	if (left.minor !== right.minor) return left.minor - right.minor;
-	if (left.patch !== right.patch) return left.patch - right.patch;
-	if (left.prerelease === right.prerelease) return 0;
-	if (!left.prerelease) return 1;
-	if (!right.prerelease) return -1;
-	return left.prerelease.localeCompare(right.prerelease);
+	return compare(left, right);
 }
 
 export function isNewerPackageVersion(candidateVersion: string, currentVersion: string): boolean {

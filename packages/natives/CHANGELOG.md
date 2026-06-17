@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Published a synchronized Atomic 0.8.30-alpha.1 prerelease; no functional native transport changes were made after 0.8.29.
+
 ## [0.8.29] - 2026-06-15
 
 ### Added

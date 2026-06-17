@@ -1,6 +1,6 @@
 {
   "name": "@bastani/subagents",
-  "version": "0.8.29",
+  "version": "0.8.30-alpha.2",
   "private": true,
   "description": "Atomic extension for delegating tasks to subagents with chains, parallel execution, and TUI clarification. Fork of: https://github.com/nicobailon/pi-subagents",
   "contributors": [
@@ -38,9 +38,9 @@
   },
   "peerDependencies": {
     "@bastani/atomic": "*",
-    "@earendil-works/pi-agent-core": "^0.79.3",
-    "@earendil-works/pi-ai": "^0.79.3",
-    "@earendil-works/pi-tui": "^0.79.3"
+    "@earendil-works/pi-agent-core": "^0.79.4",
+    "@earendil-works/pi-ai": "^0.79.4",
+    "@earendil-works/pi-tui": "^0.79.4"
   },
   "peerDependenciesMeta": {
     "@bastani/atomic": {

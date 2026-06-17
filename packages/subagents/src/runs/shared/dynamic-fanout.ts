@@ -40,16 +40,17 @@ const SAFE_OUTPUT_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const ITEM_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const ITEM_REF_PATTERN = /\{([A-Za-z_][A-Za-z0-9_]*)(?:\.([^{}]+))?\}/g;
 const RESERVED_TEMPLATE_NAMES = new Set(["task", "previous", "chain_dir", "outputs"]);
-const DYNAMIC_STEP_KEYS = new Set(["expand", "parallel", "collect", "concurrency", "failFast", "phase", "label", "acceptance"]);
-const RUNNER_DYNAMIC_STEP_KEYS = new Set([...DYNAMIC_STEP_KEYS, "effectiveAcceptance"]);
+const DYNAMIC_STEP_KEYS = new Set(["expand", "parallel", "collect", "concurrency", "failFast", "phase", "label"]);
+const RUNNER_DYNAMIC_STEP_KEYS = new Set(DYNAMIC_STEP_KEYS);
+const REMOVED_LEGACY_DYNAMIC_KEYS = new Set(["acceptance"]);
 const DYNAMIC_EXPAND_KEYS = new Set(["from", "item", "key", "maxItems", "onEmpty"]);
 const DYNAMIC_EXPAND_FROM_KEYS = new Set(["output", "path"]);
-const DYNAMIC_PARALLEL_KEYS = new Set(["agent", "task", "phase", "label", "outputSchema", "cwd", "output", "outputMode", "reads", "progress", "skill", "model", "acceptance"]);
+const DYNAMIC_PARALLEL_KEYS = new Set(["agent", "task", "phase", "label", "outputSchema", "cwd", "output", "outputMode", "reads", "progress", "skill", "model"]);
 const RUNNER_DYNAMIC_PARALLEL_KEYS = new Set([
 	...DYNAMIC_PARALLEL_KEYS,
 	"outputName", "structured", "inheritProjectContext", "inheritSkills", "skills", "outputPath", "maxSubagentDepth",
-	"structuredOutput", "structuredOutputSchema", "tools", "extensions", "mcpDirectTools", "completionGuard", "systemPrompt",
-	"systemPromptMode", "thinking", "modelCandidates", "sessionFile", "effectiveAcceptance",
+	"structuredOutput", "structuredOutputSchema", "tools", "extensions", "mcpDirectTools", "systemPrompt",
+	"systemPromptMode", "thinking", "modelCandidates", "sessionFile",
 ]);
 const DYNAMIC_COLLECT_KEYS = new Set(["as", "outputSchema"]);
 
@@ -146,8 +147,14 @@ export function resolveItemTemplate(template: string, itemName: string, item: un
 function assertOnlyKeys(value: unknown, allowed: Set<string>, label: string): void {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new DynamicFanoutError(`${label} must be an object.`);
 	for (const key of Object.keys(value)) {
+		if (REMOVED_LEGACY_DYNAMIC_KEYS.has(key)) continue;
 		if (!allowed.has(key)) throw new DynamicFanoutError(`${label} does not support field '${key}'.`);
 	}
+}
+
+function stripRemovedLegacyDynamicKeys<T extends object>(value: T): T {
+	const entries = Object.entries(value).filter(([key]) => !REMOVED_LEGACY_DYNAMIC_KEYS.has(key));
+	return entries.length === Object.keys(value).length ? value : Object.fromEntries(entries) as T;
 }
 
 export function assertNoUnresolvedItemReferences(template: string, itemName: string, label: string): void {
@@ -247,11 +254,12 @@ export function materializeDynamicParallelStep(step: DynamicParallelStep, output
 		return { items, parallel: [], collectedOnEmpty: [] };
 	}
 	const itemName = step.expand.item ?? "item";
+	const parallelTemplate = stripRemovedLegacyDynamicKeys(step.parallel);
 	const parallel = items.map((entry) => {
-		const task = resolveItemTemplate(step.parallel.task ?? "{previous}", itemName, entry.item);
-		const label = step.parallel.label ? resolveItemTemplate(step.parallel.label, itemName, entry.item) : undefined;
+		const task = resolveItemTemplate(parallelTemplate.task ?? "{previous}", itemName, entry.item);
+		const label = parallelTemplate.label ? resolveItemTemplate(parallelTemplate.label, itemName, entry.item) : undefined;
 		return {
-			...step.parallel,
+			...parallelTemplate,
 			task,
 			...(label !== undefined ? { label } : {}),
 		};

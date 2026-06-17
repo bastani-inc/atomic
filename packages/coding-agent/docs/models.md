@@ -156,10 +156,12 @@ The `apiKey` and `headers` fields support three formats:
   ```json
   "apiKey": "$MY_API_KEY"
   ```
-- **Literal value:** Used directly; bare strings are not environment variable references
+- **Literal value:** Used directly when the value does not use shell-command or explicit environment-variable syntax. Use `$MY_API_KEY`/`${MY_API_KEY}` for new environment-variable references; legacy uppercase env-var-like values may be migrated as described below.
   ```json
   "apiKey": "sk-..."
   ```
+
+Legacy uppercase env-var-like values in existing `models.json` provider config, such as `MY_API_KEY`, are migrated to `$MY_API_KEY` on startup only when that environment variable is present during migration; otherwise the value is preserved as a literal. New configs should use explicit `$ENV_VAR`/`${ENV_VAR}` syntax for environment variables.
 
 For `models.json`, shell commands are resolved at request time. Atomic intentionally does not apply built-in TTL, stale reuse, or recovery logic for arbitrary commands. Different commands need different caching and failure strategies, and Atomic cannot infer the right one.
 
@@ -191,7 +193,7 @@ If your command is slow, expensive, rate-limited, or should keep using a previou
 | Field              | Required | Default           | Description                                                                                                |
 | ------------------ | -------- | ----------------- | ---------------------------------------------------------------------------------------------------------- |
 | `id`               | Yes      | —                 | Model identifier (passed to the API)                                                                       |
-| `name`             | No       | `id`              | Human-readable model label. Used for matching (`--model` patterns) and shown in model details/status text. |
+| `name`             | No       | `id`              | Human-readable model label. Used for matching (`--model` patterns) and shown as secondary model detail text. |
 | `api`              | No       | provider's `api`  | Override provider's API for this model                                                                     |
 | `reasoning`        | No       | `false`           | Supports extended thinking                                                                                 |
 | `thinkingLevelMap` | No       | omitted           | Maps Atomic thinking levels to provider values and marks unsupported levels (see below)                    |
@@ -202,8 +204,8 @@ If your command is slow, expensive, rate-limited, or should keep using a previou
 | `compat`           | No       | provider `compat` | Provider compatibility overrides. Merged with provider-level `compat` when both are set.                   |
 
 Current behavior:
-- `/model` and `--list-models` list entries by model `id`.
-- The configured `name` is used for model matching and detail/status text.
+- `/model`, `--list-models`, and the interactive footer display entries by model `id`.
+- The configured `name` is used for model matching and secondary model detail text. It does not replace the footer/status-bar model id.
 
 ### Thinking Level Map
 
