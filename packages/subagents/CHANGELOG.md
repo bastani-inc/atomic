@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.8.30] - 2026-06-17
+
 ### Changed
 
 - Aligned the subagents extension peer dependencies with upstream pi `^0.79.4` runtime packages (`@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, and `@earendil-works/pi-tui`); no subagents extension code changes were made for this metadata sync.

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.8.30] - 2026-06-17
+
 ### Changed
 
 - Bumped the bundled upstream pi runtime libraries `@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, and `@earendil-works/pi-tui` from `^0.79.3` to `^0.79.4`, added `semver` as an explicit runtime dependency for package/version checks, and aligned companion extension peer ranges so Atomic inherits upstream provider/model metadata updates, agent-core fixes, the new terminal background-color query used by first-run theme detection, and shared TUI wrapping/keyboard compatibility fixes.
