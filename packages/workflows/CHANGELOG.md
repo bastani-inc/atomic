@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.8.30] - 2026-06-17
+
 ### Changed
 
 - Aligned the workflows extension peer dependency with upstream pi TUI `^0.79.4` so workflow graph, custom UI, and prompt-broker integrations consume the latest shared TUI fixes; no workflows extension code changes were made for this metadata sync.
