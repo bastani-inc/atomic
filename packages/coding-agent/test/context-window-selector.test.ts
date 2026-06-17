@@ -3,27 +3,11 @@ import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import {
 	buildContextWindowChoices,
 	ContextWindowSelectorComponent,
-	formatContextSize,
 } from "../src/modes/interactive/components/context-window-selector.ts";
 
 // The component renders themed text eagerly, so initialize the theme like startup does.
 beforeAll(() => {
 	initTheme("dark");
-});
-
-describe("formatContextSize", () => {
-	test("formats sub-million windows in thousands", () => {
-		expect(formatContextSize(400_000)).toBe("400K");
-		expect(formatContextSize(264_000)).toBe("264K");
-		expect(formatContextSize(200_000)).toBe("200K");
-	});
-
-	test("formats millions with one decimal unless whole, matching the Copilot CLI", () => {
-		expect(formatContextSize(1_000_000)).toBe("1M");
-		expect(formatContextSize(1_100_000)).toBe("1.1M");
-		// A model reporting ~1,050,000 rounds up to 1.1M (toFixed(1) rounding).
-		expect(formatContextSize(1_050_000)).toBe("1.1M");
-	});
 });
 
 describe("buildContextWindowChoices", () => {
@@ -36,14 +20,14 @@ describe("buildContextWindowChoices", () => {
 				value: "400000",
 				label: "Default",
 				isDefault: true,
-				tokensLabel: "400K tokens",
+				tokensLabel: "400k tokens",
 			},
 			{
 				contextWindow: 1_000_000,
 				value: "1000000",
 				label: "Long context",
 				isDefault: false,
-				tokensLabel: "1M tokens",
+				tokensLabel: "1m tokens",
 			},
 		]);
 		expect(currentIndex).toBe(1);

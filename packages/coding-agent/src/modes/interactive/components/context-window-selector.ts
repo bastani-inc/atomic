@@ -1,4 +1,5 @@
 import { Container, getKeybindings, Spacer, Text } from "@earendil-works/pi-tui";
+import { formatContextWindow } from "../../../core/context-window.ts";
 import { theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
 import { keyHint, rawKeyHint } from "./keybinding-hints.ts";
@@ -15,26 +16,13 @@ export interface ContextWindowChoice {
 	label: string;
 	/** True for the model's native (smallest) window, rendered with a `(default)` tag. */
 	isDefault: boolean;
-	/** Right-column display, e.g. "400K tokens" / "1M tokens". */
+	/** Right-column display, e.g. "400k tokens" / "1m tokens". */
 	tokensLabel: string;
 }
 
 export interface ContextWindowChoices {
 	choices: ContextWindowChoice[];
 	currentIndex: number;
-}
-
-/**
- * Format a token count the way the GitHub Copilot CLI does: `400K`, `1M`, `1.1M`.
- * Sub-million values render in thousands (`264K`), millions render with one decimal
- * unless whole (`1M`, not `1.0M`). A model reporting ~1,050,000 rounds to `1.1M`.
- */
-export function formatContextSize(tokens: number): string {
-	if (tokens >= 1_000_000) {
-		const millions = tokens / 1_000_000;
-		return `${millions % 1 === 0 ? millions.toFixed(0) : millions.toFixed(1)}M`;
-	}
-	return `${Math.round(tokens / 1_000).toLocaleString()}K`;
 }
 
 /**
@@ -58,14 +46,14 @@ export function buildContextWindowChoices(
 		} else if (contextWindow === largest) {
 			label = "Long context";
 		} else {
-			label = formatContextSize(contextWindow);
+			label = formatContextWindow(contextWindow);
 		}
 		return {
 			contextWindow,
 			value: String(contextWindow),
 			label,
 			isDefault: contextWindow === smallest,
-			tokensLabel: `${formatContextSize(contextWindow)} tokens`,
+			tokensLabel: `${formatContextWindow(contextWindow)} tokens`,
 		};
 	});
 
@@ -83,8 +71,8 @@ export function buildContextWindowChoices(
  * ```
  * Select Context Window for GPT-5.5
  *
- *    1. Default (default)   400K tokens
- *  ❯ 2. Long context        1M tokens
+ *    1. Default (default)   400k tokens
+ *  ❯ 2. Long context        1m tokens
  *
  *  1-2 select · up/down navigate · enter confirm · esc cancel
  * ```
