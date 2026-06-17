@@ -39,7 +39,7 @@ Anthropic subscription auth is active for Claude Pro/Max accounts. Third-party h
 
 - Press Enter for github.com, or enter your GitHub Enterprise Server domain
 - If you get "model not supported", enable it in VS Code: Copilot Chat → model selector → select model → "Enable"
-- Supported built-in Copilot long-context models, including `github-copilot/gpt-5.5` and `github-copilot/gemini-3.1-pro-preview`, expose an opt-in `1m` context-window choice through `--context-window`, `/settings` → **Context window**, `defaultContextWindow`, SDK, and RPC controls.
+- Supported built-in Copilot long-context models, including `github-copilot/gpt-5.5` and `github-copilot/gemini-3.1-pro-preview`, expose an opt-in `1m` context-window choice through `--context-window`, the `/model` selection flow, `defaultContextWindow`, SDK, and RPC controls.
 - Selecting `1m` raises Atomic's local token budget and makes Copilot requests include `X-GitHub-Api-Version: 2026-06-01`. Atomic does not send a body field, `contextTier`, or model-id variant; GitHub automatically applies the server-side `long_context` tier when prompt tokens exceed the default budget.
 - Long-context Copilot requests consume more AI credits and require Copilot long-context/usage-based billing entitlement. Without that entitlement, or when a model/account is capped by GitHub's server-side limit, prompts over the cap are rejected; Atomic surfaces a friendly entitlement/server-cap/cost hint rather than silently truncating context.
 

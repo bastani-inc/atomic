@@ -252,7 +252,7 @@ Migration: older configs that used `compat.reasoningEffortMap` should move that 
 
 ### Context Window Options
 
-`contextWindow` remains the scalar default and is always valid. Models that support multiple context sizes can also declare `contextWindowOptions` as positive token counts. Atomic hides unsupported choices in `/settings` and rejects unsupported `--context-window` values for the selected model. The active selection changes Atomic's effective `model.contextWindow`, so local budgeting, compaction, footer/stats, session replay, RPC/SDK state, and extensions all use the selected token budget while the model's scalar default remains unchanged.
+`contextWindow` remains the scalar default and is always valid. Models that support multiple context sizes can also declare `contextWindowOptions` as positive token counts. Atomic hides unsupported choices in the `/model` selection flow and rejects unsupported `--context-window` values for the selected model. The active selection changes Atomic's effective `model.contextWindow`, so local budgeting, compaction, footer/stats, session replay, RPC/SDK state, and extensions all use the selected token budget while the model's scalar default remains unchanged.
 
 ```json
 {
@@ -269,9 +269,9 @@ Users can select a supported context window independently from thinking level:
 atomic --model custom/long-context-model --thinking high --context-window 1m
 ```
 
-In interactive mode, use `/settings` → **Context window** to choose one of the active model's supported budgets. To persist a preferred budget for future sessions, set `defaultContextWindow` in settings (raw token counts and compact labels such as `400k` or `1m` are accepted). Successful explicit startup selections are recorded as `context_window_change` entries even when the chosen value equals the scalar default, preserving the user's explicit budget choice across future settings changes and resume.
+In interactive mode, run `/model` and pick a model; when the chosen model exposes more than one window, Atomic immediately prompts for the context window as a follow-up step so you can choose one of the active model's supported budgets. To persist a preferred budget for future sessions, set `defaultContextWindow` in settings (raw token counts and compact labels such as `400k` or `1m` are accepted). Successful explicit startup selections are recorded as `context_window_change` entries even when the chosen value equals the scalar default, preserving the user's explicit budget choice across future settings changes and resume.
 
-Use larger context windows deliberately. Some providers charge more for larger windows, and Atomic preserves each model's default unless the user explicitly opts in through `--context-window`, `/settings`, or `defaultContextWindow`.
+Use larger context windows deliberately. Some providers charge more for larger windows, and Atomic preserves each model's default unless the user explicitly opts in through `--context-window`, the `/model` selection flow, or `defaultContextWindow`.
 
 #### GitHub Copilot 1M long-context behavior
 

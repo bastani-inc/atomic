@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
-import { buildContextWindowSelectOptions } from "../src/modes/interactive/components/settings-selector.ts";
+import { buildContextWindowSelectOptions } from "../src/modes/interactive/components/context-window-selector.ts";
 
-describe("SettingsSelectorComponent context-window options", () => {
+describe("context-window selector options", () => {
 	test("uses raw token strings as stable values and disambiguates colliding display labels", () => {
 		const choices = buildContextWindowSelectOptions([400_000, 1_040_000, 1_049_000], 1_049_000);
 

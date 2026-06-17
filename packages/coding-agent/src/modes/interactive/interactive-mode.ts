@@ -160,6 +160,8 @@ import { CustomMessageComponent } from "./components/custom-message.ts";
 import { DaxnutsComponent } from "./components/daxnuts.ts";
 import { renderAtomicAnsiBanner } from "./components/atomic-banner.ts";
 import { DynamicBorder } from "./components/dynamic-border.ts";
+import { ContextWindowSelectorComponent } from "./components/context-window-selector.ts";
+import { formatContextWindow } from "../../core/context-window.ts";
 import { EarendilAnnouncementComponent } from "./components/earendil-announcement.ts";
 import { ExtensionEditorComponent } from "./components/extension-editor.ts";
 import { ExtensionInputComponent } from "./components/extension-input.ts";
@@ -4901,8 +4903,6 @@ export class InteractiveMode {
           httpIdleTimeoutMs: this.settingsManager.getHttpIdleTimeoutMs(),
           thinkingLevel: this.session.thinkingLevel,
           availableThinkingLevels: this.session.getAvailableThinkingLevels(),
-          contextWindow: this.session.model?.contextWindow,
-          availableContextWindows: this.session.getAvailableContextWindows(),
           currentTheme: this.settingsManager.getTheme() || "dark",
           availableThemes: getAvailableThemes(),
           hideThinkingBlock: this.hideThinkingBlock,
@@ -4970,15 +4970,6 @@ export class InteractiveMode {
             this.session.setThinkingLevel(level);
             this.footer.invalidate();
             this.updateEditorBorderColor();
-          },
-          onContextWindowChange: (contextWindow) => {
-            try {
-              this.session.setContextWindow(contextWindow, { persistDefault: true });
-              this.footer.invalidate();
-              this.usageMeter.invalidate();
-            } catch (error) {
-              this.showError(error instanceof Error ? error.message : String(error));
-            }
           },
           onThemeChange: (themeName) => {
             const result = setTheme(themeName, true);
@@ -5170,9 +5161,13 @@ export class InteractiveMode {
             this.footer.invalidate();
             this.updateEditorBorderColor();
             done();
-            this.showStatus(`Model: ${model.id}`);
             void this.maybeWarnAboutAnthropicSubscriptionAuth(model);
             this.checkDaxnutsEasterEgg(model);
+            if (this.session.supportsContextWindowSelection()) {
+              this.showContextWindowSelector(model);
+            } else {
+              this.showStatus(`Model: ${model.id}`);
+            }
           } catch (error) {
             done();
             this.showError(
@@ -5185,6 +5180,42 @@ export class InteractiveMode {
           this.ui.requestRender();
         },
         initialSearchInput,
+      );
+      return { component: selector, focus: selector };
+    });
+  }
+
+  private showContextWindowSelector(model: Model<Api>): void {
+    const availableContextWindows = this.session.getAvailableContextWindows();
+    const currentContextWindow =
+      this.session.model?.contextWindow ?? availableContextWindows[0] ?? 0;
+    this.showSelector((done) => {
+      const selector = new ContextWindowSelectorComponent(
+        availableContextWindows,
+        currentContextWindow,
+        (contextWindow) => {
+          try {
+            this.session.setContextWindow(contextWindow, {
+              persistDefault: true,
+            });
+            this.footer.invalidate();
+            this.usageMeter.invalidate();
+            this.updateEditorBorderColor();
+            done();
+            this.showStatus(
+              `Model: ${model.id} \u00b7 ${formatContextWindow(contextWindow)} context`,
+            );
+          } catch (error) {
+            done();
+            this.showError(
+              error instanceof Error ? error.message : String(error),
+            );
+          }
+        },
+        () => {
+          done();
+          this.showStatus(`Model: ${model.id}`);
+        },
       );
       return { component: selector, focus: selector };
     });

@@ -11,7 +11,6 @@ import {
 	Spacer,
 	Text,
 } from "@earendil-works/pi-tui";
-import { formatContextWindow } from "../../../core/context-window.ts";
 import { formatHttpIdleTimeoutMs, HTTP_IDLE_TIMEOUT_CHOICES } from "../../../core/http-dispatcher.ts";
 import type { DefaultProjectTrust, WarningSettings } from "../../../core/settings-manager.ts";
 import { getSelectListTheme, getSettingsListTheme, theme } from "../theme/theme.ts";
@@ -42,51 +41,6 @@ const DEFAULT_PROJECT_TRUST_BY_LABEL = new Map(
 	Object.entries(DEFAULT_PROJECT_TRUST_LABELS).map(([value, label]) => [label, value as DefaultProjectTrust]),
 );
 
-export interface ContextWindowSelectOptions {
-	options: SelectItem[];
-	currentValue: string;
-	currentLabel: string;
-	valueToContextWindow: Map<string, number>;
-	labelByValue: Map<string, string>;
-}
-
-export function buildContextWindowSelectOptions(
-	availableContextWindows: readonly number[],
-	currentContextWindow: number,
-): ContextWindowSelectOptions {
-	const uniqueContextWindows = Array.from(new Set(availableContextWindows));
-	const displayLabelCounts = new Map<string, number>();
-	for (const contextWindow of uniqueContextWindows) {
-		const displayLabel = formatContextWindow(contextWindow);
-		displayLabelCounts.set(displayLabel, (displayLabelCounts.get(displayLabel) ?? 0) + 1);
-	}
-
-	const valueToContextWindow = new Map<string, number>();
-	const labelByValue = new Map<string, string>();
-	const options = uniqueContextWindows.map((contextWindow) => {
-		const value = String(contextWindow);
-		const displayLabel = formatContextWindow(contextWindow);
-		const label =
-			(displayLabelCounts.get(displayLabel) ?? 0) > 1 ? `${displayLabel} (${contextWindow} tokens)` : displayLabel;
-		const option: SelectItem = { value, label };
-		if (contextWindow === currentContextWindow) {
-			option.description = "current";
-		}
-		valueToContextWindow.set(value, contextWindow);
-		labelByValue.set(value, label);
-		return option;
-	});
-
-	const currentValue = String(currentContextWindow);
-	return {
-		options,
-		currentValue,
-		currentLabel: labelByValue.get(currentValue) ?? formatContextWindow(currentContextWindow),
-		valueToContextWindow,
-		labelByValue,
-	};
-}
-
 export interface SettingsConfig {
 	autoCompact: boolean;
 	showImages: boolean;
@@ -100,8 +54,6 @@ export interface SettingsConfig {
 	httpIdleTimeoutMs: number;
 	thinkingLevel: ThinkingLevel;
 	availableThinkingLevels: ThinkingLevel[];
-	contextWindow?: number;
-	availableContextWindows: number[];
 	currentTheme: string;
 	availableThemes: string[];
 	hideThinkingBlock: boolean;
@@ -131,7 +83,6 @@ export interface SettingsCallbacks {
 	onTransportChange: (transport: Transport) => void;
 	onHttpIdleTimeoutChange: (timeoutMs: number) => void;
 	onThinkingLevelChange: (level: ThinkingLevel) => void;
-	onContextWindowChange: (contextWindow: number) => void;
 	onThemeChange: (theme: string) => void;
 	onThemePreview?: (theme: string) => void;
 	onHideThinkingBlockChange: (hidden: boolean) => void;
@@ -426,40 +377,6 @@ export class SettingsSelectorComponent extends Container {
 					),
 			},
 		];
-
-		if (config.availableContextWindows.length > 1 && config.contextWindow !== undefined) {
-			let selectedContextWindow = config.contextWindow;
-			const getContextWindowChoices = () =>
-				buildContextWindowSelectOptions(config.availableContextWindows, selectedContextWindow);
-			const initialContextWindowChoices = getContextWindowChoices();
-			const thinkingIndex = items.findIndex((item) => item.id === "thinking");
-			items.splice(thinkingIndex + 1, 0, {
-				id: "context-window",
-				label: "Context window",
-				description: "Token budget for supported models; larger windows may use more credits",
-				currentValue: initialContextWindowChoices.currentLabel,
-				submenu: (_currentValue, done) => {
-					const contextWindowChoices = getContextWindowChoices();
-					return new SelectSubmenu(
-						"Context Window",
-						"Select token context independently from thinking level. Larger windows may use more credits.",
-						contextWindowChoices.options,
-						contextWindowChoices.currentValue,
-						(value) => {
-							const contextWindow = contextWindowChoices.valueToContextWindow.get(value);
-							if (contextWindow !== undefined) {
-								selectedContextWindow = contextWindow;
-								callbacks.onContextWindowChange(contextWindow);
-								done(contextWindowChoices.labelByValue.get(value) ?? value);
-								return;
-							}
-							done();
-						},
-						() => done(),
-					);
-				},
-			});
-		}
 
 		// Only show image toggle if terminal supports it
 		if (supportsImages) {
