@@ -1,68 +1,92 @@
-import { describe, expect, test, vi } from "vitest";
+import { beforeAll, describe, expect, test, vi } from "vitest";
+import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import {
-	buildContextWindowSelectOptions,
+	buildContextWindowChoices,
 	ContextWindowSelectorComponent,
+	formatContextSize,
 } from "../src/modes/interactive/components/context-window-selector.ts";
 
-describe("context-window selector options", () => {
-	test("uses raw token strings as stable values and disambiguates colliding display labels", () => {
-		const choices = buildContextWindowSelectOptions([400_000, 1_040_000, 1_049_000], 1_049_000);
+// The component renders themed text eagerly, so initialize the theme like startup does.
+beforeAll(() => {
+	initTheme("dark");
+});
 
-		expect(choices.options.map((option) => option.value)).toEqual(["400000", "1040000", "1049000"]);
-		expect(new Set(choices.options.map((option) => option.value)).size).toBe(3);
-		expect(choices.currentValue).toBe("1049000");
-		expect(choices.currentLabel).toBe("1.0m (1049000 tokens)");
-		expect(choices.valueToContextWindow.get("1040000")).toBe(1_040_000);
-		expect(choices.valueToContextWindow.get("1049000")).toBe(1_049_000);
-		expect(choices.options.find((option) => option.value === "1040000")?.label).toBe(
-			"1.0m (1040000 tokens)",
-		);
-		expect(choices.options.find((option) => option.value === "1049000")?.label).toBe(
-			"1.0m (1049000 tokens)",
-		);
-		expect(choices.options.find((option) => option.value === "1049000")?.description).toBe("current");
+describe("formatContextSize", () => {
+	test("formats sub-million windows in thousands", () => {
+		expect(formatContextSize(400_000)).toBe("400K");
+		expect(formatContextSize(264_000)).toBe("264K");
+		expect(formatContextSize(200_000)).toBe("200K");
 	});
 
-	test("keeps compact labels for non-colliding context windows", () => {
-		const choices = buildContextWindowSelectOptions([400_000, 1_000_000], 400_000);
+	test("formats millions with one decimal unless whole, matching the Copilot CLI", () => {
+		expect(formatContextSize(1_000_000)).toBe("1M");
+		expect(formatContextSize(1_100_000)).toBe("1.1M");
+		// A model reporting ~1,050,000 rounds up to 1.1M (toFixed(1) rounding).
+		expect(formatContextSize(1_050_000)).toBe("1.1M");
+	});
+});
 
-		expect(choices.options).toEqual([
-			{ value: "400000", label: "400k", description: "current" },
-			{ value: "1000000", label: "1m" },
+describe("buildContextWindowChoices", () => {
+	test("names the smallest tier Default and the largest Long context with token labels", () => {
+		const { choices, currentIndex } = buildContextWindowChoices([400_000, 1_000_000], 1_000_000);
+
+		expect(choices).toEqual([
+			{
+				contextWindow: 400_000,
+				value: "400000",
+				label: "Default",
+				isDefault: true,
+				tokensLabel: "400K tokens",
+			},
+			{
+				contextWindow: 1_000_000,
+				value: "1000000",
+				label: "Long context",
+				isDefault: false,
+				tokensLabel: "1M tokens",
+			},
 		]);
-		expect(choices.currentLabel).toBe("400k");
+		expect(currentIndex).toBe(1);
+	});
+
+	test("sorts ascending, dedupes, and defaults currentIndex to 0 when current is unknown", () => {
+		const { choices, currentIndex } = buildContextWindowChoices([1_000_000, 400_000, 400_000], 999);
+
+		expect(choices.map((choice) => choice.contextWindow)).toEqual([400_000, 1_000_000]);
+		expect(currentIndex).toBe(0);
 	});
 });
 
 describe("ContextWindowSelectorComponent", () => {
-	// Regression guard for the interactive freeze: the TUI only routes keyboard
-	// input to a focused component that exposes `handleInput` (tui dispatch checks
-	// `focusedComponent?.handleInput`). A component without it silently drops every
-	// keystroke, leaving the selector uninteractable.
-	test("forwards handleInput to the inner select list so it is interactable", () => {
+	// Regression guard for the interactive freeze: the TUI only routes keyboard input
+	// to a focused component that exposes `handleInput`. A component without it silently
+	// drops every keystroke, leaving the selector uninteractable.
+	test("is interactable and selects the matching window via number shortcuts", () => {
+		const onSelect = vi.fn();
+		const onCancel = vi.fn();
 		const component = new ContextWindowSelectorComponent(
+			"GPT-5.5",
 			[400_000, 1_000_000],
 			400_000,
-			() => {},
-			() => {},
+			onSelect,
+			onCancel,
 		);
 
 		expect(typeof component.handleInput).toBe("function");
-		const spy = vi.spyOn(component.getSelectList(), "handleInput");
-		component.handleInput("\x1b[B");
-		expect(spy).toHaveBeenCalledWith("\x1b[B");
+
+		component.handleInput("2");
+		expect(onSelect).toHaveBeenLastCalledWith(1_000_000);
+
+		component.handleInput("1");
+		expect(onSelect).toHaveBeenLastCalledWith(400_000);
+		expect(onCancel).not.toHaveBeenCalled();
 	});
 
-	test("maps a chosen list item to its raw context-window value", () => {
+	test("ignores out-of-range number shortcuts", () => {
 		const onSelect = vi.fn();
-		const onCancel = vi.fn();
-		const component = new ContextWindowSelectorComponent([400_000, 1_000_000], 400_000, onSelect, onCancel);
-		const list = component.getSelectList();
+		const component = new ContextWindowSelectorComponent("GPT-5.5", [400_000, 1_000_000], 400_000, onSelect, () => {});
 
-		list.onSelect?.({ value: "1000000", label: "1m" });
-		expect(onSelect).toHaveBeenCalledWith(1_000_000);
-
-		list.onCancel?.();
-		expect(onCancel).toHaveBeenCalledTimes(1);
+		component.handleInput("3");
+		expect(onSelect).not.toHaveBeenCalled();
 	});
 });

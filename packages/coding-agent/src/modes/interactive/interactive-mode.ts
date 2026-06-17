@@ -5191,6 +5191,7 @@ export class InteractiveMode {
       this.session.model?.contextWindow ?? availableContextWindows[0] ?? 0;
     this.showSelector((done) => {
       const selector = new ContextWindowSelectorComponent(
+        model.name ?? model.id,
         availableContextWindows,
         currentContextWindow,
         (contextWindow) => {
