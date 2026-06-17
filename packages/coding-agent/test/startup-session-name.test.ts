@@ -6,6 +6,19 @@ import { afterEach, describe, expect, it } from "vitest";
 import { ENV_AGENT_DIR } from "../src/config.ts";
 
 const cliPath = resolve(__dirname, "../src/cli.ts");
+
+// The CLI is TypeScript source that uses the repo-wide `.js`->`.ts` import
+// convention, which only resolves under Bun. Launch it with Bun explicitly so
+// these tests pass regardless of whether the Vitest worker runs under Bun or
+// Node (where `process.execPath` would be Node and ESM resolution would fail).
+function bunExecutable(): string {
+	const npmExecPath = process.env.npm_execpath;
+	if (npmExecPath?.endsWith("bun") || npmExecPath?.endsWith("bun.exe")) {
+		return npmExecPath;
+	}
+	return "bun";
+}
+
 const tempDirs: string[] = [];
 
 afterEach(() => {
@@ -65,7 +78,7 @@ function readSessionInfoNames(sessionFile: string): string[] {
 
 async function runCli(args: string[], dirs: CliDirs): Promise<CliResult> {
 	let stderr = "";
-	const child = spawn(process.execPath, [cliPath, ...args], {
+	const child = spawn(bunExecutable(), [cliPath, ...args], {
 		cwd: dirs.projectDir,
 		env: {
 			...process.env,
