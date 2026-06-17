@@ -7,6 +7,7 @@ import { getOAuthProvider } from "@earendil-works/pi-ai/oauth";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { getSupportedContextWindows, selectContextWindow } from "../src/core/context-window.ts";
+import { clearActiveCopilotModelCatalog, setActiveCopilotModelCatalog } from "../src/core/copilot-model-catalog.ts";
 import { clearApiKeyCache, ModelRegistry, type ProviderConfigInput } from "../src/core/model-registry.ts";
 
 describe("ModelRegistry", () => {
@@ -98,47 +99,42 @@ describe("ModelRegistry", () => {
 	};
 
 	describe("context window options", () => {
-		test("adds selectable 1m options to built-in github-copilot long-context models", () => {
+		// The live CAPI catalog (only populated when the user has the GitHub Copilot provider) drives
+		// which Copilot models expose a selectable long-context window. Seed it like a successful fetch.
+		const copilotCatalog = new Map([
+			["gpt-5.5", { maxOutputTokens: 128_000, defaultContextMax: 272_000, longContextMax: 922_000 }],
+			["claude-opus-4.8", { maxOutputTokens: 64_000, defaultContextMax: 200_000, longContextMax: 936_000 }],
+			["gemini-3.1-pro-preview", { maxOutputTokens: 64_000, defaultContextMax: 200_000, longContextMax: 936_000 }],
+		]);
+
+		afterEach(() => clearActiveCopilotModelCatalog());
+
+		test("derives selectable long-context windows from the active Copilot catalog", () => {
+			setActiveCopilotModelCatalog(copilotCatalog);
 			const registry = ModelRegistry.create(authStorage, modelsJsonPath);
-			const expectedLongContextDefaults = new Map<string, number>([
-				["claude-fable-5", 1_000_000],
-				["claude-opus-4.6", 1_000_000],
-				["claude-opus-4.7", 200_000],
-				["claude-opus-4.8", 200_000],
-				["claude-sonnet-4.6", 1_000_000],
-				["gemini-3.1-pro-preview", 200_000],
-				["gpt-5-mini", 264_000],
-				["gpt-5.2", 400_000],
-				["gpt-5.2-codex", 400_000],
-				["gpt-5.3-codex", 400_000],
-				["gpt-5.4", 400_000],
-				["gpt-5.4-mini", 400_000],
-				["gpt-5.4-nano", 400_000],
-				["gpt-5.5", 400_000],
-			]);
 
-			for (const [id, defaultContextWindow] of expectedLongContextDefaults) {
-				const model = registry.find("github-copilot", id);
-				expect(model).toBeDefined();
-				expect(model?.contextWindow).toBe(defaultContextWindow);
-				expect(model?.defaultContextWindow).toBe(defaultContextWindow);
-				expect(model ? getSupportedContextWindows(model) : []).toEqual(
-					defaultContextWindow === 1_000_000 ? [1_000_000] : [defaultContextWindow, 1_000_000],
-				);
-			}
-
+			// gpt-5.5: 272k+128k default, 922k+128k long.
 			const gpt55 = registry.find("github-copilot", "gpt-5.5");
-			expect(gpt55?.contextWindowOptions).toEqual([400_000, 1_000_000]);
+			expect(gpt55?.contextWindow).toBe(400_000);
+			expect(gpt55?.defaultContextWindow).toBe(400_000);
+			expect(gpt55?.contextWindowOptions).toEqual([400_000, 1_050_000]);
+			expect(gpt55 ? getSupportedContextWindows(gpt55) : []).toEqual([400_000, 1_050_000]);
+
+			// claude/gemini: 200k+64k default, 936k+64k long.
+			const claude = registry.find("github-copilot", "claude-opus-4.8");
+			expect(claude?.contextWindow).toBe(264_000);
+			expect(claude?.defaultContextWindow).toBe(264_000);
+			expect(claude?.contextWindowOptions).toEqual([264_000, 1_000_000]);
 
 			const gemini31 = registry.find("github-copilot", "gemini-3.1-pro-preview");
-			expect(gemini31?.contextWindowOptions).toEqual([200_000, 1_000_000]);
+			expect(gemini31?.contextWindowOptions).toEqual([264_000, 1_000_000]);
 		});
 
-		test("does not add selectable 1m options to non-allowlisted github-copilot models", () => {
+		test("adds no options for github-copilot models absent from the catalog", () => {
+			setActiveCopilotModelCatalog(copilotCatalog);
 			const registry = ModelRegistry.create(authStorage, modelsJsonPath);
-			const nonAllowlistedIds = ["claude-haiku-4.5", "gpt-4.1", "gemini-2.5-pro"];
-
-			for (const id of nonAllowlistedIds) {
+			// gpt-5-mini has no long_context tier in CAPI, so it is not in the catalog.
+			for (const id of ["claude-haiku-4.5", "gpt-4.1", "gpt-5-mini"]) {
 				const model = registry.find("github-copilot", id);
 				expect(model).toBeDefined();
 				expect(model?.contextWindowOptions).toBeUndefined();
@@ -146,7 +142,16 @@ describe("ModelRegistry", () => {
 			}
 		});
 
-		test("does not add selectable 1m options to other providers with matching model IDs", () => {
+		test("adds no options when the catalog is empty (no Copilot auth / offline)", () => {
+			const registry = ModelRegistry.create(authStorage, modelsJsonPath);
+			const model = registry.find("github-copilot", "gpt-5.5");
+			expect(model).toBeDefined();
+			expect(model?.contextWindowOptions).toBeUndefined();
+			expect(model ? getSupportedContextWindows(model) : []).toEqual([model?.contextWindow]);
+		});
+
+		test("does not apply the catalog to other providers with matching model IDs", () => {
+			setActiveCopilotModelCatalog(copilotCatalog);
 			const registry = ModelRegistry.create(authStorage, modelsJsonPath);
 			const model = registry.find("openai-codex", "gpt-5.5");
 			if (!model) {
@@ -157,17 +162,18 @@ describe("ModelRegistry", () => {
 			expect(getSupportedContextWindows(model)).toEqual([model.contextWindow]);
 		});
 
-		test("selecting 1m raises the effective context window for an allowlisted Copilot model", () => {
+		test("selecting the long-context window raises the effective context window", () => {
+			setActiveCopilotModelCatalog(copilotCatalog);
 			const registry = ModelRegistry.create(authStorage, modelsJsonPath);
 			const model = registry.find("github-copilot", "gpt-5.5");
 			expect(model?.contextWindow).toBe(400_000);
 
-			const selected = model ? selectContextWindow(model, 1_000_000) : { error: "missing model" };
+			const selected = model ? selectContextWindow(model, 1_050_000) : { error: "missing model" };
 			expect("error" in selected).toBe(false);
 			if (!("error" in selected)) {
-				expect(selected.model.contextWindow).toBe(1_000_000);
+				expect(selected.model.contextWindow).toBe(1_050_000);
 				expect(selected.model.defaultContextWindow).toBe(400_000);
-				expect(getSupportedContextWindows(selected.model)).toEqual([400_000, 1_000_000]);
+				expect(getSupportedContextWindows(selected.model)).toEqual([400_000, 1_050_000]);
 			}
 		});
 

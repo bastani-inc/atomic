@@ -28,6 +28,7 @@ import { normalizePath } from "../utils/paths.ts";
 import { warnDeprecation } from "../utils/deprecation.ts";
 import type { AuthStatus, AuthStorage } from "./auth-storage.ts";
 import { normalizeContextWindowOptions, validateContextWindowValue, withContextWindowOptions } from "./context-window.ts";
+import { deriveCopilotContextWindows, getActiveCopilotModelCatalog } from "./copilot-model-catalog.ts";
 import { BUILT_IN_PROVIDER_DISPLAY_NAMES } from "./provider-display-names.ts";
 import {
 	clearConfigValueCache,
@@ -216,30 +217,6 @@ type ModelsConfig = Static<typeof ModelsConfigSchema>;
 
 const GITHUB_COPILOT_API_VERSION_HEADER = "X-GitHub-Api-Version";
 const GITHUB_COPILOT_API_VERSION = "2026-06-01";
-const GITHUB_COPILOT_LONG_CONTEXT_WINDOW = 1_000_000;
-
-/**
- * Built-in GitHub Copilot models observed to expose GitHub's server-side
- * `long_context` tier. Keep this conservative and update it with the bundled
- * Copilot model catalog so Atomic can offer an explicit 1m client budget only
- * where GitHub has a matching long-context tier.
- */
-const BUILT_IN_COPILOT_LONG_CONTEXT_MODEL_IDS = new Set<string>([
-	"claude-fable-5",
-	"claude-opus-4.6",
-	"claude-opus-4.7",
-	"claude-opus-4.8",
-	"claude-sonnet-4.6",
-	"gemini-3.1-pro-preview",
-	"gpt-5-mini",
-	"gpt-5.2",
-	"gpt-5.2-codex",
-	"gpt-5.3-codex",
-	"gpt-5.4",
-	"gpt-5.4-mini",
-	"gpt-5.4-nano",
-	"gpt-5.5",
-]);
 
 function hasHeader(headers: Record<string, string> | undefined, headerName: string): boolean {
 	if (!headers) return false;
@@ -257,11 +234,22 @@ function withGitHubCopilotApiVersionHeader(
 	return { ...(headers ?? {}), [GITHUB_COPILOT_API_VERSION_HEADER]: GITHUB_COPILOT_API_VERSION };
 }
 
-function withBuiltInCopilotContextWindowOptions(model: Model<Api>): Model<Api> {
-	if (model.provider !== "github-copilot" || !BUILT_IN_COPILOT_LONG_CONTEXT_MODEL_IDS.has(model.id)) {
-		return model;
-	}
-	return withContextWindowOptions(model, [model.contextWindow, GITHUB_COPILOT_LONG_CONTEXT_WINDOW]);
+/**
+ * Apply GitHub Copilot context-window tiers from the live CAPI catalog.
+ *
+ * The active catalog only contains models GitHub exposes a `long_context` tier for, and is only
+ * populated when the user has the GitHub Copilot provider (see `copilot-model-catalog.ts`). So
+ * non-Copilot users, non-tiered models, and offline/unauthenticated sessions are unaffected and the
+ * picker only appears for models with a real long-context tier. The default tier becomes the
+ * model's effective window; the long tier is offered as a selectable option.
+ */
+function withCopilotContextWindowOptions(model: Model<Api>): Model<Api> {
+	if (model.provider !== "github-copilot") return model;
+	const tier = getActiveCopilotModelCatalog().get(model.id);
+	if (!tier) return model;
+	const { defaultWindow, longWindow } = deriveCopilotContextWindows(tier);
+	if (longWindow <= defaultWindow) return model;
+	return withContextWindowOptions({ ...model, contextWindow: defaultWindow }, [defaultWindow, longWindow]);
 }
 
 function formatValidationPath(error: TLocalizedValidationError): string {
@@ -577,7 +565,7 @@ export class ModelRegistry {
 					};
 				}
 
-				model = withBuiltInCopilotContextWindowOptions(model);
+				model = withCopilotContextWindowOptions(model);
 
 				// Apply per-model override after built-in selectable windows so explicit
 				// user overrides can clear or replace inherited contextWindowOptions.

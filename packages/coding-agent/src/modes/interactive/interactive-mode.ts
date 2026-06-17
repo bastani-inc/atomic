@@ -162,6 +162,14 @@ import { renderAtomicAnsiBanner } from "./components/atomic-banner.ts";
 import { DynamicBorder } from "./components/dynamic-border.ts";
 import { ContextWindowSelectorComponent } from "./components/context-window-selector.ts";
 import { formatContextWindow } from "../../core/context-window.ts";
+import {
+  copilotApiBaseUrlFromToken,
+  copilotCatalogCacheHost,
+  fetchCopilotModelCatalog,
+  readCopilotCatalogCache,
+  setActiveCopilotModelCatalog,
+  writeCopilotCatalogCache,
+} from "../../core/copilot-model-catalog.ts";
 import { EarendilAnnouncementComponent } from "./components/earendil-announcement.ts";
 import { ExtensionEditorComponent } from "./components/extension-editor.ts";
 import { ExtensionInputComponent } from "./components/extension-input.ts";
@@ -374,6 +382,9 @@ export class InteractiveMode {
   private keybindings: KeybindingsManager;
   private version: string;
   private isInitialized = false;
+  // GitHub Copilot CAPI context-window catalog load state (gated on the Copilot provider).
+  private copilotCatalogApplied = false;
+  private copilotCatalogInFlight?: Promise<void>;
   private onInputCallback?: (text: string) => void;
   private pendingUserInputs: string[] = [];
   private loadingAnimation: Loader | undefined = undefined;
@@ -920,6 +931,10 @@ export class InteractiveMode {
    */
   async run(): Promise<void> {
     await this.init();
+
+    // Load GitHub Copilot context-window tiers from CAPI early (gated on the Copilot provider) so
+    // the footer and /model picker reflect GitHub's real windows. Best-effort, never blocks startup.
+    void this.refreshCopilotModelCatalog();
 
     // Start version check asynchronously
     checkForNewPiVersion(this.version).then((newVersion) => {
@@ -5097,11 +5112,54 @@ export class InteractiveMode {
       return this.session.scopedModels.map((scoped) => scoped.model);
     }
 
+    await this.refreshCopilotModelCatalog();
     this.session.modelRegistry.refresh();
     try {
       return await this.session.modelRegistry.getAvailable();
     } catch {
       return [];
+    }
+  }
+
+  /**
+   * Load GitHub Copilot's context-window tiers from the live CAPI catalog, but only when the user
+   * actually has the GitHub Copilot provider authenticated. Cache-first (30-min TTL); on a
+   * successful load the model registry is refreshed so the /model context-window picker reflects
+   * GitHub's real tiers (e.g. gpt-5.5 1.05m, Claude/Gemini 1m). Best-effort and gated: offline,
+   * unauthenticated, or non-Copilot sessions silently keep no long-context options.
+   */
+  private async refreshCopilotModelCatalog(): Promise<void> {
+    if (this.copilotCatalogApplied) return;
+    if (!this.copilotCatalogInFlight) {
+      this.copilotCatalogInFlight = this.loadCopilotModelCatalog();
+    }
+    try {
+      await this.copilotCatalogInFlight;
+    } finally {
+      this.copilotCatalogInFlight = undefined;
+    }
+  }
+
+  private async loadCopilotModelCatalog(): Promise<void> {
+    const registry = this.session.modelRegistry;
+    const cred = registry.authStorage.get("github-copilot");
+    // Gate: do nothing unless the user has the GitHub Copilot provider.
+    if (!cred || cred.type !== "oauth") return;
+    try {
+      const token = await registry.getApiKeyForProvider("github-copilot");
+      if (!token) return;
+      const baseUrl = copilotApiBaseUrlFromToken(token);
+      const cachePath = path.join(getAgentDir(), "cache", "copilot-models.json");
+      let catalog = readCopilotCatalogCache(cachePath, { host: copilotCatalogCacheHost(baseUrl) });
+      if (!catalog) {
+        catalog = await fetchCopilotModelCatalog({ token, baseUrl });
+        writeCopilotCatalogCache(cachePath, baseUrl, catalog);
+      }
+      setActiveCopilotModelCatalog(catalog);
+      registry.refresh();
+      this.copilotCatalogApplied = true;
+    } catch {
+      // Best-effort: leave the active catalog as-is on any failure (offline, auth, parse).
     }
   }
 

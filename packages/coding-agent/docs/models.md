@@ -269,20 +269,22 @@ Users can select a supported context window independently from thinking level:
 atomic --model custom/long-context-model --thinking high --context-window 1m
 ```
 
-In interactive mode, run `/model` and pick a model; when the chosen model exposes more than one window, Atomic immediately prompts for the context window as a follow-up step — a GitHub Copilot CLI-style picker that lists numbered `Default` and `Long context` tiers with their token counts (for example `400k tokens` / `1m tokens`) — so you can choose one of the active model's supported budgets. To persist a preferred budget for future sessions, set `defaultContextWindow` in settings (raw token counts and compact labels such as `400k` or `1m` are accepted). Successful explicit startup selections are recorded as `context_window_change` entries even when the chosen value equals the scalar default, preserving the user's explicit budget choice across future settings changes and resume.
+In interactive mode, run `/model` and pick a model; when the chosen model exposes more than one window, Atomic immediately prompts for the context window as a follow-up step — a GitHub Copilot CLI-style picker that lists numbered `Default` and `Long context` tiers with their token counts (for example `264k tokens` / `1m tokens`, or `400k tokens` / `1.1m tokens` for `github-copilot/gpt-5.5`) — so you can choose one of the active model's supported budgets. To persist a preferred budget for future sessions, set `defaultContextWindow` in settings (raw token counts and compact labels such as `400k` or `1m` are accepted). Successful explicit startup selections are recorded as `context_window_change` entries even when the chosen value equals the scalar default, preserving the user's explicit budget choice across future settings changes and resume.
 
 Use larger context windows deliberately. Some providers charge more for larger windows, and Atomic preserves each model's default unless the user explicitly opts in through `--context-window`, the `/model` selection flow, or `defaultContextWindow`.
 
-#### GitHub Copilot 1M long-context behavior
+#### GitHub Copilot long-context behavior
 
-For built-in GitHub Copilot models with GitHub's `long_context` tier (including `github-copilot/gpt-5.5`, `github-copilot/gemini-3.1-pro-preview`, and the other allowlisted Copilot GPT-5.x/Claude/Gemini long-context entries), Atomic exposes an opt-in `1m` context-window choice. Selecting it does two client-side things:
+Selectable Copilot windows are derived **dynamically from GitHub's live CAPI model catalog** (`GET {baseUrl}/models`) rather than a hardcoded model list, so models GitHub adds, removes, or retiers are reflected automatically. Atomic fetches the catalog only when you actually have the GitHub Copilot provider authenticated, caches it on disk for 30 minutes, and offers a long-context window **only for models GitHub exposes a `long_context` tier for**. Each tier's window is the input+output total (`token_prices.<tier>.context_max + capabilities.limits.max_output_tokens`), matching the Copilot CLI — for example `github-copilot/gpt-5.5` resolves to a `400k` default / `1.1m` (1,050,000) long window, while the Claude/Gemini long-context entries resolve to `264k` default / `1m` long. Offline, unauthenticated, or non-Copilot sessions simply show no long-context option.
 
-1. Raises Atomic's local token budget to `1_000_000` for context collection, compaction thresholds, footer/stats, session replay, and SDK/RPC metadata.
+Selecting the long-context window does two client-side things:
+
+1. Raises Atomic's local token budget (e.g. `1_050_000` for `gpt-5.5`) for context collection, compaction thresholds, footer/stats, session replay, and SDK/RPC metadata.
 2. Sends `X-GitHub-Api-Version: 2026-06-01` on Copilot requests so GitHub returns/enforces the absolute long-context limits for eligible accounts.
 
 Atomic does **not** send a request body field, `contextTier`, or model-id variant for Copilot long context. GitHub chooses the larger `long_context` billing tier server-side automatically when the prompt token count exceeds the model's default budget. That tier consumes more Copilot AI credits and requires the account/actor to have Copilot long-context/usage-based billing entitlement enabled. If the account or selected model is still capped by GitHub's server-side limit, the request is rejected (for example, `prompt token count of N exceeds the limit of M`) and Atomic surfaces a friendly entitlement/cost/server-cap hint instead of silently truncating context.
 
-Custom `models.json` entries remain the escape hatch for providers, proxies, or Copilot catalog changes that Atomic has not built in yet. To adjust an existing built-in model, use `modelOverrides`:
+Custom `models.json` entries remain the escape hatch for providers, proxies, or Copilot accounts where the live catalog is unavailable. To adjust an existing built-in model, use `modelOverrides`:
 
 ```json
 {
