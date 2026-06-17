@@ -1496,6 +1496,52 @@ describe("executor.run", () => {
         assert.equal(stageC?.parentIds.length, 2);
     });
 
+    test("ctx.parallel queued stages share the same parent frontier after sibling failures", async () => {
+        const def = defineWorkflow("parallel-parent-frontier-wf")
+            .run(async (ctx) => {
+                await ctx.task("seed", { prompt: "seed" });
+                try {
+                    await ctx.parallel(
+                        [
+                            { name: "branch-a", prompt: "fail-a" },
+                            { name: "branch-b", prompt: "branch-b" },
+                            { name: "branch-c", prompt: "branch-c" },
+                        ],
+                        { concurrency: 1, failFast: false },
+                    );
+                } catch (err) {
+                    assert.ok(err instanceof AggregateError);
+                }
+                return {};
+            })
+            .compile();
+
+        const wfResult = await run(
+            def,
+            {},
+            {
+                adapters: {
+                    prompt: {
+                        prompt: async (text) => {
+                            if (text.includes("fail-a")) throw new Error("branch-a failed");
+                            return `ok:${text}`;
+                        },
+                    },
+                },
+                store: createStore(),
+            },
+        );
+
+        assert.equal(wfResult.status, "completed");
+        const seed = wfResult.stages.find((stage) => stage.name === "seed");
+        assert.notEqual(seed, undefined);
+        for (const name of ["branch-a", "branch-b", "branch-c"]) {
+            const stage = wfResult.stages.find((candidate) => candidate.name === name);
+            assert.notEqual(stage, undefined);
+            assert.deepEqual(stage?.parentIds, [seed!.id]);
+        }
+    });
+
     test("records lifecycle callbacks", async () => {
         const def = defineWorkflow("lifecycle-wf")
             .output("done", Type.Optional(Type.Any()))

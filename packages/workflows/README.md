@@ -68,7 +68,7 @@ export default defineWorkflow("summarize-pr")
 
 ### Example 2 — Parallel fan-out with `ctx.parallel`
 
-Use `ctx.parallel` for independent specialist work. The aggregator receives the specialist outputs through typed task results instead of manual stage/session plumbing.
+Use `ctx.parallel` for independent specialist work. The aggregator receives the specialist outputs through typed task results instead of manual stage/session plumbing. The runtime snapshots the parent graph frontier when the fan-out starts, so every branch shares the same parents even when limited `concurrency` queues later branches or an earlier sibling fails with `failFast: false`.
 
 ```typescript
 import { defineWorkflow, Type } from "@bastani/workflows";

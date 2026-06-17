@@ -2575,6 +2575,7 @@ interface ParallelFailFastScope {
   failed: boolean;
   firstFailure?: unknown;
   readonly activeStages: Map<string, ParallelFailFastStage>;
+  readonly parentIds?: readonly string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -4041,13 +4042,18 @@ export async function run<TInputs extends WorkflowInputValues>(
 
       // b. tracker.onSpawn → provisional parentIds
       const provisionalParentIds = tracker.onSpawn(stageId, name);
+      const scopedParentIds = opts.continuation === undefined ? stageFailFastScope?.parentIds : undefined;
+      const initialParentIds = scopedParentIds === undefined ? provisionalParentIds : [...scopedParentIds];
+      if (scopedParentIds !== undefined && !sameStringSet(scopedParentIds, provisionalParentIds)) {
+        tracker.replaceParents(stageId, scopedParentIds);
+      }
 
       // c. Create StageSnapshot as "pending"
       const replayKey = `stage:${name}`;
       const replayDecision = replayIndex.decide({
         displayName: name,
         replayKey,
-        parentIds: provisionalParentIds,
+        parentIds: initialParentIds,
         stageId,
         kind: "stage",
       });
@@ -4599,7 +4605,7 @@ export async function run<TInputs extends WorkflowInputValues>(
           throw err;
         }
 
-        if (opts.continuation === undefined && stageSnapshot.startedAt === undefined) {
+        if (opts.continuation === undefined && stageSnapshot.startedAt === undefined && stageFailFastScope?.parentIds === undefined) {
           const actualParentIds = tracker.currentParents();
           if (!sameStringSet(actualParentIds, stageSnapshot.parentIds)) {
             tracker.replaceParents(stageId, actualParentIds);
@@ -4956,22 +4962,25 @@ export async function run<TInputs extends WorkflowInputValues>(
     async parallel(steps: readonly WorkflowTaskStep[], options: WorkflowParallelOptions = {}): Promise<WorkflowTaskResult[]> {
       throwIfWorkflowExitSelected();
       const fallback = parallelFallbackTask(steps, options);
-      const failFastScope: ParallelFailFastScope | undefined = options.failFast === false
-        ? undefined
-        : { failed: false, activeStages: new Map<string, ParallelFailFastStage>() };
+      const failFastEnabled = options.failFast !== false;
+      const parallelScope: ParallelFailFastScope = {
+        failed: false,
+        activeStages: new Map<string, ParallelFailFastStage>(),
+        parentIds: Object.freeze(tracker.currentParents()),
+      };
       return mapParallelSteps(steps, options.concurrency, options.failFast, async (step) => {
         throwIfWorkflowExitSelected();
         const prompt = replaceTaskPlaceholder(step.prompt ?? step.task ?? fallback, options.task ?? fallback);
         return await (ctx.task as typeof ctx.task & ((taskName: string, taskOptions: WorkflowTaskOptions, scope?: ParallelFailFastScope) => Promise<WorkflowTaskResult>))(
           step.name,
           taskWithSharedDefaults(taskOptionsFromStep(step, prompt, taskPrevious(step)), options),
-          failFastScope,
+          parallelScope,
         );
       }, (error) => {
-        if (failFastScope === undefined) return;
-        failFastScope.failed = true;
-        failFastScope.firstFailure = error;
-        for (const stage of failFastScope.activeStages.values()) {
+        if (!failFastEnabled) return;
+        parallelScope.failed = true;
+        parallelScope.firstFailure = error;
+        for (const stage of parallelScope.activeStages.values()) {
           stage.skip();
         }
       }, {

@@ -1454,6 +1454,8 @@ Use `previous` and `{previous}` for compact handoffs only. If no placeholder is 
 
 For large handoffs, write artifacts to files, pass their paths with `reads`, and tell downstream stages to read those files incrementally. Put the instruction in the downstream prompt explicitly, e.g. `Read the file at ${artifactPath} and use only the sections needed for this stage.` Prefer `outputMode: "file-only"` when the parent only needs the artifact path.
 
+`ctx.parallel` snapshots the current graph frontier when the fan-out starts. Every branch in that call uses the same parent set, including branches dequeued later because of a limited `concurrency` value and branches that continue after an earlier sibling fails with `failFast: false`. Downstream stages then depend on all settled parallel branches instead of accidentally chaining queued siblings behind one another.
+
 ### Fine-Grained Stages
 
 Use `ctx.stage(name, options?)` when `ctx.task` is too coarse and you need direct control over the underlying stage session. `StageContext` supports:
