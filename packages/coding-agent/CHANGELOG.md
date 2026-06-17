@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Bumped the bundled upstream pi runtime libraries `@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, and `@earendil-works/pi-tui` from `^0.79.4` to `^0.79.6` so Atomic's installed pi runtime packages pick up upstream v0.79.5/v0.79.6 provider, model, thinking-payload, and shared TUI compatibility fixes; no Atomic coding-agent source changes were made for upstream coding-agent-only marked export or fetch-override behavior in this dependency sync ([#1413](https://github.com/bastani-inc/atomic/issues/1413)).
+
 ## [0.8.30] - 2026-06-17
 
 ### Changed
