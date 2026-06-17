@@ -113,6 +113,10 @@ export class ContextWindowSelectorComponent extends Container {
 		this.addChild(new DynamicBorder());
 	}
 
+	handleInput(data: string): void {
+		this.selectList.handleInput(data);
+	}
+
 	getSelectList(): SelectList {
 		return this.selectList;
 	}

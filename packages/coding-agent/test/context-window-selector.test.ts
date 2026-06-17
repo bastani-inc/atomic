@@ -1,5 +1,8 @@
-import { describe, expect, test } from "vitest";
-import { buildContextWindowSelectOptions } from "../src/modes/interactive/components/context-window-selector.ts";
+import { describe, expect, test, vi } from "vitest";
+import {
+	buildContextWindowSelectOptions,
+	ContextWindowSelectorComponent,
+} from "../src/modes/interactive/components/context-window-selector.ts";
 
 describe("context-window selector options", () => {
 	test("uses raw token strings as stable values and disambiguates colliding display labels", () => {
@@ -28,5 +31,38 @@ describe("context-window selector options", () => {
 			{ value: "1000000", label: "1m" },
 		]);
 		expect(choices.currentLabel).toBe("400k");
+	});
+});
+
+describe("ContextWindowSelectorComponent", () => {
+	// Regression guard for the interactive freeze: the TUI only routes keyboard
+	// input to a focused component that exposes `handleInput` (tui dispatch checks
+	// `focusedComponent?.handleInput`). A component without it silently drops every
+	// keystroke, leaving the selector uninteractable.
+	test("forwards handleInput to the inner select list so it is interactable", () => {
+		const component = new ContextWindowSelectorComponent(
+			[400_000, 1_000_000],
+			400_000,
+			() => {},
+			() => {},
+		);
+
+		expect(typeof component.handleInput).toBe("function");
+		const spy = vi.spyOn(component.getSelectList(), "handleInput");
+		component.handleInput("\x1b[B");
+		expect(spy).toHaveBeenCalledWith("\x1b[B");
+	});
+
+	test("maps a chosen list item to its raw context-window value", () => {
+		const onSelect = vi.fn();
+		const onCancel = vi.fn();
+		const component = new ContextWindowSelectorComponent([400_000, 1_000_000], 400_000, onSelect, onCancel);
+		const list = component.getSelectList();
+
+		list.onSelect?.({ value: "1000000", label: "1m" });
+		expect(onSelect).toHaveBeenCalledWith(1_000_000);
+
+		list.onCancel?.();
+		expect(onCancel).toHaveBeenCalledTimes(1);
 	});
 });
