@@ -6,6 +6,7 @@ import {
 	buildSessionContext,
 	type CompactionEntry,
 	type ContextCompactionEntry,
+	type ContextWindowChangeEntry,
 	type ModelChangeEntry,
 	type SessionEntry,
 	type SessionMessageEntry,
@@ -94,6 +95,10 @@ function thinkingLevel(id: string, parentId: string | null, level: string): Thin
 	return { type: "thinking_level_change", id, parentId, timestamp: "2025-01-01T00:00:00Z", thinkingLevel: level };
 }
 
+function contextWindow(id: string, parentId: string | null, value: number): ContextWindowChangeEntry {
+	return { type: "context_window_change", id, parentId, timestamp: "2025-01-01T00:00:00Z", contextWindow: value };
+}
+
 function modelChange(id: string, parentId: string | null, provider: string, modelId: string): ModelChangeEntry {
 	return { type: "model_change", id, parentId, timestamp: "2025-01-01T00:00:00Z", provider, modelId };
 }
@@ -134,6 +139,17 @@ describe("buildSessionContext", () => {
 			];
 			const ctx = buildSessionContext(entries);
 			expect(ctx.thinkingLevel).toBe("high");
+			expect(ctx.messages).toHaveLength(2);
+		});
+
+		it("tracks context window changes", () => {
+			const entries: SessionEntry[] = [
+				msg("1", null, "user", "hello"),
+				contextWindow("2", "1", 1_000_000),
+				msg("3", "2", "assistant", "using more context"),
+			];
+			const ctx = buildSessionContext(entries);
+			expect(ctx.contextWindow).toBe(1_000_000);
 			expect(ctx.messages).toHaveLength(2);
 		});
 

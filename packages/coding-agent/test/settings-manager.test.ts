@@ -24,6 +24,62 @@ describe("SettingsManager", () => {
 		}
 	});
 
+	describe("context window settings", () => {
+		it("parses numeric and compact default context windows", () => {
+			const settingsPath = join(agentDir, "settings.json");
+			writeFileSync(settingsPath, JSON.stringify({ defaultContextWindow: "1m" }));
+			const compact = SettingsManager.create(projectDir, agentDir);
+			expect(compact.getDefaultContextWindow()).toBe(1_000_000);
+
+			writeFileSync(settingsPath, JSON.stringify({ defaultContextWindow: 400_000 }));
+			const numeric = SettingsManager.create(projectDir, agentDir);
+			expect(numeric.getDefaultContextWindow()).toBe(400_000);
+		});
+
+		it("reports malformed global and project default context windows at load", () => {
+			const globalSettingsPath = join(agentDir, "settings.json");
+			const projectSettingsDir = join(projectDir, ".atomic");
+			mkdirSync(projectSettingsDir, { recursive: true });
+			writeFileSync(globalSettingsPath, JSON.stringify({ defaultContextWindow: "bogus" }));
+			writeFileSync(join(projectSettingsDir, "settings.json"), JSON.stringify({ defaultContextWindow: 0 }));
+
+			const manager = SettingsManager.create(projectDir, agentDir);
+
+			expect(manager.getDefaultContextWindow()).toBeUndefined();
+			const errors = manager.drainErrors();
+			expect(errors).toHaveLength(2);
+			expect(errors.map((error) => error.scope).sort()).toEqual(["global", "project"]);
+			expect(errors.map((error) => error.error.message).join("\n")).toContain("defaultContextWindow");
+			expect(errors.map((error) => error.error.message).join("\n")).toContain("bogus");
+			expect(errors.map((error) => error.error.message).join("\n")).toContain("positive integer");
+			expect(manager.drainErrors()).toEqual([]);
+		});
+
+		it("reports malformed default context windows at reload and falls back safely", async () => {
+			const settingsPath = join(agentDir, "settings.json");
+			writeFileSync(settingsPath, JSON.stringify({ defaultContextWindow: 400_000 }));
+			const manager = SettingsManager.create(projectDir, agentDir);
+			expect(manager.drainErrors()).toEqual([]);
+			expect(manager.getDefaultContextWindow()).toBe(400_000);
+
+			writeFileSync(settingsPath, JSON.stringify({ defaultContextWindow: -1 }));
+			await manager.reload();
+			expect(manager.getDefaultContextWindow()).toBeUndefined();
+			let errors = manager.drainErrors();
+			expect(errors).toHaveLength(1);
+			expect(errors[0].scope).toBe("global");
+			expect(errors[0].error.message).toContain("defaultContextWindow");
+			expect(errors[0].error.message).toContain("positive integer");
+
+			writeFileSync(settingsPath, JSON.stringify({ defaultContextWindow: 1.5 }));
+			await manager.reload();
+			expect(manager.getDefaultContextWindow()).toBeUndefined();
+			errors = manager.drainErrors();
+			expect(errors).toHaveLength(1);
+			expect(errors[0].error.message).toContain("positive integer");
+		});
+	});
+
 	describe("compaction settings", () => {
 		it("returns default and configured context compaction parameters", () => {
 			const defaults = SettingsManager.create(projectDir, agentDir);

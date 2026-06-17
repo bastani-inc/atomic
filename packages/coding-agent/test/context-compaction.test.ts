@@ -1,9 +1,10 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, registerFauxProvider, type AssistantMessage, type ToolResultMessage } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
 import {
 	buildContextCompactionPrompt,
 	type CompactableTranscript,
+	contextCompact,
 	createContextDeletionTool,
 	DEFAULT_COMPACTION_SETTINGS,
 	estimateContextTokens,
@@ -203,6 +204,73 @@ function compactionEntry(summary: string, firstKeptEntryId: string, tokensBefore
 }
 
 describe("context compaction", () => {
+	it("adds Copilot long-context guidance to prompt-limit context compaction failures", async () => {
+		resetIds();
+		const rawError = "prompt token count of 500000 exceeds the limit of 400000";
+		const task = entry(user("Retain the task."));
+		const oldOne = entry(assistantText("Old search output that can be deleted."));
+		const oldTwo = entry(assistantText("Old file read that can be deleted."));
+		const recentOne = entry(assistantText("Recent operation one stays protected."));
+		const recentTwo = entry(assistantText("Recent operation two stays protected."));
+		const preparation = prepareContextCompaction(
+			[task, oldOne, oldTwo, recentOne, recentTwo],
+			DEFAULT_COMPACTION_SETTINGS,
+		)!;
+		const faux = registerFauxProvider({ provider: "github-copilot" });
+		faux.setResponses([
+			fauxAssistantMessage("", {
+				stopReason: "error",
+				errorMessage: rawError,
+			}),
+		]);
+
+		try {
+			await contextCompact(preparation, faux.getModel(), "test-key");
+			throw new Error("Expected context compaction to fail");
+		} catch (error) {
+			if (!(error instanceof Error)) {
+				throw error;
+			}
+			expect(error.message).toContain(rawError);
+			expect(error.message).toContain("Copilot long-context/usage-based billing");
+		} finally {
+			faux.unregister();
+		}
+	});
+
+	it("does not add Copilot guidance to non-Copilot prompt-limit context compaction failures", async () => {
+		resetIds();
+		const rawError = "prompt token count of 500000 exceeds the limit of 400000";
+		const task = entry(user("Retain the task."));
+		const oldOne = entry(assistantText("Old search output that can be deleted."));
+		const oldTwo = entry(assistantText("Old file read that can be deleted."));
+		const recentOne = entry(assistantText("Recent operation one stays protected."));
+		const recentTwo = entry(assistantText("Recent operation two stays protected."));
+		const preparation = prepareContextCompaction(
+			[task, oldOne, oldTwo, recentOne, recentTwo],
+			DEFAULT_COMPACTION_SETTINGS,
+		)!;
+		const faux = registerFauxProvider({ provider: "openai" });
+		faux.setResponses([
+			fauxAssistantMessage("", {
+				stopReason: "error",
+				errorMessage: rawError,
+			}),
+		]);
+
+		try {
+			await contextCompact(preparation, faux.getModel(), "test-key");
+			throw new Error("Expected context compaction to fail");
+		} catch (error) {
+			if (!(error instanceof Error)) {
+				throw error;
+			}
+			expect(error.message).not.toContain("Copilot long-context/usage-based billing");
+		} finally {
+			faux.unregister();
+		}
+	});
+
 	it("excludes excludeFromContext entries from context compaction transcript, prompt, recency, and stats", () => {
 		resetIds();
 		const bashSentinel = "ITER4_EXCLUDED_BASH_SENTINEL";

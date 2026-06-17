@@ -58,6 +58,11 @@ export interface ThinkingLevelChangeEntry extends SessionEntryBase {
 	thinkingLevel: string;
 }
 
+export interface ContextWindowChangeEntry extends SessionEntryBase {
+	type: "context_window_change";
+	contextWindow: number;
+}
+
 export interface ModelChangeEntry extends SessionEntryBase {
 	type: "model_change";
 	provider: string;
@@ -161,6 +166,7 @@ export interface CustomMessageEntry<T = unknown> extends SessionEntryBase {
 export type SessionEntry =
 	| SessionMessageEntry
 	| ThinkingLevelChangeEntry
+	| ContextWindowChangeEntry
 	| ModelChangeEntry
 	| CompactionEntry
 	| ContextCompactionEntry
@@ -186,6 +192,7 @@ export interface SessionTreeNode {
 export interface SessionContext {
 	messages: AgentMessage[];
 	thinkingLevel: string;
+	contextWindow: number | undefined;
 	model: { provider: string; modelId: string } | null;
 }
 
@@ -615,7 +622,7 @@ export function buildSessionContext(
 	let leaf: SessionEntry | undefined;
 	if (leafId === null) {
 		// Explicitly null - return no messages (navigated to before first entry)
-		return { messages: [], thinkingLevel: "off", model: null };
+		return { messages: [], thinkingLevel: "off", contextWindow: undefined, model: null };
 	}
 	if (leafId) {
 		leaf = byId.get(leafId);
@@ -626,7 +633,7 @@ export function buildSessionContext(
 	}
 
 	if (!leaf) {
-		return { messages: [], thinkingLevel: "off", model: null };
+		return { messages: [], thinkingLevel: "off", contextWindow: undefined, model: null };
 	}
 
 	// Walk from leaf to root, collecting path
@@ -639,11 +646,14 @@ export function buildSessionContext(
 
 	// Extract settings
 	let thinkingLevel = "off";
+	let contextWindow: number | undefined;
 	let model: { provider: string; modelId: string } | null = null;
 
 	for (const entry of path) {
 		if (entry.type === "thinking_level_change") {
 			thinkingLevel = entry.thinkingLevel;
+		} else if (entry.type === "context_window_change") {
+			contextWindow = entry.contextWindow;
 		} else if (entry.type === "model_change") {
 			model = { provider: entry.provider, modelId: entry.modelId };
 		} else if (entry.type === "message" && entry.message.role === "assistant") {
@@ -681,7 +691,7 @@ export function buildSessionContext(
 		appendMessage(entry);
 	}
 
-	return { messages, thinkingLevel, model };
+	return { messages, thinkingLevel, contextWindow, model };
 }
 
 /**
@@ -1180,6 +1190,19 @@ export class SessionManager {
 			parentId: this.leafId,
 			timestamp: new Date().toISOString(),
 			thinkingLevel,
+		};
+		this._appendEntry(entry);
+		return entry.id;
+	}
+
+	/** Append a context window change as child of current leaf, then advance leaf. Returns entry id. */
+	appendContextWindowChange(contextWindow: number): string {
+		const entry: ContextWindowChangeEntry = {
+			type: "context_window_change",
+			id: generateId(this.byId),
+			parentId: this.leafId,
+			timestamp: new Date().toISOString(),
+			contextWindow,
 		};
 		this._appendEntry(entry);
 		return entry.id;

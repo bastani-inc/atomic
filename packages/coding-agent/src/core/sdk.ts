@@ -23,6 +23,7 @@ import {
   withCodexFastModeStreamOptions,
 } from "./codex-fast-mode.ts";
 import { restoreAnthropicReplayThinkingBlocks } from "./anthropic-thinking-guard.ts";
+import { getModelDefaultContextWindow, getSupportedContextWindows, selectContextWindow } from "./context-window.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import type {
   ExtensionRunner,
@@ -73,6 +74,10 @@ export interface CreateAgentSessionOptions {
   model?: Model<Api>;
   /** Thinking level. Default: from settings, else 'medium' (clamped to model capabilities) */
   thinkingLevel?: ThinkingLevel;
+  /** Context window token count. Default: model scalar contextWindow, or settings/session override when supported. */
+  contextWindow?: number;
+  /** Treat unsupported contextWindow as an error instead of a warning/fallback. */
+  contextWindowStrict?: boolean;
   /** Models available for cycling (Ctrl+P in interactive mode) */
   scopedModels?: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>;
 
@@ -128,6 +133,10 @@ export interface CreateAgentSessionResult {
   extensionsResult: LoadExtensionsResult;
   /** Warning if session was restored with a different model than saved */
   modelFallbackMessage?: string;
+  /** Warning if a saved/default context window could not be applied to the selected model. */
+  contextWindowWarning?: string;
+  /** Error if an explicit strict context-window selection is unsupported. */
+  contextWindowError?: string;
 }
 
 // Re-exports
@@ -184,6 +193,17 @@ export {
 
 function getDefaultAgentDir(): string {
   return getAgentDir();
+}
+
+function getAlreadyAppliedContextWindow(model: Model<Api>): number | undefined {
+  const defaultContextWindow = getModelDefaultContextWindow(model);
+  if (model.contextWindow === defaultContextWindow) {
+    return undefined;
+  }
+
+  return getSupportedContextWindows(model).includes(model.contextWindow)
+    ? model.contextWindow
+    : undefined;
 }
 
 /**
@@ -316,6 +336,31 @@ export async function createAgentSession(
     thinkingLevel = "off";
   } else {
     thinkingLevel = clampThinkingLevel(model, thinkingLevel) as ThinkingLevel;
+  }
+
+  let selectedContextWindow: number | undefined;
+  let contextWindowWarning: string | undefined;
+  let contextWindowError: string | undefined;
+  const explicitContextWindowSelection = options.contextWindow !== undefined;
+  const incomingModelContextWindow =
+    model && options.model ? getAlreadyAppliedContextWindow(model) : undefined;
+  const requestedContextWindow =
+    options.contextWindow ??
+    incomingModelContextWindow ??
+    (hasExistingSession ? existingSession.contextWindow : undefined) ??
+    settingsManager.getDefaultContextWindow();
+  if (model && requestedContextWindow !== undefined) {
+    const selected = selectContextWindow(model, requestedContextWindow);
+    if ("error" in selected) {
+      if (options.contextWindowStrict) {
+        contextWindowError = selected.error;
+      } else {
+        contextWindowWarning = selected.error;
+      }
+    } else {
+      model = selected.model;
+      selectedContextWindow = selected.contextWindow;
+    }
   }
 
   const allowedToolNames =
@@ -476,6 +521,15 @@ export async function createAgentSession(
   // Restore messages if session has existing data
   if (hasExistingSession) {
     agent.state.messages = existingSession.messages;
+    const transcriptContextWindow = model
+      ? (existingSession.contextWindow ?? getModelDefaultContextWindow(model))
+      : undefined;
+    if (
+      selectedContextWindow !== undefined &&
+      (explicitContextWindowSelection || selectedContextWindow !== transcriptContextWindow)
+    ) {
+      sessionManager.appendContextWindowChange(selectedContextWindow);
+    }
     if (!hasThinkingEntry) {
       sessionManager.appendThinkingLevelChange(thinkingLevel);
     }
@@ -483,6 +537,12 @@ export async function createAgentSession(
     // Save initial model and thinking level for new sessions so they can be restored on resume
     if (model) {
       sessionManager.appendModelChange(model.provider, model.id);
+      if (
+        selectedContextWindow !== undefined &&
+        (explicitContextWindowSelection || selectedContextWindow !== getModelDefaultContextWindow(model))
+      ) {
+        sessionManager.appendContextWindowChange(selectedContextWindow);
+      }
     }
     sessionManager.appendThinkingLevelChange(thinkingLevel);
   }
@@ -510,5 +570,7 @@ export async function createAgentSession(
     session,
     extensionsResult,
     modelFallbackMessage,
+    contextWindowWarning,
+    contextWindowError,
   };
 }

@@ -151,6 +151,26 @@ describe("parseArgs", () => {
 			expect(result.thinking).toBe("high");
 		});
 
+		test("parses --context-window compact values", () => {
+			const result = parseArgs(["--context-window", "1m"]);
+			expect(result.contextWindow).toBe(1_000_000);
+			expect(result.diagnostics).toEqual([]);
+		});
+
+		test("parses --context-window raw token counts", () => {
+			const result = parseArgs(["--context-window", "400000"]);
+			expect(result.contextWindow).toBe(400_000);
+			expect(result.diagnostics).toEqual([]);
+		});
+
+		test("reports invalid --context-window values", () => {
+			const result = parseArgs(["--context-window", "large"]);
+			expect(result.contextWindow).toBeUndefined();
+			expect(result.diagnostics).toEqual([
+				expect.objectContaining({ type: "error", message: expect.stringContaining("Invalid context window") }),
+			]);
+		});
+
 		test("parses --models as comma-separated list", () => {
 			const result = parseArgs(["--models", "gpt-4o,claude-sonnet,gemini-pro"]);
 			expect(result.models).toEqual(["gpt-4o", "claude-sonnet", "gemini-pro"]);

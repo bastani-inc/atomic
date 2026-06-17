@@ -65,6 +65,8 @@ import {
 	shouldCompact,
 	validateContextDeletionRequest,
 } from "./compaction/index.ts";
+import { getModelDefaultContextWindow, getSupportedContextWindows, selectContextWindow } from "./context-window.ts";
+import { formatCopilotProviderError, parseCopilotPromptLimitError } from "./copilot-errors.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.ts";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.ts";
@@ -194,6 +196,7 @@ export type AgentSessionEvent =
 			source: "set" | "cycle" | "restore";
 	  }
 	| { type: "thinking_level_changed"; level: ThinkingLevel }
+	| { type: "context_window_changed"; contextWindow: number }
 	| {
 			type: "compaction_end";
 			reason: "manual" | "threshold" | "overflow";
@@ -703,6 +706,7 @@ export class AgentSession {
 		}
 
 		this._applyInterruptAbortMessage(event);
+		this._applyProviderErrorGuidance(event);
 
 		// Emit to extensions first
 		await this._emitExtensionEvent(event);
@@ -792,6 +796,19 @@ export class AgentSession {
 				assistantMessage.errorMessage = abortMessage;
 			}
 		}
+	}
+
+	private _applyProviderErrorGuidance(event: AgentEvent): void {
+		if (event.type !== "message_start" && event.type !== "message_update" && event.type !== "message_end") return;
+		if (event.message.role !== "assistant") return;
+
+		const assistantMessage = event.message as AssistantMessage;
+		if (assistantMessage.stopReason !== "error" || !assistantMessage.errorMessage) return;
+
+		assistantMessage.errorMessage = formatCopilotProviderError(
+			assistantMessage.provider,
+			assistantMessage.errorMessage,
+		);
 	}
 
 	/** Resolve the pending retry promise */
@@ -1842,16 +1859,18 @@ export class AgentSession {
 
 		const previousModel = this.model;
 		const thinkingLevel = this._getThinkingLevelForModelSwitch();
-		this.agent.state.model = model;
-		this.sessionManager.appendModelChange(model.provider, model.id);
-		this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
+		const nextModel = this._withContextWindowForModelSwitch(model);
+		this.agent.state.model = nextModel;
+		this.sessionManager.appendModelChange(nextModel.provider, nextModel.id);
+		this._appendContextWindowChangeIfChanged(previousModel, nextModel);
+		this.settingsManager.setDefaultModelAndProvider(nextModel.provider, nextModel.id);
 
 		// Re-clamp thinking level for new model's capabilities
 		this.setThinkingLevel(thinkingLevel);
 		this._refreshBaseSystemPromptFromActiveTools();
 
-		this._emitModelChanged(model, previousModel, "set");
-		await this._emitModelSelect(model, previousModel, "set");
+		this._emitModelChanged(nextModel, previousModel, "set");
+		await this._emitModelSelect(nextModel, previousModel, "set");
 	}
 
 	/**
@@ -1879,11 +1898,13 @@ export class AgentSession {
 		const nextIndex = direction === "forward" ? (currentIndex + 1) % len : (currentIndex - 1 + len) % len;
 		const next = scopedModels[nextIndex];
 		const thinkingLevel = this._getThinkingLevelForModelSwitch(next.thinkingLevel);
+		const nextModel = this._withContextWindowForModelSwitch(next.model);
 
 		// Apply model
-		this.agent.state.model = next.model;
-		this.sessionManager.appendModelChange(next.model.provider, next.model.id);
-		this.settingsManager.setDefaultModelAndProvider(next.model.provider, next.model.id);
+		this.agent.state.model = nextModel;
+		this.sessionManager.appendModelChange(nextModel.provider, nextModel.id);
+		this._appendContextWindowChangeIfChanged(currentModel, nextModel);
+		this.settingsManager.setDefaultModelAndProvider(nextModel.provider, nextModel.id);
 
 		// Apply thinking level.
 		// - Explicit scoped model thinking level overrides current session level
@@ -1892,10 +1913,10 @@ export class AgentSession {
 		this.setThinkingLevel(thinkingLevel);
 		this._refreshBaseSystemPromptFromActiveTools();
 
-		this._emitModelChanged(next.model, currentModel, "cycle");
-		await this._emitModelSelect(next.model, currentModel, "cycle");
+		this._emitModelChanged(nextModel, currentModel, "cycle");
+		await this._emitModelSelect(nextModel, currentModel, "cycle");
 
-		return { model: next.model, thinkingLevel: this.thinkingLevel, isScoped: true };
+		return { model: nextModel, thinkingLevel: this.thinkingLevel, isScoped: true };
 	}
 
 	private async _cycleAvailableModel(direction: "forward" | "backward"): Promise<ModelCycleResult | undefined> {
@@ -1908,21 +1929,22 @@ export class AgentSession {
 		if (currentIndex === -1) currentIndex = 0;
 		const len = availableModels.length;
 		const nextIndex = direction === "forward" ? (currentIndex + 1) % len : (currentIndex - 1 + len) % len;
-		const nextModel = availableModels[nextIndex];
+		const selectedModel = this._withContextWindowForModelSwitch(availableModels[nextIndex]);
 
 		const thinkingLevel = this._getThinkingLevelForModelSwitch();
-		this.agent.state.model = nextModel;
-		this.sessionManager.appendModelChange(nextModel.provider, nextModel.id);
-		this.settingsManager.setDefaultModelAndProvider(nextModel.provider, nextModel.id);
+		this.agent.state.model = selectedModel;
+		this.sessionManager.appendModelChange(selectedModel.provider, selectedModel.id);
+		this._appendContextWindowChangeIfChanged(currentModel, selectedModel);
+		this.settingsManager.setDefaultModelAndProvider(selectedModel.provider, selectedModel.id);
 
 		// Re-clamp thinking level for new model's capabilities
 		this.setThinkingLevel(thinkingLevel);
 		this._refreshBaseSystemPromptFromActiveTools();
 
-		this._emitModelChanged(nextModel, currentModel, "cycle");
-		await this._emitModelSelect(nextModel, currentModel, "cycle");
+		this._emitModelChanged(selectedModel, currentModel, "cycle");
+		await this._emitModelSelect(selectedModel, currentModel, "cycle");
 
-		return { model: nextModel, thinkingLevel: this.thinkingLevel, isScoped: false };
+		return { model: selectedModel, thinkingLevel: this.thinkingLevel, isScoped: false };
 	}
 
 	// =========================================================================
@@ -2003,6 +2025,146 @@ export class AgentSession {
 
 	private _clampThinkingLevel(level: ThinkingLevel, _availableLevels: ThinkingLevel[]): ThinkingLevel {
 		return this.model ? (clampThinkingLevel(this.model, level) as ThinkingLevel) : "off";
+	}
+
+	// =========================================================================
+	// Context Window Management
+	// =========================================================================
+
+	getAvailableContextWindows(): number[] {
+		return this.model ? getSupportedContextWindows(this.model) : [];
+	}
+
+	supportsContextWindowSelection(): boolean {
+		return this.getAvailableContextWindows().length > 1;
+	}
+
+	setContextWindow(contextWindow: number, options: { persistDefault?: boolean } = {}): void {
+		if (!this.model) {
+			throw new Error("No model selected");
+		}
+		const selected = selectContextWindow(this.model, contextWindow);
+		if ("error" in selected) {
+			throw new Error(selected.error);
+		}
+
+		const previousContextWindow = this.model.contextWindow;
+		const isChanging = previousContextWindow !== selected.contextWindow;
+		this.agent.state.model = selected.model;
+
+		if (isChanging) {
+			this.sessionManager.appendContextWindowChange(selected.contextWindow);
+			this._emit({ type: "context_window_changed", contextWindow: selected.contextWindow });
+		}
+		if (options.persistDefault === true) {
+			this.settingsManager.setDefaultContextWindow(selected.contextWindow);
+		}
+	}
+
+	private _withContextWindowForModelSwitch(model: Model<Api>): Model<Api> {
+		// A source model's scalar contextWindow can be its natural default (for example a 1m-default
+		// model). Do not treat that alone as an opt-in to larger windows on a 400k-default target.
+		const settingsDefaultContextWindow = this.settingsManager.getDefaultContextWindow();
+		const candidates: number[] = [];
+		const targetDefaultContextWindow = getModelDefaultContextWindow(model);
+		if (model.contextWindow !== targetDefaultContextWindow) {
+			// Preserve an explicit context-window selection already applied to the target model
+			// (for example a caller passing selectContextWindow(target, 1m).model).
+			candidates.push(model.contextWindow);
+		}
+		const currentModel = this.model;
+		if (currentModel && this._shouldCarryCurrentContextWindowForModelSwitch(currentModel, settingsDefaultContextWindow)) {
+			candidates.push(currentModel.contextWindow);
+		}
+		if (settingsDefaultContextWindow !== undefined) {
+			candidates.push(settingsDefaultContextWindow);
+		}
+		candidates.push(targetDefaultContextWindow);
+
+		const availableContextWindows = getSupportedContextWindows(model);
+		const contextWindow = candidates.find((candidate) => availableContextWindows.includes(candidate));
+		if (contextWindow === undefined) return model;
+		const selected = selectContextWindow(model, contextWindow);
+		return "error" in selected ? model : selected.model;
+	}
+
+	private _shouldCarryCurrentContextWindowForModelSwitch(
+		currentModel: Model<Api>,
+		settingsDefaultContextWindow: number | undefined,
+	): boolean {
+		if (currentModel.contextWindow !== getModelDefaultContextWindow(currentModel)) {
+			return true;
+		}
+		if (this.sessionManager.getBranch().some((entry) => entry.type === "context_window_change")) {
+			return true;
+		}
+		return (
+			settingsDefaultContextWindow !== undefined &&
+			currentModel.contextWindow === settingsDefaultContextWindow &&
+			getSupportedContextWindows(currentModel).includes(settingsDefaultContextWindow)
+		);
+	}
+
+	private _getContextWindowReplayForModel(
+		model: Model<Api>,
+		requestedContextWindow: number | undefined,
+	): { model: Model<Api>; contextWindow: number; wouldWarn: boolean } {
+		if (requestedContextWindow !== undefined) {
+			const selected = selectContextWindow(model, requestedContextWindow);
+			if (!("error" in selected)) {
+				return { model: selected.model, contextWindow: selected.contextWindow, wouldWarn: false };
+			}
+			return this._getDefaultContextWindowReplayForModel(model, true);
+		}
+
+		return this._getDefaultContextWindowReplayForModel(model, false);
+	}
+
+	private _getDefaultContextWindowReplayForModel(
+		model: Model<Api>,
+		wouldWarn: boolean,
+	): { model: Model<Api>; contextWindow: number; wouldWarn: boolean } {
+		const defaultContextWindow = getModelDefaultContextWindow(model);
+		const selected = selectContextWindow(model, defaultContextWindow);
+		if (!("error" in selected)) {
+			return { model: selected.model, contextWindow: selected.contextWindow, wouldWarn };
+		}
+		return {
+			model: { ...model, contextWindow: defaultContextWindow, defaultContextWindow },
+			contextWindow: defaultContextWindow,
+			wouldWarn,
+		};
+	}
+
+	private _getResumeContextWindowReplayForModel(
+		model: Model<Api>,
+	): { model: Model<Api>; contextWindow: number; wouldWarn: boolean } {
+		const sessionContext = this.sessionManager.buildSessionContext();
+		const requestedContextWindow = sessionContext.contextWindow ?? this.settingsManager.getDefaultContextWindow();
+		return this._getContextWindowReplayForModel(model, requestedContextWindow);
+	}
+
+	private _applyContextWindowReplay(contextWindow: number | undefined): void {
+		if (!this.model) return;
+		const previousContextWindow = this.model.contextWindow;
+		const requestedContextWindow = contextWindow ?? this.settingsManager.getDefaultContextWindow();
+		const replay = this._getContextWindowReplayForModel(this.model, requestedContextWindow);
+		this.agent.state.model = replay.model;
+		if (previousContextWindow !== replay.contextWindow) {
+			this._emit({ type: "context_window_changed", contextWindow: replay.contextWindow });
+		}
+	}
+
+	private _appendContextWindowChangeIfChanged(
+		previousModel: Model<Api> | undefined,
+		nextModel: Model<Api>,
+	): void {
+		const replay = this._getResumeContextWindowReplayForModel(nextModel);
+		if (!replay.wouldWarn && nextModel.contextWindow === replay.contextWindow) return;
+		this.sessionManager.appendContextWindowChange(nextModel.contextWindow);
+		if (previousModel?.contextWindow !== nextModel.contextWindow) {
+			this._emit({ type: "context_window_changed", contextWindow: nextModel.contextWindow });
+		}
 	}
 
 	// =========================================================================
@@ -2365,6 +2527,12 @@ export class AgentSession {
 		}
 
 		// Case 1: Overflow - LLM returned context overflow error
+		// When Copilot rejects a 1m client-budget prompt at a lower server cap (for example
+		// because long-context/usage-based billing entitlement is missing), leave the friendly
+		// error visible instead of auto-compacting down to a smaller server tier silently.
+		if (sameModel && this._isCopilotServerCapBelowSelectedContextWindow(assistantMessage)) {
+			return;
+		}
 		if (sameModel && isContextOverflow(assistantMessage, contextWindow)) {
 			if (this._overflowRecoveryAttempted) {
 				this._emit({
@@ -2416,6 +2584,12 @@ export class AgentSession {
 		if (shouldCompact(contextTokens, contextWindow, settings)) {
 			await this._runAutoCompaction("threshold", false);
 		}
+	}
+
+	private _isCopilotServerCapBelowSelectedContextWindow(assistantMessage: AssistantMessage): boolean {
+		if (!this.model || this.model.provider !== "github-copilot" || !assistantMessage.errorMessage) return false;
+		const promptLimitError = parseCopilotPromptLimitError(assistantMessage.errorMessage);
+		return promptLimitError !== undefined && this.model.contextWindow > promptLimitError.limitTokens;
 	}
 
 	/**
@@ -3392,6 +3566,7 @@ export class AgentSession {
 			// Update agent state
 			const sessionContext = this.sessionManager.buildSessionContext();
 			this.agent.state.messages = sessionContext.messages;
+			this._applyContextWindowReplay(sessionContext.contextWindow);
 
 			// Emit session_tree event
 			await this._extensionRunner.emit({

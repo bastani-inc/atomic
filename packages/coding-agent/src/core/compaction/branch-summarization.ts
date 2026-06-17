@@ -8,6 +8,7 @@
 import type { AgentMessage, StreamFn } from "@earendil-works/pi-agent-core";
 import type { Api, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { completeSimple } from "@earendil-works/pi-ai";
+import { formatCopilotProviderError } from "../copilot-errors.ts";
 import { convertToLlm, createBranchSummaryMessage, createCustomMessage } from "../messages.ts";
 import {
 	buildContextDeletionFilteredPath,
@@ -169,6 +170,7 @@ function getMessageFromEntry(entry: SessionEntry): AgentMessage | undefined {
 
 		// These don't contribute to conversation content
 		case "thinking_level_change":
+		case "context_window_change":
 		case "model_change":
 		case "custom":
 		case "label":
@@ -344,16 +346,28 @@ export async function generateBranchSummary(
 	// without running through agent state/events.
 	const context = { systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages };
 	const requestOptions: SimpleStreamOptions = { apiKey, headers, signal, maxTokens: 2048 };
-	const response = streamFn
-		? await (await streamFn(model, context, requestOptions)).result()
-		: await completeSimple(model, context, requestOptions);
+	const response = await (async () => {
+		try {
+			return streamFn
+				? await (await streamFn(model, context, requestOptions)).result()
+				: await completeSimple(model, context, requestOptions);
+		} catch (error) {
+			if (signal.aborted) {
+				return undefined;
+			}
+			return {
+				stopReason: "error" as const,
+				errorMessage: error instanceof Error ? error.message : String(error),
+			};
+		}
+	})();
 
 	// Check if aborted or errored
-	if (response.stopReason === "aborted") {
+	if (!response || response.stopReason === "aborted") {
 		return { aborted: true };
 	}
 	if (response.stopReason === "error") {
-		return { error: response.errorMessage || "Summarization failed" };
+		return { error: formatCopilotProviderError(model.provider, response.errorMessage || "Summarization failed") };
 	}
 
 	let summary = response.content

@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Type } from "typebox";
+import { formatCopilotProviderError } from "../copilot-errors.ts";
 import { createBranchSummaryMessage, createCustomMessage } from "../messages.ts";
 import {
 	isAssistantThinkingBlockType,
@@ -2416,6 +2417,7 @@ function isContextCompactionOverflowError(model: Model<Api>, errorMessage: strin
 interface ContextDeletionRun {
 	validatedResult: ValidatedContextDeletionResult | undefined;
 	lastToolError: string | undefined;
+	providerError: string | undefined;
 }
 
 async function runContextDeletionAssistant(
@@ -2482,6 +2484,11 @@ async function runContextDeletionAssistant(
 	signal?.addEventListener("abort", abortOnSignal, { once: true });
 	try {
 		await agent.prompt(promptMessage);
+	} catch (error) {
+		if (signal?.aborted) {
+			throw new Error("Context compaction failed: Request was aborted");
+		}
+		throw new Error(`Context compaction failed: ${formatCopilotProviderError(model.provider, formatErrorMessage(error))}`);
 	} finally {
 		signal?.removeEventListener("abort", abortOnSignal);
 		unsubscribeNudge();
@@ -2492,13 +2499,15 @@ async function runContextDeletionAssistant(
 		throw new Error("Context compaction failed: Request was aborted");
 	}
 	if (agent.state.errorMessage) {
+		const formattedErrorMessage = formatCopilotProviderError(model.provider, agent.state.errorMessage);
 		if (isContextCompactionOverflowError(model, agent.state.errorMessage)) {
 			return {
 				validatedResult: deletionTool.getValidatedResult(),
 				lastToolError: deletionTool.getLastError(),
+				providerError: formattedErrorMessage === agent.state.errorMessage ? undefined : formattedErrorMessage,
 			};
 		}
-		throw new Error(`Context compaction failed: ${agent.state.errorMessage}`);
+		throw new Error(`Context compaction failed: ${formattedErrorMessage}`);
 	}
 	if (deletionTool.getCallCount() === 0) {
 		throw new Error(
@@ -2508,6 +2517,7 @@ async function runContextDeletionAssistant(
 	return {
 		validatedResult: deletionTool.getValidatedResult(),
 		lastToolError: deletionTool.getLastError(),
+		providerError: undefined,
 	};
 }
 
@@ -2530,8 +2540,9 @@ function formatContextCompactionTargetFailureMessage(
 		.map((attempt) => {
 			const reduction = contextCompactionProgressPercent(attempt.validatedResult);
 			const deletionCount = attempt.validatedResult?.deletedTargets.length ?? 0;
-			const errorText = attempt.lastToolError ? `; last deletion tool error: ${attempt.lastToolError}` : "";
-			return `attempt reached ${reduction}% with ${deletionCount} validated deletion target(s)${errorText}`;
+			const toolErrorText = attempt.lastToolError ? `; last deletion tool error: ${attempt.lastToolError}` : "";
+			const providerErrorText = attempt.providerError ? `; provider error: ${attempt.providerError}` : "";
+			return `attempt reached ${reduction}% with ${deletionCount} validated deletion target(s)${toolErrorText}${providerErrorText}`;
 		})
 		.join("; ");
 	return `Context compaction did not meet the strict ${targetLabel} reduction requirement; ${attemptDetails}`;

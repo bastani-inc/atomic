@@ -175,8 +175,12 @@ function resolveAppMode(parsed: Args, stdinIsTTY: boolean, stdoutIsTTY: boolean)
 	return "interactive";
 }
 
+function isReadOnlyRuntimeMetadataCommand(parsed: Args): boolean {
+	return parsed.help === true || parsed.listModels !== undefined;
+}
+
 function isPlainRuntimeMetadataCommand(parsed: Args): boolean {
-	return !parsed.print && parsed.mode === undefined && (parsed.help === true || parsed.listModels !== undefined);
+	return !parsed.print && parsed.mode === undefined && isReadOnlyRuntimeMetadataCommand(parsed);
 }
 
 function toPrintOutputMode(appMode: AppMode): Exclude<Mode, "rpc"> {
@@ -471,6 +475,11 @@ function buildSessionOptions(
 	// Thinking level from CLI (takes precedence over scoped model thinking levels set above)
 	if (parsed.thinking) {
 		options.thinkingLevel = parsed.thinking;
+	}
+
+	if (parsed.contextWindow !== undefined) {
+		options.contextWindow = parsed.contextWindow;
+		options.contextWindowStrict = true;
 	}
 
 	// Scoped models for CTRL+P cycling
@@ -806,15 +815,34 @@ export async function main(args: string[], options?: MainOptions) {
 			sessionStartEvent,
 			model: sessionOptions.model,
 			thinkingLevel: sessionOptions.thinkingLevel,
+			contextWindow: sessionOptions.contextWindow,
+			contextWindowStrict: sessionOptions.contextWindowStrict,
 			scopedModels: sessionOptions.scopedModels,
 			tools: sessionOptions.tools,
 			excludedTools: resolveExcludedToolsForAppMode(appMode, sessionOptions.excludedTools),
 			noTools: sessionOptions.noTools,
 			customTools: sessionOptions.customTools,
 		});
+		if (created.contextWindowWarning) {
+			diagnostics.push({ type: "warning", message: created.contextWindowWarning });
+		}
+		if (created.contextWindowError) {
+			diagnostics.push({ type: "error", message: created.contextWindowError });
+		}
+
 		const cliThinkingOverride = parsed.thinking !== undefined || cliThinkingFromModel;
 		if (created.session.model && cliThinkingOverride) {
 			created.session.setThinkingLevel(created.session.thinkingLevel);
+		}
+		const hasFatalDiagnostics = diagnostics.some((diagnostic) => diagnostic.type === "error");
+		if (
+			created.session.model &&
+			parsed.contextWindow !== undefined &&
+			!created.contextWindowError &&
+			!hasFatalDiagnostics &&
+			!isReadOnlyRuntimeMetadataCommand(parsed)
+		) {
+			created.session.setContextWindow(parsed.contextWindow, { persistDefault: true });
 		}
 
 		return {

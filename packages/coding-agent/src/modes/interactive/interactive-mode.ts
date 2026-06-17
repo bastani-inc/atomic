@@ -3606,6 +3606,12 @@ export class InteractiveMode {
         this.updateEditorBorderColor();
         break;
 
+      case "context_window_changed":
+        this.footer.invalidate();
+        this.usageMeter.invalidate();
+        this.ui.requestRender();
+        break;
+
       case "message_start":
         if (event.message.role === "custom") {
           this.addMessageToChat(event.message);
@@ -4895,6 +4901,8 @@ export class InteractiveMode {
           httpIdleTimeoutMs: this.settingsManager.getHttpIdleTimeoutMs(),
           thinkingLevel: this.session.thinkingLevel,
           availableThinkingLevels: this.session.getAvailableThinkingLevels(),
+          contextWindow: this.session.model?.contextWindow,
+          availableContextWindows: this.session.getAvailableContextWindows(),
           currentTheme: this.settingsManager.getTheme() || "dark",
           availableThemes: getAvailableThemes(),
           hideThinkingBlock: this.hideThinkingBlock,
@@ -4962,6 +4970,15 @@ export class InteractiveMode {
             this.session.setThinkingLevel(level);
             this.footer.invalidate();
             this.updateEditorBorderColor();
+          },
+          onContextWindowChange: (contextWindow) => {
+            try {
+              this.session.setContextWindow(contextWindow, { persistDefault: true });
+              this.footer.invalidate();
+              this.usageMeter.invalidate();
+            } catch (error) {
+              this.showError(error instanceof Error ? error.message : String(error));
+            }
           },
           onThemeChange: (themeName) => {
             const result = setTheme(themeName, true);

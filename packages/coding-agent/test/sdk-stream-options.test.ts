@@ -141,6 +141,98 @@ describe("createAgentSession stream options", () => {
 		expect(options?.websocketConnectTimeoutMs).toBe(1234);
 	});
 
+	it("forwards the Copilot API version header through normal stream options", async () => {
+		const api: Api = "openai-completions";
+		const model: Model<Api> = {
+			...createModel(api),
+			id: "gpt-5.5",
+			name: "GitHub Copilot GPT-5.5",
+			provider: "github-copilot",
+			baseUrl: "https://api.githubcopilot.com/v1",
+			contextWindow: 400_000,
+		};
+		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
+		authStorage.setRuntimeApiKey(model.provider, "test-api-key");
+		const modelRegistry = ModelRegistry.create(authStorage, join(agentDir, "models.json"));
+		let capturedOptions: SimpleStreamOptions | undefined;
+
+		modelRegistry.registerProvider(model.provider, {
+			api,
+			streamSimple: (_model, _context, providerOptions) => {
+				capturedOptions = providerOptions;
+				return createDoneStream(api);
+			},
+		});
+
+		const sessionManager = SessionManager.inMemory(cwd);
+		const settingsManager = SettingsManager.inMemory();
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir,
+			model,
+			authStorage,
+			modelRegistry,
+			settingsManager,
+			sessionManager,
+		});
+
+		try {
+			await session.agent.streamFn(model, { messages: [] });
+			expect(capturedOptions?.headers?.["X-GitHub-Api-Version"]).toBe("2026-06-01");
+		} finally {
+			session.dispose();
+			modelRegistry.unregisterProvider(model.provider);
+		}
+	});
+
+	it("lets a per-request lowercase Copilot API version header replace the canonical auth header", async () => {
+		const api: Api = "openai-completions";
+		const model: Model<Api> = {
+			...createModel(api),
+			id: "gpt-5.5",
+			name: "GitHub Copilot GPT-5.5",
+			provider: "github-copilot",
+			baseUrl: "https://api.githubcopilot.com/v1",
+			contextWindow: 400_000,
+		};
+		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
+		authStorage.setRuntimeApiKey(model.provider, "test-api-key");
+		const modelRegistry = ModelRegistry.create(authStorage, join(agentDir, "models.json"));
+		let capturedOptions: SimpleStreamOptions | undefined;
+
+		modelRegistry.registerProvider(model.provider, {
+			api,
+			streamSimple: (_model, _context, providerOptions) => {
+				capturedOptions = providerOptions;
+				return createDoneStream(api);
+			},
+		});
+
+		const sessionManager = SessionManager.inMemory(cwd);
+		const settingsManager = SettingsManager.inMemory();
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir,
+			model,
+			authStorage,
+			modelRegistry,
+			settingsManager,
+			sessionManager,
+		});
+
+		try {
+			await session.agent.streamFn(model, { messages: [] }, { headers: { "x-github-api-version": "request-version" } });
+			expect(capturedOptions?.headers?.["x-github-api-version"]).toBe("request-version");
+			expect(capturedOptions?.headers?.["X-GitHub-Api-Version"]).toBeUndefined();
+			expect(
+				Object.keys(capturedOptions?.headers ?? {}).filter((key) => key.toLowerCase() === "x-github-api-version"),
+			).toEqual(["x-github-api-version"]);
+		} finally {
+			session.dispose();
+			modelRegistry.unregisterProvider(model.provider);
+		}
+	});
+
 	it("lets request websocketConnectTimeoutMs override settings", async () => {
 		const options = await captureStreamOptions(
 			"openai-codex-responses",

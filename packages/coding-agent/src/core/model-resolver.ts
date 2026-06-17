@@ -181,10 +181,15 @@ function buildFallbackModel(
     ? (providerModels.find((m) => m.id === defaultId) ?? providerModels[0])
     : providerModels[0];
 
+  const fallbackContextWindow = baseModel.contextWindow;
+
   return {
     ...baseModel,
     id: modelId,
     name: modelId,
+    contextWindow: fallbackContextWindow,
+    defaultContextWindow: fallbackContextWindow,
+    contextWindowOptions: undefined,
   };
 }
 

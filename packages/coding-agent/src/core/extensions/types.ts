@@ -1532,8 +1532,10 @@ export interface ProviderModelConfig {
 	input: ("text" | "image")[];
 	/** Cost per token (for tracking, can be 0). */
 	cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
-	/** Maximum context window size in tokens. */
+	/** Default/effective context window size in tokens. */
 	contextWindow: number;
+	/** Selectable context-window sizes in tokens; omit when the model has only one supported window. */
+	contextWindowOptions?: readonly number[];
 	/** Maximum output tokens. */
 	maxTokens: number;
 	/** Custom headers for this model. */

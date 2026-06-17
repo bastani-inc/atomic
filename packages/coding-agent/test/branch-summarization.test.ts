@@ -1,7 +1,7 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, type Api, type AssistantMessage, type Model } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
-import { prepareBranchEntries } from "../src/core/compaction/branch-summarization.ts";
+import { generateBranchSummary, prepareBranchEntries } from "../src/core/compaction/branch-summarization.ts";
 import { serializeConversation } from "../src/core/compaction/utils.ts";
 import { convertToLlm } from "../src/core/messages.ts";
 import type { ContextCompactionEntry, SessionEntry, SessionMessageEntry } from "../src/core/session-manager.ts";
@@ -36,6 +36,54 @@ function assistantBlocks(blocks: AssistantMessage["content"]): AssistantMessage 
 		stopReason: "stop",
 		timestamp: Date.now(),
 	};
+}
+
+function copilotModel(): Model<Api> {
+	return {
+		id: "gpt-5.5",
+		name: "GitHub Copilot GPT-5.5",
+		api: "openai-completions",
+		provider: "github-copilot",
+		baseUrl: "https://api.githubcopilot.com/v1",
+		reasoning: false,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 1_000_000,
+		maxTokens: 4096,
+	};
+}
+
+function nonCopilotModel(): Model<Api> {
+	return {
+		...copilotModel(),
+		name: "OpenAI GPT-5.5",
+		provider: "openai",
+		baseUrl: "https://api.openai.com/v1",
+	};
+}
+
+function assistantErrorStream(model: Model<Api>, errorMessage: string) {
+	const stream = createAssistantMessageEventStream();
+	const message: AssistantMessage = {
+		role: "assistant",
+		content: [],
+		api: model.api,
+		provider: model.provider,
+		model: model.id,
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "error",
+		errorMessage,
+		timestamp: Date.now(),
+	};
+	stream.end(message);
+	return stream;
 }
 
 function entry(message: AgentMessage): SessionMessageEntry {
@@ -75,6 +123,55 @@ function contextEntry(targets: ContextCompactionEntry["deletedTargets"]): Contex
 }
 
 describe("branch summarization context deletion filtering", () => {
+	it("adds Copilot long-context guidance to prompt-limit summarization errors", async () => {
+		resetIds();
+		const rawError = "prompt token count of 500000 exceeds the limit of 400000";
+		const model = copilotModel();
+		const entries: SessionEntry[] = [entry(user("summarize this Copilot branch"))];
+		const result = await generateBranchSummary(entries, {
+			model,
+			apiKey: "test-key",
+			signal: new AbortController().signal,
+			streamFn: async (requestModel) => assistantErrorStream(requestModel, rawError),
+		});
+
+		expect(result.error).toContain(rawError);
+		expect(result.error).toContain("Copilot long-context/usage-based billing");
+	});
+
+	it("adds Copilot long-context guidance to thrown prompt-limit summarization errors", async () => {
+		resetIds();
+		const rawError = "prompt token count of 500000 exceeds the limit of 400000";
+		const entries: SessionEntry[] = [entry(user("summarize this Copilot branch"))];
+		const result = await generateBranchSummary(entries, {
+			model: copilotModel(),
+			apiKey: "test-key",
+			signal: new AbortController().signal,
+			streamFn: async () => {
+				throw new Error(rawError);
+			},
+		});
+
+		expect(result.error).toContain(rawError);
+		expect(result.error).toContain("Copilot long-context/usage-based billing");
+	});
+
+	it("leaves non-Copilot prompt-limit summarization errors unchanged", async () => {
+		resetIds();
+		const rawError = "prompt token count of 500000 exceeds the limit of 400000";
+		const model = nonCopilotModel();
+		const entries: SessionEntry[] = [entry(user("summarize this non-Copilot branch"))];
+		const result = await generateBranchSummary(entries, {
+			model,
+			apiKey: "test-key",
+			signal: new AbortController().signal,
+			streamFn: async (requestModel) => assistantErrorStream(requestModel, rawError),
+		});
+
+		expect(result.error).toBe(rawError);
+		expect(result.error).not.toContain("Copilot long-context/usage-based billing");
+	});
+
 	it("omits whole-entry and content-block logical deletions from prepared prompt input", () => {
 		resetIds();
 		const deletedEntrySentinel = "ITER7_BRANCH_DELETED_ENTRY_SENTINEL";

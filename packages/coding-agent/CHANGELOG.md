@@ -2,9 +2,20 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added configurable context-window support for models that declare `contextWindowOptions`, including explicit `--context-window` CLI/settings control, `/settings` selection, session replay, SDK/runtime/RPC APIs, and docs while preserving each model's scalar default context window. Allowlisted built-in GitHub Copilot long-context models now expose an opt-in `1m` budget, including `github-copilot/gpt-5.5` and `github-copilot/gemini-3.1-pro-preview`; Atomic raises the local budget and sends `X-GitHub-Api-Version: 2026-06-01`, while GitHub applies the long-context billing tier server-side by prompt token count. Long-context Copilot requests consume more AI credits and require Copilot long-context/usage-based billing entitlement; custom providers and explicit model overrides can still expose their own selectable windows ([#1409](https://github.com/bastani-inc/atomic/issues/1409)).
+- Exported context-window helper functions and types from the package root, including parser/formatter/normalizer/selection utilities and the `Model<Api>` augmentation for `contextWindowOptions`/`defaultContextWindow`, so SDK consumers can use the public API without importing internal source paths ([#1409](https://github.com/bastani-inc/atomic/issues/1409)).
+- Added RPC mode runtime context-window commands so headless clients can read supported token budgets with `get_available_context_windows` and select the active runtime budget with `set_context_window` without persisting `defaultContextWindow` settings ([#1409](https://github.com/bastani-inc/atomic/issues/1409)).
+
 ### Changed
 
-- Bumped the bundled upstream pi runtime libraries `@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, and `@earendil-works/pi-tui` from `^0.79.4` to `^0.79.6` so Atomic's installed pi runtime packages pick up upstream v0.79.5/v0.79.6 provider, model, thinking-payload, and shared TUI compatibility fixes; no Atomic coding-agent source changes were made for upstream coding-agent-only marked export or fetch-override behavior in this dependency sync ([#1413](https://github.com/bastani-inc/atomic/issues/1413)).
+- Changed built-in GitHub Copilot context-window behavior to offer documented `1m` choices only for known Copilot `long_context`-tier models, including `github-copilot/gpt-5.5` and `github-copilot/gemini-3.1-pro-preview`, preserving scalar defaults, custom provider entries, and explicit `models.json` overrides while relying on GitHub's API-version header and server-side tier selection rather than payload fields or model-id variants ([#1409](https://github.com/bastani-inc/atomic/issues/1409)).
+
+### Fixed
+
+- Fixed context-window startup, session-switch, settings, and RPC edge cases: unknown provider fallback models no longer inherit selectable context-window options from provider defaults, fatal startup diagnostics no longer persist `defaultContextWindow`, `AgentSession.setModel()` preserves an incoming target model's explicit selected context window, model-switch paths that change effective context windows now notify listeners via `context_window_changed`, `/settings` context-window choices use raw token values instead of rounded display labels, RPC `set_model` returns the effective post-switch session model, and explicit startup `contextWindow` selections are journaled even when they equal the model scalar default ([#1409](https://github.com/bastani-inc/atomic/issues/1409)).
+- Fixed `AgentSession.setContextWindow()` so bare SDK/runtime calls update the active session, append `context_window_change`, and emit `context_window_changed` without persisting `defaultContextWindow`; callers must pass `{ persistDefault: true }` to update settings ([#1409](https://github.com/bastani-inc/atomic/issues/1409)).
 
 ## [0.8.30] - 2026-06-17
 

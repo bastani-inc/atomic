@@ -198,7 +198,8 @@ If your command is slow, expensive, rate-limited, or should keep using a previou
 | `reasoning`        | No       | `false`           | Supports extended thinking                                                                                 |
 | `thinkingLevelMap` | No       | omitted           | Maps Atomic thinking levels to provider values and marks unsupported levels (see below)                    |
 | `input`            | No       | `["text"]`        | Input types: `["text"]` or `["text", "image"]`                                                             |
-| `contextWindow`    | No       | `128000`          | Context window size in tokens                                                                              |
+| `contextWindow`    | No       | `128000`          | Default/effective context window size in tokens                                                            |
+| `contextWindowOptions` | No   | omitted           | Additional/selectable context windows in tokens (see below)                                                |
 | `maxTokens`        | No       | `16384`           | Maximum output tokens                                                                                      |
 | `cost`             | No       | all zeros         | `{"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0}` (per million tokens)                          |
 | `compat`           | No       | provider `compat` | Provider compatibility overrides. Merged with provider-level `compat` when both are set.                   |
@@ -248,6 +249,77 @@ Example for a model where thinking cannot be disabled:
 ```
 
 Migration: older configs that used `compat.reasoningEffortMap` should move that mapping to model-level `thinkingLevelMap`. Use `null` for levels that should not appear in the UI.
+
+### Context Window Options
+
+`contextWindow` remains the scalar default and is always valid. Models that support multiple context sizes can also declare `contextWindowOptions` as positive token counts. Atomic hides unsupported choices in `/settings` and rejects unsupported `--context-window` values for the selected model. The active selection changes Atomic's effective `model.contextWindow`, so local budgeting, compaction, footer/stats, session replay, RPC/SDK state, and extensions all use the selected token budget while the model's scalar default remains unchanged.
+
+```json
+{
+  "id": "long-context-model",
+  "reasoning": true,
+  "contextWindow": 400000,
+  "contextWindowOptions": [400000, 1000000]
+}
+```
+
+Users can select a supported context window independently from thinking level:
+
+```bash
+atomic --model custom/long-context-model --thinking high --context-window 1m
+```
+
+In interactive mode, use `/settings` → **Context window** to choose one of the active model's supported budgets. To persist a preferred budget for future sessions, set `defaultContextWindow` in settings (raw token counts and compact labels such as `400k` or `1m` are accepted). Successful explicit startup selections are recorded as `context_window_change` entries even when the chosen value equals the scalar default, preserving the user's explicit budget choice across future settings changes and resume.
+
+Use larger context windows deliberately. Some providers charge more for larger windows, and Atomic preserves each model's default unless the user explicitly opts in through `--context-window`, `/settings`, or `defaultContextWindow`.
+
+#### GitHub Copilot 1M long-context behavior
+
+For built-in GitHub Copilot models with GitHub's `long_context` tier (including `github-copilot/gpt-5.5`, `github-copilot/gemini-3.1-pro-preview`, and the other allowlisted Copilot GPT-5.x/Claude/Gemini long-context entries), Atomic exposes an opt-in `1m` context-window choice. Selecting it does two client-side things:
+
+1. Raises Atomic's local token budget to `1_000_000` for context collection, compaction thresholds, footer/stats, session replay, and SDK/RPC metadata.
+2. Sends `X-GitHub-Api-Version: 2026-06-01` on Copilot requests so GitHub returns/enforces the absolute long-context limits for eligible accounts.
+
+Atomic does **not** send a request body field, `contextTier`, or model-id variant for Copilot long context. GitHub chooses the larger `long_context` billing tier server-side automatically when the prompt token count exceeds the model's default budget. That tier consumes more Copilot AI credits and requires the account/actor to have Copilot long-context/usage-based billing entitlement enabled. If the account or selected model is still capped by GitHub's server-side limit, the request is rejected (for example, `prompt token count of N exceeds the limit of M`) and Atomic surfaces a friendly entitlement/cost/server-cap hint instead of silently truncating context.
+
+Custom `models.json` entries remain the escape hatch for providers, proxies, or Copilot catalog changes that Atomic has not built in yet. To adjust an existing built-in model, use `modelOverrides`:
+
+```json
+{
+  "providers": {
+    "github-copilot": {
+      "modelOverrides": {
+        "gpt-5.5": {
+          "contextWindowOptions": [1000000]
+        },
+        "gemini-3.1-pro-preview": {
+          "contextWindowOptions": [1000000]
+        }
+      }
+    }
+  }
+}
+```
+
+To add a new Copilot model id under the built-in provider, define it in `models`:
+
+```json
+{
+  "providers": {
+    "github-copilot": {
+      "models": [
+        {
+          "id": "my-copilot-model",
+          "contextWindow": 400000,
+          "contextWindowOptions": [1000000]
+        }
+      ]
+    }
+  }
+}
+```
+
+SDK and extension consumers can import the public helper API from the package root: `parseContextWindowValue()`, `formatContextWindow()`, `getSupportedContextWindows()`, `getModelDefaultContextWindow()`, `withContextWindowOptions()`, and `selectContextWindow()` are exported from `@bastani/atomic` alongside their TypeScript helper types. The root export also carries the `Model<Api>` augmentation for `contextWindowOptions` and `defaultContextWindow`.
 
 ## Overriding Built-in Providers
 
@@ -309,7 +381,7 @@ Use `modelOverrides` to customize specific built-in models without replacing the
 }
 ```
 
-`modelOverrides` supports these fields per model: `name`, `reasoning`, `input`, `cost` (partial), `contextWindow`, `maxTokens`, `headers`, `compat`.
+`modelOverrides` supports these fields per model: `name`, `reasoning`, `input`, `cost` (partial), `contextWindow`, `contextWindowOptions`, `maxTokens`, `headers`, `compat`.
 
 Behavior notes:
 - `modelOverrides` are applied to built-in provider models.

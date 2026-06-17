@@ -100,6 +100,19 @@ export {
 	type CodexFastModeResolvedSettings,
 	type CodexFastModeScope,
 } from "./core/codex-fast-mode.ts";
+export {
+	formatContextWindow,
+	getModelDefaultContextWindow,
+	getSupportedContextWindows,
+	normalizeContextWindowOptions,
+	parseContextWindowValue,
+	selectContextWindow,
+	validateContextWindowValue,
+	withContextWindowOptions,
+	type ContextWindowParseResult,
+	type ContextWindowSelection,
+	type ContextWindowSelectionError,
+} from "./core/context-window.ts";
 export { createEventBus, type EventBus, type EventBusController } from "./core/event-bus.ts";
 export { areExperimentalFeaturesEnabled } from "./core/experimental.ts";
 // Extension system
@@ -408,6 +421,7 @@ export {
 	RpcClient,
 	type RpcClientOptions,
 	type RpcCommand,
+	type RpcContextWindowInfo,
 	type RpcEvent,
 	type RpcEventListener,
 	type RpcExtensionUIRequest,

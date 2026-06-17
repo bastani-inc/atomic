@@ -357,6 +357,9 @@
           case 'thinking_level_change':
             parts.push('thinking', entry.thinkingLevel);
             break;
+          case 'context_window_change':
+            parts.push('context window', String(entry.contextWindow));
+            break;
         }
 
         return parts.join(' ').toLowerCase();
@@ -385,7 +388,7 @@
           }
 
           // Apply filter mode
-          const isSettingsEntry = ['label', 'custom', 'model_change', 'thinking_level_change'].includes(entry.type);
+          const isSettingsEntry = ['label', 'custom', 'model_change', 'thinking_level_change', 'context_window_change'].includes(entry.type);
           let passesFilter = true;
 
           switch (filterMode) {
@@ -696,6 +699,8 @@
             return labelHtml + `<span class="tree-muted">[model: ${escapeHtml(entry.modelId)}]</span>`;
           case 'thinking_level_change':
             return labelHtml + `<span class="tree-muted">[thinking: ${escapeHtml(entry.thinkingLevel)}]</span>`;
+          case 'context_window_change':
+            return labelHtml + `<span class="tree-muted">[context window: ${escapeHtml(String(entry.contextWindow))}]</span>`;
           default:
             return labelHtml + `<span class="tree-muted">[${escapeHtml(entry.type)}]</span>`;
         }
@@ -1288,6 +1293,10 @@
 
         if (entry.type === 'model_change') {
           return `<div class="model-change" id="${entryDomId}">${tsHtml}Switched to model: <span class="model-name">${escapeHtml(entry.provider)}/${escapeHtml(entry.modelId)}</span></div>`;
+        }
+
+        if (entry.type === 'context_window_change') {
+          return `<div class="model-change" id="${entryDomId}">${tsHtml}Context window: <span class="model-name">${escapeHtml(String(entry.contextWindow))}</span></div>`;
         }
 
         if (entry.type === 'compaction') {

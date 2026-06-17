@@ -227,17 +227,21 @@ Normally the package manager's global modules location is queried using `root -g
 
 When multiple sources specify a session directory, precedence is `--session-dir`, `ATOMIC_CODING_AGENT_SESSION_DIR`, then `sessionDir` in settings.json.
 
-### Model Cycling
+### Models
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `enabledModels` | string[] | - | Model patterns for CTRL+P cycling (same format as `--models` CLI flag) |
+| `defaultContextWindow` | number \| string | model default | Preferred context window for models that expose selectable context windows. Accepts raw token counts or compact labels such as `400k` and `1m`. Unsupported values are ignored with a warning for the active model. |
 
 ```json
 {
-  "enabledModels": ["claude-*", "gpt-4o", "gemini-2*"]
+  "enabledModels": ["claude-*", "gpt-4o", "gemini-2*"],
+  "defaultContextWindow": "1m"
 }
 ```
+
+`defaultContextWindow` is independent of `defaultThinkingLevel`: selecting a larger context window does not change reasoning effort. Interactive users can also change the active model's budget with `/settings` → **Context window**. Larger provider context windows can carry higher usage cost. For GitHub Copilot allowlisted long-context models (including `github-copilot/gpt-5.5` and `github-copilot/gemini-3.1-pro-preview`), selecting `1m` raises Atomic's local budget and sends `X-GitHub-Api-Version: 2026-06-01`; GitHub then applies the long-context tier server-side by prompt token count. That tier consumes more Copilot AI credits and requires Copilot long-context/usage-based billing entitlement, otherwise requests over the server cap are rejected with a friendly hint. Custom providers and explicit model overrides can still declare their own selectable `contextWindowOptions`.
 
 ### Markdown
 
@@ -297,6 +301,7 @@ See [Atomic packages](/packages) for package management details.
   "defaultProvider": "anthropic",
   "defaultModel": "claude-sonnet-4-20250514",
   "defaultThinkingLevel": "medium",
+  "defaultContextWindow": "400k",
   "theme": "dark",
   "compaction": {
     "enabled": true,

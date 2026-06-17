@@ -142,6 +142,6 @@ See [Compaction](/compaction) for Verbatim Compaction, branch summarization inte
 
 ## Session Format
 
-Session files are JSONL and contain message entries, model changes, thinking-level changes, labels, context compactions, branch summaries, extension entries, and retired legacy `type:"compaction"` records from older sessions.
+Session files are JSONL and contain message entries, model changes, thinking-level changes, context-window changes, labels, context compactions, branch summaries, extension entries, and retired legacy `type:"compaction"` records from older sessions.
 
 For parsers, extensions, SDK usage, and the full SessionManager API, see [Session Format](/session-format).

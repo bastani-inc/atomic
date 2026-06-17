@@ -6,6 +6,7 @@ import { getApiProvider } from "@earendil-works/pi-ai";
 import { getOAuthProvider } from "@earendil-works/pi-ai/oauth";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
+import { getSupportedContextWindows, selectContextWindow } from "../src/core/context-window.ts";
 import { clearApiKeyCache, ModelRegistry, type ProviderConfigInput } from "../src/core/model-registry.ts";
 
 describe("ModelRegistry", () => {
@@ -96,6 +97,143 @@ describe("ModelRegistry", () => {
 		messages: [],
 	};
 
+	describe("context window options", () => {
+		test("adds selectable 1m options to built-in github-copilot long-context models", () => {
+			const registry = ModelRegistry.create(authStorage, modelsJsonPath);
+			const expectedLongContextDefaults = new Map<string, number>([
+				["claude-fable-5", 1_000_000],
+				["claude-opus-4.6", 1_000_000],
+				["claude-opus-4.7", 200_000],
+				["claude-opus-4.8", 200_000],
+				["claude-sonnet-4.6", 1_000_000],
+				["gemini-3.1-pro-preview", 200_000],
+				["gpt-5-mini", 264_000],
+				["gpt-5.2", 400_000],
+				["gpt-5.2-codex", 400_000],
+				["gpt-5.3-codex", 400_000],
+				["gpt-5.4", 400_000],
+				["gpt-5.4-mini", 400_000],
+				["gpt-5.4-nano", 400_000],
+				["gpt-5.5", 400_000],
+			]);
+
+			for (const [id, defaultContextWindow] of expectedLongContextDefaults) {
+				const model = registry.find("github-copilot", id);
+				expect(model).toBeDefined();
+				expect(model?.contextWindow).toBe(defaultContextWindow);
+				expect(model?.defaultContextWindow).toBe(defaultContextWindow);
+				expect(model ? getSupportedContextWindows(model) : []).toEqual(
+					defaultContextWindow === 1_000_000 ? [1_000_000] : [defaultContextWindow, 1_000_000],
+				);
+			}
+
+			const gpt55 = registry.find("github-copilot", "gpt-5.5");
+			expect(gpt55?.contextWindowOptions).toEqual([400_000, 1_000_000]);
+
+			const gemini31 = registry.find("github-copilot", "gemini-3.1-pro-preview");
+			expect(gemini31?.contextWindowOptions).toEqual([200_000, 1_000_000]);
+		});
+
+		test("does not add selectable 1m options to non-allowlisted github-copilot models", () => {
+			const registry = ModelRegistry.create(authStorage, modelsJsonPath);
+			const nonAllowlistedIds = ["claude-haiku-4.5", "gpt-4.1", "gemini-2.5-pro"];
+
+			for (const id of nonAllowlistedIds) {
+				const model = registry.find("github-copilot", id);
+				expect(model).toBeDefined();
+				expect(model?.contextWindowOptions).toBeUndefined();
+				expect(model ? getSupportedContextWindows(model) : []).toEqual([model?.contextWindow]);
+			}
+		});
+
+		test("does not add selectable 1m options to other providers with matching model IDs", () => {
+			const registry = ModelRegistry.create(authStorage, modelsJsonPath);
+			const model = registry.find("openai-codex", "gpt-5.5");
+			if (!model) {
+				throw new Error("Missing built-in openai-codex/gpt-5.5 test model");
+			}
+
+			expect(model.contextWindowOptions).toBeUndefined();
+			expect(getSupportedContextWindows(model)).toEqual([model.contextWindow]);
+		});
+
+		test("selecting 1m raises the effective context window for an allowlisted Copilot model", () => {
+			const registry = ModelRegistry.create(authStorage, modelsJsonPath);
+			const model = registry.find("github-copilot", "gpt-5.5");
+			expect(model?.contextWindow).toBe(400_000);
+
+			const selected = model ? selectContextWindow(model, 1_000_000) : { error: "missing model" };
+			expect("error" in selected).toBe(false);
+			if (!("error" in selected)) {
+				expect(selected.model.contextWindow).toBe(1_000_000);
+				expect(selected.model.defaultContextWindow).toBe(400_000);
+				expect(getSupportedContextWindows(selected.model)).toEqual([400_000, 1_000_000]);
+			}
+		});
+
+		test("loads custom contextWindowOptions and preserves scalar contextWindow", () => {
+			writeRawModelsJson({
+				custom: {
+					baseUrl: "https://example.com/v1",
+					apiKey: "test-key",
+					api: "openai-responses",
+					models: [
+						{
+							id: "selectable-context",
+							reasoning: true,
+							contextWindow: 128_000,
+							contextWindowOptions: [1_000_000],
+						},
+					],
+				},
+			});
+
+			const registry = ModelRegistry.create(authStorage, modelsJsonPath);
+			const model = registry.find("custom", "selectable-context");
+			expect(model?.contextWindow).toBe(128_000);
+			expect(model ? getSupportedContextWindows(model) : []).toEqual([128_000, 1_000_000]);
+		});
+
+		test("loads custom github-copilot contextWindowOptions and preserves scalar contextWindow", () => {
+			writeRawModelsJson({
+				"github-copilot": {
+					models: [
+						{
+							id: "custom-copilot-long-context",
+							reasoning: true,
+							contextWindow: 400_000,
+							contextWindowOptions: [1_000_000],
+						},
+					],
+				},
+			});
+
+			const registry = ModelRegistry.create(authStorage, modelsJsonPath);
+			const model = registry.find("github-copilot", "custom-copilot-long-context");
+			expect(model?.contextWindow).toBe(400_000);
+			expect(model ? getSupportedContextWindows(model) : []).toEqual([400_000, 1_000_000]);
+		});
+
+		test("rejects invalid custom contextWindowOptions", () => {
+			writeRawModelsJson({
+				custom: {
+					baseUrl: "https://example.com/v1",
+					apiKey: "test-key",
+					api: "openai-responses",
+					models: [
+						{
+							id: "bad-context-option",
+							contextWindowOptions: [0],
+						},
+					],
+				},
+			});
+
+			const registry = ModelRegistry.create(authStorage, modelsJsonPath);
+			expect(registry.getError()).toContain("invalid contextWindowOptions value");
+		});
+	});
+
 	describe("baseUrl override (no custom models)", () => {
 		test("overriding baseUrl keeps all built-in models", () => {
 			writeRawModelsJson({
@@ -162,6 +300,69 @@ describe("ModelRegistry", () => {
 				if (auth.ok) {
 					expect(auth.headers?.["X-Custom-Header"]).toBe("custom-value");
 				}
+			}
+		});
+
+		test("adds GitHub Copilot API version header only for github-copilot requests", async () => {
+			const registry = ModelRegistry.create(authStorage, modelsJsonPath);
+			const copilotModel = registry.find("github-copilot", "gpt-5.5");
+			expect(copilotModel).toBeDefined();
+
+			const copilotAuth = await registry.getApiKeyAndHeaders(copilotModel!);
+			expect(copilotAuth.ok).toBe(true);
+			if (copilotAuth.ok) {
+				expect(copilotAuth.headers?.["X-GitHub-Api-Version"]).toBe("2026-06-01");
+			}
+
+			const openAiAuth = await registry.getApiKeyAndHeaders(openAiModel);
+			expect(openAiAuth.ok).toBe(true);
+			if (openAiAuth.ok) {
+				expect(openAiAuth.headers?.["X-GitHub-Api-Version"]).toBeUndefined();
+			}
+		});
+
+		test("preserves explicit GitHub Copilot API version provider header override", async () => {
+			writeRawModelsJson({
+				"github-copilot": {
+					headers: {
+						"x-github-api-version": "custom-version",
+					},
+				},
+			});
+
+			const registry = ModelRegistry.create(authStorage, modelsJsonPath);
+			const model = registry.find("github-copilot", "gpt-5.5");
+			expect(model).toBeDefined();
+
+			const auth = await registry.getApiKeyAndHeaders(model!);
+			expect(auth.ok).toBe(true);
+			if (auth.ok) {
+				expect(auth.headers?.["x-github-api-version"]).toBe("custom-version");
+				expect(auth.headers?.["X-GitHub-Api-Version"]).toBeUndefined();
+			}
+		});
+
+		test("preserves explicit GitHub Copilot API version model header override", async () => {
+			writeRawModelsJson({
+				"github-copilot": {
+					modelOverrides: {
+						"gpt-5.5": {
+							headers: {
+								"X-GitHub-Api-Version": "model-version",
+							},
+						},
+					},
+				},
+			});
+
+			const registry = ModelRegistry.create(authStorage, modelsJsonPath);
+			const model = registry.find("github-copilot", "gpt-5.5");
+			expect(model).toBeDefined();
+
+			const auth = await registry.getApiKeyAndHeaders(model!);
+			expect(auth.ok).toBe(true);
+			if (auth.ok) {
+				expect(auth.headers?.["X-GitHub-Api-Version"]).toBe("model-version");
 			}
 		});
 
@@ -742,6 +943,47 @@ describe("ModelRegistry", () => {
 			expect(models.find((m) => m.id === "nonexistent/model-id")).toBeUndefined();
 			// Should not crash or show error
 			expect(registry.getError()).toBeUndefined();
+		});
+
+		test("scalar contextWindow override clears inherited contextWindowOptions", () => {
+			writeRawModelsJson({
+				"github-copilot": {
+					modelOverrides: {
+						"gpt-5.5": {
+							contextWindow: 128_000,
+						},
+					},
+				},
+			});
+
+			const registry = ModelRegistry.create(authStorage, modelsJsonPath);
+			const model = registry.find("github-copilot", "gpt-5.5");
+
+			expect(model?.contextWindow).toBe(128_000);
+			expect(model?.defaultContextWindow).toBe(128_000);
+			expect(model?.contextWindowOptions).toBeUndefined();
+			expect(model ? getSupportedContextWindows(model) : []).toEqual([128_000]);
+		});
+
+		test("explicit contextWindowOptions override is honored with scalar contextWindow override", () => {
+			writeRawModelsJson({
+				"github-copilot": {
+					modelOverrides: {
+						"gpt-5.5": {
+							contextWindow: 128_000,
+							contextWindowOptions: [1_000_000, 256_000],
+						},
+					},
+				},
+			});
+
+			const registry = ModelRegistry.create(authStorage, modelsJsonPath);
+			const model = registry.find("github-copilot", "gpt-5.5");
+
+			expect(model?.contextWindow).toBe(128_000);
+			expect(model?.defaultContextWindow).toBe(128_000);
+			expect(model?.contextWindowOptions).toEqual([256_000, 1_000_000]);
+			expect(model ? getSupportedContextWindows(model) : []).toEqual([128_000, 256_000, 1_000_000]);
 		});
 
 		test("model override can change cost fields partially", () => {
