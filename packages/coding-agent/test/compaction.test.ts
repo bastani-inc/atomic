@@ -163,12 +163,42 @@ function createThinkingLevelEntry(thinkingLevel: string): ThinkingLevelChangeEnt
 // ============================================================================
 
 describe("Token calculation", () => {
-	it("should calculate total context tokens from usage", () => {
+	it("calculates active context tokens from usage components", () => {
 		const usage = createMockUsage(1000, 500, 200, 100);
 		expect(calculateContextTokens(usage)).toBe(1800);
 	});
 
-	it("should handle zero values", () => {
+	it("ignores bogus totalTokens when component usage is available", () => {
+		const usage: Usage = {
+			...createMockUsage(1000, 500, 200, 100),
+			totalTokens: 999_999,
+		};
+		expect(calculateContextTokens(usage)).toBe(1800);
+	});
+
+	it("does not double-count mirrored Anthropic-compatible cache buckets", () => {
+		const usage = createMockUsage(116_000, 500, 116_000, 0);
+		expect(calculateContextTokens(usage)).toBe(116_500);
+	});
+
+	it("keeps separate Anthropic cache partitions when cache is not mirrored input", () => {
+		const usage = createMockUsage(35_000, 500, 81_000, 0);
+		expect(calculateContextTokens(usage)).toBe(116_500);
+	});
+
+	it("falls back to totalTokens when component values are unavailable", () => {
+		const usage: Usage = {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 1234,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		};
+		expect(calculateContextTokens(usage)).toBe(1234);
+	});
+
+	it("handles zero values", () => {
 		const usage = createMockUsage(0, 0, 0, 0);
 		expect(calculateContextTokens(usage)).toBe(0);
 	});

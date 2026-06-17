@@ -392,7 +392,7 @@ What Survives:
 - User instructions: The original task and any clarifications.
 
 Conditionally Deleted:
-- Old Reasoning decisions: If there is nothing else to remove and the target reduction is not met, you can remove reasoning steps, EXCEPT do not delete any content block from the latest assistant message when that message contains thinking or redacted_thinking blocks.
+- Old Reasoning decisions: If there is nothing else to remove and the target reduction is not met, you can remove entire stale assistant entries, EXCEPT do not delete individual content blocks from any retained assistant message that contains thinking or redacted_thinking blocks. Thinking-bearing assistant messages are all-or-nothing for replay safety.
 
 <output_format>
 Call the context_delete tool one or more times with deletion targets in this shape:
@@ -836,7 +836,7 @@ function isProtectedContextDeletionErrorMessage(message: string): boolean {
 	return (
 		/\bprotected\b/i.test(message) ||
 		/Cannot delete (?:recent context entry|content block .* because entry .* is one of the last)/u.test(message) ||
-		/latest assistant message|thinking\/redacted_thinking block in the latest assistant message/u.test(message)
+		/latest assistant message|thinking\/redacted_thinking block in (?:the latest|a retained) assistant message/u.test(message)
 	);
 }
 
@@ -859,6 +859,20 @@ function latestAssistantEntry(
 	for (let index = transcript.entries.length - 1; index >= 0; index--) {
 		const entry = transcript.entries[index];
 		if (entry.role === "assistant" && !deletedEntryIds.has(entry.entryId)) return entry;
+	}
+	return undefined;
+}
+
+function findAssistantThinkingContentBlockDeletionViolation(
+	transcript: CompactableTranscript,
+	targets: readonly ContextDeletionTarget[],
+): Extract<ContextDeletionTarget, { kind: "content_block" }> | undefined {
+	const deletedEntryIds = getDeletedEntryIds(targets);
+	for (const target of targets) {
+		if (target.kind !== "content_block") continue;
+		if (deletedEntryIds.has(target.entryId)) continue;
+		const entry = findTranscriptEntry(transcript, target.entryId);
+		if (entry && assistantEntryHasThinkingContentBlock(entry)) return target;
 	}
 	return undefined;
 }
@@ -889,6 +903,17 @@ function findLatestAssistantThinkingDeletionViolation(
 		}
 	}
 	return undefined;
+}
+
+function assertNoAssistantThinkingContentBlockDeletionTargets(
+	transcript: CompactableTranscript,
+	targets: readonly ContextDeletionTarget[],
+): void {
+	const violation = findAssistantThinkingContentBlockDeletionViolation(transcript, targets);
+	if (!violation) return;
+	throw new Error(
+		`Cannot delete content block ${violation.entryId}:${violation.blockIndex} because a thinking/redacted_thinking block in a retained assistant message must remain unmodified; retained assistant messages containing thinking/redacted_thinking content blocks are all-or-nothing`,
+	);
 }
 
 function assertNoLatestAssistantThinkingDeletionTargets(
@@ -980,6 +1005,11 @@ function addToolCallDeletion(
 	entry: CompactableTranscriptEntry,
 	callId: string,
 ): boolean {
+	if (assistantEntryHasThinkingContentBlock(entry)) {
+		if (!canDeleteTarget(transcript, { kind: "entry", entryId: entry.entryId })) return false;
+		return deleteEntryTarget(targets, entry.entryId);
+	}
+
 	let changed = false;
 	for (const blockIndex of toolCallBlockIndexes(entry, callId)) {
 		const target: ContextDeletionTarget = { kind: "content_block", entryId: entry.entryId, blockIndex };
@@ -1065,7 +1095,9 @@ function reconcileToolDependencies(
 				if (!deletedEntryIds.has(result.entryId)) continue;
 				recordChange(deleteEntryTarget(targets, result.entryId));
 				const callEntryTarget: ContextDeletionTarget = { kind: "entry", entryId: callEntry.entryId };
-				const callBlockTarget = firstToolCallBlockTarget(callEntry, callId) ?? callEntryTarget;
+				const callBlockTarget = assistantEntryHasThinkingContentBlock(callEntry)
+					? callEntryTarget
+					: firstToolCallBlockTarget(callEntry, callId) ?? callEntryTarget;
 				if (!canDeleteTarget(transcript, callBlockTarget)) {
 					if (isRecentTarget(transcript, callBlockTarget)) {
 						throw new Error(formatRecentContextDeletionError(transcript, callBlockTarget));
@@ -1275,6 +1307,7 @@ export function validateContextDeletionRequest(
 	// Tool reconciliation can add targets after the per-request checks above, so
 	// these post-reconcile assertions remain authoritative.
 	assertNoRecentContextDeletionTargets(transcript, reconciledTargets);
+	assertNoAssistantThinkingContentBlockDeletionTargets(transcript, reconciledTargets);
 	assertNoLatestAssistantThinkingDeletionTargets(transcript, reconciledTargets);
 	const reconciledDeletedEntryIds = getDeletedEntryIds(reconciledTargets);
 

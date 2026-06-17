@@ -58,6 +58,8 @@ Verbatim Compaction never asks a model to rewrite the conversation for the main 
 - **Whole entries** such as an old assistant message or obsolete tool result.
 - **Individual content blocks** inside a multi-block message, such as one stale tool call block while keeping other blocks.
 
+Replay-sensitive assistant messages that contain `thinking` or `redacted_thinking` blocks are all-or-nothing: Atomic may delete an old thinking-bearing assistant entry when dependency validation allows it, but it will not delete individual sibling blocks from a retained thinking-bearing assistant message. This keeps Anthropic/GitHub Copilot extended-thinking replay byte-for-byte compatible with provider requirements.
+
 Atomic records those targets in an append-only `context_compaction` entry. When the active branch is rebuilt, Atomic filters the targeted objects out and reuses every retained entry/content block unchanged. There is no generated summary, no paraphrasing, and no replacement message inserted.
 
 The raw session JSONL remains append-only. Deleted objects stay available in the stored session file and backup snapshot; they are only omitted from future active LLM context on that branch.

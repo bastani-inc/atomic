@@ -22,6 +22,7 @@ import {
   withCodexFastModePayload,
   withCodexFastModeStreamOptions,
 } from "./codex-fast-mode.ts";
+import { restoreAnthropicReplayThinkingBlocks } from "./anthropic-thinking-guard.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import type {
   ExtensionRunner,
@@ -327,15 +328,18 @@ export async function createAgentSession(
 
   let agent: Agent;
 
+  let lastConvertedLlmMessages: Message[] | undefined;
+
   // Create convertToLlm wrapper that filters images if blockImages is enabled (defense-in-depth)
   const convertToLlmWithBlockImages = (messages: AgentMessage[]): Message[] => {
     const converted = convertToLlm(messages);
     // Check setting dynamically so mid-session changes take effect
     if (!settingsManager.getBlockImages()) {
+      lastConvertedLlmMessages = converted;
       return converted;
     }
     // Filter out ImageContent from all messages, replacing with text placeholder
-    return converted.map((msg) => {
+    const filtered = converted.map((msg) => {
       if (msg.role === "user" || msg.role === "toolResult") {
         const content = msg.content;
         if (Array.isArray(content)) {
@@ -368,6 +372,8 @@ export async function createAgentSession(
       }
       return msg;
     });
+    lastConvertedLlmMessages = filtered;
+    return filtered;
   };
 
   const extensionRunnerRef: { current?: ExtensionRunner } = {};
@@ -428,11 +434,20 @@ export async function createAgentSession(
     onPayload: async (payload, model) => {
       const fastModeEnabled = isCodexFastModeEnabled(model);
       const guardedPayload = withCodexFastModePayload(payload, fastModeEnabled);
+      const sourceMessages = lastConvertedLlmMessages;
+      const replayGuardedPayload = sourceMessages
+        ? restoreAnthropicReplayThinkingBlocks(guardedPayload, sourceMessages, model)
+        : guardedPayload;
       const runner = extensionRunnerRef.current;
       if (!runner?.hasHandlers("before_provider_request")) {
-        return guardedPayload;
+        return replayGuardedPayload;
       }
-      return runner.emitBeforeProviderRequest(guardedPayload);
+      const extensionPayload = await runner.emitBeforeProviderRequest(
+        replayGuardedPayload,
+      );
+      return sourceMessages
+        ? restoreAnthropicReplayThinkingBlocks(extensionPayload, sourceMessages, model)
+        : extensionPayload;
     },
     onResponse: async (response, _model) => {
       const runner = extensionRunnerRef.current;

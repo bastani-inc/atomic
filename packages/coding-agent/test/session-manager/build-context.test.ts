@@ -310,7 +310,7 @@ describe("buildSessionContext", () => {
 			expect((ctx.messages[1] as AssistantMessage).content).toEqual((latestAssistant.message as AssistantMessage).content);
 		});
 
-		it("applies old thinking content-block deletion filters when a newer assistant exists", () => {
+		it("restores old thinking content-block deletion filters when a newer assistant exists", () => {
 			const oldAssistantContent = [
 				{ type: "text", text: "keep old visible text" },
 				{ type: "thinking", thinking: "old thinking may be evicted", thinkingSignature: "sig-old" },
@@ -346,10 +346,7 @@ describe("buildSessionContext", () => {
 					message.content.some((block) => block.type === "text" && block.text === "keep old visible text"),
 			);
 
-			expect(rebuiltOldAssistant?.content).toEqual([
-				{ type: "text", text: "keep old visible text" },
-				{ type: "text", text: "keep old trailing text" },
-			]);
+			expect(rebuiltOldAssistant?.content).toEqual(oldAssistantContent);
 			expect(ctx.messages.map((message) => message.role)).toEqual(["user", "assistant", "assistant"]);
 		});
 

@@ -435,17 +435,16 @@ function buildToolResultEntryIdsByCallId(path: SessionEntry[]): Map<string, Set<
 	return toolResultEntryIdsByCallId;
 }
 
-function findLatestRetainedAssistant(
+function findRetainedThinkingAssistants(
 	path: SessionEntry[],
 	deletedEntryIds: ReadonlySet<string>,
-): SessionMessageEntry | undefined {
-	for (let index = path.length - 1; index >= 0; index -= 1) {
-		const entry = path[index];
-		if (entry?.type !== "message") continue;
-		if (deletedEntryIds.has(entry.id)) continue;
-		if (entry.message.role === "assistant") return entry;
-	}
-	return undefined;
+): SessionMessageEntry[] {
+	return path.filter((entry): entry is SessionMessageEntry => {
+		if (entry.type !== "message") return false;
+		if (deletedEntryIds.has(entry.id)) return false;
+		if (entry.message.role !== "assistant") return false;
+		return contentArrayHasAssistantThinkingBlock(entry.message.content);
+	});
 }
 
 export function buildEffectiveContextDeletionFilters(path: SessionEntry[]): ContextDeletionFilters {
@@ -459,15 +458,9 @@ export function buildEffectiveContextDeletionFilters(path: SessionEntry[]): Cont
 			if (target.kind === "entry") rawDeletedEntryIds.add(target.entryId);
 		}
 	}
-	const latestRetainedAssistant = findLatestRetainedAssistant(path, rawDeletedEntryIds);
-	const latestRetainedAssistantContent = latestRetainedAssistant?.message.role === "assistant"
-		? latestRetainedAssistant.message.content
-		: undefined;
-	const latestRetainedThinkingAssistant = latestRetainedAssistant !== undefined &&
-		latestRetainedAssistantContent !== undefined &&
-		contentArrayHasAssistantThinkingBlock(latestRetainedAssistantContent)
-		? latestRetainedAssistant
-		: undefined;
+	const retainedThinkingAssistants = findRetainedThinkingAssistants(path, rawDeletedEntryIds);
+	const retainedThinkingAssistantIds = new Set(retainedThinkingAssistants.map((entry) => entry.id));
+	const retainedThinkingAssistantById = new Map(retainedThinkingAssistants.map((entry) => [entry.id, entry]));
 	const toolResultEntryIdsByCallId = buildToolResultEntryIdsByCallId(path);
 	const effectiveFilters: ContextDeletionFilters = {
 		deletedEntryIds: new Set<string>(),
@@ -479,8 +472,9 @@ export function buildEffectiveContextDeletionFilters(path: SessionEntry[]): Cont
 		if (compaction.type !== "context_compaction") continue;
 		for (const target of compaction.deletedTargets) {
 			if (target.kind !== "content_block") continue;
-			if (target.entryId !== latestRetainedThinkingAssistant?.id) continue;
-			const content = (latestRetainedThinkingAssistant.message as { content: readonly unknown[] }).content;
+			const retainedThinkingAssistant = retainedThinkingAssistantById.get(target.entryId);
+			if (!retainedThinkingAssistant) continue;
+			const content = (retainedThinkingAssistant.message as { content: readonly unknown[] }).content;
 			for (const toolCallId of collectToolCallContentBlockIds(content)) {
 				for (const entryId of toolResultEntryIdsByCallId.get(toolCallId) ?? []) {
 					allRestoredToolResultEntryIds.add(entryId);
@@ -491,25 +485,25 @@ export function buildEffectiveContextDeletionFilters(path: SessionEntry[]): Cont
 
 	for (const compaction of path) {
 		if (compaction.type !== "context_compaction") continue;
-		let restoresLatestThinkingAssistant = false;
+		let restoresRetainedThinkingAssistant = false;
 		for (const target of compaction.deletedTargets) {
-			if (target.kind === "content_block" && target.entryId === latestRetainedThinkingAssistant?.id) {
-				restoresLatestThinkingAssistant = true;
+			if (target.kind === "content_block" && retainedThinkingAssistantIds.has(target.entryId)) {
+				restoresRetainedThinkingAssistant = true;
 				break;
 			}
 		}
 
 		for (const target of compaction.deletedTargets) {
-			if (target.kind === "content_block" && target.entryId === latestRetainedThinkingAssistant?.id) {
+			if (target.kind === "content_block" && retainedThinkingAssistantIds.has(target.entryId)) {
 				continue;
 			}
-			// When a stale persisted plan tried to partially filter the latest
+			// When a stale persisted plan tried to partially filter a retained
 			// thinking-bearing assistant, treat the same compaction entry as one
 			// unsafe unit and restore its paired tool results. Later compaction
 			// entries may still trim those restored multi-block results normally,
 			// but whole-entry deletion of those paired results remains unsafe in any
-			// later compaction because the latest assistant tool call is retained.
-			if (restoresLatestThinkingAssistant && allRestoredToolResultEntryIds.has(target.entryId)) continue;
+			// later compaction because the assistant tool call is retained.
+			if (restoresRetainedThinkingAssistant && allRestoredToolResultEntryIds.has(target.entryId)) continue;
 			if (target.kind === "entry" && allRestoredToolResultEntryIds.has(target.entryId)) continue;
 			addDeletionTarget(effectiveFilters, target);
 		}

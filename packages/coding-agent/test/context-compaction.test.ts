@@ -542,7 +542,7 @@ describe("context compaction", () => {
 		]);
 	});
 
-	it("repairs tool-call reconciliation inside older thinking-bearing assistant entries", () => {
+	it("promotes paired tool-result deletion to whole-entry deletion for older thinking-bearing assistants", () => {
 		resetIds();
 		const combinedToolCallId = "call_7SZEC0NytS60tNYbfx3iV93P|fc_0f290ffb56102ac9016a262e88c10c819aa3fe84e1e79aa20f";
 		const task = entry(user("Task"));
@@ -573,7 +573,7 @@ describe("context compaction", () => {
 		);
 		expect(validated.deletedTargets).toEqual([
 			{ kind: "entry", entryId: result.id },
-			{ kind: "content_block", entryId: assistantWithThinkingAndCall.id, blockIndex: 1 },
+			{ kind: "entry", entryId: assistantWithThinkingAndCall.id },
 		]);
 	});
 
@@ -611,7 +611,7 @@ describe("context compaction", () => {
 		).toThrow(/every content block/);
 	});
 
-	it("allows older assistant thinking-bearing entry and content-block deletions while rejecting latest thinking blocks", () => {
+	it("allows whole-entry deletion for older thinking-bearing assistants but rejects partial content-block deletions", () => {
 		resetIds();
 		const task = entry(user("Task must remain available"));
 		const sensitiveAssistant = entry({
@@ -646,11 +646,12 @@ describe("context compaction", () => {
 		expect(sensitiveEntry.protected).toBe(false);
 		expect(sensitiveEntry.contentBlocks.map((block) => block.type)).toEqual(["text", "thinking", "redacted_thinking"]);
 		for (const blockIndex of [0, 1, 2]) {
-			const validated = validateContextDeletionRequest(
-				{ deletions: [{ kind: "content_block", entryId: sensitiveAssistant.id, blockIndex }] },
-				preparation.transcript,
-			);
-			expect(validated.deletedTargets).toEqual([{ kind: "content_block", entryId: sensitiveAssistant.id, blockIndex }]);
+			expect(() =>
+				validateContextDeletionRequest(
+					{ deletions: [{ kind: "content_block", entryId: sensitiveAssistant.id, blockIndex }] },
+					preparation.transcript,
+				),
+			).toThrow(/retained assistant messages containing thinking\/redacted_thinking content blocks are all-or-nothing/);
 		}
 		const entryValidated = validateContextDeletionRequest(
 			{ deletions: [{ kind: "entry", entryId: sensitiveAssistant.id }] },
@@ -665,7 +666,7 @@ describe("context compaction", () => {
 		expect(safeValidated.deletedTargets).toEqual([{ kind: "content_block", entryId: safeAssistant.id, blockIndex: 0 }]);
 	});
 
-	it("rejects deleting any content block in the latest thinking-bearing assistant message", () => {
+	it("rejects deleting any content block in a retained thinking-bearing assistant message", () => {
 		resetIds();
 		const task = entry(user("Task must remain available"));
 		const latestAssistant = entry({
@@ -683,19 +684,19 @@ describe("context compaction", () => {
 				{ deletions: [{ kind: "content_block", entryId: latestAssistant.id, blockIndex: 0 }] },
 				preparation.transcript,
 			),
-		).toThrow(/latest retained assistant message contains thinking\/redacted_thinking/);
+		).toThrow(/retained assistant messages containing thinking\/redacted_thinking content blocks are all-or-nothing/);
 		expect(() =>
 			validateContextDeletionRequest(
 				{ deletions: [{ kind: "content_block", entryId: latestAssistant.id, blockIndex: 1 }] },
 				preparation.transcript,
 			),
-		).toThrow(/latest retained assistant message contains thinking\/redacted_thinking/);
+		).toThrow(/retained assistant messages containing thinking\/redacted_thinking content blocks are all-or-nothing/);
 		expect(() =>
 			validateContextDeletionRequest({ deletions: [{ kind: "entry", entryId: latestAssistant.id }] }, preparation.transcript),
 		).toThrow(/latest assistant message.*thinking\/redacted_thinking/);
 	});
 
-	it("rejects content-block deletion when deleting newer assistants would make an older thinking assistant latest retained", () => {
+	it("rejects content-block deletion from older retained thinking assistants", () => {
 		resetIds();
 		const task = entry(user("Task must remain available"));
 		const olderThinkingAssistant = entry({
@@ -719,7 +720,7 @@ describe("context compaction", () => {
 				},
 				preparation.transcript,
 			),
-		).toThrow(/latest retained assistant message contains thinking\/redacted_thinking/);
+		).toThrow(/retained assistant messages containing thinking\/redacted_thinking content blocks are all-or-nothing/);
 	});
 
 	it("rejects entry deletion when deleting newer assistants would make an older thinking assistant latest retained", () => {
@@ -792,7 +793,7 @@ describe("context compaction", () => {
 		expect(result.details.matches).toHaveLength(1);
 	});
 
-	it("context_grep_delete skips newer entries that would expose an already-filtered thinking assistant", async () => {
+	it("context_delete rejects partial deletion from older retained thinking assistants", async () => {
 		resetIds();
 		const task = entry(user("Task must remain available"));
 		const olderThinkingAssistant = entry({
@@ -808,31 +809,12 @@ describe("context compaction", () => {
 		})!;
 		const controller = createContextDeletionTool(preparation.transcript, { preserve_recent: 0 });
 
-		const first = await controller.tool.execute("delete-old-visible", {
+		const result = await controller.tool.execute("delete-old-visible", {
 			deletions: [{ kind: "content_block", entryId: olderThinkingAssistant.id, blockIndex: 0 }],
 		});
-		expect(first.details.error).toBeUndefined();
-		expect(controller.getDeletionRequest().deletions).toEqual([
-			{ kind: "content_block", entryId: olderThinkingAssistant.id, blockIndex: 0 },
-		]);
 
-		const second = await controller.grepTool.execute("grep-newer", {
-			pattern: "newer obsolete entry marker",
-			target: "entry",
-		});
-
-		expect(second.details.error).toBeUndefined();
-		expect(second.details.matches).toEqual([]);
-		expect(second.details.skipped).toEqual([
-			expect.objectContaining({
-				entryId: newerAssistant.id,
-				target: "entry",
-				reason: "protected_entry",
-			}),
-		]);
-		expect(controller.getDeletionRequest().deletions).toEqual([
-			{ kind: "content_block", entryId: olderThinkingAssistant.id, blockIndex: 0 },
-		]);
+		expect(result.details.error).toMatch(/retained assistant messages containing thinking\/redacted_thinking content blocks are all-or-nothing/);
+		expect(controller.getDeletionRequest().deletions).toEqual([]);
 	});
 
 	it("preserves assistant thinking-bearing content arrays when applying persisted content-block deletion filters", () => {
@@ -854,7 +836,8 @@ describe("context compaction", () => {
 			{ kind: "content_block", entryId: assistantWithThinking.id, blockIndex: 2 },
 		]);
 
-		const branch = [task, assistantWithThinking, persistedDeletion];
+		const newerAssistant = entry(assistantText("newer assistant remains latest"));
+		const branch = [task, assistantWithThinking, newerAssistant, persistedDeletion];
 		const rebuilt = buildSessionContext(branch);
 		const rebuiltAssistant = rebuilt.messages.find((message) => message.role === "assistant") as AssistantMessage | undefined;
 

@@ -25,11 +25,27 @@ export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 };
 
 /**
- * Calculate total context tokens from usage.
- * Uses the native totalTokens field when available, falls back to computing from components.
+ * Calculate active context-window tokens from provider usage.
+ *
+ * Prefer normalized component fields over `totalTokens`: some providers expose
+ * `totalTokens` as a billing/cumulative total, while the footer needs an active
+ * context estimate. Anthropic-compatible endpoints can also mirror cached input
+ * in both `input` and `cacheRead`/`cacheWrite`; when cache buckets are nearly the
+ * same size as `input`, treat `input` as the full prompt instead of counting the
+ * same cached prompt twice.
  */
 export function calculateContextTokens(usage: Usage): number {
-	return usage.totalTokens || usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
+	const input = Math.max(0, usage.input || 0);
+	const output = Math.max(0, usage.output || 0);
+	const cacheRead = Math.max(0, usage.cacheRead || 0);
+	const cacheWrite = Math.max(0, usage.cacheWrite || 0);
+	const cacheTokens = cacheRead + cacheWrite;
+	const hasComponents = input > 0 || output > 0 || cacheTokens > 0;
+	if (!hasComponents) return Math.max(0, usage.totalTokens || 0);
+
+	const cacheMirrorsInput = input > 0 && cacheTokens > 0 && cacheTokens >= input * 0.9 && cacheTokens <= input * 1.1;
+	const promptTokens = cacheMirrorsInput ? input : input + cacheTokens;
+	return promptTokens + output;
 }
 
 /**
