@@ -153,7 +153,7 @@ For the builtin result tables below, `deep-research-codebase`, `goal`, and `ralp
 |---|---|---|
 | `deep-research-codebase` | Scout + research-history chain → parallel specialist waves → aggregator. Indexes the whole repo and synthesizes findings. | Broad or cross-cutting research before you decide what to change. Prefer `/skill:research-codebase` for one subsystem. |
 | `goal` | Persisted goal ledger → bounded worker turns → receipts → three-reviewer gate → deterministic reducer → final report. | Small-to-medium scope changes when you can identify the work surface, state the exact outcome, and name the validation that proves it is done — for example tests, lint/typecheck, docs builds, or observable behavior. |
-| `ralph` | Prompt-engineering → codebase/online research → sub-agent orchestration → parallel review → optional final-stage PR handoff. | Larger migrations, broad refactors, and multi-package changes where you want Atomic to transform the prompt into a research question, research the codebase before implementing, delegate through sub-agents, review, iterate, and optionally allow only the final `pull-request` stage to attempt PR creation with `create_pr=true`. |
+| `ralph` | Prompt-engineering → codebase/online research → sub-agent orchestration → multi-model parallel review → optional final-stage PR handoff. | Larger migrations, broad refactors, and multi-package changes where you want Atomic to transform the prompt into a research question, research the codebase before implementing, delegate through sub-agents, review, iterate, and optionally allow only the final `pull-request` stage to attempt PR creation with `create_pr=true`. |
 | `open-claude-design` | Design-system onboarding → reference import → HTML generation → impeccable-driven refinement → quality gate → rich HTML handoff. Renders a live `preview.html` you can iterate against (opens through `browser` when available). | UI, page, component, theme, or design-token work that benefits from generation + critique loops. |
 
 ### `deep-research-codebase`
@@ -224,7 +224,7 @@ Run examples:
 
 Write the `objective` like a compact acceptance spec. Say what should exist when the run is done, how you want testing handled, which command(s) or manual checks matter, and what outcome proves completion. The workflow is intentionally lean: it does not first generate an RFC or migration plan, so the developer-supplied objective is where scope, validation, and completion criteria belong.
 
-The worker may claim readiness, but it cannot finalize completion. Workers and reviewers are prompted to verify user-visible behavior end-to-end when practical, using browser-skilled subagents for web/frontend flows that may depend on backend/API behavior and tmux-skilled subagents for TUI or terminal-app scenarios. Three reviewers independently inspect the ledger, worker receipt, repository state, and diff against `base_branch`; each returns structured JSON with findings, evidence, verification still remaining, and an optional blocker. A TypeScript reducer marks the goal complete only when reviewer quorum approves, marks blocked only when the same dependency/tool blocker repeats for the blocker threshold, continues when evidence is missing, and returns `needs_human` when `max_turns` is exhausted or worker execution fails.
+The worker may claim readiness, but it cannot finalize completion. Workers and reviewers are prompted to verify user-visible behavior end-to-end when practical, using `playwright-cli`-skilled subagents for web/frontend flows that may depend on backend/API behavior and tmux-skilled subagents for TUI or terminal-app scenarios. Three reviewers independently inspect the ledger, worker receipt, repository state, and diff against `base_branch`; each returns structured JSON with findings, evidence, verification still remaining, and an optional blocker. A TypeScript reducer marks the goal complete only when reviewer quorum approves, marks blocked only when the same dependency/tool blocker repeats for the blocker threshold, continues when evidence is missing, and returns `needs_human` when `max_turns` is exhausted or worker execution fails.
 
 Result fields:
 
@@ -262,7 +262,7 @@ Run examples:
 /workflow ralph prompt="Safely implement the API refactor" git_worktree_dir=../atomic-ralph-api-wt base_branch=main
 ```
 
-Each `ralph` iteration starts by prompt-engineering the user prompt with `/skill:prompt-engineer Transform the following user prompt to a codebase and online research question which can be thoroughly explored: ...`, then researches that transformed question with `/skill:research-codebase ...` and writes the findings under `research/`. The orchestrator treats that research artifact as its primary implementation context, initializes/updates an OS-temp implementation notes file, delegates implementation through sub-agents, and asks two reviewers to inspect the patch directly against `base_branch`. Ralph's orchestrator and reviewers are prompted to verify user-visible behavior end-to-end when practical, using browser-skilled subagents for web/frontend flows that may depend on backend/API behavior and tmux-skilled subagents for TUI or terminal-app scenarios. If reviewers find issues, the next prompt-engineering and research stages receive the review artifact path so follow-up research can address unresolved findings, and research stages fork from prior research session data when available. The loop stops when every reviewer approves or `max_loops` is reached. By default Ralph does not start the final `pull-request` stage, and `pr_report` is omitted. Prompt text alone does not opt in. Pass `create_pr=true` only when you explicitly want the final `pull-request` stage to inspect provider credentials and attempt provider-appropriate PR/MR/review creation, such as GitHub `gh`, Azure Repos `az repos pr create`, or Sapling/Phabricator tooling; Ralph's own PR-creation instructions live in that final stage.
+Each `ralph` iteration starts by prompt-engineering the user prompt with `/skill:prompt-engineer Transform the following user prompt to a codebase and online research question which can be thoroughly explored: ...`, then researches that transformed question with `/skill:research-codebase ...` and writes the findings under `research/`. The orchestrator treats that research artifact as its primary implementation context, initializes/updates an OS-temp implementation notes file while generating verifiable evidence for any claims it records in the notes and reviewer artifacts, delegates implementation through sub-agents, and asks three independent reviewers to inspect the patch directly against `base_branch`. The reviewer fan-out runs each reviewer on a different primary model family (with shared fallbacks) so the adversarial review gets cross-model coverage instead of three passes from one model. Ralph's orchestrator and reviewers are prompted to verify user-visible behavior end-to-end when practical, using `playwright-cli`-skilled subagents for web/frontend flows that may depend on backend/API behavior and tmux-skilled subagents for TUI or terminal-app scenarios. For UI-applicable or full-stack changes, the orchestrator runs a `playwright-cli` end-to-end QA pass and records a reviewable proof video (referenced in the implementation notes and surfaced as `qa_video_path`); when `create_pr=true`, the final `pull-request` stage attaches or links that video to the created PR/MR/review. If reviewers find issues, the next prompt-engineering and research stages receive the review artifact path so follow-up research can address unresolved findings, and research stages fork from prior research session data when available. The loop stops only when all three reviewers independently approve (each finds no issues) or `max_loops` is reached, so a P0–P3 finding from any single reviewer keeps Ralph iterating instead of being out-voted by a majority quorum. By default Ralph does not start the final `pull-request` stage, and `pr_report` is omitted. Prompt text alone does not opt in. Pass `create_pr=true` only when you explicitly want the final `pull-request` stage to inspect provider credentials and attempt provider-appropriate PR/MR/review creation, such as GitHub `gh`, Azure Repos `az repos pr create`, or Sapling/Phabricator tooling; Ralph's own PR-creation instructions live in that final stage.
 
 Set `git_worktree_dir` when you want Ralph's worker stages isolated in a reusable Git worktree. Relative paths resolve from the invoking repository root, existing same-repository worktree roots are reused, and missing paths are created from `base_branch`. Ralph preserves the invoking repo-relative cwd inside the worktree, so launching from `repo/packages/api` with `git_worktree_dir=../repo-wt` runs stages from `../repo-wt/packages/api`.
 
@@ -276,6 +276,7 @@ Result fields:
 | `research` | Latest research report text or artifact reference. |
 | `research_path` | Path to the latest generated research artifact under `research/`. |
 | `implementation_notes_path` | OS-temp notes file containing decisions, deviations, blockers, and validation notes. |
+| `qa_video_path` | Absolute path to the reviewable QA end-to-end proof video recorded with `playwright-cli` for UI-applicable changes, when one was produced. |
 | `pr_report` | Pull-request report emitted only when `create_pr=true` and the final `pull-request` stage runs. |
 | `approved` | Whether the reviewer loop approved before completion or optional final handoff. |
 | `iterations_completed` | Number of research/orchestrate/review loops completed. |
@@ -313,6 +314,7 @@ Result fields:
 | `preview_file_url` | `file://` URL for the generated `preview.html` file. |
 | `spec_path` | Absolute path to the generated `spec.html` file. |
 | `spec_file_url` | `file://` URL for the generated `spec.html` file. |
+| `playwright_cli_status` | Outcome of the initial deterministic step that ensures the `playwright-cli` skill's `playwright-cli` command is installed. |
 
 `open-claude-design` has no `result` output; it exposes only the declared fields listed above. Use the declared `artifact` and `handoff` fields for generated content.
 
@@ -725,6 +727,8 @@ atomic -e npm:my-atomic-workflows
 atomic -e ./local-workflow-package
 ```
 
+Workflow stage sessions inherit the same package and temporary `-e` resource discovery snapshot as the main chat. That means a workflow loaded from an external package or directory can start stages that see the package's extensions/tools, subagents and agent definitions, skills, prompt templates, themes, workflows, and trusted borrowed project-local resources without sharing the parent chat's resource-loader instance. Passing an explicit `resourceLoader` in stage options still opts that stage out of this inheritance.
+
 ## Settings
 
 Settings can list package sources directly:
@@ -872,7 +876,7 @@ Control behavior:
 - `stages` lists stage summaries, including flattened stages from nested `ctx.workflow(...)` imports and `sessionFile`/`transcriptPath` when a stage has a persisted session. Use `statusFilter: "all"` to include completed, failed, skipped, and pending stages.
 - `stage` returns details for one stage by stage id, unique prefix, or stage name, including nested child stages shown in the expanded graph and the persisted `sessionFile` when available.
 - `transcript` is reference-first with a small preview by default: it returns metadata, transcript paths, and up to 5 recent entries. For targeted lookup, quote the exact `sessionFile`/`transcriptPath` value without changing platform separators (preserve Windows backslashes), search it with `rg` or `grep`, then read only small surrounding ranges. Text results include JSON-escaped `sessionFileJson`/`transcriptPathJson` lines for copy-safe path literals. Pass explicit `tail` or `limit` to override the 5-entry preview; `tail` overrides `limit`; `includeToolOutput` includes captured snapshot tool output in snapshot transcript results.
-- `send` delivery modes are `auto`, `answer`, `prompt`, `steer`, `followUp`, and `resume`. Prompt answers can include `promptId` and can carry answer content in `response`, `text`, or `message`; structured UI prompts usually prefer `response`. Arbitrary `ctx.ui.custom<T>` widget prompts require the interactive workflow graph and return a clear unsupported message when targeted through `send`.
+- `send` delivery modes are `auto`, `answer`, `prompt`, `steer`, `followUp`, and `resume`. Prompt answers can include `promptId` and can carry answer content in `response`, `text`, or `message`; structured UI prompts usually prefer `response`. Follow-up messaging to completed or failed stages reuses the retained `sessionFile` when available so the conversation resumes from the archived stage transcript instead of starting empty; if no session metadata was retained, Atomic refuses the follow-up rather than silently resetting. Arbitrary `ctx.ui.custom<T>` widget prompts require the interactive workflow graph and return a clear unsupported message when targeted through `send`.
 - `delivery: "auto"` first answers a pending prompt, then resumes paused work, then steers a streaming stage, then queues a follow-up.
 - `pause`, `interrupt`, and `kill` can target one top-level run or `all: true`; `stageId` cannot be combined with `all: true`. Stage-scoped controls can target a visible nested child stage from the expanded graph; Atomic routes the operation to the owning nested run internally.
 - `interrupt` is resumable: it pauses live work when pausable stages exist and keeps the run in live history/status.
@@ -967,7 +971,7 @@ workflow({
 })
 ```
 
-Direct mode supports top-level/default options and per-task options such as `context`, `forkFromSessionFile`, `model`, `fallbackModels`, `thinkingLevel`, `tools`, `noTools`, `customTools`, `bashPolicy`, `mcp`, `output`, `outputMode`, `reads`, `worktree`, `gitWorktreeDir`, `baseBranch`, `maxOutput`, `artifacts`, `sessionDir`, `cwd`, and `agentDir`. Direct chains also support `chainName`, `chainDir`, and `failFast`.
+Direct mode supports top-level/default options and per-task options such as `context`, `forkFromSessionFile`, `model`, `fallbackModels`, `thinkingLevel`, `contextWindow`, `tools`, `noTools`, `customTools`, `bashPolicy`, `mcp`, `output`, `outputMode`, `reads`, `worktree`, `gitWorktreeDir`, `baseBranch`, `maxOutput`, `artifacts`, `sessionDir`, `cwd`, and `agentDir`. Direct chains also support `chainName`, `chainDir`, and `failFast`.
 
 For large fan-outs, prefer `outputMode: "file-only"` so the parent result contains compact file references instead of full output. Treat intercom payloads from async direct runs as user-visible workflow output.
 
@@ -1454,6 +1458,8 @@ Use `previous` and `{previous}` for compact handoffs only. If no placeholder is 
 
 For large handoffs, write artifacts to files, pass their paths with `reads`, and tell downstream stages to read those files incrementally. Put the instruction in the downstream prompt explicitly, e.g. `Read the file at ${artifactPath} and use only the sections needed for this stage.` Prefer `outputMode: "file-only"` when the parent only needs the artifact path.
 
+`ctx.parallel` snapshots the current graph frontier when the fan-out starts. Every branch in that call uses the same parent set, including branches dequeued later because of a limited `concurrency` value and branches that continue after an earlier sibling fails with `failFast: false`. Downstream stages then depend on all settled parallel branches instead of accidentally chaining queued siblings behind one another.
+
 ### Fine-Grained Stages
 
 Use `ctx.stage(name, options?)` when `ctx.task` is too coarse and you need direct control over the underlying stage session. `StageContext` supports:
@@ -1473,13 +1479,14 @@ Common task/stage options include:
 - `prompt` or `task`
 - `previous` for small handoff context; use artifact paths plus `reads` for large outputs, logs, research bundles, or reviewer payloads
 - `context: "fresh" | "fork"`, `forkFromSessionFile`
-- `model`, `fallbackModels`, `thinkingLevel`, `scopedModels`, `modelRegistry` — `model` and each `fallbackModels` entry accept a `model_name:thinking_effort` reasoning suffix; the standalone `thinkingLevel` is deprecated (see [Reasoning levels](#reasoning-levels))
+- `model`, `fallbackModels`, `thinkingLevel`, `scopedModels`, `modelRegistry` — `model` and each `fallbackModels` entry accept a `model_name:thinking_effort` reasoning suffix and an optional parenthesized context-window token such as `model (1m)` (see [Reasoning levels](#reasoning-levels) and [Context windows](#context-windows)); the standalone `thinkingLevel` is deprecated
+- `contextWindow`, `contextWindowStrict` — stage-wide context-window budget mapped to the SDK `createAgentSession` options of the same name (non-strict by default)
 - `tools`, `noTools`, `customTools`, `mcp: { allow?: string[], deny?: string[] }`, `bashPolicy`
 - `schema` for a structured final answer from this workflow item
 - `output`, `outputMode`, `reads`, `worktree`, `gitWorktreeDir`, `baseBranch`, `maxOutput`, `artifacts`, `sessionDir`, `cwd`, `agentDir`
 - advanced host-supplied SDK seams: `authStorage`, `resourceLoader`, `sessionManager`, `settingsManager`, `sessionStartEvent`
 
-`schema` is opt-in. When a `ctx.stage` call, `ctx.task` call, `ctx.chain` item, or `ctx.parallel` item includes a TypeBox schema or plain JSON Schema descriptor object, Atomic registers a schema-specific final-answer tool for that item only. The schema may describe object, array, or primitive final values; the captured value is the JSON value passed to the tool. The prompt result is the captured structured value for `ctx.stage(..., { schema }).prompt(...)`; task/chain/parallel results also include `result.structured` and keep `result.text` as formatted JSON for handoffs. Because the result contract is single-use, a schema-backed `StageContext` supports one `prompt()` call; create a new `ctx.stage(..., { schema })` for each additional structured prompt. If the item also uses an explicit `tools` allowlist, Atomic automatically adds the final-answer tool to that allowlist. Items without `schema` do not receive it from the normal tool registry.
+`schema` is opt-in. When a `ctx.stage` call, `ctx.task` call, `ctx.chain` item, or `ctx.parallel` item includes a TypeBox schema or plain JSON Schema descriptor object, Atomic registers a schema-specific final-answer tool for that item only. The schema may describe object, array, or primitive final values; the captured value is the JSON value passed to the tool. The prompt result is the captured structured value for `ctx.stage(..., { schema }).prompt(...)`; task/chain/parallel results also include `result.structured` and keep `result.text` as formatted JSON for handoffs. Because the result contract is single-use, a schema-backed `StageContext` supports one `prompt()` call; create a new `ctx.stage(..., { schema })` for each additional structured prompt. If a turn finishes without calling `structured_output`, or the tool call fails schema validation, Atomic sends up to three corrective follow-up prompts that quote the concrete contract/validation error and remind the model to call `structured_output` instead of replying with plain JSON. If the item also uses an explicit `tools` allowlist, Atomic automatically adds the final-answer tool to that allowlist. Items without `schema` do not receive it from the normal tool registry.
 
 `subagent` is available as a default workflow-stage tool, with the same default two-hop nesting budget as main chat: a workflow stage can launch a subagent, and that subagent can launch one nested subagent before the guard blocks further delegation. `tools` remains an allowlist across built-in tools and bundled extension tools; if you set `tools`, list every tool the stage should see. Explicitly listing tools such as `subagent`, `web_search`, `fetch_content`, or `intercom` exposes those tools to the stage, while `excludedTools` and `noTools: "all"` still win. The bundled subagent definitions from `@bastani/subagents` are available to the `subagent` tool in workflow stages; when a workflow is itself running inside a subagent child process, Atomic isolates stage resource discovery from the parent child-process flags so `subagent` remains available while workflow-stage nested-depth guards remain in force.
 
@@ -1491,18 +1498,18 @@ await ctx.task("browser-preview", {
   bashPolicy: {
     default: "deny",
     allow: [
-      "which browse",
-      { prefix: "browse open " },
-      { prefix: "browse snapshot" },
+      "which playwright-cli",
+      { prefix: "playwright-cli open " },
+      { prefix: "playwright-cli snapshot" },
       { prefix: "grep " },
     ],
     deny: [{ regex: "\\brm\\b" }],
   },
-  prompt: "Open the preview with browse, then summarize the visible state.",
+  prompt: "Open the preview with playwright-cli, then summarize the visible state.",
 });
 ```
 
-A command such as `browse snapshot | grep title` passes only when both segments are allowed, and `browse snapshot\nrm -rf /tmp/proof` cannot be hidden behind a `{ prefix: "browse " }` rule because the newline starts a new segment. Glob rules match command strings rather than filesystem path segments: `*` and `?` may span `/`, so `{ glob: "browse *" }` matches URLs and slash-bearing paths such as `browse http://localhost:3000`, `browse docs/index.html`, and `browse ./preview/output.html` while still matching the whole target rather than `echo browse ...`; escaped bracket-class metacharacters such as `\-`, `\^`, `\]`, `\[`, and `\\` stay literal, while malformed glob ranges such as `{ glob: "echo [z-a]" }` become `invalid-policy` denials. Segment mode accepts literal heads such as `grep`, `./script`, `/usr/bin/env`, `bun`, and `browse`, and treats non-leading `>|` as redirection syntax so `echo ok >|/tmp/out` stays one segment, but conservatively rejects reserved or compound heads (`coproc`, `if`, `for`, `while`, `case`, `{`, `}`, `!`), leading redirections (`>file cmd`, `2>file cmd`, `<file cmd`, `&>file cmd`, `&>>file cmd`, `>|file cmd`, `<&0 cmd`, `>&2 cmd`), redirections attached to the command-head word (`cmd>file`, `cmd>>file`, `cmd>|file`, `cmd2>file`, `cmd>&2`, `cmd</tmp/in`), leading environment assignments (`PATH=/tmp:$PATH browse snapshot`, `LD_PRELOAD=/tmp/x browse snapshot`, `FOO=bar`), dynamic heads such as `$cmd`, `${cmd}`, `r''m`, `r\m`, `~/bin/rm`, `r*m`, `{rm,echo}`, `r$(printf m)`, or backtick-built command names. A single denied, redirection-prefixed, attached-redirection, assignment-prefixed, dynamic, or unrecognized segment blocks the whole command with a model-readable tool error and no UI prompt, so the behavior works in headless workflow runs. Use `match: "whole"` only when raw-command matching is intentional.
+A command such as `playwright-cli snapshot | grep title` passes only when both segments are allowed, and `playwright-cli snapshot\nrm -rf /tmp/proof` cannot be hidden behind a `{ prefix: "playwright-cli " }` rule because the newline starts a new segment. Glob rules match command strings rather than filesystem path segments: `*` and `?` may span `/`, so `{ glob: "playwright-cli *" }` matches URLs and slash-bearing paths such as `playwright-cli http://localhost:3000`, `playwright-cli docs/index.html`, and `playwright-cli ./preview/output.html` while still matching the whole target rather than `echo playwright-cli ...`; escaped bracket-class metacharacters such as `\-`, `\^`, `\]`, `\[`, and `\\` stay literal, while malformed glob ranges such as `{ glob: "echo [z-a]" }` become `invalid-policy` denials. Segment mode accepts literal heads such as `grep`, `./script`, `/usr/bin/env`, `bun`, and `playwright-cli`, and treats non-leading `>|` as redirection syntax so `echo ok >|/tmp/out` stays one segment, but conservatively rejects reserved or compound heads (`coproc`, `if`, `for`, `while`, `case`, `{`, `}`, `!`), leading redirections (`>file cmd`, `2>file cmd`, `<file cmd`, `&>file cmd`, `&>>file cmd`, `>|file cmd`, `<&0 cmd`, `>&2 cmd`), redirections attached to the command-head word (`cmd>file`, `cmd>>file`, `cmd>|file`, `cmd2>file`, `cmd>&2`, `cmd</tmp/in`), leading environment assignments (`PATH=/tmp:$PATH playwright-cli snapshot`, `LD_PRELOAD=/tmp/x playwright-cli snapshot`, `FOO=bar`), dynamic heads such as `$cmd`, `${cmd}`, `r''m`, `r\m`, `~/bin/rm`, `r*m`, `{rm,echo}`, `r$(printf m)`, or backtick-built command names. A single denied, redirection-prefixed, attached-redirection, assignment-prefixed, dynamic, or unrecognized segment blocks the whole command with a model-readable tool error and no UI prompt, so the behavior works in headless workflow runs. Use `match: "whole"` only when raw-command matching is intentional.
 
 `gitWorktreeDir` selects a reusable Git worktree root for `ctx.stage`, `ctx.task`, `ctx.chain`, and `ctx.parallel`. If the path is missing, Atomic creates it with `git worktree add --detach <path> <baseBranch>`; if it exists, it must be a same-repository worktree root. The default stage cwd becomes the matching cwd inside the worktree and preserves the invoking repo-relative subdirectory. Explicit `cwd` still wins; relative `cwd` values resolve from the worktree cwd, while absolute `cwd` values are used as provided. `gitWorktreeDir` is mutually exclusive with `worktree: true`: use `gitWorktreeDir` for named/reusable worktrees and `worktree: true` for temporary direct-mode worktrees that are cleaned up after the run.
 
@@ -1549,6 +1556,27 @@ The standalone `thinkingLevel` stage option is deprecated. It still applies as a
 ```
 
 This applies everywhere a stage accepts a model: direct `ctx.task`/`ctx.chain`/`ctx.parallel` options, `ctx.stage` options, builtin workflow stage definitions, and workflow parameters. `fallbackThinkingLevels` is an optional compatibility helper aligned by index to `fallbackModels`; it applies only to fallback entries that do not already carry a suffix. Each `WorkflowModelAttempt` reports the resolved model and the effective reasoning effort used for that attempt.
+
+### Context windows
+
+A `model`/`fallbackModels` entry may also request a context-window budget with a parenthesized size token in the model-name portion — placed *before* the optional `:reasoning` suffix so it never collides with the reasoning level. This mirrors GitHub Copilot's `Claude Opus 4.8 (1M context)` model-name convention:
+
+```ts
+await ctx.task("review", {
+  task: "Review the diff",
+  model: "anthropic/claude-fable-5:xhigh",
+  // The copilot opus fallback runs at its largest advertised (long-context) window.
+  fallbackModels: ["github-copilot/claude-opus-4.8 (1m):xhigh", "anthropic/claude-opus-4-8:xhigh"],
+});
+```
+
+The token accepts the same compact sizes as the `--context-window` flag (`1m`, `936k`, `400k`, or a raw token count) and is resolved against that specific candidate model's advertised windows:
+
+- an exact supported window is used as-is;
+- otherwise the largest supported window not exceeding the request is selected, so `(1m)` lands on a model's ~936K long-context tier;
+- when the model exposes no larger tier (or is unavailable), the request is dropped and the session keeps the model's default (short) window — a non-strict, automatic fallback.
+
+The budget applies only to the candidate that carries the token; other primary and fallback models in the same chain are unaffected. A parenthesized token that is not a valid size (for example `(preview)`) is left attached to the model id rather than being treated as a context window. For stage-wide selection you can instead set the `contextWindow` (and `contextWindowStrict`) stage option, which maps to the SDK `createAgentSession` options of the same name.
 
 ## Programmatic Usage
 

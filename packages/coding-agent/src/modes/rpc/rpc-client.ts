@@ -11,8 +11,15 @@ import type { SessionStats } from "../../core/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { ContextCompactionResult } from "../../core/compaction/index.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
-import type { RpcCommand, RpcEvent, RpcResponse, RpcSessionState, RpcSlashCommand } from "./rpc-types.ts";
-export type { RpcEvent } from "./rpc-types.ts";
+import type {
+	RpcCommand,
+	RpcContextWindowInfo,
+	RpcEvent,
+	RpcResponse,
+	RpcSessionState,
+	RpcSlashCommand,
+} from "./rpc-types.ts";
+export type { RpcContextWindowInfo, RpcEvent } from "./rpc-types.ts";
 
 // ============================================================================
 // Types
@@ -35,6 +42,8 @@ export interface RpcClientOptions {
 	provider?: string;
 	/** Model ID to use */
 	model?: string;
+	/** Startup context-window selection, as raw tokens or compact form like "400k"/"1m" */
+	contextWindow?: number | string;
 	/** Additional CLI arguments */
 	args?: string[];
 }
@@ -84,6 +93,9 @@ export class RpcClient {
 		}
 		if (this.options.model) {
 			args.push("--model", this.options.model);
+		}
+		if (this.options.contextWindow !== undefined) {
+			args.push("--context-window", String(this.options.contextWindow));
 		}
 		if (this.options.args) {
 			args.push(...this.options.args);
@@ -269,6 +281,23 @@ export class RpcClient {
 	 */
 	async cycleThinkingLevel(): Promise<{ level: ThinkingLevel } | null> {
 		const response = await this.send({ type: "cycle_thinking_level" });
+		return this.getData(response);
+	}
+
+	/**
+	 * Set the active context-window token budget for the current model.
+	 * This is a runtime selection and does not persist context-window defaults.
+	 */
+	async setContextWindow(contextWindow: number | string): Promise<void> {
+		const response = await this.send({ type: "set_context_window", contextWindow });
+		this.assertSuccess(response);
+	}
+
+	/**
+	 * Get selectable context-window token budgets for the current model.
+	 */
+	async getAvailableContextWindows(): Promise<RpcContextWindowInfo> {
+		const response = await this.send({ type: "get_available_context_windows" });
 		return this.getData(response);
 	}
 
@@ -560,11 +589,14 @@ export class RpcClient {
 		});
 	}
 
-	private getData<T>(response: RpcResponse): T {
+	private assertSuccess(response: RpcResponse): void {
 		if (!response.success) {
-			const errorResponse = response as Extract<RpcResponse, { success: false }>;
-			throw new Error(errorResponse.error);
+			throw new Error(response.error);
 		}
+	}
+
+	private getData<T>(response: RpcResponse): T {
+		this.assertSuccess(response);
 		// Type assertion: we trust response.data matches T based on the command sent.
 		// This is safe because each public method specifies the correct T for its command.
 		const successResponse = response as Extract<RpcResponse, { success: true; data: unknown }>;

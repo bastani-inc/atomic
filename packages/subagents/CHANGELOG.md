@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added the `playwright-cli` builtin skill (browser automation, end-to-end UI checks, screenshots, reviewable video recording, and Playwright test workflows) and the `effective-liteparse` builtin skill (fast, local, model-free text/table/value extraction from PDF, DOCX, PPTX, XLSX, and image files via the `lit` CLI).
+
+### Changed
+
+- Changed the `debugger` and `codebase-online-researcher` subagents to load the `playwright-cli` skill and drive the `playwright-cli` command for JS-heavy, auth-gated, or interactive web work instead of the removed `browser` skill / `browse` CLI.
+- Aligned the subagents extension peer dependencies with upstream pi `^0.79.7` runtime packages (`@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, and `@earendil-works/pi-tui`) so child sessions can use the host's latest provider catalog, RPC id handling, model-search, theme/color-scheme, Warp image capability, and shared TUI compatibility fixes; no subagents extension code changes were made for this metadata sync ([#1413](https://github.com/bastani-inc/atomic/issues/1413)).
+
+### Removed
+
+- Removed the bundled `browser` skill and all references to its `browse` CLI in favor of the `playwright-cli` skill and `playwright-cli` command.
+
+## [0.8.30] - 2026-06-17
+
+### Changed
+
+- Aligned the subagents extension peer dependencies with upstream pi `^0.79.4` runtime packages (`@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, and `@earendil-works/pi-tui`); no subagents extension code changes were made for this metadata sync.
+- Removed subagent acceptance gates, deterministic task-text acceptance inference, the remaining no-mutation completion guard, acceptance-report prompt injection/parsing, acceptance/completion-guard status metadata, and related tool/schema/config fields; completed child output is now preserved without acceptance or mutation-intent evaluation. Migration guidance now directs users to remove stale acceptance fields from subagent calls/chains/parallel items and move validation requirements into task text; JSON chain rewrites drop legacy acceptance entries ([#1398](https://github.com/bastani-inc/atomic/issues/1398)).
+
+### Fixed
+
+- Fixed `outputSchema` child runs to retry the structured-output contract up to three times before failing, re-running with a corrective prompt that includes the exact missing-output or schema-validation error and validating captured `output.json` against the schema on readback.
+
 ## [0.8.29] - 2026-06-15
 
 ### Changed

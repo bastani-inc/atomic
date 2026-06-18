@@ -22,7 +22,12 @@
  */
 
 import { basename } from "node:path";
-import type { ChatMessageRenderOptions, CreateAgentSessionOptions, PackageSource } from "@bastani/atomic";
+import type {
+  ChatMessageRenderOptions,
+  CreateAgentSessionOptions,
+  DefaultResourceLoaderInheritanceSnapshot,
+  PackageSource,
+} from "@bastani/atomic";
 import type { StageAdapters, StageSessionCreateResult, StageSessionRuntime } from "../runs/foreground/stage-runner.js";
 import type { StageExecutionMeta, StageOptions } from "../shared/types.js";
 import { stageUiBroker, type StageUiBroker } from "../shared/stage-ui-broker.js";
@@ -55,6 +60,8 @@ export interface PiExecOpts {
 export interface RuntimeWiringSurface {
   exec?: (command: string, args: string[], opts?: PiExecOpts) => Promise<PiExecResult>;
   ui?: PiUISurface;
+  /** Resource-loader inheritance snapshot supplied by Atomic's ExtensionAPI. */
+  getResourceLoaderInheritanceSnapshot?: () => DefaultResourceLoaderInheritanceSnapshot | undefined;
   /** Test seam: inject a stub session factory instead of importing the SDK. */
   createAgentSession?: (options?: CreateAgentSessionOptions) => Promise<StageSessionCreateResult>;
 }
@@ -103,13 +110,14 @@ export interface PiCodingAgentSdk {
   getAgentDir(): string;
   getBuiltinPackagePaths?: () => string[];
   SettingsManager: {
-    create(cwd?: string, agentDir?: string): PiSdkSettingsManager;
+    create(cwd?: string, agentDir?: string, options?: { projectTrusted?: boolean }): PiSdkSettingsManager;
   };
   DefaultResourceLoader: new (options: {
     cwd: string;
     agentDir: string;
     settingsManager?: PiSdkSettingsManager;
     builtinPackagePaths?: PackageSource[];
+    resourceLoaderInheritanceSnapshot?: DefaultResourceLoaderInheritanceSnapshot;
   }) => PiSdkResourceLoader;
   createAgentSession(options?: AtomicCreateAgentSessionOptions): Promise<{ session: StageSessionRuntime }>;
 }
@@ -118,6 +126,10 @@ type AtomicCreateAgentSessionOptions = Omit<CreateAgentSessionOptions, "settings
   resourceLoader?: PiSdkResourceLoader;
   sessionManager?: PiSdkSessionManager;
 };
+
+export interface PrepareAtomicStageSessionOptions {
+  resourceLoaderInheritanceSnapshot?: DefaultResourceLoaderInheritanceSnapshot;
+}
 
 function resolveSessionCwd(options: AtomicCreateAgentSessionOptions | undefined): string {
   return options?.cwd ?? options?.sessionManager?.getCwd() ?? process.cwd();
@@ -141,20 +153,33 @@ function resolveSessionCwd(options: AtomicCreateAgentSessionOptions | undefined)
 export async function prepareAtomicStageSessionOptions(
   options: CreateAgentSessionOptions | undefined,
   sdk: PiCodingAgentSdk,
+  prepareOptions: PrepareAtomicStageSessionOptions = {},
 ): Promise<AtomicCreateAgentSessionOptions | undefined> {
   const atomicOptions = options as AtomicCreateAgentSessionOptions | undefined;
   if (atomicOptions?.resourceLoader !== undefined) return atomicOptions;
 
+  const inheritanceSnapshot = prepareOptions.resourceLoaderInheritanceSnapshot;
   const cwd = resolveSessionCwd(atomicOptions);
   const hasAgentDirOverride = atomicOptions?.agentDir !== undefined;
   const agentDir = atomicOptions?.agentDir ?? sdk.getAgentDir();
   const settingsManager =
-    atomicOptions?.settingsManager ?? sdk.SettingsManager.create(cwd, agentDir);
+    atomicOptions?.settingsManager ?? sdk.SettingsManager.create(
+      cwd,
+      agentDir,
+      inheritanceSnapshot?.projectTrusted === undefined
+        ? undefined
+        : { projectTrusted: inheritanceSnapshot.projectTrusted },
+    );
+  const inheritedBuiltinPackagePaths = inheritanceSnapshot?.builtinPackagePaths;
+  const builtinPackagePaths = inheritedBuiltinPackagePaths === undefined
+    ? sdk.getBuiltinPackagePaths?.() ?? []
+    : [...inheritedBuiltinPackagePaths];
   const resourceLoader = new sdk.DefaultResourceLoader({
     cwd,
     agentDir,
     settingsManager,
-    builtinPackagePaths: stageBuiltinPackagePaths(sdk.getBuiltinPackagePaths?.() ?? []),
+    resourceLoaderInheritanceSnapshot: inheritanceSnapshot,
+    builtinPackagePaths: stageBuiltinPackagePaths(builtinPackagePaths),
   });
   await reloadWorkflowStageResources(resourceLoader);
 
@@ -167,15 +192,39 @@ export async function prepareAtomicStageSessionOptions(
   };
 }
 
-function stageBuiltinPackagePaths(paths: readonly string[]): PackageSource[] {
+function clonePackageSource(source: PackageSource): PackageSource {
+  if (typeof source === "string") return source;
+  return {
+    source: source.source,
+    ...(source.extensions === undefined ? {} : { extensions: [...source.extensions] }),
+    ...(source.skills === undefined ? {} : { skills: [...source.skills] }),
+    ...(source.prompts === undefined ? {} : { prompts: [...source.prompts] }),
+    ...(source.themes === undefined ? {} : { themes: [...source.themes] }),
+    ...(source.workflows === undefined ? {} : { workflows: [...source.workflows] }),
+  };
+}
+
+function packageSourcePath(source: PackageSource): string {
+  return typeof source === "string" ? source : source.source;
+}
+
+function disablePackageExtensions(source: PackageSource): PackageSource {
+  if (typeof source === "string") return { source, extensions: [] };
+  return { ...source, extensions: [] };
+}
+
+function stageBuiltinPackagePaths(paths: readonly PackageSource[]): PackageSource[] {
   // Workflow stages are child AgentSessions owned by the workflow extension.
   // Loading the workflows extension again inside that child session replays its
   // `session_start` lifecycle and clears/kills the parent workflow store. Keep
   // the workflows package itself so its bundled skills/prompts/resources remain
   // available, but disable only its extension entry for stage sessions.
-  return paths.map((path) =>
-    basename(path) === "workflows" ? { source: path, extensions: [] } : path,
-  );
+  return paths.map((path) => {
+    const cloned = clonePackageSource(path);
+    return basename(packageSourcePath(cloned)) === "workflows"
+      ? disablePackageExtensions(cloned)
+      : cloned;
+  });
 }
 
 const SUBAGENT_CHILD_EXTENSION_ENV_KEYS = [
@@ -225,9 +274,10 @@ async function reloadWorkflowStageResourcesWithEnvIsolation(resourceLoader: PiSd
 
 async function createPiSdkAgentSession(
   options?: CreateAgentSessionOptions,
+  prepareOptions?: PrepareAtomicStageSessionOptions,
 ): Promise<StageSessionCreateResult> {
   const sdk = await import("@bastani/atomic") as PiCodingAgentSdk;
-  const sessionOptions = await prepareAtomicStageSessionOptions(options, sdk);
+  const sessionOptions = await prepareAtomicStageSessionOptions(options, sdk, prepareOptions);
   const result = await sdk.createAgentSession(sessionOptions);
   // `CreateAgentSessionResult` is `{ session, extensionsResult, modelFallbackMessage? }`;
   // workflow stages only consume `.session` (structurally an `AgentSession`,
@@ -275,6 +325,7 @@ async function createTestAgentSession(_options?: CreateAgentSessionOptions): Pro
     async compact(): ReturnType<StageSessionRuntime["compact"]> {
       return {
         promptVersion: 1,
+        parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "auto-detected" },
         deletedTargets: [],
         protectedEntryIds: [],
         stats: {
@@ -419,7 +470,12 @@ export function buildRuntimeAdapters(
   const createSession =
     options.createAgentSession ??
     pi.createAgentSession ??
-    (isTestContext() ? createTestAgentSession : createPiSdkAgentSession);
+    (isTestContext()
+      ? createTestAgentSession
+      : (sessionOptions?: CreateAgentSessionOptions) =>
+        createPiSdkAgentSession(sessionOptions, {
+          resourceLoaderInheritanceSnapshot: pi.getResourceLoaderInheritanceSnapshot?.(),
+        }));
   const broker = options.stageUiBroker ?? stageUiBroker;
   const adapters: StageAdapters = {
     agentSession: {

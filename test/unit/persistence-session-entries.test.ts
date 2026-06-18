@@ -263,6 +263,20 @@ describe("appendStageEnd", () => {
     assert.equal(p["skippedReason"], "fail-fast");
   });
 
+  test("includes optional session metadata when provided", () => {
+    const api = makeMockApi();
+    appendStageEnd(api, {
+      runId: "r1",
+      stageId: "s1",
+      status: "failed",
+      sessionId: "session-1",
+      sessionFile: "/tmp/session-1.jsonl",
+    });
+    const p = api._entries[0]!.payload;
+    assert.equal(p["sessionId"], "session-1");
+    assert.equal(p["sessionFile"], "/tmp/session-1.jsonl");
+  });
+
   test("includes optional replay metadata when provided", () => {
     const api = makeMockApi();
     appendStageEnd(api, {

@@ -23,6 +23,7 @@ import {
 	createBranchSummaryMessage,
 	createCustomMessage,
 } from "./messages.ts";
+import { contentArrayHasAssistantThinkingBlock } from "./thinking-blocks.ts";
 
 export const CURRENT_SESSION_VERSION = 3;
 
@@ -55,6 +56,11 @@ export interface SessionMessageEntry extends SessionEntryBase {
 export interface ThinkingLevelChangeEntry extends SessionEntryBase {
 	type: "thinking_level_change";
 	thinkingLevel: string;
+}
+
+export interface ContextWindowChangeEntry extends SessionEntryBase {
+	type: "context_window_change";
+	contextWindow: number;
 }
 
 export interface ModelChangeEntry extends SessionEntryBase {
@@ -160,6 +166,7 @@ export interface CustomMessageEntry<T = unknown> extends SessionEntryBase {
 export type SessionEntry =
 	| SessionMessageEntry
 	| ThinkingLevelChangeEntry
+	| ContextWindowChangeEntry
 	| ModelChangeEntry
 	| CompactionEntry
 	| ContextCompactionEntry
@@ -185,6 +192,7 @@ export interface SessionTreeNode {
 export interface SessionContext {
 	messages: AgentMessage[];
 	thinkingLevel: string;
+	contextWindow: number | undefined;
 	model: { provider: string; modelId: string } | null;
 }
 
@@ -361,6 +369,15 @@ export interface ContextDeletionFilters {
 	deletedContentBlocks: Map<string, Set<number>>;
 }
 
+/**
+ * Build raw deletion filters from persisted context_compaction entries.
+ *
+ * These raw filters do not apply replay-safety repair for latest assistant
+ * thinking/redacted_thinking blocks or their paired tool results. Production
+ * context rebuild paths should prefer `buildEffectiveContextDeletionFilters`
+ * or `buildContextDeletionFilteredPath(path)` unless they intentionally need
+ * the un-repaired historical deletion plan for diagnostics.
+ */
 export function buildContextDeletionFilters(path: SessionEntry[]): ContextDeletionFilters {
 	const deletedEntryIds = new Set<string>();
 	const deletedContentBlocks = new Map<string, Set<number>>();
@@ -379,6 +396,127 @@ export function buildContextDeletionFilters(path: SessionEntry[]): ContextDeleti
 	}
 
 	return { deletedEntryIds, deletedContentBlocks };
+}
+
+function getToolCallContentBlockId(block: unknown): string | undefined {
+	if (!block || typeof block !== "object") return undefined;
+	const candidate = block as { type?: unknown; id?: unknown };
+	return candidate.type === "toolCall" && typeof candidate.id === "string" ? candidate.id : undefined;
+}
+
+function getToolResultCallId(message: AgentMessage): string | undefined {
+	if (message.role !== "toolResult") return undefined;
+	const toolCallId = (message as { toolCallId?: unknown }).toolCallId;
+	return typeof toolCallId === "string" ? toolCallId : undefined;
+}
+
+function collectToolCallContentBlockIds(content: readonly unknown[]): Set<string> {
+	const toolCallIds = new Set<string>();
+	for (const block of content) {
+		const toolCallId = getToolCallContentBlockId(block);
+		if (toolCallId) toolCallIds.add(toolCallId);
+	}
+	return toolCallIds;
+}
+
+function addDeletionTarget(filters: ContextDeletionFilters, target: ContextCompactionEntry["deletedTargets"][number]): void {
+	if (target.kind === "entry") {
+		filters.deletedEntryIds.add(target.entryId);
+		return;
+	}
+	const existing = filters.deletedContentBlocks.get(target.entryId) ?? new Set<number>();
+	existing.add(target.blockIndex);
+	filters.deletedContentBlocks.set(target.entryId, existing);
+}
+
+function buildToolResultEntryIdsByCallId(path: SessionEntry[]): Map<string, Set<string>> {
+	const toolResultEntryIdsByCallId = new Map<string, Set<string>>();
+	for (const entry of path) {
+		if (entry.type !== "message") continue;
+		const toolCallId = getToolResultCallId(entry.message);
+		if (!toolCallId) continue;
+		const existing = toolResultEntryIdsByCallId.get(toolCallId) ?? new Set<string>();
+		existing.add(entry.id);
+		toolResultEntryIdsByCallId.set(toolCallId, existing);
+	}
+	return toolResultEntryIdsByCallId;
+}
+
+function findRetainedThinkingAssistants(
+	path: SessionEntry[],
+	deletedEntryIds: ReadonlySet<string>,
+): SessionMessageEntry[] {
+	return path.filter((entry): entry is SessionMessageEntry => {
+		if (entry.type !== "message") return false;
+		if (deletedEntryIds.has(entry.id)) return false;
+		if (entry.message.role !== "assistant") return false;
+		return contentArrayHasAssistantThinkingBlock(entry.message.content);
+	});
+}
+
+export function buildEffectiveContextDeletionFilters(path: SessionEntry[]): ContextDeletionFilters {
+	const filters = buildContextDeletionFilters(path);
+	if (!path.some((entry) => entry.type === "context_compaction")) return filters;
+
+	const rawDeletedEntryIds = new Set<string>();
+	for (const compaction of path) {
+		if (compaction.type !== "context_compaction") continue;
+		for (const target of compaction.deletedTargets) {
+			if (target.kind === "entry") rawDeletedEntryIds.add(target.entryId);
+		}
+	}
+	const retainedThinkingAssistants = findRetainedThinkingAssistants(path, rawDeletedEntryIds);
+	const retainedThinkingAssistantIds = new Set(retainedThinkingAssistants.map((entry) => entry.id));
+	const retainedThinkingAssistantById = new Map(retainedThinkingAssistants.map((entry) => [entry.id, entry]));
+	const toolResultEntryIdsByCallId = buildToolResultEntryIdsByCallId(path);
+	const effectiveFilters: ContextDeletionFilters = {
+		deletedEntryIds: new Set<string>(),
+		deletedContentBlocks: new Map<string, Set<number>>(),
+	};
+	const allRestoredToolResultEntryIds = new Set<string>();
+
+	for (const compaction of path) {
+		if (compaction.type !== "context_compaction") continue;
+		for (const target of compaction.deletedTargets) {
+			if (target.kind !== "content_block") continue;
+			const retainedThinkingAssistant = retainedThinkingAssistantById.get(target.entryId);
+			if (!retainedThinkingAssistant) continue;
+			const content = (retainedThinkingAssistant.message as { content: readonly unknown[] }).content;
+			for (const toolCallId of collectToolCallContentBlockIds(content)) {
+				for (const entryId of toolResultEntryIdsByCallId.get(toolCallId) ?? []) {
+					allRestoredToolResultEntryIds.add(entryId);
+				}
+			}
+		}
+	}
+
+	for (const compaction of path) {
+		if (compaction.type !== "context_compaction") continue;
+		let restoresRetainedThinkingAssistant = false;
+		for (const target of compaction.deletedTargets) {
+			if (target.kind === "content_block" && retainedThinkingAssistantIds.has(target.entryId)) {
+				restoresRetainedThinkingAssistant = true;
+				break;
+			}
+		}
+
+		for (const target of compaction.deletedTargets) {
+			if (target.kind === "content_block" && retainedThinkingAssistantIds.has(target.entryId)) {
+				continue;
+			}
+			// When a stale persisted plan tried to partially filter a retained
+			// thinking-bearing assistant, treat the same compaction entry as one
+			// unsafe unit and restore its paired tool results. Later compaction
+			// entries may still trim those restored multi-block results normally,
+			// but whole-entry deletion of those paired results remains unsafe in any
+			// later compaction because the assistant tool call is retained.
+			if (restoresRetainedThinkingAssistant && allRestoredToolResultEntryIds.has(target.entryId)) continue;
+			if (target.kind === "entry" && allRestoredToolResultEntryIds.has(target.entryId)) continue;
+			addDeletionTarget(effectiveFilters, target);
+		}
+	}
+
+	return effectiveFilters;
 }
 
 function filterContentArray<T>(content: T[], deletedBlocks: ReadonlySet<number>): T[] {
@@ -425,17 +563,20 @@ function filterMessageContentBlocks(
  * Return the active branch path after applying logical context-deletion entries.
  * Whole-entry deletions remove the entry from the path. Content-block deletions
  * clone only affected message/custom-message entries so retained blocks stay verbatim.
+ * The optional filters parameter is for callers that already computed effective
+ * filters with `buildEffectiveContextDeletionFilters(path)` and want to avoid
+ * repeating the repair pass.
  */
 export function buildContextDeletionFilteredPath(
 	path: SessionEntry[],
-	filters: ContextDeletionFilters = buildContextDeletionFilters(path),
+	effectiveFilters: ContextDeletionFilters = buildEffectiveContextDeletionFilters(path),
 ): SessionEntry[] {
 	const filteredPath: SessionEntry[] = [];
 
 	for (const entry of path) {
-		if (filters.deletedEntryIds.has(entry.id)) continue;
+		if (effectiveFilters.deletedEntryIds.has(entry.id)) continue;
 
-		const deletedBlocks = filters.deletedContentBlocks.get(entry.id);
+		const deletedBlocks = effectiveFilters.deletedContentBlocks.get(entry.id);
 		if (!deletedBlocks || deletedBlocks.size === 0) {
 			filteredPath.push(entry);
 			continue;
@@ -481,7 +622,7 @@ export function buildSessionContext(
 	let leaf: SessionEntry | undefined;
 	if (leafId === null) {
 		// Explicitly null - return no messages (navigated to before first entry)
-		return { messages: [], thinkingLevel: "off", model: null };
+		return { messages: [], thinkingLevel: "off", contextWindow: undefined, model: null };
 	}
 	if (leafId) {
 		leaf = byId.get(leafId);
@@ -492,7 +633,7 @@ export function buildSessionContext(
 	}
 
 	if (!leaf) {
-		return { messages: [], thinkingLevel: "off", model: null };
+		return { messages: [], thinkingLevel: "off", contextWindow: undefined, model: null };
 	}
 
 	// Walk from leaf to root, collecting path
@@ -505,11 +646,14 @@ export function buildSessionContext(
 
 	// Extract settings
 	let thinkingLevel = "off";
+	let contextWindow: number | undefined;
 	let model: { provider: string; modelId: string } | null = null;
 
 	for (const entry of path) {
 		if (entry.type === "thinking_level_change") {
 			thinkingLevel = entry.thinkingLevel;
+		} else if (entry.type === "context_window_change") {
+			contextWindow = entry.contextWindow;
 		} else if (entry.type === "model_change") {
 			model = { provider: entry.provider, modelId: entry.modelId };
 		} else if (entry.type === "message" && entry.message.role === "assistant") {
@@ -547,7 +691,7 @@ export function buildSessionContext(
 		appendMessage(entry);
 	}
 
-	return { messages, thinkingLevel, model };
+	return { messages, thinkingLevel, contextWindow, model };
 }
 
 /**
@@ -1046,6 +1190,19 @@ export class SessionManager {
 			parentId: this.leafId,
 			timestamp: new Date().toISOString(),
 			thinkingLevel,
+		};
+		this._appendEntry(entry);
+		return entry.id;
+	}
+
+	/** Append a context window change as child of current leaf, then advance leaf. Returns entry id. */
+	appendContextWindowChange(contextWindow: number): string {
+		const entry: ContextWindowChangeEntry = {
+			type: "context_window_change",
+			id: generateId(this.byId),
+			parentId: this.leafId,
+			timestamp: new Date().toISOString(),
+			contextWindow,
 		};
 		this._appendEntry(entry);
 		return entry.id;

@@ -399,7 +399,7 @@ export default defineWorkflow("deep-research-codebase")
         "openai-codex/gpt-5.5:xhigh",
         "github-copilot/gpt-5.5:xhigh",
         "openai/gpt-5.5:xhigh",
-        "github-copilot/claude-opus-4.8:xhigh",
+        "github-copilot/claude-opus-4.8 (1m):xhigh",
         "anthropic/claude-opus-4-8:xhigh"
       ],
       excludedTools: ["ask_user_question"],

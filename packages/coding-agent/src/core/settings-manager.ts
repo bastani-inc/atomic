@@ -13,11 +13,15 @@ import {
 	getProjectConfigPaths,
 } from "../config.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
+import { parseContextWindowValue, validateContextWindowValue } from "./context-window.ts";
 import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, parseHttpIdleTimeoutMs } from "./http-dispatcher.ts";
 
 export interface CompactionSettings {
 	enabled?: boolean; // default: true
 	reserveTokens?: number; // default: 16384
+	compression_ratio?: number; // default: 0.5 (fraction of compactable context to keep)
+	preserve_recent?: number; // default: 2 (recent context-eligible messages to keep)
+	query?: string; // default: auto-detected from session context
 }
 
 export interface BranchSummarySettings {
@@ -74,6 +78,9 @@ export type DefaultProjectTrust = "ask" | "always" | "never";
 
 export type TransportSetting = Transport;
 
+export type ContextWindowSetting = number | string;
+export type ModelContextWindowSettings = Record<string, ContextWindowSetting>;
+
 /**
  * Package source for npm/git packages.
  * - String form: load all resources from the package
@@ -95,6 +102,8 @@ export interface Settings {
 	defaultProvider?: string;
 	defaultModel?: string;
 	defaultThinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+	defaultContextWindow?: ContextWindowSetting; // Optional global fallback; model picker writes defaultContextWindows instead.
+	defaultContextWindows?: ModelContextWindowSettings; // Per-model defaults keyed as "provider/modelId".
 	transport?: TransportSetting; // default: "auto"
 	steeringMode?: "all" | "one-at-a-time";
 	followUpMode?: "all" | "one-at-a-time";
@@ -354,9 +363,13 @@ export class SettingsManager {
 		const initialErrors: SettingsError[] = [];
 		if (globalLoad.error) {
 			initialErrors.push({ scope: "global", error: globalLoad.error });
+		} else {
+			initialErrors.push(...SettingsManager.validateLoadedSettings("global", globalLoad.settings));
 		}
 		if (projectLoad.error) {
 			initialErrors.push({ scope: "project", error: projectLoad.error });
+		} else {
+			initialErrors.push(...SettingsManager.validateLoadedSettings("project", projectLoad.settings));
 		}
 
 		return new SettingsManager(
@@ -405,6 +418,63 @@ export class SettingsManager {
 			return { settings: SettingsManager.loadFromStorage(storage, scope, projectTrusted), error: null };
 		} catch (error) {
 			return { settings: {}, error: error as Error };
+		}
+	}
+
+	private static validateLoadedSettings(scope: SettingsScope, settings: Settings): SettingsError[] {
+		const errors: SettingsError[] = [];
+		const configured = (settings as Record<string, unknown>).defaultContextWindow;
+		if (configured !== undefined) {
+			const error = SettingsManager.validateContextWindowSettingValue(configured, "defaultContextWindow");
+			if (error) {
+				errors.push({ scope, error });
+			}
+		}
+		const configuredByModel = (settings as Record<string, unknown>).defaultContextWindows;
+		if (configuredByModel !== undefined) {
+			if (!SettingsManager.isPlainRecord(configuredByModel)) {
+				errors.push({
+					scope,
+					error: new Error(
+						`Invalid defaultContextWindows: expected an object keyed by "provider/modelId", got ${SettingsManager.formatSettingValue(configuredByModel)}.`,
+					),
+				});
+			} else {
+				for (const [key, value] of Object.entries(configuredByModel)) {
+					const error = SettingsManager.validateContextWindowSettingValue(value, `defaultContextWindows.${key}`);
+					if (error) {
+						errors.push({ scope, error });
+					}
+				}
+			}
+		}
+		return errors;
+	}
+
+	private static isPlainRecord(value: unknown): value is Record<string, unknown> {
+		return typeof value === "object" && value !== null && !Array.isArray(value);
+	}
+
+	private static validateContextWindowSettingValue(value: unknown, fieldName: string): Error | undefined {
+		if (typeof value === "number") {
+			const validationError = validateContextWindowValue(value);
+			return validationError ? new Error(`Invalid ${fieldName}: ${validationError}.`) : undefined;
+		}
+		if (typeof value === "string") {
+			const parsed = parseContextWindowValue(value);
+			return parsed.error ? new Error(`Invalid ${fieldName}: ${parsed.error}`) : undefined;
+		}
+		return new Error(
+			`Invalid ${fieldName}: expected a positive integer token count or compact string like "400k" or "1m", got ${SettingsManager.formatSettingValue(value)}.`,
+		);
+	}
+
+	private static formatSettingValue(value: unknown): string {
+		try {
+			const serialized = JSON.stringify(value);
+			return serialized ?? String(value);
+		} catch {
+			return String(value);
 		}
 	}
 
@@ -503,6 +573,10 @@ export class SettingsManager {
 		this.projectSettingsLoadError = projectLoad.error;
 		if (projectLoad.error) {
 			this.recordError("project", projectLoad.error);
+		} else {
+			for (const { error } of SettingsManager.validateLoadedSettings("project", projectLoad.settings)) {
+				this.recordError("project", error);
+			}
 		}
 		this.settings = this.mergeEffectiveSettings();
 	}
@@ -513,6 +587,9 @@ export class SettingsManager {
 		if (!globalLoad.error) {
 			this.globalSettings = globalLoad.settings;
 			this.globalSettingsLoadError = null;
+			for (const { error } of SettingsManager.validateLoadedSettings("global", globalLoad.settings)) {
+				this.recordError("global", error);
+			}
 		} else {
 			this.globalSettingsLoadError = globalLoad.error;
 			this.recordError("global", globalLoad.error);
@@ -527,6 +604,9 @@ export class SettingsManager {
 		if (!projectLoad.error) {
 			this.projectSettings = projectLoad.settings;
 			this.projectSettingsLoadError = null;
+			for (const { error } of SettingsManager.validateLoadedSettings("project", projectLoad.settings)) {
+				this.recordError("project", error);
+			}
 		} else {
 			this.projectSettingsLoadError = projectLoad.error;
 			this.recordError("project", projectLoad.error);
@@ -745,8 +825,15 @@ export class SettingsManager {
 		this.save();
 	}
 
+	getThemeSetting(): string | undefined {
+		const value = this.settings.theme;
+		if (typeof value === "string") return value;
+		return undefined;
+	}
+
 	getTheme(): string | undefined {
-		return this.settings.theme;
+		const theme = this.getThemeSetting();
+		return theme?.includes("/") ? undefined : theme;
 	}
 
 	setTheme(theme: string): void {
@@ -762,6 +849,56 @@ export class SettingsManager {
 	setDefaultThinkingLevel(level: "off" | "minimal" | "low" | "medium" | "high" | "xhigh"): void {
 		this.globalSettings.defaultThinkingLevel = level;
 		this.markModified("defaultThinkingLevel");
+		this.save();
+	}
+
+	private static defaultContextWindowModelKey(provider: string, modelId: string): string {
+		return `${provider}/${modelId}`;
+	}
+
+	private static parseContextWindowSetting(configured: ContextWindowSetting | undefined): number | undefined {
+		if (typeof configured === "number") {
+			return validateContextWindowValue(configured) ? undefined : configured;
+		}
+		if (typeof configured === "string") {
+			return parseContextWindowValue(configured).value;
+		}
+		return undefined;
+	}
+
+	getDefaultContextWindow(): number | undefined {
+		return SettingsManager.parseContextWindowSetting(this.settings.defaultContextWindow);
+	}
+
+	getDefaultContextWindowForModel(provider: string, modelId: string): number | undefined {
+		const key = SettingsManager.defaultContextWindowModelKey(provider, modelId);
+		return SettingsManager.parseContextWindowSetting(this.settings.defaultContextWindows?.[key]);
+	}
+
+	setDefaultContextWindow(contextWindow: number | undefined): void {
+		if (contextWindow === undefined) {
+			delete this.globalSettings.defaultContextWindow;
+		} else {
+			this.globalSettings.defaultContextWindow = contextWindow;
+		}
+		this.markModified("defaultContextWindow");
+		this.save();
+	}
+
+	setDefaultContextWindowForModel(provider: string, modelId: string, contextWindow: number | undefined): void {
+		const key = SettingsManager.defaultContextWindowModelKey(provider, modelId);
+		const next = { ...(this.globalSettings.defaultContextWindows ?? {}) };
+		if (contextWindow === undefined) {
+			delete next[key];
+		} else {
+			next[key] = contextWindow;
+		}
+		if (Object.keys(next).length === 0) {
+			delete this.globalSettings.defaultContextWindows;
+		} else {
+			this.globalSettings.defaultContextWindows = next;
+		}
+		this.markModified("defaultContextWindows");
 		this.save();
 	}
 
@@ -792,10 +929,35 @@ export class SettingsManager {
 		return this.settings.compaction?.reserveTokens ?? 16384;
 	}
 
-	getCompactionSettings(): { enabled: boolean; reserveTokens: number } {
+	getCompactionCompressionRatio(): number {
+		const value = this.settings.compaction?.compression_ratio;
+		return typeof value === "number" && Number.isFinite(value) && value > 0 && value < 1 ? value : 0.5;
+	}
+
+	getCompactionPreserveRecent(): number {
+		const value = this.settings.compaction?.preserve_recent;
+		return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 2;
+	}
+
+	getCompactionQuery(): string | undefined {
+		const query = this.settings.compaction?.query?.trim();
+		return query && query.length > 0 ? query : undefined;
+	}
+
+	getCompactionSettings(): {
+		enabled: boolean;
+		reserveTokens: number;
+		compression_ratio: number;
+		preserve_recent: number;
+		query?: string;
+	} {
+		const query = this.getCompactionQuery();
 		return {
 			enabled: this.getCompactionEnabled(),
 			reserveTokens: this.getCompactionReserveTokens(),
+			compression_ratio: this.getCompactionCompressionRatio(),
+			preserve_recent: this.getCompactionPreserveRecent(),
+			...(query === undefined ? {} : { query }),
 		};
 	}
 

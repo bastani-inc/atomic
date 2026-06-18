@@ -107,6 +107,43 @@ function isTruthyEnvFlag(value: string | undefined): boolean {
 	return value === "1" || value.toLowerCase() === "true" || value.toLowerCase() === "yes";
 }
 
+type DrainableWritable = NodeJS.WritableStream & {
+	destroyed?: boolean;
+	writable?: boolean;
+	writableEnded?: boolean;
+};
+
+function drainWritable(stream: DrainableWritable): Promise<void> {
+	if (stream.destroyed || stream.writable === false || stream.writableEnded) {
+		return Promise.resolve();
+	}
+
+	return new Promise((resolve) => {
+		let settled = false;
+
+		const settle = () => {
+			if (settled) {
+				return;
+			}
+			settled = true;
+			stream.removeListener("error", onError);
+			resolve();
+		};
+		const onError = () => settle();
+
+		stream.once("error", onError);
+		try {
+			stream.write("", settle);
+		} catch {
+			settle();
+		}
+	});
+}
+
+async function drainProcessStdio(): Promise<void> {
+	await Promise.all([drainWritable(process.stdout), drainWritable(process.stderr)]);
+}
+
 export type AppMode = "interactive" | "print" | "json" | "rpc";
 
 const NO_UI_EXCLUDED_TOOLS = ["ask_user_question"] as const;
@@ -138,8 +175,12 @@ function resolveAppMode(parsed: Args, stdinIsTTY: boolean, stdoutIsTTY: boolean)
 	return "interactive";
 }
 
+function isReadOnlyRuntimeMetadataCommand(parsed: Args): boolean {
+	return parsed.help === true || parsed.listModels !== undefined;
+}
+
 function isPlainRuntimeMetadataCommand(parsed: Args): boolean {
-	return !parsed.print && parsed.mode === undefined && (parsed.help === true || parsed.listModels !== undefined);
+	return !parsed.print && parsed.mode === undefined && isReadOnlyRuntimeMetadataCommand(parsed);
 }
 
 function toPrintOutputMode(appMode: AppMode): Exclude<Mode, "rpc"> {
@@ -436,6 +477,11 @@ function buildSessionOptions(
 		options.thinkingLevel = parsed.thinking;
 	}
 
+	if (parsed.contextWindow !== undefined) {
+		options.contextWindow = parsed.contextWindow;
+		options.contextWindowStrict = true;
+	}
+
 	// Scoped models for CTRL+P cycling
 	// Keep thinking level undefined when not explicitly set in the model pattern.
 	// Undefined means "inherit current session thinking level" during cycling.
@@ -517,6 +563,9 @@ export async function main(args: string[], options?: MainOptions) {
 	}
 
 	if (await handlePackageCommand(args, { extensionFactories: options?.extensionFactories })) {
+		const exitCode = process.exitCode ?? 0;
+		await drainProcessStdio();
+		process.exit(exitCode);
 		return;
 	}
 
@@ -766,15 +815,34 @@ export async function main(args: string[], options?: MainOptions) {
 			sessionStartEvent,
 			model: sessionOptions.model,
 			thinkingLevel: sessionOptions.thinkingLevel,
+			contextWindow: sessionOptions.contextWindow,
+			contextWindowStrict: sessionOptions.contextWindowStrict,
 			scopedModels: sessionOptions.scopedModels,
 			tools: sessionOptions.tools,
 			excludedTools: resolveExcludedToolsForAppMode(appMode, sessionOptions.excludedTools),
 			noTools: sessionOptions.noTools,
 			customTools: sessionOptions.customTools,
 		});
+		if (created.contextWindowWarning) {
+			diagnostics.push({ type: "warning", message: created.contextWindowWarning });
+		}
+		if (created.contextWindowError) {
+			diagnostics.push({ type: "error", message: created.contextWindowError });
+		}
+
 		const cliThinkingOverride = parsed.thinking !== undefined || cliThinkingFromModel;
 		if (created.session.model && cliThinkingOverride) {
 			created.session.setThinkingLevel(created.session.thinkingLevel);
+		}
+		const hasFatalDiagnostics = diagnostics.some((diagnostic) => diagnostic.type === "error");
+		if (
+			created.session.model &&
+			parsed.contextWindow !== undefined &&
+			!created.contextWindowError &&
+			!hasFatalDiagnostics &&
+			!isReadOnlyRuntimeMetadataCommand(parsed)
+		) {
+			created.session.setContextWindow(parsed.contextWindow, { persistDefault: true });
 		}
 
 		return {

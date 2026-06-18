@@ -71,11 +71,14 @@ export function detectInstallMethod(): InstallMethod {
 	if (resolvedPath.includes("/yarn/") || resolvedPath.includes("/.yarn/")) {
 		return "yarn";
 	}
-	if (isBunRuntime || resolvedPath.includes("/install/global/node_modules/")) {
+	if (resolvedPath.includes("/install/global/node_modules/")) {
 		return "bun";
 	}
 	if (resolvedPath.includes("/npm/") || resolvedPath.includes("/node_modules/")) {
 		return "npm";
+	}
+	if (isBunRuntime) {
+		return "bun";
 	}
 
 	return "unknown";
@@ -109,19 +112,27 @@ function getSelfUpdateCommandForMethod(
 	switch (method) {
 		case "bun-binary":
 			return undefined;
-		case "pnpm":
+		case "pnpm": {
+			const match = readCommandOutput("pnpm", ["root", "-g"])
+				? undefined
+				: /^(.*[\\/]global[\\/][^\\/]+)[\\/]\.pnpm[\\/]/.exec(getPackageDir());
+			const binDirArgs = match
+				? [`--config.global-bin-dir=${process.env.PNPM_HOME || dirname(dirname(match[1]))}`]
+				: [];
 			return makeSelfUpdateCommand(
 				makeSelfUpdateCommandStep("pnpm", [
 					"install",
 					"-g",
 					"--ignore-scripts",
 					"--config.minimumReleaseAge=0",
+					...binDirArgs,
 					updatePackageName,
 				]),
 				updatePackageName === installedPackageName
 					? undefined
-					: makeSelfUpdateCommandStep("pnpm", ["remove", "-g", installedPackageName]),
+					: makeSelfUpdateCommandStep("pnpm", ["remove", "-g", ...binDirArgs, installedPackageName]),
 			);
+		}
 		case "yarn":
 			return makeSelfUpdateCommand(
 				makeSelfUpdateCommandStep("yarn", ["global", "add", "--ignore-scripts", updatePackageName]),
@@ -205,7 +216,9 @@ function getGlobalPackageRoots(method: InstallMethod, _packageName: string, npmC
 		}
 		case "pnpm": {
 			const root = readCommandOutput("pnpm", ["root", "-g"]);
-			return root ? [root, dirname(root)] : [];
+			if (root) return [root, dirname(root)];
+			const match = /^(.*[\\/]global[\\/][^\\/]+)[\\/]\.pnpm[\\/]/.exec(getPackageDir());
+			return match ? [match[1]] : [];
 		}
 		case "yarn": {
 			const dir = readCommandOutput("yarn", ["global", "dir"]);

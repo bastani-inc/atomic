@@ -2575,6 +2575,7 @@ interface ParallelFailFastScope {
   failed: boolean;
   firstFailure?: unknown;
   readonly activeStages: Map<string, ParallelFailFastStage>;
+  readonly parentIds?: readonly string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -3553,6 +3554,8 @@ export async function run<TInputs extends WorkflowInputValues>(
         ...(stageSnapshot.failureMessage !== undefined ? { failureMessage: stageSnapshot.failureMessage } : {}),
         ...(stageSnapshot.retryAfterMs !== undefined ? { retryAfterMs: stageSnapshot.retryAfterMs } : {}),
         ...(stageSnapshot.skippedReason !== undefined ? { skippedReason: stageSnapshot.skippedReason } : {}),
+        ...(stageSnapshot.sessionId !== undefined ? { sessionId: stageSnapshot.sessionId } : {}),
+        ...(stageSnapshot.sessionFile !== undefined ? { sessionFile: stageSnapshot.sessionFile } : {}),
         ...(stageSnapshot.result !== undefined && stageSnapshot.status === "completed" ? { summary: stageSnapshot.result } : {}),
         ...stageReplayFields(stageSnapshot),
         ...(stageSnapshot.status === "completed" && stageSnapshot.workflowChild !== undefined
@@ -4039,13 +4042,18 @@ export async function run<TInputs extends WorkflowInputValues>(
 
       // b. tracker.onSpawn → provisional parentIds
       const provisionalParentIds = tracker.onSpawn(stageId, name);
+      const scopedParentIds = opts.continuation === undefined ? stageFailFastScope?.parentIds : undefined;
+      const initialParentIds = scopedParentIds === undefined ? provisionalParentIds : [...scopedParentIds];
+      if (scopedParentIds !== undefined && !sameStringSet(scopedParentIds, provisionalParentIds)) {
+        tracker.replaceParents(stageId, scopedParentIds);
+      }
 
       // c. Create StageSnapshot as "pending"
       const replayKey = `stage:${name}`;
       const replayDecision = replayIndex.decide({
         displayName: name,
         replayKey,
-        parentIds: provisionalParentIds,
+        parentIds: initialParentIds,
         stageId,
         kind: "stage",
       });
@@ -4054,6 +4062,7 @@ export async function run<TInputs extends WorkflowInputValues>(
         tracker.replaceParents(stageId, parentIds);
       }
       const replaySource = replayDecision.kind === "replay" ? replayDecision.source : undefined;
+      const executeReplaySource = replayDecision.kind === "execute" ? replayDecision.source : undefined;
       const shouldReplay = replaySource !== undefined;
 
       const stageSnapshot: StageSnapshot = {
@@ -4068,6 +4077,8 @@ export async function run<TInputs extends WorkflowInputValues>(
           endedAt: Date.now(),
           durationMs: 0,
           ...(replaySource.result !== undefined ? { result: replaySource.result } : {}),
+          ...(replaySource.sessionId !== undefined ? { sessionId: replaySource.sessionId } : {}),
+          ...(replaySource.sessionFile !== undefined ? { sessionFile: replaySource.sessionFile } : {}),
           replayedFromStageId: replaySource.id,
           replayed: true,
         } : {}),
@@ -4110,6 +4121,8 @@ export async function run<TInputs extends WorkflowInputValues>(
             durationMs: stageSnapshot.durationMs ?? 0,
             ...(stageSnapshot.status === "completed" && stageSnapshot.result !== undefined ? { summary: stageSnapshot.result } : {}),
             ...(stageSnapshot.skippedReason !== undefined ? { skippedReason: stageSnapshot.skippedReason } : {}),
+            ...(stageSnapshot.sessionId !== undefined ? { sessionId: stageSnapshot.sessionId } : {}),
+            ...(stageSnapshot.sessionFile !== undefined ? { sessionFile: stageSnapshot.sessionFile } : {}),
             ...stageReplayFields(stageSnapshot),
           });
         };
@@ -4170,6 +4183,7 @@ export async function run<TInputs extends WorkflowInputValues>(
           __getLastAssistantText: () => replayResult,
           getLastAssistantText: () => replayResult,
           __ensureSession: async () => {},
+          __ensureSessionFromFile: async () => {},
           __sessionMeta: () => ({
             sessionId: replaySource.sessionId,
             sessionFile: replaySource.sessionFile,
@@ -4202,13 +4216,21 @@ export async function run<TInputs extends WorkflowInputValues>(
         if (meta.modelAttempts !== undefined) stageSnapshot.modelAttempts = meta.modelAttempts;
       };
 
+      const stageOptionsForContext: StageOptions | undefined = executeReplaySource?.sessionFile === undefined
+        ? options
+        : {
+            ...(options ?? {}),
+            context: options?.context ?? "fork",
+            forkFromSessionFile: options?.forkFromSessionFile ?? executeReplaySource.sessionFile,
+          };
+
       const innerCtx: InternalStageContext = createStageContext({
         stageId,
         stageName: name,
         adapters,
         runId,
         signal: ownController.signal,
-        stageOptions: options,
+        stageOptions: stageOptionsForContext,
         models: opts.models,
         executionMode: opts.executionMode,
         onModelFallbackMetaChange(meta) {
@@ -4312,6 +4334,26 @@ export async function run<TInputs extends WorkflowInputValues>(
       //    the chat surface only realises the SDK session when the user
       //    types or the workflow body invokes a tracked call.
       const stageRegistry = opts.stageControlRegistry ?? defaultStageControlRegistry;
+      const captureStageSessionMeta = (): void => {
+        const meta = innerCtx.__sessionMeta();
+        if (meta.sessionId !== undefined) stageSnapshot.sessionId = meta.sessionId;
+        if (meta.sessionFile !== undefined) stageSnapshot.sessionFile = meta.sessionFile;
+        if (meta.sessionId !== undefined || meta.sessionFile !== undefined) {
+          activeStore.recordStageSession(runId, stageId, meta);
+        }
+      };
+      const ensureMessagingSession = async (): Promise<void> => {
+        const meta = innerCtx.__sessionMeta();
+        if (meta.sessionId !== undefined || meta.sessionFile !== undefined) return;
+        if (stageSnapshot.sessionFile !== undefined) {
+          await innerCtx.__ensureSessionFromFile(stageSnapshot.sessionFile);
+          captureStageSessionMeta();
+          return;
+        }
+        if (isTerminalStage(stageSnapshot)) {
+          throw new Error(`atomic-workflows: cannot message stage "${name}" because no retained session metadata is available.`);
+        }
+      };
       const handle: StageControlHandle = {
         runId,
         stageId,
@@ -4320,10 +4362,10 @@ export async function run<TInputs extends WorkflowInputValues>(
           return stageSnapshot.status;
         },
         get sessionId() {
-          return innerCtx.__sessionMeta().sessionId;
+          return innerCtx.__sessionMeta().sessionId ?? stageSnapshot.sessionId;
         },
         get sessionFile() {
-          return innerCtx.__sessionMeta().sessionFile;
+          return innerCtx.__sessionMeta().sessionFile ?? stageSnapshot.sessionFile;
         },
         get isStreaming() {
           return innerCtx.isStreaming;
@@ -4339,29 +4381,38 @@ export async function run<TInputs extends WorkflowInputValues>(
         },
         async ensureAttached() {
           throwIfStageMutationBlocked();
+          await ensureMessagingSession();
           await innerCtx.__ensureSession();
           throwIfStageMutationBlocked();
-          const meta = innerCtx.__sessionMeta();
-          if (meta.sessionId !== undefined || meta.sessionFile !== undefined) {
-            activeStore.recordStageSession(runId, stageId, meta);
-          }
+          captureStageSessionMeta();
         },
         async prompt(text: string) {
           throwIfStageMutationBlocked();
-          await innerCtx.prompt(text);
-          throwIfStageMutationBlocked();
-          const meta = innerCtx.__sessionMeta();
-          if (meta.sessionId !== undefined || meta.sessionFile !== undefined) {
-            activeStore.recordStageSession(runId, stageId, meta);
+          await ensureMessagingSession();
+          try {
+            await innerCtx.prompt(text);
+          } finally {
+            captureStageSessionMeta();
           }
+          throwIfStageMutationBlocked();
         },
         async steer(text: string) {
           throwIfStageMutationBlocked();
-          await innerCtx.steer(text);
+          await ensureMessagingSession();
+          try {
+            await innerCtx.steer(text);
+          } finally {
+            captureStageSessionMeta();
+          }
         },
         async followUp(text: string) {
           throwIfStageMutationBlocked();
-          await innerCtx.followUp(text);
+          await ensureMessagingSession();
+          try {
+            await innerCtx.followUp(text);
+          } finally {
+            captureStageSessionMeta();
+          }
         },
         async pause() {
           throwIfStageMutationBlocked();
@@ -4377,12 +4428,17 @@ export async function run<TInputs extends WorkflowInputValues>(
         },
         async resume(message?: string) {
           throwIfStageMutationBlocked();
+          await ensureMessagingSession();
           const changed = activeStore.recordStageResumed(runId, stageId);
           if (changed) {
             releaseStageBarrier(stageId);
             await cascadeResumeFrom(stageId);
           }
-          await innerCtx.__resume(message);
+          try {
+            await innerCtx.__resume(message);
+          } finally {
+            captureStageSessionMeta();
+          }
         },
         subscribe(listener: AgentSessionEventListener) {
           return innerCtx.subscribe(listener);
@@ -4432,6 +4488,8 @@ export async function run<TInputs extends WorkflowInputValues>(
             ...(stageSnapshot.failureMessage !== undefined ? { failureMessage: stageSnapshot.failureMessage } : {}),
             ...(stageSnapshot.retryAfterMs !== undefined ? { retryAfterMs: stageSnapshot.retryAfterMs } : {}),
             ...(stageSnapshot.skippedReason !== undefined ? { skippedReason: stageSnapshot.skippedReason } : {}),
+            ...(stageSnapshot.sessionId !== undefined ? { sessionId: stageSnapshot.sessionId } : {}),
+            ...(stageSnapshot.sessionFile !== undefined ? { sessionFile: stageSnapshot.sessionFile } : {}),
             ...(stageSnapshot.result !== undefined && stageSnapshot.status === "completed" ? { summary: stageSnapshot.result } : {}),
             ...stageReplayFields(stageSnapshot),
           });
@@ -4547,7 +4605,7 @@ export async function run<TInputs extends WorkflowInputValues>(
           throw err;
         }
 
-        if (opts.continuation === undefined && stageSnapshot.startedAt === undefined) {
+        if (opts.continuation === undefined && stageSnapshot.startedAt === undefined && stageFailFastScope?.parentIds === undefined) {
           const actualParentIds = tracker.currentParents();
           if (!sameStringSet(actualParentIds, stageSnapshot.parentIds)) {
             tracker.replaceParents(stageId, actualParentIds);
@@ -4576,6 +4634,7 @@ export async function run<TInputs extends WorkflowInputValues>(
         if (eagerSession && !promptAdapterHandlesInitialPrompt && (hasNoExplicitModelConfig || await hasExplicitFastModeCandidate())) {
           try {
             await innerCtx.__ensureSession();
+            captureStageSessionMeta();
           } catch (err) {
             if (!(err instanceof Error && err.message.includes("prompt adapter not configured"))) {
               throw err;
@@ -4661,10 +4720,7 @@ export async function run<TInputs extends WorkflowInputValues>(
           // attached chat surface can reopen the persisted session
           // via SessionManager.open(sessionFile) post-mortem.
           {
-            const meta = innerCtx.__sessionMeta();
-            if (meta.sessionId !== undefined || meta.sessionFile !== undefined) {
-              activeStore.recordStageSession(runId, stageId, meta);
-            }
+            captureStageSessionMeta();
             applyModelFallbackMeta(innerCtx.__modelFallbackMeta());
           }
           if (stageFailFastScope?.failed === true && stageFailFastScope.activeStages.has(stageId)) {
@@ -4699,6 +4755,7 @@ export async function run<TInputs extends WorkflowInputValues>(
             opts.mcp.clearScope(stageId);
           }
 
+          captureStageSessionMeta();
           finalizeStageSnapshot();
           if (stageClosedByWorkflowExit || currentWorkflowExitAbortReason() !== undefined) {
             await releaseLiveHandle().catch(() => {});
@@ -4905,22 +4962,25 @@ export async function run<TInputs extends WorkflowInputValues>(
     async parallel(steps: readonly WorkflowTaskStep[], options: WorkflowParallelOptions = {}): Promise<WorkflowTaskResult[]> {
       throwIfWorkflowExitSelected();
       const fallback = parallelFallbackTask(steps, options);
-      const failFastScope: ParallelFailFastScope | undefined = options.failFast === false
-        ? undefined
-        : { failed: false, activeStages: new Map<string, ParallelFailFastStage>() };
+      const failFastEnabled = options.failFast !== false;
+      const parallelScope: ParallelFailFastScope = {
+        failed: false,
+        activeStages: new Map<string, ParallelFailFastStage>(),
+        parentIds: Object.freeze(tracker.currentParents()),
+      };
       return mapParallelSteps(steps, options.concurrency, options.failFast, async (step) => {
         throwIfWorkflowExitSelected();
         const prompt = replaceTaskPlaceholder(step.prompt ?? step.task ?? fallback, options.task ?? fallback);
         return await (ctx.task as typeof ctx.task & ((taskName: string, taskOptions: WorkflowTaskOptions, scope?: ParallelFailFastScope) => Promise<WorkflowTaskResult>))(
           step.name,
           taskWithSharedDefaults(taskOptionsFromStep(step, prompt, taskPrevious(step)), options),
-          failFastScope,
+          parallelScope,
         );
       }, (error) => {
-        if (failFastScope === undefined) return;
-        failFastScope.failed = true;
-        failFastScope.firstFailure = error;
-        for (const stage of failFastScope.activeStages.values()) {
+        if (!failFastEnabled) return;
+        parallelScope.failed = true;
+        parallelScope.firstFailure = error;
+        for (const stage of parallelScope.activeStages.values()) {
           stage.skip();
         }
       }, {

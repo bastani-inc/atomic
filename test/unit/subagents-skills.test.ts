@@ -53,38 +53,38 @@ afterEach(() => {
 });
 
 describe("subagent skill resolution", () => {
-    test("resolves builtin tdd and browser skills from the repo root", () => {
-        const result = resolveSkills(["tdd", "browser"], repoRoot);
+    test("resolves builtin tdd and playwright-cli skills from the repo root", () => {
+        const result = resolveSkills(["tdd", "playwright-cli"], repoRoot);
 
         const resolvedByName = new Map(
             result.resolved.map((skill) => [skill.name, skill]),
         );
 
         assert.deepEqual(result.missing, []);
-        assert.deepEqual([...resolvedByName.keys()].sort(), ["browser", "tdd"]);
+        assert.deepEqual([...resolvedByName.keys()].sort(), ["playwright-cli", "tdd"]);
         assert.equal(resolvedByName.get("tdd")?.source, "builtin");
         assert.equal(
             resolvedByName.get("tdd")?.path,
             join(builtinSubagentsSkillsRoot, "tdd", "SKILL.md"),
         );
-        assert.equal(resolvedByName.get("browser")?.source, "builtin");
+        assert.equal(resolvedByName.get("playwright-cli")?.source, "builtin");
         assert.equal(
-            resolvedByName.get("browser")?.path,
-            join(builtinSubagentsSkillsRoot, "browser", "SKILL.md"),
+            resolvedByName.get("playwright-cli")?.path,
+            join(builtinSubagentsSkillsRoot, "playwright-cli", "SKILL.md"),
         );
     });
 
     test("builds skill injection for builtin skills without YAML frontmatter", () => {
-        const result = resolveSkills(["tdd", "browser"], repoRoot);
+        const result = resolveSkills(["tdd", "playwright-cli"], repoRoot);
         const injection = buildSkillInjection(result.resolved);
 
         assert.equal(result.missing.length, 0);
         assert.match(injection, /<skill name="tdd">/);
-        assert.match(injection, /<skill name="browser">/);
+        assert.match(injection, /<skill name="playwright-cli">/);
         assert.doesNotMatch(injection, /<skill name="tdd">\n---\nname: tdd/);
         assert.doesNotMatch(
             injection,
-            /<skill name="browser">\n---\nname: browser/,
+            /<skill name="playwright-cli">\n---\nname: playwright-cli/,
         );
     });
 

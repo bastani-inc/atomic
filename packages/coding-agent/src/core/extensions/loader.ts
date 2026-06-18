@@ -33,6 +33,7 @@ import { resolvePath } from "../../utils/paths.ts";
 import { createEventBus, type EventBus } from "../event-bus.ts";
 import type { ExecOptions } from "../exec.ts";
 import type { ResolvedResource } from "../package-manager.ts";
+import type { DefaultResourceLoaderInheritanceSnapshot } from "../resource-loader.ts";
 import { execCommand } from "../exec.ts";
 import { createSyntheticSourceInfo } from "../source-info.ts";
 import { endTimingSpan, startTimingSpan } from "../timings.ts";
@@ -149,6 +150,8 @@ export interface WorkflowResourceProvider {
 
 export type WorkflowResourceProviderInput = WorkflowResourceProvider | ResolvedResource[];
 
+export type ResourceLoaderInheritanceSnapshotProvider = () => DefaultResourceLoaderInheritanceSnapshot;
+
 function createStaticWorkflowResourceProvider(workflowResources: ResolvedResource[]): WorkflowResourceProvider {
   return {
     get: () => workflowResources,
@@ -232,6 +235,7 @@ function createExtensionAPI(
   cwd: string,
   eventBus: EventBus,
   workflowResourceProvider: WorkflowResourceProviderInput = emptyWorkflowResourceProvider,
+  resourceLoaderInheritanceSnapshotProvider?: ResourceLoaderInheritanceSnapshotProvider,
 ): ExtensionAPI {
   const workflowResources = normalizeWorkflowResourceProvider(workflowResourceProvider);
   const api = {
@@ -324,6 +328,11 @@ function createExtensionAPI(
       runtime.assertActive();
       const refreshed = await workflowResources.refresh?.();
       return [...(refreshed ?? workflowResources.get())];
+    },
+
+    getResourceLoaderInheritanceSnapshot(): DefaultResourceLoaderInheritanceSnapshot {
+      runtime.assertActive();
+      return resourceLoaderInheritanceSnapshotProvider?.() ?? {};
     },
 
     // Action methods - delegate to shared runtime
@@ -463,6 +472,7 @@ async function loadExtension(
   eventBus: EventBus,
   runtime: ExtensionRuntime,
   workflowResourceProvider: WorkflowResourceProviderInput = emptyWorkflowResourceProvider,
+  resourceLoaderInheritanceSnapshotProvider?: ResourceLoaderInheritanceSnapshotProvider,
 ): Promise<{ extension: Extension | null; error: string | null }> {
   const resolvedPath = resolvePath(extensionPath, cwd, { normalizeUnicodeSpaces: true });
 
@@ -484,6 +494,7 @@ async function loadExtension(
       cwd,
       eventBus,
       workflowResourceProvider,
+      resourceLoaderInheritanceSnapshotProvider,
     );
     const factorySpan = startTimingSpan(`loadExtensions.${extensionPath}.factory`);
     await factory(api);
@@ -506,6 +517,7 @@ export async function loadExtensionFromFactory(
   runtime: ExtensionRuntime,
   extensionPath = "<inline>",
   workflowResourceProvider: WorkflowResourceProviderInput = emptyWorkflowResourceProvider,
+  resourceLoaderInheritanceSnapshotProvider?: ResourceLoaderInheritanceSnapshotProvider,
 ): Promise<Extension> {
   const extension = createExtension(extensionPath, extensionPath);
   const resolvedCwd = resolvePath(cwd);
@@ -515,6 +527,7 @@ export async function loadExtensionFromFactory(
     resolvedCwd,
     eventBus,
     workflowResourceProvider,
+    resourceLoaderInheritanceSnapshotProvider,
   );
   await factory(api);
   return extension;
@@ -529,6 +542,7 @@ export async function loadExtensions(
   eventBus?: EventBus,
   workflowResourceProvider: WorkflowResourceProviderInput = emptyWorkflowResourceProvider,
   runtime?: ExtensionRuntime,
+  resourceLoaderInheritanceSnapshotProvider?: ResourceLoaderInheritanceSnapshotProvider,
 ): Promise<LoadExtensionsResult> {
   const extensions: Extension[] = [];
   const errors: Array<{ path: string; error: string }> = [];
@@ -544,6 +558,7 @@ export async function loadExtensions(
       resolvedEventBus,
       resolvedRuntime,
       workflowResourceProvider,
+      resourceLoaderInheritanceSnapshotProvider,
     );
     endTimingSpan(extensionSpan);
 

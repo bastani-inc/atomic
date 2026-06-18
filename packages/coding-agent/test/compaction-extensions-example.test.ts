@@ -9,14 +9,13 @@ describe("Documentation example", () => {
 	it("deletion-shaped compaction before hook should type-check correctly", () => {
 		const exampleExtension = (pi: ExtensionAPI) => {
 			pi.on("session_before_compact", async (event: SessionBeforeCompactEvent, ctx) => {
-				const { preparation, branchEntries, mode, reason } = event;
+				const { preparation, branchEntries, reason } = event;
 				const { sessionManager, modelRegistry } = ctx;
 
 				expect(Array.isArray(preparation.transcript.entries)).toBe(true);
 				expect(Array.isArray(preparation.transcript.protectedEntryIds)).toBe(true);
 				expect(typeof preparation.transcript.tokensBefore).toBe("number");
 				expect(Array.isArray(branchEntries)).toBe(true);
-				expect(["standard", "critical_overflow"]).toContain(mode);
 				expect(["manual", "threshold", "overflow"]).toContain(reason);
 				expect(typeof sessionManager.getEntries).toBe("function");
 				expect(typeof modelRegistry.getApiKeyAndHeaders).toBe("function");
@@ -46,7 +45,6 @@ describe("Documentation example", () => {
 				expect(entry.stats).toBe(result.stats);
 				expect(typeof event.fromExtension).toBe("boolean");
 				expect(["manual", "threshold", "overflow"]).toContain(event.reason);
-				expect(["standard", "critical_overflow"]).toContain(event.mode);
 			});
 		};
 

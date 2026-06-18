@@ -39,6 +39,9 @@ Anthropic subscription auth is active for Claude Pro/Max accounts. Third-party h
 
 - Press Enter for github.com, or enter your GitHub Enterprise Server domain
 - If you get "model not supported", enable it in VS Code: Copilot Chat → model selector → select model → "Enable"
+- Supported built-in Copilot long-context models, including `github-copilot/gpt-5.5`, `github-copilot/claude-opus-4.8`, and `github-copilot/gemini-3.1-pro-preview`, expose an opt-in long-context choice through `--context-window`, the `/model` selection flow, per-model `defaultContextWindows`, SDK, and RPC controls. The long-context option advertises the model's full context window (for example `1m` or `1.05m` — GitHub's `max_context_window_tokens`), matching how the native `openai/*` and `anthropic/*` providers report these models and what the chat footer shows. GitHub's lower server-side prompt cap (`max_prompt_tokens`, for example `936k` or `922k`) is retained internally as the effective input budget that drives compaction thresholds and overflow recovery, so the branded window is displayed without overrunning the server limit.
+- Selecting long context sets Atomic's displayed window to the model's full capacity while compaction triggers against the effective prompt-token budget, and makes Copilot requests include `X-GitHub-Api-Version: 2026-06-01`. Atomic does not send a body field, `contextTier`, or model-id variant; GitHub automatically applies the server-side `long_context` tier when prompt tokens exceed the default budget.
+- Long-context Copilot requests consume more AI credits and require Copilot long-context/usage-based billing entitlement. A prompt that reaches the model's normal prompt cap is compacted and retried automatically. Only when GitHub rejects a prompt *below* that cap — for example because the account lacks the long-context/usage-based billing entitlement and is dropped to a smaller server tier — does Atomic surface a friendly entitlement/server-cap/cost hint rather than silently truncating context.
 
 ### Cursor (experimental)
 
@@ -152,7 +155,7 @@ The `key` field supports command execution, environment interpolation, and liter
   { "type": "api_key", "key": "public" }
   ```
 
-Legacy uppercase env-var-like values such as `MY_API_KEY` are migrated to `$MY_API_KEY` on startup only when that environment variable is present during migration; otherwise the value is preserved as a literal. OAuth credentials are also stored here after `/login` and managed automatically.
+Legacy uppercase env-var-like values such as `MY_API_KEY` are migrated to `$MY_API_KEY` on startup only when that environment variable is present during migration; otherwise the value is preserved as a literal. The same explicit `$ENV_VAR` rule and guarded legacy migration apply to custom provider `apiKey` and header values in `models.json`; see [Custom Models](/models). OAuth credentials are also stored here after `/login` and managed automatically.
 
 ## Cloud Providers
 

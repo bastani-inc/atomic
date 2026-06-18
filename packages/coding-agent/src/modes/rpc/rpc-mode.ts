@@ -13,6 +13,7 @@
 
 import * as crypto from "node:crypto";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
+import { parseContextWindowValue } from "../../core/context-window.ts";
 import type {
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
@@ -35,11 +36,26 @@ import type {
 // Re-export types for consumers
 export type {
 	RpcCommand,
+	RpcContextWindowInfo,
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
 	RpcResponse,
 	RpcSessionState,
 } from "./rpc-types.ts";
+
+function parseRpcContextWindow(value: number | string): number {
+	if (typeof value === "number") {
+		return value;
+	}
+	if (typeof value === "string") {
+		const parsed = parseContextWindowValue(value);
+		if (parsed.value !== undefined) {
+			return parsed.value;
+		}
+		throw new Error(parsed.error ?? "Invalid context window");
+	}
+	throw new Error("Context window must be a number of tokens or a compact value like 400k or 1m");
+}
 
 /**
  * Run in RPC mode.
@@ -492,7 +508,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					return error(id, "set_model", `Model not found: ${command.provider}/${command.modelId}`);
 				}
 				await session.setModel(model);
-				return success(id, "set_model", model);
+				return success(id, "set_model", session.model ?? model);
 			}
 
 			case "cycle_model": {
@@ -523,6 +539,24 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					return success(id, "cycle_thinking_level", null);
 				}
 				return success(id, "cycle_thinking_level", { level });
+			}
+
+			// =================================================================
+			// Context Window
+			// =================================================================
+
+			case "set_context_window": {
+				const contextWindow = parseRpcContextWindow(command.contextWindow);
+				session.setContextWindow(contextWindow);
+				return success(id, "set_context_window");
+			}
+
+			case "get_available_context_windows": {
+				return success(id, "get_available_context_windows", {
+					contextWindows: session.getAvailableContextWindows(),
+					currentContextWindow: session.model?.contextWindow,
+					supportsSelection: session.supportsContextWindowSelection(),
+				});
 			}
 
 			// =================================================================
@@ -696,7 +730,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 
 			default: {
 				const unknownCommand = command as { type: string };
-				return error(undefined, unknownCommand.type, `Unknown command: ${unknownCommand.type}`);
+				return error(id, unknownCommand.type, `Unknown command: ${unknownCommand.type}`);
 			}
 		}
 	};

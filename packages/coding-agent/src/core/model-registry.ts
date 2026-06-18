@@ -23,10 +23,17 @@ import { existsSync, readFileSync } from "fs";
 import { type Static, Type } from "typebox";
 import { Compile } from "typebox/compile";
 import type { TLocalizedValidationError } from "typebox/error";
+import { dirname } from "node:path";
 import { getAgentConfigPaths } from "../config.ts";
 import { normalizePath } from "../utils/paths.ts";
 import { warnDeprecation } from "../utils/deprecation.ts";
 import type { AuthStatus, AuthStorage } from "./auth-storage.ts";
+import { normalizeContextWindowOptions, validateContextWindowValue, withContextWindowOptions } from "./context-window.ts";
+import {
+	copilotCatalogCachePath,
+	getActiveCopilotModelCatalog,
+	seedActiveCopilotModelCatalogFromCache,
+} from "./copilot-model-catalog.ts";
 import { BUILT_IN_PROVIDER_DISPLAY_NAMES } from "./provider-display-names.ts";
 import {
 	clearConfigValueCache,
@@ -95,6 +102,7 @@ const ThinkingLevelMapSchema = Type.Object({
 	high: Type.Optional(ThinkingLevelMapValueSchema),
 	xhigh: Type.Optional(ThinkingLevelMapValueSchema),
 });
+const ContextWindowOptionsSchema = Type.Array(Type.Number());
 
 const OpenAICompletionsCompatSchema = Type.Object({
 	supportsStore: Type.Optional(Type.Boolean()),
@@ -163,6 +171,7 @@ const ModelDefinitionSchema = Type.Object({
 		}),
 	),
 	contextWindow: Type.Optional(Type.Number()),
+	contextWindowOptions: Type.Optional(ContextWindowOptionsSchema),
 	maxTokens: Type.Optional(Type.Number()),
 	headers: Type.Optional(Type.Record(Type.String(), Type.String())),
 	compat: Type.Optional(ProviderCompatSchema),
@@ -183,6 +192,7 @@ const ModelOverrideSchema = Type.Object({
 		}),
 	),
 	contextWindow: Type.Optional(Type.Number()),
+	contextWindowOptions: Type.Optional(ContextWindowOptionsSchema),
 	maxTokens: Type.Optional(Type.Number()),
 	headers: Type.Optional(Type.Record(Type.String(), Type.String())),
 	compat: Type.Optional(ProviderCompatSchema),
@@ -209,6 +219,48 @@ const ModelsConfigSchema = Type.Object({
 const validateModelsConfig = Compile(ModelsConfigSchema);
 
 type ModelsConfig = Static<typeof ModelsConfigSchema>;
+
+const GITHUB_COPILOT_API_VERSION_HEADER = "X-GitHub-Api-Version";
+const GITHUB_COPILOT_API_VERSION = "2026-06-01";
+
+function hasHeader(headers: Record<string, string> | undefined, headerName: string): boolean {
+	if (!headers) return false;
+	const normalizedHeaderName = headerName.toLowerCase();
+	return Object.keys(headers).some((key) => key.toLowerCase() === normalizedHeaderName);
+}
+
+function withGitHubCopilotApiVersionHeader(
+	model: Model<Api>,
+	headers: Record<string, string> | undefined,
+): Record<string, string> | undefined {
+	if (model.provider !== "github-copilot" || hasHeader(headers, GITHUB_COPILOT_API_VERSION_HEADER)) {
+		return headers;
+	}
+	return { ...(headers ?? {}), [GITHUB_COPILOT_API_VERSION_HEADER]: GITHUB_COPILOT_API_VERSION };
+}
+
+/**
+ * Apply GitHub Copilot input-token context windows from the live CAPI catalog.
+ *
+ * The active catalog is only populated when the user has the GitHub Copilot provider (see
+ * `copilot-model-catalog.ts`), so non-Copilot users and offline/unauthenticated sessions are
+ * unaffected. For catalog models, the model's effective `contextWindow` is set to GitHub's input
+ * (prompt) budget; models that expose a larger `long_context` tier additionally get a selectable
+ * window so the `/model` picker can switch between the default and long input budgets.
+ */
+function withCopilotContextWindowOptions(model: Model<Api>): Model<Api> {
+	if (model.provider !== "github-copilot") return model;
+	const context = getActiveCopilotModelCatalog().get(model.id);
+	if (!context) return model;
+	// Apply GitHub's context window everywhere; add a selectable long-context window when the model
+	// exposes one larger than its default tier, and carry the hard prompt cap as the effective input
+	// budget so the displayed total does not overrun GitHub's server-side prompt limit.
+	const base = { ...model, contextWindow: context.contextWindow, maxInputTokens: context.maxInputTokens };
+	if (context.contextWindowOptions && context.contextWindowOptions.length > 1) {
+		return withContextWindowOptions(base, context.contextWindowOptions);
+	}
+	return base;
+}
 
 function formatValidationPath(error: TLocalizedValidationError): string {
 	if (error.keyword === "required") {
@@ -312,7 +364,16 @@ function applyModelOverride(model: Model<Api>, override: ModelOverride): Model<A
 		result.thinkingLevelMap = { ...model.thinkingLevelMap, ...override.thinkingLevelMap };
 	}
 	if (override.input !== undefined) result.input = override.input as ("text" | "image")[];
-	if (override.contextWindow !== undefined) result.contextWindow = override.contextWindow;
+	if (override.contextWindow !== undefined) {
+		result.contextWindow = override.contextWindow;
+		result.defaultContextWindow = override.contextWindow;
+		if (override.contextWindowOptions === undefined) {
+			result.contextWindowOptions = undefined;
+		}
+	}
+	if (override.contextWindowOptions !== undefined) {
+		result.contextWindowOptions = normalizeContextWindowOptions(override.contextWindowOptions);
+	}
 	if (override.maxTokens !== undefined) result.maxTokens = override.maxTokens;
 
 	// Merge cost (partial override)
@@ -424,7 +485,24 @@ export class ModelRegistry {
 	) {
 		this.authStorage = authStorage;
 		this.modelsJsonPaths = modelsJsonPaths.map((path) => normalizePath(path));
+		// Seed the Copilot context-window catalog from disk before models load, so a returning user's
+		// persisted long-context selection is recognized at startup rather than warned-about and reset.
+		this.seedCopilotModelCatalogFromCache();
 		this.loadModels();
+	}
+
+	/**
+	 * Seed the active GitHub Copilot context-window catalog from the on-disk cache before models load.
+	 *
+	 * No-op without a `github-copilot` OAuth credential, without a resolvable agent dir, or without a
+	 * host-matching cached catalog. The agent dir is derived from the registry's own models.json path
+	 * (not the global agent dir) so unit tests never read the real user cache.
+	 */
+	private seedCopilotModelCatalogFromCache(): void {
+		if (this.modelsJsonPaths.length === 0) return;
+		const cred = this.authStorage.get("github-copilot");
+		if (!cred || cred.type !== "oauth" || typeof cred.access !== "string") return;
+		seedActiveCopilotModelCatalogFromCache(cred.access, copilotCatalogCachePath(dirname(this.modelsJsonPaths[0])));
 	}
 
 	static create(
@@ -514,7 +592,10 @@ export class ModelRegistry {
 					};
 				}
 
-				// Apply per-model override
+				model = withCopilotContextWindowOptions(model);
+
+				// Apply per-model override after built-in selectable windows so explicit
+				// user overrides can clear or replace inherited contextWindowOptions.
 				const modelOverride = perModelOverrides?.get(m.id);
 				if (modelOverride) {
 					model = applyModelOverride(model, modelOverride);
@@ -654,10 +735,29 @@ export class ModelRegistry {
 
 				if (!modelDef.id) throw new Error(`Provider ${providerName}: model missing "id"`);
 				// Validate contextWindow/maxTokens only if provided (they have defaults)
-				if (modelDef.contextWindow !== undefined && modelDef.contextWindow <= 0)
+				if (modelDef.contextWindow !== undefined && validateContextWindowValue(modelDef.contextWindow))
 					throw new Error(`Provider ${providerName}, model ${modelDef.id}: invalid contextWindow`);
+				this.validateContextWindowOptions(providerName, modelDef.id, modelDef.contextWindowOptions);
 				if (modelDef.maxTokens !== undefined && modelDef.maxTokens <= 0)
 					throw new Error(`Provider ${providerName}, model ${modelDef.id}: invalid maxTokens`);
+			}
+
+			for (const [modelId, modelOverride] of Object.entries(providerConfig.modelOverrides ?? {})) {
+				if (modelOverride.contextWindow !== undefined && validateContextWindowValue(modelOverride.contextWindow)) {
+					throw new Error(`Provider ${providerName}, model ${modelId}: invalid contextWindow`);
+				}
+				this.validateContextWindowOptions(providerName, modelId, modelOverride.contextWindowOptions);
+				if (modelOverride.maxTokens !== undefined && modelOverride.maxTokens <= 0) {
+					throw new Error(`Provider ${providerName}, model ${modelId}: invalid maxTokens`);
+				}
+			}
+		}
+	}
+
+	private validateContextWindowOptions(providerName: string, modelId: string, options: readonly number[] | undefined): void {
+		for (const option of options ?? []) {
+			if (validateContextWindowValue(option)) {
+				throw new Error(`Provider ${providerName}, model ${modelId}: invalid contextWindowOptions value`);
 			}
 		}
 	}
@@ -695,6 +795,7 @@ export class ModelRegistry {
 				this.storeModelHeaders(providerName, modelDef.id, modelDef.headers);
 
 				const defaultCost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+				const contextWindow = modelDef.contextWindow ?? 128000;
 				models.push({
 					id: modelDef.id,
 					name: modelDef.name ?? modelDef.id,
@@ -705,7 +806,9 @@ export class ModelRegistry {
 					thinkingLevelMap: modelDef.thinkingLevelMap,
 					input: (modelDef.input ?? ["text"]) as ("text" | "image")[],
 					cost: modelDef.cost ?? defaultCost,
-					contextWindow: modelDef.contextWindow ?? 128000,
+					contextWindow,
+					defaultContextWindow: contextWindow,
+					contextWindowOptions: normalizeContextWindowOptions([contextWindow, ...(modelDef.contextWindowOptions ?? [])]),
 					maxTokens: modelDef.maxTokens ?? 16384,
 					headers: undefined,
 					compat,
@@ -743,9 +846,10 @@ export class ModelRegistry {
 	 * Get API key for a model.
 	 */
 	hasConfiguredAuth(model: Model<Api>): boolean {
+		const providerApiKey = this.providerRequestConfigs.get(model.provider)?.apiKey;
 		return (
 			this.authStorage.hasAuth(model.provider) ||
-			this.providerRequestConfigs.get(model.provider)?.apiKey !== undefined
+			(providerApiKey !== undefined && isConfigValueConfigured(providerApiKey))
 		);
 	}
 
@@ -811,6 +915,8 @@ export class ModelRegistry {
 				}
 				headers = { ...headers, Authorization: `Bearer ${apiKey}` };
 			}
+
+			headers = withGitHubCopilotApiVersionHeader(model, headers);
 
 			return {
 				ok: true,
@@ -972,6 +1078,13 @@ export class ModelRegistry {
 			if (!api) {
 				throw new Error(`Provider ${providerName}, model ${modelDef.id}: no "api" specified.`);
 			}
+			if (validateContextWindowValue(modelDef.contextWindow)) {
+				throw new Error(`Provider ${providerName}, model ${modelDef.id}: invalid contextWindow`);
+			}
+			this.validateContextWindowOptions(providerName, modelDef.id, modelDef.contextWindowOptions);
+			if (modelDef.maxTokens <= 0) {
+				throw new Error(`Provider ${providerName}, model ${modelDef.id}: invalid maxTokens`);
+			}
 		}
 	}
 
@@ -1020,6 +1133,11 @@ export class ModelRegistry {
 					input: modelDef.input as ("text" | "image")[],
 					cost: modelDef.cost,
 					contextWindow: modelDef.contextWindow,
+					defaultContextWindow: modelDef.contextWindow,
+					contextWindowOptions: normalizeContextWindowOptions([
+						modelDef.contextWindow,
+						...(modelDef.contextWindowOptions ?? []),
+					]),
 					maxTokens: modelDef.maxTokens,
 					headers: undefined,
 					compat: modelDef.compat,
@@ -1069,6 +1187,7 @@ export interface ProviderConfigInput {
 		input: ("text" | "image")[];
 		cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
 		contextWindow: number;
+		contextWindowOptions?: readonly number[];
 		maxTokens: number;
 		headers?: Record<string, string>;
 		compat?: Model<Api>["compat"];

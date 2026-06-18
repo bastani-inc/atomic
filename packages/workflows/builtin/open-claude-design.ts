@@ -21,12 +21,13 @@
  *
  * The refinement loop has been re-shaped so that the artifact under review is
  * a real HTML page on disk (`preview.html`). The workflow attempts to open it
- * through the `browser` skill so the user can interactively review;
+ * through the `playwright-cli` skill so the user can interactively review;
  * when browser automation is unavailable, the file path is surfaced so the user
  * can open it manually. Before any stage runs, an initial deterministic setup
- * step ensures the browser skill's `browse` CLI is available (`which browse`,
- * then `npm install -g browse` when missing); it is best-effort and never
- * blocks the run. The final exporter produces a rich `spec.html` that
+ * step ensures the playwright-cli skill's `playwright-cli` command is available
+ * (`npx --no-install playwright-cli --version`, then
+ * `npm install -g @playwright/cli@latest` when missing); it is best-effort and
+ * never blocks the run. The final exporter produces a rich `spec.html` that
  * embeds the agreed-upon design alongside the implementation handoff.
  */
 
@@ -222,12 +223,12 @@ const ANTI_SLOP_RULES = [
   "Commit to a specific aesthetic direction; do not hedge with generic SaaS defaults.",
 ].join("\n");
 
-type BrowseCliStatus = {
-  /** Whether the `browse` CLI is expected to be available to downstream stages. */
+type PlaywrightCliStatus = {
+  /** Whether the `playwright-cli` command is expected to be available to downstream stages. */
   readonly available: boolean;
-  /** True when the CLI was already on PATH and no install was attempted. */
+  /** True when the command was already on PATH and no install was attempted. */
   readonly alreadyPresent: boolean;
-  /** True when this step installed the CLI via `npm install -g browse`. */
+  /** True when this step installed the command via `npm install -g @playwright/cli@latest`. */
   readonly installed: boolean;
   /** Human-readable, single-line outcome surfaced as a workflow output. */
   readonly summary: string;
@@ -236,23 +237,24 @@ type BrowseCliStatus = {
 };
 
 /**
- * Initial deterministic setup step (no LLM): ensure the browser skill's `browse`
- * CLI is available before any design stage runs. Mirrors the browser skill's
- * documented bootstrap (`which browse || npm install -g browse`) but performs it
- * once, deterministically, instead of relying on each stage to probe/install it.
+ * Initial deterministic setup step (no LLM): ensure the playwright-cli skill's
+ * `playwright-cli` command is available before any design stage runs. Mirrors the
+ * playwright-cli skill's documented bootstrap (`npx --no-install playwright-cli
+ * --version` || `npm install -g @playwright/cli@latest`) but performs it once,
+ * deterministically, instead of relying on each stage to probe/install it.
  * The PATH probe always runs, but the actual global install is skipped under
  * automated tests (`NODE_ENV=test`) to avoid slow, networked, environment-
  * mutating side effects.
  *
  * Best-effort by contract: it never throws and never blocks the workflow. When
- * the CLI cannot be located or installed, downstream stages keep their graceful
+ * the command cannot be located or installed, downstream stages keep their graceful
  * degradation path (surface the manual preview path / URL).
  */
-function ensureBrowseCli(): BrowseCliStatus {
+function ensurePlaywrightCli(): PlaywrightCliStatus {
   const isWindows = process.platform === "win32";
   const onPath = (): boolean => {
     try {
-      const probe = spawnSync(isWindows ? "where" : "which", ["browse"], {
+      const probe = spawnSync(isWindows ? "where" : "which", ["playwright-cli"], {
         stdio: "ignore",
         timeout: 15_000,
         shell: isWindows,
@@ -268,7 +270,7 @@ function ensureBrowseCli(): BrowseCliStatus {
       available: true,
       alreadyPresent: true,
       installed: false,
-      summary: "browse CLI already on PATH; skipped install.",
+      summary: "playwright-cli already on PATH; skipped install.",
     };
   }
 
@@ -282,13 +284,13 @@ function ensureBrowseCli(): BrowseCliStatus {
       alreadyPresent: false,
       installed: false,
       summary:
-        "browse CLI not found; skipped global install under the test environment.",
+        "playwright-cli not found; skipped global install under the test environment.",
       error: "global install skipped during tests",
     };
   }
 
   try {
-    const install = spawnSync("npm", ["install", "-g", "browse"], {
+    const install = spawnSync("npm", ["install", "-g", "@playwright/cli@latest"], {
       stdio: "ignore",
       timeout: 180_000,
       shell: isWindows,
@@ -298,19 +300,19 @@ function ensureBrowseCli(): BrowseCliStatus {
         available: true,
         alreadyPresent: false,
         installed: true,
-        summary: "Installed browse CLI via `npm install -g browse`.",
+        summary: "Installed playwright-cli via `npm install -g @playwright/cli@latest`.",
       };
     }
     const reason =
       install.error?.message ??
       (typeof install.status === "number"
-        ? `npm install -g browse exited with code ${install.status}`
-        : "npm install -g browse did not complete");
+        ? `npm install -g @playwright/cli@latest exited with code ${install.status}`
+        : "npm install -g @playwright/cli@latest did not complete");
     return {
       available: false,
       alreadyPresent: false,
       installed: false,
-      summary: `Could not install browse CLI (${reason}); stages will degrade gracefully.`,
+      summary: `Could not install playwright-cli (${reason}); stages will degrade gracefully.`,
       error: reason,
     };
   } catch (error) {
@@ -320,7 +322,7 @@ function ensureBrowseCli(): BrowseCliStatus {
       available: false,
       alreadyPresent: false,
       installed: false,
-      summary: `Could not install browse CLI (${reason}); stages will degrade gracefully.`,
+      summary: `Could not install playwright-cli (${reason}); stages will degrade gracefully.`,
       error: reason,
     };
   }
@@ -328,24 +330,25 @@ function ensureBrowseCli(): BrowseCliStatus {
 
 /**
  * Build the per-run browser bootstrap guidance injected into stage prompts.
- * When the deterministic setup step already ensured `browse` is installed, the
- * guidance tells stages to assume availability and not waste turns reinstalling;
- * otherwise it retains the original probe-and-install fallback.
+ * When the deterministic setup step already ensured `playwright-cli` is installed,
+ * the guidance tells stages to assume availability and not waste turns
+ * reinstalling; otherwise it retains the original probe-and-install fallback.
  */
-function buildBrowserBootstrapRules(status: BrowseCliStatus): string {
+function buildPlaywrightCliBootstrapRules(status: PlaywrightCliStatus): string {
   const probeRule = status.available
-    ? "The workflow's deterministic setup step already ensured the browser skill's `browse` CLI is installed and on PATH; assume it is available and do NOT reinstall it. Only if a `browse` command reports the executable as missing should you re-probe with `which browse` and run `npm install -g browse` once before retrying. Do not add project dependencies."
-    : `The workflow's deterministic setup step attempted to install the browser skill's \`browse\` CLI but it FAILED with: "${status.error ?? "unknown error"}". Treat this as a known starting condition to work around, not a hard blocker. Probe with \`which browse\` and retry once with \`npm install -g browse\`; if it still fails, use the error above to diagnose a workaround (for example: EACCES/permission errors → retry with a user-writable global prefix; missing npm/Node → report it plainly; network/registry errors → surface them). If the CLI still cannot be made available, degrade gracefully and surface the manual file path / URL. Do not add project dependencies.`;
+    ? "The workflow's deterministic setup step already ensured the playwright-cli skill's `playwright-cli` command is installed and on PATH; assume it is available and do NOT reinstall it. Only if a `playwright-cli` command reports it is missing should you re-probe with `which playwright-cli` (or `npx --no-install playwright-cli --version`) and run `npm install -g @playwright/cli@latest` once before retrying. Do not add project dependencies."
+    : `The workflow's deterministic setup step attempted to install the playwright-cli skill's \`playwright-cli\` command but it FAILED with: "${status.error ?? "unknown error"}". Treat this as a known starting condition to work around, not a hard blocker. Probe with \`which playwright-cli\` (or \`npx --no-install playwright-cli --version\`) and retry once with \`npm install -g @playwright/cli@latest\`; if it still fails, use the error above to diagnose a workaround (for example: EACCES/permission errors → retry with a user-writable global prefix; missing npm/Node → report it plainly; network/registry errors → surface them). If the command still cannot be made available, degrade gracefully and surface the manual file path / URL. Do not add project dependencies.`;
   return [
     probeRule,
-    "Use `browse open <url> --local --headed` when a generated local preview should be visible to the user, and use `browse snapshot` plus `browse screenshot --path <file>` for review evidence.",
-    "If `browse` is unavailable after three attempts or the browser runtime still fails, degrade gracefully and surface the manual file path / URL.",
+    "Use `playwright-cli open <url>` when a generated local preview should be visible to the user, and use `playwright-cli snapshot` plus `playwright-cli screenshot --filename=<file>` for review evidence.",
+    "If a `playwright-cli` command reports a missing browser executable, install the browser once with `npx playwright install chromium` and retry.",
+    "If `playwright-cli` is unavailable after three attempts or the browser runtime still fails, degrade gracefully and surface the manual file path / URL.",
   ].join("\n");
 }
 
 export default defineWorkflow("open-claude-design")
   .description(
-    "AI-powered design workflow: design-system onboarding → reference import → HTML generation → impeccable-driven refinement → quality gate → rich HTML handoff. Each stage delegates to a specific impeccable sub-skill; the user can iteratively review the generated HTML through the browser skill.",
+    "AI-powered design workflow: design-system onboarding → reference import → HTML generation → impeccable-driven refinement → quality gate → rich HTML handoff. Each stage delegates to a specific impeccable sub-skill; the user can iteratively review the generated HTML through the playwright-cli skill.",
   )
   .input("prompt", Type.String({
     description: "What to design (for example, a dashboard, page, component, or prototype).",
@@ -378,14 +381,14 @@ export default defineWorkflow("open-claude-design")
   .output("preview_file_url", Type.Optional(Type.String({ description: "file:// URL for the generated preview.html file." })))
   .output("spec_path", Type.Optional(Type.String({ description: "Absolute path to the generated spec.html file." })))
   .output("spec_file_url", Type.Optional(Type.String({ description: "file:// URL for the generated spec.html file." })))
-  .output("browse_cli_status", Type.Optional(Type.String({ description: "Outcome of the initial deterministic step that ensures the browser skill's `browse` CLI is installed." })))
+  .output("playwright_cli_status", Type.Optional(Type.String({ description: "Outcome of the initial deterministic step that ensures the playwright-cli skill's `playwright-cli` command is installed." })))
   .run(async (ctx) => {
-    // Initial deterministic setup step (no LLM): ensure the browser skill's
-    // `browse` CLI is installed before any design stage runs. Best-effort —
+    // Initial deterministic setup step (no LLM): ensure the playwright-cli skill's
+    // `playwright-cli` command is installed before any design stage runs. Best-effort —
     // a failed install never blocks the workflow; downstream stages keep their
     // graceful-degradation fallback (surface the manual preview path / URL).
-    const browseCli = ensureBrowseCli();
-    const browserBootstrapRules = buildBrowserBootstrapRules(browseCli);
+    const playwrightCli = ensurePlaywrightCli();
+    const browserBootstrapRules = buildPlaywrightCliBootstrapRules(playwrightCli);
 
     const inputs = ctx.inputs;
 
@@ -407,7 +410,7 @@ export default defineWorkflow("open-claude-design")
     const designModelConfig = {
       model: "anthropic/claude-fable-5:xhigh",
       fallbackModels: [
-          "github-copilot/claude-opus-4.8:xhigh",
+          "github-copilot/claude-opus-4.8 (1m):xhigh",
           "anthropic/claude-opus-4-8:xhigh",
           "github-copilot/claude-sonnet-4.6:high",
           "anthropic/claude-sonnet-4-6:high",
@@ -626,8 +629,8 @@ export default defineWorkflow("open-claude-design")
           [
             "instructions",
             [
-              "1. Use browser/screenshot tooling (for example the browser skill's `browse` CLI) if available; cite observable evidence rather than guessing.",
-              "2. If `browse` is available but opening the reference URL reports a missing browser executable, follow the bootstrap rules and retry once.",
+              "1. Use browser/screenshot tooling (for example the playwright-cli skill's `playwright-cli` command) if available; cite observable evidence rather than guessing.",
+              "2. If `playwright-cli` is available but opening the reference URL reports a missing browser executable, follow the bootstrap rules and retry once.",
               "3. Analyze: layout, visual hierarchy, navigation, color, typography, spacing, states, interactions, responsive behavior.",
               "4. Separate reference-specific styling from requirements that should transfer to this project's design system.",
               "5. If the URL is inaccessible or browser bootstrap fails, state that and provide a best-effort fallback based only on available information — never fabricate observations.",
@@ -738,7 +741,7 @@ export default defineWorkflow("open-claude-design")
           ],
           [
             "objective",
-            "Your job is to make the just-generated HTML artifact visible to the user so they can give feedback. Open the HTML preview file using the browser skill's `browse` CLI when available, then prompt the user for feedback. Gracefully degrade if browser automation is unavailable.",
+            "Your job is to make the just-generated HTML artifact visible to the user so they can give feedback. Open the HTML preview file using the playwright-cli skill's `playwright-cli` command when available, then prompt the user for feedback. Gracefully degrade if browser automation is unavailable.",
           ],
           ["preview_path", previewPath],
           ["preview_file_url", previewFileUrl],
@@ -746,11 +749,11 @@ export default defineWorkflow("open-claude-design")
           [
             "instructions",
             [
-              "1. Probe for `browse` availability using the bootstrap rules above.",
-              `2. If available, run: \`browse open ${previewFileUrl} --local --headed\`. If that reports a missing browser executable, follow the bootstrap rules and retry once.`,
-              "3. Then run `browse snapshot` and use any available annotation/review flow from the active browser environment; if none exists, ask the user to review the visible page or manual file path and provide notes inline.",
+              "1. Probe for `playwright-cli` availability using the bootstrap rules above.",
+              `2. If available, run: \`playwright-cli open ${previewFileUrl}\`. If that reports a missing browser executable, follow the bootstrap rules and retry once.`,
+              "3. Then run `playwright-cli snapshot` and, for interactive review, `playwright-cli show --annotate` so the user can draw on the page and add notes; if interactive review is unavailable, ask the user to review the visible page or manual file path and provide notes inline.",
               "4. Capture any annotation artifact path, screenshot path, or user notes and surface them in your output.",
-              `5. If \`browse\` is NOT available or browser bootstrap fails, print a clear instruction block telling the user to open the file manually at: ${previewPath} (or via the URL ${previewFileUrl}).`,
+              `5. If \`playwright-cli\` is NOT available or browser bootstrap fails, print a clear instruction block telling the user to open the file manually at: ${previewPath} (or via the URL ${previewFileUrl}).`,
               "6. Never block the workflow on unavailable tooling; always exit with a non-empty status string.",
             ].join("\n"),
           ],
@@ -869,10 +872,10 @@ export default defineWorkflow("open-claude-design")
               [
                 "instructions",
                 [
-                  `1. Attempt rendering verification via the browser skill: \`browse open ${previewFileUrl} --local\`. If that reports a missing browser executable, follow the bootstrap rules and retry once.`,
-                  `2. Then run \`browse viewport 360 800\`, \`browse screenshot --path ${join(artifactDir, `mobile-${iteration}.png`)}\`, \`browse viewport 1440 900\`, \`browse screenshot --path ${join(artifactDir, `desktop-${iteration}.png`)}\`.`,
+                  `1. Attempt rendering verification via the playwright-cli skill: \`playwright-cli open ${previewFileUrl}\`. If that reports a missing browser executable, follow the bootstrap rules and retry once.`,
+                  `2. Then run \`playwright-cli resize 360 800\`, \`playwright-cli screenshot --filename=${join(artifactDir, `mobile-${iteration}.png`)}\`, \`playwright-cli resize 1440 900\`, \`playwright-cli screenshot --filename=${join(artifactDir, `desktop-${iteration}.png`)}\`.`,
                   "3. Check: contrast (WCAG AA), overflow, spacing rhythm, alignment, breakpoint behavior, empty/loading/error states, keyboard/pointer affordances, focus rings, prefers-reduced-motion.",
-                  "4. If `browse` is unavailable or browser bootstrap fails, perform a static design review of the HTML source and mark every finding as `needs-rendering-verification`.",
+                  "4. If `playwright-cli` is unavailable or browser bootstrap fails, perform a static design review of the HTML source and mark every finding as `needs-rendering-verification`.",
                   "5. Distinguish confirmed visual issues from risks that need rendering verification. Never fabricate rendered evidence.",
                 ].join("\n"),
               ],
@@ -956,9 +959,9 @@ export default defineWorkflow("open-claude-design")
             [
               "instructions",
               [
-                `1. If \`browse\` is available, run \`browse open ${previewFileUrl} --local --headed\`. If that reports a missing browser executable, follow the bootstrap rules and retry once.`,
-                "2. Then run `browse snapshot` and use any available annotation/review flow from the active browser environment; otherwise ask the user to provide feedback inline.",
-                `3. If \`browse\` is unavailable or browser bootstrap fails, surface the path clearly: ${previewPath} (URL: ${previewFileUrl}).`,
+                `1. If \`playwright-cli\` is available, run \`playwright-cli open ${previewFileUrl}\`. If that reports a missing browser executable, follow the bootstrap rules and retry once.`,
+                "2. Then run `playwright-cli snapshot` and, for interactive review, `playwright-cli show --annotate`; otherwise ask the user to provide feedback inline.",
+                `3. If \`playwright-cli\` is unavailable or browser bootstrap fails, surface the path clearly: ${previewPath} (URL: ${previewFileUrl}).`,
                 "4. Return any captured annotations as structured notes the next user-feedback step can read.",
                 "5. Do not block on unavailable tooling.",
               ].join("\n"),
@@ -1083,7 +1086,7 @@ export default defineWorkflow("open-claude-design")
             "Return markdown with headings (NOT the HTML):",
             "1. Spec written to (absolute path)",
             "2. Sections included",
-            "3. How to open the spec (browse command + manual fallback path)",
+            "3. How to open the spec (playwright-cli command + manual fallback path)",
             "4. Recommended files and components",
             "5. Implementation steps",
             "6. Usage example",
@@ -1107,7 +1110,7 @@ export default defineWorkflow("open-claude-design")
           ],
           [
             "objective",
-            "Make the rich HTML spec visible to the user. Open the final spec.html with the browser skill's `browse` CLI so the user can review the agreed design and implementation handoff. Degrade gracefully if browser automation is unavailable.",
+            "Make the rich HTML spec visible to the user. Open the final spec.html with the playwright-cli skill's `playwright-cli` command so the user can review the agreed design and implementation handoff. Degrade gracefully if browser automation is unavailable.",
           ],
           ["spec_path", specPath],
           ["spec_file_url", specFileUrl],
@@ -1117,9 +1120,9 @@ export default defineWorkflow("open-claude-design")
           [
             "instructions",
             [
-              "1. Probe for `browse` availability using the bootstrap rules above.",
-              `2. If available, run \`browse open ${specFileUrl} --local --headed\`. If that reports a missing browser executable, follow the bootstrap rules and retry once.`,
-              "3. Then run `browse snapshot` and use any available annotation/review flow from the active browser environment so the user can capture any final notes.",
+              "1. Probe for `playwright-cli` availability using the bootstrap rules above.",
+              `2. If available, run \`playwright-cli open ${specFileUrl}\`. If that reports a missing browser executable, follow the bootstrap rules and retry once.`,
+              "3. Then run `playwright-cli snapshot` and, for interactive review, `playwright-cli show --annotate` so the user can capture any final notes.",
               `4. Always print, prominently, the absolute paths so the user can open them manually:\n   - Final spec: ${specPath}\n   - Approved preview: ${previewPath}`,
               "5. Do not block the workflow; return a structured summary even if no tooling worked.",
             ].join("\n"),
@@ -1147,7 +1150,7 @@ export default defineWorkflow("open-claude-design")
       preview_file_url: previewFileUrl,
       spec_path: specPath,
       spec_file_url: specFileUrl,
-      browse_cli_status: browseCli.summary,
+      playwright_cli_status: playwrightCli.summary,
     };
   })
   .compile();

@@ -89,6 +89,8 @@ export interface StageEndPayload {
   readonly failureMessage?: string;
   readonly retryAfterMs?: number;
   readonly skippedReason?: string;
+  readonly sessionId?: string;
+  readonly sessionFile?: string;
   readonly replayKey?: string;
   readonly replayedFromStageId?: string;
   readonly replayed?: boolean;
@@ -202,6 +204,8 @@ export function appendStageEnd(
     ...(payload.failureMessage !== undefined ? { failureMessage: payload.failureMessage } : {}),
     ...(payload.retryAfterMs !== undefined ? { retryAfterMs: payload.retryAfterMs } : {}),
     ...(payload.skippedReason !== undefined ? { skippedReason: payload.skippedReason } : {}),
+    ...(payload.sessionId !== undefined ? { sessionId: payload.sessionId } : {}),
+    ...(payload.sessionFile !== undefined ? { sessionFile: payload.sessionFile } : {}),
     ...(payload.replayKey !== undefined ? { replayKey: payload.replayKey } : {}),
     ...(payload.replayedFromStageId !== undefined ? { replayedFromStageId: payload.replayedFromStageId } : {}),
     ...(payload.replayed !== undefined ? { replayed: payload.replayed } : {}),

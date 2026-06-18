@@ -463,7 +463,6 @@ Important fields:
 | `defaultReads` | Files to read before running in chain/parallel behavior. |
 | `defaultProgress` | Maintain `progress.md`. |
 | `interactive` | Parsed for compatibility but not enforced in v1. |
-| `completionGuard` | Set to `false` to intentionally opt this agent out of automatic completion-guard reminders. Use sparingly for user-authored read-only/review agents whose prompt already prevents premature completion. |
 | `maxSubagentDepth` | Tightens nested delegation for this agent’s children. |
 
 ### Tool and extension selection
@@ -531,7 +530,7 @@ Create an implementation plan based on {outputs.context}
 
 Each `.chain.md` `## agent-name` section is a step. Config lines such as `phase`, `label`, `as`, `outputSchema`, `output`, `outputMode`, `reads`, `model`, `skills`, and `progress` go immediately after the header. A blank line separates config from task text. In saved `.chain.md` files, `outputSchema` is a path to a JSON Schema file; direct tool calls and `.chain.json` files can pass the schema object inline.
 
-When `outputSchema` is present, the child receives a schema-specific `structured_output` tool backed by Atomic's shared factory. The schema is passed directly to the tool. The child writes the tool arguments to `output.json`, and the parent reads that JSON back as `structuredOutput`; Atomic no longer adds object-root restrictions, sidecar metadata, transcript-finality checks, or duplicate-call guards.
+When `outputSchema` is present, the child receives a schema-specific `structured_output` tool backed by Atomic's shared factory. The schema is passed directly to the tool. The child writes the tool arguments to `output.json`, and the parent validates that JSON against the schema before reading it back as `structuredOutput`; Atomic no longer adds object-root restrictions, sidecar metadata, transcript-finality checks, or duplicate-call guards. If the child finishes without calling `structured_output`, or the captured JSON fails schema validation, Atomic retries up to three times with a corrective prompt that includes the exact contract/validation error and reminds the child to call `structured_output` rather than returning plain JSON.
 
 Children without `outputSchema` do not receive `structured_output` from Atomic's default tool registry. They can still use a custom extension-provided terminating tool if you explicitly add one.
 
@@ -799,10 +798,10 @@ Agent definitions are not loaded into context by default. Management actions let
 | `outputMode` | `"inline" \| "file-only"` | `inline` | Return saved output inline or as a concise saved-file reference. `file-only` requires an `output` path. |
 | `skill` | `string \| string[] \| false` | agent default | Override skills or disable all. |
 | `model` | string | agent default | Override model. |
-| `tasks` | array | - | Top-level parallel tasks. Supports `agent`, `task`, `cwd`, `count`, `output`, `outputMode`, `reads`, `progress`, `skill`, `model`, and `acceptance`. |
+| `tasks` | array | - | Top-level parallel tasks. Supports `agent`, `task`, `cwd`, `count`, `output`, `outputMode`, `reads`, `progress`, `skill`, and `model`. |
 | `concurrency` | number | config or `4` | Top-level parallel concurrency. |
 | `worktree` | boolean | false | Create isolated git worktrees for parallel tasks. |
-| `chain` | array | - | Sequential, static parallel, and dynamic fanout chain steps. Steps and chain parallel tasks support `phase`, `label`, `as`, `outputSchema`, and `acceptance` in addition to the usual execution fields. Dynamic fanout uses `expand`, one child `parallel` template, and `collect`. |
+| `chain` | array | - | Sequential, static parallel, and dynamic fanout chain steps. Steps and chain parallel tasks support `phase`, `label`, `as`, and `outputSchema` in addition to the usual execution fields. Dynamic fanout uses `expand`, one child `parallel` template, and `collect`. |
 | `context` | `fresh \| fork` | agent default or `fresh` | `fork` creates real branched sessions from the parent leaf. Packaged `planner`, `worker`, and `oracle` default to `fork`. |
 | `chainDir` | string | temp chain dir | Persistent directory for chain artifacts. |
 | `clarify` | boolean | true for chains | Show TUI preview/edit flow. |
@@ -814,7 +813,6 @@ Agent definitions are not loaded into context by default. Management actions let
 | `includeProgress` | boolean | false | Include full progress in result. |
 | `share` | boolean | false | Upload session export to GitHub Gist. |
 | `sessionDir` | string | derived | Override session log directory. |
-| `acceptance` | string/object/false | inferred | Override the run's inferred acceptance gates. Use `"auto"`, `"attested"`, `"checked"`, `"verified"`, `"reviewed"`, or `{ level: "none", reason: "..." }`. |
 
 `context: "fork"` fails fast when the parent session is not persisted, the current leaf is missing, or the branched child session cannot be created. It never silently downgrades to `fresh`. In multi-agent runs, if any requested agent has `defaultContext: fork` and the launch omits `context`, the whole invocation uses forked context; pass `context: "fresh"` when you intentionally want a fresh run.
 
@@ -990,35 +988,17 @@ Async runs write:
 
 `status.json` powers the widget and `subagent({ action: "status" })` output. `events.jsonl` contains wrapper events plus child Pi JSON events annotated with run and step metadata. `output-<n>.log` is a live human-readable tail. Fallback information is persisted so background runs are debuggable after completion.
 
-## Acceptance Gates
+## Completion and output
 
-Every run resolves an effective acceptance policy. Callers may omit `acceptance` for the inferred default, or set it on single runs, top-level parallel task items, chain steps, static parallel tasks, and dynamic fanout templates.
+Subagent runs no longer inject acceptance gate prompts, infer task policies from text, parse `acceptance-report` blocks, or reject completed children for missing acceptance evidence. Child output is preserved as returned, including any literal fenced block named `acceptance-report`. Parent sessions remain responsible for deciding whether the returned work is sufficient.
 
-```ts
-{
-  agent: "worker",
-  task: "Implement the fix",
-  acceptance: {
-    level: "verified",
-    criteria: ["Patch the bug without widening scope"],
-    evidence: ["changed-files", "tests-added", "commands-run", "residual-risks", "no-staged-files"],
-    verify: [{ id: "focused", command: "npm test", timeoutMs: 120000 }]
-  }
-}
-```
+### Migration from acceptance gates
 
-Accepted levels are `auto`, `none`, `attested`, `checked`, `verified`, and `reviewed`. `acceptance: "auto"` is the default. Read-only reviewer/scout tasks infer lightweight attestation, normal writer tasks infer checked evidence, and async/risky/dynamic writer contexts infer a reviewed gate. To disable gates, prefer `{ level: "none", reason: "..." }`.
+For existing subagent integrations and saved definitions:
 
-Acceptance provenance is stored separately from child prose:
-
-- `claimed`: child finished but did not provide structured evidence.
-- `attested`: child returned a structured acceptance report.
-- `checked`: runtime structural checks passed, such as required evidence and no staged files.
-- `verified`: configured runtime verification commands passed. Child-reported command success does not count.
-- `reviewed`: an independent reviewer result is present.
-- `rejected`: attestation, structural checks, verification, or review failed.
-
-For `attested` or stricter levels, the child prompt includes a standardized acceptance section and asks for a fenced `acceptance-report` JSON block. Explicit failed gates fail the run. Inferred gates are persisted for observability without breaking older calls that omit `acceptance`.
+- Remove `acceptance` properties from `subagent()` calls, top-level `tasks` items, `chain` steps, static parallel task items, and dynamic fanout parallel templates. The fields are no longer read; JSON chain rewrites drop legacy copies.
+- Remove `completionGuard: false` from agent frontmatter or custom agent definitions. The completion guard no longer exists, so the override has no effect and management rewrites strip it.
+- Put validation, command, evidence, review, or residual-risk requirements directly in the task text you pass to the parent or child agent.
 
 ## Live progress
 

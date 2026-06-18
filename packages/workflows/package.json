@@ -1,6 +1,6 @@
 {
   "name": "@bastani/workflows",
-  "version": "0.8.29",
+  "version": "0.8.31-alpha.3",
   "private": true,
   "description": "Atomic extension for multi-stage workflow authoring and execution.",
   "contributors": [
@@ -83,7 +83,7 @@
   },
   "peerDependencies": {
     "@bastani/atomic": "*",
-    "@earendil-works/pi-tui": "^0.79.3"
+    "@earendil-works/pi-tui": "^0.79.7"
   },
   "peerDependenciesMeta": {
     "@bastani/atomic": {

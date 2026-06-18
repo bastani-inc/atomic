@@ -1496,6 +1496,52 @@ describe("executor.run", () => {
         assert.equal(stageC?.parentIds.length, 2);
     });
 
+    test("ctx.parallel queued stages share the same parent frontier after sibling failures", async () => {
+        const def = defineWorkflow("parallel-parent-frontier-wf")
+            .run(async (ctx) => {
+                await ctx.task("seed", { prompt: "seed" });
+                try {
+                    await ctx.parallel(
+                        [
+                            { name: "branch-a", prompt: "fail-a" },
+                            { name: "branch-b", prompt: "branch-b" },
+                            { name: "branch-c", prompt: "branch-c" },
+                        ],
+                        { concurrency: 1, failFast: false },
+                    );
+                } catch (err) {
+                    assert.ok(err instanceof AggregateError);
+                }
+                return {};
+            })
+            .compile();
+
+        const wfResult = await run(
+            def,
+            {},
+            {
+                adapters: {
+                    prompt: {
+                        prompt: async (text) => {
+                            if (text.includes("fail-a")) throw new Error("branch-a failed");
+                            return `ok:${text}`;
+                        },
+                    },
+                },
+                store: createStore(),
+            },
+        );
+
+        assert.equal(wfResult.status, "completed");
+        const seed = wfResult.stages.find((stage) => stage.name === "seed");
+        assert.notEqual(seed, undefined);
+        for (const name of ["branch-a", "branch-b", "branch-c"]) {
+            const stage = wfResult.stages.find((candidate) => candidate.name === name);
+            assert.notEqual(stage, undefined);
+            assert.deepEqual(stage?.parentIds, [seed!.id]);
+        }
+    });
+
     test("records lifecycle callbacks", async () => {
         const def = defineWorkflow("lifecycle-wf")
             .output("done", Type.Optional(Type.Any()))
@@ -4387,6 +4433,65 @@ describe("executor.run", () => {
         }
     });
 
+    test("dummy workflow: a (1m) token stage runs end-to-end and applies the long-context window to the SDK session", async () => {
+        const st = createStore();
+        let createdModel: string | undefined;
+        let createdContextWindow: number | undefined = -1;
+        const def = defineWorkflow("context-window-token-smoke")
+            .output("ok", Type.Boolean())
+            .run(async (ctx) => {
+                await ctx
+                    .stage("opus", { model: "github-copilot/claude-opus-4.8 (1m):xhigh" })
+                    .prompt("hello");
+                return { ok: true };
+            })
+            .compile();
+
+        const wfResult = await run(
+            def,
+            {},
+            {
+                models: {
+                    listModels: async () => [
+                        {
+                            provider: "github-copilot",
+                            id: "claude-opus-4.8",
+                            fullId: "github-copilot/claude-opus-4.8",
+                            // Tiered window mirroring the live CAPI catalog (200K default + ~936K long).
+                            model: {
+                                provider: "github-copilot",
+                                id: "claude-opus-4.8",
+                                contextWindow: 200_000,
+                                defaultContextWindow: 200_000,
+                                contextWindowOptions: [200_000, 936_000],
+                            } as unknown as NonNullable<CreateAgentSessionOptions["model"]>,
+                        },
+                    ],
+                },
+                adapters: {
+                    agentSession: {
+                        async create(options) {
+                            createdModel =
+                                typeof options.model === "string"
+                                    ? options.model
+                                    : `${String(options.model?.provider)}/${options.model?.id}`;
+                            createdContextWindow = options.contextWindow;
+                            return mockSession();
+                        },
+                    },
+                },
+                store: st,
+            },
+        );
+
+        assert.equal(wfResult.status, "completed");
+        assert.equal(wfResult.result?.["ok"], true);
+        // The `(1m)` token resolved against the opus model's advertised windows
+        // and reached createAgentSession as the ~936K long-context budget.
+        assert.equal(createdModel, "github-copilot/claude-opus-4.8");
+        assert.equal(createdContextWindow, 936_000);
+    });
+
     test("bare explicit model stage publishes running fast-mode metadata after catalog resolution", async () => {
         const promptGate = deferred<string | void>();
         const st = createStore();
@@ -7255,6 +7360,76 @@ describe("executor — stage-control registry integration", () => {
         assert.ok(stage, "stage snapshot should exist");
         assert.equal(stage!.sessionId, "sess-test-1");
         assert.equal(stage!.sessionFile, "/tmp/atomic-test-session.ndjson");
+    });
+
+    test("failed schema-backed stage retains session metadata", async () => {
+        const def = defineWorkflow("failed-session-meta-wf")
+            .run(async (ctx) => {
+                await ctx.stage("review", {
+                    schema: Type.Object({ ok: Type.Boolean() }, { additionalProperties: false }),
+                }).prompt("review");
+                return {};
+            })
+            .compile();
+        const store = createStore();
+        const result = await run(
+            def,
+            {},
+            {
+                adapters: {
+                    agentSession: {
+                        async create() {
+                            return mockSession();
+                        },
+                    },
+                },
+                store,
+                stageControlRegistry: createStageControlRegistry(),
+            },
+        );
+
+        assert.equal(result.status, "failed");
+        const stage = store.runs()[0]?.stages[0];
+        assert.equal(stage?.status, "failed");
+        assert.equal(stage?.sessionId, "sess-test-1");
+        assert.equal(stage?.sessionFile, "/tmp/atomic-test-session.ndjson");
+    });
+
+    test("failed schema-backed stage persists session metadata", async () => {
+        const calls: Array<{ type: string; payload: Record<string, unknown> }> = [];
+        const def = defineWorkflow("failed-session-persist-wf")
+            .run(async (ctx) => {
+                await ctx.stage("review", {
+                    schema: Type.Object({ ok: Type.Boolean() }, { additionalProperties: false }),
+                }).prompt("review");
+                return {};
+            })
+            .compile();
+        await run(
+            def,
+            {},
+            {
+                adapters: {
+                    agentSession: {
+                        async create() {
+                            return mockSession();
+                        },
+                    },
+                },
+                store: createStore(),
+                stageControlRegistry: createStageControlRegistry(),
+                persistence: {
+                    appendEntry(type: string, payload: Record<string, unknown>): string {
+                        calls.push({ type, payload });
+                        return `entry-${calls.length}`;
+                    },
+                },
+            },
+        );
+
+        const stageEnd = calls.find((call) => call.type === "workflow.stage.end");
+        assert.equal(stageEnd?.payload["sessionId"], "sess-test-1");
+        assert.equal(stageEnd?.payload["sessionFile"], "/tmp/atomic-test-session.ndjson");
     });
 
     test("attachable flag is cleared once the stage settles", async () => {

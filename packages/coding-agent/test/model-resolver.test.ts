@@ -1,5 +1,6 @@
 import type { Model } from "@earendil-works/pi-ai";
 import { describe, expect, test } from "vitest";
+import { getSupportedContextWindows } from "../src/core/context-window.ts";
 import {
 	defaultModelPerProvider,
 	findInitialModel,
@@ -76,6 +77,21 @@ const cursorBaseModel: Model<"cursor-agent"> = {
 	input: ["text"],
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 	contextWindow: 200000,
+	maxTokens: 64000,
+};
+
+const copilotSelectableBaseModel: Model<"openai-completions"> = {
+	id: "gpt-5.4",
+	name: "GPT-5.4",
+	api: "openai-completions",
+	provider: "github-copilot",
+	baseUrl: "https://api.githubcopilot.com",
+	reasoning: true,
+	input: ["text"],
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	contextWindow: 400000,
+	defaultContextWindow: 400000,
+	contextWindowOptions: [400000, 1000000],
 	maxTokens: 64000,
 };
 
@@ -314,6 +330,26 @@ describe("resolveCliModel", () => {
 		expect(result.model?.id).toBe("openai/ghost-model");
 	});
 
+	test("scrubs inherited context-window options from explicit provider fallback models", () => {
+		const registry = {
+			getAll: () => [copilotSelectableBaseModel],
+		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRegistry"];
+
+		const result = resolveCliModel({
+			cliProvider: "github-copilot",
+			cliModel: "future-copilot-model",
+			modelRegistry: registry,
+		});
+
+		expect(result.error).toBeUndefined();
+		expect(result.model?.provider).toBe("github-copilot");
+		expect(result.model?.id).toBe("future-copilot-model");
+		expect(result.model?.contextWindow).toBe(400000);
+		expect(result.model?.defaultContextWindow).toBe(400000);
+		expect(result.model?.contextWindowOptions).toBeUndefined();
+		expect(result.model ? getSupportedContextWindows(result.model) : []).toEqual([400000]);
+	});
+
 	test("returns a clear error when there are no models", () => {
 		const registry = {
 			getAll: () => [],
@@ -460,6 +496,29 @@ describe("default model selection", () => {
 		expect(result.model?.provider).toBe("cursor");
 		expect(result.model?.id).toBe("cursor-compose-2.5");
 		expect(result.model?.api).toBe("cursor-agent");
+	});
+
+	test("restoreModelFromSession scrubs inherited context-window options from fallback models", async () => {
+		const registry = {
+			find: () => undefined,
+			getAvailable: async () => [copilotSelectableBaseModel],
+		} as unknown as Parameters<typeof restoreModelFromSession>[4];
+
+		const result = await restoreModelFromSession(
+			"github-copilot",
+			"future-copilot-model",
+			undefined,
+			false,
+			registry,
+		);
+
+		expect(result.fallbackMessage).toBeUndefined();
+		expect(result.model?.provider).toBe("github-copilot");
+		expect(result.model?.id).toBe("future-copilot-model");
+		expect(result.model?.contextWindow).toBe(400000);
+		expect(result.model?.defaultContextWindow).toBe(400000);
+		expect(result.model?.contextWindowOptions).toBeUndefined();
+		expect(result.model ? getSupportedContextWindows(result.model) : []).toEqual([400000]);
 	});
 
 	test("findInitialModel selects ai-gateway default when available", async () => {

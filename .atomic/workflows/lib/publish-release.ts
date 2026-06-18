@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { createGitEnvironment } from "@bastani/atomic";
+import { createGitEnvironment } from "../../../packages/coding-agent/src/utils/git-env.js";
 
 export type ReleaseKind = "release" | "prerelease";
 export type ReleaseStatus = "completed" | "blocked" | "failed";

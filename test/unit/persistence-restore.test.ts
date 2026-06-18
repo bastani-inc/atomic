@@ -202,6 +202,29 @@ describe("restoreOnSessionStart", () => {
     assert.notEqual(run.endedAt, undefined);
   });
 
+  test("stage session metadata is restored from stage.end entries", () => {
+    const st = createStore();
+    const entries: SessionEntry[] = [
+      { id: "e1", type: "workflow.run.start", payload: { runId: "r1", name: "wf", inputs: {}, ts: 1 } },
+      { id: "e2", type: "workflow.stage.start", payload: { runId: "r1", stageId: "s1", name: "review", parentIds: [], ts: 2 } },
+      {
+        id: "e3",
+        type: "workflow.stage.end",
+        payload: {
+          runId: "r1",
+          stageId: "s1",
+          status: "failed",
+          sessionId: "session-1",
+          sessionFile: "/tmp/session-1.jsonl",
+        },
+      },
+    ];
+    restoreOnSessionStart(makeSessionManager(entries), { resumeInFlight: "never", persistRuns: true }, st);
+    const stage = st.runs()[0]?.stages[0];
+    assert.equal(stage?.sessionId, "session-1");
+    assert.equal(stage?.sessionFile, "/tmp/session-1.jsonl");
+  });
+
   test("stage snapshots are rebuilt from session entries", () => {
     const st = createStore();
     const entries: SessionEntry[] = [

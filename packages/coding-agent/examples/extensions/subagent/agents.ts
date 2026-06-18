@@ -4,7 +4,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { getAgentDir, parseFrontmatter } from "@bastani/atomic";
+import { CONFIG_DIR_NAME, getAgentDir, parseFrontmatter } from "@bastani/atomic";
 
 export type AgentScope = "user" | "project" | "both";
 
@@ -85,7 +85,7 @@ function isDirectory(p: string): boolean {
 function findNearestProjectAgentsDir(cwd: string): string | null {
 	let currentDir = cwd;
 	while (true) {
-		const atomicCandidate = path.join(currentDir, ".atomic", "agents");
+		const atomicCandidate = path.join(currentDir, CONFIG_DIR_NAME, "agents");
 		if (isDirectory(atomicCandidate)) return atomicCandidate;
 		const legacyCandidate = path.join(currentDir, ".pi", "agents");
 		if (isDirectory(legacyCandidate)) return legacyCandidate;

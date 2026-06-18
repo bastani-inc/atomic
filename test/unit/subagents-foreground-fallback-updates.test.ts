@@ -1,7 +1,10 @@
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import { shouldSuppressIntermediateRetryableFailureUpdate } from "../../packages/subagents/src/runs/foreground/execution.js";
+import {
+  shouldSuppressIntermediateRetryableFailureUpdate,
+  shouldSuppressIntermediateStructuredOutputFailureUpdate,
+} from "../../packages/subagents/src/runs/foreground/execution.js";
 import type { AgentProgress, Details, SingleResult, Usage } from "../../packages/subagents/src/shared/types.js";
 
 const usage: Usage = {
@@ -80,6 +83,27 @@ describe("foreground subagent model fallback update suppression", () => {
     assert.equal(
       shouldSuppressIntermediateRetryableFailureUpdate(
         update({ status: "failed", error: "command failed: bun test" }),
+      ),
+      false,
+    );
+  });
+
+  test("suppresses intermediate structured_output contract failures", () => {
+    assert.equal(
+      shouldSuppressIntermediateStructuredOutputFailureUpdate(
+        update({ status: "failed", error: "Missing structured_output call; this step has outputSchema and must finish by calling structured_output." }),
+      ),
+      true,
+    );
+    assert.equal(
+      shouldSuppressIntermediateStructuredOutputFailureUpdate(
+        update({ status: "failed", error: "Structured output validation failed: answer: Expected string" }),
+      ),
+      true,
+    );
+    assert.equal(
+      shouldSuppressIntermediateStructuredOutputFailureUpdate(
+        update({ status: "running", error: "Missing structured_output call; this step has outputSchema and must finish by calling structured_output." }),
       ),
       false,
     );

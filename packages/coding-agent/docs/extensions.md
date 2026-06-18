@@ -222,6 +222,12 @@ export default async function (pi: ExtensionAPI) {
 
 This pattern makes the fetched models available during normal startup and to `atomic --list-models`.
 
+### Long-lived resources and shutdown
+
+Extension factories may run in invocations that never start a session, such as metadata commands or early configuration checks. Do not start background resources such as processes, sockets, file watchers, or timers from the factory.
+
+Defer background resource startup until `session_start` or the command/tool/event that needs the resource. Register an idempotent `session_shutdown` handler to close any session-scoped resources you start.
+
 ### Extension Styles
 
 **Single file** - simplest, for small extensions:
@@ -438,15 +444,14 @@ Fired by `/compact` and auto-compaction. Compaction is deletion-only: extensions
 
 ```typescript
 pi.on("session_before_compact", async (event, ctx) => {
-  const { preparation, branchEntries, reason, mode, signal } = event;
+  const { preparation, branchEntries, reason, signal } = event;
   const { transcript } = preparation;
 
   // transcript.entries - compactable entries on the active branch
-  // transcript.protectedEntryIds - entries protected from standard compaction
+  // transcript.protectedEntryIds - entries validation will reject if directly deleted
   // transcript.tokensBefore - token estimate before compaction
   // branchEntries - raw session entries on the current branch
   // reason - "manual" | "threshold" | "overflow"
-  // mode - "standard" | "critical_overflow"
 
   if (signal.aborted) return { cancel: true };
 
@@ -491,7 +496,7 @@ pi.on("session_tree", async (event, ctx) => {
 
 #### session_shutdown
 
-Fired before an extension runtime is torn down.
+Fired before a started session runtime is torn down. Use this to clean up resources opened from `session_start` or other session-scoped hooks.
 
 ```typescript
 pi.on("session_shutdown", async (event, ctx) => {
@@ -905,6 +910,27 @@ UI methods for user interaction. See [Custom UI](#custom-ui) for full details.
 
 Current working directory.
 
+Use `CONFIG_DIR_NAME` instead of hardcoding `.atomic` (or legacy `.pi`) when constructing project-local config paths. Rebranded distributions can use a different config directory name.
+
+```typescript
+import { CONFIG_DIR_NAME, type ExtensionAPI } from "@bastani/atomic";
+import { join } from "node:path";
+
+export default function (pi: ExtensionAPI) {
+  pi.on("session_start", (_event, ctx) => {
+    const projectConfigPath = join(ctx.cwd, CONFIG_DIR_NAME, "my-extension.json");
+    // ...
+  });
+}
+```
+
+### ctx.isProjectTrusted()
+
+Returns whether project-local trust is active for the current session context. This includes temporary trust decisions and CLI trust overrides, not just saved decisions in the global trust store.
+
+Use this before reading project-local extension configuration that should only be honored for trusted projects.
+
+
 ### ctx.sessionManager
 
 Read-only access to session state. See [Session Format](/session-format) for the full SessionManager API and entry types.
@@ -994,10 +1020,13 @@ if (usage && usage.tokens > 100_000) {
 
 ### ctx.compact()
 
-Trigger Atomic's default Verbatim Compaction without awaiting completion. This is deletion-only Context Compaction: the internal planner searches/reads transcript slices, records exact entry/content-block deletion targets with transcript-bound tools, and Atomic applies only locally validated logical deletions. Retained transcript content stays unchanged. The approach is informed by Morph's Context Compaction write-up: [Morph's Context Compaction](https://www.morphllm.com/context-compaction). Use `onComplete` and `onError` for follow-up actions.
+Trigger Atomic's default Verbatim Compaction without awaiting completion. This is deletion-only Context Compaction: the internal planner searches/reads transcript slices, records exact entry/content-block deletion targets with transcript-bound tools, and Atomic applies only locally validated logical deletions. Retained transcript content stays unchanged. The approach is informed by Morph's Context Compaction write-up: [Morph's Context Compaction](https://www.morphllm.com/context-compaction). Use `compression_ratio`, `preserve_recent`, and `query` to tune the run, and `onComplete`/`onError` for follow-up actions.
 
 ```typescript
 ctx.compact({
+  compression_ratio: 0.5, // fraction to keep: 0.3 aggressive, 0.7 light
+  preserve_recent: 2,    // keep the last N context-eligible messages
+  query: "keep active migration details",
   onComplete: (result) => {
     ctx.ui.notify(`Compaction deleted ${result.stats.objectsDeleted} objects`, "info");
   },
@@ -1007,7 +1036,7 @@ ctx.compact({
 });
 ```
 
-Verbatim Compaction uses a fixed internal prompt; no custom summary text can be injected.
+Verbatim Compaction uses a fixed internal prompt; no custom summary text can be injected. The `query` parameter guides relevance-based pruning inside that fixed prompt; it is not replacement summary text.
 
 ### ctx.getSystemPrompt()
 
@@ -1539,24 +1568,25 @@ const result = await pi.exec("git", ["status"], { signal, timeout: 5000 });
 
 ### pi.getActiveTools() / pi.getAllTools() / pi.setActiveTools(names)
 
-Manage active tools. This works for both built-in tools and dynamically registered tools.
+Manage active tools. This works for both built-in tools and dynamically registered tools. `pi.getActiveTools()` returns the active tool names as `string[]`; `pi.getAllTools()` returns metadata for all configured tools.
 
 ```typescript
-const active = pi.getActiveTools();
+const active = pi.getActiveTools(); // ["read", "bash", ...]
 const all = pi.getAllTools();
-// [{
+// all = [{
 //   name: "read",
 //   description: "Read file contents...",
-//   parameters: ..., 
+//   parameters: ...,
+//   promptGuidelines: ["Use read to examine files instead of cat or sed."],
 //   sourceInfo: { path: "<builtin:read>", source: "builtin", scope: "temporary", origin: "top-level" }
 // }, ...]
-const names = all.map(t => t.name);
 const builtinTools = all.filter((t) => t.sourceInfo.source === "builtin");
 const extensionTools = all.filter((t) => t.sourceInfo.source !== "builtin" && t.sourceInfo.source !== "sdk");
+pi.setActiveTools([...new Set([...active, "my_custom_tool"])]); // Keep current tools and enable my_custom_tool
 pi.setActiveTools(["read", "bash"]); // Switch to read-only
 ```
 
-`pi.getAllTools()` returns `name`, `description`, `parameters`, and `sourceInfo`.
+`pi.getAllTools()` returns `name`, `description`, `parameters`, `promptGuidelines`, and `sourceInfo`.
 
 Typical `sourceInfo.source` values:
 - `builtin` for built-in tools
@@ -2588,8 +2618,8 @@ All examples in [examples/extensions/](https://github.com/bastani-inc/atomic/tre
 |---------|-------------|----------|
 | **Tools** |||
 | `hello.ts` | Minimal tool registration | `registerTool` |
-| `question.ts` | Tool with user interaction | `registerTool`, `ui.select` |
-| `questionnaire.ts` | Multi-step wizard tool | `registerTool`, `ui.custom` |
+| `question.ts` | Width-wrapped single-question custom UI with option descriptions and typed answers | `registerTool`, `ui.custom` |
+| `questionnaire.ts` | Width-wrapped multi-step wizard with tab navigation and typed answers | `registerTool`, `ui.custom` |
 | `todo.ts` | Stateful tool with persistence | `registerTool`, `appendEntry`, `renderResult`, session events |
 | `dynamic-tools.ts` | Register tools after startup and during commands | `registerTool`, `session_start`, `registerCommand` |
 | `structured-output.ts` | Opt-in schema-specific `structured_output` tool using the canonical factory | `createStructuredOutputTool`, `registerTool`, terminating tool results |

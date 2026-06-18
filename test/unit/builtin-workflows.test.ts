@@ -1157,7 +1157,7 @@ describe("goal", () => {
         );
         assert.match(prompt, /The audit must prove completion/);
         assert.match(prompt, /Verify correctness end-to-end whenever practical/);
-        assert.match(prompt, /skill: "browser"/);
+        assert.match(prompt, /skill: "playwright-cli"/);
         assert.match(prompt, /skill: "tmux"/);
         assert.match(
             prompt,
@@ -1734,7 +1734,7 @@ describe("goal", () => {
         assert.match(reviewerPrompt, /stop_review_loop=true/);
         assert.match(reviewerPrompt, /Verify correctness end-to-end whenever practical/);
         assert.match(reviewerPrompt, /frontend changes whose correctness depends on backend\/API behavior/);
-        assert.match(reviewerPrompt, /skill: "browser"/);
+        assert.match(reviewerPrompt, /skill: "playwright-cli"/);
         assert.match(reviewerPrompt, /skill: "tmux"/);
     });
 
@@ -2271,6 +2271,7 @@ describe("ralph", () => {
             plan: "text",
             plan_path: "text",
             pr_report: "text",
+            qa_video_path: "text",
             research: "text",
             research_path: "text",
             result: "text",
@@ -2368,7 +2369,7 @@ describe("ralph", () => {
             const prompt = ctx.calls.prompts[label]?.[0] ?? "";
             assert.match(prompt, /Verify correctness end-to-end whenever practical/, label);
             assert.match(prompt, /frontend changes whose correctness depends on backend\/API behavior/, label);
-            assert.match(prompt, /skill: "browser"/, label);
+            assert.match(prompt, /skill: "playwright-cli"/, label);
             assert.match(prompt, /skill: "tmux"/, label);
         }
         assert.equal(ctx.calls.task.includes("code-simplifier-1"), false);
@@ -2696,7 +2697,7 @@ describe("ralph", () => {
             /Continue implementing from the latest research findings/i,
         );
         assert.match(forkedOrchestratorPrompt, /Verify correctness end-to-end whenever practical/);
-        assert.match(forkedOrchestratorPrompt, /skill: "browser"/);
+        assert.match(forkedOrchestratorPrompt, /skill: "playwright-cli"/);
         assert.match(forkedOrchestratorPrompt, /skill: "tmux"/);
         assert.doesNotMatch(
             ctx.calls.prompts["orchestrator-2"]?.[0] ?? "",
@@ -2947,7 +2948,6 @@ describe("open-claude-design", () => {
             approved_for_export: "boolean",
             artifact: "text",
             artifact_dir: "text",
-            browse_cli_status: "text",
             design_system: "text",
             handoff: "text",
             import_context: "text",
@@ -2958,6 +2958,7 @@ describe("open-claude-design", () => {
             run_id: "text",
             spec_file_url: "text",
             spec_path: "text",
+            playwright_cli_status: "text",
         });
     });
 
@@ -3039,7 +3040,7 @@ describe("open-claude-design", () => {
         assert.equal(result["output_type"], "prototype");
     });
 
-    test("browser display prompts use browse bootstrap rules", async () => {
+    test("browser display prompts use playwright-cli bootstrap rules", async () => {
         const mod =
             await import("../../packages/workflows/builtin/open-claude-design.js");
         const d = mod.default as unknown as WorkflowDefinition;
@@ -3074,15 +3075,16 @@ describe("open-claude-design", () => {
         ]) {
             assert.match(displayPrompt, /<browser_use_guidelines>/);
             assert.match(displayPrompt, /<\/browser_use_guidelines>/);
-            assert.match(displayPrompt, /which browse/);
-            assert.match(displayPrompt, /npm install -g browse/);
+            assert.match(displayPrompt, /which playwright-cli/);
+            assert.match(displayPrompt, /@playwright\/cli/);
             assert.match(displayPrompt, /Do not add project dependencies/);
             assert.match(displayPrompt, /missing browser executable/);
+            assert.match(displayPrompt, /screenshot --filename/);
             assert.doesNotMatch(displayPrompt, /playwright_browser_bootstrap/);
-            assert.doesNotMatch(displayPrompt, /@playwright\/cli/);
+            assert.doesNotMatch(displayPrompt, /which browse/);
+            assert.doesNotMatch(displayPrompt, /npm install -g browse/);
             assert.doesNotMatch(displayPrompt, /browser-use/);
             assert.doesNotMatch(displayPrompt, /browser goto/);
-            assert.doesNotMatch(displayPrompt, /screenshot --filename/);
         }
     });
 

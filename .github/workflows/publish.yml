@@ -588,6 +588,21 @@ jobs:
                     echo "make_latest=true" >> "$GITHUB_OUTPUT"
                   fi
 
+            - name: Generate binary checksums
+              shell: bash
+              working-directory: ${{ env.PACKAGE_DIR }}/binaries
+              run: |
+                  set -euo pipefail
+                  release_assets=(
+                    atomic-darwin-arm64.tar.gz
+                    atomic-darwin-x64.tar.gz
+                    atomic-linux-x64.tar.gz
+                    atomic-linux-arm64.tar.gz
+                    atomic-windows-x64.zip
+                    atomic-windows-arm64.zip
+                  )
+                  sha256sum "${release_assets[@]}" > SHA256SUMS
+
             - name: Create GitHub Release with binaries
               uses: softprops/action-gh-release@v3
               with:
@@ -604,3 +619,4 @@ jobs:
                       packages/coding-agent/binaries/atomic-linux-arm64.tar.gz
                       packages/coding-agent/binaries/atomic-windows-x64.zip
                       packages/coding-agent/binaries/atomic-windows-arm64.zip
+                      packages/coding-agent/binaries/SHA256SUMS

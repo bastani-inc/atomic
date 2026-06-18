@@ -43,12 +43,17 @@ import {
 	extractTextFromContent,
 } from "../../shared/utils.ts";
 import { buildSkillInjection, resolveSkillsWithFallback } from "../../agents/skills.ts";
-import { evaluateCompletionMutationGuard } from "../shared/completion-guard.ts";
 import { getPiSpawnCommand } from "../shared/pi-spawn.ts";
 import { createJsonlWriter } from "../../shared/jsonl-writer.ts";
 import { attachPostExitStdioGuard, trySignalChild } from "../../shared/post-exit-stdio-guard.ts";
 import { applyThinkingSuffix, buildPiArgs, cleanupTempDir } from "../shared/pi-args.ts";
-import { readStructuredOutput } from "../shared/structured-output.ts";
+import {
+	STRUCTURED_OUTPUT_MAX_CORRECTIVE_PROMPTS,
+	formatStructuredOutputCorrectionPrompt,
+	isStructuredOutputContractError,
+	latestStructuredOutputToolErrorFromMessages,
+	readStructuredOutput,
+} from "../shared/structured-output.ts";
 import { captureSingleOutputSnapshot, formatSavedOutputReference, resolveSingleOutput, validateFileOnlyOutputMode, type SingleOutputSnapshot } from "../shared/single-output.ts";
 import {
 	buildModelCandidates,
@@ -78,10 +83,8 @@ import {
 	resolveSubagentModelFastMode,
 } from "../../shared/fast-mode.ts";
 import { resolveEffectiveThinking } from "../../shared/model-info.ts";
-import { acceptanceFailureMessage, evaluateAcceptance, formatAcceptancePrompt, resolveEffectiveAcceptance, stripAcceptanceReport } from "../shared/acceptance.ts";
 
 const artifactOutputByResult = new WeakMap<SingleResult, string>();
-const acceptanceOutputByResult = new WeakMap<SingleResult, string>();
 const modelFailureSignalByResult = new WeakMap<SingleResult, unknown>();
 
 function emptyUsage(): Usage {
@@ -102,17 +105,6 @@ function appendRecentOutput(progress: AgentProgress, lines: string[]): void {
 	progress.recentOutput.push(...lines.filter((line) => line.trim()));
 	if (progress.recentOutput.length > 50) {
 		progress.recentOutput.splice(0, progress.recentOutput.length - 50);
-	}
-}
-
-function stripAcceptanceReportsFromMessages(messages: Message[] | undefined): void {
-	for (const message of messages ?? []) {
-		if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
-		for (const part of message.content) {
-			if (part.type === "text" && "text" in part && typeof part.text === "string") {
-				part.text = stripAcceptanceReport(part.text);
-			}
-		}
 	}
 }
 
@@ -157,18 +149,39 @@ function extractUpdateText(update: RunSyncUpdate): string | undefined {
 	return text || undefined;
 }
 
-export function shouldSuppressIntermediateRetryableFailureUpdate(update: RunSyncUpdate): boolean {
+function terminalUpdateFailureText(update: RunSyncUpdate): string | undefined {
 	const result = update.details?.results?.[0];
-	if (!result) return false;
+	if (!result) return undefined;
 	const progress = update.details?.progress?.[0];
 	const status = result.progress?.status ?? progress?.status;
-	if (status !== "failed") return false;
-	const failureText = result.error
+	if (status !== "failed") return undefined;
+	return result.error
 		?? result.progress?.error
 		?? progress?.error
 		?? extractUpdateText(update);
-	return isRetryableModelFailure(failureText);
 }
+
+export function shouldSuppressIntermediateRetryableFailureUpdate(update: RunSyncUpdate): boolean {
+	return isRetryableModelFailure(terminalUpdateFailureText(update));
+}
+
+export function shouldSuppressIntermediateStructuredOutputFailureUpdate(update: RunSyncUpdate): boolean {
+	return isStructuredOutputContractError(terminalUpdateFailureText(update));
+}
+
+type RunSingleAttemptShared = {
+	sessionEnabled: boolean;
+	systemPrompt: string;
+	resolvedSkillNames?: string[];
+	skillsWarning?: string;
+	jsonlPath?: string;
+	artifactPaths?: ArtifactPaths;
+	attemptNotes: string[];
+	outputSnapshot?: SingleOutputSnapshot;
+	fastModeSettings: CodexFastModeResolvedSettings;
+	fastModeScope: CodexFastModeScope;
+	originalTask?: string;
+};
 
 async function runSingleAttempt(
 	runtimeCwd: string,
@@ -176,19 +189,7 @@ async function runSingleAttempt(
 	task: string,
 	model: string | undefined,
 	options: RunSyncOptions,
-	shared: {
-		sessionEnabled: boolean;
-		systemPrompt: string;
-		resolvedSkillNames?: string[];
-		skillsWarning?: string;
-		jsonlPath?: string;
-		artifactPaths?: ArtifactPaths;
-		attemptNotes: string[];
-		outputSnapshot?: SingleOutputSnapshot;
-		fastModeSettings: CodexFastModeResolvedSettings;
-		fastModeScope: CodexFastModeScope;
-		originalTask?: string;
-	},
+	shared: RunSingleAttemptShared,
 ): Promise<SingleResult> {
 	const modelArg = applyThinkingSuffix(model, agent.thinking);
 	const runCwd = options.cwd ?? runtimeCwd;
@@ -283,8 +284,6 @@ async function runSingleAttempt(
 			workflowStageSubagentGuard: options.workflowStageSubagentGuard,
 		}),
 	};
-	let observedMutationAttempt = false;
-
 	const exitCode = await new Promise<number>((resolve) => {
 		const spawnSpec = getPiSpawnCommand(args);
 		const proc = spawn(spawnSpec.command, spawnSpec.args, {
@@ -517,7 +516,6 @@ async function runSingleAttempt(
 				progress.currentToolStartedAt = now;
 				progress.currentPath = resolveCurrentPath(evt.toolName, toolArgs);
 				const mutates = isMutatingTool(evt.toolName, toolArgs);
-				observedMutationAttempt = observedMutationAttempt || mutates;
 				pendingToolResult = { tool: evt.toolName ?? "tool", path: progress.currentPath, mutates, startedAt: now };
 				fireUpdate();
 			}
@@ -774,36 +772,10 @@ async function runSingleAttempt(
 		durationMs: progress.durationMs,
 	};
 
-	const acceptanceOutput = getFinalOutput(result.messages ?? []);
-	let fullOutput = stripAcceptanceReport(acceptanceOutput);
-	const completionGuard = result.exitCode === 0 && !result.error && agent.completionGuard !== false
-		? evaluateCompletionMutationGuard({
-			agent: agent.name,
-			task: shared.originalTask ?? task,
-			messages: result.messages ?? [],
-			tools: agent.tools,
-			mcpDirectTools: agent.mcpDirectTools,
-		})
-		: undefined;
-	if (completionGuard?.triggered && !observedMutationAttempt) {
-		result.exitCode = 1;
-		result.error = "Subagent completed without making edits for an implementation task.\nIt appears to have returned planning or scratchpad output instead of applying changes.";
-		progress.status = "failed";
-		progress.error = result.error;
-		emitControlEvent(buildControlEvent({
-			from: progress.activityState,
-			to: "needs_attention",
-			runId: options.runId ?? agent.name,
-			agent: agent.name,
-			index: options.index,
-			ts: Date.now(),
-			message: `${agent.name} completed without making edits for an implementation task`,
-			reason: "completion_guard",
-		}));
-	}
+	let fullOutput = getFinalOutput(result.messages ?? []);
 	if (options.outputPath && result.exitCode === 0) {
 		const resolvedOutput = resolveSingleOutput(options.outputPath, fullOutput, shared.outputSnapshot);
-		fullOutput = stripAcceptanceReport(resolvedOutput.fullOutput);
+		fullOutput = resolvedOutput.fullOutput;
 		result.savedOutputPath = resolvedOutput.savedPath;
 		result.outputSaveError = resolvedOutput.saveError;
 		if (resolvedOutput.savedPath) {
@@ -811,7 +783,6 @@ async function runSingleAttempt(
 		}
 	}
 	artifactOutputByResult.set(result, fullOutput);
-	acceptanceOutputByResult.set(result, acceptanceOutput);
 	result.outputMode = options.outputMode ?? "inline";
 	result.finalOutput = options.outputMode === "file-only" && result.savedOutputPath && result.outputReference
 		? result.outputReference.message
@@ -831,6 +802,71 @@ async function runSingleAttempt(
 			},
 		});
 	}
+	return result;
+}
+
+async function runSingleAttemptWithStructuredOutputRetries(
+	runtimeCwd: string,
+	agent: AgentConfig,
+	task: string,
+	model: string | undefined,
+	options: RunSyncOptions,
+	shared: RunSingleAttemptShared,
+): Promise<SingleResult> {
+	let nextTask = task;
+	let correctiveAttempts = 0;
+	let finalResult: SingleResult | undefined;
+	const aggregateUsage = emptyUsage();
+	let totalToolCount = 0;
+	let totalDurationMs = 0;
+
+	while (true) {
+		const suppressIntermediateStructuredOutputFailure = options.structuredOutput !== undefined
+			&& correctiveAttempts < STRUCTURED_OUTPUT_MAX_CORRECTIVE_PROMPTS
+			&& options.onUpdate !== undefined;
+		const attemptOptions = suppressIntermediateStructuredOutputFailure
+			? {
+				...options,
+				onUpdate: (update: RunSyncUpdate) => {
+					if (shouldSuppressIntermediateStructuredOutputFailureUpdate(update)) return;
+					options.onUpdate?.(update);
+				},
+			}
+			: options;
+		const result = await runSingleAttempt(runtimeCwd, agent, nextTask, model, attemptOptions, shared);
+		finalResult = result;
+		sumUsage(aggregateUsage, result.usage);
+		totalToolCount += result.progressSummary?.toolCount ?? 0;
+		totalDurationMs += result.progressSummary?.durationMs ?? 0;
+
+		if (!options.structuredOutput || !isStructuredOutputContractError(result.error)) break;
+		const correctionError = latestStructuredOutputToolErrorFromMessages(result.messages) ?? result.error ?? "Structured output contract failed.";
+		if (correctiveAttempts >= STRUCTURED_OUTPUT_MAX_CORRECTIVE_PROMPTS) {
+			result.error = correctionError;
+			break;
+		}
+		correctiveAttempts += 1;
+		nextTask = formatStructuredOutputCorrectionPrompt({
+			originalTask: task,
+			error: correctionError,
+			attempt: correctiveAttempts,
+		});
+	}
+
+	const result = finalResult ?? {
+		agent: agent.name,
+		task,
+		exitCode: 1,
+		messages: [],
+		usage: emptyUsage(),
+		error: "Subagent did not produce a result.",
+	} satisfies SingleResult;
+	result.usage = aggregateUsage;
+	result.progressSummary = {
+		toolCount: totalToolCount,
+		tokens: aggregateUsage.input + aggregateUsage.output,
+		durationMs: totalDurationMs,
+	};
 	return result;
 }
 
@@ -869,17 +905,6 @@ export async function runSync(
 	}
 
 	const shareEnabled = options.share === true;
-	const effectiveAcceptance = resolveEffectiveAcceptance({
-		explicit: options.acceptance,
-		agentName,
-		task,
-		mode: options.acceptanceContext?.mode ?? "single",
-		async: options.acceptanceContext?.async,
-		dynamic: options.acceptanceContext?.dynamic,
-		dynamicGroup: options.acceptanceContext?.dynamicGroup,
-	});
-	const acceptancePrompt = formatAcceptancePrompt(effectiveAcceptance);
-	const taskWithAcceptance = acceptancePrompt ? `${task}\n${acceptancePrompt}` : task;
 	const sessionEnabled = Boolean(options.sessionFile || options.sessionDir) || shareEnabled;
 	const skillNames = options.skills ?? agent.skills ?? [];
 	const skillCwd = options.cwd ?? runtimeCwd;
@@ -925,7 +950,7 @@ export async function runSync(
 		artifactPathsResult = getArtifactPaths(options.artifactsDir, options.runId, agentName, options.index);
 		ensureArtifactsDir(options.artifactsDir);
 		if (options.artifactConfig?.includeInput !== false) {
-				writeArtifact(artifactPathsResult.inputPath, `# Task for ${agentName}\n\n${taskWithAcceptance}`);
+			writeArtifact(artifactPathsResult.inputPath, `# Task for ${agentName}\n\n${task}`);
 		}
 		if (options.artifactConfig?.includeJsonl !== false) {
 			jsonlPath = artifactPathsResult.jsonlPath;
@@ -949,7 +974,7 @@ export async function runSync(
 				},
 			};
 		}
-		const result = await runSingleAttempt(runtimeCwd, agent, taskWithAcceptance, candidate, attemptOptions, {
+		const result = await runSingleAttemptWithStructuredOutputRetries(runtimeCwd, agent, task, candidate, attemptOptions, {
 			sessionEnabled,
 			systemPrompt,
 			resolvedSkillNames: resolvedSkills.length > 0 ? resolvedSkills.map((skill) => skill.name) : undefined,
@@ -1054,22 +1079,6 @@ export async function runSync(
 	} else if (shareEnabled && options.sessionDir) {
 		const sessionFile = findLatestSessionFile(options.sessionDir);
 		if (sessionFile) result.sessionFile = sessionFile;
-	}
-
-		result.acceptance = await evaluateAcceptance({
-			acceptance: effectiveAcceptance,
-			output: acceptanceOutputByResult.get(result) ?? result.finalOutput ?? "",
-			cwd: options.cwd ?? runtimeCwd,
-		});
-		const acceptanceFailure = acceptanceFailureMessage(result.acceptance);
-		stripAcceptanceReportsFromMessages(result.messages);
-		if (acceptanceFailure && result.acceptance.explicit && result.exitCode === 0 && !result.detached && !result.interrupted) {
-		result.exitCode = 1;
-		result.error = result.error ? `${result.error}\n${acceptanceFailure}` : acceptanceFailure;
-		if (result.progress) {
-			result.progress.status = "failed";
-			result.progress.error = result.error;
-		}
 	}
 
 	return result;

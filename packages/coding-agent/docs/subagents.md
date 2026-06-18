@@ -27,6 +27,16 @@ Research the upstream library behavior online, then compare it with our local im
 
 Atomic decides whether to call the bundled `subagent` tool, which specialist fits each part, and whether the work should run as a single child, parallel group, chain, foreground run, or background run.
 
+Subagents now run and return their results directly. Atomic does not infer acceptance gates from prompt wording, inject `acceptance-report` instructions into child prompts, parse or strip `acceptance-report` blocks, or reject completed child runs because changed-file, test, or review evidence is missing. Put any evidence or validation requirements directly in the task text you give the parent or child agent.
+
+## Migration from acceptance gates
+
+If you have older subagent calls, saved chains, or custom agents that used the removed gate fields:
+
+- Remove `acceptance` properties from `subagent()` calls, `tasks` entries, `chain` steps, static parallel task items, and dynamic fanout parallel templates. Atomic no longer reads these fields; JSON chain rewrites drop legacy copies.
+- Remove `completionGuard: false` from agent frontmatter and custom agent definitions. The no-mutation completion guard no longer exists, so the override has no effect and management rewrites strip it.
+- Move validation, command, evidence, review, or residual-risk requirements into the natural-language task text passed to the parent or child agent.
+
 ## Bundled agents
 
 Atomic currently bundles these agents from `@bastani/subagents`:
@@ -136,13 +146,10 @@ tools: read, grep, bash
 model: anthropic/claude-sonnet-4
 fallbackModels: openai/gpt-5-mini
 inheritProjectContext: true
-completionGuard: false
 ---
 
 You are a read-only inspector. Inspect the current diff, cite evidence with file paths, and return only issues worth fixing now. Do not edit files.
 ```
-
-Use `completionGuard: false` sparingly. It opts a user-authored agent out of automatic completion-guard reminders and is intended for read-only agents whose prompt already prevents premature completion. Do not use it to bypass required implementation or validation work.
 
 If an agent or chain step uses an explicit empty `tools: []` allowlist together with `outputSchema`, Atomic starts the child with only `structured_output` enabled for the required final answer. It does not omit `--tools` and accidentally restore default tools. Path-only tool entries remain extension paths and do not create a builtin allowlist by themselves. The child prompt-runtime extension is loaded before user/tool extensions so its schema-backed `structured_output` tool is registered before explicit allowlists are applied.
 
@@ -157,7 +164,7 @@ structured_output({
 })
 ```
 
-`outputSchema` is a plain JSON Schema descriptor object. It may describe object, array, or primitive final values, and the child should pass a JSON value that matches that schema directly. Atomic no longer adds object-root restrictions, sidecar metadata, transcript-finality checks, duplicate-call guards, or extra parent-side schema parsing. The child runtime writes the tool arguments to `output.json`; the parent reads that JSON back as `result.structuredOutput` and in named-chain references under `outputs.name.structured`.
+`outputSchema` is a plain JSON Schema descriptor object. It may describe object, array, or primitive final values, and the child should pass a JSON value that matches that schema directly. Atomic no longer adds object-root restrictions, sidecar metadata, transcript-finality checks, or duplicate-call guards. The child runtime writes the tool arguments to `output.json`; the parent validates that captured JSON against the schema, reads it back as `result.structuredOutput`, and exposes it in named-chain references under `outputs.name.structured`. If the child exits without calling `structured_output`, or the captured value fails schema validation, Atomic retries up to three times with a corrective prompt that quotes the exact contract/validation error and reminds the child to call `structured_output` rather than returning plain JSON.
 
 Children without `outputSchema` do not receive `structured_output` from Atomic's default tool registry. They can still use a custom extension-provided terminating tool if you explicitly add one.
 

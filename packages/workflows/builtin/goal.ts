@@ -976,7 +976,7 @@ export default defineWorkflow("goal")
       fallbackModels: [
           "github-copilot/gpt-5.5:medium",
           "openai/gpt-5.5:medium",
-          "github-copilot/claude-opus-4.8:medium",
+          "github-copilot/claude-opus-4.8 (1m):medium",
           "anthropic/claude-opus-4-8:medium",
       ],
       tools: goalRunnerTools,
@@ -988,7 +988,7 @@ export default defineWorkflow("goal")
           "openai-codex/gpt-5.5:xhigh",
           "github-copilot/gpt-5.5:xhigh",
           "openai/gpt-5.5:xhigh",
-          "github-copilot/claude-opus-4.8:xhigh",
+          "github-copilot/claude-opus-4.8 (1m):xhigh",
           "anthropic/claude-opus-4-8:xhigh"
       ],
       tools: goalRunnerTools,

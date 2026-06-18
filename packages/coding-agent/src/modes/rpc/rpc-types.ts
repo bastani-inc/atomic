@@ -36,6 +36,10 @@ export type RpcCommand =
 	| { id?: string; type: "set_thinking_level"; level: ThinkingLevel }
 	| { id?: string; type: "cycle_thinking_level" }
 
+	// Context Window
+	| { id?: string; type: "set_context_window"; contextWindow: number | string }
+	| { id?: string; type: "get_available_context_windows" }
+
 	// Queue modes
 	| { id?: string; type: "set_steering_mode"; mode: "all" | "one-at-a-time" }
 	| { id?: string; type: "set_follow_up_mode"; mode: "all" | "one-at-a-time" }
@@ -104,6 +108,12 @@ export interface RpcSessionState {
 	pendingMessageCount: number;
 }
 
+export interface RpcContextWindowInfo {
+	contextWindows: number[];
+	currentContextWindow?: number;
+	supportsSelection: boolean;
+}
+
 // ============================================================================
 // RPC Responses (stdout)
 // ============================================================================
@@ -151,6 +161,16 @@ export type RpcResponse =
 			command: "cycle_thinking_level";
 			success: true;
 			data: { level: ThinkingLevel } | null;
+	  }
+
+	// Context Window
+	| { id?: string; type: "response"; command: "set_context_window"; success: true }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_available_context_windows";
+			success: true;
+			data: RpcContextWindowInfo;
 	  }
 
 	// Queue modes

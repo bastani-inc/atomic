@@ -536,6 +536,8 @@ export function createStore(): Store {
       existing.durationMs = stage.durationMs;
       existing.result = stage.result;
       existing.error = stage.error;
+      if (stage.sessionId !== undefined) existing.sessionId = stage.sessionId;
+      if (stage.sessionFile !== undefined) existing.sessionFile = stage.sessionFile;
       existing.failureKind = stage.failureKind;
       existing.failureCode = stage.failureCode;
       existing.failureRecoverability = stage.failureRecoverability;

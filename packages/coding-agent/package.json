@@ -1,6 +1,6 @@
 {
   "name": "@bastani/atomic",
-  "version": "0.8.29",
+  "version": "0.8.31-alpha.3",
   "description": "Atomic coding agent CLI with read, bash, edit, write tools and session management",
   "type": "module",
   "atomicConfig": {
@@ -68,11 +68,11 @@
     "prepublishOnly": "bun run clean && bun run build"
   },
   "dependencies": {
-    "@bastani/atomic-natives": "0.8.29",
+    "@bastani/atomic-natives": "0.8.31-alpha.3",
     "@bufbuild/protobuf": "^2.0.0",
-    "@earendil-works/pi-agent-core": "^0.79.3",
-    "@earendil-works/pi-ai": "^0.79.3",
-    "@earendil-works/pi-tui": "^0.79.3",
+    "@earendil-works/pi-agent-core": "^0.79.7",
+    "@earendil-works/pi-ai": "^0.79.7",
+    "@earendil-works/pi-tui": "^0.79.7",
     "@modelcontextprotocol/ext-apps": "^1.7.2",
     "@modelcontextprotocol/sdk": "^1.25.1",
     "@mozilla/readability": "^0.6.0",
@@ -90,6 +90,7 @@
     "open": "^11.0.0",
     "p-limit": "^7.3.0",
     "proper-lockfile": "^4.1.2",
+    "semver": "^7.8.0",
     "turndown": "^7.2.0",
     "typebox": "^1.1.24",
     "undici": "^8.3.0",
@@ -113,6 +114,7 @@
     "@types/ms": "^2.1.0",
     "@types/node": "^25.9.3",
     "@types/proper-lockfile": "^4.1.4",
+    "@types/semver": "^7.7.1",
     "@typescript/native-preview": "7.0.0-dev.20260511.1",
     "shx": "^0.4.0",
     "typescript": "^5.7.3",

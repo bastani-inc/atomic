@@ -209,7 +209,8 @@ Skills are reusable expert instructions and process modules. They auto-invoke wh
 | `prompt-engineer`   | Sharpen prompts, research questions, and workflow inputs using prompt-engineering best practices                                                                      |
 | `tdd`               | Red-green-refactor loop with a built-in testing-anti-patterns guide                                                                                                   |
 | `tmux`              | Control tmux-compatible terminal sessions for interactive CLIs: capture panes, send keys, paste text, and verify terminal app behavior                                |
-| `browser`           | Automate browser interactions, tests, and screenshots                                                                                                                 |
+| `playwright-cli`    | Automate browser interactions, run end-to-end UI checks, record reviewable videos, and work with Playwright tests                                                      |
+| `effective-liteparse` | Fast, local, model-free extraction of text, tables, and values from PDF, DOCX, PPTX, XLSX, and image files via the `lit` CLI                                          |
 | `impeccable`        | Design, redesign, audit, or polish frontend interfaces (Anthropic's frontend-design skill, vendored from [pbakaus/impeccable](https://github.com/pbakaus/impeccable)) |
 
 ### 3. Specialized sub-agents
@@ -221,11 +222,11 @@ Sub-agents are purpose-built agents with scoped context, tools, and termination 
 | `codebase-locator`           | Locate files, directories, and components relevant to a task                                          |
 | `codebase-analyzer`          | Analyze implementation details of specific components                                                 |
 | `codebase-pattern-finder`    | Find similar implementations and usage examples in the codebase                                       |
-| `codebase-online-researcher` | Fetch up-to-date docs and authoritative sources from the web (uses `browser`)                         |
+| `codebase-online-researcher` | Fetch up-to-date docs and authoritative sources from the web (uses `playwright-cli`)                  |
 | `codebase-research-locator`  | Discover prior research documents in `research/` that are relevant to the current task                |
 | `codebase-research-analyzer` | Deep-dive analysis of local research documents to extract decisions, rationale, and technical details |
 | `code-simplifier`            | Clean up, simplify, and refine recently written code without changing behavior                        |
-| `debugger`                   | Debug errors, test failures, and unexpected behavior (uses `tdd` and `browser`)                       |
+| `debugger`                   | Debug errors, test failures, and unexpected behavior (uses `tdd` and `playwright-cli`)                |
 
 <details>
 <summary><i>Why specialized agents instead of one general agent?</i></summary>
@@ -340,6 +341,12 @@ Atomic is repo-native and software-engineering-native. It is designed around iss
 ### Where do artifacts live?
 
 Research lives in `research/`, specs live in `specs/`, and workflow runs can persist plans, logs, transcripts, reviewer notes, check output, and final summaries. The goal is to make every important agent decision inspectable after the run.
+
+---
+
+## Workflow playbook
+
+Want better results from coding agents and workflow systems? Read the [Workflow Playbook](./docs/workflow-playbook.md) for a practical, personal guide to writing tighter objectives, constraining scope, steering long-running work, validating results, and turning agent output into reliable engineering handoffs.
 
 ---
 

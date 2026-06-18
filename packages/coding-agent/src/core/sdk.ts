@@ -22,6 +22,8 @@ import {
   withCodexFastModePayload,
   withCodexFastModeStreamOptions,
 } from "./codex-fast-mode.ts";
+import { restoreAnthropicReplayThinkingBlocks } from "./anthropic-thinking-guard.ts";
+import { getModelDefaultContextWindow, getSupportedContextWindows, selectContextWindow } from "./context-window.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import type {
   ExtensionRunner,
@@ -72,6 +74,10 @@ export interface CreateAgentSessionOptions {
   model?: Model<Api>;
   /** Thinking level. Default: from settings, else 'medium' (clamped to model capabilities) */
   thinkingLevel?: ThinkingLevel;
+  /** Context window token count. Default: model scalar contextWindow, or settings/session override when supported. */
+  contextWindow?: number;
+  /** Treat unsupported contextWindow as an error instead of a warning/fallback. */
+  contextWindowStrict?: boolean;
   /** Models available for cycling (Ctrl+P in interactive mode) */
   scopedModels?: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>;
 
@@ -127,6 +133,10 @@ export interface CreateAgentSessionResult {
   extensionsResult: LoadExtensionsResult;
   /** Warning if session was restored with a different model than saved */
   modelFallbackMessage?: string;
+  /** Warning if a saved/default context window could not be applied to the selected model. */
+  contextWindowWarning?: string;
+  /** Error if an explicit strict context-window selection is unsupported. */
+  contextWindowError?: string;
 }
 
 // Re-exports
@@ -183,6 +193,21 @@ export {
 
 function getDefaultAgentDir(): string {
   return getAgentDir();
+}
+
+type ContextWindowRequestSource = "explicit" | "incoming-model" | "session" | "model-settings" | "global-settings";
+
+const COPILOT_CONTEXT_WINDOW_SELECTION_OPTIONS = { allowCopilotLongContextFallback: true } as const;
+
+function getAlreadyAppliedContextWindow(model: Model<Api>): number | undefined {
+  const defaultContextWindow = getModelDefaultContextWindow(model);
+  if (model.contextWindow === defaultContextWindow) {
+    return undefined;
+  }
+
+  return getSupportedContextWindows(model).includes(model.contextWindow)
+    ? model.contextWindow
+    : undefined;
 }
 
 /**
@@ -317,6 +342,47 @@ export async function createAgentSession(
     thinkingLevel = clampThinkingLevel(model, thinkingLevel) as ThinkingLevel;
   }
 
+  let selectedContextWindow: number | undefined;
+  let contextWindowWarning: string | undefined;
+  let contextWindowError: string | undefined;
+  const explicitContextWindowSelection = options.contextWindow !== undefined;
+  const incomingModelContextWindow =
+    model && options.model ? getAlreadyAppliedContextWindow(model) : undefined;
+  const sessionContextWindow = hasExistingSession ? existingSession.contextWindow : undefined;
+  const modelSettingsContextWindow = model ? settingsManager.getDefaultContextWindowForModel(model.provider, model.id) : undefined;
+  const globalSettingsContextWindow = settingsManager.getDefaultContextWindow();
+  const contextWindowRequest:
+    | { contextWindow: number; source: ContextWindowRequestSource }
+    | undefined =
+    options.contextWindow !== undefined
+      ? { contextWindow: options.contextWindow, source: "explicit" }
+      : incomingModelContextWindow !== undefined
+        ? { contextWindow: incomingModelContextWindow, source: "incoming-model" }
+        : sessionContextWindow !== undefined
+          ? { contextWindow: sessionContextWindow, source: "session" }
+          : modelSettingsContextWindow !== undefined
+            ? { contextWindow: modelSettingsContextWindow, source: "model-settings" }
+            : globalSettingsContextWindow !== undefined
+              ? { contextWindow: globalSettingsContextWindow, source: "global-settings" }
+              : undefined;
+  if (model && contextWindowRequest !== undefined) {
+    const selected = selectContextWindow(
+      model,
+      contextWindowRequest.contextWindow,
+      COPILOT_CONTEXT_WINDOW_SELECTION_OPTIONS,
+    );
+    if ("error" in selected) {
+      if (options.contextWindowStrict) {
+        contextWindowError = selected.error;
+      } else if (contextWindowRequest.source !== "global-settings") {
+        contextWindowWarning = selected.error;
+      }
+    } else {
+      model = selected.model;
+      selectedContextWindow = selected.contextWindow;
+    }
+  }
+
   const allowedToolNames =
     options.tools ?? (options.noTools === "all" ? [] : undefined);
   const initialActiveToolNames: string[] = options.tools
@@ -327,15 +393,18 @@ export async function createAgentSession(
 
   let agent: Agent;
 
+  let lastConvertedLlmMessages: Message[] | undefined;
+
   // Create convertToLlm wrapper that filters images if blockImages is enabled (defense-in-depth)
   const convertToLlmWithBlockImages = (messages: AgentMessage[]): Message[] => {
     const converted = convertToLlm(messages);
     // Check setting dynamically so mid-session changes take effect
     if (!settingsManager.getBlockImages()) {
+      lastConvertedLlmMessages = converted;
       return converted;
     }
     // Filter out ImageContent from all messages, replacing with text placeholder
-    return converted.map((msg) => {
+    const filtered = converted.map((msg) => {
       if (msg.role === "user" || msg.role === "toolResult") {
         const content = msg.content;
         if (Array.isArray(content)) {
@@ -368,6 +437,8 @@ export async function createAgentSession(
       }
       return msg;
     });
+    lastConvertedLlmMessages = filtered;
+    return filtered;
   };
 
   const extensionRunnerRef: { current?: ExtensionRunner } = {};
@@ -428,11 +499,20 @@ export async function createAgentSession(
     onPayload: async (payload, model) => {
       const fastModeEnabled = isCodexFastModeEnabled(model);
       const guardedPayload = withCodexFastModePayload(payload, fastModeEnabled);
+      const sourceMessages = lastConvertedLlmMessages;
+      const replayGuardedPayload = sourceMessages
+        ? restoreAnthropicReplayThinkingBlocks(guardedPayload, sourceMessages, model)
+        : guardedPayload;
       const runner = extensionRunnerRef.current;
       if (!runner?.hasHandlers("before_provider_request")) {
-        return guardedPayload;
+        return replayGuardedPayload;
       }
-      return runner.emitBeforeProviderRequest(guardedPayload);
+      const extensionPayload = await runner.emitBeforeProviderRequest(
+        replayGuardedPayload,
+      );
+      return sourceMessages
+        ? restoreAnthropicReplayThinkingBlocks(extensionPayload, sourceMessages, model)
+        : extensionPayload;
     },
     onResponse: async (response, _model) => {
       const runner = extensionRunnerRef.current;
@@ -461,6 +541,15 @@ export async function createAgentSession(
   // Restore messages if session has existing data
   if (hasExistingSession) {
     agent.state.messages = existingSession.messages;
+    const transcriptContextWindow = model
+      ? (existingSession.contextWindow ?? getModelDefaultContextWindow(model))
+      : undefined;
+    if (
+      selectedContextWindow !== undefined &&
+      (explicitContextWindowSelection || selectedContextWindow !== transcriptContextWindow)
+    ) {
+      sessionManager.appendContextWindowChange(selectedContextWindow);
+    }
     if (!hasThinkingEntry) {
       sessionManager.appendThinkingLevelChange(thinkingLevel);
     }
@@ -468,6 +557,12 @@ export async function createAgentSession(
     // Save initial model and thinking level for new sessions so they can be restored on resume
     if (model) {
       sessionManager.appendModelChange(model.provider, model.id);
+      if (
+        selectedContextWindow !== undefined &&
+        (explicitContextWindowSelection || selectedContextWindow !== getModelDefaultContextWindow(model))
+      ) {
+        sessionManager.appendContextWindowChange(selectedContextWindow);
+      }
     }
     sessionManager.appendThinkingLevelChange(thinkingLevel);
   }
@@ -495,5 +590,7 @@ export async function createAgentSession(
     session,
     extensionsResult,
     modelFallbackMessage,
+    contextWindowWarning,
+    contextWindowError,
   };
 }

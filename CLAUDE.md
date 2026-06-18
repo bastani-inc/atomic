@@ -89,7 +89,7 @@ You are bound to run into errors when testing. As you test and run into issues/e
 
 ## Docs
 
-Relevant resources (use your `browser` skill if the information is not available in the local docs):
+Relevant resources (use your `playwright-cli` skill if the information is not available in the local docs):
 
 1. Bun (runtime + test runner): `oven-sh/bun`
     1. [`bun:test`](https://bun.sh/docs/cli/test)

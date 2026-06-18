@@ -66,7 +66,6 @@ export {
 	type BranchSummaryResult,
 	type CollectEntriesResult,
 	type CompactableTranscript,
-	type ContextCompactionMode,
 	type ContextCompactionPreparation,
 	type ContextCompactionResult,
 	type ContextDeletionRequest,
@@ -81,7 +80,6 @@ export {
 	type GenerateBranchSummaryOptions,
 	generateBranchSummary,
 	getLastAssistantUsage,
-	parseContextDeletionRequest,
 	prepareBranchEntries,
 	prepareContextCompaction,
 	serializeConversation,
@@ -102,6 +100,21 @@ export {
 	type CodexFastModeResolvedSettings,
 	type CodexFastModeScope,
 } from "./core/codex-fast-mode.ts";
+export {
+	formatContextWindow,
+	getEffectiveInputBudget,
+	getModelDefaultContextWindow,
+	getSupportedContextWindows,
+	normalizeContextWindowOptions,
+	parseContextWindowValue,
+	selectContextWindow,
+	validateContextWindowValue,
+	withContextWindowOptions,
+	type ContextWindowParseResult,
+	type ContextWindowSelection,
+	type ContextWindowSelectionError,
+	type ContextWindowSelectionOptions,
+} from "./core/context-window.ts";
 export { createEventBus, type EventBus, type EventBusController } from "./core/event-bus.ts";
 export { areExperimentalFeaturesEnabled } from "./core/experimental.ts";
 // Extension system
@@ -247,7 +260,12 @@ export type {
 } from "./core/package-manager.ts";
 export { getBuiltinPackagePaths } from "./core/builtin-packages.ts";
 export { DefaultPackageManager } from "./core/package-manager.ts";
-export type { ResourceCollision, ResourceDiagnostic, ResourceLoader } from "./core/resource-loader.ts";
+export type {
+	DefaultResourceLoaderInheritanceSnapshot,
+	ResourceCollision,
+	ResourceDiagnostic,
+	ResourceLoader,
+} from "./core/resource-loader.ts";
 export { DefaultResourceLoader, loadProjectContextFiles } from "./core/resource-loader.ts";
 // SDK for programmatic usage
 export {
@@ -393,6 +411,7 @@ export {
 	type WriteToolOptions,
 	withFileMutationQueue,
 } from "./core/tools/index.ts";
+export { type EditDiffResult, generateDiffString, generateUnifiedPatch } from "./core/tools/edit-diff.ts";
 // Main entry point
 export { type MainOptions, main } from "./main.ts";
 // Run modes for programmatic SDK usage
@@ -405,6 +424,7 @@ export {
 	RpcClient,
 	type RpcClientOptions,
 	type RpcCommand,
+	type RpcContextWindowInfo,
 	type RpcEvent,
 	type RpcEventListener,
 	type RpcExtensionUIRequest,
