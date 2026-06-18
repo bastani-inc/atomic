@@ -22,6 +22,11 @@ const DEFAULT_MAX_LOOPS = 10;
 const DEFAULT_RESEARCH_DIR = "research";
 const IMPLEMENTATION_NOTES_FILENAME = "implementation-notes.md";
 const MAX_RESEARCH_SLUG_LENGTH = 80;
+// Reviewer fan-out launches three independent reviewers; the loop stops only when
+// all three reviewers independently approve (find no issues). Requiring unanimous
+// approval means a P0–P3 finding from any single reviewer keeps the loop iterating
+// instead of being out-voted by a majority, so lower-severity issues stay surfaced.
+const REVIEWER_COUNT = 3;
 
 type ReviewFinding = {
   readonly title: string;
@@ -376,7 +381,7 @@ function renderForkedOrchestratorPrompt(args: {
       "implementation_notes",
       [
         `Keep updating the running Markdown implementation notes file at: ${args.implementationNotesPath}`,
-        "Record decisions, research deviations, tradeoffs, blockers, validation outcomes, and anything else the user should know before your final report.",
+        "Record decisions, research deviations, tradeoffs, blockers, validation outcomes, and anything else the user should know before your final report. Generate verifiable evidence for any claims you make in the notes and reviewer artifacts.",
       ].join("\n"),
     ],
     ["e2e_verification", E2E_VERIFICATION_GUIDANCE],
@@ -492,12 +497,40 @@ async function runRalphWorkflow(
     excludedTools: ["ask_user_question"],
   };
 
-  const reviewerModelConfig = {
+  const reviewerAModelConfig = {
     model: "anthropic/claude-fable-5:xhigh",
     fallbackModels: [
+      "github-copilot/claude-opus-4.8 (1m):xhigh",
+      "anthropic/claude-opus-4-8:xhigh",
+      "openai-codex/gpt-5.5:xhigh",
+      "github-copilot/gpt-5.5:xhigh",
+      "openai/gpt-5.5:xhigh"
+    ],
+    excludedTools: ["ask_user_question"],
+    schema: reviewDecisionSchema,
+  };
+
+  const reviewerBModelConfig = {
+    model: "openai-codex/gpt-5.5:xhigh",
+    fallbackModels: [
+      "github-copilot/gpt-5.5:xhigh",
+      "openai/gpt-5.5:xhigh",
+      "anthropic/claude-fable-5:xhigh",
+      "github-copilot/claude-opus-4.8 (1m):xhigh",
+      "anthropic/claude-opus-4-8:xhigh"
+    ],
+    excludedTools: ["ask_user_question"],
+    schema: reviewDecisionSchema,
+  };
+
+  const reviewerCModelConfig = {
+    model: "github-copilot/gemini-3.1-pro-preview (1m):high",
+    fallbackModels: [
+      "google/gemini-3.1-pro-preview:high",
       "openai-codex/gpt-5.5:xhigh",
       "github-copilot/gpt-5.5:xhigh",
       "openai/gpt-5.5:xhigh",
+      "anthropic/claude-fable-5:xhigh",
       "github-copilot/claude-opus-4.8 (1m):xhigh",
       "anthropic/claude-opus-4-8:xhigh"
     ],
@@ -789,7 +822,7 @@ async function runRalphWorkflow(
               implementationNotesPath,
               orchestratorReportPath,
             ],
-            ...reviewerModelConfig,
+            ...reviewerAModelConfig,
           },
           {
             name: "reviewer-b",
@@ -799,7 +832,17 @@ async function runRalphWorkflow(
               implementationNotesPath,
               orchestratorReportPath,
             ],
-            ...reviewerModelConfig,
+            ...reviewerBModelConfig,
+          },
+          {
+            name: "reviewer-c",
+            task: reviewPrompt,
+            reads: [
+              researchPath,
+              implementationNotesPath,
+              orchestratorReportPath,
+            ],
+            ...reviewerCModelConfig,
           },
         ],
         {
@@ -828,9 +871,16 @@ async function runRalphWorkflow(
       });
       return { reviewer, artifact_path: artifactPath, decision };
     }));
+    const approvalCount = reviewEntries.filter((review) =>
+      reviewDecisionApproved(review.decision),
+    ).length;
+    // Require unanimous approval: every reviewer must have run and independently
+    // approved. A fan-out error that collapses to a single error entry (fewer than
+    // REVIEWER_COUNT reviews) or any reviewer surfacing a finding keeps the loop
+    // iterating rather than letting a majority paper over outstanding issues.
     approved =
-      reviewEntries.length > 0 &&
-      reviewEntries.every((review) => reviewDecisionApproved(review.decision));
+      reviewEntries.length === REVIEWER_COUNT &&
+      approvalCount === REVIEWER_COUNT;
     latestReviewReportPath = await writeJsonArtifact(
       join(artifactDir, `review-round-${iteration}.json`),
       { iteration, reviews: reviewEntries },
@@ -916,7 +966,7 @@ async function runRalphWorkflow(
 
 export default defineWorkflow("ralph")
   .description(
-    "Prompt-engineer → research → orchestrate → parallel review loop with bounded iteration.",
+    "Prompt-engineer → research → orchestrate → multi-model parallel review loop with bounded iteration.",
   )
   .input("prompt", Type.String({ description: "The task or goal to research, execute, and refine." }))
   .input("max_loops", Type.Number({
