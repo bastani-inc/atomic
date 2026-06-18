@@ -65,7 +65,7 @@ import {
 	shouldCompact,
 	validateContextDeletionRequest,
 } from "./compaction/index.ts";
-import { getModelDefaultContextWindow, getSupportedContextWindows, selectContextWindow } from "./context-window.ts";
+import { getEffectiveInputBudget, getModelDefaultContextWindow, getSupportedContextWindows, selectContextWindow } from "./context-window.ts";
 import { formatCopilotProviderError, parseCopilotPromptLimitError } from "./copilot-errors.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.ts";
@@ -2607,7 +2607,11 @@ export class AgentSession {
 		} else {
 			contextTokens = calculateContextTokens(assistantMessage.usage);
 		}
-		if (shouldCompact(contextTokens, contextWindow, settings)) {
+		// Compact against the effective input budget (the hard prompt cap for providers like Copilot
+		// that advertise a larger total window) so we compact before overrunning the server-side limit
+		// rather than relying on reactive overflow recovery near the cap.
+		const compactionBudget = this.model ? getEffectiveInputBudget(this.model) : contextWindow;
+		if (shouldCompact(contextTokens, compactionBudget, settings)) {
 			await this._runAutoCompaction("threshold", false);
 		}
 	}
@@ -2615,7 +2619,11 @@ export class AgentSession {
 	private _isCopilotServerCapBelowSelectedContextWindow(assistantMessage: AssistantMessage): boolean {
 		if (!this.model || this.model.provider !== "github-copilot" || !assistantMessage.errorMessage) return false;
 		const promptLimitError = parseCopilotPromptLimitError(assistantMessage.errorMessage);
-		return promptLimitError !== undefined && this.model.contextWindow > promptLimitError.limitTokens;
+		// Compare against the effective input budget (the model's real prompt cap), not the displayed
+		// total window. A rejection at the prompt cap is a normal overflow we should compact-and-retry;
+		// only a rejection *below* the cap (e.g. a missing long-context entitlement dropping the account
+		// to a lower server tier) keeps the friendly error visible instead of silently compacting down.
+		return promptLimitError !== undefined && getEffectiveInputBudget(this.model) > promptLimitError.limitTokens;
 	}
 
 	/**

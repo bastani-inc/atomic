@@ -107,9 +107,9 @@ describe("ModelRegistry", () => {
 		// The live CAPI catalog (only populated when the user has the GitHub Copilot provider) drives
 		// which Copilot models expose a selectable long-context window. Seed it like a successful fetch.
 		const copilotCatalog = new Map([
-			["gpt-5.5", { contextWindow: 272_000, contextWindowOptions: [272_000, 922_000] }],
-			["claude-opus-4.8", { contextWindow: 200_000, contextWindowOptions: [200_000, 936_000] }],
-			["gemini-3.1-pro-preview", { contextWindow: 200_000, contextWindowOptions: [200_000, 936_000] }],
+			["gpt-5.5", { contextWindow: 272_000, contextWindowOptions: [272_000, 1_050_000], maxInputTokens: 922_000 }],
+			["claude-opus-4.8", { contextWindow: 200_000, contextWindowOptions: [200_000, 1_000_000], maxInputTokens: 936_000 }],
+			["gemini-3.1-pro-preview", { contextWindow: 200_000, contextWindowOptions: [200_000, 1_000_000], maxInputTokens: 936_000 }],
 			["gpt-4.1", { contextWindow: 200_000 }],
 		]);
 
@@ -119,21 +119,24 @@ describe("ModelRegistry", () => {
 			setActiveCopilotModelCatalog(copilotCatalog);
 			const registry = ModelRegistry.create(authStorage, modelsJsonPath);
 
-			// gpt-5.5: 272k default / 922k long (input/prompt tokens).
+			// gpt-5.5: 272k default / 1.05M long (full context window); 922k prompt cap carried internally.
 			const gpt55 = registry.find("github-copilot", "gpt-5.5");
 			expect(gpt55?.contextWindow).toBe(272_000);
 			expect(gpt55?.defaultContextWindow).toBe(272_000);
-			expect(gpt55?.contextWindowOptions).toEqual([272_000, 922_000]);
-			expect(gpt55 ? getSupportedContextWindows(gpt55) : []).toEqual([272_000, 922_000]);
+			expect(gpt55?.contextWindowOptions).toEqual([272_000, 1_050_000]);
+			expect(gpt55?.maxInputTokens).toBe(922_000);
+			expect(gpt55 ? getSupportedContextWindows(gpt55) : []).toEqual([272_000, 1_050_000]);
 
-			// claude/gemini: 200k default / 936k long.
+			// claude/gemini: 200k default / 1M long; 936k prompt cap carried internally.
 			const claude = registry.find("github-copilot", "claude-opus-4.8");
 			expect(claude?.contextWindow).toBe(200_000);
 			expect(claude?.defaultContextWindow).toBe(200_000);
-			expect(claude?.contextWindowOptions).toEqual([200_000, 936_000]);
+			expect(claude?.contextWindowOptions).toEqual([200_000, 1_000_000]);
+			expect(claude?.maxInputTokens).toBe(936_000);
 
 			const gemini31 = registry.find("github-copilot", "gemini-3.1-pro-preview");
-			expect(gemini31?.contextWindowOptions).toEqual([200_000, 936_000]);
+			expect(gemini31?.contextWindowOptions).toEqual([200_000, 1_000_000]);
+			expect(gemini31?.maxInputTokens).toBe(936_000);
 		});
 
 		test("overrides contextWindow (input tokens) without options for single-window catalog models", () => {
@@ -168,7 +171,7 @@ describe("ModelRegistry", () => {
 
 		test("seeds context-window options from the on-disk cache at construction (returning user)", () => {
 			// Regression: a persisted long-context selection must be recognized at startup without first
-			// running the async catalog fetch — otherwise it warns ("936k is not supported…") and resets.
+			// running the async catalog fetch — otherwise it warns ("1m is not supported…") and resets.
 			authStorage.set("github-copilot", {
 				type: "oauth",
 				access: "tid=x;proxy-ep=proxy.individual.githubcopilot.com",
@@ -178,7 +181,7 @@ describe("ModelRegistry", () => {
 			writeCopilotCatalogCache(
 				copilotCatalogCachePath(tempDir),
 				"https://api.individual.githubcopilot.com",
-				new Map([["claude-opus-4.8", { contextWindow: 200_000, contextWindowOptions: [200_000, 936_000] }]]),
+				new Map([["claude-opus-4.8", { contextWindow: 200_000, contextWindowOptions: [200_000, 1_000_000], maxInputTokens: 936_000 }]]),
 				1_000,
 			);
 
@@ -186,9 +189,10 @@ describe("ModelRegistry", () => {
 			const registry = ModelRegistry.create(authStorage, modelsJsonPath);
 			const claude = registry.find("github-copilot", "claude-opus-4.8");
 			expect(claude?.contextWindow).toBe(200_000);
-			expect(claude?.contextWindowOptions).toEqual([200_000, 936_000]);
+			expect(claude?.contextWindowOptions).toEqual([200_000, 1_000_000]);
+			expect(claude?.maxInputTokens).toBe(936_000);
 			// The previously selected long window now validates instead of warning/resetting.
-			const selected = claude ? selectContextWindow(claude, 936_000) : { error: "missing" };
+			const selected = claude ? selectContextWindow(claude, 1_000_000) : { error: "missing" };
 			expect("error" in selected).toBe(false);
 		});
 
@@ -210,12 +214,14 @@ describe("ModelRegistry", () => {
 			const model = registry.find("github-copilot", "gpt-5.5");
 			expect(model?.contextWindow).toBe(272_000);
 
-			const selected = model ? selectContextWindow(model, 922_000) : { error: "missing model" };
+			const selected = model ? selectContextWindow(model, 1_050_000) : { error: "missing model" };
 			expect("error" in selected).toBe(false);
 			if (!("error" in selected)) {
-				expect(selected.model.contextWindow).toBe(922_000);
+				expect(selected.model.contextWindow).toBe(1_050_000);
 				expect(selected.model.defaultContextWindow).toBe(272_000);
-				expect(getSupportedContextWindows(selected.model)).toEqual([272_000, 922_000]);
+				// The prompt cap rides along so compaction/overflow still respect the real input budget.
+				expect(selected.model.maxInputTokens).toBe(922_000);
+				expect(getSupportedContextWindows(selected.model)).toEqual([272_000, 1_050_000]);
 			}
 		});
 

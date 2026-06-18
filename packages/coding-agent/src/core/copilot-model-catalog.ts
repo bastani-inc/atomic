@@ -11,10 +11,14 @@
  *     `default` tier is the short prompt budget (e.g. gpt-5.5 272k, Claude 200k); a
  *     `long_context` tier adds a selectable larger prompt budget (e.g. gpt-5.5 922k, Claude 936k).
  *
- * Atomic's current `contextWindow` drives local prompt collection, compaction thresholds, footer
- * usage, and overflow avoidance, so Copilot selectable windows intentionally use prompt-token
- * budgets rather than total context capacities such as 1_000_000/1_050_000. The total context field
- * remains a compatibility fallback for older/sparse payloads that omit `max_prompt_tokens`.
+ * Atomic shows the model's full context window for the selectable long tier (the
+ * `max_context_window_tokens` total, e.g. 1_000_000/1_050_000), matching how the native `openai/*`
+ * and `anthropic/*` providers advertise these models. Because GitHub enforces a lower server-side
+ * prompt cap (`max_prompt_tokens`, e.g. 936k/922k) below that total, the prompt cap is retained as
+ * an internal effective input budget (`CopilotModelContext.maxInputTokens`) that drives compaction
+ * thresholds and the overflow-recovery guard, so the branded total can be displayed without
+ * overrunning the server limit. The default (short) tier stays at the `default` billing tier's
+ * prompt budget.
  *
  * This data is intentionally NOT baked into a static map: GitHub adds/removes models and retiers
  * windows over time (e.g. a model that disappears from the catalog), so a hardcoded snapshot goes
@@ -28,15 +32,24 @@ import { dirname, join } from "node:path";
 /** Resolved input-token context window(s) for a single Copilot model. */
 export interface CopilotModelContext {
 	/**
-	 * Base context window in INPUT tokens — shown in the footer and used for compaction. The
-	 * default tier's `context_max`, or the model-level `max_prompt_tokens` fallback otherwise.
+	 * Base/displayed context window — shown in the footer. The default tier's `context_max`, or the
+	 * model-level `max_prompt_tokens` fallback otherwise.
 	 */
 	contextWindow: number;
 	/**
-	 * Selectable input-token windows (`[default, long]`) when the model exposes a `long_context`
-	 * tier larger than its default; absent for single-window models.
+	 * Selectable windows (`[default, long]`) when the model exposes a `long_context` tier larger than
+	 * its default; absent for single-window models. The long entry is the model's full
+	 * `max_context_window_tokens` (total capacity) when advertised, matching `openai/*` and
+	 * `anthropic/*`.
 	 */
 	contextWindowOptions?: readonly number[];
+	/**
+	 * Hard prompt/input cap (`max_prompt_tokens`) when it sits below the displayed long window. Used
+	 * as the effective input budget for compaction thresholds and overflow recovery so the branded
+	 * total can be shown without overrunning GitHub's server-side prompt limit. Absent when the
+	 * displayed window already equals the input cap.
+	 */
+	maxInputTokens?: number;
 }
 
 /** Map of model id → resolved input-token context window(s). */
@@ -66,7 +79,7 @@ export const DEFAULT_COPILOT_API_BASE_URL = "https://api.individual.githubcopilo
 export const COPILOT_CATALOG_CACHE_TTL_MS = 30 * 60 * 1000;
 
 /** Current on-disk cache schema version. */
-export const COPILOT_CATALOG_CACHE_VERSION = 2 as const;
+export const COPILOT_CATALOG_CACHE_VERSION = 3 as const;
 
 /**
  * Resolve the Copilot CAPI base URL.
@@ -101,10 +114,12 @@ function toPositiveInt(value: unknown): number | undefined {
 
 /** Raw token limits parsed from a CAPI model entry. */
 export interface CopilotModelLimits {
-	/** `capabilities.limits.max_prompt_tokens` — maximum prompt/input budget. */
+	/** `capabilities.limits.max_prompt_tokens` — maximum prompt/input budget (the hard input cap). */
 	maxPromptTokens?: number;
-	/** `capabilities.limits.max_context_window_tokens` — total context capacity, used only as a fallback. */
+	/** `capabilities.limits.max_context_window_tokens` — total context capacity (the displayed long tier). */
 	maxContextWindowTokens?: number;
+	/** `capabilities.limits.max_output_tokens` — output reserve; derives the input cap when `max_prompt_tokens` is absent. */
+	maxOutputTokens?: number;
 	/** `billing.token_prices.default.context_max` — default-tier prompt threshold. */
 	defaultContextMax?: number;
 	/** `billing.token_prices.long_context.context_max` — long-context prompt threshold. */
@@ -130,7 +145,25 @@ export function resolveCopilotModelContext(limits: CopilotModelLimits): CopilotM
 	const maxInput = limits.maxPromptTokens ?? limits.maxContextWindowTokens ?? COPILOT_CONTEXT_WINDOW_FALLBACK;
 	const base = limits.defaultContextMax ?? maxInput;
 	if (limits.longContextMax !== undefined && limits.longContextMax > base) {
-		return { contextWindow: base, contextWindowOptions: [base, limits.longContextMax] };
+		// Display the model's full context window as the long tier (matching openai/* and anthropic/*)
+		// when CAPI advertises it; otherwise fall back to the long-context prompt threshold for
+		// older/sparse payloads.
+		const longWindow = limits.maxContextWindowTokens ?? limits.longContextMax;
+		// The hard prompt/input cap GitHub enforces server-side: prefer max_prompt_tokens, else derive
+		// it from total − output reserve, else fall back to the long-context prompt threshold.
+		const derivedInputCap =
+			limits.maxContextWindowTokens !== undefined && limits.maxOutputTokens !== undefined
+				? limits.maxContextWindowTokens - limits.maxOutputTokens
+				: undefined;
+		const inputCap =
+			limits.maxPromptTokens ??
+			(derivedInputCap !== undefined && derivedInputCap > 0 ? derivedInputCap : undefined) ??
+			limits.longContextMax;
+		// Only carry the cap when the displayed long window actually exceeds it (the branded-total
+		// case); when they coincide there is no gap and the input budget is just the window.
+		return longWindow > inputCap
+			? { contextWindow: base, contextWindowOptions: [base, longWindow], maxInputTokens: inputCap }
+			: { contextWindow: base, contextWindowOptions: [base, longWindow] };
 	}
 	return { contextWindow: base };
 }
@@ -154,6 +187,7 @@ export function parseCopilotModelCatalog(body: unknown): CopilotModelCatalog {
 		const context = resolveCopilotModelContext({
 			maxPromptTokens: toPositiveInt(limits?.max_prompt_tokens),
 			maxContextWindowTokens: toPositiveInt(limits?.max_context_window_tokens),
+			maxOutputTokens: toPositiveInt(limits?.max_output_tokens),
 			defaultContextMax: toPositiveInt(asRecord(prices?.default)?.context_max),
 			longContextMax: toPositiveInt(asRecord(prices?.long_context)?.context_max),
 		});
@@ -256,12 +290,17 @@ function sanitizeCachedContext(value: unknown): CopilotModelContext | undefined 
 	const record = asRecord(value);
 	const contextWindow = toPositiveInt(record?.contextWindow);
 	if (contextWindow === undefined) return undefined;
+	const maxInputTokens = toPositiveInt(record?.maxInputTokens);
 	const rawOptions = record?.contextWindowOptions;
 	if (Array.isArray(rawOptions)) {
 		const options = rawOptions.map(toPositiveInt).filter((n): n is number => n !== undefined);
-		if (options.length > 1) return { contextWindow, contextWindowOptions: options };
+		if (options.length > 1) {
+			return maxInputTokens !== undefined
+				? { contextWindow, contextWindowOptions: options, maxInputTokens }
+				: { contextWindow, contextWindowOptions: options };
+		}
 	}
-	return { contextWindow };
+	return maxInputTokens !== undefined ? { contextWindow, maxInputTokens } : { contextWindow };
 }
 
 /** Read a fresh, host-matching catalog from the cache file, or `undefined` if missing/stale/invalid. */
