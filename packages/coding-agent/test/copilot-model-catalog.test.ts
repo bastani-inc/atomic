@@ -7,64 +7,97 @@ import {
 	clearActiveCopilotModelCatalog,
 	COPILOT_CATALOG_CACHE_TTL_MS,
 	COPILOT_CATALOG_HEADERS,
+	COPILOT_CONTEXT_WINDOW_FALLBACK,
 	copilotApiBaseUrlFromToken,
-	deriveCopilotContextWindows,
 	fetchCopilotModelCatalog,
 	getActiveCopilotModelCatalog,
 	parseCopilotModelCatalog,
 	readCopilotCatalogCache,
+	resolveCopilotModelContext,
 	setActiveCopilotModelCatalog,
-	tierContextWindowTokens,
 	writeCopilotCatalogCache,
 } from "../src/core/copilot-model-catalog.ts";
 
-// Minimal CAPI /models fixture mirroring the live shape (gpt-5.5 has a long tier, claude has one
-// with a different default, gpt-5-mini has no long tier, gpt-4.1 has no tiered pricing at all).
+// Minimal CAPI /models fixture mirroring the live shape. Every window is INPUT (prompt) tokens:
+//   gpt-5.5 / claude  -> tiered (default + long_context), different default budgets
+//   gpt-5.3-codex     -> default tier only, no long_context (single window)
+//   gpt-4o            -> no tiered pricing; window comes from max_prompt_tokens
+//   mystery-model     -> no max_prompt_tokens; window falls back to max_context_window_tokens
+//   bare-model        -> no usable limit signal at all (skipped)
 function capiBody() {
 	return {
 		data: [
 			{
 				id: "gpt-5.5",
-				capabilities: { limits: { max_output_tokens: 128_000, max_prompt_tokens: 922_000 } },
+				capabilities: { limits: { max_output_tokens: 128_000, max_prompt_tokens: 922_000, max_context_window_tokens: 1_050_000 } },
 				billing: { token_prices: { default: { context_max: 272_000 }, long_context: { context_max: 922_000 } } },
 			},
 			{
 				id: "claude-opus-4.8",
-				capabilities: { limits: { max_output_tokens: 64_000 } },
+				capabilities: { limits: { max_output_tokens: 64_000, max_prompt_tokens: 936_000, max_context_window_tokens: 1_000_000 } },
 				billing: { token_prices: { default: { context_max: 200_000 }, long_context: { context_max: 936_000 } } },
 			},
 			{
-				id: "gpt-5-mini",
-				capabilities: { limits: { max_output_tokens: 128_000 } },
+				id: "gpt-5.3-codex",
+				capabilities: { limits: { max_output_tokens: 128_000, max_prompt_tokens: 272_000, max_context_window_tokens: 400_000 } },
 				billing: { token_prices: { default: { context_max: 272_000 } } },
 			},
 			{
-				id: "gpt-4.1",
-				capabilities: { limits: { max_output_tokens: 16_000 } },
+				id: "gpt-4o",
+				capabilities: { limits: { max_output_tokens: 16_384, max_prompt_tokens: 64_000, max_context_window_tokens: 128_000 } },
 				billing: {},
 			},
+			{
+				id: "mystery-model",
+				capabilities: { limits: { max_output_tokens: 16_384, max_context_window_tokens: 256_000 } },
+			},
+			{ id: "bare-model", capabilities: { limits: {} }, billing: {} },
 		],
 	};
 }
 
-describe("parseCopilotModelCatalog", () => {
-	test("includes only models with both a default and long_context tier", () => {
-		const catalog = parseCopilotModelCatalog(capiBody());
-		assert.deepEqual([...catalog.keys()].sort(), ["claude-opus-4.8", "gpt-5.5"]);
+describe("resolveCopilotModelContext", () => {
+	test("uses the default tier as the base and adds a larger long_context window", () => {
+		assert.deepEqual(resolveCopilotModelContext({ maxPromptTokens: 922_000, defaultContextMax: 272_000, longContextMax: 922_000 }), {
+			contextWindow: 272_000,
+			contextWindowOptions: [272_000, 922_000],
+		});
 	});
 
-	test("captures the raw tier maxima and output tokens", () => {
+	test("omits options when there is no larger long_context tier", () => {
+		assert.deepEqual(resolveCopilotModelContext({ maxPromptTokens: 272_000, defaultContextMax: 272_000 }), { contextWindow: 272_000 });
+		// long_context not larger than default -> single window
+		assert.deepEqual(resolveCopilotModelContext({ defaultContextMax: 272_000, longContextMax: 272_000 }), { contextWindow: 272_000 });
+	});
+
+	test("scalar formula: max_prompt_tokens || max_context_window_tokens || 128_000", () => {
+		assert.deepEqual(resolveCopilotModelContext({ maxPromptTokens: 922_000, maxContextWindowTokens: 1_050_000 }), { contextWindow: 922_000 });
+		assert.deepEqual(resolveCopilotModelContext({ maxContextWindowTokens: 256_000 }), { contextWindow: 256_000 });
+		// 128_000 safety only kicks in when nothing else is advertised
+		assert.deepEqual(resolveCopilotModelContext({ longContextMax: 500_000 }), {
+			contextWindow: COPILOT_CONTEXT_WINDOW_FALLBACK,
+			contextWindowOptions: [COPILOT_CONTEXT_WINDOW_FALLBACK, 500_000],
+		});
+	});
+
+	test("returns undefined without any limit signal", () => {
+		assert.equal(resolveCopilotModelContext({}), undefined);
+	});
+});
+
+describe("parseCopilotModelCatalog", () => {
+	test("includes every model with a usable input budget", () => {
 		const catalog = parseCopilotModelCatalog(capiBody());
-		assert.deepEqual(catalog.get("gpt-5.5"), {
-			maxOutputTokens: 128_000,
-			defaultContextMax: 272_000,
-			longContextMax: 922_000,
-		});
-		assert.deepEqual(catalog.get("claude-opus-4.8"), {
-			maxOutputTokens: 64_000,
-			defaultContextMax: 200_000,
-			longContextMax: 936_000,
-		});
+		assert.deepEqual([...catalog.keys()].sort(), ["claude-opus-4.8", "gpt-4o", "gpt-5.3-codex", "gpt-5.5", "mystery-model"]);
+	});
+
+	test("resolves input-token windows per model", () => {
+		const catalog = parseCopilotModelCatalog(capiBody());
+		assert.deepEqual(catalog.get("gpt-5.5"), { contextWindow: 272_000, contextWindowOptions: [272_000, 922_000] });
+		assert.deepEqual(catalog.get("claude-opus-4.8"), { contextWindow: 200_000, contextWindowOptions: [200_000, 936_000] });
+		assert.deepEqual(catalog.get("gpt-5.3-codex"), { contextWindow: 272_000 });
+		assert.deepEqual(catalog.get("gpt-4o"), { contextWindow: 64_000 });
+		assert.deepEqual(catalog.get("mystery-model"), { contextWindow: 256_000 });
 	});
 
 	test("tolerates malformed bodies", () => {
@@ -72,27 +105,6 @@ describe("parseCopilotModelCatalog", () => {
 		assert.equal(parseCopilotModelCatalog({}).size, 0);
 		assert.equal(parseCopilotModelCatalog({ data: "nope" }).size, 0);
 		assert.equal(parseCopilotModelCatalog({ data: [null, { id: 5 }, {}] }).size, 0);
-	});
-});
-
-describe("context-window derivation", () => {
-	test("window = context_max + max_output_tokens (input+output, matching the Copilot CLI)", () => {
-		assert.equal(tierContextWindowTokens(272_000, 128_000), 400_000);
-		assert.equal(tierContextWindowTokens(922_000, 128_000), 1_050_000);
-		assert.equal(tierContextWindowTokens(200_000, 64_000), 264_000);
-		assert.equal(tierContextWindowTokens(936_000, 64_000), 1_000_000);
-	});
-
-	test("derives default/long windows per model", () => {
-		const catalog = parseCopilotModelCatalog(capiBody());
-		assert.deepEqual(deriveCopilotContextWindows(catalog.get("gpt-5.5")!), {
-			defaultWindow: 400_000,
-			longWindow: 1_050_000,
-		});
-		assert.deepEqual(deriveCopilotContextWindows(catalog.get("claude-opus-4.8")!), {
-			defaultWindow: 264_000,
-			longWindow: 1_000_000,
-		});
 	});
 });
 
@@ -126,7 +138,7 @@ describe("fetchCopilotModelCatalog", () => {
 		assert.equal(capturedHeaders.Authorization, "Bearer tid=abc;proxy-ep=proxy.individual.githubcopilot.com");
 		assert.equal(capturedHeaders["X-GitHub-Api-Version"], COPILOT_CATALOG_HEADERS["X-GitHub-Api-Version"]);
 		assert.equal(capturedHeaders["Copilot-Integration-Id"], "vscode-chat");
-		assert.deepEqual([...catalog.keys()].sort(), ["claude-opus-4.8", "gpt-5.5"]);
+		assert.deepEqual(catalog.get("gpt-5.5"), { contextWindow: 272_000, contextWindowOptions: [272_000, 922_000] });
 	});
 
 	test("throws on a non-ok response", async () => {
@@ -147,7 +159,7 @@ describe("active catalog overlay", () => {
 	test("set/get/clear round-trips", () => {
 		assert.equal(getActiveCopilotModelCatalog().size, 0);
 		setActiveCopilotModelCatalog(parseCopilotModelCatalog(capiBody()));
-		assert.equal(getActiveCopilotModelCatalog().size, 2);
+		assert.equal(getActiveCopilotModelCatalog().size, 5);
 		clearActiveCopilotModelCatalog();
 		assert.equal(getActiveCopilotModelCatalog().size, 0);
 	});
@@ -169,8 +181,9 @@ describe("disk cache", () => {
 		const catalog = parseCopilotModelCatalog(capiBody());
 		writeCopilotCatalogCache(path, baseUrl, catalog, 1_000);
 		const read = readCopilotCatalogCache(path, { host, now: 1_000 + COPILOT_CATALOG_CACHE_TTL_MS - 1 });
-		assert.deepEqual(read && [...read.keys()].sort(), ["claude-opus-4.8", "gpt-5.5"]);
-		assert.deepEqual(read?.get("gpt-5.5"), { maxOutputTokens: 128_000, defaultContextMax: 272_000, longContextMax: 922_000 });
+		assert.deepEqual(read?.get("gpt-5.5"), { contextWindow: 272_000, contextWindowOptions: [272_000, 922_000] });
+		assert.deepEqual(read?.get("gpt-5.3-codex"), { contextWindow: 272_000 });
+		assert.deepEqual(read?.get("mystery-model"), { contextWindow: 256_000 });
 	});
 
 	test("ignores a stale catalog", () => {

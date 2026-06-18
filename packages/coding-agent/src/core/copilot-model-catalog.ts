@@ -1,15 +1,17 @@
 /**
- * GitHub Copilot model catalog (CAPI) — dynamic context-window tiers.
+ * GitHub Copilot model catalog (CAPI) — dynamic, input-token context windows.
  *
- * GitHub's Copilot API (CAPI) exposes per-model context tiers via `GET {baseUrl}/models`.
- * Each model reports `billing.token_prices.<tier>.context_max` (the max input/prompt tokens
- * for that tier) and `capabilities.limits.max_output_tokens`. The Copilot CLI
- * (copilot-agent-runtime) derives a tier's effective window as
- * `context_max + max_output_tokens` and only offers a selectable "long context" window when a
- * `long_context` tier exists. Atomic mirrors those decisions here.
+ * GitHub's Copilot API (CAPI) exposes per-model limits via `GET {baseUrl}/models`. Every window
+ * Atomic shows for a Copilot model is measured in INPUT (prompt) tokens, exactly like every other
+ * provider's `contextWindow`, so GitHub models read consistently across the UI:
  *
- * Atomic's token counter measures input+output (see `calculateContextTokens`), so the
- * input+output total window is the correct budget to expose — matching the Copilot CLI display.
+ *   - A model's input budget = `capabilities.limits.max_prompt_tokens`
+ *       ?? `capabilities.limits.max_context_window_tokens`
+ *       ?? 128_000   (the two fallbacks are safeties real CAPI entries never hit).
+ *   - Models with tiered pricing expose per-tier input budgets via
+ *     `billing.token_prices.<tier>.context_max`. The `default` tier is the base context window
+ *     (e.g. gpt-5.5 272k, Claude 200k); a `long_context` tier adds a selectable larger input
+ *     window (e.g. gpt-5.5 922k, Claude 936k) the user can switch to via the `/model` picker.
  *
  * This data is intentionally NOT baked into a static map: GitHub adds/removes models and retiers
  * windows over time (e.g. a model that disappears from the catalog), so a hardcoded snapshot goes
@@ -20,18 +22,25 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-/** Per-model context-tier data parsed from a CAPI `/models` entry. */
-export interface CopilotModelTier {
-	/** `capabilities.limits.max_output_tokens` (0 when the model does not report one). */
-	maxOutputTokens: number;
-	/** `billing.token_prices.default.context_max` — max input tokens for the default tier. */
-	defaultContextMax: number;
-	/** `billing.token_prices.long_context.context_max` — present only when a long_context tier exists. */
-	longContextMax: number;
+/** Resolved input-token context window(s) for a single Copilot model. */
+export interface CopilotModelContext {
+	/**
+	 * Base context window in INPUT tokens — shown in the footer and used for compaction. The
+	 * default tier's `context_max`, or the model-level `max_prompt_tokens` fallback otherwise.
+	 */
+	contextWindow: number;
+	/**
+	 * Selectable input-token windows (`[default, long]`) when the model exposes a `long_context`
+	 * tier larger than its default; absent for single-window models.
+	 */
+	contextWindowOptions?: readonly number[];
 }
 
-/** Map of model id → context-tier data. Only models with a `long_context` tier are included. */
-export type CopilotModelCatalog = ReadonlyMap<string, CopilotModelTier>;
+/** Map of model id → resolved input-token context window(s). */
+export type CopilotModelCatalog = ReadonlyMap<string, CopilotModelContext>;
+
+/** Safety fallback when a model reports neither `max_prompt_tokens` nor `max_context_window_tokens`. */
+export const COPILOT_CONTEXT_WINDOW_FALLBACK = 128_000;
 
 export const COPILOT_CATALOG_API_VERSION = "2026-06-01";
 
@@ -54,7 +63,7 @@ export const DEFAULT_COPILOT_API_BASE_URL = "https://api.individual.githubcopilo
 export const COPILOT_CATALOG_CACHE_TTL_MS = 30 * 60 * 1000;
 
 /** Current on-disk cache schema version. */
-export const COPILOT_CATALOG_CACHE_VERSION = 1 as const;
+export const COPILOT_CATALOG_CACHE_VERSION = 2 as const;
 
 /**
  * Resolve the Copilot CAPI base URL.
@@ -87,18 +96,47 @@ function toPositiveInt(value: unknown): number | undefined {
 	return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
 }
 
-function toNonNegativeInt(value: unknown): number {
-	return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : 0;
+/** Raw input-token limits parsed from a CAPI model entry. */
+export interface CopilotModelLimits {
+	/** `capabilities.limits.max_prompt_tokens`. */
+	maxPromptTokens?: number;
+	/** `capabilities.limits.max_context_window_tokens`. */
+	maxContextWindowTokens?: number;
+	/** `billing.token_prices.default.context_max`. */
+	defaultContextMax?: number;
+	/** `billing.token_prices.long_context.context_max`. */
+	longContextMax?: number;
 }
 
 /**
- * Parse a raw CAPI `/models` response body into a context-tier catalog.
+ * Resolve a model's input-token context window(s) from its CAPI limits.
  *
- * Mirrors the Copilot CLI gating: a model only yields a selectable window when its token prices are
- * tiered AND a `long_context` tier exists. Entries missing either tier's `context_max` are skipped.
+ * `contextWindow` is the model's base input budget — the default tier's `context_max` when tiered,
+ * otherwise `max_prompt_tokens ?? max_context_window_tokens ?? 128_000`. A `long_context` tier that
+ * is larger than the base adds a second selectable window. Returns `undefined` when the entry
+ * carries no usable limit signal at all.
+ */
+export function resolveCopilotModelContext(limits: CopilotModelLimits): CopilotModelContext | undefined {
+	const hasSignal =
+		limits.maxPromptTokens !== undefined ||
+		limits.maxContextWindowTokens !== undefined ||
+		limits.defaultContextMax !== undefined ||
+		limits.longContextMax !== undefined;
+	if (!hasSignal) return undefined;
+
+	const maxInput = limits.maxPromptTokens ?? limits.maxContextWindowTokens ?? COPILOT_CONTEXT_WINDOW_FALLBACK;
+	const base = limits.defaultContextMax ?? maxInput;
+	if (limits.longContextMax !== undefined && limits.longContextMax > base) {
+		return { contextWindow: base, contextWindowOptions: [base, limits.longContextMax] };
+	}
+	return { contextWindow: base };
+}
+
+/**
+ * Parse a raw CAPI `/models` response body into an input-token context-window catalog.
  */
 export function parseCopilotModelCatalog(body: unknown): CopilotModelCatalog {
-	const catalog = new Map<string, CopilotModelTier>();
+	const catalog = new Map<string, CopilotModelContext>();
 	const data = asRecord(body)?.data;
 	if (!Array.isArray(data)) return catalog;
 
@@ -110,41 +148,16 @@ export function parseCopilotModelCatalog(body: unknown): CopilotModelCatalog {
 
 		const limits = asRecord(asRecord(record.capabilities)?.limits);
 		const prices = asRecord(asRecord(record.billing)?.token_prices);
-		if (!prices) continue;
-
-		const defaultContextMax = toPositiveInt(asRecord(prices.default)?.context_max);
-		const longContextMax = toPositiveInt(asRecord(prices.long_context)?.context_max);
-		// Gate: only models exposing both a default and a long_context tier get a picker.
-		if (defaultContextMax === undefined || longContextMax === undefined) continue;
-
-		catalog.set(id, {
-			maxOutputTokens: toNonNegativeInt(limits?.max_output_tokens),
-			defaultContextMax,
-			longContextMax,
+		const context = resolveCopilotModelContext({
+			maxPromptTokens: toPositiveInt(limits?.max_prompt_tokens),
+			maxContextWindowTokens: toPositiveInt(limits?.max_context_window_tokens),
+			defaultContextMax: toPositiveInt(asRecord(prices?.default)?.context_max),
+			longContextMax: toPositiveInt(asRecord(prices?.long_context)?.context_max),
 		});
+		if (context) catalog.set(id, context);
 	}
 
 	return catalog;
-}
-
-/** Effective (input+output) window for a tier — mirrors the Copilot CLI `tierContextWindowTokens`. */
-export function tierContextWindowTokens(contextMax: number, maxOutputTokens: number): number {
-	return contextMax + Math.max(0, maxOutputTokens);
-}
-
-export interface CopilotContextWindows {
-	/** Default-tier window: `default.context_max + max_output_tokens`. */
-	defaultWindow: number;
-	/** Long-context-tier window: `long_context.context_max + max_output_tokens`. */
-	longWindow: number;
-}
-
-/** Derive the default and long-context (input+output) windows for a model tier. */
-export function deriveCopilotContextWindows(tier: CopilotModelTier): CopilotContextWindows {
-	return {
-		defaultWindow: tierContextWindowTokens(tier.defaultContextMax, tier.maxOutputTokens),
-		longWindow: tierContextWindowTokens(tier.longContextMax, tier.maxOutputTokens),
-	};
 }
 
 export interface FetchCopilotModelCatalogOptions {
@@ -185,8 +198,8 @@ export async function fetchCopilotModelCatalog(options: FetchCopilotModelCatalog
 // ----------------------------------------------------------------------------
 // Active in-memory catalog (consulted by the model registry).
 //
-// Empty by default, so with no Copilot auth / no successful fetch the registry adds no
-// context-window options and the picker never appears.
+// Empty by default, so with no Copilot auth / no successful fetch the registry leaves Copilot
+// model context windows untouched and the picker never appears.
 // ----------------------------------------------------------------------------
 
 let activeCatalog: CopilotModelCatalog = new Map();
@@ -216,7 +229,7 @@ interface CopilotCatalogCacheFile {
 	host: string;
 	/** Epoch ms the catalog was fetched. */
 	fetchedAt: number;
-	models: Record<string, CopilotModelTier>;
+	models: Record<string, CopilotModelContext>;
 }
 
 function hostFromBaseUrl(baseUrl: string): string {
@@ -236,8 +249,23 @@ export interface ReadCopilotCatalogCacheOptions {
 	ttlMs?: number;
 }
 
+function sanitizeCachedContext(value: unknown): CopilotModelContext | undefined {
+	const record = asRecord(value);
+	const contextWindow = toPositiveInt(record?.contextWindow);
+	if (contextWindow === undefined) return undefined;
+	const rawOptions = record?.contextWindowOptions;
+	if (Array.isArray(rawOptions)) {
+		const options = rawOptions.map(toPositiveInt).filter((n): n is number => n !== undefined);
+		if (options.length > 1) return { contextWindow, contextWindowOptions: options };
+	}
+	return { contextWindow };
+}
+
 /** Read a fresh, host-matching catalog from the cache file, or `undefined` if missing/stale/invalid. */
-export function readCopilotCatalogCache(path: string, options: ReadCopilotCatalogCacheOptions): CopilotModelCatalog | undefined {
+export function readCopilotCatalogCache(
+	path: string,
+	options: ReadCopilotCatalogCacheOptions,
+): CopilotModelCatalog | undefined {
 	let parsed: CopilotCatalogCacheFile;
 	try {
 		if (!existsSync(path)) return undefined;
@@ -253,19 +281,21 @@ export function readCopilotCatalogCache(path: string, options: ReadCopilotCatalo
 	const models = asRecord(parsed.models);
 	if (!models) return undefined;
 
-	const catalog = new Map<string, CopilotModelTier>();
+	const catalog = new Map<string, CopilotModelContext>();
 	for (const [id, value] of Object.entries(models)) {
-		const tier = asRecord(value);
-		const defaultContextMax = toPositiveInt(tier?.defaultContextMax);
-		const longContextMax = toPositiveInt(tier?.longContextMax);
-		if (defaultContextMax === undefined || longContextMax === undefined) continue;
-		catalog.set(id, { maxOutputTokens: toNonNegativeInt(tier?.maxOutputTokens), defaultContextMax, longContextMax });
+		const context = sanitizeCachedContext(value);
+		if (context) catalog.set(id, context);
 	}
 	return catalog;
 }
 
 /** Write the catalog to the cache file (creating parent dirs). Best-effort; never throws. */
-export function writeCopilotCatalogCache(path: string, baseUrl: string, catalog: CopilotModelCatalog, now?: number): void {
+export function writeCopilotCatalogCache(
+	path: string,
+	baseUrl: string,
+	catalog: CopilotModelCatalog,
+	now?: number,
+): void {
 	const payload: CopilotCatalogCacheFile = {
 		version: COPILOT_CATALOG_CACHE_VERSION,
 		host: hostFromBaseUrl(baseUrl),

@@ -28,7 +28,7 @@ import { normalizePath } from "../utils/paths.ts";
 import { warnDeprecation } from "../utils/deprecation.ts";
 import type { AuthStatus, AuthStorage } from "./auth-storage.ts";
 import { normalizeContextWindowOptions, validateContextWindowValue, withContextWindowOptions } from "./context-window.ts";
-import { deriveCopilotContextWindows, getActiveCopilotModelCatalog } from "./copilot-model-catalog.ts";
+import { getActiveCopilotModelCatalog } from "./copilot-model-catalog.ts";
 import { BUILT_IN_PROVIDER_DISPLAY_NAMES } from "./provider-display-names.ts";
 import {
 	clearConfigValueCache,
@@ -235,21 +235,24 @@ function withGitHubCopilotApiVersionHeader(
 }
 
 /**
- * Apply GitHub Copilot context-window tiers from the live CAPI catalog.
+ * Apply GitHub Copilot input-token context windows from the live CAPI catalog.
  *
- * The active catalog only contains models GitHub exposes a `long_context` tier for, and is only
- * populated when the user has the GitHub Copilot provider (see `copilot-model-catalog.ts`). So
- * non-Copilot users, non-tiered models, and offline/unauthenticated sessions are unaffected and the
- * picker only appears for models with a real long-context tier. The default tier becomes the
- * model's effective window; the long tier is offered as a selectable option.
+ * The active catalog is only populated when the user has the GitHub Copilot provider (see
+ * `copilot-model-catalog.ts`), so non-Copilot users and offline/unauthenticated sessions are
+ * unaffected. For catalog models, the model's effective `contextWindow` is set to GitHub's input
+ * (prompt) budget; models that expose a larger `long_context` tier additionally get a selectable
+ * window so the `/model` picker can switch between the default and long input budgets.
  */
 function withCopilotContextWindowOptions(model: Model<Api>): Model<Api> {
 	if (model.provider !== "github-copilot") return model;
-	const tier = getActiveCopilotModelCatalog().get(model.id);
-	if (!tier) return model;
-	const { defaultWindow, longWindow } = deriveCopilotContextWindows(tier);
-	if (longWindow <= defaultWindow) return model;
-	return withContextWindowOptions({ ...model, contextWindow: defaultWindow }, [defaultWindow, longWindow]);
+	const context = getActiveCopilotModelCatalog().get(model.id);
+	if (!context) return model;
+	// Apply GitHub's input-token budget everywhere; add a selectable long-context window when the
+	// model exposes one larger than its default tier.
+	if (context.contextWindowOptions && context.contextWindowOptions.length > 1) {
+		return withContextWindowOptions({ ...model, contextWindow: context.contextWindow }, context.contextWindowOptions);
+	}
+	return { ...model, contextWindow: context.contextWindow };
 }
 
 function formatValidationPath(error: TLocalizedValidationError): string {
