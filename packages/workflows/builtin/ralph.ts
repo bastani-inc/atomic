@@ -376,7 +376,7 @@ function renderForkedOrchestratorPrompt(args: {
       "implementation_notes",
       [
         `Keep updating the running Markdown implementation notes file at: ${args.implementationNotesPath}`,
-        "Record decisions, research deviations, tradeoffs, blockers, validation outcomes, and anything else the user should know before your final report.",
+        "Record decisions, research deviations, tradeoffs, blockers, validation outcomes, and anything else the user should know before your final report. Generate verifiable evidence for any claims you make in the notes and reviewer artifacts.",
       ].join("\n"),
     ],
     ["e2e_verification", E2E_VERIFICATION_GUIDANCE],
@@ -492,12 +492,39 @@ async function runRalphWorkflow(
     excludedTools: ["ask_user_question"],
   };
 
-  const reviewerModelConfig = {
+  const reviewerAModelConfig = {
     model: "anthropic/claude-fable-5:xhigh",
+    fallbackModels: [
+      "github-copilot/claude-opus-4.8 (1m):xhigh",
+      "anthropic/claude-opus-4-8:xhigh",
+      "openai-codex/gpt-5.5:xhigh",
+      "github-copilot/gpt-5.5:xhigh",
+      "openai/gpt-5.5:xhigh"
+    ],
+    excludedTools: ["ask_user_question"],
+    schema: reviewDecisionSchema,
+  };
+
+  const reviewerBModelConfig = {
+    model: "openai-codex/gpt-5.5:xhigh",
+    fallbackModels: [
+      "github-copilot/gpt-5.5:xhigh",
+      "openai/gpt-5.5:xhigh",
+      "anthropic/claude-fable-5:xhigh",
+      "github-copilot/claude-opus-4.8 (1m):xhigh",
+      "anthropic/claude-opus-4-8:xhigh"
+    ],
+    excludedTools: ["ask_user_question"],
+    schema: reviewDecisionSchema,
+  };
+
+  const reviewerCModelConfig = {
+    model: "gemini-3.1-pro-preview (1m):high",
     fallbackModels: [
       "openai-codex/gpt-5.5:xhigh",
       "github-copilot/gpt-5.5:xhigh",
       "openai/gpt-5.5:xhigh",
+      "anthropic/claude-fable-5:xhigh",
       "github-copilot/claude-opus-4.8 (1m):xhigh",
       "anthropic/claude-opus-4-8:xhigh"
     ],
@@ -789,7 +816,7 @@ async function runRalphWorkflow(
               implementationNotesPath,
               orchestratorReportPath,
             ],
-            ...reviewerModelConfig,
+            ...reviewerAModelConfig,
           },
           {
             name: "reviewer-b",
@@ -799,7 +826,17 @@ async function runRalphWorkflow(
               implementationNotesPath,
               orchestratorReportPath,
             ],
-            ...reviewerModelConfig,
+            ...reviewerBModelConfig,
+          },
+          {
+            name: "reviewer-c",
+            task: reviewPrompt,
+            reads: [
+              researchPath,
+              implementationNotesPath,
+              orchestratorReportPath,
+            ],
+            ...reviewerCModelConfig,
           },
         ],
         {
@@ -916,7 +953,7 @@ async function runRalphWorkflow(
 
 export default defineWorkflow("ralph")
   .description(
-    "Prompt-engineer → research → orchestrate → parallel review loop with bounded iteration.",
+    "Prompt-engineer → research → orchestrate → multi-model parallel review loop with bounded iteration.",
   )
   .input("prompt", Type.String({ description: "The task or goal to research, execute, and refine." }))
   .input("max_loops", Type.Number({

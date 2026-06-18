@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Changed the builtin `ralph` workflow review fan-out from two reviewers to three independent reviewers, each running on a different primary model family (Claude Fable 5, GPT-5.5 Codex, and Gemini 3.1 Pro) with shared fallbacks, so the adversarial review gets cross-model coverage instead of repeated passes from one model. Also strengthened the orchestrator's implementation-notes contract to require verifiable evidence for any claims recorded in the notes and reviewer artifacts.
 - Changed the builtin `deep-research-codebase`, `goal`, `ralph`, and `open-claude-design` workflows to run their GitHub Copilot `claude-opus-4.8` fallbacks at the model's largest advertised long-context (~1M/936K) window via the new `(1m)` token, automatically degrading to the 200K short window when Copilot's long-context tier is unavailable. Other models in each fallback chain are unaffected.
 - Aligned the workflows extension peer dependency with upstream pi TUI `^0.79.6` so workflow graph, custom UI, and prompt-broker integrations consume the latest shared TUI compatibility fixes; no workflows extension code changes were made for this metadata sync ([#1413](https://github.com/bastani-inc/atomic/issues/1413)).
 
