@@ -407,7 +407,7 @@ export default defineWorkflow("open-claude-design")
     const designModelConfig = {
       model: "anthropic/claude-fable-5:xhigh",
       fallbackModels: [
-          "github-copilot/claude-opus-4.8:xhigh",
+          "github-copilot/claude-opus-4.8 (1m):xhigh",
           "anthropic/claude-opus-4-8:xhigh",
           "github-copilot/claude-sonnet-4.6:high",
           "anthropic/claude-sonnet-4-6:high",

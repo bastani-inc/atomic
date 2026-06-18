@@ -755,6 +755,11 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
           ...(effectiveStageOptions ?? {}),
           model: candidate.value,
           ...(candidate.reasoningLevel !== undefined ? { thinkingLevel: candidate.reasoningLevel } : {}),
+          // A per-candidate context window (parsed from a parenthesized token in
+          // the model string) overrides any stage-level contextWindow so only
+          // that specific model — e.g. a github-copilot opus fallback — requests
+          // its larger window; other candidates keep the stage default.
+          ...(candidate.contextWindow !== undefined ? { contextWindow: candidate.contextWindow } : {}),
           fallbackModels: undefined,
           fallbackThinkingLevels: undefined,
         };

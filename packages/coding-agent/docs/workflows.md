@@ -969,7 +969,7 @@ workflow({
 })
 ```
 
-Direct mode supports top-level/default options and per-task options such as `context`, `forkFromSessionFile`, `model`, `fallbackModels`, `thinkingLevel`, `tools`, `noTools`, `customTools`, `bashPolicy`, `mcp`, `output`, `outputMode`, `reads`, `worktree`, `gitWorktreeDir`, `baseBranch`, `maxOutput`, `artifacts`, `sessionDir`, `cwd`, and `agentDir`. Direct chains also support `chainName`, `chainDir`, and `failFast`.
+Direct mode supports top-level/default options and per-task options such as `context`, `forkFromSessionFile`, `model`, `fallbackModels`, `thinkingLevel`, `contextWindow`, `tools`, `noTools`, `customTools`, `bashPolicy`, `mcp`, `output`, `outputMode`, `reads`, `worktree`, `gitWorktreeDir`, `baseBranch`, `maxOutput`, `artifacts`, `sessionDir`, `cwd`, and `agentDir`. Direct chains also support `chainName`, `chainDir`, and `failFast`.
 
 For large fan-outs, prefer `outputMode: "file-only"` so the parent result contains compact file references instead of full output. Treat intercom payloads from async direct runs as user-visible workflow output.
 
@@ -1477,7 +1477,8 @@ Common task/stage options include:
 - `prompt` or `task`
 - `previous` for small handoff context; use artifact paths plus `reads` for large outputs, logs, research bundles, or reviewer payloads
 - `context: "fresh" | "fork"`, `forkFromSessionFile`
-- `model`, `fallbackModels`, `thinkingLevel`, `scopedModels`, `modelRegistry` — `model` and each `fallbackModels` entry accept a `model_name:thinking_effort` reasoning suffix; the standalone `thinkingLevel` is deprecated (see [Reasoning levels](#reasoning-levels))
+- `model`, `fallbackModels`, `thinkingLevel`, `scopedModels`, `modelRegistry` — `model` and each `fallbackModels` entry accept a `model_name:thinking_effort` reasoning suffix and an optional parenthesized context-window token such as `model (1m)` (see [Reasoning levels](#reasoning-levels) and [Context windows](#context-windows)); the standalone `thinkingLevel` is deprecated
+- `contextWindow`, `contextWindowStrict` — stage-wide context-window budget mapped to the SDK `createAgentSession` options of the same name (non-strict by default)
 - `tools`, `noTools`, `customTools`, `mcp: { allow?: string[], deny?: string[] }`, `bashPolicy`
 - `schema` for a structured final answer from this workflow item
 - `output`, `outputMode`, `reads`, `worktree`, `gitWorktreeDir`, `baseBranch`, `maxOutput`, `artifacts`, `sessionDir`, `cwd`, `agentDir`
@@ -1553,6 +1554,27 @@ The standalone `thinkingLevel` stage option is deprecated. It still applies as a
 ```
 
 This applies everywhere a stage accepts a model: direct `ctx.task`/`ctx.chain`/`ctx.parallel` options, `ctx.stage` options, builtin workflow stage definitions, and workflow parameters. `fallbackThinkingLevels` is an optional compatibility helper aligned by index to `fallbackModels`; it applies only to fallback entries that do not already carry a suffix. Each `WorkflowModelAttempt` reports the resolved model and the effective reasoning effort used for that attempt.
+
+### Context windows
+
+A `model`/`fallbackModels` entry may also request a context-window budget with a parenthesized size token in the model-name portion — placed *before* the optional `:reasoning` suffix so it never collides with the reasoning level. This mirrors GitHub Copilot's `Claude Opus 4.8 (1M context)` model-name convention:
+
+```ts
+await ctx.task("review", {
+  task: "Review the diff",
+  model: "anthropic/claude-fable-5:xhigh",
+  // The copilot opus fallback runs at its largest advertised (long-context) window.
+  fallbackModels: ["github-copilot/claude-opus-4.8 (1m):xhigh", "anthropic/claude-opus-4-8:xhigh"],
+});
+```
+
+The token accepts the same compact sizes as the `--context-window` flag (`1m`, `936k`, `400k`, or a raw token count) and is resolved against that specific candidate model's advertised windows:
+
+- an exact supported window is used as-is;
+- otherwise the largest supported window not exceeding the request is selected, so `(1m)` lands on a model's ~936K long-context tier;
+- when the model exposes no larger tier (or is unavailable), the request is dropped and the session keeps the model's default (short) window — a non-strict, automatic fallback.
+
+The budget applies only to the candidate that carries the token; other primary and fallback models in the same chain are unaffected. A parenthesized token that is not a valid size (for example `(preview)`) is left attached to the model id rather than being treated as a context window. For stage-wide selection you can instead set the `contextWindow` (and `contextWindowStrict`) stage option, which maps to the SDK `createAgentSession` options of the same name.
 
 ## Programmatic Usage
 

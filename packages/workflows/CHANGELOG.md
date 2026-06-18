@@ -6,8 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Added a per-model context-window authoring token to workflow model strings: a parenthesized size token placed in the model-name portion, *before* the optional `:reasoning` suffix, e.g. `github-copilot/claude-opus-4.8 (1m):xhigh`. Adopting GitHub Copilot's `Claude Opus 4.8 (1M context)` naming convention keeps the window separate from the reasoning level so the two never collide. The token is resolved against the candidate model's advertised windows — an exact match wins, otherwise the largest supported window not exceeding the request (so `(1m)` selects a model's ~936K long-context tier), and it falls back to the model's default (short) window when no larger tier is available. It applies only to the candidate that carries the token, leaving primary and other fallback models untouched. Also surfaced `contextWindow`/`contextWindowStrict` on `StageOptions` and the workflow tool's direct-task schema for stage-level selection.
+
 ### Changed
 
+- Changed the builtin `deep-research-codebase`, `goal`, `ralph`, and `open-claude-design` workflows to run their GitHub Copilot `claude-opus-4.8` fallbacks at the model's largest advertised long-context (~1M/936K) window via the new `(1m)` token, automatically degrading to the 200K short window when Copilot's long-context tier is unavailable. Other models in each fallback chain are unaffected.
 - Aligned the workflows extension peer dependency with upstream pi TUI `^0.79.6` so workflow graph, custom UI, and prompt-broker integrations consume the latest shared TUI compatibility fixes; no workflows extension code changes were made for this metadata sync ([#1413](https://github.com/bastani-inc/atomic/issues/1413)).
 
 ## [0.8.30] - 2026-06-17

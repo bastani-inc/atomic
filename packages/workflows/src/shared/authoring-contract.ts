@@ -153,6 +153,17 @@ export interface StageOptions<TSchemaDef extends TSchema | undefined = TSchema |
   /** Optional structured final-answer schema. When set, the stage receives a schema-specific final-answer tool. */
   readonly schema?: TSchemaDef;
   readonly model?: WorkflowModelValue;
+  /**
+   * Context-window token budget for the stage session. May also be expressed
+   * per-model via a parenthesized token in a `model`/`fallbackModels` entry
+   * (e.g. `github-copilot/claude-opus-4.8 (1m):xhigh`), which is preferred when
+   * only specific fallbacks should use a larger window. Non-strict by default:
+   * an unsupported value keeps the model's default window (see
+   * `contextWindowStrict`).
+   */
+  readonly contextWindow?: number;
+  /** Treat an unsupported `contextWindow` as an error instead of falling back to the model default. */
+  readonly contextWindowStrict?: boolean;
   readonly mcp?: StageMcpOptions;
   readonly tools?: readonly string[];
   readonly noTools?: "all" | "builtin";

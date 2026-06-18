@@ -1,3 +1,4 @@
+import { getModelDefaultContextWindow, getSupportedContextWindows, parseContextWindowValue } from "@bastani/atomic";
 import type { CreateAgentSessionOptions } from "@bastani/atomic";
 import type {
   WorkflowModelCatalogPort,
@@ -10,14 +11,80 @@ export interface WorkflowResolvedModelCandidate {
   readonly id: string;
   readonly value: WorkflowModelValue;
   readonly reasoningLevel?: WorkflowThinkingLevel;
+  /**
+   * Resolved context-window token budget for this candidate's session, parsed
+   * from a parenthesized authoring token in the model string (e.g.
+   * `github-copilot/claude-opus-4.8 (1m):xhigh`). Resolved against the
+   * candidate model's advertised windows: an exact match wins, otherwise the
+   * largest supported window <= the request (so `(1m)` selects a model's ~936K
+   * long-context tier). Left `undefined` when the model exposes no matching
+   * window, so the session keeps the model's default (short) window.
+   */
+  readonly contextWindow?: number;
 }
 
 function makeCandidate(
   id: string,
   value: WorkflowModelValue,
   level: WorkflowThinkingLevel | undefined,
+  contextWindow?: number,
 ): WorkflowResolvedModelCandidate {
-  return level !== undefined ? { id, value, reasoningLevel: level } : { id, value };
+  return {
+    id,
+    value,
+    ...(level !== undefined ? { reasoningLevel: level } : {}),
+    ...(contextWindow !== undefined ? { contextWindow } : {}),
+  };
+}
+
+/**
+ * Trailing parenthesized context-window authoring token, e.g. the `(1m)` in
+ * `github-copilot/claude-opus-4.8 (1m)`. Mirrors GitHub Copilot's model-name
+ * convention (`Claude Opus 4.8 (1M context)`) and intentionally lives in the
+ * model-name portion — *not* a `:` suffix — so it never collides with the
+ * `:off|minimal|low|medium|high|xhigh` reasoning-level suffix.
+ */
+const CONTEXT_WINDOW_TOKEN_PATTERN = /^(.*\S)\s*\(\s*([^()]+?)\s*\)\s*$/;
+
+function extractContextWindowToken(
+  model: string,
+): { readonly baseModel: string; readonly requestedContextWindow?: number } {
+  const match = CONTEXT_WINDOW_TOKEN_PATTERN.exec(model);
+  if (match === null) return { baseModel: model };
+  const parsed = parseContextWindowValue(match[2]!);
+  // A parenthesized token that does not parse as a context size (e.g. an
+  // accidental `(preview)`) is left attached to the model id so the normal
+  // "not available" lookup surfaces the typo instead of being silently dropped.
+  if (parsed.value === undefined) return { baseModel: model };
+  return { baseModel: match[1]!.trim(), requestedContextWindow: parsed.value };
+}
+
+/**
+ * Resolve a requested context-window budget against a candidate model's
+ * advertised windows. Returns the exact value when supported, otherwise the
+ * largest supported window that does not exceed the request (so `(1m)` lands on
+ * a ~936K long-context tier), or `undefined` when nothing fits — in which case
+ * the session keeps the model's default window. Model values that are plain
+ * strings (not resolved against the live catalog) cannot be introspected and
+ * yield `undefined`.
+ */
+function resolveRequestedContextWindow(
+  value: WorkflowModelValue,
+  requested: number,
+): number | undefined {
+  if (typeof value === "string") return undefined;
+  const supported = getSupportedContextWindows(value);
+  if (supported.length === 0) return undefined;
+  const chosen = supported.includes(requested)
+    ? requested
+    : (() => {
+        const atOrBelow = supported.filter((window) => window <= requested);
+        return atOrBelow.length > 0 ? Math.max(...atOrBelow) : undefined;
+      })();
+  if (chosen === undefined) return undefined;
+  // Only override when the request actually upgrades past the model's default
+  // window; otherwise leave it unset so the session simply keeps its default.
+  return chosen === getModelDefaultContextWindow(value) ? undefined : chosen;
 }
 
 const WORKFLOW_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const satisfies readonly WorkflowThinkingLevel[];
@@ -34,7 +101,7 @@ export function splitReasoningSuffix(model: string): { readonly baseModel: strin
 }
 
 function candidateKey(candidate: WorkflowResolvedModelCandidate): string {
-  return `${candidate.id}::${candidate.reasoningLevel ?? ""}`;
+  return `${candidate.id}::${candidate.reasoningLevel ?? ""}::${candidate.contextWindow ?? ""}`;
 }
 
 interface ModelResolutionFailure {
@@ -99,16 +166,25 @@ function resolveStringModel(
 ): WorkflowResolvedModelCandidate | ModelResolutionFailure {
   const input = rawInput.trim();
   if (!input) return { input: rawInput, reason: "empty model id" };
-  const { baseModel, level } = splitReasoningSuffix(input);
+  const { baseModel: afterReasoning, level } = splitReasoningSuffix(input);
+  const { baseModel, requestedContextWindow } = extractContextWindowToken(afterReasoning);
+
+  const candidate = (id: string, value: WorkflowModelValue): WorkflowResolvedModelCandidate =>
+    makeCandidate(
+      id,
+      value,
+      level,
+      requestedContextWindow === undefined ? undefined : resolveRequestedContextWindow(value, requestedContextWindow),
+    );
 
   if (availableModels === undefined) {
-    return makeCandidate(baseModel, baseModel, level);
+    return candidate(baseModel, baseModel);
   }
 
   const models = uniqueByFullId(availableModels);
   const explicit = models.find((model) => model.fullId === baseModel);
   if (explicit !== undefined) {
-    return makeCandidate(explicit.fullId, explicit.model ?? explicit.fullId, level);
+    return candidate(explicit.fullId, explicit.model ?? explicit.fullId);
   }
 
   if (baseModel.includes("/")) {
@@ -122,7 +198,7 @@ function resolveStringModel(
     // currentModel — discarding the workflow's defined primary and fallbacks.
     // Pass it through with the reasoning suffix split off; the runtime fallback
     // loop skips it only if the SDK genuinely cannot create a session for it.
-    return makeCandidate(baseModel, baseModel, level);
+    return candidate(baseModel, baseModel);
   }
 
   const byBareId = models.filter((model) => model.id === baseModel);
@@ -131,14 +207,14 @@ function resolveStringModel(
   }
   if (byBareId.length === 1) {
     const only = byBareId[0]!;
-    return makeCandidate(only.fullId, only.model ?? only.fullId, level);
+    return candidate(only.fullId, only.model ?? only.fullId);
   }
 
   const preferred = preferredProvider === undefined
     ? undefined
     : byBareId.find((model) => model.provider === preferredProvider);
   if (preferred !== undefined) {
-    return makeCandidate(preferred.fullId, preferred.model ?? preferred.fullId, level);
+    return candidate(preferred.fullId, preferred.model ?? preferred.fullId);
   }
 
   return {

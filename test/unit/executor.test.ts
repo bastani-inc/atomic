@@ -4433,6 +4433,65 @@ describe("executor.run", () => {
         }
     });
 
+    test("dummy workflow: a (1m) token stage runs end-to-end and applies the long-context window to the SDK session", async () => {
+        const st = createStore();
+        let createdModel: string | undefined;
+        let createdContextWindow: number | undefined = -1;
+        const def = defineWorkflow("context-window-token-smoke")
+            .output("ok", Type.Boolean())
+            .run(async (ctx) => {
+                await ctx
+                    .stage("opus", { model: "github-copilot/claude-opus-4.8 (1m):xhigh" })
+                    .prompt("hello");
+                return { ok: true };
+            })
+            .compile();
+
+        const wfResult = await run(
+            def,
+            {},
+            {
+                models: {
+                    listModels: async () => [
+                        {
+                            provider: "github-copilot",
+                            id: "claude-opus-4.8",
+                            fullId: "github-copilot/claude-opus-4.8",
+                            // Tiered window mirroring the live CAPI catalog (200K default + ~936K long).
+                            model: {
+                                provider: "github-copilot",
+                                id: "claude-opus-4.8",
+                                contextWindow: 200_000,
+                                defaultContextWindow: 200_000,
+                                contextWindowOptions: [200_000, 936_000],
+                            } as unknown as NonNullable<CreateAgentSessionOptions["model"]>,
+                        },
+                    ],
+                },
+                adapters: {
+                    agentSession: {
+                        async create(options) {
+                            createdModel =
+                                typeof options.model === "string"
+                                    ? options.model
+                                    : `${String(options.model?.provider)}/${options.model?.id}`;
+                            createdContextWindow = options.contextWindow;
+                            return mockSession();
+                        },
+                    },
+                },
+                store: st,
+            },
+        );
+
+        assert.equal(wfResult.status, "completed");
+        assert.equal(wfResult.result?.["ok"], true);
+        // The `(1m)` token resolved against the opus model's advertised windows
+        // and reached createAgentSession as the ~936K long-context budget.
+        assert.equal(createdModel, "github-copilot/claude-opus-4.8");
+        assert.equal(createdContextWindow, 936_000);
+    });
+
     test("bare explicit model stage publishes running fast-mode metadata after catalog resolution", async () => {
         const promptGate = deferred<string | void>();
         const st = createStore();
