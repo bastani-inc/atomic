@@ -7,6 +7,7 @@
  * findings into the next research pass with ctx.task().
  */
 
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -21,6 +22,7 @@ import { E2E_VERIFICATION_GUIDANCE, WORKER_PREFLIGHT_CONTRACT } from "./shared-p
 const DEFAULT_MAX_LOOPS = 10;
 const DEFAULT_RESEARCH_DIR = "research";
 const IMPLEMENTATION_NOTES_FILENAME = "implementation-notes.md";
+const QA_E2E_VIDEO_FILENAME = "qa-e2e-evidence.webm";
 const MAX_RESEARCH_SLUG_LENGTH = 80;
 // Reviewer fan-out launches three independent reviewers; the loop stops only when
 // all three reviewers independently approve (find no issues). Requiring unanimous
@@ -194,6 +196,26 @@ async function createImplementationNotesFile(prompt: string): Promise<string> {
   return notesPath;
 }
 
+// Stable absolute path the orchestrator records the QA end-to-end proof video to.
+// The directory is created up front so `playwright-cli video-start <path>` can
+// write to it; the video file itself is produced by the orchestrator's QA pass
+// (and overwritten each iteration so it always reflects the latest state). The
+// final pull-request stage attaches it when it exists.
+async function createQaEvidenceVideoPath(): Promise<string> {
+  const qaDir = await mkdtemp(join(tmpdir(), "atomic-ralph-qa-"));
+  return join(qaDir, QA_E2E_VIDEO_FILENAME);
+}
+
+function renderQaE2eVideoGuidance(qaVideoPath: string): string {
+  return [
+    "QA the change end-to-end whenever it touches user-visible UI behavior, including full-stack changes whose UI correctness depends on backend/API behavior. Use the `playwright-cli` skill (or delegate to a subagent with `skill: \"playwright-cli\"`) to drive the running application like a user and prove the implemented scenario actually works.",
+    `Record that QA E2E pass as a reviewable video so the user can watch the feature working. After \`playwright-cli open\`, start recording with \`playwright-cli video-start ${qaVideoPath}\`, annotate the scenario with \`playwright-cli video-chapter\` / \`playwright-cli video-show-actions\`, exercise the full user scenario, then \`playwright-cli video-stop\`. Write the video to exactly this path and overwrite any prior recording so it always reflects the latest implemented state: ${qaVideoPath}`,
+    `After recording, add the video to the implementation notes as a reference: include a \`## QA E2E Video\` entry with the absolute path ${qaVideoPath} and a one-line description of the proven scenario, so the user can review the proof when this stage finishes.`,
+    "If the change has no user-visible UI scenario (pure refactor, docs, infra, or non-UI library code), do not fabricate a video; record in the implementation notes that no QA E2E video applies and why.",
+    "If `playwright-cli` or a browser runtime is unavailable, install it once per the skill (`npm install -g @playwright/cli@latest`, then `npx playwright install chromium` for a missing browser executable). If it still cannot run, record the smallest validation actually performed and note that the QA E2E video could not be produced — never claim a video exists when it does not.",
+  ].join("\n");
+}
+
 function reviewDecisionFromResult(result: WorkflowTaskResult): ReviewDecision | undefined {
   return result.structured as ReviewDecision | undefined;
 }
@@ -360,6 +382,7 @@ function renderForkedOrchestratorPrompt(args: {
   readonly workflowCwdContext: PromptSection;
   readonly researchPath: string;
   readonly implementationNotesPath: string;
+  readonly qaVideoPath: string;
 }): string {
   return taggedPrompt([
     [
@@ -385,6 +408,7 @@ function renderForkedOrchestratorPrompt(args: {
       ].join("\n"),
     ],
     ["e2e_verification", E2E_VERIFICATION_GUIDANCE],
+    ["qa_e2e_video", renderQaE2eVideoGuidance(args.qaVideoPath)],
     [
       "output_format",
       [
@@ -396,6 +420,7 @@ function renderForkedOrchestratorPrompt(args: {
         "5. Validation run / recommended",
         "6. Deferred work or blockers",
         "7. Implementation notes — confirm the OS temp notes path was updated",
+        "8. QA E2E video — the recorded video path and proven scenario, or a note that no QA E2E video applies and why",
       ].join("\n"),
     ],
   ]);
@@ -424,6 +449,7 @@ type RalphWorkflowResult = {
   readonly research: string;
   readonly research_path: string;
   readonly implementation_notes_path: string;
+  readonly qa_video_path?: string;
   readonly pr_report?: string;
   readonly approved: boolean;
   readonly iterations_completed: number;
@@ -455,6 +481,7 @@ async function runRalphWorkflow(
   // worktree cwd so research stage writes land in the same checkout.
   const workflowResearchPath = resolve(workflowStartCwd, defaultResearchPath(prompt));
   const implementationNotesPath = await createImplementationNotesFile(prompt);
+  const qaVideoPath = await createQaEvidenceVideoPath();
   const artifactDir = await mkdtemp(join(tmpdir(), "atomic-ralph-run-"));
   const workflowCwdContext = workflowCwdContextSection(workflowStartCwd);
   let approved = false;
@@ -612,6 +639,7 @@ async function runRalphWorkflow(
         ],
         ["project_setup", WORKER_PREFLIGHT_CONTRACT],
         ["e2e_verification", E2E_VERIFICATION_GUIDANCE],
+        ["qa_e2e_video", renderQaE2eVideoGuidance(qaVideoPath)],
         [
           "orchestration_guidance",
           [
@@ -654,7 +682,8 @@ async function runRalphWorkflow(
             "Pass each subagent the relevant task, constraints, files, validation expectations, unresolved reviewer findings covered by the research, and instructions to report implementation-note-worthy decisions or tradeoffs.",
             "Coordinate subagent results into the smallest coherent set of changes that satisfies the researched implementation guidance and original user prompt.",
             "Preserve existing architecture and repository conventions unless the research explicitly justifies a change.",
-            "Run or delegate the most relevant validation commands available in the repository, including end-to-end browser or tmux validation when the change has an executable user scenario.",
+            "Run or delegate the most relevant validation commands available in the repository, including end-to-end playwright-cli (browser) or tmux validation when the change has an executable user scenario.",
+            "For UI-applicable or full-stack changes, ensure the QA E2E pass described in <qa_e2e_video> runs and records the reviewable proof video before you finalize this iteration.",
             `Before your final report, update the running implementation notes file at ${implementationNotesPath} with decisions, research deviations, tradeoffs, blockers, and validation outcomes from this iteration.`,
             "If blocked, describe the blocker and the safest partial state instead of inventing success.",
             "Do not hide failures; reviewers need accurate status.",
@@ -671,6 +700,7 @@ async function runRalphWorkflow(
             "5. Validation run / recommended",
             "6. Deferred work or blockers",
             "7. Implementation notes — confirm the OS temp notes path was updated",
+            "8. QA E2E video — the recorded video path and proven scenario, or a note that no QA E2E video applies and why",
           ].join("\n"),
         ],
       ])
@@ -681,6 +711,7 @@ async function runRalphWorkflow(
           workflowCwdContext,
           researchPath,
           implementationNotesPath,
+          qaVideoPath,
         });
     const orchestrator = await ctx.task(`orchestrator-${iteration}`, {
       prompt: orchestratorPrompt,
@@ -735,7 +766,7 @@ async function runRalphWorkflow(
         "validation_expectations",
         [
           "Inspect the actual diff/repository state rather than trusting stage summaries.",
-          "Run or delegate focused validation when it is necessary to distinguish a real bug from a hunch, including end-to-end browser or tmux validation when a user scenario can prove the outcome.",
+          "Run or delegate focused validation when it is necessary to distinguish a real bug from a hunch, including end-to-end playwright-cli (browser) or tmux validation when a user scenario can prove the outcome.",
           "If tests or typechecks fail because dependencies are missing, install/download the missing dependencies with the repo's documented package manager instead of bypassing the check.",
           "If validation cannot be completed after reasonable recovery, record the limitation in overall_explanation and reviewer_error; do not use missing dependencies as a reason to approve.",
         ].join("\n"),
@@ -790,7 +821,7 @@ async function runRalphWorkflow(
         [
           "1. Identify the changed files or diff under review.",
           "2. Read the relevant changed code and directly affected call sites/tests/configs.",
-          "3. Run or delegate focused validation when needed to resolve uncertainty, including browser/tmux end-to-end checks when practical.",
+          "3. Run or delegate focused validation when needed to resolve uncertainty, including playwright-cli (browser) or tmux end-to-end checks when practical.",
           "4. If you cannot inspect or validate enough to approve safely, populate reviewer_error and set stop_review_loop=false.",
         ].join("\n"),
       ],
@@ -888,6 +919,10 @@ async function runRalphWorkflow(
     if (approved) break;
   }
 
+  // The orchestrator writes the QA end-to-end proof video to this stable path
+  // when the change has a UI-applicable scenario; the final PR stage attaches it.
+  const qaVideoAvailable = existsSync(qaVideoPath);
+
   if (createPr === true) {
     const prResult = await ctx.task("pull-request", {
       prompt: taggedPrompt([
@@ -915,6 +950,21 @@ async function runRalphWorkflow(
           ].join("\n"),
         ],
         [
+          "qa_video_attachment",
+          qaVideoAvailable
+            ? [
+                `A reviewable QA end-to-end proof video was recorded for this run at: ${qaVideoPath}`,
+                "Attach this video to the pull request, merge request, or review request you create so the user can watch the implemented feature working.",
+                "Prefer embedding or linking it in the PR/MR/review description. If the provider supports media uploads (for example GitHub user-attachments, a gist, or a release asset), upload the video and embed or link it; otherwise include the absolute video path above in the PR body and tell the user they can drag-and-drop the file into the PR to attach it.",
+                "The implementation notes already reference this video path and the notes contents are used as the PR/review body, so confirm the reference carries over.",
+                "Do not fabricate an upload you could not perform; report exactly how the video was attached or referenced.",
+              ].join("\n")
+            : [
+                "No QA end-to-end proof video was produced for this run (no UI-applicable scenario, or the browser runtime was unavailable).",
+                "Do not invent or attach a video. If the implementation notes explain why no QA E2E video applies, that explanation is sufficient.",
+              ].join("\n"),
+        ],
+        [
           "pr_policy",
           [
             "Create a provider-appropriate PR/MR/review request only if there are meaningful changes, a remote/branch target is available, credentials are available, and the current state is suitable for review.",
@@ -936,6 +986,7 @@ async function runRalphWorkflow(
             "3. Implementation notes comment — whether the provider-appropriate comment was created as the last action, or why it could not be created",
             "4. Commands run — include exit status or clear outcome",
             "5. Follow-up for the user — exact next steps if credentials or repository state blocked PR creation",
+            "6. QA E2E video — how the proof video was attached or linked to the review request, or that no QA E2E video applies",
           ].join("\n"),
         ],
       ]),
@@ -956,6 +1007,7 @@ async function runRalphWorkflow(
     research: finalResearch,
     research_path: finalResearchPath,
     implementation_notes_path: implementationNotesPath,
+    ...(qaVideoAvailable ? { qa_video_path: qaVideoPath } : {}),
     ...(finalPrReport === undefined ? {} : { pr_report: finalPrReport }),
     approved,
     iterations_completed: iterationsCompleted,
@@ -997,6 +1049,7 @@ export default defineWorkflow("ralph")
   .output("research", Type.Optional(Type.String({ description: "Latest research report text or artifact reference." })))
   .output("research_path", Type.Optional(Type.String({ description: "Path to the latest generated research artifact under research/." })))
   .output("implementation_notes_path", Type.Optional(Type.String({ description: "OS-temp notes file containing decisions, deviations, blockers, and validation notes." })))
+  .output("qa_video_path", Type.Optional(Type.String({ description: "Absolute path to the reviewable QA end-to-end proof video recorded with playwright-cli for UI-applicable changes, when one was produced." })))
   .output("pr_report", Type.Optional(Type.String({ description: "Pull-request report emitted only when create_pr=true and the final pull-request stage runs." })))
   .output("approved", Type.Optional(Type.Boolean({ description: "Whether the reviewer loop approved before completion or optional final handoff." })))
   .output("iterations_completed", Type.Optional(Type.Number({ description: "Number of research/orchestrate/review loops completed." })))
