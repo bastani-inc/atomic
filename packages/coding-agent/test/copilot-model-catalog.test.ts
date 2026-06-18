@@ -9,11 +9,13 @@ import {
 	COPILOT_CATALOG_HEADERS,
 	COPILOT_CONTEXT_WINDOW_FALLBACK,
 	copilotApiBaseUrlFromToken,
+	copilotCatalogCachePath,
 	fetchCopilotModelCatalog,
 	getActiveCopilotModelCatalog,
 	parseCopilotModelCatalog,
 	readCopilotCatalogCache,
 	resolveCopilotModelContext,
+	seedActiveCopilotModelCatalogFromCache,
 	setActiveCopilotModelCatalog,
 	writeCopilotCatalogCache,
 } from "../src/core/copilot-model-catalog.ts";
@@ -202,5 +204,49 @@ describe("disk cache", () => {
 		assert.equal(readCopilotCatalogCache(join(dir, "missing.json"), { host, now: 0 }), undefined);
 		writeFileSync(path.replace("nested/", ""), "{not json");
 		assert.equal(readCopilotCatalogCache(path.replace("nested/", ""), { host, now: 0 }), undefined);
+	});
+});
+
+describe("seedActiveCopilotModelCatalogFromCache", () => {
+	let dir: string;
+	let cachePath: string;
+	// proxy-ep -> api host api.individual.githubcopilot.com (matches the cache written below)
+	const token = "tid=x;proxy-ep=proxy.individual.githubcopilot.com";
+	const baseUrl = "https://api.individual.githubcopilot.com";
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "copilot-seed-"));
+		cachePath = copilotCatalogCachePath(dir);
+	});
+	afterEach(() => {
+		rmSync(dir, { recursive: true, force: true });
+		clearActiveCopilotModelCatalog();
+	});
+
+	test("seeds the active catalog from a host-matching cache derived from the token", () => {
+		writeCopilotCatalogCache(cachePath, baseUrl, parseCopilotModelCatalog(capiBody()), 1_000);
+		assert.equal(getActiveCopilotModelCatalog().size, 0);
+		assert.equal(seedActiveCopilotModelCatalogFromCache(token, cachePath), true);
+		assert.deepEqual(getActiveCopilotModelCatalog().get("gpt-5.5"), { contextWindow: 272_000, contextWindowOptions: [272_000, 922_000] });
+	});
+
+	test("ignores the freshness TTL so a returning user's selection survives an old cache", () => {
+		writeCopilotCatalogCache(cachePath, baseUrl, parseCopilotModelCatalog(capiBody()), 0);
+		// Far beyond COPILOT_CATALOG_CACHE_TTL_MS: the seed must still apply (validation only).
+		assert.equal(seedActiveCopilotModelCatalogFromCache(token, cachePath, COPILOT_CATALOG_CACHE_TTL_MS * 1_000), true);
+		assert.equal(getActiveCopilotModelCatalog().size, 5);
+	});
+
+	test("no-ops without a token, on host mismatch, or with no cache file", () => {
+		writeCopilotCatalogCache(cachePath, baseUrl, parseCopilotModelCatalog(capiBody()), 1_000);
+		assert.equal(seedActiveCopilotModelCatalogFromCache(undefined, cachePath), false);
+		// Different proxy-ep -> different api host -> cache ignored.
+		assert.equal(seedActiveCopilotModelCatalogFromCache("tid=x;proxy-ep=proxy.enterprise.githubcopilot.com", cachePath), false);
+		assert.equal(seedActiveCopilotModelCatalogFromCache(token, join(dir, "missing.json")), false);
+		assert.equal(getActiveCopilotModelCatalog().size, 0);
+	});
+
+	test("copilotCatalogCachePath nests under cache/", () => {
+		assert.equal(copilotCatalogCachePath(join("/tmp", "agent")), join("/tmp", "agent", "cache", "copilot-models.json"));
 	});
 });

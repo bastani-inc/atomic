@@ -20,7 +20,7 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 
 /** Resolved input-token context window(s) for a single Copilot model. */
 export interface CopilotModelContext {
@@ -313,4 +313,32 @@ export function writeCopilotCatalogCache(
 /** Host component of a base URL, for matching {@link readCopilotCatalogCache} `host`. */
 export function copilotCatalogCacheHost(baseUrl: string): string {
 	return hostFromBaseUrl(baseUrl);
+}
+
+/** Standard on-disk cache path for the Copilot model catalog under an agent directory. */
+export function copilotCatalogCachePath(agentDir: string): string {
+	return join(agentDir, "cache", "copilot-models.json");
+}
+
+/**
+ * Seed the active catalog synchronously from the on-disk cache, gated on a Copilot access token.
+ *
+ * Called at model-registry construction so a returning user's previously selected long-context
+ * window is recognized before startup validation runs — otherwise the persisted choice would warn
+ * ("context window 936k is not supported…") and reset until the async refresh completes. The cache
+ * TTL is intentionally ignored here: stale-but-present windows are still valid for selection, and
+ * the async loader independently refetches on its own freshness window. Returns true when a catalog
+ * was applied. No-op (returns false) without a token or a host-matching cached catalog.
+ */
+export function seedActiveCopilotModelCatalogFromCache(
+	accessToken: string | undefined,
+	cachePath: string,
+	now?: number,
+): boolean {
+	if (typeof accessToken !== "string" || accessToken.length === 0) return false;
+	const host = copilotCatalogCacheHost(copilotApiBaseUrlFromToken(accessToken));
+	const cached = readCopilotCatalogCache(cachePath, { host, now, ttlMs: Number.POSITIVE_INFINITY });
+	if (!cached) return false;
+	setActiveCopilotModelCatalog(cached);
+	return true;
 }

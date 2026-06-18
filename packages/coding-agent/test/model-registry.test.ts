@@ -7,7 +7,12 @@ import { getOAuthProvider } from "@earendil-works/pi-ai/oauth";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { getSupportedContextWindows, selectContextWindow } from "../src/core/context-window.ts";
-import { clearActiveCopilotModelCatalog, setActiveCopilotModelCatalog } from "../src/core/copilot-model-catalog.ts";
+import {
+	clearActiveCopilotModelCatalog,
+	copilotCatalogCachePath,
+	setActiveCopilotModelCatalog,
+	writeCopilotCatalogCache,
+} from "../src/core/copilot-model-catalog.ts";
 import { clearApiKeyCache, ModelRegistry, type ProviderConfigInput } from "../src/core/model-registry.ts";
 
 describe("ModelRegistry", () => {
@@ -159,6 +164,32 @@ describe("ModelRegistry", () => {
 			expect(model).toBeDefined();
 			expect(model?.contextWindowOptions).toBeUndefined();
 			expect(model ? getSupportedContextWindows(model) : []).toEqual([model?.contextWindow]);
+		});
+
+		test("seeds context-window options from the on-disk cache at construction (returning user)", () => {
+			// Regression: a persisted long-context selection must be recognized at startup without first
+			// running the async catalog fetch — otherwise it warns ("936k is not supported…") and resets.
+			authStorage.set("github-copilot", {
+				type: "oauth",
+				access: "tid=x;proxy-ep=proxy.individual.githubcopilot.com",
+				refresh: "r",
+				expires: Date.now() + 1_000_000,
+			});
+			writeCopilotCatalogCache(
+				copilotCatalogCachePath(tempDir),
+				"https://api.individual.githubcopilot.com",
+				new Map([["claude-opus-4.8", { contextWindow: 200_000, contextWindowOptions: [200_000, 936_000] }]]),
+				1_000,
+			);
+
+			// No setActiveCopilotModelCatalog here: the registry constructor must seed it from disk.
+			const registry = ModelRegistry.create(authStorage, modelsJsonPath);
+			const claude = registry.find("github-copilot", "claude-opus-4.8");
+			expect(claude?.contextWindow).toBe(200_000);
+			expect(claude?.contextWindowOptions).toEqual([200_000, 936_000]);
+			// The previously selected long window now validates instead of warning/resetting.
+			const selected = claude ? selectContextWindow(claude, 936_000) : { error: "missing" };
+			expect("error" in selected).toBe(false);
 		});
 
 		test("does not apply the catalog to other providers with matching model IDs", () => {

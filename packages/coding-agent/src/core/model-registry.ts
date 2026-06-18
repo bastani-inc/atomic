@@ -23,12 +23,17 @@ import { existsSync, readFileSync } from "fs";
 import { type Static, Type } from "typebox";
 import { Compile } from "typebox/compile";
 import type { TLocalizedValidationError } from "typebox/error";
+import { dirname } from "node:path";
 import { getAgentConfigPaths } from "../config.ts";
 import { normalizePath } from "../utils/paths.ts";
 import { warnDeprecation } from "../utils/deprecation.ts";
 import type { AuthStatus, AuthStorage } from "./auth-storage.ts";
 import { normalizeContextWindowOptions, validateContextWindowValue, withContextWindowOptions } from "./context-window.ts";
-import { getActiveCopilotModelCatalog } from "./copilot-model-catalog.ts";
+import {
+	copilotCatalogCachePath,
+	getActiveCopilotModelCatalog,
+	seedActiveCopilotModelCatalogFromCache,
+} from "./copilot-model-catalog.ts";
 import { BUILT_IN_PROVIDER_DISPLAY_NAMES } from "./provider-display-names.ts";
 import {
 	clearConfigValueCache,
@@ -478,7 +483,24 @@ export class ModelRegistry {
 	) {
 		this.authStorage = authStorage;
 		this.modelsJsonPaths = modelsJsonPaths.map((path) => normalizePath(path));
+		// Seed the Copilot context-window catalog from disk before models load, so a returning user's
+		// persisted long-context selection is recognized at startup rather than warned-about and reset.
+		this.seedCopilotModelCatalogFromCache();
 		this.loadModels();
+	}
+
+	/**
+	 * Seed the active GitHub Copilot context-window catalog from the on-disk cache before models load.
+	 *
+	 * No-op without a `github-copilot` OAuth credential, without a resolvable agent dir, or without a
+	 * host-matching cached catalog. The agent dir is derived from the registry's own models.json path
+	 * (not the global agent dir) so unit tests never read the real user cache.
+	 */
+	private seedCopilotModelCatalogFromCache(): void {
+		if (this.modelsJsonPaths.length === 0) return;
+		const cred = this.authStorage.get("github-copilot");
+		if (!cred || cred.type !== "oauth" || typeof cred.access !== "string") return;
+		seedActiveCopilotModelCatalogFromCache(cred.access, copilotCatalogCachePath(dirname(this.modelsJsonPaths[0])));
 	}
 
 	static create(

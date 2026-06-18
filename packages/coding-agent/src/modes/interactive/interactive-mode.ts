@@ -165,6 +165,7 @@ import { formatContextWindow } from "../../core/context-window.ts";
 import {
   copilotApiBaseUrlFromToken,
   copilotCatalogCacheHost,
+  copilotCatalogCachePath,
   fetchCopilotModelCatalog,
   readCopilotCatalogCache,
   setActiveCopilotModelCatalog,
@@ -5149,7 +5150,7 @@ export class InteractiveMode {
       const token = await registry.getApiKeyForProvider("github-copilot");
       if (!token) return;
       const baseUrl = copilotApiBaseUrlFromToken(token);
-      const cachePath = path.join(getAgentDir(), "cache", "copilot-models.json");
+      const cachePath = copilotCatalogCachePath(getAgentDir());
       let catalog = readCopilotCatalogCache(cachePath, { host: copilotCatalogCacheHost(baseUrl) });
       if (!catalog) {
         catalog = await fetchCopilotModelCatalog({ token, baseUrl });
