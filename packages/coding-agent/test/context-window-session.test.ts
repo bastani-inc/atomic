@@ -5,6 +5,7 @@ import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { selectContextWindow } from "../src/core/context-window.ts";
+import { clearActiveCopilotModelCatalog, setActiveCopilotModelCatalog } from "../src/core/copilot-model-catalog.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
@@ -132,6 +133,7 @@ describe("AgentSession context-window persistence", () => {
 		if (tempDir && existsSync(tempDir)) {
 			rmSync(tempDir, { recursive: true, force: true });
 		}
+		clearActiveCopilotModelCatalog();
 	});
 
 	test("setContextWindow without persistDefault journals and emits without writing default settings", async () => {
@@ -171,7 +173,7 @@ describe("AgentSession context-window persistence", () => {
 		created.session.dispose();
 	});
 
-	test("setContextWindow with persistDefault writes default context-window settings", async () => {
+	test("setContextWindow with persistDefault writes model-specific context-window settings", async () => {
 		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
 		const modelRegistry = ModelRegistry.create(authStorage, join(agentDir, "models.json"));
 		const targetModel = requireModel(modelRegistry, "target-context");
@@ -201,12 +203,124 @@ describe("AgentSession context-window persistence", () => {
 		expect(created.session.model?.contextWindow).toBe(1_000_000);
 		expect(contextWindowChanges(sessionManager)).toEqual([1_000_000]);
 		expect(contextWindowEvents).toEqual([1_000_000]);
-		expect(settingsManager.getDefaultContextWindow()).toBe(1_000_000);
+		expect(settingsManager.getDefaultContextWindow()).toBeUndefined();
+		expect(settingsManager.getDefaultContextWindowForModel("custom", "target-context")).toBe(1_000_000);
 		await settingsManager.flush();
 		expect(JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8"))).toMatchObject({
-			defaultContextWindow: 1_000_000,
+			defaultContextWindows: { "custom/target-context": 1_000_000 },
 		});
 
+		created.session.dispose();
+	});
+
+	test("resolves a saved Copilot 1m model preference to its advertised prompt cap", async () => {
+		setActiveCopilotModelCatalog(
+			new Map([["claude-opus-4.8", { contextWindow: 200_000, contextWindowOptions: [200_000, 936_000] }]]),
+		);
+		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
+		authStorage.setRuntimeApiKey("github-copilot", "test-key");
+		const modelRegistry = ModelRegistry.create(authStorage, join(agentDir, "models.json"));
+		const opusModel = modelRegistry.find("github-copilot", "claude-opus-4.8");
+		if (!opusModel) {
+			throw new Error("Missing built-in github-copilot/claude-opus-4.8 test model");
+		}
+		const settingsManager = SettingsManager.create(cwd, agentDir);
+		settingsManager.setDefaultContextWindowForModel("github-copilot", "claude-opus-4.8", 1_000_000);
+		const sessionManager = SessionManager.inMemory(cwd);
+
+		const created = await createAgentSession({
+			cwd,
+			agentDir,
+			model: opusModel,
+			modelRegistry,
+			settingsManager,
+			sessionManager,
+			resourceLoader: createTestResourceLoader(),
+		});
+
+		expect(created.contextWindowWarning).toBeUndefined();
+		expect(created.contextWindowError).toBeUndefined();
+		expect(created.session.model?.contextWindow).toBe(936_000);
+		expect(contextWindowChanges(sessionManager)).toEqual([936_000]);
+		created.session.setContextWindow(1_000_000, { persistDefault: true });
+		expect(created.session.model?.contextWindow).toBe(936_000);
+		expect(settingsManager.getDefaultContextWindow()).toBeUndefined();
+		expect(settingsManager.getDefaultContextWindowForModel("github-copilot", "claude-opus-4.8")).toBe(936_000);
+		created.session.dispose();
+	});
+
+	test("does not leak a saved model-specific Copilot prompt cap to another provider", async () => {
+		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
+		const modelRegistry = ModelRegistry.create(authStorage, join(agentDir, "models.json"));
+		const largeDefaultModel = requireModel(modelRegistry, "natural-large-default");
+		const settingsManager = SettingsManager.create(cwd, agentDir);
+		settingsManager.setDefaultContextWindowForModel("github-copilot", "claude-opus-4.8", 936_000);
+		const sessionManager = SessionManager.inMemory(cwd);
+
+		const created = await createAgentSession({
+			cwd,
+			agentDir,
+			model: largeDefaultModel,
+			modelRegistry,
+			settingsManager,
+			sessionManager,
+			resourceLoader: createTestResourceLoader(),
+		});
+
+		expect(created.contextWindowWarning).toBeUndefined();
+		expect(created.contextWindowError).toBeUndefined();
+		expect(created.session.model?.contextWindow).toBe(1_000_000);
+		expect(contextWindowChanges(sessionManager)).toEqual([]);
+		created.session.dispose();
+	});
+
+	test("ignores an unsupported stale global context-window fallback without warning", async () => {
+		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
+		const modelRegistry = ModelRegistry.create(authStorage, join(agentDir, "models.json"));
+		const largeDefaultModel = requireModel(modelRegistry, "natural-large-default");
+		const settingsManager = SettingsManager.create(cwd, agentDir);
+		settingsManager.setDefaultContextWindow(272_000);
+		const sessionManager = SessionManager.inMemory(cwd);
+
+		const created = await createAgentSession({
+			cwd,
+			agentDir,
+			model: largeDefaultModel,
+			modelRegistry,
+			settingsManager,
+			sessionManager,
+			resourceLoader: createTestResourceLoader(),
+		});
+
+		expect(created.contextWindowWarning).toBeUndefined();
+		expect(created.contextWindowError).toBeUndefined();
+		expect(created.session.model?.contextWindow).toBe(1_000_000);
+		expect(contextWindowChanges(sessionManager)).toEqual([]);
+		created.session.dispose();
+	});
+
+	test("warns for an unsupported model-specific context-window default", async () => {
+		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
+		const modelRegistry = ModelRegistry.create(authStorage, join(agentDir, "models.json"));
+		const largeDefaultModel = requireModel(modelRegistry, "natural-large-default");
+		const settingsManager = SettingsManager.create(cwd, agentDir);
+		settingsManager.setDefaultContextWindowForModel("custom", "natural-large-default", 272_000);
+		const sessionManager = SessionManager.inMemory(cwd);
+
+		const created = await createAgentSession({
+			cwd,
+			agentDir,
+			model: largeDefaultModel,
+			modelRegistry,
+			settingsManager,
+			sessionManager,
+			resourceLoader: createTestResourceLoader(),
+		});
+
+		expect(created.contextWindowWarning).toContain("Context window 272k is not supported");
+		expect(created.contextWindowError).toBeUndefined();
+		expect(created.session.model?.contextWindow).toBe(1_000_000);
+		expect(contextWindowChanges(sessionManager)).toEqual([]);
 		created.session.dispose();
 	});
 
@@ -618,7 +732,7 @@ describe("AgentSession context-window persistence", () => {
 		created.session.dispose();
 	});
 
-	test("uses a supported settings default instead of carrying an unsupported source fallback", async () => {
+	test("uses a supported global default instead of carrying an unsupported source fallback", async () => {
 		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
 		const modelRegistry = ModelRegistry.create(authStorage, join(agentDir, "models.json"));
 		const sourceModel = requireModel(modelRegistry, "source-context");
@@ -637,7 +751,7 @@ describe("AgentSession context-window persistence", () => {
 			sessionManager,
 			resourceLoader: createTestResourceLoader(),
 		});
-		expect(created.contextWindowWarning).toContain("not supported");
+		expect(created.contextWindowWarning).toBeUndefined();
 		expect(created.session.model?.contextWindow).toBe(400_000);
 
 		sessionManager.appendMessage(assistantMessage("custom", "source-context"));

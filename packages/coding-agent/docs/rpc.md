@@ -323,7 +323,7 @@ Response:
 {"type": "response", "command": "set_context_window", "success": true}
 ```
 
-This command calls `AgentSession.setContextWindow(...)` without `{ persistDefault: true }`: it updates the active model, appends a `context_window_change` session entry and emits `context_window_changed` when the budget changes, but it does **not** write `defaultContextWindow` to settings. Use startup `--context-window` or an interactive settings selection when you intentionally want the existing persisted-default behavior.
+This command calls `AgentSession.setContextWindow(...)` without `{ persistDefault: true }`: it updates the active model, appends a `context_window_change` session entry and emits `context_window_changed` when the budget changes, but it does **not** write context-window defaults to settings. Use startup `--context-window` or an interactive context-window selection when you intentionally want the effective selection persisted under `defaultContextWindows["provider/modelId"]`.
 
 Unsupported or malformed selections return the standard RPC error response:
 ```json
@@ -975,7 +975,7 @@ Emitted whenever the pending steering or follow-up queue changes.
 
 ### context_window_changed
 
-Emitted when the active context-window token budget changes through RPC `set_context_window`, `AgentSession.setContextWindow()` in an SDK-backed runtime, or because in-place tree navigation replayed a branch-scoped `context_window_change` entry. Navigation replay updates the active model for accurate budgeting and compaction but does not append another session entry or write `defaultContextWindow` to settings.
+Emitted when the active context-window token budget changes through RPC `set_context_window`, `AgentSession.setContextWindow()` in an SDK-backed runtime, or because in-place tree navigation replayed a branch-scoped `context_window_change` entry. Navigation replay updates the active model for accurate budgeting and compaction but does not append another session entry or write context-window defaults to settings.
 
 ```json
 {
@@ -1321,7 +1321,7 @@ Source files and installed definitions:
 }
 ```
 
-`contextWindow` is the active/effective token budget used by Atomic's local budgeting, footer/stats, and compaction logic. `defaultContextWindow` is the model's scalar default before a session/runtime override, and `contextWindowOptions` lists selectable token budgets when the model supports more than one size. RPC clients can read/select the active runtime budget with `get_available_context_windows` and `set_context_window`; the runtime command does not persist `defaultContextWindow` to settings.
+`contextWindow` is the active/effective token budget used by Atomic's local budgeting, footer/stats, and compaction logic. `defaultContextWindow` is the model's scalar default before a session/runtime override, and `contextWindowOptions` lists selectable token budgets when the model supports more than one size. RPC clients can read/select the active runtime budget with `get_available_context_windows` and `set_context_window`; the runtime command does not persist context-window defaults to settings.
 
 ### UserMessage
 

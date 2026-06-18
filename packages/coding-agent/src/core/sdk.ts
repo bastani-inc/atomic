@@ -195,6 +195,10 @@ function getDefaultAgentDir(): string {
   return getAgentDir();
 }
 
+type ContextWindowRequestSource = "explicit" | "incoming-model" | "session" | "model-settings" | "global-settings";
+
+const COPILOT_CONTEXT_WINDOW_SELECTION_OPTIONS = { allowCopilotLongContextFallback: true } as const;
+
 function getAlreadyAppliedContextWindow(model: Model<Api>): number | undefined {
   const defaultContextWindow = getModelDefaultContextWindow(model);
   if (model.contextWindow === defaultContextWindow) {
@@ -344,17 +348,33 @@ export async function createAgentSession(
   const explicitContextWindowSelection = options.contextWindow !== undefined;
   const incomingModelContextWindow =
     model && options.model ? getAlreadyAppliedContextWindow(model) : undefined;
-  const requestedContextWindow =
-    options.contextWindow ??
-    incomingModelContextWindow ??
-    (hasExistingSession ? existingSession.contextWindow : undefined) ??
-    settingsManager.getDefaultContextWindow();
-  if (model && requestedContextWindow !== undefined) {
-    const selected = selectContextWindow(model, requestedContextWindow);
+  const sessionContextWindow = hasExistingSession ? existingSession.contextWindow : undefined;
+  const modelSettingsContextWindow = model ? settingsManager.getDefaultContextWindowForModel(model.provider, model.id) : undefined;
+  const globalSettingsContextWindow = settingsManager.getDefaultContextWindow();
+  const contextWindowRequest:
+    | { contextWindow: number; source: ContextWindowRequestSource }
+    | undefined =
+    options.contextWindow !== undefined
+      ? { contextWindow: options.contextWindow, source: "explicit" }
+      : incomingModelContextWindow !== undefined
+        ? { contextWindow: incomingModelContextWindow, source: "incoming-model" }
+        : sessionContextWindow !== undefined
+          ? { contextWindow: sessionContextWindow, source: "session" }
+          : modelSettingsContextWindow !== undefined
+            ? { contextWindow: modelSettingsContextWindow, source: "model-settings" }
+            : globalSettingsContextWindow !== undefined
+              ? { contextWindow: globalSettingsContextWindow, source: "global-settings" }
+              : undefined;
+  if (model && contextWindowRequest !== undefined) {
+    const selected = selectContextWindow(
+      model,
+      contextWindowRequest.contextWindow,
+      COPILOT_CONTEXT_WINDOW_SELECTION_OPTIONS,
+    );
     if ("error" in selected) {
       if (options.contextWindowStrict) {
         contextWindowError = selected.error;
-      } else {
+      } else if (contextWindowRequest.source !== "global-settings") {
         contextWindowWarning = selected.error;
       }
     } else {

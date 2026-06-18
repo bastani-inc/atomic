@@ -78,6 +78,9 @@ export type DefaultProjectTrust = "ask" | "always" | "never";
 
 export type TransportSetting = Transport;
 
+export type ContextWindowSetting = number | string;
+export type ModelContextWindowSettings = Record<string, ContextWindowSetting>;
+
 /**
  * Package source for npm/git packages.
  * - String form: load all resources from the package
@@ -99,7 +102,8 @@ export interface Settings {
 	defaultProvider?: string;
 	defaultModel?: string;
 	defaultThinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
-	defaultContextWindow?: number | string;
+	defaultContextWindow?: ContextWindowSetting; // Optional global fallback; model picker writes defaultContextWindows instead.
+	defaultContextWindows?: ModelContextWindowSettings; // Per-model defaults keyed as "provider/modelId".
 	transport?: TransportSetting; // default: "auto"
 	steeringMode?: "all" | "one-at-a-time";
 	followUpMode?: "all" | "one-at-a-time";
@@ -421,25 +425,47 @@ export class SettingsManager {
 		const errors: SettingsError[] = [];
 		const configured = (settings as Record<string, unknown>).defaultContextWindow;
 		if (configured !== undefined) {
-			const error = SettingsManager.validateDefaultContextWindowSetting(configured);
+			const error = SettingsManager.validateContextWindowSettingValue(configured, "defaultContextWindow");
 			if (error) {
 				errors.push({ scope, error });
+			}
+		}
+		const configuredByModel = (settings as Record<string, unknown>).defaultContextWindows;
+		if (configuredByModel !== undefined) {
+			if (!SettingsManager.isPlainRecord(configuredByModel)) {
+				errors.push({
+					scope,
+					error: new Error(
+						`Invalid defaultContextWindows: expected an object keyed by "provider/modelId", got ${SettingsManager.formatSettingValue(configuredByModel)}.`,
+					),
+				});
+			} else {
+				for (const [key, value] of Object.entries(configuredByModel)) {
+					const error = SettingsManager.validateContextWindowSettingValue(value, `defaultContextWindows.${key}`);
+					if (error) {
+						errors.push({ scope, error });
+					}
+				}
 			}
 		}
 		return errors;
 	}
 
-	private static validateDefaultContextWindowSetting(value: unknown): Error | undefined {
+	private static isPlainRecord(value: unknown): value is Record<string, unknown> {
+		return typeof value === "object" && value !== null && !Array.isArray(value);
+	}
+
+	private static validateContextWindowSettingValue(value: unknown, fieldName: string): Error | undefined {
 		if (typeof value === "number") {
 			const validationError = validateContextWindowValue(value);
-			return validationError ? new Error(`Invalid defaultContextWindow: ${validationError}.`) : undefined;
+			return validationError ? new Error(`Invalid ${fieldName}: ${validationError}.`) : undefined;
 		}
 		if (typeof value === "string") {
 			const parsed = parseContextWindowValue(value);
-			return parsed.error ? new Error(`Invalid defaultContextWindow: ${parsed.error}`) : undefined;
+			return parsed.error ? new Error(`Invalid ${fieldName}: ${parsed.error}`) : undefined;
 		}
 		return new Error(
-			`Invalid defaultContextWindow: expected a positive integer token count or compact string like "400k" or "1m", got ${SettingsManager.formatSettingValue(value)}.`,
+			`Invalid ${fieldName}: expected a positive integer token count or compact string like "400k" or "1m", got ${SettingsManager.formatSettingValue(value)}.`,
 		);
 	}
 
@@ -819,8 +845,11 @@ export class SettingsManager {
 		this.save();
 	}
 
-	getDefaultContextWindow(): number | undefined {
-		const configured = this.settings.defaultContextWindow;
+	private static defaultContextWindowModelKey(provider: string, modelId: string): string {
+		return `${provider}/${modelId}`;
+	}
+
+	private static parseContextWindowSetting(configured: ContextWindowSetting | undefined): number | undefined {
 		if (typeof configured === "number") {
 			return validateContextWindowValue(configured) ? undefined : configured;
 		}
@@ -830,6 +859,15 @@ export class SettingsManager {
 		return undefined;
 	}
 
+	getDefaultContextWindow(): number | undefined {
+		return SettingsManager.parseContextWindowSetting(this.settings.defaultContextWindow);
+	}
+
+	getDefaultContextWindowForModel(provider: string, modelId: string): number | undefined {
+		const key = SettingsManager.defaultContextWindowModelKey(provider, modelId);
+		return SettingsManager.parseContextWindowSetting(this.settings.defaultContextWindows?.[key]);
+	}
+
 	setDefaultContextWindow(contextWindow: number | undefined): void {
 		if (contextWindow === undefined) {
 			delete this.globalSettings.defaultContextWindow;
@@ -837,6 +875,23 @@ export class SettingsManager {
 			this.globalSettings.defaultContextWindow = contextWindow;
 		}
 		this.markModified("defaultContextWindow");
+		this.save();
+	}
+
+	setDefaultContextWindowForModel(provider: string, modelId: string, contextWindow: number | undefined): void {
+		const key = SettingsManager.defaultContextWindowModelKey(provider, modelId);
+		const next = { ...(this.globalSettings.defaultContextWindows ?? {}) };
+		if (contextWindow === undefined) {
+			delete next[key];
+		} else {
+			next[key] = contextWindow;
+		}
+		if (Object.keys(next).length === 0) {
+			delete this.globalSettings.defaultContextWindows;
+		} else {
+			this.globalSettings.defaultContextWindows = next;
+		}
+		this.markModified("defaultContextWindows");
 		this.save();
 	}
 

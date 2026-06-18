@@ -23,6 +23,17 @@ export interface ContextWindowSelectionError {
 	error: string;
 }
 
+export interface ContextWindowSelectionOptions {
+	/**
+	 * GitHub Copilot advertises some long-context tiers below their branded 1M size
+	 * (for example 936k or 922k input tokens). When enabled, a request above an
+	 * advertised long tier selects the largest supported Copilot window not
+	 * exceeding the request, but never silently falls back to the model's base
+	 * window.
+	 */
+	allowCopilotLongContextFallback?: boolean;
+}
+
 const CONTEXT_WINDOW_UNITS: Record<string, number> = {
 	k: 1_000,
 	m: 1_000_000,
@@ -101,17 +112,41 @@ export function withContextWindowOptions<TApi extends Api>(
 	};
 }
 
+function resolveSelectableContextWindow(
+	model: Model<Api>,
+	requestedContextWindow: number,
+	supported: readonly number[],
+	options: ContextWindowSelectionOptions,
+): number | undefined {
+	if (supported.includes(requestedContextWindow)) {
+		return requestedContextWindow;
+	}
+
+	if (options.allowCopilotLongContextFallback !== true || model.provider !== "github-copilot") {
+		return undefined;
+	}
+
+	const defaultContextWindow = getModelDefaultContextWindow(model);
+	const candidates = supported.filter(
+		(contextWindow) => contextWindow <= requestedContextWindow && contextWindow > defaultContextWindow,
+	);
+	return candidates.length > 0 ? Math.max(...candidates) : undefined;
+}
+
 export function selectContextWindow<TApi extends Api>(
 	model: Model<TApi>,
 	contextWindow: number,
+	options: ContextWindowSelectionOptions = {},
 ): ContextWindowSelection<TApi> | ContextWindowSelectionError {
 	const validationError = validateContextWindowValue(contextWindow);
 	if (validationError) {
 		return { error: validationError };
 	}
 
-	const supported = getSupportedContextWindows(model as Model<Api>);
-	if (!supported.includes(contextWindow)) {
+	const apiModel = model as Model<Api>;
+	const supported = getSupportedContextWindows(apiModel);
+	const selectedContextWindow = resolveSelectableContextWindow(apiModel, contextWindow, supported, options);
+	if (selectedContextWindow === undefined) {
 		return {
 			error: `Context window ${formatContextWindow(contextWindow)} is not supported by ${model.provider}/${model.id}. Supported values: ${supported.map(formatContextWindow).join(", ")}.`,
 		};
@@ -120,10 +155,10 @@ export function selectContextWindow<TApi extends Api>(
 	return {
 		model: {
 			...model,
-			defaultContextWindow: getModelDefaultContextWindow(model as Model<Api>),
-			contextWindow,
+			defaultContextWindow: getModelDefaultContextWindow(apiModel),
+			contextWindow: selectedContextWindow,
 			contextWindowOptions: supported,
 		},
-		contextWindow,
+		contextWindow: selectedContextWindow,
 	};
 }

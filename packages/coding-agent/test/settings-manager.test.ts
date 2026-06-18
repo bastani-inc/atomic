@@ -36,6 +36,28 @@ describe("SettingsManager", () => {
 			expect(numeric.getDefaultContextWindow()).toBe(400_000);
 		});
 
+		it("parses and writes model-specific default context windows", async () => {
+			const settingsPath = join(agentDir, "settings.json");
+			writeFileSync(
+				settingsPath,
+				JSON.stringify({ defaultContextWindows: { "github-copilot/claude-opus-4.8": "936k" } }),
+			);
+			const manager = SettingsManager.create(projectDir, agentDir);
+
+			expect(manager.getDefaultContextWindow()).toBeUndefined();
+			expect(manager.getDefaultContextWindowForModel("github-copilot", "claude-opus-4.8")).toBe(936_000);
+			expect(manager.getDefaultContextWindowForModel("anthropic", "claude-opus-4.8")).toBeUndefined();
+
+			manager.setDefaultContextWindowForModel("github-copilot", "gpt-5.5", 922_000);
+			await manager.flush();
+			expect(JSON.parse(readFileSync(settingsPath, "utf8"))).toMatchObject({
+				defaultContextWindows: {
+					"github-copilot/claude-opus-4.8": "936k",
+					"github-copilot/gpt-5.5": 922_000,
+				},
+			});
+		});
+
 		it("reports malformed global and project default context windows at load", () => {
 			const globalSettingsPath = join(agentDir, "settings.json");
 			const projectSettingsDir = join(projectDir, ".atomic");

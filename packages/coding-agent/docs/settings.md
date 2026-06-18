@@ -232,16 +232,21 @@ When multiple sources specify a session directory, precedence is `--session-dir`
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `enabledModels` | string[] | - | Model patterns for CTRL+P cycling (same format as `--models` CLI flag) |
-| `defaultContextWindow` | number \| string | model default | Preferred context window for models that expose selectable context windows. Accepts raw token counts or compact labels such as `400k` and `1m`. Unsupported values are ignored with a warning for the active model. |
+| `defaultContextWindow` | number \| string | model default | Optional global fallback context window for models that expose selectable context windows. Accepts raw token counts or compact labels such as `400k` and `1m`. Unsupported values are ignored for models that do not support them. |
+| `defaultContextWindows` | object | `{}` | Per-model preferred context windows keyed as `provider/modelId`. The interactive `/model` context picker writes this setting so a Copilot-specific prompt cap such as `936k` does not leak into Anthropic, Cursor, or other providers. |
 
 ```json
 {
   "enabledModels": ["claude-*", "gpt-4o", "gemini-2*"],
-  "defaultContextWindow": "1m"
+  "defaultContextWindow": "1m",
+  "defaultContextWindows": {
+    "github-copilot/claude-opus-4.8": "936k",
+    "github-copilot/gpt-5.5": "922k"
+  }
 }
 ```
 
-`defaultContextWindow` is independent of `defaultThinkingLevel`: selecting a larger context window does not change reasoning effort. Interactive users can also change the active model's budget through the `/model` selection flow, which prompts for a context window whenever the chosen model supports more than one window. Larger provider context windows can carry higher usage cost. For GitHub Copilot allowlisted long-context models (including `github-copilot/gpt-5.5` and `github-copilot/gemini-3.1-pro-preview`), selecting `1m` raises Atomic's local budget and sends `X-GitHub-Api-Version: 2026-06-01`; GitHub then applies the long-context tier server-side by prompt token count. That tier consumes more Copilot AI credits and requires Copilot long-context/usage-based billing entitlement, otherwise requests over the server cap are rejected with a friendly hint. Custom providers and explicit model overrides can still declare their own selectable `contextWindowOptions`.
+Context-window settings are independent of `defaultThinkingLevel`: selecting a larger context window does not change reasoning effort. Interactive users can change the active model's budget through the `/model` selection flow, which prompts for a context window whenever the chosen model supports more than one window and persists the effective selection under `defaultContextWindows["provider/modelId"]`. Atomic treats `defaultContextWindow` as a broad fallback only: if the active model does not support that value, the model's own default is used without a startup warning; targeted `defaultContextWindows` entries still warn when they become unsupported for their exact model. Larger provider context windows can carry higher usage cost. For GitHub Copilot allowlisted long-context models (including `github-copilot/gpt-5.5` and `github-copilot/gemini-3.1-pro-preview`), selecting `1m` raises Atomic's local prompt budget to the largest advertised long-context tier at or below that rounded request (for example `922k` or `936k`) and sends `X-GitHub-Api-Version: 2026-06-01`; GitHub then applies the long-context tier server-side by prompt token count. That tier consumes more Copilot AI credits and requires Copilot long-context/usage-based billing entitlement, otherwise requests over the server cap are rejected with a friendly hint. Custom providers and explicit model overrides can still declare their own selectable `contextWindowOptions`.
 
 ### Markdown
 

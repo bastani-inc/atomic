@@ -1,17 +1,20 @@
 /**
- * GitHub Copilot model catalog (CAPI) — dynamic, input-token context windows.
+ * GitHub Copilot model catalog (CAPI) — dynamic prompt-token budgets.
  *
- * GitHub's Copilot API (CAPI) exposes per-model limits via `GET {baseUrl}/models`. Every window
- * Atomic shows for a Copilot model is measured in INPUT (prompt) tokens, exactly like every other
- * provider's `contextWindow`, so GitHub models read consistently across the UI:
+ * GitHub's Copilot API (CAPI) exposes distinct model limits via `GET {baseUrl}/models`:
  *
- *   - A model's input budget = `capabilities.limits.max_prompt_tokens`
- *       ?? `capabilities.limits.max_context_window_tokens`
- *       ?? 128_000   (the two fallbacks are safeties real CAPI entries never hit).
- *   - Models with tiered pricing expose per-tier input budgets via
- *     `billing.token_prices.<tier>.context_max`. The `default` tier is the base context window
- *     (e.g. gpt-5.5 272k, Claude 200k); a `long_context` tier adds a selectable larger input
- *     window (e.g. gpt-5.5 922k, Claude 936k) the user can switch to via the `/model` picker.
+ *   - `capabilities.limits.max_context_window_tokens` is the model's total context capacity
+ *     (prompt + completion reserve).
+ *   - `capabilities.limits.max_prompt_tokens` is the maximum prompt/input budget Atomic can safely
+ *     fill before the provider must reserve output tokens.
+ *   - `billing.token_prices.<tier>.context_max` is a prompt-token billing/selection threshold. The
+ *     `default` tier is the short prompt budget (e.g. gpt-5.5 272k, Claude 200k); a
+ *     `long_context` tier adds a selectable larger prompt budget (e.g. gpt-5.5 922k, Claude 936k).
+ *
+ * Atomic's current `contextWindow` drives local prompt collection, compaction thresholds, footer
+ * usage, and overflow avoidance, so Copilot selectable windows intentionally use prompt-token
+ * budgets rather than total context capacities such as 1_000_000/1_050_000. The total context field
+ * remains a compatibility fallback for older/sparse payloads that omit `max_prompt_tokens`.
  *
  * This data is intentionally NOT baked into a static map: GitHub adds/removes models and retiers
  * windows over time (e.g. a model that disappears from the catalog), so a hardcoded snapshot goes
@@ -96,15 +99,15 @@ function toPositiveInt(value: unknown): number | undefined {
 	return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
 }
 
-/** Raw input-token limits parsed from a CAPI model entry. */
+/** Raw token limits parsed from a CAPI model entry. */
 export interface CopilotModelLimits {
-	/** `capabilities.limits.max_prompt_tokens`. */
+	/** `capabilities.limits.max_prompt_tokens` — maximum prompt/input budget. */
 	maxPromptTokens?: number;
-	/** `capabilities.limits.max_context_window_tokens`. */
+	/** `capabilities.limits.max_context_window_tokens` — total context capacity, used only as a fallback. */
 	maxContextWindowTokens?: number;
-	/** `billing.token_prices.default.context_max`. */
+	/** `billing.token_prices.default.context_max` — default-tier prompt threshold. */
 	defaultContextMax?: number;
-	/** `billing.token_prices.long_context.context_max`. */
+	/** `billing.token_prices.long_context.context_max` — long-context prompt threshold. */
 	longContextMax?: number;
 }
 

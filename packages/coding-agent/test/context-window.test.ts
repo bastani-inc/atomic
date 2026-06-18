@@ -56,4 +56,24 @@ describe("context window utilities", () => {
 			expect(unsupported.error).toContain("Supported values: 400k, 1m");
 		}
 	});
+
+	test("optionally resolves GitHub Copilot 1m requests to the advertised long tier", () => {
+		const copilotModel = withContextWindowOptions(
+			{ ...baseModel, provider: "github-copilot", id: "claude-opus-4.8", contextWindow: 200_000 },
+			[200_000, 936_000],
+		);
+
+		const exactOnly = selectContextWindow(copilotModel, 1_000_000);
+		expect("error" in exactOnly).toBe(true);
+
+		const selected = selectContextWindow(copilotModel, 1_000_000, {
+			allowCopilotLongContextFallback: true,
+		});
+		expect("error" in selected).toBe(false);
+		if (!("error" in selected)) {
+			expect(selected.contextWindow).toBe(936_000);
+			expect(selected.model.contextWindow).toBe(936_000);
+			expect(selected.model.defaultContextWindow).toBe(200_000);
+		}
+	});
 });

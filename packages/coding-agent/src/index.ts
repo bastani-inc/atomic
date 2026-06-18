@@ -112,6 +112,7 @@ export {
 	type ContextWindowParseResult,
 	type ContextWindowSelection,
 	type ContextWindowSelectionError,
+	type ContextWindowSelectionOptions,
 } from "./core/context-window.ts";
 export { createEventBus, type EventBus, type EventBusController } from "./core/event-bus.ts";
 export { areExperimentalFeaturesEnabled } from "./core/experimental.ts";

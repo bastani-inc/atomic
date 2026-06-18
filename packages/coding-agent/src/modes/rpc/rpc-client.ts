@@ -286,7 +286,7 @@ export class RpcClient {
 
 	/**
 	 * Set the active context-window token budget for the current model.
-	 * This is a runtime selection and does not persist defaultContextWindow settings.
+	 * This is a runtime selection and does not persist context-window defaults.
 	 */
 	async setContextWindow(contextWindow: number | string): Promise<void> {
 		const response = await this.send({ type: "set_context_window", contextWindow });

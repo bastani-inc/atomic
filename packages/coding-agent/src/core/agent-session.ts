@@ -219,6 +219,15 @@ export type AgentSessionEvent =
 /** Listener function for agent session events */
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
 
+type ContextWindowReplaySource = "session" | "model-settings" | "global-settings";
+
+interface ContextWindowReplayRequest {
+	contextWindow: number;
+	source: ContextWindowReplaySource;
+}
+
+const COPILOT_CONTEXT_WINDOW_SELECTION_OPTIONS = { allowCopilotLongContextFallback: true } as const;
+
 interface PendingAgentMessageQueue {
 	hasItems(): boolean;
 	drain(): AgentMessage[];
@@ -2043,7 +2052,7 @@ export class AgentSession {
 		if (!this.model) {
 			throw new Error("No model selected");
 		}
-		const selected = selectContextWindow(this.model, contextWindow);
+		const selected = selectContextWindow(this.model, contextWindow, COPILOT_CONTEXT_WINDOW_SELECTION_OPTIONS);
 		if ("error" in selected) {
 			throw new Error(selected.error);
 		}
@@ -2057,14 +2066,14 @@ export class AgentSession {
 			this._emit({ type: "context_window_changed", contextWindow: selected.contextWindow });
 		}
 		if (options.persistDefault === true) {
-			this.settingsManager.setDefaultContextWindow(selected.contextWindow);
+			this.settingsManager.setDefaultContextWindowForModel(selected.model.provider, selected.model.id, selected.contextWindow);
 		}
 	}
 
 	private _withContextWindowForModelSwitch(model: Model<Api>): Model<Api> {
 		// A source model's scalar contextWindow can be its natural default (for example a 1m-default
 		// model). Do not treat that alone as an opt-in to larger windows on a 400k-default target.
-		const settingsDefaultContextWindow = this.settingsManager.getDefaultContextWindow();
+		const settingsDefaultContextWindow = this._getSettingsContextWindowRequestForModel(model)?.contextWindow;
 		const candidates: number[] = [];
 		const targetDefaultContextWindow = getModelDefaultContextWindow(model);
 		if (model.contextWindow !== targetDefaultContextWindow) {
@@ -2081,11 +2090,11 @@ export class AgentSession {
 		}
 		candidates.push(targetDefaultContextWindow);
 
-		const availableContextWindows = getSupportedContextWindows(model);
-		const contextWindow = candidates.find((candidate) => availableContextWindows.includes(candidate));
-		if (contextWindow === undefined) return model;
-		const selected = selectContextWindow(model, contextWindow);
-		return "error" in selected ? model : selected.model;
+		for (const candidate of candidates) {
+			const selected = selectContextWindow(model, candidate, COPILOT_CONTEXT_WINDOW_SELECTION_OPTIONS);
+			if (!("error" in selected)) return selected.model;
+		}
+		return model;
 	}
 
 	private _shouldCarryCurrentContextWindowForModelSwitch(
@@ -2105,16 +2114,28 @@ export class AgentSession {
 		);
 	}
 
+	private _getSettingsContextWindowRequestForModel(model: Model<Api>): ContextWindowReplayRequest | undefined {
+		const modelContextWindow = this.settingsManager.getDefaultContextWindowForModel(model.provider, model.id);
+		if (modelContextWindow !== undefined) {
+			return { contextWindow: modelContextWindow, source: "model-settings" };
+		}
+		const globalContextWindow = this.settingsManager.getDefaultContextWindow();
+		return globalContextWindow === undefined
+			? undefined
+			: { contextWindow: globalContextWindow, source: "global-settings" };
+	}
+
 	private _getContextWindowReplayForModel(
 		model: Model<Api>,
 		requestedContextWindow: number | undefined,
+		source: ContextWindowReplaySource | undefined,
 	): { model: Model<Api>; contextWindow: number; wouldWarn: boolean } {
 		if (requestedContextWindow !== undefined) {
-			const selected = selectContextWindow(model, requestedContextWindow);
+			const selected = selectContextWindow(model, requestedContextWindow, COPILOT_CONTEXT_WINDOW_SELECTION_OPTIONS);
 			if (!("error" in selected)) {
 				return { model: selected.model, contextWindow: selected.contextWindow, wouldWarn: false };
 			}
-			return this._getDefaultContextWindowReplayForModel(model, true);
+			return this._getDefaultContextWindowReplayForModel(model, source !== "global-settings");
 		}
 
 		return this._getDefaultContextWindowReplayForModel(model, false);
@@ -2125,7 +2146,7 @@ export class AgentSession {
 		wouldWarn: boolean,
 	): { model: Model<Api>; contextWindow: number; wouldWarn: boolean } {
 		const defaultContextWindow = getModelDefaultContextWindow(model);
-		const selected = selectContextWindow(model, defaultContextWindow);
+		const selected = selectContextWindow(model, defaultContextWindow, COPILOT_CONTEXT_WINDOW_SELECTION_OPTIONS);
 		if (!("error" in selected)) {
 			return { model: selected.model, contextWindow: selected.contextWindow, wouldWarn };
 		}
@@ -2140,15 +2161,20 @@ export class AgentSession {
 		model: Model<Api>,
 	): { model: Model<Api>; contextWindow: number; wouldWarn: boolean } {
 		const sessionContext = this.sessionManager.buildSessionContext();
-		const requestedContextWindow = sessionContext.contextWindow ?? this.settingsManager.getDefaultContextWindow();
-		return this._getContextWindowReplayForModel(model, requestedContextWindow);
+		if (sessionContext.contextWindow !== undefined) {
+			return this._getContextWindowReplayForModel(model, sessionContext.contextWindow, "session");
+		}
+		const settingsContextWindow = this._getSettingsContextWindowRequestForModel(model);
+		return this._getContextWindowReplayForModel(model, settingsContextWindow?.contextWindow, settingsContextWindow?.source);
 	}
 
 	private _applyContextWindowReplay(contextWindow: number | undefined): void {
 		if (!this.model) return;
 		const previousContextWindow = this.model.contextWindow;
-		const requestedContextWindow = contextWindow ?? this.settingsManager.getDefaultContextWindow();
-		const replay = this._getContextWindowReplayForModel(this.model, requestedContextWindow);
+		const settingsContextWindow = this._getSettingsContextWindowRequestForModel(this.model);
+		const requestedContextWindow = contextWindow ?? settingsContextWindow?.contextWindow;
+		const source: ContextWindowReplaySource | undefined = contextWindow !== undefined ? "session" : settingsContextWindow?.source;
+		const replay = this._getContextWindowReplayForModel(this.model, requestedContextWindow, source);
 		this.agent.state.model = replay.model;
 		if (previousContextWindow !== replay.contextWindow) {
 			this._emit({ type: "context_window_changed", contextWindow: replay.contextWindow });
@@ -2817,7 +2843,11 @@ export class AgentSession {
 			return;
 		}
 
-		this.agent.state.model = refreshedModel;
+		const replay = this._getResumeContextWindowReplayForModel(refreshedModel);
+		this.agent.state.model = replay.model;
+		if (currentModel.contextWindow !== replay.contextWindow) {
+			this._emit({ type: "context_window_changed", contextWindow: replay.contextWindow });
+		}
 		this._refreshBaseSystemPromptFromActiveTools();
 	}
 
