@@ -38,25 +38,36 @@ function makeCandidate(
 }
 
 /**
- * Trailing parenthesized context-window authoring token, e.g. the `(1m)` in
- * `github-copilot/claude-opus-4.8 (1m)`. Mirrors GitHub Copilot's model-name
- * convention (`Claude Opus 4.8 (1M context)`) and intentionally lives in the
- * model-name portion — *not* a `:` suffix — so it never collides with the
- * `:off|minimal|low|medium|high|xhigh` reasoning-level suffix.
+ * Extract a trailing parenthesized context-window authoring token, e.g. the
+ * `(1m)` in `github-copilot/claude-opus-4.8 (1m)`. Mirrors GitHub Copilot's
+ * model-name convention (`Claude Opus 4.8 (1M context)`) and intentionally
+ * lives in the model-name portion — *not* a `:` suffix — so it never collides
+ * with the `:off|minimal|low|medium|high|xhigh` reasoning-level suffix.
+ *
+ * Parsed with plain string scanning rather than a regular expression so that
+ * adversarial model strings (e.g. `(` followed by long whitespace runs) cannot
+ * trigger super-linear backtracking (CodeQL js/polynomial-redos).
  */
-const CONTEXT_WINDOW_TOKEN_PATTERN = /^(.*\S)\s*\(\s*([^()]+?)\s*\)\s*$/;
-
 function extractContextWindowToken(
   model: string,
 ): { readonly baseModel: string; readonly requestedContextWindow?: number } {
-  const match = CONTEXT_WINDOW_TOKEN_PATTERN.exec(model);
-  if (match === null) return { baseModel: model };
-  const parsed = parseContextWindowValue(match[2]!);
+  const trimmedEnd = model.trimEnd();
+  if (!trimmedEnd.endsWith(")")) return { baseModel: model };
+  const open = trimmedEnd.lastIndexOf("(");
+  // Require at least one character before the `(` so a bare `(1m)` is not a model.
+  if (open <= 0) return { baseModel: model };
+  const inner = trimmedEnd.slice(open + 1, -1);
+  // The token must be a single flat `(...)` group with no nested parentheses.
+  if (inner.includes("(") || inner.includes(")")) return { baseModel: model };
+  const token = inner.trim();
+  const baseModel = trimmedEnd.slice(0, open).trim();
+  if (token.length === 0 || baseModel.length === 0) return { baseModel: model };
+  const parsed = parseContextWindowValue(token);
   // A parenthesized token that does not parse as a context size (e.g. an
   // accidental `(preview)`) is left attached to the model id so the normal
   // "not available" lookup surfaces the typo instead of being silently dropped.
   if (parsed.value === undefined) return { baseModel: model };
-  return { baseModel: match[1]!.trim(), requestedContextWindow: parsed.value };
+  return { baseModel, requestedContextWindow: parsed.value };
 }
 
 /**
