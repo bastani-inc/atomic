@@ -12,7 +12,7 @@
     },
     "packages/coding-agent": {
       "name": "@bastani/atomic",
-      "version": "0.8.31-alpha.2",
+      "version": "0.8.31-alpha.3",
       "bin": {
         "atomic": "dist/cli.js",
       },
@@ -66,9 +66,9 @@
     },
     "packages/cursor": {
       "name": "@bastani/cursor",
-      "version": "0.8.31-alpha.2",
+      "version": "0.8.31-alpha.3",
       "dependencies": {
-        "@bastani/atomic-natives": "0.8.31-alpha.2",
+        "@bastani/atomic-natives": "0.8.31-alpha.3",
         "@bufbuild/protobuf": "^2.0.0",
       },
       "peerDependencies": {
@@ -80,7 +80,7 @@
     },
     "packages/intercom": {
       "name": "@bastani/intercom",
-      "version": "0.8.31-alpha.2",
+      "version": "0.8.31-alpha.3",
       "dependencies": {
         "typebox": "^1.1.24",
       },
@@ -95,7 +95,7 @@
     },
     "packages/mcp": {
       "name": "@bastani/mcp",
-      "version": "0.8.31-alpha.2",
+      "version": "0.8.31-alpha.3",
       "dependencies": {
         "@modelcontextprotocol/ext-apps": "^1.7.2",
         "@modelcontextprotocol/sdk": "^1.25.1",
@@ -117,14 +117,14 @@
     },
     "packages/natives": {
       "name": "@bastani/atomic-natives",
-      "version": "0.8.31-alpha.2",
+      "version": "0.8.31-alpha.3",
       "devDependencies": {
         "@napi-rs/cli": "3.7.0",
       },
     },
     "packages/subagents": {
       "name": "@bastani/subagents",
-      "version": "0.8.31-alpha.2",
+      "version": "0.8.31-alpha.3",
       "dependencies": {
         "jiti": "^2.7.0",
         "typebox": "^1.1.24",
@@ -144,7 +144,7 @@
     },
     "packages/web-access": {
       "name": "@bastani/web-access",
-      "version": "0.8.31-alpha.2",
+      "version": "0.8.31-alpha.3",
       "dependencies": {
         "@mozilla/readability": "^0.6.0",
         "linkedom": "^0.18.12",
@@ -163,7 +163,7 @@
     },
     "packages/workflows": {
       "name": "@bastani/workflows",
-      "version": "0.8.31-alpha.2",
+      "version": "0.8.31-alpha.3",
       "dependencies": {
         "jiti": "^2.7.0",
         "typebox": "^1.1.24",

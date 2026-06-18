@@ -4,7 +4,7 @@
 
 ### Changed
 
-- Published a synchronized Atomic 0.8.31-alpha.2 prerelease; no functional native transport changes were made after 0.8.30.
+- Published a synchronized Atomic 0.8.31-alpha.3 prerelease; no functional native transport changes were made after 0.8.30.
 
 ## [0.8.30] - 2026-06-17
 
