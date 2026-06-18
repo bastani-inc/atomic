@@ -252,12 +252,14 @@ function withCopilotContextWindowOptions(model: Model<Api>): Model<Api> {
 	if (model.provider !== "github-copilot") return model;
 	const context = getActiveCopilotModelCatalog().get(model.id);
 	if (!context) return model;
-	// Apply GitHub's input-token budget everywhere; add a selectable long-context window when the
-	// model exposes one larger than its default tier.
+	// Apply GitHub's context window everywhere; add a selectable long-context window when the model
+	// exposes one larger than its default tier, and carry the hard prompt cap as the effective input
+	// budget so the displayed total does not overrun GitHub's server-side prompt limit.
+	const base = { ...model, contextWindow: context.contextWindow, maxInputTokens: context.maxInputTokens };
 	if (context.contextWindowOptions && context.contextWindowOptions.length > 1) {
-		return withContextWindowOptions({ ...model, contextWindow: context.contextWindow }, context.contextWindowOptions);
+		return withContextWindowOptions(base, context.contextWindowOptions);
 	}
-	return { ...model, contextWindow: context.contextWindow };
+	return base;
 }
 
 function formatValidationPath(error: TLocalizedValidationError): string {

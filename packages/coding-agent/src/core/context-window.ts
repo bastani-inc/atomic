@@ -6,6 +6,13 @@ declare module "@earendil-works/pi-ai" {
 		contextWindowOptions?: readonly number[];
 		/** Original/default scalar context window, preserved when contextWindow is overridden for a session. */
 		defaultContextWindow?: number;
+		/**
+		 * Hard prompt/input cap for providers (e.g. GitHub Copilot `max_prompt_tokens`) that enforce an
+		 * input budget below the displayed context window. When set and below `contextWindow`, it is the
+		 * effective input budget for compaction thresholds and overflow recovery; `contextWindow` remains
+		 * the displayed/branded window.
+		 */
+		maxInputTokens?: number;
 	}
 }
 
@@ -95,6 +102,18 @@ export function normalizeContextWindowOptions(values: readonly number[] | undefi
 
 export function getModelDefaultContextWindow(model: Model<Api>): number {
 	return isPositiveInteger(model.defaultContextWindow ?? 0) ? model.defaultContextWindow! : model.contextWindow;
+}
+
+/**
+ * Effective input-token budget for compaction/overflow decisions. Equals the displayed
+ * `contextWindow` unless a smaller hard input cap (`maxInputTokens`, e.g. GitHub Copilot's
+ * `max_prompt_tokens`) is advertised, in which case the lower of the two is used. This lets a model
+ * display its full/branded window while compaction and overflow recovery respect the real,
+ * server-enforced input limit.
+ */
+export function getEffectiveInputBudget(model: Model<Api>): number {
+	const cap = model.maxInputTokens;
+	return isPositiveInteger(cap ?? 0) ? Math.min(model.contextWindow, cap as number) : model.contextWindow;
 }
 
 export function getSupportedContextWindows(model: Model<Api>): number[] {

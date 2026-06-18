@@ -102,6 +102,7 @@ export {
 } from "./core/codex-fast-mode.ts";
 export {
 	formatContextWindow,
+	getEffectiveInputBudget,
 	getModelDefaultContextWindow,
 	getSupportedContextWindows,
 	normalizeContextWindowOptions,

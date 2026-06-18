@@ -59,11 +59,46 @@ function capiBody() {
 }
 
 describe("resolveCopilotModelContext", () => {
-	test("uses the default tier as the base and adds a larger long_context window", () => {
+	test("uses the default tier as the base and adds the full context window as the long tier", () => {
+		assert.deepEqual(
+			resolveCopilotModelContext({
+				maxPromptTokens: 922_000,
+				maxContextWindowTokens: 1_050_000,
+				maxOutputTokens: 128_000,
+				defaultContextMax: 272_000,
+				longContextMax: 922_000,
+			}),
+			{
+				contextWindow: 272_000,
+				contextWindowOptions: [272_000, 1_050_000],
+				maxInputTokens: 922_000,
+			},
+		);
+	});
+
+	test("falls back to the long-context prompt threshold when no total window is advertised", () => {
+		// Older/sparse payloads without max_context_window_tokens keep the prompt-budget long tier and
+		// carry no separate input cap (the displayed long window already equals the prompt cap).
 		assert.deepEqual(resolveCopilotModelContext({ maxPromptTokens: 922_000, defaultContextMax: 272_000, longContextMax: 922_000 }), {
 			contextWindow: 272_000,
 			contextWindowOptions: [272_000, 922_000],
 		});
+	});
+
+	test("derives the input cap from total − output reserve when max_prompt_tokens is absent", () => {
+		assert.deepEqual(
+			resolveCopilotModelContext({
+				maxContextWindowTokens: 1_000_000,
+				maxOutputTokens: 64_000,
+				defaultContextMax: 200_000,
+				longContextMax: 936_000,
+			}),
+			{
+				contextWindow: 200_000,
+				contextWindowOptions: [200_000, 1_000_000],
+				maxInputTokens: 936_000,
+			},
+		);
 	});
 
 	test("omits options when there is no larger long_context tier", () => {
@@ -93,10 +128,18 @@ describe("parseCopilotModelCatalog", () => {
 		assert.deepEqual([...catalog.keys()].sort(), ["claude-opus-4.8", "gpt-4o", "gpt-5.3-codex", "gpt-5.5", "mystery-model"]);
 	});
 
-	test("resolves input-token windows per model", () => {
+	test("resolves windows per model: full total long tier with the prompt cap as effective budget", () => {
 		const catalog = parseCopilotModelCatalog(capiBody());
-		assert.deepEqual(catalog.get("gpt-5.5"), { contextWindow: 272_000, contextWindowOptions: [272_000, 922_000] });
-		assert.deepEqual(catalog.get("claude-opus-4.8"), { contextWindow: 200_000, contextWindowOptions: [200_000, 936_000] });
+		assert.deepEqual(catalog.get("gpt-5.5"), {
+			contextWindow: 272_000,
+			contextWindowOptions: [272_000, 1_050_000],
+			maxInputTokens: 922_000,
+		});
+		assert.deepEqual(catalog.get("claude-opus-4.8"), {
+			contextWindow: 200_000,
+			contextWindowOptions: [200_000, 1_000_000],
+			maxInputTokens: 936_000,
+		});
 		assert.deepEqual(catalog.get("gpt-5.3-codex"), { contextWindow: 272_000 });
 		assert.deepEqual(catalog.get("gpt-4o"), { contextWindow: 64_000 });
 		assert.deepEqual(catalog.get("mystery-model"), { contextWindow: 256_000 });
@@ -140,7 +183,11 @@ describe("fetchCopilotModelCatalog", () => {
 		assert.equal(capturedHeaders.Authorization, "Bearer tid=abc;proxy-ep=proxy.individual.githubcopilot.com");
 		assert.equal(capturedHeaders["X-GitHub-Api-Version"], COPILOT_CATALOG_HEADERS["X-GitHub-Api-Version"]);
 		assert.equal(capturedHeaders["Copilot-Integration-Id"], "vscode-chat");
-		assert.deepEqual(catalog.get("gpt-5.5"), { contextWindow: 272_000, contextWindowOptions: [272_000, 922_000] });
+		assert.deepEqual(catalog.get("gpt-5.5"), {
+			contextWindow: 272_000,
+			contextWindowOptions: [272_000, 1_050_000],
+			maxInputTokens: 922_000,
+		});
 	});
 
 	test("throws on a non-ok response", async () => {
@@ -183,7 +230,11 @@ describe("disk cache", () => {
 		const catalog = parseCopilotModelCatalog(capiBody());
 		writeCopilotCatalogCache(path, baseUrl, catalog, 1_000);
 		const read = readCopilotCatalogCache(path, { host, now: 1_000 + COPILOT_CATALOG_CACHE_TTL_MS - 1 });
-		assert.deepEqual(read?.get("gpt-5.5"), { contextWindow: 272_000, contextWindowOptions: [272_000, 922_000] });
+		assert.deepEqual(read?.get("gpt-5.5"), {
+			contextWindow: 272_000,
+			contextWindowOptions: [272_000, 1_050_000],
+			maxInputTokens: 922_000,
+		});
 		assert.deepEqual(read?.get("gpt-5.3-codex"), { contextWindow: 272_000 });
 		assert.deepEqual(read?.get("mystery-model"), { contextWindow: 256_000 });
 	});
@@ -227,7 +278,11 @@ describe("seedActiveCopilotModelCatalogFromCache", () => {
 		writeCopilotCatalogCache(cachePath, baseUrl, parseCopilotModelCatalog(capiBody()), 1_000);
 		assert.equal(getActiveCopilotModelCatalog().size, 0);
 		assert.equal(seedActiveCopilotModelCatalogFromCache(token, cachePath), true);
-		assert.deepEqual(getActiveCopilotModelCatalog().get("gpt-5.5"), { contextWindow: 272_000, contextWindowOptions: [272_000, 922_000] });
+		assert.deepEqual(getActiveCopilotModelCatalog().get("gpt-5.5"), {
+			contextWindow: 272_000,
+			contextWindowOptions: [272_000, 1_050_000],
+			maxInputTokens: 922_000,
+		});
 	});
 
 	test("ignores the freshness TTL so a returning user's selection survives an old cache", () => {
