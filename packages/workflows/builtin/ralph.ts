@@ -522,7 +522,7 @@ async function runRalphWorkflow(
   };
 
   const reviewerCModelConfig = {
-    model: "gemini-3.1-pro-preview (1m):high",
+    model: "github-copilot/gemini-3.1-pro-preview (1m):high",
     fallbackModels: [
       "openai-codex/gpt-5.5:xhigh",
       "github-copilot/gpt-5.5:xhigh",
