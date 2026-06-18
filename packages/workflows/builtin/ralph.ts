@@ -22,6 +22,9 @@ const DEFAULT_MAX_LOOPS = 10;
 const DEFAULT_RESEARCH_DIR = "research";
 const IMPLEMENTATION_NOTES_FILENAME = "implementation-notes.md";
 const MAX_RESEARCH_SLUG_LENGTH = 80;
+// Reviewer fan-out launches three independent reviewers; the loop may stop once a
+// majority (2 of 3) approve, rather than requiring unanimous approval.
+const REVIEW_APPROVAL_QUORUM = 2;
 
 type ReviewFinding = {
   readonly title: string;
@@ -865,9 +868,10 @@ async function runRalphWorkflow(
       });
       return { reviewer, artifact_path: artifactPath, decision };
     }));
-    approved =
-      reviewEntries.length > 0 &&
-      reviewEntries.every((review) => reviewDecisionApproved(review.decision));
+    const approvalCount = reviewEntries.filter((review) =>
+      reviewDecisionApproved(review.decision),
+    ).length;
+    approved = approvalCount >= REVIEW_APPROVAL_QUORUM;
     latestReviewReportPath = await writeJsonArtifact(
       join(artifactDir, `review-round-${iteration}.json`),
       { iteration, reviews: reviewEntries },
