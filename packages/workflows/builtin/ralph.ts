@@ -22,9 +22,11 @@ const DEFAULT_MAX_LOOPS = 10;
 const DEFAULT_RESEARCH_DIR = "research";
 const IMPLEMENTATION_NOTES_FILENAME = "implementation-notes.md";
 const MAX_RESEARCH_SLUG_LENGTH = 80;
-// Reviewer fan-out launches three independent reviewers; the loop may stop once a
-// majority (2 of 3) approve, rather than requiring unanimous approval.
-const REVIEW_APPROVAL_QUORUM = 2;
+// Reviewer fan-out launches three independent reviewers; the loop stops only when
+// all three reviewers independently approve (find no issues). Requiring unanimous
+// approval means a P0–P3 finding from any single reviewer keeps the loop iterating
+// instead of being out-voted by a majority, so lower-severity issues stay surfaced.
+const REVIEWER_COUNT = 3;
 
 type ReviewFinding = {
   readonly title: string;
@@ -872,7 +874,13 @@ async function runRalphWorkflow(
     const approvalCount = reviewEntries.filter((review) =>
       reviewDecisionApproved(review.decision),
     ).length;
-    approved = approvalCount >= REVIEW_APPROVAL_QUORUM;
+    // Require unanimous approval: every reviewer must have run and independently
+    // approved. A fan-out error that collapses to a single error entry (fewer than
+    // REVIEWER_COUNT reviews) or any reviewer surfacing a finding keeps the loop
+    // iterating rather than letting a majority paper over outstanding issues.
+    approved =
+      reviewEntries.length === REVIEWER_COUNT &&
+      approvalCount === REVIEWER_COUNT;
     latestReviewReportPath = await writeJsonArtifact(
       join(artifactDir, `review-round-${iteration}.json`),
       { iteration, reviews: reviewEntries },
