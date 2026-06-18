@@ -39,6 +39,18 @@ cd /path/to/project
 atomic
 ```
 
+## Uninstall
+
+Remove the global package with the same package manager you used to install it:
+
+```bash
+npm uninstall -g @bastani/atomic
+pnpm remove -g @bastani/atomic
+bun remove -g @bastani/atomic
+```
+
+This removes the CLI package only. User configuration, auth, sessions, and packages remain under `~/.atomic/agent/` unless you delete that directory yourself.
+
 ## Authenticate
 
 Atomic can use subscription providers through `/login`, or API-key providers through environment variables or the auth file.

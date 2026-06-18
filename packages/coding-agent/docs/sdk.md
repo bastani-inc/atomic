@@ -1256,7 +1256,8 @@ DefaultResourceLoader
 type ResourceLoader
 createEventBus
 
-// Helpers
+// Constants and helpers
+CONFIG_DIR_NAME
 defineTool
 STRUCTURED_OUTPUT_TOOL_NAME
 createStructuredOutputTool
@@ -1266,6 +1267,9 @@ getPackageDir
 getReadmePath
 getDocsPath
 getExamplesPath
+generateDiffString
+generateUnifiedPatch
+type EditDiffResult
 
 // Session management
 SessionManager

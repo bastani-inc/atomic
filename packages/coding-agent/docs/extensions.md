@@ -910,6 +910,27 @@ UI methods for user interaction. See [Custom UI](#custom-ui) for full details.
 
 Current working directory.
 
+Use `CONFIG_DIR_NAME` instead of hardcoding `.atomic` (or legacy `.pi`) when constructing project-local config paths. Rebranded distributions can use a different config directory name.
+
+```typescript
+import { CONFIG_DIR_NAME, type ExtensionAPI } from "@bastani/atomic";
+import { join } from "node:path";
+
+export default function (pi: ExtensionAPI) {
+  pi.on("session_start", (_event, ctx) => {
+    const projectConfigPath = join(ctx.cwd, CONFIG_DIR_NAME, "my-extension.json");
+    // ...
+  });
+}
+```
+
+### ctx.isProjectTrusted()
+
+Returns whether project-local trust is active for the current session context. This includes temporary trust decisions and CLI trust overrides, not just saved decisions in the global trust store.
+
+Use this before reading project-local extension configuration that should only be honored for trusted projects.
+
+
 ### ctx.sessionManager
 
 Read-only access to session state. See [Session Format](/session-format) for the full SessionManager API and entry types.

@@ -199,6 +199,7 @@ describe("InteractiveMode.createExtensionUIContext setTheme", () => {
 		let currentTheme = "dark";
 		const settingsManager = {
 			getTheme: vi.fn(() => currentTheme),
+			getThemeSetting: vi.fn(() => currentTheme),
 			setTheme: vi.fn((theme: string) => {
 				currentTheme = theme;
 			}),
@@ -206,6 +207,13 @@ describe("InteractiveMode.createExtensionUIContext setTheme", () => {
 		const fakeThis: any = {
 			session: { settingsManager },
 			settingsManager,
+			themeController: {
+				setThemeInstance: vi.fn(() => ({ success: true })),
+				setThemeName: vi.fn(() => {
+					fakeThis.ui.requestRender();
+					return { success: true };
+				}),
+			},
 			ui: { requestRender: vi.fn() },
 		};
 
@@ -213,6 +221,7 @@ describe("InteractiveMode.createExtensionUIContext setTheme", () => {
 		const result = uiContext.setTheme("light");
 
 		expect(result.success).toBe(true);
+		expect(fakeThis.themeController.setThemeName).toHaveBeenCalledWith("light");
 		expect(settingsManager.setTheme).toHaveBeenCalledWith("light");
 		expect(currentTheme).toBe("light");
 		expect(fakeThis.ui.requestRender).toHaveBeenCalledTimes(1);
@@ -223,11 +232,16 @@ describe("InteractiveMode.createExtensionUIContext setTheme", () => {
 
 		const settingsManager = {
 			getTheme: vi.fn(() => "dark"),
+			getThemeSetting: vi.fn(() => "dark"),
 			setTheme: vi.fn(),
 		};
 		const fakeThis: any = {
 			session: { settingsManager },
 			settingsManager,
+			themeController: {
+				setThemeInstance: vi.fn(() => ({ success: true })),
+				setThemeName: vi.fn(() => ({ success: false, error: "Theme not found" })),
+			},
 			ui: { requestRender: vi.fn() },
 		};
 
@@ -235,6 +249,7 @@ describe("InteractiveMode.createExtensionUIContext setTheme", () => {
 		const result = uiContext.setTheme("__missing_theme__");
 
 		expect(result.success).toBe(false);
+		expect(fakeThis.themeController.setThemeName).toHaveBeenCalledWith("__missing_theme__");
 		expect(settingsManager.setTheme).not.toHaveBeenCalled();
 		expect(fakeThis.ui.requestRender).not.toHaveBeenCalled();
 	});
@@ -652,6 +667,60 @@ describe("InteractiveMode /fast autocomplete", () => {
 		expect(labels).toContain("exit");
 		expect(labels.filter((label) => label === "exit")).toHaveLength(1);
 		expect(labels).toContain("explain");
+	});
+});
+
+describe("InteractiveMode.createBaseAutocompleteProvider", () => {
+	test("matches model command arguments across provider/model order", async () => {
+		type TestModel = { id: string; provider: string; name: string };
+		type FakeInteractiveMode = {
+			session: {
+				scopedModels: Array<{ model: TestModel }>;
+				modelRegistry: { getAvailable: () => TestModel[] };
+				promptTemplates: [];
+				extensionRunner: { getRegisteredCommands: () => [] };
+				resourceLoader: { getSkills: () => { skills: [] } };
+			};
+			settingsManager: { getEnableSkillCommands: () => boolean };
+			skillCommands: Map<string, string>;
+			sessionManager: { getCwd: () => string };
+			fdPath: null;
+		};
+
+		const createBaseAutocompleteProvider = (
+			InteractiveMode as unknown as {
+				prototype: { createBaseAutocompleteProvider(this: FakeInteractiveMode): AutocompleteProvider };
+			}
+		).prototype.createBaseAutocompleteProvider;
+		const models = [
+			{ id: "gpt-5.2-codex", provider: "github-copilot", name: "GPT-5.2 Codex" },
+			{ id: "gpt-5.5", provider: "openai-codex", name: "GPT-5.5" },
+		];
+		const fakeThis: FakeInteractiveMode = {
+			session: {
+				scopedModels: [],
+				modelRegistry: { getAvailable: () => models },
+				promptTemplates: [],
+				extensionRunner: { getRegisteredCommands: () => [] },
+				resourceLoader: { getSkills: () => ({ skills: [] }) },
+			},
+			settingsManager: { getEnableSkillCommands: () => false },
+			skillCommands: new Map(),
+			sessionManager: { getCwd: () => "/tmp" },
+			fdPath: null,
+		};
+		Object.setPrototypeOf(fakeThis, (InteractiveMode as any).prototype);
+
+		const provider = createBaseAutocompleteProvider.call(fakeThis);
+		const line = "/model codexgpt";
+		const suggestions = await provider.getSuggestions([line], 0, line.length, {
+			signal: new AbortController().signal,
+		});
+
+		expect(suggestions?.items.map((item) => item.value)).toEqual([
+			"openai-codex/gpt-5.5",
+			"github-copilot/gpt-5.2-codex",
+		]);
 	});
 });
 

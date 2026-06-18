@@ -70,9 +70,9 @@
   "dependencies": {
     "@bastani/atomic-natives": "0.8.31-alpha.1",
     "@bufbuild/protobuf": "^2.0.0",
-    "@earendil-works/pi-agent-core": "^0.79.6",
-    "@earendil-works/pi-ai": "^0.79.6",
-    "@earendil-works/pi-tui": "^0.79.6",
+    "@earendil-works/pi-agent-core": "^0.79.7",
+    "@earendil-works/pi-ai": "^0.79.7",
+    "@earendil-works/pi-tui": "^0.79.7",
     "@modelcontextprotocol/ext-apps": "^1.7.2",
     "@modelcontextprotocol/sdk": "^1.25.1",
     "@mozilla/readability": "^0.6.0",

@@ -465,20 +465,7 @@ function getBuiltinThemes(): Record<string, ThemeJson> {
 }
 
 export function getAvailableThemes(): string[] {
-	const themes = new Set<string>(Object.keys(getBuiltinThemes()));
-	const customThemesDir = getCustomThemesDir();
-	if (fs.existsSync(customThemesDir)) {
-		const files = fs.readdirSync(customThemesDir);
-		for (const file of files) {
-			if (file.endsWith(".json")) {
-				themes.add(file.slice(0, -5));
-			}
-		}
-	}
-	for (const name of registeredThemes.keys()) {
-		themes.add(name);
-	}
-	return Array.from(themes).sort();
+	return getAvailableThemesWithPaths().map(({ name }) => name);
 }
 
 export interface ThemeInfo {
@@ -488,34 +475,64 @@ export interface ThemeInfo {
 
 export function getAvailableThemesWithPaths(): ThemeInfo[] {
 	const themesDir = getThemesDir();
-	const customThemesDir = getCustomThemesDir();
 	const result: ThemeInfo[] = [];
+	const seen = new Set<string>();
+	const addTheme = (info: ThemeInfo) => {
+		if (seen.has(info.name)) return;
+		seen.add(info.name);
+		result.push(info);
+	};
 
 	// Built-in themes
 	for (const name of Object.keys(getBuiltinThemes())) {
-		result.push({ name, path: path.join(themesDir, `${name}.json`) });
+		addTheme({ name, path: path.join(themesDir, `${name}.json`) });
 	}
 
 	// Custom themes
-	if (fs.existsSync(customThemesDir)) {
-		for (const file of fs.readdirSync(customThemesDir)) {
-			if (file.endsWith(".json")) {
-				const name = file.slice(0, -5);
-				if (!result.some((t) => t.name === name)) {
-					result.push({ name, path: path.join(customThemesDir, file) });
-				}
-			}
-		}
+	for (const info of getCustomThemeInfos()) {
+		addTheme(info);
 	}
 
 	for (const [name, theme] of registeredThemes.entries()) {
-		if (!result.some((t) => t.name === name)) {
-			result.push({ name, path: theme.sourcePath });
-		}
+		addTheme({ name, path: theme.sourcePath });
 	}
 
 	return result.sort((a, b) => a.name.localeCompare(b.name));
 }
+
+function getCustomThemeInfos(): ThemeInfo[] {
+	const customThemesDir = getCustomThemesDir();
+	const result: ThemeInfo[] = [];
+	if (!fs.existsSync(customThemesDir)) {
+		return result;
+	}
+
+	for (const file of fs.readdirSync(customThemesDir)) {
+		if (!file.endsWith(".json")) {
+			continue;
+		}
+		const themePath = path.join(customThemesDir, file);
+		try {
+			const customTheme = loadThemeFromPath(themePath);
+			if (customTheme.name) {
+				result.push({ name: customTheme.name, path: themePath });
+			}
+		} catch {
+			// Invalid themes are ignored here; the resource loader reports them
+			// during normal startup/reload.
+		}
+	}
+	return result;
+}
+
+function assertThemeNameIsValid(name: string): void {
+	if (name.includes("/")) {
+		throw new Error(
+			`Invalid theme name "${name}": theme names cannot contain "/" because it is reserved for automatic light/dark theme settings.`,
+		);
+	}
+}
+
 
 function parseThemeJson(label: string, json: unknown): ThemeJson {
 	if (!validateThemeJson.Check(json)) {
@@ -553,7 +570,9 @@ function parseThemeJson(label: string, json: unknown): ThemeJson {
 		throw new Error(errorMessage);
 	}
 
-	return json as ThemeJson;
+	const themeJson = json as ThemeJson;
+	assertThemeNameIsValid(themeJson.name);
+	return themeJson;
 }
 
 function parseThemeJsonContent(label: string, content: string): ThemeJson {
@@ -638,6 +657,36 @@ export function getThemeByName(name: string): Theme | undefined {
 }
 
 export type TerminalTheme = "dark" | "light";
+
+export function parseAutoThemeSetting(
+	themeSetting: string | undefined,
+): { lightTheme: string; darkTheme: string } | undefined {
+	if (!themeSetting) return undefined;
+	const slashIndex = themeSetting.indexOf("/");
+	if (slashIndex === -1 || themeSetting.indexOf("/", slashIndex + 1) !== -1) {
+		return undefined;
+	}
+
+	const lightTheme = themeSetting.slice(0, slashIndex).trim();
+	const darkTheme = themeSetting.slice(slashIndex + 1).trim();
+	if (!lightTheme || !darkTheme) {
+		return undefined;
+	}
+	return { lightTheme, darkTheme };
+}
+
+export function resolveThemeSetting(
+	themeSetting: string | undefined,
+	terminalTheme: TerminalTheme,
+): string | undefined {
+	const autoTheme = parseAutoThemeSetting(themeSetting);
+	if (autoTheme) {
+		return terminalTheme === "light" ? autoTheme.lightTheme : autoTheme.darkTheme;
+	}
+	if (themeSetting?.includes("/")) return undefined;
+	if (typeof themeSetting === "string") return themeSetting;
+	return undefined;
+}
 
 export interface TerminalThemeDetection {
 	theme: TerminalTheme;
@@ -766,6 +815,7 @@ export function setRegisteredThemes(themes: Theme[]): void {
 	registeredThemes.clear();
 	for (const theme of themes) {
 		if (theme.name) {
+			assertThemeNameIsValid(theme.name);
 			registeredThemes.set(theme.name, theme);
 		}
 	}

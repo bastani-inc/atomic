@@ -34,6 +34,7 @@ interface PackageCommandOptions {
 	command: PackageCommand;
 	source?: string;
 	updateTarget?: UpdateTarget;
+	showExtensionsSkippedNote: boolean;
 	local: boolean;
 	force: boolean;
 	projectTrustOverride?: boolean;
@@ -61,7 +62,7 @@ function getPackageCommandUsage(command: PackageCommand): string {
 		case "remove":
 			return `${APP_NAME} remove <source> [-l] [--approve|--no-approve]`;
 		case "update":
-			return `${APP_NAME} update [source|self|${APP_NAME}] [--self] [--extensions] [--extension <source>] [--approve|--no-approve] [--force]`;
+			return `${APP_NAME} update [source|self|${APP_NAME}] [--self|--extensions|--all] [--extension <source>] [--approve|--no-approve] [--force]`;
 		case "list":
 			return `${APP_NAME} list [--approve|--no-approve]`;
 	}
@@ -115,15 +116,17 @@ Examples:
 Update ${APP_NAME} and installed packages.
 
 Options:
-  --self                  Update ${APP_NAME} only
+  --self                  Update ${APP_NAME} only (default when no target is given)
   --extensions            Update installed packages only
+  --all                   Update ${APP_NAME} and installed packages
   --extension <source>    Update one package only
   -a, --approve           Trust project-local files for this command
   -na, --no-approve       Ignore project-local files for this command
   --force                 Reinstall ${APP_NAME} even if the current version is latest
 
 Short forms:
-  ${APP_NAME} update                Update ${APP_NAME} and all extensions
+  ${APP_NAME} update                Update ${APP_NAME} only
+  ${APP_NAME} update --all          Update ${APP_NAME} and all extensions
   ${APP_NAME} update <source>       Update one package
   ${APP_NAME} update ${APP_NAME}    Update ${APP_NAME} only (self works as an alias)
 `);
@@ -166,6 +169,7 @@ function parsePackageCommand(args: string[]): PackageCommandOptions | undefined 
 	let source: string | undefined;
 	let selfFlag = false;
 	let extensionsFlag = false;
+	let allFlag = false;
 	let extensionFlagSource: string | undefined;
 
 	for (let index = 0; index < rest.length; index++) {
@@ -196,6 +200,15 @@ function parsePackageCommand(args: string[]): PackageCommandOptions | undefined 
 		if (arg === "--extensions") {
 			if (command === "update") {
 				extensionsFlag = true;
+			} else {
+				invalidOption = invalidOption ?? arg;
+			}
+			continue;
+		}
+
+		if (arg === "--all") {
+			if (command === "update") {
+				allFlag = true;
 			} else {
 				invalidOption = invalidOption ?? arg;
 			}
@@ -253,10 +266,20 @@ function parsePackageCommand(args: string[]): PackageCommandOptions | undefined 
 	}
 
 	let updateTarget: UpdateTarget | undefined;
+	let showExtensionsSkippedNote = false;
 	if (command === "update") {
+		if (allFlag && (selfFlag || extensionsFlag || extensionFlagSource)) {
+			conflictingOptions =
+				conflictingOptions ?? "--all cannot be combined with --self, --extensions, or --extension";
+		}
+		if (allFlag && source) {
+			conflictingOptions = conflictingOptions ?? "--all cannot be combined with a positional source";
+		}
+
 		if (extensionFlagSource) {
-			if (selfFlag || extensionsFlag) {
-				conflictingOptions = conflictingOptions ?? "--extension cannot be combined with --self or --extensions";
+			if (selfFlag || extensionsFlag || allFlag) {
+				conflictingOptions =
+					conflictingOptions ?? "--extension cannot be combined with --self, --extensions, or --all";
 			}
 			if (source) {
 				conflictingOptions = conflictingOptions ?? "--extension cannot be combined with a positional source";
@@ -267,12 +290,15 @@ function parsePackageCommand(args: string[]): PackageCommandOptions | undefined 
 			if (sourceIsSelf) {
 				updateTarget = extensionsFlag ? { type: "all" } : { type: "self" };
 			} else {
-				if (extensionsFlag || selfFlag) {
+				if (extensionsFlag || selfFlag || allFlag) {
 					conflictingOptions =
-						conflictingOptions ?? "positional update targets cannot be combined with --self or --extensions";
+						conflictingOptions ??
+						"positional update targets cannot be combined with --self, --extensions, or --all";
 				}
 				updateTarget = { type: "extensions", source };
 			}
+		} else if (allFlag) {
+			updateTarget = { type: "all" };
 		} else if (selfFlag && extensionsFlag) {
 			updateTarget = { type: "all" };
 		} else if (selfFlag) {
@@ -280,7 +306,8 @@ function parsePackageCommand(args: string[]): PackageCommandOptions | undefined 
 		} else if (extensionsFlag) {
 			updateTarget = { type: "extensions" };
 		} else {
-			updateTarget = { type: "all" };
+			updateTarget = { type: "self" };
+			showExtensionsSkippedNote = true;
 		}
 	}
 
@@ -288,6 +315,7 @@ function parsePackageCommand(args: string[]): PackageCommandOptions | undefined 
 		command,
 		source,
 		updateTarget,
+		showExtensionsSkippedNote,
 		local,
 		force,
 		projectTrustOverride,
@@ -612,7 +640,12 @@ export async function handlePackageCommand(
 			}
 
 			case "update": {
-				const target = options.updateTarget ?? { type: "all" };
+				const target = options.updateTarget ?? { type: "self" };
+				if (options.showExtensionsSkippedNote) {
+					console.log(
+						chalk.dim(`Extensions are skipped. Run ${APP_NAME} update --extensions to update extensions.`),
+					);
+				}
 				if (updateTargetIncludesExtensions(target)) {
 					const updateSource = target.type === "extensions" ? target.source : undefined;
 					await packageManager.update(updateSource);

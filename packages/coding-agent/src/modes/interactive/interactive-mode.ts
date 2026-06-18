@@ -198,22 +198,20 @@ import { TrustSelectorComponent } from "./components/trust-selector.ts";
 import { hasProjectConfigDir, ProjectTrustStore } from "../../core/trust-manager.ts";
 import { UserMessageComponent } from "./components/user-message.ts";
 import { UserMessageSelectorComponent } from "./components/user-message-selector.ts";
+import { getModelSearchText } from "./model-search.ts";
 import {
-  detectTerminalBackgroundTheme,
   getAvailableThemes,
   getAvailableThemesWithPaths,
   getEditorTheme,
   getMarkdownTheme,
   getThemeByName,
-  initTheme,
   onThemeChange,
   setRegisteredThemes,
-  setTheme,
-  setThemeInstance,
   stopThemeWatcher,
   Theme,
   theme,
 } from "./theme/theme.ts";
+import { InteractiveThemeController } from "./theme/theme-controller.ts";
 
 /** Interface for components that can be expanded/collapsed */
 interface Expandable {
@@ -461,6 +459,7 @@ export class InteractiveMode {
   private deferredInlineCustomUiFocusDepth = 0;
   private pendingInlineCustomUiFocus: Component | undefined = undefined;
   private hostCustomUiStateListeners = new Set<HostCustomUiStateListener>();
+  private themeController: InteractiveThemeController;
 
   // Extension widgets (components rendered above/below the editor)
   private extensionWidgetsAbove = new Map<
@@ -558,26 +557,12 @@ export class InteractiveMode {
 
     // Register themes from resource loader and initialize
     setRegisteredThemes(this.session.resourceLoader.getThemes().themes);
-    initTheme(this.settingsManager.getTheme(), true);
-  }
-
-  private async detectThemeIfUnset(): Promise<void> {
-    if (this.settingsManager.getTheme()) {
-      return;
-    }
-
-    const detection = await detectTerminalBackgroundTheme({ ui: this.ui, timeoutMs: 100 });
-    const result = setTheme(detection.theme, true);
-    if (!result.success) {
-      return;
-    }
-
-    if (detection.confidence === "high") {
-      this.settingsManager.setTheme(detection.theme);
-      await this.settingsManager.flush();
-    }
-    this.updateEditorBorderColor();
-    this.ui.requestRender();
+    this.themeController = new InteractiveThemeController(
+      this.ui,
+      this.settingsManager,
+      (message) => this.showError(message),
+      () => this.updateEditorBorderColor(),
+    );
   }
 
   private getAutocompleteSourceTag(
@@ -684,15 +669,12 @@ export class InteractiveMode {
         const items = models.map((m) => ({
           id: m.id,
           provider: m.provider,
+          name: m.name,
           label: `${m.provider}/${m.id}`,
         }));
 
-        // Fuzzy filter by model ID + provider (allows "opus anthropic" to match)
-        const filtered = fuzzyFilter(
-          items,
-          prefix,
-          (item) => `${item.id} ${item.provider}`,
-        );
+        // Fuzzy filter by model ID + provider in either order.
+        const filtered = fuzzyFilter(items, prefix, getModelSearchText);
 
         if (filtered.length === 0) return null;
 
@@ -821,7 +803,7 @@ export class InteractiveMode {
     // Load changelog (only show new entries, skip for resumed sessions)
     this.changelogMarkdown = this.getChangelogForDisplay();
 
-    // Add header container as first child. Populate it after detectThemeIfUnset.
+    // Add header container as first child. Populate it after theme initialization.
     this.ui.addChild(this.headerContainer);
 
     this.ui.addChild(this.chatContainer);
@@ -853,7 +835,7 @@ export class InteractiveMode {
     recordTimeSinceReset("time-to-first-frame");
     this.isInitialized = true;
 
-    await this.detectThemeIfUnset();
+    await this.themeController.applyFromSettings();
 
     // Add the quiet startup identity (unless silenced). Resource details are
     // disclosed separately in the chat canvas via the tools/resources toggle.
@@ -2708,16 +2690,11 @@ export class InteractiveMode {
       getTheme: (name) => getThemeByName(name),
       setTheme: (themeOrName) => {
         if (themeOrName instanceof Theme) {
-          setThemeInstance(themeOrName);
-          this.ui.requestRender();
-          return { success: true };
+          return this.themeController.setThemeInstance(themeOrName);
         }
-        const result = setTheme(themeOrName, true);
-        if (result.success) {
-          if (this.settingsManager.getTheme() !== themeOrName) {
-            this.settingsManager.setTheme(themeOrName);
-          }
-          this.ui.requestRender();
+        const result = this.themeController.setThemeName(themeOrName);
+        if (result.success && this.settingsManager.getThemeSetting() !== themeOrName) {
+          this.settingsManager.setTheme(themeOrName);
         }
         return result;
       },
@@ -4266,6 +4243,7 @@ export class InteractiveMode {
 
     if (options?.fromSignal) {
       await this.runtimeHost.dispose();
+      this.themeController.disableAutoSync();
       // Drain any in-flight Kitty key release events before stopping.
       // This prevents escape sequences from leaking to the parent shell over slow SSH.
       await this.ui.terminal.drainInput(1000);
@@ -4275,6 +4253,7 @@ export class InteractiveMode {
 
     // Drain any in-flight Kitty key release events before stopping.
     // This prevents escape sequences from leaking to the parent shell over slow SSH.
+    this.themeController.disableAutoSync();
     await this.ui.terminal.drainInput(1000);
 
     this.stop();
@@ -4621,7 +4600,7 @@ export class InteractiveMode {
   }
 
   showPackageUpdateNotification(packages: string[]): void {
-    const action = theme.fg("accent", `${APP_NAME} update`);
+    const action = theme.fg("accent", `${APP_NAME} update --extensions`);
     const updateInstruction =
       theme.fg("muted", "Package updates are available. Run ") + action;
     const packageLines = packages.map((pkg) => `- ${pkg}`).join("\n");
@@ -4919,7 +4898,8 @@ export class InteractiveMode {
           httpIdleTimeoutMs: this.settingsManager.getHttpIdleTimeoutMs(),
           thinkingLevel: this.session.thinkingLevel,
           availableThinkingLevels: this.session.getAvailableThinkingLevels(),
-          currentTheme: this.settingsManager.getTheme() || "dark",
+          currentTheme: this.settingsManager.getThemeSetting() || "dark",
+          terminalTheme: this.themeController.getTerminalTheme(),
           availableThemes: getAvailableThemes(),
           hideThinkingBlock: this.hideThinkingBlock,
           collapseChangelog: this.settingsManager.getCollapseChangelog(),
@@ -4987,23 +4967,11 @@ export class InteractiveMode {
             this.footer.invalidate();
             this.updateEditorBorderColor();
           },
-          onThemeChange: (themeName) => {
-            const result = setTheme(themeName, true);
-            this.settingsManager.setTheme(themeName);
-            this.ui.invalidate();
-            if (!result.success) {
-              this.showError(
-                `Failed to load theme "${themeName}": ${result.error}\nFell back to dark theme.`,
-              );
-            }
+          onThemeChange: (themeSetting) => {
+            this.settingsManager.setTheme(themeSetting);
+            void this.themeController.applyFromSettings();
           },
-          onThemePreview: (themeName) => {
-            const result = setTheme(themeName, true);
-            if (result.success) {
-              this.ui.invalidate();
-              this.ui.requestRender();
-            }
-          },
+          onThemePreview: (themeName) => this.themeController.preview(themeName),
           onHideThinkingBlockChange: (hidden) => {
             this.hideThinkingBlock = hidden;
             this.settingsManager.setHideThinkingBlock(hidden);
@@ -6255,15 +6223,7 @@ export class InteractiveMode {
       }
       setRegisteredThemes(this.session.resourceLoader.getThemes().themes);
       this.hideThinkingBlock = this.settingsManager.getHideThinkingBlock();
-      const themeName = this.settingsManager.getTheme();
-      const themeResult = themeName
-        ? setTheme(themeName, true)
-        : { success: true };
-      if (!themeResult.success) {
-        this.showError(
-          `Failed to load theme "${themeName}": ${themeResult.error}\nFell back to dark theme.`,
-        );
-      }
+      await this.themeController.applyFromSettings();
       const editorPaddingX = this.settingsManager.getEditorPaddingX();
       const autocompleteMaxVisible =
         this.settingsManager.getAutocompleteMaxVisible();
@@ -6994,6 +6954,7 @@ export class InteractiveMode {
       this.loadingAnimation.stop();
       this.loadingAnimation = undefined;
     }
+    this.themeController.disableAutoSync();
     this.clearExtensionTerminalInputListeners();
     this.footer.dispose();
     this.footerDataProvider.dispose();

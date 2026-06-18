@@ -1,7 +1,7 @@
 {
   "name": "atomic-extension-sandbox",
   "private": true,
-  "version": "1.9.4",
+  "version": "1.9.7",
   "type": "module",
   "scripts": {
     "clean": "echo 'nothing to clean'",
@@ -9,7 +9,7 @@
     "check": "echo 'nothing to check'"
   },
   "dependencies": {
-    "@anthropic-ai/sandbox-runtime": "^0.0.26"
+    "@anthropic-ai/sandbox-runtime": "0.0.26"
   },
   "atomic": {
     "extensions": [

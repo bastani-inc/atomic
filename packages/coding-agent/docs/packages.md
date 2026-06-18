@@ -35,15 +35,18 @@ atomic install ./relative/path/to/package
 
 atomic remove npm:@foo/bar
 atomic list                     # show installed packages from settings
-atomic update                   # update Atomic and all non-pinned packages
-atomic update --extensions      # update all non-pinned packages only
+atomic update                   # update Atomic only
+atomic update --all             # update Atomic, update packages, and reconcile pinned git refs
+atomic update --extensions      # update packages and reconcile pinned git refs only
 atomic update --self            # update Atomic only
 atomic update --self --force    # reinstall Atomic even if current
 atomic update npm:@foo/bar      # update one package
 atomic update --extension npm:@foo/bar
 ```
 
-By default, `install` and `remove` write to global settings (`~/.atomic/agent/settings.json`). Use `-l` to write to project settings (`.atomic/settings.json`) instead. Project settings can be shared with your team, and Atomic installs any missing packages automatically on startup after the project is trusted.
+These commands manage Atomic packages and `atomic update` can update the Atomic CLI installation. To uninstall Atomic itself, see [Quickstart](/quickstart#uninstall).
+
+By default, `install` and `remove` write to user settings (`~/.atomic/agent/settings.json`). Use `-l` to write to project settings (`.atomic/settings.json`; legacy `.pi/settings.json` is also read) instead. Project settings can be shared with your team, and Atomic installs any missing packages automatically on startup after the project is trusted.
 
 To try a package without installing it, use `--extension` or `-e`. This installs to a temporary directory for the current run only:
 
@@ -67,9 +70,9 @@ npm:@scope/pkg@1.2.3
 npm:pkg
 ```
 
-- Versioned specs are pinned and skipped by package updates (`atomic update`, `atomic update --extensions`).
-- Global installs use the configured npm-compatible package-manager command (npm by default).
-- Project installs go under `.atomic/npm/`.
+- Versioned specs are pinned and skipped by package updates (`atomic update --extensions`, `atomic update --all`).
+- User installs use the configured npm-compatible package-manager command (npm by default) and resolve from the managed Atomic npm area.
+- Project installs go under `.atomic/npm/` (legacy `.pi/npm/` remains a compatibility fallback).
 - Set `npmCommand` in `settings.json` to pin npm package lookup and install operations to a specific wrapper command such as `mise` or `asdf`.
 
 Example:
@@ -94,9 +97,10 @@ ssh://git@github.com/user/repo@v1
 - HTTPS and SSH URLs are both supported.
 - SSH URLs use your configured SSH keys automatically (respects `~/.ssh/config`).
 - For non-interactive runs (for example CI), you can set `GIT_TERMINAL_PROMPT=0` to disable credential prompts and set `GIT_SSH_COMMAND` (for example `ssh -o BatchMode=yes -o ConnectTimeout=5`) to fail fast.
-- Refs pin the package and skip package updates (`atomic update`, `atomic update --extensions`).
-- Cloned to `~/.atomic/agent/git/<host>/<path>` (global) or `.atomic/git/<host>/<path>` (project).
-- Runs the configured npm-compatible install command after clone or pull if `package.json` exists.
+- Refs are pinned tags or commits. `atomic update --extensions` and `atomic update --all` do not move them to newer refs, but they do reconcile an existing clone to the configured ref.
+- Use `atomic install git:host/user/repo@new-ref` to update settings and move an existing package to a new pinned ref.
+- Cloned to `~/.atomic/agent/git/<host>/<path>` (global) or `.atomic/git/<host>/<path>` (project; legacy `.pi/git/` remains a compatibility fallback).
+- When reconciliation changes the checkout, Atomic resets and cleans the clone, then runs the configured npm-compatible install command if `package.json` exists.
 
 **SSH examples:**
 ```bash

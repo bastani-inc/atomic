@@ -4,7 +4,7 @@
 
 ### Changed
 
-- Aligned the subagents extension peer dependencies with upstream pi `^0.79.6` runtime packages (`@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, and `@earendil-works/pi-tui`) so child sessions can use the host's latest provider, model, thinking-payload, and shared TUI compatibility fixes; no subagents extension code changes were made for this metadata sync ([#1413](https://github.com/bastani-inc/atomic/issues/1413)).
+- Aligned the subagents extension peer dependencies with upstream pi `^0.79.7` runtime packages (`@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, and `@earendil-works/pi-tui`) so child sessions can use the host's latest provider catalog, RPC id handling, model-search, theme/color-scheme, Warp image capability, and shared TUI compatibility fixes; no subagents extension code changes were made for this metadata sync ([#1413](https://github.com/bastani-inc/atomic/issues/1413)).
 
 ## [0.8.30] - 2026-06-17
 

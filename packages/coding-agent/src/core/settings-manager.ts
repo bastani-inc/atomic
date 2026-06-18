@@ -825,8 +825,15 @@ export class SettingsManager {
 		this.save();
 	}
 
+	getThemeSetting(): string | undefined {
+		const value = this.settings.theme;
+		if (typeof value === "string") return value;
+		return undefined;
+	}
+
 	getTheme(): string | undefined {
-		return this.settings.theme;
+		const theme = this.getThemeSetting();
+		return theme?.includes("/") ? undefined : theme;
 	}
 
 	setTheme(theme: string): void {

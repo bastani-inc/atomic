@@ -21,7 +21,9 @@ import type { Message } from "@earendil-works/pi-ai";
 import { StringEnum } from "@earendil-works/pi-ai";
 import {
   APP_NAME,
+  CONFIG_DIR_NAME,
   type ExtensionAPI,
+  getAgentDir,
   getMarkdownTheme,
   withFileMutationQueue,
 } from "@bastani/atomic";
@@ -518,8 +520,8 @@ export default function (pi: ExtensionAPI) {
     description: [
       "Delegate tasks to specialized subagents with isolated context.",
       "Modes: single (agent + task), parallel (tasks array), chain (sequential with {previous} placeholder).",
-      'Default agent scope is "user" (from ~/.atomic/agent/agents).',
-      'To enable project-local agents in .atomic/agents (legacy .pi/agents also works), set agentScope: "both" (or "project").',
+      `Default agent scope is "user" (from ${path.join(getAgentDir(), "agents")}).`,
+      `To enable project-local agents in ${CONFIG_DIR_NAME}/agents (legacy .pi/agents also works), set agentScope: "both" (or "project").`,
     ].join(" "),
     parameters: SubagentParams,
 

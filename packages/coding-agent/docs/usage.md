@@ -131,16 +131,19 @@ atomic [options] [@files...] [messages...]
 ### Package Commands
 
 ```bash
-atomic install <source> [-l]     # Install package, -l for project-local
-atomic remove <source> [-l]      # Remove package
-atomic uninstall <source> [-l]   # Alias for remove
-atomic update [source|self|atomic] # Update Atomic and packages; skips pinned packages
-atomic update --extensions       # Update packages only
-atomic update --self             # Update Atomic only
-atomic update --extension <src>  # Update one package
-atomic list                      # List installed packages
-atomic config                    # Enable/disable package resources
+atomic install <source> [-l]       # Install package, -l for project-local
+atomic remove <source> [-l]        # Remove package
+atomic uninstall <source> [-l]     # Alias for remove
+atomic update [source|self|atomic] # Update Atomic only, or one package source
+atomic update --all                # Update Atomic and packages; reconcile pinned git refs
+atomic update --extensions         # Update packages only; reconcile pinned git refs
+atomic update --self               # Update Atomic only
+atomic update --extension <src>    # Update one package
+atomic list                        # List installed packages
+atomic config                      # Enable/disable package resources
 ```
+
+These commands manage Atomic packages and `atomic update` can update the Atomic CLI installation. To uninstall Atomic itself, see [Quickstart](/quickstart#uninstall). `atomic config` and project package commands accept `--approve`/`--no-approve` to trust or ignore project-local settings for one command. `atomic update` never prompts for project trust.
 
 See [Atomic Packages](/packages) for package sources and security notes.
 
