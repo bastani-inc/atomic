@@ -11,6 +11,7 @@
 ### Changed
 
 - Changed built-in GitHub Copilot context windows to be measured in **input (prompt) tokens** (matching every other provider) and derived from GitHub's live CAPI model catalog (`GET /models`, cached 30 minutes, gated on the Copilot provider) instead of a hardcoded long-context model list, so newly added/removed Copilot models and retiered windows are reflected automatically without shipping a stale snapshot. Each model's window now resolves to `max_prompt_tokens || max_context_window_tokens || 128_000`, and tiered models expose their per-tier input budgets (`token_prices.<tier>.context_max`) as the selectable default/long windows (e.g. `gpt-5.5` 272k/922k, Claude/Gemini 200k/936k) — replacing the previous input+output totals — while preserving custom provider entries and explicit `models.json` overrides and relying on GitHub's API-version header and server-side tier selection rather than payload fields or model-id variants ([#1409](https://github.com/bastani-inc/atomic/issues/1409)).
+- Bumped the bundled upstream pi runtime libraries `@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, and `@earendil-works/pi-tui` from `^0.79.4` to `^0.79.6` so Atomic's installed pi runtime packages pick up upstream v0.79.5/v0.79.6 provider, model, thinking-payload, and shared TUI compatibility fixes; no Atomic coding-agent source changes were made for upstream coding-agent-only marked export or fetch-override behavior in this dependency sync ([#1413](https://github.com/bastani-inc/atomic/issues/1413)).
 
 ### Fixed
 
