@@ -250,10 +250,11 @@ describe("coding-agent builtin resources", () => {
 
     const skillNames = new Set(loader.getSkills().skills.map((skill) => skill.name));
     for (const skillName of [
-      "browser",
       "create-spec",
+      "effective-liteparse",
       "impeccable",
       "intercom",
+      "playwright-cli",
       "prompt-engineer",
       "research-codebase",
       "skill-creator",

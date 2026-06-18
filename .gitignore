@@ -55,3 +55,7 @@ collect.sh
 
 # Local screenshots / scratch images dropped into the worktree
 Screenshot*.png
+
+# playwright-cli local session artifacts (config + on-disk snapshots)
+.playwright/
+.playwright-cli/

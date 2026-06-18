@@ -176,6 +176,7 @@ In addition to the tools above, you may have access to other custom tools depend
 
 Guidelines:
 ${guidelines}
+- Prefer using your effective-liteparse skill in case you need to work with PDFs
 
 Atomic documentation (read only when the user asks about customizing Atomic itself, its SDK, creating workflows, packages, extensions, themes, skills, or TUI):
 - Main documentation: ${readmePath}
