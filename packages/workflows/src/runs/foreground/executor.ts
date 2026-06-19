@@ -4421,6 +4421,18 @@ export async function run<TInputs extends WorkflowInputValues>(
           if (changed) {
             ensureReleaseBarrier(stageId);
             await cascadePauseFrom(stageId);
+            // Mark the run paused once no stage is still actively running,
+            // mirroring pauseRun() (runs/background/status.ts). This keeps a
+            // manual TUI/Escape pause updating run-level status — and therefore
+            // the main-chat status widget and `/workflow status` — identically
+            // to the `workflow` tool and `/workflow pause`. recordRunPaused is
+            // idempotent, so double-recording from the tool/slash path or from
+            // cascade re-entry is safe.
+            const run = activeStore.runs().find((candidate) => candidate.id === runId);
+            const stillActive = run?.stages.some(
+              (s) => s.status === "running" && s.id !== stageId,
+            ) ?? false;
+            if (!stillActive) activeStore.recordRunPaused(runId);
           }
           if (statusBeforePause === "pending" || statusBeforePause === "running" || innerCtx.isStreaming) {
             await innerCtx.__requestPause();
@@ -4433,6 +4445,11 @@ export async function run<TInputs extends WorkflowInputValues>(
           if (changed) {
             releaseStageBarrier(stageId);
             await cascadeResumeFrom(stageId);
+            // Restore run-level status so a manual resume updates the main chat
+            // like the `workflow` tool / `/workflow resume`. recordRunResumed is
+            // a no-op when the run is not paused, so this is safe under cascade
+            // and the tool/slash path.
+            activeStore.recordRunResumed(runId);
           }
           try {
             await innerCtx.__resume(message);

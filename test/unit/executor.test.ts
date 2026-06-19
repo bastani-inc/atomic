@@ -8287,4 +8287,174 @@ describe("executor — stage-control registry integration", () => {
             "completed",
         );
     });
+
+    test("manual handle.pause()/resume() updates run-level status (single stage), like pauseRun", async () => {
+        const registry = createStageControlRegistry();
+        const store = createStore();
+        const sawStage = deferred<{ runId: string; stageId: string }>();
+        let sawStageResolved = false;
+        let streaming = false;
+        let promptResolve: (() => void) | undefined;
+        let promptReject: ((err: Error) => void) | undefined;
+        const session: StageSessionRuntime = {
+            ...mockSession(),
+            async prompt() {
+                streaming = true;
+                return new Promise<void>((resolve, reject) => {
+                    promptResolve = () => {
+                        streaming = false;
+                        resolve();
+                    };
+                    promptReject = (err) => {
+                        streaming = false;
+                        reject(err);
+                    };
+                });
+            },
+            get isStreaming() {
+                return streaming;
+            },
+            async abort() {
+                promptReject?.(new Error("AbortError"));
+            },
+        };
+        const def = defineWorkflow("manual-pause-run-status-wf")
+            .run(async (ctx) => {
+                await ctx.stage("live").prompt("go");
+                return {};
+            })
+            .compile();
+
+        const runPromise = run(
+            def,
+            {},
+            {
+                adapters: { agentSession: { create: async () => session } },
+                store,
+                stageControlRegistry: registry,
+                onStageStart: (runId, stage) => {
+                    if (
+                        stage.name === "live" &&
+                        stage.startedAt === undefined &&
+                        !sawStageResolved
+                    ) {
+                        sawStageResolved = true;
+                        sawStage.resolve({ runId, stageId: stage.id });
+                    }
+                },
+            },
+        );
+
+        const { runId, stageId } = await sawStage.promise;
+        const handle = registry.get(runId, stageId);
+        assert.ok(handle, "stage handle should be registered");
+        await waitForMicrotasks();
+        assert.equal(store.runs()[0]?.status, "running");
+
+        await handle!.pause();
+        await waitForMicrotasks();
+        // The regression: a manual pause must mark BOTH the stage and the run
+        // paused, so the main-chat status surfaces match the workflow tool path.
+        assert.equal(store.runs()[0]?.stages[0]?.status, "paused");
+        assert.equal(store.runs()[0]?.status, "paused");
+
+        await handle!.resume("keep going");
+        await waitForMicrotasks();
+        assert.equal(store.runs()[0]?.stages[0]?.status, "running");
+        assert.equal(store.runs()[0]?.status, "running");
+
+        promptResolve?.();
+        const result = await runPromise;
+        assert.equal(result.status, "completed");
+    });
+
+    test("manual pause of one parallel stage keeps the run running until every active stage is paused", async () => {
+        const registry = createStageControlRegistry();
+        const store = createStore();
+        const bothStarted = deferred();
+        let runId: string | undefined;
+        const stageIds: Record<string, string> = {};
+        const makeSession = (): StageSessionRuntime => {
+            let streaming = false;
+            let reject: ((err: Error) => void) | undefined;
+            return {
+                ...mockSession(),
+                async prompt() {
+                    streaming = true;
+                    return new Promise<void>((resolve, rej) => {
+                        // Resolve on resume-without-message (pause loop returns) is
+                        // driven by the executor; abort rejects the in-flight turn.
+                        void resolve;
+                        reject = (err) => {
+                            streaming = false;
+                            rej(err);
+                        };
+                    });
+                },
+                get isStreaming() {
+                    return streaming;
+                },
+                async abort() {
+                    reject?.(new Error("AbortError"));
+                },
+            };
+        };
+        const def = defineWorkflow("manual-pause-parallel-run-status-wf")
+            .run(async (ctx) => {
+                await ctx.parallel(
+                    [
+                        { name: "a", prompt: "a" },
+                        { name: "b", prompt: "b" },
+                    ],
+                    { concurrency: 2 },
+                );
+                return {};
+            })
+            .compile();
+
+        const runPromise = run(
+            def,
+            {},
+            {
+                adapters: { agentSession: { create: async () => makeSession() } },
+                store,
+                stageControlRegistry: registry,
+                onStageStart: (rid, stage) => {
+                    if ((stage.name === "a" || stage.name === "b") && stage.startedAt === undefined) {
+                        runId = rid;
+                        stageIds[stage.name] = stage.id;
+                        if (stageIds.a && stageIds.b) bothStarted.resolve();
+                    }
+                },
+            },
+        );
+
+        await bothStarted.promise;
+        await waitForMicrotasks();
+        const handleA = registry.get(runId!, stageIds.a!);
+        const handleB = registry.get(runId!, stageIds.b!);
+        assert.ok(handleA && handleB, "both parallel stage handles should be registered");
+        assert.equal(store.runs()[0]?.status, "running");
+
+        await handleA!.pause();
+        await waitForMicrotasks();
+        // One paused, one still running → run must stay running (mirrors pauseRun's
+        // all-active-stages-paused rule).
+        assert.equal(store.runs()[0]?.stages.find((s) => s.name === "a")?.status, "paused");
+        assert.equal(store.runs()[0]?.status, "running");
+
+        await handleB!.pause();
+        await waitForMicrotasks();
+        // Every active stage is now paused → run becomes paused.
+        assert.equal(store.runs()[0]?.status, "paused");
+
+        await handleA!.resume();
+        await waitForMicrotasks();
+        // Resuming any stage restores run-level running.
+        assert.equal(store.runs()[0]?.status, "running");
+
+        await handleB!.resume();
+        const result = await runPromise;
+        assert.equal(result.status, "completed");
+    });
 });
