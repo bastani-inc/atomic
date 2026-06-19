@@ -751,13 +751,18 @@ export class AgentSession {
 				this._lastAssistantMessage = event.message;
 
 				const assistantMsg = event.message as AssistantMessage;
-				if (assistantMsg.stopReason !== "error") {
+				// Treat degenerate empty completions (no content, zero output tokens) as
+				// failures alongside stopReason === "error". Otherwise an empty turn that
+				// stops with reason "stop" would reset the retry counter on every attempt,
+				// causing unbounded retries instead of honoring maxRetries.
+				const assistantFailed = assistantMsg.stopReason === "error" || this._isEmptyCompletion(assistantMsg);
+				if (!assistantFailed) {
 					this._overflowRecoveryAttempted = false;
 				}
 
 				// Reset retry counter immediately on successful assistant response
 				// This prevents accumulation across multiple LLM calls within a turn
-				if (assistantMsg.stopReason !== "error" && this._retryAttempt > 0) {
+				if (!assistantFailed && this._retryAttempt > 0) {
 					this._emit({
 						type: "auto_retry_end",
 						success: true,
@@ -773,8 +778,16 @@ export class AgentSession {
 			const msg = this._lastAssistantMessage;
 			this._lastAssistantMessage = undefined;
 
-			// Check for retryable errors first (overloaded, rate limit, server errors)
-			if (this._isRetryableError(msg)) {
+			// Check for retryable errors first (overloaded, rate limit, server errors,
+			// transient provider finish_reason errors, or degenerate empty completions)
+			const retryableError = this._isRetryableError(msg);
+			const emptyCompletion = !retryableError && this._isEmptyCompletion(msg);
+			if (retryableError || emptyCompletion) {
+				if (emptyCompletion && !msg.errorMessage) {
+					// Surface a clear reason in the retry banner; empty completions carry no
+					// provider error message of their own.
+					msg.errorMessage = "Provider returned an empty completion";
+				}
 				const didRetry = await this._handleRetryableError(msg);
 				if (didRetry) return; // Retry was initiated, don't proceed to compaction
 			}
@@ -3186,10 +3199,41 @@ export class AgentSession {
 		if (isContextOverflow(message, contextWindow)) return false;
 
 		const err = message.errorMessage;
-		// Match: overloaded_error, provider returned error, rate limit, 429, 500, 502, 503, 504, service unavailable, network/connection errors (including connection lost), WebSocket transport closes/errors, fetch failed, premature stream endings, HTTP/2 closed before response, terminated, retry delay exceeded
-		return /overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|connection.?lost|websocket.?closed|websocket.?error|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|stream ended before message_stop|http2 request did not get a response|timed? out|timeout|terminated|retry delay/i.test(
+		// Match: overloaded_error, provider returned error, rate limit, 429, 500, 502, 503, 504, service unavailable, network/connection errors (including connection lost), WebSocket transport closes/errors, fetch failed, premature stream endings, HTTP/2 closed before response, terminated, retry delay exceeded, and bare/transient provider finish_reason errors (e.g. github-copilot Gemini emitting finish_reason "error"/"content_filter" for MALFORMED_FUNCTION_CALL, OTHER, UNEXPECTED_TOOL_CALL, or spurious RECITATION/safety blocks)
+		return /overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|connection.?lost|websocket.?closed|websocket.?error|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|stream ended before message_stop|http2 request did not get a response|timed? out|timeout|terminated|retry delay|finish.?reason:?\s*(?:error|content.?filter)/i.test(
 			err,
 		);
+	}
+
+	/**
+	 * Detect a degenerate empty completion: the provider ended the stream with no
+	 * usable content and zero output tokens. Seen with github-copilot Gemini models
+	 * that emit finish_reason "stop" (or a tool-use stop) with an empty content array
+	 * and 0 output tokens, leaving the turn dead instead of producing the next step.
+	 *
+	 * These are treated as retryable so the harness re-issues the request rather than
+	 * silently stopping mid-task. Guarded tightly (no text, no tool call, no thinking,
+	 * and output === 0) so legitimate non-empty turns are never matched.
+	 */
+	private _isEmptyCompletion(message: AssistantMessage): boolean {
+		// Only "completed" stop reasons can be deceptively empty. Real errors are handled
+		// by _isRetryableError; aborted/length turns are intentional outcomes.
+		if (message.stopReason !== "stop" && message.stopReason !== "toolUse") return false;
+
+		const content = message.content;
+		if (Array.isArray(content)) {
+			const hasContent = content.some((part) => {
+				if (part.type === "text") return part.text.trim().length > 0;
+				if (part.type === "toolCall") return true;
+				if (part.type === "thinking") return part.redacted === true || part.thinking.trim().length > 0;
+				return true; // unknown part types count as content
+			});
+			if (hasContent) return false;
+		}
+
+		// A turn that produced output tokens but no surfaced content is not "empty"
+		// (e.g. reasoning-only responses); leave those alone.
+		return (message.usage?.output ?? 0) === 0;
 	}
 
 	/**
