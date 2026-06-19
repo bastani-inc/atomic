@@ -1533,6 +1533,8 @@ For lower-level integrations, `@bastani/workflows` also exports `setupGitWorktre
 
 `fallbackModels` retries transient provider/model failures with the primary `model` first, then each fallback, then the current Atomic-selected model when available. It is for rate limits, quota/auth/provider outages, unavailable models, network timeouts, and 5xx errors — not workflow-code errors, tool failures, validation failures, or cancellations.
 
+When a finished stage's session is reattached for a follow-up (for example a post-completion follow-up, or after the CLI is reloaded), the stage resumes on the model the session last settled on — the one that actually worked — instead of replaying the chain from the primary. If that model fails again with a transient/retryable error, the full chain is retried from the primary.
+
 ### Reasoning levels
 
 Each `model` and `fallbackModels` entry accepts a `model_name:thinking_effort` suffix that sets the reasoning effort for that candidate (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`). The effort travels with the model string, so a single fallback chain can mix efforts — for example a high-effort primary that degrades to lower-effort, cheaper fallbacks:

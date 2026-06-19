@@ -1,11 +1,30 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerOAuthProvider } from "@earendil-works/pi-ai/oauth";
 import lockfile from "proper-lockfile";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { AuthStorage } from "../src/core/auth-storage.ts";
+import { AuthStorage, type AuthStorageBackend, FileAuthStorageBackend } from "../src/core/auth-storage.ts";
 import { clearConfigValueCache } from "../src/core/resolve-config-value.ts";
+
+/**
+ * Backend whose every access throws — used to simulate a credential-store load
+ * failure (e.g. ELOCKED under concurrent auth.json access) so a *fresh*
+ * AuthStorage ends up with an empty in-memory store and a recorded loadError
+ * (issue #1431).
+ */
+class ThrowingAuthStorageBackend implements AuthStorageBackend {
+	constructor(private readonly error: Error) {}
+	read(): string | undefined {
+		throw this.error;
+	}
+	withLock<T>(): T {
+		throw this.error;
+	}
+	async withLockAsync<T>(): Promise<T> {
+		throw this.error;
+	}
+}
 
 describe("AuthStorage", () => {
 	let tempDir: string;
@@ -355,6 +374,97 @@ describe("AuthStorage", () => {
 		});
 	});
 
+	describe("concurrent access (issue #1431)", () => {
+		test("reload reads credentials without acquiring the write lock", () => {
+			// A configured provider must remain readable even while another
+			// process/stage holds the exclusive auth.json lock. Pure reads are
+			// lock-free, so a fresh AuthStorage never reports ELOCKED here.
+			writeAuthJson({ anthropic: { type: "api_key", key: "anthropic-key" } });
+
+			const release = lockfile.lockSync(authJsonPath, { realpath: false });
+			try {
+				const storage = AuthStorage.create(authJsonPath);
+				expect(storage.getLoadError()).toBeNull();
+				expect(storage.hasAuth("anthropic")).toBe(true);
+				expect(storage.get("anthropic")).toEqual({ type: "api_key", key: "anthropic-key" });
+			} finally {
+				release();
+			}
+		});
+
+		test("many fresh AuthStorage reads succeed while the lock is held", () => {
+			// Mirrors the fallback-auth-stress harness: many parallel stages each
+			// build their own AuthStorage. None should be starved by the held lock.
+			writeAuthJson({ anthropic: { type: "api_key", key: "anthropic-key" } });
+
+			const release = lockfile.lockSync(authJsonPath, { realpath: false });
+			try {
+				for (let i = 0; i < 12; i++) {
+					const storage = AuthStorage.create(authJsonPath);
+					expect(storage.getLoadError()).toBeNull();
+					expect(storage.get("anthropic")).toEqual({ type: "api_key", key: "anthropic-key" });
+				}
+			} finally {
+				release();
+			}
+		});
+
+		test("writes are atomic and leave no temp files behind", () => {
+			writeAuthJson({ anthropic: { type: "api_key", key: "a" } });
+			authStorage = AuthStorage.create(authJsonPath);
+
+			authStorage.set("openai", { type: "api_key", key: "b" });
+
+			const leftovers = readdirSync(tempDir).filter((entry) => entry.endsWith(".tmp"));
+			expect(leftovers).toEqual([]);
+
+			const parsed = JSON.parse(readFileSync(authJsonPath, "utf-8")) as Record<string, { key: string }>;
+			expect(parsed.anthropic).toEqual({ type: "api_key", key: "a" });
+			expect(parsed.openai).toEqual({ type: "api_key", key: "b" });
+		});
+
+		test("atomic write preserves 0600 permissions", () => {
+			if (process.platform === "win32") return;
+			writeAuthJson({ anthropic: { type: "api_key", key: "a" } });
+			authStorage = AuthStorage.create(authJsonPath);
+
+			authStorage.set("openai", { type: "api_key", key: "b" });
+
+			expect(statSync(authJsonPath).mode & 0o777).toBe(0o600);
+		});
+
+		test("reads resolve while an async writer holds the lock across an await", async () => {
+			// Reproduces the fallback-auth-stress interaction: an in-flight OAuth
+			// refresh holds the exclusive lock across a network await while sibling
+			// stages create fresh AuthStorages. With a blocking, lock-taking read
+			// path these reads would busy-wait and fail ELOCKED; lock-free reads must
+			// resolve immediately and keep the event loop free so the writer can
+			// finish (issue #1431).
+			writeAuthJson({ anthropic: { type: "api_key", key: "anthropic-key" } });
+			const backend = new FileAuthStorageBackend(authJsonPath, [authJsonPath]);
+
+			let releaseHeld!: () => void;
+			const held = new Promise<void>((resolve) => {
+				releaseHeld = resolve;
+			});
+			const writer = backend.withLockAsync(async () => {
+				await held;
+				return { result: undefined };
+			});
+
+			try {
+				for (let i = 0; i < 10; i++) {
+					const storage = AuthStorage.create(authJsonPath);
+					expect(storage.getLoadError()).toBeNull();
+					expect(storage.get("anthropic")).toEqual({ type: "api_key", key: "anthropic-key" });
+				}
+			} finally {
+				releaseHeld();
+				await writer;
+			}
+		});
+	});
+
 	describe("persistence semantics", () => {
 		test("set preserves unrelated external edits", () => {
 			writeAuthJson({
@@ -436,6 +546,41 @@ describe("AuthStorage", () => {
 
 			const secondDrain = authStorage.drainErrors();
 			expect(secondDrain).toHaveLength(0);
+		});
+	});
+
+	describe("credential load failure state", () => {
+		test("getLoadError is null after a successful load", () => {
+			writeAuthJson({ anthropic: { type: "api_key", key: "anthropic-key" } });
+			authStorage = AuthStorage.create(authJsonPath);
+			expect(authStorage.getLoadError()).toBeNull();
+		});
+
+		test("a fresh-load failure is surfaced via getLoadError and leaves credentials empty", () => {
+			const loadError = Object.assign(new Error("Lock file is already being held"), { code: "ELOCKED" });
+			const storage = AuthStorage.fromStorage(new ThrowingAuthStorageBackend(loadError));
+
+			// The failure is preserved, not swallowed: an empty store is NOT
+			// authoritative — the provider is not "absent", the store could not be read.
+			expect(storage.getLoadError()).toBe(loadError);
+			expect(storage.hasAuth("some-locked-provider")).toBe(false);
+			expect(storage.list()).toEqual([]);
+		});
+
+		test("getLoadError clears after a subsequent successful reload", () => {
+			writeAuthJson({ anthropic: { type: "api_key", key: "anthropic-key" } });
+			authStorage = AuthStorage.create(authJsonPath);
+			expect(authStorage.getLoadError()).toBeNull();
+
+			// Corrupt the file and reload -> load error recorded.
+			writeFileSync(authJsonPath, "{invalid-json", "utf-8");
+			authStorage.reload();
+			expect(authStorage.getLoadError()).toBeInstanceOf(Error);
+
+			// Repair and reload -> error cleared.
+			writeAuthJson({ anthropic: { type: "api_key", key: "anthropic-key" } });
+			authStorage.reload();
+			expect(authStorage.getLoadError()).toBeNull();
 		});
 	});
 
