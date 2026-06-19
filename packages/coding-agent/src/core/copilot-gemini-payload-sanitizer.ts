@@ -59,9 +59,10 @@ const KEPT_SCHEMA_KEYWORDS = new Set<string>([
  * Keywords that are dropped because CAPI strips them before Google and/or
  * Gemini's function schema rejects them. Listing them explicitly keeps the
  * intent auditable; any keyword not in {@link KEPT_SCHEMA_KEYWORDS} and not a
- * union keyword is dropped regardless.
+ * union keyword is dropped regardless. Exported so the documented drop-list has
+ * a real consumer (and stays linted) without a per-iteration `void` reference.
  */
-const DROPPED_SCHEMA_KEYWORDS = new Set<string>([
+export const DROPPED_SCHEMA_KEYWORDS = new Set<string>([
   "$schema",
   "$id",
   "$ref",
@@ -198,8 +199,8 @@ export function sanitizeGeminiSchema(schema: JsonValue): JsonValue {
       result[key] = value;
       continue;
     }
-    // Everything else (DROPPED_SCHEMA_KEYWORDS plus unknown keywords) is omitted.
-    void DROPPED_SCHEMA_KEYWORDS;
+    // Everything else (the documented DROPPED_SCHEMA_KEYWORDS plus any unknown
+    // keyword) is omitted: the rule is simply "keep only KEPT_SCHEMA_KEYWORDS".
   }
 
   inferContainerType(result);

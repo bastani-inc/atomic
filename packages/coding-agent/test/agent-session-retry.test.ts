@@ -433,4 +433,50 @@ describe("AgentSession retry", () => {
 		expect(events).toEqual(["start:1", "start:2", "end:success=true"]);
 		expect(session.isRetrying).toBe(false);
 	});
+
+	it("retries content_filter only for Copilot Gemini, not other providers", () => {
+		const created = createSession({ failCount: 0 });
+		const probe = created.session as unknown as {
+			_isRetryableError(message: AssistantMessage): boolean;
+		};
+
+		const anthropicBlocked = createAssistantMessage("", {
+			stopReason: "error",
+			errorMessage: "Provider finish_reason: content_filter",
+		});
+		expect(probe._isRetryableError(anthropicBlocked)).toBe(false);
+
+		const geminiBlocked = createAssistantMessage("", {
+			stopReason: "error",
+			errorMessage: "Provider finish_reason: content_filter",
+			provider: "github-copilot",
+			api: "openai-completions",
+			model: "gemini-3.1-pro-preview",
+		});
+		expect(probe._isRetryableError(geminiBlocked)).toBe(true);
+	});
+
+	it("does not treat a reasoning-only turn (output > 0) as an empty completion", () => {
+		const created = createSession({ failCount: 0 });
+		const probe = created.session as unknown as {
+			_isEmptyCompletion(message: AssistantMessage): boolean;
+		};
+
+		const emptyZeroOutput = createAssistantMessage("", { stopReason: "stop", content: [] });
+		expect(probe._isEmptyCompletion(emptyZeroOutput)).toBe(true);
+
+		const reasoningOnly = createAssistantMessage("", {
+			stopReason: "stop",
+			content: [],
+			usage: {
+				input: 10,
+				output: 5,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 15,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+		});
+		expect(probe._isEmptyCompletion(reasoningOnly)).toBe(false);
+	});
 });

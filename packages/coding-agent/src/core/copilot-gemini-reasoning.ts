@@ -37,7 +37,7 @@ import { isCopilotGeminiModel } from "./copilot-gemini-payload-sanitizer.ts";
  * `reasoning_details` mechanism the client already round-trips:
  *
  *  - **Inbound** ({@link rewriteCopilotGeminiSseData} via
- *    {@link createCopilotGeminiSseTransform}): rewrites the CAPI Gemini SSE
+ *    {@link createCopilotGeminiSseStream}): rewrites the CAPI Gemini SSE
  *    stream so each streamed delta that carries both `reasoning_opaque` and a
  *    `tool_calls[].id` gains a
  *    `reasoning_details: [{ type: "reasoning.encrypted", id, data: <opaque> }]`
@@ -143,37 +143,55 @@ function rewriteSseLine(line: string): string {
 }
 
 /**
- * Streaming SSE transform that bridges CAPI Gemini `reasoning_opaque` into
+ * Wrap a CAPI Gemini SSE byte stream so `reasoning_opaque` is bridged into
  * `reasoning_details`. Buffers across chunk boundaries and rewrites whole lines
  * only; bytes that are not affected pass through unchanged.
+ *
+ * Implemented as a `ReadableStream` over the source reader (rather than a
+ * `TransformStream` piped via `pipeThrough`) so the transform pulls lazily and
+ * propagates cancellation to the upstream body.
  */
-export function createCopilotGeminiSseTransform(): TransformStream<Uint8Array, Uint8Array> {
+export function createCopilotGeminiSseStream(
+  source: ReadableStream<Uint8Array>,
+): ReadableStream<Uint8Array> {
+  const reader = source.getReader();
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
   let buffer = "";
 
-  const flushLine = (line: string): string => `${rewriteSseLine(line)}\n`;
-
-  return new TransformStream<Uint8Array, Uint8Array>({
-    transform(chunk, controller) {
-      buffer += decoder.decode(chunk, { stream: true });
-      let newlineIndex = buffer.indexOf("\n");
-      if (newlineIndex === -1) return;
-      let out = "";
-      while (newlineIndex !== -1) {
-        const line = buffer.slice(0, newlineIndex);
-        buffer = buffer.slice(newlineIndex + 1);
-        out += flushLine(line);
-        newlineIndex = buffer.indexOf("\n");
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      // Loop until we emit at least one chunk or close, so a read that yields no
+      // complete line still makes progress without relying on the runtime to
+      // re-invoke pull after a no-enqueue return.
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) {
+          buffer += decoder.decode();
+          if (buffer.length > 0) {
+            controller.enqueue(encoder.encode(rewriteSseLine(buffer)));
+            buffer = "";
+          }
+          controller.close();
+          return;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        let newlineIndex = buffer.indexOf("\n");
+        let out = "";
+        while (newlineIndex !== -1) {
+          const line = buffer.slice(0, newlineIndex);
+          buffer = buffer.slice(newlineIndex + 1);
+          out += `${rewriteSseLine(line)}\n`;
+          newlineIndex = buffer.indexOf("\n");
+        }
+        if (out.length > 0) {
+          controller.enqueue(encoder.encode(out));
+          return;
+        }
       }
-      if (out.length > 0) controller.enqueue(encoder.encode(out));
     },
-    flush(controller) {
-      buffer += decoder.decode();
-      if (buffer.length > 0) {
-        controller.enqueue(encoder.encode(rewriteSseLine(buffer)));
-        buffer = "";
-      }
+    cancel(reason) {
+      return reader.cancel(reason);
     },
   });
 }
@@ -223,7 +241,10 @@ export function restoreCopilotGeminiReasoningOpaque(
 /** Whether the URL targets Copilot's CAPI gateway (`*.githubcopilot.com`). */
 function isCopilotApiHost(url: string): boolean {
   try {
-    return new URL(url).hostname.toLowerCase().endsWith("githubcopilot.com");
+    const host = new URL(url).hostname.toLowerCase();
+    // Exact host or a real subdomain only — never a look-alike suffix such as
+    // `notgithubcopilot.com` (CodeQL: incomplete URL substring sanitization).
+    return host === "githubcopilot.com" || host.endsWith(".githubcopilot.com");
   } catch {
     return false;
   }
@@ -254,7 +275,7 @@ export function maybeRewriteCopilotGeminiResponse(
   const contentType = response.headers.get("content-type") ?? "";
   if (!contentType.includes("text/event-stream")) return response;
   if (!response.body) return response;
-  const transformed = response.body.pipeThrough(createCopilotGeminiSseTransform());
+  const transformed = createCopilotGeminiSseStream(response.body);
   return new Response(transformed, {
     status: response.status,
     statusText: response.statusText,
@@ -267,7 +288,7 @@ let originalFetch: typeof fetch | undefined;
 /**
  * Install a `globalThis.fetch` wrapper that rewrites CAPI Gemini SSE responses
  * to bridge `reasoning_opaque` into `reasoning_details` (see
- * {@link createCopilotGeminiSseTransform}). Idempotent.
+ * {@link createCopilotGeminiSseStream}). Idempotent.
  *
  * The OpenAI SDK used by the `openai-completions` provider resolves
  * `globalThis.fetch` at client-construction time, and a new client is built per

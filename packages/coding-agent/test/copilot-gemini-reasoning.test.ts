@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import {
-  createCopilotGeminiSseTransform,
+  createCopilotGeminiSseStream,
   injectCopilotGeminiReasoningDetails,
   maybeRewriteCopilotGeminiResponse,
   restoreCopilotGeminiReasoningOpaque,
@@ -22,25 +22,21 @@ const OPAQUE = "enc:abc123==";
 async function runTransform(chunks: string[]): Promise<string> {
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
-  const transform = createCopilotGeminiSseTransform();
-  const reader = transform.readable.getReader();
-  const writer = transform.writable.getWriter();
+  const source = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+      controller.close();
+    },
+  });
 
+  const reader = createCopilotGeminiSseStream(source).getReader();
   let out = "";
-  const pump = (async () => {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      out += decoder.decode(value, { stream: true });
-    }
-    out += decoder.decode();
-  })();
-
-  for (const chunk of chunks) {
-    await writer.write(encoder.encode(chunk));
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    out += decoder.decode(value, { stream: true });
   }
-  await writer.close();
-  await pump;
+  out += decoder.decode();
   return out;
 }
 
@@ -136,7 +132,7 @@ describe("rewriteCopilotGeminiSseData", () => {
   });
 });
 
-describe("createCopilotGeminiSseTransform", () => {
+describe("createCopilotGeminiSseStream", () => {
   it("rewrites the data line in an SSE event and preserves framing", async () => {
     const event = `data: ${JSON.stringify(toolCallDelta())}\n\n`;
     const out = await runTransform([event]);

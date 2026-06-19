@@ -89,7 +89,15 @@ function assignFlattenedKeyPath(
   node[segments[segments.length - 1]] = value;
 }
 
-/** Remove empty holes from sparse arrays produced by out-of-order indices. */
+/**
+ * Remove empty holes from sparse arrays produced by out-of-order indices.
+ *
+ * Note: this collapses holes rather than preserving them — `name[0]` + `name[2]`
+ * (no index 1) becomes a dense 2-element array `[a, c]`, not `[a, <hole>, c]`.
+ * That is the intended healing for Gemini's flattened output (which emits
+ * contiguous indices in practice); it would, however, silently misalign two
+ * arrays that were meant to be index-paired.
+ */
 function compactSparseArrays(value: unknown): unknown {
   if (Array.isArray(value)) {
     return value.filter((entry) => entry !== undefined).map((entry) => compactSparseArrays(entry));

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import {
+  DROPPED_SCHEMA_KEYWORDS,
   isCopilotGeminiModel,
   sanitizeCopilotGeminiPayload,
   sanitizeGeminiSchema,
@@ -269,5 +270,15 @@ describe("sanitizeCopilotGeminiPayload", () => {
     const sanitized = result.tools[0].function.parameters;
     // After sanitization, no union retains an object/array branch.
     expect(hasUnionWithObjectBranch(sanitized)).toBe(false);
+  });
+
+  it("documents dropped keywords without overlapping the kept set", () => {
+    // The drop-list is documentation-only (the loop keeps KEPT_SCHEMA_KEYWORDS
+    // and omits everything else); assert it stays coherent.
+    expect(DROPPED_SCHEMA_KEYWORDS.has("additionalProperties")).toBe(true);
+    expect(DROPPED_SCHEMA_KEYWORDS.has("$schema")).toBe(true);
+    for (const kept of ["type", "description", "enum", "properties", "required", "items", "nullable"]) {
+      expect(DROPPED_SCHEMA_KEYWORDS.has(kept)).toBe(false);
+    }
   });
 });

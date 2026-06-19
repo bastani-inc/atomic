@@ -3068,6 +3068,10 @@ export class AgentSession {
 		// them into proper arrays/objects before per-tool preparation and schema
 		// validation, so tool calls (notably structured_output) don't fail and loop.
 		// Gated to Copilot Gemini at call time via this.model; a no-op otherwise.
+		// `prepareArguments` is a plain function field (no `this` binding), and the
+		// `{ ...tool }` spread assumes AgentTools are plain objects — matching the
+		// existing tool-definition-wrapper pattern; a class-instance tool would lose
+		// prototype members here.
 		this._toolRegistry = new Map(
 			Array.from(toolRegistry, ([name, tool]) => {
 				const basePrepareArguments = tool.prepareArguments;
@@ -3253,6 +3257,10 @@ export class AgentSession {
 	 * These are treated as retryable so the harness re-issues the request rather than
 	 * silently stopping mid-task. Guarded tightly (no text, no tool call, no thinking,
 	 * and output === 0) so legitimate non-empty turns are never matched.
+	 *
+	 * Intentionally provider-agnostic (not gated to Copilot Gemini): a degenerate
+	 * empty turn is a transient failure for any provider. It is bounded by
+	 * `maxRetries` and falls through to normal handling on exhaustion.
 	 */
 	private _isEmptyCompletion(message: AssistantMessage): boolean {
 		// Only "completed" stop reasons can be deceptively empty. Real errors are handled
