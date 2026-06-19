@@ -4,7 +4,7 @@
 
 ### Added
 
-- Added opt-in experimental Cursor user-image transport behind `ATOMIC_CURSOR_EXPERIMENTAL_IMAGE_INPUT=1`, requiring a serialization-level opt-in/internal guard and strict base64/data URL validation before encoding final user-message images into Cursor's local private protobuf `selectedImages[].data` path while keeping Cursor model metadata text-only. That protobuf path is undocumented and unvalidated against live Cursor remote behavior; Cursor documents image support on other product/API surfaces, which do not validate this local private protobuf transport. Remote behavior may fail or ignore images, and tool-result images are still rejected.
+- Added experimental Cursor user-image transport, requiring a serialization-level internal guard and strict base64/data URL validation before encoding final user-message images into Cursor's local private protobuf `selectedImages[].data` path while keeping Cursor model metadata text-only. Image input is enabled by default without a user-facing flag, supports multiple current-message images, and tolerates historical user image blocks by serializing history as text-only. That protobuf path is undocumented and unvalidated against live Cursor remote behavior; Cursor documents image support on other product/API surfaces, which do not validate this local private protobuf transport. Remote behavior may fail or ignore images, and tool-result images are still rejected.
 
 ### Changed
 
@@ -12,8 +12,9 @@
 
 ### Fixed
 
-- Tightened experimental Cursor image validation so historical user images and tool-result images are rejected before protobuf encoding instead of being omitted.
-- Clarified Cursor image/screenshot rejection guidance so users know Atomic's Cursor provider is text-only by default and can remove image content, switch to a vision-capable provider, or explicitly try the experimental opt-in for user images.
+- Corrected Cursor native-transport failure guidance for local development to use `bun run --cwd packages/natives build`, matching Bun's script invocation semantics.
+- Allowed multi-turn Cursor image conversations by tolerating historical user image blocks in chat history while serializing only current user-message images through Cursor's `selectedImages[]` transport.
+- Kept tool-result images rejected with provider fallback guidance while clarifying Cursor image/screenshot guidance for current-message images and text-only historical serialization.
 
 ## [0.8.30] - 2026-06-17
 

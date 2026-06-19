@@ -104,6 +104,7 @@ import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import type { ModelRegistry } from "./model-registry.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
+import { resolvePromptImageReferences } from "./prompt-file-references.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
 import type { BranchSummaryEntry, ContextCompactionEntry, SessionManager } from "./session-manager.ts";
 import { CURRENT_SESSION_VERSION, getLatestCompactionBoundaryEntry, type SessionHeader } from "./session-manager.ts";
@@ -1230,9 +1231,21 @@ export class AgentSession {
 				}
 			}
 
-			// Emit input event for extension interception (before skill/template expansion)
+			// Resolve inline @image references before extension interception so the
+			// current user turn carries images as attachments instead of forcing the
+			// model to read them through tool results.
 			let currentText = text;
 			let currentImages = options?.images;
+			const inlineImageReferences = await resolvePromptImageReferences(currentText, {
+				cwd: this._cwd,
+				autoResizeImages: this.settingsManager.getImageAutoResize(),
+			});
+			if (inlineImageReferences.images.length > 0 || inlineImageReferences.text !== currentText) {
+				currentText = inlineImageReferences.text;
+				currentImages = currentImages
+					? [...currentImages, ...inlineImageReferences.images]
+					: inlineImageReferences.images;
+			}
 			if (this._extensionRunner.hasHandlers("input")) {
 				const inputResult = await this._extensionRunner.emitInput(
 					currentText,

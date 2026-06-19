@@ -6,6 +6,10 @@
 
 - Published a synchronized Atomic 0.8.31-alpha.3 prerelease; no functional native transport changes were made after 0.8.30.
 
+### Fixed
+
+- Fixed local native binding builds to invoke NAPI-RS through the current Bun executable (`bun x`) instead of a potentially broken `bunx` shim, and surfaced spawn errors in build failures.
+
 ## [0.8.30] - 2026-06-17
 
 ### Changed

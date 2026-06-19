@@ -13,6 +13,7 @@ const crossTarget = Bun.env.CROSS_TARGET;
 mkdirSync(nativeDir, { recursive: true });
 
 const args = [
+	"x",
 	"--bun",
 	"--no-install",
 	"napi",
@@ -33,7 +34,12 @@ const args = [
 if (!debug) args.push("--release");
 if (crossTarget) args.push("--target", crossTarget, "--cross-compile");
 
-const result = spawnSync("bunx", args, { cwd: repoRoot, stdio: "inherit" });
+const result = spawnSync(process.execPath, args, { cwd: repoRoot, stdio: "inherit" });
 if (result.status !== 0) {
-	throw new Error(`Failed to build Atomic native bindings (napi exited ${result.status ?? "null"})`);
+	const details = [
+		result.error ? `spawn error: ${result.error.message}` : undefined,
+		result.signal ? `signal ${result.signal}` : undefined,
+	].filter((detail): detail is string => Boolean(detail));
+	const suffix = details.length > 0 ? `; ${details.join("; ")}` : "";
+	throw new Error(`Failed to build Atomic native bindings (napi exited ${result.status ?? "null"}${suffix})`);
 }

@@ -346,30 +346,31 @@ describe("Cursor HTTP2 transport boundary", () => {
 		);
 	});
 
-	test("protobuf codec rejects historical user images under serialization opt-in without leaking payloads", () => {
+	test("protobuf codec allows historical user images while serializing only current images", () => {
 		const codec = new CursorProtobufProtocolCodec();
-		assert.throws(
-			() => codec.encodeRunRequest({
-				accessToken: "secret-token-that-must-not-appear",
-				requestId: "run-historical-image-rejected",
-				model,
-				resolvedModelId: "composer-2",
-				experimentalImageInput: true,
-				context: {
-					messages: [
-						{ role: "user", content: [{ type: "text", text: "historical text must not leak" }, { type: "image", data: "historical-image-must-not-leak", mimeType: "image/png" }], timestamp: 1 },
-						{ role: "user", content: "current text", timestamp: 2 },
-					],
-				},
-			}),
-			(error: Error) => {
-				assert.match(error.message, /current user message/u);
-				assert.doesNotMatch(error.message, /secret-token-that-must-not-appear/u);
-				assert.doesNotMatch(error.message, /historical-image-must-not-leak/u);
-				assert.doesNotMatch(error.message, /historical text must not leak/u);
-				return true;
+		const currentFirstImage = new Uint8Array([1, 2, 3]);
+		const currentSecondImage = new Uint8Array([4, 5, 6]);
+		const encodedRun = codec.encodeRunRequest({
+			accessToken: "secret-token-that-must-not-appear",
+			requestId: "run-historical-image-allowed",
+			model,
+			resolvedModelId: "composer-2",
+			experimentalImageInput: true,
+			context: {
+				messages: [
+					{ role: "user", content: [{ type: "text", text: "historical text" }, { type: "image", data: "historical-image-is-not-base64", mimeType: "image/png" }], timestamp: 1 },
+					{ role: "assistant", content: [{ type: "text", text: "historical answer" }], api: "cursor-agent", provider: "cursor", model: "composer-2", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: 2 },
+					{ role: "user", content: [{ type: "text", text: "current text" }, { type: "image", data: Buffer.from(currentFirstImage).toString("base64"), mimeType: "image/png" }, { type: "image", data: Buffer.from(currentSecondImage).toString("base64"), mimeType: "image/png" }], timestamp: 3 },
+				],
 			},
-		);
+		});
+
+		const selectedImages = decodeRunUserMessage(encodedRun).selectedContext?.selectedImages ?? [];
+		assert.equal(selectedImages.length, 2);
+		assert.equal(selectedImages[0]?.dataOrBlobId.case, "data");
+		assert.equal(selectedImages[1]?.dataOrBlobId.case, "data");
+		assert.deepEqual([...(selectedImages[0]?.dataOrBlobId.value ?? [])], [...currentFirstImage]);
+		assert.deepEqual([...(selectedImages[1]?.dataOrBlobId.value ?? [])], [...currentSecondImage]);
 	});
 
 	test("protobuf codec rejects tool-result images anywhere in context under serialization opt-in without leaking payloads", () => {
@@ -400,35 +401,27 @@ describe("Cursor HTTP2 transport boundary", () => {
 		);
 	});
 
-	test("transport rejects historical user images before opening a Cursor stream", async () => {
+	test("transport allows historical user images before opening a Cursor stream", async () => {
 		const client = new FakeHttp2Client();
 		const transport = new Http2CursorAgentTransport({ client });
 
-		await assert.rejects(
-			() => transport.run({
-				accessToken: "secret-token-that-must-not-appear",
-				requestId: "run-transport-historical-image",
-				model,
-				resolvedModelId: "composer-2",
-				experimentalImageInput: true,
-				context: {
-					messages: [
-						{ role: "user", content: [{ type: "image", data: "historical-transport-image-must-not-leak", mimeType: "image/png" }], timestamp: 1 },
-						{ role: "user", content: "current text", timestamp: 2 },
-					],
-				},
-			}),
-			(error: Error) => {
-				assert.ok(error instanceof CursorTransportError);
-				assert.equal(error.code, "ProtocolError");
-				assert.match(error.message, /current user message/u);
-				assert.doesNotMatch(error.message, /secret-token-that-must-not-appear/u);
-				assert.doesNotMatch(error.message, /historical-transport-image-must-not-leak/u);
-				return true;
+		const stream = await transport.run({
+			accessToken: "secret-token-that-must-not-appear",
+			requestId: "run-transport-historical-image",
+			model,
+			resolvedModelId: "composer-2",
+			experimentalImageInput: true,
+			context: {
+				messages: [
+					{ role: "user", content: [{ type: "image", data: "historical-transport-image-is-not-base64", mimeType: "image/png" }], timestamp: 1 },
+					{ role: "user", content: "current text", timestamp: 2 },
+				],
 			},
-		);
-		assert.equal(client.streamRequests.length, 0);
-		assert.equal(client.streamHandle.writes.length, 0);
+		});
+
+		assert.equal(client.streamRequests.length, 1);
+		assert.equal(client.streamHandle.writes.length, 1);
+		await stream.close();
 	});
 
 	test("transport rejects tool-result images before opening a Cursor stream", async () => {

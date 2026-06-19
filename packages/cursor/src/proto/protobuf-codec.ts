@@ -107,7 +107,6 @@ interface ParsedTurn {
 const CURSOR_PROTO_CLIENT_NAME = "pi";
 const NATIVE_EXEC_REJECT_REASON = "Tool not available in this environment. Use the MCP tools provided instead.";
 const CURSOR_IMAGE_SERIALIZATION_OPT_IN_ERROR = "Cursor experimental image input serialization requires explicit opt-in before encoding image content.";
-const CURSOR_HISTORICAL_IMAGE_SERIALIZATION_ERROR = "Cursor experimental image input serialization only supports images on the current user message.";
 const CURSOR_TOOL_RESULT_IMAGE_SERIALIZATION_ERROR = "Cursor experimental image input serialization does not support tool-result images.";
 const CURSOR_IMAGE_DECODE_ERROR = "Cursor experimental image input could not decode an image content block because the image payload is not valid base64/data URL base64. Remove image content or switch to a vision-capable provider.";
 const textEncoder = new TextEncoder();
@@ -463,17 +462,16 @@ function buildTurnStepBytes(step: ParsedTurnStep): Uint8Array {
 }
 
 function validateCursorImageSerializationContext(request: CursorRunRequest): void {
-	const finalMessageIndex = request.context.messages.length - 1;
-	for (const [index, message] of request.context.messages.entries()) {
+	let hasUserImages = false;
+	for (const message of request.context.messages) {
 		if (message.role === "toolResult") {
 			if (message.content.some((part) => part.type === "image")) throw new Error(CURSOR_TOOL_RESULT_IMAGE_SERIALIZATION_ERROR);
 			continue;
 		}
 		if (message.role !== "user" || typeof message.content === "string") continue;
-		if (!message.content.some((part) => part.type === "image")) continue;
-		if (index !== finalMessageIndex) throw new Error(CURSOR_HISTORICAL_IMAGE_SERIALIZATION_ERROR);
-		if (request.experimentalImageInput !== true) throw new Error(CURSOR_IMAGE_SERIALIZATION_OPT_IN_ERROR);
+		if (message.content.some((part) => part.type === "image")) hasUserImages = true;
 	}
+	if (hasUserImages && request.experimentalImageInput !== true) throw new Error(CURSOR_IMAGE_SERIALIZATION_OPT_IN_ERROR);
 }
 
 function parseHistoricalTurns(messages: readonly CursorRunRequest["context"]["messages"][number][]): readonly ParsedTurn[] {
@@ -491,7 +489,7 @@ function parseHistoricalTurns(messages: readonly CursorRunRequest["context"]["me
 	for (const message of messages) {
 		if (message.role === "user") {
 			flushTurn();
-			currentTurn = { userText: textFromMessage(message, { allowUserImages: false }), steps: [], toolCallById: new Map() };
+			currentTurn = { userText: textFromMessage(message), steps: [], toolCallById: new Map() };
 		} else if (message.role === "assistant") {
 			const turn = ensureTurn();
 			for (const part of message.content) {
@@ -732,7 +730,7 @@ function serializableJsonValue(value: object): JsonValue {
 
 function extractCurrentActionText(request: CursorRunRequest): string {
 	const last = request.context.messages.at(-1);
-	return last ? textFromMessage(last, { allowUserImages: true }) : "";
+	return last ? textFromMessage(last) : "";
 }
 
 function extractCurrentActionImages(request: CursorRunRequest): readonly ImageContent[] {
@@ -746,10 +744,9 @@ function rawToolResultText(message: Extract<CursorRunRequest["context"]["message
 	return message.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("\n");
 }
 
-function textFromMessage(message: CursorRunRequest["context"]["messages"][number], options: { readonly allowUserImages?: boolean } = {}): string {
+function textFromMessage(message: CursorRunRequest["context"]["messages"][number]): string {
 	if (message.role === "user") {
 		if (typeof message.content === "string") return message.content;
-		if (!options.allowUserImages && message.content.some((part) => part.type === "image")) throw new Error(CURSOR_HISTORICAL_IMAGE_SERIALIZATION_ERROR);
 		return message.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("\n");
 	}
 	if (message.role === "assistant") {

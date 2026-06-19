@@ -29,6 +29,8 @@ The editor can be replaced temporarily by built-in UI such as `/settings` or by 
 
 See [Keybindings](/keybindings) for all shortcuts and customization.
 
+Inline image file references such as `@screenshot.png what is this?` and pasted absolute image paths such as `/tmp/atomic-clipboard-....png` are resolved before the turn starts: Atomic replaces the reference with a file marker and attaches the image to the current user message. Multiple images can be attached to the same current user message; Cursor's experimental path also tolerates historical user image blocks on later turns while serializing only current-turn images. Missing paths and non-image mentions are left as text. This keeps image prompts on providers that support current-turn image attachments (including Cursor's default-enabled experimental path) from falling back to a `read` tool-result image.
+
 ## Slash Commands
 
 Type `/` in the editor to open command completion. Extensions can register custom commands, skills are available as `/skill:name`, and prompt templates expand via `/templatename`.

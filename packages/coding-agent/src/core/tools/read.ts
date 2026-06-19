@@ -105,7 +105,7 @@ function trimTrailingEmptyLines(lines: string[]): string[] {
 	return lines.slice(0, end);
 }
 
-function getNonVisionImageNote(model: Model<Api> | undefined): string | undefined {
+function getImageOmissionNote(model: Model<Api> | undefined): string | undefined {
 	if (!model || model.input.includes("image")) {
 		return undefined;
 	}
@@ -305,34 +305,35 @@ export function createReadToolDefinition(
 							const mimeType = ops.detectImageMimeType ? await ops.detectImageMimeType(absolutePath) : undefined;
 							let content: (TextContent | ImageContent)[];
 							let details: ReadToolDetails | undefined;
-							const nonVisionImageNote = getNonVisionImageNote(ctx?.model);
+							const imageOmissionNote = getImageOmissionNote(ctx?.model);
 							if (mimeType) {
-								// Read image as binary.
-								const buffer = await ops.readFile(absolutePath);
-								if (autoResizeImages) {
-									// Resize image if needed before sending it back to the model.
-									const resized = await resizeImage(buffer, mimeType);
-									if (!resized) {
-										let textNote = `Read image file [${mimeType}]\n[Image omitted: could not be resized below the inline image size limit.]`;
-										if (nonVisionImageNote) textNote += `\n${nonVisionImageNote}`;
-										content = [{ type: "text", text: textNote }];
+								if (imageOmissionNote) {
+									content = [{ type: "text", text: `Read image file [${mimeType}]\n${imageOmissionNote}` }];
+								} else {
+									// Read image as binary.
+									const buffer = await ops.readFile(absolutePath);
+									if (autoResizeImages) {
+										// Resize image if needed before sending it back to the model.
+										const resized = await resizeImage(buffer, mimeType);
+										if (!resized) {
+											const textNote = `Read image file [${mimeType}]\n[Image omitted: could not be resized below the inline image size limit.]`;
+											content = [{ type: "text", text: textNote }];
+										} else {
+											const dimensionNote = formatDimensionNote(resized);
+											let textNote = `Read image file [${resized.mimeType}]`;
+											if (dimensionNote) textNote += `\n${dimensionNote}`;
+											content = [
+												{ type: "text", text: textNote },
+												{ type: "image", data: resized.data, mimeType: resized.mimeType },
+											];
+										}
 									} else {
-										const dimensionNote = formatDimensionNote(resized);
-										let textNote = `Read image file [${resized.mimeType}]`;
-										if (dimensionNote) textNote += `\n${dimensionNote}`;
-										if (nonVisionImageNote) textNote += `\n${nonVisionImageNote}`;
+										const textNote = `Read image file [${mimeType}]`;
 										content = [
 											{ type: "text", text: textNote },
-											{ type: "image", data: resized.data, mimeType: resized.mimeType },
+											{ type: "image", data: buffer.toString("base64"), mimeType },
 										];
 									}
-								} else {
-									let textNote = `Read image file [${mimeType}]`;
-									if (nonVisionImageNote) textNote += `\n${nonVisionImageNote}`;
-									content = [
-										{ type: "text", text: textNote },
-										{ type: "image", data: buffer.toString("base64"), mimeType },
-									];
 								}
 							} else {
 								// Read text content.

@@ -23,6 +23,8 @@
 
 ### Fixed
 
+- Fixed inline image prompts such as `@screenshot.png what is this?` and pasted absolute image paths such as `/tmp/atomic-clipboard-....png` so local image references are attached to the current user message before the model can fall back to the `read` tool, made the `read` tool omit image blocks for Cursor/text-only models instead of returning unsupported tool-result images, and enabled Cursor current user-message image input by default without a user-facing flag.
+- Fixed Cursor native-transport local-development guidance to point at `bun run --cwd packages/natives build`, and documented that source checkouts need a local `@bastani/atomic-natives` platform artifact before Cursor prompts can use the native HTTP/2 transport.
 - Fixed RPC unknown-command errors to include the request id so RPC clients do not hang waiting for a response.
 - Fixed `/model` autocomplete and model-selection searches to match provider/model queries regardless of whether the provider or model token is typed first.
 - Fixed the tree navigator to horizontally pan deep entries so the selected item remains readable.

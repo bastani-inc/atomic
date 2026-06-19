@@ -11,6 +11,9 @@ import { createSyntheticSourceInfo } from "../../src/core/source-info.ts";
 import { createTestResourceLoader } from "../utilities.ts";
 import { createHarness, getMessageText, type Harness } from "./harness.ts";
 
+const TINY_PNG_BASE64 =
+	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
+
 describe("AgentSession prompt characterization", () => {
 	const harnesses: Harness[] = [];
 	const tempDirs: string[] = [];
@@ -142,6 +145,61 @@ describe("AgentSession prompt characterization", () => {
 		});
 
 		expect(sawImage).toBe(true);
+	});
+
+	it("turns inline @image references into current user image attachments", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const imagePath = join(harness.tempDir, "test.png");
+		writeFileSync(imagePath, Buffer.from(TINY_PNG_BASE64, "base64"));
+		let userText = "";
+		let sawImage = false;
+
+		harness.setResponses([
+			(context) => {
+				const user = context.messages.find((message) => message.role === "user");
+				userText = user ? getMessageText(user) : "";
+				sawImage =
+					user?.role === "user" &&
+					typeof user.content !== "string" &&
+					user.content.some((part) => part.type === "image" && part.mimeType === "image/png");
+				return fauxAssistantMessage("ok");
+			},
+		]);
+
+		await harness.session.prompt("@test.png what is this?");
+
+		expect(sawImage).toBe(true);
+		expect(userText).toContain(`<file name="${imagePath}">`);
+		expect(userText).toContain("what is this?");
+		expect(userText).not.toContain("@test.png");
+	});
+
+	it("turns pasted absolute image paths into current user image attachments", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const imagePath = join(harness.tempDir, "atomic-clipboard-test.png");
+		writeFileSync(imagePath, Buffer.from(TINY_PNG_BASE64, "base64"));
+		let userText = "";
+		let sawImage = false;
+
+		harness.setResponses([
+			(context) => {
+				const user = context.messages.find((message) => message.role === "user");
+				userText = user ? getMessageText(user) : "";
+				sawImage =
+					user?.role === "user" &&
+					typeof user.content !== "string" &&
+					user.content.some((part) => part.type === "image" && part.mimeType === "image/png");
+				return fauxAssistantMessage("ok");
+			},
+		]);
+
+		await harness.session.prompt(`${imagePath} what is this?`);
+
+		expect(sawImage).toBe(true);
+		expect(userText).toContain(`<file name="${imagePath}">`);
+		expect(userText).toContain("what is this?");
 	});
 
 	it("expands skill commands before sending the prompt", async () => {

@@ -33,10 +33,7 @@ interface CursorStreamRuntime {
 const DEFAULT_PAUSED_TURN_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 const DEFAULT_STREAM_READ_TIMEOUT_MS = 10 * 60 * 1000;
 const TOOL_CALL_BATCH_IDLE_TIMEOUT_MS = 100;
-const CURSOR_EXPERIMENTAL_IMAGE_INPUT_ENV = "ATOMIC_CURSOR_EXPERIMENTAL_IMAGE_INPUT";
-const CURSOR_IMAGE_INPUT_ERROR = "Cursor supports text input only by default; images/screenshots are not supported by Cursor's documented headless provider API. Remove image content, switch to a vision-capable provider, or set ATOMIC_CURSOR_EXPERIMENTAL_IMAGE_INPUT=1 to try unsupported Cursor user-image transport.";
 const CURSOR_TOOL_RESULT_IMAGE_INPUT_ERROR = "Cursor supports text tool results only; tool-result images/screenshots are not supported by Cursor's headless provider API. Remove image content or switch to a vision-capable provider.";
-const CURSOR_HISTORICAL_IMAGE_INPUT_ERROR = "Cursor experimental image transport only supports images on the current user message. Remove earlier image content or start a new Cursor turn with the image attached to the final user message.";
 const CURSOR_IMAGE_SESSION_ID_ERROR = "Cursor experimental image transport requires a non-empty sessionId to isolate image conversations. Provide a non-empty sessionId or remove image content.";
 
 type IteratorReadResult =
@@ -116,15 +113,13 @@ export class CursorStreamAdapter {
 			if (!options?.apiKey) {
 				throw new Error("Cursor OAuth credentials are required. Run /login and select Cursor.");
 			}
-			const experimentalImageInput = isCursorExperimentalImageInputEnabled();
+			const experimentalImageInput = true;
 			if (hasToolResultImageInput(context)) {
 				throw new Error(CURSOR_TOOL_RESULT_IMAGE_INPUT_ERROR);
 			}
 			const trailingToolResults = getTrailingToolResults(context);
 			if (hasUserImageInput(context)) {
-				if (!experimentalImageInput) throw new Error(CURSOR_IMAGE_INPUT_ERROR);
 				if (!options.sessionId?.trim()) throw new Error(CURSOR_IMAGE_SESSION_ID_ERROR);
-				if (trailingToolResults.length === 0 && hasNonCurrentUserImageInput(context)) throw new Error(CURSOR_HISTORICAL_IMAGE_INPUT_ERROR);
 			}
 			if (options.signal?.aborted) {
 				throw new CursorStreamAbortError();
@@ -453,17 +448,8 @@ function deterministicCursorConversationId(conversationKey: string): string {
 	].join("-");
 }
 
-function isCursorExperimentalImageInputEnabled(): boolean {
-	return process.env[CURSOR_EXPERIMENTAL_IMAGE_INPUT_ENV] === "1";
-}
-
 function hasUserImageInput(context: Context): boolean {
 	return context.messages.some((message) => message.role === "user" && typeof message.content !== "string" && message.content.some((content) => content.type === "image"));
-}
-
-function hasNonCurrentUserImageInput(context: Context): boolean {
-	const currentMessageIndex = context.messages.length - 1;
-	return context.messages.some((message, index) => index !== currentMessageIndex && message.role === "user" && typeof message.content !== "string" && message.content.some((content) => content.type === "image"));
 }
 
 function hasToolResultImageInput(context: Context): boolean {

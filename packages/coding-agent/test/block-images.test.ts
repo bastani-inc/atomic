@@ -2,13 +2,28 @@ import { mkdirSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import { processFileArguments } from "../src/cli/file-processor.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
-import { createReadTool } from "../src/core/tools/read.ts";
+import { createReadTool, createReadToolDefinition } from "../src/core/tools/read.ts";
+import type { ExtensionContext } from "../src/index.ts";
 
 // 1x1 red PNG image as base64 (smallest valid PNG)
 const TINY_PNG_BASE64 =
 	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
+
+const TEXT_ONLY_MODEL: Model<Api> = {
+	id: "text-only",
+	name: "Text Only",
+	api: "cursor-agent",
+	provider: "cursor",
+	baseUrl: "https://api2.cursor.sh",
+	reasoning: false,
+	input: ["text"],
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	contextWindow: 1000,
+	maxTokens: 100,
+};
 
 describe("blockImages setting", () => {
 	describe("SettingsManager", () => {
@@ -66,6 +81,27 @@ describe("blockImages setting", () => {
 			expect(result.content.length).toBeGreaterThanOrEqual(1);
 			const hasImage = result.content.some((c) => c.type === "image");
 			expect(hasImage).toBe(true);
+		});
+
+		it("should omit image blocks when the current model is text-only", async () => {
+			const imagePath = join(testDir, "test.png");
+			writeFileSync(imagePath, Buffer.from(TINY_PNG_BASE64, "base64"));
+
+			const tool = createReadToolDefinition(testDir);
+			const result = await tool.execute(
+				"test-text-only",
+				{ path: imagePath },
+				undefined,
+				undefined,
+				{ model: TEXT_ONLY_MODEL } as ExtensionContext,
+			);
+
+			expect(result.content).toHaveLength(1);
+			expect(result.content[0]?.type).toBe("text");
+			expect(result.content.some((content) => content.type === "image")).toBe(false);
+			expect(result.content[0]?.type === "text" ? result.content[0].text : "").toContain(
+				"Current model does not support images",
+			);
 		});
 
 		it("should read text files normally", async () => {
