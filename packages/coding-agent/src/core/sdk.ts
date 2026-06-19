@@ -255,14 +255,19 @@ export async function createAgentSession(
   const agentDir = options.agentDir ? resolvePath(options.agentDir) : getDefaultAgentDir();
   let resourceLoader = options.resourceLoader;
 
-  // Use provided or create AuthStorage and ModelRegistry
+  // Use provided or create AuthStorage and ModelRegistry. When a modelRegistry
+  // is supplied (e.g. a workflow stage reusing one registry across model
+  // fallback candidates), do NOT also build a fresh AuthStorage: its
+  // constructor eagerly calls reload(), which acquires the auth.json file lock
+  // and, under contention, can fail and leave an empty credential set. Reusing
+  // the supplied registry's already-loaded auth avoids that race (issue #1431).
   const authPath = options.agentDir ? join(agentDir, "auth.json") : undefined;
   const modelsPath = options.agentDir
     ? join(agentDir, "models.json")
     : undefined;
-  const authStorage = options.authStorage ?? AuthStorage.create(authPath);
   const modelRegistry =
-    options.modelRegistry ?? ModelRegistry.create(authStorage, modelsPath);
+    options.modelRegistry ??
+    ModelRegistry.create(options.authStorage ?? AuthStorage.create(authPath), modelsPath);
 
   const settingsManager =
     options.settingsManager ?? SettingsManager.create(cwd, agentDir);

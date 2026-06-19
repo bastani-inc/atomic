@@ -723,6 +723,18 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
   let candidatesPromise: Promise<WorkflowResolvedModelCandidate[]> | undefined;
   let activeCandidateIndex: number | undefined;
   let selectedModel: string | undefined;
+  // A single ModelRegistry (carrying its AuthStorage) reused across every model
+  // fallback candidate in this stage. Captured from the first created session
+  // and threaded into subsequent candidate sessions so fallback does not rebuild
+  // auth/model state per candidate — which can misreport configured providers as
+  // "No API key found" under auth.json lock contention (issue #1431).
+  let sharedModelRegistry: CreateAgentSessionOptions["modelRegistry"];
+  // When true, the next promptWithFallback() call first retries the model the
+  // session last settled on (a post-completion follow-up, a subsequent turn, or
+  // a reattached session) before replaying the chain from the primary. Set on
+  // every successful attempt and by ensureSession()'s reattach branch; cleared
+  // when the current session is disposed.
+  let resumeCurrentSession = false;
   const modelAttempts: WorkflowModelAttempt[] = [];
   const modelWarnings: string[] = [];
   const pendingFallbackWarnings: string[] = [];
@@ -748,7 +760,10 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
     return candidatesPromise;
   }
 
-  function stageOptionsForCandidate(candidate: WorkflowResolvedModelCandidate | undefined): StageOptions | undefined {
+  function stageOptionsForCandidate(
+    candidate: WorkflowResolvedModelCandidate | undefined,
+    resumeOptions?: { restoreSavedModel?: boolean },
+  ): StageOptions | undefined {
     const optionsForCandidate: StageOptions = candidate === undefined
       ? { ...(effectiveStageOptions ?? {}) }
       : {
@@ -763,6 +778,12 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
           fallbackModels: undefined,
           fallbackThinkingLevels: undefined,
         };
+    // When resuming a reattached session (a post-completion follow-up), drop any
+    // model override so the SDK restores the model the session last used — the
+    // one that actually worked — instead of forcing the primary/candidate model.
+    if (resumeOptions?.restoreSavedModel) {
+      delete optionsForCandidate.model;
+    }
     if (reattachSessionFile !== undefined && optionsForCandidate.sessionManager === undefined) {
       const cwd = optionsForCandidate.cwd ?? process.cwd();
       optionsForCandidate.sessionManager = SessionManager.open(
@@ -772,6 +793,11 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
       );
       optionsForCandidate.context = undefined;
       optionsForCandidate.forkFromSessionFile = undefined;
+    }
+    // Reuse the registry captured from the first session for later fallback
+    // candidates. A caller-supplied modelRegistry is preserved (issue #1431).
+    if (sharedModelRegistry !== undefined && optionsForCandidate.modelRegistry === undefined) {
+      optionsForCandidate.modelRegistry = sharedModelRegistry;
     }
     return Object.keys(optionsForCandidate).length === 0 ? undefined : optionsForCandidate;
   }
@@ -829,6 +855,16 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
   function attachSession(created: StageSessionRuntime | StageSessionCreateResult): StageSessionRuntime {
     const result = normalizeSessionCreateResult(created);
     session = result.session;
+    // Capture the SDK ModelRegistry from the first real session so subsequent
+    // fallback candidates reuse the same already-loaded auth/model state instead
+    // of re-creating it per candidate (issue #1431). The test stub session has
+    // no modelRegistry, so capture is simply skipped there.
+    if (sharedModelRegistry === undefined) {
+      const withRegistry = result.session as Partial<Pick<AgentSession, "modelRegistry">>;
+      if (withRegistry.modelRegistry !== undefined) {
+        sharedModelRegistry = withRegistry.modelRegistry;
+      }
+    }
     sessionSettingsManager = result.settingsManager ?? result.session.settingsManager;
     if (pendingThinkingLevel !== undefined) {
       result.session.setThinkingLevel(pendingThinkingLevel);
@@ -851,12 +887,13 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
   async function createSession(
     candidate: WorkflowResolvedModelCandidate | undefined,
     consumer: AgentSessionConsumer,
+    resumeOptions?: { restoreSavedModel?: boolean },
   ): Promise<StageSessionRuntime> {
     applyCandidateThinking(candidate);
     const created = adapters.agentSession
-      ? await adapters.agentSession.create(stripWorkflowOnlyOptions(stageOptionsForCandidate(candidate)) as StageSessionCreateOptions, {
+      ? await adapters.agentSession.create(stripWorkflowOnlyOptions(stageOptionsForCandidate(candidate, resumeOptions)) as StageSessionCreateOptions, {
         ...meta,
-        stageOptions: stageOptionsForCandidate(candidate),
+        stageOptions: stageOptionsForCandidate(candidate, resumeOptions),
       })
       : missingAdapter(consumer);
     return attachSession(created);
@@ -864,12 +901,37 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 
   async function ensureSession(consumer: AgentSessionConsumer = "prompt"): Promise<StageSessionRuntime> {
     if (disposed) throw new Error(`atomic-workflows: stage "${stageName}" session has been disposed`);
+    // Reuse an already-attached session. After model fallback settles, `session`
+    // is set but `sessionPromise` is left undefined; without this guard a
+    // follow-up's ensureSession() (via ctx.followUp / ctx.steer / __ensureSession)
+    // would create a brand-new session from the primary candidate and discard the
+    // working fallback session (issue #1431 follow-up).
+    if (session !== undefined) return session;
     if (!sessionPromise) {
       sessionPromise = (async () => {
         if (!hasExplicitModelFallbackConfig) return createSession(undefined, consumer);
         const candidates = await modelCandidates();
         const first = candidates[0];
         if (first === undefined) return createSession(undefined, consumer);
+
+        // Reattaching a previously-run session (e.g. a post-completion
+        // follow-up after the session was disposed): resume on the model the
+        // session last settled on — the one that actually worked — instead of
+        // replaying the fallback chain from an unavailable primary.
+        // promptWithFallback retries that model first; if it fails again it
+        // restarts the full chain from the primary.
+        if (reattachSessionFile !== undefined) {
+          const resumed = await createSession(undefined, consumer, { restoreSavedModel: true });
+          const restoredId = workflowModelId(resumed.model);
+          const restoredIndex = restoredId === undefined
+            ? -1
+            : candidates.findIndex((entry) => entry.id === restoredId);
+          activeCandidateIndex = restoredIndex >= 0 ? restoredIndex : undefined;
+          selectedModel = restoredId ?? first.id;
+          resumeCurrentSession = true;
+          return resumed;
+        }
+
         activeCandidateIndex = 0;
         selectedModel = first.id;
         return createSession(first, consumer);
@@ -889,6 +951,7 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
     session = undefined;
     sessionPromise = undefined;
     sessionSettingsManager = undefined;
+    resumeCurrentSession = false;
     for (const unsubscribe of listenerUnsubscribes.values()) unsubscribe();
     listenerUnsubscribes.clear();
     unsubscribeTerminateWatcher?.();
@@ -956,13 +1019,60 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
       return;
     }
 
-    let index = activeCandidateIndex ?? 0;
     const capturedStructuredOutputForAttempt = (): boolean =>
       structuredOutputCapture?.called === true && signal?.aborted !== true;
     const recordSuccessfulAttempt = (candidate: WorkflowResolvedModelCandidate): void => {
       modelAttempts.push({ model: candidate.id, success: true, ...modelAttemptReasoning(candidate) });
       pendingFallbackWarnings.length = 0;
+      // The session settled on a working model; a later follow-up/turn should
+      // resume on it rather than replaying the chain from the primary.
+      resumeCurrentSession = true;
     };
+
+    // Resume preamble: when the stage already settled on a working model (a
+    // post-completion follow-up, a subsequent turn, or a reattached session),
+    // retry that model first instead of replaying the chain from an unavailable
+    // primary. If that model now fails retryably, restart the full chain from
+    // the primary.
+    if (resumeCurrentSession && session !== undefined) {
+      resumeCurrentSession = false;
+      const resumedSession = session;
+      const resumedLabel = selectedModel ?? workflowModelId(resumedSession.model) ?? candidates[0]!.id;
+      notifyModelFallbackMetaChange();
+      try {
+        const { terminalScanStartIndex } = await promptWithPauseResume(resumedSession, text, sdkOptions);
+        const terminalFailure = latestTerminalAssistantFailureSince(resumedSession.messages, terminalScanStartIndex);
+        if (terminalFailure === undefined || capturedStructuredOutputForAttempt()) {
+          modelAttempts.push({ model: resumedLabel, success: true });
+          pendingFallbackWarnings.length = 0;
+          resumeCurrentSession = true;
+          return;
+        }
+        throw new WorkflowPromptModelFailure(terminalFailure);
+      } catch (err) {
+        if (capturedStructuredOutputForAttempt() && isRetryableModelFailure(err)) {
+          modelAttempts.push({ model: resumedLabel, success: true });
+          pendingFallbackWarnings.length = 0;
+          resumeCurrentSession = true;
+          return;
+        }
+        const message = errorMessage(err);
+        modelAttempts.push({ model: resumedLabel, success: false, error: message });
+        if (signal?.aborted || !isRetryableModelFailure(err)) {
+          modelWarnings.push(...pendingFallbackWarnings);
+          pendingFallbackWarnings.length = 0;
+          notifyModelFallbackMetaChange();
+          throw err;
+        }
+        // The resumed model failed retryably: restart the whole fallback chain
+        // from the primary. disposeCurrentSession clears resumeCurrentSession.
+        pendingFallbackWarnings.push(`[fallback] resume on ${resumedLabel} failed: ${message}. Restarting fallback from ${candidateLabel(candidates[0]!)}.`);
+        await disposeCurrentSession();
+        activeCandidateIndex = undefined;
+      }
+    }
+
+    let index = activeCandidateIndex ?? 0;
 
     while (index < candidates.length) {
       const candidate = candidates[index]!;

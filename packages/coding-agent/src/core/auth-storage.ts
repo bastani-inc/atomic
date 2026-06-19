@@ -14,7 +14,7 @@ import {
 	type OAuthProviderId,
 } from "@earendil-works/pi-ai";
 import { getOAuthApiKey, getOAuthProvider, getOAuthProviders } from "@earendil-works/pi-ai/oauth";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import lockfile from "proper-lockfile";
 import { getAgentConfigPaths, getAgentDir } from "../config.ts";
@@ -48,6 +48,20 @@ type LockResult<T> = {
 const AUTH_FILE_WRITE_OPTIONS = { encoding: "utf-8", mode: 0o600 } as const;
 
 export interface AuthStorageBackend {
+	/**
+	 * Read the current credential snapshot WITHOUT acquiring the exclusive write
+	 * lock. Pure reads do not need cross-process write-exclusion: writers replace
+	 * the file atomically (temp file + rename), so a lock-free reader always
+	 * observes a complete previous-or-next snapshot, never a torn one. Keeping
+	 * reads lock-free is what prevents many concurrent sessions from starving each
+	 * other on `auth.json` and misreporting configured providers as unreadable
+	 * under contention (issue #1431).
+	 *
+	 * Optional for backward compatibility with custom backends that predate this
+	 * method (the released `AuthStorageBackend` interface): when absent,
+	 * `AuthStorage.reload()` falls back to a `withLock`-based read.
+	 */
+	read?(): string | undefined;
 	withLock<T>(fn: (current: string | undefined) => LockResult<T>): T;
 	withLockAsync<T>(fn: (current: string | undefined) => Promise<LockResult<T>>): Promise<T>;
 }
@@ -118,6 +132,37 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 		return found ? JSON.stringify(merged, null, 2) : undefined;
 	}
 
+	/**
+	 * Atomically replace `auth.json` with `content`: write a sibling temp file
+	 * (same directory, so `rename` is a same-filesystem atomic swap), fix its
+	 * permissions, then `rename` it over the target. Lock-free readers therefore
+	 * never observe a half-written file. The temp file is best-effort cleaned up
+	 * if the rename fails.
+	 */
+	private writeAtomic(content: string): void {
+		const dir = dirname(this.authPath);
+		const tempPath = join(
+			dir,
+			`.${`auth.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}`}.tmp`,
+		);
+		try {
+			writeFileSync(tempPath, content, AUTH_FILE_WRITE_OPTIONS);
+			chmodSync(tempPath, 0o600);
+			renameSync(tempPath, this.authPath);
+		} catch (error) {
+			try {
+				if (existsSync(tempPath)) rmSync(tempPath, { force: true });
+			} catch {
+				// Best-effort cleanup; ignore.
+			}
+			throw error;
+		}
+	}
+
+	read(): string | undefined {
+		return this.readMergedAuth();
+	}
+
 	withLock<T>(fn: (current: string | undefined) => LockResult<T>): T {
 		this.ensureParentDir();
 
@@ -135,8 +180,7 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 				if (!release) {
 					release = this.acquireLockSyncWithRetry(this.authPath);
 				}
-				writeFileSync(this.authPath, next, AUTH_FILE_WRITE_OPTIONS);
-				chmodSync(this.authPath, 0o600);
+				this.writeAtomic(next);
 			}
 			return result;
 		} finally {
@@ -182,8 +226,7 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 			const { result, next } = await fn(current);
 			throwIfCompromised();
 			if (next !== undefined) {
-				writeFileSync(this.authPath, next, AUTH_FILE_WRITE_OPTIONS);
-				chmodSync(this.authPath, 0o600);
+				this.writeAtomic(next);
 			}
 			throwIfCompromised();
 			return result;
@@ -201,6 +244,10 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 
 export class InMemoryAuthStorageBackend implements AuthStorageBackend {
 	private value: string | undefined;
+
+	read(): string | undefined {
+		return this.value;
+	}
 
 	withLock<T>(fn: (current: string | undefined) => LockResult<T>): T {
 		const { result, next } = fn(this.value);
@@ -294,18 +341,36 @@ private constructor(storage: AuthStorageBackend) {
 	 * Reload credentials from storage.
 	 */
 	reload(): void {
-		let content: string | undefined;
 		try {
-			this.storage.withLock((current) => {
-				content = current;
-				return { result: undefined };
-			});
+			// Pure read: never take the exclusive write lock. Writers replace
+			// auth.json atomically, so a lock-free read always sees a complete
+			// snapshot. This keeps many concurrent sessions from starving each other
+			// on the lock and misreporting configured providers as unreadable under
+			// contention (issue #1431).
+			const content = this.readSnapshot();
 			this.data = this.parseStorageData(content);
 			this.loadError = null;
 		} catch (error) {
 			this.loadError = error as Error;
 			this.recordError(error);
 		}
+	}
+
+	/**
+	 * Read the credential snapshot, preferring the backend's lock-free `read()`.
+	 * Falls back to a `withLock`-based read for custom backends that predate
+	 * `read()` so the released `AuthStorageBackend` interface stays compatible.
+	 */
+	private readSnapshot(): string | undefined {
+		if (this.storage.read) {
+			return this.storage.read();
+		}
+		let content: string | undefined;
+		this.storage.withLock((current) => {
+			content = current;
+			return { result: undefined };
+		});
+		return content;
 	}
 
 	private persistProviderChange(provider: string, credential: AuthCredential | undefined): void {
@@ -413,6 +478,21 @@ private constructor(storage: AuthStorageBackend) {
 		const drained = [...this.errors];
 		this.errors = [];
 		return drained;
+	}
+
+	/**
+	 * Returns the error from the most recent failed credential load, or null when
+	 * the last reload succeeded.
+	 *
+	 * A non-null value means stored credentials could NOT be read — e.g. the auth
+	 * file was temporarily locked by another process (ELOCKED) or contained
+	 * invalid JSON — so an empty/absent credential set is NOT authoritative.
+	 * Callers that would otherwise report "No API key found" should surface this
+	 * load failure instead of treating the provider as unauthenticated
+	 * (issue #1431).
+	 */
+	getLoadError(): Error | null {
+		return this.loadError;
 	}
 
 	/**

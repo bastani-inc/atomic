@@ -45,6 +45,7 @@ import {
 	normalizeAtomicGuideMode,
 } from "./atomic-guide-command.ts";
 import {
+	formatAuthStorageLoadFailedMessage,
 	formatNoApiKeyFoundMessage,
 	formatNoModelSelectedMessage,
 	formatUnresolvedModelMessage,
@@ -1310,6 +1311,19 @@ export class AgentSession {
 			}
 
 			if (!this._modelRegistry.hasConfiguredAuth(this.model)) {
+				// A failed credential-store load (for example auth.json briefly locked
+				// by a concurrent process, or invalid JSON) leaves an empty in-memory
+				// credential set. That would otherwise be misreported here as
+				// "No API key found" even though the credentials exist on disk. Surface
+				// the real load failure instead so configured providers are not falsely
+				// reported as unauthenticated (issue #1431).
+				const authLoadError = this._modelRegistry.authStorage.getLoadError();
+				if (authLoadError) {
+					throw new Error(
+						formatAuthStorageLoadFailedMessage(this.model.provider, authLoadError),
+						{ cause: authLoadError },
+					);
+				}
 				const isOAuth = this._modelRegistry.isUsingOAuth(this.model);
 				if (isOAuth) {
 					throw new Error(

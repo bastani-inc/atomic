@@ -468,6 +468,20 @@ describe("model fallback helpers", () => {
     assert.equal(normalizeModelFailureSignal(err).kind, "provider_unavailable");
   });
 
+  test("an auth-storage load failure stays retryable (not a hard task failure) (#1431)", () => {
+    // Mirrors formatAuthStorageLoadFailedMessage(...) output. Fix #2 surfaces a
+    // credential-store LOAD failure instead of "No API key found"; that message
+    // must remain a recoverable/retryable auth failure so a transient store-read
+    // failure can still fall back rather than hard-failing the stage.
+    const message =
+      "Could not load stored credentials for anthropic: the auth credential store could not be " +
+      "read (Lock file is already being held). This is not a missing API key — stored credentials " +
+      "may exist but the credential store could not be read (it may be temporarily locked by " +
+      "another process). Retry shortly or run '/login anthropic' to re-authenticate.";
+    assert.equal(isRetryableModelFailure(new Error(message)), true);
+    assert.equal(normalizeModelFailureSignal(new Error(message)).kind, "auth_on_candidate_provider");
+  });
+
   test("retry classifier refuses cancellation and task failures despite structured-looking text", () => {
     assert.equal(isRetryableModelFailure({ name: "AbortError", status: 503, message: "request aborted" }), false);
     assert.equal(isRetryableModelFailure({ status: 503, message: "request cancelled" }), false);
