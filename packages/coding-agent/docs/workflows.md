@@ -361,6 +361,8 @@ Named runs go to the background. Common controls:
 /workflow kill <run-id>                # abort and retain for inspection
 ```
 
+When a paused stage is resumed with a message, Atomic lets the stage answer that resume message, then (if the stage has not already finalized) injects `Continue where you left off.` into the same stage session before normal stage completion/readiness handling. This keeps interrupted work moving without asking you to manually type a second continuation prompt.
+
 Human-in-the-loop prompts from `ctx.ui.input`, `ctx.ui.confirm`, `ctx.ui.select`, `ctx.ui.editor`, and `ctx.ui.custom<T>` appear as awaiting-input nodes in the workflow graph viewer, not as chat modals — use `/workflow connect <run-id>` (or F2), focus the node, and press Enter to answer them locally.
 
 `ctx.ui.custom<T>(factory, options?)` reuses Atomic's TUI component path: the factory receives the same real `(tui, theme, keybindings, done)` types as extension `ctx.ui.custom`, and the workflow resumes with the value passed to `done(value)`. Use `options.label` for a safe display-only graph/status label and `options.replayIdentity` when widget semantics can change without the callsite changing. Do not put secrets in labels or replay identities; only a hash of the identity is stored, and label text is not part of replay identity. Inline connected rendering is supported; `overlay: true` is rejected clearly because nested workflow graph overlays are not safely supported yet.
@@ -881,7 +883,7 @@ Control behavior:
 - `pause`, `interrupt`, and `kill` can target one top-level run or `all: true`; `stageId` cannot be combined with `all: true`. Stage-scoped controls can target a visible nested child stage from the expanded graph; Atomic routes the operation to the owning nested run internally.
 - `interrupt` is resumable: it pauses live work when pausable stages exist and keeps the run in live history/status.
 - `pause` is useful for pausing a live run or a single live stage without treating it as a destructive abort.
-- `resume` can target a stage with `stageId`; the target may be a stage id, unique prefix, or stage name. `message` is forwarded to paused work.
+- `resume` can target a stage with `stageId`; the target may be a stage id, unique prefix, or stage name. `message` is forwarded to paused work. After the stage answers a non-empty resume message, Atomic automatically injects `Continue where you left off.` in that same session before normal readiness-gate completion when the stage has not already finalized, including when the resume-answer turn used `ask_user_question`.
 - `kill` aborts in-flight work, marks the run `killed`, and retains it in live history/status for inspection.
 - `reload` refreshes discovered workflow resources in-process; the optional `reason` is echoed in the result.
 

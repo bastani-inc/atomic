@@ -1003,6 +1003,24 @@ export function toolResultHasChatAnswer(result: unknown): boolean {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Resume continuation hook (#1407)
+// ---------------------------------------------------------------------------
+// When an interactive paused stage is resumed with a user message, the resumed
+// answer turn should be followed by one deterministic same-session nudge so the
+// model returns to the interrupted work without showing the readiness gate for
+// the resume-answer turn itself.
+
+export const RESUME_CONTINUATION_PROMPT = "Continue where you left off.";
+
+export function shouldInjectResumeContinuation(state: {
+  readonly resumeOccurred: boolean;
+  readonly gateEnabled: boolean;
+  readonly aborted: boolean;
+}): boolean {
+  return state.resumeOccurred && state.gateEnabled && !state.aborted;
+}
+
 let cachedReadinessGateTool: ReturnType<typeof createAskUserQuestionToolDefinition> | undefined;
 function readinessGateTool(): ReturnType<typeof createAskUserQuestionToolDefinition> {
   return (cachedReadinessGateTool ??= createAskUserQuestionToolDefinition());
@@ -4199,6 +4217,7 @@ export async function run<TInputs extends WorkflowInputValues>(
           __requestPause: async () => rejectReplayMutation("pause"),
           __resume: async () => rejectReplayMutation("resume"),
           __isPaused: () => false,
+          __structuredOutputFinalized: () => false,
         };
         return replayContext;
       }
@@ -4251,6 +4270,12 @@ export async function run<TInputs extends WorkflowInputValues>(
       // When true the readiness gate is bypassed — the stage stays in the
       // composer without showing an extra confirmation UI (#1264).
       let chatAnswerObservedThisTurn = false;
+      // Saturated one-slot marker for the latest real pause->resume(message)
+      // transition that still needs the deterministic same-session continuation
+      // prompt (#1407). Later paused resumes before the same post-turn drain
+      // supersede earlier unfinished resumes; the slot is consumed before
+      // prompting so a pause/resume of the continuation turn can set it again.
+      let resumeContinuationPending = false;
       const hasActiveAskUserQuestion = (): boolean =>
         activeAskUserQuestionCalls.size > 0 || activeAskUserQuestionAnonymousCalls > 0;
       const unsubscribeAskUserQuestionWatcher = innerCtx.subscribe((event) => {
@@ -4441,18 +4466,30 @@ export async function run<TInputs extends WorkflowInputValues>(
         async resume(message?: string) {
           throwIfStageMutationBlocked();
           await ensureMessagingSession();
-          const changed = activeStore.recordStageResumed(runId, stageId);
-          if (changed) {
-            releaseStageBarrier(stageId);
-            await cascadeResumeFrom(stageId);
-            // Restore run-level status so a manual resume updates the main chat
-            // like the `workflow` tool / `/workflow resume`. recordRunResumed is
-            // a no-op when the run is not paused, so this is safe under cascade
-            // and the tool/slash path.
-            activeStore.recordRunResumed(runId);
+          const wasPausedBeforeResume = innerCtx.__isPaused();
+          const hasResumeContinuationMessage = typeof message === "string" && message.trim().length > 0;
+          const previousResumeContinuationPending = resumeContinuationPending;
+          const queuedResumeContinuation = wasPausedBeforeResume && hasResumeContinuationMessage;
+          if (queuedResumeContinuation) {
+            resumeContinuationPending = true;
           }
           try {
+            const changed = activeStore.recordStageResumed(runId, stageId);
+            if (changed) {
+              releaseStageBarrier(stageId);
+              await cascadeResumeFrom(stageId);
+              // Restore run-level status so a manual resume updates the main chat
+              // like the `workflow` tool / `/workflow resume`. recordRunResumed is
+              // a no-op when the run is not paused, so this is safe under cascade
+              // and the tool/slash path.
+              activeStore.recordRunResumed(runId);
+            }
             await innerCtx.__resume(message);
+          } catch (err) {
+            if (queuedResumeContinuation) {
+              resumeContinuationPending = previousResumeContinuationPending;
+            }
+            throw err;
           } finally {
             captureStageSessionMeta();
           }
@@ -4601,7 +4638,44 @@ export async function run<TInputs extends WorkflowInputValues>(
         }
       };
 
-      const runTrackedStageCall = async (call: () => Promise<string>, eagerSession = false): Promise<string> => {
+      const suppressReadinessForCurrentTurn = (): void => {
+        askUserQuestionObservedThisTurn = false;
+        chatAnswerObservedThisTurn = false;
+      };
+
+      const skipResumeContinuationInjection = (): boolean => {
+        if (stageFinalized) return true;
+        if (skippedForParallelFailFast) return true;
+        if (stageSnapshot.status === "skipped" && stageSnapshot.skippedReason === "fail-fast") return true;
+        if (isTerminalStage(stageSnapshot)) return true;
+        if (stageFailFastScope?.failed === true && stageFailFastScope.activeStages.has(stageId)) return true;
+        // A schema-backed stage can finalize during the resumed answer turn by
+        // calling structured_output. That consumes the resume slot and
+        // suppresses readiness for the resume-answer turn, but a second prompt
+        // would violate the one-prompt schema contract.
+        if (innerCtx.__structuredOutputFinalized()) return true;
+        return false;
+      };
+
+      const drainResumeContinuations = async <T>(currentResult: T): Promise<T> => {
+        let result = currentResult;
+        while (resumeContinuationPending) {
+          resumeContinuationPending = false;
+          suppressReadinessForCurrentTurn();
+          if (!shouldInjectResumeContinuation({
+            resumeOccurred: true,
+            gateEnabled: readinessGateEnabled,
+            aborted: ownController.signal.aborted,
+          })) {
+            continue;
+          }
+          if (skipResumeContinuationInjection()) continue;
+          result = await raceAbort(innerCtx.prompt(RESUME_CONTINUATION_PROMPT), ownController.signal) as T;
+        }
+        return result;
+      };
+
+      const runTrackedStageCall = async <T>(call: () => Promise<T>, eagerSession = false): Promise<T> => {
         throwIfWorkflowExitSelected();
         await waitForStageRelease();
         if (stageFinalized) {
@@ -4678,12 +4752,13 @@ export async function run<TInputs extends WorkflowInputValues>(
           };
           if (ownController.signal.aborted) abortSession();
           else ownController.signal.addEventListener("abort", abortSession, { once: true });
-          let result = "";
+          let result: T;
           try {
             // Run the stage's initial agent turn.
             askUserQuestionObservedThisTurn = false;
             chatAnswerObservedThisTurn = false;
             result = await raceAbort(call(), ownController.signal);
+            result = await drainResumeContinuations(result);
 
             // Per-turn readiness gate (#1099). When an agent turn ENDS (control
             // returns to the user): if the turn issued no ask_user_question
@@ -4723,7 +4798,8 @@ export async function run<TInputs extends WorkflowInputValues>(
                     ownController.signal,
                   );
                   if (ownController.signal.aborted) break;
-                  result = innerCtx.__getLastAssistantText() ?? result;
+                  result = (innerCtx.__getLastAssistantText() ?? result) as T;
+                  result = await drainResumeContinuations(result);
                 }
               } finally {
                 resolveNextTurnEnd = null;
