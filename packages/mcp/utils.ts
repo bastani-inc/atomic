@@ -208,6 +208,9 @@ function assignFlattenedArgPath(
   let node: Record<string | number, unknown> = root as Record<string | number, unknown>;
   for (let i = 0; i < segments.length - 1; i += 1) {
     const segment = segments[i];
+    if (segment === "__proto__" || segment === "constructor" || segment === "prototype") {
+      continue;
+    }
     const nextIsIndex = typeof segments[i + 1] === "number";
     const existing = node[segment];
     if (existing === null || existing === undefined || typeof existing !== "object") {
