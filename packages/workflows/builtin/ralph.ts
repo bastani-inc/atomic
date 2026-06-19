@@ -18,6 +18,7 @@ import type {
   WorkflowTaskResult,
 } from "../src/shared/types.js";
 import { E2E_VERIFICATION_GUIDANCE, WORKER_PREFLIGHT_CONTRACT } from "./shared-prompts.js";
+import { reviewDecisionApproved, type ReviewDecision } from "./ralph-review-gate.js";
 
 const DEFAULT_MAX_LOOPS = 10;
 const DEFAULT_RESEARCH_DIR = "research";
@@ -25,43 +26,14 @@ const IMPLEMENTATION_NOTES_FILENAME = "implementation-notes.md";
 const QA_E2E_VIDEO_FILENAME = "qa-e2e-evidence.webm";
 const MAX_RESEARCH_SLUG_LENGTH = 80;
 // Reviewer fan-out launches three independent reviewers; the loop stops only when
-// all three reviewers independently approve (find no issues). Requiring unanimous
-// approval means a P0–P3 finding from any single reviewer keeps the loop iterating
-// instead of being out-voted by a majority, so lower-severity issues stay surfaced.
+// all three reviewers independently approve. Approval is severity-aware: a
+// reviewer approves when it judged the patch correct, reported no reviewer_error,
+// and filed no *blocking* (P0/P1/P2) finding. P3 nice-to-haves no longer keep the
+// loop iterating, so a single low-priority nit (or a placeholder finding) can no
+// longer strand an otherwise-approved patch. Requiring unanimous approval still
+// means a blocking finding from any one reviewer keeps the loop going. See
+// ./ralph-review-gate.ts for the gate types and decision logic.
 const REVIEWER_COUNT = 3;
-
-type ReviewFinding = {
-  readonly title: string;
-  readonly body: string;
-  readonly confidence_score: number;
-  readonly priority?: number | null;
-  readonly code_location: {
-    readonly absolute_file_path: string;
-    readonly line_range: {
-      readonly start: number;
-      readonly end: number;
-    };
-  };
-};
-
-type ReviewerError = {
-  readonly kind:
-    | "validation_unavailable"
-    | "dependency_unavailable"
-    | "tool_failure"
-    | "reviewer_failure";
-  readonly message: string;
-  readonly attempted_recovery: string;
-};
-
-type ReviewDecision = {
-  readonly findings: readonly ReviewFinding[];
-  readonly overall_correctness: "patch is correct" | "patch is incorrect";
-  readonly overall_explanation: string;
-  readonly overall_confidence_score: number;
-  readonly stop_review_loop: boolean;
-  readonly reviewer_error?: ReviewerError | null;
-};
 
 const reviewFindingSchema = Type.Object(
   {
@@ -218,15 +190,6 @@ function renderQaE2eVideoGuidance(qaVideoPath: string): string {
 
 function reviewDecisionFromResult(result: WorkflowTaskResult): ReviewDecision | undefined {
   return result.structured as ReviewDecision | undefined;
-}
-
-function reviewDecisionApproved(decision: ReviewDecision): boolean {
-  return (
-    decision.stop_review_loop === true &&
-    decision.overall_correctness === "patch is correct" &&
-    decision.findings.length === 0 &&
-    decision.reviewer_error == null
-  );
 }
 
 function reviewerErrorDecision(error: string): ReviewDecision {
@@ -785,14 +748,14 @@ async function runRalphWorkflow(
           "Speculation is insufficient: identify the code path, scenario, environment, or input that is provably affected.",
           "Do not flag intentional behavior changes as bugs unless they clearly violate the task or documented contract.",
           "Ignore trivial style unless it obscures meaning or violates documented standards in a way that affects correctness/security/maintainability.",
-          "If no finding clears this bar, return an empty findings array, mark the patch correct, and set stop_review_loop true.",
+          "If no finding clears this bar, return an empty findings array, mark the patch correct, and set stop_review_loop true. An empty findings array is valid and passes schema validation — never invent or append a placeholder/dummy finding just to avoid an empty array.",
         ].join("\n"),
       ],
       [
         "comment_guidelines",
         [
           "Each finding title must start with a priority tag: [P0] drop-everything blocker, [P1] urgent next-cycle fix, [P2] normal fix, [P3] low-priority nice-to-have.",
-          "Also include numeric priority: 0 for P0, 1 for P1, 2 for P2, 3 for P3; use null only if priority genuinely cannot be determined.",
+          "Also include numeric priority: 0 for P0, 1 for P1, 2 for P2, 3 for P3; use null only if priority genuinely cannot be determined. Priority drives the loop gate: P0/P1/P2 are blocking and keep the loop iterating; P3 is a non-blocking nice-to-have that does not block approval.",
           "The body must be one concise paragraph explaining why this is a bug and the exact scenario, environment, or inputs required for it to arise.",
           "Use a matter-of-fact, non-accusatory tone. Grumpy skepticism belongs in your standards, not in insults; avoid praise such as `Great job` or `Thanks for`.",
           "Keep code_location ranges as short as possible, ideally one line and never longer than 5-10 lines unless unavoidable.",
@@ -805,7 +768,7 @@ async function runRalphWorkflow(
         "how_many_findings",
         [
           "Return all findings the original author would definitely want to fix.",
-          "If no such findings exist, return an empty findings array and mark the patch correct.",
+          "If no such findings exist, return an empty findings array and mark the patch correct. Do not pad the array with placeholder or speculative findings.",
           "Do not stop after the first qualifying finding; continue until every qualifying finding is listed.",
         ].join("\n"),
       ],
@@ -836,7 +799,7 @@ async function runRalphWorkflow(
       [
         "decision_rules",
         [
-          "Set stop_review_loop=true only when findings is empty, overall_correctness is patch is correct, and reviewer_error is null/omitted.",
+          "Set stop_review_loop=true when the patch is correct, reviewer_error is null/omitted, and there are no blocking (P0/P1/P2) findings; remaining P3 nice-to-haves do not block approval. The loop gate is computed from finding priorities, so an unresolved P0/P1/P2 keeps the loop going regardless of this flag.",
           "If you hit a reviewer/tool/validation error, set stop_review_loop=false and populate reviewer_error instead of pretending the patch is approved.",
         ].join("\n"),
       ],
@@ -908,8 +871,9 @@ async function runRalphWorkflow(
     ).length;
     // Require unanimous approval: every reviewer must have run and independently
     // approved. A fan-out error that collapses to a single error entry (fewer than
-    // REVIEWER_COUNT reviews) or any reviewer surfacing a finding keeps the loop
-    // iterating rather than letting a majority paper over outstanding issues.
+    // REVIEWER_COUNT reviews) or any reviewer surfacing a blocking (P0/P1/P2)
+    // finding keeps the loop iterating rather than letting a majority paper over
+    // outstanding issues. P3 nice-to-haves do not block approval.
     approved =
       reviewEntries.length === REVIEWER_COUNT &&
       approvalCount === REVIEWER_COUNT;
