@@ -191,7 +191,7 @@ export function sanitizeGeminiSchema(schema: JsonValue): JsonValue {
       continue;
     }
     if (key === "items") {
-      result.items = sanitizeGeminiSchema(value);
+      result.items = sanitizeItems(value);
       continue;
     }
     if (KEPT_SCHEMA_KEYWORDS.has(key)) {
@@ -202,8 +202,35 @@ export function sanitizeGeminiSchema(schema: JsonValue): JsonValue {
     void DROPPED_SCHEMA_KEYWORDS;
   }
 
+  inferContainerType(result);
   pruneRequired(result);
   return result;
+}
+
+/**
+ * Resolve an `items` schema. Gemini's function-declaration schema expects a
+ * single `items` schema, so a tuple-form `items` (array of schemas) is collapsed
+ * to its most expressive (object/array) entry, falling back to the first entry.
+ */
+function sanitizeItems(items: JsonValue): JsonValue {
+  if (!Array.isArray(items)) return sanitizeGeminiSchema(items);
+  const sanitized = items.map((entry) => sanitizeGeminiSchema(entry));
+  const objectOrArray = sanitized.find((entry) => isObjectOrArraySchema(entry));
+  return objectOrArray ?? sanitized[0] ?? { type: "string" };
+}
+
+/**
+ * Gemini resolves function arguments more reliably when container nodes carry an
+ * explicit `type`. Infer it when omitted: a node with `properties`/`required` is
+ * an object, and a node with `items` is an array.
+ */
+function inferContainerType(schema: JsonObject): void {
+  if (schema.type !== undefined) return;
+  if (isPlainObject(schema.properties) || Array.isArray(schema.required)) {
+    schema.type = "object";
+  } else if (schema.items !== undefined) {
+    schema.type = "array";
+  }
 }
 
 /** Resolve an `anyOf`/`oneOf` union node into the Gemini-compatible subset. */
@@ -221,8 +248,11 @@ function sanitizeUnion(parent: JsonObject, branches: JsonValue[]): JsonValue {
     return target;
   };
 
-  // Core fix: if any branch is an object/array schema, collapse to the most
-  // expressive one (Gemini rejects unions whose branch is a complex object).
+  // Core fix: if any branch is an object/array schema, collapse to the first
+  // such branch (Gemini rejects unions whose branch is a complex object). For
+  // the TypeBox `Type.Union([Type.Object(...), Type.String()])` pattern this is
+  // the object branch; a union of two distinct object shapes keeps only the
+  // first, so the others' properties are intentionally dropped.
   const objectOrArray = nonNull.find((branch) => isObjectOrArraySchema(branch));
   if (objectOrArray) {
     return carryDescription(objectOrArray);

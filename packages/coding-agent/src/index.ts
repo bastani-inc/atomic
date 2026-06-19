@@ -38,6 +38,7 @@ export {
 	VERSION,
 } from "./config.ts";
 export { type BashResult, executeBashWithOperations } from "./core/bash-executor.ts";
+export { parseFlattenedKeyPath, reconstructFlattenedKeys } from "./core/flattened-tool-arguments.ts";
 export {
 	AgentSession,
 	type AgentSessionConfig,

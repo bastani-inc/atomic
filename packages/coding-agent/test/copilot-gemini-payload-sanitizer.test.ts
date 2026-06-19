@@ -187,6 +187,35 @@ describe("sanitizeGeminiSchema", () => {
     expect(items.type).toBe("object");
     expect(items.anyOf).toBeUndefined();
   });
+
+  it("infers a missing object type from properties", () => {
+    const result = sanitizeGeminiSchema({ properties: { a: { type: "string" } } }) as JsonObject;
+    expect(result.type).toBe("object");
+  });
+
+  it("infers a missing object type from required", () => {
+    const result = sanitizeGeminiSchema({ properties: { a: { type: "string" } }, required: ["a"] }) as JsonObject;
+    expect(result.type).toBe("object");
+  });
+
+  it("infers a missing array type from items", () => {
+    const result = sanitizeGeminiSchema({ items: { type: "string" } }) as JsonObject;
+    expect(result.type).toBe("array");
+  });
+
+  it("collapses a tuple-form items array to a single object schema", () => {
+    const schema = {
+      type: "array",
+      items: [
+        { type: "string" },
+        { type: "object", properties: { a: { type: "string" } } },
+      ],
+    };
+    const result = sanitizeGeminiSchema(schema) as JsonObject;
+    expect(Array.isArray(result.items)).toBe(false);
+    expect((result.items as JsonObject).type).toBe("object");
+    expect((result.items as JsonObject).properties).toEqual({ a: { type: "string" } });
+  });
 });
 
 describe("sanitizeCopilotGeminiPayload", () => {

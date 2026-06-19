@@ -1,5 +1,6 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { isCopilotGeminiModel } from "./copilot-gemini-payload-sanitizer.ts";
+import { reconstructFlattenedKeys } from "./flattened-tool-arguments.ts";
 
 /**
  * Normalizes GitHub Copilot Gemini tool-call arguments.
@@ -29,9 +30,12 @@ import { isCopilotGeminiModel } from "./copilot-gemini-payload-sanitizer.ts";
  * ------------
  * Reconstructs flattened keys (`name[i]`, `name[i].sub`, `parent.child`) back
  * into the intended nested arrays/objects, before tool-argument validation
- * runs. It is a no-op unless at least one bracket-indexed key (`name[<digit>]`)
- * is present, and it is gated to GitHub Copilot Gemini models, so it never
- * touches well-formed arguments from any other provider/model.
+ * runs. Bracket-indexed keys (`name[<digit>]`) are always reconstructed. A
+ * purely dotted key (`parent.child`, with no array anywhere) is ambiguous —
+ * a legitimate argument key can itself contain a dot — so it is only split when
+ * the optional tool `schema` marks its head segment as an object/array
+ * container property. The transform is gated to GitHub Copilot Gemini models,
+ * so it never touches well-formed arguments from any other provider/model.
  */
 
 type JsonRecord = Record<string, unknown>;
@@ -45,107 +49,79 @@ function hasFlattenedKey(keys: string[]): boolean {
   return keys.some((key) => /\[\d+\]/.test(key));
 }
 
+/** A schema node that holds a nested object/array (so dotted keys are real paths). */
+function isContainerSchema(schema: unknown): boolean {
+  if (!isPlainObject(schema)) return false;
+  if (schema.type === "object" || schema.type === "array") return true;
+  if ("properties" in schema || "items" in schema) return true;
+  const union = schema.anyOf ?? schema.oneOf;
+  if (Array.isArray(union)) return union.some((branch) => isContainerSchema(branch));
+  return false;
+}
+
+/** Top-level property names whose schema is an object/array container. */
+function containerPropertyNames(schema: unknown): Set<string> {
+  const names = new Set<string>();
+  if (!isPlainObject(schema)) return names;
+  const properties = schema.properties;
+  if (!isPlainObject(properties)) return names;
+  for (const [name, sub] of Object.entries(properties)) {
+    if (isContainerSchema(sub)) names.add(name);
+  }
+  return names;
+}
+
+/** Whether `key` is a pure dotted path (`parent.child`) headed by a container prop. */
+function isDottedContainerKey(key: string, containers: Set<string>): boolean {
+  const dot = key.indexOf(".");
+  if (dot <= 0) return false;
+  return containers.has(key.slice(0, dot));
+}
+
 /**
- * Parse a flattened key such as `a.b[0].c` into path segments
- * `["a", "b", 0, "c"]`. Returns `undefined` for a plain key with no `.`/`[`.
+ * Decide whether a flattened key should be split into nested path segments.
+ * Bracket-indexed keys always split. When a bracket key is present anywhere in
+ * the payload, dotted keys split too (they are part of the same flattened
+ * object). Otherwise a dotted key only splits when the schema marks its head as
+ * a container property, which keeps legitimate dot-containing keys intact.
  */
-function parseFlattenedPath(key: string): Array<string | number> | undefined {
-  if (!/[.[]/.test(key)) return undefined;
-  const segments: Array<string | number> = [];
-  let current = "";
-  let index = 0;
-  const flushCurrent = () => {
-    if (current !== "") {
-      segments.push(current);
-      current = "";
-    }
-  };
-  while (index < key.length) {
-    const char = key[index];
-    if (char === ".") {
-      flushCurrent();
-      index += 1;
-    } else if (char === "[") {
-      flushCurrent();
-      const end = key.indexOf("]", index);
-      if (end === -1) return undefined; // malformed — leave key untouched
-      const inner = key.slice(index + 1, end);
-      const numeric = Number(inner);
-      if (Number.isInteger(numeric) && numeric >= 0 && inner.trim() !== "") {
-        segments.push(numeric);
-      } else {
-        segments.push(inner.replace(/^["']|["']$/g, ""));
-      }
-      index = end + 1;
-    } else {
-      current += char;
-      index += 1;
-    }
-  }
-  flushCurrent();
-  return segments.length > 0 ? segments : undefined;
-}
-
-/** Assign `value` at the given path inside `root`, creating arrays/objects as needed. */
-function assignPath(root: JsonRecord, segments: Array<string | number>, value: unknown): void {
-  let node: JsonRecord | unknown[] = root;
-  for (let i = 0; i < segments.length - 1; i += 1) {
-    const segment = segments[i];
-    const nextIsIndex = typeof segments[i + 1] === "number";
-    const container = node as Record<string | number, unknown>;
-    const existing = container[segment];
-    if (existing === undefined || existing === null || typeof existing !== "object") {
-      container[segment] = nextIsIndex ? [] : {};
-    }
-    node = container[segment] as JsonRecord | unknown[];
-  }
-  (node as Record<string | number, unknown>)[segments[segments.length - 1]] = value;
-}
-
-/** Remove empty holes from sparse arrays produced by out-of-order indices. */
-function compactSparseArrays(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.filter((entry) => entry !== undefined).map((entry) => compactSparseArrays(entry));
-  }
-  if (isPlainObject(value)) {
-    const out: JsonRecord = {};
-    for (const [key, entry] of Object.entries(value)) out[key] = compactSparseArrays(entry);
-    return out;
-  }
-  return value;
+function shouldSplitKey(key: string, hasBracket: boolean, containers: Set<string>): boolean {
+  if (/\[\d+\]/.test(key)) return true;
+  if (hasBracket) return true;
+  return isDottedContainerKey(key, containers);
 }
 
 /**
  * Reconstruct flattened Gemini tool-call arguments into proper nested
- * arrays/objects. Returns the original reference unchanged when no flattened
- * (`name[index]`) keys are present.
+ * arrays/objects. Returns the original reference unchanged when there is nothing
+ * to reconstruct. Bracket-indexed keys are always reconstructed; purely dotted
+ * keys are reconstructed only when the optional `schema` marks their head
+ * segment as an object/array container property. Reconstruction (and its
+ * prototype-pollution guard) is delegated to the shared canonical helper.
  */
-export function unflattenGeminiToolArguments(args: unknown): unknown {
+export function unflattenGeminiToolArguments(args: unknown, schema?: unknown): unknown {
   if (!isPlainObject(args)) return args;
   const keys = Object.keys(args);
-  if (!hasFlattenedKey(keys)) return args;
+  const hasBracket = hasFlattenedKey(keys);
+  const containers = hasBracket ? new Set<string>() : containerPropertyNames(schema);
+  const hasDottedContainer =
+    !hasBracket && keys.some((key) => isDottedContainerKey(key, containers));
+  if (!hasBracket && !hasDottedContainer) return args;
 
-  const result: JsonRecord = {};
-  for (const [key, value] of Object.entries(args)) {
-    const segments = parseFlattenedPath(key);
-    if (!segments) {
-      result[key] = value;
-      continue;
-    }
-    assignPath(result, segments, value);
-  }
-  return compactSparseArrays(result);
+  return reconstructFlattenedKeys(args, (key) => shouldSplitKey(key, hasBracket, containers));
 }
 
 /**
  * If `model` is a GitHub Copilot Gemini model, normalize flattened tool-call
  * arguments; otherwise return them unchanged. Used to gate
- * {@link unflattenGeminiToolArguments} by model at tool-call time.
+ * {@link unflattenGeminiToolArguments} by model at tool-call time. The optional
+ * `schema` is the tool's parameter schema, used to disambiguate dotted keys.
  */
 export function normalizeToolArgumentsForModel(
   args: unknown,
   model: Pick<Model<Api>, "provider" | "api" | "id"> | undefined,
+  schema?: unknown,
 ): unknown {
   if (!model || !isCopilotGeminiModel(model)) return args;
-  return unflattenGeminiToolArguments(args);
+  return unflattenGeminiToolArguments(args, schema);
 }

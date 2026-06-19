@@ -120,6 +120,7 @@ import {
 import { createAllToolDefinitions, defaultToolNames } from "./tools/index.ts";
 import { redirectOversizedToolResult } from "./tools/oversized-tool-result.js";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
+import { isCopilotGeminiModel } from "./copilot-gemini-payload-sanitizer.ts";
 import { normalizeToolArgumentsForModel } from "./copilot-gemini-tool-arguments.ts";
 
 function deepFreeze<T>(value: T): T {
@@ -3068,7 +3069,7 @@ export class AgentSession {
 			Array.from(toolRegistry, ([name, tool]) => {
 				const basePrepareArguments = tool.prepareArguments;
 				const prepareArguments = (args: unknown): unknown => {
-					const normalized = normalizeToolArgumentsForModel(args, this.model);
+					const normalized = normalizeToolArgumentsForModel(args, this.model, tool.parameters);
 					return basePrepareArguments ? basePrepareArguments(normalized) : normalized;
 				};
 				return [name, { ...tool, prepareArguments } as AgentTool] as const;
@@ -3199,8 +3200,21 @@ export class AgentSession {
 		if (isContextOverflow(message, contextWindow)) return false;
 
 		const err = message.errorMessage;
-		// Match: overloaded_error, provider returned error, rate limit, 429, 500, 502, 503, 504, service unavailable, network/connection errors (including connection lost), WebSocket transport closes/errors, fetch failed, premature stream endings, HTTP/2 closed before response, terminated, retry delay exceeded, and bare/transient provider finish_reason errors (e.g. github-copilot Gemini emitting finish_reason "error"/"content_filter" for MALFORMED_FUNCTION_CALL, OTHER, UNEXPECTED_TOOL_CALL, or spurious RECITATION/safety blocks)
-		return /overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|connection.?lost|websocket.?closed|websocket.?error|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|stream ended before message_stop|http2 request did not get a response|timed? out|timeout|terminated|retry delay|finish.?reason:?\s*(?:error|content.?filter)/i.test(
+
+		// A genuine `content_filter` stop is a deliberate safety block: retrying it
+		// re-issues the same blocked request up to maxRetries times for no benefit.
+		// GitHub Copilot Gemini is the exception — CAPI maps spurious Gemini blocks
+		// (RECITATION/safety on MALFORMED_FUNCTION_CALL etc.) to `content_filter`, so
+		// only treat `content_filter` as retryable for those models.
+		if (
+			isCopilotGeminiModel({ provider: message.provider, api: message.api, id: message.model }) &&
+			/finish.?reason:?\s*content.?filter/i.test(err)
+		) {
+			return true;
+		}
+
+		// Match: overloaded_error, provider returned error, rate limit, 429, 500, 502, 503, 504, service unavailable, network/connection errors (including connection lost), WebSocket transport closes/errors, fetch failed, premature stream endings, HTTP/2 closed before response, terminated, retry delay exceeded, and a bare/transient provider finish_reason "error" (e.g. github-copilot Gemini's CAPI mapping of MALFORMED_FUNCTION_CALL/OTHER/UNEXPECTED_TOOL_CALL). These are provider-agnostic transient failures.
+		return /overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|connection.?lost|websocket.?closed|websocket.?error|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|stream ended before message_stop|http2 request did not get a response|timed? out|timeout|terminated|retry delay|finish.?reason:?\s*error/i.test(
 			err,
 		);
 	}
@@ -3232,7 +3246,10 @@ export class AgentSession {
 		}
 
 		// A turn that produced output tokens but no surfaced content is not "empty"
-		// (e.g. reasoning-only responses); leave those alone.
+		// (e.g. reasoning-only responses); leave those alone. Note: a provider that
+		// fails to report `usage` (output defaults to 0) would make every
+		// content-less turn match here; the dual requirement (empty content AND zero
+		// output) keeps that false-positive risk low in practice.
 		return (message.usage?.output ?? 0) === 0;
 	}
 

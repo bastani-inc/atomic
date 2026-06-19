@@ -78,4 +78,27 @@ describe("unflattenToolArguments", () => {
     const result = unflattenToolArguments(args);
     assert.equal(result, args);
   });
+
+  test("drops __proto__ path keys and does not pollute Object.prototype", () => {
+    // JSON.parse keeps `__proto__` as an own property (the real wire shape).
+    const args = JSON.parse('{"x[0]":"a","__proto__.polluted":"yes"}');
+    const result = unflattenToolArguments(args);
+    assert.equal(({} as Record<string, unknown>).polluted, undefined);
+    assert.equal((Object.prototype as Record<string, unknown>).polluted, undefined);
+    assert.deepEqual(result, { x: ["a"] });
+  });
+
+  test("drops a literal __proto__ own key", () => {
+    const args = JSON.parse('{"x[0]":"a","__proto__":{"polluted":true}}');
+    const result = unflattenToolArguments(args);
+    assert.equal((Object.prototype as Record<string, unknown>).polluted, undefined);
+    assert.deepEqual(result, { x: ["a"] });
+  });
+
+  test("drops constructor.prototype paths", () => {
+    const args = JSON.parse('{"a[0]":1,"constructor.prototype.polluted":"x"}');
+    const result = unflattenToolArguments(args);
+    assert.equal((Object.prototype as Record<string, unknown>).polluted, undefined);
+    assert.deepEqual(result, { a: [1] });
+  });
 });
