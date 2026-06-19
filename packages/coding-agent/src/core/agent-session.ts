@@ -742,6 +742,9 @@ export class AgentSession {
 				event.message.role === "assistant" ||
 				event.message.role === "toolResult"
 			) {
+				if (event.message.role === "assistant") {
+					this._normalizePersistedGeminiToolArgs(event.message);
+				}
 				// Regular LLM message - persist as SessionMessageEntry
 				this.sessionManager.appendMessage(event.message);
 			}
@@ -3217,6 +3220,28 @@ export class AgentSession {
 		return /overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|connection.?lost|websocket.?closed|websocket.?error|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|stream ended before message_stop|http2 request did not get a response|timed? out|timeout|terminated|retry delay|finish.?reason:?\s*error/i.test(
 			err,
 		);
+	}
+
+	/**
+	 * For GitHub Copilot Gemini, reconstruct flattened tool-call arguments
+	 * (for example `edits[0].newText`) into the nested arrays/objects Gemini
+	 * produced before the assistant message is persisted, so saved transcripts
+	 * never carry the flattened CAPI wire shape and replays loaded from disk match
+	 * the structure Gemini signed. In-place, gated to Copilot Gemini, and a no-op
+	 * for well-formed arguments or any other provider/model. The outbound replay
+	 * normalizer still heals already-persisted (legacy) sessions on the wire.
+	 */
+	private _normalizePersistedGeminiToolArgs(message: AssistantMessage): void {
+		const model = this.model;
+		if (!model || !isCopilotGeminiModel(model)) return;
+		for (const block of message.content) {
+			if (block.type !== "toolCall") continue;
+			const tool = this._toolRegistry.get(block.name);
+			const normalized = normalizeToolArgumentsForModel(block.arguments, model, tool?.parameters);
+			if (normalized !== block.arguments && normalized !== null && typeof normalized === "object") {
+				block.arguments = normalized as Record<string, unknown>;
+			}
+		}
 	}
 
 	/**

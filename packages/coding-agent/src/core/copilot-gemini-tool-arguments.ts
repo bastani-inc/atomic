@@ -125,3 +125,92 @@ export function normalizeToolArgumentsForModel(
   if (!model || !isCopilotGeminiModel(model)) return args;
   return unflattenGeminiToolArguments(args, schema);
 }
+
+/** Map each tool name in an OpenAI chat-completions payload to its parameter schema. */
+function toolParameterSchemas(tools: unknown): Map<string, unknown> {
+  const schemas = new Map<string, unknown>();
+  if (!Array.isArray(tools)) return schemas;
+  for (const tool of tools) {
+    if (!isPlainObject(tool)) continue;
+    // OpenAI chat-completions tool shape: { type: "function", function: { name, parameters } }.
+    const fn = tool.function;
+    if (isPlainObject(fn) && typeof fn.name === "string") {
+      schemas.set(fn.name, fn.parameters);
+      continue;
+    }
+    // Defensive: flat tool shape { name, parameters }.
+    if (typeof tool.name === "string") schemas.set(tool.name, tool.parameters);
+  }
+  return schemas;
+}
+
+/**
+ * Reconstruct flattened GitHub Copilot Gemini tool-call arguments on the
+ * **outbound replay payload**, so prior assistant tool calls are sent back to
+ * CAPI in the nested array/object shape Gemini originally produced.
+ *
+ * Why this exists
+ * ---------------
+ * {@link normalizeToolArgumentsForModel} only unflattens at tool *execution*
+ * time; the persisted assistant message keeps the raw flattened arguments CAPI
+ * delivered (for example `{ "edits[0].newText": "..." }`). When that message is
+ * replayed on the next turn, CAPI parses those literal keys straight into the
+ * Gemini `FunctionCall.Args`, producing a function call that does not match the
+ * tool's declared schema (nor the structure Gemini signed). Gemini then ends
+ * the turn with `MALFORMED_FUNCTION_CALL` / `UNEXPECTED_TOOL_CALL` / `OTHER`,
+ * which CAPI surfaces as a bare `finish_reason: "error"` — so multi-turn tool
+ * use dies one turn after any array/object tool call (such as `edit`).
+ *
+ * This rewrites each replayed assistant `tool_calls[].function.arguments` JSON
+ * into the reconstructed nested shape (reusing {@link unflattenGeminiToolArguments}
+ * with the tool's own parameter schema, looked up from the payload's `tools`),
+ * fixing both new and already-persisted sessions. Gated to GitHub Copilot Gemini
+ * models, fail-open on non-JSON arguments, and a no-op for well-formed args.
+ */
+export function normalizeCopilotGeminiReplayToolArguments(
+  payload: unknown,
+  model: Pick<Model<Api>, "provider" | "api" | "id">,
+): unknown {
+  if (!isCopilotGeminiModel(model)) return payload;
+  if (!isPlainObject(payload)) return payload;
+  const messages = payload.messages;
+  if (!Array.isArray(messages)) return payload;
+
+  const schemas = toolParameterSchemas(payload.tools);
+  let mutated = false;
+
+  const nextMessages = messages.map((message) => {
+    if (!isPlainObject(message) || message.role !== "assistant") return message;
+    const toolCalls = message.tool_calls;
+    if (!Array.isArray(toolCalls) || toolCalls.length === 0) return message;
+
+    let messageMutated = false;
+    const nextToolCalls = toolCalls.map((toolCall) => {
+      if (!isPlainObject(toolCall)) return toolCall;
+      const fn = toolCall.function;
+      if (!isPlainObject(fn) || typeof fn.arguments !== "string") return toolCall;
+
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(fn.arguments);
+      } catch {
+        return toolCall; // fail open: never corrupt a replayed argument string
+      }
+      if (!isPlainObject(parsed)) return toolCall;
+
+      const schema = typeof fn.name === "string" ? schemas.get(fn.name) : undefined;
+      const reconstructed = unflattenGeminiToolArguments(parsed, schema);
+      if (reconstructed === parsed) return toolCall;
+
+      messageMutated = true;
+      return { ...toolCall, function: { ...fn, arguments: JSON.stringify(reconstructed) } };
+    });
+
+    if (!messageMutated) return message;
+    mutated = true;
+    return { ...message, tool_calls: nextToolCalls };
+  });
+
+  if (!mutated) return payload;
+  return { ...payload, messages: nextMessages };
+}

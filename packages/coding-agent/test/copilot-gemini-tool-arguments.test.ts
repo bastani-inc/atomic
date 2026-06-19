@@ -1,9 +1,28 @@
 import { describe, expect, it } from "vitest";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import {
+  normalizeCopilotGeminiReplayToolArguments,
   normalizeToolArgumentsForModel,
   unflattenGeminiToolArguments,
 } from "../src/core/copilot-gemini-tool-arguments.ts";
+
+function nonGeminiModel(): Pick<Model<Api>, "provider" | "api" | "id"> {
+  return { provider: "github-copilot", api: "openai-completions", id: "gpt-4o" };
+}
+
+const editTool = {
+  type: "function",
+  function: {
+    name: "edit",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string" },
+        edits: { type: "array", items: { type: "object" } },
+      },
+    },
+  },
+};
 
 function geminiModel(): Pick<Model<Api>, "provider" | "api" | "id"> {
   return { provider: "github-copilot", api: "openai-completions", id: "gemini-3.1-pro-preview" };
@@ -144,5 +163,85 @@ describe("normalizeToolArgumentsForModel", () => {
     expect(normalizeToolArgumentsForModel(flattened, { provider: "google", api: "google-generative-ai", id: "gemini-3.1-pro-preview" })).toBe(flattened);
     expect(normalizeToolArgumentsForModel(flattened, { provider: "github-copilot", api: "anthropic-messages", id: "claude-opus-4.8" })).toBe(flattened);
     expect(normalizeToolArgumentsForModel(flattened, undefined)).toBe(flattened);
+  });
+});
+
+describe("normalizeCopilotGeminiReplayToolArguments", () => {
+  function payloadWithEdit(args: Record<string, unknown>) {
+    return {
+      tools: [editTool],
+      messages: [
+        { role: "user", content: "go" },
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            { id: "call_1", type: "function", function: { name: "edit", arguments: JSON.stringify(args) } },
+          ],
+        },
+        { role: "tool", tool_call_id: "call_1", content: "ok" },
+      ],
+    };
+  }
+
+  it("reconstructs flattened `edit` arguments on a replayed assistant tool call", () => {
+    const payload = payloadWithEdit({
+      path: "x.ts",
+      "edits[0].oldText": "old",
+      "edits[0].newText": "new",
+    });
+    const out = normalizeCopilotGeminiReplayToolArguments(payload, geminiModel()) as any;
+    const replayed = JSON.parse(out.messages[1].tool_calls[0].function.arguments);
+    expect(replayed).toEqual({ path: "x.ts", edits: [{ oldText: "old", newText: "new" }] });
+  });
+
+  it("leaves well-formed nested arguments unchanged (same payload reference)", () => {
+    const payload = payloadWithEdit({ path: "x.ts", edits: [{ oldText: "a", newText: "b" }] });
+    expect(normalizeCopilotGeminiReplayToolArguments(payload, geminiModel())).toBe(payload);
+  });
+
+  it("is a no-op for non-Gemini models", () => {
+    const payload = payloadWithEdit({ "edits[0].newText": "new" });
+    expect(normalizeCopilotGeminiReplayToolArguments(payload, nonGeminiModel())).toBe(payload);
+  });
+
+  it("fails open on malformed argument JSON", () => {
+    const payload = {
+      tools: [editTool],
+      messages: [
+        {
+          role: "assistant",
+          tool_calls: [{ id: "c", type: "function", function: { name: "edit", arguments: "{not json" } }],
+        },
+      ],
+    };
+    expect(normalizeCopilotGeminiReplayToolArguments(payload, geminiModel())).toBe(payload);
+  });
+
+  it("reconstructs bracket-indexed arguments without needing the tool schema", () => {
+    const payload = {
+      messages: [
+        {
+          role: "assistant",
+          tool_calls: [
+            {
+              id: "c",
+              type: "function",
+              function: { name: "unknown_tool", arguments: JSON.stringify({ "items[0]": "a", "items[1]": "b" }) },
+            },
+          ],
+        },
+      ],
+    };
+    const out = normalizeCopilotGeminiReplayToolArguments(payload, geminiModel()) as any;
+    expect(JSON.parse(out.messages[0].tool_calls[0].function.arguments)).toEqual({ items: ["a", "b"] });
+  });
+
+  it("only normalizes assistant messages, not user/tool messages", () => {
+    const payload = {
+      tools: [editTool],
+      messages: [{ role: "user", content: "x" }, { role: "tool", tool_call_id: "c", content: "y" }],
+    };
+    expect(normalizeCopilotGeminiReplayToolArguments(payload, geminiModel())).toBe(payload);
   });
 });
