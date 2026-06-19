@@ -103,9 +103,11 @@ function compactSparseArrays(value: unknown): unknown {
 }
 
 /**
- * Reconstruct flattened keys into nested arrays/objects. `shouldSplit` decides,
- * per key, whether it is a flattened path (true) or an opaque literal key to be
- * preserved (false); callers apply their own gating/schema logic there.
+ * Reconstruct (unflatten) flattened keys into nested arrays/objects — for
+ * example `"items[0]"` -> `{ items: [...] }` and `"parent.child"` ->
+ * `{ parent: { child: ... } }`. `shouldSplit` decides, per key, whether it is a
+ * flattened path (true) or an opaque literal key to be preserved (false);
+ * callers apply their own gating/schema logic there.
  *
  * Prototype-pollution safe: a key whose parsed path contains `__proto__`,
  * `constructor`, or `prototype` (at any position) is dropped, as is a literal
