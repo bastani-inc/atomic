@@ -5,6 +5,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+    RESUME_CONTINUATION_PROMPT,
     run,
     runChain,
     runParallel,
@@ -6947,6 +6948,21 @@ async function sleep(ms: number): Promise<void> {
     await new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
 
+async function waitForPromptCall(
+    promptCalls: readonly string[],
+    text: string,
+    occurrence = 1,
+    timeoutMs = 1000,
+): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        const count = promptCalls.filter((call) => call === text).length;
+        if (count >= occurrence) return;
+        await sleep(5);
+    }
+    throw new Error(`prompt ${JSON.stringify(text)} occurrence ${occurrence} did not appear`);
+}
+
 function mockSession(): StageSessionRuntime {
     const listeners = new Set<
         (e: { type: string; [k: string]: unknown }) => void
@@ -8286,5 +8302,287 @@ describe("executor — stage-control registry integration", () => {
             stages.find((s) => s.name === "dependent")?.status,
             "completed",
         );
+    });
+
+    test("resume continuation survives a later empty resume before drain", async () => {
+        const registry = createStageControlRegistry();
+        const store = createStore();
+        const sawStage = deferred<{ runId: string; stageId: string }>();
+        let sawStageResolved = false;
+        const promptCalls: string[] = [];
+        let currentReject: ((error: Error) => void) | undefined;
+        const session: StageSessionRuntime = {
+            ...mockSession(),
+            async prompt(text: string) {
+                promptCalls.push(text);
+                if (text === RESUME_CONTINUATION_PROMPT) return;
+                await new Promise<void>((_resolve, reject) => {
+                    currentReject = reject;
+                });
+            },
+            async abort() {
+                const reject = currentReject;
+                currentReject = undefined;
+                reject?.(new Error("AbortError"));
+            },
+            getLastAssistantText() {
+                return "assistant";
+            },
+        };
+        const def = defineWorkflow("resume-continuation-empty-resume-wf")
+            .run(async (ctx) => {
+                await ctx.stage("resumable").prompt("go");
+                return {};
+            })
+            .compile();
+
+        const runPromise = run(
+            def,
+            {},
+            {
+                adapters: {
+                    agentSession: {
+                        async create() {
+                            return session;
+                        },
+                    },
+                },
+                store,
+                stageControlRegistry: registry,
+                onStageStart: (runId, stage) => {
+                    if (stage.name === "resumable" && !sawStageResolved) {
+                        sawStageResolved = true;
+                        sawStage.resolve({ runId, stageId: stage.id });
+                    }
+                },
+                confirmStageReadiness: async () => true,
+            },
+        );
+
+        const { runId, stageId } = await sawStage.promise;
+        const handle = registry.get(runId, stageId);
+        assert.ok(handle, "stage handle should be registered");
+        await waitForPromptCall(promptCalls, "go");
+        await handle.pause();
+        await handle.resume("steer");
+        await waitForPromptCall(promptCalls, "steer");
+        await handle.pause();
+        await handle.resume();
+
+        const result = await runPromise;
+        assert.equal(result.status, "completed");
+        assert.deepEqual(promptCalls, ["go", "steer", RESUME_CONTINUATION_PROMPT]);
+    });
+
+    test("resume continuation injects the exact prompt, suppresses readiness, and repeats for later resumes", async () => {
+        const registry = createStageControlRegistry();
+        const store = createStore();
+        const sawStage = deferred<{ runId: string; stageId: string }>();
+        let sawStageResolved = false;
+        const promptCalls: string[] = [];
+        const gateStages: string[] = [];
+        const listeners = new Set<
+            (event: { type: string; [key: string]: unknown }) => void
+        >();
+        const emit = (event: { type: string; [key: string]: unknown }): void => {
+            for (const listener of [...listeners]) listener(event);
+        };
+        let currentReject: ((error: Error) => void) | undefined;
+        const session: StageSessionRuntime = {
+            ...mockSession(),
+            async prompt(text: string) {
+                promptCalls.push(text);
+                if (text === "go") {
+                    await new Promise<void>((_resolve, reject) => {
+                        currentReject = reject;
+                    });
+                    return;
+                }
+                if (text === "ask on resume") {
+                    emit({
+                        type: "tool_execution_start",
+                        toolCallId: "resume-question",
+                        toolName: "ask_user_question",
+                    });
+                    emit({
+                        type: "tool_execution_end",
+                        toolCallId: "resume-question",
+                        toolName: "ask_user_question",
+                    });
+                    return;
+                }
+                if (text === RESUME_CONTINUATION_PROMPT) {
+                    const occurrence = promptCalls.filter((call) => call === text).length;
+                    if (occurrence === 1) {
+                        await new Promise<void>((_resolve, reject) => {
+                            currentReject = reject;
+                        });
+                    }
+                    return;
+                }
+            },
+            subscribe(listener) {
+                listeners.add(
+                    listener as (event: {
+                        type: string;
+                        [key: string]: unknown;
+                    }) => void,
+                );
+                return () => {
+                    listeners.delete(
+                        listener as (event: {
+                            type: string;
+                            [key: string]: unknown;
+                        }) => void,
+                    );
+                };
+            },
+            async abort() {
+                const reject = currentReject;
+                currentReject = undefined;
+                reject?.(new Error("AbortError"));
+            },
+            getLastAssistantText() {
+                return "assistant";
+            },
+        };
+        const def = defineWorkflow("resume-continuation-repeat-wf")
+            .run(async (ctx) => {
+                await ctx.stage("resumable").prompt("go");
+                return {};
+            })
+            .compile();
+
+        const runPromise = run(
+            def,
+            {},
+            {
+                adapters: {
+                    agentSession: {
+                        async create() {
+                            return session;
+                        },
+                    },
+                },
+                store,
+                stageControlRegistry: registry,
+                onStageStart: (runId, stage) => {
+                    if (stage.name === "resumable" && !sawStageResolved) {
+                        sawStageResolved = true;
+                        sawStage.resolve({ runId, stageId: stage.id });
+                    }
+                },
+                confirmStageReadiness: async ({ stageName }) => {
+                    gateStages.push(stageName);
+                    return true;
+                },
+            },
+        );
+
+        const { runId, stageId } = await sawStage.promise;
+        const handle = registry.get(runId, stageId);
+        assert.ok(handle, "stage handle should be registered");
+        await waitForPromptCall(promptCalls, "go");
+        await handle.pause();
+        await handle.resume("ask on resume");
+        await waitForPromptCall(promptCalls, RESUME_CONTINUATION_PROMPT);
+        await handle.pause();
+        await handle.resume("second resume");
+
+        const result = await runPromise;
+        assert.equal(result.status, "completed");
+        assert.deepEqual(promptCalls, [
+            "go",
+            "ask on resume",
+            RESUME_CONTINUATION_PROMPT,
+            "second resume",
+            RESUME_CONTINUATION_PROMPT,
+        ]);
+        assert.deepEqual(gateStages, []);
+    });
+
+    test("resume continuation skips fail-fast finalized stages while workers unwind", async () => {
+        const registry = createStageControlRegistry();
+        const store = createStore();
+        const sawSlowStage = deferred<{ runId: string; stageId: string }>();
+        let sawSlowStageResolved = false;
+        const releaseFailure = deferred();
+        const promptCalls: string[] = [];
+        const makeSession = (): StageSessionRuntime => {
+            let currentResolve: (() => void) | undefined;
+            return {
+                ...mockSession(),
+                async prompt(text: string) {
+                    promptCalls.push(text);
+                    if (text === "fail") {
+                        await releaseFailure.promise;
+                        throw new Error("boom");
+                    }
+                    if (text === RESUME_CONTINUATION_PROMPT) return;
+                    await new Promise<void>((resolve) => {
+                        currentResolve = resolve;
+                    });
+                },
+                async abort() {
+                    const resolve = currentResolve;
+                    currentResolve = undefined;
+                    resolve?.();
+                },
+                getLastAssistantText() {
+                    return "assistant";
+                },
+            };
+        };
+        const def = defineWorkflow("resume-continuation-fail-fast-wf")
+            .run(async (ctx) => {
+                await ctx.parallel(
+                    [
+                        { name: "slow", prompt: "slow" },
+                        { name: "fail", prompt: "fail" },
+                    ],
+                    { concurrency: 2, failFast: true },
+                );
+                return {};
+            })
+            .compile();
+
+        const runPromise = run(
+            def,
+            {},
+            {
+                adapters: {
+                    agentSession: {
+                        async create() {
+                            return makeSession();
+                        },
+                    },
+                },
+                store,
+                stageControlRegistry: registry,
+                onStageStart: (runId, stage) => {
+                    if (stage.name === "slow" && !sawSlowStageResolved) {
+                        sawSlowStageResolved = true;
+                        sawSlowStage.resolve({ runId, stageId: stage.id });
+                    }
+                },
+                confirmStageReadiness: async () => true,
+            },
+        );
+
+        const { runId, stageId } = await sawSlowStage.promise;
+        const handle = registry.get(runId, stageId);
+        assert.ok(handle, "slow stage handle should be registered");
+        await waitForPromptCall(promptCalls, "slow");
+        await handle.pause();
+        await handle.resume("keep going");
+        await waitForPromptCall(promptCalls, "keep going");
+        releaseFailure.resolve();
+
+        const result = await runPromise;
+        assert.equal(result.status, "failed");
+        assert.equal(promptCalls.includes(RESUME_CONTINUATION_PROMPT), false);
+        const slow = store.runs()[0]?.stages.find((stage) => stage.name === "slow");
+        assert.equal(slow?.status, "skipped");
+        assert.equal(slow?.skippedReason, "fail-fast");
     });
 });

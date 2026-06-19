@@ -168,6 +168,8 @@ export interface InternalStageContext extends StageContext {
   __resume(message?: string): Promise<void>;
   /** Internal: true while a controlled pause is in flight. */
   __isPaused(): boolean;
+  /** Internal: true once a schema-backed prompt captured its final structured output. */
+  __structuredOutputFinalized(): boolean;
 }
 
 function stripWorkflowOnlyOptions(options: StageOptions | undefined): CreateAgentSessionOptions {
@@ -1337,6 +1339,10 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 
     __isPaused() {
       return pauseRequest !== null;
+    },
+
+    __structuredOutputFinalized() {
+      return structuredOutputCapture?.called === true;
     },
   };
 }
