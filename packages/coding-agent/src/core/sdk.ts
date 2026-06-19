@@ -23,6 +23,7 @@ import {
   withCodexFastModeStreamOptions,
 } from "./codex-fast-mode.ts";
 import { restoreAnthropicReplayThinkingBlocks } from "./anthropic-thinking-guard.ts";
+import { sanitizeCopilotGeminiPayload } from "./copilot-gemini-payload-sanitizer.ts";
 import { getModelDefaultContextWindow, getSupportedContextWindows, selectContextWindow } from "./context-window.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import type {
@@ -504,15 +505,24 @@ export async function createAgentSession(
         ? restoreAnthropicReplayThinkingBlocks(guardedPayload, sourceMessages, model)
         : guardedPayload;
       const runner = extensionRunnerRef.current;
+      let finalPayload: unknown;
       if (!runner?.hasHandlers("before_provider_request")) {
-        return replayGuardedPayload;
+        finalPayload = replayGuardedPayload;
+      } else {
+        const extensionPayload = await runner.emitBeforeProviderRequest(
+          replayGuardedPayload,
+        );
+        finalPayload = sourceMessages
+          ? restoreAnthropicReplayThinkingBlocks(extensionPayload, sourceMessages, model)
+          : extensionPayload;
       }
-      const extensionPayload = await runner.emitBeforeProviderRequest(
-        replayGuardedPayload,
-      );
-      return sourceMessages
-        ? restoreAnthropicReplayThinkingBlocks(extensionPayload, sourceMessages, model)
-        : extensionPayload;
+      // GitHub Copilot Gemini models are served through CAPI, which translates
+      // the OpenAI request into Google GenAI and rejects tool schemas whose
+      // `anyOf`/`oneOf` wraps a complex object (HTTP 400 invalid request body).
+      // Sanitize tool JSON Schemas into Gemini's supported subset. No-op for
+      // every other provider/model, and runs last so it also covers tools
+      // injected by `before_provider_request` extensions.
+      return sanitizeCopilotGeminiPayload(finalPayload, model);
     },
     onResponse: async (response, _model) => {
       const runner = extensionRunnerRef.current;

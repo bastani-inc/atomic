@@ -127,3 +127,105 @@ export function extractToolUiStreamMode(toolMeta: Record<string, unknown> | unde
   }
   return undefined;
 }
+
+/**
+ * Reconstruct flattened tool-call arguments into proper nested arrays/objects.
+ *
+ * Some upstream providers — notably GitHub Copilot Gemini models proxied through
+ * Google's GenAI API — serialize array/object function-call arguments as
+ * flattened, indexed keys on the wire. For example a tool called with
+ * `{ keywords: ["a", "b"] }` arrives as `{ "keywords[0]": "a", "keywords[1]": "b" }`,
+ * which an MCP server then rejects as invalid arguments.
+ *
+ * This normalizer runs at the MCP `callTool` boundary so arguments are correct
+ * regardless of how the model/provider serialized them. It is provider-agnostic
+ * and **self-gating**: it is a no-op unless at least one bracket-indexed key
+ * (`name[<digit>]`) is present, so well-formed arguments pass through untouched
+ * (including arguments already normalized upstream by the host runtime).
+ */
+export function unflattenToolArguments(
+  args: Record<string, unknown> | null | undefined,
+): Record<string, unknown> {
+  if (args === null || args === undefined) return {};
+  const keys = Object.keys(args);
+  if (!keys.some((key) => /\[\d+\]/.test(key))) return args;
+
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(args)) {
+    const segments = parseFlattenedArgPath(key);
+    if (!segments) {
+      result[key] = value;
+      continue;
+    }
+    assignFlattenedArgPath(result, segments, value);
+  }
+  return compactSparseArrayHoles(result) as Record<string, unknown>;
+}
+
+/** Parse `a.b[0].c` into `["a","b",0,"c"]`; returns undefined for a plain key. */
+function parseFlattenedArgPath(key: string): Array<string | number> | undefined {
+  if (!/[.[]/.test(key)) return undefined;
+  const segments: Array<string | number> = [];
+  let current = "";
+  let index = 0;
+  const flush = () => {
+    if (current !== "") {
+      segments.push(current);
+      current = "";
+    }
+  };
+  while (index < key.length) {
+    const char = key[index];
+    if (char === ".") {
+      flush();
+      index += 1;
+    } else if (char === "[") {
+      flush();
+      const end = key.indexOf("]", index);
+      if (end === -1) return undefined;
+      const inner = key.slice(index + 1, end);
+      const numeric = Number(inner);
+      if (inner.trim() !== "" && Number.isInteger(numeric) && numeric >= 0) {
+        segments.push(numeric);
+      } else {
+        segments.push(inner.replace(/^["']|["']$/g, ""));
+      }
+      index = end + 1;
+    } else {
+      current += char;
+      index += 1;
+    }
+  }
+  flush();
+  return segments.length > 0 ? segments : undefined;
+}
+
+function assignFlattenedArgPath(
+  root: Record<string, unknown>,
+  segments: Array<string | number>,
+  value: unknown,
+): void {
+  let node: Record<string | number, unknown> = root as Record<string | number, unknown>;
+  for (let i = 0; i < segments.length - 1; i += 1) {
+    const segment = segments[i];
+    const nextIsIndex = typeof segments[i + 1] === "number";
+    const existing = node[segment];
+    if (existing === null || existing === undefined || typeof existing !== "object") {
+      node[segment] = nextIsIndex ? [] : {};
+    }
+    node = node[segment] as Record<string | number, unknown>;
+  }
+  node[segments[segments.length - 1]] = value;
+}
+
+function compactSparseArrayHoles(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.filter((entry) => entry !== undefined).map((entry) => compactSparseArrayHoles(entry));
+  }
+  if (value !== null && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value)) out[key] = compactSparseArrayHoles(entry);
+    return out;
+  }
+  return value;
+}

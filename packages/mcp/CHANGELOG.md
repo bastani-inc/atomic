@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed MCP tool calls failing under GitHub Copilot Gemini models (e.g. `github-copilot/gemini-3.1-pro-preview`). Gemini, served through Copilot's CAPI/GenAI gateway, serializes array/object function-call arguments as flattened indexed keys on the wire — for example `{ keywords: ["a", "b"] }` arrives as `{ "keywords[0]": "a", "keywords[1]": "b" }` — which MCP servers reject as invalid arguments. The extension now normalizes arguments at the `callTool` boundary (both direct-tool and proxy/gateway paths) via `unflattenToolArguments`, reconstructing `name[i]`, `name[i].sub`, and `parent.child` keys back into proper arrays/objects before they reach the server. The normalizer is provider-agnostic and self-gating (a no-op unless flattened keys are present), so well-formed arguments — including those already normalized by the host runtime — pass through untouched.
+
 ### Changed
 
 - Aligned the MCP extension peer dependencies with upstream pi AI/TUI `^0.79.7` so MCP-backed sessions can use the host's latest provider catalog, model-search, theme/color-scheme, Warp image capability, and shared TUI compatibility fixes; no MCP extension code changes were made for this metadata sync ([#1413](https://github.com/bastani-inc/atomic/issues/1413)).

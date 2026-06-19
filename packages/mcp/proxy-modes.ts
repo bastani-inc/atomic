@@ -6,7 +6,7 @@ import { lazyConnect, updateServerMetadata, updateMetadataCache, getFailureAgeSe
 import { buildToolMetadata, getToolNames, findToolByName, formatSchema } from "./tool-metadata.ts";
 import { transformMcpContent } from "./tool-registrar.ts";
 import { maybeStartUiSession, type UiSessionRuntime } from "./ui-session.ts";
-import { formatAuthRequiredMessage, truncateAtWord } from "./utils.ts";
+import { formatAuthRequiredMessage, truncateAtWord, unflattenToolArguments } from "./utils.ts";
 import { authenticate, supportsOAuth } from "./mcp-auth-flow.ts";
 
 type ProxyToolResult = AgentToolResult<Record<string, unknown>>;
@@ -718,7 +718,9 @@ export async function executeCall(
 
     const resultPromise = connection.client.callTool({
       name: toolMeta.originalName,
-      arguments: args ?? {},
+      // Normalize provider-flattened argument keys (e.g. Gemini's `keywords[0]`)
+      // back into arrays/objects before the MCP server validates them.
+      arguments: unflattenToolArguments(args),
       _meta: uiSession?.requestMeta,
     });
 

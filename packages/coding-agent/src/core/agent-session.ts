@@ -120,6 +120,7 @@ import {
 import { createAllToolDefinitions, defaultToolNames } from "./tools/index.ts";
 import { redirectOversizedToolResult } from "./tools/oversized-tool-result.js";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
+import { normalizeToolArgumentsForModel } from "./copilot-gemini-tool-arguments.ts";
 
 function deepFreeze<T>(value: T): T {
 	if (value && typeof value === "object") {
@@ -3045,7 +3046,21 @@ export class AgentSession {
 		for (const tool of wrappedExtensionTools as AgentTool[]) {
 			toolRegistry.set(tool.name, tool);
 		}
-		this._toolRegistry = toolRegistry;
+		// GitHub Copilot Gemini serializes array/object tool-call arguments as
+		// flattened `name[index]` keys (confirmed on the raw CAPI wire). Reconstruct
+		// them into proper arrays/objects before per-tool preparation and schema
+		// validation, so tool calls (notably structured_output) don't fail and loop.
+		// Gated to Copilot Gemini at call time via this.model; a no-op otherwise.
+		this._toolRegistry = new Map(
+			Array.from(toolRegistry, ([name, tool]) => {
+				const basePrepareArguments = tool.prepareArguments;
+				const prepareArguments = (args: unknown): unknown => {
+					const normalized = normalizeToolArgumentsForModel(args, this.model);
+					return basePrepareArguments ? basePrepareArguments(normalized) : normalized;
+				};
+				return [name, { ...tool, prepareArguments } as AgentTool] as const;
+			}),
+		);
 
 		const nextActiveToolNames = (
 			options?.activeToolNames ? [...options.activeToolNames] : [...previousActiveToolNames]

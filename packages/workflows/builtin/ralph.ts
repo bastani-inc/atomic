@@ -554,6 +554,7 @@ async function runRalphWorkflow(
     model: "github-copilot/gemini-3.1-pro-preview (1m):high",
     fallbackModels: [
       "google/gemini-3.1-pro-preview:high",
+      "google-vertex/gemini-3.1-pro-preview:high",
       "openai-codex/gpt-5.5:xhigh",
       "github-copilot/gpt-5.5:xhigh",
       "openai/gpt-5.5:xhigh",
