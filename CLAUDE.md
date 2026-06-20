@@ -130,7 +130,7 @@ bun run scripts/cut-release.ts 0.8.31 --base main --push
 
 ### Agent publishing requests
 
-If a user asks you to publish the package or create a release/prerelease, run the `publish-release` workflow using your workflow tool. That workflow opens a CHANGELOG-only release-notes PR to `main`, then stamps and tags the release off-`main` via `cut-release.ts` — it never bumps the version on `main`.
+If a user asks you to publish the package or create a release/prerelease, run the `publish-release` workflow using your workflow tool. That workflow opens a CHANGELOG-only release-notes PR to `main`, then stamps and tags the release off-`main` via `cut-release.ts` — it never bumps the version on `main`. It also accepts an optional `base_ref` input (default `main`) to release from a maintenance/integration branch instead of `main`.
 
 ## Docs
 
