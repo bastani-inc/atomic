@@ -121,6 +121,8 @@ export interface RunOpts extends Omit<AuthoringContract.RunOpts, "adapters" | "s
   ui?: WorkflowUIAdapter;
   /** Runtime execution mode. Controls child session policy metadata. */
   executionMode?: WorkflowExecutionMode;
+  /** Host-resolved non-default session directory inherited by stages without explicit sessionDir. */
+  defaultSessionDir?: string;
   /** Internal detached-run mode: surface ctx.ui.* as node-local workflow prompt stages. */
   usePromptNodesForUi?: boolean;
   /**
@@ -4252,6 +4254,7 @@ export async function run<TInputs extends WorkflowInputValues>(
         stageOptions: stageOptionsForContext,
         models: opts.models,
         executionMode: opts.executionMode,
+        defaultSessionDir: opts.defaultSessionDir,
         onModelFallbackMetaChange(meta) {
           applyModelFallbackMeta(meta);
           if (stageSnapshot.status === "running") {

@@ -47,6 +47,8 @@ export interface SessionEntry {
 /** Structural type for pi's sessionManager (optional — degrades gracefully). */
 export interface SessionManager {
   getEntries?: () => SessionEntry[] | readonly SessionEntry[];
+  getSessionDir?: () => string;
+  usesDefaultSessionDir?: () => boolean;
 }
 
 // ---------------------------------------------------------------------------

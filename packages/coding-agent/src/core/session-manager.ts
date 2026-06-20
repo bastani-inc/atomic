@@ -216,6 +216,7 @@ export type ReadonlySessionManager = Pick<
 	SessionManager,
 	| "getCwd"
 	| "getSessionDir"
+	| "usesDefaultSessionDir"
 	| "getSessionId"
 	| "getSessionFile"
 	| "getLeafId"

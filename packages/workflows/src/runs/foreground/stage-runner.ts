@@ -124,6 +124,8 @@ export interface StageRunnerOpts {
   models?: WorkflowModelCatalogPort;
   /** Runtime execution mode forwarded to stage session adapters. */
   executionMode?: WorkflowExecutionMode;
+  /** Host-resolved non-default session directory inherited by stages without explicit sessionDir. */
+  defaultSessionDir?: string;
   /** Internal: notifies the executor when an in-flight fallback changes model/fast metadata. */
   onModelFallbackMetaChange?: (meta: StageModelFallbackMeta) => void;
 }
@@ -172,8 +174,12 @@ export interface InternalStageContext extends StageContext {
   __structuredOutputFinalized(): boolean;
 }
 
-function stripWorkflowOnlyOptions(options: StageOptions | undefined): CreateAgentSessionOptions {
-  if (!options) return {};
+function stripWorkflowOnlyOptions(options: StageOptions | undefined, defaultSessionDir?: string): CreateAgentSessionOptions {
+  if (!options) {
+    return defaultSessionDir === undefined
+      ? {}
+      : { sessionManager: SessionManager.create(process.cwd(), defaultSessionDir) };
+  }
   const {
     schema: _schema,
     mcp: _mcp,
@@ -188,10 +194,11 @@ function stripWorkflowOnlyOptions(options: StageOptions | undefined): CreateAgen
   } = options;
   if (sessionOptions.sessionManager === undefined) {
     const cwd = sessionOptions.cwd ?? process.cwd();
+    const effectiveSessionDir = sessionDir ?? defaultSessionDir;
     if (context === "fork" && forkFromSessionFile !== undefined) {
-      sessionOptions.sessionManager = SessionManager.forkFrom(forkFromSessionFile, cwd, sessionDir);
-    } else if (sessionDir !== undefined) {
-      sessionOptions.sessionManager = SessionManager.create(cwd, sessionDir);
+      sessionOptions.sessionManager = SessionManager.forkFrom(forkFromSessionFile, cwd, effectiveSessionDir);
+    } else if (effectiveSessionDir !== undefined) {
+      sessionOptions.sessionManager = SessionManager.create(cwd, effectiveSessionDir);
     }
   }
   return sessionOptions as CreateAgentSessionOptions;
@@ -647,7 +654,7 @@ async function finalizePromptOutput(
 }
 
 export function createStageContext(opts: StageRunnerOpts): InternalStageContext {
-  const { stageId, stageName, adapters, runId, signal, stageOptions, executionMode } = opts;
+  const { stageId, stageName, adapters, runId, signal, stageOptions, executionMode, defaultSessionDir } = opts;
   const structuredOutputCapture = stageOptions?.schema ? createStructuredOutputCapture<unknown>() : undefined;
   const effectiveStageOptions = stageOptionsWithStructuredOutput(stageOptions, structuredOutputCapture);
   const meta: StageExecutionMeta = { runId, stageId, stageName, signal, stageOptions: effectiveStageOptions, executionMode };
@@ -893,7 +900,7 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
   ): Promise<StageSessionRuntime> {
     applyCandidateThinking(candidate);
     const created = adapters.agentSession
-      ? await adapters.agentSession.create(stripWorkflowOnlyOptions(stageOptionsForCandidate(candidate, resumeOptions)) as StageSessionCreateOptions, {
+      ? await adapters.agentSession.create(stripWorkflowOnlyOptions(stageOptionsForCandidate(candidate, resumeOptions), defaultSessionDir) as StageSessionCreateOptions, {
         ...meta,
         stageOptions: stageOptionsForCandidate(candidate, resumeOptions),
       })

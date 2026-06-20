@@ -15,6 +15,9 @@
 
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { dispatch } from "../../packages/workflows/src/extension/dispatcher.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
@@ -601,6 +604,42 @@ describe("createExtensionRuntime", () => {
         });
         const list = asList(result);
         assert.ok(list.items.some((i) => i.name === "hello-world"));
+    });
+
+    test("dispatch forwards resolved defaultSessionDir to named workflow stages", async () => {
+        const dir = await mkdtemp(join(tmpdir(), "atomic-runtime-stage-session-dir-"));
+        try {
+            const activeStore = createStore();
+            const received: CreateAgentSessionOptions[] = [];
+            const runtime = createExtensionRuntime({
+                definitions: [helloWorkflow],
+                store: activeStore,
+                resolveDefaultStageSessionDir: () => dir,
+                adapters: {
+                    agentSession: {
+                        async create(options) {
+                            received.push(options);
+                            return fakeStageSession();
+                        },
+                    },
+                },
+            });
+
+            const result = await runtime.dispatch(
+                {
+                    workflow: "hello-world",
+                    inputs: { name: "Ada" },
+                    action: "run",
+                },
+                { policy: NON_INTERACTIVE_WORKFLOW_POLICY },
+            );
+
+            const run = asRun(result);
+            assert.equal(run.status, "completed");
+            assert.equal(received[0]?.sessionManager?.getSessionDir(), dir);
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
     });
 });
 

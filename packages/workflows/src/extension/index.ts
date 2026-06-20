@@ -2562,6 +2562,17 @@ function factory(pi: ExtensionAPI): void {
         : undefined,
     parentSession: () => intercomParentSession ?? undefined,
   };
+  const hostStageSessionDir: { current: string | undefined } = { current: undefined };
+  const resolveDefaultStageSessionDir = (): string | undefined => hostStageSessionDir.current;
+  const updateHostStageSessionDir = (sessionManager: SessionManager | undefined): void => {
+    try {
+      hostStageSessionDir.current = sessionManager?.usesDefaultSessionDir?.() === false
+        ? sessionManager.getSessionDir?.()
+        : undefined;
+    } catch {
+      hostStageSessionDir.current = undefined;
+    }
+  };
 
   const startupDiscovery = discoverStartupWorkflowsSync();
   const runtimeRef: { current: ExtensionRuntime } = {
@@ -2574,6 +2585,7 @@ function factory(pi: ExtensionAPI): void {
       mcp: mcpPort,
       intercom: intercomPort,
       config: runtimeConfigRef.current,
+      resolveDefaultStageSessionDir,
     }),
   };
   const discoveryRef: { current: DiscoveryResult | null } = { current: null };
@@ -2641,6 +2653,7 @@ function factory(pi: ExtensionAPI): void {
       intercom: intercomPort,
       config: runtimeConfigRef.current,
       models,
+      resolveDefaultStageSessionDir,
     });
   }
 
@@ -2735,6 +2748,7 @@ function factory(pi: ExtensionAPI): void {
       mcp: mcpPort,
       intercom: intercomPort,
       config: runtimeConfigRef.current,
+      resolveDefaultStageSessionDir,
     });
   }
 
@@ -4025,6 +4039,7 @@ function factory(pi: ExtensionAPI): void {
       }
 
       const sessionManager = ctx?.sessionManager ?? pi.sessionManager;
+      updateHostStageSessionDir(sessionManager);
       if (sessionManager) {
         const cfg = configLoadRef.current?.config;
         withWorkflowLifecycleNotificationsSuppressed(

@@ -86,6 +86,8 @@ export interface ExtensionRuntimeOpts {
   jobs?: JobTracker;
   /** Invocation cwd used for workflow execution. Defaults to process.cwd(). */
   cwd?: string;
+  /** Resolve the host's non-default session directory for workflow stage transcripts. */
+  resolveDefaultStageSessionDir?: () => string | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -149,6 +151,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
   const models = opts.models;
   const jobs = opts.jobs;
   const runtimeCwd = opts.cwd ?? process.cwd();
+  const resolveDefaultStageSessionDir = opts.resolveDefaultStageSessionDir;
 
   function runOptions(args: WorkflowToolArgs, policy?: WorkflowExecutionPolicy): RunOpts {
     const argConcurrency =
@@ -166,6 +169,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
             ...(config?.statusFilePath !== undefined ? { statusFilePath: config.statusFilePath } : {}),
             resumeInFlight: config?.resumeInFlight ?? "ask",
           };
+    const defaultSessionDir = resolveDefaultStageSessionDir?.();
     return {
       adapters,
       store: activeStore,
@@ -174,6 +178,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
       mcp,
       config: effectiveConfig,
       models,
+      ...(defaultSessionDir !== undefined ? { defaultSessionDir } : {}),
       ...(policy !== undefined ? { executionMode: policy.mode } : {}),
       registry,
       cwd: runtimeCwd,
@@ -510,6 +515,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
     },
 
     dispatch(args: WorkflowToolArgs, options?: RuntimeDispatchOptions): Promise<WorkflowToolResult> {
+      const defaultSessionDir = resolveDefaultStageSessionDir?.();
       return dispatch(args, {
         registry,
         adapters,
@@ -522,6 +528,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
         models,
         policy: options?.policy,
         cwd: runtimeCwd,
+        ...(defaultSessionDir !== undefined ? { defaultSessionDir } : {}),
       });
     },
 

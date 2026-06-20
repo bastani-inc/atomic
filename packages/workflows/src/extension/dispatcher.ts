@@ -69,6 +69,8 @@ export interface DispatcherOpts {
   policy?: WorkflowExecutionPolicy;
   /** Invocation cwd used for workflow execution. */
   cwd?: string;
+  /** Host-resolved non-default session directory inherited by stages without explicit sessionDir. */
+  defaultSessionDir?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -173,6 +175,7 @@ export async function dispatch(
         models: opts.models,
         executionMode: policy.mode,
         cwd: opts.cwd,
+        defaultSessionDir: opts.defaultSessionDir,
       });
       if (policy.awaitTerminalRun === true) {
         const tracker = opts.jobs ?? defaultJobTracker;
