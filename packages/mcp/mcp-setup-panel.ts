@@ -3,31 +3,11 @@ import { CONFIG_DIR_NAME } from "@bastani/atomic";
 import type { ImportKind } from "./types.ts";
 import type { ConfigWritePreview, McpDiscoverySummary } from "./config.ts";
 import type { McpOnboardingState } from "./onboarding-state.ts";
-
-interface SetupTheme {
-  border: string;
-  title: string;
-  selected: string;
-  hint: string;
-  success: string;
-  warning: string;
-  muted: string;
-}
-
-const DEFAULT_THEME: SetupTheme = {
-  border: "2",
-  title: "36",
-  selected: "32",
-  hint: "2",
-  success: "32",
-  warning: "33",
-  muted: "2;3",
-};
-
+interface SetupTheme { border: string; title: string; selected: string; hint: string; success: string; warning: string; muted: string; }
+const DEFAULT_THEME: SetupTheme = { border: "2", title: "36", selected: "32", hint: "2", success: "32", warning: "33", muted: "2;3" };
 function fg(code: string, text: string): string {
   return code ? `\x1b[${code}m${text}\x1b[0m` : text;
 }
-
 function wrapText(text: string, width: number): string[] {
   if (width <= 8) return [text];
   const words = text.split(/\s+/).filter(Boolean);
@@ -45,7 +25,6 @@ function wrapText(text: string, width: number): string[] {
   if (current) lines.push(current);
   return lines.length > 0 ? lines : [""];
 }
-
 export interface SetupPanelCallbacks {
   previewImports: (imports: ImportKind[]) => ConfigWritePreview;
   previewStarterProject: () => ConfigWritePreview;
@@ -56,30 +35,13 @@ export interface SetupPanelCallbacks {
   openPath: (path: string) => Promise<void>;
   markSetupCompleted: () => void;
 }
-
 export interface SetupPanelOptions {
   mode: "empty" | "setup";
   onboardingState: McpOnboardingState;
 }
-
 type Screen = "empty" | "setup" | "imports" | "paths";
-
-type ActionId =
-  | "run-setup"
-  | "adopt-imports"
-  | "view-example"
-  | "show-precedence"
-  | "open-paths"
-  | "add-repoprompt"
-  | "scaffold-project"
-  | "close";
-
-interface Action {
-  id: ActionId;
-  label: string;
-  description: string;
-}
-
+type ActionId = "run-setup" | "adopt-imports" | "view-example" | "show-precedence" | "open-paths" | "add-repoprompt" | "scaffold-project" | "close";
+interface Action { id: ActionId; label: string; description: string; }
 export class McpSetupPanel {
   private screen: Screen;
   private actionCursor = 0;
@@ -92,7 +54,6 @@ export class McpSetupPanel {
   private t = DEFAULT_THEME;
   private inactivityTimeout: ReturnType<typeof setTimeout> | null = null;
   private static readonly INACTIVITY_MS = 60_000;
-
   constructor(
     private discovery: McpDiscoverySummary,
     private callbacks: SetupPanelCallbacks,
@@ -107,7 +68,6 @@ export class McpSetupPanel {
     }
     this.resetInactivityTimeout();
   }
-
   private resetInactivityTimeout(): void {
     if (this.inactivityTimeout) clearTimeout(this.inactivityTimeout);
     this.inactivityTimeout = setTimeout(() => {
@@ -115,14 +75,12 @@ export class McpSetupPanel {
       this.done();
     }, McpSetupPanel.INACTIVITY_MS);
   }
-
   private cleanup(): void {
     if (this.inactivityTimeout) {
       clearTimeout(this.inactivityTimeout);
       this.inactivityTimeout = null;
     }
   }
-
   private getActions(): Action[] {
     const actions: Action[] = [];
     if (this.screen === "empty") {
@@ -145,7 +103,6 @@ export class McpSetupPanel {
     actions.push({ id: "close", label: "Close", description: "Exit the onboarding flow." });
     return actions;
   }
-
   private getDetectedPaths(): string[] {
     const paths = [
       ...this.discovery.sources.filter((source) => source.exists).map((source) => source.path),
@@ -153,22 +110,18 @@ export class McpSetupPanel {
     ];
     return [...new Set(paths)];
   }
-
   private getSelectedAction(): Action | null {
     const actions = this.getActions();
     return actions[this.actionCursor] ?? null;
   }
-
   handleInput(data: string): void {
     this.resetInactivityTimeout();
     if (!this.busy) this.notice = null;
-
     if (matchesKey(data, "ctrl+c")) {
       this.cleanup();
       this.done();
       return;
     }
-
     if (matchesKey(data, "escape")) {
       if (this.screen === "imports" || this.screen === "paths") {
         this.screen = this.discovery.hasAnyConfig ? "setup" : "empty";
@@ -179,9 +132,7 @@ export class McpSetupPanel {
       this.done();
       return;
     }
-
     if (this.busy) return;
-
     if (this.screen === "imports") {
       this.handleImportsInput(data);
       return;
@@ -190,7 +141,6 @@ export class McpSetupPanel {
       this.handlePathsInput(data);
       return;
     }
-
     const actions = this.getActions();
     if (matchesKey(data, "up")) {
       this.actionCursor = Math.max(0, this.actionCursor - 1);
@@ -207,7 +157,6 @@ export class McpSetupPanel {
       if (selected) void this.runAction(selected.id);
     }
   }
-
   private handleImportsInput(data: string): void {
     const imports = this.discovery.imports;
     if (matchesKey(data, "up")) {
@@ -235,7 +184,6 @@ export class McpSetupPanel {
       void this.applySelectedImports();
     }
   }
-
   private handlePathsInput(data: string): void {
     const paths = this.getDetectedPaths();
     if (matchesKey(data, "up")) {
@@ -257,7 +205,6 @@ export class McpSetupPanel {
       });
     }
   }
-
   private async runAction(action: ActionId): Promise<void> {
     if (action === "run-setup") {
       this.screen = "setup";
@@ -298,11 +245,9 @@ export class McpSetupPanel {
       this.done();
       return;
     }
-
     this.notice = { text: "Review Details Below. Enter Apply Action With Side Effect.", tone: "muted" };
     this.tui.requestRender();
   }
-
   private async applySelectedImports(): Promise<void> {
     const selected = this.discovery.imports.filter((entry) => this.selectedImports.has(entry.kind)).map((entry) => entry.kind);
     if (selected.length === 0) {
@@ -310,7 +255,6 @@ export class McpSetupPanel {
       this.tui.requestRender();
       return;
     }
-
     await this.runBusy(async () => {
       const result = await this.callbacks.adoptImports(selected);
       this.callbacks.markSetupCompleted();
@@ -321,7 +265,6 @@ export class McpSetupPanel {
       this.actionCursor = 0;
     });
   }
-
   private async runBusy(fn: () => Promise<void>): Promise<void> {
     this.busy = true;
     this.notice = { text: "Working...", tone: "muted" };
@@ -338,7 +281,6 @@ export class McpSetupPanel {
       this.tui.requestRender();
     }
   }
-
   render(width: number): string[] {
     const innerW = Math.max(40, width - 2);
     const lines: string[] = [];
@@ -348,7 +290,6 @@ export class McpSetupPanel {
     lines.push(this.padLine(this.discoverySummaryLine(), innerW));
     lines.push(this.padLine(fg(this.t.muted, this.secondarySummaryLine()), innerW));
     lines.push(this.padLine("", innerW));
-
     if (this.notice) {
       const tone = this.notice.tone === "success" ? this.t.success : this.notice.tone === "warning" ? this.t.warning : this.t.hint;
       for (const line of wrapText(this.notice.text, innerW - 6)) {
@@ -356,9 +297,7 @@ export class McpSetupPanel {
       }
       lines.push(this.padLine("", innerW));
     }
-
     lines.push(`├${border}┤`);
-
     if (this.screen === "imports") {
       lines.push(...this.renderImports(innerW));
     } else if (this.screen === "paths") {
@@ -366,11 +305,9 @@ export class McpSetupPanel {
     } else {
       lines.push(...this.renderActions(innerW));
     }
-
     lines.push(`└${border}┘`);
     return lines;
   }
-
   private renderActions(innerW: number): string[] {
     const lines: string[] = [];
     const actions = this.getActions();
@@ -381,7 +318,6 @@ export class McpSetupPanel {
       lines.push(this.padLine(`${cursor} ${truncateToWidth(action.label, innerW - 4)}`, innerW));
     }
     lines.push(this.padLine("", innerW));
-
     const preview = this.getActionPreview(this.getSelectedAction()?.id ?? "view-example");
     for (const line of preview) {
       lines.push(this.padLine(line, innerW));
@@ -390,7 +326,6 @@ export class McpSetupPanel {
     lines.push(this.padLine(fg(this.t.muted, "Enter Select · Escape Back · CTRL+C Close"), innerW));
     return lines;
   }
-
   private renderImports(innerW: number): string[] {
     const lines: string[] = [];
     lines.push(this.padLine("Select Compatibility Imports. Space Toggle · Enter Save · Escape Back.", innerW));
@@ -409,7 +344,6 @@ export class McpSetupPanel {
     }
     return lines;
   }
-
   private renderPaths(innerW: number): string[] {
     const lines: string[] = [];
     lines.push(this.padLine("Select Detected Config Path. Enter Open · Escape Back.", innerW));
@@ -421,23 +355,19 @@ export class McpSetupPanel {
     }
     return lines;
   }
-
   private discoverySummaryLine(): string {
     if (!this.discovery.hasAnyConfig) {
       return fg(this.t.warning, this.options.onboardingState.setupCompleted
         ? "No MCP servers are active right now."
         : "No MCP config is active yet.");
     }
-
     if (this.discovery.totalServerCount === 0 && (this.discovery.imports.length > 0 || !!this.discovery.repoPrompt.executablePath)) {
       return fg(this.t.warning, "Pi found MCP-related setup options, but none are active in Pi yet.");
     }
-
     const shared = this.discovery.sources.filter((source) => source.kind === "shared" && source.serverCount > 0).length;
     const piOwned = this.discovery.sources.filter((source) => source.kind === "pi" && source.serverCount > 0).length;
     return fg(this.t.hint, `Detected ${this.discovery.totalServerCount} configured servers across ${shared} shared and ${piOwned} Pi-owned source${shared + piOwned === 1 ? "" : "s"}.`);
   }
-
   private secondarySummaryLine(): string {
     if (!this.discovery.hasAnyConfig) {
       return "Create a shared `.mcp.json`, adopt host imports, or quick-add RepoPrompt from this screen.";
@@ -447,7 +377,6 @@ export class McpSetupPanel {
     }
     return "Shared MCP files are preferred. Pi-owned files are only for compatibility imports and adapter-specific overrides.";
   }
-
   private getActionPreview(action: ActionId): string[] {
     switch (action) {
       case "run-setup":
@@ -520,7 +449,6 @@ export class McpSetupPanel {
         return this.formatPreview(["Close the setup flow."]);
     }
   }
-
   private formatPreview(lines: string[]): string[] {
     const preview: string[] = [];
     for (const line of lines) {
@@ -528,7 +456,6 @@ export class McpSetupPanel {
     }
     return preview;
   }
-
   private formatWritePreview(title: string, preview: ConfigWritePreview, intro: string[] = []): string[] {
     const lines: string[] = [];
     for (const line of intro) {
@@ -549,7 +476,6 @@ export class McpSetupPanel {
     }
     return lines;
   }
-
   private padLine(text: string, innerW: number): string {
     const inset = 2;
     const contentW = Math.max(0, innerW - inset * 2);
@@ -558,14 +484,11 @@ export class McpSetupPanel {
     const padding = Math.max(0, contentW - plainWidth);
     return `│${" ".repeat(inset)}${fitted}${" ".repeat(padding)}${" ".repeat(inset)}│`;
   }
-
   invalidate(): void {}
-
   dispose(): void {
     this.cleanup();
   }
 }
-
 export function createMcpSetupPanel(
   discovery: McpDiscoverySummary,
   callbacks: SetupPanelCallbacks,

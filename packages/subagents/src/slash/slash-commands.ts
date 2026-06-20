@@ -309,7 +309,6 @@ async function runSlashSubagent(
 
 
 interface ParsedStep { name: string; config: InlineConfig; task?: string }
-
 const parseAgentArgs = (
 	state: SubagentState,
 	args: string,
@@ -321,7 +320,6 @@ const parseAgentArgs = (
 	let steps: ParsedStep[];
 	let sharedTask: string;
 	let perStep = false;
-
 	if (input.includes(" -> ")) {
 		perStep = true;
 		const segments = input.split(" -> ");
@@ -362,7 +360,6 @@ const parseAgentArgs = (
 		}
 		steps = agentsPart.split(/\s+/).filter(Boolean).map((t) => parseAgentToken(t));
 	}
-
 	if (steps.length === 0) {
 		ctx.ui.notify(usage, "error");
 		return null;
@@ -388,7 +385,6 @@ const parseAgentArgs = (
 	}
 	return { steps, task: sharedTask };
 };
-
 export function registerSlashCommands(
 	pi: ExtensionAPI,
 	state: SubagentState,
@@ -403,11 +399,9 @@ export function registerSlashCommands(
 			if (!input) { ctx.ui.notify("Usage: /run <agent> [task] [--bg] [--fork]", "error"); return; }
 			const { name: agentName, config: inline } = parseAgentToken(firstSpace === -1 ? input : input.slice(0, firstSpace));
 			const task = firstSpace === -1 ? "" : input.slice(firstSpace + 1).trim();
-
 			if (!state.baseCwd) { ctx.ui.notify("Subagent session cwd is not initialized yet", "error"); return; }
 			const agents = discoverAgents(state.baseCwd, "both").agents;
 			if (!agents.find((a) => a.name === agentName)) { ctx.ui.notify(`Unknown agent: ${agentName}`, "error"); return; }
-
 			let finalTask = task;
 			if (inline.reads && Array.isArray(inline.reads) && inline.reads.length > 0) {
 				finalTask = `[Read from: ${inline.reads.join(", ")}]\n\n${finalTask}`;
@@ -422,7 +416,6 @@ export function registerSlashCommands(
 			await runSlashSubagent(pi, ctx, params);
 		},
 	});
-
 	pi.registerCommand("chain", {
 		description: "Run agents in sequence: /chain scout \"task\" -> planner [--bg] [--fork]",
 		getArgumentCompletions: makeAgentCompletions(state, true),
@@ -446,7 +439,6 @@ export function registerSlashCommands(
 			await runSlashSubagent(pi, ctx, params);
 		},
 	});
-
 	pi.registerCommand("run-chain", {
 		description: "Run a saved chain: /run-chain chainName -- task [--bg] [--fork]",
 		getArgumentCompletions: makeChainCompletions(state),
@@ -476,7 +468,6 @@ export function registerSlashCommands(
 			await runSlashSubagent(pi, ctx, params);
 		},
 	});
-
 	pi.registerCommand("parallel", {
 		description: "Run agents in parallel: /parallel scout \"task1\" -> reviewer \"task2\" [--bg] [--fork]",
 		getArgumentCompletions: makeAgentCompletions(state, true),
@@ -500,13 +491,10 @@ export function registerSlashCommands(
 			await runSlashSubagent(pi, ctx, params);
 		},
 	});
-
-
 	pi.registerCommand("subagents-doctor", {
 		description: "Show subagent diagnostics",
 		handler: async (_args, ctx) => {
 			await runSlashSubagent(pi, ctx, { action: "doctor" });
 		},
 	});
-
 }

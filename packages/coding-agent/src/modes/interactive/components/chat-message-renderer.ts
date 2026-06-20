@@ -3,11 +3,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { Container, Text, type Component, type MarkdownTheme, type TUI } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
 import type { MessageRenderer, ToolDefinition } from "../../../core/extensions/types.ts";
-import type {
-  BashExecutionMessage,
-  BranchSummaryMessage,
-  CustomMessage,
-} from "../../../core/messages.ts";
+import type { BashExecutionMessage, BranchSummaryMessage, CustomMessage } from "../../../core/messages.ts";
 import { parseSkillBlock } from "../../../core/agent-session.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
 import { AssistantMessageComponent } from "./assistant-message.ts";
@@ -17,46 +13,28 @@ import { CustomMessageComponent } from "./custom-message.ts";
 import { SkillInvocationMessageComponent } from "./skill-invocation-message.ts";
 import { ToolExecutionComponent } from "./tool-execution.ts";
 import { UserMessageComponent } from "./user-message.ts";
-
 export type ChatMessageEntry =
   | { role: "assistant"; kind: "assistant"; message: AssistantMessage }
-  | {
-      role: "tool";
-      kind: "tool";
-      toolName: string;
-      toolCallId: string;
-      args: unknown;
-      result?: ToolResultMessage;
-      isPartial?: boolean;
-    }
+  | { role: "tool"; kind: "tool"; toolName: string; toolCallId: string; args: unknown; result?: ToolResultMessage; isPartial?: boolean }
   | { role: "tool"; kind: "bashExecution"; message: BashExecutionMessage; isPartial?: boolean }
   | { role: "user"; kind: "user"; text: string }
   | { role: "custom"; kind: "custom"; message: CustomMessage<unknown> }
   | { role: "summary"; kind: "branchSummary"; message: BranchSummaryMessage }
   | { role: "system"; kind: "system"; text: string };
-
 export interface ChatMessageRenderOptions {
-  ui: Pick<TUI, "requestRender">;
-  cwd: string;
-  markdownTheme?: MarkdownTheme;
-  hideThinkingBlock?: boolean;
-  hiddenThinkingLabel?: string;
-  toolOutputExpanded?: boolean;
-  showImages?: boolean;
-  imageWidthCells?: number;
+  ui: Pick<TUI, "requestRender">; cwd: string; markdownTheme?: MarkdownTheme;
+  hideThinkingBlock?: boolean; hiddenThinkingLabel?: string; toolOutputExpanded?: boolean;
+  showImages?: boolean; imageWidthCells?: number;
   getToolDefinition?: (toolName: string) => ToolDefinition<TSchema, unknown> | undefined;
   getCustomMessageRenderer?: (customType: string) => MessageRenderer | undefined;
 }
-
 export function chatEntriesFromAgentMessages(
   messages: readonly AgentMessage[],
 ): ChatMessageEntry[] {
   const entries: ChatMessageEntry[] = [];
   const pendingTools = new Map<string, Extract<ChatMessageEntry, { kind: "tool" }>>();
-
   for (const message of messages) {
     if (isLegacyCompactionSummaryMessage(message)) continue;
-
     switch (message.role) {
       case "assistant": {
         entries.push({ role: "assistant", kind: "assistant", message });
@@ -132,10 +110,8 @@ export function chatEntriesFromAgentMessages(
       }
     }
   }
-
   return entries;
 }
-
 export interface LiveChatEventLike {
   readonly type?: unknown;
   readonly message?: unknown;
@@ -147,28 +123,21 @@ export interface LiveChatEventLike {
   readonly result?: unknown;
   readonly isError?: unknown;
 }
-
 type LiveChatEntry = ChatMessageEntry | { role: string };
-
 export class LiveChatEntriesController {
   private streamingAssistantIndex: number | undefined;
   private pendingToolIndexes = new Map<string, number>();
-
   declare private readonly entries: LiveChatEntry[];
-
   constructor(entries: LiveChatEntry[]) {
     this.entries = entries;
 	}
-
   appendMessages(messages: readonly AgentMessage[]): void {
     this.entries.push(...chatEntriesFromAgentMessages(messages));
     this.reindexPendingTools();
   }
-
   appendUserText(text: string): void {
     this.entries.push({ role: "user", kind: "user", text });
   }
-
   applyEvent(event: LiveChatEventLike): boolean {
     const type = String(event.type ?? "");
     switch (type) {
@@ -199,15 +168,12 @@ export class LiveChatEntriesController {
         return false;
     }
   }
-
   pendingToolIds(): string[] {
     return [...this.pendingToolIndexes.keys()];
   }
-
   clearPendingTools(): void {
     this.pendingToolIndexes.clear();
   }
-
   private handleMessageStart(message: unknown): boolean {
     if (!isAgentMessageLike(message)) return false;
     if (message.role === "assistant") {
@@ -216,10 +182,6 @@ export class LiveChatEntriesController {
     }
     if (message.role === "toolResult") {
       const toolResult = message as ToolResultMessage;
-      // Match the main InteractiveMode live-chat behavior: tool output is
-      // rendered from tool_execution_end. The subsequent persisted
-      // message_start/toolResult echo is absorbed so it cannot append or
-      // overwrite a second row for the same tool call.
       if (this.findToolEntryIndex(toolResult.toolCallId) >= 0) return true;
     }
     const entries = chatEntriesFromAgentMessages([message as AgentMessage]);
@@ -228,7 +190,6 @@ export class LiveChatEntriesController {
     this.reindexPendingTools();
     return true;
   }
-
   private handleMessageUpdate(event: LiveChatEventLike): boolean {
     const message = event.message;
     let changed = false;
@@ -248,7 +209,6 @@ export class LiveChatEntriesController {
     }
     return changed;
   }
-
   private handleMessageEnd(message: unknown): boolean {
     if (!isAgentMessageLike(message) || message.role !== "assistant") return false;
     const changed = this.updateAssistantMessage(message as AssistantMessage);
@@ -267,7 +227,6 @@ export class LiveChatEntriesController {
     this.streamingAssistantIndex = undefined;
     return changed || true;
   }
-
   private updateAssistantMessage(message: AssistantMessage): boolean {
     if (this.streamingAssistantIndex !== undefined && this.isAssistantEntry(this.entries[this.streamingAssistantIndex])) {
       this.entries[this.streamingAssistantIndex] = {
@@ -289,7 +248,6 @@ export class LiveChatEntriesController {
     }
     return true;
   }
-
   private appendAssistantTextDelta(delta: string): boolean {
     const current = this.currentStreamingAssistantMessage();
     const content = current ? [...current.content] : [];
@@ -301,7 +259,6 @@ export class LiveChatEntriesController {
       content,
     });
   }
-
   private appendAssistantThinkingDelta(delta: string): boolean {
     const current = this.currentStreamingAssistantMessage();
     const content = current ? [...current.content] : [];
@@ -313,12 +270,10 @@ export class LiveChatEntriesController {
       content,
     });
   }
-
   private currentStreamingAssistantMessage(): AssistantMessage | undefined {
     const entry = this.streamingAssistantIndex !== undefined ? this.entries[this.streamingAssistantIndex] : undefined;
     return this.isAssistantEntry(entry) ? entry.message : undefined;
   }
-
   private upsertToolEntry(update: {
     toolCallId?: string;
     toolName: string;
@@ -343,7 +298,6 @@ export class LiveChatEntriesController {
     this.pendingToolIndexes.set(toolCallId, index >= 0 ? index : this.entries.length - 1);
     return true;
   }
-
   private updateToolResult(toolCallId: string, result: unknown, isPartial: boolean, isError: boolean): boolean {
     const index = this.pendingToolIndexes.get(toolCallId) ?? this.findToolEntryIndex(toolCallId);
     if (index < 0) return false;
@@ -354,19 +308,14 @@ export class LiveChatEntriesController {
     if (!isPartial) this.pendingToolIndexes.delete(toolCallId);
     return true;
   }
-
   private isSyntheticToolCallId(toolCallId: string): boolean {
     return toolCallId.startsWith("live-");
   }
-
   private findToolEntryIndex(toolCallId: string, toolName?: string): number {
     for (let i = this.entries.length - 1; i >= 0; i--) {
       const entry = this.entries[i];
       if (!this.isToolEntry(entry)) continue;
       if (entry.toolCallId === toolCallId) return i;
-      // Legacy reconciliation ONLY: a synthetic `live-<name>` id may pair with a
-      // row for the same in-flight tool name (or vice versa). Never collapse two
-      // distinct concrete toolCallIds — that merges parallel tool calls (#1198).
       if (
         toolName &&
         entry.toolName === toolName &&
@@ -378,7 +327,6 @@ export class LiveChatEntriesController {
     }
     return -1;
   }
-
   private reindexPendingTools(): void {
     this.pendingToolIndexes.clear();
     for (let i = 0; i < this.entries.length; i++) {
@@ -386,28 +334,22 @@ export class LiveChatEntriesController {
       if (this.isToolEntry(entry) && entry.isPartial !== false) this.pendingToolIndexes.set(entry.toolCallId, i);
     }
   }
-
   private isAssistantEntry(entry: LiveChatEntry | undefined): entry is Extract<ChatMessageEntry, { kind: "assistant" }> {
     return isChatMessageEntry(entry) && entry.kind === "assistant";
   }
-
   private isToolEntry(entry: LiveChatEntry | undefined): entry is Extract<ChatMessageEntry, { kind: "tool" }> {
     return isChatMessageEntry(entry) && entry.kind === "tool";
   }
 }
-
 function isChatMessageEntry(entry: LiveChatEntry | undefined): entry is ChatMessageEntry {
   return entry !== undefined && "kind" in entry;
 }
-
 function isLegacyCompactionSummaryMessage(message: AgentMessage): boolean {
   return message.role === "compaction" + "Summary";
 }
-
 function isAgentMessageLike(message: unknown): message is AgentMessage & { stopReason?: unknown; errorMessage?: unknown } {
   return message !== null && typeof message === "object" && "role" in message;
 }
-
 function assistantContentHasRenderablePayload(content: unknown): boolean {
   if (typeof content === "string") return content.length > 0;
   if (!Array.isArray(content)) return false;
@@ -420,7 +362,6 @@ function assistantContentHasRenderablePayload(content: unknown): boolean {
       obj.type === "toolCall";
   });
 }
-
 function minimalAssistantMessage(): AssistantMessage {
   return {
     role: "assistant",
@@ -428,7 +369,6 @@ function minimalAssistantMessage(): AssistantMessage {
     stopReason: "stop",
   } as unknown as AssistantMessage;
 }
-
 function toolResultFromUnknown(
   result: unknown,
   toolName: string,
@@ -457,14 +397,12 @@ function toolResultFromUnknown(
     timestamp: Date.now(),
   };
 }
-
 export function renderChatMessageEntry(
   entry: ChatMessageEntry,
   options: ChatMessageRenderOptions,
 ): Component {
   const messageEntry = entry as ChatMessageEntry;
   const markdownTheme = options.markdownTheme ?? getMarkdownTheme();
-
   switch (messageEntry.kind) {
     case "assistant":
       return new AssistantMessageComponent(
@@ -529,11 +467,9 @@ export function renderChatMessageEntry(
       return new Text(theme.fg("dim", messageEntry.text), 1, 0);
   }
 }
-
 function userMessageComponent(text: string, markdownTheme: MarkdownTheme, expanded: boolean): Component {
   const skillBlock = parseSkillBlock(text);
   if (!skillBlock) return new UserMessageComponent(text, markdownTheme);
-
   const container = new Container();
   const skillComponent = new SkillInvocationMessageComponent(skillBlock, markdownTheme);
   skillComponent.setExpanded(expanded);
@@ -543,11 +479,9 @@ function userMessageComponent(text: string, markdownTheme: MarkdownTheme, expand
   }
   return container;
 }
-
 function getMessageText(message: Extract<AgentMessage, { role: "user" }>): string {
   return messageContentText(message.content).trim();
 }
-
 function messageContentText(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";

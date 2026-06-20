@@ -10,6 +10,7 @@
 
 - Changed the `debugger` and `codebase-online-researcher` subagents to load the `playwright-cli` skill and drive the `playwright-cli` command for JS-heavy, auth-gated, or interactive web work instead of the removed `browser` skill / `browse` CLI.
 - Aligned the subagents extension peer dependencies with upstream pi `^0.79.7` runtime packages (`@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, and `@earendil-works/pi-tui`) so child sessions can use the host's latest provider catalog, RPC id handling, model-search, theme/color-scheme, Warp image capability, and shared TUI compatibility fixes; no subagents extension code changes were made for this metadata sync ([#1413](https://github.com/bastani-inc/atomic/issues/1413)).
+- Changed contributor validation to include the monorepo-wide file-length gate for tracked TS/JS/Rust files in local `prek` hooks and PR CI, with only documented generated/vendored exclusions and no grandfathered baseline allowlist ([#1445](https://github.com/bastani-inc/atomic/issues/1445)).
 
 ### Removed
 

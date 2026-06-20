@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Aligned the MCP extension peer dependencies with upstream pi AI/TUI `^0.79.7` so MCP-backed sessions can use the host's latest provider catalog, model-search, theme/color-scheme, Warp image capability, and shared TUI compatibility fixes; no MCP extension code changes were made for this metadata sync ([#1413](https://github.com/bastani-inc/atomic/issues/1413)).
+- Changed contributor validation to include the monorepo-wide file-length gate for tracked TS/JS/Rust files in local `prek` hooks and PR CI, with only documented generated/vendored exclusions and no grandfathered baseline allowlist ([#1445](https://github.com/bastani-inc/atomic/issues/1445)).
 
 ## [0.8.30] - 2026-06-17
 

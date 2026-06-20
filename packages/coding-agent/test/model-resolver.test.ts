@@ -217,7 +217,6 @@ describe("parseModelPattern", () => {
 			expect(result.warning).toContain("random");
 		});
 	});
-
 	describe("edge cases", () => {
 		test("empty pattern matches via partial matching", () => {
 			// Empty string is included in all model IDs, so partial matching finds a match
@@ -225,7 +224,6 @@ describe("parseModelPattern", () => {
 			expect(result.model).not.toBeNull();
 			expect(result.thinkingLevel).toBeUndefined();
 		});
-
 		test("pattern ending with colon treats empty suffix as invalid", () => {
 			const result = parseModelPattern("sonnet:", allModels);
 			// Empty string after colon is not a valid thinking level
@@ -235,112 +233,91 @@ describe("parseModelPattern", () => {
 		});
 	});
 });
-
 describe("resolveCliModel", () => {
 	test("resolves --model provider/id without --provider", () => {
 		const registry = {
 			getAll: () => allModels,
 		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRegistry"];
-
 		const result = resolveCliModel({
 			cliModel: "openai/gpt-4o",
 			modelRegistry: registry,
 		});
-
 		expect(result.error).toBeUndefined();
 		expect(result.model?.provider).toBe("openai");
 		expect(result.model?.id).toBe("gpt-4o");
 	});
-
 	test("resolves fuzzy patterns within an explicit provider", () => {
 		const registry = {
 			getAll: () => allModels,
 		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRegistry"];
-
 		const result = resolveCliModel({
 			cliProvider: "openai",
 			cliModel: "4o",
 			modelRegistry: registry,
 		});
-
 		expect(result.error).toBeUndefined();
 		expect(result.model?.provider).toBe("openai");
 		expect(result.model?.id).toBe("gpt-4o");
 	});
-
 	test("supports --model <pattern>:<thinking> (without explicit --thinking)", () => {
 		const registry = {
 			getAll: () => allModels,
 		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRegistry"];
-
 		const result = resolveCliModel({
 			cliModel: "sonnet:high",
 			modelRegistry: registry,
 		});
-
 		expect(result.error).toBeUndefined();
 		expect(result.model?.id).toBe("claude-sonnet-4-5");
 		expect(result.thinkingLevel).toBe("high");
 	});
-
 	test("prefers exact model id match over provider inference (OpenRouter-style ids)", () => {
 		const registry = {
 			getAll: () => allModels,
 		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRegistry"];
-
 		const result = resolveCliModel({
 			cliModel: "openai/gpt-4o:extended",
 			modelRegistry: registry,
 		});
-
 		expect(result.error).toBeUndefined();
 		expect(result.model?.provider).toBe("openrouter");
 		expect(result.model?.id).toBe("openai/gpt-4o:extended");
 	});
-
 	test("does not strip invalid :suffix as thinking level in --model (treat as raw id)", () => {
 		const registry = {
 			getAll: () => allModels,
 		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRegistry"];
-
 		const result = resolveCliModel({
 			cliProvider: "openai",
 			cliModel: "gpt-4o:extended",
 			modelRegistry: registry,
 		});
-
 		expect(result.error).toBeUndefined();
 		expect(result.model?.provider).toBe("openai");
 		expect(result.model?.id).toBe("gpt-4o:extended");
 	});
-
 	test("allows custom model ids for explicit providers without double prefixing", () => {
 		const registry = {
 			getAll: () => allModels,
 		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRegistry"];
-
 		const result = resolveCliModel({
 			cliProvider: "openrouter",
 			cliModel: "openrouter/openai/ghost-model",
 			modelRegistry: registry,
 		});
-
 		expect(result.error).toBeUndefined();
 		expect(result.model?.provider).toBe("openrouter");
 		expect(result.model?.id).toBe("openai/ghost-model");
 	});
-
 	test("scrubs inherited context-window options from explicit provider fallback models", () => {
 		const registry = {
 			getAll: () => [copilotSelectableBaseModel],
 		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRegistry"];
-
 		const result = resolveCliModel({
 			cliProvider: "github-copilot",
 			cliModel: "future-copilot-model",
 			modelRegistry: registry,
 		});
-
 		expect(result.error).toBeUndefined();
 		expect(result.model?.provider).toBe("github-copilot");
 		expect(result.model?.id).toBe("future-copilot-model");
@@ -349,22 +326,18 @@ describe("resolveCliModel", () => {
 		expect(result.model?.contextWindowOptions).toBeUndefined();
 		expect(result.model ? getSupportedContextWindows(result.model) : []).toEqual([400000]);
 	});
-
 	test("returns a clear error when there are no models", () => {
 		const registry = {
 			getAll: () => [],
 		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRegistry"];
-
 		const result = resolveCliModel({
 			cliProvider: "openai",
 			cliModel: "gpt-4o",
 			modelRegistry: registry,
 		});
-
 		expect(result.model).toBeUndefined();
 		expect(result.error).toContain("No models available");
 	});
-
 	test("prefers provider/model split over gateway model with matching id", () => {
 		// When a user writes "zai/glm-5", and both a zai provider model (id: "glm-5")
 		// and a gateway model (id: "zai/glm-5") exist, prefer the zai provider model.
@@ -395,39 +368,32 @@ describe("resolveCliModel", () => {
 		const registry = {
 			getAll: () => [...allModels, zaiModel, gatewayModel],
 		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRegistry"];
-
 		const result = resolveCliModel({
 			cliModel: "zai/glm-5",
 			modelRegistry: registry,
 		});
-
 		expect(result.error).toBeUndefined();
 		expect(result.model?.provider).toBe("zai");
 		expect(result.model?.id).toBe("glm-5");
 	});
-
 	test("resolves provider-prefixed fuzzy patterns (openrouter/qwen -> openrouter model)", () => {
 		const registry = {
 			getAll: () => allModels,
 		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRegistry"];
-
 		const result = resolveCliModel({
 			cliModel: "openrouter/qwen",
 			modelRegistry: registry,
 		});
-
 		expect(result.error).toBeUndefined();
 		expect(result.model?.provider).toBe("openrouter");
 		expect(result.model?.id).toBe("qwen/qwen3-coder:exacto");
 	});
 });
-
 describe("default model selection", () => {
 	test("openai defaults track current models", () => {
 		expect(defaultModelPerProvider.openai).toBe("gpt-5.4");
 		expect(defaultModelPerProvider["openai-codex"]).toBe("gpt-5.5");
 	});
-
 	test("zai, minimax, cerebras, and ant-ling defaults track current models", () => {
 		expect(defaultModelPerProvider.zai).toBe("glm-5.1");
 		expect(defaultModelPerProvider.minimax).toBe("MiniMax-M2.7");
@@ -435,16 +401,13 @@ describe("default model selection", () => {
 		expect(defaultModelPerProvider.cerebras).toBe("zai-glm-4.7");
 		expect(defaultModelPerProvider["ant-ling"]).toBe("Ring-2.6-1T");
 	});
-
 	test("ai-gateway default tracks current model", () => {
 		expect(defaultModelPerProvider["vercel-ai-gateway"]).toBe("zai/glm-5.1");
 	});
-
 	test("findInitialModel accepts explicit provider custom model ids", async () => {
 		const registry = {
 			getAll: () => allModels,
 		} as unknown as Parameters<typeof findInitialModel>[0]["modelRegistry"];
-
 		const result = await findInitialModel({
 			cliProvider: "openrouter",
 			cliModel: "openrouter/openai/ghost-model",
@@ -452,17 +415,14 @@ describe("default model selection", () => {
 			isContinuing: false,
 			modelRegistry: registry,
 		});
-
 		expect(result.model?.provider).toBe("openrouter");
 		expect(result.model?.id).toBe("openai/ghost-model");
 	});
-
 	test("findInitialModel restores saved custom Cursor model ids from an authenticated provider template", async () => {
 		const registry = {
 			find: () => undefined,
 			getAvailable: async () => [cursorBaseModel],
 		} as unknown as Parameters<typeof findInitialModel>[0]["modelRegistry"];
-
 		const result = await findInitialModel({
 			scopedModels: [],
 			isContinuing: false,
@@ -471,19 +431,16 @@ describe("default model selection", () => {
 			defaultThinkingLevel: "medium",
 			modelRegistry: registry,
 		});
-
 		expect(result.model?.provider).toBe("cursor");
 		expect(result.model?.id).toBe("cursor-compose-2.5");
 		expect(result.model?.api).toBe("cursor-agent");
 		expect(result.thinkingLevel).toBe("medium");
 	});
-
 	test("restoreModelFromSession restores saved custom Cursor model ids from an authenticated provider template", async () => {
 		const registry = {
 			find: () => undefined,
 			getAvailable: async () => [cursorBaseModel],
 		} as unknown as Parameters<typeof restoreModelFromSession>[4];
-
 		const result = await restoreModelFromSession(
 			"cursor",
 			"cursor-compose-2.5",
@@ -491,19 +448,16 @@ describe("default model selection", () => {
 			false,
 			registry,
 		);
-
 		expect(result.fallbackMessage).toBeUndefined();
 		expect(result.model?.provider).toBe("cursor");
 		expect(result.model?.id).toBe("cursor-compose-2.5");
 		expect(result.model?.api).toBe("cursor-agent");
 	});
-
 	test("restoreModelFromSession scrubs inherited context-window options from fallback models", async () => {
 		const registry = {
 			find: () => undefined,
 			getAvailable: async () => [copilotSelectableBaseModel],
 		} as unknown as Parameters<typeof restoreModelFromSession>[4];
-
 		const result = await restoreModelFromSession(
 			"github-copilot",
 			"future-copilot-model",
@@ -511,7 +465,6 @@ describe("default model selection", () => {
 			false,
 			registry,
 		);
-
 		expect(result.fallbackMessage).toBeUndefined();
 		expect(result.model?.provider).toBe("github-copilot");
 		expect(result.model?.id).toBe("future-copilot-model");
@@ -520,7 +473,6 @@ describe("default model selection", () => {
 		expect(result.model?.contextWindowOptions).toBeUndefined();
 		expect(result.model ? getSupportedContextWindows(result.model) : []).toEqual([400000]);
 	});
-
 	test("findInitialModel selects ai-gateway default when available", async () => {
 		const aiGatewayModel: Model<"anthropic-messages"> = {
 			id: "anthropic/claude-opus-4-6",
@@ -534,17 +486,14 @@ describe("default model selection", () => {
 			contextWindow: 200000,
 			maxTokens: 8192,
 		};
-
 		const registry = {
 			getAvailable: async () => [aiGatewayModel],
 		} as unknown as Parameters<typeof findInitialModel>[0]["modelRegistry"];
-
 		const result = await findInitialModel({
 			scopedModels: [],
 			isContinuing: false,
 			modelRegistry: registry,
 		});
-
 		expect(result.model?.provider).toBe("vercel-ai-gateway");
 		expect(result.model?.id).toBe("anthropic/claude-opus-4-6");
 	});

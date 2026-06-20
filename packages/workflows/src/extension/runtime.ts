@@ -19,9 +19,6 @@ import {
   type WorkflowMcpPort,
   type WorkflowRuntimeConfig,
   type WorkflowDetails,
-  type WorkflowDirectOptions,
-  type WorkflowDirectTaskItem,
-  type WorkflowChainStep,
   type WorkflowModelCatalogPort,
   type WorkflowExecutionPolicy,
 } from "../shared/types.js";
@@ -46,6 +43,7 @@ import { runDetached } from "../runs/background/runner.js";
 import type { JobTracker } from "../runs/background/job-tracker.js";
 import { appendRunEnd } from "../shared/persistence-session-entries.js";
 import { classifyWorkflowFailure } from "../shared/workflow-failures.js";
+import { directMode, directModelRequests, directOptions, directProgressTotal } from "./runtime-direct.js";
 
 // ---------------------------------------------------------------------------
 // Options
@@ -183,95 +181,6 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
       registry,
       cwd: runtimeCwd,
     };
-  }
-
-  function withoutUndefinedProperties<T extends object>(value: T): Partial<T> {
-    return Object.fromEntries(
-      Object.entries(value).filter(([, field]) => field !== undefined),
-    ) as Partial<T>;
-  }
-
-  function directOptions(args: WorkflowToolArgs): WorkflowDirectOptions {
-    const {
-      workflow: _workflow,
-      inputs: _inputs,
-      action: _action,
-      runId: _runId,
-      task,
-      tasks: _tasks,
-      chain: _chain,
-      chainName,
-      concurrency,
-      failFast,
-      async: _async,
-      intercom: _intercom,
-      output,
-      outputMode,
-      reads,
-      chainDir,
-      maxOutput,
-      artifacts,
-      worktree,
-      gitWorktreeDir,
-      baseBranch,
-      ...stageOptions
-    } = args;
-
-    return {
-      ...withoutUndefinedProperties(stageOptions),
-      ...(typeof task === "string" ? { task } : {}),
-      ...(typeof chainName === "string" ? { chainName } : {}),
-      ...(typeof concurrency === "number" ? { concurrency } : {}),
-      ...(typeof failFast === "boolean" ? { failFast } : {}),
-      ...(typeof chainDir === "string" ? { chainDir } : {}),
-      ...(output !== undefined ? { output } : {}),
-      ...(outputMode !== undefined ? { outputMode } : {}),
-      ...(reads !== undefined ? { reads } : {}),
-      ...(maxOutput !== undefined ? { maxOutput } : {}),
-      ...(typeof artifacts === "boolean" ? { artifacts } : {}),
-      ...(typeof worktree === "boolean" ? { worktree } : {}),
-      ...(typeof gitWorktreeDir === "string" ? { gitWorktreeDir } : {}),
-      ...(typeof baseBranch === "string" ? { baseBranch } : {}),
-    };
-  }
-
-  function directMode(args: WorkflowToolArgs): WorkflowDetails["mode"] {
-    if (Array.isArray(args.chain)) return "chain";
-    if (Array.isArray(args.tasks)) return "parallel";
-    return "single";
-  }
-
-  function directModelRequests(args: WorkflowToolArgs): Array<{ readonly model?: WorkflowDirectTaskItem["model"]; readonly fallbackModels?: readonly string[] }> {
-    const options = directOptions(args);
-    const withFallbackDefault = (item: WorkflowDirectTaskItem) => ({
-      model: item.model ?? options.model,
-      fallbackModels: item.fallbackModels ?? options.fallbackModels,
-    });
-    if (args.task !== undefined && typeof args.task === "object") return [withFallbackDefault(args.task)];
-    if (Array.isArray(args.tasks)) return args.tasks.map(withFallbackDefault);
-    if (Array.isArray(args.chain)) {
-      return args.chain.flatMap((step) =>
-        "parallel" in step
-          ? step.parallel.map(withFallbackDefault)
-          : [withFallbackDefault(step)],
-      );
-    }
-    return [];
-  }
-
-  function directProgressTotal(args: WorkflowToolArgs): number {
-    const countTask = (task: WorkflowDirectTaskItem): number => task.count ?? 1;
-    const countChainStep = (step: WorkflowChainStep): number =>
-      "parallel" in step
-        ? step.parallel.reduce((total, task) => total + countTask(task), 0)
-        : 1;
-    if (Array.isArray(args.chain)) {
-      return args.chain.reduce((total, step) => total + countChainStep(step), 0);
-    }
-    if (Array.isArray(args.tasks)) {
-      return args.tasks.reduce((total, task) => total + countTask(task), 0);
-    }
-    return 1;
   }
 
   function explicitIntercomDelivery(args: WorkflowToolArgs): WorkflowIntercomDelivery | undefined {

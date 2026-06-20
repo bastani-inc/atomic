@@ -1,0 +1,197 @@
+import type { StageOptions } from "../../shared/types.js";
+import type { ConcurrencyLimiter } from "../shared/concurrency.js";
+import type { StageAdapters } from "./stage-runner.js";
+import type { LiveStageRuntime } from "./executor-stage-types.js";
+import { askReadinessViaStageBroker, RESUME_CONTINUATION_PROMPT, shouldInjectResumeContinuation } from "./executor-hil.js";
+import { raceAbort } from "./executor-abort.js";
+import { hasExplicitFastModeCandidate } from "./executor-direct-helpers.js";
+import { applyFailureToStage } from "./executor-lifecycle.js";
+import { isTerminalStage } from "./executor-scheduler.js";
+
+export function createTrackedStageCaller(input: {
+  readonly runtime: LiveStageRuntime;
+  readonly limiter: ConcurrencyLimiter;
+  readonly options: StageOptions | undefined;
+  readonly adapters: StageAdapters;
+  readonly hasContinuation: boolean;
+  readonly hasScopedParents: boolean;
+}): <T>(call: () => Promise<T>, eagerSession?: boolean) => Promise<T> {
+  const { runtime } = input;
+  const readinessGateEnabled = runtime.opts.confirmStageReadiness !== undefined || runtime.opts.usePromptNodesForUi === true;
+  const confirmReadiness = async (): Promise<"advance" | "stay"> => {
+    try {
+      if (runtime.opts.confirmStageReadiness !== undefined) {
+        const ready = await runtime.opts.confirmStageReadiness({
+          runId: runtime.runId,
+          stageId: runtime.stageId,
+          stageName: runtime.name,
+          signal: runtime.signal,
+        });
+        return ready ? "advance" : "stay";
+      }
+      return await askReadinessViaStageBroker(runtime.runId, runtime.stageId, runtime.signal);
+    } catch {
+      return "advance";
+    }
+  };
+
+  const suppressReadinessForCurrentTurn = (): void => {
+    runtime.state.askUserQuestionObservedThisTurn = false;
+    runtime.state.chatAnswerObservedThisTurn = false;
+  };
+
+  const skipResumeContinuationInjection = (): boolean => {
+    if (runtime.state.stageFinalized) return true;
+    if (runtime.state.skippedForParallelFailFast) return true;
+    if (runtime.stageSnapshot.status === "skipped" && runtime.stageSnapshot.skippedReason === "fail-fast") return true;
+    if (isTerminalStage(runtime.stageSnapshot)) return true;
+    if (runtime.stageFailFastScope?.failed === true && runtime.stageFailFastScope.activeStages.has(runtime.stageId)) return true;
+    if (runtime.innerCtx.__structuredOutputFinalized()) return true;
+    return false;
+  };
+
+  const drainResumeContinuations = async <T>(currentResult: T): Promise<T> => {
+    let result = currentResult;
+    while (runtime.state.resumeContinuationPending) {
+      runtime.state.resumeContinuationPending = false;
+      suppressReadinessForCurrentTurn();
+      if (!shouldInjectResumeContinuation({
+        resumeOccurred: true,
+        gateEnabled: readinessGateEnabled,
+        aborted: runtime.signal.aborted,
+      })) {
+        continue;
+      }
+      if (skipResumeContinuationInjection()) continue;
+      result = await raceAbort(runtime.innerCtx.prompt(RESUME_CONTINUATION_PROMPT), runtime.signal) as T;
+    }
+    return result;
+  };
+
+  return async <T>(call: () => Promise<T>, eagerSession = false): Promise<T> => {
+    runtime.exit.throwIfWorkflowExitSelected();
+    await runtime.scheduler.waitForStageRelease(runtime.stageId, runtime.releaseLiveHandle);
+    if (runtime.state.stageFinalized) throw runtime.parallelFailFastError();
+
+    await input.limiter.acquire();
+    try {
+      await runtime.scheduler.waitForStageRelease(runtime.stageId, runtime.releaseLiveHandle);
+      runtime.exit.throwIfWorkflowExitSelected();
+      if (runtime.state.stageFinalized) throw runtime.parallelFailFastError();
+    } catch (err) {
+      input.limiter.release();
+      throw err;
+    }
+
+    if (!input.hasContinuation && runtime.stageSnapshot.startedAt === undefined && !input.hasScopedParents) {
+      const actualParentIds = runtime.scheduler.tracker.currentParents();
+      const sameParents = actualParentIds.length === runtime.stageSnapshot.parentIds.length &&
+        actualParentIds.every((value) => runtime.stageSnapshot.parentIds.includes(value));
+      if (!sameParents) {
+        runtime.scheduler.tracker.replaceParents(runtime.stageId, actualParentIds);
+        runtime.scheduler.setStageParentIds(runtime.stageSnapshot, actualParentIds);
+      }
+    }
+    runtime.stageSnapshot.status = "running";
+    runtime.stageSnapshot.startedAt = Date.now();
+    const hasNoExplicitModelConfig = input.options?.model === undefined && input.options?.fallbackModels === undefined;
+    const promptAdapterHandlesInitialPrompt = input.adapters.prompt !== undefined;
+    if (eagerSession && !promptAdapterHandlesInitialPrompt && (hasNoExplicitModelConfig || await hasExplicitFastModeCandidate({
+      model: input.options?.model,
+      fallbackModels: input.options?.fallbackModels,
+      models: runtime.opts.models,
+    }))) {
+      try {
+        await runtime.innerCtx.__ensureSession();
+        runtime.captureStageSessionMeta();
+      } catch (err) {
+        if (!(err instanceof Error && err.message.includes("prompt adapter not configured"))) throw err;
+      }
+    }
+    runtime.applyModelFallbackMeta(runtime.innerCtx.__modelFallbackMeta());
+    runtime.activeStore.recordStageStart(runtime.runId, runtime.stageSnapshot);
+    runtime.appendStageStartOnce();
+
+    const mcpAllow = input.options?.mcp?.allow ?? null;
+    const mcpDeny = input.options?.mcp?.deny ?? null;
+    const hasMcpScope = mcpAllow !== null || mcpDeny !== null;
+    if (runtime.opts.mcp && hasMcpScope) runtime.opts.mcp.setScope(runtime.stageId, mcpAllow, mcpDeny);
+
+    try {
+      const abortSession = (): void => {
+        void runtime.innerCtx.abort().catch(() => {});
+      };
+      if (runtime.signal.aborted) abortSession();
+      else runtime.signal.addEventListener("abort", abortSession, { once: true });
+      let result: T;
+      try {
+        runtime.state.askUserQuestionObservedThisTurn = false;
+        runtime.state.chatAnswerObservedThisTurn = false;
+        result = await raceAbort(call(), runtime.signal);
+        result = await drainResumeContinuations(result);
+
+        if (!runtime.signal.aborted && readinessGateEnabled) {
+          let resolveNextTurnEnd: (() => void) | null = null;
+          const unsubscribeTurnWatcher = runtime.innerCtx.subscribe((event) => {
+            if ((event as { type?: unknown }).type === "agent_end" && resolveNextTurnEnd) {
+              const resolve = resolveNextTurnEnd;
+              resolveNextTurnEnd = null;
+              resolve();
+            }
+          });
+          try {
+            while (runtime.state.askUserQuestionObservedThisTurn) {
+              const decision = runtime.state.chatAnswerObservedThisTurn ? "stay" : await confirmReadiness();
+              if (decision === "advance") break;
+              if (runtime.signal.aborted) break;
+              runtime.state.askUserQuestionObservedThisTurn = false;
+              runtime.state.chatAnswerObservedThisTurn = false;
+              await raceAbort(new Promise<void>((resolve) => { resolveNextTurnEnd = resolve; }), runtime.signal);
+              if (runtime.signal.aborted) break;
+              result = (runtime.innerCtx.__getLastAssistantText() ?? result) as T;
+              result = await drainResumeContinuations(result);
+            }
+          } finally {
+            resolveNextTurnEnd = null;
+            unsubscribeTurnWatcher();
+          }
+        }
+      } finally {
+        runtime.signal.removeEventListener("abort", abortSession);
+      }
+      runtime.captureStageSessionMeta();
+      runtime.applyModelFallbackMeta(runtime.innerCtx.__modelFallbackMeta());
+      if (runtime.stageFailFastScope?.failed === true && runtime.stageFailFastScope.activeStages.has(runtime.stageId)) {
+        runtime.markSkippedForParallelFailFast();
+        throw runtime.parallelFailFastError();
+      }
+      if (runtime.state.stageFinalized) throw runtime.parallelFailFastError();
+      runtime.stageSnapshot.status = "completed";
+      const assistantText = runtime.innerCtx.__getLastAssistantText();
+      if (assistantText !== undefined) runtime.stageSnapshot.result = assistantText;
+      return result;
+    } catch (err) {
+      const workflowExitAbort = runtime.signal.aborted ? runtime.exit.currentWorkflowExitAbortReason() : undefined;
+      if (workflowExitAbort !== undefined && !runtime.state.skippedForParallelFailFast) {
+        runtime.state.stageClosedByWorkflowExit = true;
+        if (!isTerminalStage(runtime.stageSnapshot)) {
+          runtime.stageSnapshot.status = "skipped";
+          runtime.stageSnapshot.skippedReason = runtime.exit.workflowExitSkippedReason(workflowExitAbort.reason);
+        }
+      } else if (!runtime.signal.aborted && !runtime.state.skippedForParallelFailFast) {
+        applyFailureToStage(runtime.stageSnapshot, runtime.classifyExecutorFailure(err));
+      }
+      throw err;
+    } finally {
+      if (runtime.opts.mcp && hasMcpScope) runtime.opts.mcp.clearScope(runtime.stageId);
+      runtime.captureStageSessionMeta();
+      runtime.finalizeStageSnapshot();
+      if (runtime.state.stageClosedByWorkflowExit || runtime.exit.currentWorkflowExitAbortReason() !== undefined) {
+        await runtime.releaseLiveHandle().catch(() => {});
+      } else {
+        await runtime.dropStageControlForCompletion().catch(() => {});
+      }
+      input.limiter.release();
+    }
+  };
+}

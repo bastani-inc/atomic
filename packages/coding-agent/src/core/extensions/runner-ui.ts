@@ -1,0 +1,51 @@
+import { type Theme, theme } from "../../modes/interactive/theme/theme.ts";
+import type { ExtensionUIContext } from "./types.ts";
+
+export const noOpUIContext: ExtensionUIContext = {
+	select: async () => undefined,
+	confirm: async () => false,
+	input: async () => undefined,
+	notify: () => {},
+	requestRender: () => {},
+	onTerminalInput: () => () => {},
+	setStatus: () => {},
+	setWorkingMessage: () => {},
+	setWorkingVisible: () => {},
+	setWorkingIndicator: () => {},
+	setHiddenThinkingLabel: () => {},
+	setWidget: () => {},
+	setFooter: () => {},
+	setHeader: () => {},
+	setTitle: () => {},
+	custom: async () => undefined as never,
+	pasteToEditor: () => {},
+	setEditorText: () => {},
+	getEditorText: () => "",
+	editor: async () => undefined,
+	addAutocompleteProvider: () => {},
+	setEditorComponent: () => {},
+	getEditorComponent: () => undefined,
+	getFooterDataProvider: () => ({
+		getGitBranch: () => null,
+		getExtensionStatuses: () => new Map(),
+		getAvailableProviderCount: () => 1,
+		onBranchChange: () => () => {},
+	}),
+	get theme() {
+		return theme;
+	},
+	getAllThemes: () => [],
+	getTheme: () => undefined,
+	setTheme: (_theme: string | Theme) => ({ success: false, error: "UI not available" }),
+	getToolsExpanded: () => false,
+	setToolsExpanded: () => {},
+	getChatRenderSettings: () => ({
+		hideThinkingBlock: false,
+		hiddenThinkingLabel: "Thinking...",
+		toolOutputExpanded: false,
+		showImages: false,
+		imageWidthCells: 60,
+		getToolDefinition: () => undefined,
+		getCustomMessageRenderer: () => undefined,
+	}),
+};

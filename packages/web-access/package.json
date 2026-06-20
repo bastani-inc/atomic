@@ -19,6 +19,7 @@
   },
   "files": [
     "*.ts",
+    "curator-page-assets/**/*.ts",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"

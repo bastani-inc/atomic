@@ -338,7 +338,6 @@ describe("runPrintMode", () => {
 		});
 		const { session } = runtimeHost;
 		const stdoutChunks = captureStdout();
-
 		session.prompt.mockImplementation(async () => {
 			session.emitEvent({
 				type: "tool_execution_end",
@@ -357,21 +356,17 @@ describe("runPrintMode", () => {
 				text: "not final",
 			}));
 		});
-
 		const exitCode = await runPrintModeWithFakeHost(runtimeHost, {
 			mode: "text",
 			initialMessage: "Return JSON with structured_output",
 		});
-
 		expect(exitCode).toBe(0);
 		expect(stdoutChunks.join("")).toBe("");
 	});
-
 	it("does not print terminating tool results from unrelated tools in text mode", async () => {
 		const runtimeHost = createRuntimeHost(createAssistantMessage({ text: "stale" }));
 		const { session } = runtimeHost;
 		const stdoutChunks = captureStdout();
-
 		session.prompt.mockImplementation(async () => {
 			session.emitEvent({
 				type: "tool_execution_end",
@@ -390,33 +385,27 @@ describe("runPrintMode", () => {
 				text: "unrelated final",
 			}));
 		});
-
 		const exitCode = await runPrintModeWithFakeHost(runtimeHost, {
 			mode: "text",
 			initialMessage: "Ask a question",
 		});
-
 		expect(exitCode).toBe(0);
 		expect(stdoutChunks.join("")).toBe("");
 	});
-
 	it("emits session_shutdown and returns non-zero on assistant error", async () => {
 		const runtimeHost = createRuntimeHost(
 			createAssistantMessage({ stopReason: "error", errorMessage: "provider failure" }),
 		);
 		const { session } = runtimeHost;
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-
 		const exitCode = await runPrintModeWithFakeHost(runtimeHost, {
 			mode: "text",
 		});
-
 		expect(exitCode).toBe(1);
 		expect(errorSpy).toHaveBeenCalledWith("provider failure");
 		expect(session.extensionRunner.emit).toHaveBeenCalledTimes(1);
 		expect(session.extensionRunner.emit).toHaveBeenCalledWith({ type: "session_shutdown", reason: "quit" });
 	});
-
 	it("issue #1156: command-originated extension errors exit non-zero and suppress stale assistant output", async () => {
 		const runtimeHost = createRuntimeHost(createAssistantMessage({ text: "done" }));
 		const { session } = runtimeHost;
@@ -429,19 +418,16 @@ describe("runPrintMode", () => {
 		});
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 		const stdoutChunks = captureStdout();
-
 		const exitCode = await runPrintModeWithFakeHost(runtimeHost, {
 			mode: "text",
 			initialMessage: "/workflow approval-required",
 		});
-
 		expect(exitCode).toBe(1);
 		expect(errorSpy).toHaveBeenCalledWith(`Extension error (command:workflow): ${MISSING_INPUT_ERROR}`);
 		expect(stdoutChunks.join("")).toBe("");
 		expect(session.extensionRunner.emit).toHaveBeenCalledTimes(1);
 		expect(session.extensionRunner.emit).toHaveBeenCalledWith({ type: "session_shutdown", reason: "quit" });
 	});
-
 	it("keeps zero exit code and final output for non-command extension errors", async () => {
 		const runtimeHost = createRuntimeHost(createAssistantMessage({ text: "done" }));
 		const { session } = runtimeHost;
@@ -454,18 +440,15 @@ describe("runPrintMode", () => {
 		});
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 		const stdoutChunks = captureStdout();
-
 		const exitCode = await runPrintModeWithFakeHost(runtimeHost, {
 			mode: "text",
 			initialMessage: "hello",
 		});
-
 		expect(exitCode).toBe(0);
 		expect(errorSpy).toHaveBeenCalledWith("Extension error (test-extension): transient extension failure");
 		expect(stdoutChunks.join("")).toBe("done\n");
 		expect(session.extensionRunner.emit).toHaveBeenCalledWith({ type: "session_shutdown", reason: "quit" });
 	});
-
 	it("prints later successful custom output after earlier command errors while keeping non-zero exit", async () => {
 		const runtimeHost = createRuntimeHost(createAssistantMessage({ text: "stale answer" }));
 		const { session } = runtimeHost;
@@ -478,25 +461,21 @@ describe("runPrintMode", () => {
 				emitWorkflowCommandError(bindings, MISSING_INPUT_ERROR);
 				return;
 			}
-
 			session.state.messages.push(createCustomMessage({ content: "later workflow completed" }));
 		});
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 		const stdoutChunks = captureStdout();
-
 		const exitCode = await runPrintModeWithFakeHost(runtimeHost, {
 			mode: "text",
 			initialMessage: "/workflow approval-required",
 			messages: ["write a normal answer"],
 		});
-
 		expect(exitCode).toBe(1);
 		expect(errorSpy).toHaveBeenCalledWith(`Extension error (command:workflow): ${MISSING_INPUT_ERROR}`);
 		expect(stdoutChunks.join("")).toBe("later workflow completed\n");
 		expect(stdoutChunks.join("")).not.toContain("stale answer");
 		expect(session.extensionRunner.emit).toHaveBeenCalledWith({ type: "session_shutdown", reason: "quit" });
 	});
-
 	it("issue #1156: command-originated extension errors suppress stale custom output", async () => {
 		const runtimeHost = createRuntimeHost(createCustomMessage({ content: "stale workflow result" }));
 		const { session } = runtimeHost;
@@ -509,12 +488,10 @@ describe("runPrintMode", () => {
 		});
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 		const stdoutChunks = captureStdout();
-
 		const exitCode = await runPrintModeWithFakeHost(runtimeHost, {
 			mode: "text",
 			initialMessage: "/workflow status definitely-missing",
 		});
-
 		expect(exitCode).toBe(1);
 		expect(errorSpy).toHaveBeenCalledWith(`Extension error (command:workflow): ${RUN_MISSING_ERROR}`);
 		expect(stdoutChunks.join("")).toBe("");

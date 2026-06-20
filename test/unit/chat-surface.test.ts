@@ -124,13 +124,11 @@ describe("renderFlatBand", () => {
     // Total visible width must not exceed the budget by more than a tail cell.
     assert.ok(plain.length <= 90, `plain band width = ${plain.length}`);
   });
-
   test("empty subtitle and no badges still renders cleanly", () => {
     const out = renderFlatBand({ label: "DISPATCHED", width: 80 });
     assert.match(stripAnsi(out), /\[ DISPATCHED \]/);
   });
 });
-
 describe("renderTaggedCard", () => {
   test("themed: emits a stripe glyph, surface0 tag, title, trailing badge", () => {
     const theme = deriveGraphTheme({});
@@ -152,7 +150,6 @@ describe("renderTaggedCard", () => {
     assert.match(plain[0]!, /running/);
     assert.match(plain[1]!, /\[✓\]\[●\]\[○\]/);
   });
-
   test("plain: stripe degrades to │, tag in [brackets], no ANSI", () => {
     const out = renderTaggedCard({
       tag: "abc123",
@@ -172,7 +169,6 @@ describe("renderTaggedCard", () => {
     assert.match(plain, /^ │ \[abc123\]/);
     assert.match(plain, /ship-feature/);
   });
-
   test("end-truncates long title with …", () => {
     const theme = deriveGraphTheme({});
     const out = renderTaggedCard({
@@ -187,7 +183,6 @@ describe("renderTaggedCard", () => {
     assert.match(plain, new RegExp(ELLIPSIS));
   });
 });
-
 describe("progressStrip", () => {
   test("themed: emits one [glyph] per stage, status-coloured", () => {
     const theme = deriveGraphTheme({});
@@ -205,7 +200,6 @@ describe("progressStrip", () => {
     // Themed cells include ANSI.
     assert.match(out, /\x1b\[/);
   });
-
   test("plain: same ASCII shape without ANSI", () => {
     const out = progressStrip(
       [
@@ -216,7 +210,6 @@ describe("progressStrip", () => {
     );
     assert.equal(out, "[✓][✗]");
   });
-
   test("truncates to budget with trailing …", () => {
     const cells = Array.from({ length: 12 }, () => ({ status: "pending" as const }));
     const out = progressStrip(cells, 10); // budget < 12*3
@@ -225,16 +218,13 @@ describe("progressStrip", () => {
     // 10 columns budget = 3 cells (3*3=9) + ellipsis (1) = 10
     assert.ok(plain.length <= 10, `truncated strip exceeded budget: ${plain.length}`);
   });
-
   test("empty stage list yields empty string", () => {
     assert.equal(progressStrip([], 40), "");
   });
-
   test("zero budget yields empty string", () => {
     assert.equal(progressStrip([{ status: "completed" }], 0), "");
   });
 });
-
 describe("renderHintRows", () => {
   test("themed: ▸ glyph, accent command, dim hint", () => {
     const theme = deriveGraphTheme({});
@@ -253,7 +243,6 @@ describe("renderHintRows", () => {
     }
     assert.match(out, /\x1b\[/);
   });
-
   test("plain: same shape without ANSI", () => {
     const out = renderHintRows([
       { command: "/workflow status", hint: "drill into a run" },
@@ -263,12 +252,10 @@ describe("renderHintRows", () => {
     assert.equal(out, " ▸ /workflow status  drill into a run");
     assert.doesNotMatch(out, /\x1b\[/);
   });
-
   test("empty rows yields empty string", () => {
     assert.equal(renderHintRows([]), "");
   });
 });
-
 describe("renderChatSurfacePlainText", () => {
   test("renders printable content for every chat-surface payload kind", () => {
     const run = printableRun();
@@ -308,7 +295,6 @@ describe("renderChatSurfacePlainText", () => {
         patterns: [/Workflow killed/, /printable-workflow/, /run-printable-1234567890/, /running → killed/],
       },
     ];
-
     for (const { payload, patterns } of payloads) {
       const rendered = renderChatSurfacePlainText(payload, { width: 100, now: 3_000 });
       assert.doesNotMatch(rendered, /\x1b\[/, `${payload.kind} fallback should be plain by default`);
@@ -317,7 +303,6 @@ describe("renderChatSurfacePlainText", () => {
       }
     }
   });
-
   test("emitChatSurface defaults content to printable text while preserving custom message metadata", () => {
     const sent: Array<{
       customType: string;
@@ -335,14 +320,11 @@ describe("renderChatSurfacePlainText", () => {
         },
       ],
     };
-
     const pi = {
       sendMessage: (message: (typeof sent)[number]) => { sent.push(message); },
     } as never;
-
     emitChatSurface(pi, payload);
     emitChatSurface(pi, payload, { content: "custom fallback" });
-
     assert.equal(sent[0]?.customType, CHAT_SURFACE_CUSTOM_TYPE);
     assert.equal(sent[0]?.display, true);
     assert.equal(sent[0]?.details, payload);
@@ -355,19 +337,16 @@ describe("renderChatSurfacePlainText", () => {
     assert.equal(sent[1]?.details, payload);
   });
 });
-
 describe("registerChatSurfaceRenderer", () => {
   test("registers once per live ExtensionAPI host", () => {
     class ClassBackedPi {
       readonly renderers = new Map<string, (payload: unknown) => unknown>();
       calls = 0;
-
       registerMessageRenderer(event: string, renderer: (payload: unknown) => unknown): void {
         this.calls += 1;
         this.renderers.set(event, renderer);
       }
     }
-
     const pi = new ClassBackedPi();
     registerChatSurfaceRenderer(pi as never, deriveGraphTheme({}));
     const first = pi.renderers.get(CHAT_SURFACE_CUSTOM_TYPE);
@@ -375,13 +354,11 @@ describe("registerChatSurfaceRenderer", () => {
     const second = pi.renderers.get(CHAT_SURFACE_CUSTOM_TYPE);
     assert.equal(first, second);
     assert.equal(pi.calls, 1);
-
     const replacementPi = new ClassBackedPi();
     registerChatSurfaceRenderer(replacementPi as never, deriveGraphTheme({}));
     assert.equal(replacementPi.calls, 1);
     assert.notEqual(replacementPi.renderers.get(CHAT_SURFACE_CUSTOM_TYPE), undefined);
   });
-
   test("renders killed workflow notices inline in chat", () => {
     class ClassBackedPi {
       readonly renderers = new Map<string, (payload: unknown) => unknown>();
@@ -415,7 +392,6 @@ describe("registerChatSurfaceRenderer", () => {
     assert.match(rendered, /read-only inspection/i);
     assert.doesNotMatch(rendered, /close/);
   });
-
   test("status/detail cards freeze elapsed at creation so scrollback doesn't tick on re-render", () => {
     // Regression for the whole-screen flicker class fixed for the tool-result
     // status cards (capture wall-clock once per chat entry). The chat-surface
@@ -432,7 +408,6 @@ describe("registerChatSurfaceRenderer", () => {
     registerChatSurfaceRenderer(pi as never, deriveGraphTheme({}));
     const renderer = pi.renderers.get(CHAT_SURFACE_CUSTOM_TYPE);
     assert.notEqual(renderer, undefined);
-
     const runningSnapshot = {
       id: "abc12345-0000-0000-0000-000000000000",
       name: "tick-demo",
@@ -441,7 +416,6 @@ describe("registerChatSurfaceRenderer", () => {
       stages: [{ id: "s1", name: "plan", status: "running", parentIds: [], toolEvents: [] }],
       startedAt: 1_000,
     };
-
     for (const payload of [
       { kind: "status", runs: [runningSnapshot] },
       { kind: "detail", detail: { runId: runningSnapshot.id, name: runningSnapshot.name, mode: "single", status: "running", startedAt: 1_000, inputs: {}, stages: [] } },
@@ -451,7 +425,6 @@ describe("registerChatSurfaceRenderer", () => {
         // Component created at a fixed wall-clock — the clock is captured here.
         Date.now = () => 60_000;
         const component = renderer!({ details: payload }) as { render(width: number): string[] };
-
         // Subsequent host re-renders (e.g. driven by the live-widget ticker)
         // advance the wall-clock; the card must stay byte-identical.
         Date.now = () => 600_000;
@@ -463,7 +436,6 @@ describe("registerChatSurfaceRenderer", () => {
           second,
           `${payload.kind} card must not tick elapsed across re-renders (frozen clock avoids above-fold flicker)`,
         );
-
         // Sanity: a card created at a later wall-clock renders a larger
         // elapsed, proving the output genuinely depends on the frozen clock.
         Date.now = () => 9_000_000;
@@ -480,13 +452,11 @@ describe("registerChatSurfaceRenderer", () => {
     }
   });
 });
-
 describe("chatWidth", () => {
   test("honours explicit width verbatim", () => {
     assert.equal(chatWidth(80), 80);
     assert.equal(chatWidth(132), 132);
   });
-
   test("subtracts pi-tui Text paddingX from process.stdout.columns fallback", () => {
     // pi's `customMessage` surface wraps our string in a `Text` component
     // with `paddingX = 1`, so the renderable width is `columns - 2`. The
@@ -509,7 +479,6 @@ describe("chatWidth", () => {
       });
     }
   });
-
   test("floors at MIN_WIDTH so tiny terminals stay legible", () => {
     const original = process.stdout.columns;
     Object.defineProperty(process.stdout, "columns", {

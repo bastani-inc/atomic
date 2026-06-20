@@ -19,7 +19,7 @@
 - Bumped the bundled upstream pi runtime libraries `@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, and `@earendil-works/pi-tui` from `^0.79.6` to `^0.79.7` so Atomic inherits upstream v0.79.7 TUI color-scheme, Warp image, generated model catalog, and agent-core fixes.
 - Reserved `/` in theme names for automatic light/dark theme settings.
 - Replaced the bundled `browser` skill / `browse` CLI with the `playwright-cli` skill and `playwright-cli` command across `@bastani/atomic`, and bundled the new `effective-liteparse` document-extraction skill. The builtin `ralph`, `goal`, and `open-claude-design` workflows and the `debugger`/`codebase-online-researcher` subagents now drive browsers via `playwright-cli`; `open-claude-design`'s deterministic setup step ensures `playwright-cli` (`npm install -g @playwright/cli@latest`) and renames its `browse_cli_status` output to `playwright_cli_status`; and `ralph` now records a `playwright-cli` QA end-to-end proof video (`qa_video_path`) for UI-applicable/full-stack changes, references it in the implementation notes, and attaches or links it to the final pull request when `create_pr=true`. Updated the user-facing docs (workflows, SDK bash-policy examples, quickstart skills, README) to match.
-
+- Changed contributor validation to include a monorepo-wide file-length gate in Bun scripts, local `prek` hooks, and PR CI, covering tracked TS/JS/Rust files with the documented generated/vendored exclusions and no grandfathered baseline allowlist ([#1445](https://github.com/bastani-inc/atomic/issues/1445)).
 
 ### Fixed
 
