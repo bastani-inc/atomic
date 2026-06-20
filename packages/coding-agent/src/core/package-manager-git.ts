@@ -97,6 +97,13 @@ export async function installGit(
 	}
 	mkdirSync(dirname(targetDir), { recursive: true });
 
+	// Defense-in-depth: the clone URL is already parsed/validated upstream, but
+	// assert it contains only shell-safe characters immediately before it reaches
+	// `git clone`, so no metacharacter can ever reach a shell even on platforms
+	// that wrap process spawns.
+	if (!/^[A-Za-z0-9._~:@\/%+-]+$/.test(source.repo)) {
+		throw new Error(`Refusing to clone repository with unsafe URL: ${source.repo}`);
+	}
 	await runGitProcess(context, "git", ["clone", "--", source.repo, targetDir]);
 	if (safeRef) {
 		await runGitProcess(context, "git", ["checkout", safeRef], { cwd: targetDir });
