@@ -405,24 +405,16 @@ function stripStyleAndJoin(lines, block) {
     let line = lines[i];
 
     if (!inStyle) {
-      // Strip any complete <style> elements on this line (self-closed or
-      // same-line-closed), including their body content.
-      // Repeat until stable so overlapping/nested <style> fragments cannot
-      // survive a single pass (incomplete multi-character sanitization).
-      let prevLine;
-      do {
-        prevLine = line;
-        line = line
-          .replace(/<style\b[^>]*>[\s\S]*?<\/style[^>]*>/g, '')
-          .replace(/<style\b[^>]*\/\s*>/g, '');
-        // A surviving "<style" is an unclosed opener (multi-line body starts
-        // here): flip into skip mode and drop from the opener to EOL so the
-        // sanitized value can never retain a <style fragment.
-        if (/<style\b/i.test(line)) {
-          inStyle = true;
-          line = line.replace(/<style\b[\s\S]*$/i, '');
-        }
-      } while (line !== prevLine);
+      // An unclosed <style> opener (more non-self-closed openers than same-line
+      // closers) starts a multi-line body that continues on following lines.
+      const openers = (line.match(/<style\b/gi) || []).length;
+      const selfClosed = (line.match(/<style\b[^>]*\/\s*>/gi) || []).length;
+      const closers = (line.match(/<\/style\b/gi) || []).length;
+      if (openers - selfClosed > closers) inStyle = true;
+      // Remove every <style> element on this line in a single pass — self-closed
+      // <style/>, same-line <style>…</style>, or an unclosed opener through end
+      // of line — so the result provably cannot retain a <style fragment.
+      line = line.replace(/<style\b(?:[^>]*\/>|[^>]*>[\s\S]*?(?:<\/style[^>]*>|$))/gi, '');
       out.push(line);
     } else {
       // In multi-line style body; drop everything until we see </style>.
