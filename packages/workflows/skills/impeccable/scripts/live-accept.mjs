@@ -417,12 +417,12 @@ function stripStyleAndJoin(lines, block) {
           .replace(/<style\b[^>]*\/\s*>/g, '');
       } while (line !== prevLine);
 
-      // If a <style> opener remains (multi-line body starts here), strip from
-      // the opener to end-of-line and flip into skip mode.
-      const openerIdx = line.search(/<style\b/);
-      if (openerIdx !== -1) {
-        line = line.slice(0, openerIdx);
+      // A surviving "<style" means an unclosed opener (multi-line body starts
+      // here): flip into skip mode and drop everything from the opener onward
+      // with a single replace, so no <style fragment can remain on this line.
+      if (/<style\b/i.test(line)) {
         inStyle = true;
+        line = line.replace(/<style\b[\s\S]*$/i, '');
       }
       out.push(line);
     } else {
