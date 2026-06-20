@@ -413,7 +413,7 @@ function stripStyleAndJoin(lines, block) {
       do {
         prevLine = line;
         line = line
-          .replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/g, '')
+          .replace(/<style\b[^>]*>[\s\S]*?<\/style[^>]*>/g, '')
           .replace(/<style\b[^>]*\/\s*>/g, '');
       } while (line !== prevLine);
 

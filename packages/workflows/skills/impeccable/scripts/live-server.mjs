@@ -1872,13 +1872,9 @@ function handlePollGet(req, res, url) {
     return;
   }
   state.lastPollAt = Date.now();
-  // Clamp the client-supplied long-poll timeout so a user-provided value cannot
-  // schedule an unbounded timer (resource exhaustion).
-  const MAX_POLL_TIMEOUT_MS = 300000;
-  const timeout = Math.min(
-    Math.max(parseInt(url.searchParams.get('timeout') || DEFAULT_POLL_TIMEOUT, 10) || 0, 0),
-    MAX_POLL_TIMEOUT_MS,
-  );
+  // Clamp the client-supplied long-poll timeout to a fixed maximum so a
+  // user-provided value cannot schedule an unbounded timer (resource exhaustion).
+  const timeout = Math.min(parseInt(url.searchParams.get('timeout') || DEFAULT_POLL_TIMEOUT, 10) || 0, 300000);
   const leaseMs = parseInt(url.searchParams.get('leaseMs') || '30000', 10);
   const available = findAvailablePendingEvent();
   if (available) {
