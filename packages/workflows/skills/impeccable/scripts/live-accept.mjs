@@ -415,15 +415,14 @@ function stripStyleAndJoin(lines, block) {
         line = line
           .replace(/<style\b[^>]*>[\s\S]*?<\/style[^>]*>/g, '')
           .replace(/<style\b[^>]*\/\s*>/g, '');
+        // A surviving "<style" is an unclosed opener (multi-line body starts
+        // here): flip into skip mode and drop from the opener to EOL so the
+        // sanitized value can never retain a <style fragment.
+        if (/<style\b/i.test(line)) {
+          inStyle = true;
+          line = line.replace(/<style\b[\s\S]*$/i, '');
+        }
       } while (line !== prevLine);
-
-      // A surviving "<style" means an unclosed opener (multi-line body starts
-      // here): flip into skip mode and drop everything from the opener onward
-      // with a single replace, so no <style fragment can remain on this line.
-      if (/<style\b/i.test(line)) {
-        inStyle = true;
-        line = line.replace(/<style\b[\s\S]*$/i, '');
-      }
       out.push(line);
     } else {
       // In multi-line style body; drop everything until we see </style>.
