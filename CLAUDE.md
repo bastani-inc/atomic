@@ -79,7 +79,7 @@ Set any of the following environment variables to enable AI-friendly output:
 
 ### Code Quality
 
-- Frequently run linters and type checks using `bun run typecheck` and `bun run lint` (`lint` runs typecheck plus the file-length gate).
+- Frequently run linters and type checks using `bun run typecheck` and `bun run lint` (both `tsc --noEmit`), and run `bun run check:file-length` to enforce the 500-line file-length gate.
 - Keep tracked TypeScript, JavaScript, and Rust source-like files at or below 500 physical lines. `bun run check:file-length` enforces `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, and `.rs` files with only the documented generated/vendored glob exclusions (`node_modules`, `dist`, `target`, `binaries`, `.git`, `vendor`, `*.min.js`, `*.min.mjs`, `packages/workflows/skills/impeccable/**`) and first-five-line generated markers (`@generated`, `auto-generated`, `DO NOT EDIT`, `GENERATED -- do not edit`). Do not add grandfather or baseline allowlists for oversized authored files.
 - Avoid `any` and `unknown` types.
 - Modularize code and avoid re-inventing the wheel. Use functionality of libraries and SDKs whenever possible.

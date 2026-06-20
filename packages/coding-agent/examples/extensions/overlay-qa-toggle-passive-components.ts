@@ -13,26 +13,31 @@ export class ToggleDemoComponent extends BaseOverlay {
 	private isToggling = false;
 	private done: () => void;
 
-	constructor(tui: TUI, theme: Theme, done: () => void) {
+	constructor(tui: TUI, theme: Theme, done: () => void, getToggleHandle: ToggleHandleAccessor) {
 		super(theme);
 		this.tui = tui;
 		this.done = done;
+		this.getToggleHandle = getToggleHandle;
 	}
 
 	handleInput(data: string): void {
 		if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) {
 			this.done();
-		} else if (matchesKey(data, "t") && getToggleHandle() && !this.isToggling) {
+			return;
+		}
+		const handle = this.getToggleHandle();
+		if (matchesKey(data, "t") && handle && !this.isToggling) {
 			// Demonstrate toggle by hiding for 1 second then showing again
 			// (In real usage, a global keybinding would control visibility)
 			this.isToggling = true;
 			this.toggleCount++;
-			getToggleHandle().setHidden(true);
+			handle.setHidden(true);
 
 			// Auto-restore after 1 second to demonstrate the API
 			setTimeout(() => {
-				if (getToggleHandle()) {
-					getToggleHandle().setHidden(false);
+				const current = this.getToggleHandle();
+				if (current) {
+					current.setHidden(false);
 					this.isToggling = false;
 					this.tui.requestRender();
 				}

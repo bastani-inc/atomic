@@ -23,7 +23,7 @@
     "test:all": "bun run test:unit && bun run test:integration",
     "typecheck": "tsc --noEmit",
     "check:file-length": "bun scripts/check-file-length.ts",
-    "lint": "bun run typecheck && bun run check:file-length"
+    "lint": "tsc --noEmit"
   },
   "devDependencies": {
     "@j178/prek": "0.4.4",

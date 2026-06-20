@@ -49,27 +49,25 @@ export async function executeCall(
     } else {
       const needsAuthConnection = state.manager.getConnection(serverName);
       if (needsAuthConnection?.status === "needs-auth") {
-        if (!autoAuthAttempted) {
-          autoAuthAttempted = true;
-          const autoAuth = await attemptAutoAuth(state, serverName);
-          if (autoAuth.status === "failed") {
-            return {
-              content: [{ type: "text" as const, text: autoAuth.message }],
-              details: { mode: "call", error: "auth_required", server: serverName, message: autoAuth.message },
-            };
-          }
-          if (autoAuth.status === "success") {
-            await state.manager.close(serverName);
-            state.failureTracker.delete(serverName);
-            const connectedAfterAuth = await lazyConnect(state, serverName);
-            if (connectedAfterAuth) {
-              toolMeta = findToolByName(state.toolMetadata.get(serverName), toolName);
-              if (!toolMeta) {
-                return {
-                  content: [{ type: "text" as const, text: `Tool "${toolName}" not found on "${serverName}" after reconnect.` }],
-                  details: { mode: "call", error: "tool_not_found_after_reconnect", requestedTool: toolName },
-                };
-              }
+        autoAuthAttempted = true;
+        const autoAuth = await attemptAutoAuth(state, serverName);
+        if (autoAuth.status === "failed") {
+          return {
+            content: [{ type: "text" as const, text: autoAuth.message }],
+            details: { mode: "call", error: "auth_required", server: serverName, message: autoAuth.message },
+          };
+        }
+        if (autoAuth.status === "success") {
+          await state.manager.close(serverName);
+          state.failureTracker.delete(serverName);
+          const connectedAfterAuth = await lazyConnect(state, serverName);
+          if (connectedAfterAuth) {
+            toolMeta = findToolByName(state.toolMetadata.get(serverName), toolName);
+            if (!toolMeta) {
+              return {
+                content: [{ type: "text" as const, text: `Tool "${toolName}" not found on "${serverName}" after reconnect.` }],
+                details: { mode: "call", error: "tool_not_found_after_reconnect", requestedTool: toolName },
+              };
             }
           }
         }

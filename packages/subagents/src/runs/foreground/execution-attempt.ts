@@ -403,7 +403,7 @@ export async function runSingleAttempt(
 		if (options.signal) {
 			const kill = () => {
 				if (processClosed || detached) return;
-				if (options.allowIntercomDetach && intercomStarted && !detached) {
+				if (options.allowIntercomDetach && intercomStarted) {
 					detachForIntercom();
 					return;
 				}

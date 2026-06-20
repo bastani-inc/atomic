@@ -174,10 +174,6 @@ export async function prompt(this: AgentSession, text: string, options?: PromptO
 		throw error;
 	}
 
-	if (!messages) {
-		return;
-	}
-
 	preflightResult?.(true);
 	await this._runAgentPrompt(messages);
 }
