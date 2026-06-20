@@ -126,13 +126,15 @@ function packageManifestPaths(): readonly string[] {
   return paths;
 }
 
+// main is versionless: it carries this placeholder and the real version is
+// stamped only onto an off-main tag by scripts/cut-release.ts. The release-notes
+// PR this workflow opens against main must therefore touch CHANGELOGs only —
+// never package manifests, lockfiles, or generated version files.
+const PLACEHOLDER_VERSION = "0.0.0";
+
 function releaseChangedFileAllowed(path: string): boolean {
-  return path === "package.json"
-    || path === "bun.lock"
-    || path === "Cargo.toml"
-    || path === "Cargo.lock"
-    || path === "packages/natives/native/index.js"
-    || /^packages\/[^/]+\/(?:package\.json|README\.md|CHANGELOG\.md)$/u.test(path);
+  return path === "CHANGELOG.md"
+    || /^packages\/[^/]+\/CHANGELOG\.md$/u.test(path);
 }
 
 async function verifyReleasePreparation(
@@ -172,8 +174,10 @@ async function verifyReleasePreparation(
       continue;
     }
 
-    if (typeof manifest.version === "string" && manifest.version !== release.version) {
-      failures.push(`${manifestPath} version was ${manifest.version}, expected ${release.version}`);
+    if (typeof manifest.version === "string" && manifest.version !== PLACEHOLDER_VERSION) {
+      failures.push(
+        `${manifestPath} version was ${manifest.version}, expected the ${PLACEHOLDER_VERSION} placeholder. main is versionless; do not run bump-version in this flow (the release version is stamped onto the tag by scripts/cut-release.ts).`,
+      );
     }
 
     if (manifestPath === "packages/coding-agent/package.json" && manifest.name !== "@bastani/atomic") {
@@ -472,28 +476,57 @@ function verifyMainReadyForTag(release: ValidatedRelease, mergeCommitOid: string
   return { ok: true, summary, mainOid: head.stdout };
 }
 
-function verifyReleaseTagPublished(release: ValidatedRelease, expectedTagTargetOid: string): TagPublicationVerification {
-  const localTag = runCommand(["git", "rev-parse", `${release.version}^{}`]);
+function verifyReleaseTagPublished(release: ValidatedRelease, expectedParentOid: string): TagPublicationVerification {
+  // The tag does not point at a commit on main. cut-release.ts stamps the real
+  // version onto a throwaway "Release" commit whose parent is the merged main
+  // HEAD, then tags that commit. Verify: (1) local + remote tag resolve to the
+  // same release commit, (2) its parent is the verified main commit, and (3) the
+  // tagged @bastani/atomic manifest carries the target version (proving the stamp).
+  const localTag = runCommand(["git", "rev-parse", `${release.version}^{commit}`]);
+  const releaseCommitOid = localTag.stdout;
+  const tagParent = runCommand(["git", "rev-parse", `${release.version}^{commit}^`]);
+  const taggedManifest = runCommand(["git", "show", `${release.version}:packages/coding-agent/package.json`]);
   const remoteTag = runCommand(["git", "ls-remote", "--tags", "origin", `refs/tags/${release.version}`]);
   const remoteTagTargetOid = remoteTag.stdout.split(/\s+/u)[0] ?? "";
   const failures: string[] = [];
 
-  if (localTag.exitCode !== 0 || localTag.stdout !== expectedTagTargetOid) {
-    failures.push(`local tag target was ${localTag.stdout || "missing"}, expected ${expectedTagTargetOid}`);
+  if (localTag.exitCode !== 0 || releaseCommitOid.length === 0) {
+    failures.push("local release tag commit could not be resolved");
   }
-  if (remoteTag.exitCode !== 0 || remoteTagTargetOid !== expectedTagTargetOid) {
-    failures.push(`remote tag target was ${remoteTagTargetOid || "missing"}, expected ${expectedTagTargetOid}`);
+  if (tagParent.exitCode !== 0 || tagParent.stdout !== expectedParentOid) {
+    failures.push(`release commit parent was ${tagParent.stdout || "missing"}, expected the verified main commit ${expectedParentOid}`);
+  }
+
+  let stampedVersion: string | undefined;
+  if (taggedManifest.exitCode === 0) {
+    try {
+      stampedVersion = (JSON.parse(taggedManifest.stdout) as { version?: string }).version;
+    } catch {
+      stampedVersion = undefined;
+    }
+  }
+  if (stampedVersion !== release.version) {
+    failures.push(`tagged @bastani/atomic version was ${stampedVersion ?? "unparseable"}, expected ${release.version}`);
+  }
+
+  if (remoteTag.exitCode !== 0 || remoteTagTargetOid.length === 0) {
+    failures.push(`remote tag ${release.version} was missing on origin`);
+  } else if (releaseCommitOid.length > 0 && remoteTagTargetOid !== releaseCommitOid) {
+    failures.push(`remote tag target was ${remoteTagTargetOid}, expected the release commit ${releaseCommitOid}`);
   }
 
   const summary = [
     failures.length === 0 ? "Release tag publication is deterministically verified." : "Release tag publication is not verified.",
+    releaseCommitOid.length === 0 ? undefined : `releaseCommitOid: ${releaseCommitOid}`,
+    `expectedParentOid: ${expectedParentOid}`,
     failures.length === 0 ? undefined : failures.map((failure) => `- ${failure}`).join("\n"),
     commandSummary(localTag),
+    commandSummary(tagParent),
     commandSummary(remoteTag),
   ].filter((line): line is string => line !== undefined).join("\n\n");
 
-  if (failures.length > 0) return { ok: false, summary };
-  return { ok: true, summary, tagTargetOid: expectedTagTargetOid };
+  if (failures.length > 0 || releaseCommitOid.length === 0) return { ok: false, summary };
+  return { ok: true, summary, tagTargetOid: releaseCommitOid };
 }
 
 async function verifyPublishWorkflowSucceeded(
@@ -619,18 +652,19 @@ function releaseInstructions(release: ValidatedRelease): string {
   return [
     `Release kind: ${release.kind}`,
     `Target version: ${release.version}`,
-    `Release branch to create from current HEAD: ${release.branch}`,
+    `Release-notes branch to create from current HEAD: ${release.branch}`,
     "Repository rules:",
     "- Use Bun commands, not npm/yarn/pnpm/npx, for local development steps.",
     "- Never include a leading v in the version or tag.",
+    "- main is versionless: every packages/*/package.json stays at the 0.0.0 placeholder. Do NOT run scripts/bump-version.ts and do NOT change any package version in this flow.",
+    "- The real version is materialized only on a throwaway off-main tag commit produced by `scripts/cut-release.ts`; it is never merged into main.",
     "- Do not modify already released changelog sections; add entries only under each package CHANGELOG.md `## [Unreleased]` section.",
-    `- Use \`bun run scripts/bump-version.ts ${release.version}\` and then \`bun install\` for version bumps.`,
     "- If credentials, git state, CI, or publish checks block safe progress, report the blocker clearly and stop rather than fabricating success.",
   ].join("\n");
 }
 
 export default defineWorkflow("publish-release")
-  .description("Automate Atomic release/prerelease branch, PR, merge, tag, and publish monitoring.")
+  .description("Automate Atomic versionless-main release: open a release-notes PR to main, then stamp and tag the release off-main with cut-release.ts, and monitor publishing.")
   .input("target_version", Type.String({ description: "Version to publish, without a leading v." }))
   .input("release_kind", Type.Union([Type.Literal("release"), Type.Literal("prerelease")], {
     description: "Release type; release requires MAJOR.MINOR.PATCH and prerelease requires MAJOR.MINOR.PATCH-alpha.REVISION.",
@@ -665,11 +699,11 @@ export default defineWorkflow("publish-release")
         "Required actions:",
         "1. Inspect `git status --short`, `git branch --show-current`, `git rev-parse HEAD`, `git log -1 --oneline`, and `git remote -v` to record the source branch and exact source commit.",
         "2. Ensure you are starting from a safe state for a release. If unrelated uncommitted changes already exist before your release edits, stop and report BLOCKED with the exact files.",
-        `3. Create and switch to branch \`${release.branch}\` from the recorded source commit \`${sourceHead.stdout}\` if it does not already exist; if it exists, verify it is the intended same-version release branch before continuing.`,
-        "4. Read package changelogs, especially `packages/*/CHANGELOG.md`, and update only `## [Unreleased]` sections according to AGENTS.md Changelog guidance.",
-        `5. Run \`bun run scripts/bump-version.ts ${release.version}\` and then \`bun install\`.`,
-        "6. Inspect the resulting diff and ensure it contains only release metadata/changelog/version/lockfile changes.",
-        `7. Commit all release changes on \`${release.branch}\` with a concise conventional message such as \`chore: release ${release.version}\`.`,
+        `3. Create and switch to branch \`${release.branch}\` from the recorded source commit \`${sourceHead.stdout}\` if it does not already exist; if it exists, verify it is the intended same-version release-notes branch before continuing.`,
+        `4. Read package changelogs, especially \`packages/*/CHANGELOG.md\`, and move the \`## [Unreleased]\` entries into a new \`## [${release.version}]\` section dated today, per AGENTS.md Changelog guidance.`,
+        "5. Do NOT bump versions: main is versionless and every package manifest must stay at the 0.0.0 placeholder. Do not run scripts/bump-version.ts and do not touch package.json, bun.lock, Cargo.*, or generated version files.",
+        "6. Inspect the resulting diff and ensure it contains only CHANGELOG.md changes.",
+        `7. Commit the changelog changes on \`${release.branch}\` with a concise conventional message such as \`docs: release notes for ${release.version}\`.`,
         "",
         "Final response format:",
         "- Summarize source branch, source HEAD, created/current release branch, release commit hash, `git status --short`, changed files, commands run, and any blockers.",
@@ -823,9 +857,9 @@ export default defineWorkflow("publish-release")
       );
     }
 
-    const pushTag = await ctx.task("push-release-tag", {
+    const pushTag = await ctx.task("cut-release-tag", {
       prompt: [
-        "Create and push the release tag. This is the sole publish trigger stage.",
+        "Cut the release tag off main. This is the sole publish trigger stage. main is never bumped.",
         "",
         baseInstructions,
         "",
@@ -833,13 +867,13 @@ export default defineWorkflow("publish-release")
         excerpt(mainReady.summary),
         "",
         "Required actions:",
-        `1. Verify you are still on clean local \`main\` at commit \`${mainReady.mainOid}\`.`,
-        `2. Run \`git tag ${release.version}\` and \`git push origin ${release.version}\`.`,
-        "3. Do not force-push or overwrite an existing tag.",
+        `1. Verify you are on clean local \`main\` at commit \`${mainReady.mainOid}\`.`,
+        `2. Run \`bun run scripts/cut-release.ts ${release.version} --base main --push --yes\`. This stamps the real version onto a throwaway off-main "Release ${release.version}" commit (parent = the current main commit), tags it, and pushes ONLY the tag.`,
+        "3. Do not push main. Do not force-push or overwrite an existing tag. Do not run scripts/bump-version.ts.",
         "4. You may start monitoring the publish workflow, but the workflow body will verify the tag and publish run deterministically after this stage.",
         "",
         "Final response format:",
-        "- Include pushed tag, local/remote tag SHA evidence, GitHub Actions run URL/status if available, commands run, and any observed blockers.",
+        "- Include the pushed tag, the off-main release commit SHA and its parent (which must equal the main commit above), local/remote tag SHA evidence, GitHub Actions run URL/status if available, commands run, and any observed blockers.",
       ].join("\n"),
     });
 
@@ -848,8 +882,8 @@ export default defineWorkflow("publish-release")
       return blockedOutput(
         release,
         "verify-release-tag-published",
-        "local and remote release tag exist and point to the verified main commit",
-        [tagVerification.summary, "", "Push-tag stage output:", excerpt(pushTag.text, 2_000)].join("\n"),
+        "local and remote release tag exist, the release commit parent is the verified main commit, and the tagged @bastani/atomic manifest carries the target version",
+        [tagVerification.summary, "", "Cut-release stage output:", excerpt(pushTag.text, 2_000)].join("\n"),
         "failed",
       );
     }
@@ -860,7 +894,7 @@ export default defineWorkflow("publish-release")
         release,
         "verify-publish-workflow-succeeded",
         "GitHub Actions Publish run for the release tag has matching headSha, status completed, and conclusion success",
-        [publishVerification.summary, "", "Push-tag stage output:", excerpt(pushTag.text, 2_000)].join("\n"),
+        [publishVerification.summary, "", "Cut-release stage output:", excerpt(pushTag.text, 2_000)].join("\n"),
         "failed",
       );
     }

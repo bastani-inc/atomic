@@ -116,11 +116,21 @@ atomic:
 
 ## Releasing
 
-Atomic mirrors pi's tag-driven release flow: bump versions locally, commit, push a `<version>` git tag (no leading `v`, for example `0.8.24` or `0.8.24-alpha.1`), and CI publishes to npm with OIDC provenance and creates the GitHub Release with cross-compiled binaries attached.
+Atomic uses a **versionless `main`** release flow (modeled on openai/codex): every `packages/*/package.json` on `main` stays at the `0.0.0` placeholder, and the real version is materialized **only** on a throwaway, off-`main` `Release <version>` commit that is tagged but never merged back. Pushing the `<version>` tag (no leading `v`, for example `0.8.24` or `0.8.24-alpha.1`) triggers CI, which publishes to npm with OIDC provenance (stable `<x.y.z>` → `@latest`, prerelease `<x.y.z>-alpha.N` → `@next`) and creates the GitHub Release with cross-compiled binaries attached. Because `main` carries no version, you can cut a stable release and an ahead-of-stable prerelease line from the same trunk without branch gymnastics.
+
+Cut a release with `scripts/cut-release.ts`, which stamps the version onto the off-`main` tag commit and (with `--push`) pushes only the tag:
+
+```sh
+bun run scripts/cut-release.ts 0.8.31            # stable -> @latest
+bun run scripts/cut-release.ts 0.9.0-alpha.1     # prerelease -> @next
+bun run scripts/cut-release.ts 0.8.31 --base main --push
+```
+
+`main` is never advanced; the script creates the release commit in a detached git worktree, tags it, and abandons the worktree (the tag keeps the commit alive).
 
 ### Agent publishing requests
 
-If a user asks you to publish the package or create a release/prerelease, run the `publish-release` workflow using your workflow tool.
+If a user asks you to publish the package or create a release/prerelease, run the `publish-release` workflow using your workflow tool. That workflow opens a CHANGELOG-only release-notes PR to `main`, then stamps and tags the release off-`main` via `cut-release.ts` — it never bumps the version on `main`.
 
 ## Docs
 
@@ -158,17 +168,20 @@ Use these sections under `## [Unreleased]`:
 - **Internal changes (from issues)**: `Fixed foo bar ([#123](https://github.com/earendil-works/pi-mono/issues/123))`
 - **External contributions**: `Added feature X ([#456](https://github.com/earendil-works/pi-mono/pull/456) by [@username](https://github.com/username))`
 
-## Bumping Versions
+## Versionless main & bumping
 
-Use the top-level `scripts/bump-version.ts` script to update every `packages/*/package.json` version and package README badge:
+`main` is versionless: every `packages/*/package.json` (plus `bun.lock` workspace entries, the `@bastani/atomic-natives` dependency pin, `packages/natives/native/index.js` checks, and the Cargo manifests/lock) stays at the `0.0.0` placeholder. **Do not bump the version on `main`.**
+
+`scripts/bump-version.ts` is the low-level stamper that rewrites every versioned manifest. It is invoked by `scripts/cut-release.ts` inside a throwaway worktree to materialize the real version on the tagged release commit. You normally never run it directly against `main`; the only direct use is resetting the placeholder if it ever drifts:
 
 ```sh
-# Explicit version
-bun run scripts/bump-version.ts 0.1.0
-bun run scripts/bump-version.ts 0.1.0-alpha.1
-```
+# stamp a real version onto the off-main tag commit (preferred)
+bun run scripts/cut-release.ts 0.1.0
+bun run scripts/cut-release.ts 0.1.0-alpha.1
 
-Run `bun install` afterward to refresh `bun.lock`.
+# low-level: reset main back to the versionless placeholder
+bun run scripts/bump-version.ts 0.0.0 && bun install
+```
 
 ## CI
 
