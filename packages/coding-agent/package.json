@@ -1,6 +1,6 @@
 {
   "name": "@bastani/atomic",
-  "version": "0.8.31-alpha.4",
+  "version": "0.8.31-alpha.5",
   "description": "Atomic coding agent CLI with read, bash, edit, write tools and session management",
   "type": "module",
   "atomicConfig": {
@@ -68,7 +68,7 @@
     "prepublishOnly": "bun run clean && bun run build"
   },
   "dependencies": {
-    "@bastani/atomic-natives": "0.8.31-alpha.4",
+    "@bastani/atomic-natives": "0.8.31-alpha.5",
     "@bufbuild/protobuf": "^2.0.0",
     "@earendil-works/pi-agent-core": "^0.79.7",
     "@earendil-works/pi-ai": "^0.79.7",
