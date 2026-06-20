@@ -1144,8 +1144,8 @@ function checkHtmlPatterns(html) {
   // runs in the bundled browser path too, not just the CLI/static path.
   {
     const bodyText = html
-      .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
-      .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, ' ')
+      .replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/gi, ' ')
       .replace(/<[^>]+>/g, ' ');
     const tm = /\b(\w+)\s+theater\b/i.exec(bodyText);
     if (tm) findings.push({ id: 'theater-slop-phrase', snippet: `"${tm[0].trim()}"` });

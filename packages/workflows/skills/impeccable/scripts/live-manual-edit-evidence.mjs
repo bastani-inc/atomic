@@ -353,9 +353,9 @@ function decodeBasicHtml(value) {
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
     .replace(/&apos;/g, "'")
-    .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>');
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&');
 }
 
 function escapeRegExp(value) {
