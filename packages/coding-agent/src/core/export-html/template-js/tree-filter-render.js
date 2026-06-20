@@ -102,7 +102,7 @@
 
           // Apply filter mode
           const isSettingsEntry = ['label', 'custom', 'model_change', 'thinking_level_change', 'context_window_change'].includes(entry.type);
-          let passesFilter = true;
+          let passesFilter;
 
           switch (filterMode) {
             case 'user-only':
