@@ -490,3 +490,4 @@ describe("buildSessionContext", () => {
 			expect(rebuiltResult?.content).toEqual([{ type: "text", text: "keep me" }]);
 		});
 });
+});

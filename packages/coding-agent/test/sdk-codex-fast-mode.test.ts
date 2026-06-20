@@ -86,8 +86,11 @@ describe("createAgentSession codex fast mode", () => {
 	let cwd: string;
 	let agentDir: string;
 	let registeredProviders: Array<{ registry: ModelRegistry; provider: string }>;
+	let previousCodexFastModeEnv: string | undefined;
 
 	beforeEach(() => {
+		previousCodexFastModeEnv = process.env[ENV_CODEX_FAST_MODE];
+		delete process.env[ENV_CODEX_FAST_MODE];
 		tempDir = join(tmpdir(), `atomic-sdk-codex-fast-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		cwd = join(tempDir, "project");
 		agentDir = join(tempDir, "agent");
@@ -103,6 +106,11 @@ describe("createAgentSession codex fast mode", () => {
 		}
 		if (existsSync(tempDir)) {
 			rmSync(tempDir, { recursive: true, force: true });
+		}
+		if (previousCodexFastModeEnv === undefined) {
+			delete process.env[ENV_CODEX_FAST_MODE];
+		} else {
+			process.env[ENV_CODEX_FAST_MODE] = previousCodexFastModeEnv;
 		}
 	});
 

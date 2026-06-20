@@ -494,3 +494,4 @@ describe("AuthStorage", () => {
 			expect(raw).toBe("{invalid-json");
 		});
 });
+});

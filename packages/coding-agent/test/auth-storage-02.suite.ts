@@ -154,3 +154,4 @@ describe("AuthStorage", () => {
 			expect(apiKey).toBe("stored-key");
 		});
 });
+});
