@@ -19,5 +19,6 @@ hooks = [
   { id = "cargo-fmt", name = "cargo fmt --check", entry = "cargo fmt --check", language = "system", pass_filenames = false, files = "(^Cargo\\.toml$|^Cargo\\.lock$|^crates/.*\\.rs$|^rustfmt\\.toml$)" },
   { id = "cargo-clippy", name = "cargo clippy", entry = "cargo clippy --workspace --all-targets -- -D warnings", language = "system", pass_filenames = false, files = "(^Cargo\\.toml$|^Cargo\\.lock$|^crates/.*\\.rs$)" },
   { id = "bun-lint", name = "bun run lint", entry = "bun run lint", language = "system", pass_filenames = false },
+  { id = "check-file-length", name = "bun run check:file-length", entry = "bun run check:file-length", language = "system", pass_filenames = false },
   { id = "bun-test-unit", name = "bun run test:unit", entry = "bun run test:unit", language = "system", pass_filenames = false },
 ]

@@ -405,19 +405,16 @@ function stripStyleAndJoin(lines, block) {
     let line = lines[i];
 
     if (!inStyle) {
-      // Strip any complete <style> elements on this line (self-closed or
-      // same-line-closed), including their body content.
-      line = line
-        .replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/g, '')
-        .replace(/<style\b[^>]*\/\s*>/g, '');
-
-      // If a <style> opener remains (multi-line body starts here), strip from
-      // the opener to end-of-line and flip into skip mode.
-      const openerIdx = line.search(/<style\b/);
-      if (openerIdx !== -1) {
-        line = line.slice(0, openerIdx);
-        inStyle = true;
-      }
+      // An unclosed <style> opener (more non-self-closed openers than same-line
+      // closers) starts a multi-line body that continues on following lines.
+      const openers = (line.match(/<style\b/gi) || []).length;
+      const selfClosed = (line.match(/<style\b[^>]*\/\s*>/gi) || []).length;
+      const closers = (line.match(/<\/style\b/gi) || []).length;
+      if (openers - selfClosed > closers) inStyle = true;
+      // Remove every <style> element on this line in a single pass — self-closed
+      // <style/>, same-line <style>…</style>, or an unclosed opener through end
+      // of line — so the result provably cannot retain a <style fragment.
+      line = line.replace(/<style\b(?:[^>]*\/>|[^>]*>[\s\S]*?(?:<\/style[^>]*>|$))/gi, '');
       out.push(line);
     } else {
       // In multi-line style body; drop everything until we see </style>.
@@ -435,7 +432,8 @@ function stripStyleAndJoin(lines, block) {
 /**
  * Find the inner content of `<TAG ...attrMatch...>…</TAG>` inside `text`,
  * handling nested same-tag elements via depth counting. `attrMatch` is a
- * regex source fragment that must appear inside the opener tag.
+ * regex source fragment that must appear inside the opener tag; callers must
+ * pre-escape any dynamic (non-constant) portion with `escapeRegExp`.
  * Returns the inner string (may be empty), or null if not found.
  */
 function extractInnerByAttr(text, attrMatch) {
@@ -483,7 +481,7 @@ function extractOriginal(lines, block) {
  */
 function extractVariant(lines, block, variantNum) {
   const text = stripStyleAndJoin(lines, block);
-  const inner = extractInnerByAttr(text, 'data-impeccable-variant="' + variantNum + '"');
+  const inner = extractInnerByAttr(text, 'data-impeccable-variant="' + escapeRegExp(variantNum) + '"');
   if (inner === null) return null;
   const result = inner.split('\n');
   // Collapse a lone empty leading/trailing line (common after string splice).

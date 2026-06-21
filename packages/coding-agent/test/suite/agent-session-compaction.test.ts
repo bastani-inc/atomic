@@ -81,7 +81,7 @@ describe("AgentSession compaction characterization", () => {
 		const deletedEntryId = await populateCompactableSession(harness);
 		setContextDeletionRequest(harness, deletedEntryId);
 
-		const result = await harness.session.compact();
+		const result = await harness.session.compact({ compression_ratio: 0.9 });
 		const compactionEntries = harness.sessionManager.getEntries().filter((entry) => entry.type === "context_compaction");
 
 		expect(result.deletedTargets).toEqual([{ kind: "entry", entryId: deletedEntryId }]);
@@ -126,7 +126,7 @@ describe("AgentSession compaction characterization", () => {
 
 	it("resumes after threshold compaction when only agent-level queued messages exist", async () => {
 		vi.useFakeTimers();
-		const harness = await createHarness();
+		const harness = await createHarness({ settings: { compaction: { compression_ratio: 0.9 } } });
 		harnesses.push(harness);
 		const deletedEntryId = await populateCompactableSession(harness);
 		setContextDeletionRequest(harness, deletedEntryId);

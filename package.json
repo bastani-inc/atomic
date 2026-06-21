@@ -22,6 +22,7 @@
     "test:integration": "bun test test/integration",
     "test:all": "bun run test:unit && bun run test:integration",
     "typecheck": "tsc --noEmit",
+    "check:file-length": "bun scripts/check-file-length.ts",
     "lint": "tsc --noEmit"
   },
   "devDependencies": {

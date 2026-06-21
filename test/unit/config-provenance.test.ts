@@ -288,24 +288,20 @@ describe("toScopedDiscoveryConfig — project override changes scope", () => {
   test("loadWorkflowConfig result → toScopedDiscoveryConfig: shared key in projectWorkflows only", async () => {
     const home = tempDir("scope-override");
     const proj = tempDir("scope-override-proj");
-
     writeConfigFile(home, "global", {
       workflows: { shared: { path: "../../packages/workflows/src/extension/global-shared.ts" } },
     });
     writeConfigFile(proj, "project", {
       workflows: { shared: { path: "../../packages/workflows/src/extension/project-shared.ts" } },
     });
-
     const { globalConfig, projectConfig } = await loadWorkflowConfig({
       homeDir: home,
       projectRoot: proj,
     });
-
     const dc = toScopedDiscoveryConfig(globalConfig ?? null, projectConfig ?? null, {
       homeDir: home,
       projectRoot: proj,
     });
-
     // shared key in projectWorkflows (project wins)
     assert.equal(dc.projectWorkflows?.["shared"], join(proj, "../../packages/workflows/src/extension/project-shared.ts"));
     // shared NOT in globalWorkflows
@@ -314,70 +310,57 @@ describe("toScopedDiscoveryConfig — project override changes scope", () => {
     assert.equal("globalWorkflows" in dc, false);
   });
 });
-
 // ---------------------------------------------------------------------------
 // 4. discoverWorkflows distinguishes settings-project vs settings-global
 // ---------------------------------------------------------------------------
-
 describe("discoverWorkflows — settings-project vs settings-global source kinds via toScopedDiscoveryConfig", () => {
   test("global workflow only → source kind is settings-global", async () => {
     const home = tempDir("disc-global-kind");
     const proj = tempDir("disc-global-kind-proj");
-
     // Write actual workflow file at the resolved path
     const globalBase = join(home, ".atomic", "agent");
     const wfDir = join(globalBase, "workflows");
     const wfPath = writeWorkflowFile(wfDir, "Global Workflow", "global-wf-kind-test");
-
     const dc = toScopedDiscoveryConfig(
       { workflows: { "global-wf-kind-test": { path: wfPath } } },
       null,
       { homeDir: home, projectRoot: proj },
     );
-
     const result = await discoverWorkflows({
       cwd: proj,
       homeDir: home,
       config: dc,
       includeBundled: false,
     });
-
     const src = result.sources.find((s) => s.id === "global-wf-kind-test");
     assert.notEqual(src, undefined);
     assert.equal(src?.kind, "settings-global");
     assert.equal(result.errors.filter((e) => e.level === "error").length, 0);
   });
-
   test("project workflow only → source kind is settings-project", async () => {
     const home = tempDir("disc-project-kind");
     const proj = tempDir("disc-project-kind-proj");
-
     const wfDir = join(proj, "workflows");
     const wfPath = writeWorkflowFile(wfDir, "Project Workflow", "project-wf-kind-test");
-
     const dc = toScopedDiscoveryConfig(
       null,
       { workflows: { "project-wf-kind-test": { path: wfPath } } },
       { homeDir: home, projectRoot: proj },
     );
-
     const result = await discoverWorkflows({
       cwd: proj,
       homeDir: home,
       config: dc,
       includeBundled: false,
     });
-
     const src = result.sources.find((s) => s.id === "project-wf-kind-test");
     assert.notEqual(src, undefined);
     assert.equal(src?.kind, "settings-project");
     assert.equal(result.errors.filter((e) => e.level === "error").length, 0);
   });
-
   test("project overrides global key → only settings-project source registered", async () => {
     const home = tempDir("disc-override-kind");
     const proj = tempDir("disc-override-kind-proj");
-
     // Write two separate workflow files (same normalizedName would clash — use distinct names)
     const globalBase = join(home, ".atomic", "agent");
     const globalWfPath = writeWorkflowFile(
@@ -390,35 +373,29 @@ describe("discoverWorkflows — settings-project vs settings-global source kinds
       "Override Workflow (Project)",
       "override-kind-test",
     );
-
     // toScopedDiscoveryConfig: project key "override-kind-test" overrides global
     const dc = toScopedDiscoveryConfig(
       { workflows: { "override-kind-test": { path: globalWfPath } } },
       { workflows: { "override-kind-test": { path: projWfPath } } },
       { homeDir: home, projectRoot: proj },
     );
-
     // Verify project wins in DiscoveryConfig
     assert.equal(dc.projectWorkflows?.["override-kind-test"], projWfPath);
     assert.equal(dc.globalWorkflows?.["override-kind-test"], undefined);
-
     const result = await discoverWorkflows({
       cwd: proj,
       homeDir: home,
       config: dc,
       includeBundled: false,
     });
-
     const sources = result.sources.filter((s) => s.id === "override-kind-test");
     assert.equal(sources.length, 1);
     assert.equal(sources[0]!.kind, "settings-project");
     assert.equal(sources[0]!.filePath, projWfPath);
   });
-
   test("disjoint global + project keys → distinct kinds in sources", async () => {
     const home = tempDir("disc-disjoint-kinds");
     const proj = tempDir("disc-disjoint-kinds-proj");
-
     const globalWfPath = writeWorkflowFile(
       join(home, ".atomic", "agent", "workflows"),
       "Global Distinct",
@@ -429,32 +406,26 @@ describe("discoverWorkflows — settings-project vs settings-global source kinds
       "Project Distinct",
       "disjoint-project",
     );
-
     const dc = toScopedDiscoveryConfig(
       { workflows: { "disjoint-global": { path: globalWfPath } } },
       { workflows: { "disjoint-project": { path: projWfPath } } },
       { homeDir: home, projectRoot: proj },
     );
-
     const result = await discoverWorkflows({
       cwd: proj,
       homeDir: home,
       config: dc,
       includeBundled: false,
     });
-
     const globalSrc = result.sources.find((s) => s.id === "disjoint-global");
     const projectSrc = result.sources.find((s) => s.id === "disjoint-project");
-
     assert.equal(globalSrc?.kind, "settings-global");
     assert.equal(projectSrc?.kind, "settings-project");
     assert.equal(result.errors.filter((e) => e.level === "error").length, 0);
   });
-
   test("end-to-end: loadWorkflowConfig + toScopedDiscoveryConfig + discoverWorkflows", async () => {
     const home = tempDir("e2e-provenance");
     const proj = tempDir("e2e-provenance-proj");
-
     // Write actual workflow files
     const globalWfPath = writeWorkflowFile(
       join(home, ".atomic", "agent", "workflows"),
@@ -471,7 +442,6 @@ describe("discoverWorkflows — settings-project vs settings-global source kinds
       "E2E Overridden (Project)",
       "e2e-shared-wf",
     );
-
     // Global config: e2e-global-wf (absolute) + e2e-shared-wf (absolute, will be overridden)
     const globalSharedPath = join(home, ".atomic", "agent", "workflows", "e2e-shared-global.ts");
     writeFileSync(
@@ -483,7 +453,6 @@ export default defineWorkflow("e2e-shared-wf")
   .compile();\n`,
       "utf-8",
     );
-
     writeConfigFile(home, "global", {
       workflows: {
         "e2e-global-wf":  { path: globalWfPath },
@@ -496,7 +465,6 @@ export default defineWorkflow("e2e-shared-wf")
         "e2e-shared-wf":  { path: overriddenProjPath },
       },
     });
-
     // Step 1: load config (provenance)
     const { globalConfig, projectConfig } = await loadWorkflowConfig({
       homeDir: home,
@@ -504,17 +472,14 @@ export default defineWorkflow("e2e-shared-wf")
     });
     assert.notEqual(globalConfig?.workflows?.["e2e-global-wf"], undefined);
     assert.notEqual(projectConfig?.workflows?.["e2e-project-wf"], undefined);
-
     // Step 2: build scoped discovery config
     const dc = toScopedDiscoveryConfig(globalConfig ?? null, projectConfig ?? null, {
       homeDir: home,
       projectRoot: proj,
     });
-
     // e2e-shared-wf override: project wins
     assert.equal(dc.projectWorkflows?.["e2e-shared-wf"], overriddenProjPath);
     assert.equal(dc.globalWorkflows?.["e2e-shared-wf"], undefined);
-
     // Step 3: discover
     const result = await discoverWorkflows({
       cwd: proj,
@@ -522,17 +487,14 @@ export default defineWorkflow("e2e-shared-wf")
       config: dc,
       includeBundled: false,
     });
-
     const globalSrc  = result.sources.find((s) => s.id === "e2e-global-wf");
     const projectSrc = result.sources.find((s) => s.id === "e2e-project-wf");
     const sharedSrc  = result.sources.find((s) => s.id === "e2e-shared-wf");
-
     assert.equal(globalSrc?.kind, "settings-global");
     assert.equal(projectSrc?.kind, "settings-project");
     // shared: project wins → settings-project, not settings-global
     assert.equal(sharedSrc?.kind, "settings-project");
     assert.equal(sharedSrc?.filePath, overriddenProjPath);
-
     assert.equal(result.errors.filter((e) => e.level === "error").length, 0);
   });
 });

@@ -1872,7 +1872,16 @@ function handlePollGet(req, res, url) {
     return;
   }
   state.lastPollAt = Date.now();
+  // Bound the client-supplied long-poll timeout so a user-provided value cannot
+  // schedule an unbounded timer (resource exhaustion).
   const timeout = parseInt(url.searchParams.get('timeout') || DEFAULT_POLL_TIMEOUT, 10);
+  if (!Number.isFinite(timeout) || timeout < 0 || timeout > 300000) {
+    // Reject out-of-range long-poll lifetimes so a user-provided value cannot
+    // schedule an unbounded timer (resource exhaustion).
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Invalid timeout' }));
+    return;
+  }
   const leaseMs = parseInt(url.searchParams.get('leaseMs') || '30000', 10);
   const available = findAvailablePendingEvent();
   if (available) {

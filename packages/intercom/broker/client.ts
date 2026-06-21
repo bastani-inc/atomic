@@ -287,124 +287,100 @@ export class IntercomClient extends EventEmitter {
         if (this._sessionId !== null) {
           throw new Error("Received duplicate registered message");
         }
-
         this._sessionId = brokerMessage.sessionId;
         this.emit("_registered", { type: "registered", sessionId: brokerMessage.sessionId });
         break;
       }
-
       case "sessions": {
         const { requestId, sessions } = brokerMessage;
         if (typeof requestId !== "string" || !Array.isArray(sessions) || !sessions.every(isSessionInfo)) {
           throw new Error("Invalid sessions message");
         }
-
         const pending = this.pendingLists.get(requestId);
         if (!pending) {
           // Late list responses can still arrive after the caller has already timed out.
           return;
         }
-
         this.pendingLists.delete(requestId);
         pending.resolve(sessions);
         break;
       }
-
       case "message": {
         const { from, message } = brokerMessage;
         if (!isSessionInfo(from) || !isMessage(message)) {
           throw new Error("Invalid message event");
         }
-
         this.emit("message", from, message);
         break;
       }
-
       case "delivered": {
         const { messageId } = brokerMessage;
         if (typeof messageId !== "string") {
           throw new Error("Invalid delivered message");
         }
-
         const pending = this.pendingSends.get(messageId);
         if (!pending) {
           // Late send responses are harmless once the caller has already timed out.
           return;
         }
-
         this.pendingSends.delete(messageId);
         pending.resolve({ id: messageId, delivered: true });
         break;
       }
-
       case "delivery_failed": {
         const { messageId, reason } = brokerMessage;
         if (typeof messageId !== "string" || typeof reason !== "string") {
           throw new Error("Invalid delivery_failed message");
         }
-
         const pending = this.pendingSends.get(messageId);
         if (!pending) {
           // Late send responses are harmless once the caller has already timed out.
           return;
         }
-
         this.pendingSends.delete(messageId);
         pending.resolve({ id: messageId, delivered: false, reason });
         break;
       }
-
       case "session_joined": {
         if (!isSessionInfo(brokerMessage.session)) {
           throw new Error("Invalid session_joined message");
         }
-
         this.emit("session_joined", brokerMessage.session);
         break;
       }
-
       case "session_left": {
         if (typeof brokerMessage.sessionId !== "string") {
           throw new Error("Invalid session_left message");
         }
-
         this.emit("session_left", brokerMessage.sessionId);
         break;
       }
-
       case "presence_update": {
         if (!isSessionInfo(brokerMessage.session)) {
           throw new Error("Invalid presence_update message");
         }
-
         this.emit("presence_update", brokerMessage.session);
         break;
       }
-
       case "error": {
         if (typeof brokerMessage.error !== "string") {
           throw new Error("Invalid error message");
         }
-
         this.emit("error", new Error(brokerMessage.error));
         break;
       }
-
       default:
         throw new Error(`Unknown broker message type: ${brokerMessage.type}`);
     }
   }
-
   async disconnect(): Promise<void> {
     const socket = this.socket;
     if (!socket) {
       return;
     }
-
     this.disconnecting = true;
     this.disconnectError = null;
     this.failPending(new Error("Client disconnected"));
-
     await new Promise<void>((resolve) => {
       let settled = false;
       const finish = () => {
@@ -424,10 +400,8 @@ export class IntercomClient extends EventEmitter {
       const timeout = setTimeout(() => {
         socket.destroy();
       }, 2000);
-
       socket.once("close", onClose);
       socket.once("error", onError);
-
       try {
         writeMessage(socket, { type: "unregister" });
         socket.end();
@@ -437,7 +411,6 @@ export class IntercomClient extends EventEmitter {
       }
     });
   }
-
   listSessions(): Promise<SessionInfo[]> {
     let socket: net.Socket;
     try {
@@ -445,7 +418,6 @@ export class IntercomClient extends EventEmitter {
     } catch (error) {
       return Promise.reject(toError(error));
     }
-    
     return new Promise((resolve, reject) => {
       const requestId = randomUUID();
       const wrappedResolve = (sessions: SessionInfo[]) => {
@@ -472,7 +444,6 @@ export class IntercomClient extends EventEmitter {
       }
     });
   }
-
   send(to: string, options: SendOptions): Promise<SendResult> {
     let socket: net.Socket;
     try {
@@ -480,7 +451,6 @@ export class IntercomClient extends EventEmitter {
     } catch (error) {
       return Promise.reject(toError(error));
     }
-    
     const messageId = options.messageId ?? randomUUID();
     const message: Message = {
       id: messageId,
@@ -492,7 +462,6 @@ export class IntercomClient extends EventEmitter {
         attachments: options.attachments,
       },
     };
-
     return new Promise((resolve, reject) => {
       const wrappedResolve = (result: SendResult) => {
         clearTimeout(timeout);
@@ -509,7 +478,6 @@ export class IntercomClient extends EventEmitter {
         }
       }, 10000);
       this.pendingSends.set(messageId, { resolve: wrappedResolve, reject: wrappedReject });
-
       try {
         writeMessage(socket, { type: "send", to, message });
       } catch (error) {
@@ -519,17 +487,14 @@ export class IntercomClient extends EventEmitter {
       }
     });
   }
-
   updatePresence(updates: { name?: string; status?: string; model?: string }): void {
     if (this.disconnecting) {
       return;
     }
-
     const socket = this.socket;
     if (!socket || !this._sessionId || socket.destroyed || socket.writableEnded || !socket.writable) {
       return;
     }
-
     writeMessage(socket, { type: "presence", ...updates });
   }
 }

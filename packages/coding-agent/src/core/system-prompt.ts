@@ -148,10 +148,18 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
   const hasFind = tools.includes("find");
   const hasLs = tools.includes("ls");
   const hasRead = tools.includes("read");
+  const shouldIncludeAskUserFallbackGuidance =
+    selectedTools !== undefined &&
+    tools.length > 0 &&
+    !tools.includes("ask_user_question") &&
+    !explicitlyExcludedTools.has("ask_user_question");
 
   // File exploration guidelines
   if (hasBash && !hasGrep && !hasFind && !hasLs) {
     addGuideline("Use bash for file operations like ls, rg, find");
+  }
+  if (shouldIncludeAskUserFallbackGuidance) {
+    addGuideline("Clarify ambiguous requirements using the ask_user_question tool if available.");
   }
 
   for (const guideline of promptGuidelines ?? []) {

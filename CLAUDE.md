@@ -33,7 +33,7 @@ Default to using **Bun**, not Node/npm/yarn/pnpm.
 - Use `bun install` instead of `npm install`, `yarn install`, or `pnpm install`
 - Use `bun run <script>` instead of `npm run <script>`
 - Use `bunx <package> <command>` instead of `npx <package> <command>`
-- Repo commands: `bun run test:unit`, `bun run test:integration`, `bun run test:all`, `bun run typecheck`, `bun run lint`, `bun run hooks:install`, `bun run hooks:run`
+- Repo commands: `bun run test:unit`, `bun run test:integration`, `bun run test:all`, `bun run typecheck`, `bun run check:file-length`, `bun run lint`, `bun run hooks:install`, `bun run hooks:run`
 - Git hooks are configured in `prek.toml`; `bun install` runs the root `prepare` script to install hooks with `prek install --prepare-hooks` using `default_install_hook_types`.
 
 **Exception — publishing:** `npm publish --provenance` is still the registry publish tool because npm's OIDC-signed provenance lives in the npm CLI. Everything else is Bun.
@@ -79,7 +79,8 @@ Set any of the following environment variables to enable AI-friendly output:
 
 ### Code Quality
 
-- Frequently run linters and type checks using `bun run lint` and `bun run typecheck` (both are `tsc --noEmit`).
+- Frequently run linters and type checks using `bun run typecheck` and `bun run lint` (both `tsc --noEmit`), and run `bun run check:file-length` to enforce the 500-line file-length gate.
+- Keep tracked TypeScript, JavaScript, and Rust source-like files at or below 500 physical lines. `bun run check:file-length` enforces `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, and `.rs` files with only the documented generated/vendored glob exclusions (`node_modules`, `dist`, `target`, `binaries`, `.git`, `vendor`, `*.min.js`, `*.min.mjs`, `packages/workflows/skills/impeccable/**`) and first-five-line generated markers (`@generated`, `auto-generated`, `DO NOT EDIT`, `GENERATED -- do not edit`). Do not add grandfather or baseline allowlists for oversized authored files.
 - Avoid `any` and `unknown` types.
 - Modularize code and avoid re-inventing the wheel. Use functionality of libraries and SDKs whenever possible.
 

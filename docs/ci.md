@@ -12,6 +12,7 @@ This document describes the GitHub Actions workflows for the Atomic monorepo and
 Pull request / push
   ├─ bun install --frozen-lockfile
   ├─ bun run typecheck
+  ├─ bun run check:file-length
   ├─ cd packages/coding-agent && bun run docs:check
   ├─ cd packages/coding-agent/docs && bunx --bun mintlify@latest validate
   ├─ cd packages/coding-agent/docs && bunx --bun mintlify@latest broken-links
@@ -92,14 +93,15 @@ Steps:
 2. Set up Bun.
 3. Install dependencies with `bun install --frozen-lockfile`.
 4. Run `bun run typecheck`.
-5. Validate hosted-docs routes and internal links with `cd packages/coding-agent && bun run docs:check`.
-6. Validate Mintlify MDX/page syntax with `cd packages/coding-agent/docs && bunx --bun mintlify@latest validate`.
-7. Check Mintlify broken links with `cd packages/coding-agent/docs && bunx --bun mintlify@latest broken-links`.
-8. Build `@bastani/atomic` with `cd packages/coding-agent && bun run build`.
-9. Run `bun run test:unit`.
-10. Run `bun run test:integration`.
-11. Build the native release binary with `scripts/build-binaries.sh --platform <native-x64>`.
-12. Extract the generated release archive, verify required bundled `builtin/*` and selected `node_modules/*` paths are present, run `atomic --version`, and run `atomic --no-session` far enough to catch extension-load diagnostics while allowing the expected no-models exit in CI.
+5. Run `bun run check:file-length` to enforce the 500-line maximum for tracked TS/JS/Rust source-like files after applying only the documented generated/vendored exclusions.
+6. Validate hosted-docs routes and internal links with `cd packages/coding-agent && bun run docs:check`.
+7. Validate Mintlify MDX/page syntax with `cd packages/coding-agent/docs && bunx --bun mintlify@latest validate`.
+8. Check Mintlify broken links with `cd packages/coding-agent/docs && bunx --bun mintlify@latest broken-links`.
+9. Build `@bastani/atomic` with `cd packages/coding-agent && bun run build`.
+10. Run `bun run test:unit`.
+11. Run `bun run test:integration`.
+12. Build the native release binary with `scripts/build-binaries.sh --platform <native-x64>`.
+13. Extract the generated release archive, verify required bundled `builtin/*` and selected `node_modules/*` paths are present, run `atomic --version`, and run `atomic --no-session` far enough to catch extension-load diagnostics while allowing the expected no-models exit in CI.
 
 ### Code Review (`code-review.yml`)
 
@@ -271,7 +273,7 @@ The meaningful pre-publish checks are:
 
 | File                 | Trigger                                       | Purpose                                                                                                                                                                                                       |
 | -------------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `test.yml`           | Push to `main`, PR to `main`                  | Install, typecheck, validate docs links plus Mintlify MDX/page syntax and broken links, build `@bastani/atomic`, unit/integration tests, build native Linux/Windows binaries, verify archive contents, and run `atomic --version` / `atomic --no-session` archive smoke tests |
+| `test.yml`           | Push to `main`, PR to `main`                  | Install, typecheck, enforce the tracked TS/JS/Rust file-length gate, validate docs links plus Mintlify MDX/page syntax and broken links, build `@bastani/atomic`, unit/integration tests, build native Linux/Windows binaries, verify archive contents, and run `atomic --version` / `atomic --no-session` archive smoke tests |
 | `publish.yml`        | `<version>` tag push, manual dispatch with tag input | Smoke test Linux/Windows binaries in parallel on Blacksmith runners, build native NAPI artifacts on Blacksmith Linux/Windows/ARM/macOS runners plus GitHub `macos-26-intel` for Darwin x64, validate docs links plus Mintlify MDX/page syntax and broken links before publish metadata checks, build binaries on a GitHub-hosted runner for npm provenance, publish `@bastani/atomic-natives` and `@bastani/atomic`, create GitHub Release with binaries |
 | `code-review.yml`    | PR opened/synchronized                        | Claude-powered code review                                                                                                                                                                                    |
 | `pr-description.yml` | PR opened/synchronized                        | Claude-powered PR description generation, skipped for Dependabot                                                                                                                                              |
@@ -287,6 +289,7 @@ The meaningful pre-publish checks are:
 
     ```sh
     bun run typecheck
+    bun run check:file-length
     cd packages/coding-agent && bun run docs:check
     cd docs && bunx --bun mintlify@latest validate
     bunx --bun mintlify@latest broken-links

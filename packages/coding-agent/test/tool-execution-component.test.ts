@@ -348,7 +348,6 @@ describe("ToolExecutionComponent parity", () => {
 		const toolDefinition: ToolDefinition = {
 			...createBaseToolDefinition(),
 		};
-
 		const component = new ToolExecutionComponent(
 			"custom_tool",
 			"tool-6",
@@ -363,7 +362,6 @@ describe("ToolExecutionComponent parity", () => {
 		expect(rendered).toContain("custom_tool");
 		expect(rendered).toContain("done");
 	});
-
 	test("trims trailing blank display lines from write previews", () => {
 		const component = new ToolExecutionComponent(
 			"write",
@@ -379,7 +377,6 @@ describe("ToolExecutionComponent parity", () => {
 		expect(rendered).toContain("two");
 		expect(rendered).not.toContain("two\n\n");
 	});
-
 	test("trims trailing blank display lines from read results", () => {
 		const component = new ToolExecutionComponent(
 			"read",
@@ -400,7 +397,6 @@ describe("ToolExecutionComponent parity", () => {
 		expect(rendered).toContain("two");
 		expect(rendered).not.toContain("two\n\n");
 	});
-
 	test("collapses ordinary read results until expanded", () => {
 		const component = new ToolExecutionComponent(
 			"read",
@@ -415,17 +411,14 @@ describe("ToolExecutionComponent parity", () => {
 			{ content: [{ type: "text", text: "hidden content" }], details: undefined, isError: false },
 			false,
 		);
-
 		const collapsed = stripAnsi(component.render(120).join("\n"));
 		expect(collapsed).toContain("read");
 		expect(collapsed).toContain("notes.txt");
 		expect(collapsed).not.toContain("hidden content");
-
 		component.setExpanded(true);
 		const expanded = stripAnsi(component.render(120).join("\n"));
 		expect(expanded).toContain("hidden content");
 	});
-
 	for (const scenario of [
 		{
 			title: "SKILL.md",
@@ -474,20 +467,17 @@ describe("ToolExecutionComponent parity", () => {
 				{ content: [{ type: "text", text: scenario.content }], details: undefined, isError: false },
 				false,
 			);
-
 			const collapsed = stripAnsi(component.render(120).join("\n"));
 			expect(collapsed).toContain(scenario.compact);
 			expect(collapsed).not.toContain(scenario.hidden);
 			if (scenario.absent) {
 				expect(collapsed).not.toContain(scenario.absent);
 			}
-
 			component.setExpanded(true);
 			const expanded = stripAnsi(component.render(120).join("\n"));
 			expect(expanded).toContain(scenario.hidden);
 		});
 	}
-
 	for (const scenario of [
 		{ title: "SKILL.md", path: join(process.cwd(), "attio", "SKILL.md"), compact: "[skill] attio:120-329" },
 		{ title: "Pi documentation", path: getReadmePath(), compact: "read docs README.md:120-329" },
@@ -502,7 +492,6 @@ describe("ToolExecutionComponent parity", () => {
 				createFakeTui(),
 				process.cwd(),
 			);
-
 			const collapsed = stripAnsi(component.render(120).join("\n"));
 			expect(collapsed).toContain(scenario.compact);
 			expect(collapsed.indexOf(":120-329")).toBeLessThan(collapsed.indexOf("Expand"));

@@ -9,8 +9,11 @@ describe("SettingsManager codexFastMode", () => {
 	let tempDir: string;
 	let cwd: string;
 	let agentDir: string;
+	let previousCodexFastModeEnv: string | undefined;
 
 	beforeEach(() => {
+		previousCodexFastModeEnv = process.env[ENV_CODEX_FAST_MODE];
+		delete process.env[ENV_CODEX_FAST_MODE];
 		tempDir = join(tmpdir(), `atomic-codex-fast-settings-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		cwd = join(tempDir, "project");
 		agentDir = join(tempDir, "agent");
@@ -21,6 +24,11 @@ describe("SettingsManager codexFastMode", () => {
 	afterEach(() => {
 		if (existsSync(tempDir)) {
 			rmSync(tempDir, { recursive: true, force: true });
+		}
+		if (previousCodexFastModeEnv === undefined) {
+			delete process.env[ENV_CODEX_FAST_MODE];
+		} else {
+			process.env[ENV_CODEX_FAST_MODE] = previousCodexFastModeEnv;
 		}
 	});
 
