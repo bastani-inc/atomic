@@ -15,7 +15,6 @@ import {
 } from "../../packages/coding-agent/src/core/tools/bash-policy.ts";
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import type { StageSessionCreateOptions, StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
-import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 
 function assertAllowed(decision: BashCommandPolicyDecision): asserts decision is Extract<BashCommandPolicyDecision, { readonly allowed: true }> {
   if (!decision.allowed) {

@@ -9,6 +9,25 @@ import {
   schemaIsRequired,
 } from "../../packages/workflows/src/shared/schema-introspection.js";
 
+type ErrorConstructorWithPrepareStackTrace = typeof Error & {
+  prepareStackTrace?: (error: Error, structuredStackTrace: readonly unknown[]) => string;
+};
+
+function withPreparedStack<T>(stack: string, fn: () => T): T {
+  const errorConstructor = Error as ErrorConstructorWithPrepareStackTrace;
+  const originalPrepareStackTrace = errorConstructor.prepareStackTrace;
+  errorConstructor.prepareStackTrace = () => stack;
+  try {
+    return fn();
+  } finally {
+    errorConstructor.prepareStackTrace = originalPrepareStackTrace;
+  }
+}
+
+function workflowFromStack(stack: string) {
+  return withPreparedStack(stack, () => workflow({ description: "", outputs: {}, run: () => ({}) }));
+}
+
 describe("workflow authoring door", () => {
   test("emits a valid workflow definition", () => {
     const def = workflow({
@@ -23,7 +42,8 @@ describe("workflow authoring door", () => {
       run: async (ctx) => {
         const prompt: string = ctx.inputs.prompt;
         // @ts-expect-error ctx.inputs is closed over declared input schema keys.
-        ctx.inputs.propmt;
+        const _invalidInput = ctx.inputs.propmt;
+        void _invalidInput;
         const result = await ctx.stage("step1").prompt(prompt);
         return { result };
       },
@@ -48,7 +68,8 @@ describe("workflow authoring door", () => {
       outputs: {},
       run: (ctx) => {
         // @ts-expect-error ctx.inputs is closed when inputs is omitted.
-        ctx.inputs.extra;
+        const _extra: never = ctx.inputs.extra;
+        void _extra;
         return {};
       },
     });
@@ -84,6 +105,63 @@ describe("workflow authoring door", () => {
     assert.throws(
       () => workflow({ name: "broken", description: "", inputs: {}, outputs: {} } as never),
       { message: /run must be a function/ },
+    );
+  });
+
+  test("workflow validates spec field shapes at runtime", () => {
+    assert.throws(
+      () => workflow({ name: "bad-description", description: 42, outputs: {}, run: () => ({}) } as never),
+      { message: /description must be a string/ },
+    );
+
+    for (const outputs of [undefined, null, [], "nope"] as readonly unknown[]) {
+      assert.throws(
+        () => workflow({ name: "bad-outputs", description: "", outputs, run: () => ({}) } as never),
+        { message: /outputs must be a schema map/ },
+      );
+    }
+
+    for (const inputs of [null, [], "nope"] as readonly unknown[]) {
+      assert.throws(
+        () => workflow({ name: "bad-inputs", description: "", inputs, outputs: {}, run: () => ({}) } as never),
+        { message: /inputs must be a schema map/ },
+      );
+    }
+  });
+
+  test("infers omitted workflow names from caller filenames", () => {
+    const def = workflow({ description: "", outputs: {}, run: () => ({}) });
+
+    assert.equal(def.name, "define-workflow.test");
+    assert.equal(def.normalizedName, "define-workflowtest");
+  });
+
+  test("infers omitted workflow names across installed and extension layouts", () => {
+    const implementationFrames = [
+      "/workspace/app/node_modules/@bastani/workflows/authoring/workflow.ts",
+      "/Users/test/.atomic/agent/extensions/workflows/authoring/workflow.ts",
+      "/Users/test/.pi/agent/extensions/workflows/authoring/workflow.ts",
+      "/Users/test/.bun/install/global/node_modules/@bastani/atomic/dist/builtin/workflows/authoring/workflow.ts",
+    ];
+
+    for (const [index, implementationFrame] of implementationFrames.entries()) {
+      const def = workflowFromStack(`Error\n    at workflow (${implementationFrame}:10:2)\n    at Object.<anonymous> (/tmp/custom-flow-${index}.ts:5:1)`);
+      assert.equal(def.name, `custom-flow-${index}`);
+    }
+  });
+
+  test("infers omitted workflow names from file URL and Windows stack paths", () => {
+    const fileUrlDef = workflowFromStack("Error\n    at workflow (file:///tmp/project/node_modules/@bastani/workflows/authoring/workflow.ts:10:2)\n    at Object.<anonymous> (file:///tmp/project/file-url-flow.ts:5:1)");
+    assert.equal(fileUrlDef.name, "file-url-flow");
+
+    const windowsDef = workflowFromStack("Error\n    at workflow (C:\\Users\\test\\.pi\\agent\\extensions\\workflows\\authoring\\workflow.ts:10:2)\n    at Object.<anonymous> (C:\\Users\\test\\project\\windows-flow.ts:5:1)");
+    assert.equal(windowsDef.name, "windows-flow");
+  });
+
+  test("workflow throws when omitted name cannot be inferred", () => {
+    assert.throws(
+      () => workflowFromStack("Error\n    at workflow (/tmp/app/node_modules/@bastani/workflows/authoring/workflow.ts:10:2)\n    at resolveWorkflowName (/tmp/app/node_modules/@bastani/workflows/authoring/workflow.ts:9:2)"),
+      { message: /name must be provided when caller filename cannot be inferred/ },
     );
   });
 
@@ -174,6 +252,7 @@ describe("workflow authoring door", () => {
       gitWorktreeDir: "git_worktree_dir",
       baseBranch: "base_branch",
     });
+    assert.equal(Object.isFrozen(def.inputBindings?.worktree), true);
   });
 
   test("input() records immutable workflow input metadata", () => {

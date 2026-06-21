@@ -146,20 +146,6 @@ const helloWorkflow = workflow({
     },
 }) as WorkflowDefinition;
 
-const schemaWorkflow = workflow({
-  name: "schema-test",
-  description: "Multi-input schema",
-  inputs: {
-    text: Type.String({ default: "hi" }),
-    count: Type.Optional(Type.Number()),
-    flag: Type.Boolean(),
-  },
-  outputs: {
-    ok: Type.Optional(Type.Any()),
-  },
-  run: async (_ctx) => ({ ok: true }),
-}) as WorkflowDefinition;
-
 // ---------------------------------------------------------------------------
 // dispatch: list
 // ---------------------------------------------------------------------------

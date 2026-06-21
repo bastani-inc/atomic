@@ -320,6 +320,11 @@ export function createWorkflowStageFactory(input: {
     const blockedBy = input.scheduler.blockingAncestorFor(stageSnapshot);
     if (blockedBy !== undefined) input.scheduler.blockStageUntilCascadeRelease(stageSnapshot, blockedBy);
 
+    // Parallel fail-fast and workflow-exit cleanup can both target a live stage.
+    // The first terminal path owns the snapshot: finalization unregisters
+    // workflow-exit cleanup and removes the stage from the fail-fast active set.
+    // Later paths must not overwrite the terminal skippedReason; they only abort
+    // and release idempotent live handles.
     const skipForParallelFailFast = (): void => {
       if (isTerminalStage(stageSnapshot)) return;
       markSkippedForParallelFailFast();

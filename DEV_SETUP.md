@@ -207,7 +207,7 @@ Examples import the workspace package `@bastani/workflows`.
 │       │   ├── runs/                    # foreground/background workflow execution
 │       │   ├── shared/                  # store, store-types, types, persistence helpers
 │       │   ├── tui/                     # widget and DAG overlay renderers
-│       │   ├── workflows/               # defineWorkflow, registry, identity helpers
+│       │   ├── workflows/               # registry and identity helpers
 │       │   └── index.ts                 # public entry point
 │       ├── workflows/                   # bundled workflow definitions
 │       ├── skills/                      # bundled atomic skills

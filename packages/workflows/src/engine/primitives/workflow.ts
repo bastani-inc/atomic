@@ -85,6 +85,9 @@ export function createChildWorkflowRunner(input: {
       runtime.childRunOptions.cancellation?.register(childRunId, childController);
       runtime.exit.throwIfWorkflowExitSelected();
 
+      // Ordering is intentional: linkChildRun happens before launch so parent
+      // cleanup can abort the child; observeChildRun happens immediately after
+      // promise creation, with no await in between, so cleanup can await teardown.
       const childRunPromise = input.runWorkflow(child, childInputs, {
         ...runtime.childRunOptions,
         runId: childRunId,

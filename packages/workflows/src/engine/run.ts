@@ -65,6 +65,8 @@ export async function run<
 
   const activeStore = opts.store ?? defaultStore;
   const adapters = opts.adapters ?? {};
+  // Prompt-node UI is the graph-mode transport and intentionally takes precedence
+  // over an injected RunOpts.ui adapter; warn because that adapter will be ignored.
   if (opts.usePromptNodesForUi === true && opts.ui !== undefined) {
     console.warn("atomic-workflows: usePromptNodesForUi ignores the provided RunOpts.ui adapter");
   }
