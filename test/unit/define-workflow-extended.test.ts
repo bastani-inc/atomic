@@ -1,11 +1,26 @@
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { Type, type TSchema } from "typebox";
 import {
   schemaChoices,
   schemaFieldKind,
 } from "../../packages/workflows/src/shared/schema-introspection.js";
+
+type NamedDefinition = { readonly name: string; readonly normalizedName: string };
+
+const repoRoot = resolve(import.meta.dir, "../..");
+const workflowModuleUrl = pathToFileURL(join(repoRoot, "packages", "workflows", "src", "authoring", "workflow.ts")).href;
+
+async function importDefaultDefinition(filePath: string): Promise<NamedDefinition> {
+  const imported = await import(pathToFileURL(filePath).href) as { readonly default: NamedDefinition };
+  return imported.default;
+}
 
 describe("workflow config object semantics", () => {
   test("freezes current schema maps without mutating the source spec", () => {
@@ -37,6 +52,51 @@ describe("workflow config object semantics", () => {
 
     assert.notEqual(def.run, fn);
     assert.deepEqual(await def.run({ inputs: {} } as Parameters<typeof def.run>[0]), { from: "fn1" });
+  });
+});
+
+describe("workflow inferred names", () => {
+  test("uses the calling workflow filename when name is omitted", async () => {
+    const fixtureRoot = join(tmpdir(), `workflow-source-name-${randomUUID()}`);
+    try {
+      mkdirSync(fixtureRoot, { recursive: true });
+      const workflowFile = join(fixtureRoot, "source-derived-workflow.ts");
+      writeFileSync(
+        workflowFile,
+        `import { workflow } from ${JSON.stringify(workflowModuleUrl)};\nexport default workflow({ description: "", outputs: {}, run: () => ({}) });\n`,
+      );
+
+      const def = await importDefaultDefinition(workflowFile);
+
+      assert.equal(def.name, "source-derived-workflow");
+      assert.equal(def.normalizedName, "source-derived-workflow");
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("skips installed SDK authoring frames when name is omitted", async () => {
+    const fixtureRoot = join(tmpdir(), `workflow-dist-name-${randomUUID()}`);
+    try {
+      const sdkDir = join(fixtureRoot, "dist", "builtin", "workflows", "src", "authoring");
+      mkdirSync(sdkDir, { recursive: true });
+      writeFileSync(
+        join(sdkDir, "workflow.ts"),
+        `import { workflow as realWorkflow } from ${JSON.stringify(workflowModuleUrl)};\nexport function workflow(spec: Parameters<typeof realWorkflow>[0]): ReturnType<typeof realWorkflow> {\n  return realWorkflow(spec);\n}\n`,
+      );
+      const userWorkflowFile = join(fixtureRoot, "actual-user-workflow.ts");
+      writeFileSync(
+        userWorkflowFile,
+        `import { workflow } from "./dist/builtin/workflows/src/authoring/workflow.ts";\nexport default workflow({ description: "", outputs: {}, run: () => ({}) });\n`,
+      );
+
+      const def = await importDefaultDefinition(userWorkflowFile);
+
+      assert.equal(def.name, "actual-user-workflow");
+      assert.equal(def.normalizedName, "actual-user-workflow");
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
   });
 });
 

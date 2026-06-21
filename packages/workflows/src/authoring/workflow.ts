@@ -24,6 +24,7 @@ type UnionToIntersection<T> = (
 ) extends (value: infer TIntersection) => void
   ? TIntersection
   : never;
+type WorkflowInputShape<T> = T extends WorkflowInputValues ? T : never;
 
 type DeclaredResolvedEntry<K extends string, S extends TSchema> = S extends TOptional<TSchema>
   ? { readonly [P in K]?: Static<S> & WorkflowSerializableValue }
@@ -38,21 +39,23 @@ type DeclaredOutputEntry<K extends string, S extends TSchema> = S extends TOptio
   ? { readonly [P in K]?: Static<S> & WorkflowSerializableValue }
   : { readonly [P in K]: Static<S> & WorkflowSerializableValue };
 
-export type WorkflowInputsFromSchemas<TSchemas extends WorkflowInputSchemaMap> = (
-  [SchemaKeys<TSchemas>] extends [never]
-    ? {}
-    : Simplify<UnionToIntersection<{
-      readonly [K in SchemaKeys<TSchemas>]: DeclaredResolvedEntry<K, TSchemas[K]>;
-    }[SchemaKeys<TSchemas>]>>
-) & WorkflowInputValues;
+type WorkflowResolvedInputShapeFromSchemas<TSchemas extends WorkflowInputSchemaMap> = [SchemaKeys<TSchemas>] extends [never]
+  ? {}
+  : Simplify<UnionToIntersection<{
+    readonly [K in SchemaKeys<TSchemas>]: DeclaredResolvedEntry<K, TSchemas[K]>;
+  }[SchemaKeys<TSchemas>]>>;
 
-export type WorkflowProvidedInputsFromSchemas<TSchemas extends WorkflowInputSchemaMap> = (
-  [SchemaKeys<TSchemas>] extends [never]
-    ? {}
-    : Simplify<UnionToIntersection<{
-      readonly [K in SchemaKeys<TSchemas>]: DeclaredProvidedEntry<K, TSchemas[K]>;
-    }[SchemaKeys<TSchemas>]>>
-) & WorkflowInputValues;
+type WorkflowProvidedInputShapeFromSchemas<TSchemas extends WorkflowInputSchemaMap> = [SchemaKeys<TSchemas>] extends [never]
+  ? {}
+  : Simplify<UnionToIntersection<{
+    readonly [K in SchemaKeys<TSchemas>]: DeclaredProvidedEntry<K, TSchemas[K]>;
+  }[SchemaKeys<TSchemas>]>>;
+
+export type WorkflowInputsFromSchemas<TSchemas extends WorkflowInputSchemaMap> =
+  WorkflowInputShape<WorkflowResolvedInputShapeFromSchemas<TSchemas>>;
+
+export type WorkflowProvidedInputsFromSchemas<TSchemas extends WorkflowInputSchemaMap> =
+  WorkflowInputShape<WorkflowProvidedInputShapeFromSchemas<TSchemas>>;
 
 type WorkflowDeclaredOutputsFromSchemas<TSchemas extends WorkflowOutputSchemaMap> = [SchemaKeys<TSchemas>] extends [never]
   ? {}
@@ -127,6 +130,16 @@ function stackFilePath(line: string): string | undefined {
   return rawPath.startsWith("file://") ? fileURLToPath(rawPath) : rawPath;
 }
 
+function isWorkflowAuthoringImplementationFrame(filePath: string): boolean {
+  const normalized = filePath.replace(/\\/g, "/");
+  if (!/\/authoring\/workflow\.[cm]?[jt]sx?$/.test(normalized)) return false;
+  return normalized.includes("/packages/workflows/")
+    || normalized.includes("/node_modules/@bastani/workflows/")
+    || normalized.includes("/dist/builtin/workflows/")
+    || normalized.includes("/.atomic/agent/extensions/workflows/")
+    || normalized.includes("/.pi/agent/extensions/workflows/");
+}
+
 function workflowNameFromCaller(): string | undefined {
   const stack = new Error().stack;
   if (stack === undefined) return undefined;
@@ -134,9 +147,7 @@ function workflowNameFromCaller(): string | undefined {
   for (const line of stack.split("\n")) {
     const filePath = stackFilePath(line);
     if (filePath === undefined) continue;
-    if (/[/\\]packages[/\\]workflows[/\\]src[/\\]authoring[/\\]workflow\.[cm]?[jt]s$/.test(filePath)) {
-      continue;
-    }
+    if (isWorkflowAuthoringImplementationFrame(filePath)) continue;
     const base = basename(filePath).replace(/\.[cm]?[jt]sx?$/, "");
     if (base.length > 0) return base;
   }

@@ -310,7 +310,7 @@ describe("executor.run", () => {
         assert.equal(childRun?.status, "failed");
         assert.match(
             childRun?.error ?? "",
-            /workflow "undeclared-output-child" returned undeclared output "result"/,
+            /workflow "undeclared-output-child" returned undeclared output "result"; declare it in outputs: \{ "result": Type\.\.\.\. \}/,
         );
     });
     test("run rejects a top-level workflow that returns an undeclared output", async () => {
@@ -331,7 +331,7 @@ describe("executor.run", () => {
         assert.equal(wfResult.status, "failed");
         assert.match(
             wfResult.error ?? "",
-            /workflow "undeclared-top-level" returned undeclared output "rogue"/,
+            /workflow "undeclared-top-level" returned undeclared output "rogue"; declare it in outputs: \{ "rogue": Type\.\.\.\. \}/,
         );
     });
     test("run rejects a select output whose value is not a declared choice", async () => {

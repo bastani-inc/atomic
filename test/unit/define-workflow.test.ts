@@ -22,6 +22,8 @@ describe("workflow authoring door", () => {
       },
       run: async (ctx) => {
         const prompt: string = ctx.inputs.prompt;
+        // @ts-expect-error ctx.inputs is closed over declared input schema keys.
+        ctx.inputs.propmt;
         const result = await ctx.stage("step1").prompt(prompt);
         return { result };
       },

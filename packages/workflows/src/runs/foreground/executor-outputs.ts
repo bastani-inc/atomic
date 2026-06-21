@@ -31,7 +31,7 @@ function assertWorkflowOutputsExplicit(
   for (const key of Object.keys(sourceOutput)) {
     if (!hasOwnWorkflowOutput(declarations, key)) {
       throw new Error(
-        `atomic-workflows: ${scope} returned undeclared output "${key}"; declare it with .output("${key}", Type....) or remove it from the .run() return`,
+        `atomic-workflows: ${scope} returned undeclared output "${key}"; declare it in outputs: { "${key}": Type.... } or remove it from the .run() return`,
       );
     }
   }
@@ -119,7 +119,7 @@ export function assertWorkflowExitOutputs(
   for (const key of Object.keys(sourceOutput)) {
     if (!hasOwnWorkflowOutput(declarations, key)) {
       throw new Error(
-        `atomic-workflows: ${scope} provided undeclared output "${key}"; declare it with .output("${key}", Type....) or remove it from ctx.exit({ outputs })`,
+        `atomic-workflows: ${scope} provided undeclared output "${key}"; declare it in outputs: { "${key}": Type.... } or remove it from ctx.exit({ outputs })`,
       );
     }
   }

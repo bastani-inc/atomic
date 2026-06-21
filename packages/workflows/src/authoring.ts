@@ -151,6 +151,7 @@ type UnionToIntersection<T> = (
 ) extends (value: infer TIntersection) => void
   ? TIntersection
   : never;
+type WorkflowInputShape<T> = T extends WorkflowInputValues ? T : never;
 
 type DeclaredResolvedEntry<K extends string, S extends TSchema> = S extends TOptional<TSchema>
   ? { readonly [P in K]?: Static<S> & WorkflowSerializableValue }
@@ -165,21 +166,23 @@ type DeclaredOutputEntry<K extends string, S extends TSchema> = S extends TOptio
   ? { readonly [P in K]?: Static<S> & WorkflowSerializableValue }
   : { readonly [P in K]: Static<S> & WorkflowSerializableValue };
 
-export type WorkflowInputsFromSchemas<TSchemas extends WorkflowInputSchemaMap> = (
-  [SchemaKeys<TSchemas>] extends [never]
-    ? {}
-    : Simplify<UnionToIntersection<{
-      readonly [K in SchemaKeys<TSchemas>]: DeclaredResolvedEntry<K, TSchemas[K]>;
-    }[SchemaKeys<TSchemas>]>>
-) & WorkflowInputValues;
+type WorkflowResolvedInputShapeFromSchemas<TSchemas extends WorkflowInputSchemaMap> = [SchemaKeys<TSchemas>] extends [never]
+  ? {}
+  : Simplify<UnionToIntersection<{
+    readonly [K in SchemaKeys<TSchemas>]: DeclaredResolvedEntry<K, TSchemas[K]>;
+  }[SchemaKeys<TSchemas>]>>;
 
-export type WorkflowProvidedInputsFromSchemas<TSchemas extends WorkflowInputSchemaMap> = (
-  [SchemaKeys<TSchemas>] extends [never]
-    ? {}
-    : Simplify<UnionToIntersection<{
-      readonly [K in SchemaKeys<TSchemas>]: DeclaredProvidedEntry<K, TSchemas[K]>;
-    }[SchemaKeys<TSchemas>]>>
-) & WorkflowInputValues;
+type WorkflowProvidedInputShapeFromSchemas<TSchemas extends WorkflowInputSchemaMap> = [SchemaKeys<TSchemas>] extends [never]
+  ? {}
+  : Simplify<UnionToIntersection<{
+    readonly [K in SchemaKeys<TSchemas>]: DeclaredProvidedEntry<K, TSchemas[K]>;
+  }[SchemaKeys<TSchemas>]>>;
+
+export type WorkflowInputsFromSchemas<TSchemas extends WorkflowInputSchemaMap> =
+  WorkflowInputShape<WorkflowResolvedInputShapeFromSchemas<TSchemas>>;
+
+export type WorkflowProvidedInputsFromSchemas<TSchemas extends WorkflowInputSchemaMap> =
+  WorkflowInputShape<WorkflowProvidedInputShapeFromSchemas<TSchemas>>;
 
 type WorkflowDeclaredOutputsFromSchemas<TSchemas extends WorkflowOutputSchemaMap> = [SchemaKeys<TSchemas>] extends [never]
   ? {}

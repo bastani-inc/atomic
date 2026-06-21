@@ -106,7 +106,10 @@ describe("ctx.exit", () => {
 
     const undeclaredResult = await run(undeclared, {}, { store: createStore() });
     assert.equal(undeclaredResult.status, "failed");
-    assert.match(undeclaredResult.error ?? "", /provided undeclared output "extra"/);
+    assert.match(
+      undeclaredResult.error ?? "",
+      /provided undeclared output "extra"; declare it in outputs: \{ "extra": Type\.\.\.\. \}/,
+    );
 
     const invalidValue = workflow({
       name: "exit-output-snapshot-invalid-value",

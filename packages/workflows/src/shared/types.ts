@@ -55,10 +55,10 @@ export type WorkflowExitOptions<TOutputs extends WorkflowOutputValues = Workflow
 // ---------------------------------------------------------------------------
 
 /**
- * Inputs and outputs are declared with TypeBox schemas. Authors use
- * `.input(key, Type.String({ ... }))` / `.output(key, Type.Object({ ... }))`;
- * the builder threads the precise `Static<>` types and the runtime validates
- * via TypeBox `Value`.
+ * Inputs and outputs are declared as TypeBox schema maps on
+ * `workflow({ inputs: { ... }, outputs: { ... } })`. Authors import `Type`
+ * from typebox, while the workflow authoring types thread the corresponding
+ * `Static<>` types and the runtime validates via TypeBox `Value`.
  */
 export type WorkflowInputSchemaMap = AuthoringContract.WorkflowInputSchemaMap;
 export type WorkflowOutputSchemaMap = AuthoringContract.WorkflowOutputSchemaMap;

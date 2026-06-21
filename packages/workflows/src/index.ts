@@ -6,5 +6,3 @@
 // Add new non-cyclic public runtime exports to sdk-surface.ts so the Bun
 // virtual SDK used by workflow discovery stays in lockstep with this entry.
 export * from "./sdk-surface.js";
-
-// Note: `Type` / `Static` / `TSchema` are re-exported via ./sdk-surface.js.
